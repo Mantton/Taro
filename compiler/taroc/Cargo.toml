@@ -1,0 +1,7 @@
+[package]
+name = "taroc"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+taroc_driver = { path = "../taroc_driver" }

@@ -1,0 +1,9 @@
+[package]
+name = "taroc_diagnostics"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+colored = "3.0.0"
+taroc_span = { path = "../taroc_span" }
+taroc_error = { path = "../taroc_error" }

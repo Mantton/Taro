@@ -1,0 +1,65 @@
+use super::package::Actor;
+
+impl Actor<'_> {
+    pub fn lower_enum(&mut self, e: taroc_ast::Enum) -> taroc_hir::Enum {
+        taroc_hir::Enum {
+            variants: self.lower_sequence(e.variants, |a, v| a.lower_variant(v)),
+            generics: self.lower_generics(e.generics),
+        }
+    }
+    fn lower_variant(&mut self, variant: taroc_ast::Variant) -> taroc_hir::Variant {
+        taroc_hir::Variant {
+            id: self.next(),
+            identifier: variant.identifier.clone(),
+            kind: self.lower_variant_kind(variant.kind),
+            discriminant: self.lower_optional(variant.discriminant, |a, ac| a.lower_anon_const(ac)),
+            span: variant.span,
+        }
+    }
+
+    fn lower_variant_kind(&mut self, kind: taroc_ast::VariantKind) -> taroc_hir::VariantKind {
+        match kind {
+            taroc_ast::VariantKind::Unit => taroc_hir::VariantKind::Unit(self.next()),
+            taroc_ast::VariantKind::Tuple(fields) => taroc_hir::VariantKind::Tuple(
+                self.next(),
+                self.lower_sequence(fields, |a, ty| a.lower_field_definition(ty)),
+            ),
+            taroc_ast::VariantKind::Struct(fields) => taroc_hir::VariantKind::Struct(
+                self.next(),
+                self.lower_sequence(fields, |a, ty| a.lower_field_definition(ty)),
+            ),
+        }
+    }
+}
+
+impl Actor<'_> {
+    pub fn lower_struct(&mut self, s: taroc_ast::Struct) -> taroc_hir::Struct {
+        taroc_hir::Struct {
+            generics: self.lower_generics(s.generics),
+            variant: self.lower_variant_kind(s.variant),
+        }
+    }
+}
+
+impl Actor<'_> {
+    pub fn lower_field_definition(
+        &mut self,
+        f: taroc_ast::FieldDefinition,
+    ) -> taroc_hir::FieldDefinition {
+        taroc_hir::FieldDefinition {
+            id: self.next(),
+            visibility: self.lower_visibility(f.visibility),
+            mutability: self.lower_mutability(f.mutability),
+            identifier: f.identifier.clone(),
+            ty: self.lower_type(f.ty),
+            span: f.span,
+        }
+    }
+
+    pub fn lower_mutability(&mut self, m: taroc_ast::Mutability) -> taroc_hir::Mutability {
+        match m {
+            taroc_ast::Mutability::Mutable => taroc_hir::Mutability::Mutable,
+            taroc_ast::Mutability::Immutable => taroc_hir::Mutability::Mutable,
+        }
+    }
+}

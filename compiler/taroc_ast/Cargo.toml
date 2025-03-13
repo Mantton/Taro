@@ -1,0 +1,8 @@
+[package]
+name = "taroc_ast"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+taroc_span = { path = "../taroc_span" }
+taroc_token = { path = "../taroc_token" }

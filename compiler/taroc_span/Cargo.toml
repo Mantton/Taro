@@ -1,0 +1,10 @@
+[package]
+name = "taroc_span"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+index_vec = "0.1.4"
+scoped-tls = "1.0.1"
+string-interner = "0.19.0"
+taroc_error = { path = "../taroc_error" }

@@ -1,0 +1,15 @@
+use taroc_span::{Identifier, Span};
+
+use super::generics::TypeArguments;
+
+#[derive(Debug)]
+pub struct Path {
+    pub span: Span,
+    pub segments: Vec<PathSegment>,
+}
+
+#[derive(Debug)]
+pub struct PathSegment {
+    pub identifier: Identifier,
+    pub arguments: Option<TypeArguments>,
+}

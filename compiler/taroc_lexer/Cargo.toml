@@ -1,0 +1,11 @@
+[package]
+name = "taroc_lexer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+taroc_span = { path = "../taroc_span" }
+taroc_error = { path = "../taroc_error" }
+taroc_context = { path = "../taroc_context" }
+taroc_token = { path = "../taroc_token" }
+taroc_constants = { path = "../taroc_constants" }

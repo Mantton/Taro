@@ -1,0 +1,16 @@
+use taroc_context::GlobalContext;
+use taroc_error::CompileResult;
+
+mod expand;
+
+pub fn run(
+    mut package: taroc_ast::Package,
+    context: GlobalContext,
+) -> CompileResult<taroc_hir::Package> {
+    expand::run(&mut package, context)?;
+    taroc_ast_lowering::run(package, context)
+}
+
+// Validate functions
+// validate extensions & conformances
+// validate namespaces and extern

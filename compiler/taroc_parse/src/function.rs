@@ -1,0 +1,213 @@
+use taroc_ast::{
+    DeclarationKind, Function, FunctionParameter, FunctionPrototype, FunctionSignature, Label,
+    Mutability, SelfKind, Type, TypeKind,
+};
+use taroc_span::{Identifier, SpannedMessage, Symbol};
+use taroc_token::{Delimiter, TokenKind};
+
+use super::package::{Parser, R};
+
+impl Parser {
+    pub fn parse_function(&mut self) -> R<(Identifier, DeclarationKind)> {
+        // func <name> <type_parameters>? (<parameter list>) <async?> -> <return_type>? <where_clause>?
+        self.expect(TokenKind::Function)?;
+        let identifier = self.parse_identifier()?;
+        let func = self.parse_fn()?;
+        Ok((identifier, DeclarationKind::Function(func)))
+    }
+
+    pub fn parse_constructor(&mut self) -> R<DeclarationKind> {
+        self.expect(TokenKind::Init)?;
+        let is_optional = self.eat(TokenKind::Question);
+        let func = self.parse_fn()?;
+        Ok(DeclarationKind::Constructor(func, is_optional))
+    }
+
+    fn parse_fn(&mut self) -> R<Function> {
+        let lo = self.lo_span();
+        let mut generics = self.parse_generics()?;
+        let parameters = self.parse_function_parameters()?;
+        let is_async = self.eat(TokenKind::Async);
+
+        let return_type = if self.eat(TokenKind::RArrow) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+
+        let where_clause = self.parse_generic_where_clause()?;
+        generics.where_clause = where_clause;
+
+        let prototype = FunctionPrototype {
+            inputs: parameters,
+            output: return_type,
+        };
+
+        let signature = FunctionSignature {
+            span: lo.to(self.hi_span()),
+            prototype,
+            is_async,
+        };
+
+        let block = if self.matches(TokenKind::LBrace) {
+            Some(self.parse_block()?)
+        } else {
+            self.expect_line_break_or_semi()?;
+            None
+        };
+
+        let func = Function {
+            generics,
+            signature,
+            block,
+        };
+
+        Ok(func)
+    }
+
+    fn parse_function_parameters(&mut self) -> R<Vec<FunctionParameter>> {
+        self.parse_delimiter_sequence(Delimiter::Parenthesis, TokenKind::Comma, false, |p| {
+            p.parse_function_parameter()
+        })
+    }
+
+    fn parse_function_parameter(&mut self) -> R<FunctionParameter> {
+        if let Some(self_param) = self.parse_self_parameter()? {
+            return Ok(self_param);
+        }
+
+        let lo = self.lo_span();
+
+        // @attribute label name: type
+        let attributes = self.parse_attributes()?;
+
+        let mut underscore_label = false;
+        let label = if self.matches(TokenKind::Identifier) {
+            Some(self.parse_identifier()?)
+        } else if self.matches(TokenKind::Underscore) {
+            underscore_label = true;
+            self.bump();
+            None
+        } else {
+            let msg = "expected parameter name or label".to_string();
+            let err = SpannedMessage::new(msg, self.current_token_span());
+            return Err(err);
+        };
+
+        let name = if self.matches(TokenKind::Identifier) {
+            self.parse_identifier()?
+        } else if let Some(label) = label.clone() {
+            label
+        } else if underscore_label {
+            Identifier::emtpy(self.file.file)
+        } else {
+            let msg = "expected parameter name".to_string();
+            let err = SpannedMessage::new(msg, self.current_token_span());
+            return Err(err);
+        };
+
+        self.expect(TokenKind::Colon)?;
+        let label = if let Some(label) = label {
+            Some(Label {
+                span: label.span.to(self.hi_span()),
+                identifier: label,
+            })
+        } else {
+            None
+        };
+
+        let ty = self.parse_type()?;
+
+        let is_variadic = self.eat(TokenKind::Ellipsis);
+
+        let default_value = if self.eat(TokenKind::Assign) {
+            let expr = self.parse_expression()?;
+            Some(expr)
+        } else {
+            None
+        };
+
+        let param = FunctionParameter {
+            attributes,
+            label,
+            name,
+            annotated_type: ty,
+            default_value,
+            is_variadic,
+            span: lo.to(self.hi_span()),
+        };
+
+        Ok(param)
+    }
+
+    fn parse_self_parameter(&mut self) -> R<Option<FunctionParameter>> {
+        let lo = self.lo_span();
+        let attributes = self.parse_attributes()?;
+
+        let (a, b, c) = match self.current_kind() {
+            TokenKind::Mut => {
+                // mut self
+                self.bump();
+                let ident = self.parse_self()?;
+                (SelfKind::Copy, Mutability::Mutable, ident)
+            }
+            TokenKind::Identifier => {
+                let anchor = self.cursor;
+                let ident = self.parse_identifier()?;
+
+                if ident.symbol == Symbol::with("self") {
+                    (SelfKind::Copy, Mutability::Immutable, ident)
+                } else {
+                    self.cursor = anchor;
+                    return Ok(None);
+                }
+            }
+            TokenKind::Amp => {
+                self.bump();
+                let mutability = if self.eat(TokenKind::Mut) {
+                    Mutability::Mutable
+                } else {
+                    Mutability::Immutable
+                };
+
+                (SelfKind::Reference, mutability, self.parse_self()?)
+            }
+            _ => return Ok(None),
+        };
+
+        let self_ty = Type {
+            span: c.span,
+            kind: TypeKind::ImplicitSelf,
+        };
+
+        let ty = match a {
+            SelfKind::Copy => self_ty,
+            SelfKind::Reference => Type {
+                span: c.span,
+                kind: TypeKind::Reference(Box::new(self_ty), b),
+            },
+        };
+
+        Ok(Some(FunctionParameter {
+            attributes,
+            label: None,
+            name: c,
+            annotated_type: Box::new(ty),
+            default_value: None,
+            is_variadic: false,
+            span: lo.to(self.hi_span()),
+        }))
+    }
+
+    fn parse_self(&mut self) -> R<Identifier> {
+        let ident = self.parse_identifier()?;
+
+        if ident.symbol != Symbol::with("self") {
+            let msg = format!("expected 'self' got '{}' instead", ident.symbol);
+            let err = SpannedMessage::new(msg.to_string(), ident.span);
+            return Err(err);
+        }
+
+        return Ok(ident);
+    }
+}

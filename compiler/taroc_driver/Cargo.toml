@@ -1,0 +1,19 @@
+[package]
+name = "taroc_driver"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.5.20", features = ["derive"] }
+serde = { version = "1.0.219", features = ["derive"] }
+taroc_error = { path = "../taroc_error" }
+taroc_package = { path = "../taroc_package" }
+taroc_constants = { path = "../taroc_constants" }
+taroc_context = { path = "../taroc_context" }
+taroc_span = { path = "../taroc_span" }
+taroc_lexer = { path = "../taroc_lexer" }
+taroc_diagnostics = { path = "../taroc_diagnostics" }
+taroc_parse = { path = "../taroc_parse" }
+taroc_hir = { path = "../taroc_hir" }
+taroc_ast_passes = { path = "../taroc_ast_passes" }
+taroc_hir_passes = { path = "../taroc_hir_passes" }
