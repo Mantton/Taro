@@ -1,11 +1,12 @@
 #![feature(let_chains)]
-use taroc_context::GlobalContext;
+use std::rc::Rc;
+use taroc_context::CompilerSession;
 use taroc_error::CompileResult;
 use taroc_hir::Package;
 
 mod collect;
 
-pub fn run(package: &Package, context: GlobalContext) -> CompileResult<()> {
-    collect::run(package, context)?;
+pub fn run(package: &Package, session: Rc<CompilerSession>) -> CompileResult<()> {
+    collect::run(package, session)?;
     Ok(())
 }

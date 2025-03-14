@@ -23,7 +23,14 @@ impl<'ctx> Resolver<'ctx> {
             glob_imports: Default::default(),
         };
         // Allocate the context data in the bump arena.
-        let allocated = self.session.context.store.interners.resolve.alloc(data);
+        let allocated = self
+            .session
+            .context
+            .store
+            .interners
+            .arenas
+            .resolve
+            .alloc(data);
         let p = Interned::new_unchecked(allocated);
         DefinitionContext::new(p)
     }
@@ -32,14 +39,28 @@ impl<'ctx> Resolver<'ctx> {
         &self,
         data: ExternalDefUsageData<'ctx>,
     ) -> ExternalDefinitionUsage<'ctx> {
-        let allocated = self.session.context.store.interners.resolve.alloc(data);
+        let allocated = self
+            .session
+            .context
+            .store
+            .interners
+            .arenas
+            .resolve
+            .alloc(data);
         Interned::new_unchecked(allocated)
         // In your actual code you might wrap this Interned pointer into a newtype
         // or convert it appropriately.
     }
 
     pub fn alloc_binding(&self, data: NameBindingData<'ctx>) -> NameBinding<'ctx> {
-        let allocated = self.session.context.store.interners.resolve.alloc(data);
+        let allocated = self
+            .session
+            .context
+            .store
+            .interners
+            .arenas
+            .resolve
+            .alloc(data);
         Interned::new_unchecked(allocated)
         // Similarly, wrap or convert as needed.
     }
@@ -52,6 +73,7 @@ impl<'ctx> Resolver<'ctx> {
             .context
             .store
             .interners
+            .arenas
             .resolve
             .alloc_slice_copy(&src)
     }

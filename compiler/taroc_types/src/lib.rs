@@ -2,8 +2,6 @@ use taroc_data_structures::Interned;
 use taroc_hir::DefinitionID;
 use taroc_span::{FileID, Symbol};
 
-
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Ty<'arena>(Interned<'arena, TyKind<'arena>>);
 
@@ -29,12 +27,10 @@ pub enum TyKind<'arena> {
     Slice(Ty<'arena>),
     Tuple(&'arena [Ty<'arena>]),
 
-    Adt {
-        id: DefinitionID,
-        name: Symbol,
-        kind: AdtKind,
-        arguments: &'arena [GenericArgument<'arena>],
-    },
+    Adt(AdtData, &'arena [GenericArgument<'arena>]),
+
+    // Interfaces
+    Existential(&'arena [ExisitentialPredicate<'arena>], InterfaceType),
 
     Parameter,
     Infer,
@@ -45,6 +41,13 @@ pub enum TyKind<'arena> {
 pub enum AdtKind {
     Struct,
     Enum,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AdtData {
+    pub id: DefinitionID,
+    pub name: Symbol,
+    pub kind: AdtKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -84,16 +87,24 @@ pub enum GenericArgument<'arena> {
     Const(usize),
 }
 
+pub type GenericArguments<'arena> = &'arena [GenericArgument<'arena>];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Mutability {
     Mutable,
     Immutable,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InterfaceType {
     Some,
     Any,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ExisitentialPredicate<'ctx> {
+    pub id: DefinitionID,
+    pub arguments: GenericArguments<'ctx>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

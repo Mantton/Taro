@@ -1,6 +1,5 @@
 use std::{env::current_dir, ops::Deref};
 use taroc_diagnostics::{DiagnosticContext, DiagnosticLevel};
-use taroc_package::CompilerConfig;
 use taroc_span::SpannedMessage;
 
 mod models;
@@ -34,18 +33,19 @@ pub struct CompilerContext<'ctx> {
 }
 
 impl<'ctx> CompilerContext<'ctx> {
-    pub fn new() -> CompilerContext<'ctx> {
+    pub fn new(arenas: &'ctx ContextArenas<'ctx>) -> CompilerContext<'ctx> {
         CompilerContext {
             diagnostics: DiagnosticContext::new(
                 current_dir().expect("Expected Current Working Directory"),
             ),
-            store: ContextStore::new(),
+            store: ContextStore::new(arenas),
         }
     }
 }
 
 pub fn with_global_context<T, F: for<'a> FnOnce(GlobalContext<'a>) -> T>(f: F) -> T {
-    let context = CompilerContext::new();
+    let arenas = ContextArenas::new();
+    let context = CompilerContext::new(&arenas);
     let gcx = GlobalContext::new(&context);
     f(gcx)
 }

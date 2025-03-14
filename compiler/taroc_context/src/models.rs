@@ -1,37 +1,77 @@
-use std::{cell::RefCell, marker::PhantomData};
-
 use bumpalo::Bump;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
+use std::{borrow::Borrow, cell::RefCell, hash::Hash, hash::Hasher, marker::PhantomData};
+use taroc_data_structures::Interned;
 use taroc_hir::{DefinitionID, DefinitionKind, NodeID, PartialRes};
 use taroc_resolve_models::DefinitionContext;
+use taroc_types::{FloatTy, GenericArgument, IntTy, Ty, TyKind, UIntTy};
 
 pub struct ContextStore<'ctx> {
     pub interners: ContextInterners<'ctx>,
     pub resolutions: RefCell<FxHashMap<usize, ResolutionData<'ctx>>>,
     pub package_mapping: RefCell<FxHashMap<String, usize>>,
+    pub common_types: CommonTypes<'ctx>,
 }
 
 impl<'ctx> ContextStore<'ctx> {
-    pub fn new() -> ContextStore<'ctx> {
+    pub fn new(arenas: &'ctx ContextArenas<'ctx>) -> ContextStore<'ctx> {
+        let interners = ContextInterners::new(arenas);
+        let common_types = CommonTypes::new(&interners);
         ContextStore {
-            interners: ContextInterners::new(),
+            interners,
+            common_types,
             resolutions: RefCell::default(),
             package_mapping: RefCell::default(),
         }
     }
 }
 
-pub struct ContextInterners<'ctx> {
+pub struct ContextArenas<'ctx> {
     pub resolve: Bump,
+    pub types: Bump,
     _data: PhantomData<DefinitionContext<'ctx>>,
 }
 
-impl<'ctx> ContextInterners<'ctx> {
-    pub fn new() -> ContextInterners<'ctx> {
-        ContextInterners {
+impl<'ctx> ContextArenas<'ctx> {
+    pub fn new() -> ContextArenas<'ctx> {
+        ContextArenas {
             resolve: Bump::new(),
+            types: Bump::new(),
             _data: PhantomData::default(),
         }
+    }
+}
+
+pub struct ContextInterners<'ctx> {
+    pub arenas: &'ctx ContextArenas<'ctx>,
+    ty: InternedSet<'ctx, TyKind<'ctx>>,
+}
+
+impl<'ctx> ContextInterners<'ctx> {
+    pub fn new(arenas: &'ctx ContextArenas<'ctx>) -> ContextInterners<'ctx> {
+        ContextInterners {
+            arenas,
+            ty: InternedSet::new(),
+        }
+    }
+}
+
+impl<'ctx> ContextInterners<'ctx> {
+    pub fn intern_ty(&self, kind: TyKind<'ctx>) -> Ty<'ctx> {
+        let ik = self
+            .ty
+            .intern(kind, |k| {
+                let k = self.arenas.types.alloc(k);
+                return InternedInSet(k);
+            })
+            .0;
+
+        let i = Interned::new_unchecked(ik);
+        return Ty::with_kind(i);
+    }
+
+    pub fn mk_args(&self, args: Vec<GenericArgument<'ctx>>) -> &'ctx [GenericArgument<'ctx>] {
+        return self.arenas.types.alloc_slice_copy(&args);
     }
 }
 
@@ -40,4 +80,136 @@ pub struct ResolutionData<'ctx> {
     pub node_to_def: FxHashMap<NodeID, DefinitionID>,
     pub def_to_kind: FxHashMap<DefinitionID, DefinitionKind>,
     pub partial_resolution_map: FxHashMap<NodeID, PartialRes>,
+}
+
+pub struct CommonTypes<'ctx> {
+    pub bool: Ty<'ctx>,
+    pub rune: Ty<'ctx>,
+    pub void: Ty<'ctx>,
+
+    pub uint: Ty<'ctx>,
+    pub uint8: Ty<'ctx>,
+    pub uint16: Ty<'ctx>,
+    pub uint32: Ty<'ctx>,
+    pub uint64: Ty<'ctx>,
+
+    pub int: Ty<'ctx>,
+    pub int8: Ty<'ctx>,
+    pub int16: Ty<'ctx>,
+    pub int32: Ty<'ctx>,
+    pub int64: Ty<'ctx>,
+
+    pub float32: Ty<'ctx>,
+    pub float64: Ty<'ctx>,
+}
+
+impl<'a> CommonTypes<'a> {
+    pub fn new(interner: &ContextInterners<'a>) -> CommonTypes<'a> {
+        let mk = |ty| interner.intern_ty(ty);
+
+        CommonTypes {
+            bool: mk(TyKind::Bool),
+            rune: mk(TyKind::Rune),
+            void: mk(TyKind::Void),
+
+            uint: mk(TyKind::UInt(UIntTy::UInt)),
+            uint8: mk(TyKind::UInt(UIntTy::U8)),
+            uint16: mk(TyKind::UInt(UIntTy::U16)),
+            uint32: mk(TyKind::UInt(UIntTy::U32)),
+            uint64: mk(TyKind::UInt(UIntTy::U64)),
+
+            int: mk(TyKind::Int(IntTy::Int)),
+            int8: mk(TyKind::Int(IntTy::I8)),
+            int16: mk(TyKind::Int(IntTy::I16)),
+            int32: mk(TyKind::Int(IntTy::I32)),
+            int64: mk(TyKind::Int(IntTy::I64)),
+
+            float32: mk(TyKind::Float(FloatTy::F32)),
+            float64: mk(TyKind::Float(FloatTy::F64)),
+        }
+    }
+}
+
+pub struct WrappedHashSet<K> {
+    wrapped: RefCell<FxHashSet<K>>,
+}
+
+impl<K> WrappedHashSet<K> {
+    pub fn new() -> WrappedHashSet<K> {
+        WrappedHashSet {
+            wrapped: RefCell::new(FxHashSet::default()),
+        }
+    }
+}
+
+type InternedSet<'tcx, T> = WrappedHashSet<InternedInSet<'tcx, T>>;
+// This type holds a `T` in the interner. The `T` is stored in the arena and
+// this type just holds a pointer to it, but it still effectively owns it. It
+// impls `Borrow` so that it can be looked up using the original
+// (non-arena-memory-owning) types.
+struct InternedInSet<'tcx, T: ?Sized>(&'tcx T);
+
+impl<'tcx, T: 'tcx + ?Sized> Clone for InternedInSet<'tcx, T> {
+    fn clone(&self) -> Self {
+        InternedInSet(self.0)
+    }
+}
+
+impl<'tcx, T: 'tcx + ?Sized> Copy for InternedInSet<'tcx, T> {}
+
+impl<'tcx> Borrow<TyKind<'tcx>> for InternedInSet<'tcx, TyKind<'tcx>> {
+    fn borrow(&self) -> &TyKind<'tcx> {
+        &self.0
+    }
+}
+
+impl<'tcx> PartialEq for InternedInSet<'tcx, TyKind<'tcx>> {
+    fn eq(&self, other: &InternedInSet<'tcx, TyKind<'tcx>>) -> bool {
+        // The `Borrow` trait requires that `x.borrow() == y.borrow()` equals
+        // `x == y`.
+        self.0 == other.0
+    }
+}
+
+impl<'tcx> Eq for InternedInSet<'tcx, TyKind<'tcx>> {}
+
+impl<'tcx> Hash for InternedInSet<'tcx, TyKind<'tcx>> {
+    fn hash<H: Hasher>(&self, s: &mut H) {
+        // The `Borrow` trait requires that `x.borrow().hash(s) == x.hash(s)`.
+        self.0.hash(s)
+    }
+}
+
+impl<K: Eq + Hash + Copy> WrappedHashSet<K> {
+    #[inline]
+    pub fn intern<Q>(&self, value: Q, make: impl FnOnce(Q) -> K) -> K
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
+        let mut set = self.wrapped.borrow_mut();
+        if let Some(v) = set.get(&value) {
+            return *v;
+        } else {
+            let v = make(value);
+            set.insert(v);
+            v
+        }
+    }
+
+    #[inline]
+    pub fn intern_ref<Q: ?Sized>(&self, value: &Q, make: impl FnOnce() -> K) -> K
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
+        let mut set = self.wrapped.borrow_mut();
+        if let Some(v) = set.get(&value) {
+            return *v;
+        } else {
+            let v = make();
+            set.insert(v);
+            v
+        }
+    }
 }

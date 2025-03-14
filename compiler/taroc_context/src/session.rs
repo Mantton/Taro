@@ -1,5 +1,3 @@
-use std::rc::Rc;
-
 use taroc_package::CompilerConfig;
 
 use crate::GlobalContext;
