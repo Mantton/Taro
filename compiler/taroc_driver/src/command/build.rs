@@ -2,9 +2,10 @@ use crate::arguments::CommandLineArguments;
 use std::{
     env::{self, current_dir},
     path::PathBuf,
+    rc::Rc,
 };
 use taroc_constants::{LANGUAGE_HOME, MANIFEST_FILE, STD_PREFIX};
-use taroc_context::with_global_context;
+use taroc_context::{CompilerSession, GlobalContext, with_global_context};
 use taroc_error::{CompileError, CompileResult};
 use taroc_lexer::tokenize_package;
 use taroc_package::{CompilerConfig, Manifest, PackageIdentifier, sync_dependencies};
@@ -29,6 +30,10 @@ impl Builder {
 
 impl Builder {
     fn build(self) -> CompileResult<()> {
+        create_session_globals_then(|| with_global_context(|gcx| self.prepare(gcx)))
+    }
+
+    fn prepare(self, gcx: GlobalContext) -> CompileResult<()> {
         // run `taro get` to install package dependencies
         let (lockfile, dependency_graph, local_mapping) =
             sync_dependencies(&self.project_path).map_err(CompileError::Message)?;
@@ -40,16 +45,19 @@ impl Builder {
         let ordered_packages = dependency_graph.compilation_order();
         println!("Compilation Order {:?}", ordered_packages);
 
-        for (_, package) in ordered_packages.into_iter().enumerate() {
+        for (index, package) in ordered_packages.into_iter().enumerate() {
             let mut is_std = false;
-            let path = if package == manifest.identifier().normalize() {
-                self.project_path.clone()
+            let (path, qualified) = if package == manifest.identifier().normalize() {
+                (self.project_path.clone(), manifest.identifier().normalize())
             } else if package == STD_PREFIX {
                 is_std = true;
-                env::var(LANGUAGE_HOME)
-                    .map(|home| PathBuf::from(home).join(STD_PREFIX))
-                    .map_err(|err| format!("{} `{}`", err, LANGUAGE_HOME))
-                    .map_err(CompileError::Message)?
+                (
+                    env::var(LANGUAGE_HOME)
+                        .map(|home| PathBuf::from(home).join(STD_PREFIX))
+                        .map_err(|err| format!("{} `{}`", err, LANGUAGE_HOME))
+                        .map_err(CompileError::Message)?,
+                    "std".into(),
+                )
             } else {
                 let target = lockfile
                     .package
@@ -59,7 +67,7 @@ impl Builder {
                     })
                     .expect("target should be in lockfile");
 
-                if target.source == "local" {
+                let path = if target.source == "local" {
                     local_mapping
                         .get(&target.revision)
                         .expect("local package to be mapped")
@@ -68,7 +76,9 @@ impl Builder {
                     PackageIdentifier::from(target.name.clone())
                         .install_path(target.revision.clone())
                         .map_err(CompileError::Message)?
-                }
+                };
+
+                (path, target.qualified())
             };
 
             let cwd = current_dir().map_err(|err| {
@@ -79,23 +89,35 @@ impl Builder {
             })?;
 
             println!("Compiling {}", package);
-            let config = CompilerConfig::new(package, path, cwd, is_std, &lockfile)?;
-            self.compile(config)?;
-            break;
+            let config = CompilerConfig::new(package, qualified, path, cwd, is_std, &lockfile)?;
+            self.compile(index, config, gcx)?;
         }
 
         Ok(())
     }
 
-    fn compile(&self, config: CompilerConfig) -> CompileResult<()> {
-        create_session_globals_then(|| {
-            with_global_context(config, |gcx| {
-                let package = tokenize_package(&gcx.config.source_path, gcx)?;
-                let package = parse_package(package, gcx)?;
-                let package = taroc_ast_passes::run(package, gcx)?;
-                taroc_hir_passes::run(package, gcx)
-            })
-        })?;
+    fn compile(
+        &self,
+        index: usize,
+        config: CompilerConfig,
+        context: GlobalContext,
+    ) -> CompileResult<()> {
+        {
+            context
+                .store
+                .package_mapping
+                .borrow_mut()
+                .insert(config.qualified.clone(), index);
+        }
+        let session = Rc::new(CompilerSession {
+            index,
+            config,
+            context,
+        });
+        let package = tokenize_package(&session.config.source_path, context)?;
+        let package = parse_package(package, context)?;
+        let package = taroc_ast_passes::run(package, context)?;
+        taroc_hir_passes::run(package, session.clone())?;
         Ok(())
     }
 }

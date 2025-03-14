@@ -10,15 +10,13 @@ pub fn run(package: &taroc_hir::Package, resolver: &mut Resolver) {
     actor.run(package);
 }
 
-struct Actor<'res, 'ctx, 'arena> {
-    resolver: &'res mut Resolver<'ctx, 'arena>,
+struct Actor<'res, 'ctx> {
+    resolver: &'res mut Resolver<'ctx>,
     parent: DefinitionID,
 }
 
-impl Actor<'_, '_, '_> {
-    fn new<'res, 'ctx, 'arena>(
-        resolver: &'res mut Resolver<'ctx, 'arena>,
-    ) -> Actor<'res, 'ctx, 'arena> {
+impl Actor<'_, '_> {
+    fn new<'res, 'ctx>(resolver: &'res mut Resolver<'ctx>) -> Actor<'res, 'ctx> {
         Actor {
             resolver,
             parent: DefinitionID::new(PackageIndex::new(0), DefinitionIndex::new(0)),
@@ -26,7 +24,7 @@ impl Actor<'_, '_, '_> {
     }
 }
 
-impl Actor<'_, '_, '_> {
+impl Actor<'_, '_> {
     fn run(mut self, package: &taroc_hir::Package) {
         walk_package(&mut self, package);
     }
@@ -42,7 +40,7 @@ impl Actor<'_, '_, '_> {
     }
 }
 
-impl HirVisitor for Actor<'_, '_, '_> {
+impl HirVisitor for Actor<'_, '_> {
     fn visit_module(&mut self, m: &taroc_hir::Module, id: NodeID) -> <Self as HirVisitor>::Result {
         self.tag(m.name, id, DefinitionKind::Module);
         walk_module(self, m)

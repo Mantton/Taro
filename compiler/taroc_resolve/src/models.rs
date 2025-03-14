@@ -1,13 +1,13 @@
 use taroc_resolve_models::NameBinding;
 
-use super::arena::ResolverArena;
+use crate::resolver::Resolver;
 
-pub trait ToNameBinding<'arena> {
-    fn to_name_binding(self, arenas: &'arena ResolverArena<'arena>) -> NameBinding<'arena>;
+pub trait ToNameBinding<'ctx> {
+    fn to_name_binding(self, arenas: &Resolver<'ctx>) -> NameBinding<'ctx>;
 }
 
-impl<'arena> ToNameBinding<'arena> for NameBinding<'arena> {
-    fn to_name_binding(self, _: &'arena ResolverArena<'arena>) -> NameBinding<'arena> {
+impl<'ctx> ToNameBinding<'ctx> for NameBinding<'ctx> {
+    fn to_name_binding(self, _: &Resolver<'ctx>) -> NameBinding<'ctx> {
         self
     }
 }

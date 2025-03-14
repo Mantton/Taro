@@ -8,15 +8,18 @@ use taroc_span::Symbol;
 
 use crate::resolver::Resolver;
 
-impl<'ctx, 'arena> Resolver<'ctx, 'arena> {
+impl<'ctx> Resolver<'ctx> {
     pub fn resolve_path_with_scopes(
         &mut self,
         path: &[Segment],
         ns: SymbolNamespace,
-        scopes: &[LexicalScope<'arena>],
-    ) -> PathResult<'arena> {
-        let mut context: Option<DefinitionContext<'arena>> = None;
+        scopes: &[LexicalScope<'ctx>],
+    ) -> PathResult<'ctx> {
+        // let name: Vec<&str> = path.iter().map(|v| v.identifier.symbol.as_str()).collect();
+        // println!("\n---- {}", name.join("::"));
+        let mut context: Option<DefinitionContext<'ctx>> = None;
         for (index, segment) in path.iter().enumerate() {
+            // println!("Segment ({:?})", segment.id);
             // self.context
             //     .diagnostics
             //     .info("Resolving".into(), segment.identifier.span);
@@ -110,12 +113,12 @@ impl<'ctx, 'arena> Resolver<'ctx, 'arena> {
     }
 }
 
-impl<'ctx, 'arena> Resolver<'ctx, 'arena> {
+impl<'ctx> Resolver<'ctx> {
     pub fn resolve_symbol_in_context(
         &self,
         name: &Symbol,
-        context: DefinitionContext<'arena>,
-    ) -> Result<NameHolder<'arena>, Determinacy> {
+        context: DefinitionContext<'ctx>,
+    ) -> Result<NameHolder<'ctx>, Determinacy> {
         let resolutions = context.resolutions.borrow();
         // let symbols: Vec<&Symbol> = resolutions.bindings.keys().collect();
         // println!("Find {} in {:?}, {:?}", name, symbols, context.resolution());
@@ -193,12 +196,12 @@ impl<'ctx, 'arena> Resolver<'ctx, 'arena> {
     }
 }
 
-impl<'ctx, 'arena> Resolver<'ctx, 'arena> {
+impl<'ctx> Resolver<'ctx> {
     pub fn resolve_symbol_in_lexical_scope(
         &self,
         name: &Symbol,
-        scopes: &[LexicalScope<'arena>],
-    ) -> Option<LexicalScopeBinding<'arena>> {
+        scopes: &[LexicalScope<'ctx>],
+    ) -> Option<LexicalScopeBinding<'ctx>> {
         if name == &Symbol::with("") {
             return Some(LexicalScopeBinding::Resolution(Resolution::Error));
         }

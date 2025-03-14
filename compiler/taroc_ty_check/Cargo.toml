@@ -1,13 +1,12 @@
 [package]
-name = "taroc_hir_passes"
+name = "taroc_ty_check"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 taroc_span = { path = "../taroc_span" }
 taroc_error = { path = "../taroc_error" }
-taroc_resolve = { path = "../taroc_resolve" }
 taroc_hir = { path = "../taroc_hir" }
+taroc_types = { path = "../taroc_types" }
 taroc_context = { path = "../taroc_context" }
-taroc_package = { path = "../taroc_package" }
-taroc_ty_check = { path = "../taroc_ty_check" }
+rustc-hash = "2.1.1"

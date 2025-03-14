@@ -16,19 +16,17 @@ use taroc_span::{FileID, Identifier, Span, Spanned, Symbol};
 pub fn run(package: &taroc_hir::Package, resolver: &mut Resolver) -> CompileResult<()> {
     let actor = Actor::new(resolver);
     actor.run(package);
-    resolver.context.diagnostics.report()
+    resolver.session.context.diagnostics.report()
 }
 
-struct Actor<'res, 'ctx, 'arena> {
-    pub resolver: &'res mut Resolver<'ctx, 'arena>,
-    pub scopes: Vec<LexicalScope<'arena>>,
+struct Actor<'res, 'ctx> {
+    pub resolver: &'res mut Resolver<'ctx>,
+    pub scopes: Vec<LexicalScope<'ctx>>,
     pub current_file: Option<FileID>,
 }
 
-impl Actor<'_, '_, '_> {
-    fn new<'res, 'ctx, 'arena>(
-        resolver: &'res mut Resolver<'ctx, 'arena>,
-    ) -> Actor<'res, 'ctx, 'arena> {
+impl Actor<'_, '_> {
+    fn new<'res, 'ctx>(resolver: &'res mut Resolver<'ctx>) -> Actor<'res, 'ctx> {
         Actor {
             resolver,
             scopes: Default::default(),
@@ -42,10 +40,10 @@ impl Actor<'_, '_, '_> {
     }
 }
 
-impl<'res, 'ctx, 'arena> Actor<'res, 'ctx, 'arena> {
+impl<'res, 'ctx> Actor<'res, 'ctx> {
     fn with_scope<T>(
         &mut self,
-        source: LexicalScopeSource<'arena>,
+        source: LexicalScopeSource<'ctx>,
         work: impl FnOnce(&mut Self) -> T,
     ) -> T {
         self.scopes.push(LexicalScope::new(source));
@@ -78,6 +76,7 @@ impl<'res, 'ctx, 'arena> Actor<'res, 'ctx, 'arena> {
                     // param has already been defined
                     let msg = format!("TypeParameter '{name}' is already defined");
                     self.resolver
+                        .session
                         .context
                         .diagnostics
                         .error(msg, param.identifier.span);
@@ -109,7 +108,7 @@ impl<'res, 'ctx, 'arena> Actor<'res, 'ctx, 'arena> {
     }
 }
 
-impl HirVisitor for Actor<'_, '_, '_> {
+impl HirVisitor for Actor<'_, '_> {
     fn visit_module(&mut self, module: &taroc_hir::Module, id: NodeID) -> Self::Result {
         // Soft Reset on Modular Level, So Module Root is Scope Count
         let previous = std::mem::take(&mut self.scopes);
@@ -154,10 +153,10 @@ impl HirVisitor for Actor<'_, '_, '_> {
         match &ty.kind {
             taroc_hir::TypeKind::Path(path) => {
                 self.resolve_path_with_source(path, PathSource::Type);
-                taroc_hir::visitor::walk_type(self, ty);
             }
             _ => {}
         }
+        taroc_hir::visitor::walk_type(self, ty);
     }
 
     fn visit_generic_requirement(&mut self, n: &taroc_hir::GenericRequirement) -> Self::Result {
@@ -199,7 +198,7 @@ impl HirVisitor for Actor<'_, '_, '_> {
     }
 }
 
-impl Actor<'_, '_, '_> {
+impl Actor<'_, '_> {
     fn resolve_declaration(
         &mut self,
         declaration: &taroc_hir::Declaration,
@@ -286,7 +285,7 @@ impl Actor<'_, '_, '_> {
     }
 }
 
-impl<'res, 'ctx, 'arena> Actor<'res, 'ctx, 'arena> {
+impl<'res, 'ctx> Actor<'res, 'ctx> {
     fn resolve_block(&mut self, block: &taroc_hir::Block) {
         let scope = if let Some(context) = self.resolver.get_block_context(&block.id) {
             LexicalScope::new(LexicalScopeSource::Context(context))
@@ -300,7 +299,7 @@ impl<'res, 'ctx, 'arena> Actor<'res, 'ctx, 'arena> {
     }
 }
 
-impl Actor<'_, '_, '_> {
+impl Actor<'_, '_> {
     fn resolve_interface(&mut self, interface: &taroc_hir::Interface, id: DefinitionID) {
         self.with_generics_scope(&interface.generics, |this| {
             let self_res = Resolution::InterfaceSelfTypeAlias(id);
@@ -318,7 +317,7 @@ impl Actor<'_, '_, '_> {
     }
 }
 
-impl<'res, 'ctx, 'arena> Actor<'res, 'ctx, 'arena> {
+impl<'res, 'ctx> Actor<'res, 'ctx> {
     fn resolve_extend(&mut self, node: &taroc_hir::Extend) {
         let self_res = self.resolve_path_with_source(&node.ty, PathSource::Type);
         let def_id = self_res.def_id();
@@ -339,7 +338,7 @@ impl<'res, 'ctx, 'arena> Actor<'res, 'ctx, 'arena> {
     }
 }
 
-impl<'res, 'ctx, 'arena> Actor<'res, 'ctx, 'arena> {
+impl<'res, 'ctx> Actor<'res, 'ctx> {
     fn resolve_conform(&mut self, node: &taroc_hir::Conform, id: DefinitionID) {
         let conformance_id = id;
         let type_res = self.resolve_path_with_source(&node.ty, PathSource::Type);
@@ -377,7 +376,7 @@ impl<'res, 'ctx, 'arena> Actor<'res, 'ctx, 'arena> {
     }
 }
 
-impl<'res, 'ctx, 'arena> Actor<'res, 'ctx, 'arena> {
+impl<'res, 'ctx> Actor<'res, 'ctx> {
     fn resolve_expression(&mut self, expr: &taroc_hir::Expression) {
         match &expr.kind {
             taroc_hir::ExpressionKind::Path(path) => {
@@ -427,7 +426,7 @@ impl<'res, 'ctx, 'arena> Actor<'res, 'ctx, 'arena> {
     }
 }
 
-impl<'res, 'ctx, 'arena> Actor<'res, 'ctx, 'arena> {
+impl<'res, 'ctx> Actor<'res, 'ctx> {
     fn resolve_top_level_binding_pattern(
         &mut self,
         pat: &taroc_hir::BindingPattern,
@@ -503,7 +502,7 @@ impl<'res, 'ctx, 'arena> Actor<'res, 'ctx, 'arena> {
     }
 }
 
-impl<'res, 'ctx, 'arena> Actor<'res, 'ctx, 'arena> {
+impl<'res, 'ctx> Actor<'res, 'ctx> {
     fn resolve_path_with_source(
         &mut self,
         path: &taroc_hir::Path,
@@ -592,7 +591,7 @@ impl<'res, 'ctx, 'arena> Actor<'res, 'ctx, 'arena> {
         };
     }
 
-    fn resolve_path(&mut self, path: &[Segment], ns: SymbolNamespace) -> PathResult<'arena> {
+    fn resolve_path(&mut self, path: &[Segment], ns: SymbolNamespace) -> PathResult<'ctx> {
         let res = self
             .resolver
             .resolve_path_with_scopes(path, ns, &self.scopes);
@@ -600,7 +599,7 @@ impl<'res, 'ctx, 'arena> Actor<'res, 'ctx, 'arena> {
     }
 }
 
-impl<'res, 'ctx, 'arena> Actor<'res, 'ctx, 'arena> {
+impl<'res, 'ctx> Actor<'res, 'ctx> {
     fn report_error(&mut self, err: ResolutionError, span: Span) {
         let message = match err {
             ResolutionError::FailedToResolve { segment } => {
@@ -617,7 +616,11 @@ impl<'res, 'ctx, 'arena> Actor<'res, 'ctx, 'arena> {
             }
         };
 
-        self.resolver.context.diagnostics.error(message, span);
+        self.resolver
+            .session
+            .context
+            .diagnostics
+            .error(message, span);
     }
 
     fn report_error_with_context(
@@ -632,7 +635,11 @@ impl<'res, 'ctx, 'arena> Actor<'res, 'ctx, 'arena> {
         if let Some(res) = resolution {
             let provided = res.description();
             let message = format!("expected {expectation}, got {provided} '{item}'");
-            self.resolver.context.diagnostics.error(message, path.span);
+            self.resolver
+                .session
+                .context
+                .diagnostics
+                .error(message, path.span);
             return;
         } else {
             let mod_name = if path.segments.len() == 1 {
@@ -645,7 +652,11 @@ impl<'res, 'ctx, 'arena> Actor<'res, 'ctx, 'arena> {
             };
 
             let message = format!("cannot find {expectation} '{item}' in {mod_name}");
-            self.resolver.context.diagnostics.error(message, path.span);
+            self.resolver
+                .session
+                .context
+                .diagnostics
+                .error(message, path.span);
         }
     }
 }

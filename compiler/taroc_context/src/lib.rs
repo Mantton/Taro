@@ -3,46 +3,49 @@ use taroc_diagnostics::{DiagnosticContext, DiagnosticLevel};
 use taroc_package::CompilerConfig;
 use taroc_span::SpannedMessage;
 
+mod models;
+mod session;
+
+pub use models::*;
+pub use session::*;
+
 #[derive(Copy, Clone)]
 pub struct GlobalContext<'ctx> {
-    context: &'ctx CompilerContext,
+    context: &'ctx CompilerContext<'ctx>,
 }
 
 impl<'ctx> GlobalContext<'ctx> {
-    pub fn new(context: &'ctx CompilerContext) -> GlobalContext<'ctx> {
+    pub fn new(context: &'ctx CompilerContext<'ctx>) -> GlobalContext<'ctx> {
         GlobalContext { context }
     }
 }
 
 impl<'ctx> Deref for GlobalContext<'ctx> {
-    type Target = &'ctx CompilerContext;
+    type Target = &'ctx CompilerContext<'ctx>;
     #[inline(always)]
     fn deref(&self) -> &Self::Target {
         &self.context
     }
 }
 
-pub struct CompilerContext {
-    pub config: CompilerConfig,
+pub struct CompilerContext<'ctx> {
     pub diagnostics: DiagnosticContext,
+    pub store: ContextStore<'ctx>,
 }
 
-impl<'a> CompilerContext {
-    pub fn new(config: CompilerConfig) -> CompilerContext {
+impl<'ctx> CompilerContext<'ctx> {
+    pub fn new() -> CompilerContext<'ctx> {
         CompilerContext {
-            config,
             diagnostics: DiagnosticContext::new(
                 current_dir().expect("Expected Current Working Directory"),
             ),
+            store: ContextStore::new(),
         }
     }
 }
 
-pub fn with_global_context<T, F: for<'a> FnOnce(GlobalContext<'a>) -> T>(
-    config: CompilerConfig,
-    f: F,
-) -> T {
-    let context = CompilerContext::new(config);
+pub fn with_global_context<T, F: for<'a> FnOnce(GlobalContext<'a>) -> T>(f: F) -> T {
+    let context = CompilerContext::new();
     let gcx = GlobalContext::new(&context);
     f(gcx)
 }

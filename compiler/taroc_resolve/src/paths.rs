@@ -4,8 +4,8 @@ use taroc_span::Symbol;
 
 use super::resolver::Resolver;
 
-impl<'ctx, 'arena> Resolver<'ctx, 'arena> {
-    pub fn resolve_module_path(&mut self, path: &[Segment]) -> Option<DefinitionContext<'arena>> {
+impl<'ctx> Resolver<'ctx> {
+    pub fn resolve_module_path(&mut self, path: &[Segment]) -> Option<DefinitionContext<'ctx>> {
         let mut module = None;
         for (index, segment) in path.iter().enumerate() {
             // Resolve
@@ -32,7 +32,8 @@ impl<'ctx, 'arena> Resolver<'ctx, 'arena> {
                         path[index - 1].identifier.symbol
                     )
                 };
-                self.context
+                self.session
+                    .context
                     .diagnostics
                     .error(message, segment.identifier.span);
                 return None;
@@ -44,20 +45,46 @@ impl<'ctx, 'arena> Resolver<'ctx, 'arena> {
         return module;
     }
 
-    fn resolve_package_root(&mut self, name: Symbol) -> Option<DefinitionContext<'arena>> {
+    fn resolve_package_root(&mut self, name: Symbol) -> Option<DefinitionContext<'ctx>> {
         // Refering to self
-        if name.as_str() == &self.context.config.package_name() {
+        if name.as_str() == &self.session.config.package_name() {
             return self.root_context;
         }
 
         // Refering to STD
         if name.as_str() == STD_PREFIX {
-            todo!("Load STD")
+            let context = self
+                .session
+                .context
+                .store
+                .resolutions
+                .borrow()
+                .get(&0)
+                .expect("std to be resolved")
+                .root;
+            return Some(context);
         }
 
         // Refering to Dependency
-        if let Some(_) = self.context.config.dependency_map.get(name.as_str()) {
-            todo!("Load External ^^^")
+        if let Some(target) = self.session.config.dependency_map.get(name.as_str()) {
+            let index = *self
+                .session
+                .context
+                .store
+                .package_mapping
+                .borrow()
+                .get(target)
+                .expect("package index");
+            let context = self
+                .session
+                .context
+                .store
+                .resolutions
+                .borrow()
+                .get(&index)
+                .expect("package to be resolved")
+                .root;
+            return Some(context);
         }
 
         return None;
@@ -65,9 +92,9 @@ impl<'ctx, 'arena> Resolver<'ctx, 'arena> {
 
     fn resolve_module_in_context(
         &mut self,
-        context: DefinitionContext<'arena>,
+        context: DefinitionContext<'ctx>,
         symbol: Symbol,
-    ) -> Option<DefinitionContext<'arena>> {
+    ) -> Option<DefinitionContext<'ctx>> {
         let holder = context.resolutions.borrow().find(&symbol);
 
         let Some(holder) = holder else {

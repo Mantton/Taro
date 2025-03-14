@@ -58,8 +58,12 @@ impl DefinitionID {
         }
     }
 
-    pub fn is_local(&self) -> bool {
-        self.package_index == PackageIndex::new(0)
+    pub fn is_local(&self, index: usize) -> bool {
+        self.package_index == PackageIndex::from_usize(index)
+    }
+
+    pub fn package(&self) -> PackageIndex {
+        self.package_index
     }
 }
 

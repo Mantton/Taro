@@ -1,41 +1,34 @@
 use rustc_hash::FxHashMap;
-use taroc_context::GlobalContext;
+use std::rc::Rc;
+use taroc_context::{CompilerSession, ResolutionData};
 use taroc_hir::{DefinitionID, DefinitionIndex, DefinitionKind, NodeID, PackageIndex, PartialRes};
 use taroc_resolve_models::{
     DefContextKind, DefinitionContext, ExternalDefinitionUsage, NameBinding, NameHolder,
-    ResolverOutput,
 };
 use taroc_span::{FileID, Identifier, Span, Symbol};
 
 use crate::models::ToNameBinding;
 
-use super::arena::ResolverArena;
-
-pub struct Resolver<'ctx, 'arena> {
-    pub context: GlobalContext<'ctx>,
-    pub arena: &'arena ResolverArena<'arena>,
+pub struct Resolver<'ctx> {
+    pub session: Rc<CompilerSession<'ctx>>,
     node_to_def: FxHashMap<NodeID, DefinitionID>,
     def_to_kind: FxHashMap<DefinitionID, DefinitionKind>,
-    def_to_context: FxHashMap<DefinitionID, DefinitionContext<'arena>>,
-    pub block_map: FxHashMap<NodeID, DefinitionContext<'arena>>,
-    pub file_map: FxHashMap<FileID, DefinitionContext<'arena>>,
-    pub unresolved_exports: Vec<ExternalDefinitionUsage<'arena>>,
-    pub unresolved_imports: Vec<ExternalDefinitionUsage<'arena>>,
-    pub resolved_exports: Vec<ExternalDefinitionUsage<'arena>>,
-    pub resolved_imports: Vec<ExternalDefinitionUsage<'arena>>,
-    pub root_context: Option<DefinitionContext<'arena>>,
+    def_to_context: FxHashMap<DefinitionID, DefinitionContext<'ctx>>,
+    pub block_map: FxHashMap<NodeID, DefinitionContext<'ctx>>,
+    pub file_map: FxHashMap<FileID, DefinitionContext<'ctx>>,
+    pub unresolved_exports: Vec<ExternalDefinitionUsage<'ctx>>,
+    pub unresolved_imports: Vec<ExternalDefinitionUsage<'ctx>>,
+    pub resolved_exports: Vec<ExternalDefinitionUsage<'ctx>>,
+    pub resolved_imports: Vec<ExternalDefinitionUsage<'ctx>>,
+    pub root_context: Option<DefinitionContext<'ctx>>,
     pub next_index: u32,
     partial_resolution_map: FxHashMap<NodeID, PartialRes>,
 }
 
-impl Resolver<'_, '_> {
-    pub fn new<'ctx, 'arena>(
-        context: GlobalContext<'ctx>,
-        arena: &'arena ResolverArena<'arena>,
-    ) -> Resolver<'ctx, 'arena> {
+impl Resolver<'_> {
+    pub fn new<'ctx>(session: Rc<CompilerSession<'ctx>>) -> Resolver<'ctx> {
         Resolver {
-            context,
-            arena,
+            session,
             node_to_def: Default::default(),
             def_to_kind: Default::default(),
             def_to_context: Default::default(),
@@ -52,14 +45,14 @@ impl Resolver<'_, '_> {
     }
 }
 
-impl<'ctx, 'arena> Resolver<'_, 'arena> {
+impl<'ctx> Resolver<'ctx> {
     pub fn new_context(
         &mut self,
-        parent: Option<DefinitionContext<'arena>>,
+        parent: Option<DefinitionContext<'ctx>>,
         kind: DefContextKind,
         span: Span,
-    ) -> DefinitionContext<'arena> {
-        let context = self.arena.new_context(parent, kind, span);
+    ) -> DefinitionContext<'ctx> {
+        let context = self.alloc_context(parent, kind, span);
 
         match kind {
             DefContextKind::Block => {}
@@ -80,7 +73,7 @@ impl<'ctx, 'arena> Resolver<'_, 'arena> {
         _parent: DefinitionID,
     ) -> DefinitionID {
         let index = DefinitionID::new(
-            PackageIndex::new(0),
+            PackageIndex::new(self.session.index),
             DefinitionIndex::from_raw(self.next_index),
         );
         self.node_to_def.insert(node, index);
@@ -94,26 +87,31 @@ impl<'ctx, 'arena> Resolver<'_, 'arena> {
     }
 
     pub fn def_kind(&self, id: DefinitionID) -> DefinitionKind {
-        if id.is_local() {
+        if id.is_local(self.session.index) {
             return *self.def_to_kind.get(&id).expect("bug! node not tagged");
         }
 
-        todo!("non-local definition, requesting kind")
+        let resolutions = self.session.context.store.resolutions.borrow();
+        let data = resolutions
+            .get(&id.package().index())
+            .expect("resolution data");
+        let kind = *data.def_to_kind.get(&id).expect("def to kind");
+        kind
     }
 
-    pub fn get_context(&self, id: &DefinitionID) -> Option<DefinitionContext<'arena>> {
-        if !id.is_local() {
+    pub fn get_context(&self, id: &DefinitionID) -> Option<DefinitionContext<'ctx>> {
+        if !id.is_local(self.session.index) {
             todo!("non local id")
         };
 
         let x = self.def_to_context.get(id).cloned();
         return x;
     }
-    pub fn get_block_context(&self, id: &NodeID) -> Option<DefinitionContext<'arena>> {
+    pub fn get_block_context(&self, id: &NodeID) -> Option<DefinitionContext<'ctx>> {
         self.block_map.get(id).cloned()
     }
 
-    pub fn get_file_context(&self, id: &FileID) -> DefinitionContext<'arena> {
+    pub fn get_file_context(&self, id: &FileID) -> DefinitionContext<'ctx> {
         self.file_map
             .get(id)
             .cloned()
@@ -121,38 +119,38 @@ impl<'ctx, 'arena> Resolver<'_, 'arena> {
     }
 }
 
-impl<'ctx, 'arena> Resolver<'ctx, 'arena> {
+impl<'ctx> Resolver<'ctx> {
     pub fn define<T>(
         &mut self,
-        parent: DefinitionContext<'arena>,
+        parent: DefinitionContext<'ctx>,
         identifier: Identifier,
         definition: T,
     ) -> bool
     where
-        T: ToNameBinding<'arena>,
+        T: ToNameBinding<'ctx>,
     {
-        let binding = definition.to_name_binding(&self.arena);
+        let binding = definition.to_name_binding(&self);
         self.define_in_parent(parent, identifier, binding, false)
     }
 
     pub fn force_define<T>(
         &mut self,
-        parent: DefinitionContext<'arena>,
+        parent: DefinitionContext<'ctx>,
         identifier: Identifier,
         definition: T,
     ) -> bool
     where
-        T: ToNameBinding<'arena>,
+        T: ToNameBinding<'ctx>,
     {
-        let binding = definition.to_name_binding(&self.arena);
+        let binding = definition.to_name_binding(&self);
         self.define_in_parent(parent, identifier, binding, true)
     }
 
     pub fn define_in_parent(
         &mut self,
-        parent: DefinitionContext<'arena>,
+        parent: DefinitionContext<'ctx>,
         identifier: Identifier,
-        binding: NameBinding<'arena>,
+        binding: NameBinding<'ctx>,
         force: bool,
     ) -> bool {
         let result = self.define_in_context(parent, identifier.symbol, binding, force);
@@ -167,10 +165,14 @@ impl<'ctx, 'arena> Resolver<'ctx, 'arena> {
                     "Duplicate Definition, '{}' is already defined in this scope",
                     identifier.symbol
                 );
-                self.context.diagnostics.error(message, identifier.span);
+                self.session
+                    .context
+                    .diagnostics
+                    .error(message, identifier.span);
 
                 let message = format!("'{}' is defined here.", identifier.symbol);
-                self.context
+                self.session
+                    .context
                     .diagnostics
                     .info(message, previous_binding.nearest().span);
                 return false;
@@ -180,11 +182,11 @@ impl<'ctx, 'arena> Resolver<'ctx, 'arena> {
 
     pub fn define_in_context(
         &self,
-        context: DefinitionContext<'arena>,
+        context: DefinitionContext<'ctx>,
         symbol: Symbol,
-        binding: NameBinding<'arena>,
+        binding: NameBinding<'ctx>,
         force: bool,
-    ) -> Result<Option<NameHolder<'arena>>, NameHolder<'arena>> {
+    ) -> Result<Option<NameHolder<'ctx>>, NameHolder<'ctx>> {
         // if forcing a new binding
         if force {
             let old = context
@@ -216,7 +218,7 @@ impl<'ctx, 'arena> Resolver<'ctx, 'arena> {
 
             // Overloaded Function
 
-            let bindings: &[NameBinding<'arena>] = match current_binding {
+            let bindings: &[NameBinding<'ctx>] = match current_binding {
                 NameHolder::Single(interned) => &[*interned],
                 NameHolder::Set(interneds) => *interneds,
             };
@@ -225,8 +227,8 @@ impl<'ctx, 'arena> Resolver<'ctx, 'arena> {
             let mut combined = Vec::with_capacity(total);
             combined.push(binding);
             combined.extend_from_slice(bindings);
-            let new_bindings = self.arena.alloc_slice_copy(&combined);
-            let new_holder = NameHolder::Set(new_bindings);
+            let new_bindings = self.alloc_slice_copy(&combined);
+            let new_holder: NameHolder<'ctx> = NameHolder::Set(new_bindings);
             resolutions.bindings.insert(symbol, new_holder);
             return Ok(None);
         } else {
@@ -238,20 +240,21 @@ impl<'ctx, 'arena> Resolver<'ctx, 'arena> {
     }
 }
 
-impl<'ctx, 'arena> Resolver<'ctx, 'arena> {
+impl<'ctx> Resolver<'ctx> {
     pub fn record_paratial_resolution(&mut self, node: NodeID, resolution: PartialRes) {
         if let Some(_) = self.partial_resolution_map.insert(node, resolution) {
-            panic!("multiple resolutions recorded for node {node:?}")
+            // panic!("multiple resolutions recorded for node {node:?}")
         }
     }
 }
 
-impl<'ctx, 'arena> Resolver<'_, 'arena> {
-    pub fn produce(self) -> ResolverOutput {
-        ResolverOutput {
+impl<'ctx> Resolver<'ctx> {
+    pub fn produce(self) -> ResolutionData<'ctx> {
+        ResolutionData {
             node_to_def: self.node_to_def,
             def_to_kind: self.def_to_kind,
             partial_resolution_map: self.partial_resolution_map,
+            root: self.root_context.unwrap(),
         }
     }
 }

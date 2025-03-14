@@ -392,9 +392,3 @@ pub enum LexicalScopeBinding<'arena> {
     Declaration(NameHolder<'arena>),
     Resolution(Resolution),
 }
-
-pub struct ResolverOutput {
-    pub node_to_def: FxHashMap<NodeID, DefinitionID>,
-    pub def_to_kind: FxHashMap<DefinitionID, DefinitionKind>,
-    pub partial_resolution_map: FxHashMap<NodeID, PartialRes>,
-}

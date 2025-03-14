@@ -8,6 +8,7 @@ use crate::{LockFile, Manifest};
 
 pub struct CompilerConfig {
     identifier: String,
+    pub qualified: String,
     pub source_path: PathBuf,
     pub working_directory: PathBuf,
     pub is_std: bool,
@@ -18,6 +19,7 @@ pub struct CompilerConfig {
 impl CompilerConfig {
     pub fn new(
         identifier: String,
+        qualified: String,
         source: PathBuf,
         cwd: PathBuf,
         is_std: bool,
@@ -29,6 +31,7 @@ impl CompilerConfig {
         lockfile.normalize_mappings(&mut mappings);
         Ok(CompilerConfig {
             identifier,
+            qualified,
             source_path: source,
             working_directory: cwd,
             is_std,

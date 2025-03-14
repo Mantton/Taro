@@ -7,4 +7,8 @@ edition = "2024"
 [dependencies]
 taroc_package = { path = "../taroc_package" }
 taroc_span = { path = "../taroc_span" }
+taroc_hir = { path = "../taroc_hir" }
 taroc_diagnostics = { path = "../taroc_diagnostics" }
+taroc_resolve_models = { path = "../taroc_resolve_models" }
+rustc-hash = "2.1.1"
+bumpalo = "3.17.0"

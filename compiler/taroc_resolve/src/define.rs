@@ -1,6 +1,6 @@
 use crate::models::ToNameBinding;
 
-use super::{arena::ResolverArena, resolver::Resolver};
+use super::resolver::Resolver;
 use std::cell::{Cell, RefCell};
 use taroc_error::CompileResult;
 use taroc_hir::{
@@ -17,19 +17,17 @@ use taroc_span::{FileID, Span, Symbol};
 pub fn run(package: &taroc_hir::Package, r: &mut Resolver) -> CompileResult<()> {
     let actor = Actor::new(r);
     actor.run(package);
-    r.context.diagnostics.report()
+    r.session.context.diagnostics.report()
 }
 
-struct Actor<'res, 'ctx, 'arena> {
-    pub resolver: &'res mut Resolver<'ctx, 'arena>,
-    pub parent_context: Option<DefinitionContext<'arena>>,
-    pub import_context: Option<DefinitionContext<'arena>>,
+struct Actor<'res, 'ctx> {
+    pub resolver: &'res mut Resolver<'ctx>,
+    pub parent_context: Option<DefinitionContext<'ctx>>,
+    pub import_context: Option<DefinitionContext<'ctx>>,
 }
 
-impl Actor<'_, '_, '_> {
-    fn new<'res, 'ctx, 'arena>(
-        resolver: &'res mut Resolver<'ctx, 'arena>,
-    ) -> Actor<'res, 'ctx, 'arena> {
+impl Actor<'_, '_> {
+    fn new<'res, 'ctx>(resolver: &'res mut Resolver<'ctx>) -> Actor<'res, 'ctx> {
         Actor {
             resolver,
             parent_context: None,
@@ -42,7 +40,7 @@ impl Actor<'_, '_, '_> {
     }
 }
 
-impl HirVisitor for Actor<'_, '_, '_> {
+impl HirVisitor for Actor<'_, '_> {
     fn visit_module(&mut self, m: &taroc_hir::Module, id: NodeID) -> Self::Result {
         // Create Context Scope for root module
         if id == NodeID::from(0) {
@@ -106,7 +104,7 @@ impl HirVisitor for Actor<'_, '_, '_> {
     }
 }
 
-impl Actor<'_, '_, '_> {
+impl Actor<'_, '_> {
     fn define_declaration(&mut self, decl: &taroc_hir::Declaration, context: DeclarationContext) {
         if matches!(
             context,
@@ -177,7 +175,7 @@ impl Actor<'_, '_, '_> {
     }
 }
 
-impl Actor<'_, '_, '_> {
+impl Actor<'_, '_> {
     fn define_external_symbol_usage(
         &mut self,
         tree: &PathTree,
@@ -237,6 +235,7 @@ impl Actor<'_, '_, '_> {
             taroc_hir::PathTreeNode::Nested { nodes, span } => {
                 if nodes.is_empty() {
                     self.resolver
+                        .session
                         .context
                         .diagnostics
                         .warn("Unused Import, Path is Empty".into(), *span);
@@ -255,11 +254,11 @@ impl Actor<'_, '_, '_> {
     }
 }
 
-impl<'a, 'b, 'arena> Actor<'_, '_, 'arena> {
+impl<'res, 'ctx> Actor<'res, 'ctx> {
     fn add_extenal_symbol_usage(
         &mut self,
         module_path: Vec<Segment>,
-        kind: ExternalDefUsageKind<'arena>,
+        kind: ExternalDefUsageKind<'ctx>,
         span: Span,
         decl: &Declaration,
     ) {
@@ -280,7 +279,7 @@ impl<'a, 'b, 'arena> Actor<'_, '_, 'arena> {
             is_import,
             module_context: Cell::new(None),
         };
-        let ptr = self.resolver.arena.alloc_external_usage(data);
+        let ptr = self.resolver.alloc_external_usage(data);
 
         if is_import {
             self.resolver.unresolved_imports.push(ptr);
@@ -315,7 +314,7 @@ impl<'a, 'b, 'arena> Actor<'_, '_, 'arena> {
     }
 }
 
-impl Actor<'_, '_, '_> {
+impl Actor<'_, '_> {
     fn define_block(&mut self, block: &taroc_hir::Block) {
         if block.has_declarations {
             let parent = self.parent_context;
@@ -328,8 +327,8 @@ impl Actor<'_, '_, '_> {
     }
 }
 
-impl<'arena> ToNameBinding<'arena> for (DefinitionContext<'arena>, taroc_hir::TVisibility, Span) {
-    fn to_name_binding(self, arena: &'arena ResolverArena<'arena>) -> NameBinding<'arena> {
+impl<'ctx> ToNameBinding<'ctx> for (DefinitionContext<'ctx>, taroc_hir::TVisibility, Span) {
+    fn to_name_binding(self, arena: &Resolver<'ctx>) -> NameBinding<'ctx> {
         let binding = NameBindingData {
             kind: NameBindingKind::Context(self.0),
             span: self.2,
@@ -339,8 +338,8 @@ impl<'arena> ToNameBinding<'arena> for (DefinitionContext<'arena>, taroc_hir::TV
     }
 }
 
-impl<'arena> ToNameBinding<'arena> for (Resolution, taroc_hir::TVisibility, Span) {
-    fn to_name_binding(self, arena: &'arena ResolverArena<'arena>) -> NameBinding<'arena> {
+impl<'ctx> ToNameBinding<'ctx> for (Resolution, taroc_hir::TVisibility, Span) {
+    fn to_name_binding(self, arena: &Resolver<'ctx>) -> NameBinding<'ctx> {
         let binding = NameBindingData {
             kind: NameBindingKind::Resolution(self.0),
             span: self.2,

@@ -13,7 +13,7 @@ pub fn run(_: &taroc_hir::Package, resolver: &mut Resolver) -> CompileResult<()>
     return Ok(());
 }
 
-impl Resolver<'_, '_> {
+impl Resolver<'_> {
     pub fn resolve_exports(&mut self) -> CompileResult<()> {
         // Process each exprt.
         for node in std::mem::take(&mut self.unresolved_exports) {
@@ -24,7 +24,7 @@ impl Resolver<'_, '_> {
             }
         }
 
-        self.context.diagnostics.report()
+        self.session.context.diagnostics.report()
     }
     fn resolve_imports(&mut self) {
         while !self.unresolved_imports.is_empty() {
@@ -51,8 +51,8 @@ impl Resolver<'_, '_> {
     }
 }
 
-impl<'ctx, 'arena> Resolver<'ctx, 'arena> {
-    fn resolve_export(&mut self, export: ExternalDefinitionUsage<'arena>) -> bool {
+impl<'ctx> Resolver<'ctx> {
+    fn resolve_export(&mut self, export: ExternalDefinitionUsage<'ctx>) -> bool {
         let module = self.resolve_module_path(&export.module_path);
         let Some(module) = module else {
             return false;
@@ -79,7 +79,10 @@ impl<'ctx, 'arena> Resolver<'ctx, 'arena> {
                 usage.source.symbol,
                 export.module_path.last().unwrap().identifier.symbol
             );
-            self.context.diagnostics.error(message, usage.source.span);
+            self.session
+                .context
+                .diagnostics
+                .error(message, usage.source.span);
             return false;
         }
 
@@ -94,7 +97,7 @@ impl<'ctx, 'arena> Resolver<'ctx, 'arena> {
         ok
     }
 
-    fn resolve_import(&mut self, import: ExternalDefinitionUsage<'arena>) -> bool {
+    fn resolve_import(&mut self, import: ExternalDefinitionUsage<'ctx>) -> bool {
         let module = self.resolve_module_path(&import.module_path);
         let Some(module) = module else {
             return false;
@@ -121,7 +124,10 @@ impl<'ctx, 'arena> Resolver<'ctx, 'arena> {
                 usage.source.symbol,
                 import.module_path.last().unwrap().identifier.symbol
             );
-            self.context.diagnostics.error(message, usage.source.span);
+            self.session
+                .context
+                .diagnostics
+                .error(message, usage.source.span);
             return false;
         }
 
@@ -139,10 +145,10 @@ impl<'ctx, 'arena> Resolver<'ctx, 'arena> {
 
     fn convert_usage_binding(
         &mut self,
-        binding: NameBinding<'arena>,
-        usage: ExternalDefinitionUsage<'arena>,
-    ) -> NameBinding<'arena> {
-        self.arena.alloc_binding(NameBindingData {
+        binding: NameBinding<'ctx>,
+        usage: ExternalDefinitionUsage<'ctx>,
+    ) -> NameBinding<'ctx> {
+        self.alloc_binding(NameBindingData {
             kind: NameBindingKind::ExternalUsage { binding, usage },
             span: usage.span,
             vis: taroc_hir::TVisibility::Public,
