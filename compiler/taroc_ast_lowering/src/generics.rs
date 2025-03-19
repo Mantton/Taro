@@ -69,6 +69,7 @@ impl Actor<'_> {
     fn lower_generic_bound(&mut self, bound: taroc_ast::GenericBound) -> taroc_hir::GenericBound {
         taroc_hir::GenericBound {
             path: self.lower_path(bound.path),
+            id: self.next(),
         }
     }
 
@@ -100,6 +101,7 @@ impl Actor<'_> {
                         bounded_type: self.lower_path(c.bounded_type),
                         bound: self.lower_type(c.bound),
                         span: c.span,
+                        bounded_ty_ref_id: self.next(),
                     },
                 )
             }
@@ -109,6 +111,7 @@ impl Actor<'_> {
                         bounded_type: self.lower_path(c.bounded_type),
                         bounds: self.lower_generic_bounds(c.bounds),
                         span: c.span,
+                        bounded_ty_ref_id: self.next(),
                     },
                 )
             }

@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use taroc_ast::{
     BindingPatternKind, Bridge, BridgeValue, ComputedVariable, Conform, Declaration,
-    DeclarationContext, DeclarationKind, Enum, Extend, Extern, Interface, Local, ModuleKind,
-    Mutability, Namespace, PathTree, PathTreeNode, Struct, TypeAlias, VariantKind,
+    DeclarationContext, DeclarationKind, Enum, Extend, Extern, Interface, Local, Mutability,
+    Namespace, PathTree, PathTreeNode, Struct, TypeAlias, VariantKind,
 };
 use taroc_span::{Identifier, SpannedMessage, Symbol};
 use taroc_token::{Delimiter, TokenKind};
@@ -71,7 +71,6 @@ impl Parser {
                 Identifier::emtpy(self.file.file),
                 self.parse_use_declaration(false)?,
             ),
-            TokenKind::Mod => self.parse_mod_declaration()?,
             TokenKind::Type => self.parse_type_declaration()?,
             TokenKind::Struct => self.parse_struct_declaration()?,
             TokenKind::Enum => self.parse_enum_declaration()?,
@@ -447,15 +446,6 @@ impl Parser {
         }
 
         return Ok(Some(self.parse_identifier()?));
-    }
-}
-
-impl Parser {
-    fn parse_mod_declaration(&mut self) -> R<(Identifier, DeclarationKind)> {
-        self.expect(TokenKind::Mod)?;
-        let identifier = self.parse_identifier()?;
-        self.expect_line_break_or_semi()?;
-        Ok((identifier, DeclarationKind::Module(ModuleKind::Unloaded)))
     }
 }
 

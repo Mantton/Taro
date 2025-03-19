@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use taroc_span::{Identifier, Span};
 
 use super::{
-    AttributeList, Block, Module, NodeID, Visibility,
+    AttributeList, Block, NodeID, Visibility,
     adt::{Enum, Struct},
     function::Function,
     generics::Generics,
@@ -23,8 +23,6 @@ pub struct Declaration {
 
 #[derive(Debug)]
 pub enum DeclarationKind {
-    /// `mod Foo`
-    Module(Module),
     /// `fn main() {}`
     Function(Function),
     /// `init()` | `init?()`
@@ -76,6 +74,7 @@ pub struct Interface {
 
 #[derive(Debug)]
 pub struct Extend {
+    pub ty_ref_id: NodeID,
     pub ty: Path,
     pub generics: Generics,
     pub declarations: Vec<Declaration>,
@@ -83,6 +82,8 @@ pub struct Extend {
 
 #[derive(Debug)]
 pub struct Conform {
+    pub ty_ref_id: NodeID,
+    pub interface_ref_id: NodeID,
     pub ty: Path,
     pub interface: Path,
     pub generics: Generics,

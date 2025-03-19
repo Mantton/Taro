@@ -17,6 +17,7 @@ pub struct Package {
 pub struct Module {
     pub name: Symbol,
     pub files: Vec<File>,
+    pub submodules: Vec<Module>,
 }
 
 #[derive(Debug)]
@@ -82,6 +83,7 @@ pub fn tokenize_module(
     };
 
     let mut files = vec![];
+    let mut submodules = vec![];
     for entry in content {
         let entry = match entry {
             Ok(entry) => entry,
@@ -103,6 +105,9 @@ pub fn tokenize_module(
             // Register File in Source Map
             let id = with_session_globals(|session| session.tag_file(path));
             files.push(id);
+        } else if path.is_dir() {
+            let module = tokenize_module(&path, false, context)?;
+            submodules.push(module);
         }
     }
 
@@ -114,6 +119,7 @@ pub fn tokenize_module(
     Ok(Module {
         name: Symbol::with(&name),
         files,
+        submodules,
     })
 }
 

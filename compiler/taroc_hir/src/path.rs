@@ -4,6 +4,7 @@ use super::{NodeID, generics::TypeArguments};
 
 #[derive(Debug)]
 pub struct Path {
+    pub id: NodeID,
     pub span: Span,
     pub segments: Vec<PathSegment>,
 }

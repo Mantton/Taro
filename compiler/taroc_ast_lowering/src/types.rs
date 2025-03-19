@@ -32,7 +32,9 @@ impl Actor<'_> {
                 size: self.lower_anon_const(size),
                 element: self.lower_type(element),
             },
-            taroc_ast::TypeKind::Slice(ty) => taroc_hir::TypeKind::Slice(self.lower_type(ty)),
+            taroc_ast::TypeKind::Slice(..) => {
+                todo!("lower to built in std slice")
+            }
             taroc_ast::TypeKind::Composite(tys) => {
                 taroc_hir::TypeKind::Composite(self.lower_sequence(tys, |a, ty| a.lower_type(ty)))
             }

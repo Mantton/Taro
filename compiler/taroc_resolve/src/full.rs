@@ -109,12 +109,12 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
 }
 
 impl HirVisitor for Actor<'_, '_> {
-    fn visit_module(&mut self, module: &taroc_hir::Module, id: NodeID) -> Self::Result {
+    fn visit_module(&mut self, module: &taroc_hir::Module) -> Self::Result {
         // Soft Reset on Modular Level, So Module Root is Scope Count
         let previous = std::mem::take(&mut self.scopes);
         self.scopes = vec![];
 
-        let module_id = self.resolver.def_id(id);
+        let module_id = self.resolver.def_id(module.id);
         let context = self
             .resolver
             .get_context(&module_id)
@@ -152,7 +152,7 @@ impl HirVisitor for Actor<'_, '_> {
     fn visit_type(&mut self, ty: &taroc_hir::Type) -> Self::Result {
         match &ty.kind {
             taroc_hir::TypeKind::Path(path) => {
-                self.resolve_path_with_source(path, PathSource::Type);
+                self.resolve_path_with_source(ty.id, path, PathSource::Type);
             }
             _ => {}
         }
@@ -162,18 +162,26 @@ impl HirVisitor for Actor<'_, '_> {
     fn visit_generic_requirement(&mut self, n: &taroc_hir::GenericRequirement) -> Self::Result {
         match n {
             taroc_hir::GenericRequirement::SameTypeRequirement(c) => {
-                self.resolve_path_with_source(&c.bounded_type, PathSource::Type);
+                self.resolve_path_with_source(
+                    c.bounded_ty_ref_id,
+                    &c.bounded_type,
+                    PathSource::Type,
+                );
                 self.visit_type(&c.bound);
             }
             taroc_hir::GenericRequirement::ConformanceRequirement(c) => {
-                self.resolve_path_with_source(&c.bounded_type, PathSource::Type);
+                self.resolve_path_with_source(
+                    c.bounded_ty_ref_id,
+                    &c.bounded_type,
+                    PathSource::Type,
+                );
                 self.visit_generic_bounds(&c.bounds);
             }
         }
     }
 
     fn visit_generic_bound(&mut self, n: &taroc_hir::GenericBound) -> Self::Result {
-        self.resolve_path_with_source(&n.path, PathSource::Interface);
+        self.resolve_path_with_source(n.id, &n.path, PathSource::Interface);
     }
 
     fn visit_expression(&mut self, e: &taroc_hir::Expression) -> Self::Result {
@@ -274,7 +282,6 @@ impl Actor<'_, '_> {
                 });
             }
             taroc_hir::DeclarationKind::Bridge(_) => {}
-            taroc_hir::DeclarationKind::Module(module) => self.visit_module(module, declaration.id),
             taroc_hir::DeclarationKind::Export(..) | taroc_hir::DeclarationKind::Import(..) => {
                 taroc_hir::visitor::walk_declaration(self, declaration, context)
             }
@@ -319,7 +326,9 @@ impl Actor<'_, '_> {
 
 impl<'res, 'ctx> Actor<'res, 'ctx> {
     fn resolve_extend(&mut self, node: &taroc_hir::Extend) {
-        let self_res = self.resolve_path_with_source(&node.ty, PathSource::Type);
+        let self_res = self
+            .resolve_path_with_source(node.ty_ref_id, &node.ty, PathSource::Type)
+            .base_res();
         let def_id = self_res.def_id();
 
         // TODO: Any Checks to be done if this fails? error will be reported by path resolution
@@ -341,8 +350,16 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
 impl<'res, 'ctx> Actor<'res, 'ctx> {
     fn resolve_conform(&mut self, node: &taroc_hir::Conform, id: DefinitionID) {
         let conformance_id = id;
-        let type_res = self.resolve_path_with_source(&node.ty, PathSource::Type);
-        let interface_res = self.resolve_path_with_source(&node.interface, PathSource::Interface);
+        let type_res = self
+            .resolve_path_with_source(node.ty_ref_id, &node.ty, PathSource::Type)
+            .base_res();
+        let interface_res = self
+            .resolve_path_with_source(
+                node.interface_ref_id,
+                &node.interface,
+                PathSource::Interface,
+            )
+            .base_res();
 
         if type_res.is_error() || interface_res.is_error() {
             return;
@@ -380,7 +397,7 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
     fn resolve_expression(&mut self, expr: &taroc_hir::Expression) {
         match &expr.kind {
             taroc_hir::ExpressionKind::Path(path) => {
-                self.resolve_path_with_source(path, PathSource::Expression);
+                self.resolve_path_with_source(expr.id, path, PathSource::Expression);
                 taroc_hir::visitor::walk_expression(self, expr);
             }
             _ => taroc_hir::visitor::walk_expression(self, expr),
@@ -505,32 +522,36 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
 impl<'res, 'ctx> Actor<'res, 'ctx> {
     fn resolve_path_with_source(
         &mut self,
+        id: NodeID,
         path: &taroc_hir::Path,
         source: PathSource,
-    ) -> Resolution {
+    ) -> PartialRes {
         let segments = Segment::from_path(path);
         let result = self.resolve_qualified_path_anywhere(&segments, source.namespace());
 
         let report_error = |this: &mut Self, res: Option<Resolution>| {
             this.report_error_with_context(path, source, res);
-            return Resolution::Error;
+            return PartialRes::new(Resolution::Error);
         };
-        match result {
+        let res = match result {
             Ok(Some(partial_res)) if let Some(res) = partial_res.full_res() => {
                 if source.is_allowed(&res) || res.is_error() {
-                    return res;
+                    partial_res
                 } else {
                     report_error(self, Some(res))
                 }
             }
-            Ok(Some(_)) if source.defer_to_typecheck() => return Resolution::Error, // TODO
+            Ok(Some(_)) if source.defer_to_typecheck() => PartialRes::new(Resolution::Error), // TODO
             Err(err) => {
                 self.report_error(err.value, err.span);
-                return Resolution::Error;
+                PartialRes::new(Resolution::Error)
             }
 
             _ => report_error(self, None),
-        }
+        };
+
+        self.resolver.record_paratial_resolution(id, res.clone());
+        res
     }
 
     fn resolve_qualified_path_anywhere(
@@ -539,18 +560,11 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
         ns: SymbolNamespace,
     ) -> Result<Option<PartialRes>, Spanned<ResolutionError>> {
         let mut fin_res = None;
-        for (i, &xs) in [ns, SymbolNamespace::Type, SymbolNamespace::Value]
-            .iter()
-            .enumerate()
-        {
-            if i == 0 || xs != ns {
-                match self.resolve_qualified_path(path, xs)? {
-                    Some(res) => return Ok(Some(res)),
-                    res => {
-                        if fin_res.is_none() {
-                            fin_res = res
-                        }
-                    }
+        match self.resolve_qualified_path(path, ns)? {
+            Some(res) => return Ok(Some(res)),
+            res => {
+                if fin_res.is_none() {
+                    fin_res = res
                 }
             }
         }

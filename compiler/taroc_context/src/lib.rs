@@ -2,9 +2,11 @@ use std::{env::current_dir, ops::Deref};
 use taroc_diagnostics::{DiagnosticContext, DiagnosticLevel};
 use taroc_span::SpannedMessage;
 
+mod context;
 mod models;
 mod session;
 
+pub use context::*;
 pub use models::*;
 pub use session::*;
 

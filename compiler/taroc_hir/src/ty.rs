@@ -2,8 +2,6 @@ use std::fmt::Debug;
 
 use taroc_span::Span;
 
-use crate::{InterfaceType, Mutability};
-
 use super::{NodeID, adt::FieldDefinition, expression::AnonConst, path::Path};
 
 #[derive(Debug)]
@@ -38,10 +36,6 @@ pub enum TypeKind {
         size: AnonConst,
         element: Box<Type>,
     },
-    /// A Slice of an array
-    ///
-    /// `[]T`
-    Slice(Box<Type>),
     /// Anonymous Struct Type
     ///
     /// `let foo : struct { age: int, name: int } = struct { age: 10, name: ""}`
@@ -67,3 +61,6 @@ pub enum TypeKind {
     /// Foo & Bar
     Composite(Vec<Box<Type>>),
 }
+
+pub use taroc_ast::InterfaceType;
+pub use taroc_ast::Mutability;

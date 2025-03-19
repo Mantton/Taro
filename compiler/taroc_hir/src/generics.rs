@@ -60,6 +60,7 @@ pub enum GenericRequirement {
 /// `Foo == Bar`
 #[derive(Debug)]
 pub struct RequiredTypeConstraint {
+    pub bounded_ty_ref_id: NodeID,
     pub bounded_type: Path,
     pub bound: Box<Type>,
     pub span: Span,
@@ -68,6 +69,7 @@ pub struct RequiredTypeConstraint {
 /// `Self::Foo: Hashable`
 #[derive(Debug)]
 pub struct ConformanceConstraint {
+    pub bounded_ty_ref_id: NodeID,
     pub bounded_type: Path,
     pub bounds: GenericBounds,
     pub span: Span,
@@ -76,6 +78,7 @@ pub struct ConformanceConstraint {
 #[derive(Debug)]
 pub struct GenericBound {
     pub path: Path,
+    pub id: NodeID,
 }
 
 pub type GenericBounds = Vec<GenericBound>;

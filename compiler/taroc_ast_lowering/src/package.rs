@@ -38,15 +38,24 @@ impl Actor<'_> {
     }
 
     pub fn lower_module(&mut self, module: taroc_ast::Module) -> taroc_hir::Module {
+        let id = self.next();
         let files = module
             .files
             .into_iter()
             .map(|file| self.lower_file(file))
             .collect();
 
+        let submodules = module
+            .submodules
+            .into_iter()
+            .map(|file| self.lower_module(file))
+            .collect();
+
         taroc_hir::Module {
             name: module.name,
+            id,
             files,
+            submodules,
         }
     }
 

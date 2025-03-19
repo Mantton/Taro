@@ -1,6 +1,5 @@
+use taroc_ast::Mutability;
 use taroc_span::{Identifier, Span};
-
-use crate::Mutability;
 
 use super::{
     AttributeList, Label, NodeID, block::Block, expression::Expression, generics::Generics,

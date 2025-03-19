@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use taroc_span::{Identifier, Span, Symbol};
 
 use super::{
-    Block, Generics, Module,
+    Block, Generics,
     adt::{Enum, Struct},
     attribute::AttributeList,
     function::Function,
@@ -24,8 +24,6 @@ pub struct Declaration {
 
 #[derive(Debug)]
 pub enum DeclarationKind {
-    /// `mod Foo`
-    Module(ModuleKind),
     /// `fn main() {}`
     Function(Function),
     /// `init()` | `init?()`
@@ -144,12 +142,6 @@ pub enum PathTreeNode {
     Simple { alias: Option<Identifier> },
     Nested { nodes: Vec<PathTree>, span: Span },
     Glob,
-}
-
-#[derive(Debug)]
-pub enum ModuleKind {
-    Unloaded,
-    Loaded(Module),
 }
 
 #[derive(Debug)]

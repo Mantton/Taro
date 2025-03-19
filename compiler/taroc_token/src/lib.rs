@@ -26,7 +26,6 @@ pub enum TokenKind {
     Export,
 
     Public,
-    Mod,
     Function,
     Struct,
     Enum,
@@ -248,7 +247,6 @@ impl Display for TokenKind {
             TokenKind::Some => "some",
             TokenKind::Any => "any",
             TokenKind::Init => "init",
-            TokenKind::Mod => "mod",
             TokenKind::Export => "export",
         };
         write!(f, "{}", text)
@@ -301,7 +299,6 @@ impl TokenKind {
             "some" => TokenKind::Some,
             "any" => TokenKind::Any,
             "init" => TokenKind::Init,
-            "module" => TokenKind::Mod,
             "export" => TokenKind::Export,
             _ => return None,
         };

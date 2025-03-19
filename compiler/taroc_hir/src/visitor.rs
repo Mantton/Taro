@@ -102,7 +102,7 @@ pub trait HirVisitor: Sized {
     fn visit_package(&mut self, p: &Package) -> Self::Result {
         walk_package(self, p)
     }
-    fn visit_module(&mut self, m: &Module, _id: NodeID) -> Self::Result {
+    fn visit_module(&mut self, m: &Module) -> Self::Result {
         walk_module(self, m)
     }
     fn visit_file(&mut self, file: &File) -> Self::Result {
@@ -247,11 +247,14 @@ pub trait HirVisitor: Sized {
 }
 
 pub fn walk_package<V: HirVisitor>(visitor: &mut V, package: &Package) -> V::Result {
-    visitor.visit_module(&package.root, NodeID::from(0))
+    visitor.visit_module(&package.root)
 }
 
 pub fn walk_module<V: HirVisitor>(visitor: &mut V, module: &Module) -> V::Result {
-    let Module { files, .. } = module;
+    let Module {
+        files, submodules, ..
+    } = module;
+    walk_list!(visitor, visit_module, submodules);
     walk_list!(visitor, visit_file, files);
     V::Result::output()
 }
@@ -349,10 +352,7 @@ pub fn walk_declaration<V: HirVisitor>(
                 DeclarationContext::Namespace
             )
         }
-        DeclarationKind::Bridge(_) => {}
-        DeclarationKind::Module(module) => {
-            try_visit!(visitor.visit_module(module, declaration.id));
-        }
+        DeclarationKind::Bridge(_) => todo!(),
         DeclarationKind::Computed(node) => {
             try_visit!(visitor.visit_computed_property(node))
         }
@@ -485,9 +485,6 @@ pub fn walk_type<V: HirVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
         }
         TypeKind::Array { element, .. } => {
             try_visit!(visitor.visit_type(element));
-        }
-        TypeKind::Slice(ty) => {
-            try_visit!(visitor.visit_type(ty));
         }
         TypeKind::AnonStruct { fields } => {
             walk_list!(visitor, visit_field_definition, fields);

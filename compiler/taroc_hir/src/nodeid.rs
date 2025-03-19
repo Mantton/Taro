@@ -8,7 +8,7 @@ pub struct NodeTagger {
 
 impl NodeTagger {
     pub fn new() -> Self {
-        NodeTagger { next_index: 1 }
+        NodeTagger { next_index: 0 }
     }
 
     pub fn next(&mut self) -> NodeID {

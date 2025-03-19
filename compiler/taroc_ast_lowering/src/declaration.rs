@@ -59,14 +59,6 @@ impl Actor<'_> {
                 taroc_hir::DeclarationKind::Extern(self.lower_extern(extrn))
             }
             taroc_ast::DeclarationKind::Bridge(..) => todo!(),
-            taroc_ast::DeclarationKind::Module(module_kind) => match module_kind {
-                taroc_ast::ModuleKind::Unloaded => {
-                    unreachable!("ast expansion should occur to load this module")
-                }
-                taroc_ast::ModuleKind::Loaded(module) => {
-                    taroc_hir::DeclarationKind::Module(self.lower_module(module))
-                }
-            },
             taroc_ast::DeclarationKind::Import(tree) => {
                 taroc_hir::DeclarationKind::Import(self.lower_path_tree(tree))
             }
@@ -116,6 +108,8 @@ impl Actor<'_> {
             ty: self.lower_path(e.ty),
             interface: self.lower_path(e.interface),
             generics: self.lower_generics(e.generics),
+            ty_ref_id: self.next(),
+            interface_ref_id: self.next(),
         }
     }
 
@@ -126,6 +120,7 @@ impl Actor<'_> {
             }),
             ty: self.lower_path(e.ty),
             generics: self.lower_generics(e.generics),
+            ty_ref_id: self.next(),
         }
     }
 }

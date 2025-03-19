@@ -41,20 +41,39 @@ impl Actor<'_, '_> {
 }
 
 impl HirVisitor for Actor<'_, '_> {
-    fn visit_module(&mut self, m: &taroc_hir::Module, id: NodeID) -> Self::Result {
-        // Create Context Scope for root module
-        if id == NodeID::from(0) {
-            let id = self.resolver.def_id(id);
-            let context = self.resolver.new_context(
-                None,
-                DefContextKind::Definition(id, taroc_hir::DefinitionKind::Module, m.name),
+    fn visit_module(&mut self, m: &taroc_hir::Module) -> Self::Result {
+        let id = self.resolver.def_id(m.id);
+        let context = self.resolver.new_context(
+            None,
+            DefContextKind::Definition(id, taroc_hir::DefinitionKind::Module, m.name),
+            Span::empty(FileID::new(0)),
+        );
+
+        if m.id == NodeID::from(0) {
+            self.resolver.root_context = Some(context);
+            self.parent_context = Some(context);
+        } else {
+            let def = (
+                context,
+                taroc_hir::TVisibility::Public,
                 Span::empty(FileID::new(0)),
             );
-            self.parent_context = Some(context);
-            self.resolver.root_context = Some(context);
-        }
 
-        visitor::walk_module(self, m)
+            println!("{} - {:?}", m.name, m.id);
+            println!("{:?}", self.parent_context.unwrap().kind);
+            self.resolver.define(
+                self.parent_context.unwrap(),
+                taroc_span::Identifier {
+                    span: Span::empty(FileID::new(0)),
+                    symbol: m.name,
+                },
+                def,
+            );
+        }
+        let previous = self.parent_context;
+        self.parent_context = Some(context);
+        visitor::walk_module(self, m);
+        self.parent_context = previous;
     }
 
     fn visit_file(&mut self, f: &taroc_hir::File) -> Self::Result {
@@ -153,8 +172,7 @@ impl Actor<'_, '_> {
             DeclarationKind::Interface(..)
             | DeclarationKind::Enum(..)
             | DeclarationKind::Namespace(..)
-            | DeclarationKind::Bridge(..)
-            | DeclarationKind::Module(..) => {
+            | DeclarationKind::Bridge(..) => {
                 let ctx_k = DefContextKind::Definition(id, kind, name);
                 let context = self.resolver.new_context(Some(parent), ctx_k, span);
                 let def = (context, vis, span);

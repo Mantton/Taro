@@ -4,12 +4,13 @@ use std::{borrow::Borrow, cell::RefCell, hash::Hash, hash::Hasher, marker::Phant
 use taroc_data_structures::Interned;
 use taroc_hir::{DefinitionID, DefinitionKind, NodeID, PartialRes};
 use taroc_resolve_models::DefinitionContext;
-use taroc_types::{FloatTy, GenericArgument, IntTy, Ty, TyKind, UIntTy};
+use taroc_ty::{FloatTy, GenericArgument, IntTy, Ty, TyKind, UIntTy};
 
 pub struct ContextStore<'ctx> {
     pub interners: ContextInterners<'ctx>,
     pub resolutions: RefCell<FxHashMap<usize, ResolutionData<'ctx>>>,
     pub package_mapping: RefCell<FxHashMap<String, usize>>,
+    pub types: RefCell<TypeDatabase<'ctx>>,
     pub common_types: CommonTypes<'ctx>,
 }
 
@@ -20,8 +21,9 @@ impl<'ctx> ContextStore<'ctx> {
         ContextStore {
             interners,
             common_types,
-            resolutions: RefCell::default(),
             package_mapping: RefCell::default(),
+            resolutions: RefCell::default(),
+            types: RefCell::default(),
         }
     }
 }
@@ -45,6 +47,7 @@ impl<'ctx> ContextArenas<'ctx> {
 pub struct ContextInterners<'ctx> {
     pub arenas: &'ctx ContextArenas<'ctx>,
     ty: InternedSet<'ctx, TyKind<'ctx>>,
+    ty_list: InternedSet<'ctx, Vec<Ty<'ctx>>>,
 }
 
 impl<'ctx> ContextInterners<'ctx> {
@@ -52,6 +55,7 @@ impl<'ctx> ContextInterners<'ctx> {
         ContextInterners {
             arenas,
             ty: InternedSet::new(),
+            ty_list: InternedSet::new(),
         }
     }
 }
@@ -70,6 +74,22 @@ impl<'ctx> ContextInterners<'ctx> {
         return Ty::with_kind(i);
     }
 
+    pub fn intern_ty_list(&self, items: &Vec<Ty<'ctx>>) -> &'ctx Vec<Ty<'ctx>> {
+        if items.is_empty() {
+            unreachable!("type list should never be empty")
+        }
+
+        let ik = self
+            .ty_list
+            .intern_ref(items, || {
+                let k = self.arenas.types.alloc(items.clone());
+                return InternedInSet(k);
+            })
+            .0;
+
+        ik
+    }
+
     pub fn mk_args(&self, args: Vec<GenericArgument<'ctx>>) -> &'ctx [GenericArgument<'ctx>] {
         return self.arenas.types.alloc_slice_copy(&args);
     }
@@ -80,6 +100,12 @@ pub struct ResolutionData<'ctx> {
     pub node_to_def: FxHashMap<NodeID, DefinitionID>,
     pub def_to_kind: FxHashMap<DefinitionID, DefinitionKind>,
     pub partial_resolution_map: FxHashMap<NodeID, PartialRes>,
+}
+
+#[derive(Debug, Default)]
+pub struct TypeDatabase<'ctx> {
+    pub def_to_ty: FxHashMap<DefinitionID, Ty<'ctx>>,
+    pub def_to_generics: FxHashMap<DefinitionID, taroc_ty::Generics>,
 }
 
 pub struct CommonTypes<'ctx> {
@@ -163,19 +189,45 @@ impl<'tcx> Borrow<TyKind<'tcx>> for InternedInSet<'tcx, TyKind<'tcx>> {
     }
 }
 
-impl<'tcx> PartialEq for InternedInSet<'tcx, TyKind<'tcx>> {
-    fn eq(&self, other: &InternedInSet<'tcx, TyKind<'tcx>>) -> bool {
-        // The `Borrow` trait requires that `x.borrow() == y.borrow()` equals
-        // `x == y`.
+impl<'tcx> Borrow<Vec<Ty<'tcx>>> for InternedInSet<'tcx, Vec<Ty<'tcx>>> {
+    fn borrow(&self) -> &Vec<Ty<'tcx>> {
+        &self.0
+    }
+}
+
+// impl<'tcx> PartialEq for InternedInSet<'tcx, TyKind<'tcx>> {
+//     fn eq(&self, other: &InternedInSet<'tcx, TyKind<'tcx>>) -> bool {
+//         // The `Borrow` trait requires that `x.borrow() == y.borrow()` equals
+//         // `x == y`.
+//         self.0 == other.0
+//     }
+// }
+
+// impl<'tcx> Eq for InternedInSet<'tcx, TyKind<'tcx>> {}
+
+// impl<'tcx> Hash for InternedInSet<'tcx, TyKind<'tcx>> {
+//     fn hash<H: Hasher>(&self, s: &mut H) {
+//         // The `Borrow` trait requires that `x.borrow().hash(s) == x.hash(s)`.
+//         self.0.hash(s)
+//     }
+// }
+
+impl<'tcx, T> PartialEq for InternedInSet<'tcx, T>
+where
+    T: ?Sized + PartialEq,
+{
+    fn eq(&self, other: &Self) -> bool {
         self.0 == other.0
     }
 }
 
-impl<'tcx> Eq for InternedInSet<'tcx, TyKind<'tcx>> {}
+impl<'tcx, T> Eq for InternedInSet<'tcx, T> where T: ?Sized + Eq {}
 
-impl<'tcx> Hash for InternedInSet<'tcx, TyKind<'tcx>> {
+impl<'tcx, T> Hash for InternedInSet<'tcx, T>
+where
+    T: ?Sized + Hash,
+{
     fn hash<H: Hasher>(&self, s: &mut H) {
-        // The `Borrow` trait requires that `x.borrow().hash(s) == x.hash(s)`.
         self.0.hash(s)
     }
 }
@@ -204,7 +256,7 @@ impl<K: Eq + Hash + Copy> WrappedHashSet<K> {
         Q: Hash + Eq,
     {
         let mut set = self.wrapped.borrow_mut();
-        if let Some(v) = set.get(&value) {
+        if let Some(v) = set.get(value) {
             return *v;
         } else {
             let v = make();

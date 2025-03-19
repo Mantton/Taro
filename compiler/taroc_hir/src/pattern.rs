@@ -1,6 +1,5 @@
+use taroc_ast::Mutability;
 use taroc_span::{Identifier, Span};
-
-use crate::Mutability;
 
 use super::{Label, NodeID, expression::AnonConst, path::Path};
 #[derive(Debug)]

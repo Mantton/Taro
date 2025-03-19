@@ -3,6 +3,7 @@ use super::package::Actor;
 impl Actor<'_> {
     pub fn lower_path(&mut self, path: taroc_ast::Path) -> taroc_hir::Path {
         taroc_hir::Path {
+            id: self.next(),
             span: path.span,
             segments: self.lower_sequence(path.segments, |a, sg| a.lower_path_segment(sg)),
         }

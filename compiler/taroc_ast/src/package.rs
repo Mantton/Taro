@@ -11,6 +11,7 @@ pub struct Package {
 pub struct Module {
     pub name: Symbol,
     pub files: Vec<File>,
+    pub submodules: Vec<Module>,
 }
 
 #[derive(Debug)]

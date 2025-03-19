@@ -25,13 +25,23 @@ pub fn parse_package(
 pub fn parse_module(module: taroc_lexer::Module, context: GlobalContext) -> taroc_ast::Module {
     let name = module.name;
     let mut files = vec![];
+    let mut submodules = vec![];
 
     for file in module.files {
         let file = parse_file(file, context);
         files.push(file);
     }
 
-    taroc_ast::Module { name, files }
+    for module in module.submodules {
+        let module = parse_module(module, context);
+        submodules.push(module);
+    }
+
+    taroc_ast::Module {
+        name,
+        files,
+        submodules,
+    }
 }
 
 pub fn parse_file(file: taroc_lexer::File, context: GlobalContext) -> taroc_ast::File {

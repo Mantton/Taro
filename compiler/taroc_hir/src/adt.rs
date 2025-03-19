@@ -1,3 +1,4 @@
+use taroc_ast::Mutability;
 use taroc_span::{Identifier, Span};
 
 use super::{CtorKind, NodeID, Visibility, expression::AnonConst, generics::Generics, ty::Type};
@@ -48,16 +49,4 @@ impl VariantKind {
             VariantKind::Struct(id, _) => (CtorKind::Fn, *id),
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Mutability {
-    Mutable,
-    Immutable,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InterfaceType {
-    Some,
-    Any,
 }

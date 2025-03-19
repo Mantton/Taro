@@ -1,6 +1,6 @@
 use taroc_ast::{InterfaceType, Mutability, Type, TypeKind};
 use taroc_span::SpannedMessage;
-use taroc_token::{Base, Delimiter, TokenKind};
+use taroc_token::{Delimiter, TokenKind};
 
 use super::package::{Parser, R};
 
@@ -131,48 +131,36 @@ impl Parser {
     }
 
     fn parse_collection_type(&mut self) -> R<TypeKind> {
-        // Parses [T], []T, [N]T, [T:V]
+        // Parses []T, [N]T, [T:V]
         // eat opening bracket
         self.expect(TokenKind::LBracket)?;
 
-        // expecting a slice type: []T
+        // expecting a list type: []T
         if self.eat(TokenKind::RBracket) {
             let ty = self.parse_type()?;
-            return Ok(TypeKind::Slice(ty));
+            return Ok(TypeKind::List(ty));
         }
 
-        // now we could be an array [N]T or a list [T]
-        // check for integer literal for array type otherwise default to list
-
-        match self.current_kind() {
-            TokenKind::Integer(b) if b == Base::Decimal => {
-                // [N]T
-                let size = self.parse_anon_const()?;
-                self.expect(TokenKind::RBracket)?;
-                let element = self.parse_type()?;
-                return Ok(TypeKind::Array { size, element });
-            }
-            _ => {}
+        match self.parse_array_type() {
+            Ok(k) => return Ok(k),
+            Err(_) if self.matches(TokenKind::Colon) => return self.parse_dictionary_type(),
+            Err(err) => return Err(err),
         }
+    }
 
-        // Now we are either parsing a List Type [T] or a Dictionary Type [T:V]
-
-        // parse T
-
-        let t = self.parse_type()?;
-
-        // we are parsing a Dictionary Type, [T:V]
-        if self.eat(TokenKind::Colon) {
-            // parse type V
-            let value = self.parse_type()?;
-            // parse closing bracket
-            self.expect(TokenKind::RBracket)?;
-            return Ok(TypeKind::Dictionary { key: t, value });
-        }
-
-        // we are parsing a List type [T], eat closing bracket
+    fn parse_array_type(&mut self) -> R<TypeKind> {
+        let size = self.parse_anon_const()?;
         self.expect(TokenKind::RBracket)?;
-        return Ok(TypeKind::List(t));
+        let element = self.parse_type()?;
+        return Ok(TypeKind::Array { size, element });
+    }
+
+    fn parse_dictionary_type(&mut self) -> R<TypeKind> {
+        let key = self.parse_type()?;
+        self.expect(TokenKind::Colon)?;
+        let value = self.parse_type()?;
+        self.expect(TokenKind::RBracket)?;
+        return Ok(TypeKind::Dictionary { key, value });
     }
 
     fn parse_anon_struct_type(&mut self) -> R<TypeKind> {

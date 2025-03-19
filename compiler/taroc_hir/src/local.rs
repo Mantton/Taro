@@ -1,4 +1,4 @@
-use crate::Mutability;
+use taroc_ast::Mutability;
 
 use super::{NodeID, expression::Expression, pattern::BindingPattern, ty::Type};
 

@@ -41,8 +41,8 @@ impl Actor<'_, '_> {
 }
 
 impl HirVisitor for Actor<'_, '_> {
-    fn visit_module(&mut self, m: &taroc_hir::Module, id: NodeID) -> <Self as HirVisitor>::Result {
-        self.tag(m.name, id, DefinitionKind::Module);
+    fn visit_module(&mut self, m: &taroc_hir::Module) -> <Self as HirVisitor>::Result {
+        self.tag(m.name, m.id, DefinitionKind::Module);
         walk_module(self, m)
     }
 
@@ -67,7 +67,6 @@ impl HirVisitor for Actor<'_, '_> {
             taroc_hir::DeclarationKind::Extern(..) => DefinitionKind::Extern,
             taroc_hir::DeclarationKind::Namespace(..) => DefinitionKind::Namespace,
             taroc_hir::DeclarationKind::Bridge(..) => DefinitionKind::Bridged,
-            taroc_hir::DeclarationKind::Module(..) => DefinitionKind::Module,
             taroc_hir::DeclarationKind::Export(..) => DefinitionKind::Export,
             taroc_hir::DeclarationKind::Computed(..) => DefinitionKind::ComputedProperty,
         };
