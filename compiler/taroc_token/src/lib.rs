@@ -37,6 +37,8 @@ pub enum TokenKind {
     Extern,
     Namespace,
     Init,
+    AssociatedType,
+    Case,
 
     Let,
     Var,
@@ -116,6 +118,7 @@ pub enum TokenKind {
     CaretEq, // ^=
     ShlEq,   // <<=
     ShrEq,   // >>=
+    PtrEq,   // ===
 
     Bar,   // |
     Caret, // ^
@@ -248,6 +251,9 @@ impl Display for TokenKind {
             TokenKind::Any => "any",
             TokenKind::Init => "init",
             TokenKind::Export => "export",
+            TokenKind::AssociatedType => "associatedtype",
+            TokenKind::PtrEq => "===",
+            TokenKind::Case => "case",
         };
         write!(f, "{}", text)
     }
@@ -300,6 +306,8 @@ impl TokenKind {
             "any" => TokenKind::Any,
             "init" => TokenKind::Init,
             "export" => TokenKind::Export,
+            "associatedtype" => TokenKind::AssociatedType,
+            "case" => TokenKind::Case,
             _ => return None,
         };
 
@@ -366,6 +374,7 @@ impl TokenKind {
 
             TokenKind::RChevron => Some(BinaryOperator::Gt),
             TokenKind::LChevron => Some(BinaryOperator::Lt),
+            TokenKind::PtrEq => Some(BinaryOperator::PtrEq),
             _ => None,
         }
     }

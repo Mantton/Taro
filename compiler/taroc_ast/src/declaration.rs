@@ -1,17 +1,10 @@
-use std::collections::HashMap;
-
-use taroc_span::{Identifier, Span, Symbol};
-
 use super::{
-    Block, Generics,
-    adt::{Enum, Struct},
-    attribute::AttributeList,
-    function::Function,
-    local::Local,
-    path::Path,
-    ty::Type,
+    Block, attribute::AttributeList, function::Function, local::Local, path::Path, ty::Type,
     visibility::Visibility,
 };
+use crate::{AnonConst, Generics, Variant};
+use std::collections::HashMap;
+use taroc_span::{Identifier, Span, Symbol};
 
 #[derive(Debug)]
 pub struct Declaration {
@@ -28,28 +21,22 @@ pub enum DeclarationKind {
     Function(Function),
     /// `init()` | `init?()`
     Constructor(Function, bool),
+    /// `operator +()`
+    Operator(Function),
     /// `let | var VALUE = 10`
     Variable(Local),
+    /// `const VALUE: Uint = 10`
+    Constant(Box<Type>, AnonConst),
     /// `import foo::bar`
     Import(PathTree),
     /// `export foo::bar`
     Export(PathTree),
-    /// `interface Walkable`
-    Interface(Interface),
     /// `extend Foo`
     ///
     /// `extend Foo where Element is Numerical`
     Extend(Extend),
-    /// `conform Foo as Bar`
-    ///
-    /// `conform Foo as Bar where Element is Numerical`
-    Conform(Conform),
     /// `type Foo = Optional<int>`
     TypeAlias(TypeAlias),
-    /// `struct Foo {}` | `struct Foo()` | `struct Foo`
-    Struct(Struct),
-    /// `enum Foo {}`
-    Enum(Enum),
     /// `extern "c" {}`
     Extern(Extern),
     /// `namespace Foo {}`
@@ -58,6 +45,12 @@ pub enum DeclarationKind {
     Bridge(Bridge),
     /// `var count: Int {}`
     Computed(ComputedVariable),
+    /// `associatedtype Foo`
+    AssociatedType,
+    /// `struct Foo {}` | `enum Foo {}` | `interface Foo {}`
+    DefinedType(DefinedType),
+    /// `case Foo, case Bar {}, case Baz`
+    EnumCase(EnumCase),
 }
 
 #[derive(Debug)]
@@ -67,23 +60,22 @@ pub struct TypeAlias {
 }
 
 #[derive(Debug)]
-pub struct Interface {
-    pub declarations: Vec<Declaration>,
-    pub extensions: Option<Vec<Path>>,
+pub enum DefinedTypeKind {
+    Struct,
+    Enum,
+    Interface,
+}
+
+#[derive(Debug)]
+pub struct DefinedType {
+    pub kind: DefinedTypeKind,
     pub generics: Generics,
+    pub declarations: Vec<Declaration>,
 }
 
 #[derive(Debug)]
 pub struct Extend {
     pub ty: Path,
-    pub generics: Generics,
-    pub declarations: Vec<Declaration>,
-}
-
-#[derive(Debug)]
-pub struct Conform {
-    pub ty: Path,
-    pub interface: Path,
     pub generics: Generics,
     pub declarations: Vec<Declaration>,
 }
@@ -104,12 +96,13 @@ pub struct Namespace {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeclarationContext {
     Module,
-    Interface,
-    Conform,
     Extend,
     Statement,
     Extern,
     Namespace,
+    Struct,
+    Enum,
+    Interface,
 }
 
 pub enum FunctionContext {
@@ -147,5 +140,10 @@ pub enum PathTreeNode {
 #[derive(Debug)]
 pub struct ComputedVariable {
     pub ty: Box<Type>,
-    pub block: Option<Block>,
+    pub block: Block,
+}
+
+#[derive(Debug)]
+pub struct EnumCase {
+    pub members: Vec<Variant>,
 }

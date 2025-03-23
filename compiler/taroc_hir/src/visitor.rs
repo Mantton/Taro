@@ -294,17 +294,7 @@ pub fn walk_declaration<V: HirVisitor>(
         DeclarationKind::Export(i) => {
             try_visit!(visitor.visit_export(i, declaration.id));
         }
-        DeclarationKind::Interface(interface) => {
-            try_visit!(visitor.visit_generics(&interface.generics));
-            walk_list!(
-                visitor,
-                visit_declaration,
-                &interface.declarations,
-                DeclarationContext::Interface
-            )
-        }
         DeclarationKind::Extend(extension) => {
-            try_visit!(visitor.visit_generics(&extension.generics));
             try_visit!(visitor.visit_path(&extension.ty));
             walk_list!(
                 visitor,
@@ -313,28 +303,9 @@ pub fn walk_declaration<V: HirVisitor>(
                 DeclarationContext::Extend
             )
         }
-        DeclarationKind::Conform(conformance) => {
-            try_visit!(visitor.visit_generics(&conformance.generics));
-            try_visit!(visitor.visit_path(&conformance.ty));
-            try_visit!(visitor.visit_path(&conformance.interface));
-            walk_list!(
-                visitor,
-                visit_declaration,
-                &conformance.declarations,
-                DeclarationContext::Conform
-            )
-        }
         DeclarationKind::TypeAlias(ty) => {
             try_visit!(visitor.visit_generics(&ty.generics));
             visit_optional!(visitor, visit_type, &ty.ty);
-        }
-        DeclarationKind::Struct(node) => {
-            try_visit!(visitor.visit_generics(&node.generics));
-            try_visit!(visitor.visit_variant_kind(&node.variant));
-        }
-        DeclarationKind::Enum(node) => {
-            try_visit!(visitor.visit_generics(&node.generics));
-            walk_list!(visitor, visit_variant, &node.variants);
         }
         DeclarationKind::Extern(node) => {
             walk_list!(
@@ -356,6 +327,10 @@ pub fn walk_declaration<V: HirVisitor>(
         DeclarationKind::Computed(node) => {
             try_visit!(visitor.visit_computed_property(node))
         }
+        DeclarationKind::AssociatedType => {}
+        DeclarationKind::Constant(_, anon_const) => todo!(),
+        DeclarationKind::EnumCase(enum_case) => todo!(),
+        DeclarationKind::DefinedType(defined_type) => todo!(),
     }
 
     V::Result::output()
@@ -717,7 +692,7 @@ pub fn walk_function_prototype<V: HirVisitor>(
 }
 
 pub fn walk_generics<V: HirVisitor>(visitor: &mut V, node: &Generics) -> V::Result {
-    try_visit!(visitor.visit_type_parameters(&node.parameters));
+    // try_visit!(visitor.visit_type_parameters(&node.parameters));
     visit_optional!(visitor, visit_generic_where_clause, &node.where_clause);
     V::Result::output()
 }
@@ -744,11 +719,11 @@ pub fn walk_generic_requirement<V: HirVisitor>(
 ) -> V::Result {
     match &node {
         GenericRequirement::SameTypeRequirement(c) => {
-            try_visit!(visitor.visit_path(&c.bounded_type));
+            try_visit!(visitor.visit_path(&c.bounded_type.path));
             try_visit!(visitor.visit_type(&c.bound));
         }
         GenericRequirement::ConformanceRequirement(c) => {
-            try_visit!(visitor.visit_path(&c.bounded_type));
+            try_visit!(visitor.visit_path(&c.bounded_type.path));
             try_visit!(visitor.visit_generic_bounds(&c.bounds));
         }
     }
@@ -761,7 +736,7 @@ pub fn walk_generic_bounds<V: HirVisitor>(visitor: &mut V, node: &GenericBounds)
 }
 
 pub fn walk_generic_bound<V: HirVisitor>(visitor: &mut V, node: &GenericBound) -> V::Result {
-    try_visit!(visitor.visit_path(&node.path));
+    try_visit!(visitor.visit_path(&node.path.path));
     V::Result::output()
 }
 
@@ -770,6 +745,6 @@ pub fn walk_computed_property<V: HirVisitor>(
     node: &ComputedProperty,
 ) -> V::Result {
     try_visit!(visitor.visit_type(&node.ty));
-    visit_optional!(visitor, visit_block, &node.block);
+    try_visit!(visitor.visit_block(&node.block));
     V::Result::output()
 }

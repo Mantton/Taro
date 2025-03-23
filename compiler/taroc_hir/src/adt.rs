@@ -1,19 +1,6 @@
+use super::{CtorKind, NodeID, Visibility, expression::AnonConst, ty::Type};
 use taroc_ast::Mutability;
 use taroc_span::{Identifier, Span};
-
-use super::{CtorKind, NodeID, Visibility, expression::AnonConst, generics::Generics, ty::Type};
-
-#[derive(Debug)]
-pub struct Struct {
-    pub generics: Generics,
-    pub variant: VariantKind,
-}
-
-#[derive(Debug)]
-pub struct Enum {
-    pub generics: Generics,
-    pub variants: Vec<Variant>,
-}
 
 #[derive(Debug)]
 pub struct Variant {

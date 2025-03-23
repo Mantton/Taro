@@ -177,6 +177,7 @@ impl Parser {
                 | TokenKind::Neq
                 | TokenKind::Eql
                 | TokenKind::Teq
+                | TokenKind::PtrEq
         ) {
             expr = self.build_binary_expr(expr, |p| p.parse_bit_or_expr())?;
         }

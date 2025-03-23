@@ -1,6 +1,6 @@
+use super::{NodeID, path::Path, ty::Type};
+use crate::AnonConst;
 use taroc_span::{Identifier, Span};
-
-use super::{NodeID, expression::AnonConst, path::Path, ty::Type};
 
 #[derive(Debug)]
 pub struct TypeParameter {
@@ -33,12 +33,6 @@ pub struct TypeArguments {
     pub arguments: Vec<Box<Type>>,
 }
 
-#[derive(Debug)]
-pub struct Generics {
-    pub parameters: TypeParameters,
-    pub where_clause: Option<GenericWhereClause>,
-}
-
 /// `where T: X & Y`
 #[derive(Debug)]
 pub struct GenericWhereClause {
@@ -60,8 +54,7 @@ pub enum GenericRequirement {
 /// `Foo == Bar`
 #[derive(Debug)]
 pub struct RequiredTypeConstraint {
-    pub bounded_ty_ref_id: NodeID,
-    pub bounded_type: Path,
+    pub bounded_type: TaggedPath,
     pub bound: Box<Type>,
     pub span: Span,
 }
@@ -69,16 +62,32 @@ pub struct RequiredTypeConstraint {
 /// `Self::Foo: Hashable`
 #[derive(Debug)]
 pub struct ConformanceConstraint {
-    pub bounded_ty_ref_id: NodeID,
-    pub bounded_type: Path,
+    pub bounded_type: TaggedPath,
     pub bounds: GenericBounds,
     pub span: Span,
 }
 
 #[derive(Debug)]
 pub struct GenericBound {
+    pub path: TaggedPath,
+}
+
+pub type GenericBounds = Vec<GenericBound>;
+
+#[derive(Debug)]
+pub struct Inheritance {
+    pub interfaces: Vec<TaggedPath>,
+}
+
+#[derive(Debug)]
+pub struct TaggedPath {
     pub path: Path,
     pub id: NodeID,
 }
 
-pub type GenericBounds = Vec<GenericBound>;
+#[derive(Debug)]
+pub struct Generics {
+    pub type_parameters: Option<TypeParameters>,
+    pub where_clause: Option<GenericWhereClause>,
+    pub inheritance: Option<Inheritance>,
+}

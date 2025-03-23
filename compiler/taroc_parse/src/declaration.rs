@@ -1,13 +1,12 @@
+use super::package::{Parser, R};
 use std::collections::HashMap;
 use taroc_ast::{
-    BindingPatternKind, Bridge, BridgeValue, ComputedVariable, Conform, Declaration,
-    DeclarationContext, DeclarationKind, Enum, Extend, Extern, Interface, Local, Mutability,
-    Namespace, PathTree, PathTreeNode, Struct, TypeAlias, VariantKind,
+    BindingPatternKind, Bridge, BridgeValue, ComputedVariable, Declaration, DeclarationContext,
+    DeclarationKind, DefinedType, DefinedTypeKind, EnumCase, Extend, Extern, Generics, Local,
+    Mutability, Namespace, PathTree, PathTreeNode, TypeAlias,
 };
 use taroc_span::{Identifier, SpannedMessage, Symbol};
 use taroc_token::{Delimiter, TokenKind};
-
-use super::package::{Parser, R};
 
 impl Parser {
     pub fn parse_declaration(
@@ -46,23 +45,13 @@ impl Parser {
 impl Parser {
     fn parse_decl_kind(
         &mut self,
-        context: DeclarationContext,
+        _: DeclarationContext,
     ) -> R<Option<(Identifier, DeclarationKind)>> {
         let current_kind = self.current_kind();
         let (identifier, kind) = match current_kind {
-            TokenKind::Let => self.parse_top_level_variable_decl()?,
-            TokenKind::Var => {
-                if matches!(
-                    context,
-                    DeclarationContext::Extend
-                        | DeclarationContext::Conform
-                        | DeclarationContext::Interface
-                ) {
-                    self.parse_computed_variable()?
-                } else {
-                    self.parse_top_level_variable_decl()?
-                }
-            }
+            TokenKind::Let => self.parse_variable_decl()?,
+            TokenKind::Var => self.parse_variable_decl()?,
+            TokenKind::Const => self.parse_const_decl()?,
             TokenKind::Import => (
                 Identifier::emtpy(self.file.file),
                 self.parse_use_declaration(true)?,
@@ -71,17 +60,21 @@ impl Parser {
                 Identifier::emtpy(self.file.file),
                 self.parse_use_declaration(false)?,
             ),
+            TokenKind::AssociatedType => self.parse_associated_type()?,
             TokenKind::Type => self.parse_type_declaration()?,
-            TokenKind::Struct => self.parse_struct_declaration()?,
-            TokenKind::Enum => self.parse_enum_declaration()?,
+            TokenKind::Struct | TokenKind::Enum | TokenKind::Interface => {
+                self.parse_defined_type()?
+            }
             TokenKind::Function => self.parse_function()?,
             TokenKind::Init => (Identifier::emtpy(self.file.file), self.parse_constructor()?),
-            TokenKind::Interface => self.parse_interface()?,
             TokenKind::Extern => (Identifier::emtpy(self.file.file), self.parse_extern()?),
-            TokenKind::Conform => (Identifier::emtpy(self.file.file), self.parse_conform()?),
             TokenKind::Extend => (Identifier::emtpy(self.file.file), self.parse_extend()?),
             TokenKind::Bridge => self.parse_bridge()?,
             TokenKind::Namespace => self.parse_namespace()?,
+            TokenKind::Case => (
+                Identifier::emtpy(self.file.file),
+                self.parse_enum_case_decl()?,
+            ),
             _ => return Ok(None),
         };
 
@@ -90,7 +83,7 @@ impl Parser {
 }
 
 impl Parser {
-    fn parse_top_level_variable_decl(&mut self) -> R<(Identifier, DeclarationKind)> {
+    fn parse_variable_decl(&mut self) -> R<(Identifier, DeclarationKind)> {
         let mutability = if self.eat(TokenKind::Let) {
             Mutability::Immutable
         } else if self.eat(TokenKind::Var) {
@@ -117,6 +110,25 @@ impl Parser {
             None
         };
 
+        if self.matches(TokenKind::LBrace) {
+            let identifier = match pattern.kind {
+                BindingPatternKind::Identifier(identifier) => identifier,
+                _ => {
+                    let msg = format!("expected identifeir pattern for computed property",);
+                    return Err(SpannedMessage::new(msg, self.current_token_span()));
+                }
+            };
+
+            let Some(ty) = ty else {
+                let msg = format!("expected type annotation for computed property",);
+                return Err(SpannedMessage::new(msg, self.current_token_span()));
+            };
+
+            let block = self.parse_block()?;
+            let kind = DeclarationKind::Computed(ComputedVariable { ty, block });
+            return Ok((identifier, kind));
+        }
+
         let initializer = if self.eat(TokenKind::Assign) {
             Some(self.parse_expression()?)
         } else {
@@ -131,8 +143,21 @@ impl Parser {
             is_shorthand: false,
         };
 
-        self.expect(TokenKind::Semicolon)?;
-        Ok((ident, DeclarationKind::Variable(local)))
+        self.expect_line_break_or_semi()?;
+
+        return Ok((ident, DeclarationKind::Variable(local)));
+    }
+
+    fn parse_const_decl(&mut self) -> R<(Identifier, DeclarationKind)> {
+        self.expect(TokenKind::Type)?;
+        let identifier = self.parse_identifier()?;
+        self.expect(TokenKind::Colon)?;
+        let ty = self.parse_type()?;
+        self.expect(TokenKind::Assign)?;
+        let value = self.parse_anon_const()?;
+        self.expect_line_break_or_semi()?;
+        let kind = DeclarationKind::Constant(ty, value);
+        return Ok((identifier, kind));
     }
 }
 
@@ -140,85 +165,27 @@ impl Parser {
     fn parse_type_declaration(&mut self) -> R<(Identifier, DeclarationKind)> {
         self.expect(TokenKind::Type)?;
         let identifier = self.parse_identifier()?;
-        let mut generics = self.parse_generics()?;
 
+        let type_parameters = self.parse_type_parameters()?;
         let ty = if self.eat(TokenKind::Assign) {
             Some(self.parse_type()?)
         } else {
             None
         };
 
-        generics.where_clause = self.parse_generic_where_clause()?;
+        let where_clause = self.parse_generic_where_clause()?;
 
-        let decl = TypeAlias { generics, ty };
+        let generics = Generics {
+            type_parameters,
+            where_clause,
+            inheritance: None,
+        };
+
+        let decl = TypeAlias { ty, generics };
 
         let k = DeclarationKind::TypeAlias(decl);
         self.expect_line_break_or_semi()?;
         Ok((identifier, k))
-    }
-}
-impl Parser {
-    fn parse_struct_declaration(&mut self) -> R<(Identifier, DeclarationKind)> {
-        self.expect(TokenKind::Struct)?;
-        let identifier = self.parse_identifier()?;
-        let mut generics = self.parse_generics()?;
-        generics.where_clause = self.parse_generic_where_clause()?;
-        let variant = self.parse_variant_kind()?;
-
-        match &variant {
-            VariantKind::Unit | VariantKind::Tuple(..) => self.expect_line_break_or_semi()?,
-            _ => {}
-        }
-        let s = Struct { generics, variant };
-        let s = DeclarationKind::Struct(s);
-        Ok((identifier, s))
-    }
-
-    fn parse_enum_declaration(&mut self) -> R<(Identifier, DeclarationKind)> {
-        self.expect(TokenKind::Enum)?;
-        let identifier = self.parse_identifier()?;
-        let mut generics = self.parse_generics()?;
-        generics.where_clause = self.parse_generic_where_clause()?;
-
-        let variants =
-            self.parse_delimiter_sequence(Delimiter::Brace, TokenKind::Comma, true, |p| {
-                p.parse_enum_variant()
-            })?;
-
-        let e = Enum { generics, variants };
-
-        Ok((identifier, DeclarationKind::Enum(e)))
-    }
-}
-
-impl Parser {
-    fn parse_interface(&mut self) -> R<(Identifier, DeclarationKind)> {
-        // interface foo : bar where bar::element {}
-        self.expect(TokenKind::Interface)?;
-        let ident = self.parse_identifier()?;
-        let mut generics = self.parse_generics()?;
-        let extensions = if self.eat(TokenKind::Colon) {
-            let paths =
-                self.parse_sequence_until(&[], TokenKind::Comma, false, |p| p.parse_path())?;
-            Some(paths)
-        } else {
-            None
-        };
-        generics.where_clause = self.parse_generic_where_clause()?;
-
-        let declarations = self
-            .parse_block_sequence(|p| p.parse_declaration(true, DeclarationContext::Interface))?
-            .into_iter()
-            .flatten()
-            .collect();
-
-        let interface = Interface {
-            declarations,
-            extensions,
-            generics,
-        };
-
-        Ok((ident, DeclarationKind::Interface(interface)))
     }
 }
 
@@ -251,10 +218,9 @@ impl Parser {
 impl Parser {
     fn parse_extend(&mut self) -> R<DeclarationKind> {
         self.expect(TokenKind::Extend)?;
-        let mut generics = self.parse_generics()?;
         let ty = self.parse_path()?;
-
-        generics.where_clause = self.parse_generic_where_clause()?;
+        let inheritance = self.parse_inheritance()?;
+        let where_clause = self.parse_generic_where_clause()?;
 
         let declarations = self
             .parse_block_sequence(|p| p.parse_declaration(true, DeclarationContext::Extend))?
@@ -262,40 +228,19 @@ impl Parser {
             .flatten()
             .collect();
 
+        let generics = Generics {
+            type_parameters: None,
+            where_clause,
+            inheritance,
+        };
+
         let extend = Extend {
             ty,
-            generics,
             declarations,
+            generics,
         };
 
         Ok(DeclarationKind::Extend(extend))
-    }
-    fn parse_conform(&mut self) -> R<DeclarationKind> {
-        self.expect(TokenKind::Conform)?;
-        let mut generics = self.parse_generics()?;
-
-        let ty = self.parse_path()?;
-
-        self.expect(TokenKind::Colon)?;
-
-        let interface = self.parse_path()?;
-
-        generics.where_clause = self.parse_generic_where_clause()?;
-
-        let declarations = self
-            .parse_block_sequence(|p| p.parse_declaration(true, DeclarationContext::Interface))?
-            .into_iter()
-            .flatten()
-            .collect();
-
-        let conform = Conform {
-            ty,
-            interface,
-            generics,
-            declarations,
-        };
-
-        Ok(DeclarationKind::Conform(conform))
     }
 }
 
@@ -450,20 +395,64 @@ impl Parser {
 }
 
 impl Parser {
-    fn parse_computed_variable(&mut self) -> R<(Identifier, DeclarationKind)> {
-        self.expect(TokenKind::Var)?;
+    fn parse_associated_type(&mut self) -> R<(Identifier, DeclarationKind)> {
+        self.expect(TokenKind::AssociatedType)?;
         let identifier = self.parse_identifier()?;
-        self.expect(TokenKind::Colon)?;
-        let ty = self.parse_type()?;
 
-        let block = if self.matches(TokenKind::LBrace) {
-            Some(self.parse_block()?)
+        return Ok((identifier, DeclarationKind::AssociatedType));
+    }
+}
+
+impl Parser {
+    fn parse_defined_type(&mut self) -> R<(Identifier, DeclarationKind)> {
+        let kind = if self.eat(TokenKind::Struct) {
+            DefinedTypeKind::Struct
+        } else if self.eat(TokenKind::Enum) {
+            DefinedTypeKind::Enum
+        } else if self.eat(TokenKind::Interface) {
+            DefinedTypeKind::Interface
         } else {
-            None
+            let msg = format!(
+                "expected struct, enum or interface definition, got {} instead",
+                self.current_kind()
+            );
+            let err = SpannedMessage::new(msg, self.current_token_span());
+            return Err(err);
         };
 
-        let kind = DeclarationKind::Computed(ComputedVariable { ty, block });
+        let identifier = self.parse_identifier()?;
+        let type_parameters = self.parse_type_parameters()?;
+        let inheritance = self.parse_inheritance()?;
+        let where_clause = self.parse_generic_where_clause()?;
 
+        let declarations = self
+            .parse_block_sequence(|p| p.parse_declaration(true, DeclarationContext::Interface))?
+            .into_iter()
+            .flatten()
+            .collect();
+
+        let generics = Generics {
+            inheritance,
+            type_parameters,
+            where_clause,
+        };
+
+        let node = DefinedType {
+            kind,
+            declarations,
+            generics,
+        };
+
+        let kind = DeclarationKind::DefinedType(node);
         return Ok((identifier, kind));
+    }
+}
+
+impl Parser {
+    fn parse_enum_case_decl(&mut self) -> R<DeclarationKind> {
+        self.expect(TokenKind::Case)?;
+        let members = self.parse_sequence(TokenKind::Comma, |this| this.parse_enum_variant())?;
+        let kind = DeclarationKind::EnumCase(EnumCase { members });
+        return Ok(kind);
     }
 }

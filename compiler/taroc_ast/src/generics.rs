@@ -1,6 +1,6 @@
+use super::{path::Path, ty::Type};
+use crate::AnonConst;
 use taroc_span::{Identifier, Span};
-
-use super::{expression::AnonConst, path::Path, ty::Type};
 
 #[derive(Debug)]
 pub struct TypeParameter {
@@ -38,8 +38,9 @@ pub struct TypeArguments {
 
 #[derive(Debug)]
 pub struct Generics {
-    pub parameters: TypeParameters,
+    pub type_parameters: Option<TypeParameters>,
     pub where_clause: Option<GenericWhereClause>,
+    pub inheritance: Option<Inheritance>,
 }
 
 /// `where T: X & Y`
@@ -82,3 +83,8 @@ pub struct GenericBound {
 }
 
 pub type GenericBounds = Vec<GenericBound>;
+
+#[derive(Debug)]
+pub struct Inheritance {
+    pub interfaces: Vec<Path>,
+}

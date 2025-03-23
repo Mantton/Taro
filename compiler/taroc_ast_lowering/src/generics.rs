@@ -3,9 +3,11 @@ use super::package::Actor;
 impl Actor<'_> {
     pub fn lower_generics(&mut self, g: taroc_ast::Generics) -> taroc_hir::Generics {
         taroc_hir::Generics {
-            parameters: self.lower_type_parameters(g.parameters),
+            type_parameters: self
+                .lower_optional(g.type_parameters, |a, v| a.lower_type_parameters(v)),
             where_clause: self
                 .lower_optional(g.where_clause, |a, v| a.lower_generic_where_clause(v)),
+            inheritance: self.lower_optional(g.inheritance, |a, v| a.lower_inheritance(v)),
         }
     }
 
@@ -68,8 +70,7 @@ impl Actor<'_> {
 
     fn lower_generic_bound(&mut self, bound: taroc_ast::GenericBound) -> taroc_hir::GenericBound {
         taroc_hir::GenericBound {
-            path: self.lower_path(bound.path),
-            id: self.next(),
+            path: self.lower_tagged_path(bound.path),
         }
     }
 
@@ -98,23 +99,27 @@ impl Actor<'_> {
             taroc_ast::GenericRequirement::SameTypeRequirement(c) => {
                 taroc_hir::GenericRequirement::SameTypeRequirement(
                     taroc_hir::RequiredTypeConstraint {
-                        bounded_type: self.lower_path(c.bounded_type),
+                        bounded_type: self.lower_tagged_path(c.bounded_type),
                         bound: self.lower_type(c.bound),
                         span: c.span,
-                        bounded_ty_ref_id: self.next(),
                     },
                 )
             }
             taroc_ast::GenericRequirement::ConformanceRequirement(c) => {
                 taroc_hir::GenericRequirement::ConformanceRequirement(
                     taroc_hir::ConformanceConstraint {
-                        bounded_type: self.lower_path(c.bounded_type),
+                        bounded_type: self.lower_tagged_path(c.bounded_type),
                         bounds: self.lower_generic_bounds(c.bounds),
                         span: c.span,
-                        bounded_ty_ref_id: self.next(),
                     },
                 )
             }
+        }
+    }
+
+    fn lower_inheritance(&mut self, inheritance: taroc_ast::Inheritance) -> taroc_hir::Inheritance {
+        taroc_hir::Inheritance {
+            interfaces: self.lower_sequence(inheritance.interfaces, |a, v| a.lower_tagged_path(v)),
         }
     }
 }

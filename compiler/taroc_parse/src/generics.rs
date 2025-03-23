@@ -1,10 +1,10 @@
 use super::package::{Parser, R};
 use taroc_ast::{
     ConformanceConstraint, GenericBound, GenericBounds, GenericRequirement, GenericRequirementList,
-    GenericWhereClause, Generics, RequiredTypeConstraint, TypeArguments, TypeParameter,
+    GenericWhereClause, Inheritance, RequiredTypeConstraint, TypeArguments, TypeParameter,
     TypeParameterKind, TypeParameters,
 };
-use taroc_span::{Span, SpannedMessage};
+use taroc_span::SpannedMessage;
 use taroc_token::{Delimiter, TokenKind};
 
 impl Parser {
@@ -25,20 +25,6 @@ impl Parser {
 }
 
 impl Parser {
-    pub fn parse_generics(&mut self) -> R<Generics> {
-        Ok(Generics {
-            parameters: if let Some(tp) = self.parse_type_parameters()? {
-                tp
-            } else {
-                TypeParameters {
-                    span: Span::empty(self.file.file),
-                    parameters: vec![],
-                }
-            },
-            where_clause: None,
-        })
-    }
-
     pub fn parse_type_parameters(&mut self) -> R<Option<TypeParameters>> {
         let lo = self.lo_span();
         if !self.matches(TokenKind::LChevron) {
@@ -192,5 +178,17 @@ impl Parser {
 
             return TokenKind::is_generic_type_disambiguating_token(p.current_kind());
         })
+    }
+}
+
+impl Parser {
+    pub fn parse_inheritance(&mut self) -> R<Option<Inheritance>> {
+        if self.eat(TokenKind::Colon) {
+            let interfaces = self.parse_sequence(TokenKind::Comma, |this| this.parse_path())?;
+            let node = Inheritance { interfaces };
+            Ok(Some(node))
+        } else {
+            Ok(None)
+        }
     }
 }

@@ -16,6 +16,14 @@ impl Span {
             file,
         }
     }
+
+    pub fn module() -> Span {
+        Span {
+            start: Position::default(),
+            end: Position::default(),
+            file: FileID::new(0),
+        }
+    }
 }
 
 impl Span {

@@ -88,6 +88,7 @@ pub enum DefinitionKind {
     Field,
     Variant,
     ComputedProperty,
+    AssociatedType,
 }
 
 impl DefinitionKind {
@@ -112,6 +113,7 @@ impl DefinitionKind {
             DefinitionKind::Variant => "variant",
             DefinitionKind::Export => "export",
             DefinitionKind::ComputedProperty => "computed property",
+            DefinitionKind::AssociatedType => "associated type",
         }
     }
 }

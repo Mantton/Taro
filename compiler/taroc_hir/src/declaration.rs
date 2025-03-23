@@ -1,15 +1,10 @@
-use std::collections::HashMap;
-use taroc_span::{Identifier, Span};
-
 use super::{
-    AttributeList, Block, NodeID, Visibility,
-    adt::{Enum, Struct},
-    function::Function,
-    generics::Generics,
-    local::Local,
-    path::Path,
+    AttributeList, Block, NodeID, Visibility, function::Function, local::Local, path::Path,
     ty::Type,
 };
+use crate::{AnonConst, Generics, Variant};
+use std::collections::HashMap;
+use taroc_span::{Identifier, Span};
 
 #[derive(Debug)]
 pub struct Declaration {
@@ -29,26 +24,19 @@ pub enum DeclarationKind {
     Constructor(Function, bool),
     /// `let | var VALUE = 10`
     Variable(Local),
+    /// `const VALUE: Uint = 10`
+    Constant(Box<Type>, AnonConst),
     /// `import foo::bar`
     Import(PathTree),
     /// `export foo::bar`
     Export(PathTree),
-    /// `interface Walkable`
-    Interface(Interface),
     /// `extend Foo`
     ///
     /// `extend Foo where Element is Numerical`
     Extend(Extend),
-    /// `conform Foo as Bar`
-    ///
-    /// `conform Foo as Bar where Element is Numerical`
-    Conform(Conform),
     /// `type Foo = Optional<int>`
     TypeAlias(TypeAlias),
-    /// `struct Foo {}` | `struct Foo()` | `struct Foo`
-    Struct(Struct),
-    /// `enum Foo {}`
-    Enum(Enum),
+
     /// `extern "c" {}`
     Extern(Extern),
     /// `namespace Foo {}`
@@ -57,6 +45,12 @@ pub enum DeclarationKind {
     Bridge(Bridge),
     /// `var count: Int {}`
     Computed(ComputedProperty),
+    /// `case Foo, case Bar {}, case Baz`
+    EnumCase(EnumCase),
+    /// `associatedtype Foo`
+    AssociatedType,
+    /// `struct Foo {}` | `enum Foo {}` | `interface Foo {}`
+    DefinedType(DefinedType),
 }
 
 #[derive(Debug)]
@@ -66,27 +60,9 @@ pub struct TypeAlias {
 }
 
 #[derive(Debug)]
-pub struct Interface {
-    pub declarations: Vec<Declaration>,
-    pub extensions: Option<Vec<Path>>,
-    pub generics: Generics,
-}
-
-#[derive(Debug)]
 pub struct Extend {
     pub ty_ref_id: NodeID,
     pub ty: Path,
-    pub generics: Generics,
-    pub declarations: Vec<Declaration>,
-}
-
-#[derive(Debug)]
-pub struct Conform {
-    pub ty_ref_id: NodeID,
-    pub interface_ref_id: NodeID,
-    pub ty: Path,
-    pub interface: Path,
-    pub generics: Generics,
     pub declarations: Vec<Declaration>,
 }
 
@@ -111,12 +87,13 @@ pub struct Namespace {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeclarationContext {
     Module,
-    Interface,
-    Conform,
     Extend,
     Statement,
     Extern,
     Namespace,
+    Struct,
+    Enum,
+    Interface,
 }
 
 pub enum FunctionContext {
@@ -160,5 +137,24 @@ pub enum PathTreeNode {
 pub struct ComputedProperty {
     pub id: NodeID,
     pub ty: Box<Type>,
-    pub block: Option<Block>,
+    pub block: Block,
+}
+
+#[derive(Debug)]
+pub enum DefinedTypeKind {
+    Struct,
+    Enum,
+    Interface,
+}
+
+#[derive(Debug)]
+pub struct DefinedType {
+    pub kind: DefinedTypeKind,
+    pub generics: Generics,
+    pub declarations: Vec<Declaration>,
+}
+
+#[derive(Debug)]
+pub struct EnumCase {
+    pub members: Vec<Variant>,
 }

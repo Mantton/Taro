@@ -58,36 +58,35 @@ impl HirVisitor for Actor<'_, '_> {
             }
             taroc_hir::DeclarationKind::Variable(..) => DefinitionKind::Variable,
             taroc_hir::DeclarationKind::Import(..) => DefinitionKind::Import,
-            taroc_hir::DeclarationKind::Interface(..) => DefinitionKind::Interface,
             taroc_hir::DeclarationKind::Extend(..) => DefinitionKind::Extension,
-            taroc_hir::DeclarationKind::Conform(..) => DefinitionKind::Conformance,
             taroc_hir::DeclarationKind::TypeAlias(..) => DefinitionKind::TypeAlias,
-            taroc_hir::DeclarationKind::Struct(..) => DefinitionKind::Struct,
-            taroc_hir::DeclarationKind::Enum(..) => DefinitionKind::Enum,
             taroc_hir::DeclarationKind::Extern(..) => DefinitionKind::Extern,
             taroc_hir::DeclarationKind::Namespace(..) => DefinitionKind::Namespace,
             taroc_hir::DeclarationKind::Bridge(..) => DefinitionKind::Bridged,
             taroc_hir::DeclarationKind::Export(..) => DefinitionKind::Export,
             taroc_hir::DeclarationKind::Computed(..) => DefinitionKind::ComputedProperty,
+            taroc_hir::DeclarationKind::AssociatedType => DefinitionKind::AssociatedType,
+            taroc_hir::DeclarationKind::Constant(_, anon_const) => todo!(),
+            _ => todo!(),
         };
 
         let parent = self.tag(d.identifier.symbol, d.id, kind);
 
-        self.with_parent(parent, |actor| {
-            // Register Struct Constructor
-            match &d.kind {
-                taroc_hir::DeclarationKind::Struct(node) => {
-                    let (kind, id) = node.variant.ctor();
-                    actor.tag(
-                        d.identifier.symbol,
-                        id,
-                        DefinitionKind::Constructor(CtorOf::Struct, kind),
-                    );
-                }
-                _ => {}
-            }
-            walk_declaration(actor, d, c);
-        });
+        // self.with_parent(parent, |actor| {
+        //     // Register Struct Constructor
+        //     match &d.kind {
+        //         taroc_hir::DeclarationKind::Struct(node) => {
+        //             let (kind, id) = node.variant.ctor();
+        //             actor.tag(
+        //                 d.identifier.symbol,
+        //                 id,
+        //                 DefinitionKind::Constructor(CtorOf::Struct, kind),
+        //             );
+        //         }
+        //         _ => {}
+        //     }
+        //     walk_declaration(actor, d, c);
+        // });
     }
 
     fn visit_type_parameter(

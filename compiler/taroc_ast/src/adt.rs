@@ -1,18 +1,5 @@
+use super::{Label, expression::AnonConst, ty::Type, visibility::Visibility};
 use taroc_span::{Identifier, Span};
-
-use super::{Label, expression::AnonConst, generics::Generics, ty::Type, visibility::Visibility};
-
-#[derive(Debug)]
-pub struct Struct {
-    pub generics: Generics,
-    pub variant: VariantKind,
-}
-
-#[derive(Debug)]
-pub struct Enum {
-    pub generics: Generics,
-    pub variants: Vec<Variant>,
-}
 
 #[derive(Debug)]
 pub struct Variant {

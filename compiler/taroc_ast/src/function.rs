@@ -1,9 +1,7 @@
-use taroc_span::{Identifier, Span};
+use crate::Generics;
 
-use super::{
-    Label, attribute::AttributeList, block::Block, expression::Expression, generics::Generics,
-    ty::Type,
-};
+use super::{Label, attribute::AttributeList, block::Block, expression::Expression, ty::Type};
+use taroc_span::{Identifier, Span};
 
 #[derive(Debug)]
 pub struct Function {

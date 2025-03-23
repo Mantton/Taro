@@ -1,13 +1,7 @@
 use super::package::Actor;
 
 impl Actor<'_> {
-    pub fn lower_enum(&mut self, e: taroc_ast::Enum) -> taroc_hir::Enum {
-        taroc_hir::Enum {
-            variants: self.lower_sequence(e.variants, |a, v| a.lower_variant(v)),
-            generics: self.lower_generics(e.generics),
-        }
-    }
-    fn lower_variant(&mut self, variant: taroc_ast::Variant) -> taroc_hir::Variant {
+    pub fn lower_variant(&mut self, variant: taroc_ast::Variant) -> taroc_hir::Variant {
         taroc_hir::Variant {
             id: self.next(),
             identifier: variant.identifier.clone(),
@@ -28,15 +22,6 @@ impl Actor<'_> {
                 self.next(),
                 self.lower_sequence(fields, |a, ty| a.lower_field_definition(ty)),
             ),
-        }
-    }
-}
-
-impl Actor<'_> {
-    pub fn lower_struct(&mut self, s: taroc_ast::Struct) -> taroc_hir::Struct {
-        taroc_hir::Struct {
-            generics: self.lower_generics(s.generics),
-            variant: self.lower_variant_kind(s.variant),
         }
     }
 }

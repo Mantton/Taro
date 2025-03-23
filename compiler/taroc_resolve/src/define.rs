@@ -46,25 +46,19 @@ impl HirVisitor for Actor<'_, '_> {
         let context = self.resolver.new_context(
             None,
             DefContextKind::Definition(id, taroc_hir::DefinitionKind::Module, m.name),
-            Span::empty(FileID::new(0)),
+            Span::module(),
         );
 
         if m.id == NodeID::from(0) {
             self.resolver.root_context = Some(context);
             self.parent_context = Some(context);
         } else {
-            let def = (
-                context,
-                taroc_hir::TVisibility::Public,
-                Span::empty(FileID::new(0)),
-            );
+            let def = (context, taroc_hir::TVisibility::Public, Span::module());
 
-            println!("{} - {:?}", m.name, m.id);
-            println!("{:?}", self.parent_context.unwrap().kind);
             self.resolver.define(
                 self.parent_context.unwrap(),
                 taroc_span::Identifier {
-                    span: Span::empty(FileID::new(0)),
+                    span: Span::module(),
                     symbol: m.name,
                 },
                 def,
@@ -125,10 +119,7 @@ impl HirVisitor for Actor<'_, '_> {
 
 impl Actor<'_, '_> {
     fn define_declaration(&mut self, decl: &taroc_hir::Declaration, context: DeclarationContext) {
-        if matches!(
-            context,
-            DeclarationContext::Extend | DeclarationContext::Conform
-        ) {
+        if matches!(context, DeclarationContext::Extend) {
             return;
         }
 
@@ -144,33 +135,14 @@ impl Actor<'_, '_> {
         match &decl.kind {
             DeclarationKind::Function(..)
             | DeclarationKind::Variable(..)
+            | DeclarationKind::Constant(..)
             | DeclarationKind::Computed(..) => {
                 self.resolver.define(parent, decl.identifier, def);
             }
             DeclarationKind::TypeAlias(_) => {
                 self.resolver.define(parent, decl.identifier, def);
             }
-            DeclarationKind::Struct(..) => {
-                let ctx_k = DefContextKind::Definition(id, kind, name);
-                let context = self.resolver.new_context(Some(parent), ctx_k, span);
-                let def = (context, vis, span);
-                self.resolver.define(parent, decl.identifier, def);
-
-                // Non-Builtin
-                // if !attributes_contain(&decl.attributes, Symbol::with("builtin")) {
-                //     let (_, ctor_id) = node.variant.ctor();
-                //     let ctor_res = self.res(ctor_id);
-                //     let ctor_def = (ctor_res, vis, span);
-                //     self.resolver.define(
-                //         parent,
-                //         decl.identifier,
-                //         taroc_hir::SymbolNamespace::Value,
-                //         ctor_def,
-                //     );
-                // }
-            }
-            DeclarationKind::Interface(..)
-            | DeclarationKind::Enum(..)
+            DeclarationKind::DefinedType(..)
             | DeclarationKind::Namespace(..)
             | DeclarationKind::Bridge(..) => {
                 let ctx_k = DefContextKind::Definition(id, kind, name);
@@ -187,8 +159,11 @@ impl Actor<'_, '_> {
             }
             DeclarationKind::Extern(..)
             | DeclarationKind::Constructor(..)
-            | DeclarationKind::Extend(..)
-            | DeclarationKind::Conform(..) => {}
+            | DeclarationKind::Extend(..) => {}
+            DeclarationKind::AssociatedType => {
+                self.resolver.define(parent, decl.identifier, def);
+            }
+            DeclarationKind::EnumCase(..) => todo!(),
         }
     }
 }

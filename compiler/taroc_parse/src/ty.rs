@@ -38,7 +38,12 @@ impl Parser {
             TokenKind::Function => self.parse_function_type(),
             TokenKind::Tilde => {
                 self.bump();
-                Ok(TypeKind::OptionalReference(self.parse_type()?))
+                let mutability = if self.eat(TokenKind::Mut) {
+                    Mutability::Mutable
+                } else {
+                    Mutability::Immutable
+                };
+                Ok(TypeKind::OptionalReference(self.parse_type()?, mutability))
             }
             TokenKind::Some | TokenKind::Any => self.parse_interface_type(),
             _ => {
@@ -141,9 +146,13 @@ impl Parser {
             return Ok(TypeKind::List(ty));
         }
 
+        self.drop_anchor();
         match self.parse_array_type() {
             Ok(k) => return Ok(k),
-            Err(_) if self.matches(TokenKind::Colon) => return self.parse_dictionary_type(),
+            Err(_) if self.matches(TokenKind::Colon) => {
+                self.raise_anchor();
+                return self.parse_dictionary_type();
+            }
             Err(err) => return Err(err),
         }
     }

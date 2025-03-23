@@ -3,8 +3,8 @@ use std::rc::Rc;
 use taroc_context::CompilerSession;
 use taroc_error::CompileResult;
 use taroc_hir::{
-    Declaration, DeclarationContext, DeclarationKind, DefinitionID, Enum, Generics, Interface,
-    NodeID, Package, Struct, TypeAlias, TypeParameterKind, TypeParameters, visitor::HirVisitor,
+    Declaration, DeclarationContext, DeclarationKind, DefinitionID, Generics, NodeID, Package,
+    TypeAlias, TypeParameters, visitor::HirVisitor,
 };
 use taroc_span::Symbol;
 use taroc_ty::{AdtData, AdtKind, GenericArgument, Ty, TyKind};
@@ -42,50 +42,34 @@ impl<'ctx> GenericsCollector<'ctx> {
 
 impl HirVisitor for GenericsCollector<'_> {
     fn visit_declaration(&mut self, decl: &Declaration, _c: DeclarationContext) -> Self::Result {
-        match &decl.kind {
-            DeclarationKind::Struct(node) => self.collect(decl.id, &node.generics),
-            DeclarationKind::Enum(node) => self.collect(decl.id, &node.generics),
-            DeclarationKind::TypeAlias(node) => self.collect(decl.id, &node.generics),
-            DeclarationKind::Interface(node) => self.collect(decl.id, &node.generics),
-            _ => {}
-        }
+        // match &decl.kind {
+        //     DeclarationKind::Struct(node) => self.collect(decl.id, &node.generics),
+        //     DeclarationKind::Enum(node) => self.collect(decl.id, &node.generics),
+        //     DeclarationKind::TypeAlias(node) => self.collect(decl.id, &node.generics),
+        //     DeclarationKind::Interface(node) => self.collect(decl.id, &node.generics),
+        //     _ => {}
+        // }
     }
 }
 
 impl<'ctx> GenericsCollector<'ctx> {
     fn collect(&mut self, id: NodeID, generics: &Generics) {
-        let mut parameters = Vec::with_capacity(generics.parameters.parameters.len());
-        for (index, param) in generics.parameters.parameters.iter().enumerate() {
-            match &param.kind {
-                TypeParameterKind::Type { default } => {
-                    let def = taroc_ty::GenericParameterDefinition {
-                        name: param.identifier.symbol,
-                        id: self.session.context.def_id(param.id, self.session.index),
-                        index,
-                        kind: taroc_ty::GenericParameterDefinitionKind::Type {
-                            has_default: default.is_some(),
-                        },
-                    };
+        // let mut parameters = Vec::with_capacity(generics.parameters.parameters.len());
+        // for (index, param) in generics.parameters.parameters.iter().enumerate() {
+        //     let def = taroc_ty::GenericParameterDefinition {
+        //         name: param.identifier.symbol,
+        //         id: self.session.context.def_id(param.id, self.session.index),
+        //         index,
+        //         kind: taroc_ty::GenericParameterDefinitionKind::Type {
+        //             has_default: param.default.is_some(),
+        //         },
+        //     };
 
-                    parameters.push(def);
-                }
-                TypeParameterKind::Constant { default, .. } => {
-                    let def = taroc_ty::GenericParameterDefinition {
-                        name: param.identifier.symbol,
-                        id: self.session.context.def_id(param.id, self.session.index),
-                        index,
-                        kind: taroc_ty::GenericParameterDefinitionKind::Const {
-                            has_default: default.is_some(),
-                        },
-                    };
-
-                    parameters.push(def);
-                }
-            }
-        }
-        let def_id = self.session.context.def_id(id, self.session.index);
-        let generics = taroc_ty::Generics { parameters };
-        self.table.insert(def_id, generics);
+        //     parameters.push(def);
+        // }
+        // let def_id = self.session.context.def_id(id, self.session.index);
+        // let generics = taroc_ty::Generics { parameters };
+        // self.table.insert(def_id, generics);
     }
 }
 
@@ -115,17 +99,17 @@ impl<'ctx> TypeCollector<'ctx> {
 
 impl HirVisitor for TypeCollector<'_> {
     fn visit_declaration(&mut self, decl: &Declaration, _c: DeclarationContext) -> Self::Result {
-        match &decl.kind {
-            DeclarationKind::Struct(node) => {
-                self.collect_struct(&decl.id, decl.identifier.symbol, node)
-            }
-            DeclarationKind::Enum(node) => {
-                self.collect_enum(&decl.id, decl.identifier.symbol, node)
-            }
-            DeclarationKind::TypeAlias(node) => self.collect_alias(&decl.id, node),
-            DeclarationKind::Interface(node) => self.collect_interface(&decl.id, node),
-            _ => {}
-        }
+        // match &decl.kind {
+        //     DeclarationKind::Struct(node) => {
+        //         self.collect_struct(&decl.id, decl.identifier.symbol, node)
+        //     }
+        //     DeclarationKind::Enum(node) => {
+        //         self.collect_enum(&decl.id, decl.identifier.symbol, node)
+        //     }
+        //     DeclarationKind::TypeAlias(node) => self.collect_alias(&decl.id, node),
+        //     DeclarationKind::Interface(node) => self.collect_interface(&decl.id, node),
+        //     _ => {}
+        // }
     }
 }
 
@@ -146,50 +130,50 @@ impl<'ctx> TypeCollector<'ctx> {
 }
 
 impl<'ctx> TypeCollector<'ctx> {
-    fn collect_struct(&mut self, id: &NodeID, name: Symbol, node: &Struct) {
-        let def_id = self.def_id(id);
-        if self.session.config.is_std
-            && let Some(builtin) = self.check_builtin(name)
-        {
-            self.tag(id, builtin);
-        } else {
-            let arguments = self.collect_type_parameters(&node.generics.parameters);
-            let arguments = self.session.context.store.interners.mk_args(arguments);
-            let data = AdtData {
-                id: def_id,
-                name,
-                kind: AdtKind::Struct,
-            };
-            let kind = TyKind::Adt(data, arguments);
-            let ty = self.session.context.store.interners.intern_ty(kind);
-            self.tag(id, ty);
-        }
-    }
+    // fn collect_struct(&mut self, id: &NodeID, name: Symbol, node: &Struct) {
+    //     let def_id = self.def_id(id);
+    //     if self.session.config.is_std
+    //         && let Some(builtin) = self.check_builtin(name)
+    //     {
+    //         self.tag(id, builtin);
+    //     } else {
+    //         let arguments = self.collect_type_parameters(&node.generics.parameters);
+    //         let arguments = self.session.context.store.interners.mk_args(arguments);
+    //         let data = AdtData {
+    //             id: def_id,
+    //             name,
+    //             kind: AdtKind::Struct,
+    //         };
+    //         let kind = TyKind::Adt(data, arguments);
+    //         let ty = self.session.context.store.interners.intern_ty(kind);
+    //         self.tag(id, ty);
+    //     }
+    // }
 
-    fn collect_enum(&mut self, id: &NodeID, name: Symbol, node: &Enum) {
-        let def_id = self.def_id(id);
+    // fn collect_enum(&mut self, id: &NodeID, name: Symbol, node: &Enum) {
+    //     let def_id = self.def_id(id);
 
-        let arguments = self.collect_type_parameters(&node.generics.parameters);
-        let arguments = self.session.context.store.interners.mk_args(arguments);
-        let data = AdtData {
-            id: def_id,
-            name,
-            kind: AdtKind::Enum,
-        };
-        let kind = TyKind::Adt(data, arguments);
-        let ty = self.session.context.store.interners.intern_ty(kind);
-        self.tag(id, ty);
-    }
+    //     let arguments = self.collect_type_parameters(&node.generics.parameters);
+    //     let arguments = self.session.context.store.interners.mk_args(arguments);
+    //     let data = AdtData {
+    //         id: def_id,
+    //         name,
+    //         kind: AdtKind::Enum,
+    //     };
+    //     let kind = TyKind::Adt(data, arguments);
+    //     let ty = self.session.context.store.interners.intern_ty(kind);
+    //     self.tag(id, ty);
+    // }
 
-    fn collect_alias(&mut self, id: &NodeID, node: &TypeAlias) {
-        let def_id = self.def_id(id);
-        let _ = self.collect_type_parameters(&node.generics.parameters);
-        let kind = TyKind::AliasPlaceholder;
-        let ty = self.session.context.store.interners.intern_ty(kind);
-        self.tag(id, ty);
-    }
+    // fn collect_alias(&mut self, id: &NodeID, node: &TypeAlias) {
+    //     let def_id = self.def_id(id);
+    //     let _ = self.collect_type_parameters(&node.generics.parameters);
+    //     let kind = TyKind::AliasPlaceholder;
+    //     let ty = self.session.context.store.interners.intern_ty(kind);
+    //     self.tag(id, ty);
+    // }
 
-    fn collect_interface(&mut self, id: &NodeID, node: &Interface) {}
+    // fn collect_interface(&mut self, id: &NodeID, node: &Interface) {}
 }
 impl<'ctx> TypeCollector<'ctx> {
     fn check_builtin(&self, symbol: Symbol) -> Option<Ty<'ctx>> {
@@ -222,18 +206,11 @@ impl<'ctx> TypeCollector<'ctx> {
         let mut arguments = Vec::new();
 
         for parameter in parameters.parameters.iter() {
-            match parameter.kind {
-                TypeParameterKind::Type { .. } => {
-                    let kind = TyKind::Parameter;
-                    let ty = self.session.context.store.interners.intern_ty(kind);
-                    self.tag(&parameter.id, ty);
-                    let argument = GenericArgument::Type(ty);
-                    arguments.push(argument);
-                }
-                TypeParameterKind::Constant { .. } => {
-                    continue;
-                }
-            }
+            let kind = TyKind::Parameter;
+            let ty = self.session.context.store.interners.intern_ty(kind);
+            self.tag(&parameter.id, ty);
+            let argument = GenericArgument::Type(ty);
+            arguments.push(argument);
         }
 
         arguments

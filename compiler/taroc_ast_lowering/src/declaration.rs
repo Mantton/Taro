@@ -34,23 +34,11 @@ impl Actor<'_> {
             taroc_ast::DeclarationKind::Variable(local) => {
                 taroc_hir::DeclarationKind::Variable(self.lower_local(local))
             }
-            taroc_ast::DeclarationKind::Interface(interface) => {
-                taroc_hir::DeclarationKind::Interface(self.lower_interface(interface))
-            }
             taroc_ast::DeclarationKind::Extend(extend) => {
                 taroc_hir::DeclarationKind::Extend(self.lower_extend(extend))
             }
-            taroc_ast::DeclarationKind::Conform(conform) => {
-                taroc_hir::DeclarationKind::Conform(self.lower_conform(conform))
-            }
             taroc_ast::DeclarationKind::TypeAlias(type_alias) => {
                 taroc_hir::DeclarationKind::TypeAlias(self.lower_type_alias(type_alias))
-            }
-            taroc_ast::DeclarationKind::Struct(s) => {
-                taroc_hir::DeclarationKind::Struct(self.lower_struct(s))
-            }
-            taroc_ast::DeclarationKind::Enum(value) => {
-                taroc_hir::DeclarationKind::Enum(self.lower_enum(value))
             }
             taroc_ast::DeclarationKind::Namespace(ns) => {
                 taroc_hir::DeclarationKind::Namespace(self.lower_namspace(ns))
@@ -68,6 +56,42 @@ impl Actor<'_> {
             taroc_ast::DeclarationKind::Computed(node) => {
                 taroc_hir::DeclarationKind::Computed(self.lower_computed_var(node))
             }
+            taroc_ast::DeclarationKind::AssociatedType => {
+                taroc_hir::DeclarationKind::AssociatedType
+            }
+            taroc_ast::DeclarationKind::Constant(ty, c) => {
+                taroc_hir::DeclarationKind::Constant(self.lower_type(ty), self.lower_anon_const(c))
+            }
+            taroc_ast::DeclarationKind::DefinedType(node) => {
+                let (kind, context) = match node.kind {
+                    taroc_ast::DefinedTypeKind::Struct => (
+                        taroc_hir::DefinedTypeKind::Struct,
+                        DeclarationContext::Struct,
+                    ),
+                    taroc_ast::DefinedTypeKind::Enum => {
+                        (taroc_hir::DefinedTypeKind::Enum, DeclarationContext::Enum)
+                    }
+                    taroc_ast::DefinedTypeKind::Interface => (
+                        taroc_hir::DefinedTypeKind::Interface,
+                        DeclarationContext::Interface,
+                    ),
+                };
+                let node = taroc_hir::DefinedType {
+                    generics: self.lower_generics(node.generics),
+                    declarations: self
+                        .lower_sequence(node.declarations, |a, v| a.lower_declaration(v, context)),
+                    kind,
+                };
+                taroc_hir::DeclarationKind::DefinedType(node)
+            }
+            taroc_ast::DeclarationKind::EnumCase(node) => {
+                let node = taroc_hir::EnumCase {
+                    members: self.lower_sequence(node.members, |a, v| a.lower_variant(v)),
+                };
+
+                taroc_hir::DeclarationKind::EnumCase(node)
+            }
+            taroc_ast::DeclarationKind::Operator(..) => todo!(),
         }
     }
 }
@@ -88,38 +112,12 @@ impl Actor<'_> {
         }
     }
 
-    fn lower_interface(&mut self, e: taroc_ast::Interface) -> taroc_hir::Interface {
-        taroc_hir::Interface {
-            declarations: self.lower_sequence(e.declarations, |a, d| {
-                a.lower_declaration(d, DeclarationContext::Interface)
-            }),
-            extensions: self.lower_optional(e.extensions, |a1, paths| {
-                a1.lower_sequence(paths, |a2, path| a2.lower_path(path))
-            }),
-            generics: self.lower_generics(e.generics),
-        }
-    }
-
-    fn lower_conform(&mut self, e: taroc_ast::Conform) -> taroc_hir::Conform {
-        taroc_hir::Conform {
-            declarations: self.lower_sequence(e.declarations, |a, d| {
-                a.lower_declaration(d, DeclarationContext::Conform)
-            }),
-            ty: self.lower_path(e.ty),
-            interface: self.lower_path(e.interface),
-            generics: self.lower_generics(e.generics),
-            ty_ref_id: self.next(),
-            interface_ref_id: self.next(),
-        }
-    }
-
     fn lower_extend(&mut self, e: taroc_ast::Extend) -> taroc_hir::Extend {
         taroc_hir::Extend {
             declarations: self.lower_sequence(e.declarations, |a, d| {
                 a.lower_declaration(d, DeclarationContext::Extern)
             }),
             ty: self.lower_path(e.ty),
-            generics: self.lower_generics(e.generics),
             ty_ref_id: self.next(),
         }
     }
@@ -155,7 +153,7 @@ impl Actor<'_> {
         taroc_hir::ComputedProperty {
             id: self.next(),
             ty: self.lower_type(node.ty),
-            block: self.lower_optional(node.block, |this, node| this.lower_block(node)),
+            block: self.lower_block(node.block),
         }
     }
 }

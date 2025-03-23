@@ -1,8 +1,6 @@
-use taroc_span::Span;
-
-use crate::{InterfaceType, Mutability};
-
 use super::{adt::FieldDefinition, expression::AnonConst, path::Path};
+use crate::{InterfaceType, Mutability};
+use taroc_span::Span;
 
 #[derive(Debug)]
 pub struct Type {
@@ -12,10 +10,10 @@ pub struct Type {
 
 #[derive(Debug)]
 pub enum TypeKind {
-    /// A Dynamic, growable array
+    /// Path Type
     ///
-    /// `[T]`
-    List(Box<Type>),
+    /// `Foo` | `Foo::Bar::Baz` | `Foo<T>`
+    Path(Path),
     /// Pointer Type
     ///
     /// `*T` | `*const T`
@@ -31,10 +29,6 @@ pub enum TypeKind {
     ///
     /// `(T, V)`
     Tuple(Vec<Box<Type>>),
-    /// Path Type
-    ///
-    /// `Foo` | `Foo::Bar::Baz` | `Foo<T>`
-    Path(Path),
     /// Optional Type
     ///
     /// `T?`
@@ -46,10 +40,10 @@ pub enum TypeKind {
         size: AnonConst,
         element: Box<Type>,
     },
-    /// A Slice of an array
+    /// A Dynamic, growable array
     ///
     /// `[]T`
-    Slice(Box<Type>),
+    List(Box<Type>),
     /// A hash-map
     ///
     /// `[T:V]`
@@ -80,5 +74,5 @@ pub enum TypeKind {
     /// Foo & Bar
     Composite(Vec<Box<Type>>),
     /// Tilde
-    OptionalReference(Box<Type>),
+    OptionalReference(Box<Type>, Mutability),
 }

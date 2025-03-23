@@ -1,11 +1,10 @@
+use super::package::{Parser, R};
 use taroc_ast::{
-    DeclarationKind, Function, FunctionParameter, FunctionPrototype, FunctionSignature, Label,
-    Mutability, SelfKind, Type, TypeKind,
+    DeclarationKind, Function, FunctionParameter, FunctionPrototype, FunctionSignature, Generics,
+    Label, Mutability, SelfKind, Type, TypeKind,
 };
 use taroc_span::{Identifier, SpannedMessage, Symbol};
 use taroc_token::{Delimiter, TokenKind};
-
-use super::package::{Parser, R};
 
 impl Parser {
     pub fn parse_function(&mut self) -> R<(Identifier, DeclarationKind)> {
@@ -25,7 +24,7 @@ impl Parser {
 
     fn parse_fn(&mut self) -> R<Function> {
         let lo = self.lo_span();
-        let mut generics = self.parse_generics()?;
+        let type_parameters = self.parse_type_parameters()?;
         let parameters = self.parse_function_parameters()?;
         let is_async = self.eat(TokenKind::Async);
 
@@ -36,7 +35,6 @@ impl Parser {
         };
 
         let where_clause = self.parse_generic_where_clause()?;
-        generics.where_clause = where_clause;
 
         let prototype = FunctionPrototype {
             inputs: parameters,
@@ -56,10 +54,16 @@ impl Parser {
             None
         };
 
+        let generics = Generics {
+            type_parameters,
+            where_clause,
+            inheritance: None,
+        };
+
         let func = Function {
-            generics,
             signature,
             block,
+            generics,
         };
 
         Ok(func)

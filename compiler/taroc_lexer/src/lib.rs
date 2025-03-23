@@ -416,7 +416,11 @@ impl Lexer {
             }
             '=' => {
                 if self.matches('=') {
-                    self.build(TokenKind::Eql)
+                    if self.matches('=') {
+                        self.build(TokenKind::PtrEq)
+                    } else {
+                        self.build(TokenKind::Eql)
+                    }
                 } else if self.matches('>') {
                     self.build(TokenKind::EqArrow)
                 } else {
@@ -1039,14 +1043,15 @@ mod test {
         assert_sequence_kind!("&& ||", TokenKind::AmpAmp, TokenKind::BarBar);
 
         assert_sequence_kind!(
-            "< > == != <= >= ~=",
+            "< > == != <= >= ~= ===",
             TokenKind::LChevron,
             TokenKind::RChevron,
             TokenKind::Eql,
             TokenKind::Neq,
             TokenKind::Leq,
             TokenKind::Geq,
-            TokenKind::Teq
+            TokenKind::Teq,
+            TokenKind::PtrEq
         );
     }
 

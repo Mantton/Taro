@@ -38,6 +38,9 @@ pub enum BinaryOperator {
     Neq,
     /// `~=`
     PatMatch,
+    /// Pointer Equality
+    /// `===`
+    PtrEq,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
