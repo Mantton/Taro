@@ -149,12 +149,6 @@ impl Parser {
         let attributes = self.parse_attributes()?;
 
         let (a, b, c) = match self.current_kind() {
-            TokenKind::Mut => {
-                // mut self
-                self.bump();
-                let ident = self.parse_self()?;
-                (SelfKind::Copy, Mutability::Mutable, ident)
-            }
             TokenKind::Identifier => {
                 let anchor = self.cursor;
                 let ident = self.parse_identifier()?;
@@ -168,10 +162,10 @@ impl Parser {
             }
             TokenKind::Amp => {
                 self.bump();
-                let mutability = if self.eat(TokenKind::Mut) {
-                    Mutability::Mutable
-                } else {
+                let mutability = if self.eat(TokenKind::Const) {
                     Mutability::Immutable
+                } else {
+                    Mutability::Mutable
                 };
 
                 (SelfKind::Reference, mutability, self.parse_self()?)

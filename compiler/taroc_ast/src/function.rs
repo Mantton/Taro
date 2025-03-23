@@ -15,6 +15,7 @@ pub struct Function {
 /// ```
 /// name: String
 /// name: String = "Default Value"
+/// _ name: String = "Default Value"
 /// @attribute name: String
 ///
 /// ```

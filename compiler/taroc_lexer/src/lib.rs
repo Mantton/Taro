@@ -995,7 +995,6 @@ mod test {
         assert_token!("let", TokenKind::Let, "let");
         assert_token!("var", TokenKind::Var, "var");
         assert_token!("const", TokenKind::Const, "const");
-        assert_token!("mut", TokenKind::Mut, "mut");
         assert_token!("loop", TokenKind::Loop, "loop");
         assert_token!("while", TokenKind::While, "while");
         assert_token!("if", TokenKind::If, "if");

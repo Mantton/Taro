@@ -42,9 +42,7 @@ pub enum TokenKind {
 
     Let,
     Var,
-
     Const,
-    Mut,
 
     If,
     Else,
@@ -168,7 +166,6 @@ impl Display for TokenKind {
             TokenKind::Let => "let",
             TokenKind::Var => "var",
             TokenKind::Const => "const",
-            TokenKind::Mut => "mut",
             TokenKind::Loop => "loop",
             TokenKind::While => "while",
             TokenKind::If => "if",
@@ -278,7 +275,6 @@ impl TokenKind {
             "let" => TokenKind::Let,
             "var" => TokenKind::Var,
             "const" => TokenKind::Const,
-            "mut" => TokenKind::Mut,
             "loop" => TokenKind::Loop,
             "while" => TokenKind::While,
             "if" => TokenKind::If,
@@ -393,17 +389,6 @@ impl TokenKind {
 
             TokenKind::ShlEq => Some(BinaryOperator::BitShl),
             TokenKind::ShrEq => Some(BinaryOperator::BitShr),
-            _ => None,
-        }
-    }
-
-    pub fn un_op(k: TokenKind) -> Option<UnaryOperator> {
-        match k {
-            TokenKind::Bang => Some(UnaryOperator::LogicalNot),
-            TokenKind::Tilde => Some(UnaryOperator::BitwiseNot),
-            TokenKind::Star => Some(UnaryOperator::Dereference),
-            TokenKind::Amp => Some(UnaryOperator::Reference),
-            TokenKind::Minus => Some(UnaryOperator::Negate),
             _ => None,
         }
     }

@@ -328,9 +328,9 @@ pub fn walk_declaration<V: HirVisitor>(
             try_visit!(visitor.visit_computed_property(node))
         }
         DeclarationKind::AssociatedType => {}
-        DeclarationKind::Constant(_, anon_const) => todo!(),
-        DeclarationKind::EnumCase(enum_case) => todo!(),
-        DeclarationKind::DefinedType(defined_type) => todo!(),
+        DeclarationKind::Constant(..) => todo!(),
+        DeclarationKind::EnumCase(..) => todo!(),
+        DeclarationKind::DefinedType(..) => todo!(),
     }
 
     V::Result::output()

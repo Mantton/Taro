@@ -38,10 +38,10 @@ impl Parser {
             TokenKind::Function => self.parse_function_type(),
             TokenKind::Tilde => {
                 self.bump();
-                let mutability = if self.eat(TokenKind::Mut) {
-                    Mutability::Mutable
-                } else {
+                let mutability = if self.eat(TokenKind::Const) {
                     Mutability::Immutable
+                } else {
+                    Mutability::Mutable
                 };
                 Ok(TypeKind::OptionalReference(self.parse_type()?, mutability))
             }
@@ -56,17 +56,11 @@ impl Parser {
         res
     }
 
-    fn parse_type_mutability(&mut self, is_pointer: bool) -> Mutability {
+    fn parse_type_mutability(&mut self) -> Mutability {
         if self.eat(TokenKind::Const) {
             Mutability::Immutable
-        } else if self.eat(TokenKind::Mut) {
-            Mutability::Mutable
         } else {
-            if is_pointer {
-                Mutability::Mutable
-            } else {
-                Mutability::Immutable
-            }
+            Mutability::Mutable
         }
     }
 
@@ -95,7 +89,7 @@ impl Parser {
         debug_assert!(matches!(k, TokenKind::Star | TokenKind::Amp));
 
         let is_pointer = matches!(k, TokenKind::Star);
-        let mutability = self.parse_type_mutability(is_pointer);
+        let mutability = self.parse_type_mutability();
         let ty = self.parse_type()?;
 
         let kind = if is_pointer {

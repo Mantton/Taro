@@ -1,3 +1,5 @@
+use super::package::{Parser, R};
+use crate::restrictions::Restrictions;
 use taroc_ast::{
     AnonConst, Block, ClosureExpression, EnsureMode, Expression, ExpressionArgument,
     ExpressionKind, FunctionParameter, FunctionPrototype, FunctionSignature, IfExpression, Literal,
@@ -5,11 +7,7 @@ use taroc_ast::{
     PatternBindingCondition, Type, TypeKind, WhenArm, WhenArmKind, WhenExpression,
 };
 use taroc_span::{Span, SpannedMessage};
-use taroc_token::{Base, Delimiter, TokenKind};
-
-use crate::restrictions::Restrictions;
-
-use super::package::{Parser, R};
+use taroc_token::{Base, Delimiter, TokenKind, UnaryOperator};
 
 impl Parser {
     pub fn parse_expression(&mut self) -> R<Box<Expression>> {
@@ -337,16 +335,35 @@ impl Parser {
             return self.parse_stmt_expr();
         }
 
-        if let Some(op) = TokenKind::un_op(self.current_kind()) {
-            self.bump();
-            let mut expr = self.parse_prefix_expr()?;
-            let kind = ExpressionKind::Unary(op, expr);
-            let span = lo.to(self.hi_span());
-            expr = self.build_expr(kind, span);
-            return Ok(expr);
-        } else {
-            return self.parse_postfix_expr();
-        }
+        let operator = match self.current_kind() {
+            TokenKind::Bang => {
+                self.bump();
+                UnaryOperator::LogicalNot
+            }
+            TokenKind::Tilde => {
+                self.bump();
+                UnaryOperator::BitwiseNot
+            }
+            TokenKind::Star => {
+                self.bump();
+                UnaryOperator::Dereference
+            }
+            TokenKind::Amp => {
+                self.bump();
+                UnaryOperator::Reference(self.eat(TokenKind::Const))
+            }
+            TokenKind::Minus => {
+                self.bump();
+                UnaryOperator::Negate
+            }
+            _ => return self.parse_postfix_expr(),
+        };
+
+        let mut expr = self.parse_prefix_expr()?;
+        let kind = ExpressionKind::Unary(operator, expr);
+        let span = lo.to(self.hi_span());
+        expr = self.build_expr(kind, span);
+        return Ok(expr);
     }
 }
 

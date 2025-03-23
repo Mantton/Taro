@@ -48,7 +48,7 @@ pub enum UnaryOperator {
     // !
     LogicalNot,
     // &
-    Reference,
+    Reference(bool),
     // *
     Dereference,
     // -
