@@ -75,6 +75,7 @@ impl Parser {
                 Identifier::emtpy(self.file.file),
                 self.parse_enum_case_decl()?,
             ),
+            TokenKind::Operator => (Identifier::emtpy(self.file.file), self.parse_operator()?),
             _ => return Ok(None),
         };
 

@@ -4,7 +4,7 @@ use taroc_ast::{
     Label, Mutability, SelfKind, Type, TypeKind,
 };
 use taroc_span::{Identifier, SpannedMessage, Symbol};
-use taroc_token::{Delimiter, TokenKind};
+use taroc_token::{Delimiter, OperatorKind, TokenKind};
 
 impl Parser {
     pub fn parse_function(&mut self) -> R<(Identifier, DeclarationKind)> {
@@ -20,6 +20,13 @@ impl Parser {
         let is_optional = self.eat(TokenKind::Question);
         let func = self.parse_fn()?;
         Ok(DeclarationKind::Constructor(func, is_optional))
+    }
+
+    pub fn parse_operator(&mut self) -> R<DeclarationKind> {
+        self.expect(TokenKind::Operator)?;
+        let operator = self.parse_operator_from_token()?;
+        let func = self.parse_fn()?;
+        Ok(DeclarationKind::Operator(operator, func))
     }
 
     fn parse_fn(&mut self) -> R<Function> {
@@ -207,5 +214,64 @@ impl Parser {
         }
 
         return Ok(ident);
+    }
+}
+
+impl Parser {
+    fn parse_operator_from_token(&mut self) -> R<OperatorKind> {
+        let kind = match self.current_kind() {
+            TokenKind::Plus => Some(OperatorKind::Add),
+            TokenKind::Minus => Some(OperatorKind::Sub),
+            TokenKind::Star => Some(OperatorKind::Mul),
+            TokenKind::Quotient => Some(OperatorKind::Div),
+            TokenKind::Modulus => Some(OperatorKind::Rem),
+
+            TokenKind::AmpAmp => Some(OperatorKind::BoolAnd),
+            TokenKind::BarBar => Some(OperatorKind::BoolOr),
+
+            TokenKind::Amp => Some(OperatorKind::BitAnd),
+            TokenKind::Bar => Some(OperatorKind::BitOr),
+            TokenKind::Caret => Some(OperatorKind::BitXor),
+
+            TokenKind::Shl => Some(OperatorKind::BitShl),
+            TokenKind::Shr => Some(OperatorKind::BitShr),
+
+            TokenKind::Eql => Some(OperatorKind::Eq),
+            TokenKind::Neq => Some(OperatorKind::Neq),
+            TokenKind::Geq => Some(OperatorKind::Geq),
+            TokenKind::Leq => Some(OperatorKind::Leq),
+            TokenKind::Teq => Some(OperatorKind::ExprMatch),
+
+            TokenKind::RChevron => Some(OperatorKind::Gt),
+            TokenKind::LChevron => Some(OperatorKind::Lt),
+
+            TokenKind::PlusEq => Some(OperatorKind::Add),
+            TokenKind::MinusEq => Some(OperatorKind::Sub),
+            TokenKind::MulEq => Some(OperatorKind::Mul),
+            TokenKind::DivEq => Some(OperatorKind::Div),
+            TokenKind::RemEq => Some(OperatorKind::Rem),
+
+            TokenKind::AmpEq => Some(OperatorKind::BitAnd),
+            TokenKind::BarEq => Some(OperatorKind::BitOr),
+            TokenKind::CaretEq => Some(OperatorKind::BitXor),
+
+            TokenKind::ShlEq => Some(OperatorKind::BitShl),
+            TokenKind::ShrEq => Some(OperatorKind::BitShr),
+            _ => None,
+        };
+
+        if let Some(kind) = kind {
+            self.bump();
+            return Ok(kind);
+        }
+
+        if self.matches(TokenKind::LBracket) && self.next_matches(1, TokenKind::RBracket) {
+            self.bump();
+            self.bump();
+            return Ok(OperatorKind::Index);
+        }
+
+        let err = SpannedMessage::new(format!("invalid operator"), self.current_token_span());
+        Err(err)
     }
 }

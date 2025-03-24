@@ -91,7 +91,9 @@ impl Actor<'_> {
 
                 taroc_hir::DeclarationKind::EnumCase(node)
             }
-            taroc_ast::DeclarationKind::Operator(..) => todo!(),
+            taroc_ast::DeclarationKind::Operator(kind, func) => {
+                taroc_hir::DeclarationKind::Operator(kind, self.lower_function(func))
+            }
         }
     }
 }

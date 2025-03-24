@@ -1,6 +1,5 @@
-use crate::models::ToNameBinding;
-
 use super::resolver::Resolver;
+use crate::models::ToNameBinding;
 use std::cell::{Cell, RefCell};
 use taroc_error::CompileResult;
 use taroc_hir::{
@@ -12,7 +11,7 @@ use taroc_resolve_models::{
     DefUsageBinding, DefinitionContext, ExternalDefUsageData, ExternalDefUsageKind, NameBinding,
     NameBindingData, NameBindingKind, Segment,
 };
-use taroc_span::{FileID, Span, Symbol};
+use taroc_span::{Span, Symbol};
 
 pub fn run(package: &taroc_hir::Package, r: &mut Resolver) -> CompileResult<()> {
     let actor = Actor::new(r);
@@ -164,6 +163,7 @@ impl Actor<'_, '_> {
                 self.resolver.define(parent, decl.identifier, def);
             }
             DeclarationKind::EnumCase(..) => todo!(),
+            DeclarationKind::Operator(..) => {}
         }
     }
 }

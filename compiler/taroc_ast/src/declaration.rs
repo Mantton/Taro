@@ -5,6 +5,7 @@ use super::{
 use crate::{AnonConst, Generics, Variant};
 use std::collections::HashMap;
 use taroc_span::{Identifier, Span, Symbol};
+use taroc_token::OperatorKind;
 
 #[derive(Debug)]
 pub struct Declaration {
@@ -22,7 +23,7 @@ pub enum DeclarationKind {
     /// `init()` | `init?()`
     Constructor(Function, bool),
     /// `operator +()`
-    Operator(Function),
+    Operator(OperatorKind, Function),
     /// `let | var VALUE = 10`
     Variable(Local),
     /// `const VALUE: Uint = 10`

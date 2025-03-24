@@ -39,6 +39,7 @@ pub enum TokenKind {
     Init,
     AssociatedType,
     Case,
+    Operator,
 
     Let,
     Var,
@@ -251,6 +252,7 @@ impl Display for TokenKind {
             TokenKind::AssociatedType => "associatedtype",
             TokenKind::PtrEq => "===",
             TokenKind::Case => "case",
+            TokenKind::Operator => "operator",
         };
         write!(f, "{}", text)
     }
@@ -304,6 +306,7 @@ impl TokenKind {
             "export" => TokenKind::Export,
             "associatedtype" => TokenKind::AssociatedType,
             "case" => TokenKind::Case,
+            "operator" => TokenKind::Operator,
             _ => return None,
         };
 

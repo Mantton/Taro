@@ -285,6 +285,9 @@ pub fn walk_declaration<V: HirVisitor>(
         DeclarationKind::Constructor(function, _) => {
             try_visit!(visitor.visit_function(function));
         }
+        DeclarationKind::Operator(_, function) => {
+            try_visit!(visitor.visit_function(function));
+        }
         DeclarationKind::Variable(decl) => {
             try_visit!(visitor.visit_local(decl))
         }

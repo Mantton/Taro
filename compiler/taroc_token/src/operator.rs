@@ -56,3 +56,47 @@ pub enum UnaryOperator {
     // ~
     BitwiseNot,
 }
+
+#[derive(Debug)]
+pub enum OperatorKind {
+    Add,
+    Sub,
+    Div,
+    Mul,
+    Rem,
+
+    BitShl,
+    BitShr,
+    BitAnd,
+    BitOr,
+    BitXor,
+
+    Neg,
+    Not,
+    BitwiseNot,
+    ExprMatch,
+
+    AddAssign,
+    SubAssign,
+    DivAssign,
+    MulAssign,
+    RemAssign,
+
+    BitShlAssign,
+    BitShrAssign,
+    BitAndAssign,
+    BitOrAssign,
+    BitXorAssign,
+
+    BoolAnd,
+    BoolOr,
+
+    Lt,
+    Gt,
+    Leq,
+    Geq,
+    Eq,
+    Neq,
+
+    Index,
+}
