@@ -148,6 +148,12 @@ impl Parser {
             return Ok(());
         }
 
+        let current = self.current_token_span();
+        self.consume_comments_and_new_lines();
+        if current != self.current_token_span() {
+            return Ok(());
+        }
+
         return Err(SpannedMessage::new(
             "expected line-break".into(),
             self.previous().unwrap().span,
