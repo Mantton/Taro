@@ -1,12 +1,10 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cell::{Cell, RefCell};
 use taroc_data_structures::Interned;
-use taroc_hir::{
-    DefinitionID, DefinitionKind, NodeID, PartialRes, Path, Resolution, SymbolNamespace,
-};
+use taroc_hir::{DefinitionID, DefinitionKind, NodeID, Path, Resolution, SymbolNamespace};
 use taroc_span::{FileID, Identifier, Span, Symbol};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct DefinitionContext<'arena>(pub Interned<'arena, DefContextData<'arena>>);
 
 pub struct DefContextData<'arena> {
@@ -262,7 +260,7 @@ impl<'a> From<&'a taroc_hir::PathSegment> for Segment {
 // MARK: PathResult
 pub enum PathResult<'arena> {
     Context(DefinitionContext<'arena>),
-    NonContext(PartialRes),
+    NonContext(Resolution),
     Indeterminate,
     Failed {
         segment: Identifier,
@@ -344,13 +342,6 @@ impl PathSource {
                 ) | Resolution::Local(..)
                     | Resolution::FunctionSet(..)
             ),
-        }
-    }
-
-    pub fn defer_to_typecheck(&self) -> bool {
-        match self {
-            PathSource::Type | PathSource::Expression => true,
-            PathSource::Interface => false,
         }
     }
 

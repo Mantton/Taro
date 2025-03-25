@@ -44,7 +44,7 @@ impl Actor<'_> {
             }
             taroc_ast::TypeKind::Dictionary { key, value } => {
                 // [K:V] === std::collection::Dictionary<K, V>
-                let mut path = self.mk_path(&["std", "collecion", "Dictionary"], span);
+                let mut path = self.mk_path(&["std", "collection", "Dictionary"], span);
                 let last_index = path.segments.len() - 1;
                 let segment = &mut path.segments[last_index];
                 segment.arguments = Some(taroc_hir::TypeArguments {

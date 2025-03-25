@@ -119,8 +119,8 @@ impl Actor<'_> {
             declarations: self.lower_sequence(e.declarations, |a, d| {
                 a.lower_declaration(d, DeclarationContext::Extern)
             }),
-            ty: self.lower_path(e.ty),
-            ty_ref_id: self.next(),
+            ty: self.lower_tagged_path(e.ty),
+            generics: self.lower_generics(e.generics),
         }
     }
 }

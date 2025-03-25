@@ -1,8 +1,8 @@
 use crate::resolver::Resolver;
-use taroc_hir::{PartialRes, Resolution, SymbolNamespace};
+use taroc_hir::{Resolution, SymbolNamespace};
 use taroc_resolve_models::{
     DefContextKind, DefinitionContext, Determinacy, LexicalScope, LexicalScopeBinding,
-    LexicalScopeSource, NameHolder, PathResult, PathSource, Segment,
+    LexicalScopeSource, NameHolder, PathResult, Segment,
 };
 use taroc_span::Symbol;
 
@@ -27,7 +27,7 @@ impl<'ctx> Resolver<'ctx> {
 
             let record_resolution = |this: &mut Self, resolution: Resolution| {
                 if let Some(id) = segment.id {
-                    this.record_paratial_resolution(id, PartialRes::new(resolution.clone()));
+                    this.rescord_resolution(id, resolution.clone());
                 };
             };
 
@@ -47,10 +47,7 @@ impl<'ctx> Resolver<'ctx> {
                             Err(Determinacy::Undetermined)
                         } else {
                             record_resolution(self, resolution.clone());
-                            return PathResult::NonContext(PartialRes::with_unresolved_segments(
-                                resolution,
-                                path.len() - 1,
-                            ));
+                            return PathResult::NonContext(resolution);
                         }
                     }
                     _ => Err(Determinacy::Determined),
@@ -61,16 +58,6 @@ impl<'ctx> Resolver<'ctx> {
                 Ok(named_symbol) => named_symbol,
                 Err(Determinacy::Undetermined) => return PathResult::Indeterminate,
                 Err(Determinacy::Determined) => {
-                    // perhaps we failed to determine soemthing like `List::new()`, if it's not a module kind, partial resolutions with unresolved segments are fine
-                    if let Some(context) = context
-                        && !context.kind.is_module_kind()
-                    {
-                        return PathResult::NonContext(PartialRes::with_unresolved_segments(
-                            context.resolution().unwrap(),
-                            path.len() - index,
-                        ));
-                    }
-
                     return PathResult::Failed {
                         segment: segment.identifier,
                         is_last_segment: is_last,
@@ -79,19 +66,15 @@ impl<'ctx> Resolver<'ctx> {
             };
 
             let resolution = named_symbol.resolution();
-            let maybe_assoc = PathSource::Type.is_allowed(&resolution);
 
             if let Some(next_context) = named_symbol.context() {
                 context = Some(next_context);
                 record_resolution(self, resolution.clone());
-            } else if is_last || maybe_assoc {
+            } else if is_last {
                 record_resolution(self, resolution.clone());
-                return PathResult::NonContext(PartialRes::with_unresolved_segments(
-                    resolution,
-                    path.len() - index - 1,
-                ));
+                return PathResult::NonContext(resolution);
             } else if matches!(resolution, Resolution::Error) {
-                return PathResult::NonContext(PartialRes::new(Resolution::Error));
+                return PathResult::NonContext(Resolution::Error);
             } else {
                 return PathResult::Failed {
                     segment: segment.identifier,

@@ -63,14 +63,8 @@ impl<'ctx> TypeLowerer<'ctx> {
 
 impl<'ctx> TypeLowerer<'ctx> {
     fn lower_unchecked_path(&mut self, path: &taroc_hir::Path, id: NodeID) -> Ty<'ctx> {
-        let res = self.context.partial_res(id, self.index);
-        if res.unresolved_segments() == 0 {
-            // Fully Validated Node
-            self.lower_path(path, id, res.base_res())
-        } else {
-            // Potentially Associated Path
-            todo!("associated path")
-        }
+        let res = self.context.resolution(id, self.index);
+        self.lower_path(path, id, res)
     }
 
     fn lower_path(&mut self, path: &taroc_hir::Path, id: NodeID, res: Resolution) -> Ty<'ctx> {

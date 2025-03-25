@@ -1,4 +1,4 @@
-use super::{CtorKind, NodeID, Visibility, expression::AnonConst, ty::Type};
+use super::{NodeID, Visibility, expression::AnonConst, ty::Type};
 use taroc_ast::Mutability;
 use taroc_span::{Identifier, Span};
 
@@ -26,14 +26,4 @@ pub enum VariantKind {
     Unit(NodeID),
     Tuple(NodeID, Vec<FieldDefinition>),
     Struct(NodeID, Vec<FieldDefinition>),
-}
-
-impl VariantKind {
-    pub fn ctor(&self) -> (CtorKind, NodeID) {
-        match self {
-            VariantKind::Unit(id) => (CtorKind::Const, *id),
-            VariantKind::Tuple(id, _) => (CtorKind::Fn, *id),
-            VariantKind::Struct(id, _) => (CtorKind::Fn, *id),
-        }
-    }
 }

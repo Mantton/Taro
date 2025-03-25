@@ -2,7 +2,7 @@ use super::{
     AttributeList, Block, NodeID, Visibility, function::Function, local::Local, path::Path,
     ty::Type,
 };
-use crate::{AnonConst, Generics, Variant};
+use crate::{AnonConst, Generics, TaggedPath, Variant};
 use std::collections::HashMap;
 use taroc_span::{Identifier, Span};
 use taroc_token::OperatorKind;
@@ -64,8 +64,8 @@ pub struct TypeAlias {
 
 #[derive(Debug)]
 pub struct Extend {
-    pub ty_ref_id: NodeID,
-    pub ty: Path,
+    pub ty: TaggedPath,
+    pub generics: Generics,
     pub declarations: Vec<Declaration>,
 }
 

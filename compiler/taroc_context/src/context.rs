@@ -1,7 +1,7 @@
-use taroc_hir::{DefinitionID, DefinitionKind, NodeID, PartialRes};
-use taroc_ty::Ty;
-
 use crate::GlobalContext;
+use taroc_hir::{DefinitionID, DefinitionKind, NodeID, Resolution};
+use taroc_span::Symbol;
+use taroc_ty::Ty;
 
 impl<'ctx> GlobalContext<'ctx> {
     pub fn def_id(self, id: NodeID, package: usize) -> DefinitionID {
@@ -18,11 +18,17 @@ impl<'ctx> GlobalContext<'ctx> {
         partial_res.clone()
     }
 
-    pub fn partial_res(self, id: NodeID, package: usize) -> PartialRes {
+    pub fn resolution(self, id: NodeID, package: usize) -> Resolution {
         let resolutions = self.context.store.resolutions.borrow();
         let package = resolutions.get(&package).expect("package");
-        let partial_res = package.partial_resolution_map.get(&id).expect("res");
-        partial_res.clone()
+        let res = package.resolution_map.get(&id).expect("res");
+        res.clone()
+    }
+
+    pub fn resolution_generics(self, id: DefinitionID) -> Option<Vec<(Symbol, DefinitionID)>> {
+        let resolutions = self.context.store.resolutions.borrow();
+        let package = resolutions.get(&id.package().index()).expect("package");
+        return package.generics_map.get(&id).cloned();
     }
 
     pub fn type_of(self, id: DefinitionID) -> Ty<'ctx> {

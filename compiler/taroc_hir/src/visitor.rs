@@ -298,7 +298,7 @@ pub fn walk_declaration<V: HirVisitor>(
             try_visit!(visitor.visit_export(i, declaration.id));
         }
         DeclarationKind::Extend(extension) => {
-            try_visit!(visitor.visit_path(&extension.ty));
+            try_visit!(visitor.visit_path(&extension.ty.path));
             walk_list!(
                 visitor,
                 visit_declaration,

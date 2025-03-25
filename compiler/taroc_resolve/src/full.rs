@@ -3,7 +3,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::hash_map::Entry;
 use taroc_error::CompileResult;
 use taroc_hir::{
-    DeclarationContext, DefinitionKind, NodeID, PartialRes, Resolution, SymbolNamespace,
+    DeclarationContext, DefinitionID, DefinitionKind, NodeID, Resolution, SymbolNamespace,
     visitor::HirVisitor,
 };
 use taroc_resolve_models::{
@@ -13,9 +13,88 @@ use taroc_resolve_models::{
 use taroc_span::{FileID, Identifier, Span, Spanned, Symbol};
 
 pub fn run(package: &taroc_hir::Package, resolver: &mut Resolver) -> CompileResult<()> {
+    let collector = GenericsCollector::new(resolver);
+    collector.run(package);
+    resolver.session.context.diagnostics.report()?;
+
     let actor = Actor::new(resolver);
     actor.run(package);
     resolver.session.context.diagnostics.report()
+}
+
+struct GenericsCollector<'res, 'ctx> {
+    pub resolver: &'res mut Resolver<'ctx>,
+    pub parent: Option<DefinitionID>,
+    pub table: FxHashMap<DefinitionID, Vec<(Symbol, DefinitionID)>>,
+}
+
+impl<'res, 'ctx> GenericsCollector<'res, 'ctx> {
+    fn new(resolver: &'res mut Resolver<'ctx>) -> GenericsCollector<'res, 'ctx> {
+        GenericsCollector {
+            resolver,
+            parent: None,
+            table: Default::default(),
+        }
+    }
+
+    fn run(mut self, package: &taroc_hir::Package) {
+        taroc_hir::visitor::walk_package(&mut self, package);
+        self.resolver.generics_table = self.table;
+    }
+}
+
+impl HirVisitor for GenericsCollector<'_, '_> {
+    fn visit_declaration(
+        &mut self,
+        d: &taroc_hir::Declaration,
+        c: DeclarationContext,
+    ) -> Self::Result {
+        let def_id = self.resolver.def_id(d.id);
+        self.parent = Some(def_id);
+        taroc_hir::visitor::walk_declaration(self, d, c);
+    }
+
+    fn visit_type_parameters(&mut self, t: &taroc_hir::TypeParameters) -> Self::Result {
+        let params = &t.parameters;
+        let parent = self.parent.unwrap();
+
+        if params.is_empty() {
+            return;
+        }
+
+        let mut items = vec![];
+        let mut seen_bindings: FxHashMap<Symbol, Span> = Default::default();
+
+        for param in params.iter() {
+            let def_id = self.resolver.def_id(param.id);
+            let kind = DefinitionKind::TypeParameter;
+            let name = param.identifier.symbol.clone();
+            let entry = seen_bindings.entry(name.clone());
+
+            match entry {
+                Entry::Occupied(_) => {
+                    // param has already been defined
+                    let msg = format!("TypeParameter '{name}' is already defined");
+                    self.resolver
+                        .session
+                        .context
+                        .diagnostics
+                        .error(msg, param.identifier.span);
+                    continue;
+                }
+                Entry::Vacant(entry) => {
+                    // mark as seen
+                    entry.insert(param.identifier.span);
+                }
+            }
+
+            items.push((name, def_id));
+            let res = Resolution::Definition(def_id, kind);
+            self.resolver.rescord_resolution(param.id, res);
+        }
+
+        self.table.insert(parent, items);
+    }
 }
 
 struct Actor<'res, 'ctx> {
@@ -51,46 +130,24 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
         result
     }
 
-    fn with_generics_scope(
-        &mut self,
-        generics: &taroc_hir::Generics,
-        work: impl FnOnce(&mut Self),
-    ) {
-        if generics.type_parameters.is_none() {
+    fn with_generics_scope(&mut self, id: DefinitionID, work: impl FnOnce(&mut Self)) {
+        let generics = if id.is_local(self.resolver.session.index) {
+            self.resolver.generics_table.get(&id).cloned()
+        } else {
+            self.resolver.session.context.resolution_generics(id)
+        };
+
+        let Some(generics) = generics else {
             work(self);
             return;
-        }
+        };
 
         let mut scope = LexicalScope::new(LexicalScopeSource::Plain);
-        let mut seen_bindings: FxHashMap<Symbol, Span> = Default::default();
-
-        for param in generics.type_parameters.as_ref().unwrap().parameters.iter() {
-            let def_id = self.resolver.def_id(param.id);
-            let kind = DefinitionKind::TypeParameter;
-            let name = param.identifier.symbol.clone();
-            let entry = seen_bindings.entry(name.clone());
-
-            match entry {
-                Entry::Occupied(_) => {
-                    // param has already been defined
-                    let msg = format!("TypeParameter '{name}' is already defined");
-                    self.resolver
-                        .session
-                        .context
-                        .diagnostics
-                        .error(msg, param.identifier.span);
-                    continue;
-                }
-                Entry::Vacant(entry) => {
-                    // mark as seen
-                    entry.insert(param.identifier.span);
-                }
-            }
-
-            let res = Resolution::Definition(def_id, kind);
-            self.resolver
-                .record_paratial_resolution(param.id, PartialRes::new(res.clone()));
-            scope.define(name, res);
+        for (symbol, id) in generics.into_iter() {
+            scope.define(
+                symbol,
+                Resolution::Definition(id, DefinitionKind::TypeParameter),
+            );
         }
 
         self.scopes.push(scope);
@@ -215,16 +272,16 @@ impl Actor<'_, '_> {
         let def_kind = self.resolver.def_kind(def_id);
 
         match &declaration.kind {
-            taroc_hir::DeclarationKind::Function(node) => {
+            taroc_hir::DeclarationKind::Function(..) => {
                 self.with_scope(LexicalScopeSource::Definition(def_kind), |this| {
-                    this.with_generics_scope(&node.generics, |this| {
+                    this.with_generics_scope(def_id, |this| {
                         taroc_hir::visitor::walk_declaration(this, declaration, context);
                     });
                 });
             }
-            taroc_hir::DeclarationKind::Constructor(node, _) => {
+            taroc_hir::DeclarationKind::Constructor(..) => {
                 self.with_scope(LexicalScopeSource::Definition(def_kind), |this| {
-                    this.with_generics_scope(&node.generics, |this| {
+                    this.with_generics_scope(def_id, |this| {
                         taroc_hir::visitor::walk_declaration(this, declaration, context);
                     })
                 });
@@ -232,16 +289,16 @@ impl Actor<'_, '_> {
             taroc_hir::DeclarationKind::Extend(extend) => {
                 self.resolve_extend(extend);
             }
-            taroc_hir::DeclarationKind::TypeAlias(node) => {
+            taroc_hir::DeclarationKind::TypeAlias(..) => {
                 self.with_scope(LexicalScopeSource::Definition(def_kind), |this| {
-                    this.with_generics_scope(&node.generics, |this| {
+                    this.with_generics_scope(def_id, |this| {
                         taroc_hir::visitor::walk_declaration(this, declaration, context);
                     })
                 });
             }
-            taroc_hir::DeclarationKind::DefinedType(node) => {
+            taroc_hir::DeclarationKind::DefinedType(..) => {
                 self.with_scope(LexicalScopeSource::Definition(def_kind), |this| {
-                    this.with_generics_scope(&node.generics, |this| {
+                    this.with_generics_scope(def_id, |this| {
                         this.with_self_alias_scope(Resolution::SelfTypeAlias(def_id), |this| {
                             taroc_hir::visitor::walk_declaration(this, declaration, context)
                         });
@@ -301,24 +358,27 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
 
 impl<'res, 'ctx> Actor<'res, 'ctx> {
     fn resolve_extend(&mut self, node: &taroc_hir::Extend) {
-        let self_res = self
-            .resolve_path_with_source(node.ty_ref_id, &node.ty, PathSource::Type)
-            .base_res();
+        let self_res = self.resolve_path_with_source(node.ty.id, &node.ty.path, PathSource::Type);
         let def_id = self_res.def_id();
 
         // TODO: Any Checks to be done if this fails? error will be reported by path resolution
-        let Some(_) = def_id else {
+        let Some(def_id) = def_id else {
             return;
         };
 
-        // self.with_generics_scope(&node.generics, |this| {
-        //     this.with_self_alias_scope(self_res, |this| {
-        //         this.visit_generics(&node.generics);
-        //         for declaration in &node.declarations {
-        //             this.visit_declaration(declaration, DeclarationContext::Extend);
-        //         }
-        //     });
-        // });
+        self.with_generics_scope(def_id, |this| {
+            this.with_self_alias_scope(self_res, |this| {
+                this.visit_generics(&node.generics);
+                for declaration in &node.declarations {
+                    // this.visit_declaration(declaration, DeclarationContext::Extend)
+                    taroc_hir::visitor::walk_declaration(
+                        this,
+                        declaration,
+                        DeclarationContext::Extend,
+                    )
+                }
+            });
+        });
     }
 }
 
@@ -396,8 +456,7 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
                         self.fresh_var_from_binding_pattern(&identifier, pat.id, source, bindings)
                     });
 
-                self.resolver
-                    .record_paratial_resolution(pat.id, PartialRes::new(res));
+                self.resolver.rescord_resolution(pat.id, res);
             }
             taroc_hir::BindingPatternKind::Tuple(binding_patterns) => {
                 for pattern in binding_patterns {
@@ -454,61 +513,42 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
         id: NodeID,
         path: &taroc_hir::Path,
         source: PathSource,
-    ) -> PartialRes {
+    ) -> Resolution {
         let segments = Segment::from_path(path);
-        let result = self.resolve_qualified_path_anywhere(&segments, source.namespace());
+        let result = self.resolve_path(&segments, source.namespace());
 
         let report_error = |this: &mut Self, res: Option<Resolution>| {
             this.report_error_with_context(path, source, res);
-            return PartialRes::new(Resolution::Error);
+            return Resolution::Error;
         };
         let res = match result {
-            Ok(Some(partial_res)) if let Some(res) = partial_res.full_res() => {
+            Ok(Some(res)) => {
                 if source.is_allowed(&res) || res.is_error() {
-                    partial_res
+                    res
                 } else {
                     report_error(self, Some(res))
                 }
             }
-            Ok(Some(_)) if source.defer_to_typecheck() => PartialRes::new(Resolution::Error), // TODO
             Err(err) => {
                 self.report_error(err.value, err.span);
-                PartialRes::new(Resolution::Error)
+                Resolution::Error
             }
 
             _ => report_error(self, None),
         };
 
-        self.resolver.record_paratial_resolution(id, res.clone());
+        self.resolver.rescord_resolution(id, res.clone());
         res
     }
 
-    fn resolve_qualified_path_anywhere(
+    fn resolve_path(
         &mut self,
         path: &[Segment],
         ns: SymbolNamespace,
-    ) -> Result<Option<PartialRes>, Spanned<ResolutionError>> {
-        let mut fin_res = None;
-        match self.resolve_qualified_path(path, ns)? {
-            Some(res) => return Ok(Some(res)),
-            res => {
-                if fin_res.is_none() {
-                    fin_res = res
-                }
-            }
-        }
-
-        return Ok(fin_res);
-    }
-
-    fn resolve_qualified_path(
-        &mut self,
-        path: &[Segment],
-        ns: SymbolNamespace,
-    ) -> Result<Option<PartialRes>, Spanned<ResolutionError>> {
-        match self.resolve_path(path, ns) {
+    ) -> Result<Option<Resolution>, Spanned<ResolutionError>> {
+        match self.resolve_path_with_scopes(path, ns) {
             PathResult::Context(context) => {
-                return Ok(Some(PartialRes::new(context.resolution().unwrap())));
+                return Ok(context.resolution());
             }
             PathResult::NonContext(res) => return Ok(Some(res)),
             PathResult::Indeterminate => {
@@ -534,7 +574,11 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
         };
     }
 
-    fn resolve_path(&mut self, path: &[Segment], ns: SymbolNamespace) -> PathResult<'ctx> {
+    fn resolve_path_with_scopes(
+        &mut self,
+        path: &[Segment],
+        ns: SymbolNamespace,
+    ) -> PathResult<'ctx> {
         let res = self
             .resolver
             .resolve_path_with_scopes(path, ns, &self.scopes);

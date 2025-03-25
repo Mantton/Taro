@@ -37,8 +37,6 @@ impl<'ctx> Resolver<'ctx> {
                     .error(message, segment.identifier.span);
                 return None;
             }
-
-            // println!("Resolved {}", segment.ident.symbol);
         }
 
         return module;

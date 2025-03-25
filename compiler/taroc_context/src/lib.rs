@@ -6,7 +6,6 @@ mod context;
 mod models;
 mod session;
 
-pub use context::*;
 pub use models::*;
 pub use session::*;
 

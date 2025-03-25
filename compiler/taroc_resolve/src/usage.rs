@@ -2,7 +2,9 @@ use super::resolver::Resolver;
 use taroc_error::CompileResult;
 use taroc_resolve_models::{
     ExternalDefUsageKind, ExternalDefinitionUsage, NameBinding, NameBindingData, NameBindingKind,
+    NameHolder, Segment,
 };
+use taroc_span::Span;
 
 pub fn run(_: &taroc_hir::Package, resolver: &mut Resolver) -> CompileResult<()> {
     // Resolve
@@ -52,6 +54,10 @@ impl Resolver<'_> {
 
 impl<'ctx> Resolver<'ctx> {
     fn resolve_export(&mut self, export: ExternalDefinitionUsage<'ctx>) -> bool {
+        if export.module_path.len() == 0 {
+            todo!("module export")
+        };
+
         let module = self.resolve_module_path(&export.module_path);
         let Some(module) = module else {
             return false;
@@ -97,10 +103,39 @@ impl<'ctx> Resolver<'ctx> {
     }
 
     fn resolve_import(&mut self, import: ExternalDefinitionUsage<'ctx>) -> bool {
+        if import.module_path.len() == 0 {
+            match &import.kind {
+                ExternalDefUsageKind::Single(binding) => {
+                    let module = self.resolve_module_path(&[Segment::from_ident(binding.source)]);
+                    let Some(module) = module else {
+                        return false;
+                    };
+                    import.module_context.set(Some(module));
+                    let n_binding = self.alloc_binding(NameBindingData {
+                        kind: NameBindingKind::Context(module),
+                        span: Span::empty(import.file),
+                        vis: taroc_hir::TVisibility::Public,
+                    });
+                    let holder = NameHolder::Single(n_binding);
+                    *binding.source_binding.borrow_mut() = Some(holder);
+                    let bindings = holder.all();
+                    let usage = binding;
+                    let mut ok = true;
+                    for binding in bindings {
+                        let binding = self.convert_usage_binding(binding, import);
+                        // TODO: Visibility
+                        ok = ok && self.force_define(usage.parent, usage.target, binding);
+                    }
+                    return true;
+                }
+                _ => unreachable!(),
+            };
+        }
         let module = self.resolve_module_path(&import.module_path);
         let Some(module) = module else {
             return false;
         };
+
         import.module_context.set(Some(module));
 
         let usage = match &import.kind {

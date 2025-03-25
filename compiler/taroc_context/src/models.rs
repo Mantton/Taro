@@ -2,8 +2,9 @@ use bumpalo::Bump;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::{borrow::Borrow, cell::RefCell, hash::Hash, hash::Hasher, marker::PhantomData};
 use taroc_data_structures::Interned;
-use taroc_hir::{DefinitionID, DefinitionKind, NodeID, PartialRes};
+use taroc_hir::{DefinitionID, DefinitionKind, NodeID, Resolution};
 use taroc_resolve_models::DefinitionContext;
+use taroc_span::Symbol;
 use taroc_ty::{FloatTy, GenericArgument, IntTy, Ty, TyKind, UIntTy};
 
 pub struct ContextStore<'ctx> {
@@ -99,7 +100,8 @@ pub struct ResolutionData<'ctx> {
     pub root: DefinitionContext<'ctx>,
     pub node_to_def: FxHashMap<NodeID, DefinitionID>,
     pub def_to_kind: FxHashMap<DefinitionID, DefinitionKind>,
-    pub partial_resolution_map: FxHashMap<NodeID, PartialRes>,
+    pub resolution_map: FxHashMap<NodeID, Resolution>,
+    pub generics_map: FxHashMap<DefinitionID, Vec<(Symbol, DefinitionID)>>,
 }
 
 #[derive(Debug, Default)]

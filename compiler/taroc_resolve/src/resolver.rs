@@ -2,7 +2,7 @@ use crate::models::ToNameBinding;
 use rustc_hash::FxHashMap;
 use std::rc::Rc;
 use taroc_context::{CompilerSession, ResolutionData};
-use taroc_hir::{DefinitionID, DefinitionIndex, DefinitionKind, NodeID, PackageIndex, PartialRes};
+use taroc_hir::{DefinitionID, DefinitionIndex, DefinitionKind, NodeID, PackageIndex, Resolution};
 use taroc_resolve_models::{
     DefContextKind, DefinitionContext, ExternalDefinitionUsage, NameBinding, NameHolder,
 };
@@ -21,7 +21,8 @@ pub struct Resolver<'ctx> {
     pub resolved_imports: Vec<ExternalDefinitionUsage<'ctx>>,
     pub root_context: Option<DefinitionContext<'ctx>>,
     pub next_index: u32,
-    partial_resolution_map: FxHashMap<NodeID, PartialRes>,
+    resolution_map: FxHashMap<NodeID, Resolution>,
+    pub generics_table: FxHashMap<DefinitionID, Vec<(Symbol, DefinitionID)>>,
 }
 
 impl Resolver<'_> {
@@ -38,8 +39,9 @@ impl Resolver<'_> {
             resolved_exports: Vec::new(),
             resolved_imports: Vec::new(),
             root_context: None,
-            partial_resolution_map: Default::default(),
+            resolution_map: Default::default(),
             next_index: 0,
+            generics_table: Default::default(),
         }
     }
 }
@@ -240,9 +242,9 @@ impl<'ctx> Resolver<'ctx> {
 }
 
 impl<'ctx> Resolver<'ctx> {
-    pub fn record_paratial_resolution(&mut self, node: NodeID, resolution: PartialRes) {
-        if let Some(_) = self.partial_resolution_map.insert(node, resolution) {
-            // panic!("multiple resolutions recorded for node {node:?}")
+    pub fn rescord_resolution(&mut self, node: NodeID, resolution: Resolution) {
+        if let Some(_) = self.resolution_map.insert(node, resolution) {
+            panic!("multiple resolutions recorded for node {node:?}")
         }
     }
 }
@@ -252,8 +254,9 @@ impl<'ctx> Resolver<'ctx> {
         ResolutionData {
             node_to_def: self.node_to_def,
             def_to_kind: self.def_to_kind,
-            partial_resolution_map: self.partial_resolution_map,
+            resolution_map: self.resolution_map,
             root: self.root_context.unwrap(),
+            generics_map: self.generics_table,
         }
     }
 }
