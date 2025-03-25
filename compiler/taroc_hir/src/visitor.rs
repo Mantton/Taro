@@ -332,8 +332,18 @@ pub fn walk_declaration<V: HirVisitor>(
         }
         DeclarationKind::AssociatedType => {}
         DeclarationKind::Constant(..) => todo!(),
-        DeclarationKind::EnumCase(..) => todo!(),
-        DeclarationKind::DefinedType(..) => todo!(),
+        DeclarationKind::EnumCase(node) => {
+            walk_list!(visitor, visit_variant, &node.members)
+        }
+        DeclarationKind::DefinedType(node) => {
+            try_visit!(visitor.visit_generics(&node.generics));
+            let ctx = match &node.kind {
+                crate::DefinedTypeKind::Struct => DeclarationContext::Struct,
+                crate::DefinedTypeKind::Enum => DeclarationContext::Enum,
+                crate::DefinedTypeKind::Interface => DeclarationContext::Interface,
+            };
+            walk_list!(visitor, visit_declaration, &node.declarations, ctx)
+        }
     }
 
     V::Result::output()
@@ -695,7 +705,7 @@ pub fn walk_function_prototype<V: HirVisitor>(
 }
 
 pub fn walk_generics<V: HirVisitor>(visitor: &mut V, node: &Generics) -> V::Result {
-    // try_visit!(visitor.visit_type_parameters(&node.parameters));
+    visit_optional!(visitor, visit_type_parameters, &node.type_parameters);
     visit_optional!(visitor, visit_generic_where_clause, &node.where_clause);
     V::Result::output()
 }

@@ -73,8 +73,10 @@ pub enum DefinitionKind {
     Struct,
     Enum,
     Function,
-    Constructor(CtorOf, CtorKind),
+    Constructor,
+    Operator,
     Variable,
+    Constant,
     Interface,
     TypeAlias,
     Namespace,
@@ -89,6 +91,7 @@ pub enum DefinitionKind {
     Variant,
     ComputedProperty,
     AssociatedType,
+    EnumCase,
 }
 
 impl DefinitionKind {
@@ -98,7 +101,7 @@ impl DefinitionKind {
             DefinitionKind::Struct => "struct",
             DefinitionKind::Enum => "enum",
             DefinitionKind::Function => "function",
-            DefinitionKind::Constructor(_, _) => "constructor",
+            DefinitionKind::Constructor => "constructor",
             DefinitionKind::Variable => "local variable",
             DefinitionKind::Interface => "interface",
             DefinitionKind::TypeAlias => "type alias",
@@ -114,6 +117,9 @@ impl DefinitionKind {
             DefinitionKind::Export => "export",
             DefinitionKind::ComputedProperty => "computed property",
             DefinitionKind::AssociatedType => "associated type",
+            DefinitionKind::Constant => "constant",
+            DefinitionKind::Operator => "operator",
+            DefinitionKind::EnumCase => "enum case",
         }
     }
 }

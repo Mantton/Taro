@@ -1,9 +1,8 @@
+use super::resolver::Resolver;
 use taroc_error::CompileResult;
 use taroc_resolve_models::{
     ExternalDefUsageKind, ExternalDefinitionUsage, NameBinding, NameBindingData, NameBindingKind,
 };
-
-use super::resolver::Resolver;
 
 pub fn run(_: &taroc_hir::Package, resolver: &mut Resolver) -> CompileResult<()> {
     // Resolve

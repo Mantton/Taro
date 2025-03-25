@@ -1,11 +1,10 @@
+use crate::resolver::Resolver;
 use taroc_data_structures::Interned;
 use taroc_resolve_models::{
     DefContextData, DefContextKind, DefinitionContext, ExternalDefUsageData,
     ExternalDefinitionUsage, NameBinding, NameBindingData,
 };
 use taroc_span::Span;
-
-use crate::resolver::Resolver;
 
 impl<'ctx> Resolver<'ctx> {
     pub fn alloc_context(

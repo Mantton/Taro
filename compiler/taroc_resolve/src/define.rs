@@ -107,12 +107,6 @@ impl HirVisitor for Actor<'_, '_> {
 
         // Define Variant in Type Namespace
         self.resolver.define(parent, v.identifier, def);
-
-        // Define Ctor in Value Namespace
-        // let (_, ctor_id) = v.kind.ctor();
-        // let ctor_res = self.res(ctor_id);
-        // let ctor_def = (ctor_res, vis, span);
-        // self.resolver.define(parent, v.identifier, ctor_def);
     }
 }
 
@@ -162,7 +156,7 @@ impl Actor<'_, '_> {
             DeclarationKind::AssociatedType => {
                 self.resolver.define(parent, decl.identifier, def);
             }
-            DeclarationKind::EnumCase(..) => todo!(),
+            DeclarationKind::EnumCase(..) => {}
             DeclarationKind::Operator(..) => {}
         }
     }

@@ -1,8 +1,7 @@
+use super::resolver::Resolver;
 use taroc_constants::STD_PREFIX;
 use taroc_resolve_models::{DefinitionContext, NameHolder, Segment};
 use taroc_span::Symbol;
-
-use super::resolver::Resolver;
 
 impl<'ctx> Resolver<'ctx> {
     pub fn resolve_module_path(&mut self, path: &[Segment]) -> Option<DefinitionContext<'ctx>> {

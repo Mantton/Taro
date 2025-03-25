@@ -1,3 +1,4 @@
+use crate::models::ToNameBinding;
 use rustc_hash::FxHashMap;
 use std::rc::Rc;
 use taroc_context::{CompilerSession, ResolutionData};
@@ -6,8 +7,6 @@ use taroc_resolve_models::{
     DefContextKind, DefinitionContext, ExternalDefinitionUsage, NameBinding, NameHolder,
 };
 use taroc_span::{FileID, Identifier, Span, Symbol};
-
-use crate::models::ToNameBinding;
 
 pub struct Resolver<'ctx> {
     pub session: Rc<CompilerSession<'ctx>>,

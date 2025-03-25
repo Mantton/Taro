@@ -1,6 +1,6 @@
 use super::resolver::Resolver;
 use taroc_hir::{
-    CtorOf, DefinitionID, DefinitionIndex, DefinitionKind, NodeID, PackageIndex,
+    DefinitionID, DefinitionIndex, DefinitionKind, NodeID, PackageIndex,
     visitor::{HirVisitor, walk_declaration, walk_module, walk_package, walk_path_tree},
 };
 use taroc_span::Symbol;
@@ -53,9 +53,7 @@ impl HirVisitor for Actor<'_, '_> {
     ) -> <Self as HirVisitor>::Result {
         let kind = match &d.kind {
             taroc_hir::DeclarationKind::Function(..) => DefinitionKind::Function,
-            taroc_hir::DeclarationKind::Constructor(..) => {
-                DefinitionKind::Constructor(taroc_hir::CtorOf::Struct, taroc_hir::CtorKind::Fn)
-            }
+            taroc_hir::DeclarationKind::Constructor(..) => DefinitionKind::Constructor,
             taroc_hir::DeclarationKind::Variable(..) => DefinitionKind::Variable,
             taroc_hir::DeclarationKind::Import(..) => DefinitionKind::Import,
             taroc_hir::DeclarationKind::Extend(..) => DefinitionKind::Extension,
@@ -66,27 +64,21 @@ impl HirVisitor for Actor<'_, '_> {
             taroc_hir::DeclarationKind::Export(..) => DefinitionKind::Export,
             taroc_hir::DeclarationKind::Computed(..) => DefinitionKind::ComputedProperty,
             taroc_hir::DeclarationKind::AssociatedType => DefinitionKind::AssociatedType,
-            taroc_hir::DeclarationKind::Constant(_, anon_const) => todo!(),
-            _ => todo!(),
+            taroc_hir::DeclarationKind::Constant(..) => DefinitionKind::Constant,
+            taroc_hir::DeclarationKind::Operator(..) => DefinitionKind::Operator,
+            taroc_hir::DeclarationKind::EnumCase(..) => DefinitionKind::EnumCase,
+            taroc_hir::DeclarationKind::DefinedType(ty) => match &ty.kind {
+                taroc_hir::DefinedTypeKind::Struct => DefinitionKind::Struct,
+                taroc_hir::DefinedTypeKind::Enum => DefinitionKind::Enum,
+                taroc_hir::DefinedTypeKind::Interface => DefinitionKind::Interface,
+            },
         };
 
         let parent = self.tag(d.identifier.symbol, d.id, kind);
 
-        // self.with_parent(parent, |actor| {
-        //     // Register Struct Constructor
-        //     match &d.kind {
-        //         taroc_hir::DeclarationKind::Struct(node) => {
-        //             let (kind, id) = node.variant.ctor();
-        //             actor.tag(
-        //                 d.identifier.symbol,
-        //                 id,
-        //                 DefinitionKind::Constructor(CtorOf::Struct, kind),
-        //             );
-        //         }
-        //         _ => {}
-        //     }
-        //     walk_declaration(actor, d, c);
-        // });
+        self.with_parent(parent, |actor| {
+            walk_declaration(actor, d, c);
+        });
     }
 
     fn visit_type_parameter(
@@ -106,12 +98,6 @@ impl HirVisitor for Actor<'_, '_> {
     fn visit_variant(&mut self, v: &taroc_hir::Variant) -> <Self as HirVisitor>::Result {
         // Register Enum Variant Constructors
         self.tag(v.identifier.symbol, v.id, DefinitionKind::Variant);
-        let (kind, id) = v.kind.ctor();
-        self.tag(
-            v.identifier.symbol,
-            id,
-            DefinitionKind::Constructor(taroc_hir::CtorOf::Variant, kind),
-        );
     }
 
     fn visit_path_tree(

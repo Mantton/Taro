@@ -1,8 +1,7 @@
 #![feature(let_chains)]
 #![feature(if_let_guard)]
-use std::rc::Rc;
-
 use resolver::Resolver;
+use std::rc::Rc;
 use taroc_context::CompilerSession;
 use taroc_error::CompileResult;
 mod arena;

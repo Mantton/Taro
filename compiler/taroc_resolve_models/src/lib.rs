@@ -323,7 +323,8 @@ impl PathSource {
                             | DefinitionKind::Enum
                             | DefinitionKind::Interface
                             | DefinitionKind::TypeParameter
-                            | DefinitionKind::TypeAlias,
+                            | DefinitionKind::TypeAlias
+                            | DefinitionKind::AssociatedType,
                     ) | Resolution::SelfTypeAlias(..)
                         | Resolution::InterfaceSelfTypeAlias(..)
                 )
@@ -336,7 +337,7 @@ impl PathSource {
                 Resolution::Definition(
                     _,
                     DefinitionKind::Function
-                        | DefinitionKind::Constructor(..)
+                        | DefinitionKind::Constructor
                         | DefinitionKind::Struct
                         | DefinitionKind::Variant
                         | DefinitionKind::Variable

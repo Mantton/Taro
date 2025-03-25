@@ -1,12 +1,10 @@
+use crate::resolver::Resolver;
 use taroc_hir::{PartialRes, Resolution, SymbolNamespace};
 use taroc_resolve_models::{
     DefContextKind, DefinitionContext, Determinacy, LexicalScope, LexicalScopeBinding,
     LexicalScopeSource, NameHolder, PathResult, PathSource, Segment,
 };
-
 use taroc_span::Symbol;
-
-use crate::resolver::Resolver;
 
 impl<'ctx> Resolver<'ctx> {
     pub fn resolve_path_with_scopes(
