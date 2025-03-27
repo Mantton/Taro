@@ -11,7 +11,7 @@ pub struct ContextStore<'ctx> {
     pub interners: ContextInterners<'ctx>,
     pub resolutions: RefCell<FxHashMap<usize, ResolutionData<'ctx>>>,
     pub package_mapping: RefCell<FxHashMap<String, usize>>,
-    pub types: RefCell<TypeDatabase<'ctx>>,
+    pub types: RefCell<FxHashMap<usize, TypeDatabase<'ctx>>>,
     pub common_types: CommonTypes<'ctx>,
 }
 
@@ -49,6 +49,7 @@ pub struct ContextInterners<'ctx> {
     pub arenas: &'ctx ContextArenas<'ctx>,
     ty: InternedSet<'ctx, TyKind<'ctx>>,
     ty_list: InternedSet<'ctx, Vec<Ty<'ctx>>>,
+    generic_arguments: InternedSet<'ctx, Vec<GenericArgument<'ctx>>>,
 }
 
 impl<'ctx> ContextInterners<'ctx> {
@@ -57,6 +58,7 @@ impl<'ctx> ContextInterners<'ctx> {
             arenas,
             ty: InternedSet::new(),
             ty_list: InternedSet::new(),
+            generic_arguments: InternedSet::new(),
         }
     }
 }
@@ -75,13 +77,24 @@ impl<'ctx> ContextInterners<'ctx> {
         return Ty::with_kind(i);
     }
 
-    pub fn intern_ty_list(&self, items: &Vec<Ty<'ctx>>) -> &'ctx Vec<Ty<'ctx>> {
-        if items.is_empty() {
-            unreachable!("type list should never be empty")
-        }
-
+    pub fn intern_ty_list(&self, items: &Vec<Ty<'ctx>>) -> &'ctx [Ty<'ctx>] {
         let ik = self
             .ty_list
+            .intern_ref(items, || {
+                let k = self.arenas.types.alloc(items.clone());
+                return InternedInSet(k);
+            })
+            .0;
+
+        ik
+    }
+
+    pub fn intern_generic_args(
+        &self,
+        items: &Vec<GenericArgument<'ctx>>,
+    ) -> &'ctx [GenericArgument<'ctx>] {
+        let ik = self
+            .generic_arguments
             .intern_ref(items, || {
                 let k = self.arenas.types.alloc(items.clone());
                 return InternedInSet(k);
@@ -129,6 +142,8 @@ pub struct CommonTypes<'ctx> {
 
     pub float32: Ty<'ctx>,
     pub float64: Ty<'ctx>,
+
+    pub error: Ty<'ctx>,
 }
 
 impl<'a> CommonTypes<'a> {
@@ -154,6 +169,8 @@ impl<'a> CommonTypes<'a> {
 
             float32: mk(TyKind::Float(FloatTy::F32)),
             float64: mk(TyKind::Float(FloatTy::F64)),
+
+            error: mk(TyKind::Error),
         }
     }
 }
@@ -197,6 +214,11 @@ impl<'tcx> Borrow<Vec<Ty<'tcx>>> for InternedInSet<'tcx, Vec<Ty<'tcx>>> {
     }
 }
 
+impl<'tcx> Borrow<Vec<GenericArgument<'tcx>>> for InternedInSet<'tcx, Vec<GenericArgument<'tcx>>> {
+    fn borrow(&self) -> &Vec<GenericArgument<'tcx>> {
+        &self.0
+    }
+}
 // impl<'tcx> PartialEq for InternedInSet<'tcx, TyKind<'tcx>> {
 //     fn eq(&self, other: &InternedInSet<'tcx, TyKind<'tcx>>) -> bool {
 //         // The `Borrow` trait requires that `x.borrow() == y.borrow()` equals

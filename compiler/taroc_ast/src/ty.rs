@@ -1,4 +1,4 @@
-use super::{adt::FieldDefinition, expression::AnonConst, path::Path};
+use super::{expression::AnonConst, path::Path};
 use crate::{InterfaceType, Mutability};
 use taroc_span::Span;
 
@@ -54,9 +54,9 @@ pub enum TypeKind {
     /// Anonymous Struct Type
     ///
     /// `let foo : struct { age: int, name: int } = struct { age: 10, name: ""}`
-    AnonStruct {
-        fields: Vec<FieldDefinition>,
-    },
+    // AnonStruct {
+    //     fields: Vec<FieldDefinition>,
+    // },
     /// fn (T, V) -> X
     Function {
         inputs: Vec<Box<Type>>,

@@ -167,9 +167,12 @@ impl Parser {
     }
 
     fn parse_anon_struct_type(&mut self) -> R<TypeKind> {
+        let lo = self.lo_span();
         self.expect(TokenKind::Struct)?; // eat keyword
-        let fields = self.parse_field_definitions(Delimiter::Brace)?;
-        Ok(TypeKind::AnonStruct { fields })
+        // let fields = self.parse_field_definitions(Delimiter::Brace)?;
+        let err = SpannedMessage::new("Planned Feature".into(), lo.to(self.hi_span()));
+        return Err(err);
+        // Ok(TypeKind::AnonStruct { fields })
     }
 
     fn parse_optional_type(&mut self, ty: Type) -> R<TypeKind> {

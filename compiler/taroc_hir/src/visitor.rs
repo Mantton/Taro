@@ -474,9 +474,6 @@ pub fn walk_type<V: HirVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
         TypeKind::Array { element, .. } => {
             try_visit!(visitor.visit_type(element));
         }
-        TypeKind::AnonStruct { fields } => {
-            walk_list!(visitor, visit_field_definition, fields);
-        }
         TypeKind::Function { inputs, output, .. } => {
             walk_list!(visitor, visit_type, inputs);
             visit_optional!(visitor, visit_type, output);

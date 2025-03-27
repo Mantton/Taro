@@ -33,11 +33,18 @@ impl<'ctx> GlobalContext<'ctx> {
 
     pub fn type_of(self, id: DefinitionID) -> Ty<'ctx> {
         let database = self.context.store.types.borrow();
+        let database = database.get(&id.package().index()).expect("package types");
         return *database.def_to_ty.get(&id).unwrap();
     }
 
     pub fn generics_of(self, id: DefinitionID) -> taroc_ty::Generics {
         let database = self.context.store.types.borrow();
-        return database.def_to_generics.get(&id).unwrap().clone();
+        let database = database.get(&id.package().index()).expect("package types");
+
+        if let Some(x) = database.def_to_generics.get(&id) {
+            x.clone()
+        } else {
+            taroc_ty::Generics { parameters: vec![] }
+        }
     }
 }

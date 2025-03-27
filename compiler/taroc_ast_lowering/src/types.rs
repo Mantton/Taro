@@ -73,9 +73,6 @@ impl Actor<'_> {
             taroc_ast::TypeKind::Composite(tys) => {
                 taroc_hir::TypeKind::Composite(self.lower_sequence(tys, |a, ty| a.lower_type(ty)))
             }
-            taroc_ast::TypeKind::AnonStruct { fields } => taroc_hir::TypeKind::AnonStruct {
-                fields: self.lower_sequence(fields, |a, f| a.lower_field_definition(f)),
-            },
             taroc_ast::TypeKind::Function { .. } => todo!(),
             taroc_ast::TypeKind::ImplicitSelf => taroc_hir::TypeKind::ImplicitSelf,
             taroc_ast::TypeKind::InferedClosureParameter => todo!(),

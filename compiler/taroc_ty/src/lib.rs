@@ -24,9 +24,9 @@ pub enum TyKind<'arena> {
     Reference(Ty<'arena>, Mutability),
 
     Array(Ty<'arena>, u32),
-    Tuple(&'arena Vec<Ty<'arena>>),
+    Tuple(&'arena [Ty<'arena>]),
 
-    Adt(AdtData, &'arena [GenericArgument<'arena>]),
+    Adt(DefinitionID, &'arena [GenericArgument<'arena>]),
 
     // Interfaces
     Existential(&'arena [ExisitentialPredicate<'arena>], InterfaceType),
@@ -147,4 +147,13 @@ pub struct GenericParameterDefinition {
 pub enum GenericParameterDefinitionKind {
     Type { has_default: bool },
     Const { has_default: bool },
+}
+
+impl GenericParameterDefinitionKind {
+    pub fn has_default(&self) -> bool {
+        match self {
+            GenericParameterDefinitionKind::Type { has_default } => *has_default,
+            GenericParameterDefinitionKind::Const { has_default } => *has_default,
+        }
+    }
 }

@@ -143,7 +143,7 @@ pub struct ComputedProperty {
     pub block: Block,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DefinedTypeKind {
     Struct,
     Enum,

@@ -36,12 +36,6 @@ pub enum TypeKind {
         size: AnonConst,
         element: Box<Type>,
     },
-    /// Anonymous Struct Type
-    ///
-    /// `let foo : struct { age: int, name: int } = struct { age: 10, name: ""}`
-    AnonStruct {
-        fields: Vec<FieldDefinition>,
-    },
     Function {
         inputs: Vec<Box<Type>>,
         output: Option<Box<Type>>,
