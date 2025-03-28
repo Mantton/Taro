@@ -34,7 +34,10 @@ impl<'ctx> GlobalContext<'ctx> {
     pub fn type_of(self, id: DefinitionID) -> Ty<'ctx> {
         let database = self.context.store.types.borrow();
         let database = database.get(&id.package().index()).expect("package types");
-        return *database.def_to_ty.get(&id).unwrap();
+        return *database
+            .def_to_ty
+            .get(&id)
+            .expect("expected typeof of definition");
     }
 
     pub fn generics_of(self, id: DefinitionID) -> taroc_ty::Generics {

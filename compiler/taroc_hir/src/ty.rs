@@ -1,8 +1,6 @@
+use super::{NodeID, expression::AnonConst, path::Path};
 use std::fmt::Debug;
-
 use taroc_span::Span;
-
-use super::{NodeID, adt::FieldDefinition, expression::AnonConst, path::Path};
 
 #[derive(Debug)]
 pub struct Type {

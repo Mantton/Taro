@@ -5,9 +5,12 @@ use taroc_span::{FileID, Symbol};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Ty<'arena>(Interned<'arena, TyKind<'arena>>);
 
-impl Ty<'_> {
-    pub fn with_kind<'arena>(k: Interned<'arena, TyKind<'arena>>) -> Ty<'arena> {
+impl<'arena> Ty<'arena> {
+    pub fn with_kind(k: Interned<'arena, TyKind<'arena>>) -> Ty<'arena> {
         Ty(k)
+    }
+    pub fn kind(self) -> TyKind<'arena> {
+        *self.0.0
     }
 }
 
@@ -35,6 +38,7 @@ pub enum TyKind<'arena> {
     Parameter,
     Infer,
     Error,
+    Ignore,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

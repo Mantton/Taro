@@ -8,12 +8,13 @@ use taroc_hir::{
     Generics, NodeID, Package, TypeAlias, TypeParameters, visitor::HirVisitor,
 };
 use taroc_span::Symbol;
-use taroc_ty::{AdtData, AdtKind, GenericArgument, Ty, TyKind};
+use taroc_ty::{GenericArgument, Ty, TyKind};
 
 pub fn run(package: &taroc_hir::Package, session: Rc<CompilerSession>) -> CompileResult<()> {
     GenericsCollector::run(package, session.clone())?;
     TypeCollector::run(package, session.clone())?;
     AliasCollector::run(package, session.clone())?;
+    DefinitionCollector::run(package, session.clone())?;
     session.context.diagnostics.report()
 }
 
@@ -172,10 +173,6 @@ impl<'ctx> TypeCollector<'ctx> {
     fn collect_defined_type(&mut self, id: &NodeID, name: Symbol, node: &DefinedType) {
         let def_id = self.def_id(id);
 
-        if node.kind == DefinedTypeKind::Interface {
-            return;
-        }
-
         if self.session.config.is_std
             && let Some(builtin) = self.check_builtin(name)
         {
@@ -183,19 +180,19 @@ impl<'ctx> TypeCollector<'ctx> {
         } else {
             let arguments = self.collect_type_parameters(&node.generics.type_parameters);
             let arguments = self.session.context.store.interners.mk_args(arguments);
-            let data = AdtData {
-                id: def_id,
-                name,
-                kind: AdtKind::Struct,
-            };
-            let kind = TyKind::Adt(def_id, arguments);
-            let ty = self.session.context.store.interners.intern_ty(kind);
-            self.tag(id, ty);
+
+            match node.kind {
+                DefinedTypeKind::Struct | DefinedTypeKind::Enum => {
+                    let kind = TyKind::Adt(def_id, arguments);
+                    let ty = self.session.context.store.interners.intern_ty(kind);
+                    self.tag(id, ty);
+                }
+                DefinedTypeKind::Interface => {}
+            }
         }
     }
 
     fn collect_alias(&mut self, id: &NodeID, node: &TypeAlias) {
-        let def_id = self.def_id(id);
         let _ = self.collect_type_parameters(&node.generics.type_parameters);
         let kind = TyKind::AliasPlaceholder;
         let ty = self.session.context.store.interners.intern_ty(kind);
@@ -305,4 +302,69 @@ impl<'ctx> AliasCollector<'ctx> {
 /// Fields, TypeAliases, AssociatedTypes, Variants, Computed Properties
 struct DefinitionCollector<'ctx> {
     session: Rc<CompilerSession<'ctx>>,
+    parent: Option<DefinitionID>,
+}
+
+impl<'ctx> DefinitionCollector<'ctx> {
+    fn new(session: Rc<CompilerSession<'ctx>>) -> DefinitionCollector<'ctx> {
+        DefinitionCollector {
+            session,
+            parent: None,
+        }
+    }
+
+    fn run<'a>(package: &Package, session: Rc<CompilerSession<'ctx>>) -> CompileResult<()> {
+        let mut actor = DefinitionCollector::new(session.clone());
+        taroc_hir::visitor::walk_package(&mut actor, package);
+        session.context.diagnostics.report()
+    }
+}
+impl HirVisitor for DefinitionCollector<'_> {
+    fn visit_declaration(
+        &mut self,
+        declaration: &Declaration,
+        context: DeclarationContext,
+    ) -> Self::Result {
+        let previous = self.parent;
+        match &declaration.kind {
+            DeclarationKind::DefinedType(node)
+                if matches!(node.kind, DefinedTypeKind::Struct | DefinedTypeKind::Enum) =>
+            {
+                let id = self
+                    .session
+                    .context
+                    .def_id(declaration.id, self.session.index);
+
+                let ty = self.session.context.type_of(id);
+                self.parent = Some(id);
+            }
+            DeclarationKind::Computed(node) => {
+                let name = declaration.identifier.symbol;
+                let ty = &node.ty;
+                let ty = lower::lower_type(
+                    ty,
+                    self.session.context,
+                    self.session.index,
+                    Default::default(),
+                );
+            }
+            DeclarationKind::Variable(node) if matches!(context, DeclarationContext::Struct) => {
+                // Struct Field
+                let ty = lower::lower_type(
+                    node.ty.as_ref().expect("annotated field"),
+                    self.session.context,
+                    self.session.index,
+                    Default::default(),
+                );
+            }
+            _ => {}
+        }
+
+        taroc_hir::visitor::walk_declaration(self, declaration, context);
+        self.parent = previous
+    }
+
+    fn visit_variant(&mut self, v: &taroc_hir::Variant) -> Self::Result {
+        // Enum Variant
+    }
 }

@@ -144,6 +144,7 @@ pub struct CommonTypes<'ctx> {
     pub float64: Ty<'ctx>,
 
     pub error: Ty<'ctx>,
+    pub ignore: Ty<'ctx>,
 }
 
 impl<'a> CommonTypes<'a> {
@@ -171,6 +172,7 @@ impl<'a> CommonTypes<'a> {
             float64: mk(TyKind::Float(FloatTy::F64)),
 
             error: mk(TyKind::Error),
+            ignore: mk(TyKind::Ignore),
         }
     }
 }

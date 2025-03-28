@@ -93,9 +93,9 @@ impl<'ctx> TypeLowerer<'ctx> {
         segment: &taroc_hir::PathSegment,
         res: Resolution,
     ) -> Ty<'ctx> {
-        // self.context
-        //     .diagnostics
-        //     .info("Lowering".into(), segment.identifier.span);
+        self.context
+            .diagnostics
+            .info("Lowering".into(), segment.identifier.span);
         match res {
             Resolution::Definition(
                 def_id,
@@ -122,6 +122,10 @@ impl<'ctx> TypeLowerer<'ctx> {
             Resolution::Definition(_, DefinitionKind::Interface) => {
                 self.context.store.common_types.error
             }
+            Resolution::Definition(
+                _,
+                DefinitionKind::Namespace | DefinitionKind::Module | DefinitionKind::Bridged,
+            ) => self.context.store.common_types.ignore,
             Resolution::InterfaceSelfTypeAlias(definition_id) => todo!(),
             Resolution::SelfTypeAlias(definition_id) => todo!(),
             Resolution::ConformanceSelfTypeAlias {
@@ -225,6 +229,7 @@ impl<'ctx> TypeLowerer<'ctx> {
             } else if node.kind.has_default() {
                 todo!("check for default")
             } else {
+                // TODO: pass Segment Here for error reporting
                 GenericArgument::Type(self.context.store.common_types.error)
             };
 
