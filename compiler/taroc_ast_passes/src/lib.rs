@@ -11,3 +11,4 @@ pub fn run(
 // Validate functions
 // validate extensions & conformances
 // validate namespaces and extern
+// validate default type parameters

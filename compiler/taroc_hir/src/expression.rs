@@ -12,14 +12,14 @@ use super::{
     ty::Type,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Expression {
     pub id: NodeID,
     pub kind: ExpressionKind,
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ExpressionKind {
     Malformed,
     Literal(Literal),
@@ -108,26 +108,26 @@ pub enum ExpressionKind {
     // OptionalBinding(OptionalBindingCondition),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AnonConst {
     pub value: Box<Expression>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ExpressionArgument {
     pub label: Option<Label>,
     pub expression: Box<Expression>,
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IfExpression {
     pub condition: Box<Expression>,
     pub body: Block,
     pub else_block: Option<Box<Expression>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MethodCall {
     pub receiver: Box<Expression>,
     pub method: PathSegment,
@@ -135,14 +135,14 @@ pub struct MethodCall {
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PatternBindingCondition {
     pub expression: Box<Expression>,
     pub pattern: MatchingPattern,
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ClosureExpression {
     pub prototype: FunctionPrototype,
     pub is_async: bool,

@@ -2,16 +2,16 @@ use taroc_ast::Mutability;
 use taroc_span::{Identifier, Span};
 
 use super::{Label, NodeID, expression::AnonConst, path::Path};
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MatchingPattern {
     pub id: NodeID,
     pub span: Span,
     pub kind: MatchingPatternKind,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BindingMode(pub Mutability);
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum MatchingPatternKind {
     /// _
     Wildcard,
@@ -33,27 +33,27 @@ pub enum MatchingPatternKind {
     Literal(AnonConst),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LabeledMatchingPattern {
     pub label: Option<Label>,
     pub pattern: MatchingPattern,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BindingPattern {
     pub id: NodeID,
     pub span: Span,
     pub kind: BindingPatternKind,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum BindingPatternKind {
     Wildcard,
     Identifier(Identifier),
     Tuple(Vec<BindingPattern>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PatternField {
     pub id: NodeID,
     pub identifier: Identifier,

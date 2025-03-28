@@ -2,14 +2,14 @@ use super::{NodeID, expression::AnonConst, path::Path};
 use std::fmt::Debug;
 use taroc_span::Span;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Type {
     pub id: NodeID,
     pub span: Span,
     pub kind: TypeKind,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TypeKind {
     /// Pointer Type
     ///

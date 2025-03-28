@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use taroc_span::{Identifier, Span};
 use taroc_token::OperatorKind;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Declaration {
     pub id: NodeID,
     pub span: Span,
@@ -17,7 +17,7 @@ pub struct Declaration {
     pub attributes: AttributeList,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum DeclarationKind {
     /// `fn main() {}`
     Function(Function),
@@ -56,20 +56,20 @@ pub enum DeclarationKind {
     DefinedType(DefinedType),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TypeAlias {
     pub generics: Generics,
     pub ty: Option<Box<Type>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Extend {
     pub ty: TaggedPath,
     pub generics: Generics,
     pub declarations: Vec<Declaration>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Extern {
     pub abi: Abi,
     pub declarations: Vec<Declaration>,
@@ -82,7 +82,7 @@ pub enum Abi {
     Error,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Namespace {
     pub declarations: Vec<Declaration>,
 }
@@ -117,14 +117,14 @@ pub enum BridgeValue {
     Dict(Box<Bridge>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PathTree {
     pub root: Path,
     pub node: PathTreeNode,
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PathTreeNode {
     Simple {
         alias: Option<Identifier>,
@@ -136,7 +136,7 @@ pub enum PathTreeNode {
     Glob,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ComputedProperty {
     pub id: NodeID,
     pub ty: Box<Type>,
@@ -150,14 +150,14 @@ pub enum DefinedTypeKind {
     Interface,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DefinedType {
     pub kind: DefinedTypeKind,
     pub generics: Generics,
     pub declarations: Vec<Declaration>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EnumCase {
     pub members: Vec<Variant>,
 }

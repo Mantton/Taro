@@ -5,14 +5,14 @@ use super::{
     local::Local,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Statement {
     pub id: NodeID,
     pub kind: StatementKind,
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum StatementKind {
     Declaration(Declaration),
     Expression(Box<Expression>),
@@ -24,7 +24,7 @@ pub enum StatementKind {
     Defer(Block),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LoopStatement {
     pub label: Option<Label>,
     pub block: Block,

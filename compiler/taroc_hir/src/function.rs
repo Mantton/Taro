@@ -6,7 +6,7 @@ use super::{
     ty::Type,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Function {
     pub generics: Generics,
     pub signature: FunctionSignature,
@@ -21,7 +21,7 @@ pub struct Function {
 /// @attribute name: String
 ///
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FunctionParameter {
     pub attributes: AttributeList,
     pub id: NodeID,
@@ -37,20 +37,20 @@ pub struct FunctionParameter {
 ///
 /// `(name: string) -> int`
 /// `(name: string) -> void` // defaults to void if not provided
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FunctionPrototype {
     pub inputs: Vec<FunctionParameter>,
     pub output: Option<Box<Type>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FunctionSignature {
     pub span: Span,
     pub prototype: FunctionPrototype,
     pub is_async: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum FunctionReceiverKind {
     Copy(Identifier),
     Ref(Mutability, Option<Identifier>),

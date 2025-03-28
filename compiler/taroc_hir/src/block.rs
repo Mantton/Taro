@@ -1,7 +1,7 @@
 use super::{NodeID, statement::Statement};
 use taroc_span::Span;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Block {
     pub id: NodeID,
     pub statements: Vec<Statement>,

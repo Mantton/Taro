@@ -2,7 +2,7 @@ use super::{NodeID, path::Path, ty::Type};
 use crate::AnonConst;
 use taroc_span::{Identifier, Span};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TypeParameter {
     pub id: NodeID,
     pub span: Span,
@@ -10,7 +10,7 @@ pub struct TypeParameter {
     pub kind: TypeParameterKind,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TypeParameterKind {
     Type {
         default: Option<Box<Type>>,
@@ -21,20 +21,20 @@ pub enum TypeParameterKind {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TypeParameters {
     pub span: Span,
     pub parameters: Vec<TypeParameter>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TypeArguments {
     pub span: Span,
     pub arguments: Vec<Box<Type>>,
 }
 
 /// `where T: X & Y`
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct GenericWhereClause {
     pub requirements: GenericRequirementList,
     pub span: Span,
@@ -43,7 +43,7 @@ pub struct GenericWhereClause {
 /// `T: X & Y, V == T`
 pub type GenericRequirementList = Vec<GenericRequirement>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum GenericRequirement {
     /// `Foo == Bar`
     SameTypeRequirement(RequiredTypeConstraint),
@@ -52,7 +52,7 @@ pub enum GenericRequirement {
 }
 
 /// `Foo == Bar`
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RequiredTypeConstraint {
     pub bounded_type: TaggedPath,
     pub bound: Box<Type>,
@@ -60,32 +60,32 @@ pub struct RequiredTypeConstraint {
 }
 
 /// `Self::Foo: Hashable`
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ConformanceConstraint {
     pub bounded_type: TaggedPath,
     pub bounds: GenericBounds,
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct GenericBound {
     pub path: TaggedPath,
 }
 
 pub type GenericBounds = Vec<GenericBound>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Inheritance {
     pub interfaces: Vec<TaggedPath>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TaggedPath {
     pub path: Path,
     pub id: NodeID,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Generics {
     pub type_parameters: Option<TypeParameters>,
     pub where_clause: Option<GenericWhereClause>,
