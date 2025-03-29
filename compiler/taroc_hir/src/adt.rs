@@ -23,7 +23,7 @@ pub struct FieldDefinition {
 
 #[derive(Debug, Clone)]
 pub enum VariantKind {
-    Unit(NodeID),
-    Tuple(NodeID, Vec<FieldDefinition>),
-    Struct(NodeID, Vec<FieldDefinition>),
+    Unit,
+    Tuple(Vec<FieldDefinition>),
+    Struct(Vec<FieldDefinition>),
 }

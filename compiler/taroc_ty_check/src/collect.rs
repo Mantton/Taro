@@ -5,10 +5,13 @@ use taroc_context::{CompilerSession, TypeDatabase};
 use taroc_error::CompileResult;
 use taroc_hir::{
     Declaration, DeclarationContext, DeclarationKind, DefinedType, DefinedTypeKind, DefinitionID,
-    Generics, NodeID, Package, TypeAlias, TypeParameters, visitor::HirVisitor,
+    Generics, Mutability, NodeID, Package, TypeAlias, TypeParameters, visitor::HirVisitor,
 };
 use taroc_span::Symbol;
-use taroc_ty::{GenericArgument, Ty, TyKind};
+use taroc_ty::{
+    EnumDefinition, EnumVariant, EnumVariantKind, GenericArgument, InterfaceDefinition,
+    StructDefinition, StructField, Ty, TyKind,
+};
 
 pub fn run(package: &taroc_hir::Package, session: Rc<CompilerSession>) -> CompileResult<()> {
     GenericsCollector::run(package, session.clone())?;
@@ -90,7 +93,7 @@ impl<'ctx> GenericsCollector<'ctx> {
                 kind: match &param.kind {
                     taroc_hir::TypeParameterKind::Type { default } => {
                         taroc_ty::GenericParameterDefinitionKind::Type {
-                            has_default: default.is_some(),
+                            default: default.clone(),
                         }
                     }
                     taroc_hir::TypeParameterKind::Constant { default, .. } => {
@@ -303,6 +306,9 @@ impl<'ctx> AliasCollector<'ctx> {
 struct DefinitionCollector<'ctx> {
     session: Rc<CompilerSession<'ctx>>,
     parent: Option<DefinitionID>,
+    structs: FxHashMap<DefinitionID, StructDefinition<'ctx>>,
+    enums: FxHashMap<DefinitionID, EnumDefinition<'ctx>>,
+    interfaces: FxHashMap<DefinitionID, InterfaceDefinition<'ctx>>,
 }
 
 impl<'ctx> DefinitionCollector<'ctx> {
@@ -310,16 +316,22 @@ impl<'ctx> DefinitionCollector<'ctx> {
         DefinitionCollector {
             session,
             parent: None,
+            structs: Default::default(),
+            enums: Default::default(),
+            interfaces: Default::default(),
         }
     }
 
     fn run<'a>(package: &Package, session: Rc<CompilerSession<'ctx>>) -> CompileResult<()> {
         let mut actor = DefinitionCollector::new(session.clone());
         taroc_hir::visitor::walk_package(&mut actor, package);
+        println!("{:?}", actor.structs);
+        println!("\n\n\n");
+        println!("{:?}", actor.enums);
         session.context.diagnostics.report()
     }
 }
-impl HirVisitor for DefinitionCollector<'_> {
+impl<'ctx> HirVisitor for DefinitionCollector<'ctx> {
     fn visit_declaration(
         &mut self,
         declaration: &Declaration,
@@ -327,15 +339,48 @@ impl HirVisitor for DefinitionCollector<'_> {
     ) -> Self::Result {
         let previous = self.parent;
         match &declaration.kind {
-            DeclarationKind::DefinedType(node)
-                if matches!(node.kind, DefinedTypeKind::Struct | DefinedTypeKind::Enum) =>
-            {
+            DeclarationKind::DefinedType(node) => {
                 let id = self
                     .session
                     .context
                     .def_id(declaration.id, self.session.index);
+                let name = declaration.identifier.symbol;
 
-                let ty = self.session.context.type_of(id);
+                match &node.kind {
+                    DefinedTypeKind::Struct => {
+                        // create struct definition
+                        let def = StructDefinition {
+                            id,
+                            name,
+                            conformances: vec![],
+                            fields: Default::default(),
+                        };
+
+                        self.structs.insert(id, def);
+                    }
+                    DefinedTypeKind::Enum => {
+                        let def = EnumDefinition {
+                            id,
+                            name,
+                            conformances: vec![],
+                            variants: Default::default(),
+                        };
+
+                        self.enums.insert(id, def);
+                    }
+                    DefinedTypeKind::Interface => {
+                        let def = InterfaceDefinition {
+                            id,
+                            name,
+                            conformances: vec![],
+                            associated_types: vec![],
+                            requirements: vec![],
+                        };
+
+                        self.interfaces.insert(id, def);
+                    }
+                };
+
                 self.parent = Some(id);
             }
             DeclarationKind::Computed(node) => {
@@ -349,6 +394,8 @@ impl HirVisitor for DefinitionCollector<'_> {
                 );
             }
             DeclarationKind::Variable(node) if matches!(context, DeclarationContext::Struct) => {
+                let name = declaration.identifier.symbol;
+
                 // Struct Field
                 let ty = lower::lower_type(
                     node.ty.as_ref().expect("annotated field"),
@@ -356,7 +403,33 @@ impl HirVisitor for DefinitionCollector<'_> {
                     self.session.index,
                     Default::default(),
                 );
+
+                let field = StructField {
+                    name,
+                    ty,
+                    mutability: node.mutability,
+                };
+
+                let parent = self.parent.expect("parent_id");
+                let def = self.structs.get_mut(&parent).expect("struct definition");
+                let previous = def.fields.insert(declaration.identifier.symbol, field);
+
+                debug_assert!(
+                    previous.is_none(),
+                    "overlapping field defintions should be caught by resolver"
+                );
             }
+
+            DeclarationKind::Constant(ty, _) => {
+                let ty = lower::lower_type(
+                    ty,
+                    self.session.context,
+                    self.session.index,
+                    Default::default(),
+                );
+            }
+
+            DeclarationKind::AssociatedType => {}
             _ => {}
         }
 
@@ -364,7 +437,82 @@ impl HirVisitor for DefinitionCollector<'_> {
         self.parent = previous
     }
 
-    fn visit_variant(&mut self, v: &taroc_hir::Variant) -> Self::Result {
+    fn visit_variant(&mut self, variant: &taroc_hir::Variant) -> Self::Result {
+        let id = self.session.context.def_id(variant.id, self.session.index);
+        let name = variant.identifier.symbol;
+        let kind = match &variant.kind {
+            taroc_hir::VariantKind::Unit => EnumVariantKind::Unit,
+            taroc_hir::VariantKind::Tuple(fields) => {
+                let types: Vec<Ty<'ctx>> = fields
+                    .iter()
+                    .map(|f| {
+                        let ty = lower::lower_type(
+                            &f.ty,
+                            self.session.context,
+                            self.session.index,
+                            Default::default(),
+                        );
+                        ty
+                    })
+                    .collect();
+
+                EnumVariantKind::Tuple(types)
+            }
+            taroc_hir::VariantKind::Struct(fields) => {
+                let fields: FxHashMap<Symbol, StructField<'ctx>> =
+                    fields.iter().fold(Default::default(), |mut acc, field| {
+                        let ty = lower::lower_type(
+                            &field.ty,
+                            self.session.context,
+                            self.session.index,
+                            Default::default(),
+                        );
+
+                        let field = StructField {
+                            name,
+                            ty,
+                            mutability: Mutability::Immutable,
+                        };
+
+                        let previous = acc.insert(field.name, field);
+
+                        debug_assert!(
+                            previous.is_none(),
+                            "fields must be unique, this should be caught by the resolver"
+                        );
+
+                        acc
+                    });
+
+                let def = StructDefinition {
+                    id,
+                    name,
+                    fields,
+                    conformances: vec![],
+                };
+
+                EnumVariantKind::Struct(def)
+            }
+        };
         // Enum Variant
+
+        let node = EnumVariant {
+            id,
+            name,
+            kind,
+            discriminant: 0, // TODO
+        };
+
+        let parent = self.parent.expect("parent_id");
+        let def = self.enums.get_mut(&parent).expect("enum definition");
+        let previous = def.variants.insert(node.name, node);
+
+        debug_assert!(
+            previous.is_none(),
+            "variant names must be unique, this should be caught by the resolver"
+        );
     }
 }
+
+// TODO: Recursive Checker
+// TODO: Extension Blocks

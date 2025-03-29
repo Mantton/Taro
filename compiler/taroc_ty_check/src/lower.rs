@@ -34,7 +34,7 @@ impl<'ctx> TypeLowerer<'ctx> {
                 lower_type(ty, self.context, self.index, self.active_subst.clone()),
                 *mutability,
             )),
-            taroc_hir::TypeKind::Reference(_, mutability) => mk(TyKind::Reference(
+            taroc_hir::TypeKind::Reference(ty, mutability) => mk(TyKind::Reference(
                 lower_type(ty, self.context, self.index, self.active_subst.clone()),
                 *mutability,
             )),
@@ -127,7 +127,7 @@ impl<'ctx> TypeLowerer<'ctx> {
                 DefinitionKind::Namespace | DefinitionKind::Module | DefinitionKind::Bridged,
             ) => self.context.store.common_types.ignore,
             Resolution::InterfaceSelfTypeAlias(definition_id) => todo!(),
-            Resolution::SelfTypeAlias(definition_id) => todo!(),
+            Resolution::SelfTypeAlias(definition_id) => self.context.type_of(definition_id),
             Resolution::ConformanceSelfTypeAlias {
                 ty,
                 interface,
@@ -222,18 +222,28 @@ impl<'ctx> TypeLowerer<'ctx> {
         let mut local_subst = SubstitutionMap::default();
 
         for (i, node) in generics.parameters.iter().enumerate() {
-            let k = self.context.type_of(node.id);
+            match &node.kind {
+                taroc_ty::GenericParameterDefinitionKind::Type { default } => {
+                    let k = self.context.type_of(node.id);
+                    let v = if let Some(v) = args.get(i) {
+                        *v
+                    } else if let Some(default) = default {
+                        let ty = lower_type(
+                            default,
+                            self.context,
+                            self.index,
+                            self.active_subst.clone(),
+                        );
+                        GenericArgument::Type(ty)
+                    } else {
+                        // TODO: pass Segment Here for error reporting
+                        GenericArgument::Type(self.context.store.common_types.error)
+                    };
 
-            let v = if let Some(v) = args.get(i) {
-                *v
-            } else if node.kind.has_default() {
-                todo!("check for default")
-            } else {
-                // TODO: pass Segment Here for error reporting
-                GenericArgument::Type(self.context.store.common_types.error)
-            };
-
-            local_subst.insert(k, v);
+                    local_subst.insert(k, v);
+                }
+                taroc_ty::GenericParameterDefinitionKind::Const { .. } => todo!(),
+            }
         }
 
         local_subst
@@ -298,10 +308,13 @@ fn check_generic_arg_count(
     }
 
     if provided > total_count {
-        context.diagnostics.error(
-            "Excess Generic Arguments".into(),
-            segment.arguments.as_ref().map(|v| v.span).unwrap(),
+        let message = format!(
+            "excess generic arguments, '{}' requires {} type argument(s), provided {}",
+            segment.identifier.symbol, min, provided
         );
+        context
+            .diagnostics
+            .error(message, segment.arguments.as_ref().map(|v| v.span).unwrap());
     } else {
         context
             .diagnostics

@@ -8,3 +8,5 @@ taroc_span = { path = "../taroc_span" }
 taroc_error = { path = "../taroc_error" }
 taroc_hir = { path = "../taroc_hir" }
 taroc_data_structures = { path = "../taroc_data_structures" }
+rustc-hash = "2.1.1"
+indexmap = "2.8.0"

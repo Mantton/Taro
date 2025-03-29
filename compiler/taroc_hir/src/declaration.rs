@@ -39,7 +39,6 @@ pub enum DeclarationKind {
     Extend(Extend),
     /// `type Foo = Optional<int>`
     TypeAlias(TypeAlias),
-
     /// `extern "c" {}`
     Extern(Extern),
     /// `namespace Foo {}`

@@ -640,10 +640,10 @@ pub fn walk_variant<V: HirVisitor>(visitor: &mut V, variant: &Variant) -> V::Res
 }
 pub fn walk_variant_kind<V: HirVisitor>(visitor: &mut V, variant_kind: &VariantKind) -> V::Result {
     match variant_kind {
-        VariantKind::Tuple(_, fields) => {
+        VariantKind::Tuple(fields) => {
             walk_list!(visitor, visit_field_definition, fields);
         }
-        VariantKind::Struct(_, fields) => {
+        VariantKind::Struct(fields) => {
             walk_list!(visitor, visit_field_definition, fields);
         }
         _ => {}
