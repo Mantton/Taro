@@ -4,7 +4,7 @@ use std::collections::hash_map::Entry;
 use taroc_error::CompileResult;
 use taroc_hir::{
     DeclarationContext, DefinitionID, DefinitionKind, NodeID, Resolution, SymbolNamespace,
-    visitor::HirVisitor,
+    visitor::{self, HirVisitor},
 };
 use taroc_resolve_models::{
     LexicalScope, LexicalScopeSource, PathResult, PathSource, PatternSource, ResolutionError,
@@ -260,6 +260,18 @@ impl HirVisitor for Actor<'_, '_> {
             self.resolve_function_signature(&f.signature);
         }
     }
+
+    fn visit_inheritance(&mut self, n: &taroc_hir::Inheritance) -> Self::Result {
+        for interface_ref in &n.interfaces {
+            self.resolve_path_with_source(
+                interface_ref.id,
+                &interface_ref.path,
+                PathSource::Interface,
+            );
+
+            visitor::walk_tagged_path(self, interface_ref);
+        }
+    }
 }
 
 impl Actor<'_, '_> {
@@ -329,7 +341,7 @@ impl Actor<'_, '_> {
             taroc_hir::DeclarationKind::Computed(_) => {
                 taroc_hir::visitor::walk_declaration(self, declaration, context)
             }
-            taroc_hir::DeclarationKind::AssociatedType => {
+            taroc_hir::DeclarationKind::AssociatedType(..) => {
                 taroc_hir::visitor::walk_declaration(self, declaration, context)
             }
             taroc_hir::DeclarationKind::Operator(..) => {

@@ -12,3 +12,4 @@ pub fn run(
 // validate extensions & conformances
 // validate namespaces and extern
 // validate default type parameters
+// validate interfaces may only be nested in modular spaces (Namespace, Top Level)

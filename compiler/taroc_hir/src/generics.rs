@@ -30,7 +30,13 @@ pub struct TypeParameters {
 #[derive(Debug, Clone)]
 pub struct TypeArguments {
     pub span: Span,
-    pub arguments: Vec<Box<Type>>,
+    pub arguments: Vec<TypeArgument>,
+}
+
+#[derive(Debug, Clone)]
+pub enum TypeArgument {
+    Type(Box<Type>),
+    Const(AnonConst),
 }
 
 /// `where T: X & Y`

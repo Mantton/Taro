@@ -56,8 +56,11 @@ impl Actor<'_> {
             taroc_ast::DeclarationKind::Computed(node) => {
                 taroc_hir::DeclarationKind::Computed(self.lower_computed_var(node))
             }
-            taroc_ast::DeclarationKind::AssociatedType => {
-                taroc_hir::DeclarationKind::AssociatedType
+            taroc_ast::DeclarationKind::AssociatedType(node) => {
+                taroc_hir::DeclarationKind::AssociatedType(
+                    self.lower_generics(node.generics),
+                    self.lower_optional(node.default, |a, ty| a.lower_type(ty)),
+                )
             }
             taroc_ast::DeclarationKind::Constant(ty, c) => {
                 taroc_hir::DeclarationKind::Constant(self.lower_type(ty), self.lower_anon_const(c))

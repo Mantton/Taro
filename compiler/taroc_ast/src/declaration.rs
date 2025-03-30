@@ -47,7 +47,7 @@ pub enum DeclarationKind {
     /// `var count: Int {}`
     Computed(ComputedVariable),
     /// `associatedtype Foo`
-    AssociatedType,
+    AssociatedType(AssociatedType),
     /// `struct Foo {}` | `enum Foo {}` | `interface Foo {}`
     DefinedType(DefinedType),
     /// `case Foo, case Bar {}, case Baz`
@@ -58,6 +58,12 @@ pub enum DeclarationKind {
 pub struct TypeAlias {
     pub generics: Generics,
     pub ty: Option<Box<Type>>,
+}
+
+#[derive(Debug)]
+pub struct AssociatedType {
+    pub generics: Generics,
+    pub default: Option<Box<Type>>,
 }
 
 #[derive(Debug)]

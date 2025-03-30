@@ -77,6 +77,9 @@ impl<'ctx> TypeLowerer<'ctx> {
         debug_assert!(!path.segments.is_empty(), "empty path");
 
         for (index, segment) in path.segments.iter().enumerate() {
+            // self.context
+            //     .diagnostics
+            //     .info("Lowering".into(), segment.identifier.span);
             let res = self.context.resolution(segment.id, self.index);
             let ty = self.lower_path_segment(segment, res);
 
@@ -93,9 +96,6 @@ impl<'ctx> TypeLowerer<'ctx> {
         segment: &taroc_hir::PathSegment,
         res: Resolution,
     ) -> Ty<'ctx> {
-        self.context
-            .diagnostics
-            .info("Lowering".into(), segment.identifier.span);
         match res {
             Resolution::Definition(
                 def_id,
@@ -199,14 +199,13 @@ impl<'ctx> TypeLowerer<'ctx> {
     ) -> Vec<GenericArgument<'ctx>> {
         let mut output = vec![];
         for argument in &arguments.arguments {
-            let ty = lower_type(
-                argument,
-                self.context,
-                self.index,
-                self.active_subst.clone(),
-            );
-
-            output.push(GenericArgument::Type(ty));
+            match argument {
+                taroc_hir::TypeArgument::Type(ty) => {
+                    let ty = lower_type(ty, self.context, self.index, self.active_subst.clone());
+                    output.push(GenericArgument::Type(ty));
+                }
+                taroc_hir::TypeArgument::Const(_) => todo!(),
+            }
         }
 
         return output;
@@ -288,7 +287,7 @@ fn check_generics_prohibited(
     ok
 }
 
-fn check_generic_arg_count(
+pub fn check_generic_arg_count(
     generics: &taroc_ty::Generics,
     segment: &taroc_hir::PathSegment,
     context: GlobalContext<'_>,

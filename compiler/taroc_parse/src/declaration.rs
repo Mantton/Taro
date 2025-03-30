@@ -1,9 +1,9 @@
 use super::package::{Parser, R};
 use std::collections::HashMap;
 use taroc_ast::{
-    BindingPatternKind, Bridge, BridgeValue, ComputedVariable, Declaration, DeclarationContext,
-    DeclarationKind, DefinedType, DefinedTypeKind, EnumCase, Extend, Extern, Generics, Local,
-    Mutability, Namespace, PathTree, PathTreeNode, TypeAlias,
+    AssociatedType, BindingPatternKind, Bridge, BridgeValue, ComputedVariable, Declaration,
+    DeclarationContext, DeclarationKind, DefinedType, DefinedTypeKind, EnumCase, Extend, Extern,
+    Generics, Local, Mutability, Namespace, PathTree, PathTreeNode, TypeAlias,
 };
 use taroc_span::{Identifier, SpannedMessage, Symbol};
 use taroc_token::{Delimiter, TokenKind};
@@ -400,7 +400,26 @@ impl Parser {
         self.expect(TokenKind::AssociatedType)?;
         let identifier = self.parse_identifier()?;
 
-        return Ok((identifier, DeclarationKind::AssociatedType));
+        let inheritance = self.parse_inheritance()?;
+
+        let default = if self.eat(TokenKind::Assign) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+
+        let where_clause = self.parse_generic_where_clause()?;
+
+        let generics = Generics {
+            type_parameters: None,
+            where_clause,
+            inheritance,
+        };
+
+        return Ok((
+            identifier,
+            DeclarationKind::AssociatedType(AssociatedType { generics, default }),
+        ));
     }
 }
 

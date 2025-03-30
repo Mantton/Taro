@@ -9,8 +9,8 @@ use taroc_hir::{
 };
 use taroc_span::Symbol;
 use taroc_ty::{
-    EnumDefinition, EnumVariant, EnumVariantKind, GenericArgument, InterfaceDefinition,
-    StructDefinition, StructField, Ty, TyKind,
+    AssociatedTypeDefinition, EnumDefinition, EnumVariant, EnumVariantKind, GenericArgument,
+    InterfaceDefinition, InterfaceReference, StructDefinition, StructField, Ty, TyKind,
 };
 
 pub fn run(package: &taroc_hir::Package, session: Rc<CompilerSession>) -> CompileResult<()> {
@@ -325,9 +325,6 @@ impl<'ctx> DefinitionCollector<'ctx> {
     fn run<'a>(package: &Package, session: Rc<CompilerSession<'ctx>>) -> CompileResult<()> {
         let mut actor = DefinitionCollector::new(session.clone());
         taroc_hir::visitor::walk_package(&mut actor, package);
-        println!("{:?}", actor.structs);
-        println!("\n\n\n");
-        println!("{:?}", actor.enums);
         session.context.diagnostics.report()
     }
 }
@@ -345,14 +342,14 @@ impl<'ctx> HirVisitor for DefinitionCollector<'ctx> {
                     .context
                     .def_id(declaration.id, self.session.index);
                 let name = declaration.identifier.symbol;
-
+                let conformances = self.collect_interface_conformances(&node.generics.inheritance);
                 match &node.kind {
                     DefinedTypeKind::Struct => {
                         // create struct definition
                         let def = StructDefinition {
                             id,
                             name,
-                            conformances: vec![],
+                            conformances,
                             fields: Default::default(),
                         };
 
@@ -362,7 +359,7 @@ impl<'ctx> HirVisitor for DefinitionCollector<'ctx> {
                         let def = EnumDefinition {
                             id,
                             name,
-                            conformances: vec![],
+                            conformances,
                             variants: Default::default(),
                         };
 
@@ -372,8 +369,8 @@ impl<'ctx> HirVisitor for DefinitionCollector<'ctx> {
                         let def = InterfaceDefinition {
                             id,
                             name,
-                            conformances: vec![],
-                            associated_types: vec![],
+                            conformances,
+                            associated_types: Default::default(),
                             requirements: vec![],
                         };
 
@@ -429,7 +426,34 @@ impl<'ctx> HirVisitor for DefinitionCollector<'ctx> {
                 );
             }
 
-            DeclarationKind::AssociatedType => {}
+            DeclarationKind::AssociatedType(generics, default_ty)
+                if matches!(context, DeclarationContext::Interface) =>
+            {
+                let name = declaration.identifier.symbol;
+                let conformances = self.collect_interface_conformances(&generics.inheritance);
+
+                let assoc = AssociatedTypeDefinition {
+                    name,
+                    conformances,
+                    default_type: default_ty.as_ref().map(|ty| {
+                        lower::lower_type(
+                            &ty,
+                            self.session.context,
+                            self.session.index,
+                            Default::default(),
+                        )
+                    }),
+                };
+
+                let parent = self.parent.expect("parent_id");
+                let def = self.interfaces.get_mut(&parent).expect("struct definition");
+                let previous = def.associated_types.insert(name, assoc);
+
+                debug_assert!(
+                    previous.is_none(),
+                    "overlapping associated types should be caught by resolver"
+                );
+            }
             _ => {}
         }
 
@@ -511,6 +535,69 @@ impl<'ctx> HirVisitor for DefinitionCollector<'ctx> {
             previous.is_none(),
             "variant names must be unique, this should be caught by the resolver"
         );
+    }
+}
+
+impl<'ctx> DefinitionCollector<'ctx> {
+    pub fn collect_interface_conformances(
+        &mut self,
+        node: &Option<taroc_hir::Inheritance>,
+    ) -> Vec<InterfaceReference<'ctx>> {
+        let mut out = vec![];
+
+        let Some(node) = node else {
+            return out;
+        };
+
+        for node in node.interfaces.iter() {
+            let resolution = self.session.context.resolution(node.id, self.session.index);
+
+            match resolution {
+                taroc_hir::Resolution::Definition(id, taroc_hir::DefinitionKind::Interface) => {
+                    let arguments = node
+                        .path
+                        .segments
+                        .last()
+                        .map(|f| f.arguments.as_ref())
+                        .flatten();
+
+                    let generics = self.session.context.generics_of(id);
+                    lower::check_generic_arg_count(
+                        &generics,
+                        node.path.segments.last().unwrap(),
+                        self.session.context,
+                    );
+                    let arguments: Vec<GenericArgument<'ctx>> = if let Some(arguments) = arguments {
+                        let arguments = arguments.arguments.iter().map(|argument| match argument {
+                            taroc_hir::TypeArgument::Type(ty) => {
+                                let ty = lower::lower_type(
+                                    ty,
+                                    self.session.context,
+                                    self.session.index,
+                                    Default::default(),
+                                );
+
+                                GenericArgument::Type(ty)
+                            }
+                            taroc_hir::TypeArgument::Const(..) => todo!(),
+                        });
+                        arguments.collect()
+                    } else {
+                        vec![]
+                    };
+
+                    let reference = InterfaceReference {
+                        id,
+                        arguments: self.session.context.store.interners.mk_args(arguments),
+                    };
+
+                    out.push(reference);
+                }
+                _ => unreachable!("resolver must validate provided paths are interfaces"),
+            }
+        }
+
+        out
     }
 }
 

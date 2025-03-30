@@ -132,7 +132,7 @@ impl Actor<'_, '_> {
             | DeclarationKind::Computed(..) => {
                 self.resolver.define(parent, decl.identifier, def);
             }
-            DeclarationKind::TypeAlias(_) => {
+            DeclarationKind::TypeAlias(_) | DeclarationKind::AssociatedType(..) => {
                 self.resolver.define(parent, decl.identifier, def);
             }
             DeclarationKind::DefinedType(..)
@@ -153,9 +153,6 @@ impl Actor<'_, '_> {
             DeclarationKind::Extern(..)
             | DeclarationKind::Constructor(..)
             | DeclarationKind::Extend(..) => {}
-            DeclarationKind::AssociatedType => {
-                self.resolver.define(parent, decl.identifier, def);
-            }
             DeclarationKind::EnumCase(..) => {}
             DeclarationKind::Operator(..) => {}
         }

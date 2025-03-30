@@ -49,8 +49,8 @@ pub enum DeclarationKind {
     Computed(ComputedProperty),
     /// `case Foo, case Bar {}, case Baz`
     EnumCase(EnumCase),
-    /// `associatedtype Foo`
-    AssociatedType,
+    /// `associatedtype Foo: Bar = Baz`
+    AssociatedType(Generics, Option<Box<Type>>),
     /// `struct Foo {}` | `enum Foo {}` | `interface Foo {}`
     DefinedType(DefinedType),
 }

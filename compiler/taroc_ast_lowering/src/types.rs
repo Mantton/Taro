@@ -25,7 +25,7 @@ impl Actor<'_> {
                 let segment = &mut path.segments[last_index];
                 segment.arguments = Some(taroc_hir::TypeArguments {
                     span,
-                    arguments: vec![internal],
+                    arguments: vec![taroc_hir::TypeArgument::Type(internal)],
                 });
 
                 taroc_hir::TypeKind::Path(path)
@@ -38,7 +38,7 @@ impl Actor<'_> {
                 let segment = &mut path.segments[last_index];
                 segment.arguments = Some(taroc_hir::TypeArguments {
                     span,
-                    arguments: vec![internal],
+                    arguments: vec![taroc_hir::TypeArgument::Type(internal)],
                 });
                 taroc_hir::TypeKind::Path(path)
             }
@@ -49,7 +49,10 @@ impl Actor<'_> {
                 let segment = &mut path.segments[last_index];
                 segment.arguments = Some(taroc_hir::TypeArguments {
                     span,
-                    arguments: vec![self.lower_type(key), self.lower_type(value)],
+                    arguments: vec![
+                        taroc_hir::TypeArgument::Type(self.lower_type(key)),
+                        taroc_hir::TypeArgument::Type(self.lower_type(value)),
+                    ],
                 });
                 taroc_hir::TypeKind::Path(path)
             }
@@ -95,7 +98,7 @@ impl Actor<'_> {
                 let segment = &mut path.segments[last_index];
                 segment.arguments = Some(taroc_hir::TypeArguments {
                     span,
-                    arguments: vec![internal],
+                    arguments: vec![taroc_hir::TypeArgument::Type(internal)],
                 });
 
                 taroc_hir::TypeKind::Path(path)

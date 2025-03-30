@@ -1,10 +1,10 @@
 use crate::{
     AnonConst, Attribute, BindingPattern, BindingPatternKind, Block, ClosureExpression,
     Declaration, DeclarationKind, Expression, ExpressionArgument, ExpressionKind, FieldDefinition,
-    File, Function, FunctionParameter, FunctionPrototype, FunctionSignature, Generics, Label,
-    Local, MatchingPattern, MatchingPatternKind, MethodCall, Module, Package, Path, PathSegment,
-    Statement, StatementKind, Type, TypeArguments, TypeKind, TypeParameter, TypeParameterKind,
-    TypeParameters, Variant, VariantKind,
+    File, Function, FunctionParameter, FunctionPrototype, FunctionSignature, Generics, Inheritance,
+    Label, Local, MatchingPattern, MatchingPatternKind, MethodCall, Module, Package, Path,
+    PathSegment, Statement, StatementKind, TaggedPath, Type, TypeArgument, TypeArguments, TypeKind,
+    TypeParameter, TypeParameterKind, TypeParameters, Variant, VariantKind,
 };
 use std::ops::ControlFlow;
 use taroc_span::Identifier;
@@ -217,6 +217,10 @@ pub trait HirVisitor: Sized {
         walk_type_arguments(self, t)
     }
 
+    fn visit_type_argument(&mut self, t: &TypeArgument) -> Self::Result {
+        walk_type_argument(self, t)
+    }
+
     fn visit_expression_argument(&mut self, e: &ExpressionArgument) -> Self::Result {
         walk_expression_argument(self, e)
     }
@@ -243,6 +247,14 @@ pub trait HirVisitor: Sized {
 
     fn visit_computed_property(&mut self, n: &ComputedProperty) -> Self::Result {
         walk_computed_property(self, n)
+    }
+
+    fn visit_inheritance(&mut self, n: &Inheritance) -> Self::Result {
+        walk_inheritance(self, n)
+    }
+
+    fn visit_tagged_path(&mut self, node: &TaggedPath) -> Self::Result {
+        walk_tagged_path(self, node)
     }
 }
 
@@ -330,7 +342,10 @@ pub fn walk_declaration<V: HirVisitor>(
         DeclarationKind::Computed(node) => {
             try_visit!(visitor.visit_computed_property(node))
         }
-        DeclarationKind::AssociatedType => {}
+        DeclarationKind::AssociatedType(generics, default) => {
+            try_visit!(visitor.visit_generics(generics));
+            visit_optional!(visitor, visit_type, default);
+        }
         DeclarationKind::Constant(..) => todo!(),
         DeclarationKind::EnumCase(node) => {
             walk_list!(visitor, visit_variant, &node.members)
@@ -664,7 +679,15 @@ pub fn walk_path_segment<V: HirVisitor>(visitor: &mut V, path_segment: &PathSegm
 
 pub fn walk_type_arguments<V: HirVisitor>(visitor: &mut V, arguments: &TypeArguments) -> V::Result {
     let tys = &arguments.arguments;
-    walk_list!(visitor, visit_type, tys);
+    walk_list!(visitor, visit_type_argument, tys);
+    V::Result::output()
+}
+
+pub fn walk_type_argument<V: HirVisitor>(visitor: &mut V, argument: &TypeArgument) -> V::Result {
+    match argument {
+        TypeArgument::Type(ty) => try_visit!(visitor.visit_type(ty)),
+        TypeArgument::Const(anon_const) => try_visit!(visitor.visit_anon_const(anon_const)),
+    }
     V::Result::output()
 }
 
@@ -704,6 +727,7 @@ pub fn walk_function_prototype<V: HirVisitor>(
 pub fn walk_generics<V: HirVisitor>(visitor: &mut V, node: &Generics) -> V::Result {
     visit_optional!(visitor, visit_type_parameters, &node.type_parameters);
     visit_optional!(visitor, visit_generic_where_clause, &node.where_clause);
+    visit_optional!(visitor, visit_inheritance, &node.inheritance);
     V::Result::output()
 }
 
@@ -756,5 +780,15 @@ pub fn walk_computed_property<V: HirVisitor>(
 ) -> V::Result {
     try_visit!(visitor.visit_type(&node.ty));
     try_visit!(visitor.visit_block(&node.block));
+    V::Result::output()
+}
+
+pub fn walk_inheritance<V: HirVisitor>(visitor: &mut V, node: &Inheritance) -> V::Result {
+    walk_list!(visitor, visit_tagged_path, &node.interfaces);
+    V::Result::output()
+}
+
+pub fn walk_tagged_path<V: HirVisitor>(visitor: &mut V, node: &TaggedPath) -> V::Result {
+    try_visit!(visitor.visit_path(&node.path));
     V::Result::output()
 }

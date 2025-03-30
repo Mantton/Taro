@@ -1,8 +1,8 @@
 use super::package::{Parser, R};
 use taroc_ast::{
     ConformanceConstraint, GenericBound, GenericBounds, GenericRequirement, GenericRequirementList,
-    GenericWhereClause, Inheritance, RequiredTypeConstraint, TypeArguments, TypeParameter,
-    TypeParameterKind, TypeParameters,
+    GenericWhereClause, Inheritance, RequiredTypeConstraint, TypeArgument, TypeArguments,
+    TypeParameter, TypeParameterKind, TypeParameters,
 };
 use taroc_span::SpannedMessage;
 use taroc_token::{Delimiter, TokenKind};
@@ -10,17 +10,31 @@ use taroc_token::{Delimiter, TokenKind};
 impl Parser {
     pub fn parse_type_arguments(&mut self) -> R<TypeArguments> {
         let lo = self.lo_span();
-        let tys =
+        let arguments =
             self.parse_delimiter_sequence(Delimiter::Chevron, TokenKind::Comma, false, |p| {
-                p.parse_type()
+                p.parse_type_argument()
             })?;
 
-        let args = TypeArguments {
-            span: lo.to(self.hi_span()),
-            arguments: tys,
-        };
+        let span = lo.to(self.hi_span());
+        Ok(TypeArguments { span, arguments })
+    }
 
-        Ok(args)
+    pub fn parse_type_argument(&mut self) -> R<TypeArgument> {
+        match self.current_kind() {
+            TokenKind::LBrace
+            | TokenKind::Integer(..)
+            | TokenKind::Rune
+            | TokenKind::Float(..)
+            | TokenKind::True
+            | TokenKind::False => {
+                // const
+                todo!()
+            }
+            _ => {
+                let ty = self.parse_type()?;
+                Ok(TypeArgument::Type(ty))
+            }
+        }
     }
 }
 

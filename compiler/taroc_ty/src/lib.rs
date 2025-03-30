@@ -33,8 +33,8 @@ pub enum TyKind<'arena> {
 
     Adt(DefinitionID, &'arena [GenericArgument<'arena>]),
 
-    // Interfaces
-    Existential(&'arena [ExisitentialPredicate<'arena>], InterfaceType),
+    // any <interface> | <interface>
+    Existential(&'arena [InterfaceReference<'arena>]),
 
     AliasPlaceholder,
     Parameter,
@@ -81,12 +81,6 @@ pub enum GenericArgument<'arena> {
 }
 
 pub type GenericArguments<'arena> = &'arena [GenericArgument<'arena>];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ExisitentialPredicate<'ctx> {
-    pub id: DefinitionID,
-    pub arguments: GenericArguments<'ctx>,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Visibility {
@@ -198,7 +192,7 @@ pub struct InterfaceDefinition<'ctx> {
     pub id: DefinitionID,
     pub name: Symbol,
     pub conformances: Vec<InterfaceReference<'ctx>>,
-    pub associated_types: Vec<AssociatedTypeDeclaration<'ctx>>, // TODO!
+    pub associated_types: FxHashMap<Symbol, AssociatedTypeDefinition<'ctx>>,
     pub requirements: Vec<InterfaceRequirement<'ctx>>,
 }
 
@@ -214,14 +208,14 @@ pub struct InterfaceMethodRequirement<'ctx> {
     pub signature: Ty<'ctx>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct InterfaceReference<'ctx> {
     pub id: DefinitionID,
-    pub arguments: &'ctx GenericArguments<'ctx>,
+    pub arguments: GenericArguments<'ctx>,
 }
 
 #[derive(Debug, Clone)]
-pub struct AssociatedTypeDeclaration<'ctx> {
+pub struct AssociatedTypeDefinition<'ctx> {
     pub name: Symbol,
     // Constraints on the associated type (e.g., must implement these interfaces)
     pub conformances: Vec<InterfaceReference<'ctx>>,

@@ -57,7 +57,16 @@ impl Actor<'_> {
     ) -> taroc_hir::TypeArguments {
         taroc_hir::TypeArguments {
             span: arg.span,
-            arguments: self.lower_sequence(arg.arguments, |a, ty| a.lower_type(ty)),
+            arguments: self.lower_sequence(arg.arguments, |a, arg| a.lower_type_argument(arg)),
+        }
+    }
+
+    pub fn lower_type_argument(&mut self, arg: taroc_ast::TypeArgument) -> taroc_hir::TypeArgument {
+        match arg {
+            taroc_ast::TypeArgument::Type(ty) => taroc_hir::TypeArgument::Type(self.lower_type(ty)),
+            taroc_ast::TypeArgument::Const(anon_const) => {
+                taroc_hir::TypeArgument::Const(self.lower_anon_const(anon_const))
+            }
         }
     }
 
