@@ -1,3 +1,5 @@
+use crate::TaggedPath;
+
 use super::{NodeID, expression::AnonConst, path::Path};
 use std::fmt::Debug;
 use taroc_span::Span;
@@ -36,23 +38,17 @@ pub enum TypeKind {
     },
     Function {
         inputs: Vec<Box<Type>>,
-        output: Option<Box<Type>>,
+        output: Box<Type>,
         is_async: bool,
     },
-    // func (&mut self)
-    ImplicitSelf,
+    // Type to be inferred
+    Infer,
 
-    // |a, b| { a + b }
-    InferedClosureParameter,
-
-    /// Interface types
-    ///
-    /// `some T` | `any T`
-    SomeOrAny(InterfaceType, Box<Type>),
-
-    /// Foo & Bar
-    Composite(Vec<Box<Type>>),
+    // Interface types
+    /// `some T`
+    Opaque(Vec<TaggedPath>),
+    /// `any T`
+    Exisitential(Vec<TaggedPath>),
 }
 
-pub use taroc_ast::InterfaceType;
 pub use taroc_ast::Mutability;

@@ -1,4 +1,4 @@
-use crate::lower;
+use crate::{lower, utils};
 use rustc_hash::FxHashMap;
 use std::rc::Rc;
 use taroc_context::{CompilerSession, TypeDatabase};
@@ -10,7 +10,8 @@ use taroc_hir::{
 use taroc_span::Symbol;
 use taroc_ty::{
     AssociatedTypeDefinition, EnumDefinition, EnumVariant, EnumVariantKind, GenericArgument,
-    InterfaceDefinition, InterfaceReference, StructDefinition, StructField, Ty, TyKind,
+    GenericParameter, InterfaceDefinition, InterfaceMethodRequirement, InterfaceReference,
+    InterfaceRequirement, StructDefinition, StructField, Ty, TyKind,
 };
 
 pub fn run(package: &taroc_hir::Package, session: Rc<CompilerSession>) -> CompileResult<()> {
@@ -18,6 +19,7 @@ pub fn run(package: &taroc_hir::Package, session: Rc<CompilerSession>) -> Compil
     TypeCollector::run(package, session.clone())?;
     AliasCollector::run(package, session.clone())?;
     DefinitionCollector::run(package, session.clone())?;
+    InterfaceRequirementsCollector::run(package, session.clone())?;
     session.context.diagnostics.report()
 }
 
@@ -237,8 +239,11 @@ impl<'ctx> TypeCollector<'ctx> {
         let parameters = parameters.as_ref().unwrap();
         let mut arguments = Vec::new();
 
-        for parameter in parameters.parameters.iter() {
-            let kind = TyKind::Parameter;
+        for (index, parameter) in parameters.parameters.iter().enumerate() {
+            let kind = TyKind::Parameter(GenericParameter {
+                index,
+                name: parameter.identifier.symbol,
+            });
             let ty = self.session.context.store.interners.intern_ty(kind);
             self.tag(&parameter.id, ty);
             let argument = GenericArgument::Type(ty);
@@ -598,6 +603,72 @@ impl<'ctx> DefinitionCollector<'ctx> {
         }
 
         out
+    }
+}
+
+/// Collect InterfaceRequirements
+struct InterfaceRequirementsCollector<'ctx> {
+    session: Rc<CompilerSession<'ctx>>,
+    parent: Option<DefinitionID>,
+}
+
+impl<'ctx> InterfaceRequirementsCollector<'ctx> {
+    fn new(session: Rc<CompilerSession<'ctx>>) -> InterfaceRequirementsCollector<'ctx> {
+        InterfaceRequirementsCollector {
+            session,
+            parent: None,
+        }
+    }
+
+    fn run<'a>(package: &Package, session: Rc<CompilerSession<'ctx>>) -> CompileResult<()> {
+        let mut actor = InterfaceRequirementsCollector::new(session.clone());
+        taroc_hir::visitor::walk_package(&mut actor, package);
+        session.context.diagnostics.report()
+    }
+}
+
+impl<'ctx> HirVisitor for InterfaceRequirementsCollector<'ctx> {
+    fn visit_declaration(
+        &mut self,
+        declaration: &Declaration,
+        context: DeclarationContext,
+    ) -> Self::Result {
+        let previous = self.parent;
+
+        match &declaration.kind {
+            DeclarationKind::DefinedType(node)
+                if matches!(node.kind, DefinedTypeKind::Interface) =>
+            {
+                let id = self
+                    .session
+                    .context
+                    .def_id(declaration.id, self.session.index);
+
+                self.parent = Some(id)
+            }
+            DeclarationKind::Function(func) if matches!(context, DeclarationContext::Interface) => {
+                self.session
+                    .context
+                    .diagnostics
+                    .info("Target".into(), declaration.identifier.span);
+
+                let is_required = func.block.is_none();
+
+                let requirement = InterfaceMethodRequirement {
+                    name: declaration.identifier.symbol,
+                    is_required,
+                    signature: utils::convert_to_labeled_signature(func, self.session.clone()),
+                };
+
+                let kind = InterfaceRequirement::Method(requirement);
+
+                todo!("update interface")
+            }
+            _ => {}
+        }
+
+        taroc_hir::visitor::walk_declaration(self, declaration, context);
+        self.parent = previous
     }
 }
 

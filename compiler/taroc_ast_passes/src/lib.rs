@@ -13,3 +13,4 @@ pub fn run(
 // validate namespaces and extern
 // validate default type parameters
 // validate interfaces may only be nested in modular spaces (Namespace, Top Level)
+// validate opaque type usage (some T), isolate to computed properties and functions

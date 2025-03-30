@@ -51,14 +51,27 @@ impl<'ctx> TypeLowerer<'ctx> {
                 let _element = self.lower(element);
                 todo!()
             }
-            taroc_hir::TypeKind::Function { .. } => todo!(),
-            taroc_hir::TypeKind::ImplicitSelf => todo!(),
-            taroc_hir::TypeKind::InferedClosureParameter => todo!(),
-            taroc_hir::TypeKind::SomeOrAny(_, ty) => {
-                let _ty = self.lower(ty);
-                todo!()
+            taroc_hir::TypeKind::Function {
+                inputs,
+                output,
+                is_async,
+            } => {
+                let inputs: Vec<Ty<'ctx>> = inputs
+                    .iter()
+                    .map(|ty| lower_type(ty, self.context, self.index, self.active_subst.clone()))
+                    .collect();
+                let inputs = self.context.store.interners.intern_ty_list(&inputs);
+
+                let kind = TyKind::Function {
+                    inputs,
+                    output: lower_type(output, self.context, self.index, self.active_subst.clone()),
+                    is_async: *is_async,
+                };
+                mk(kind)
             }
-            taroc_hir::TypeKind::Composite(..) => todo!(),
+            taroc_hir::TypeKind::Opaque(..) => todo!(),
+            taroc_hir::TypeKind::Exisitential(..) => todo!(),
+            taroc_hir::TypeKind::Infer => todo!("infer"),
         };
         ty
     }
@@ -73,9 +86,9 @@ impl<'ctx> TypeLowerer<'ctx> {
         debug_assert!(!path.segments.is_empty(), "empty path");
 
         for (index, segment) in path.segments.iter().enumerate() {
-            // self.context
-            //     .diagnostics
-            //     .info("Lowering".into(), segment.identifier.span);
+            self.context
+                .diagnostics
+                .info("Lowering".into(), segment.identifier.span);
             let res = self.context.resolution(segment.id, self.index);
             let ty = self.lower_path_segment(segment, res);
 
@@ -122,8 +135,14 @@ impl<'ctx> TypeLowerer<'ctx> {
                 _,
                 DefinitionKind::Namespace | DefinitionKind::Module | DefinitionKind::Bridged,
             ) => self.context.store.common_types.ignore,
-            Resolution::InterfaceSelfTypeAlias(..) => todo!(),
-            Resolution::SelfTypeAlias(definition_id) => self.context.type_of(definition_id),
+            Resolution::InterfaceSelfTypeAlias(..) => {
+                // TODO!
+                self.context.store.common_types.error
+            }
+            Resolution::SelfTypeAlias(definition_id) => {
+                println!("{:?}", self.context.def_kind(definition_id));
+                self.context.type_of(definition_id)
+            }
             Resolution::ConformanceSelfTypeAlias { .. } => todo!(),
             Resolution::FunctionSet(..) => {
                 unreachable!("cannot resolve type to set of functions")

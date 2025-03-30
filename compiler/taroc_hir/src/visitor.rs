@@ -491,16 +491,15 @@ pub fn walk_type<V: HirVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
         }
         TypeKind::Function { inputs, output, .. } => {
             walk_list!(visitor, visit_type, inputs);
-            visit_optional!(visitor, visit_type, output);
+            try_visit!(visitor.visit_type(output));
         }
-        TypeKind::ImplicitSelf => {}
-        TypeKind::InferedClosureParameter => {}
-        TypeKind::SomeOrAny(_, ty) => {
-            try_visit!(visitor.visit_type(ty));
+        TypeKind::Opaque(items) => {
+            walk_list!(visitor, visit_tagged_path, items);
         }
-        TypeKind::Composite(items) => {
-            walk_list!(visitor, visit_type, items);
+        TypeKind::Exisitential(items) => {
+            walk_list!(visitor, visit_tagged_path, items);
         }
+        TypeKind::Infer => {}
     }
     V::Result::output()
 }

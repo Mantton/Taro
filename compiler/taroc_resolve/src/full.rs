@@ -308,10 +308,15 @@ impl Actor<'_, '_> {
                     })
                 });
             }
-            taroc_hir::DeclarationKind::DefinedType(..) => {
+            taroc_hir::DeclarationKind::DefinedType(node) => {
                 self.with_scope(LexicalScopeSource::Definition(def_kind), |this| {
                     this.with_generics_scope(def_id, |this| {
-                        this.with_self_alias_scope(Resolution::SelfTypeAlias(def_id), |this| {
+                        let res = if matches!(node.kind, taroc_hir::DefinedTypeKind::Interface) {
+                            Resolution::InterfaceSelfTypeAlias(def_id)
+                        } else {
+                            Resolution::SelfTypeAlias(def_id)
+                        };
+                        this.with_self_alias_scope(res, |this| {
                             taroc_hir::visitor::walk_declaration(this, declaration, context)
                         });
                     });

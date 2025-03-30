@@ -161,7 +161,7 @@ impl Parser {
                 let ident = self.parse_identifier()?;
 
                 if ident.symbol == Symbol::with("self") {
-                    (SelfKind::Copy, Mutability::Immutable, ident)
+                    (SelfKind::Value, Mutability::Immutable, ident)
                 } else {
                     self.cursor = anchor;
                     return Ok(None);
@@ -186,7 +186,7 @@ impl Parser {
         };
 
         let ty = match a {
-            SelfKind::Copy => self_ty,
+            SelfKind::Value => self_ty,
             SelfKind::Reference => Type {
                 span: c.span,
                 kind: TypeKind::Reference(Box::new(self_ty), b),

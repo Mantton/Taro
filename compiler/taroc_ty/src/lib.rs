@@ -37,7 +37,12 @@ pub enum TyKind<'arena> {
     Existential(&'arena [InterfaceReference<'arena>]),
 
     AliasPlaceholder,
-    Parameter,
+    Parameter(GenericParameter),
+    Function {
+        inputs: &'arena [Ty<'arena>],
+        output: Ty<'arena>,
+        is_async: bool,
+    },
     Infer,
     Error,
     Ignore,
@@ -69,9 +74,9 @@ pub enum FloatTy {
 
 // MARK: Generics
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct GenericParameter {
-    id: usize,
-    name: Symbol,
+pub struct GenericParameter {
+    pub index: usize,
+    pub name: Symbol,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -204,8 +209,8 @@ pub enum InterfaceRequirement<'ctx> {
 #[derive(Debug, Clone)]
 pub struct InterfaceMethodRequirement<'ctx> {
     pub name: Symbol,
+    pub signature: LabeledFunctionSignature<'ctx>,
     pub is_required: bool,
-    pub signature: Ty<'ctx>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -221,4 +226,18 @@ pub struct AssociatedTypeDefinition<'ctx> {
     pub conformances: Vec<InterfaceReference<'ctx>>,
     // Optional: A default type if the implementer doesn't provide one
     pub default_type: Option<Ty<'ctx>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LabeledFunctionSignature<'ctx> {
+    pub inputs: Vec<LabeledFunctionParameter<'ctx>>,
+    pub output: Ty<'ctx>,
+    pub is_async: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LabeledFunctionParameter<'ctx> {
+    pub label: Option<Symbol>,
+    pub ty: Ty<'ctx>,
+    pub is_variadic: bool,
 }

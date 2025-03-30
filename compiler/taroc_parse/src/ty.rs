@@ -1,8 +1,7 @@
-use taroc_ast::{InterfaceType, Mutability, Type, TypeKind};
+use super::package::{Parser, R};
+use taroc_ast::{Mutability, Type, TypeKind};
 use taroc_span::SpannedMessage;
 use taroc_token::{Delimiter, TokenKind};
-
-use super::package::{Parser, R};
 
 impl Parser {
     pub fn parse_type(&mut self) -> R<Box<Type>> {
@@ -34,8 +33,7 @@ impl Parser {
             TokenKind::Identifier => self.parse_path_type(),
             TokenKind::LParen => self.parse_tuple_type(),
             TokenKind::LBracket => self.parse_collection_type(),
-            TokenKind::Struct => self.parse_anon_struct_type(),
-            TokenKind::Function => self.parse_function_type(),
+            // TokenKind::Struct => self.parse_anon_struct_type(),
             TokenKind::Tilde => {
                 self.bump();
                 let mutability = if self.eat(TokenKind::Const) {
@@ -70,18 +68,15 @@ impl Parser {
             TokenKind::Some | TokenKind::Any
         ));
 
-        let is_static = self.current_kind() == TokenKind::Some;
-        self.bump();
-
-        let ty = self.parse_type()?;
-
-        let k = if is_static {
-            InterfaceType::Some
+        if self.eat(TokenKind::Some) {
+            let tys = self.parse_sequence(TokenKind::Amp, |this| this.parse_path())?;
+            return Ok(TypeKind::Opaque(tys));
+        } else if self.eat(TokenKind::Any) {
+            let tys = self.parse_sequence(TokenKind::Amp, |this| this.parse_path())?;
+            return Ok(TypeKind::Exisitential(tys));
         } else {
-            InterfaceType::Any
-        };
-
-        Ok(TypeKind::SomeOrAny(k, ty))
+            unreachable!()
+        }
     }
 
     fn parse_pointer_type(&mut self, k: TokenKind) -> R<TypeKind> {
@@ -103,8 +98,15 @@ impl Parser {
 
     fn parse_path_type(&mut self) -> R<TypeKind> {
         let path = self.parse_path()?;
-        let kind = TypeKind::Path(path);
 
+        //implict existential type
+        if self.eat(TokenKind::Amp) {
+            let mut tys = self.parse_sequence(TokenKind::Amp, |this| this.parse_path())?;
+            tys.insert(0, path);
+            return Ok(TypeKind::Exisitential(tys));
+        }
+
+        let kind = TypeKind::Path(path);
         Ok(kind)
     }
 
@@ -119,6 +121,22 @@ impl Parser {
             let msg = "expected 1 or more elements in tuple type";
             let err = SpannedMessage::new(msg.to_string(), lo.to(self.hi_span()));
             return Err(err);
+        }
+
+        if self.matches(TokenKind::RArrow)
+            | (self.matches(TokenKind::Async) && self.next_matches(1, TokenKind::RArrow))
+        {
+            let is_async = self.eat(TokenKind::Async);
+            self.expect(TokenKind::RArrow)?;
+            let output = self.parse_type()?;
+
+            let kind = TypeKind::Function {
+                inputs: elements,
+                output,
+                is_async,
+            };
+
+            return Ok(kind);
         }
 
         if elements.len() == 1 {
@@ -166,45 +184,18 @@ impl Parser {
         return Ok(TypeKind::Dictionary { key, value });
     }
 
-    fn parse_anon_struct_type(&mut self) -> R<TypeKind> {
-        let lo = self.lo_span();
-        self.expect(TokenKind::Struct)?; // eat keyword
-        // let fields = self.parse_field_definitions(Delimiter::Brace)?;
-        let err = SpannedMessage::new("Planned Feature".into(), lo.to(self.hi_span()));
-        return Err(err);
-        // Ok(TypeKind::AnonStruct { fields })
-    }
+    // fn parse_anon_struct_type(&mut self) -> R<TypeKind> {
+    //     let lo = self.lo_span();
+    //     self.expect(TokenKind::Struct)?; // eat keyword
+    //     // let fields = self.parse_field_definitions(Delimiter::Brace)?;
+    //     let err = SpannedMessage::new("Planned Feature".into(), lo.to(self.hi_span()));
+    //     return Err(err);
+    //     // Ok(TypeKind::AnonStruct { fields })
+    // }
 
     fn parse_optional_type(&mut self, ty: Type) -> R<TypeKind> {
         self.expect(TokenKind::Question)?;
         let k = TypeKind::Optional(Box::new(ty));
         Ok(k)
-    }
-
-    fn parse_function_type(&mut self) -> R<TypeKind> {
-        // func (T, V) async -> V
-        self.expect(TokenKind::Function)?;
-
-        let inputs = self.parse_delimiter_sequence(
-            Delimiter::Parenthesis,
-            TokenKind::Semicolon,
-            false,
-            |p| p.parse_type(),
-        )?;
-
-        let is_async = self.eat(TokenKind::Async);
-
-        let output = if self.eat(TokenKind::RArrow) {
-            Some(self.parse_type()?)
-        } else {
-            None
-        };
-
-        let kind = TypeKind::Function {
-            inputs,
-            output,
-            is_async,
-        };
-        Ok(kind)
     }
 }

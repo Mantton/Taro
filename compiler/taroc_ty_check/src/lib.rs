@@ -6,6 +6,7 @@ use taroc_hir::Package;
 
 mod collect;
 mod lower;
+mod utils;
 
 pub fn run(package: &Package, session: Rc<CompilerSession>) -> CompileResult<()> {
     collect::run(package, session)?;

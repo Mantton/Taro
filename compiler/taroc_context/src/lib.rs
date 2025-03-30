@@ -1,13 +1,11 @@
+pub use models::*;
+pub use session::*;
 use std::{env::current_dir, ops::Deref};
 use taroc_diagnostics::{DiagnosticContext, DiagnosticLevel};
 use taroc_span::SpannedMessage;
-
 mod context;
 mod models;
 mod session;
-
-pub use models::*;
-pub use session::*;
 
 #[derive(Copy, Clone)]
 pub struct GlobalContext<'ctx> {

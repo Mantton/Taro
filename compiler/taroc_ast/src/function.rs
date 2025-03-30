@@ -49,6 +49,6 @@ pub struct FunctionSignature {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SelfKind {
-    Copy,
+    Value,
     Reference,
 }

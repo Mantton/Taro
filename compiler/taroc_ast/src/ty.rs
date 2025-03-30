@@ -1,5 +1,5 @@
 use super::{expression::AnonConst, path::Path};
-use crate::{InterfaceType, Mutability};
+use crate::Mutability;
 use taroc_span::Span;
 
 #[derive(Debug)]
@@ -51,28 +51,27 @@ pub enum TypeKind {
         key: Box<Type>,
         value: Box<Type>,
     },
-    /// Anonymous Struct Type
-    ///
-    /// `let foo : struct { age: int, name: int } = struct { age: 10, name: ""}`
+    // Anonymous Struct Type
+    //
+    // `let foo : struct { age: int, name: int } = struct { age: 10, name: ""}`
     // AnonStruct {
     //     fields: Vec<FieldDefinition>,
     // },
-    /// fn (T, V) -> X
+    /// (T, V) -> X
     Function {
         inputs: Vec<Box<Type>>,
-        output: Option<Box<Type>>,
+        output: Box<Type>,
         is_async: bool,
     },
     /// Ty of, self, &mut self, &self
     ImplicitSelf,
     // { a, b in a + b}
     InferedClosureParameter,
-    /// Interface types
-    ///
-    /// `some T` | `any T`
-    SomeOrAny(InterfaceType, Box<Type>),
-    /// Foo & Bar
-    Composite(Vec<Box<Type>>),
+    // Interface types
+    /// `some T`
+    Opaque(Vec<Path>),
+    /// `any T`
+    Exisitential(Vec<Path>),
     /// Tilde
     OptionalReference(Box<Type>, Mutability),
 }

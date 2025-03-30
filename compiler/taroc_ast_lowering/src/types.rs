@@ -73,19 +73,20 @@ impl Actor<'_> {
                 size: self.lower_anon_const(size),
                 element: self.lower_type(element),
             },
-            taroc_ast::TypeKind::Composite(tys) => {
-                taroc_hir::TypeKind::Composite(self.lower_sequence(tys, |a, ty| a.lower_type(ty)))
+            taroc_ast::TypeKind::Function {
+                inputs,
+                output,
+                is_async,
+            } => taroc_hir::TypeKind::Function {
+                inputs: self.lower_sequence(inputs, |a, ty| a.lower_type(ty)),
+                output: self.lower_type(output),
+                is_async,
+            },
+            taroc_ast::TypeKind::ImplicitSelf => {
+                let path = self.mk_path(&["Self"], span);
+                taroc_hir::TypeKind::Path(path)
             }
-            taroc_ast::TypeKind::Function { .. } => todo!(),
-            taroc_ast::TypeKind::ImplicitSelf => taroc_hir::TypeKind::ImplicitSelf,
-            taroc_ast::TypeKind::InferedClosureParameter => todo!(),
-            taroc_ast::TypeKind::SomeOrAny(k, ty) => {
-                let kind = match k {
-                    taroc_ast::InterfaceType::Some => taroc_hir::InterfaceType::Some,
-                    taroc_ast::InterfaceType::Any => taroc_hir::InterfaceType::Any,
-                };
-                taroc_hir::TypeKind::SomeOrAny(kind, self.lower_type(ty))
-            }
+            taroc_ast::TypeKind::InferedClosureParameter => taroc_hir::TypeKind::Infer,
             taroc_ast::TypeKind::OptionalReference(ty, mutability) => {
                 // ~T == std::option::Option<&T>
                 // ~mut T == std::option::Option<&mut T>
@@ -103,6 +104,12 @@ impl Actor<'_> {
 
                 taroc_hir::TypeKind::Path(path)
             }
+            taroc_ast::TypeKind::Opaque(items) => taroc_hir::TypeKind::Opaque(
+                self.lower_sequence(items, |a, ty| a.lower_tagged_path(ty)),
+            ),
+            taroc_ast::TypeKind::Exisitential(items) => taroc_hir::TypeKind::Exisitential(
+                self.lower_sequence(items, |a, ty| a.lower_tagged_path(ty)),
+            ),
         }
     }
 }
