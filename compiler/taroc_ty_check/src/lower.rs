@@ -47,22 +47,18 @@ impl<'ctx> TypeLowerer<'ctx> {
                 mk(TyKind::Tuple(items))
             }
             taroc_hir::TypeKind::Path(path) => self.lower_unchecked_path(path, ty.id),
-            taroc_hir::TypeKind::Array { size, element } => {
-                let element = self.lower(element);
+            taroc_hir::TypeKind::Array { element, .. } => {
+                let _element = self.lower(element);
                 todo!()
             }
-            taroc_hir::TypeKind::Function {
-                inputs,
-                output,
-                is_async,
-            } => todo!(),
+            taroc_hir::TypeKind::Function { .. } => todo!(),
             taroc_hir::TypeKind::ImplicitSelf => todo!(),
             taroc_hir::TypeKind::InferedClosureParameter => todo!(),
-            taroc_hir::TypeKind::SomeOrAny(kind, ty) => {
-                let ty = self.lower(ty);
+            taroc_hir::TypeKind::SomeOrAny(_, ty) => {
+                let _ty = self.lower(ty);
                 todo!()
             }
-            taroc_hir::TypeKind::Composite(items) => todo!(),
+            taroc_hir::TypeKind::Composite(..) => todo!(),
         };
         ty
     }
@@ -73,7 +69,7 @@ impl<'ctx> TypeLowerer<'ctx> {
         self.lower_path(id, path)
     }
 
-    fn lower_path(&mut self, id: NodeID, path: &taroc_hir::Path) -> Ty<'ctx> {
+    fn lower_path(&mut self, _id: NodeID, path: &taroc_hir::Path) -> Ty<'ctx> {
         debug_assert!(!path.segments.is_empty(), "empty path");
 
         for (index, segment) in path.segments.iter().enumerate() {
@@ -126,14 +122,10 @@ impl<'ctx> TypeLowerer<'ctx> {
                 _,
                 DefinitionKind::Namespace | DefinitionKind::Module | DefinitionKind::Bridged,
             ) => self.context.store.common_types.ignore,
-            Resolution::InterfaceSelfTypeAlias(definition_id) => todo!(),
+            Resolution::InterfaceSelfTypeAlias(..) => todo!(),
             Resolution::SelfTypeAlias(definition_id) => self.context.type_of(definition_id),
-            Resolution::ConformanceSelfTypeAlias {
-                ty,
-                interface,
-                conformance,
-            } => todo!(),
-            Resolution::FunctionSet(hash_set) => {
+            Resolution::ConformanceSelfTypeAlias { .. } => todo!(),
+            Resolution::FunctionSet(..) => {
                 unreachable!("cannot resolve type to set of functions")
             }
             Resolution::Local(..) => unreachable!("cannot resolve type to local variable"),
@@ -266,7 +258,7 @@ impl<'ctx> TypeLowerer<'ctx> {
 
 fn check_generics_prohibited(
     def_id: DefinitionID,
-    generics: &taroc_ty::Generics,
+    _generics: &taroc_ty::Generics,
     arguments: &taroc_hir::TypeArguments,
     context: GlobalContext<'_>,
 ) -> bool {

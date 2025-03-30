@@ -1,7 +1,7 @@
 use indexmap::IndexMap;
 use rustc_hash::FxHashMap;
 use taroc_data_structures::Interned;
-use taroc_hir::{DefinitionID, InterfaceType, Mutability};
+use taroc_hir::{DefinitionID, Mutability};
 use taroc_span::{FileID, Symbol};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

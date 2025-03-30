@@ -381,9 +381,9 @@ impl<'ctx> HirVisitor for DefinitionCollector<'ctx> {
                 self.parent = Some(id);
             }
             DeclarationKind::Computed(node) => {
-                let name = declaration.identifier.symbol;
+                let _name = declaration.identifier.symbol;
                 let ty = &node.ty;
-                let ty = lower::lower_type(
+                let _ty = lower::lower_type(
                     ty,
                     self.session.context,
                     self.session.index,
@@ -418,7 +418,7 @@ impl<'ctx> HirVisitor for DefinitionCollector<'ctx> {
             }
 
             DeclarationKind::Constant(ty, _) => {
-                let ty = lower::lower_type(
+                let _ty = lower::lower_type(
                     ty,
                     self.session.context,
                     self.session.index,
