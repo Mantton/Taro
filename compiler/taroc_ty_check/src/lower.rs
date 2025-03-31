@@ -8,19 +8,16 @@ pub type SubstitutionMap<'ctx> = FxHashMap<Ty<'ctx>, GenericArgument<'ctx>>;
 pub fn lower_type<'ctx>(
     ty: &taroc_hir::Type,
     context: GlobalContext<'ctx>,
-    index: usize,
     initial_subst: SubstitutionMap<'ctx>, // Pass initial substitutions from caller
 ) -> taroc_ty::Ty<'ctx> {
     let actor = TypeLowerer {
         context,
-        index,
         active_subst: initial_subst,
     };
     actor.lower(ty)
 }
 
 struct TypeLowerer<'ctx> {
-    index: usize,
     context: GlobalContext<'ctx>,
     // The currently active substitution map, accumulates as we lower paths
     active_subst: SubstitutionMap<'ctx>,
@@ -31,17 +28,17 @@ impl<'ctx> TypeLowerer<'ctx> {
         let mk = |k| self.context.store.interners.intern_ty(k);
         let ty = match &ty.kind {
             taroc_hir::TypeKind::Pointer(ty, mutability) => mk(TyKind::Pointer(
-                lower_type(ty, self.context, self.index, self.active_subst.clone()),
+                lower_type(ty, self.context, self.active_subst.clone()),
                 *mutability,
             )),
             taroc_hir::TypeKind::Reference(ty, mutability) => mk(TyKind::Reference(
-                lower_type(ty, self.context, self.index, self.active_subst.clone()),
+                lower_type(ty, self.context, self.active_subst.clone()),
                 *mutability,
             )),
             taroc_hir::TypeKind::Tuple(items) => {
                 let items: Vec<Ty<'ctx>> = items
                     .iter()
-                    .map(|ty| lower_type(ty, self.context, self.index, self.active_subst.clone()))
+                    .map(|ty| lower_type(ty, self.context, self.active_subst.clone()))
                     .collect();
                 let items = self.context.store.interners.intern_ty_list(&items);
                 mk(TyKind::Tuple(items))
@@ -58,13 +55,13 @@ impl<'ctx> TypeLowerer<'ctx> {
             } => {
                 let inputs: Vec<Ty<'ctx>> = inputs
                     .iter()
-                    .map(|ty| lower_type(ty, self.context, self.index, self.active_subst.clone()))
+                    .map(|ty| lower_type(ty, self.context, self.active_subst.clone()))
                     .collect();
                 let inputs = self.context.store.interners.intern_ty_list(&inputs);
 
                 let kind = TyKind::Function {
                     inputs,
-                    output: lower_type(output, self.context, self.index, self.active_subst.clone()),
+                    output: lower_type(output, self.context, self.active_subst.clone()),
                     is_async: *is_async,
                 };
                 mk(kind)
@@ -89,7 +86,7 @@ impl<'ctx> TypeLowerer<'ctx> {
             self.context
                 .diagnostics
                 .info("Lowering".into(), segment.identifier.span);
-            let res = self.context.resolution(segment.id, self.index);
+            let res = self.context.resolution(segment.id);
             let ty = self.lower_path_segment(segment, res);
 
             if index == path.segments.len() - 1 {
@@ -216,7 +213,7 @@ impl<'ctx> TypeLowerer<'ctx> {
         for argument in &arguments.arguments {
             match argument {
                 taroc_hir::TypeArgument::Type(ty) => {
-                    let ty = lower_type(ty, self.context, self.index, self.active_subst.clone());
+                    let ty = lower_type(ty, self.context, self.active_subst.clone());
                     output.push(GenericArgument::Type(ty));
                 }
                 taroc_hir::TypeArgument::Const(_) => todo!(),
@@ -242,12 +239,7 @@ impl<'ctx> TypeLowerer<'ctx> {
                     let v = if let Some(v) = args.get(i) {
                         *v
                     } else if let Some(default) = default {
-                        let ty = lower_type(
-                            default,
-                            self.context,
-                            self.index,
-                            self.active_subst.clone(),
-                        );
+                        let ty = lower_type(default, self.context, self.active_subst.clone());
                         GenericArgument::Type(ty)
                     } else {
                         // TODO: pass Segment Here for error reporting

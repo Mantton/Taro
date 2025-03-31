@@ -1,8 +1,7 @@
 #![feature(let_chains)]
 #![feature(if_let_guard)]
 use resolver::Resolver;
-use std::rc::Rc;
-use taroc_context::CompilerSession;
+use taroc_context::GlobalContext;
 use taroc_error::CompileResult;
 mod arena;
 mod define;
@@ -14,8 +13,8 @@ mod resolver;
 mod tag;
 mod usage;
 
-pub fn run(package: &taroc_hir::Package, session: Rc<CompilerSession>) -> CompileResult<()> {
-    let mut r = Resolver::new(session.clone());
+pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
+    let mut r = Resolver::new(context);
     // Collection Stage
     tag::run(&package, &mut r);
     define::run(&package, &mut r)?;
@@ -26,12 +25,11 @@ pub fn run(package: &taroc_hir::Package, session: Rc<CompilerSession>) -> Compil
     let data = r.produce();
 
     // Cleanup
-    session
-        .context
+    context
         .store
         .resolutions
         .borrow_mut()
-        .insert(session.index, data);
+        .insert(context.session().package_index, data);
 
     Ok(())
 }

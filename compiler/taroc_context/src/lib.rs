@@ -1,6 +1,6 @@
 pub use models::*;
 pub use session::*;
-use std::{env::current_dir, ops::Deref};
+use std::{cell::RefCell, env::current_dir, ops::Deref};
 use taroc_diagnostics::{DiagnosticContext, DiagnosticLevel};
 use taroc_span::SpannedMessage;
 mod context;
@@ -29,6 +29,7 @@ impl<'ctx> Deref for GlobalContext<'ctx> {
 pub struct CompilerContext<'ctx> {
     pub diagnostics: DiagnosticContext,
     pub store: ContextStore<'ctx>,
+    pub session: RefCell<Option<CompilerSession>>,
 }
 
 impl<'ctx> CompilerContext<'ctx> {
@@ -38,6 +39,7 @@ impl<'ctx> CompilerContext<'ctx> {
                 current_dir().expect("Expected Current Working Directory"),
             ),
             store: ContextStore::new(arenas),
+            session: RefCell::new(None),
         }
     }
 }

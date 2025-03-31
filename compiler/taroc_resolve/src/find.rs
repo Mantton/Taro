@@ -18,8 +18,7 @@ impl<'ctx> Resolver<'ctx> {
         let mut resulting_context: Option<DefinitionContext<'ctx>> = None;
         for (index, segment) in path.iter().enumerate() {
             // println!("Segment ({:?})", segment.id);
-            self.session
-                .context
+            self.context
                 .diagnostics
                 .info("Resolving".into(), segment.identifier.span);
 
@@ -55,7 +54,7 @@ impl<'ctx> Resolver<'ctx> {
                                 continue;
                             } else {
                                 if !is_last {
-                                    self.session.context.diagnostics.error(
+                                    self.context.diagnostics.error(
                                         format!(
                                             "{} does not have a namespace",
                                             segment.identifier.symbol

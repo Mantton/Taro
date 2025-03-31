@@ -1,7 +1,6 @@
 use crate::models::ToNameBinding;
 use rustc_hash::FxHashMap;
-use std::rc::Rc;
-use taroc_context::{CompilerSession, ResolutionData};
+use taroc_context::{CompilerSession, GlobalContext, ResolutionData};
 use taroc_hir::{DefinitionID, DefinitionIndex, DefinitionKind, NodeID, PackageIndex, Resolution};
 use taroc_resolve_models::{
     DefContextKind, DefinitionContext, ExternalDefinitionUsage, NameBinding, NameHolder,
@@ -9,7 +8,7 @@ use taroc_resolve_models::{
 use taroc_span::{FileID, Identifier, Span, Symbol};
 
 pub struct Resolver<'ctx> {
-    pub session: Rc<CompilerSession<'ctx>>,
+    pub context: GlobalContext<'ctx>,
     node_to_def: FxHashMap<NodeID, DefinitionID>,
     def_to_kind: FxHashMap<DefinitionID, DefinitionKind>,
     def_to_context: FxHashMap<DefinitionID, DefinitionContext<'ctx>>,
@@ -26,9 +25,9 @@ pub struct Resolver<'ctx> {
 }
 
 impl Resolver<'_> {
-    pub fn new<'ctx>(session: Rc<CompilerSession<'ctx>>) -> Resolver<'ctx> {
+    pub fn new<'ctx>(context: GlobalContext<'ctx>) -> Resolver<'ctx> {
         Resolver {
-            session,
+            context,
             node_to_def: Default::default(),
             def_to_kind: Default::default(),
             def_to_context: Default::default(),
@@ -47,6 +46,10 @@ impl Resolver<'_> {
 }
 
 impl<'ctx> Resolver<'ctx> {
+    pub fn session(&self) -> CompilerSession {
+        self.context.session()
+    }
+
     pub fn new_context(
         &mut self,
         parent: Option<DefinitionContext<'ctx>>,
@@ -74,7 +77,7 @@ impl<'ctx> Resolver<'ctx> {
         _parent: DefinitionID,
     ) -> DefinitionID {
         let index = DefinitionID::new(
-            PackageIndex::new(self.session.index),
+            PackageIndex::new(self.session().package_index),
             DefinitionIndex::from_raw(self.next_index),
         );
         self.node_to_def.insert(node, index);
@@ -88,11 +91,11 @@ impl<'ctx> Resolver<'ctx> {
     }
 
     pub fn def_kind(&self, id: DefinitionID) -> DefinitionKind {
-        if id.is_local(self.session.index) {
+        if id.is_local(self.session().package_index) {
             return *self.def_to_kind.get(&id).expect("bug! node not tagged");
         }
 
-        let resolutions = self.session.context.store.resolutions.borrow();
+        let resolutions = self.context.store.resolutions.borrow();
         let data = resolutions
             .get(&id.package().index())
             .expect("resolution data");
@@ -101,7 +104,7 @@ impl<'ctx> Resolver<'ctx> {
     }
 
     pub fn get_context(&self, id: &DefinitionID) -> Option<DefinitionContext<'ctx>> {
-        if !id.is_local(self.session.index) {
+        if !id.is_local(self.session().package_index) {
             todo!("non local id")
         };
 
@@ -166,14 +169,10 @@ impl<'ctx> Resolver<'ctx> {
                     "Duplicate Definition, '{}' is already defined in this scope",
                     identifier.symbol
                 );
-                self.session
-                    .context
-                    .diagnostics
-                    .error(message, identifier.span);
+                self.context.diagnostics.error(message, identifier.span);
 
                 let message = format!("'{}' is defined here.", identifier.symbol);
-                self.session
-                    .context
+                self.context
                     .diagnostics
                     .info(message, previous_binding.nearest().span);
                 return false;

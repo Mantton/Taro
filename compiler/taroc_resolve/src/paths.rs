@@ -31,8 +31,7 @@ impl<'ctx> Resolver<'ctx> {
                         path[index - 1].identifier.symbol
                     )
                 };
-                self.session
-                    .context
+                self.context
                     .diagnostics
                     .error(message, segment.identifier.span);
                 return None;
@@ -44,14 +43,13 @@ impl<'ctx> Resolver<'ctx> {
 
     fn resolve_package_root(&mut self, name: Symbol) -> Option<DefinitionContext<'ctx>> {
         // Refering to self
-        if name.as_str() == &self.session.config.package_name() {
+        if name.as_str() == &self.session().config.package_name() {
             return self.root_context;
         }
 
         // Refering to STD
         if name.as_str() == STD_PREFIX {
             let context = self
-                .session
                 .context
                 .store
                 .resolutions
@@ -63,9 +61,8 @@ impl<'ctx> Resolver<'ctx> {
         }
 
         // Refering to Dependency
-        if let Some(target) = self.session.config.dependency_map.get(name.as_str()) {
+        if let Some(target) = self.session().config.dependency_map.get(name.as_str()) {
             let index = *self
-                .session
                 .context
                 .store
                 .package_mapping
@@ -73,7 +70,6 @@ impl<'ctx> Resolver<'ctx> {
                 .get(target)
                 .expect("package index");
             let context = self
-                .session
                 .context
                 .store
                 .resolutions

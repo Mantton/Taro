@@ -26,10 +26,8 @@ pub struct File {
     pub tokens: Vec<Token>,
 }
 
-pub fn tokenize_package(
-    source: &std::path::Path,
-    context: GlobalContext,
-) -> CompileResult<Package> {
+pub fn tokenize_package(context: GlobalContext) -> CompileResult<Package> {
+    let source = &context.session().config.source_path;
     let source = source.join(SOURCE_DIRECTORY);
     let root = tokenize_module(&source, true, context)?;
     if context.diagnostics.has_errors() {

@@ -109,15 +109,15 @@ impl Builder {
                 .borrow_mut()
                 .insert(config.qualified.clone(), index);
         }
-        let session = Rc::new(CompilerSession {
-            index,
-            config,
-            context,
-        });
-        let package = tokenize_package(&session.config.source_path, context)?;
+        let session = CompilerSession {
+            package_index: index,
+            config: Rc::new(config),
+        };
+        context.set_session(session);
+        let package = tokenize_package(context)?;
         let package = parse_package(package, context)?;
         let package = taroc_ast_passes::run(package, context)?;
-        taroc_hir_passes::run(package, session.clone())?;
+        taroc_hir_passes::run(package, context)?;
         Ok(())
     }
 }

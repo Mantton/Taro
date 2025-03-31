@@ -1,13 +1,11 @@
-use std::rc::Rc;
-
-use taroc_context::CompilerSession;
+use taroc_context::GlobalContext;
 use taroc_ty::{LabeledFunctionParameter, LabeledFunctionSignature};
 
 use crate::lower::lower_type;
 
 pub fn convert_to_labeled_signature<'ctx>(
     func: &taroc_hir::Function,
-    session: Rc<CompilerSession<'ctx>>,
+    context: GlobalContext<'ctx>,
 ) -> LabeledFunctionSignature<'ctx> {
     let is_async = func.signature.is_async;
     let inputs: Vec<LabeledFunctionParameter> = func
@@ -15,13 +13,13 @@ pub fn convert_to_labeled_signature<'ctx>(
         .prototype
         .inputs
         .iter()
-        .map(|i| convert_to_labeled_parameter(i, session.clone()))
+        .map(|i| convert_to_labeled_parameter(i, context))
         .collect();
 
     let output = if let Some(output) = &func.signature.prototype.output {
-        lower_type(output, session.context, session.index, Default::default())
+        lower_type(output, context, Default::default())
     } else {
-        session.context.store.common_types.void
+        context.store.common_types.void
     };
 
     LabeledFunctionSignature {
@@ -33,17 +31,12 @@ pub fn convert_to_labeled_signature<'ctx>(
 
 pub fn convert_to_labeled_parameter<'ctx>(
     param: &taroc_hir::FunctionParameter,
-    session: Rc<CompilerSession<'ctx>>,
+    context: GlobalContext<'ctx>,
 ) -> LabeledFunctionParameter<'ctx> {
     let label = param.label.as_ref().map(|f| f.identifier.symbol);
     LabeledFunctionParameter {
         label,
-        ty: lower_type(
-            &param.annotated_type,
-            session.context,
-            session.index,
-            Default::default(),
-        ),
+        ty: lower_type(&param.annotated_type, context, Default::default()),
         is_variadic: param.is_variadic,
     }
 }

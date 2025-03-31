@@ -15,11 +15,11 @@ use taroc_span::{FileID, Identifier, Span, Spanned, Symbol};
 pub fn run(package: &taroc_hir::Package, resolver: &mut Resolver) -> CompileResult<()> {
     let collector = GenericsCollector::new(resolver);
     collector.run(package);
-    resolver.session.context.diagnostics.report()?;
+    resolver.context.diagnostics.report()?;
 
     let actor = Actor::new(resolver);
     actor.run(package);
-    resolver.session.context.diagnostics.report()
+    resolver.context.diagnostics.report()
 }
 
 struct GenericsCollector<'res, 'ctx> {
@@ -76,7 +76,6 @@ impl HirVisitor for GenericsCollector<'_, '_> {
                     // param has already been defined
                     let msg = format!("TypeParameter '{name}' is already defined");
                     self.resolver
-                        .session
                         .context
                         .diagnostics
                         .error(msg, param.identifier.span);
@@ -131,10 +130,10 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
     }
 
     fn with_generics_scope(&mut self, id: DefinitionID, work: impl FnOnce(&mut Self)) {
-        let generics = if id.is_local(self.resolver.session.index) {
+        let generics = if id.is_local(self.resolver.session().package_index) {
             self.resolver.generics_table.get(&id).cloned()
         } else {
-            self.resolver.session.context.resolution_generics(id)
+            self.resolver.context.resolution_generics(id)
         };
 
         let Some(generics) = generics else {
@@ -626,11 +625,7 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
             }
         };
 
-        self.resolver
-            .session
-            .context
-            .diagnostics
-            .error(message, span);
+        self.resolver.context.diagnostics.error(message, span);
     }
 
     fn report_error_with_context(
@@ -645,11 +640,7 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
         if let Some(res) = resolution {
             let provided = res.description();
             let message = format!("expected {expectation}, got {provided} '{item}'");
-            self.resolver
-                .session
-                .context
-                .diagnostics
-                .error(message, path.span);
+            self.resolver.context.diagnostics.error(message, path.span);
             return;
         } else {
             let mod_name = if path.segments.len() == 1 {
@@ -662,11 +653,7 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
             };
 
             let message = format!("cannot find {expectation} '{item}' in {mod_name}");
-            self.resolver
-                .session
-                .context
-                .diagnostics
-                .error(message, path.span);
+            self.resolver.context.diagnostics.error(message, path.span);
         }
     }
 }

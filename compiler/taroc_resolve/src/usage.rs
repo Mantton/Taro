@@ -25,7 +25,7 @@ impl Resolver<'_> {
             }
         }
 
-        self.session.context.diagnostics.report()
+        self.context.diagnostics.report()
     }
     fn resolve_imports(&mut self) {
         while !self.unresolved_imports.is_empty() {
@@ -84,10 +84,7 @@ impl<'ctx> Resolver<'ctx> {
                 usage.source.symbol,
                 export.module_path.last().unwrap().identifier.symbol
             );
-            self.session
-                .context
-                .diagnostics
-                .error(message, usage.source.span);
+            self.context.diagnostics.error(message, usage.source.span);
             return false;
         }
 
@@ -158,10 +155,7 @@ impl<'ctx> Resolver<'ctx> {
                 usage.source.symbol,
                 import.module_path.last().unwrap().identifier.symbol
             );
-            self.session
-                .context
-                .diagnostics
-                .error(message, usage.source.span);
+            self.context.diagnostics.error(message, usage.source.span);
             return false;
         }
 

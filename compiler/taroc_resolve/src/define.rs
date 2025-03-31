@@ -16,7 +16,7 @@ use taroc_span::{Span, Symbol};
 pub fn run(package: &taroc_hir::Package, r: &mut Resolver) -> CompileResult<()> {
     let actor = Actor::new(r);
     actor.run(package);
-    r.session.context.diagnostics.report()
+    r.context.diagnostics.report()
 }
 
 struct Actor<'res, 'ctx> {
@@ -219,7 +219,6 @@ impl Actor<'_, '_> {
             taroc_hir::PathTreeNode::Nested { nodes, span } => {
                 if nodes.is_empty() {
                     self.resolver
-                        .session
                         .context
                         .diagnostics
                         .warn("Unused Import, Path is Empty".into(), *span);
