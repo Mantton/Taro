@@ -3,7 +3,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::hash_map::Entry;
 use taroc_error::CompileResult;
 use taroc_hir::{
-    DeclarationContext, DefinitionID, DefinitionKind, NodeID, Resolution, SymbolNamespace,
+    Declaration, DeclarationContext, DefinitionID, DefinitionKind, NodeID, Resolution,
+    SymbolNamespace,
     visitor::{self, HirVisitor},
 };
 use taroc_resolve_models::{
@@ -298,7 +299,7 @@ impl Actor<'_, '_> {
                 });
             }
             taroc_hir::DeclarationKind::Extend(extend) => {
-                self.resolve_extend(extend);
+                self.resolve_extend(extend, declaration, context);
             }
             taroc_hir::DeclarationKind::TypeAlias(..) => {
                 self.with_scope(LexicalScopeSource::Definition(def_kind), |this| {
@@ -379,26 +380,32 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
 }
 
 impl<'res, 'ctx> Actor<'res, 'ctx> {
-    fn resolve_extend(&mut self, node: &taroc_hir::Extend) {
+    fn resolve_extend(
+        &mut self,
+        node: &taroc_hir::Extend,
+        decl: &Declaration,
+        ctx: DeclarationContext,
+    ) {
         let self_res = self.resolve_path_with_source(node.ty.id, &node.ty.path, PathSource::Type);
         let def_id = self_res.def_id();
 
-        // TODO: Any Checks to be done if this fails? error will be reported by path resolution
         let Some(def_id) = def_id else {
+            self.report_error(
+                ResolutionError::CannotExtend {
+                    segment: node.ty.path.segments.last().unwrap().identifier.symbol,
+                },
+                node.ty.path.span,
+            );
             return;
         };
 
-        self.with_generics_scope(def_id, |this| {
-            this.with_self_alias_scope(self_res, |this| {
-                this.visit_generics(&node.generics);
-                for declaration in &node.declarations {
-                    // this.visit_declaration(declaration, DeclarationContext::Extend)
-                    taroc_hir::visitor::walk_declaration(
-                        this,
-                        declaration,
-                        DeclarationContext::Extend,
-                    )
-                }
+        let context = self.resolver.get_context(&def_id).expect("type context");
+
+        self.with_scope(LexicalScopeSource::Context(context), |this| {
+            this.with_generics_scope(def_id, |this| {
+                this.with_self_alias_scope(self_res, |this| {
+                    taroc_hir::visitor::walk_declaration(this, &decl, ctx);
+                });
             });
         });
     }
@@ -622,6 +629,9 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
             }
             ResolutionError::IdentifierBoundMoreThanOnceInSamePattern => {
                 format!("identifier is bound more than once in the pattern")
+            }
+            ResolutionError::CannotExtend { segment } => {
+                format!("cannot extend {segment}")
             }
         };
 

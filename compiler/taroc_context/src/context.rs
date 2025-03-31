@@ -1,5 +1,6 @@
 use crate::{CompilerSession, GlobalContext};
 use taroc_hir::{DefinitionID, DefinitionKind, NodeID, Resolution};
+use taroc_resolve_models::DefinitionContext;
 use taroc_span::Symbol;
 use taroc_ty::{
     EnumDefinition, GenericArgument, GenericParameter, InterfaceDefinition, StructDefinition, Ty,
@@ -30,8 +31,15 @@ impl<'ctx> GlobalContext<'ctx> {
     pub fn def_kind(self, id: DefinitionID) -> DefinitionKind {
         let resolutions = self.context.store.resolutions.borrow();
         let package = resolutions.get(&id.package().index()).expect("package");
-        let partial_res = package.def_to_kind.get(&id).expect("res");
-        partial_res.clone()
+        let kind = package.def_to_kind.get(&id).expect("res");
+        *kind
+    }
+
+    pub fn def_context(self, id: DefinitionID) -> DefinitionContext<'ctx> {
+        let resolutions = self.context.store.resolutions.borrow();
+        let package = resolutions.get(&id.package().index()).expect("package");
+        let ctx = package.def_to_context.get(&id).expect("def_context");
+        *ctx
     }
 
     pub fn resolution(self, id: NodeID) -> Resolution {

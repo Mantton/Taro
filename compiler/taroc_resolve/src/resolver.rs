@@ -105,7 +105,7 @@ impl<'ctx> Resolver<'ctx> {
 
     pub fn get_context(&self, id: &DefinitionID) -> Option<DefinitionContext<'ctx>> {
         if !id.is_local(self.session().package_index) {
-            todo!("non local id")
+            return Some(self.context.def_context(*id));
         };
 
         let x = self.def_to_context.get(id).cloned();
@@ -256,6 +256,7 @@ impl<'ctx> Resolver<'ctx> {
             resolution_map: self.resolution_map,
             root: self.root_context.unwrap(),
             generics_map: self.generics_table,
+            def_to_context: self.def_to_context,
         }
     }
 }

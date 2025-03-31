@@ -293,6 +293,7 @@ pub enum ResolutionError {
     Ambiguous { segment: Symbol },
     IdentifierBoundMoreThanOnceInParameterList,
     IdentifierBoundMoreThanOnceInSamePattern,
+    CannotExtend { segment: Symbol },
 }
 
 #[derive(Clone, Copy)]

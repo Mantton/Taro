@@ -116,6 +116,7 @@ pub struct ResolutionData<'ctx> {
     pub root: DefinitionContext<'ctx>,
     pub node_to_def: FxHashMap<NodeID, DefinitionID>,
     pub def_to_kind: FxHashMap<DefinitionID, DefinitionKind>,
+    pub def_to_context: FxHashMap<DefinitionID, DefinitionContext<'ctx>>,
     pub resolution_map: FxHashMap<NodeID, Resolution>,
     pub generics_map: FxHashMap<DefinitionID, Vec<(Symbol, DefinitionID)>>,
 }
