@@ -13,14 +13,15 @@ impl<'ctx> Resolver<'ctx> {
         ns: SymbolNamespace,
         scopes: &[LexicalScope<'ctx>],
     ) -> PathResult<'ctx> {
-        // let name: Vec<&str> = path.iter().map(|v| v.identifier.symbol.as_str()).collect();
-        // println!("\n---- {}", name.join("::"));
-        let mut context: Option<DefinitionContext<'ctx>> = None;
+        let name: Vec<&str> = path.iter().map(|v| v.identifier.symbol.as_str()).collect();
+        println!("\n---- {}", name.join("::"));
+        let mut resulting_context: Option<DefinitionContext<'ctx>> = None;
         for (index, segment) in path.iter().enumerate() {
             // println!("Segment ({:?})", segment.id);
-            // self.context
-            //     .diagnostics
-            //     .info("Resolving".into(), segment.identifier.span);
+            self.session
+                .context
+                .diagnostics
+                .info("Resolving".into(), segment.identifier.span);
 
             let is_last = index == path.len() - 1;
             let name = &segment.identifier.symbol;
@@ -34,11 +35,10 @@ impl<'ctx> Resolver<'ctx> {
             // For Nested Paths, The Non-Last Segments should resolve to a type
             let _ns = if is_last { ns } else { SymbolNamespace::Type };
 
-            let named_symbol = if let Some(context) = context {
+            let named_symbol = if let Some(context) = resulting_context {
                 self.resolve_symbol_in_context(name, context)
             } else {
                 let lexical_resolution = self.resolve_symbol_in_lexical_scope(name, scopes);
-
                 match lexical_resolution {
                     Some(LexicalScopeBinding::Declaration(binding)) => Ok(binding),
                     Some(LexicalScopeBinding::Resolution(resolution)) => {
@@ -47,7 +47,24 @@ impl<'ctx> Resolver<'ctx> {
                             Err(Determinacy::Undetermined)
                         } else {
                             record_resolution(self, resolution.clone());
-                            return PathResult::NonContext(resolution);
+                            let def_id = resolution.def_id();
+                            if let Some(id) = def_id
+                                && let Some(new_context) = self.get_context(&id)
+                            {
+                                resulting_context = Some(new_context);
+                                continue;
+                            } else {
+                                if !is_last {
+                                    self.session.context.diagnostics.error(
+                                        format!(
+                                            "{} does not have a namespace",
+                                            segment.identifier.symbol
+                                        ),
+                                        segment.identifier.span,
+                                    );
+                                }
+                                return PathResult::NonContext(resolution);
+                            }
                         }
                     }
                     _ => Err(Determinacy::Determined),
@@ -68,7 +85,7 @@ impl<'ctx> Resolver<'ctx> {
             let resolution = named_symbol.resolution();
 
             if let Some(next_context) = named_symbol.context() {
-                context = Some(next_context);
+                resulting_context = Some(next_context);
                 record_resolution(self, resolution.clone());
             } else if is_last {
                 record_resolution(self, resolution.clone());
@@ -83,9 +100,9 @@ impl<'ctx> Resolver<'ctx> {
             }
         }
 
-        match context {
+        match resulting_context {
             Some(_) => {
-                return PathResult::Context(context.unwrap());
+                return PathResult::Context(resulting_context.unwrap());
             }
             None => {
                 unreachable!("must return failing resolution earlier")
@@ -199,21 +216,6 @@ impl<'ctx> Resolver<'ctx> {
                 LexicalScopeSource::Context(context) => context,
                 _ => continue,
             };
-
-            match context.kind {
-                DefContextKind::Block
-                | DefContextKind::File
-                | DefContextKind::Definition(
-                    _,
-                    taroc_hir::DefinitionKind::Module | taroc_hir::DefinitionKind::Namespace,
-                    _,
-                ) => {
-                    // these blocks are transparent, meaning you don't need to qualify to get a member
-                }
-                _ => {
-                    break;
-                }
-            }
 
             let binding = self.resolve_symbol_in_context(name, context);
 

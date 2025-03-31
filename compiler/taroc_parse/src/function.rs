@@ -1,9 +1,9 @@
 use super::package::{Parser, R};
 use taroc_ast::{
-    DeclarationKind, Function, FunctionParameter, FunctionPrototype, FunctionSignature, Generics,
-    Label, Mutability, SelfKind, Type, TypeKind,
+    DeclarationKind, Function, FunctionParameter, FunctionPrototype, FunctionReciever,
+    FunctionSignature, Generics, Label, Mutability,
 };
-use taroc_span::{Identifier, SpannedMessage, Symbol};
+use taroc_span::{Identifier, SpannedMessage};
 use taroc_token::{Delimiter, OperatorKind, TokenKind};
 
 impl Parser {
@@ -33,7 +33,22 @@ impl Parser {
         let lo = self.lo_span();
         let type_parameters = self.parse_type_parameters()?;
         let parameters = self.parse_function_parameters()?;
+
+        let reciever = if self.eat(TokenKind::Const) {
+            Some(FunctionReciever::Reference(Mutability::Immutable))
+        } else if self.eat(TokenKind::Mut) {
+            Some(FunctionReciever::Reference(Mutability::Mutable))
+        } else {
+            None
+        };
+
         let is_async = self.eat(TokenKind::Async);
+        if is_async && self.matches_any(&[TokenKind::Mut, TokenKind::Const]) {
+            self.emit_error(
+                "receiver must appear before async modifier".into(),
+                self.current_token_span(),
+            );
+        }
 
         let return_type = if self.eat(TokenKind::RArrow) {
             Some(self.parse_type()?)
@@ -68,6 +83,7 @@ impl Parser {
         };
 
         let func = Function {
+            reciever,
             signature,
             block,
             generics,
@@ -83,10 +99,6 @@ impl Parser {
     }
 
     fn parse_function_parameter(&mut self) -> R<FunctionParameter> {
-        if let Some(self_param) = self.parse_self_parameter()? {
-            return Ok(self_param);
-        }
-
         let lo = self.lo_span();
 
         // @attribute label name: type
@@ -149,71 +161,6 @@ impl Parser {
         };
 
         Ok(param)
-    }
-
-    fn parse_self_parameter(&mut self) -> R<Option<FunctionParameter>> {
-        let lo = self.lo_span();
-        let attributes = self.parse_attributes()?;
-
-        let (a, b, c) = match self.current_kind() {
-            TokenKind::Identifier => {
-                let anchor = self.cursor;
-                let ident = self.parse_identifier()?;
-
-                if ident.symbol == Symbol::with("self") {
-                    (SelfKind::Value, Mutability::Immutable, ident)
-                } else {
-                    self.cursor = anchor;
-                    return Ok(None);
-                }
-            }
-            TokenKind::Amp => {
-                self.bump();
-                let mutability = if self.eat(TokenKind::Const) {
-                    Mutability::Immutable
-                } else {
-                    Mutability::Mutable
-                };
-
-                (SelfKind::Reference, mutability, self.parse_self()?)
-            }
-            _ => return Ok(None),
-        };
-
-        let self_ty = Type {
-            span: c.span,
-            kind: TypeKind::ImplicitSelf,
-        };
-
-        let ty = match a {
-            SelfKind::Value => self_ty,
-            SelfKind::Reference => Type {
-                span: c.span,
-                kind: TypeKind::Reference(Box::new(self_ty), b),
-            },
-        };
-
-        Ok(Some(FunctionParameter {
-            attributes,
-            label: None,
-            name: c,
-            annotated_type: Box::new(ty),
-            default_value: None,
-            is_variadic: false,
-            span: lo.to(self.hi_span()),
-        }))
-    }
-
-    fn parse_self(&mut self) -> R<Identifier> {
-        let ident = self.parse_identifier()?;
-
-        if ident.symbol != Symbol::with("self") {
-            let msg = format!("expected 'self' got '{}' instead", ident.symbol);
-            let err = SpannedMessage::new(msg.to_string(), ident.span);
-            return Err(err);
-        }
-
-        return Ok(ident);
     }
 }
 

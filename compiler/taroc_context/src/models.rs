@@ -5,7 +5,10 @@ use taroc_data_structures::Interned;
 use taroc_hir::{DefinitionID, DefinitionKind, NodeID, Resolution};
 use taroc_resolve_models::DefinitionContext;
 use taroc_span::Symbol;
-use taroc_ty::{FloatTy, GenericArgument, IntTy, Ty, TyKind, UIntTy};
+use taroc_ty::{
+    EnumDefinition, FloatTy, GenericArgument, IntTy, InterfaceDefinition, StructDefinition, Ty,
+    TyKind, UIntTy,
+};
 
 pub struct ContextStore<'ctx> {
     pub interners: ContextInterners<'ctx>,
@@ -121,6 +124,9 @@ pub struct ResolutionData<'ctx> {
 pub struct TypeDatabase<'ctx> {
     pub def_to_ty: FxHashMap<DefinitionID, Ty<'ctx>>,
     pub def_to_generics: FxHashMap<DefinitionID, taroc_ty::Generics>,
+    pub structs: FxHashMap<DefinitionID, StructDefinition<'ctx>>,
+    pub enums: FxHashMap<DefinitionID, EnumDefinition<'ctx>>,
+    pub interfaces: FxHashMap<DefinitionID, InterfaceDefinition<'ctx>>,
 }
 
 pub struct CommonTypes<'ctx> {

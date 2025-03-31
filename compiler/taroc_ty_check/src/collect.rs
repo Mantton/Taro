@@ -17,6 +17,7 @@ use taroc_ty::{
 pub fn run(package: &taroc_hir::Package, session: Rc<CompilerSession>) -> CompileResult<()> {
     GenericsCollector::run(package, session.clone())?;
     TypeCollector::run(package, session.clone())?;
+    FunctionCollector::run(package, session.clone())?;
     AliasCollector::run(package, session.clone())?;
     DefinitionCollector::run(package, session.clone())?;
     InterfaceRequirementsCollector::run(package, session.clone())?;
@@ -228,6 +229,85 @@ impl<'ctx> TypeCollector<'ctx> {
 
         return Some(value);
     }
+    fn collect_type_parameters(
+        &mut self,
+        parameters: &Option<TypeParameters>,
+    ) -> Vec<GenericArgument<'ctx>> {
+        if parameters.is_none() {
+            return vec![];
+        }
+
+        let parameters = parameters.as_ref().unwrap();
+        let mut arguments = Vec::new();
+
+        for (index, parameter) in parameters.parameters.iter().enumerate() {
+            let kind = TyKind::Parameter(GenericParameter {
+                index,
+                name: parameter.identifier.symbol,
+            });
+            let ty = self.session.context.store.interners.intern_ty(kind);
+            self.tag(&parameter.id, ty);
+            let argument = GenericArgument::Type(ty);
+            arguments.push(argument);
+        }
+
+        arguments
+    }
+}
+
+struct FunctionCollector<'ctx> {
+    session: Rc<CompilerSession<'ctx>>,
+}
+
+impl<'ctx> FunctionCollector<'ctx> {
+    fn new(session: Rc<CompilerSession<'ctx>>) -> FunctionCollector<'ctx> {
+        FunctionCollector { session }
+    }
+
+    fn run<'a>(package: &Package, session: Rc<CompilerSession<'ctx>>) -> CompileResult<()> {
+        let mut actor = FunctionCollector::new(session.clone());
+        taroc_hir::visitor::walk_package(&mut actor, package);
+        session.context.diagnostics.report()
+    }
+}
+
+impl HirVisitor for FunctionCollector<'_> {
+    fn visit_declaration(
+        &mut self,
+        decl: &Declaration,
+        context: DeclarationContext,
+    ) -> Self::Result {
+        match &decl.kind {
+            DeclarationKind::Function(node) => {
+                self.collect_type_parameters(&node.generics.type_parameters);
+            }
+            _ => {}
+        }
+
+        taroc_hir::visitor::walk_declaration(self, decl, context)
+    }
+}
+
+impl<'ctx> FunctionCollector<'ctx> {
+    fn def_id(&self, node: &NodeID) -> DefinitionID {
+        let resolutions = self.session.context.store.resolutions.borrow();
+        let resolutions = resolutions
+            .get(&self.session.index)
+            .expect("resolution data");
+
+        *resolutions.node_to_def.get(node).expect("nodeid")
+    }
+
+    fn tag(&mut self, node: &NodeID, ty: Ty<'ctx>) {
+        let id = self.def_id(node);
+        let mut types = self.session.context.store.types.borrow_mut();
+        let db = types.get_mut(&self.session.index).expect("database");
+        let previous = db.def_to_ty.insert(id, ty);
+        debug_assert!(previous.is_none(), "no previous type coding");
+    }
+}
+
+impl<'ctx> FunctionCollector<'ctx> {
     fn collect_type_parameters(
         &mut self,
         parameters: &Option<TypeParameters>,
@@ -662,7 +742,7 @@ impl<'ctx> HirVisitor for InterfaceRequirementsCollector<'ctx> {
 
                 let kind = InterfaceRequirement::Method(requirement);
 
-                todo!("update interface")
+                // todo!("update interface")
             }
             _ => {}
         }

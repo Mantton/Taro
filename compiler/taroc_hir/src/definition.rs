@@ -136,11 +136,6 @@ pub enum Resolution {
     FunctionSet(FxHashSet<DefinitionID>),
     InterfaceSelfTypeAlias(DefinitionID),
     SelfTypeAlias(DefinitionID),
-    ConformanceSelfTypeAlias {
-        ty: DefinitionID,
-        interface: DefinitionID,
-        conformance: DefinitionID,
-    },
     Local(NodeID),
     Error,
 }
@@ -151,7 +146,6 @@ impl Resolution {
             Resolution::Definition(i, _) => Some(*i),
             Resolution::FunctionSet(_) => None,
             Resolution::InterfaceSelfTypeAlias(i) => Some(*i),
-            Resolution::ConformanceSelfTypeAlias { conformance, .. } => Some(*conformance),
             Resolution::SelfTypeAlias(i) => Some(*i),
             Resolution::Local(_) => None,
             Resolution::Error => None,
@@ -166,7 +160,6 @@ impl Resolution {
             Resolution::SelfTypeAlias(_) => None,
             Resolution::Local(_) => None,
             Resolution::Error => None,
-            Resolution::ConformanceSelfTypeAlias { .. } => None,
         }
     }
 
@@ -182,7 +175,6 @@ impl Resolution {
             Resolution::Definition(_, k) => k.description(),
             Resolution::FunctionSet(_) => "function",
             Resolution::InterfaceSelfTypeAlias(_) => "self type",
-            Resolution::ConformanceSelfTypeAlias { .. } => "self type",
             Resolution::SelfTypeAlias(_) => "self type",
             Resolution::Local(_) => "local variable",
             Resolution::Error => "unresolved symbol",

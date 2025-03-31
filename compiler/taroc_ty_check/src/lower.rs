@@ -129,6 +129,11 @@ impl<'ctx> TypeLowerer<'ctx> {
                 self.context.type_of(def_id)
             }
             Resolution::Definition(_, DefinitionKind::Interface) => {
+                // TODO!!
+                self.context.store.common_types.error
+            }
+            Resolution::Definition(_, DefinitionKind::AssociatedType) => {
+                // TODO!!
                 self.context.store.common_types.error
             }
             Resolution::Definition(
@@ -143,7 +148,6 @@ impl<'ctx> TypeLowerer<'ctx> {
                 println!("{:?}", self.context.def_kind(definition_id));
                 self.context.type_of(definition_id)
             }
-            Resolution::ConformanceSelfTypeAlias { .. } => todo!(),
             Resolution::FunctionSet(..) => {
                 unreachable!("cannot resolve type to set of functions")
             }

@@ -309,18 +309,26 @@ impl Actor<'_, '_> {
                 });
             }
             taroc_hir::DeclarationKind::DefinedType(node) => {
-                self.with_scope(LexicalScopeSource::Definition(def_kind), |this| {
+                let def_context = self
+                    .resolver
+                    .get_context(&def_id)
+                    .expect("must have context");
+                let self_res = if matches!(node.kind, taroc_hir::DefinedTypeKind::Interface) {
+                    Resolution::InterfaceSelfTypeAlias(def_id)
+                } else {
+                    Resolution::SelfTypeAlias(def_id)
+                };
+                self.with_scope(LexicalScopeSource::Context(def_context), |this| {
                     this.with_generics_scope(def_id, |this| {
-                        let res = if matches!(node.kind, taroc_hir::DefinedTypeKind::Interface) {
-                            Resolution::InterfaceSelfTypeAlias(def_id)
-                        } else {
-                            Resolution::SelfTypeAlias(def_id)
-                        };
-                        this.with_self_alias_scope(res, |this| {
-                            taroc_hir::visitor::walk_declaration(this, declaration, context)
+                        this.with_self_alias_scope(self_res, |this| {
+                            return taroc_hir::visitor::walk_declaration(
+                                this,
+                                declaration,
+                                context,
+                            );
                         });
                     });
-                });
+                })
             }
             taroc_hir::DeclarationKind::Extern(_) => {
                 taroc_hir::visitor::walk_declaration(self, declaration, context);
@@ -333,11 +341,9 @@ impl Actor<'_, '_> {
                     .resolver
                     .get_context(&def_id)
                     .expect("namespace must have context");
-                self.with_scope(LexicalScopeSource::Definition(def_kind), |this| {
-                    this.with_scope(LexicalScopeSource::Context(def_context), |this| {
-                        taroc_hir::visitor::walk_declaration(this, declaration, context)
-                    })
-                });
+                self.with_scope(LexicalScopeSource::Context(def_context), |this| {
+                    taroc_hir::visitor::walk_declaration(this, declaration, context)
+                })
             }
             taroc_hir::DeclarationKind::Bridge(_) => {}
             taroc_hir::DeclarationKind::Export(..) | taroc_hir::DeclarationKind::Import(..) => {

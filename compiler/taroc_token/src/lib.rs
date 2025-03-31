@@ -44,6 +44,7 @@ pub enum TokenKind {
     Let,
     Var,
     Const,
+    Mut,
 
     If,
     Else,
@@ -253,6 +254,7 @@ impl Display for TokenKind {
             TokenKind::PtrEq => "===",
             TokenKind::Case => "case",
             TokenKind::Operator => "operator",
+            TokenKind::Mut => "mut",
         };
         write!(f, "{}", text)
     }
@@ -307,6 +309,7 @@ impl TokenKind {
             "associatedtype" => TokenKind::AssociatedType,
             "case" => TokenKind::Case,
             "operator" => TokenKind::Operator,
+            "mut" => TokenKind::Mut,
             _ => return None,
         };
 
