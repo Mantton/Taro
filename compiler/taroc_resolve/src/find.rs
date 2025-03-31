@@ -13,14 +13,14 @@ impl<'ctx> Resolver<'ctx> {
         ns: SymbolNamespace,
         scopes: &[LexicalScope<'ctx>],
     ) -> PathResult<'ctx> {
-        let name: Vec<&str> = path.iter().map(|v| v.identifier.symbol.as_str()).collect();
-        println!("\n---- {}", name.join("::"));
+        // let name: Vec<&str> = path.iter().map(|v| v.identifier.symbol.as_str()).collect();
+        // println!("\n---- {}", name.join("::"));
         let mut resulting_context: Option<DefinitionContext<'ctx>> = None;
         for (index, segment) in path.iter().enumerate() {
             // println!("Segment ({:?})", segment.id);
-            self.context
-                .diagnostics
-                .info("Resolving".into(), segment.identifier.span);
+            // self.context
+            //     .diagnostics
+            //     .info("Resolving".into(), segment.identifier.span);
 
             let is_last = index == path.len() - 1;
             let name = &segment.identifier.symbol;

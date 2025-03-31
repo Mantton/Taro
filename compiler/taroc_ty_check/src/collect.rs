@@ -4,7 +4,7 @@ use taroc_context::GlobalContext;
 use taroc_error::CompileResult;
 use taroc_hir::{
     Declaration, DeclarationContext, DeclarationKind, DefinedType, DefinedTypeKind, DefinitionID,
-    Generics, Mutability, NodeID, Package, TypeAlias, TypeParameters, visitor::HirVisitor,
+    Generics, Mutability, NodeID, Package, TypeAlias, visitor::HirVisitor,
 };
 use taroc_span::Symbol;
 use taroc_ty::{
@@ -74,9 +74,13 @@ impl<'ctx> GenericsCollector<'ctx> {
             .iter()
             .enumerate()
         {
+            let id = self.context.def_id(param.id);
+            let name = param.identifier.symbol;
+
+            // Definition
             let def = taroc_ty::GenericParameterDefinition {
-                name: param.identifier.symbol,
-                id: self.context.def_id(param.id),
+                name,
+                id,
                 index,
                 kind: match &param.kind {
                     taroc_hir::TypeParameterKind::Type { default } => {
@@ -91,8 +95,12 @@ impl<'ctx> GenericsCollector<'ctx> {
                     }
                 },
             };
-
             parameters.push(def);
+
+            // Type
+            let kind = TyKind::Parameter(GenericParameter { index, name });
+            let ty = self.context.store.interners.intern_ty(kind);
+            self.context.cache_type(id, ty);
         }
         let def_id = self.context.def_id(id);
         let generics = taroc_ty::Generics { parameters };
@@ -143,9 +151,7 @@ impl<'ctx> TypeCollector<'ctx> {
         {
             self.context.cache_type(def_id, builtin);
         } else {
-            let arguments = self.collect_type_parameters(&node.generics.type_parameters);
-            let arguments = self.context.store.interners.mk_args(arguments);
-
+            let arguments = self.context.type_arguments(def_id);
             match node.kind {
                 DefinedTypeKind::Struct | DefinedTypeKind::Enum => {
                     let kind = TyKind::Adt(def_id, arguments);
@@ -159,7 +165,7 @@ impl<'ctx> TypeCollector<'ctx> {
 
     fn collect_alias(&mut self, id: NodeID, node: &TypeAlias) {
         let def_id = self.context.def_id(id);
-        let _ = self.collect_type_parameters(&node.generics.type_parameters);
+        let _ = self.context.type_arguments(def_id);
         let kind = TyKind::AliasPlaceholder;
         let ty = self.context.store.interners.intern_ty(kind);
         self.context.cache_type(def_id, ty);
@@ -189,31 +195,6 @@ impl<'ctx> TypeCollector<'ctx> {
 
         return Some(value);
     }
-    fn collect_type_parameters(
-        &mut self,
-        parameters: &Option<TypeParameters>,
-    ) -> Vec<GenericArgument<'ctx>> {
-        if parameters.is_none() {
-            return vec![];
-        }
-
-        let parameters = parameters.as_ref().unwrap();
-        let mut arguments = Vec::new();
-
-        for (index, parameter) in parameters.parameters.iter().enumerate() {
-            let kind = TyKind::Parameter(GenericParameter {
-                index,
-                name: parameter.identifier.symbol,
-            });
-            let ty = self.context.store.interners.intern_ty(kind);
-            let def_id = self.context.def_id(parameter.id);
-            self.context.cache_type(def_id, ty);
-            let argument = GenericArgument::Type(ty);
-            arguments.push(argument);
-        }
-
-        arguments
-    }
 }
 
 struct FunctionCollector<'ctx> {
@@ -240,40 +221,12 @@ impl HirVisitor for FunctionCollector<'_> {
     ) -> Self::Result {
         match &decl.kind {
             DeclarationKind::Function(node) => {
-                self.collect_type_parameters(&node.generics.type_parameters);
+                // TODO
             }
             _ => {}
         }
 
         taroc_hir::visitor::walk_declaration(self, decl, context)
-    }
-}
-
-impl<'ctx> FunctionCollector<'ctx> {
-    fn collect_type_parameters(
-        &mut self,
-        parameters: &Option<TypeParameters>,
-    ) -> Vec<GenericArgument<'ctx>> {
-        if parameters.is_none() {
-            return vec![];
-        }
-
-        let parameters = parameters.as_ref().unwrap();
-        let mut arguments = Vec::new();
-
-        for (index, parameter) in parameters.parameters.iter().enumerate() {
-            let kind = TyKind::Parameter(GenericParameter {
-                index,
-                name: parameter.identifier.symbol,
-            });
-            let ty = self.context.store.interners.intern_ty(kind);
-            let def_id = self.context.def_id(parameter.id);
-            self.context.cache_type(def_id, ty);
-            let argument = GenericArgument::Type(ty);
-            arguments.push(argument);
-        }
-
-        arguments
     }
 }
 
@@ -615,10 +568,6 @@ impl<'ctx> HirVisitor for InterfaceRequirementsCollector<'ctx> {
                 self.parent = Some(id)
             }
             DeclarationKind::Function(func) if matches!(context, DeclarationContext::Interface) => {
-                self.context
-                    .diagnostics
-                    .info("Target".into(), declaration.identifier.span);
-
                 let is_required = func.block.is_none();
 
                 let requirement = InterfaceMethodRequirement {
@@ -629,7 +578,10 @@ impl<'ctx> HirVisitor for InterfaceRequirementsCollector<'ctx> {
 
                 let kind = InterfaceRequirement::Method(requirement);
 
-                // todo!("update interface")
+                self.context
+                    .update_interface_def(self.parent.expect("parent"), |def| {
+                        def.requirements.push(kind);
+                    });
             }
             _ => {}
         }

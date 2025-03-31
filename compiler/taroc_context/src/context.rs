@@ -1,7 +1,10 @@
 use crate::{CompilerSession, GlobalContext};
 use taroc_hir::{DefinitionID, DefinitionKind, NodeID, Resolution};
 use taroc_span::Symbol;
-use taroc_ty::{EnumDefinition, InterfaceDefinition, StructDefinition, Ty};
+use taroc_ty::{
+    EnumDefinition, GenericArgument, GenericParameter, InterfaceDefinition, StructDefinition, Ty,
+    TyKind,
+};
 
 impl<'ctx> GlobalContext<'ctx> {
     pub fn set_session(self, session: CompilerSession) {
@@ -136,5 +139,30 @@ impl<'ctx> GlobalContext<'ctx> {
             .get_mut(&id)
             .expect("interface definition");
         action(entry);
+    }
+
+    pub fn type_arguments(self, id: DefinitionID) -> taroc_ty::GenericArguments<'ctx> {
+        let generics = self.generics_of(id);
+
+        let args: Vec<GenericArgument<'ctx>> = if generics.parameters.is_empty() {
+            vec![]
+        } else {
+            generics
+                .parameters
+                .iter()
+                .map(|param| {
+                    let kind = TyKind::Parameter(GenericParameter {
+                        index: param.index,
+                        name: param.name,
+                    });
+                    let ty = self.store.interners.intern_ty(kind);
+                    self.cache_type(param.id, ty);
+                    let argument = GenericArgument::Type(ty);
+                    argument
+                })
+                .collect()
+        };
+
+        self.store.interners.mk_args(args)
     }
 }

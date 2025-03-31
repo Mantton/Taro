@@ -83,9 +83,9 @@ impl<'ctx> TypeLowerer<'ctx> {
         debug_assert!(!path.segments.is_empty(), "empty path");
 
         for (index, segment) in path.segments.iter().enumerate() {
-            self.context
-                .diagnostics
-                .info("Lowering".into(), segment.identifier.span);
+            // self.context
+            //     .diagnostics
+            //     .info("Lowering".into(), segment.identifier.span);
             let res = self.context.resolution(segment.id);
             let ty = self.lower_path_segment(segment, res);
 
@@ -141,10 +141,7 @@ impl<'ctx> TypeLowerer<'ctx> {
                 // TODO!
                 self.context.store.common_types.error
             }
-            Resolution::SelfTypeAlias(definition_id) => {
-                println!("{:?}", self.context.def_kind(definition_id));
-                self.context.type_of(definition_id)
-            }
+            Resolution::SelfTypeAlias(definition_id) => self.context.type_of(definition_id),
             Resolution::FunctionSet(..) => {
                 unreachable!("cannot resolve type to set of functions")
             }
