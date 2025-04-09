@@ -5,28 +5,18 @@ use taroc_hir::{
 };
 use taroc_span::Symbol;
 
-pub fn run(package: &taroc_hir::Package, resolver: &mut Resolver) {
-    let actor = Actor::new(resolver);
-    actor.run(package);
-}
-
-struct Actor<'res, 'ctx> {
+pub struct HirNodeTagger<'res, 'ctx> {
     resolver: &'res mut Resolver<'ctx>,
     parent: DefinitionID,
 }
 
-impl Actor<'_, '_> {
-    fn new<'res, 'ctx>(resolver: &'res mut Resolver<'ctx>) -> Actor<'res, 'ctx> {
-        Actor {
+impl<'res, 'ctx> HirNodeTagger<'res, 'ctx> {
+    pub fn run(package: &taroc_hir::Package, resolver: &'res mut Resolver<'ctx>) {
+        let mut actor = HirNodeTagger {
             resolver,
             parent: DefinitionID::new(PackageIndex::new(0), DefinitionIndex::new(0)),
-        }
-    }
-}
-
-impl Actor<'_, '_> {
-    fn run(mut self, package: &taroc_hir::Package) {
-        walk_package(&mut self, package);
+        };
+        walk_package(&mut actor, package);
     }
 
     fn tag(&mut self, symbol: Symbol, node: NodeID, kind: DefinitionKind) -> DefinitionID {
@@ -40,7 +30,7 @@ impl Actor<'_, '_> {
     }
 }
 
-impl HirVisitor for Actor<'_, '_> {
+impl HirVisitor for HirNodeTagger<'_, '_> {
     fn visit_module(&mut self, m: &taroc_hir::Module) -> <Self as HirVisitor>::Result {
         self.tag(m.name, m.id, DefinitionKind::Module);
         walk_module(self, m)

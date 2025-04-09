@@ -26,6 +26,7 @@ impl<'arena> DefinitionContext<'arena> {
             DefContextKind::Block => None,
             DefContextKind::File => None,
             DefContextKind::Definition(definition_id, ..) => Some(*definition_id),
+            DefContextKind::Root => None,
         }
     }
 
@@ -34,6 +35,7 @@ impl<'arena> DefinitionContext<'arena> {
             DefContextKind::Block => None,
             DefContextKind::File => None,
             DefContextKind::Definition(id, kind, _) => Some(Resolution::Definition(id, kind)),
+            DefContextKind::Root => None,
         }
     }
 }
@@ -51,6 +53,7 @@ pub enum DefContextKind {
     Block,
     File,
     Definition(DefinitionID, DefinitionKind, Symbol),
+    Root,
 }
 
 impl DefContextKind {
@@ -70,6 +73,7 @@ impl DefContextKind {
             DefContextKind::Block => Symbol::with("BLOCK"),
             DefContextKind::File => Symbol::with("FILE"),
             DefContextKind::Definition(_, _, s) => s,
+            DefContextKind::Root => Symbol::with("{{root}}"),
         }
     }
 }
@@ -177,10 +181,12 @@ pub struct ExternalDefUsageData<'arena> {
     pub module_path: Vec<Segment>,
     pub module_context: Cell<Option<DefinitionContext<'arena>>>,
     pub file: FileID,
+    pub module: DefinitionID,
     pub kind: ExternalDefUsageKind<'arena>,
     pub root_id: NodeID,
     pub root_span: Span,
     pub is_import: bool,
+    pub is_resolved: Cell<bool>,
 }
 
 pub enum ExternalDefUsageKind<'arena> {

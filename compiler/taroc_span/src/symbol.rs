@@ -16,6 +16,10 @@ impl Identifier {
             symbol: Symbol::with(""),
         }
     }
+
+    pub fn new(symbol: Symbol, span: Span) -> Self {
+        Identifier { span, symbol }
+    }
 }
 
 impl PartialEq for Identifier {
@@ -65,5 +69,20 @@ impl fmt::Debug for Symbol {
 impl fmt::Display for Symbol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self.as_str(), f)
+    }
+}
+
+impl Symbol {
+    pub fn is_path_segment_keyword(self) -> bool {
+        match self.as_str() {
+            "self" | "Self" | "package" | "{{root}}" => true,
+            _ => false,
+        }
+    }
+}
+
+impl Identifier {
+    pub fn is_path_segment_keyword(self) -> bool {
+        self.symbol.is_path_segment_keyword()
     }
 }

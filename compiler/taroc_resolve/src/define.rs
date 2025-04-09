@@ -1,9 +1,10 @@
 use super::resolver::Resolver;
-use crate::models::ToNameBinding;
+use crate::models::{DefinitionExtensionData, ToNameBinding, UnresolvedAlias};
 use std::cell::{Cell, RefCell};
 use taroc_error::CompileResult;
 use taroc_hir::{
-    self, Declaration, DeclarationContext, DeclarationKind, NodeID, PathTree, Resolution,
+    self, Declaration, DeclarationContext, DeclarationKind, DefinitionID, NodeID, PathTree,
+    PathTreeNode, Resolution,
     visitor::{self, HirVisitor, walk_package},
 };
 use taroc_resolve_models::DefContextKind;
@@ -11,35 +12,36 @@ use taroc_resolve_models::{
     DefUsageBinding, DefinitionContext, ExternalDefUsageData, ExternalDefUsageKind, NameBinding,
     NameBindingData, NameBindingKind, Segment,
 };
-use taroc_span::{Span, Symbol};
+use taroc_span::{FileID, Identifier, Span, Symbol};
 
-pub fn run(package: &taroc_hir::Package, r: &mut Resolver) -> CompileResult<()> {
-    let actor = Actor::new(r);
-    actor.run(package);
-    r.context.diagnostics.report()
-}
-
-struct Actor<'res, 'ctx> {
+pub struct DefinitionCollector<'res, 'ctx> {
     pub resolver: &'res mut Resolver<'ctx>,
     pub parent_context: Option<DefinitionContext<'ctx>>,
     pub import_context: Option<DefinitionContext<'ctx>>,
+    pub file_id: Option<FileID>,
+    pub module_id: Option<DefinitionID>,
 }
 
-impl Actor<'_, '_> {
-    fn new<'res, 'ctx>(resolver: &'res mut Resolver<'ctx>) -> Actor<'res, 'ctx> {
-        Actor {
+impl<'res, 'ctx> DefinitionCollector<'res, 'ctx> {
+    pub fn run(
+        package: &taroc_hir::Package,
+        resolver: &'res mut Resolver<'ctx>,
+    ) -> CompileResult<()> {
+        let context = resolver.context;
+        let mut actor = DefinitionCollector {
             resolver,
             parent_context: None,
             import_context: None,
-        }
-    }
+            file_id: None,
+            module_id: None,
+        };
 
-    fn run(mut self, package: &taroc_hir::Package) {
-        walk_package(&mut self, package);
+        walk_package(&mut actor, package);
+        context.diagnostics.report()
     }
 }
 
-impl HirVisitor for Actor<'_, '_> {
+impl HirVisitor for DefinitionCollector<'_, '_> {
     fn visit_module(&mut self, m: &taroc_hir::Module) -> Self::Result {
         let id = self.resolver.def_id(m.id);
         let context = self.resolver.new_context(
@@ -49,6 +51,11 @@ impl HirVisitor for Actor<'_, '_> {
         );
 
         if m.id == NodeID::from(0) {
+            self.resolver.packages_root = Some(self.resolver.new_context(
+                None,
+                DefContextKind::Root,
+                Span::module(),
+            ));
             self.resolver.root_context = Some(context);
             self.parent_context = Some(context);
         } else {
@@ -64,9 +71,12 @@ impl HirVisitor for Actor<'_, '_> {
             );
         }
         let previous = self.parent_context;
+        let previous_module = self.module_id;
         self.parent_context = Some(context);
+        self.module_id = Some(id);
         visitor::walk_module(self, m);
         self.parent_context = previous;
+        self.module_id = previous_module
     }
 
     fn visit_file(&mut self, f: &taroc_hir::File) -> Self::Result {
@@ -75,6 +85,7 @@ impl HirVisitor for Actor<'_, '_> {
                 .new_context(self.parent_context, DefContextKind::File, Span::empty(f.id));
         self.resolver.file_map.insert(f.id, file_context);
         self.import_context = Some(file_context);
+        self.file_id = Some(f.id);
         visitor::walk_file(self, f);
         self.import_context = None;
     }
@@ -110,12 +121,8 @@ impl HirVisitor for Actor<'_, '_> {
     }
 }
 
-impl Actor<'_, '_> {
-    fn define_declaration(&mut self, decl: &taroc_hir::Declaration, context: DeclarationContext) {
-        if matches!(context, DeclarationContext::Extend) {
-            return;
-        }
-
+impl DefinitionCollector<'_, '_> {
+    fn define_declaration(&mut self, decl: &taroc_hir::Declaration, _: DeclarationContext) {
         let id = self.resolver.def_id(decl.id);
         let kind = self.resolver.def_kind(id);
         let name = decl.identifier.symbol;
@@ -129,11 +136,22 @@ impl Actor<'_, '_> {
             DeclarationKind::Function(..)
             | DeclarationKind::Variable(..)
             | DeclarationKind::Constant(..)
-            | DeclarationKind::Computed(..) => {
+            | DeclarationKind::Computed(..)
+            | DeclarationKind::AssociatedType(..) => {
                 self.resolver.define(parent, decl.identifier, def);
             }
-            DeclarationKind::TypeAlias(_) | DeclarationKind::AssociatedType(..) => {
+            DeclarationKind::TypeAlias(alias) => {
                 self.resolver.define(parent, decl.identifier, def);
+
+                if alias.ty.is_some() {
+                    let node = UnresolvedAlias {
+                        name: decl.identifier,
+                        span,
+                        alias: alias.clone(),
+                        parent,
+                    };
+                    self.resolver.unresolved_aliases.insert(id, node);
+                }
             }
             DeclarationKind::DefinedType(..)
             | DeclarationKind::Namespace(..)
@@ -150,16 +168,26 @@ impl Actor<'_, '_> {
             DeclarationKind::Export(node) => {
                 self.define_external_symbol_usage(node, decl.id, &[], false, &decl)
             }
-            DeclarationKind::Extern(..)
-            | DeclarationKind::Constructor(..)
-            | DeclarationKind::Extend(..) => {}
+            DeclarationKind::Extend(node) => {
+                let ctx_k = DefContextKind::Definition(id, kind, name);
+                let context = self.resolver.new_context(Some(parent), ctx_k, span);
+                let data = DefinitionExtensionData {
+                    path: node.ty.clone(),
+                    extension_context: context,
+                    module_id: self.module_id.unwrap(),
+                    file_id: self.file_id.unwrap(),
+                };
+                self.resolver.unresolved_extensions.insert(id, data);
+                self.parent_context = Some(context);
+            }
+            DeclarationKind::Extern(..) | DeclarationKind::Constructor(..) => {}
             DeclarationKind::EnumCase(..) => {}
             DeclarationKind::Operator(..) => {}
         }
     }
 }
 
-impl Actor<'_, '_> {
+impl DefinitionCollector<'_, '_> {
     fn define_external_symbol_usage(
         &mut self,
         tree: &PathTree,
@@ -168,11 +196,23 @@ impl Actor<'_, '_> {
         is_nested: bool,
         decl: &Declaration,
     ) {
-        let prefix: Vec<Segment> = prefix
+        let mut prefix_iter = prefix
             .iter()
             .cloned()
             .chain(tree.root.segments.iter().map(|v| v.into()))
-            .collect();
+            .peekable();
+
+        let is_glob = matches!(tree.node, PathTreeNode::Glob);
+        let package_root = match prefix_iter.peek() {
+            Some(segment) if !segment.identifier.is_path_segment_keyword() => {
+                Some(segment.identifier.span)
+            }
+            None if is_glob => Some(tree.span),
+            _ => None,
+        }
+        .map(|span| Segment::from_ident(Identifier::new(Symbol::with("{{root}}"), span)));
+
+        let prefix: Vec<Segment> = package_root.into_iter().chain(prefix_iter).collect();
 
         match &tree.node {
             taroc_hir::PathTreeNode::Simple { alias } => {
@@ -237,7 +277,7 @@ impl Actor<'_, '_> {
     }
 }
 
-impl<'res, 'ctx> Actor<'res, 'ctx> {
+impl<'res, 'ctx> DefinitionCollector<'res, 'ctx> {
     fn add_extenal_symbol_usage(
         &mut self,
         module_path: Vec<Segment>,
@@ -254,6 +294,7 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
         let root_id = decl.id;
         let data = ExternalDefUsageData {
             file: span.file,
+            module: self.module_id.unwrap(),
             span,
             module_path,
             kind,
@@ -261,6 +302,7 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
             root_span,
             is_import,
             module_context: Cell::new(None),
+            is_resolved: Cell::new(false),
         };
         let ptr = self.resolver.alloc_external_usage(data);
 
@@ -297,7 +339,7 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
     }
 }
 
-impl Actor<'_, '_> {
+impl DefinitionCollector<'_, '_> {
     fn define_block(&mut self, block: &taroc_hir::Block) {
         if block.has_declarations {
             let parent = self.parent_context;

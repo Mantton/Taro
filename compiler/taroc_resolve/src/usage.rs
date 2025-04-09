@@ -1,174 +1,174 @@
+use crate::{find::ResolutionState, models::ParentContext};
+
 use super::resolver::Resolver;
-use taroc_error::CompileResult;
 use taroc_resolve_models::{
-    ExternalDefUsageKind, ExternalDefinitionUsage, NameBinding, NameBindingData, NameBindingKind,
-    NameHolder, Segment,
+    Determinacy, ExternalDefUsageKind, ExternalDefinitionUsage, NameBinding, NameBindingData,
+    NameBindingKind, PathResult,
 };
-use taroc_span::Span;
 
-pub fn run(_: &taroc_hir::Package, resolver: &mut Resolver) -> CompileResult<()> {
-    // Resolve
-    resolver.resolve_exports()?;
-    resolver.resolve_imports();
-    // Finalize
-    return Ok(());
+pub struct UsageResolver<'res, 'ctx> {
+    pub resolver: &'res mut Resolver<'ctx>,
+    pub finalize: bool,
 }
 
-impl Resolver<'_> {
-    pub fn resolve_exports(&mut self) -> CompileResult<()> {
+impl<'res, 'ctx> UsageResolver<'res, 'ctx> {
+    pub fn run(resolver: &'res mut Resolver<'ctx>, finalize: bool) {
+        let mut actor = UsageResolver { resolver, finalize };
+        actor.resolve_exports();
+        actor.resolve_imports();
+    }
+}
+
+impl<'res, 'ctx> UsageResolver<'res, 'ctx> {
+    fn resolve_exports(&mut self) {
         // Process each exprt.
-        for node in std::mem::take(&mut self.unresolved_exports) {
-            if self.resolve_export(node) {
-                self.resolved_exports.push(node);
+        let exports = std::mem::take(&mut self.resolver.unresolved_exports);
+        for export in exports {
+            if self.resolve_usage(export) {
+                self.resolver.resolved_exports.push(export);
             } else {
-                self.unresolved_exports.push(node);
+                self.resolver.unresolved_exports.push(export);
             }
         }
-
-        self.context.diagnostics.report()
     }
+
     fn resolve_imports(&mut self) {
-        while !self.unresolved_imports.is_empty() {
-            let mut progress = false;
-            let mut remaining = Vec::new();
-
-            // Process each imports.
-            for node in std::mem::take(&mut self.unresolved_imports) {
-                if self.resolve_import(node) {
-                    self.resolved_imports.push(node);
-                    progress = true;
-                } else {
-                    remaining.push(node);
-                }
+        let imports = std::mem::take(&mut self.resolver.unresolved_imports);
+        for import in imports {
+            if self.resolve_usage(import) {
+                self.resolver.resolved_imports.push(import);
+            } else {
+                self.resolver.unresolved_exports.push(import);
             }
-
-            // If no exports were resolved during this pass, exit the loop.
-            if !progress {
-                break;
-            }
-
-            self.unresolved_imports = remaining;
         }
     }
 }
 
-impl<'ctx> Resolver<'ctx> {
-    fn resolve_export(&mut self, export: ExternalDefinitionUsage<'ctx>) -> bool {
-        if export.module_path.len() == 0 {
-            todo!("module export")
+impl<'res, 'ctx> UsageResolver<'res, 'ctx> {
+    fn resolve_usage(&mut self, usage: ExternalDefinitionUsage<'ctx>) -> bool {
+        // self.resolver
+        //     .context
+        //     .diagnostics
+        //     .warn("Resolving Usage".into(), usage.span);
+        debug_assert!(
+            usage.module_path.len() >= 1,
+            "Module Path Must Not be Emtpy!"
+        );
+        debug_assert!(!usage.is_resolved.get(), "Usage Has already been resolved");
+
+        let is_import = usage.is_import;
+        let parent_context = if !is_import {
+            Some(ParentContext {
+                file: usage.file,
+                module: usage.module,
+            })
+        } else {
+            None
         };
+        let result = self.resolver.resolve_path_with_scopes(
+            &usage.module_path,
+            &[],
+            ResolutionState::Usage(parent_context),
+        );
 
-        let module = self.resolve_module_path(&export.module_path);
-        let Some(module) = module else {
-            return false;
-        };
-        export.module_context.set(Some(module));
-
-        let usage = match &export.kind {
-            ExternalDefUsageKind::Single(binding) => binding,
-            ExternalDefUsageKind::Glob { .. } => {
-                // println!("Glob Export Tagged!");
-                return true;
-            }
-        };
-
-        // Set Source Binding
-        let holder = module.resolutions.borrow().find(&usage.source.symbol);
-        *usage.source_binding.borrow_mut() = holder;
-
-        let parent = usage.parent;
-
-        if holder.is_none() {
-            let message = format!(
-                "unable to find symbol '{}' in '{}'",
-                usage.source.symbol,
-                export.module_path.last().unwrap().identifier.symbol
-            );
-            self.context.diagnostics.error(message, usage.source.span);
-            return false;
-        }
-
-        let bindings = holder.unwrap().all();
-
-        let mut ok = true;
-        for binding in bindings {
-            let binding = self.convert_usage_binding(binding, export);
-            // TODO: Visibility
-            ok = ok && self.define(parent, usage.target, binding);
-        }
-        ok
-    }
-
-    fn resolve_import(&mut self, import: ExternalDefinitionUsage<'ctx>) -> bool {
-        if import.module_path.len() == 0 {
-            match &import.kind {
-                ExternalDefUsageKind::Single(binding) => {
-                    let module = self.resolve_module_path(&[Segment::from_ident(binding.source)]);
-                    let Some(module) = module else {
-                        return false;
-                    };
-                    import.module_context.set(Some(module));
-                    let n_binding = self.alloc_binding(NameBindingData {
-                        kind: NameBindingKind::Context(module),
-                        span: Span::empty(import.file),
-                        vis: taroc_hir::TVisibility::Public,
-                    });
-                    let holder = NameHolder::Single(n_binding);
-                    *binding.source_binding.borrow_mut() = Some(holder);
-                    let bindings = holder.all();
-                    let usage = binding;
-                    let mut ok = true;
-                    for binding in bindings {
-                        let binding = self.convert_usage_binding(binding, import);
-                        // TODO: Visibility
-                        ok = ok && self.force_define(usage.parent, usage.target, binding);
-                    }
-                    return true;
+        let module = match result {
+            PathResult::Context(ctx) => ctx,
+            PathResult::NonContext(_) => {
+                if self.finalize {
+                    let last = usage.module_path.last().unwrap().identifier;
+                    let message = format!("'{}' does not have a namespace", last.symbol);
+                    self.resolver.context.diagnostics.error(message, last.span);
                 }
-                _ => unreachable!(),
-            };
-        }
-        let module = self.resolve_module_path(&import.module_path);
-        let Some(module) = module else {
-            return false;
+
+                return false;
+            }
+            PathResult::Indeterminate => {
+                if self.finalize {
+                    let last = usage.module_path.last().unwrap().identifier;
+                    let message = format!("ambiguous usage '{}'", last.symbol);
+                    self.resolver.context.diagnostics.error(message, last.span);
+                }
+                return false;
+            }
+            PathResult::Failed { segment, .. } => {
+                if self.finalize {
+                    let message = format!("Unable to Resolve '{}'", segment.symbol);
+                    self.resolver
+                        .context
+                        .diagnostics
+                        .error(message, segment.span);
+                }
+                return false;
+            }
         };
 
-        import.module_context.set(Some(module));
+        usage.module_context.set(Some(module));
 
-        let usage = match &import.kind {
-            ExternalDefUsageKind::Single(binding) => binding,
+        let (source, source_binding, parent, target) = match &usage.kind {
+            ExternalDefUsageKind::Single(def_usage_binding) => (
+                def_usage_binding.source,
+                &def_usage_binding.source_binding,
+                def_usage_binding.parent,
+                def_usage_binding.target,
+            ),
             ExternalDefUsageKind::Glob { .. } => {
-                // println!("Glob Export Tagged!");
+                usage.is_resolved.set(true);
                 return true;
             }
         };
 
-        // Set Source Binding
-        let holder = module.resolutions.borrow().find(&usage.source.symbol);
-        *usage.source_binding.borrow_mut() = holder;
+        let result = self.resolver.resolve_symbol_in_context(
+            &source.symbol,
+            module,
+            ResolutionState::Usage(parent_context),
+        );
 
-        let parent = usage.parent;
+        match result {
+            Ok(holder) => {
+                *source_binding.borrow_mut() = Some(holder);
+                let bindings = holder.all();
+                for binding in bindings {
+                    let binding = self.convert_usage_binding(binding, usage);
+                    if is_import {
+                        self.resolver.force_define(parent, target, binding);
+                    } else {
+                        self.resolver.define(parent, target, binding);
+                    }
+                }
+            }
+            Err(err) => {
+                let last = usage.module_path.last().unwrap().identifier;
+                match err {
+                    Determinacy::Determined => {
+                        if self.finalize {
+                            let title = if last.symbol.as_str() == "{{root}}" {
+                                "scope"
+                            } else {
+                                last.symbol.as_str()
+                            };
 
-        if holder.is_none() {
-            let message = format!(
-                "unable to find symbol '{}' in '{}'",
-                usage.source.symbol,
-                import.module_path.last().unwrap().identifier.symbol
-            );
-            self.context.diagnostics.error(message, usage.source.span);
-            return false;
+                            let message =
+                                format!("unable to find symbol '{}' in {}", source.symbol, title);
+                            self.resolver
+                                .context
+                                .diagnostics
+                                .error(message, source.span);
+                        }
+                    }
+                    Determinacy::Undetermined => {
+                        if self.finalize {
+                            let last = usage.module_path.last().unwrap().identifier;
+                            let message = format!("ambiguous usage '{}'", last.symbol);
+                            self.resolver.context.diagnostics.error(message, last.span);
+                        }
+                    }
+                }
+                return false;
+            }
         }
 
-        let bindings = holder.unwrap().all();
-
-        let mut ok = true;
-        for binding in bindings {
-            let binding = self.convert_usage_binding(binding, import);
-            // TODO: Visibility
-            ok = ok && self.force_define(parent, usage.target, binding);
-        }
-
-        ok
+        usage.is_resolved.set(true);
+        return true;
     }
 
     fn convert_usage_binding(
@@ -176,7 +176,7 @@ impl<'ctx> Resolver<'ctx> {
         binding: NameBinding<'ctx>,
         usage: ExternalDefinitionUsage<'ctx>,
     ) -> NameBinding<'ctx> {
-        self.alloc_binding(NameBindingData {
+        self.resolver.alloc_binding(NameBindingData {
             kind: NameBindingKind::ExternalUsage { binding, usage },
             span: usage.span,
             vis: taroc_hir::TVisibility::Public,

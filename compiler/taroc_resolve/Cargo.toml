@@ -15,3 +15,4 @@ taroc_data_structures = { path = "../taroc_data_structures" }
 taroc_resolve_models = { path = "../taroc_resolve_models" }
 bumpalo = "3.17.0"
 rustc-hash = "2.1.1"
+indexmap = "2.8.0"

@@ -1,17 +1,25 @@
-use crate::resolver::Resolver;
-use taroc_hir::{Resolution, SymbolNamespace};
+use crate::{models::ParentContext, resolver::Resolver};
+use taroc_constants::STD_PREFIX;
+use taroc_hir::{Resolution, TVisibility};
 use taroc_resolve_models::{
     DefContextKind, DefinitionContext, Determinacy, LexicalScope, LexicalScopeBinding,
-    LexicalScopeSource, NameHolder, PathResult, Segment,
+    LexicalScopeSource, NameBindingData, NameBindingKind, NameHolder, PathResult, Segment,
 };
 use taroc_span::Symbol;
+
+#[derive(Clone, Copy)]
+pub enum ResolutionState {
+    Usage(Option<ParentContext>),
+    Full,
+    Alias,
+}
 
 impl<'ctx> Resolver<'ctx> {
     pub fn resolve_path_with_scopes(
         &mut self,
         path: &[Segment],
-        ns: SymbolNamespace,
         scopes: &[LexicalScope<'ctx>],
+        state: ResolutionState,
     ) -> PathResult<'ctx> {
         // let name: Vec<&str> = path.iter().map(|v| v.identifier.symbol.as_str()).collect();
         // println!("\n---- {}", name.join("::"));
@@ -21,6 +29,12 @@ impl<'ctx> Resolver<'ctx> {
             // self.context
             //     .diagnostics
             //     .info("Resolving".into(), segment.identifier.span);
+
+            // package root
+            if index == 0 && segment.identifier.symbol == Symbol::with("{{root}}") {
+                resulting_context = self.packages_root;
+                continue;
+            }
 
             let is_last = index == path.len() - 1;
             let name = &segment.identifier.symbol;
@@ -32,12 +46,11 @@ impl<'ctx> Resolver<'ctx> {
             };
 
             // For Nested Paths, The Non-Last Segments should resolve to a type
-            let _ns = if is_last { ns } else { SymbolNamespace::Type };
 
             let named_symbol = if let Some(context) = resulting_context {
-                self.resolve_symbol_in_context(name, context)
+                self.resolve_symbol_in_context(name, context, state)
             } else {
-                let lexical_resolution = self.resolve_symbol_in_lexical_scope(name, scopes);
+                let lexical_resolution = self.resolve_symbol_in_lexical_scope(name, scopes, state);
                 match lexical_resolution {
                     Some(LexicalScopeBinding::Declaration(binding)) => Ok(binding),
                     Some(LexicalScopeBinding::Resolution(resolution)) => {
@@ -115,6 +128,7 @@ impl<'ctx> Resolver<'ctx> {
         &self,
         name: &Symbol,
         context: DefinitionContext<'ctx>,
+        state: ResolutionState,
     ) -> Result<NameHolder<'ctx>, Determinacy> {
         let resolutions = context.resolutions.borrow();
         // let symbols: Vec<&Symbol> = resolutions.bindings.keys().collect();
@@ -132,6 +146,59 @@ impl<'ctx> Resolver<'ctx> {
             return Ok(binding);
         }
 
+        if context == self.packages_root.unwrap() {
+            if let Some(package) = self.resolve_package_root(*name) {
+                let binding = self.alloc_binding(NameBindingData {
+                    kind: NameBindingKind::Context(package),
+                    span: context.span,
+                    vis: TVisibility::Public,
+                });
+
+                let holder = NameHolder::Single(binding);
+                return Ok(holder);
+            } else {
+                match state {
+                    ResolutionState::Usage(parent) if let Some(parent) = parent => {
+                        let module_context = self
+                            .get_context(&parent.module)
+                            .expect("modules must always have a definition context");
+                        let module_scope = LexicalScope {
+                            source: LexicalScopeSource::Context(module_context),
+                            table: Default::default(),
+                        };
+
+                        let file_context = self.get_file_context(&parent.file);
+                        let file_scope = LexicalScope {
+                            source: LexicalScopeSource::Context(file_context),
+                            table: Default::default(),
+                        };
+                        let scopes = vec![module_scope, file_scope];
+                        let result = self.resolve_symbol_in_lexical_scope(
+                            name,
+                            &scopes,
+                            ResolutionState::Full,
+                        );
+
+                        let Some(binding) = result else {
+                            return Err(Determinacy::Determined);
+                        };
+
+                        match binding {
+                            LexicalScopeBinding::Declaration(name_holder) => {
+                                return Ok(name_holder);
+                            }
+                            LexicalScopeBinding::Resolution(_) => {
+                                todo!("found resolution should not happen")
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            return Err(Determinacy::Determined);
+        }
+
         let mut candidates = Vec::new();
         // Track if we encountered any undetermined resolutions
         let mut has_undetermined = false;
@@ -139,11 +206,15 @@ impl<'ctx> Resolver<'ctx> {
         match context.kind {
             DefContextKind::File | DefContextKind::Block => {
                 for import in context.glob_imports.borrow().iter() {
+                    if !import.is_resolved.get() {
+                        continue;
+                    }
+
                     let module_context = import
                         .module_context
                         .get()
                         .expect("module should be resolved");
-                    match self.resolve_symbol_in_context(name, module_context) {
+                    match self.resolve_symbol_in_context(name, module_context, state) {
                         Ok(holder) => candidates.push(holder),
                         Err(Determinacy::Undetermined) => {
                             has_undetermined = true;
@@ -158,11 +229,14 @@ impl<'ctx> Resolver<'ctx> {
                 _,
             ) => {
                 for export in context.glob_exports.borrow().iter() {
+                    if !export.is_resolved.get() {
+                        continue;
+                    }
                     let module_context = export
                         .module_context
                         .get()
                         .expect("module should be resolved");
-                    match self.resolve_symbol_in_context(name, module_context) {
+                    match self.resolve_symbol_in_context(name, module_context, state) {
                         Ok(holder) => candidates.push(holder),
                         Err(Determinacy::Undetermined) => {
                             has_undetermined = true;
@@ -198,6 +272,7 @@ impl<'ctx> Resolver<'ctx> {
         &self,
         name: &Symbol,
         scopes: &[LexicalScope<'ctx>],
+        state: ResolutionState,
     ) -> Option<LexicalScopeBinding<'ctx>> {
         if name == &Symbol::with("") {
             return Some(LexicalScopeBinding::Resolution(Resolution::Error));
@@ -216,7 +291,7 @@ impl<'ctx> Resolver<'ctx> {
                 _ => continue,
             };
 
-            let binding = self.resolve_symbol_in_context(name, context);
+            let binding = self.resolve_symbol_in_context(name, context, state);
 
             match binding {
                 Ok(binding) => {
@@ -229,6 +304,62 @@ impl<'ctx> Resolver<'ctx> {
                     return Some(LexicalScopeBinding::Resolution(Resolution::Error));
                 }
             }
+        }
+
+        if *name == Symbol::with("{{root}}") && matches!(state, ResolutionState::Usage(..)) {
+            let root = self.packages_root.unwrap();
+            let binding = self.alloc_binding(NameBindingData {
+                kind: NameBindingKind::Context(root),
+                span: root.span,
+                vis: taroc_hir::TVisibility::Public,
+            });
+            return Some(LexicalScopeBinding::Declaration(NameHolder::Single(
+                binding,
+            )));
+        }
+
+        return None;
+    }
+}
+
+impl<'ctx> Resolver<'ctx> {
+    pub fn resolve_package_root(&self, name: Symbol) -> Option<DefinitionContext<'ctx>> {
+        // Refering to self
+        if name.as_str() == &self.session().config.package_name() {
+            return self.root_context;
+        }
+
+        // Refering to STD
+        if name.as_str() == STD_PREFIX {
+            let context = self
+                .context
+                .store
+                .resolutions
+                .borrow()
+                .get(&0)
+                .expect("std to be resolved")
+                .root;
+            return Some(context);
+        }
+
+        // Refering to Dependency
+        if let Some(target) = self.session().config.dependency_map.get(name.as_str()) {
+            let index = *self
+                .context
+                .store
+                .package_mapping
+                .borrow()
+                .get(target)
+                .expect("package index");
+            let context = self
+                .context
+                .store
+                .resolutions
+                .borrow()
+                .get(&index)
+                .expect("package to be resolved")
+                .root;
+            return Some(context);
         }
 
         return None;

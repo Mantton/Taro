@@ -1,5 +1,6 @@
-use crate::models::ToNameBinding;
-use rustc_hash::FxHashMap;
+use crate::models::{DefinitionExtensionData, ToNameBinding, UnresolvedAlias};
+use indexmap::IndexMap;
+use rustc_hash::{FxBuildHasher, FxHashMap};
 use taroc_context::{CompilerSession, GlobalContext, ResolutionData};
 use taroc_hir::{DefinitionID, DefinitionIndex, DefinitionKind, NodeID, PackageIndex, Resolution};
 use taroc_resolve_models::{
@@ -19,9 +20,14 @@ pub struct Resolver<'ctx> {
     pub resolved_exports: Vec<ExternalDefinitionUsage<'ctx>>,
     pub resolved_imports: Vec<ExternalDefinitionUsage<'ctx>>,
     pub root_context: Option<DefinitionContext<'ctx>>,
+    pub packages_root: Option<DefinitionContext<'ctx>>,
     pub next_index: u32,
     resolution_map: FxHashMap<NodeID, Resolution>,
     pub generics_table: FxHashMap<DefinitionID, Vec<(Symbol, DefinitionID)>>,
+    pub unresolved_extensions: IndexMap<DefinitionID, DefinitionExtensionData<'ctx>, FxBuildHasher>,
+    pub resolved_extensions: FxHashMap<DefinitionID, DefinitionContext<'ctx>>,
+    pub unresolved_aliases: IndexMap<DefinitionID, UnresolvedAlias<'ctx>>,
+    pub resolved_aliases: FxHashMap<DefinitionID, Resolution>,
 }
 
 impl Resolver<'_> {
@@ -38,9 +44,14 @@ impl Resolver<'_> {
             resolved_exports: Vec::new(),
             resolved_imports: Vec::new(),
             root_context: None,
+            packages_root: None,
             resolution_map: Default::default(),
             next_index: 0,
             generics_table: Default::default(),
+            unresolved_extensions: Default::default(),
+            unresolved_aliases: Default::default(),
+            resolved_aliases: Default::default(),
+            resolved_extensions: Default::default(),
         }
     }
 }
@@ -64,6 +75,7 @@ impl<'ctx> Resolver<'ctx> {
             DefContextKind::Definition(id, ..) => {
                 self.def_to_context.insert(id, context);
             }
+            DefContextKind::Root => {}
         }
 
         context
@@ -108,7 +120,13 @@ impl<'ctx> Resolver<'ctx> {
             return Some(self.context.def_context(*id));
         };
 
+        if matches!(self.def_kind(*id), DefinitionKind::TypeAlias)
+            && let Some(id) = self.resolved_aliases.get(id).map(|f| f.def_id()).flatten()
+        {
+            return Some(self.context.def_context(id));
+        }
         let x = self.def_to_context.get(id).cloned();
+
         return x;
     }
     pub fn get_block_context(&self, id: &NodeID) -> Option<DefinitionContext<'ctx>> {
@@ -243,7 +261,7 @@ impl<'ctx> Resolver<'ctx> {
 impl<'ctx> Resolver<'ctx> {
     pub fn rescord_resolution(&mut self, node: NodeID, resolution: Resolution) {
         if let Some(_) = self.resolution_map.insert(node, resolution) {
-            panic!("multiple resolutions recorded for node {node:?}")
+            // panic!("multiple resolutions recorded for node {node:?}")
         }
     }
 }

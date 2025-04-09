@@ -1,10 +1,11 @@
+use crate::find::ResolutionState;
+
 use super::resolver::Resolver;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::hash_map::Entry;
 use taroc_error::CompileResult;
 use taroc_hir::{
     Declaration, DeclarationContext, DefinitionID, DefinitionKind, NodeID, Resolution,
-    SymbolNamespace,
     visitor::{self, HirVisitor},
 };
 use taroc_resolve_models::{
@@ -14,33 +15,30 @@ use taroc_resolve_models::{
 use taroc_span::{FileID, Identifier, Span, Spanned, Symbol};
 
 pub fn run(package: &taroc_hir::Package, resolver: &mut Resolver) -> CompileResult<()> {
-    let collector = GenericsCollector::new(resolver);
-    collector.run(package);
-    resolver.context.diagnostics.report()?;
-
     let actor = Actor::new(resolver);
     actor.run(package);
     resolver.context.diagnostics.report()
 }
 
-struct GenericsCollector<'res, 'ctx> {
+pub struct GenericsCollector<'res, 'ctx> {
     pub resolver: &'res mut Resolver<'ctx>,
     pub parent: Option<DefinitionID>,
     pub table: FxHashMap<DefinitionID, Vec<(Symbol, DefinitionID)>>,
 }
 
 impl<'res, 'ctx> GenericsCollector<'res, 'ctx> {
-    fn new(resolver: &'res mut Resolver<'ctx>) -> GenericsCollector<'res, 'ctx> {
-        GenericsCollector {
+    pub fn run(
+        package: &taroc_hir::Package,
+        resolver: &'res mut Resolver<'ctx>,
+    ) -> CompileResult<()> {
+        let mut actor = GenericsCollector {
             resolver,
             parent: None,
             table: Default::default(),
-        }
-    }
-
-    fn run(mut self, package: &taroc_hir::Package) {
-        taroc_hir::visitor::walk_package(&mut self, package);
-        self.resolver.generics_table = self.table;
+        };
+        taroc_hir::visitor::walk_package(&mut actor, package);
+        actor.resolver.generics_table = actor.table;
+        actor.resolver.context.diagnostics.report()
     }
 }
 
@@ -544,7 +542,7 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
         source: PathSource,
     ) -> Resolution {
         let segments = Segment::from_path(path);
-        let result = self.resolve_path(&segments, source.namespace());
+        let result = self.resolve_path(&segments);
 
         let report_error = |this: &mut Self, res: Option<Resolution>| {
             this.report_error_with_context(path, source, res);
@@ -573,9 +571,8 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
     fn resolve_path(
         &mut self,
         path: &[Segment],
-        ns: SymbolNamespace,
     ) -> Result<Option<Resolution>, Spanned<ResolutionError>> {
-        match self.resolve_path_with_scopes(path, ns) {
+        match self.resolve_path_with_scopes(path) {
             PathResult::Context(context) => {
                 return Ok(context.resolution());
             }
@@ -603,14 +600,10 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
         };
     }
 
-    fn resolve_path_with_scopes(
-        &mut self,
-        path: &[Segment],
-        ns: SymbolNamespace,
-    ) -> PathResult<'ctx> {
+    fn resolve_path_with_scopes(&mut self, path: &[Segment]) -> PathResult<'ctx> {
         let res = self
             .resolver
-            .resolve_path_with_scopes(path, ns, &self.scopes);
+            .resolve_path_with_scopes(path, &self.scopes, ResolutionState::Full);
         return res;
     }
 }
