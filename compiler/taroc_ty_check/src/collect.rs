@@ -150,6 +150,8 @@ impl<'ctx> TypeCollector<'ctx> {
             && let Some(builtin) = self.check_builtin(name)
         {
             self.context.cache_type(def_id, builtin);
+        } else if self.context.session().config.is_std && self.check_generic_builtin(name, def_id) {
+            return;
         } else {
             let arguments = self.context.type_arguments(def_id);
             match node.kind {
@@ -194,6 +196,33 @@ impl<'ctx> TypeCollector<'ctx> {
         };
 
         return Some(value);
+    }
+
+    fn check_generic_builtin(&self, symbol: Symbol, id: DefinitionID) -> bool {
+        let store = &self.context.store;
+        match symbol.as_str() {
+            "Array" => {
+                store.common_types.array.set(Some(id));
+                return true;
+            }
+            "ImmutablePointer" => {
+                store.common_types.const_ptr.set(Some(id));
+                return true;
+            }
+            "MutablePointer" => {
+                store.common_types.ptr.set(Some(id));
+                return true;
+            }
+            "ImmutableReference" => {
+                store.common_types.const_ref.set(Some(id));
+                return true;
+            }
+            "MutableReference" => {
+                store.common_types.mut_ref.set(Some(id));
+                return true;
+            }
+            _ => return false,
+        };
     }
 }
 

@@ -1,6 +1,6 @@
 use rustc_hash::FxHashMap;
 use taroc_context::GlobalContext;
-use taroc_hir::{DefinitionID, DefinitionKind, NodeID, Resolution};
+use taroc_hir::{DefinitionID, DefinitionKind, Mutability, NodeID, Resolution};
 use taroc_ty::{GenericArgument, Ty, TyKind};
 
 pub type SubstitutionMap<'ctx> = FxHashMap<Ty<'ctx>, GenericArgument<'ctx>>;
@@ -111,7 +111,8 @@ impl<'ctx> TypeLowerer<'ctx> {
                 let ty = normalized.ty;
                 let generics = self.context.generics_of(def_id);
                 let arguments = self.lower_type_arguments(def_id, &generics, segment);
-                let local_subst = self.create_local_substitutions(&generics, &arguments);
+                let mut local_subst = self.active_subst.clone();
+                local_subst.extend(self.create_local_substitutions(&generics, &arguments));
                 let ty = lower_type(&ty, self.context, local_subst);
                 ty
             }
@@ -262,12 +263,37 @@ impl<'ctx> TypeLowerer<'ctx> {
 
     fn instantiate(&self, def_id: DefinitionID, arguments: Vec<GenericArgument<'ctx>>) -> Ty<'ctx> {
         let args = self.context.store.interners.intern_generic_args(&arguments);
-        let kind = self.context.def_kind(def_id);
 
-        let kind = match kind {
-            DefinitionKind::Struct | DefinitionKind::Enum => TyKind::Adt(def_id, args),
+        let kind = match def_id {
+            id if self.context.store.common_types.const_ptr.get().unwrap() == id => {
+                let internal = args.first().expect("argument").ty().expect("ty");
+                TyKind::Pointer(internal, Mutability::Immutable)
+            }
+            id if self.context.store.common_types.ptr.get().unwrap() == id => {
+                let internal = args.first().expect("argument").ty().expect("ty");
+                TyKind::Pointer(internal, Mutability::Mutable)
+            }
+            id if self.context.store.common_types.const_ref.get().unwrap() == id => {
+                let internal = args.first().expect("argument").ty().expect("ty");
+                TyKind::Reference(internal, Mutability::Immutable)
+            }
+            id if self.context.store.common_types.mut_ref.get().unwrap() == id => {
+                let internal = args.first().expect("argument").ty().expect("ty");
+                TyKind::Reference(internal, Mutability::Mutable)
+            }
+            id if self.context.store.common_types.array.get().unwrap() == id => {
+                // let internal = args.first().expect("argument").ty().expect("ty");
+                // TyKind::Array(internal, todo!("size!"))
+                todo!()
+            }
             _ => {
-                return self.context.store.common_types.error;
+                let kind = self.context.def_kind(def_id);
+                match kind {
+                    DefinitionKind::Struct | DefinitionKind::Enum => TyKind::Adt(def_id, args),
+                    _ => {
+                        return self.context.store.common_types.error;
+                    }
+                }
             }
         };
 

@@ -1,6 +1,11 @@
 use bumpalo::Bump;
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::{borrow::Borrow, cell::RefCell, hash::Hash, hash::Hasher, marker::PhantomData};
+use std::{
+    borrow::Borrow,
+    cell::{Cell, RefCell},
+    hash::{Hash, Hasher},
+    marker::PhantomData,
+};
 use taroc_data_structures::Interned;
 use taroc_hir::{DefinitionID, DefinitionKind, NodeID, Resolution};
 use taroc_resolve_models::{DefinitionContext, ResolvedAlias};
@@ -153,6 +158,12 @@ pub struct CommonTypes<'ctx> {
 
     pub error: Ty<'ctx>,
     pub ignore: Ty<'ctx>,
+
+    pub array: Cell<Option<DefinitionID>>,
+    pub ptr: Cell<Option<DefinitionID>>,
+    pub const_ptr: Cell<Option<DefinitionID>>,
+    pub mut_ref: Cell<Option<DefinitionID>>,
+    pub const_ref: Cell<Option<DefinitionID>>,
 }
 
 impl<'a> CommonTypes<'a> {
@@ -181,6 +192,12 @@ impl<'a> CommonTypes<'a> {
 
             error: mk(TyKind::Error),
             ignore: mk(TyKind::Ignore),
+
+            array: Default::default(),
+            ptr: Default::default(),
+            const_ptr: Default::default(),
+            mut_ref: Default::default(),
+            const_ref: Default::default(),
         }
     }
 }

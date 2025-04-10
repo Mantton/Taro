@@ -85,6 +85,15 @@ pub enum GenericArgument<'arena> {
     Const(usize),
 }
 
+impl<'arena> GenericArgument<'arena> {
+    pub fn ty(self) -> Option<Ty<'arena>> {
+        match self {
+            GenericArgument::Type(ty) => Some(ty),
+            GenericArgument::Const(_) => None,
+        }
+    }
+}
+
 pub type GenericArguments<'arena> = &'arena [GenericArgument<'arena>];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
