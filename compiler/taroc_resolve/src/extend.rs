@@ -1,40 +1,40 @@
 use crate::{find::ResolutionState, models::DefinitionExtensionData, resolver::Resolver};
-use taroc_hir::DefinitionID;
+use taroc_hir::{DefinitionID, Path};
 use taroc_resolve_models::{
     DefinitionContext, LexicalScope, LexicalScopeSource, NameHolder, Segment,
 };
-use taroc_span::{FileID, Identifier};
+use taroc_span::{FileID, Identifier, Span};
 
 pub struct ExtensionBinder<'res, 'ctx> {
     pub resolver: &'res mut Resolver<'ctx>,
+    finalize: bool,
 }
 
 impl<'res, 'ctx> ExtensionBinder<'res, 'ctx> {
     pub fn run(resolver: &'res mut Resolver<'ctx>, finalize: bool) {
-        let mut actor = ExtensionBinder { resolver };
-        actor.bind_extension(finalize);
+        let mut actor = ExtensionBinder { resolver, finalize };
+        actor.bind_extension();
     }
 }
 
 impl<'res, 'ctx> ExtensionBinder<'res, 'ctx> {
-    fn bind_extension(&mut self, finalize: bool) {
+    fn bind_extension(&mut self) {
         let extensions = std::mem::take(&mut self.resolver.unresolved_extensions);
         for (id, data) in extensions.into_iter() {
-            let ok = self.resolve_extension(id, &data, finalize);
-
+            let ok = self.resolve_extension(id, &data);
             if !ok {
                 self.resolver.unresolved_extensions.insert(id, data);
             }
         }
     }
 
-    fn resolve_extension(
-        &mut self,
-        _id: DefinitionID,
-        data: &DefinitionExtensionData<'ctx>,
-        finalize: bool,
-    ) -> bool {
-        let target = self.find_binding(&data.path, data.module_id, data.file_id, finalize);
+    fn resolve_extension(&mut self, _: DefinitionID, data: &DefinitionExtensionData<'ctx>) -> bool {
+        let path = self.check_extenstion_type(&data.ty.kind, data.ty.span);
+        let Some(path) = path else {
+            return false;
+        };
+
+        let target = self.find_binding(path, data.module_id, data.file_id);
         let Some(target) = target else { return false };
 
         if target.def_id().is_none() {
@@ -46,15 +46,17 @@ impl<'res, 'ctx> ExtensionBinder<'res, 'ctx> {
 
     fn find_binding(
         &mut self,
-        ty: &taroc_hir::TaggedPath,
+        path: Path,
         mod_id: DefinitionID,
         file_id: FileID,
-        finalize: bool,
     ) -> Option<DefinitionContext<'ctx>> {
         // self.resolver
         //     .context
         //     .diagnostics
         //     .warn("Resolving Extension".into(), ty.path.span);
+        //
+
+        // Create Module Scope
         let module_context = self
             .resolver
             .get_context(&mod_id)
@@ -64,14 +66,16 @@ impl<'res, 'ctx> ExtensionBinder<'res, 'ctx> {
             table: Default::default(),
         };
 
+        // Create File Scope
         let file_context = self.resolver.get_file_context(&file_id);
         let file_scope = LexicalScope {
             source: LexicalScopeSource::Context(file_context),
             table: Default::default(),
         };
-        let scopes = vec![module_scope, file_scope];
 
-        let segments = &Segment::from_path(&ty.path);
+        // Perform Resolution
+        let scopes = vec![module_scope, file_scope];
+        let segments = &Segment::from_path(&path);
         let resolution =
             self.resolver
                 .resolve_path_with_scopes(segments, &scopes, ResolutionState::Full);
@@ -81,17 +85,19 @@ impl<'res, 'ctx> ExtensionBinder<'res, 'ctx> {
                 return Some(definition_context);
             }
             taroc_resolve_models::PathResult::NonContext(resolution) => {
-                if finalize {
+                if self.finalize {
                     match resolution {
                         taroc_hir::Resolution::Definition(
                             id,
                             taroc_hir::DefinitionKind::TypeAlias,
                         ) => {
-                            if let Some(res) = self.resolver.resolved_aliases.get(&id) {
-                                return self.resolver.get_context(&res.def_id().expect("def_id"));
+                            if let Some(alias) = self.resolver.resolved_aliases.get(&id) {
+                                return self
+                                    .resolver
+                                    .get_context(&alias.res.def_id().expect("def_id"));
                             } else {
                                 // Pre-Reported
-                            }
+                            };
                         }
                         taroc_hir::Resolution::Error => {}
                         _ => {
@@ -115,7 +121,7 @@ impl<'res, 'ctx> ExtensionBinder<'res, 'ctx> {
             }
             taroc_resolve_models::PathResult::Failed { segment, .. } => {
                 // todo!("Failed!")
-                if finalize {
+                if self.finalize {
                     self.resolver
                         .context
                         .diagnostics
@@ -182,5 +188,60 @@ impl<'res, 'ctx> ExtensionBinder<'res, 'ctx> {
         _target: DefinitionContext<'ctx>,
         _extension: DefinitionContext<'ctx>,
     ) {
+    }
+}
+
+impl<'res, 'ctx> ExtensionBinder<'res, 'ctx> {
+    fn check_extenstion_type(&self, kind: &taroc_hir::TypeKind, span: Span) -> Option<Path> {
+        let path = match kind {
+            taroc_hir::TypeKind::Path(path) => Some(path.clone()),
+            taroc_hir::TypeKind::Tuple(_) => {
+                if self.finalize {
+                    self.resolver
+                        .context
+                        .diagnostics
+                        .error("cannot extend tuple type".into(), span);
+                }
+                return None;
+            }
+            taroc_hir::TypeKind::Function { .. } => {
+                if self.finalize {
+                    self.resolver
+                        .context
+                        .diagnostics
+                        .error("cannot extend function type".into(), span);
+                }
+                return None;
+            }
+            taroc_hir::TypeKind::Infer => {
+                if self.finalize {
+                    self.resolver
+                        .context
+                        .diagnostics
+                        .error("cannot extend inferred type".into(), span);
+                }
+                return None;
+            }
+            taroc_hir::TypeKind::Opaque(..) => {
+                if self.finalize {
+                    self.resolver
+                        .context
+                        .diagnostics
+                        .error("cannot extend opaque type".into(), span);
+                }
+                return None;
+            }
+            taroc_hir::TypeKind::Exisitential(..) => {
+                if self.finalize {
+                    self.resolver
+                        .context
+                        .diagnostics
+                        .error("cannot extend existential type".into(), span);
+                }
+                return None;
+            }
+        };
+
+        path
     }
 }

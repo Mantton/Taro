@@ -391,3 +391,9 @@ pub enum LexicalScopeBinding<'arena> {
     Declaration(NameHolder<'arena>),
     Resolution(Resolution),
 }
+
+#[derive(Clone)]
+pub struct ResolvedAlias {
+    pub ty: taroc_hir::Type,
+    pub res: Resolution,
+}

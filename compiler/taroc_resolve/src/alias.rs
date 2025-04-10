@@ -1,5 +1,5 @@
 use taroc_hir::{DefinitionID, DefinitionKind, Resolution};
-use taroc_resolve_models::{LexicalScope, LexicalScopeSource, PathResult, Segment};
+use taroc_resolve_models::{LexicalScope, LexicalScopeSource, PathResult, ResolvedAlias, Segment};
 use taroc_span::Symbol;
 
 use crate::{find::ResolutionState, models::UnresolvedAlias, resolver::Resolver};
@@ -41,7 +41,7 @@ impl<'res, 'ctx> TypeAliasResolver<'res, 'ctx> {
             "initial pass must ensure the rhs of the alias is resolved"
         );
         let ty = node.alias.ty.clone().unwrap();
-        let path = match ty.kind {
+        let path = match &ty.kind {
             taroc_hir::TypeKind::Path(path) => path,
             _ => {
                 if self.finalize {
@@ -119,17 +119,18 @@ impl<'res, 'ctx> TypeAliasResolver<'res, 'ctx> {
 
         match result {
             PathResult::Context(ctx) => {
-                self.resolver
-                    .resolved_aliases
-                    .insert(id, ctx.resolution().expect("resolution"));
+                let node = ResolvedAlias {
+                    ty: *ty,
+                    res: ctx.resolution().expect("context resolution"),
+                };
+                self.resolver.resolved_aliases.insert(id, node);
                 return true;
             }
             PathResult::NonContext(resolution) => match resolution {
                 taroc_hir::Resolution::Definition(res_id, kind) => {
                     if matches!(kind, DefinitionKind::TypeAlias) {
-                        if let Some(res) = self.resolver.resolved_aliases.get(&res_id) {
-                            self.resolver.resolved_aliases.insert(id, res.clone());
-
+                        if let Some(ty) = self.resolver.resolved_aliases.get(&res_id) {
+                            self.resolver.resolved_aliases.insert(id, ty.clone());
                             return true;
                         } else {
                             if self.finalize {
@@ -145,9 +146,11 @@ impl<'res, 'ctx> TypeAliasResolver<'res, 'ctx> {
                             return false;
                         }
                     } else {
-                        self.resolver
-                            .resolved_aliases
-                            .insert(id, resolution.clone());
+                        let node = ResolvedAlias {
+                            ty: *ty,
+                            res: resolution,
+                        };
+                        self.resolver.resolved_aliases.insert(id, node);
                         return true;
                     }
                 }

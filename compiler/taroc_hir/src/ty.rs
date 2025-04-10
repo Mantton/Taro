@@ -1,6 +1,5 @@
+use super::{NodeID, path::Path};
 use crate::TaggedPath;
-
-use super::{NodeID, expression::AnonConst, path::Path};
 use std::fmt::Debug;
 use taroc_span::Span;
 
@@ -13,14 +12,6 @@ pub struct Type {
 
 #[derive(Debug, Clone)]
 pub enum TypeKind {
-    /// Pointer Type
-    ///
-    /// `*T` | `*const T` | `*raw T`
-    Pointer(Box<Type>, Mutability),
-    /// Reference Type
-    ///
-    /// `&T`
-    Reference(Box<Type>, Mutability),
     /// Tuple Type
     ///
     /// `(T, V)`
@@ -29,13 +20,6 @@ pub enum TypeKind {
     ///
     /// `Foo` | `Foo::Bar::Baz` | `Foo<T>`
     Path(Path),
-    /// An Array with a fixed size `N`
-    ///
-    /// `[N]T`
-    Array {
-        size: AnonConst,
-        element: Box<Type>,
-    },
     Function {
         inputs: Vec<Box<Type>>,
         output: Box<Type>,

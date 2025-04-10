@@ -3,7 +3,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::{borrow::Borrow, cell::RefCell, hash::Hash, hash::Hasher, marker::PhantomData};
 use taroc_data_structures::Interned;
 use taroc_hir::{DefinitionID, DefinitionKind, NodeID, Resolution};
-use taroc_resolve_models::DefinitionContext;
+use taroc_resolve_models::{DefinitionContext, ResolvedAlias};
 use taroc_span::Symbol;
 use taroc_ty::{
     EnumDefinition, FloatTy, GenericArgument, IntTy, InterfaceDefinition, StructDefinition, Ty,
@@ -119,6 +119,7 @@ pub struct ResolutionData<'ctx> {
     pub def_to_context: FxHashMap<DefinitionID, DefinitionContext<'ctx>>,
     pub resolution_map: FxHashMap<NodeID, Resolution>,
     pub generics_map: FxHashMap<DefinitionID, Vec<(Symbol, DefinitionID)>>,
+    pub alias_map: FxHashMap<DefinitionID, ResolvedAlias>,
 }
 
 #[derive(Debug, Default)]

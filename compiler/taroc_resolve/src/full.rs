@@ -380,27 +380,21 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
 impl<'res, 'ctx> Actor<'res, 'ctx> {
     fn resolve_extend(
         &mut self,
-        node: &taroc_hir::Extend,
+        _: &taroc_hir::Extend,
         decl: &Declaration,
         ctx: DeclarationContext,
     ) {
-        let self_res = self.resolve_path_with_source(node.ty.id, &node.ty.path, PathSource::Type);
-        let def_id = self_res.def_id();
+        let extend_def_id = self.resolver.def_id(decl.id);
+        let context = *self
+            .resolver
+            .resolved_extensions
+            .get(&extend_def_id)
+            .expect("resolved extension");
 
-        let Some(def_id) = def_id else {
-            self.report_error(
-                ResolutionError::CannotExtend {
-                    segment: node.ty.path.segments.last().unwrap().identifier.symbol,
-                },
-                node.ty.path.span,
-            );
-            return;
-        };
-
-        let context = self.resolver.get_context(&def_id).expect("type context");
-
+        let self_id = context.def_id().expect("context should map to definition");
+        let self_res = Resolution::SelfTypeAlias(self_id);
         self.with_scope(LexicalScopeSource::Context(context), |this| {
-            this.with_generics_scope(def_id, |this| {
+            this.with_generics_scope(self_id, |this| {
                 this.with_self_alias_scope(self_res, |this| {
                     taroc_hir::visitor::walk_declaration(this, &decl, ctx);
                 });

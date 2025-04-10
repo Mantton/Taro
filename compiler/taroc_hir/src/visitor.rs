@@ -310,7 +310,7 @@ pub fn walk_declaration<V: HirVisitor>(
             try_visit!(visitor.visit_export(i, declaration.id));
         }
         DeclarationKind::Extend(extension) => {
-            try_visit!(visitor.visit_path(&extension.ty.path));
+            try_visit!(visitor.visit_type(&extension.ty));
             walk_list!(
                 visitor,
                 visit_declaration,
@@ -474,20 +474,11 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, expr: &Expression) -> V::
 pub fn walk_type<V: HirVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
     let Type { kind, .. } = ty;
     match kind {
-        TypeKind::Pointer(ty, _) => {
-            try_visit!(visitor.visit_type(ty));
-        }
-        TypeKind::Reference(ty, _) => {
-            try_visit!(visitor.visit_type(ty));
-        }
         TypeKind::Tuple(tys) => {
             walk_list!(visitor, visit_type, tys);
         }
         TypeKind::Path(path) => {
             try_visit!(visitor.visit_path(path));
-        }
-        TypeKind::Array { element, .. } => {
-            try_visit!(visitor.visit_type(element));
         }
         TypeKind::Function { inputs, output, .. } => {
             walk_list!(visitor, visit_type, inputs);

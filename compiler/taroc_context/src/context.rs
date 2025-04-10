@@ -1,6 +1,6 @@
 use crate::{CompilerSession, GlobalContext};
 use taroc_hir::{DefinitionID, DefinitionKind, NodeID, Resolution};
-use taroc_resolve_models::DefinitionContext;
+use taroc_resolve_models::{DefinitionContext, ResolvedAlias};
 use taroc_span::Symbol;
 use taroc_ty::{
     EnumDefinition, GenericArgument, GenericParameter, InterfaceDefinition, StructDefinition, Ty,
@@ -172,5 +172,20 @@ impl<'ctx> GlobalContext<'ctx> {
         };
 
         self.store.interners.mk_args(args)
+    }
+
+    pub fn alias_resolution(self, id: DefinitionID) -> ResolvedAlias {
+        debug_assert!(
+            self.def_kind(id) == taroc_hir::DefinitionKind::TypeAlias,
+            "must be alias"
+        );
+
+        let resolutions = self.context.store.resolutions.borrow();
+        let package = resolutions.get(&id.package().index()).expect("package");
+        package
+            .alias_map
+            .get(&id)
+            .expect("alias resolution")
+            .clone()
     }
 }

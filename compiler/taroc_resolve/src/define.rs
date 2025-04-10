@@ -145,7 +145,7 @@ impl DefinitionCollector<'_, '_> {
 
                 if alias.ty.is_some() {
                     let node = UnresolvedAlias {
-                        name: decl.identifier,
+                        _name: decl.identifier,
                         span,
                         alias: alias.clone(),
                         parent,
@@ -172,7 +172,7 @@ impl DefinitionCollector<'_, '_> {
                 let ctx_k = DefContextKind::Definition(id, kind, name);
                 let context = self.resolver.new_context(Some(parent), ctx_k, span);
                 let data = DefinitionExtensionData {
-                    path: node.ty.clone(),
+                    ty: *node.ty.clone(),
                     extension_context: context,
                     module_id: self.module_id.unwrap(),
                     file_id: self.file_id.unwrap(),

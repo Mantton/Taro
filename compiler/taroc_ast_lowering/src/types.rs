@@ -1,4 +1,5 @@
 use super::package::Actor;
+use taroc_ast::Mutability;
 use taroc_span::{Identifier, Span, Symbol};
 
 impl Actor<'_> {
@@ -56,23 +57,47 @@ impl Actor<'_> {
                 });
                 taroc_hir::TypeKind::Path(path)
             }
-            taroc_ast::TypeKind::Pointer(ty, pointer_type) => taroc_hir::TypeKind::Pointer(
-                self.lower_type(ty),
-                self.lower_mutability(pointer_type),
-            ),
-            taroc_ast::TypeKind::Reference(ty, mutability) => taroc_hir::TypeKind::Reference(
-                self.lower_type(ty),
-                self.lower_mutability(mutability),
-            ),
+            taroc_ast::TypeKind::Pointer(ty, mutability) => {
+                // *T == std::mem::MutablePointer<T>
+                // *const T = std::mem:ImmutablePointer<T>
+                let t = match mutability {
+                    taroc_ast::Mutability::Mutable => "MutablePointer",
+                    taroc_ast::Mutability::Immutable => "ImmutablePointer",
+                };
+
+                let mut path = self.mk_path(&["std", "mem", t], span);
+                let last_index = path.segments.len() - 1;
+                let segment = &mut path.segments[last_index];
+                segment.arguments = Some(taroc_hir::TypeArguments {
+                    span,
+                    arguments: vec![taroc_hir::TypeArgument::Type(self.lower_type(ty))],
+                });
+                taroc_hir::TypeKind::Path(path)
+            }
+            taroc_ast::TypeKind::Reference(ty, mutability) => {
+                let internal = self.lower_type(ty);
+                self.mk_ref(internal, mutability, span)
+            }
             taroc_ast::TypeKind::Parenthesis(ty) => self.lower_type(ty).kind,
             taroc_ast::TypeKind::Tuple(vec) => {
                 taroc_hir::TypeKind::Tuple(self.lower_sequence(vec, |a, ty| a.lower_type(ty)))
             }
             taroc_ast::TypeKind::Path(path) => taroc_hir::TypeKind::Path(self.lower_path(path)),
-            taroc_ast::TypeKind::Array { size, element } => taroc_hir::TypeKind::Array {
-                size: self.lower_anon_const(size),
-                element: self.lower_type(element),
-            },
+            taroc_ast::TypeKind::Array { size, element } => {
+                // [N]T == Array<N, T>
+
+                let mut path = self.mk_path(&["std", "collection", "Array"], span);
+                let last_index = path.segments.len() - 1;
+                let segment = &mut path.segments[last_index];
+                segment.arguments = Some(taroc_hir::TypeArguments {
+                    span,
+                    arguments: vec![
+                        taroc_hir::TypeArgument::Const(self.lower_anon_const(size)),
+                        taroc_hir::TypeArgument::Type(self.lower_type(element)),
+                    ],
+                });
+                taroc_hir::TypeKind::Path(path)
+            }
             taroc_ast::TypeKind::Function {
                 inputs,
                 output,
@@ -91,8 +116,8 @@ impl Actor<'_> {
                 // ~T == std::option::Option<&T>
                 // ~mut T == std::option::Option<&mut T>
                 let internal = self.lower_type(ty);
-                let internal =
-                    self.mk_ty(taroc_hir::TypeKind::Reference(internal, mutability), span);
+                let kind = self.mk_ref(internal, mutability, span);
+                let internal = self.mk_ty(kind, span);
 
                 let mut path = self.mk_path(&["std", "option", "Option"], span);
                 let last_index = path.segments.len() - 1;
@@ -140,5 +165,28 @@ impl Actor<'_> {
         }
 
         taroc_hir::Path { segments, span }
+    }
+
+    fn mk_ref(
+        &mut self,
+        ty: Box<taroc_hir::Type>,
+        mutability: Mutability,
+        span: Span,
+    ) -> taroc_hir::TypeKind {
+        // &T == std::mem::MutableReference<T>
+        // &const T = std::mem:ImmutableReference<T>
+        let t = match mutability {
+            taroc_ast::Mutability::Mutable => "MutableReference",
+            taroc_ast::Mutability::Immutable => "ImmutableReference",
+        };
+
+        let mut path = self.mk_path(&["std", "mem", t], span);
+        let last_index = path.segments.len() - 1;
+        let segment = &mut path.segments[last_index];
+        segment.arguments = Some(taroc_hir::TypeArguments {
+            span,
+            arguments: vec![taroc_hir::TypeArgument::Type(ty)],
+        });
+        taroc_hir::TypeKind::Path(path)
     }
 }

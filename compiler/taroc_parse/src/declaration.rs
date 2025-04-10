@@ -219,7 +219,7 @@ impl Parser {
 impl Parser {
     fn parse_extend(&mut self) -> R<DeclarationKind> {
         self.expect(TokenKind::Extend)?;
-        let ty = self.parse_path()?;
+        let ty = self.parse_type()?;
         let inheritance = self.parse_inheritance()?;
         let where_clause = self.parse_generic_where_clause()?;
 

@@ -82,7 +82,7 @@ pub struct DefinedType {
 
 #[derive(Debug)]
 pub struct Extend {
-    pub ty: Path,
+    pub ty: Box<Type>,
     pub generics: Generics,
     pub declarations: Vec<Declaration>,
 }

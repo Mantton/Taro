@@ -27,14 +27,14 @@ impl<'ctx> TypeLowerer<'ctx> {
     pub fn lower(mut self, ty: &taroc_hir::Type) -> Ty<'ctx> {
         let mk = |k| self.context.store.interners.intern_ty(k);
         let ty = match &ty.kind {
-            taroc_hir::TypeKind::Pointer(ty, mutability) => mk(TyKind::Pointer(
-                lower_type(ty, self.context, self.active_subst.clone()),
-                *mutability,
-            )),
-            taroc_hir::TypeKind::Reference(ty, mutability) => mk(TyKind::Reference(
-                lower_type(ty, self.context, self.active_subst.clone()),
-                *mutability,
-            )),
+            // taroc_hir::TypeKind::Pointer(ty, mutability) => mk(TyKind::Pointer(
+            //     lower_type(ty, self.context, self.active_subst.clone()),
+            //     *mutability,
+            // )),
+            // taroc_hir::TypeKind::Reference(ty, mutability) => mk(TyKind::Reference(
+            //     lower_type(ty, self.context, self.active_subst.clone()),
+            //     *mutability,
+            // )),
             taroc_hir::TypeKind::Tuple(items) => {
                 let items: Vec<Ty<'ctx>> = items
                     .iter()
@@ -44,10 +44,10 @@ impl<'ctx> TypeLowerer<'ctx> {
                 mk(TyKind::Tuple(items))
             }
             taroc_hir::TypeKind::Path(path) => self.lower_unchecked_path(path, ty.id),
-            taroc_hir::TypeKind::Array { element, .. } => {
-                let _element = self.lower(element);
-                todo!()
-            }
+            // taroc_hir::TypeKind::Array { element, .. } => {
+            //     let _element = self.lower(element);
+            //     todo!()
+            // }
             taroc_hir::TypeKind::Function {
                 inputs,
                 output,
@@ -103,10 +103,18 @@ impl<'ctx> TypeLowerer<'ctx> {
         res: Resolution,
     ) -> Ty<'ctx> {
         match res {
-            Resolution::Definition(
-                def_id,
-                DefinitionKind::Enum | DefinitionKind::Struct | DefinitionKind::TypeAlias,
-            ) => self.lower_path_segment_with_definition(segment, def_id),
+            Resolution::Definition(def_id, DefinitionKind::Enum | DefinitionKind::Struct) => {
+                self.lower_path_segment_with_definition(segment, def_id)
+            }
+            Resolution::Definition(def_id, DefinitionKind::TypeAlias) => {
+                let normalized = self.context.alias_resolution(def_id);
+                let ty = normalized.ty;
+                let generics = self.context.generics_of(def_id);
+                let arguments = self.lower_type_arguments(def_id, &generics, segment);
+                let local_subst = self.create_local_substitutions(&generics, &arguments);
+                let ty = lower_type(&ty, self.context, local_subst);
+                ty
+            }
             Resolution::Definition(def_id, DefinitionKind::TypeParameter) => {
                 let arguments = if let Some(arguments) = &segment.arguments {
                     arguments

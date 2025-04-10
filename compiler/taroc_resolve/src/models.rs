@@ -1,7 +1,7 @@
 use crate::resolver::Resolver;
 use taroc_hir::{DefinitionID, TypeAlias};
 use taroc_resolve_models::{DefinitionContext, NameBinding};
-use taroc_span::{FileID, Identifier, Span, Symbol};
+use taroc_span::{FileID, Identifier, Span};
 
 pub trait ToNameBinding<'ctx> {
     fn to_name_binding(self, arenas: &Resolver<'ctx>) -> NameBinding<'ctx>;
@@ -14,7 +14,7 @@ impl<'ctx> ToNameBinding<'ctx> for NameBinding<'ctx> {
 }
 
 pub struct DefinitionExtensionData<'ctx> {
-    pub path: taroc_hir::TaggedPath,
+    pub ty: taroc_hir::Type,
     pub extension_context: DefinitionContext<'ctx>,
     pub module_id: DefinitionID,
     pub file_id: FileID,
@@ -27,7 +27,7 @@ pub struct ParentContext {
 }
 
 pub struct UnresolvedAlias<'ctx> {
-    pub name: Identifier,
+    pub _name: Identifier,
     pub span: Span,
     pub alias: TypeAlias,
     pub parent: DefinitionContext<'ctx>,
