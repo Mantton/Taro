@@ -57,7 +57,7 @@ pub enum UnaryOperator {
     BitwiseNot,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OperatorKind {
     Add,
     Sub,

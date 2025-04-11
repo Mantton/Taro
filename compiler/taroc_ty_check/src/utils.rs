@@ -26,6 +26,7 @@ pub fn convert_to_labeled_signature<'ctx>(
         inputs,
         output,
         is_async,
+        receiver: None,
     }
 }
 

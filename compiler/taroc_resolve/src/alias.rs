@@ -62,10 +62,13 @@ impl<'res, 'ctx> TypeAliasResolver<'res, 'ctx> {
         while let Some(mut value) = next {
             if let Some(mut id) = value.def_id() {
                 if matches!(self.resolver.def_kind(id), DefinitionKind::Extension)
-                    && let Some(x) = self.resolver.resolved_extensions.get(&id).cloned()
+                    && let Some(resolved_id) = self.resolver.resolved_extensions.get(&id).cloned()
                 {
-                    id = x.def_id().unwrap();
-                    value = x
+                    id = resolved_id;
+                    value = self
+                        .resolver
+                        .get_context(&id)
+                        .expect("defintion should have context");
                 }
 
                 let kind = self.resolver.def_kind(id);

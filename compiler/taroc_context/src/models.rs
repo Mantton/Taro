@@ -11,8 +11,8 @@ use taroc_hir::{DefinitionID, DefinitionKind, NodeID, Resolution};
 use taroc_resolve_models::{DefinitionContext, ResolvedAlias};
 use taroc_span::Symbol;
 use taroc_ty::{
-    EnumDefinition, FloatTy, GenericArgument, IntTy, InterfaceDefinition, StructDefinition, Ty,
-    TyKind, UIntTy,
+    DefinitionFunctionsData, EnumDefinition, FloatTy, GenericArgument, IntTy, InterfaceDefinition,
+    LabeledFunctionSignature, StructDefinition, Ty, TyKind, UIntTy,
 };
 
 pub struct ContextStore<'ctx> {
@@ -125,6 +125,7 @@ pub struct ResolutionData<'ctx> {
     pub resolution_map: FxHashMap<NodeID, Resolution>,
     pub generics_map: FxHashMap<DefinitionID, Vec<(Symbol, DefinitionID)>>,
     pub alias_map: FxHashMap<DefinitionID, ResolvedAlias>,
+    pub extension_map: FxHashMap<DefinitionID, DefinitionID>,
 }
 
 #[derive(Debug, Default)]
@@ -134,6 +135,8 @@ pub struct TypeDatabase<'ctx> {
     pub structs: FxHashMap<DefinitionID, StructDefinition<'ctx>>,
     pub enums: FxHashMap<DefinitionID, EnumDefinition<'ctx>>,
     pub interfaces: FxHashMap<DefinitionID, InterfaceDefinition<'ctx>>,
+    pub functions: FxHashMap<DefinitionID, LabeledFunctionSignature<'ctx>>,
+    pub def_to_functions: FxHashMap<DefinitionID, DefinitionFunctionsData<'ctx>>,
 }
 
 pub struct CommonTypes<'ctx> {

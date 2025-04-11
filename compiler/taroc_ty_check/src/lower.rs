@@ -27,14 +27,6 @@ impl<'ctx> TypeLowerer<'ctx> {
     pub fn lower(mut self, ty: &taroc_hir::Type) -> Ty<'ctx> {
         let mk = |k| self.context.store.interners.intern_ty(k);
         let ty = match &ty.kind {
-            // taroc_hir::TypeKind::Pointer(ty, mutability) => mk(TyKind::Pointer(
-            //     lower_type(ty, self.context, self.active_subst.clone()),
-            //     *mutability,
-            // )),
-            // taroc_hir::TypeKind::Reference(ty, mutability) => mk(TyKind::Reference(
-            //     lower_type(ty, self.context, self.active_subst.clone()),
-            //     *mutability,
-            // )),
             taroc_hir::TypeKind::Tuple(items) => {
                 let items: Vec<Ty<'ctx>> = items
                     .iter()
@@ -44,14 +36,11 @@ impl<'ctx> TypeLowerer<'ctx> {
                 mk(TyKind::Tuple(items))
             }
             taroc_hir::TypeKind::Path(path) => self.lower_unchecked_path(path, ty.id),
-            // taroc_hir::TypeKind::Array { element, .. } => {
-            //     let _element = self.lower(element);
-            //     todo!()
-            // }
             taroc_hir::TypeKind::Function {
                 inputs,
                 output,
                 is_async,
+                is_variadic,
             } => {
                 let inputs: Vec<Ty<'ctx>> = inputs
                     .iter()
@@ -63,6 +52,7 @@ impl<'ctx> TypeLowerer<'ctx> {
                     inputs,
                     output: lower_type(output, self.context, self.active_subst.clone()),
                     is_async: *is_async,
+                    is_variadic: *is_variadic,
                 };
                 mk(kind)
             }

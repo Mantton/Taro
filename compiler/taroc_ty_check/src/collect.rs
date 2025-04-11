@@ -8,18 +8,17 @@ use taroc_hir::{
 };
 use taroc_span::Symbol;
 use taroc_ty::{
-    AssociatedTypeDefinition, EnumDefinition, EnumVariant, EnumVariantKind, GenericArgument,
-    GenericParameter, InterfaceDefinition, InterfaceMethodRequirement, InterfaceReference,
+    AssociatedTypeDefinition, ComputedPropertySignature, EnumDefinition, EnumVariant,
+    EnumVariantKind, GenericArgument, GenericParameter, InterfaceDefinition,
+    InterfaceMethodRequirement, InterfaceOperatorRequirement, InterfaceReference,
     InterfaceRequirement, StructDefinition, StructField, Ty, TyKind,
 };
 
 pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
     GenericsCollector::run(package, context)?;
     TypeCollector::run(package, context)?;
-    FunctionCollector::run(package, context)?;
-    AliasCollector::run(package, context)?;
     DefinitionCollector::run(package, context)?;
-    InterfaceRequirementsCollector::run(package, context)?;
+    FunctionCollector::run(package, context)?;
     context.diagnostics.report()
 }
 
@@ -167,10 +166,11 @@ impl<'ctx> TypeCollector<'ctx> {
 
     fn collect_alias(&mut self, id: NodeID, node: &TypeAlias) {
         let def_id = self.context.def_id(id);
-        let _ = self.context.type_arguments(def_id);
-        let kind = TyKind::AliasPlaceholder;
-        let ty = self.context.store.interners.intern_ty(kind);
-        self.context.cache_type(def_id, ty);
+        let Some(rhs) = &node.ty else {
+            return;
+        };
+        let rhs = lower::lower_type(rhs, self.context, Default::default());
+        self.context.cache_type(def_id, rhs);
     }
 }
 impl<'ctx> TypeCollector<'ctx> {
@@ -223,78 +223,6 @@ impl<'ctx> TypeCollector<'ctx> {
             }
             _ => return false,
         };
-    }
-}
-
-struct FunctionCollector<'ctx> {
-    context: GlobalContext<'ctx>,
-}
-
-impl<'ctx> FunctionCollector<'ctx> {
-    fn new(context: GlobalContext<'ctx>) -> FunctionCollector<'ctx> {
-        FunctionCollector { context }
-    }
-
-    fn run<'a>(package: &Package, context: GlobalContext<'ctx>) -> CompileResult<()> {
-        let mut actor = FunctionCollector::new(context);
-        taroc_hir::visitor::walk_package(&mut actor, package);
-        context.diagnostics.report()
-    }
-}
-
-impl HirVisitor for FunctionCollector<'_> {
-    fn visit_declaration(
-        &mut self,
-        decl: &Declaration,
-        context: DeclarationContext,
-    ) -> Self::Result {
-        match &decl.kind {
-            DeclarationKind::Function(node) => {
-                // TODO
-            }
-            _ => {}
-        }
-
-        taroc_hir::visitor::walk_declaration(self, decl, context)
-    }
-}
-
-/// Populate Body of Each Type
-struct AliasCollector<'ctx> {
-    context: GlobalContext<'ctx>,
-}
-
-impl<'ctx> AliasCollector<'ctx> {
-    fn new(context: GlobalContext<'ctx>) -> AliasCollector<'ctx> {
-        AliasCollector { context }
-    }
-
-    fn run<'a>(package: &Package, context: GlobalContext<'ctx>) -> CompileResult<()> {
-        let mut actor = AliasCollector::new(context);
-        taroc_hir::visitor::walk_package(&mut actor, package);
-        context.diagnostics.report()
-    }
-}
-
-impl HirVisitor for AliasCollector<'_> {
-    fn visit_declaration(&mut self, d: &Declaration, c: DeclarationContext) -> Self::Result {
-        match &d.kind {
-            DeclarationKind::TypeAlias(node) => self.collect(node, d),
-            _ => {}
-        }
-        taroc_hir::visitor::walk_declaration(self, d, c)
-    }
-}
-
-impl<'ctx> AliasCollector<'ctx> {
-    fn collect(&mut self, node: &TypeAlias, declaration: &Declaration) {
-        let Some(rhs) = &node.ty else {
-            return;
-        };
-
-        let rhs = lower::lower_type(rhs, self.context, Default::default());
-        let def_id = self.context.def_id(declaration.id);
-        self.context.cache_type(def_id, rhs);
     }
 }
 
@@ -369,11 +297,6 @@ impl<'ctx> HirVisitor for DefinitionCollector<'ctx> {
 
                 self.parent = Some(id);
             }
-            DeclarationKind::Computed(node) => {
-                let _name = declaration.identifier.symbol;
-                let ty = &node.ty;
-                let _ty = lower::lower_type(ty, self.context, Default::default());
-            }
             DeclarationKind::Variable(node) if matches!(context, DeclarationContext::Struct) => {
                 let name = declaration.identifier.symbol;
 
@@ -400,7 +323,6 @@ impl<'ctx> HirVisitor for DefinitionCollector<'ctx> {
             DeclarationKind::Constant(ty, _) => {
                 let _ty = lower::lower_type(ty, self.context, Default::default());
             }
-
             DeclarationKind::AssociatedType(generics, default_ty)
                 if matches!(context, DeclarationContext::Interface) =>
             {
@@ -423,6 +345,9 @@ impl<'ctx> HirVisitor for DefinitionCollector<'ctx> {
                         "overlapping associated types should be caught by resolver"
                     );
                 });
+            }
+            DeclarationKind::TypeAlias(_) => {
+                // TODO!
             }
             _ => {}
         }
@@ -565,60 +490,166 @@ struct InterfaceRequirementsCollector<'ctx> {
     parent: Option<DefinitionID>,
 }
 
-impl<'ctx> InterfaceRequirementsCollector<'ctx> {
-    fn new(context: GlobalContext<'ctx>) -> InterfaceRequirementsCollector<'ctx> {
-        InterfaceRequirementsCollector {
+struct FunctionCollector<'ctx> {
+    context: GlobalContext<'ctx>,
+    parent: Option<DefinitionID>,
+}
+
+impl<'ctx> FunctionCollector<'ctx> {
+    fn new(context: GlobalContext<'ctx>) -> FunctionCollector<'ctx> {
+        FunctionCollector {
             context,
             parent: None,
         }
     }
 
     fn run<'a>(package: &Package, context: GlobalContext<'ctx>) -> CompileResult<()> {
-        let mut actor = InterfaceRequirementsCollector::new(context);
+        let mut actor = FunctionCollector::new(context);
         taroc_hir::visitor::walk_package(&mut actor, package);
         context.diagnostics.report()
     }
 }
 
-impl<'ctx> HirVisitor for InterfaceRequirementsCollector<'ctx> {
+impl<'ctx> HirVisitor for FunctionCollector<'ctx> {
     fn visit_declaration(
         &mut self,
-        declaration: &Declaration,
+        decl: &Declaration,
         context: DeclarationContext,
     ) -> Self::Result {
+        let def_id = self.context.def_id(decl.id);
         let previous = self.parent;
 
-        match &declaration.kind {
-            DeclarationKind::DefinedType(node)
-                if matches!(node.kind, DefinedTypeKind::Interface) =>
-            {
-                let id = self.context.def_id(declaration.id);
-
-                self.parent = Some(id)
+        match &decl.kind {
+            DeclarationKind::DefinedType(_) => {
+                self.parent = Some(def_id);
             }
-            DeclarationKind::Function(func) if matches!(context, DeclarationContext::Interface) => {
-                let is_required = func.block.is_none();
+            DeclarationKind::Extend(_) => {
+                self.parent = Some(self.context.extension_target(def_id));
+            }
+            DeclarationKind::Function(func) => {
+                let signature = utils::convert_to_labeled_signature(func, self.context);
+                match context {
+                    DeclarationContext::Module => {
+                        // Top Level Function
+                        self.context.with_type_database(None, |database| {
+                            database.functions.insert(def_id, signature);
+                        });
+                    }
+                    DeclarationContext::Interface => {
+                        // Interface Requirements
+                        let parent = self.parent.expect("parent must be defined");
+                        let is_required = func.block.is_none();
+                        let requirement = InterfaceMethodRequirement {
+                            name: decl.identifier.symbol,
+                            is_required,
+                            signature,
+                        };
+                        let kind = InterfaceRequirement::Method(requirement);
+                        self.context.update_interface_def(parent, |def| {
+                            def.requirements.push(kind);
+                        });
+                    }
+                    DeclarationContext::Extern => {
+                        // External function
+                        todo!()
+                    }
+                    _ => {
+                        // Method
+                        let parent = self.parent.expect("parent must be defined");
+                        self.context.with_type_database(None, |database| {
+                            let store = database
+                                .def_to_functions
+                                .entry(parent)
+                                .or_insert(Default::default());
+                            // TODO: Static
+                            store
+                                .methods
+                                .entry(decl.identifier.symbol)
+                                .or_default()
+                                .push(signature);
+                        });
+                    }
+                }
+            }
+            DeclarationKind::Operator(kind, func) => {
+                debug_assert!(
+                    self.parent.is_some(),
+                    "operators must only appear in type bodies"
+                );
+                let signature = utils::convert_to_labeled_signature(func, self.context);
+                let parent = self.parent.expect("parent must be defined");
 
-                let requirement = InterfaceMethodRequirement {
-                    name: declaration.identifier.symbol,
-                    is_required,
-                    signature: utils::convert_to_labeled_signature(func, self.context),
-                };
+                match context {
+                    DeclarationContext::Interface => {
+                        // Operator Requirement
+                        let requirement = InterfaceOperatorRequirement {
+                            kind: *kind,
+                            signature,
+                        };
+                        let kind = InterfaceRequirement::Operator(requirement);
+                        self.context.update_interface_def(parent, |def| {
+                            def.requirements.push(kind);
+                        });
+                    }
+                    _ => {
+                        // Operator Implementation
+                        self.context.with_type_database(None, |database| {
+                            let store = database
+                                .def_to_functions
+                                .entry(parent)
+                                .or_insert(Default::default());
 
-                let kind = InterfaceRequirement::Method(requirement);
+                            store.operators.entry(*kind).or_default().push(signature);
+                        });
+                    }
+                }
+            }
+            DeclarationKind::Computed(node) => {
+                debug_assert!(
+                    self.parent.is_some(),
+                    "computed properties must only appear in type bodies"
+                );
+                let parent = self.parent.expect("parent must be defined");
+                let ty = lower::lower_type(&node.ty, self.context, Default::default());
 
-                self.context
-                    .update_interface_def(self.parent.expect("parent"), |def| {
-                        def.requirements.push(kind);
-                    });
+                match context {
+                    DeclarationContext::Interface => {
+                        todo!()
+                    }
+                    _ => {
+                        self.context.with_type_database(None, |database| {
+                            let store = database
+                                .def_to_functions
+                                .entry(parent)
+                                .or_insert(Default::default());
+
+                            let signature = ComputedPropertySignature { ty };
+                            store.properties.insert(decl.identifier.symbol, signature)
+                        });
+                    }
+                }
+            }
+            DeclarationKind::Constructor(func, _) => {
+                debug_assert!(
+                    self.parent.is_some(),
+                    "constructors must only appear in type bodies"
+                );
+                let signature = utils::convert_to_labeled_signature(func, self.context);
+                let parent = self.parent.expect("parent must be defined");
+
+                self.context.with_type_database(None, |database| {
+                    let store = database
+                        .def_to_functions
+                        .entry(parent)
+                        .or_insert(Default::default());
+
+                    store.constructors.push(signature)
+                });
             }
             _ => {}
         }
 
-        taroc_hir::visitor::walk_declaration(self, declaration, context);
-        self.parent = previous
+        taroc_hir::visitor::walk_declaration(self, decl, context);
+        self.parent = previous;
     }
 }
-
-// TODO: Recursive Checker
-// TODO: Extension Blocks

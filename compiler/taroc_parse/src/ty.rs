@@ -8,9 +8,10 @@ impl Parser {
         let lo = self.lo_span();
         let k = self.parse_type_kind()?;
         let hi = self.hi_span();
-        let ty = Type {
+        let mut ty = Type {
             span: lo.to(hi),
             kind: k,
+            is_variadic: false,
         };
 
         // optional type : T?
@@ -20,8 +21,13 @@ impl Parser {
             let ty = Type {
                 span: lo.to(hi),
                 kind: k,
+                is_variadic: false,
             };
             return Ok(Box::new(ty));
+        }
+
+        if self.eat(TokenKind::Ellipsis) {
+            ty.is_variadic = true
         }
 
         Ok(Box::new(ty))

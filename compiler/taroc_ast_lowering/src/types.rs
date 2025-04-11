@@ -102,11 +102,15 @@ impl Actor<'_> {
                 inputs,
                 output,
                 is_async,
-            } => taroc_hir::TypeKind::Function {
-                inputs: self.lower_sequence(inputs, |a, ty| a.lower_type(ty)),
-                output: self.lower_type(output),
-                is_async,
-            },
+            } => {
+                let is_variadic = inputs.last().map(|t| t.is_variadic).unwrap_or_default();
+                taroc_hir::TypeKind::Function {
+                    inputs: self.lower_sequence(inputs, |a, ty| a.lower_type(ty)),
+                    output: self.lower_type(output),
+                    is_async,
+                    is_variadic,
+                }
+            }
             taroc_ast::TypeKind::ImplicitSelf => {
                 let path = self.mk_path(&["Self"], span);
                 taroc_hir::TypeKind::Path(path)

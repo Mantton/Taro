@@ -24,6 +24,7 @@ pub enum TypeKind {
         inputs: Vec<Box<Type>>,
         output: Box<Type>,
         is_async: bool,
+        is_variadic: bool,
     },
     // Type to be inferred
     Infer,

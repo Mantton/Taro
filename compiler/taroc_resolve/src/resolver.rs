@@ -26,7 +26,7 @@ pub struct Resolver<'ctx> {
     pub resolution_map: FxHashMap<NodeID, Resolution>,
     pub generics_table: FxHashMap<DefinitionID, Vec<(Symbol, DefinitionID)>>,
     pub unresolved_extensions: IndexMap<DefinitionID, DefinitionExtensionData<'ctx>, FxBuildHasher>,
-    pub resolved_extensions: FxHashMap<DefinitionID, DefinitionContext<'ctx>>,
+    pub resolved_extensions: FxHashMap<DefinitionID, DefinitionID>,
     pub unresolved_aliases: IndexMap<DefinitionID, UnresolvedAlias<'ctx>>,
     pub resolved_aliases: FxHashMap<DefinitionID, ResolvedAlias>,
 }
@@ -278,6 +278,7 @@ impl<'ctx> Resolver<'ctx> {
             generics_map: self.generics_table,
             def_to_context: self.def_to_context,
             alias_map: self.resolved_aliases,
+            extension_map: self.resolved_extensions,
         }
     }
 }

@@ -1,4 +1,4 @@
-use crate::{CompilerSession, GlobalContext};
+use crate::{CompilerSession, GlobalContext, TypeDatabase};
 use taroc_hir::{DefinitionID, DefinitionKind, NodeID, Resolution};
 use taroc_resolve_models::{DefinitionContext, ResolvedAlias};
 use taroc_span::Symbol;
@@ -187,5 +187,33 @@ impl<'ctx> GlobalContext<'ctx> {
             .get(&id)
             .expect("alias resolution")
             .clone()
+    }
+
+    pub fn extension_target(self, id: DefinitionID) -> DefinitionID {
+        debug_assert!(
+            self.def_kind(id) == taroc_hir::DefinitionKind::Extension,
+            "must be extension definition"
+        );
+        let resolutions = self.context.store.resolutions.borrow();
+        let package = resolutions.get(&id.package().index()).expect("package");
+        *package
+            .extension_map
+            .get(&id)
+            .expect("extension resolution")
+    }
+
+    pub fn with_type_database<F, T>(self, index: Option<usize>, func: F) -> T
+    where
+        F: FnOnce(&mut TypeDatabase<'ctx>) -> T,
+    {
+        let index = if let Some(index) = index {
+            index
+        } else {
+            self.session().package_index
+        };
+
+        let mut cache = self.context.store.types.borrow_mut();
+        let database = cache.entry(index).or_insert(Default::default());
+        func(database)
     }
 }

@@ -149,7 +149,7 @@ impl<'res, 'ctx> ExtensionBinder<'res, 'ctx> {
 
         self.resolver
             .resolved_extensions
-            .insert(extension.def_id().unwrap(), target);
+            .insert(extension.def_id().unwrap(), def_id);
     }
 
     fn merge_local_definition(

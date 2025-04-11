@@ -3,6 +3,7 @@ use rustc_hash::FxHashMap;
 use taroc_data_structures::Interned;
 use taroc_hir::{DefinitionID, Mutability};
 use taroc_span::{FileID, Symbol};
+use taroc_token::OperatorKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Ty<'arena>(Interned<'arena, TyKind<'arena>>);
@@ -42,6 +43,7 @@ pub enum TyKind<'arena> {
         inputs: &'arena [Ty<'arena>],
         output: Ty<'arena>,
         is_async: bool,
+        is_variadic: bool,
     },
     Infer,
     Error,
@@ -213,6 +215,8 @@ pub struct InterfaceDefinition<'ctx> {
 #[derive(Debug, Clone)]
 pub enum InterfaceRequirement<'ctx> {
     Method(InterfaceMethodRequirement<'ctx>),
+    Operator(InterfaceOperatorRequirement<'ctx>),
+    Property(InterfacePropertyRequirement<'ctx>),
 }
 
 #[derive(Debug, Clone)]
@@ -220,6 +224,18 @@ pub struct InterfaceMethodRequirement<'ctx> {
     pub name: Symbol,
     pub signature: LabeledFunctionSignature<'ctx>,
     pub is_required: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct InterfacePropertyRequirement<'ctx> {
+    pub name: Symbol,
+    pub signature: ComputedPropertySignature<'ctx>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InterfaceOperatorRequirement<'ctx> {
+    pub kind: OperatorKind,
+    pub signature: LabeledFunctionSignature<'ctx>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -239,6 +255,7 @@ pub struct AssociatedTypeDefinition<'ctx> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LabeledFunctionSignature<'ctx> {
+    pub receiver: Option<ReceiverKind>,
     pub inputs: Vec<LabeledFunctionParameter<'ctx>>,
     pub output: Ty<'ctx>,
     pub is_async: bool,
@@ -249,4 +266,30 @@ pub struct LabeledFunctionParameter<'ctx> {
     pub label: Option<Symbol>,
     pub ty: Ty<'ctx>,
     pub is_variadic: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ReceiverKind {
+    Owned, // For a normal 'Self'
+    Mut,   // For a &mut Self
+    Const, // For a &const Self
+}
+
+#[derive(Debug, Default)]
+pub struct DefinitionFunctionsData<'ctx> {
+    // Methods
+    pub methods: FxHashMap<Symbol, Vec<LabeledFunctionSignature<'ctx>>>,
+    pub static_methods: FxHashMap<Symbol, Vec<LabeledFunctionSignature<'ctx>>>,
+    // Operators
+    pub operators: FxHashMap<OperatorKind, Vec<LabeledFunctionSignature<'ctx>>>,
+    // Properties
+    pub properties: FxHashMap<Symbol, ComputedPropertySignature<'ctx>>,
+    pub static_properties: FxHashMap<Symbol, Vec<LabeledFunctionSignature<'ctx>>>,
+    // Constructors
+    pub constructors: Vec<LabeledFunctionSignature<'ctx>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ComputedPropertySignature<'ctx> {
+    pub ty: Ty<'ctx>,
 }

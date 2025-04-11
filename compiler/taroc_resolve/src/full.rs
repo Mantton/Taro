@@ -385,13 +385,16 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
         ctx: DeclarationContext,
     ) {
         let extend_def_id = self.resolver.def_id(decl.id);
-        let context = *self
+        let self_id = *self
             .resolver
             .resolved_extensions
             .get(&extend_def_id)
             .expect("resolved extension");
 
-        let self_id = context.def_id().expect("context should map to definition");
+        let context = self
+            .resolver
+            .get_context(&self_id)
+            .expect("self type defintion context");
         let self_res = Resolution::SelfTypeAlias(self_id);
         self.with_scope(LexicalScopeSource::Context(context), |this| {
             this.with_generics_scope(self_id, |this| {
