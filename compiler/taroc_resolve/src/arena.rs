@@ -43,7 +43,7 @@ impl<'ctx> Resolver<'ctx> {
         // Similarly, wrap or convert as needed.
     }
 
-    pub fn alloc_slice_copy<T>(&self, src: &[T]) -> &'ctx mut [T]
+    pub fn _alloc_slice_copy<T>(&self, src: &[T]) -> &'ctx mut [T]
     where
         T: Copy,
     {

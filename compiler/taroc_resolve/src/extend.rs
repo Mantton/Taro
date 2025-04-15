@@ -1,8 +1,6 @@
 use crate::{find::ResolutionState, models::DefinitionExtensionData, resolver::Resolver};
 use taroc_hir::{DefinitionID, Path};
-use taroc_resolve_models::{
-    DefinitionContext, LexicalScope, LexicalScopeSource, NameHolder, Segment,
-};
+use taroc_resolve_models::{DefinitionContext, LexicalScope, LexicalScopeSource, Segment};
 use taroc_span::{FileID, Identifier, Span};
 
 pub struct ExtensionBinder<'res, 'ctx> {
@@ -159,27 +157,13 @@ impl<'res, 'ctx> ExtensionBinder<'res, 'ctx> {
     ) {
         // Merge Local Definitions Directly into Namespace
         let extension_resolutions = extension.resolutions.borrow();
-        for (symbol, holder) in extension_resolutions.bindings.iter() {
-            match holder {
-                NameHolder::Single(binding) => {
-                    let ident = Identifier {
-                        symbol: *symbol,
-                        span: binding.span,
-                    };
-                    self.resolver
-                        .define_in_parent(target, ident, *binding, false);
-                }
-                NameHolder::Set(bindings) => {
-                    for binding in *bindings {
-                        let ident = Identifier {
-                            symbol: *symbol,
-                            span: binding.span,
-                        };
-                        self.resolver
-                            .define_in_parent(target, ident, *binding, false);
-                    }
-                }
-            }
+        for (symbol, binding) in extension_resolutions.bindings.iter() {
+            let ident = Identifier {
+                symbol: *symbol,
+                span: binding.span,
+            };
+            self.resolver
+                .define_in_parent(target, ident, *binding, false);
         }
     }
 

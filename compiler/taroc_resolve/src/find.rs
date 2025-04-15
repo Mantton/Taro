@@ -3,7 +3,7 @@ use taroc_constants::STD_PREFIX;
 use taroc_hir::{Resolution, TVisibility};
 use taroc_resolve_models::{
     DefContextKind, DefinitionContext, Determinacy, LexicalScope, LexicalScopeBinding,
-    LexicalScopeSource, NameBindingData, NameBindingKind, NameHolder, PathResult, Segment,
+    LexicalScopeSource, NameBinding, NameBindingData, NameBindingKind, PathResult, Segment,
 };
 use taroc_span::Symbol;
 
@@ -129,7 +129,7 @@ impl<'ctx> Resolver<'ctx> {
         name: &Symbol,
         context: DefinitionContext<'ctx>,
         state: ResolutionState,
-    ) -> Result<NameHolder<'ctx>, Determinacy> {
+    ) -> Result<NameBinding<'ctx>, Determinacy> {
         let resolutions = context.resolutions.borrow();
         // let symbols: Vec<&Symbol> = resolutions.bindings.keys().collect();
         // println!("Find {} in {:?}, {:?}", name, symbols, context.resolution());
@@ -154,8 +154,7 @@ impl<'ctx> Resolver<'ctx> {
                     vis: TVisibility::Public,
                 });
 
-                let holder = NameHolder::Single(binding);
-                return Ok(holder);
+                return Ok(binding);
             } else {
                 match state {
                     ResolutionState::Usage(parent) if let Some(parent) = parent => {
@@ -313,9 +312,7 @@ impl<'ctx> Resolver<'ctx> {
                 span: root.span,
                 vis: taroc_hir::TVisibility::Public,
             });
-            return Some(LexicalScopeBinding::Declaration(NameHolder::Single(
-                binding,
-            )));
+            return Some(LexicalScopeBinding::Declaration(binding));
         }
 
         return None;
