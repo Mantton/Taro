@@ -1,7 +1,7 @@
 use rustc_hash::FxHashMap;
 use taroc_context::GlobalContext;
 use taroc_hir::{DefinitionID, DefinitionKind, Mutability, NodeID, Resolution};
-use taroc_ty::{GenericArgument, Ty, TyKind};
+use taroc_ty::{GenericArgument, IntTy, Ty, TyKind, UIntTy};
 
 pub type SubstitutionMap<'ctx> = FxHashMap<Ty<'ctx>, GenericArgument<'ctx>>;
 
@@ -40,7 +40,6 @@ impl<'ctx> TypeLowerer<'ctx> {
                 inputs,
                 output,
                 is_async,
-                is_variadic,
             } => {
                 let inputs: Vec<Ty<'ctx>> = inputs
                     .iter()
@@ -52,10 +51,15 @@ impl<'ctx> TypeLowerer<'ctx> {
                     inputs,
                     output: lower_type(output, self.context, self.active_subst.clone()),
                     is_async: *is_async,
-                    is_variadic: *is_variadic,
                 };
                 mk(kind)
             }
+            taroc_hir::TypeKind::Variadic(ty) => {
+                let ty = lower_type(ty, self.context, self.active_subst.clone());
+                let kind = TyKind::Variadic(ty);
+                mk(kind)
+            }
+
             taroc_hir::TypeKind::Opaque(..) => todo!(),
             taroc_hir::TypeKind::Exisitential(..) => todo!(),
             taroc_hir::TypeKind::Infer => todo!("infer"),
@@ -128,9 +132,14 @@ impl<'ctx> TypeLowerer<'ctx> {
                 // TODO!!
                 self.context.store.common_types.error
             }
-            Resolution::Definition(_, DefinitionKind::AssociatedType) => {
-                // TODO!!
-                self.context.store.common_types.error
+            Resolution::Definition(id, DefinitionKind::AssociatedType) => {
+                // self.context
+                //     .diagnostics
+                //     .warn("Lowering Assocc Type".into(), segment.identifier.span);
+                self.context
+                    .store
+                    .interners
+                    .intern_ty(TyKind::AssociatedType(id))
             }
             Resolution::Definition(
                 _,
@@ -161,7 +170,6 @@ impl<'ctx> TypeLowerer<'ctx> {
         def_id: DefinitionID,
     ) -> Ty<'ctx> {
         let generics = self.context.generics_of(def_id);
-
         let arguments = self.lower_type_arguments(def_id, &generics, segment);
         let local_subst = self.create_local_substitutions(&generics, &arguments);
         // let base = self.context.type_of(def_id);
@@ -255,23 +263,158 @@ impl<'ctx> TypeLowerer<'ctx> {
         let args = self.context.store.interners.intern_generic_args(&arguments);
 
         let kind = match def_id {
-            id if self.context.store.common_types.const_ptr.get().unwrap() == id => {
+            id if self
+                .context
+                .store
+                .common_types
+                .mappings
+                .const_ptr
+                .get()
+                .unwrap()
+                == id =>
+            {
                 let internal = args.first().expect("argument").ty().expect("ty");
                 TyKind::Pointer(internal, Mutability::Immutable)
             }
-            id if self.context.store.common_types.ptr.get().unwrap() == id => {
+            id if self.context.store.common_types.mappings.ptr.get().unwrap() == id => {
                 let internal = args.first().expect("argument").ty().expect("ty");
                 TyKind::Pointer(internal, Mutability::Mutable)
             }
-            id if self.context.store.common_types.const_ref.get().unwrap() == id => {
+            id if self
+                .context
+                .store
+                .common_types
+                .mappings
+                .const_ref
+                .get()
+                .unwrap()
+                == id =>
+            {
                 let internal = args.first().expect("argument").ty().expect("ty");
                 TyKind::Reference(internal, Mutability::Immutable)
             }
-            id if self.context.store.common_types.mut_ref.get().unwrap() == id => {
+            id if self
+                .context
+                .store
+                .common_types
+                .mappings
+                .mut_ref
+                .get()
+                .unwrap()
+                == id =>
+            {
                 let internal = args.first().expect("argument").ty().expect("ty");
                 TyKind::Reference(internal, Mutability::Mutable)
             }
-            id if self.context.store.common_types.array.get().unwrap() == id => {
+            id if self.context.store.common_types.mappings.uint.get().unwrap() == id => {
+                TyKind::UInt(UIntTy::UInt)
+            }
+            id if self
+                .context
+                .store
+                .common_types
+                .mappings
+                .uint8
+                .get()
+                .unwrap()
+                == id =>
+            {
+                TyKind::UInt(UIntTy::U8)
+            }
+            id if self
+                .context
+                .store
+                .common_types
+                .mappings
+                .uint16
+                .get()
+                .unwrap()
+                == id =>
+            {
+                TyKind::UInt(UIntTy::U16)
+            }
+            id if self
+                .context
+                .store
+                .common_types
+                .mappings
+                .uint32
+                .get()
+                .unwrap()
+                == id =>
+            {
+                TyKind::UInt(UIntTy::U32)
+            }
+            id if self
+                .context
+                .store
+                .common_types
+                .mappings
+                .uint64
+                .get()
+                .unwrap()
+                == id =>
+            {
+                TyKind::UInt(UIntTy::U64)
+            }
+            id if self.context.store.common_types.mappings.int.get().unwrap() == id => {
+                TyKind::Int(IntTy::Int)
+            }
+            id if self.context.store.common_types.mappings.int8.get().unwrap() == id => {
+                TyKind::Int(IntTy::I8)
+            }
+            id if self
+                .context
+                .store
+                .common_types
+                .mappings
+                .int16
+                .get()
+                .unwrap()
+                == id =>
+            {
+                TyKind::Int(IntTy::I16)
+            }
+            id if self
+                .context
+                .store
+                .common_types
+                .mappings
+                .int32
+                .get()
+                .unwrap()
+                == id =>
+            {
+                TyKind::Int(IntTy::I32)
+            }
+            id if self
+                .context
+                .store
+                .common_types
+                .mappings
+                .int64
+                .get()
+                .unwrap()
+                == id =>
+            {
+                TyKind::Int(IntTy::I64)
+            }
+            id if self.context.store.common_types.mappings.bool.get().unwrap() == id => {
+                TyKind::Bool
+            }
+            id if self.context.store.common_types.mappings.rune.get().unwrap() == id => {
+                TyKind::Rune
+            }
+            id if self
+                .context
+                .store
+                .common_types
+                .mappings
+                .array
+                .get()
+                .unwrap()
+                == id =>
+            {
                 // let internal = args.first().expect("argument").ty().expect("ty");
                 // TyKind::Array(internal, todo!("size!"))
                 todo!()
@@ -279,7 +422,9 @@ impl<'ctx> TypeLowerer<'ctx> {
             _ => {
                 let kind = self.context.def_kind(def_id);
                 match kind {
-                    DefinitionKind::Struct | DefinitionKind::Enum => TyKind::Adt(def_id, args),
+                    DefinitionKind::Struct | DefinitionKind::Enum => {
+                        TyKind::Adt(def_id, args, None)
+                    }
                     _ => {
                         return self.context.store.common_types.error;
                     }
@@ -323,7 +468,7 @@ pub fn check_generic_arg_count(
     let defaults_count = generics.default_count();
     let total_count = generics.total_count();
 
-    let min = total_count - defaults_count;
+    let min = total_count - defaults_count - generics.has_self as usize;
     let provided = segment
         .arguments
         .as_ref()

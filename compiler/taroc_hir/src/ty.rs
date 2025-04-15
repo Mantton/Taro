@@ -24,7 +24,6 @@ pub enum TypeKind {
         inputs: Vec<Box<Type>>,
         output: Box<Type>,
         is_async: bool,
-        is_variadic: bool,
     },
     // Type to be inferred
     Infer,
@@ -34,6 +33,7 @@ pub enum TypeKind {
     Opaque(Vec<TaggedPath>),
     /// `any T`
     Exisitential(Vec<TaggedPath>),
+    Variadic(Box<Type>),
 }
 
 pub use taroc_ast::Mutability;

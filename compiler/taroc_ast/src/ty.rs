@@ -6,7 +6,6 @@ use taroc_span::Span;
 pub struct Type {
     pub span: Span,
     pub kind: TypeKind,
-    pub is_variadic: bool,
 }
 
 #[derive(Debug)]
@@ -75,4 +74,5 @@ pub enum TypeKind {
     Exisitential(Vec<Path>),
     /// Tilde
     OptionalReference(Box<Type>, Mutability),
+    Variadic(Box<Type>),
 }

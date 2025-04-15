@@ -177,13 +177,13 @@ impl Parser {
     }
 
     pub fn raise_anchor(&mut self) {
-        let v = self.anchors.pop_front();
+        let v = self.anchors.pop_back();
         if let Some(v) = v {
             self.cursor = v;
         }
     }
 
-    pub fn with_anchor<T, F>(&mut self, mut action: F) -> T
+    pub fn _with_anchor<T, F>(&mut self, mut action: F) -> T
     where
         F: FnMut(&mut Parser) -> T,
     {

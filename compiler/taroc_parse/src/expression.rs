@@ -726,7 +726,6 @@ impl Parser {
             Box::new(Type {
                 span: ident.span.clone(),
                 kind: TypeKind::InferedClosureParameter,
-                is_variadic: false,
             })
         };
 

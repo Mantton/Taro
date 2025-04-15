@@ -43,6 +43,7 @@ impl<'res, 'ctx> TypeAliasResolver<'res, 'ctx> {
         let ty = node.alias.ty.clone().unwrap();
         let path = match &ty.kind {
             taroc_hir::TypeKind::Path(path) => path,
+            taroc_hir::TypeKind::Tuple(..) => return true,
             _ => {
                 if self.finalize {
                     self.resolver.context.diagnostics.error(

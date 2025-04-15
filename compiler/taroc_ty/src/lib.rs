@@ -19,7 +19,6 @@ impl<'arena> Ty<'arena> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TyKind<'arena> {
-    Void,
     Bool,
     Rune,
     Int(IntTy),
@@ -32,19 +31,23 @@ pub enum TyKind<'arena> {
     Array(Ty<'arena>, u32),
     Tuple(&'arena [Ty<'arena>]),
 
-    Adt(DefinitionID, &'arena [GenericArgument<'arena>]),
+    Adt(
+        DefinitionID,
+        &'arena [GenericArgument<'arena>],
+        Option<Ty<'arena>>,
+    ),
 
     // any <interface> | <interface>
     Existential(&'arena [InterfaceReference<'arena>]),
-
-    AliasPlaceholder,
     Parameter(GenericParameter),
     Function {
         inputs: &'arena [Ty<'arena>],
         output: Ty<'arena>,
         is_async: bool,
-        is_variadic: bool,
     },
+    Variadic(Ty<'arena>),
+    // Represents Interface::AssociatedType (e.g., Self::Element or C::Element)
+    AssociatedType(DefinitionID),
     Infer,
     Error,
     Ignore,
@@ -77,6 +80,8 @@ pub enum FloatTy {
 // MARK: Generics
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GenericParameter {
+    pub parent: DefinitionID,
+    pub id: DefinitionID,
     pub index: usize,
     pub name: Symbol,
 }
@@ -108,6 +113,7 @@ pub enum Visibility {
 #[derive(Debug, Clone)]
 pub struct Generics {
     pub parameters: Vec<GenericParameterDefinition>,
+    pub has_self: bool,
 }
 
 impl Generics {
@@ -176,7 +182,6 @@ pub struct StructField<'ctx> {
 pub struct StructDefinition<'ctx> {
     pub id: DefinitionID,
     pub name: Symbol,
-    pub conformances: Vec<InterfaceReference<'ctx>>,
     pub fields: FxHashMap<Symbol, StructField<'ctx>>,
 }
 
@@ -184,7 +189,6 @@ pub struct StructDefinition<'ctx> {
 pub struct EnumDefinition<'ctx> {
     pub id: DefinitionID,
     pub name: Symbol,
-    pub conformances: Vec<InterfaceReference<'ctx>>,
     pub variants: IndexMap<Symbol, EnumVariant<'ctx>>,
 }
 
@@ -207,16 +211,16 @@ pub enum EnumVariantKind<'ctx> {
 pub struct InterfaceDefinition<'ctx> {
     pub id: DefinitionID,
     pub name: Symbol,
-    pub conformances: Vec<InterfaceReference<'ctx>>,
-    pub associated_types: FxHashMap<Symbol, AssociatedTypeDefinition<'ctx>>,
-    pub requirements: Vec<InterfaceRequirement<'ctx>>,
+    pub requirements: InterfaceRequirements<'ctx>,
+    pub parameters: GenericArguments<'ctx>,
 }
 
-#[derive(Debug, Clone)]
-pub enum InterfaceRequirement<'ctx> {
-    Method(InterfaceMethodRequirement<'ctx>),
-    Operator(InterfaceOperatorRequirement<'ctx>),
-    Property(InterfacePropertyRequirement<'ctx>),
+#[derive(Debug, Clone, Default)]
+pub struct InterfaceRequirements<'ctx> {
+    pub methods: Vec<InterfaceMethodRequirement<'ctx>>,
+    pub operators: Vec<InterfaceOperatorRequirement<'ctx>>,
+    pub properties: Vec<InterfacePropertyRequirement<'ctx>>,
+    pub types: Vec<AssociatedTypeDefinition<'ctx>>,
 }
 
 #[derive(Debug, Clone)]
@@ -247,8 +251,6 @@ pub struct InterfaceReference<'ctx> {
 #[derive(Debug, Clone)]
 pub struct AssociatedTypeDefinition<'ctx> {
     pub name: Symbol,
-    // Constraints on the associated type (e.g., must implement these interfaces)
-    pub conformances: Vec<InterfaceReference<'ctx>>,
     // Optional: A default type if the implementer doesn't provide one
     pub default_type: Option<Ty<'ctx>>,
 }
@@ -265,7 +267,6 @@ pub struct LabeledFunctionSignature<'ctx> {
 pub struct LabeledFunctionParameter<'ctx> {
     pub label: Option<Symbol>,
     pub ty: Ty<'ctx>,
-    pub is_variadic: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -292,4 +293,11 @@ pub struct DefinitionFunctionsData<'ctx> {
 #[derive(Debug, Clone)]
 pub struct ComputedPropertySignature<'ctx> {
     pub ty: Ty<'ctx>,
+}
+
+#[derive(Debug)]
+pub struct ConformanceRecord<'ctx> {
+    pub ty: DefinitionID,
+    pub interface: DefinitionID,
+    pub type_witnesses: FxHashMap<Symbol, Ty<'ctx>>,
 }

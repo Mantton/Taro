@@ -28,7 +28,7 @@ impl Parser {
             | TokenKind::True
             | TokenKind::False => {
                 // const
-                todo!()
+                Ok(TypeArgument::Const(self.parse_anon_const()?))
             }
             _ => {
                 let ty = self.parse_type()?;
@@ -183,15 +183,16 @@ impl Parser {
 
 impl Parser {
     pub fn can_parse_type_arguments(&mut self) -> bool {
-        self.with_anchor(|p| {
-            let v = p.parse_type_arguments();
+        true
+        // self.with_anchor(|p| {
+        //     let v = p.parse_type_arguments();
 
-            if v.is_err() {
-                return false;
-            }
+        //     if v.is_err() {
+        //         return false;
+        //     }
 
-            return TokenKind::is_generic_type_disambiguating_token(p.current_kind());
-        })
+        //     return TokenKind::is_generic_type_disambiguating_token(p.current_kind());
+        // })
     }
 }
 

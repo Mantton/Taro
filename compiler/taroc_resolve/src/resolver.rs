@@ -13,7 +13,9 @@ pub struct Resolver<'ctx> {
     pub context: GlobalContext<'ctx>,
     node_to_def: FxHashMap<NodeID, DefinitionID>,
     def_to_kind: FxHashMap<DefinitionID, DefinitionKind>,
+    def_to_symbol: FxHashMap<DefinitionID, Symbol>,
     def_to_context: FxHashMap<DefinitionID, DefinitionContext<'ctx>>,
+    def_to_parent: FxHashMap<DefinitionID, DefinitionID>,
     pub block_map: FxHashMap<NodeID, DefinitionContext<'ctx>>,
     pub file_map: FxHashMap<FileID, DefinitionContext<'ctx>>,
     pub unresolved_exports: Vec<ExternalDefinitionUsage<'ctx>>,
@@ -38,6 +40,8 @@ impl Resolver<'_> {
             node_to_def: Default::default(),
             def_to_kind: Default::default(),
             def_to_context: Default::default(),
+            def_to_symbol: Default::default(),
+            def_to_parent: Default::default(),
             block_map: Default::default(),
             file_map: Default::default(),
             unresolved_exports: Vec::new(),
@@ -84,10 +88,10 @@ impl<'ctx> Resolver<'ctx> {
 
     pub fn create_def(
         &mut self,
-        _symbol: Symbol,
+        symbol: Symbol,
         node: NodeID,
         kind: DefinitionKind,
-        _parent: DefinitionID,
+        parent: DefinitionID,
     ) -> DefinitionID {
         let index = DefinitionID::new(
             PackageIndex::new(self.session().package_index),
@@ -95,6 +99,8 @@ impl<'ctx> Resolver<'ctx> {
         );
         self.node_to_def.insert(node, index);
         self.def_to_kind.insert(index, kind);
+        self.def_to_symbol.insert(index, symbol);
+        self.def_to_parent.insert(index, parent);
         self.next_index += 1;
         index
     }
@@ -279,6 +285,8 @@ impl<'ctx> Resolver<'ctx> {
             def_to_context: self.def_to_context,
             alias_map: self.resolved_aliases,
             extension_map: self.resolved_extensions,
+            def_to_parent: self.def_to_parent,
+            def_to_symbol: self.def_to_symbol,
         }
     }
 }

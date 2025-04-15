@@ -11,23 +11,24 @@ impl Parser {
         let mut ty = Type {
             span: lo.to(hi),
             kind: k,
-            is_variadic: false,
         };
 
         // optional type : T?
         if self.matches(TokenKind::Question) {
             let k = self.parse_optional_type(ty)?;
             let hi = self.hi_span();
-            let ty = Type {
+            ty = Type {
                 span: lo.to(hi),
                 kind: k,
-                is_variadic: false,
             };
-            return Ok(Box::new(ty));
         }
 
         if self.eat(TokenKind::Ellipsis) {
-            ty.is_variadic = true
+            let k = TypeKind::Variadic(Box::new(ty));
+            ty = Type {
+                span: lo.to(hi),
+                kind: k,
+            };
         }
 
         Ok(Box::new(ty))
@@ -117,17 +118,10 @@ impl Parser {
     }
 
     fn parse_tuple_type(&mut self) -> R<TypeKind> {
-        let lo = self.lo_span();
         let elements =
             self.parse_delimiter_sequence(Delimiter::Parenthesis, TokenKind::Comma, false, |p| {
                 p.parse_type()
             })?;
-
-        if elements.is_empty() {
-            let msg = "expected 1 or more elements in tuple type";
-            let err = SpannedMessage::new(msg.to_string(), lo.to(self.hi_span()));
-            return Err(err);
-        }
 
         if self.matches(TokenKind::RArrow)
             | (self.matches(TokenKind::Async) && self.next_matches(1, TokenKind::RArrow))

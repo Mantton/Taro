@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use super::NodeID;
 use index_vec::IndexVec;
 use rustc_hash::FxHashSet;
@@ -64,6 +66,16 @@ impl DefinitionID {
 
     pub fn package(&self) -> PackageIndex {
         self.package_index
+    }
+}
+
+impl Display for DefinitionID {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "DefID({:?}, {:?})",
+            self.package_index, self.definition_index
+        )
     }
 }
 

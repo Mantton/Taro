@@ -9,15 +9,16 @@ use taroc_hir::{
 use taroc_span::Symbol;
 use taroc_ty::{
     AssociatedTypeDefinition, ComputedPropertySignature, EnumDefinition, EnumVariant,
-    EnumVariantKind, GenericArgument, GenericParameter, InterfaceDefinition,
-    InterfaceMethodRequirement, InterfaceOperatorRequirement, InterfaceReference,
-    InterfaceRequirement, StructDefinition, StructField, Ty, TyKind,
+    EnumVariantKind, GenericArgument, GenericArguments, GenericParameter, InterfaceDefinition,
+    InterfaceMethodRequirement, InterfaceOperatorRequirement, InterfaceReference, StructDefinition,
+    StructField, Ty, TyKind,
 };
 
 pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
     GenericsCollector::run(package, context)?;
     TypeCollector::run(package, context)?;
     DefinitionCollector::run(package, context)?;
+    ConformanceCollector::run(package, context)?;
     FunctionCollector::run(package, context)?;
     context.diagnostics.report()
 }
@@ -55,54 +56,78 @@ impl HirVisitor for GenericsCollector<'_> {
 
 impl<'ctx> GenericsCollector<'ctx> {
     fn collect(&mut self, id: NodeID, generics: &Generics) {
-        if generics.type_parameters.is_none() {
-            let def_id = self.context.def_id(id);
-            let generics = taroc_ty::Generics { parameters: vec![] };
-            self.context.cache_generics(def_id, generics);
-            return;
-        }
+        let def_id = self.context.def_id(id);
 
-        let mut parameters =
-            Vec::with_capacity(generics.type_parameters.as_ref().unwrap().parameters.len());
-
-        for (index, param) in generics
+        // Interfaces have implicit self type parameter
+        let interface_self_type = if matches!(
+            self.context.def_kind(def_id),
+            taroc_hir::DefinitionKind::Interface
+        ) {
+            let def = taroc_ty::GenericParameterDefinition {
+                index: 0,
+                name: Symbol::with("Self"),
+                id: def_id,
+                kind: taroc_ty::GenericParameterDefinitionKind::Type { default: None },
+            };
+            Some(def)
+        } else {
+            None
+        };
+        let has_self = interface_self_type.is_some();
+        let parameters_len = &generics
             .type_parameters
             .as_ref()
-            .unwrap()
-            .parameters
-            .iter()
-            .enumerate()
-        {
-            let id = self.context.def_id(param.id);
-            let name = param.identifier.symbol;
+            .map(|f| f.parameters.len())
+            .unwrap_or_default();
+        let mut parameters = Vec::with_capacity(parameters_len + (has_self as usize));
 
-            // Definition
-            let def = taroc_ty::GenericParameterDefinition {
-                name,
-                id,
-                index,
-                kind: match &param.kind {
-                    taroc_hir::TypeParameterKind::Type { default } => {
-                        taroc_ty::GenericParameterDefinitionKind::Type {
-                            default: default.clone(),
+        let start = has_self as usize;
+        if let Some(s) = interface_self_type {
+            parameters.push(s);
+        };
+        // Parameters
+        let hir_parameters = generics.type_parameters.as_ref().map(|f| &f.parameters);
+        if let Some(hir_parameters) = hir_parameters {
+            for (index, param) in hir_parameters.iter().enumerate() {
+                let id = self.context.def_id(param.id);
+                let name = param.identifier.symbol;
+                let index = start + index;
+                // Definition
+                let def = taroc_ty::GenericParameterDefinition {
+                    name,
+                    id,
+                    index,
+                    kind: match &param.kind {
+                        taroc_hir::TypeParameterKind::Type { default } => {
+                            taroc_ty::GenericParameterDefinitionKind::Type {
+                                default: default.clone(),
+                            }
                         }
-                    }
-                    taroc_hir::TypeParameterKind::Constant { default, .. } => {
-                        taroc_ty::GenericParameterDefinitionKind::Const {
-                            has_default: default.is_some(),
+                        taroc_hir::TypeParameterKind::Constant { default, .. } => {
+                            taroc_ty::GenericParameterDefinitionKind::Const {
+                                has_default: default.is_some(),
+                            }
                         }
-                    }
-                },
-            };
-            parameters.push(def);
+                    },
+                };
+                parameters.push(def);
 
-            // Type
-            let kind = TyKind::Parameter(GenericParameter { index, name });
-            let ty = self.context.store.interners.intern_ty(kind);
-            self.context.cache_type(id, ty);
+                // Type
+                let kind = TyKind::Parameter(GenericParameter {
+                    parent: def_id,
+                    id,
+                    index,
+                    name,
+                });
+                let ty = self.context.store.interners.intern_ty(kind);
+                self.context.cache_type(id, ty);
+            }
         }
         let def_id = self.context.def_id(id);
-        let generics = taroc_ty::Generics { parameters };
+        let generics = taroc_ty::Generics {
+            parameters,
+            has_self,
+        };
         self.context.cache_generics(def_id, generics);
     }
 }
@@ -146,16 +171,20 @@ impl<'ctx> TypeCollector<'ctx> {
     fn collect_defined_type(&mut self, id: NodeID, name: Symbol, node: &DefinedType) {
         let def_id = self.context.def_id(id);
         if self.context.session().config.is_std
-            && let Some(builtin) = self.check_builtin(name)
+            && let Some(builtin) = self.check_builtin(name, def_id)
         {
             self.context.cache_type(def_id, builtin);
-        } else if self.context.session().config.is_std && self.check_generic_builtin(name, def_id) {
-            return;
         } else {
             let arguments = self.context.type_arguments(def_id);
+
+            if self.context.session().config.is_std
+                && let Some(ty) = self.check_generic_builtin(name, def_id, arguments)
+            {
+                self.context.cache_type(def_id, ty);
+            }
             match node.kind {
                 DefinedTypeKind::Struct | DefinedTypeKind::Enum => {
-                    let kind = TyKind::Adt(def_id, arguments);
+                    let kind = TyKind::Adt(def_id, arguments, None);
                     let ty = self.context.store.interners.intern_ty(kind);
                     self.context.cache_type(def_id, ty);
                 }
@@ -174,54 +203,114 @@ impl<'ctx> TypeCollector<'ctx> {
     }
 }
 impl<'ctx> TypeCollector<'ctx> {
-    fn check_builtin(&self, symbol: Symbol) -> Option<Ty<'ctx>> {
+    fn check_builtin(&self, symbol: Symbol, id: DefinitionID) -> Option<Ty<'ctx>> {
         let store = &self.context.store;
         let value = match symbol.as_str() {
-            "Bool" => store.common_types.bool,
-            "Rune" => store.common_types.rune,
-            "Void" => store.common_types.void,
-            "UInt" => store.common_types.uint,
-            "UInt8" => store.common_types.uint8,
-            "UInt16" => store.common_types.uint16,
-            "UInt32" => store.common_types.uint32,
-            "UInt64" => store.common_types.uint64,
-            "Int" => store.common_types.int,
-            "Int8" => store.common_types.int8,
-            "Int16" => store.common_types.int16,
-            "Int32" => store.common_types.int32,
-            "Int64" => store.common_types.int64,
-            "Float" => store.common_types.float32,
-            "Double" => store.common_types.float64,
+            "Bool" => {
+                store.common_types.mappings.bool.set(Some(id));
+                store.common_types.bool
+            }
+            "Rune" => {
+                store.common_types.mappings.rune.set(Some(id));
+                store.common_types.rune
+            }
+            "UInt" => {
+                store.common_types.mappings.uint.set(Some(id));
+                store.common_types.uint
+            }
+            "UInt8" => {
+                store.common_types.mappings.uint8.set(Some(id));
+                store.common_types.uint8
+            }
+            "UInt16" => {
+                store.common_types.mappings.uint16.set(Some(id));
+                store.common_types.uint16
+            }
+            "UInt32" => {
+                store.common_types.mappings.uint32.set(Some(id));
+                store.common_types.uint32
+            }
+            "UInt64" => {
+                store.common_types.mappings.uint64.set(Some(id));
+                store.common_types.uint64
+            }
+            "Int" => {
+                store.common_types.mappings.int.set(Some(id));
+                store.common_types.int
+            }
+            "Int8" => {
+                store.common_types.mappings.int8.set(Some(id));
+                store.common_types.int8
+            }
+            "Int16" => {
+                store.common_types.mappings.int16.set(Some(id));
+                store.common_types.int16
+            }
+            "Int32" => {
+                store.common_types.mappings.int32.set(Some(id));
+                store.common_types.int32
+            }
+            "Int64" => {
+                store.common_types.mappings.int64.set(Some(id));
+                store.common_types.int64
+            }
+            "Float" => {
+                store.common_types.mappings.float32.set(Some(id));
+                store.common_types.float32
+            }
+            "Double" => {
+                store.common_types.mappings.float64.set(Some(id));
+                store.common_types.float64
+            }
             _ => return None,
         };
 
         return Some(value);
     }
 
-    fn check_generic_builtin(&self, symbol: Symbol, id: DefinitionID) -> bool {
+    fn check_generic_builtin(
+        &self,
+        symbol: Symbol,
+        id: DefinitionID,
+        arguments: GenericArguments<'ctx>,
+    ) -> Option<Ty<'ctx>> {
         let store = &self.context.store;
         match symbol.as_str() {
             "Array" => {
-                store.common_types.array.set(Some(id));
-                return true;
+                store.common_types.mappings.array.set(Some(id));
+                let kind = TyKind::Array(arguments.first().unwrap().ty().unwrap(), 0); // TODO
+                let ty = self.context.store.interners.intern_ty(kind);
+                return Some(ty);
             }
             "ImmutablePointer" => {
-                store.common_types.const_ptr.set(Some(id));
-                return true;
+                store.common_types.mappings.const_ptr.set(Some(id));
+                let ty = arguments.first().unwrap().ty().unwrap();
+                let kind = TyKind::Pointer(ty, Mutability::Immutable);
+                let ty = self.context.store.interners.intern_ty(kind);
+                return Some(ty);
             }
             "MutablePointer" => {
-                store.common_types.ptr.set(Some(id));
-                return true;
+                store.common_types.mappings.ptr.set(Some(id));
+                let ty = arguments.first().unwrap().ty().unwrap();
+                let kind = TyKind::Pointer(ty, Mutability::Mutable);
+                let ty = self.context.store.interners.intern_ty(kind);
+                return Some(ty);
             }
             "ImmutableReference" => {
-                store.common_types.const_ref.set(Some(id));
-                return true;
+                store.common_types.mappings.const_ref.set(Some(id));
+                let ty = arguments.first().unwrap().ty().unwrap();
+                let kind = TyKind::Reference(ty, Mutability::Immutable);
+                let ty = self.context.store.interners.intern_ty(kind);
+                return Some(ty);
             }
             "MutableReference" => {
-                store.common_types.mut_ref.set(Some(id));
-                return true;
+                store.common_types.mappings.mut_ref.set(Some(id));
+                let ty = arguments.first().unwrap().ty().unwrap();
+                let kind = TyKind::Pointer(ty, Mutability::Mutable);
+                let ty = self.context.store.interners.intern_ty(kind);
+                return Some(ty);
             }
-            _ => return false,
+            _ => return None,
         };
     }
 }
@@ -259,14 +348,12 @@ impl<'ctx> HirVisitor for DefinitionCollector<'ctx> {
             DeclarationKind::DefinedType(node) => {
                 let id = self.context.def_id(declaration.id);
                 let name = declaration.identifier.symbol;
-                let conformances = self.collect_interface_conformances(&node.generics.inheritance);
                 match &node.kind {
                     DefinedTypeKind::Struct => {
                         // create struct definition
                         let def = StructDefinition {
                             id,
                             name,
-                            conformances,
                             fields: Default::default(),
                         };
 
@@ -276,7 +363,6 @@ impl<'ctx> HirVisitor for DefinitionCollector<'ctx> {
                         let def = EnumDefinition {
                             id,
                             name,
-                            conformances,
                             variants: Default::default(),
                         };
 
@@ -286,9 +372,8 @@ impl<'ctx> HirVisitor for DefinitionCollector<'ctx> {
                         let def = InterfaceDefinition {
                             id,
                             name,
-                            conformances,
-                            associated_types: Default::default(),
-                            requirements: vec![],
+                            requirements: Default::default(),
+                            parameters: self.context.type_arguments(id),
                         };
 
                         self.context.cache_interface_def(id, def);
@@ -311,42 +396,37 @@ impl<'ctx> HirVisitor for DefinitionCollector<'ctx> {
                     ty,
                     mutability: node.mutability,
                 };
-                self.context.update_struct_def(self.parent(), move |def| {
-                    let previous = def.fields.insert(declaration.identifier.symbol, field);
-                    debug_assert!(
-                        previous.is_none(),
-                        "overlapping field defintions should be caught by resolver"
-                    );
-                });
+                self.context
+                    .update_struct_def(self.parent.unwrap(), move |def| {
+                        let previous = def.fields.insert(declaration.identifier.symbol, field);
+                        debug_assert!(
+                            previous.is_none(),
+                            "overlapping field defintions should be caught by resolver"
+                        );
+                    });
             }
 
             DeclarationKind::Constant(ty, _) => {
                 let _ty = lower::lower_type(ty, self.context, Default::default());
             }
-            DeclarationKind::AssociatedType(generics, default_ty)
+            DeclarationKind::AssociatedType(_, default_ty)
                 if matches!(context, DeclarationContext::Interface) =>
             {
                 let name = declaration.identifier.symbol;
-                let conformances = self.collect_interface_conformances(&generics.inheritance);
 
                 let assoc = AssociatedTypeDefinition {
                     name,
-                    conformances,
                     default_type: default_ty
                         .as_ref()
                         .map(|ty| lower::lower_type(&ty, self.context, Default::default())),
                 };
 
-                self.context.update_interface_def(self.parent(), |def| {
-                    let previous = def.associated_types.insert(name, assoc);
-
-                    debug_assert!(
-                        previous.is_none(),
-                        "overlapping associated types should be caught by resolver"
-                    );
-                });
+                self.context
+                    .update_interface_def(self.parent.unwrap(), |def| {
+                        def.requirements.types.push(assoc);
+                    });
             }
-            DeclarationKind::TypeAlias(_) => {
+            DeclarationKind::TypeAlias(alias) => {
                 // TODO!
             }
             _ => {}
@@ -378,7 +458,7 @@ impl<'ctx> HirVisitor for DefinitionCollector<'ctx> {
                         let ty = lower::lower_type(&field.ty, self.context, Default::default());
 
                         let field = StructField {
-                            name,
+                            name: field.identifier.symbol,
                             ty,
                             mutability: Mutability::Immutable,
                         };
@@ -393,13 +473,7 @@ impl<'ctx> HirVisitor for DefinitionCollector<'ctx> {
                         acc
                     });
 
-                let def = StructDefinition {
-                    id,
-                    name,
-                    fields,
-                    conformances: vec![],
-                };
-
+                let def = StructDefinition { id, name, fields };
                 EnumVariantKind::Struct(def)
             }
         };
@@ -412,7 +486,7 @@ impl<'ctx> HirVisitor for DefinitionCollector<'ctx> {
             discriminant: 0, // TODO
         };
 
-        self.context.update_enum_def(self.parent(), |def| {
+        self.context.update_enum_def(self.parent.unwrap(), |def| {
             let previous = def.variants.insert(node.name, node);
 
             debug_assert!(
@@ -423,15 +497,68 @@ impl<'ctx> HirVisitor for DefinitionCollector<'ctx> {
     }
 }
 
-impl<'ctx> DefinitionCollector<'ctx> {
-    pub fn parent(&self) -> DefinitionID {
-        self.parent.expect("parent_id")
+/// Collect Conformances
+struct ConformanceCollector<'ctx> {
+    context: GlobalContext<'ctx>,
+}
+
+impl<'ctx> ConformanceCollector<'ctx> {
+    fn new(context: GlobalContext<'ctx>) -> ConformanceCollector<'ctx> {
+        ConformanceCollector { context }
     }
+
+    fn run<'a>(package: &Package, context: GlobalContext<'ctx>) -> CompileResult<()> {
+        let mut actor = ConformanceCollector::new(context);
+        taroc_hir::visitor::walk_package(&mut actor, package);
+        context.diagnostics.report()
+    }
+}
+
+impl<'ctx> HirVisitor for ConformanceCollector<'ctx> {
+    fn visit_declaration(
+        &mut self,
+        declaration: &Declaration,
+        context: DeclarationContext,
+    ) -> Self::Result {
+        let id = self.context.def_id(declaration.id);
+        match &declaration.kind {
+            DeclarationKind::DefinedType(node) => {
+                let conformances =
+                    self.collect_interface_conformances(id, &node.generics.inheritance);
+                self.context.with_type_database(None, |database| {
+                    database
+                        .conformances
+                        .entry(id)
+                        .or_default()
+                        .extend(conformances);
+                });
+            }
+            DeclarationKind::Extend(node) => {
+                let id = self.context.extension_target(id);
+                let conformances =
+                    self.collect_interface_conformances(id, &node.generics.inheritance);
+                self.context.with_type_database(None, |database| {
+                    database
+                        .conformances
+                        .entry(id)
+                        .or_default()
+                        .extend(conformances);
+                });
+            }
+            _ => {}
+        };
+
+        taroc_hir::visitor::walk_declaration(self, declaration, context);
+    }
+}
+
+impl<'ctx> ConformanceCollector<'ctx> {
     pub fn collect_interface_conformances(
         &mut self,
+        def_id: DefinitionID,
         node: &Option<taroc_hir::Inheritance>,
     ) -> Vec<InterfaceReference<'ctx>> {
-        let mut out = vec![];
+        let mut out = Default::default();
 
         let Some(node) = node else {
             return out;
@@ -455,24 +582,75 @@ impl<'ctx> DefinitionCollector<'ctx> {
                         node.path.segments.last().unwrap(),
                         self.context,
                     );
-                    let arguments: Vec<GenericArgument<'ctx>> = if let Some(arguments) = arguments {
-                        let arguments = arguments.arguments.iter().map(|argument| match argument {
-                            taroc_hir::TypeArgument::Type(ty) => {
-                                let ty = lower::lower_type(ty, self.context, Default::default());
 
-                                GenericArgument::Type(ty)
+                    let mut result = vec![];
+
+                    for (index, parameter) in generics.parameters.iter().enumerate() {
+                        if index == 0 && generics.has_self {
+                            let self_ty = self.context.type_of(def_id);
+                            result.push(GenericArgument::Type(self_ty));
+                            continue;
+                        }
+
+                        if let Some(arguments) = arguments
+                            && let Some(argument) = arguments
+                                .arguments
+                                .get(parameter.index - generics.has_self as usize)
+                        {
+                            match argument {
+                                taroc_hir::TypeArgument::Type(ty) => {
+                                    let ty =
+                                        lower::lower_type(ty, self.context, Default::default());
+                                    result.push(GenericArgument::Type(ty));
+                                    continue;
+                                }
+                                taroc_hir::TypeArgument::Const(_) => todo!(),
                             }
-                            taroc_hir::TypeArgument::Const(..) => todo!(),
-                        });
-                        arguments.collect()
-                    } else {
-                        vec![]
-                    };
+                        } else {
+                            // Get Default Argument
+                            match &parameter.kind {
+                                taroc_ty::GenericParameterDefinitionKind::Type { default } => {
+                                    let ty = if let Some(default) = default {
+                                        lower::lower_type(default, self.context, Default::default())
+                                    } else {
+                                        self.context
+                                            .diagnostics
+                                            .warn("Defaulting To Err".into(), node.path.span);
+                                        self.context.store.common_types.error
+                                    };
+
+                                    result.push(GenericArgument::Type(ty));
+                                    continue;
+                                }
+                                taroc_ty::GenericParameterDefinitionKind::Const { .. } => {
+                                    todo!()
+                                }
+                            }
+                        };
+                    }
 
                     let reference = InterfaceReference {
                         id,
-                        arguments: self.context.store.interners.mk_args(arguments),
+                        arguments: self.context.store.interners.mk_args(result),
                     };
+
+                    // Validate
+                    self.context.with_type_database(None, |database| {
+                        let contains = database
+                            .conformances
+                            .entry(def_id)
+                            .or_default()
+                            .contains(&reference)
+                            || out.contains(&reference);
+
+                        if contains {
+                            let msg = format!(
+                                "redundant conformance to '{}'",
+                                node.path.segments.last().unwrap().identifier.symbol
+                            );
+                            self.context.diagnostics.error(msg, node.path.span);
+                        }
+                    });
 
                     out.push(reference);
                 }
@@ -482,12 +660,6 @@ impl<'ctx> DefinitionCollector<'ctx> {
 
         out
     }
-}
-
-/// Collect InterfaceRequirements
-struct InterfaceRequirementsCollector<'ctx> {
-    context: GlobalContext<'ctx>,
-    parent: Option<DefinitionID>,
 }
 
 struct FunctionCollector<'ctx> {
@@ -544,9 +716,8 @@ impl<'ctx> HirVisitor for FunctionCollector<'ctx> {
                             is_required,
                             signature,
                         };
-                        let kind = InterfaceRequirement::Method(requirement);
                         self.context.update_interface_def(parent, |def| {
-                            def.requirements.push(kind);
+                            def.requirements.methods.push(requirement);
                         });
                     }
                     DeclarationContext::Extern => {
@@ -563,6 +734,8 @@ impl<'ctx> HirVisitor for FunctionCollector<'ctx> {
                                 .or_insert(Default::default());
                             // TODO: Static
                             store
+                                .clone()
+                                .borrow_mut()
                                 .methods
                                 .entry(decl.identifier.symbol)
                                 .or_default()
@@ -586,9 +759,8 @@ impl<'ctx> HirVisitor for FunctionCollector<'ctx> {
                             kind: *kind,
                             signature,
                         };
-                        let kind = InterfaceRequirement::Operator(requirement);
                         self.context.update_interface_def(parent, |def| {
-                            def.requirements.push(kind);
+                            def.requirements.operators.push(requirement);
                         });
                     }
                     _ => {
@@ -599,7 +771,13 @@ impl<'ctx> HirVisitor for FunctionCollector<'ctx> {
                                 .entry(parent)
                                 .or_insert(Default::default());
 
-                            store.operators.entry(*kind).or_default().push(signature);
+                            store
+                                .clone()
+                                .borrow_mut()
+                                .operators
+                                .entry(*kind)
+                                .or_default()
+                                .push(signature);
                         });
                     }
                 }
@@ -624,7 +802,11 @@ impl<'ctx> HirVisitor for FunctionCollector<'ctx> {
                                 .or_insert(Default::default());
 
                             let signature = ComputedPropertySignature { ty };
-                            store.properties.insert(decl.identifier.symbol, signature)
+                            store
+                                .clone()
+                                .borrow_mut()
+                                .properties
+                                .insert(decl.identifier.symbol, signature)
                         });
                     }
                 }
@@ -643,7 +825,7 @@ impl<'ctx> HirVisitor for FunctionCollector<'ctx> {
                         .entry(parent)
                         .or_insert(Default::default());
 
-                    store.constructors.push(signature)
+                    store.clone().borrow_mut().constructors.push(signature)
                 });
             }
             _ => {}

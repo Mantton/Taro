@@ -5,6 +5,7 @@ use std::{
     cell::{Cell, RefCell},
     hash::{Hash, Hasher},
     marker::PhantomData,
+    rc::Rc,
 };
 use taroc_data_structures::Interned;
 use taroc_hir::{DefinitionID, DefinitionKind, NodeID, Resolution};
@@ -12,7 +13,7 @@ use taroc_resolve_models::{DefinitionContext, ResolvedAlias};
 use taroc_span::Symbol;
 use taroc_ty::{
     DefinitionFunctionsData, EnumDefinition, FloatTy, GenericArgument, IntTy, InterfaceDefinition,
-    LabeledFunctionSignature, StructDefinition, Ty, TyKind, UIntTy,
+    InterfaceReference, LabeledFunctionSignature, StructDefinition, Ty, TyKind, UIntTy,
 };
 
 pub struct ContextStore<'ctx> {
@@ -122,6 +123,8 @@ pub struct ResolutionData<'ctx> {
     pub node_to_def: FxHashMap<NodeID, DefinitionID>,
     pub def_to_kind: FxHashMap<DefinitionID, DefinitionKind>,
     pub def_to_context: FxHashMap<DefinitionID, DefinitionContext<'ctx>>,
+    pub def_to_symbol: FxHashMap<DefinitionID, Symbol>,
+    pub def_to_parent: FxHashMap<DefinitionID, DefinitionID>,
     pub resolution_map: FxHashMap<NodeID, Resolution>,
     pub generics_map: FxHashMap<DefinitionID, Vec<(Symbol, DefinitionID)>>,
     pub alias_map: FxHashMap<DefinitionID, ResolvedAlias>,
@@ -134,9 +137,10 @@ pub struct TypeDatabase<'ctx> {
     pub def_to_generics: FxHashMap<DefinitionID, taroc_ty::Generics>,
     pub structs: FxHashMap<DefinitionID, StructDefinition<'ctx>>,
     pub enums: FxHashMap<DefinitionID, EnumDefinition<'ctx>>,
-    pub interfaces: FxHashMap<DefinitionID, InterfaceDefinition<'ctx>>,
+    pub interfaces: FxHashMap<DefinitionID, Rc<RefCell<InterfaceDefinition<'ctx>>>>,
     pub functions: FxHashMap<DefinitionID, LabeledFunctionSignature<'ctx>>,
-    pub def_to_functions: FxHashMap<DefinitionID, DefinitionFunctionsData<'ctx>>,
+    pub def_to_functions: FxHashMap<DefinitionID, Rc<RefCell<DefinitionFunctionsData<'ctx>>>>,
+    pub conformances: FxHashMap<DefinitionID, FxHashSet<InterfaceReference<'ctx>>>,
 }
 
 pub struct CommonTypes<'ctx> {
@@ -162,11 +166,34 @@ pub struct CommonTypes<'ctx> {
     pub error: Ty<'ctx>,
     pub ignore: Ty<'ctx>,
 
+    pub mappings: CommonTypeMapping,
+}
+
+#[derive(Default)]
+pub struct CommonTypeMapping {
     pub array: Cell<Option<DefinitionID>>,
     pub ptr: Cell<Option<DefinitionID>>,
     pub const_ptr: Cell<Option<DefinitionID>>,
     pub mut_ref: Cell<Option<DefinitionID>>,
     pub const_ref: Cell<Option<DefinitionID>>,
+
+    pub bool: Cell<Option<DefinitionID>>,
+    pub rune: Cell<Option<DefinitionID>>,
+
+    pub uint: Cell<Option<DefinitionID>>,
+    pub uint8: Cell<Option<DefinitionID>>,
+    pub uint16: Cell<Option<DefinitionID>>,
+    pub uint32: Cell<Option<DefinitionID>>,
+    pub uint64: Cell<Option<DefinitionID>>,
+
+    pub int: Cell<Option<DefinitionID>>,
+    pub int8: Cell<Option<DefinitionID>>,
+    pub int16: Cell<Option<DefinitionID>>,
+    pub int32: Cell<Option<DefinitionID>>,
+    pub int64: Cell<Option<DefinitionID>>,
+
+    pub float32: Cell<Option<DefinitionID>>,
+    pub float64: Cell<Option<DefinitionID>>,
 }
 
 impl<'a> CommonTypes<'a> {
@@ -176,7 +203,10 @@ impl<'a> CommonTypes<'a> {
         CommonTypes {
             bool: mk(TyKind::Bool),
             rune: mk(TyKind::Rune),
-            void: mk(TyKind::Void),
+            void: {
+                let list = interner.intern_ty_list(&vec![]);
+                mk(TyKind::Tuple(list))
+            },
 
             uint: mk(TyKind::UInt(UIntTy::UInt)),
             uint8: mk(TyKind::UInt(UIntTy::U8)),
@@ -196,11 +226,7 @@ impl<'a> CommonTypes<'a> {
             error: mk(TyKind::Error),
             ignore: mk(TyKind::Ignore),
 
-            array: Default::default(),
-            ptr: Default::default(),
-            const_ptr: Default::default(),
-            mut_ref: Default::default(),
-            const_ref: Default::default(),
+            mappings: Default::default(),
         }
     }
 }

@@ -1,3 +1,5 @@
+use std::{cell::RefCell, rc::Rc};
+
 use crate::{CompilerSession, GlobalContext, TypeDatabase};
 use taroc_hir::{DefinitionID, DefinitionKind, NodeID, Resolution};
 use taroc_resolve_models::{DefinitionContext, ResolvedAlias};
@@ -33,6 +35,20 @@ impl<'ctx> GlobalContext<'ctx> {
         let package = resolutions.get(&id.package().index()).expect("package");
         let kind = package.def_to_kind.get(&id).expect("res");
         *kind
+    }
+
+    pub fn def_symbol(self, id: DefinitionID) -> Symbol {
+        let resolutions = self.context.store.resolutions.borrow();
+        let package = resolutions.get(&id.package().index()).expect("package");
+        let symbol = package.def_to_symbol.get(&id).expect("def symbol");
+        *symbol
+    }
+
+    pub fn def_parent(self, id: DefinitionID) -> DefinitionID {
+        let resolutions = self.context.store.resolutions.borrow();
+        let package = resolutions.get(&id.package().index()).expect("package");
+        let parent = package.def_to_parent.get(&id).expect("def parent");
+        *parent
     }
 
     pub fn def_context(self, id: DefinitionID) -> DefinitionContext<'ctx> {
@@ -73,7 +89,10 @@ impl<'ctx> GlobalContext<'ctx> {
         if let Some(x) = database.def_to_generics.get(&id) {
             x.clone()
         } else {
-            taroc_ty::Generics { parameters: vec![] }
+            taroc_ty::Generics {
+                parameters: vec![],
+                has_self: false,
+            }
         }
     }
 
@@ -110,7 +129,7 @@ impl<'ctx> GlobalContext<'ctx> {
         let mut cache = self.context.store.types.borrow_mut();
         let package_index = id.package().index();
         let database = cache.entry(package_index).or_insert(Default::default());
-        database.interfaces.insert(id, def);
+        database.interfaces.insert(id, Rc::new(RefCell::new(def)));
     }
 
     pub fn update_struct_def<F>(self, id: DefinitionID, action: F)
@@ -144,9 +163,12 @@ impl<'ctx> GlobalContext<'ctx> {
         let database = cache.entry(package_index).or_insert(Default::default());
         let entry = database
             .interfaces
-            .get_mut(&id)
-            .expect("interface definition");
-        action(entry);
+            .get(&id)
+            .expect("interface definition")
+            .clone();
+
+        let mut entry = entry.borrow_mut();
+        action(&mut entry);
     }
 
     pub fn type_arguments(self, id: DefinitionID) -> taroc_ty::GenericArguments<'ctx> {
@@ -162,6 +184,8 @@ impl<'ctx> GlobalContext<'ctx> {
                     let kind = TyKind::Parameter(GenericParameter {
                         index: param.index,
                         name: param.name,
+                        parent: id,
+                        id: param.id,
                     });
                     let ty = self.store.interners.intern_ty(kind);
                     self.cache_type(param.id, ty);
@@ -215,5 +239,76 @@ impl<'ctx> GlobalContext<'ctx> {
         let mut cache = self.context.store.types.borrow_mut();
         let database = cache.entry(index).or_insert(Default::default());
         func(database)
+    }
+
+    pub fn interface_definition(self, id: DefinitionID) -> Rc<RefCell<InterfaceDefinition<'ctx>>> {
+        let database = self.context.store.types.borrow();
+        let database = database.get(&id.package().index()).expect("package types");
+        return database
+            .interfaces
+            .get(&id)
+            .expect("expected interface of definition")
+            .clone();
+    }
+
+    pub fn ty_to_def(self, ty: Ty<'ctx>) -> Option<DefinitionID> {
+        match ty.kind() {
+            TyKind::Bool => self.context.store.common_types.mappings.bool.get(),
+            TyKind::Rune => self.context.store.common_types.mappings.rune.get(),
+            TyKind::Int(int_ty) => match int_ty {
+                taroc_ty::IntTy::Int => self.context.store.common_types.mappings.int.get(),
+                taroc_ty::IntTy::I8 => self.context.store.common_types.mappings.int8.get(),
+                taroc_ty::IntTy::I16 => self.context.store.common_types.mappings.int16.get(),
+                taroc_ty::IntTy::I32 => self.context.store.common_types.mappings.int32.get(),
+                taroc_ty::IntTy::I64 => self.context.store.common_types.mappings.int64.get(),
+            },
+            TyKind::UInt(uint_ty) => match uint_ty {
+                taroc_ty::UIntTy::UInt => self.context.store.common_types.mappings.uint.get(),
+                taroc_ty::UIntTy::U8 => self.context.store.common_types.mappings.uint8.get(),
+                taroc_ty::UIntTy::U16 => self.context.store.common_types.mappings.uint16.get(),
+                taroc_ty::UIntTy::U32 => self.context.store.common_types.mappings.uint32.get(),
+                taroc_ty::UIntTy::U64 => self.context.store.common_types.mappings.uint64.get(),
+            },
+            TyKind::Float(float_ty) => match float_ty {
+                taroc_ty::FloatTy::F32 => self.context.store.common_types.mappings.float32.get(),
+                taroc_ty::FloatTy::F64 => self.context.store.common_types.mappings.float64.get(),
+            },
+            TyKind::Pointer(_, mutability) => match mutability {
+                taroc_hir::Mutability::Mutable => {
+                    self.context.store.common_types.mappings.ptr.get()
+                }
+                taroc_hir::Mutability::Immutable => {
+                    self.context.store.common_types.mappings.const_ptr.get()
+                }
+            },
+            TyKind::Reference(_, mutability) => match mutability {
+                taroc_hir::Mutability::Mutable => {
+                    self.context.store.common_types.mappings.mut_ref.get()
+                }
+                taroc_hir::Mutability::Immutable => {
+                    self.context.store.common_types.mappings.const_ref.get()
+                }
+            },
+            TyKind::Array(..) => self.context.store.common_types.mappings.array.get(),
+            TyKind::Tuple(..) => None,
+            TyKind::Adt(definition_id, ..) => Some(definition_id),
+            TyKind::Existential(..) => None,
+            TyKind::Parameter(..) => None,
+            TyKind::Function { .. } => None,
+            TyKind::Variadic(..) => None,
+            TyKind::AssociatedType(definition_id) => Some(definition_id),
+            TyKind::Infer => None,
+            TyKind::Error => None,
+            TyKind::Ignore => None,
+        }
+    }
+
+    pub fn associated_type(self, id: DefinitionID, name: Symbol) -> Option<Ty<'ctx>> {
+        let ctx = self.def_context(id);
+        let resolutions = ctx.resolutions.borrow();
+        let holder = resolutions.find(&name)?;
+        let resolution = holder.nearest().resolution();
+        let id = resolution.def_id()?;
+        Some(self.type_of(id))
     }
 }
