@@ -78,21 +78,21 @@ impl<'ctx> CheckInterfaceImplementation<'ctx> {
     fn check_conformance(&mut self, id: DefinitionID, interface: InterfaceReference<'ctx>) {
         let definition = self.context.interface_definition(interface.id);
         let definition = definition.borrow();
-        println!("Working on {}", definition.name);
+        // println!("Working on {}", definition.name);
 
         // Build type witness map first.
-        let type_witnesses =
-            self.build_type_witnesses(id, interface, &definition.requirements.types);
+        let type_witnesses = self.build_type_witnesses(id, &definition.requirements.types);
 
         // Now build a conformance record; note that witness_methods will be set later.
-        let conformance = ConformanceRecord {
+        let mut conformance = ConformanceRecord {
             ty: id,
             interface: interface.id,
             type_witnesses,
+            method_witnesses: Default::default(),
         };
 
         for requirement in &definition.requirements.methods {
-            self.check_method_requirement(id, interface, requirement, &conformance);
+            self.check_method_requirement(id, interface, requirement, &mut conformance);
         }
     }
 
@@ -101,7 +101,7 @@ impl<'ctx> CheckInterfaceImplementation<'ctx> {
         id: DefinitionID,
         interface: InterfaceReference<'ctx>,
         requirement: &InterfaceMethodRequirement<'ctx>,
-        conformance: &ConformanceRecord<'ctx>,
+        conformance: &mut ConformanceRecord<'ctx>,
     ) -> bool {
         // --- Candidate Lookup ---
         let functions_data = self.context.with_type_database(None, |db| {
@@ -137,7 +137,6 @@ impl<'ctx> CheckInterfaceImplementation<'ctx> {
         let mut found_candidate = false;
         for candidate in candidates {
             let recieved = utils::convert_labeled_signature_to_signature(candidate, self.context);
-
             // println!("--- Checking ---  ");
             // println!("{:?}", expected);
             // println!("{:?}", recieved);
@@ -147,19 +146,21 @@ impl<'ctx> CheckInterfaceImplementation<'ctx> {
             if expected != recieved {
                 continue;
             }
-
             // Check Parameter Labels
+            if !utils::compare_signature_labels(&requirement.signature, candidate) {
+                continue;
+            }
+            // Register Method Witness
+            found_candidate = true;
 
-            found_candidate |= expected == recieved;
+            // TODO: Add Method Witness
+            break;
         }
 
         if !found_candidate {
             println!("no valid candidate found");
             return false;
         }
-
-        // TODO:
-        // println!("Found a candidate {}", requirement.name)
 
         return true;
     }
@@ -170,17 +171,16 @@ impl<'ctx> CheckInterfaceImplementation<'ctx> {
     fn check_type_requirement(
         &mut self,
         id: DefinitionID,
-        interface: InterfaceReference<'ctx>,
         requirement: &AssociatedTypeDefinition<'ctx>,
     ) -> Option<(Symbol, Ty<'ctx>)> {
         // For example, search the concrete type (id)'s associated type declarations.
         let candidate = self.context.associated_type(id, requirement.name);
         if let Some(candidate_type) = candidate {
             // Report that "Foo::Bar" is witnessed by candidate_type.
-            println!(
-                "Type witness Found: {} -> {:?}",
-                requirement.name, candidate_type
-            );
+            // println!(
+            //     "Type witness Found: {} -> {:?}",
+            //     requirement.name, candidate_type
+            // );
             Some((requirement.name.clone(), candidate_type))
         } else {
             let message = format!(
@@ -196,12 +196,11 @@ impl<'ctx> CheckInterfaceImplementation<'ctx> {
     fn build_type_witnesses(
         &mut self,
         id: DefinitionID,
-        interface: InterfaceReference<'ctx>,
         type_requirements: &[AssociatedTypeDefinition<'ctx>],
     ) -> FxHashMap<Symbol, Ty<'ctx>> {
         let mut type_witnesses: FxHashMap<Symbol, Ty<'ctx>> = Default::default();
         for req in type_requirements {
-            if let Some((name, witness)) = self.check_type_requirement(id, interface, req) {
+            if let Some((name, witness)) = self.check_type_requirement(id, req) {
                 type_witnesses.insert(name, witness);
             }
         }

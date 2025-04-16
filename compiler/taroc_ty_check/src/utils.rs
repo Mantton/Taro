@@ -61,6 +61,25 @@ pub fn convert_labeled_signature_to_signature<'ctx>(
     return context.store.interners.intern_ty(kind);
 }
 
+pub fn compare_signature_labels<'ctx>(
+    a: &LabeledFunctionSignature<'ctx>,
+    b: &LabeledFunctionSignature<'ctx>,
+) -> bool {
+    if a.inputs.len() != b.inputs.len() {
+        return false;
+    }
+
+    let iter = a.inputs.iter().zip(b.inputs.iter());
+
+    for (a, b) in iter {
+        if a.label != b.label {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 pub fn create_substitution_map<'ctx>(
     context: GlobalContext<'ctx>,
     def_id: DefinitionID,

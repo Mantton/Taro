@@ -300,4 +300,5 @@ pub struct ConformanceRecord<'ctx> {
     pub ty: DefinitionID,
     pub interface: DefinitionID,
     pub type_witnesses: FxHashMap<Symbol, Ty<'ctx>>,
+    pub method_witnesses: FxHashMap<Symbol, DefinitionID>,
 }
