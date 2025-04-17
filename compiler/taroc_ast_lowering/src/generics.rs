@@ -29,7 +29,7 @@ impl Actor<'_> {
             id: self.next(),
             span: tp.span,
             identifier: tp.identifier.clone(),
-            // bounds: self.lower_optional(&tp.bounds, |a1, bounds| a1.lower_generic_bounds(bounds)),
+            bounds: self.lower_optional(tp.bounds, |a1, bounds| a1.lower_generic_bounds(bounds)),
             kind: self.lower_type_parameter_kind(tp.kind),
         }
     }

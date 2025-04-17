@@ -7,6 +7,7 @@ pub struct TypeParameter {
     pub id: NodeID,
     pub span: Span,
     pub identifier: Identifier,
+    pub bounds: Option<GenericBounds>,
     pub kind: TypeParameterKind,
 }
 

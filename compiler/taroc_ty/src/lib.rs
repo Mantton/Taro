@@ -80,8 +80,8 @@ pub enum FloatTy {
 // MARK: Generics
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GenericParameter {
-    pub parent: DefinitionID,
-    pub id: DefinitionID,
+    // pub parent: DefinitionID,
+    // pub id: DefinitionID,
     pub index: usize,
     pub name: Symbol,
 }

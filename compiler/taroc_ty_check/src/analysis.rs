@@ -9,7 +9,7 @@ use taroc_ty::{
 
 use crate::utils;
 
-pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
+pub fn run(_: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
     CheckRecursiveTypes::run(context)?;
     CheckInterfaceImplementation::run(context)?;
     context.diagnostics.report()
@@ -127,7 +127,7 @@ impl<'ctx> CheckInterfaceImplementation<'ctx> {
         };
 
         let initial_map =
-            utils::create_substitution_map(self.context, interface.id, interface.arguments);
+            utils::create_substitution_map(interface.id, interface.arguments, self.context);
 
         let signature =
             utils::convert_labeled_signature_to_signature(&requirement.signature, self.context);

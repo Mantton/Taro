@@ -12,8 +12,9 @@ use taroc_hir::{DefinitionID, DefinitionKind, NodeID, Resolution};
 use taroc_resolve_models::{DefinitionContext, ResolvedAlias};
 use taroc_span::Symbol;
 use taroc_ty::{
-    DefinitionFunctionsData, EnumDefinition, FloatTy, GenericArgument, IntTy, InterfaceDefinition,
-    InterfaceReference, LabeledFunctionSignature, StructDefinition, Ty, TyKind, UIntTy,
+    DefinitionFunctionsData, EnumDefinition, FloatTy, GenericArgument, GenericParameter, IntTy,
+    InterfaceDefinition, InterfaceReference, LabeledFunctionSignature, StructDefinition, Ty,
+    TyKind, UIntTy,
 };
 
 pub struct ContextStore<'ctx> {
@@ -165,6 +166,7 @@ pub struct CommonTypes<'ctx> {
 
     pub error: Ty<'ctx>,
     pub ignore: Ty<'ctx>,
+    pub self_type_parameter: Ty<'ctx>,
 
     pub mappings: CommonTypeMapping,
 }
@@ -225,6 +227,16 @@ impl<'a> CommonTypes<'a> {
 
             error: mk(TyKind::Error),
             ignore: mk(TyKind::Ignore),
+
+            self_type_parameter: {
+                let parameter = GenericParameter {
+                    index: 0,
+                    name: Symbol::with("Self"),
+                };
+
+                let kind = TyKind::Parameter(parameter);
+                mk(kind)
+            },
 
             mappings: Default::default(),
         }

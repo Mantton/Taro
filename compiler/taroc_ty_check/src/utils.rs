@@ -1,5 +1,5 @@
 use taroc_context::GlobalContext;
-use taroc_hir::{DefinitionID, DefinitionKind};
+use taroc_hir::DefinitionID;
 use taroc_ty::{
     ConformanceRecord, GenericArgument, GenericArguments, LabeledFunctionParameter,
     LabeledFunctionSignature, Ty, TyKind,
@@ -21,7 +21,7 @@ pub fn convert_to_labeled_signature<'ctx>(
         .collect();
 
     let output = if let Some(output) = &func.signature.prototype.output {
-        lower_type(output, context, Default::default())
+        lower_type(output, context)
     } else {
         context.store.common_types.void
     };
@@ -41,7 +41,7 @@ pub fn convert_to_labeled_parameter<'ctx>(
     let label = param.label.as_ref().map(|f| f.identifier.symbol);
     LabeledFunctionParameter {
         label,
-        ty: lower_type(&param.annotated_type, context, Default::default()),
+        ty: lower_type(&param.annotated_type, context),
     }
 }
 
@@ -81,9 +81,9 @@ pub fn compare_signature_labels<'ctx>(
 }
 
 pub fn create_substitution_map<'ctx>(
-    context: GlobalContext<'ctx>,
     def_id: DefinitionID,
     arguments: GenericArguments<'ctx>,
+    context: GlobalContext<'ctx>,
 ) -> SubstitutionMap<'ctx> {
     let generics = context.generics_of(def_id);
 
@@ -97,7 +97,13 @@ pub fn create_substitution_map<'ctx>(
         let argument = arguments
             .get(index)
             .expect("Generic Arguments should match");
-        map.insert(parameter.id, *argument);
+        map.insert(
+            taroc_ty::GenericParameter {
+                index: parameter.index,
+                name: parameter.name,
+            },
+            *argument,
+        );
     }
 
     return map;
@@ -164,14 +170,15 @@ pub fn substitute<'ctx>(
             todo!()
         }
         taroc_ty::TyKind::Parameter(param) => {
-            let kind = context.def_kind(param.id);
-            debug_assert!(kind == DefinitionKind::TypeParameter);
-            let binding = substitutions.get(&param.id);
+            let binding = substitutions.get(&param);
             let Some(binding) = binding else {
                 return ty;
             };
             match binding {
                 GenericArgument::Type(ty) => {
+                    if ty == ty {
+                        return *ty;
+                    }
                     return substitute(*ty, substitutions, conformance, context);
                 }
                 GenericArgument::Const(_) => panic!("ICE: binding maps to const argument"),

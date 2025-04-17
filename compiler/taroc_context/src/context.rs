@@ -184,8 +184,8 @@ impl<'ctx> GlobalContext<'ctx> {
                     let kind = TyKind::Parameter(GenericParameter {
                         index: param.index,
                         name: param.name,
-                        parent: id,
-                        id: param.id,
+                        // parent: id,
+                        // id: param.id,
                     });
                     let ty = self.store.interners.intern_ty(kind);
                     self.cache_type(param.id, ty);

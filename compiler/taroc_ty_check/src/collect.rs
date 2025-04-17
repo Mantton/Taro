@@ -114,8 +114,8 @@ impl<'ctx> GenericsCollector<'ctx> {
 
                 // Type
                 let kind = TyKind::Parameter(GenericParameter {
-                    parent: def_id,
-                    id,
+                    // parent: def_id,
+                    // id,
                     index,
                     name,
                 });
@@ -198,7 +198,7 @@ impl<'ctx> TypeCollector<'ctx> {
         let Some(rhs) = &node.ty else {
             return;
         };
-        let rhs = lower::lower_type(rhs, self.context, Default::default());
+        let rhs = lower::lower_type(rhs, self.context);
         self.context.cache_type(def_id, rhs);
     }
 }
@@ -386,11 +386,8 @@ impl<'ctx> HirVisitor for DefinitionCollector<'ctx> {
                 let name = declaration.identifier.symbol;
 
                 // Struct Field
-                let ty = lower::lower_type(
-                    node.ty.as_ref().expect("annotated field"),
-                    self.context,
-                    Default::default(),
-                );
+                let ty =
+                    lower::lower_type(node.ty.as_ref().expect("annotated field"), self.context);
                 let field = StructField {
                     name,
                     ty,
@@ -407,7 +404,7 @@ impl<'ctx> HirVisitor for DefinitionCollector<'ctx> {
             }
 
             DeclarationKind::Constant(ty, _) => {
-                let _ty = lower::lower_type(ty, self.context, Default::default());
+                let _ty = lower::lower_type(ty, self.context);
             }
             DeclarationKind::AssociatedType(_, default_ty)
                 if matches!(context, DeclarationContext::Interface) =>
@@ -418,16 +415,13 @@ impl<'ctx> HirVisitor for DefinitionCollector<'ctx> {
                     name,
                     default_type: default_ty
                         .as_ref()
-                        .map(|ty| lower::lower_type(&ty, self.context, Default::default())),
+                        .map(|ty| lower::lower_type(&ty, self.context)),
                 };
 
                 self.context
                     .update_interface_def(self.parent.unwrap(), |def| {
                         def.requirements.types.push(assoc);
                     });
-            }
-            DeclarationKind::TypeAlias(alias) => {
-                // TODO!
             }
             _ => {}
         }
@@ -445,7 +439,7 @@ impl<'ctx> HirVisitor for DefinitionCollector<'ctx> {
                 let types: Vec<Ty<'ctx>> = fields
                     .iter()
                     .map(|f| {
-                        let ty = lower::lower_type(&f.ty, self.context, Default::default());
+                        let ty = lower::lower_type(&f.ty, self.context);
                         ty
                     })
                     .collect();
@@ -455,7 +449,7 @@ impl<'ctx> HirVisitor for DefinitionCollector<'ctx> {
             taroc_hir::VariantKind::Struct(fields) => {
                 let fields: FxHashMap<Symbol, StructField<'ctx>> =
                     fields.iter().fold(Default::default(), |mut acc, field| {
-                        let ty = lower::lower_type(&field.ty, self.context, Default::default());
+                        let ty = lower::lower_type(&field.ty, self.context);
 
                         let field = StructField {
                             name: field.identifier.symbol,
@@ -599,8 +593,7 @@ impl<'ctx> ConformanceCollector<'ctx> {
                         {
                             match argument {
                                 taroc_hir::TypeArgument::Type(ty) => {
-                                    let ty =
-                                        lower::lower_type(ty, self.context, Default::default());
+                                    let ty = lower::lower_type(ty, self.context);
                                     result.push(GenericArgument::Type(ty));
                                     continue;
                                 }
@@ -611,7 +604,7 @@ impl<'ctx> ConformanceCollector<'ctx> {
                             match &parameter.kind {
                                 taroc_ty::GenericParameterDefinitionKind::Type { default } => {
                                     let ty = if let Some(default) = default {
-                                        lower::lower_type(default, self.context, Default::default())
+                                        lower::lower_type(default, self.context)
                                     } else {
                                         self.context
                                             .diagnostics
@@ -788,7 +781,7 @@ impl<'ctx> HirVisitor for FunctionCollector<'ctx> {
                     "computed properties must only appear in type bodies"
                 );
                 let parent = self.parent.expect("parent must be defined");
-                let ty = lower::lower_type(&node.ty, self.context, Default::default());
+                let ty = lower::lower_type(&node.ty, self.context);
 
                 match context {
                     DeclarationContext::Interface => {

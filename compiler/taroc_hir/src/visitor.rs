@@ -588,6 +588,8 @@ pub fn walk_type_parameter<V: HirVisitor>(visitor: &mut V, parameter: &TypeParam
             visit_optional!(visitor, visit_type, default);
         }
     }
+
+    visit_optional!(visitor, visit_generic_bounds, &parameter.bounds);
     V::Result::output()
 }
 pub fn walk_type_parameter_bounds<V: HirVisitor>(visitor: &mut V, bounds: &Vec<Path>) -> V::Result {
