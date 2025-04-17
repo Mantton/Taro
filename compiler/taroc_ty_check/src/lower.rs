@@ -226,7 +226,7 @@ impl<'ctx> TypeLowerer<'ctx> {
             return None;
         }
 
-        let arguments = self.lower_generic_args(arguments);
+        let arguments = self.lower_generic_args(arguments, generics);
         let arguments = self.context.store.interners.intern_generic_args(&arguments);
         return Some(arguments);
     }
@@ -234,17 +234,43 @@ impl<'ctx> TypeLowerer<'ctx> {
     fn lower_generic_args(
         &mut self,
         arguments: &taroc_hir::TypeArguments,
+        generics: &taroc_ty::Generics,
     ) -> Vec<GenericArgument<'ctx>> {
         let mut output = vec![];
 
-        for argument in &arguments.arguments {
-            match argument {
-                taroc_hir::TypeArgument::Type(ty) => {
-                    let ty = self.lower_nested(ty);
-                    output.push(GenericArgument::Type(ty));
-                }
-                taroc_hir::TypeArgument::Const(_) => todo!(),
+        // Functions
+        let mk_argument = |argument: &taroc_hir::TypeArgument| match argument {
+            taroc_hir::TypeArgument::Type(ty) => {
+                let ty = self.lower_nested(ty);
+                GenericArgument::Type(ty)
             }
+            taroc_hir::TypeArgument::Const(_) => todo!(),
+        };
+
+        let mk_default_argument = |parameter: &taroc_ty::GenericParameterDefinition| {
+            match &parameter.kind {
+                taroc_ty::GenericParameterDefinitionKind::Type { default } => {
+                    let Some(default) = default else {
+                        unreachable!(
+                            "ICE: default type validation is linked to the generic argument count, this must be checked prior"
+                        )
+                    };
+
+                    let ty = self.lower_nested(default);
+                    GenericArgument::Type(ty)
+                }
+                taroc_ty::GenericParameterDefinitionKind::Const { .. } => todo!(),
+            }
+        };
+
+        // Loop
+        for (index, parameter) in generics.parameters.iter().enumerate() {
+            let argument = arguments.arguments.get(index);
+            let argument = match argument {
+                Some(argument) => mk_argument(argument),
+                None => mk_default_argument(parameter),
+            };
+            output.push(argument);
         }
         return output;
     }

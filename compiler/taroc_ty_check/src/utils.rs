@@ -96,7 +96,7 @@ pub fn create_substitution_map<'ctx>(
     for (index, parameter) in generics.parameters.iter().enumerate() {
         let argument = arguments
             .get(index)
-            .expect("Generic Arguments should match");
+            .expect("ICE: during substitution type parameter and argument counts MUST match");
         map.insert(
             taroc_ty::GenericParameter {
                 index: parameter.index,

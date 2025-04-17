@@ -150,10 +150,11 @@ impl<'ctx> CheckInterfaceImplementation<'ctx> {
             if !utils::compare_signature_labels(&requirement.signature, candidate) {
                 continue;
             }
-            // Register Method Witness
-            found_candidate = true;
 
             // TODO: Add Method Witness
+
+            // Exit Loop
+            found_candidate = true;
             break;
         }
 
