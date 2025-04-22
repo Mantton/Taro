@@ -749,11 +749,11 @@ pub fn walk_generic_requirement<V: HirVisitor>(
 ) -> V::Result {
     match &node {
         GenericRequirement::SameTypeRequirement(c) => {
-            try_visit!(visitor.visit_path(&c.bounded_type.path));
+            try_visit!(visitor.visit_type(&c.bounded_type));
             try_visit!(visitor.visit_type(&c.bound));
         }
         GenericRequirement::ConformanceRequirement(c) => {
-            try_visit!(visitor.visit_path(&c.bounded_type.path));
+            try_visit!(visitor.visit_type(&c.bounded_type));
             try_visit!(visitor.visit_generic_bounds(&c.bounds));
         }
     }

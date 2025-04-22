@@ -1,5 +1,11 @@
 use rustc_hash::FxHashMap;
-use taroc_ty::{GenericArgument, GenericParameter};
+use std::cell::RefCell;
+use taroc_context::GlobalContext;
+use taroc_hir::DefinitionID;
+use taroc_span::Span;
+use taroc_ty::{Constraint, GenericArgument, GenericArguments, GenericParameter};
+
+use crate::utils;
 
 /// Maps Generic Parameter IDs to concrete Types.
 #[derive(Debug, Clone, Default)]
@@ -36,6 +42,36 @@ impl<'ctx> SubstitutionMap<'ctx> {
                     entry.insert(arg);
                 }
             }
+        }
+    }
+}
+
+pub struct InferenceContext<'ctx> {
+    pub context: GlobalContext<'ctx>,       // read‑only db
+    pub constraints: Vec<Constraint<'ctx>>, // collected this pass
+    pub constraint_spans: Vec<Span>,
+}
+
+impl<'ctx> InferenceContext<'ctx> {
+    pub fn new(context: GlobalContext<'ctx>) -> Self {
+        Self {
+            context,
+            constraints: Vec::new(),
+            constraint_spans: Vec::new(),
+        }
+    }
+
+    /// Duplicate `sig.bounds` with the given arguments.
+    pub fn instantiate_definition_constraints(
+        &mut self,
+        id: DefinitionID,
+        args: GenericArguments<'ctx>,
+    ) {
+        let subst = utils::create_substitution_map(id, args, self.context);
+        let definition = self.context.predicates_of(id);
+        for (constraint, _) in definition.constraints.iter() {
+            let dup = utils::substitute_constraint(*constraint, &subst, self.context);
+            self.constraints.push(dup);
         }
     }
 }

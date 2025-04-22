@@ -78,6 +78,12 @@ impl<'ctx> CheckInterfaceImplementation<'ctx> {
     fn check_conformance(&mut self, id: DefinitionID, interface: InterfaceReference<'ctx>) {
         let definition = self.context.interface_definition(interface.id);
         let definition = definition.borrow();
+        let span = self
+            .context
+            .with_type_database(None, |db| {
+                db.conformances_span.get(&(id, interface)).cloned()
+            })
+            .expect("span");
         // println!("Working on {}", definition.name);
 
         // Build type witness map first.
@@ -92,7 +98,7 @@ impl<'ctx> CheckInterfaceImplementation<'ctx> {
         };
 
         for requirement in &definition.requirements.methods {
-            self.check_method_requirement(id, interface, requirement, &mut conformance);
+            self.check_method_requirement(id, interface, requirement, &mut conformance, span);
         }
     }
 
@@ -102,6 +108,7 @@ impl<'ctx> CheckInterfaceImplementation<'ctx> {
         interface: InterfaceReference<'ctx>,
         requirement: &InterfaceMethodRequirement<'ctx>,
         conformance: &mut ConformanceRecord<'ctx>,
+        span: Span,
     ) -> bool {
         // --- Candidate Lookup ---
         let functions_data = self.context.with_type_database(None, |db| {
@@ -119,7 +126,7 @@ impl<'ctx> CheckInterfaceImplementation<'ctx> {
                     "missing interface method requirement '{}'",
                     requirement.name
                 );
-                self.context.diagnostics.error(message, Span::module());
+                self.context.diagnostics.error(message, span);
                 return false;
             }
             // TODO: Report
@@ -159,7 +166,8 @@ impl<'ctx> CheckInterfaceImplementation<'ctx> {
         }
 
         if !found_candidate {
-            println!("no valid candidate found");
+            let message = format!("no valid candidates found for '{}'", requirement.name);
+            self.context.diagnostics.error(message, span);
             return false;
         }
 

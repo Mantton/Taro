@@ -71,6 +71,7 @@ impl Display for SpannedMessage {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct Spanned<Value> {
     pub span: Span,
     pub value: Value,

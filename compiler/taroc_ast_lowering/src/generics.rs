@@ -108,7 +108,7 @@ impl Actor<'_> {
             taroc_ast::GenericRequirement::SameTypeRequirement(c) => {
                 taroc_hir::GenericRequirement::SameTypeRequirement(
                     taroc_hir::RequiredTypeConstraint {
-                        bounded_type: self.lower_tagged_path(c.bounded_type),
+                        bounded_type: self.lower_type(c.bounded_type),
                         bound: self.lower_type(c.bound),
                         span: c.span,
                     },
@@ -117,7 +117,7 @@ impl Actor<'_> {
             taroc_ast::GenericRequirement::ConformanceRequirement(c) => {
                 taroc_hir::GenericRequirement::ConformanceRequirement(
                     taroc_hir::ConformanceConstraint {
-                        bounded_type: self.lower_tagged_path(c.bounded_type),
+                        bounded_type: self.lower_type(c.bounded_type),
                         bounds: self.lower_generic_bounds(c.bounds),
                         span: c.span,
                     },

@@ -216,19 +216,11 @@ impl HirVisitor for Actor<'_, '_> {
     fn visit_generic_requirement(&mut self, n: &taroc_hir::GenericRequirement) -> Self::Result {
         match n {
             taroc_hir::GenericRequirement::SameTypeRequirement(c) => {
-                self.resolve_path_with_source(
-                    c.bounded_type.id,
-                    &c.bounded_type.path,
-                    PathSource::Type,
-                );
+                self.visit_type(&c.bounded_type);
                 self.visit_type(&c.bound);
             }
             taroc_hir::GenericRequirement::ConformanceRequirement(c) => {
-                self.resolve_path_with_source(
-                    c.bounded_type.id,
-                    &c.bounded_type.path,
-                    PathSource::Type,
-                );
+                self.visit_type(&c.bounded_type);
                 self.visit_generic_bounds(&c.bounds);
             }
         }

@@ -154,7 +154,7 @@ impl Parser {
 
     fn parse_generic_requirement(&mut self) -> R<GenericRequirement> {
         let lo = self.lo_span();
-        let bounded_type = self.parse_path()?;
+        let bounded_type = self.parse_type()?;
         let kind = if self.eat(TokenKind::Eql) {
             let bound = self.parse_type()?;
             let kind = RequiredTypeConstraint {

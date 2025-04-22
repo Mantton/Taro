@@ -1,9 +1,15 @@
-use crate::{models::SubstitutionMap, utils};
+use crate::{
+    models::{InferenceContext, SubstitutionMap},
+    utils,
+};
 use taroc_context::GlobalContext;
-use taroc_hir::{DefinitionID, DefinitionKind, NodeID, Resolution};
-use taroc_ty::{GenericArgument, Ty, TyKind};
+use taroc_hir::{DefinitionID, DefinitionKind, NodeID, Resolution, TaggedPath};
+use taroc_ty::{GenericArgument, InterfaceReference, Ty, TyKind};
 
-pub fn lower_type<'ctx>(ty: &taroc_hir::Type, context: GlobalContext<'ctx>) -> taroc_ty::Ty<'ctx> {
+pub fn lower_type<'ctx>(
+    ty: &taroc_hir::Type,
+    context: &mut InferenceContext<'ctx>,
+) -> taroc_ty::Ty<'ctx> {
     let actor = TypeLowerer {
         context,
         substitutions: SubstitutionMap::new(),
@@ -13,8 +19,8 @@ pub fn lower_type<'ctx>(ty: &taroc_hir::Type, context: GlobalContext<'ctx>) -> t
 
 pub fn lower_type_with_base<'ctx>(
     ty: &taroc_hir::Type,
-    context: GlobalContext<'ctx>,
     substitutions: SubstitutionMap<'ctx>,
+    context: &mut InferenceContext<'ctx>,
 ) -> taroc_ty::Ty<'ctx> {
     let actor = TypeLowerer {
         context,
@@ -23,25 +29,25 @@ pub fn lower_type_with_base<'ctx>(
     actor.lower(ty)
 }
 
-struct TypeLowerer<'ctx> {
-    context: GlobalContext<'ctx>,
+struct TypeLowerer<'ctx, 'icx> {
+    context: &'icx mut InferenceContext<'ctx>,
     substitutions: SubstitutionMap<'ctx>,
 }
 
-impl<'ctx> TypeLowerer<'ctx> {
+impl<'ctx, 'icx> TypeLowerer<'ctx, 'icx> {
     pub fn mk(&mut self, k: TyKind<'ctx>) -> Ty<'ctx> {
-        self.context.store.interners.intern_ty(k)
+        self.context.context.store.interners.intern_ty(k)
     }
 
-    fn lower_nested(&self, ty: &taroc_hir::Type) -> Ty<'ctx> {
-        lower_type_with_base(ty, self.context, self.substitutions.clone())
+    fn lower_nested(&mut self, ty: &taroc_hir::Type) -> Ty<'ctx> {
+        lower_type_with_base(ty, self.substitutions.clone(), self.context)
     }
 
     pub fn lower(mut self, ty: &taroc_hir::Type) -> Ty<'ctx> {
         let ty = match &ty.kind {
             taroc_hir::TypeKind::Tuple(items) => {
                 let items: Vec<Ty<'ctx>> = items.iter().map(|ty| self.lower_nested(ty)).collect();
-                let items = self.context.store.interners.intern_ty_list(&items);
+                let items = self.context.context.store.interners.intern_ty_list(&items);
                 self.mk(TyKind::Tuple(items))
             }
             taroc_hir::TypeKind::Path(path) => self.lower_unchecked_path(path, ty.id),
@@ -51,7 +57,7 @@ impl<'ctx> TypeLowerer<'ctx> {
                 is_async,
             } => {
                 let inputs: Vec<Ty<'ctx>> = inputs.iter().map(|ty| self.lower_nested(ty)).collect();
-                let inputs = self.context.store.interners.intern_ty_list(&inputs);
+                let inputs = self.context.context.store.interners.intern_ty_list(&inputs);
 
                 let kind = TyKind::Function {
                     inputs,
@@ -74,7 +80,7 @@ impl<'ctx> TypeLowerer<'ctx> {
     }
 }
 
-impl<'ctx> TypeLowerer<'ctx> {
+impl<'ctx, 'icx> TypeLowerer<'ctx, 'icx> {
     fn lower_unchecked_path(&mut self, path: &taroc_hir::Path, id: NodeID) -> Ty<'ctx> {
         self.lower_path(id, path)
     }
@@ -86,10 +92,10 @@ impl<'ctx> TypeLowerer<'ctx> {
             // self.context
             //     .diagnostics
             //     .info("Lowering".into(), segment.identifier.span);
-            let res = self.context.resolution(segment.id);
+            let res = self.context.context.resolution(segment.id);
             let ty = self.lower_path_segment(segment, res);
 
-            if ty == self.context.store.common_types.error {
+            if ty == self.context.context.store.common_types.error {
                 return ty;
             }
 
@@ -98,7 +104,7 @@ impl<'ctx> TypeLowerer<'ctx> {
             }
         }
 
-        return self.context.store.common_types.error;
+        return self.context.context.store.common_types.error;
     }
 
     fn lower_path_segment(
@@ -121,9 +127,10 @@ impl<'ctx> TypeLowerer<'ctx> {
                 todo!()
             }
             Resolution::InterfaceSelfTypeAlias(..) => {
-                self.context.store.common_types.self_type_parameter
+                self.context.context.store.common_types.self_type_parameter
             }
             Resolution::Definition(id, DefinitionKind::AssociatedType) => self
+                .context
                 .context
                 .store
                 .interners
@@ -131,9 +138,9 @@ impl<'ctx> TypeLowerer<'ctx> {
             Resolution::Definition(
                 _,
                 DefinitionKind::Namespace | DefinitionKind::Module | DefinitionKind::Bridged,
-            ) => self.context.store.common_types.ignore,
+            ) => self.context.context.store.common_types.ignore,
 
-            Resolution::SelfTypeAlias(definition_id) => self.context.type_of(definition_id),
+            Resolution::SelfTypeAlias(definition_id) => self.context.context.type_of(definition_id),
             Resolution::FunctionSet(..) => {
                 unreachable!("cannot resolve type to set of functions")
             }
@@ -153,35 +160,45 @@ impl<'ctx> TypeLowerer<'ctx> {
         segment: &taroc_hir::PathSegment,
         def_id: DefinitionID,
     ) -> Ty<'ctx> {
-        let context = self.context;
-        let generics = self.context.generics_of(def_id);
+        // Lower Type Arguments
+        let generics = self.context.context.generics_of(def_id);
         let arguments = self.lower_type_arguments(def_id, &generics, segment);
         let Some(arguments) = arguments else {
-            return self.context.store.common_types.error;
+            return self.context.context.store.common_types.error;
         };
 
-        let ty = context.type_of(def_id);
-        let substitutions = utils::create_substitution_map(def_id, arguments, context);
+        // Duplicate Constraints
+        self.context
+            .instantiate_definition_constraints(def_id, arguments);
+
+        // Build / Extend Subst Map
+        let substitutions = utils::create_substitution_map(def_id, arguments, self.context.context);
         self.substitutions.extend(substitutions);
 
         // Instantiated Ty
-        let ty = utils::substitute(ty, &self.substitutions, None, context);
+        let ty = self.context.context.type_of(def_id);
+        let ty = utils::substitute(ty, &self.substitutions, None, self.context.context);
         ty
     }
 
     fn lower_alias(&mut self, segment: &taroc_hir::PathSegment, def_id: DefinitionID) -> Ty<'ctx> {
         // Resolve Alias Generics
-        let generics = self.context.generics_of(def_id);
+        let generics = self.context.context.generics_of(def_id);
         let arguments = self.lower_type_arguments(def_id, &generics, segment);
         let Some(arguments) = arguments else {
-            return self.context.store.common_types.error;
+            return self.context.context.store.common_types.error;
         };
-        let substitutions = utils::create_substitution_map(def_id, arguments, self.context);
+
+        // Constraints
+        self.context
+            .instantiate_definition_constraints(def_id, arguments);
+
+        let substitutions = utils::create_substitution_map(def_id, arguments, self.context.context);
         self.substitutions.extend(substitutions);
         // Get RHS
-        let normalized = self.context.alias_resolution(def_id);
+        let normalized = self.context.context.alias_resolution(def_id);
         let ty = self.lower_nested(&normalized.ty);
-        let ty = utils::substitute(ty, &self.substitutions, None, self.context);
+        let ty = utils::substitute(ty, &self.substitutions, None, self.context.context);
         // self.context
         //     .diagnostics
         //     .warn("Here".into(), segment.identifier.span);
@@ -193,13 +210,13 @@ impl<'ctx> TypeLowerer<'ctx> {
         segment: &taroc_hir::PathSegment,
         def_id: DefinitionID,
     ) -> Ty<'ctx> {
-        let generics = self.context.generics_of(def_id);
+        let generics = self.context.context.generics_of(def_id);
         let arguments = self.lower_type_arguments(def_id, &generics, segment);
         if arguments.is_none() {
-            return self.context.store.common_types.error;
+            return self.context.context.store.common_types.error;
         };
 
-        self.context.type_of(def_id)
+        self.context.context.type_of(def_id)
     }
 
     fn lower_type_arguments(
@@ -216,18 +233,23 @@ impl<'ctx> TypeLowerer<'ctx> {
                 arguments: Default::default(),
             }
         };
-        let mut ok = check_generics_prohibited(def_id, &generics, &arguments, self.context);
+        let mut ok = check_generics_prohibited(def_id, &generics, &arguments, self.context.context);
         if !ok {
             return None;
         }
 
-        ok = check_generic_arg_count(&generics, segment, self.context);
+        ok = check_generic_arg_count(&generics, segment, self.context.context);
         if !ok {
             return None;
         }
 
         let arguments = self.lower_generic_args(arguments, generics);
-        let arguments = self.context.store.interners.intern_generic_args(&arguments);
+        let arguments = self
+            .context
+            .context
+            .store
+            .interners
+            .intern_generic_args(&arguments);
         return Some(arguments);
     }
 
@@ -237,38 +259,29 @@ impl<'ctx> TypeLowerer<'ctx> {
         generics: &taroc_ty::Generics,
     ) -> Vec<GenericArgument<'ctx>> {
         let mut output = vec![];
-
-        // Functions
-        let mk_argument = |argument: &taroc_hir::TypeArgument| match argument {
-            taroc_hir::TypeArgument::Type(ty) => {
-                let ty = self.lower_nested(ty);
-                GenericArgument::Type(ty)
-            }
-            taroc_hir::TypeArgument::Const(_) => todo!(),
-        };
-
-        let mk_default_argument = |parameter: &taroc_ty::GenericParameterDefinition| {
-            match &parameter.kind {
-                taroc_ty::GenericParameterDefinitionKind::Type { default } => {
-                    let Some(default) = default else {
-                        unreachable!(
-                            "ICE: default type validation is linked to the generic argument count, this must be checked prior"
-                        )
-                    };
-
-                    let ty = self.lower_nested(default);
-                    GenericArgument::Type(ty)
-                }
-                taroc_ty::GenericParameterDefinitionKind::Const { .. } => todo!(),
-            }
-        };
-
-        // Loop
         for (index, parameter) in generics.parameters.iter().enumerate() {
             let argument = arguments.arguments.get(index);
             let argument = match argument {
-                Some(argument) => mk_argument(argument),
-                None => mk_default_argument(parameter),
+                Some(argument) => match argument {
+                    taroc_hir::TypeArgument::Type(ty) => {
+                        let ty = self.lower_nested(ty);
+                        GenericArgument::Type(ty)
+                    }
+                    taroc_hir::TypeArgument::Const(_) => todo!(),
+                },
+                None => match &parameter.kind {
+                    taroc_ty::GenericParameterDefinitionKind::Type { default } => {
+                        let Some(default) = default else {
+                            unreachable!(
+                                "ICE: default type validation is linked to the generic argument count, this must be checked prior"
+                            )
+                        };
+
+                        let ty = self.lower_nested(default);
+                        GenericArgument::Type(ty)
+                    }
+                    taroc_ty::GenericParameterDefinitionKind::Const { .. } => todo!(),
+                },
             };
             output.push(argument);
         }
@@ -343,4 +356,79 @@ pub fn check_generic_arg_count(
     }
 
     return false;
+}
+
+pub fn lower_interface_reference<'ctx>(
+    def_id: DefinitionID,
+    node: &TaggedPath,
+    context: GlobalContext<'ctx>,
+) -> InterfaceReference<'ctx> {
+    let resolution = context.resolution(node.id);
+    let interface_id = match resolution {
+        taroc_hir::Resolution::Definition(id, taroc_hir::DefinitionKind::Interface) => id,
+        _ => unreachable!("resolver must validate provided paths are interfaces"),
+    };
+
+    let arguments = node
+        .path
+        .segments
+        .last()
+        .map(|f| f.arguments.as_ref())
+        .flatten();
+
+    let generics = context.generics_of(interface_id);
+    check_generic_arg_count(&generics, node.path.segments.last().unwrap(), context);
+
+    let mut result = vec![];
+    let mut icx = InferenceContext::new(context);
+
+    for (index, parameter) in generics.parameters.iter().enumerate() {
+        if index == 0 && generics.has_self {
+            let self_ty = context.type_of(def_id);
+            result.push(GenericArgument::Type(self_ty));
+            continue;
+        }
+
+        if let Some(arguments) = arguments
+            && let Some(argument) = arguments
+                .arguments
+                .get(parameter.index - generics.has_self as usize)
+        {
+            match argument {
+                taroc_hir::TypeArgument::Type(ty) => {
+                    let ty = lower_type(ty, &mut icx);
+                    result.push(GenericArgument::Type(ty));
+                    continue;
+                }
+                taroc_hir::TypeArgument::Const(_) => todo!(),
+            }
+        } else {
+            // Get Default Argument
+            match &parameter.kind {
+                taroc_ty::GenericParameterDefinitionKind::Type { default } => {
+                    let ty = if let Some(default) = default {
+                        lower_type(default, &mut icx)
+                    } else {
+                        context
+                            .diagnostics
+                            .warn("Defaulting To Err".into(), node.path.span);
+                        context.store.common_types.error
+                    };
+
+                    result.push(GenericArgument::Type(ty));
+                    continue;
+                }
+                taroc_ty::GenericParameterDefinitionKind::Const { .. } => {
+                    todo!()
+                }
+            }
+        };
+    }
+
+    let reference = InterfaceReference {
+        id: interface_id,
+        arguments: context.store.interners.mk_args(result),
+    };
+
+    return reference;
 }

@@ -1,27 +1,30 @@
+use crate::{
+    lower::lower_type,
+    models::{InferenceContext, SubstitutionMap},
+};
 use taroc_context::GlobalContext;
 use taroc_hir::DefinitionID;
 use taroc_ty::{
-    ConformanceRecord, GenericArgument, GenericArguments, LabeledFunctionParameter,
+    ConformanceRecord, Constraint, GenericArgument, GenericArguments, LabeledFunctionParameter,
     LabeledFunctionSignature, Ty, TyKind,
 };
-
-use crate::{lower::lower_type, models::SubstitutionMap};
 
 pub fn convert_to_labeled_signature<'ctx>(
     func: &taroc_hir::Function,
     context: GlobalContext<'ctx>,
 ) -> LabeledFunctionSignature<'ctx> {
     let is_async = func.signature.is_async;
+    let mut icx = InferenceContext::new(context);
     let inputs: Vec<LabeledFunctionParameter> = func
         .signature
         .prototype
         .inputs
         .iter()
-        .map(|i| convert_to_labeled_parameter(i, context))
+        .map(|i| convert_to_labeled_parameter(i, &mut icx))
         .collect();
 
     let output = if let Some(output) = &func.signature.prototype.output {
-        lower_type(output, context)
+        lower_type(output, &mut icx)
     } else {
         context.store.common_types.void
     };
@@ -36,7 +39,7 @@ pub fn convert_to_labeled_signature<'ctx>(
 
 pub fn convert_to_labeled_parameter<'ctx>(
     param: &taroc_hir::FunctionParameter,
-    context: GlobalContext<'ctx>,
+    context: &mut InferenceContext<'ctx>,
 ) -> LabeledFunctionParameter<'ctx> {
     let label = param.label.as_ref().map(|f| f.identifier.symbol);
     LabeledFunctionParameter {
@@ -211,5 +214,33 @@ pub fn substitute<'ctx>(
             return context.store.interners.intern_ty(kind);
         }
         _ => return ty,
+    }
+}
+
+/// Duplicate a canonical constraint, replacing every `Ty::Parameter(_)`
+/// according to `subst_map`.
+///
+/// * `constraint` – the canonical payload taken from `GenericSig.bounds`.
+/// * `subst_map`  – created by `utils::build_subst_map(sig, args)`.
+/// * `cx`         – immutable program database (for interning).
+///
+/// Returns **a fresh `ConstraintData`** that mentions only the concrete
+/// arguments from the current instantiation (e.g. turns `T: Hashable`
+/// into `Int: Hashable`).
+pub fn substitute_constraint<'ctx>(
+    constraint: Constraint<'ctx>,
+    subst_map: &SubstitutionMap<'ctx>,
+    cx: GlobalContext<'ctx>,
+) -> Constraint<'ctx> {
+    match constraint {
+        Constraint::Bound { ty, interface } => Constraint::Bound {
+            ty: substitute(ty, subst_map, None, cx),
+            interface, // Interface refs are already concrete
+        },
+
+        Constraint::TypeEquality { left, right } => Constraint::TypeEquality {
+            left: substitute(left, subst_map, None, cx),
+            right: substitute(right, subst_map, None, cx),
+        },
     }
 }

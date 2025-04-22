@@ -1,4 +1,4 @@
-use crate::{lower, utils};
+use crate::{lower, models::InferenceContext, utils};
 use rustc_hash::FxHashMap;
 use taroc_context::GlobalContext;
 use taroc_error::CompileResult;
@@ -8,15 +8,16 @@ use taroc_hir::{
 };
 use taroc_span::Symbol;
 use taroc_ty::{
-    AssociatedTypeDefinition, ComputedPropertySignature, EnumDefinition, EnumVariant,
-    EnumVariantKind, GenericArgument, GenericArguments, GenericParameter, InterfaceDefinition,
-    InterfaceMethodRequirement, InterfaceOperatorRequirement, InterfaceReference, StructDefinition,
-    StructField, Ty, TyKind,
+    AssociatedTypeDefinition, ComputedPropertySignature, Constraint, DefinitionConstraints,
+    EnumDefinition, EnumVariant, EnumVariantKind, GenericArguments, GenericParameter,
+    InterfaceDefinition, InterfaceMethodRequirement, InterfaceOperatorRequirement,
+    StructDefinition, StructField, Ty, TyKind,
 };
 
 pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
     GenericsCollector::run(package, context)?;
     TypeCollector::run(package, context)?;
+    ConstraintsCollector::run(package, context)?;
     DefinitionCollector::run(package, context)?;
     ConformanceCollector::run(package, context)?;
     FunctionCollector::run(package, context)?;
@@ -132,6 +133,115 @@ impl<'ctx> GenericsCollector<'ctx> {
     }
 }
 
+/// Collect & Cache Generics Information for a Definition
+struct ConstraintsCollector<'ctx> {
+    context: GlobalContext<'ctx>,
+}
+
+impl<'ctx> ConstraintsCollector<'ctx> {
+    fn new(context: GlobalContext<'ctx>) -> ConstraintsCollector<'ctx> {
+        ConstraintsCollector { context }
+    }
+
+    fn run<'a>(package: &Package, context: GlobalContext<'ctx>) -> CompileResult<()> {
+        let mut actor = ConstraintsCollector::new(context);
+        taroc_hir::visitor::walk_package(&mut actor, package);
+        context.diagnostics.report()
+    }
+}
+
+impl HirVisitor for ConstraintsCollector<'_> {
+    fn visit_declaration(&mut self, decl: &Declaration, c: DeclarationContext) -> Self::Result {
+        match &decl.kind {
+            DeclarationKind::TypeAlias(node) => self.collect(decl.id, &node.generics),
+            DeclarationKind::DefinedType(node) => self.collect(decl.id, &node.generics),
+            DeclarationKind::Function(node) => self.collect(decl.id, &node.generics),
+            DeclarationKind::Constructor(node, _) => self.collect(decl.id, &node.generics),
+            _ => {}
+        }
+
+        taroc_hir::visitor::walk_declaration(self, decl, c)
+    }
+}
+
+impl<'ctx> ConstraintsCollector<'ctx> {
+    fn collect(&mut self, id: NodeID, generics: &taroc_hir::Generics) {
+        let def_id = self.context.def_id(id);
+        let mut constraints = vec![];
+
+        // Type Parameters
+        let hir_parameters = generics.type_parameters.as_ref().map(|f| &f.parameters);
+        if let Some(hir_parameters) = hir_parameters {
+            for param in hir_parameters.iter() {
+                let Some(bounds) = &param.bounds else {
+                    continue;
+                };
+
+                let param_def_id = self.context.def_id(param.id);
+                let ty = self.context.type_of(param_def_id);
+                for bound in bounds.iter() {
+                    let span = bound.path.path.span;
+                    let constraint = Constraint::Bound {
+                        ty,
+                        interface: lower::lower_interface_reference(
+                            param_def_id,
+                            &bound.path,
+                            self.context,
+                        ),
+                    };
+                    constraints.push((constraint, span));
+                }
+            }
+        }
+
+        // Where Clause
+        let mut icx = InferenceContext::new(self.context);
+        if let Some(clause) = &generics.where_clause {
+            for requirement in clause.requirements.iter() {
+                match &requirement {
+                    taroc_hir::GenericRequirement::SameTypeRequirement(node) => {
+                        let constraint = Constraint::TypeEquality {
+                            left: lower::lower_type(&node.bounded_type, &mut icx),
+                            right: lower::lower_type(&node.bound, &mut icx),
+                        };
+
+                        let constraint = (constraint, node.bounded_type.span.to(node.bound.span));
+                        constraints.push(constraint);
+                    }
+                    taroc_hir::GenericRequirement::ConformanceRequirement(node) => {
+                        for bound in node.bounds.iter() {
+                            let def_id = self
+                                .context
+                                .resolution(node.bounded_type.id)
+                                .def_id()
+                                .expect("def id");
+
+                            let constraint = Constraint::Bound {
+                                ty: lower::lower_type(&node.bounded_type, &mut icx),
+                                interface: lower::lower_interface_reference(
+                                    def_id,
+                                    &bound.path,
+                                    self.context,
+                                ),
+                            };
+
+                            let span = node.bounded_type.span.to(node
+                                .bounds
+                                .last()
+                                .map(|f| f.path.path.span)
+                                .unwrap_or(node.bounded_type.span));
+                            constraints.push((constraint, span));
+                        }
+                    }
+                };
+            }
+        }
+
+        let predicates = DefinitionConstraints { constraints };
+        self.context.cache_def_constraints(def_id, predicates);
+    }
+}
+
 /// Collect Top Level Defintitions and Generate Corresponding `types::Ty`
 struct TypeCollector<'ctx> {
     context: GlobalContext<'ctx>,
@@ -198,7 +308,8 @@ impl<'ctx> TypeCollector<'ctx> {
         let Some(rhs) = &node.ty else {
             return;
         };
-        let rhs = lower::lower_type(rhs, self.context);
+        let mut icx = InferenceContext::new(self.context);
+        let rhs = lower::lower_type(rhs, &mut icx);
         self.context.cache_type(def_id, rhs);
     }
 }
@@ -384,10 +495,11 @@ impl<'ctx> HirVisitor for DefinitionCollector<'ctx> {
             }
             DeclarationKind::Variable(node) if matches!(context, DeclarationContext::Struct) => {
                 let name = declaration.identifier.symbol;
+                let ty = node.ty.as_ref().unwrap();
+                let mut icx = InferenceContext::new(self.context);
 
                 // Struct Field
-                let ty =
-                    lower::lower_type(node.ty.as_ref().expect("annotated field"), self.context);
+                let ty = lower::lower_type(ty, &mut icx);
                 let field = StructField {
                     name,
                     ty,
@@ -402,20 +514,17 @@ impl<'ctx> HirVisitor for DefinitionCollector<'ctx> {
                         );
                     });
             }
-
-            DeclarationKind::Constant(ty, _) => {
-                let _ty = lower::lower_type(ty, self.context);
-            }
             DeclarationKind::AssociatedType(_, default_ty)
                 if matches!(context, DeclarationContext::Interface) =>
             {
                 let name = declaration.identifier.symbol;
+                let mut icx = InferenceContext::new(self.context);
 
                 let assoc = AssociatedTypeDefinition {
                     name,
                     default_type: default_ty
                         .as_ref()
-                        .map(|ty| lower::lower_type(&ty, self.context)),
+                        .map(|ty| lower::lower_type(&ty, &mut icx)),
                 };
 
                 self.context
@@ -433,13 +542,15 @@ impl<'ctx> HirVisitor for DefinitionCollector<'ctx> {
     fn visit_variant(&mut self, variant: &taroc_hir::Variant) -> Self::Result {
         let id = self.context.def_id(variant.id);
         let name = variant.identifier.symbol;
+        let mut icx = InferenceContext::new(self.context);
+
         let kind = match &variant.kind {
             taroc_hir::VariantKind::Unit => EnumVariantKind::Unit,
             taroc_hir::VariantKind::Tuple(fields) => {
                 let types: Vec<Ty<'ctx>> = fields
                     .iter()
                     .map(|f| {
-                        let ty = lower::lower_type(&f.ty, self.context);
+                        let ty = lower::lower_type(&f.ty, &mut icx);
                         ty
                     })
                     .collect();
@@ -449,7 +560,7 @@ impl<'ctx> HirVisitor for DefinitionCollector<'ctx> {
             taroc_hir::VariantKind::Struct(fields) => {
                 let fields: FxHashMap<Symbol, StructField<'ctx>> =
                     fields.iter().fold(Default::default(), |mut acc, field| {
-                        let ty = lower::lower_type(&field.ty, self.context);
+                        let ty = lower::lower_type(&field.ty, &mut icx);
 
                         let field = StructField {
                             name: field.identifier.symbol,
@@ -517,27 +628,11 @@ impl<'ctx> HirVisitor for ConformanceCollector<'ctx> {
         let id = self.context.def_id(declaration.id);
         match &declaration.kind {
             DeclarationKind::DefinedType(node) => {
-                let conformances =
-                    self.collect_interface_conformances(id, &node.generics.inheritance);
-                self.context.with_type_database(None, |database| {
-                    database
-                        .conformances
-                        .entry(id)
-                        .or_default()
-                        .extend(conformances);
-                });
+                self.collect_interface_conformances(id, &node.generics.inheritance);
             }
             DeclarationKind::Extend(node) => {
                 let id = self.context.extension_target(id);
-                let conformances =
-                    self.collect_interface_conformances(id, &node.generics.inheritance);
-                self.context.with_type_database(None, |database| {
-                    database
-                        .conformances
-                        .entry(id)
-                        .or_default()
-                        .extend(conformances);
-                });
+                self.collect_interface_conformances(id, &node.generics.inheritance);
             }
             _ => {}
         };
@@ -551,107 +646,42 @@ impl<'ctx> ConformanceCollector<'ctx> {
         &mut self,
         def_id: DefinitionID,
         node: &Option<taroc_hir::Inheritance>,
-    ) -> Vec<InterfaceReference<'ctx>> {
-        let mut out = Default::default();
-
+    ) {
         let Some(node) = node else {
-            return out;
+            return;
         };
 
         for node in node.interfaces.iter() {
-            let resolution = self.context.resolution(node.id);
+            let reference = lower::lower_interface_reference(def_id, node, self.context);
 
-            match resolution {
-                taroc_hir::Resolution::Definition(id, taroc_hir::DefinitionKind::Interface) => {
-                    let arguments = node
-                        .path
-                        .segments
-                        .last()
-                        .map(|f| f.arguments.as_ref())
-                        .flatten();
+            // Validate & Store
+            self.context.with_type_database(None, |database| {
+                let contains = database
+                    .conformances
+                    .entry(def_id)
+                    .or_default()
+                    .contains(&reference);
 
-                    let generics = self.context.generics_of(id);
-                    lower::check_generic_arg_count(
-                        &generics,
-                        node.path.segments.last().unwrap(),
-                        self.context,
+                if contains {
+                    let msg = format!(
+                        "redundant conformance to '{}'",
+                        node.path.segments.last().unwrap().identifier.symbol
                     );
-
-                    let mut result = vec![];
-
-                    for (index, parameter) in generics.parameters.iter().enumerate() {
-                        if index == 0 && generics.has_self {
-                            let self_ty = self.context.type_of(def_id);
-                            result.push(GenericArgument::Type(self_ty));
-                            continue;
-                        }
-
-                        if let Some(arguments) = arguments
-                            && let Some(argument) = arguments
-                                .arguments
-                                .get(parameter.index - generics.has_self as usize)
-                        {
-                            match argument {
-                                taroc_hir::TypeArgument::Type(ty) => {
-                                    let ty = lower::lower_type(ty, self.context);
-                                    result.push(GenericArgument::Type(ty));
-                                    continue;
-                                }
-                                taroc_hir::TypeArgument::Const(_) => todo!(),
-                            }
-                        } else {
-                            // Get Default Argument
-                            match &parameter.kind {
-                                taroc_ty::GenericParameterDefinitionKind::Type { default } => {
-                                    let ty = if let Some(default) = default {
-                                        lower::lower_type(default, self.context)
-                                    } else {
-                                        self.context
-                                            .diagnostics
-                                            .warn("Defaulting To Err".into(), node.path.span);
-                                        self.context.store.common_types.error
-                                    };
-
-                                    result.push(GenericArgument::Type(ty));
-                                    continue;
-                                }
-                                taroc_ty::GenericParameterDefinitionKind::Const { .. } => {
-                                    todo!()
-                                }
-                            }
-                        };
-                    }
-
-                    let reference = InterfaceReference {
-                        id,
-                        arguments: self.context.store.interners.mk_args(result),
-                    };
-
-                    // Validate
-                    self.context.with_type_database(None, |database| {
-                        let contains = database
-                            .conformances
-                            .entry(def_id)
-                            .or_default()
-                            .contains(&reference)
-                            || out.contains(&reference);
-
-                        if contains {
-                            let msg = format!(
-                                "redundant conformance to '{}'",
-                                node.path.segments.last().unwrap().identifier.symbol
-                            );
-                            self.context.diagnostics.error(msg, node.path.span);
-                        }
-                    });
-
-                    out.push(reference);
+                    self.context.diagnostics.error(msg, node.path.span);
+                    return;
                 }
-                _ => unreachable!("resolver must validate provided paths are interfaces"),
-            }
-        }
 
-        out
+                database
+                    .conformances
+                    .entry(def_id)
+                    .or_default()
+                    .insert(reference);
+
+                database
+                    .conformances_span
+                    .insert((def_id, reference), node.path.span);
+            });
+        }
     }
 }
 
@@ -781,7 +811,8 @@ impl<'ctx> HirVisitor for FunctionCollector<'ctx> {
                     "computed properties must only appear in type bodies"
                 );
                 let parent = self.parent.expect("parent must be defined");
-                let ty = lower::lower_type(&node.ty, self.context);
+                let mut icx = InferenceContext::new(self.context);
+                let ty = lower::lower_type(&node.ty, &mut icx);
 
                 match context {
                     DeclarationContext::Interface => {

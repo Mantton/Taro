@@ -1,6 +1,5 @@
-use std::{cell::RefCell, rc::Rc};
-
 use crate::{CompilerSession, GlobalContext, TypeDatabase};
+use std::{cell::RefCell, rc::Rc};
 use taroc_hir::{DefinitionID, DefinitionKind, NodeID, Resolution};
 use taroc_resolve_models::{DefinitionContext, ResolvedAlias};
 use taroc_span::Symbol;
@@ -102,6 +101,21 @@ impl<'ctx> GlobalContext<'ctx> {
         let database = cache.entry(package_index).or_insert(Default::default());
         let ok = database.def_to_generics.insert(id, generics).is_none();
         debug_assert!(ok, "duplicated generic information")
+    }
+
+    pub fn cache_def_constraints(
+        self,
+        id: DefinitionID,
+        constraints: taroc_ty::DefinitionConstraints<'ctx>,
+    ) {
+        let mut cache = self.context.store.types.borrow_mut();
+        let package_index = id.package().index();
+        let database = cache.entry(package_index).or_insert(Default::default());
+        let ok = database
+            .def_to_constraints
+            .insert(id, constraints)
+            .is_none();
+        debug_assert!(ok, "duplicated constraint information")
     }
 
     pub fn cache_type(self, id: DefinitionID, ty: taroc_ty::Ty<'ctx>) {
@@ -310,5 +324,15 @@ impl<'ctx> GlobalContext<'ctx> {
         let resolution = holder.resolution();
         let id = resolution.def_id()?;
         Some(self.type_of(id))
+    }
+
+    pub fn predicates_of(self, id: DefinitionID) -> taroc_ty::DefinitionConstraints<'ctx> {
+        let database = self.context.store.types.borrow();
+        let database = database.get(&id.package().index()).expect("package types");
+        return database
+            .def_to_constraints
+            .get(&id)
+            .cloned()
+            .unwrap_or_default();
     }
 }

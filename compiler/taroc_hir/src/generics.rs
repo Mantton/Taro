@@ -61,7 +61,7 @@ pub enum GenericRequirement {
 /// `Foo == Bar`
 #[derive(Debug, Clone)]
 pub struct RequiredTypeConstraint {
-    pub bounded_type: TaggedPath,
+    pub bounded_type: Box<Type>,
     pub bound: Box<Type>,
     pub span: Span,
 }
@@ -69,7 +69,7 @@ pub struct RequiredTypeConstraint {
 /// `Self::Foo: Hashable`
 #[derive(Debug, Clone)]
 pub struct ConformanceConstraint {
-    pub bounded_type: TaggedPath,
+    pub bounded_type: Box<Type>,
     pub bounds: GenericBounds,
     pub span: Span,
 }

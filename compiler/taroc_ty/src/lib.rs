@@ -2,7 +2,7 @@ use indexmap::IndexMap;
 use rustc_hash::FxHashMap;
 use taroc_data_structures::Interned;
 use taroc_hir::{DefinitionID, Mutability};
-use taroc_span::{FileID, Symbol};
+use taroc_span::{FileID, Span, Symbol};
 use taroc_token::OperatorKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -301,4 +301,21 @@ pub struct ConformanceRecord<'ctx> {
     pub interface: DefinitionID,
     pub type_witnesses: FxHashMap<Symbol, Ty<'ctx>>,
     pub method_witnesses: FxHashMap<Symbol, DefinitionID>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Constraint<'ctx> {
+    /// `T: P1 & P2 & …`
+    Bound {
+        ty: Ty<'ctx>,
+        interface: InterfaceReference<'ctx>,
+    },
+
+    /// `T == U`
+    TypeEquality { left: Ty<'ctx>, right: Ty<'ctx> },
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DefinitionConstraints<'ctx> {
+    pub constraints: Vec<(Constraint<'ctx>, Span)>,
 }

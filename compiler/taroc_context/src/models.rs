@@ -42,6 +42,7 @@ impl<'ctx> ContextStore<'ctx> {
 pub struct ContextArenas<'ctx> {
     pub resolve: Bump,
     pub types: Bump,
+    pub arena: Bump,
     _data: PhantomData<DefinitionContext<'ctx>>,
 }
 
@@ -50,6 +51,7 @@ impl<'ctx> ContextArenas<'ctx> {
         ContextArenas {
             resolve: Bump::new(),
             types: Bump::new(),
+            arena: Bump::new(),
             _data: PhantomData::default(),
         }
     }
@@ -117,6 +119,11 @@ impl<'ctx> ContextInterners<'ctx> {
     pub fn mk_args(&self, args: Vec<GenericArgument<'ctx>>) -> &'ctx [GenericArgument<'ctx>] {
         return self.arenas.types.alloc_slice_copy(&args);
     }
+
+    pub fn intern<T>(&self, value: T) -> Interned<T> {
+        let value = self.arenas.arena.alloc(value);
+        Interned::new_unchecked(value)
+    }
 }
 
 pub struct ResolutionData<'ctx> {
@@ -136,12 +143,14 @@ pub struct ResolutionData<'ctx> {
 pub struct TypeDatabase<'ctx> {
     pub def_to_ty: FxHashMap<DefinitionID, Ty<'ctx>>,
     pub def_to_generics: FxHashMap<DefinitionID, taroc_ty::Generics>,
+    pub def_to_constraints: FxHashMap<DefinitionID, taroc_ty::DefinitionConstraints<'ctx>>,
     pub structs: FxHashMap<DefinitionID, StructDefinition<'ctx>>,
     pub enums: FxHashMap<DefinitionID, EnumDefinition<'ctx>>,
     pub interfaces: FxHashMap<DefinitionID, Rc<RefCell<InterfaceDefinition<'ctx>>>>,
     pub functions: FxHashMap<DefinitionID, LabeledFunctionSignature<'ctx>>,
     pub def_to_functions: FxHashMap<DefinitionID, Rc<RefCell<DefinitionFunctionsData<'ctx>>>>,
     pub conformances: FxHashMap<DefinitionID, FxHashSet<InterfaceReference<'ctx>>>,
+    pub conformances_span: FxHashMap<(DefinitionID, InterfaceReference<'ctx>), taroc_span::Span>,
 }
 
 pub struct CommonTypes<'ctx> {
