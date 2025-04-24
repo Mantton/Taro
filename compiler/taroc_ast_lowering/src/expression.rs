@@ -180,7 +180,7 @@ impl Actor<'_> {
             self.lower_optional(expr.else_block, |this, expr| this.lower_expression(expr));
         taroc_hir::IfExpression {
             condition,
-            body,
+            then_block: body,
             else_block,
         }
     }

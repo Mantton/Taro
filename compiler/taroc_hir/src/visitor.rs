@@ -407,8 +407,10 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, expr: &Expression) -> V::
         ExpressionKind::Tuple(expressions) => {
             walk_list!(visitor, visit_expression, expressions)
         }
-        ExpressionKind::If(..) => {
-            // try_visit!(visitor.visit_if_chain(if_chain));
+        ExpressionKind::If(node) => {
+            try_visit!(visitor.visit_expression(&node.condition));
+            try_visit!(visitor.visit_block(&node.then_block));
+            visit_optional!(visitor, visit_expression, &node.else_block);
         }
         ExpressionKind::FunctionCall(caller, args) => {
             try_visit!(visitor.visit_expression(caller));

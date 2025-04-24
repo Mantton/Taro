@@ -2,7 +2,6 @@ use crate::{lower, models::InferenceContext, utils};
 use rustc_hash::FxHashMap;
 use taroc_context::GlobalContext;
 use taroc_error::CompileResult;
-use taroc_hir::Expression;
 use taroc_span::{Span, Symbol};
 use taroc_ty::{
     Constraint, GenericArgs, GenericArgument, GenericParameter, InferTy, Ty, TyKind, TyVid,
@@ -125,7 +124,7 @@ impl<'ctx> FunctionChecker<'ctx> {
         // TODO: Default Unbound Intvar
     }
 
-    fn check_block(&mut self, block: &taroc_hir::Block, expected: Ty<'ctx>) {
+    fn check_block(&mut self, block: &taroc_hir::Block, _: Ty<'ctx>) {
         for statement in &block.statements {
             self.check_statement(statement);
         }
@@ -221,6 +220,30 @@ impl<'ctx> FunctionChecker<'ctx> {
     }
 }
 impl<'ctx> FunctionChecker<'ctx> {
+    fn synthesize_statement(&mut self, statement: &taroc_hir::Statement) -> Ty<'ctx> {
+        match &statement.kind {
+            taroc_hir::StatementKind::Declaration(..) => {}
+            taroc_hir::StatementKind::Expression(expression) => {
+                return self.synthesize_expression(expression);
+            }
+            taroc_hir::StatementKind::Variable(local) => {
+                self.check_local(local);
+            }
+            taroc_hir::StatementKind::Return(expression) => {
+                if let Some(expression) = expression {
+                    self.synthesize_expression(expression);
+                }
+            }
+            //
+            taroc_hir::StatementKind::Loop(..) => {}
+            taroc_hir::StatementKind::Defer(..) => {}
+            //
+            taroc_hir::StatementKind::Break(..) => {}
+            taroc_hir::StatementKind::Continue(..) => {}
+        }
+
+        return self.context.store.common_types.void;
+    }
     fn synthesize_expression(&mut self, expression: &taroc_hir::Expression) -> Ty<'ctx> {
         match &expression.kind {
             taroc_hir::ExpressionKind::Malformed => {
@@ -239,25 +262,30 @@ impl<'ctx> FunctionChecker<'ctx> {
             taroc_hir::ExpressionKind::FunctionCall(expression, arguments) => {
                 self.synthesize_function_call_expression(expression, arguments)
             }
-            taroc_hir::ExpressionKind::Array(..) => todo!("array expression"),
-            taroc_hir::ExpressionKind::If(..) => todo!("if expression"),
+            taroc_hir::ExpressionKind::Block(block) => self.synthesize_block_expression(block),
+            taroc_hir::ExpressionKind::If(node) => self.synthesize_if_expression(node),
+            taroc_hir::ExpressionKind::Array(exprs) => self.synthesize_array_expression(exprs),
+            taroc_hir::ExpressionKind::TupleAccess(expr, index) => {
+                self.synthesize_tuple_access_expression(expr, index)
+            }
             taroc_hir::ExpressionKind::MethodCall(..) => todo!("method call expression"),
             taroc_hir::ExpressionKind::Binary(..) => todo!("binary expression"),
             taroc_hir::ExpressionKind::Unary(..) => todo!("unary expression"),
             taroc_hir::ExpressionKind::FieldAccess(..) => todo!("field access expression"),
-            taroc_hir::ExpressionKind::TupleAccess(..) => todo!("tuple access expression"),
             taroc_hir::ExpressionKind::Subscript(..) => todo!("subscript"),
             taroc_hir::ExpressionKind::AssignOp(..) => todo!("assign op expression"),
             taroc_hir::ExpressionKind::CastAs(..) => todo!("cast expression"),
             taroc_hir::ExpressionKind::MatchBinding(..) => todo!("match binding expression"),
             taroc_hir::ExpressionKind::Closure(..) => todo!("closure expression"),
-            taroc_hir::ExpressionKind::Block(..) => todo!("block expression"),
             taroc_hir::ExpressionKind::InferMemberPath(..) => todo!("inferred path"),
             taroc_hir::ExpressionKind::Await(..) => todo!("await expressions"),
         }
     }
 
-    fn synthesize_tuple_expression(&mut self, elements: &Vec<Box<Expression>>) -> Ty<'ctx> {
+    fn synthesize_tuple_expression(
+        &mut self,
+        elements: &Vec<Box<taroc_hir::Expression>>,
+    ) -> Ty<'ctx> {
         let mut element_types = Vec::with_capacity(elements.len());
 
         for element in elements {
@@ -271,9 +299,7 @@ impl<'ctx> FunctionChecker<'ctx> {
     }
 
     fn synthesize_path_expression(&mut self, path: &taroc_hir::Path) -> Ty<'ctx> {
-        let ty = lower::synthesize_path(path, &mut self.context);
-
-        ty
+        lower::synthesize_path(path, &mut self.context)
     }
 
     fn synthesize_literal_expression(&mut self, literal: &taroc_hir::Literal) -> Ty<'ctx> {
@@ -331,6 +357,107 @@ impl<'ctx> FunctionChecker<'ctx> {
         }
 
         ret_ty
+    }
+
+    fn synthesize_block_expression(&mut self, block: &taroc_hir::Block) -> Ty<'ctx> {
+        for (index, statement) in block.statements.iter().enumerate() {
+            let ty = self.synthesize_statement(statement);
+
+            if index == block.statements.len() - 1 {
+                return ty;
+            }
+        }
+
+        return self.context.store.common_types.void;
+    }
+
+    fn synthesize_if_expression(&mut self, node: &taroc_hir::IfExpression) -> Ty<'ctx> {
+        // Condition
+        let condition = self.synthesize_expression(&node.condition);
+        let constraint = Constraint::TypeEquality(self.context.store.common_types.bool, condition);
+        self.context.add_constraint(constraint, node.condition.span);
+
+        // Then
+        let then_ty = self.synthesize_block_expression(&node.then_block);
+
+        // Else
+        if let Some(else_block) = &node.else_block {
+            let else_ty = self.synthesize_expression(else_block);
+            let constraint = Constraint::TypeEquality(then_ty, else_ty);
+            self.context.add_constraint(constraint, else_block.span);
+        };
+
+        then_ty
+    }
+
+    fn synthesize_array_expression(
+        &mut self,
+        expressions: &Vec<Box<taroc_hir::Expression>>,
+    ) -> Ty<'ctx> {
+        let element_ty = self.context.fresh_ty_var();
+
+        for expression in expressions {
+            let element = self.synthesize_expression(expression);
+            let result = self.unify(element_ty, element);
+            if let Err(err) = result {
+                self.context.diagnostics.error(err, expression.span);
+            }
+        }
+
+        let array_id = {
+            let store = self.context.store.common_types.mappings.foundation.borrow();
+            let array_id = store
+                .get(&Symbol::with("List"))
+                .cloned()
+                .expect("Dynamic Array Type");
+            array_id
+        };
+
+        let list_ty = self.context.type_of(array_id);
+        let args = vec![GenericArgument::Type(element_ty)];
+        let args = self.context.store.interners.intern_generic_args(&args);
+        let subst = utils::create_substitution_map(array_id, args, *self.context);
+        let ty = utils::substitute(list_ty, &subst, None, *self.context);
+
+        ty
+    }
+
+    fn synthesize_tuple_access_expression(
+        &mut self,
+        expression: &taroc_hir::Expression,
+        index_expression: &taroc_hir::AnonConst,
+    ) -> Ty<'ctx> {
+        let index = match &index_expression.value.kind {
+            taroc_hir::ExpressionKind::Literal(taroc_hir::Literal::Integer(index)) => {
+                *index as usize
+            }
+            _ => unreachable!("ICE: tuple index should be validated as an integer"),
+        };
+
+        let ty = self.synthesize_expression(expression);
+
+        let elements = match ty.kind() {
+            TyKind::Tuple(elements) => elements,
+            _ => {
+                let message = format!("{ty} is not a tuple type.");
+                self.context.diagnostics.error(message, expression.span);
+                return self.context.store.common_types.error;
+            }
+        };
+
+        if index >= elements.len() {
+            self.context.diagnostics.error(
+                format!(
+                    "tuple index {index} is out of bounds (tuple has {} elements)",
+                    elements.len()
+                ),
+                index_expression.value.span,
+            );
+            return self.context.store.common_types.error;
+        }
+
+        // ───── 4. return the element type ─────
+        elements[index]
     }
 }
 impl<'ctx> FunctionChecker<'ctx> {

@@ -843,6 +843,7 @@ impl Parser {
             self.parse_sequence_until(&[TokenKind::RBracket], TokenKind::Comma, false, |p| {
                 parser(p)
             })?;
+        self.expect(TokenKind::RBracket)?;
 
         let kind = match state {
             SS::Dict => ExpressionKind::Dictionary(map_pairs),

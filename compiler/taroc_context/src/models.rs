@@ -206,6 +206,8 @@ pub struct CommonTypeMapping {
 
     pub float32: Cell<Option<DefinitionID>>,
     pub float64: Cell<Option<DefinitionID>>,
+
+    pub foundation: RefCell<FxHashMap<Symbol, DefinitionID>>,
 }
 
 impl<'a> CommonTypes<'a> {

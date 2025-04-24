@@ -3,10 +3,11 @@ use rustc_hash::FxHashMap;
 use taroc_context::GlobalContext;
 use taroc_error::CompileResult;
 use taroc_hir::{
-    Declaration, DeclarationContext, DeclarationKind, DefinedType, DefinedTypeKind, DefinitionID,
-    Generics, Mutability, NodeID, Package, TypeAlias, visitor::HirVisitor,
+    AttributeList, Declaration, DeclarationContext, DeclarationKind, DefinedType, DefinedTypeKind,
+    DefinitionID, Generics, Mutability, NodeID, Package, TypeAlias, attributes_contain,
+    visitor::HirVisitor,
 };
-use taroc_span::Symbol;
+use taroc_span::{Identifier, Symbol};
 use taroc_ty::{
     AdtDef, AdtKind, AssociatedTypeDefinition, ComputedPropertySignature, Constraint,
     DefinitionConstraints, EnumDefinition, EnumVariant, EnumVariantKind, GenericArguments,
@@ -267,7 +268,7 @@ impl HirVisitor for TypeCollector<'_> {
     ) -> Self::Result {
         match &decl.kind {
             DeclarationKind::DefinedType(node) => {
-                self.collect_defined_type(decl.id, decl.identifier.symbol, node)
+                self.collect_defined_type(decl.id, decl.identifier, node, &decl.attributes)
             }
             DeclarationKind::TypeAlias(node) => self.collect_alias(decl.id, node),
             DeclarationKind::EnumCase(node) => {
@@ -286,20 +287,29 @@ impl HirVisitor for TypeCollector<'_> {
 }
 
 impl<'ctx> TypeCollector<'ctx> {
-    fn collect_defined_type(&mut self, id: NodeID, name: Symbol, node: &DefinedType) {
+    fn collect_defined_type(
+        &mut self,
+        id: NodeID,
+        ident: Identifier,
+        node: &DefinedType,
+        attrs: &AttributeList,
+    ) {
+        let name = ident.symbol;
         let def_id = self.context.def_id(id);
-        if self.context.session().config.is_std
-            && let Some(builtin) = self.check_builtin(name, def_id)
-        {
-            self.context.cache_type(def_id, builtin);
-        } else {
-            let arguments = self.context.type_arguments(def_id);
+        let is_std = self.context.session().config.is_std;
+        let arguments = self.context.type_arguments(def_id);
 
-            if self.context.session().config.is_std
-                && let Some(ty) = self.check_generic_builtin(name, def_id, arguments)
-            {
-                self.context.cache_type(def_id, ty);
+        let ty = if is_std && attributes_contain(attrs, Symbol::with("builtin")) {
+            if let Some(builtin) = self.check_builtin(name, def_id) {
+                builtin
+            } else if let Some(builtin) = self.check_generic_builtin(name, def_id, arguments) {
+                builtin
+            } else {
+                let message = format!("uknown builtin type {}", name);
+                self.context.diagnostics.error(message, ident.span);
+                self.context.store.common_types.error
             }
+        } else {
             match node.kind {
                 DefinedTypeKind::Struct | DefinedTypeKind::Enum => {
                     let adt_def = AdtDef {
@@ -313,9 +323,28 @@ impl<'ctx> TypeCollector<'ctx> {
                     };
                     let kind = TyKind::Adt(adt_def, arguments, None);
                     let ty = self.context.store.interners.intern_ty(kind);
-                    self.context.cache_type(def_id, ty);
+                    ty
                 }
-                DefinedTypeKind::Interface => {}
+                DefinedTypeKind::Interface => self.context.store.common_types.ignore,
+            }
+        };
+
+        self.context.cache_type(def_id, ty);
+
+        if is_std && attributes_contain(attrs, Symbol::with("foundation")) {
+            let mut store = self
+                .context
+                .store
+                .common_types
+                .mappings
+                .foundation
+                .borrow_mut();
+
+            let previous = store.insert(name, def_id);
+
+            if let Some(_) = previous {
+                let message = format!("already set foundation type {}", name);
+                self.context.diagnostics.error(message, ident.span);
             }
         }
     }
