@@ -66,7 +66,22 @@ impl Parser {
 
 impl Parser {
     pub fn parse_non_assignment_expr(&mut self) -> R<Box<Expression>> {
-        self.parse_ternary_expr()
+        self.parse_pipe_expr()
+    }
+
+    fn parse_pipe_expr(&mut self) -> R<Box<Expression>> {
+        let mut expr = self.parse_ternary_expr()?;
+
+        while matches!(self.current_kind(), TokenKind::Pipe) {
+            self.bump();
+            let right = self.parse_ternary_expr()?;
+
+            let span = expr.span.to(right.span);
+            let kind = ExpressionKind::Pipe(expr, right);
+            expr = self.build_expr(kind, span);
+        }
+
+        Ok(expr)
     }
 
     fn parse_ternary_expr(&mut self) -> R<Box<Expression>> {
@@ -90,32 +105,15 @@ impl Parser {
 
 impl Parser {
     fn parse_optional_default_expr(&mut self) -> R<Box<Expression>> {
-        let mut expr = self.parse_pipe_expr()?;
-
+        let mut expr = self.parse_range_expr()?;
         while matches!(self.current_kind(), TokenKind::QuestionQuestion) {
             self.bump();
-            let right = self.parse_pipe_expr()?;
+            let right = self.parse_range_expr()?;
 
             let span = expr.span.to(right.span);
             let kind = ExpressionKind::OptionalDefault(expr, right);
             expr = self.build_expr(kind, span);
         }
-
-        Ok(expr)
-    }
-
-    fn parse_pipe_expr(&mut self) -> R<Box<Expression>> {
-        let mut expr = self.parse_range_expr()?;
-
-        while matches!(self.current_kind(), TokenKind::Pipe) {
-            self.bump();
-            let right = self.parse_range_expr()?;
-
-            let span = expr.span.to(right.span);
-            let kind = ExpressionKind::Pipe(expr, right);
-            expr = self.build_expr(kind, span);
-        }
-
         Ok(expr)
     }
 }
@@ -143,7 +141,7 @@ impl Parser {
 
 impl Parser {
     fn parse_bool_or_expr(&mut self) -> R<Box<Expression>> {
-        // a | b
+        // a || b
         let mut expr = self.parse_bool_and_expr()?;
 
         while matches!(self.current_kind(), TokenKind::BarBar) {
@@ -153,7 +151,7 @@ impl Parser {
         Ok(expr)
     }
     fn parse_bool_and_expr(&mut self) -> R<Box<Expression>> {
-        // a | b
+        // a && b
         let mut expr = self.parse_comparison_expr()?;
 
         while matches!(self.current_kind(), TokenKind::AmpAmp) {

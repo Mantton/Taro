@@ -94,17 +94,16 @@ impl Parser {
         };
 
         let pattern = self.parse_binding_pat()?;
-        let ident = match pattern.kind {
-            BindingPatternKind::Identifier(identifier) => identifier,
-            _ => {
-                self.result.error(SpannedMessage::new(
+        let ident =
+            match pattern.kind {
+                BindingPatternKind::Identifier(identifier) => identifier,
+                _ => return Err(SpannedMessage::new(
                     "Top Level Variables and Constants MUST use Identifier Binding Pattern Only"
                         .into(),
                     pattern.span,
-                ));
-                Identifier::emtpy(self.file.file)
-            }
-        };
+                )),
+            };
+
         let ty = if self.eat(TokenKind::Colon) {
             Some(self.parse_type()?)
         } else {
@@ -150,7 +149,6 @@ impl Parser {
     }
 
     fn parse_const_decl(&mut self) -> R<(Identifier, DeclarationKind)> {
-        self.expect(TokenKind::Type)?;
         let identifier = self.parse_identifier()?;
         self.expect(TokenKind::Colon)?;
         let ty = self.parse_type()?;

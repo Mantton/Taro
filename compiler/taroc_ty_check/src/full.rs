@@ -182,7 +182,7 @@ impl<'ctx> FunctionChecker<'ctx> {
     fn bind_pattern(&mut self, pattern: &taroc_hir::BindingPattern, ty: Ty<'ctx>) {
         match &pattern.kind {
             taroc_hir::BindingPatternKind::Wildcard => {}
-            taroc_hir::BindingPatternKind::Identifier(ident) => {
+            taroc_hir::BindingPatternKind::Identifier(..) => {
                 let id = pattern.id;
                 self.context.env.insert(id, ty);
                 // println!("Bound {} to {}", ident.symbol, ty)
