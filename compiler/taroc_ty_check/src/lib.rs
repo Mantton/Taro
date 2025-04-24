@@ -14,5 +14,6 @@ mod utils;
 pub fn run(package: &Package, context: GlobalContext) -> CompileResult<()> {
     collect::run(package, context)?;
     analysis::run(package, context)?;
+    full::run(package, context)?;
     Ok(())
 }

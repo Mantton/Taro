@@ -305,7 +305,6 @@ impl PathSource {
                         | DefinitionKind::Variant
                         | DefinitionKind::Variable
                 ) | Resolution::Local(..)
-                    | Resolution::FunctionSet(..)
             ),
         }
     }

@@ -4,8 +4,8 @@ use taroc_hir::{DefinitionID, DefinitionKind, NodeID, Resolution};
 use taroc_resolve_models::{DefinitionContext, ResolvedAlias};
 use taroc_span::Symbol;
 use taroc_ty::{
-    EnumDefinition, GenericArgument, GenericParameter, InterfaceDefinition, StructDefinition, Ty,
-    TyKind,
+    EnumDefinition, GenericArgument, GenericParameter, InterfaceDefinition,
+    LabeledFunctionSignature, StructDefinition, Ty, TyKind,
 };
 
 impl<'ctx> GlobalContext<'ctx> {
@@ -26,6 +26,15 @@ impl<'ctx> GlobalContext<'ctx> {
             .get(&self.session().package_index)
             .expect("package");
         let def = package.node_to_def.get(&id).expect("res");
+        *def
+    }
+
+    pub fn parent(self, id: DefinitionID) -> DefinitionID {
+        let resolutions = self.context.store.resolutions.borrow();
+        let package = resolutions
+            .get(&self.session().package_index)
+            .expect("package");
+        let def = package.def_to_parent.get(&id).expect("res");
         *def
     }
 
@@ -123,6 +132,23 @@ impl<'ctx> GlobalContext<'ctx> {
         let package_index = id.package().index();
         let database = cache.entry(package_index).or_insert(Default::default());
         database.def_to_ty.insert(id, ty);
+    }
+
+    pub fn cache_signature(self, id: DefinitionID, sig: taroc_ty::LabeledFunctionSignature<'ctx>) {
+        let mut cache = self.context.store.types.borrow_mut();
+        let package_index = id.package().index();
+        let database = cache.entry(package_index).or_insert(Default::default());
+        database.def_to_fn_signature.insert(id, sig);
+    }
+
+    pub fn fn_signature(self, id: DefinitionID) -> LabeledFunctionSignature<'ctx> {
+        let database = self.context.store.types.borrow();
+        let database = database.get(&id.package().index()).expect("package types");
+        return database
+            .def_to_fn_signature
+            .get(&id)
+            .expect("expected fn sig of definition")
+            .clone();
     }
 
     pub fn cache_struct_def(self, id: DefinitionID, def: taroc_ty::StructDefinition<'ctx>) {
@@ -270,14 +296,14 @@ impl<'ctx> GlobalContext<'ctx> {
             TyKind::Bool => self.context.store.common_types.mappings.bool.get(),
             TyKind::Rune => self.context.store.common_types.mappings.rune.get(),
             TyKind::Int(int_ty) => match int_ty {
-                taroc_ty::IntTy::Int => self.context.store.common_types.mappings.int.get(),
+                taroc_ty::IntTy::ISize => self.context.store.common_types.mappings.int.get(),
                 taroc_ty::IntTy::I8 => self.context.store.common_types.mappings.int8.get(),
                 taroc_ty::IntTy::I16 => self.context.store.common_types.mappings.int16.get(),
                 taroc_ty::IntTy::I32 => self.context.store.common_types.mappings.int32.get(),
                 taroc_ty::IntTy::I64 => self.context.store.common_types.mappings.int64.get(),
             },
             TyKind::UInt(uint_ty) => match uint_ty {
-                taroc_ty::UIntTy::UInt => self.context.store.common_types.mappings.uint.get(),
+                taroc_ty::UIntTy::USize => self.context.store.common_types.mappings.uint.get(),
                 taroc_ty::UIntTy::U8 => self.context.store.common_types.mappings.uint8.get(),
                 taroc_ty::UIntTy::U16 => self.context.store.common_types.mappings.uint16.get(),
                 taroc_ty::UIntTy::U32 => self.context.store.common_types.mappings.uint32.get(),
@@ -305,15 +331,16 @@ impl<'ctx> GlobalContext<'ctx> {
             },
             TyKind::Array(..) => self.context.store.common_types.mappings.array.get(),
             TyKind::Tuple(..) => None,
-            TyKind::Adt(definition_id, ..) => Some(definition_id),
+            TyKind::Adt(def, ..) => Some(def.id),
             TyKind::Existential(..) => None,
             TyKind::Parameter(..) => None,
             TyKind::Function { .. } => None,
             TyKind::Variadic(..) => None,
             TyKind::AssociatedType(definition_id) => Some(definition_id),
-            TyKind::Infer => None,
+            TyKind::Infer(..) => None,
             TyKind::Error => None,
             TyKind::Ignore => None,
+            TyKind::FnDef(id, ..) => Some(id),
         }
     }
 

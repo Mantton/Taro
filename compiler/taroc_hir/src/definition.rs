@@ -1,8 +1,6 @@
-use std::fmt::Display;
-
 use super::NodeID;
 use index_vec::IndexVec;
-use rustc_hash::FxHashSet;
+use std::fmt::Display;
 
 pub struct Definitions {
     table: DefinitionTable,
@@ -145,7 +143,6 @@ pub enum SymbolNamespace {
 #[derive(Debug, Clone)]
 pub enum Resolution {
     Definition(DefinitionID, DefinitionKind),
-    FunctionSet(FxHashSet<DefinitionID>),
     InterfaceSelfTypeAlias(DefinitionID),
     SelfTypeAlias(DefinitionID),
     Local(NodeID),
@@ -156,7 +153,6 @@ impl Resolution {
     pub fn def_id(&self) -> Option<DefinitionID> {
         match self {
             Resolution::Definition(i, _) => Some(*i),
-            Resolution::FunctionSet(_) => None,
             Resolution::InterfaceSelfTypeAlias(i) => Some(*i),
             Resolution::SelfTypeAlias(i) => Some(*i),
             Resolution::Local(_) => None,
@@ -167,7 +163,6 @@ impl Resolution {
     pub fn def_kind(&self) -> Option<DefinitionKind> {
         match self {
             Resolution::Definition(_, k) => Some(*k),
-            Resolution::FunctionSet(_) => Some(DefinitionKind::Function),
             Resolution::InterfaceSelfTypeAlias(_) => None,
             Resolution::SelfTypeAlias(_) => None,
             Resolution::Local(_) => None,
@@ -185,7 +180,6 @@ impl Resolution {
     pub fn description(&self) -> &'static str {
         match self {
             Resolution::Definition(_, k) => k.description(),
-            Resolution::FunctionSet(_) => "function",
             Resolution::InterfaceSelfTypeAlias(_) => "self type",
             Resolution::SelfTypeAlias(_) => "self type",
             Resolution::Local(_) => "local variable",

@@ -29,6 +29,17 @@ pub fn lower_type_with_base<'ctx>(
     actor.lower(ty)
 }
 
+pub fn synthesize_path<'ctx>(
+    path: &taroc_hir::Path,
+    context: &mut InferenceContext<'ctx>,
+) -> taroc_ty::Ty<'ctx> {
+    let mut actor = TypeLowerer {
+        context,
+        substitutions: SubstitutionMap::new(),
+    };
+    actor.lower_path(path)
+}
+
 struct TypeLowerer<'ctx, 'icx> {
     context: &'icx mut InferenceContext<'ctx>,
     substitutions: SubstitutionMap<'ctx>,
@@ -36,7 +47,7 @@ struct TypeLowerer<'ctx, 'icx> {
 
 impl<'ctx, 'icx> TypeLowerer<'ctx, 'icx> {
     pub fn mk(&mut self, k: TyKind<'ctx>) -> Ty<'ctx> {
-        self.context.context.store.interners.intern_ty(k)
+        self.context.store.interners.intern_ty(k)
     }
 
     fn lower_nested(&mut self, ty: &taroc_hir::Type) -> Ty<'ctx> {
@@ -47,7 +58,7 @@ impl<'ctx, 'icx> TypeLowerer<'ctx, 'icx> {
         let ty = match &ty.kind {
             taroc_hir::TypeKind::Tuple(items) => {
                 let items: Vec<Ty<'ctx>> = items.iter().map(|ty| self.lower_nested(ty)).collect();
-                let items = self.context.context.store.interners.intern_ty_list(&items);
+                let items = self.context.store.interners.intern_ty_list(&items);
                 self.mk(TyKind::Tuple(items))
             }
             taroc_hir::TypeKind::Path(path) => self.lower_unchecked_path(path, ty.id),
@@ -57,7 +68,7 @@ impl<'ctx, 'icx> TypeLowerer<'ctx, 'icx> {
                 is_async,
             } => {
                 let inputs: Vec<Ty<'ctx>> = inputs.iter().map(|ty| self.lower_nested(ty)).collect();
-                let inputs = self.context.context.store.interners.intern_ty_list(&inputs);
+                let inputs = self.context.store.interners.intern_ty_list(&inputs);
 
                 let kind = TyKind::Function {
                     inputs,
@@ -81,21 +92,21 @@ impl<'ctx, 'icx> TypeLowerer<'ctx, 'icx> {
 }
 
 impl<'ctx, 'icx> TypeLowerer<'ctx, 'icx> {
-    fn lower_unchecked_path(&mut self, path: &taroc_hir::Path, id: NodeID) -> Ty<'ctx> {
-        self.lower_path(id, path)
+    fn lower_unchecked_path(&mut self, path: &taroc_hir::Path, _id: NodeID) -> Ty<'ctx> {
+        self.lower_path(path)
     }
 
-    fn lower_path(&mut self, _id: NodeID, path: &taroc_hir::Path) -> Ty<'ctx> {
+    fn lower_path(&mut self, path: &taroc_hir::Path) -> Ty<'ctx> {
         debug_assert!(!path.segments.is_empty(), "empty path");
 
         for (index, segment) in path.segments.iter().enumerate() {
             // self.context
             //     .diagnostics
             //     .info("Lowering".into(), segment.identifier.span);
-            let res = self.context.context.resolution(segment.id);
+            let res = self.context.resolution(segment.id);
             let ty = self.lower_path_segment(segment, res);
 
-            if ty == self.context.context.store.common_types.error {
+            if ty == self.context.store.common_types.error {
                 return ty;
             }
 
@@ -104,7 +115,7 @@ impl<'ctx, 'icx> TypeLowerer<'ctx, 'icx> {
             }
         }
 
-        return self.context.context.store.common_types.error;
+        return self.context.store.common_types.error;
     }
 
     fn lower_path_segment(
@@ -113,9 +124,10 @@ impl<'ctx, 'icx> TypeLowerer<'ctx, 'icx> {
         res: Resolution,
     ) -> Ty<'ctx> {
         match res {
-            Resolution::Definition(def_id, DefinitionKind::Enum | DefinitionKind::Struct) => {
-                self.lower_path_segment_with_definition(segment, def_id)
-            }
+            Resolution::Definition(
+                def_id,
+                DefinitionKind::Enum | DefinitionKind::Struct | DefinitionKind::Function,
+            ) => self.lower_path_segment_with_definition(segment, def_id),
             Resolution::Definition(def_id, DefinitionKind::TypeAlias) => {
                 self.lower_alias(segment, def_id)
             }
@@ -127,24 +139,26 @@ impl<'ctx, 'icx> TypeLowerer<'ctx, 'icx> {
                 todo!()
             }
             Resolution::InterfaceSelfTypeAlias(..) => {
-                self.context.context.store.common_types.self_type_parameter
+                self.context.store.common_types.self_type_parameter
             }
             Resolution::Definition(id, DefinitionKind::AssociatedType) => self
                 .context
-                .context
+                .gcx
                 .store
                 .interners
                 .intern_ty(TyKind::AssociatedType(id)),
             Resolution::Definition(
                 _,
                 DefinitionKind::Namespace | DefinitionKind::Module | DefinitionKind::Bridged,
-            ) => self.context.context.store.common_types.ignore,
+            ) => self.context.store.common_types.ignore,
 
-            Resolution::SelfTypeAlias(definition_id) => self.context.context.type_of(definition_id),
-            Resolution::FunctionSet(..) => {
-                unreachable!("cannot resolve type to set of functions")
+            Resolution::Definition(def_id, _) => self.context.type_of(def_id),
+
+            Resolution::SelfTypeAlias(definition_id) => self.context.type_of(definition_id),
+            Resolution::Local(node_id) => {
+                let ty = self.context.env.get(&node_id);
+                *ty.expect("ICE: expected local variable in environment")
             }
-            Resolution::Local(..) => unreachable!("cannot resolve type to local variable"),
             Resolution::Error => {
                 unreachable!("prereported resolution error, this compiler pass should not happen")
             }
@@ -161,44 +175,46 @@ impl<'ctx, 'icx> TypeLowerer<'ctx, 'icx> {
         def_id: DefinitionID,
     ) -> Ty<'ctx> {
         // Lower Type Arguments
-        let generics = self.context.context.generics_of(def_id);
+        let generics = self.context.generics_of(def_id);
         let arguments = self.lower_type_arguments(def_id, &generics, segment);
         let Some(arguments) = arguments else {
-            return self.context.context.store.common_types.error;
+            return self.context.store.common_types.error;
         };
 
         // Duplicate Constraints
-        self.context
-            .instantiate_definition_constraints(def_id, arguments);
+        if !matches!(self.context.def_kind(def_id), DefinitionKind::Function) {
+            self.context
+                .instantiate_definition_constraints(def_id, arguments);
+        }
 
         // Build / Extend Subst Map
-        let substitutions = utils::create_substitution_map(def_id, arguments, self.context.context);
+        let substitutions = utils::create_substitution_map(def_id, arguments, self.context.gcx);
         self.substitutions.extend(substitutions);
 
         // Instantiated Ty
-        let ty = self.context.context.type_of(def_id);
-        let ty = utils::substitute(ty, &self.substitutions, None, self.context.context);
+        let ty = self.context.type_of(def_id);
+        let ty = utils::substitute(ty, &self.substitutions, None, self.context.gcx);
         ty
     }
 
     fn lower_alias(&mut self, segment: &taroc_hir::PathSegment, def_id: DefinitionID) -> Ty<'ctx> {
         // Resolve Alias Generics
-        let generics = self.context.context.generics_of(def_id);
+        let generics = self.context.generics_of(def_id);
         let arguments = self.lower_type_arguments(def_id, &generics, segment);
         let Some(arguments) = arguments else {
-            return self.context.context.store.common_types.error;
+            return self.context.store.common_types.error;
         };
 
         // Constraints
         self.context
             .instantiate_definition_constraints(def_id, arguments);
 
-        let substitutions = utils::create_substitution_map(def_id, arguments, self.context.context);
+        let substitutions = utils::create_substitution_map(def_id, arguments, self.context.gcx);
         self.substitutions.extend(substitutions);
         // Get RHS
-        let normalized = self.context.context.alias_resolution(def_id);
+        let normalized = self.context.alias_resolution(def_id);
         let ty = self.lower_nested(&normalized.ty);
-        let ty = utils::substitute(ty, &self.substitutions, None, self.context.context);
+        let ty = utils::substitute(ty, &self.substitutions, None, self.context.gcx);
         // self.context
         //     .diagnostics
         //     .warn("Here".into(), segment.identifier.span);
@@ -210,13 +226,13 @@ impl<'ctx, 'icx> TypeLowerer<'ctx, 'icx> {
         segment: &taroc_hir::PathSegment,
         def_id: DefinitionID,
     ) -> Ty<'ctx> {
-        let generics = self.context.context.generics_of(def_id);
+        let generics = self.context.generics_of(def_id);
         let arguments = self.lower_type_arguments(def_id, &generics, segment);
         if arguments.is_none() {
-            return self.context.context.store.common_types.error;
+            return self.context.store.common_types.error;
         };
 
-        self.context.context.type_of(def_id)
+        self.context.type_of(def_id)
     }
 
     fn lower_type_arguments(
@@ -233,20 +249,26 @@ impl<'ctx, 'icx> TypeLowerer<'ctx, 'icx> {
                 arguments: Default::default(),
             }
         };
-        let mut ok = check_generics_prohibited(def_id, &generics, &arguments, self.context.context);
+        let mut ok = check_generics_prohibited(def_id, &generics, &arguments, self.context.gcx);
         if !ok {
             return None;
         }
 
-        ok = check_generic_arg_count(&generics, segment, self.context.context);
+        ok = check_generic_arg_count(
+            &generics,
+            segment,
+            self.context.gcx,
+            self.context.gcx.def_kind(def_id),
+        );
         if !ok {
             return None;
         }
 
-        let arguments = self.lower_generic_args(arguments, generics);
+        let arguments =
+            self.lower_generic_args(arguments, generics, self.context.gcx.def_kind(def_id));
         let arguments = self
             .context
-            .context
+            .gcx
             .store
             .interners
             .intern_generic_args(&arguments);
@@ -257,33 +279,48 @@ impl<'ctx, 'icx> TypeLowerer<'ctx, 'icx> {
         &mut self,
         arguments: &taroc_hir::TypeArguments,
         generics: &taroc_ty::Generics,
+        kind: DefinitionKind,
     ) -> Vec<GenericArgument<'ctx>> {
         let mut output = vec![];
         for (index, parameter) in generics.parameters.iter().enumerate() {
-            let argument = arguments.arguments.get(index);
-            let argument = match argument {
-                Some(argument) => match argument {
+            // ───── Is there an explicit <…> argument in source? ─────
+            if let Some(hir_arg) = arguments.arguments.get(index) {
+                let lowered = match hir_arg {
                     taroc_hir::TypeArgument::Type(ty) => {
-                        let ty = self.lower_nested(ty);
-                        GenericArgument::Type(ty)
+                        GenericArgument::Type(self.lower_nested(ty))
                     }
-                    taroc_hir::TypeArgument::Const(_) => todo!(),
-                },
-                None => match &parameter.kind {
-                    taroc_ty::GenericParameterDefinitionKind::Type { default } => {
-                        let Some(default) = default else {
-                            unreachable!(
-                                "ICE: default type validation is linked to the generic argument count, this must be checked prior"
-                            )
-                        };
+                    taroc_hir::TypeArgument::Const(_) => todo!(), // const generics later
+                };
+                output.push(lowered);
+                continue;
+            }
 
-                        let ty = self.lower_nested(default);
-                        GenericArgument::Type(ty)
+            match &parameter.kind {
+                // ---- provided default ----
+                taroc_ty::GenericParameterDefinitionKind::Type { default: Some(d) } => {
+                    let ty = self.lower_nested(d);
+                    output.push(GenericArgument::Type(ty));
+                }
+
+                // ---- no default ----
+                taroc_ty::GenericParameterDefinitionKind::Type { default: None } => {
+                    if matches!(kind, DefinitionKind::Function) {
+                        // For *functions* we leave the original parameter so
+                        // `instantiate(FnDef)` can replace it with a fresh TyVar.
+                        output.push(GenericArgument::Type(self.context.type_of(parameter.id)));
+                    } else {
+                        // For structs/enums/etc. this should already have been
+                        // rejected by `check_generic_arg_count`, but keep a
+                        // fallback just in case.
+                        self.context
+                            .diagnostics
+                            .error("missing generic argument".into(), arguments.span);
+                        output.push(GenericArgument::Type(self.context.store.common_types.error));
                     }
-                    taroc_ty::GenericParameterDefinitionKind::Const { .. } => todo!(),
-                },
-            };
-            output.push(argument);
+                }
+
+                taroc_ty::GenericParameterDefinitionKind::Const { .. } => todo!(),
+            }
         }
         return output;
     }
@@ -309,6 +346,7 @@ fn check_generics_prohibited(
             | DefinitionKind::Enum
             | DefinitionKind::Interface
             | DefinitionKind::TypeAlias
+            | DefinitionKind::Function
     );
 
     if !allowed {
@@ -326,6 +364,7 @@ pub fn check_generic_arg_count(
     generics: &taroc_ty::Generics,
     segment: &taroc_hir::PathSegment,
     context: GlobalContext<'_>,
+    kind: DefinitionKind,
 ) -> bool {
     let defaults_count = generics.default_count();
     let total_count = generics.total_count();
@@ -336,6 +375,20 @@ pub fn check_generic_arg_count(
         .as_ref()
         .map(|v| v.arguments.len())
         .unwrap_or(0);
+
+    if matches!(kind, DefinitionKind::Function) {
+        // any number ≤ total is OK – inference will fill the rest
+        if provided <= total_count {
+            return true;
+        }
+        context.diagnostics.error(
+            format!(
+                "excess generic arguments: function takes at most {total_count}, provided {provided}"
+            ),
+            segment.arguments.as_ref().unwrap().span,
+        );
+        return false;
+    }
 
     if (min..=total_count).contains(&provided) {
         return true;
@@ -377,7 +430,12 @@ pub fn lower_interface_reference<'ctx>(
         .flatten();
 
     let generics = context.generics_of(interface_id);
-    check_generic_arg_count(&generics, node.path.segments.last().unwrap(), context);
+    check_generic_arg_count(
+        &generics,
+        node.path.segments.last().unwrap(),
+        context,
+        context.def_kind(def_id),
+    );
 
     let mut result = vec![];
     let mut icx = InferenceContext::new(context);

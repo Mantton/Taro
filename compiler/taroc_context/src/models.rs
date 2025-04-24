@@ -151,6 +151,7 @@ pub struct TypeDatabase<'ctx> {
     pub def_to_functions: FxHashMap<DefinitionID, Rc<RefCell<DefinitionFunctionsData<'ctx>>>>,
     pub conformances: FxHashMap<DefinitionID, FxHashSet<InterfaceReference<'ctx>>>,
     pub conformances_span: FxHashMap<(DefinitionID, InterfaceReference<'ctx>), taroc_span::Span>,
+    pub def_to_fn_signature: FxHashMap<DefinitionID, LabeledFunctionSignature<'ctx>>,
 }
 
 pub struct CommonTypes<'ctx> {
@@ -219,13 +220,13 @@ impl<'a> CommonTypes<'a> {
                 mk(TyKind::Tuple(list))
             },
 
-            uint: mk(TyKind::UInt(UIntTy::UInt)),
+            uint: mk(TyKind::UInt(UIntTy::USize)),
             uint8: mk(TyKind::UInt(UIntTy::U8)),
             uint16: mk(TyKind::UInt(UIntTy::U16)),
             uint32: mk(TyKind::UInt(UIntTy::U32)),
             uint64: mk(TyKind::UInt(UIntTy::U64)),
 
-            int: mk(TyKind::Int(IntTy::Int)),
+            int: mk(TyKind::Int(IntTy::ISize)),
             int8: mk(TyKind::Int(IntTy::I8)),
             int16: mk(TyKind::Int(IntTy::I16)),
             int32: mk(TyKind::Int(IntTy::I32)),

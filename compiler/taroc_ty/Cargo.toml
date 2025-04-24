@@ -11,3 +11,4 @@ taroc_data_structures = { path = "../taroc_data_structures" }
 taroc_token = { path = "../taroc_token" }
 rustc-hash = "2.1.1"
 indexmap = "2.8.0"
+index_vec = "0.1.4"

@@ -8,10 +8,10 @@ use taroc_hir::{
 };
 use taroc_span::Symbol;
 use taroc_ty::{
-    AssociatedTypeDefinition, ComputedPropertySignature, Constraint, DefinitionConstraints,
-    EnumDefinition, EnumVariant, EnumVariantKind, GenericArguments, GenericParameter,
-    InterfaceDefinition, InterfaceMethodRequirement, InterfaceOperatorRequirement,
-    StructDefinition, StructField, Ty, TyKind,
+    AdtDef, AdtKind, AssociatedTypeDefinition, ComputedPropertySignature, Constraint,
+    DefinitionConstraints, EnumDefinition, EnumVariant, EnumVariantKind, GenericArguments,
+    GenericParameter, InterfaceDefinition, InterfaceMethodRequirement,
+    InterfaceOperatorRequirement, StructDefinition, StructField, Ty, TyKind,
 };
 
 pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
@@ -200,10 +200,10 @@ impl<'ctx> ConstraintsCollector<'ctx> {
             for requirement in clause.requirements.iter() {
                 match &requirement {
                     taroc_hir::GenericRequirement::SameTypeRequirement(node) => {
-                        let constraint = Constraint::TypeEquality {
-                            left: lower::lower_type(&node.bounded_type, &mut icx),
-                            right: lower::lower_type(&node.bound, &mut icx),
-                        };
+                        let constraint = Constraint::TypeEquality(
+                            lower::lower_type(&node.bounded_type, &mut icx),
+                            lower::lower_type(&node.bound, &mut icx),
+                        );
 
                         let constraint = (constraint, node.bounded_type.span.to(node.bound.span));
                         constraints.push(constraint);
@@ -270,6 +270,14 @@ impl HirVisitor for TypeCollector<'_> {
                 self.collect_defined_type(decl.id, decl.identifier.symbol, node)
             }
             DeclarationKind::TypeAlias(node) => self.collect_alias(decl.id, node),
+            DeclarationKind::EnumCase(node) => {
+                for variant in node.members.iter() {
+                    let id = self.context.def_id(variant.id);
+                    let parent = self.context.parent(id);
+                    let parent_ty = self.context.type_of(parent);
+                    self.context.cache_type(id, parent_ty);
+                }
+            }
             _ => {}
         }
 
@@ -294,7 +302,16 @@ impl<'ctx> TypeCollector<'ctx> {
             }
             match node.kind {
                 DefinedTypeKind::Struct | DefinedTypeKind::Enum => {
-                    let kind = TyKind::Adt(def_id, arguments, None);
+                    let adt_def = AdtDef {
+                        name,
+                        kind: if matches!(node.kind, DefinedTypeKind::Struct) {
+                            AdtKind::Struct
+                        } else {
+                            AdtKind::Enum
+                        },
+                        id: def_id,
+                    };
+                    let kind = TyKind::Adt(adt_def, arguments, None);
                     let ty = self.context.store.interners.intern_ty(kind);
                     self.context.cache_type(def_id, ty);
                 }
@@ -325,7 +342,7 @@ impl<'ctx> TypeCollector<'ctx> {
                 store.common_types.mappings.rune.set(Some(id));
                 store.common_types.rune
             }
-            "UInt" => {
+            "USize" => {
                 store.common_types.mappings.uint.set(Some(id));
                 store.common_types.uint
             }
@@ -345,7 +362,7 @@ impl<'ctx> TypeCollector<'ctx> {
                 store.common_types.mappings.uint64.set(Some(id));
                 store.common_types.uint64
             }
-            "Int" => {
+            "ISize" => {
                 store.common_types.mappings.int.set(Some(id));
                 store.common_types.int
             }
@@ -715,7 +732,7 @@ impl<'ctx> HirVisitor for FunctionCollector<'ctx> {
         let previous = self.parent;
 
         match &decl.kind {
-            DeclarationKind::DefinedType(_) => {
+            DeclarationKind::DefinedType(_) | DeclarationKind::Namespace(_) => {
                 self.parent = Some(def_id);
             }
             DeclarationKind::Extend(_) => {
@@ -723,6 +740,16 @@ impl<'ctx> HirVisitor for FunctionCollector<'ctx> {
             }
             DeclarationKind::Function(func) => {
                 let signature = utils::convert_to_labeled_signature(func, self.context);
+
+                {
+                    let arguments = self.context.type_arguments(def_id);
+                    let kind = TyKind::FnDef(def_id, arguments);
+                    let ty = self.context.store.interners.intern_ty(kind);
+                    self.context.cache_type(def_id, ty);
+
+                    self.context.cache_signature(def_id, signature.clone());
+                };
+
                 match context {
                     DeclarationContext::Module => {
                         // Top Level Function

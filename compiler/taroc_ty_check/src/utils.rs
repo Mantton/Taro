@@ -5,8 +5,8 @@ use crate::{
 use taroc_context::GlobalContext;
 use taroc_hir::DefinitionID;
 use taroc_ty::{
-    ConformanceRecord, Constraint, GenericArgument, GenericArguments, LabeledFunctionParameter,
-    LabeledFunctionSignature, Ty, TyKind,
+    ConformanceRecord, Constraint, GenericArgument, GenericArguments, InterfaceReference,
+    LabeledFunctionParameter, LabeledFunctionSignature, Ty, TyKind,
 };
 
 pub fn convert_to_labeled_signature<'ctx>(
@@ -169,6 +169,24 @@ pub fn substitute<'ctx>(
                 .interners
                 .intern_ty(TyKind::Adt(definition_id, arguments, ty));
         }
+        taroc_ty::TyKind::FnDef(definition_id, generic_arguments) => {
+            let arguments: Vec<GenericArgument<'ctx>> = generic_arguments
+                .into_iter()
+                .cloned()
+                .map(|argument| match argument {
+                    taroc_ty::GenericArgument::Type(ty) => {
+                        GenericArgument::Type(substitute(ty, substitutions, conformance, context))
+                    }
+                    taroc_ty::GenericArgument::Const(_) => todo!(),
+                })
+                .collect();
+
+            let arguments = context.store.interners.intern_generic_args(&arguments);
+            return context
+                .store
+                .interners
+                .intern_ty(TyKind::FnDef(definition_id, arguments));
+        }
         taroc_ty::TyKind::Existential(..) => {
             todo!()
         }
@@ -213,6 +231,7 @@ pub fn substitute<'ctx>(
             };
             return context.store.interners.intern_ty(kind);
         }
+        taroc_ty::TyKind::Infer(..) => todo!("substitute inferred type"),
         _ => return ty,
     }
 }
@@ -235,12 +254,31 @@ pub fn substitute_constraint<'ctx>(
     match constraint {
         Constraint::Bound { ty, interface } => Constraint::Bound {
             ty: substitute(ty, subst_map, None, cx),
-            interface, // Interface refs are already concrete
+            interface: {
+                let arguments: Vec<GenericArgument<'ctx>> = interface
+                    .arguments
+                    .into_iter()
+                    .cloned()
+                    .map(|argument| match argument {
+                        taroc_ty::GenericArgument::Type(ty) => {
+                            GenericArgument::Type(substitute(ty, subst_map, None, cx))
+                        }
+                        taroc_ty::GenericArgument::Const(_) => todo!(),
+                    })
+                    .collect();
+
+                let arguments = cx.store.interners.intern_generic_args(&arguments);
+                let reference = InterfaceReference {
+                    id: interface.id,
+                    arguments,
+                };
+                reference
+            },
         },
 
-        Constraint::TypeEquality { left, right } => Constraint::TypeEquality {
-            left: substitute(left, subst_map, None, cx),
-            right: substitute(right, subst_map, None, cx),
-        },
+        Constraint::TypeEquality(left, right) => Constraint::TypeEquality(
+            substitute(left, subst_map, None, cx),
+            substitute(right, subst_map, None, cx),
+        ),
     }
 }

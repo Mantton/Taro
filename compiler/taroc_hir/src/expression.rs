@@ -62,6 +62,7 @@ pub enum ExpressionKind {
     MatchBinding(PatternBindingCondition),
     /// |a, b| { a + b }
     Closure(ClosureExpression),
+    /// { <stmt_list> }
     Block(Block),
     /// await foo.bar()
     Await(Box<Expression>),

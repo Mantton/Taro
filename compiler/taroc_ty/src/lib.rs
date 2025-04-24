@@ -1,5 +1,7 @@
+use core::fmt;
 use indexmap::IndexMap;
 use rustc_hash::FxHashMap;
+use std::fmt::Display;
 use taroc_data_structures::Interned;
 use taroc_hir::{DefinitionID, Mutability};
 use taroc_span::{FileID, Span, Symbol};
@@ -32,7 +34,7 @@ pub enum TyKind<'arena> {
     Tuple(&'arena [Ty<'arena>]),
 
     Adt(
-        DefinitionID,
+        AdtDef,
         &'arena [GenericArgument<'arena>],
         Option<Ty<'arena>>,
     ),
@@ -40,6 +42,7 @@ pub enum TyKind<'arena> {
     // any <interface> | <interface>
     Existential(&'arena [InterfaceReference<'arena>]),
     Parameter(GenericParameter),
+    FnDef(DefinitionID, &'arena [GenericArgument<'arena>]),
     Function {
         inputs: &'arena [Ty<'arena>],
         output: Ty<'arena>,
@@ -48,14 +51,14 @@ pub enum TyKind<'arena> {
     Variadic(Ty<'arena>),
     // Represents Interface::AssociatedType (e.g., Self::Element or C::Element)
     AssociatedType(DefinitionID),
-    Infer,
+    Infer(InferTy),
     Error,
     Ignore,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IntTy {
-    Int,
+    ISize,
     I8,
     I16,
     I32,
@@ -64,7 +67,7 @@ pub enum IntTy {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UIntTy {
-    UInt,
+    USize,
     U8,
     U16,
     U32,
@@ -75,6 +78,19 @@ pub enum UIntTy {
 pub enum FloatTy {
     F32,
     F64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AdtKind {
+    Struct,
+    Enum,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AdtDef {
+    pub name: Symbol,
+    pub kind: AdtKind,
+    pub id: DefinitionID,
 }
 
 // MARK: Generics
@@ -312,10 +328,274 @@ pub enum Constraint<'ctx> {
     },
 
     /// `T == U`
-    TypeEquality { left: Ty<'ctx>, right: Ty<'ctx> },
+    TypeEquality(Ty<'ctx>, Ty<'ctx>),
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct DefinitionConstraints<'ctx> {
     pub constraints: Vec<(Constraint<'ctx>, Span)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum InferTy {
+    TyVar(TyVid),
+    IntVar(IntVid),
+    FloatVar(FloatVid),
+    NilVar(NilVid),
+}
+
+index_vec::define_index_type! {
+    pub struct TyVid = u32;
+}
+
+index_vec::define_index_type! {
+    pub struct IntVid = u32;
+}
+
+index_vec::define_index_type! {
+    pub struct FloatVid = u32;
+}
+
+index_vec::define_index_type! {
+    pub struct NilVid = u32;
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct VarBinding<'ctx, T> {
+    pub parent: Option<T>,
+    pub bound_ty: Option<Ty<'ctx>>,
+}
+
+pub enum Direction<'ctx> {
+    Synth,
+    Check(Ty<'ctx>),
+}
+
+// HELPERS
+impl<'ctx> Ty<'ctx> {
+    /// Fast “syntactic” check: does this type mention any generic parameters?
+    pub fn needs_instantiation(self) -> bool {
+        fn visit<'ctx>(ty: Ty<'ctx>) -> bool {
+            match ty.kind() {
+                // A generic parameter definitely needs instantiation
+                TyKind::Parameter(_) => true,
+                // Walk composite types
+                TyKind::Pointer(inner, _)
+                | TyKind::Reference(inner, _)
+                | TyKind::Variadic(inner) => visit(inner),
+                TyKind::Array(elem, _) => visit(elem),
+                TyKind::Tuple(elems) => elems.iter().copied().any(visit),
+                TyKind::Function { inputs, output, .. } => {
+                    inputs.iter().copied().any(visit) || visit(output)
+                }
+                TyKind::FnDef(_, args) => args.iter().filter_map(|ga| ga.ty()).any(visit),
+                TyKind::Adt(_, args, _) => args.iter().filter_map(|ga| ga.ty()).any(visit),
+                // Existential, associated, infer, error, primitives …
+                _ => false,
+            }
+        }
+        visit(self)
+    }
+}
+
+// DISPLAY
+//
+// Implement Display for the interned type wrapper
+impl<'arena> Display for Ty<'arena> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Delegate to the underlying kind
+        write!(f, "{}", self.kind())
+    }
+}
+
+// Display for the various primitive type enums
+impl Display for IntTy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            IntTy::ISize => "isize",
+            IntTy::I8 => "i8",
+            IntTy::I16 => "i16",
+            IntTy::I32 => "i32",
+            IntTy::I64 => "i64",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+impl Display for UIntTy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            UIntTy::USize => "usize",
+            UIntTy::U8 => "u8",
+            UIntTy::U16 => "u16",
+            UIntTy::U32 => "u32",
+            UIntTy::U64 => "u64",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+impl Display for FloatTy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            FloatTy::F32 => "float",
+            FloatTy::F64 => "double",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+// Display for interface references (e.g., trait bounds)
+impl<'arena> Display for InterfaceReference<'arena> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.id)?;
+        if !self.arguments.is_empty() {
+            write!(f, "<")?;
+            for (i, arg) in self.arguments.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                match arg {
+                    GenericArgument::Type(t) => write!(f, "{}", t)?,
+                    GenericArgument::Const(c) => write!(f, "{}", c)?,
+                }
+            }
+            write!(f, ">")?;
+        }
+        Ok(())
+    }
+}
+
+// Display for the core TyKind enum
+impl<'arena> Display for TyKind<'arena> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TyKind::Bool => write!(f, "bool"),
+            TyKind::Rune => write!(f, "rune"),
+            TyKind::Int(i) => write!(f, "{}", i),
+            TyKind::UInt(u) => write!(f, "{}", u),
+            TyKind::Float(fl) => write!(f, "{}", fl),
+            TyKind::Pointer(inner, mutability) => match mutability {
+                Mutability::Immutable => write!(f, "*const {}", inner),
+                Mutability::Mutable => write!(f, "*mut {}", inner),
+            },
+            TyKind::Reference(inner, mutability) => match mutability {
+                Mutability::Immutable => write!(f, "&const {}", inner),
+                Mutability::Mutable => write!(f, "&mut {}", inner),
+            },
+            TyKind::Array(elem, size) => write!(f, "[{}; {}]", elem, size),
+            TyKind::Tuple(elems) => {
+                write!(f, "(")?;
+                if elems.len() == 1 {
+                    // Single-element tuple needs a trailing comma
+                    write!(f, "{},", elems[0])?;
+                } else {
+                    for (i, ty) in elems.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", ty)?;
+                    }
+                }
+                write!(f, ")")
+            }
+            TyKind::Adt(def, args, parent) => {
+                if let Some(s) = parent {
+                    write!(f, "{}::", s)?;
+                }
+                write!(f, "{}", def.name)?;
+                if !args.is_empty() {
+                    write!(f, "<")?;
+                    for (i, arg) in args.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        match arg {
+                            GenericArgument::Type(t) => write!(f, "{}", t)?,
+                            GenericArgument::Const(c) => write!(f, "{}", c)?,
+                        }
+                    }
+                    write!(f, ">")?;
+                }
+
+                Ok(())
+            }
+            TyKind::Existential(ifaces) => {
+                for (i, iface) in ifaces.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " | ")?;
+                    }
+                    write!(f, "{}", iface)?;
+                }
+                Ok(())
+            }
+            TyKind::Parameter(param) => write!(f, "{}", param.name),
+            TyKind::Function {
+                inputs,
+                output,
+                is_async,
+            } => {
+                if *is_async {
+                    write!(f, "async ")?;
+                }
+                write!(f, "(")?;
+                for (i, inp) in inputs.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", inp)?;
+                }
+                write!(f, ") -> {}", output)
+            }
+            TyKind::Variadic(elem) => write!(f, "...{}", elem),
+            TyKind::AssociatedType(def_id) => write!(f, "{}", def_id),
+            TyKind::Infer(v) => write!(f, "{v:?}"),
+            TyKind::Error => write!(f, "<error>"),
+            TyKind::Ignore => write!(f, "_"),
+            TyKind::FnDef(id, args) => {
+                write!(f, "{}", id)?;
+                if !args.is_empty() {
+                    write!(f, "<")?;
+                    for (i, arg) in args.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        match arg {
+                            GenericArgument::Type(t) => write!(f, "{}", t)?,
+                            GenericArgument::Const(c) => write!(f, "{}", c)?,
+                        }
+                    }
+                    write!(f, ">")?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// A helper wrapper so we can implement `Display` for a slice of
+/// `GenericArgument<'ctx>`.
+pub struct GenericArgs<'a, 'ctx>(pub &'a [GenericArgument<'ctx>]);
+
+impl<'a, 'ctx> fmt::Display for GenericArgs<'a, 'ctx> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("<")?;
+        for (i, arg) in self.0.iter().enumerate() {
+            if i != 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "{arg}")?; // relies on the impl below
+        }
+        f.write_str(">") // closing bracket
+    }
+}
+
+/// Nice printing for one argument (`Int`, `const 4`, …).
+impl<'ctx> fmt::Display for GenericArgument<'ctx> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GenericArgument::Type(ty) => write!(f, "{ty}"),
+            GenericArgument::Const(v) => write!(f, "{v}"),
+        }
+    }
 }
