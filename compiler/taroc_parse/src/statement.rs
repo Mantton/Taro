@@ -191,14 +191,12 @@ impl Parser {
     fn parse_return_stmt(&mut self) -> R<StatementKind> {
         self.expect(TokenKind::Return)?;
 
-        let expr = if !self.matches(TokenKind::Semicolon) && !self.matches(TokenKind::RBrace) {
-            Some(self.parse_expression()?)
-        } else {
-            None
-        };
+        if self.matches_any(&[TokenKind::Semicolon, TokenKind::Newline]) {
+            return Ok(StatementKind::Return(None));
+        }
 
+        let expr = Some(self.parse_expression()?);
         self.expect_line_break_or_semi()?;
-
         Ok(StatementKind::Return(expr))
     }
 

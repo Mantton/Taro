@@ -115,8 +115,19 @@ impl<'ctx> FunctionChecker<'ctx> {
         };
 
         // Block
+        //
         let Some(block) = &function.block else { return };
-        self.check_block(block, return_ty);
+
+        if let Some(expr) = Self::is_expression_bodied(block) {
+            // ---- single-expression body ---------------------------------------
+            let actual = self.synthesize_expression(expr);
+            self.context
+                .add_constraint(Constraint::TypeEquality(return_ty, actual), expr.span);
+        } else {
+            // ---- regular block body ------------------------------------------
+            self.check_function_body(block, return_ty);
+        }
+        self.check_function_body(block, return_ty);
 
         // Constraints
         self.solve_constraints();
@@ -124,13 +135,28 @@ impl<'ctx> FunctionChecker<'ctx> {
         // TODO: Default Unbound Intvar
     }
 
-    fn check_block(&mut self, block: &taroc_hir::Block, _: Ty<'ctx>) {
+    fn check_function_body(&mut self, block: &taroc_hir::Block, return_ty: Ty<'ctx>) {
+        // TODO: Single Line Functions
         for statement in &block.statements {
-            self.check_statement(statement);
+            self.check_statement(statement, return_ty);
         }
     }
 
-    fn check_statement(&mut self, statement: &taroc_hir::Statement) {
+    fn is_expression_bodied(block: &taroc_hir::Block) -> Option<&taroc_hir::Expression> {
+        match block.statements.as_slice() {
+            [
+                taroc_hir::Statement {
+                    kind: taroc_hir::StatementKind::Expression(expr),
+                    ..
+                },
+            ] => {
+                Some(expr) // exactly one expression stmt → expr-bodied
+            }
+            _ => None, // otherwise treat as regular block
+        }
+    }
+
+    fn check_statement(&mut self, statement: &taroc_hir::Statement, return_ty: Ty<'ctx>) {
         match &statement.kind {
             taroc_hir::StatementKind::Declaration(..) => {}
             taroc_hir::StatementKind::Expression(expression) => {
@@ -140,11 +166,20 @@ impl<'ctx> FunctionChecker<'ctx> {
                 self.check_local(local);
             }
             taroc_hir::StatementKind::Return(expression) => {
-                if let Some(expression) = expression {
-                    self.synthesize_expression(expression);
+                let ty = if let Some(expression) = expression {
+                    self.synthesize_expression(expression)
                 } else {
-                    // Unit Type
-                }
+                    self.context.store.common_types.void
+                };
+
+                let constraint = Constraint::TypeEquality(return_ty, ty);
+                self.context.add_constraint(
+                    constraint,
+                    expression
+                        .as_ref()
+                        .map(|p| p.span)
+                        .unwrap_or(statement.span),
+                );
             }
 
             //
