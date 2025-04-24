@@ -224,15 +224,6 @@ impl<'res, 'ctx> ExtensionBinder<'res, 'ctx> {
                 }
                 return None;
             }
-            taroc_hir::TypeKind::Variadic(..) => {
-                if self.finalize {
-                    self.resolver
-                        .context
-                        .diagnostics
-                        .error("cannot extend variadic type".into(), span);
-                }
-                return None;
-            }
         };
 
         path

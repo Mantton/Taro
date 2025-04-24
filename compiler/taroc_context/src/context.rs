@@ -335,7 +335,6 @@ impl<'ctx> GlobalContext<'ctx> {
             TyKind::Existential(..) => None,
             TyKind::Parameter(..) => None,
             TyKind::Function { .. } => None,
-            TyKind::Variadic(..) => None,
             TyKind::AssociatedType(definition_id) => Some(definition_id),
             TyKind::Infer(..) => None,
             TyKind::Error => None,

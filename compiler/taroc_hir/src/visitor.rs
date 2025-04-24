@@ -491,9 +491,6 @@ pub fn walk_type<V: HirVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
         TypeKind::Exisitential(items) => {
             walk_list!(visitor, visit_tagged_path, items);
         }
-        TypeKind::Variadic(ty) => {
-            try_visit!(visitor.visit_type(ty));
-        }
         TypeKind::Infer => {}
     }
     V::Result::output()

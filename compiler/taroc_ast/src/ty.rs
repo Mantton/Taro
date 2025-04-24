@@ -16,7 +16,7 @@ pub enum TypeKind {
     Path(Path),
     /// Pointer Type
     ///
-    /// `*T` | `*const T`
+    /// `*mut T` | `*const T`
     Pointer(Box<Type>, Mutability),
     /// Reference Type
     ///
@@ -74,5 +74,4 @@ pub enum TypeKind {
     Exisitential(Vec<Path>),
     /// Tilde
     OptionalReference(Box<Type>, Mutability),
-    Variadic(Box<Type>),
 }

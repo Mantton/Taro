@@ -33,7 +33,6 @@ pub enum TypeKind {
     Opaque(Vec<TaggedPath>),
     /// `any T`
     Exisitential(Vec<TaggedPath>),
-    Variadic(Box<Type>),
 }
 
 pub use taroc_ast::Mutability;

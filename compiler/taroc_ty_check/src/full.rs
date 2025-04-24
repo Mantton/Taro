@@ -751,7 +751,7 @@ impl<'ctx> FunctionChecker<'ctx> {
             TyKind::Infer(InferTy::TyVar(id)) => self.context.find_tyvar(id) == root,
 
             // Walk composite structures ---------------------------------------------------
-            TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) | TyKind::Variadic(inner) => {
+            TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => {
                 self.occurs_in_ty(root, inner)
             }
 

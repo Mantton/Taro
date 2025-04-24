@@ -48,7 +48,6 @@ pub enum TyKind<'arena> {
         output: Ty<'arena>,
         is_async: bool,
     },
-    Variadic(Ty<'arena>),
     // Represents Interface::AssociatedType (e.g., Self::Element or C::Element)
     AssociatedType(DefinitionID),
     Infer(InferTy),
@@ -273,23 +272,16 @@ pub struct AssociatedTypeDefinition<'ctx> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LabeledFunctionSignature<'ctx> {
-    pub receiver: Option<ReceiverKind>,
     pub inputs: Vec<LabeledFunctionParameter<'ctx>>,
     pub output: Ty<'ctx>,
     pub is_async: bool,
+    pub is_variadic: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LabeledFunctionParameter<'ctx> {
     pub label: Option<Symbol>,
     pub ty: Ty<'ctx>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum ReceiverKind {
-    Owned, // For a normal 'Self'
-    Mut,   // For a &mut Self
-    Const, // For a &const Self
 }
 
 #[derive(Debug, Default)]
@@ -380,9 +372,7 @@ impl<'ctx> Ty<'ctx> {
                 // A generic parameter definitely needs instantiation
                 TyKind::Parameter(_) => true,
                 // Walk composite types
-                TyKind::Pointer(inner, _)
-                | TyKind::Reference(inner, _)
-                | TyKind::Variadic(inner) => visit(inner),
+                TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => visit(inner),
                 TyKind::Array(elem, _) => visit(elem),
                 TyKind::Tuple(elems) => elems.iter().copied().any(visit),
                 TyKind::Function { inputs, output, .. } => {
@@ -547,7 +537,6 @@ impl<'arena> Display for TyKind<'arena> {
                 }
                 write!(f, ") -> {}", output)
             }
-            TyKind::Variadic(elem) => write!(f, "...{}", elem),
             TyKind::AssociatedType(def_id) => write!(f, "{}", def_id),
             TyKind::Infer(v) => write!(f, "{v:?}"),
             TyKind::Error => write!(f, "<error>"),

@@ -23,14 +23,6 @@ impl Parser {
             };
         }
 
-        if self.eat(TokenKind::Ellipsis) {
-            let k = TypeKind::Variadic(Box::new(ty));
-            ty = Type {
-                span: lo.to(hi),
-                kind: k,
-            };
-        }
-
         Ok(Box::new(ty))
     }
 

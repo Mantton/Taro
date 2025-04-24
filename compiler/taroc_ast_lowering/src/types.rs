@@ -135,7 +135,6 @@ impl Actor<'_> {
             taroc_ast::TypeKind::Exisitential(items) => taroc_hir::TypeKind::Exisitential(
                 self.lower_sequence(items, |a, ty| a.lower_tagged_path(ty)),
             ),
-            taroc_ast::TypeKind::Variadic(ty) => taroc_hir::TypeKind::Variadic(self.lower_type(ty)),
         }
     }
 }

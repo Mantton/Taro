@@ -1,11 +1,9 @@
-use crate::{Generics, Mutability};
-
 use super::{Label, attribute::AttributeList, block::Block, expression::Expression, ty::Type};
+use crate::Generics;
 use taroc_span::{Identifier, Span};
 
 #[derive(Debug)]
 pub struct Function {
-    pub reciever: Option<FunctionReciever>,
     pub generics: Generics,
     pub signature: FunctionSignature,
     pub block: Option<Block>,
@@ -48,8 +46,8 @@ pub struct FunctionSignature {
     pub is_async: bool,
 }
 
-#[derive(Debug)]
-pub enum FunctionReciever {
-    Value,
-    Reference(Mutability),
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SelfKind {
+    Copy,
+    Reference,
 }

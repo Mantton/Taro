@@ -77,12 +77,6 @@ impl<'ctx, 'icx> TypeLowerer<'ctx, 'icx> {
                 };
                 self.mk(kind)
             }
-            taroc_hir::TypeKind::Variadic(ty) => {
-                let ty = self.lower_nested(ty);
-                let kind = TyKind::Variadic(ty);
-                self.mk(kind)
-            }
-
             taroc_hir::TypeKind::Opaque(..) => todo!(),
             taroc_hir::TypeKind::Exisitential(..) => todo!(),
             taroc_hir::TypeKind::Infer => todo!("infer"),

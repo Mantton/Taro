@@ -29,11 +29,18 @@ pub fn convert_to_labeled_signature<'ctx>(
         context.store.common_types.void
     };
 
+    let is_variadic = func
+        .signature
+        .prototype
+        .inputs
+        .iter()
+        .any(|p| p.is_variadic);
+
     LabeledFunctionSignature {
         inputs,
         output,
         is_async,
-        receiver: None,
+        is_variadic,
     }
 }
 
@@ -132,10 +139,6 @@ pub fn substitute<'ctx>(
                 .store
                 .interners
                 .intern_ty(TyKind::Reference(ty, mutability));
-        }
-        taroc_ty::TyKind::Variadic(ty) => {
-            let ty = substitute(ty, substitutions, conformance, context);
-            return context.store.interners.intern_ty(TyKind::Variadic(ty));
         }
         taroc_ty::TyKind::Array(ty, len) => {
             let ty = substitute(ty, substitutions, conformance, context);
