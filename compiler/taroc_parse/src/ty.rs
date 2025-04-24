@@ -1,5 +1,5 @@
 use super::package::{Parser, R};
-use taroc_ast::{Mutability, Type, TypeKind};
+use taroc_ast::{Type, TypeKind};
 use taroc_span::SpannedMessage;
 use taroc_token::{Delimiter, TokenKind};
 
@@ -43,11 +43,7 @@ impl Parser {
             // TokenKind::Struct => self.parse_anon_struct_type(),
             TokenKind::Tilde => {
                 self.bump();
-                let mutability = if self.eat(TokenKind::Const) {
-                    Mutability::Immutable
-                } else {
-                    Mutability::Mutable
-                };
+                let mutability = self.parse_mutability();
                 Ok(TypeKind::OptionalReference(self.parse_type()?, mutability))
             }
             TokenKind::Some | TokenKind::Any => self.parse_interface_type(),
@@ -59,14 +55,6 @@ impl Parser {
         };
 
         res
-    }
-
-    fn parse_type_mutability(&mut self) -> Mutability {
-        if self.eat(TokenKind::Const) {
-            Mutability::Immutable
-        } else {
-            Mutability::Mutable
-        }
     }
 
     fn parse_interface_type(&mut self) -> R<TypeKind> {
@@ -91,7 +79,7 @@ impl Parser {
         debug_assert!(matches!(k, TokenKind::Star | TokenKind::Amp));
 
         let is_pointer = matches!(k, TokenKind::Star);
-        let mutability = self.parse_type_mutability();
+        let mutability = self.parse_mutability();
         let ty = self.parse_type()?;
 
         let kind = if is_pointer {

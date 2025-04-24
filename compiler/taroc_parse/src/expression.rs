@@ -348,7 +348,7 @@ impl Parser {
             }
             TokenKind::Amp => {
                 self.bump();
-                UnaryOperator::Reference(self.eat(TokenKind::Const))
+                UnaryOperator::Reference(matches!(self.parse_mutability(), Mutability::Mutable))
             }
             TokenKind::Minus => {
                 self.bump();

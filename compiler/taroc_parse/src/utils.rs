@@ -1,3 +1,4 @@
+use taroc_ast::Mutability;
 use taroc_error::{CompileError, CompileResult};
 use taroc_span::{Span, SpannedMessage, Symbol, with_session_globals};
 use taroc_token::{Token, TokenKind};
@@ -253,6 +254,18 @@ impl Parser {
                     return Err(SpannedMessage::new("failed to read file body".into(), span));
                 }
             },
+        }
+    }
+
+    pub fn parse_mutability(&mut self) -> Mutability {
+        if self.eat(TokenKind::Mut) {
+            Mutability::Mutable
+        } else {
+            if self.eat(TokenKind::Const) {
+                let message = format!("unnecessary `const` modifier");
+                self.emit_warning(message, self.previous().unwrap().span);
+            }
+            Mutability::Immutable
         }
     }
 }
