@@ -269,3 +269,92 @@ impl Parser {
         }
     }
 }
+
+impl Parser {
+    /* ------------------------------------------------------------------ */
+    /* 1. Conditional splitter helpers                                    */
+    /* ------------------------------------------------------------------ */
+
+    /// Returns `true` IFF the *next* token *can* satisfy `expected`,
+    /// performing "unshifting" on the fly if we are inside `< ... >`
+    /// and the compound token needs to be split.
+    fn test_then_unshift(&mut self, expected: TokenKind) -> bool {
+        use TokenKind::*;
+        let k0 = self.current_kind(); // raw token from the lexer
+        match (expected, k0, self.angle_depth) {
+            /* Looking for '<' but lexer gave us '<<' */
+            (LChevron, Shl, depth) if depth > 0 => {
+                self.split_shl(); // inject "<" "<"
+                true
+            }
+            /* Looking for '>' but lexer gave us '>>' or '>>=' */
+            (RChevron, Shr, depth) | (RChevron, ShrEq, depth) if depth > 0 => {
+                self.split_shr_like(k0); // inject ">" (">" ["="])
+                true
+            }
+            /* Looking for '=' after we've already split '>>='  */
+            (Eql, token, _) if token == Eql => true,
+
+            /* Normal single-token match */
+            _ => k0 == expected,
+        }
+    }
+
+    pub fn expect_unshifted(&mut self, kind: TokenKind) -> R<()> {
+        if self.eat_unshifted(kind.clone()) {
+            Ok(())
+        } else {
+            let msg = format!(
+                "expected '{}',  got '{}' instead",
+                kind,
+                self.current_kind()
+            );
+            let err = SpannedMessage::new(msg, self.current_token_span());
+            Err(err)
+        }
+    }
+
+    /// Consuming version (`eat_*` style).
+    fn eat_unshifted(&mut self, expected: TokenKind) -> bool {
+        if self.test_then_unshift(expected) {
+            self.bump(); // now safe: correct token is first
+            true
+        } else {
+            false
+        }
+    }
+
+    /*  low-level split helpers  --------------------------------------- */
+
+    fn split_shl(&mut self) {
+        // "<<": replace current with "<" then insert "<" after it.
+        self.replace_current(TokenKind::LChevron);
+        self.insert_future_token(TokenKind::LChevron);
+    }
+    fn split_shr_like(&mut self, k0: TokenKind) {
+        // ">>" or ">>="
+        self.replace_current(TokenKind::RChevron);
+        self.insert_future_token(TokenKind::RChevron);
+        if k0 == TokenKind::ShrEq {
+            self.insert_future_token(TokenKind::Eql); // '=' from '>>='
+        }
+    }
+
+    pub fn replace_current(&mut self, kind: TokenKind) {
+        self.file.tokens[self.cursor].kind = kind;
+    }
+    fn insert_future_token(&mut self, kind: TokenKind) {
+        let span = self
+            .previous()
+            .map(|f| f.span)
+            .unwrap_or(Span::empty(self.file.file));
+        self.file.tokens.insert(
+            self.cursor + 1,
+            Token {
+                kind,
+                span,
+                content: span,
+            },
+        );
+    }
+}

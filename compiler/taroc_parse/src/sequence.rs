@@ -14,7 +14,11 @@ impl Parser {
         F: FnMut(&mut Parser) -> R<T>,
     {
         // eat open
-        self.expect(delim.open())?;
+        self.expect_unshifted(delim.open())?;
+
+        if matches!(delim, Delimiter::Chevron) {
+            self.angle_depth += 1;
+        }
 
         self.consume_comments_and_new_lines();
 
@@ -42,7 +46,11 @@ impl Parser {
             }
         }
 
-        self.expect(delim.close())?;
+        self.expect_unshifted(delim.close())?;
+
+        if matches!(delim, Delimiter::Chevron) {
+            self.angle_depth += 1;
+        }
 
         Ok(items)
     }

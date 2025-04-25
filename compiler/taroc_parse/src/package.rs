@@ -61,6 +61,7 @@ pub struct Parser {
     pub restrictions: Restrictions,
     pub anchors: VecDeque<usize>,
     pub result: ParserResult,
+    pub angle_depth: usize, //  how many '<' are currently open?
 }
 
 impl Parser {
@@ -71,6 +72,7 @@ impl Parser {
             restrictions: Restrictions::empty(),
             anchors: VecDeque::new(),
             result: Default::default(),
+            angle_depth: 0,
         }
     }
 }

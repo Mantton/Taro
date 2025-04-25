@@ -261,6 +261,7 @@ impl Parser {
 
             TokenKind::ShlEq => Some(OperatorKind::BitShl),
             TokenKind::ShrEq => Some(OperatorKind::BitShr),
+            TokenKind::Bang => Some(OperatorKind::Not),
             _ => None,
         };
 
@@ -273,6 +274,12 @@ impl Parser {
             self.bump();
             self.bump();
             return Ok(OperatorKind::Index);
+        }
+
+        if self.matches(TokenKind::Underscore) && self.next_matches(1, TokenKind::Minus) {
+            self.bump();
+            self.bump();
+            return Ok(OperatorKind::Neg);
         }
 
         let err = SpannedMessage::new(format!("invalid operator"), self.current_token_span());
