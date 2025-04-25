@@ -122,7 +122,7 @@ impl HirVisitor for DefinitionCollector<'_, '_> {
 }
 
 impl DefinitionCollector<'_, '_> {
-    fn define_declaration(&mut self, decl: &taroc_hir::Declaration, _: DeclarationContext) {
+    fn define_declaration(&mut self, decl: &taroc_hir::Declaration, context: DeclarationContext) {
         let id = self.resolver.def_id(decl.id);
         let kind = self.resolver.def_kind(id);
         let name = decl.identifier.symbol;
@@ -134,11 +134,20 @@ impl DefinitionCollector<'_, '_> {
 
         match &decl.kind {
             DeclarationKind::Function(..)
-            | DeclarationKind::Variable(..)
             | DeclarationKind::Constant(..)
-            | DeclarationKind::Computed(..)
             | DeclarationKind::AssociatedType(..) => {
                 self.resolver.define(parent, decl.identifier, def);
+            }
+            DeclarationKind::Computed(..) => {
+                // We don't want to define computed properties in the path scope
+            }
+            DeclarationKind::Variable(..) => {
+                if !matches!(
+                    context,
+                    DeclarationContext::Struct | DeclarationContext::Interface
+                ) {
+                    self.resolver.define(parent, decl.identifier, def);
+                }
             }
             DeclarationKind::TypeAlias(alias) => {
                 self.resolver.define(parent, decl.identifier, def);

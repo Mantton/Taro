@@ -20,3 +20,10 @@ impl Parser {
         res
     }
 }
+
+bitflags::bitflags! {
+    #[derive(Default)]
+    pub struct Modifiers: u8 {
+        const STATIC = 1 << 1;
+    }
+}

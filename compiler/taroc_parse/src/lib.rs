@@ -1,3 +1,4 @@
+#![feature(if_let_guard)]
 mod adt;
 mod attribute;
 mod block;

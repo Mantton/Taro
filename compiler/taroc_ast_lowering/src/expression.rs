@@ -1,7 +1,8 @@
+use crate::literal::convert_ast_literal;
+
 use super::package::Actor;
-use taroc_ast::{self};
+use taroc_ast::{self, BinaryOperator};
 use taroc_span::Span;
-use taroc_token::BinaryOperator;
 
 impl Actor<'_> {
     pub fn lower_expression(
@@ -147,7 +148,7 @@ impl Actor<'_> {
         literal: taroc_ast::Literal,
         span: Span,
     ) -> taroc_hir::ExpressionKind {
-        let result = taroc_hir::Literal::from(literal);
+        let result = convert_ast_literal(literal);
 
         let literal = match result {
             Ok(lit) => lit,

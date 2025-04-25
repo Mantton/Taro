@@ -1,5 +1,5 @@
 use super::{expression::AnonConst, path::Path};
-use crate::Mutability;
+use taroc_ast_ir::Mutability;
 use taroc_span::Span;
 
 #[derive(Debug)]

@@ -44,6 +44,7 @@ pub struct FunctionSignature {
     pub span: Span,
     pub prototype: FunctionPrototype,
     pub is_async: bool,
+    pub is_static: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

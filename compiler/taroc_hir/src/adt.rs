@@ -1,5 +1,5 @@
 use super::{NodeID, Visibility, expression::AnonConst, ty::Type};
-use taroc_ast::Mutability;
+use taroc_ast_ir::Mutability;
 use taroc_span::{Identifier, Span};
 
 #[derive(Debug, Clone)]

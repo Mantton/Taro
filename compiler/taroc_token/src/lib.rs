@@ -1,6 +1,4 @@
 use std::fmt::Display;
-mod operator;
-pub use operator::*;
 use taroc_span::Span;
 
 #[derive(Debug, Clone, PartialEq, Copy)]
@@ -45,6 +43,7 @@ pub enum TokenKind {
     Var,
     Const,
     Mut,
+    Static,
 
     If,
     Else,
@@ -255,6 +254,7 @@ impl Display for TokenKind {
             TokenKind::Case => "case",
             TokenKind::Operator => "operator",
             TokenKind::Mut => "mut",
+            TokenKind::Static => "static",
         };
         write!(f, "{}", text)
     }
@@ -310,6 +310,7 @@ impl TokenKind {
             "case" => TokenKind::Case,
             "operator" => TokenKind::Operator,
             "mut" => TokenKind::Mut,
+            "static" => TokenKind::Static,
             _ => return None,
         };
 
@@ -346,57 +347,6 @@ impl TokenKind {
         }
 
         return false;
-    }
-}
-
-impl TokenKind {
-    pub fn bin_op_non_assign(k: TokenKind) -> Option<BinaryOperator> {
-        match k {
-            TokenKind::Plus => Some(BinaryOperator::Add),
-            TokenKind::Minus => Some(BinaryOperator::Sub),
-            TokenKind::Star => Some(BinaryOperator::Mul),
-            TokenKind::Quotient => Some(BinaryOperator::Div),
-            TokenKind::Modulus => Some(BinaryOperator::Rem),
-
-            TokenKind::AmpAmp => Some(BinaryOperator::BoolAnd),
-            TokenKind::BarBar => Some(BinaryOperator::BoolOr),
-
-            TokenKind::Amp => Some(BinaryOperator::BitAnd),
-            TokenKind::Bar => Some(BinaryOperator::BitOr),
-            TokenKind::Caret => Some(BinaryOperator::BitXor),
-
-            TokenKind::Shl => Some(BinaryOperator::BitShl),
-            TokenKind::Shr => Some(BinaryOperator::BitShr),
-
-            TokenKind::Eql => Some(BinaryOperator::Eql),
-            TokenKind::Neq => Some(BinaryOperator::Neq),
-            TokenKind::Geq => Some(BinaryOperator::Geq),
-            TokenKind::Leq => Some(BinaryOperator::Leq),
-            TokenKind::Teq => Some(BinaryOperator::PatMatch),
-
-            TokenKind::RChevron => Some(BinaryOperator::Gt),
-            TokenKind::LChevron => Some(BinaryOperator::Lt),
-            TokenKind::PtrEq => Some(BinaryOperator::PtrEq),
-            _ => None,
-        }
-    }
-
-    pub fn bin_op_assign(k: TokenKind) -> Option<BinaryOperator> {
-        match k {
-            TokenKind::PlusEq => Some(BinaryOperator::Add),
-            TokenKind::MinusEq => Some(BinaryOperator::Sub),
-            TokenKind::MulEq => Some(BinaryOperator::Mul),
-            TokenKind::DivEq => Some(BinaryOperator::Div),
-            TokenKind::RemEq => Some(BinaryOperator::Rem),
-
-            TokenKind::AmpEq => Some(BinaryOperator::BitAnd),
-            TokenKind::BarEq => Some(BinaryOperator::BitOr),
-            TokenKind::CaretEq => Some(BinaryOperator::BitXor),
-
-            TokenKind::ShlEq => Some(BinaryOperator::BitShl),
-            TokenKind::ShrEq => Some(BinaryOperator::BitShr),
-            _ => None,
-        }
     }
 }
 

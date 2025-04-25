@@ -37,3 +37,5 @@ pub use pattern::*;
 pub use statement::*;
 pub use ty::*;
 pub use visibility::*;
+
+pub use taroc_ast_ir::*;

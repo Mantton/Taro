@@ -4,8 +4,8 @@ use super::{
 };
 use crate::{AnonConst, Generics, Variant};
 use std::collections::HashMap;
+use taroc_ast_ir::OperatorKind;
 use taroc_span::{Identifier, Span};
-use taroc_token::OperatorKind;
 
 #[derive(Debug, Clone)]
 pub struct Declaration {

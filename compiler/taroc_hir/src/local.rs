@@ -1,6 +1,5 @@
-use taroc_ast::Mutability;
-
 use super::{NodeID, expression::Expression, pattern::BindingPattern, ty::Type};
+use taroc_ast_ir::{LocalSource, Mutability};
 
 #[derive(Debug, Clone)]
 pub struct Local {
@@ -9,4 +8,5 @@ pub struct Local {
     pub pattern: BindingPattern,
     pub ty: Option<Box<Type>>,
     pub initializer: Option<Box<Expression>>,
+    pub source: LocalSource,
 }

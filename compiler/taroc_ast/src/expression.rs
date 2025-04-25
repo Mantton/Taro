@@ -1,9 +1,9 @@
 use super::{
-    Block, FunctionSignature, Label, Literal, MatchingPattern, Mutability, Path, PathSegment,
+    Block, FunctionSignature, Label, Literal, MatchingPattern, Path, PathSegment,
     StatementConditionList, Type,
 };
+use taroc_ast_ir::{BinaryOperator, Mutability, UnaryOperator};
 use taroc_span::{Identifier, Span};
-use taroc_token::{BinaryOperator, UnaryOperator};
 
 #[derive(Debug)]
 pub struct Expression {

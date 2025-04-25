@@ -8,6 +8,7 @@ colored = "3.0.0"
 taroc_span = { path = "../taroc_span" }
 taroc_error = { path = "../taroc_error" }
 taroc_ast = { path = "../taroc_ast" }
+taroc_ast_ir = { path = "../taroc_ast_ir" }
 taroc_hir = { path = "../taroc_hir" }
 taroc_token = { path = "../taroc_token" }
 taroc_context = { path = "../taroc_context" }

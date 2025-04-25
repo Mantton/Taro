@@ -1,8 +1,6 @@
-use taroc_span::{Identifier, Span};
-
-use crate::Mutability;
-
 use super::{AnonConst, Label, Path};
+use taroc_ast_ir::Mutability;
+use taroc_span::{Identifier, Span};
 
 #[derive(Debug)]
 pub struct MatchingPattern {

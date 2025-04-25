@@ -2,10 +2,10 @@ use super::{
     Block, attribute::AttributeList, function::Function, local::Local, path::Path, ty::Type,
     visibility::Visibility,
 };
-use crate::{AnonConst, Generics, Variant};
+use crate::{AnonConst, Expression, Generics, Variant};
 use std::collections::HashMap;
+use taroc_ast_ir::OperatorKind;
 use taroc_span::{Identifier, Span, Symbol};
-use taroc_token::OperatorKind;
 
 #[derive(Debug)]
 pub struct Declaration {
@@ -46,6 +46,7 @@ pub enum DeclarationKind {
     Bridge(Bridge),
     /// `var count: Int {}`
     Computed(ComputedVariable),
+    // StoredProperty(StoredProperty),
     /// `associatedtype Foo`
     AssociatedType(AssociatedType),
     /// `struct Foo {}` | `enum Foo {}` | `interface Foo {}`
@@ -153,4 +154,11 @@ pub struct ComputedVariable {
 #[derive(Debug)]
 pub struct EnumCase {
     pub members: Vec<Variant>,
+}
+
+#[derive(Debug)]
+pub struct StoredProperty {
+    pub name: Identifier,
+    pub annotation: Option<Box<Type>>,
+    pub default: Option<Box<Expression>>,
 }

@@ -4,6 +4,7 @@ mod declaration;
 mod expression;
 mod function;
 mod generics;
+mod literal;
 mod local;
 mod package;
 mod path;

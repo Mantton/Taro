@@ -1,10 +1,10 @@
 use super::package::{Parser, R};
 use taroc_ast::{
-    DeclarationKind, Function, FunctionParameter, FunctionPrototype, FunctionSignature, Generics,
-    Label, Mutability, SelfKind, Type, TypeKind,
+    BinaryOperator, DeclarationKind, Function, FunctionParameter, FunctionPrototype,
+    FunctionSignature, Generics, Label, Mutability, OperatorKind, SelfKind, Type, TypeKind,
 };
 use taroc_span::{Identifier, SpannedMessage, Symbol};
-use taroc_token::{Delimiter, OperatorKind, TokenKind};
+use taroc_token::{Delimiter, TokenKind};
 
 impl Parser {
     pub fn parse_function(&mut self) -> R<(Identifier, DeclarationKind)> {
@@ -59,6 +59,7 @@ impl Parser {
             span: lo.to(self.hi_span()),
             prototype,
             is_async,
+            is_static: false,
         };
 
         let block = if self.matches(TokenKind::LBrace) {
@@ -284,5 +285,56 @@ impl Parser {
 
         let err = SpannedMessage::new(format!("invalid operator"), self.current_token_span());
         Err(err)
+    }
+}
+
+impl Parser {
+    pub fn bin_op_non_assign(k: TokenKind) -> Option<BinaryOperator> {
+        match k {
+            TokenKind::Plus => Some(BinaryOperator::Add),
+            TokenKind::Minus => Some(BinaryOperator::Sub),
+            TokenKind::Star => Some(BinaryOperator::Mul),
+            TokenKind::Quotient => Some(BinaryOperator::Div),
+            TokenKind::Modulus => Some(BinaryOperator::Rem),
+
+            TokenKind::AmpAmp => Some(BinaryOperator::BoolAnd),
+            TokenKind::BarBar => Some(BinaryOperator::BoolOr),
+
+            TokenKind::Amp => Some(BinaryOperator::BitAnd),
+            TokenKind::Bar => Some(BinaryOperator::BitOr),
+            TokenKind::Caret => Some(BinaryOperator::BitXor),
+
+            TokenKind::Shl => Some(BinaryOperator::BitShl),
+            TokenKind::Shr => Some(BinaryOperator::BitShr),
+
+            TokenKind::Eql => Some(BinaryOperator::Eql),
+            TokenKind::Neq => Some(BinaryOperator::Neq),
+            TokenKind::Geq => Some(BinaryOperator::Geq),
+            TokenKind::Leq => Some(BinaryOperator::Leq),
+            TokenKind::Teq => Some(BinaryOperator::PatMatch),
+
+            TokenKind::RChevron => Some(BinaryOperator::Gt),
+            TokenKind::LChevron => Some(BinaryOperator::Lt),
+            TokenKind::PtrEq => Some(BinaryOperator::PtrEq),
+            _ => None,
+        }
+    }
+
+    pub fn bin_op_assign(k: TokenKind) -> Option<BinaryOperator> {
+        match k {
+            TokenKind::PlusEq => Some(BinaryOperator::Add),
+            TokenKind::MinusEq => Some(BinaryOperator::Sub),
+            TokenKind::MulEq => Some(BinaryOperator::Mul),
+            TokenKind::DivEq => Some(BinaryOperator::Div),
+            TokenKind::RemEq => Some(BinaryOperator::Rem),
+
+            TokenKind::AmpEq => Some(BinaryOperator::BitAnd),
+            TokenKind::BarEq => Some(BinaryOperator::BitOr),
+            TokenKind::CaretEq => Some(BinaryOperator::BitXor),
+
+            TokenKind::ShlEq => Some(BinaryOperator::BitShl),
+            TokenKind::ShrEq => Some(BinaryOperator::BitShr),
+            _ => None,
+        }
     }
 }

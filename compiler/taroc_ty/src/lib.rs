@@ -2,10 +2,10 @@ use core::fmt;
 use indexmap::IndexMap;
 use rustc_hash::FxHashMap;
 use std::fmt::Display;
+use taroc_ast_ir::OperatorKind;
 use taroc_data_structures::Interned;
 use taroc_hir::{DefinitionID, Mutability};
 use taroc_span::{FileID, Span, Symbol};
-use taroc_token::OperatorKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Ty<'arena>(Interned<'arena, TyKind<'arena>>);

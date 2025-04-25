@@ -1,7 +1,7 @@
-use taroc_ast::Mutability;
+use super::{Label, NodeID, expression::AnonConst, path::Path};
+use taroc_ast_ir::Mutability;
 use taroc_span::{Identifier, Span};
 
-use super::{Label, NodeID, expression::AnonConst, path::Path};
 #[derive(Debug, Clone)]
 pub struct MatchingPattern {
     pub id: NodeID,

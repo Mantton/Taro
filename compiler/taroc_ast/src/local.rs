@@ -1,4 +1,4 @@
-use crate::Mutability;
+use taroc_ast_ir::{LocalSource, Mutability};
 
 use super::{expression::Expression, pattern::BindingPattern, ty::Type};
 
@@ -9,4 +9,5 @@ pub struct Local {
     pub ty: Option<Box<Type>>,
     pub initializer: Option<Box<Expression>>,
     pub is_shorthand: bool,
+    pub source: LocalSource,
 }

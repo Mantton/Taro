@@ -1,5 +1,5 @@
+use taroc_ast_ir::{BinaryOperator, UnaryOperator};
 use taroc_span::Span;
-use taroc_token::{BinaryOperator, UnaryOperator};
 
 use super::{
     NodeID,

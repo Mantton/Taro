@@ -10,7 +10,6 @@ nightly = []
 colored = "3.0.0"
 taroc_span = { path = "../taroc_span" }
 taroc_error = { path = "../taroc_error" }
-taroc_token = { path = "../taroc_token" }
-taroc_ast = { path = "../taroc_ast" }
+taroc_ast_ir = { path = "../taroc_ast_ir" }
 rustc-hash = "2.1.1"
 index_vec = "0.1.4"

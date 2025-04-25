@@ -6,9 +6,8 @@ use crate::{
 use rustc_hash::FxHashMap;
 use taroc_context::GlobalContext;
 use taroc_error::CompileResult;
-use taroc_hir::{DefinitionID, Mutability, NodeID};
+use taroc_hir::{DefinitionID, Mutability, NodeID, UnaryOperator};
 use taroc_span::{Span, Symbol};
-use taroc_token::UnaryOperator;
 use taroc_ty::{
     Adjustment, Coercion, Constraint, GenericArgs, GenericArgument, GenericParameter, InferTy, Ty,
     TyKind, TyVid,

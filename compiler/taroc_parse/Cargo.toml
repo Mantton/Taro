@@ -11,4 +11,5 @@ taroc_token = { path = "../taroc_token" }
 taroc_constants = { path = "../taroc_constants" }
 taroc_ast = { path = "../taroc_ast" }
 taroc_lexer = { path = "../taroc_lexer" }
+taroc_ast_ir = { path = "../taroc_ast_ir" }
 bitflags = "2.9.0"

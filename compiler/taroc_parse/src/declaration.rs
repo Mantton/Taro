@@ -1,10 +1,12 @@
 use super::package::{Parser, R};
+use crate::restrictions::Modifiers;
 use std::collections::HashMap;
 use taroc_ast::{
     AssociatedType, BindingPatternKind, Bridge, BridgeValue, ComputedVariable, Declaration,
     DeclarationContext, DeclarationKind, DefinedType, DefinedTypeKind, EnumCase, Extend, Extern,
     Generics, Local, Mutability, Namespace, PathTree, PathTreeNode, TypeAlias,
 };
+use taroc_ast_ir::LocalSource;
 use taroc_span::{Identifier, SpannedMessage, Symbol};
 use taroc_token::{Delimiter, TokenKind};
 
@@ -18,6 +20,13 @@ impl Parser {
         let start_span = self.lo_span();
         let attributes = self.parse_attributes()?;
         let visibility = self.parse_visibility()?;
+        let mut modifiers = Modifiers::empty();
+        let static_span = if self.eat(TokenKind::Static) {
+            modifiers.insert(Modifiers::STATIC);
+            self.previous().map(|f| f.span)
+        } else {
+            None
+        };
 
         let Some((identifier, kind)) = self.parse_decl_kind(context)? else {
             if force {
@@ -30,13 +39,31 @@ impl Parser {
             return Ok(None);
         };
 
-        let decl = Declaration {
+        let mut decl = Declaration {
             span: start_span.to(self.hi_span()),
             identifier,
             kind,
             visibility,
             attributes,
         };
+
+        if modifiers.contains(Modifiers::STATIC) {
+            match &mut decl.kind {
+                DeclarationKind::Variable(local) => {
+                    local.source = if matches!(context, DeclarationContext::Struct) {
+                        LocalSource::StaticProperty
+                    } else {
+                        local.source
+                    }
+                }
+                DeclarationKind::Function(node) => node.signature.is_static = true,
+                _ if let Some(span) = static_span => {
+                    let message = "`static` is not allowed on this declaration";
+                    return Err(SpannedMessage::new(message.into(), span));
+                }
+                _ => unreachable!("ICE: static span must not be null"),
+            }
+        }
 
         Ok(Some(decl))
     }
@@ -45,12 +72,12 @@ impl Parser {
 impl Parser {
     fn parse_decl_kind(
         &mut self,
-        _: DeclarationContext,
+        context: DeclarationContext,
     ) -> R<Option<(Identifier, DeclarationKind)>> {
         let current_kind = self.current_kind();
         let (identifier, kind) = match current_kind {
-            TokenKind::Let => self.parse_variable_decl()?,
-            TokenKind::Var => self.parse_variable_decl()?,
+            TokenKind::Let => self.parse_variable_decl(context)?,
+            TokenKind::Var => self.parse_variable_decl(context)?,
             TokenKind::Const => self.parse_const_decl()?,
             TokenKind::Import => (
                 Identifier::emtpy(self.file.file),
@@ -84,7 +111,10 @@ impl Parser {
 }
 
 impl Parser {
-    fn parse_variable_decl(&mut self) -> R<(Identifier, DeclarationKind)> {
+    fn parse_variable_decl(
+        &mut self,
+        context: DeclarationContext,
+    ) -> R<(Identifier, DeclarationKind)> {
         let mutability = if self.eat(TokenKind::Let) {
             Mutability::Immutable
         } else if self.eat(TokenKind::Var) {
@@ -141,6 +171,11 @@ impl Parser {
             ty,
             initializer,
             is_shorthand: false,
+            source: if matches!(context, DeclarationContext::Struct) {
+                LocalSource::StoredProperty
+            } else {
+                LocalSource::TopLevelDecl
+            },
         };
 
         self.expect_line_break_or_semi()?;

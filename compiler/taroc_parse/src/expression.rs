@@ -4,10 +4,10 @@ use taroc_ast::{
     AnonConst, Block, ClosureExpression, EnsureMode, Expression, ExpressionArgument,
     ExpressionKind, FunctionParameter, FunctionPrototype, FunctionSignature, IfExpression, Literal,
     LiteralKind, MapPair, MethodCall, Mutability, OptionalBindingCondition,
-    PatternBindingCondition, Type, TypeKind, WhenArm, WhenArmKind, WhenExpression,
+    PatternBindingCondition, Type, TypeKind, UnaryOperator, WhenArm, WhenArmKind, WhenExpression,
 };
 use taroc_span::{Span, SpannedMessage};
-use taroc_token::{Base, Delimiter, TokenKind, UnaryOperator};
+use taroc_token::{Base, Delimiter, TokenKind};
 
 impl Parser {
     pub fn parse_expression(&mut self) -> R<Box<Expression>> {
@@ -51,7 +51,7 @@ impl Parser {
                 | T::ShlEq
                 | T::ShrEq
         ) {
-            let op = TokenKind::bin_op_assign(self.current_kind()).unwrap();
+            let op = Self::bin_op_assign(self.current_kind()).unwrap();
             self.bump();
 
             let value = self.parse_non_assignment_expr()?;
@@ -253,7 +253,7 @@ impl Parser {
     where
         F: FnMut(&mut Parser) -> R<Box<Expression>>,
     {
-        let op = TokenKind::bin_op_non_assign(self.current_kind());
+        let op = Self::bin_op_non_assign(self.current_kind());
 
         let Some(op) = op else {
             let msg = format!("unknown binary operator {}", self.current_kind());
@@ -591,6 +591,7 @@ impl Parser {
                     },
                     span: Span::empty(self.file.file),
                     is_async: false,
+                    is_static: false,
                 }
             };
             signature
@@ -705,6 +706,7 @@ impl Parser {
             span: lo.to(self.hi_span()),
             prototype: pt,
             is_async: false,
+            is_static: false,
         };
 
         Ok(sg)

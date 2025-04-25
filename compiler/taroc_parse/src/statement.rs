@@ -3,6 +3,7 @@ use taroc_ast::{
     Local, LoopStatement, Mutability, Statement, StatementConditionList, StatementKind,
     WhileStatement,
 };
+use taroc_ast_ir::LocalSource;
 use taroc_token::TokenKind;
 
 use super::{
@@ -106,6 +107,7 @@ impl Parser {
             ty,
             initializer,
             is_shorthand: false,
+            source: LocalSource::Variable,
         };
 
         Ok(local)
@@ -253,6 +255,7 @@ impl Parser {
                 ty: None,
                 initializer: Some(initializer),
                 is_shorthand: true,
+                source: LocalSource::Variable,
             };
 
             let kind = StatementKind::Variable(local);

@@ -1,4 +1,5 @@
 use super::{Label, expression::AnonConst, ty::Type, visibility::Visibility};
+use taroc_ast_ir::Mutability;
 use taroc_span::{Identifier, Span};
 
 #[derive(Debug)]
@@ -24,10 +25,4 @@ pub enum VariantKind {
     Unit,
     Tuple(Vec<FieldDefinition>),
     Struct(Vec<FieldDefinition>),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Mutability {
-    Mutable,
-    Immutable,
 }

@@ -35,4 +35,4 @@ pub enum TypeKind {
     Exisitential(Vec<TaggedPath>),
 }
 
-pub use taroc_ast::Mutability;
+pub use taroc_ast_ir::Mutability;

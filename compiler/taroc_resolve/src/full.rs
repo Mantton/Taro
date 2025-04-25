@@ -5,7 +5,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::hash_map::Entry;
 use taroc_error::CompileResult;
 use taroc_hir::{
-    Declaration, DeclarationContext, DefinitionID, DefinitionKind, NodeID, Resolution,
+    Declaration, DeclarationContext, DefinitionID, DefinitionKind, LocalSource, NodeID, Resolution,
     visitor::{self, HirVisitor},
 };
 use taroc_resolve_models::{
@@ -418,7 +418,9 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
             self.visit_expression(expr)
         }
 
-        self.resolve_top_level_binding_pattern(&local.pattern, PatternSource::Variable);
+        if matches!(local.source, LocalSource::Variable) {
+            self.resolve_top_level_binding_pattern(&local.pattern, PatternSource::Variable);
+        }
     }
 
     fn resolve_function_signature(&mut self, sg: &taroc_hir::FunctionSignature) {
