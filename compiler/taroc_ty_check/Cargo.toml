@@ -9,5 +9,6 @@ taroc_error = { path = "../taroc_error" }
 taroc_hir = { path = "../taroc_hir" }
 taroc_ty = { path = "../taroc_ty" }
 taroc_context = { path = "../taroc_context" }
+taroc_token = { path = "../taroc_token" }
 rustc-hash = "2.1.1"
 index_vec = "0.1.4"

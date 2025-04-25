@@ -3,6 +3,7 @@ use rustc_hash::FxHashMap;
 use taroc_context::GlobalContext;
 use taroc_error::CompileResult;
 use taroc_span::{Span, Symbol};
+use taroc_token::UnaryOperator;
 use taroc_ty::{
     Constraint, GenericArgs, GenericArgument, GenericParameter, InferTy, Ty, TyKind, TyVid,
 };
@@ -193,14 +194,12 @@ impl<'ctx> FunctionChecker<'ctx> {
 
     fn check_local(&mut self, local: &taroc_hir::Local) {
         let ty = if let Some(initializer) = &local.initializer {
-            let provided = self.synthesize_expression(initializer);
-
             if let Some(annotation) = &local.ty {
                 let annotation = lower::lower_type(annotation, &mut self.context);
-                let constraint = Constraint::TypeEquality(annotation, provided);
-                self.context.add_constraint(constraint, initializer.span);
+                self.check_expression(initializer, annotation);
                 annotation
             } else {
+                let provided = self.synthesize_expression(initializer);
                 provided
             }
         } else if let Some(annotation) = &local.ty {
@@ -303,9 +302,11 @@ impl<'ctx> FunctionChecker<'ctx> {
             taroc_hir::ExpressionKind::TupleAccess(expr, index) => {
                 self.synthesize_tuple_access_expression(expr, index)
             }
+            taroc_hir::ExpressionKind::Unary(op, expr) => {
+                self.synthesize_unary_expression(expr, *op)
+            }
             taroc_hir::ExpressionKind::MethodCall(..) => todo!("method call expression"),
             taroc_hir::ExpressionKind::Binary(..) => todo!("binary expression"),
-            taroc_hir::ExpressionKind::Unary(..) => todo!("unary expression"),
             taroc_hir::ExpressionKind::FieldAccess(..) => todo!("field access expression"),
             taroc_hir::ExpressionKind::Subscript(..) => todo!("subscript"),
             taroc_hir::ExpressionKind::AssignOp(..) => todo!("assign op expression"),
@@ -493,6 +494,14 @@ impl<'ctx> FunctionChecker<'ctx> {
 
         // ───── 4. return the element type ─────
         elements[index]
+    }
+
+    fn synthesize_unary_expression(
+        &mut self,
+        expression: &taroc_hir::Expression,
+        operator: UnaryOperator,
+    ) -> Ty<'ctx> {
+        todo!("unary operator")
     }
 }
 impl<'ctx> FunctionChecker<'ctx> {
