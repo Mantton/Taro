@@ -1,11 +1,17 @@
-use crate::{lower, models::InferenceContext, utils};
+use crate::{
+    lower,
+    models::{InferenceContext, UnificationError},
+    utils,
+};
 use rustc_hash::FxHashMap;
 use taroc_context::GlobalContext;
 use taroc_error::CompileResult;
+use taroc_hir::{DefinitionID, Mutability, NodeID};
 use taroc_span::{Span, Symbol};
 use taroc_token::UnaryOperator;
 use taroc_ty::{
-    Constraint, GenericArgs, GenericArgument, GenericParameter, InferTy, Ty, TyKind, TyVid,
+    Adjustment, Coercion, Constraint, GenericArgs, GenericArgument, GenericParameter, InferTy, Ty,
+    TyKind, TyVid,
 };
 
 pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
@@ -47,7 +53,7 @@ impl<'ctx> FullChecker<'ctx> {
     fn check_declaration(&self, declaration: &taroc_hir::Declaration) {
         match &declaration.kind {
             taroc_hir::DeclarationKind::Function(node) => {
-                self.check_function(node, declaration.identifier.symbol);
+                self.check_function(node, declaration);
             }
             taroc_hir::DeclarationKind::Constructor(..) => {}
             taroc_hir::DeclarationKind::Operator(..) => {}
@@ -80,10 +86,12 @@ impl<'ctx> FullChecker<'ctx> {
         }
     }
 
-    fn check_function(&self, function: &taroc_hir::Function, name: Symbol) {
+    fn check_function(&self, function: &taroc_hir::Function, declaration: &taroc_hir::Declaration) {
+        let name = declaration.identifier.symbol;
+        let def_id = self.context.def_id(declaration.id);
         println!("Checking {name}\n----------------------");
         let checker = FunctionChecker::new(self.context);
-        checker.check_function(function);
+        checker.check_function(function, def_id);
         println!()
     }
 }
@@ -101,19 +109,21 @@ impl<'ctx> FunctionChecker<'ctx> {
 }
 
 impl<'ctx> FunctionChecker<'ctx> {
-    fn check_function(mut self, function: &taroc_hir::Function) {
-        // Generics
+    fn check_function(mut self, function: &taroc_hir::Function, def_id: DefinitionID) {
         // Signature
-        for parameter in function.signature.prototype.inputs.iter() {
-            let parameter_ty = lower::lower_type(&parameter.annotated_type, &mut self.context);
+        let signature = self.context.fn_signature(def_id);
+        let signature = utils::convert_labeled_signature_to_signature(&signature, *self.context);
+        let signature = self.instantiate(signature);
+
+        let (param_tys, return_ty) = match signature.kind() {
+            TyKind::Function { inputs, output, .. } => (inputs, output),
+            _ => unreachable!("function signature must be of function pointer type"),
+        };
+
+        for (parameter, &parameter_ty) in function.signature.prototype.inputs.iter().zip(param_tys)
+        {
             self.context.env.insert(parameter.id, parameter_ty);
         }
-
-        let return_ty = if let Some(ty) = &function.signature.prototype.output {
-            lower::lower_type(ty, &mut self.context)
-        } else {
-            self.context.store.common_types.void
-        };
 
         // Block
         //
@@ -123,12 +133,12 @@ impl<'ctx> FunctionChecker<'ctx> {
             // ---- single-expression body ---------------------------------------
             let actual = self.synthesize_expression(expr);
             self.context
-                .add_constraint(Constraint::TypeEquality(return_ty, actual), expr.span);
+                .add_constraint(Constraint::TypeEquality(actual, return_ty), expr.span);
+            let adjustment = Adjustment::ExpressionBodiedReturn;
         } else {
             // ---- regular block body ------------------------------------------
             self.check_function_body(block, return_ty);
         }
-        self.check_function_body(block, return_ty);
 
         // Constraints
         self.solve_constraints();
@@ -173,7 +183,7 @@ impl<'ctx> FunctionChecker<'ctx> {
                     self.context.store.common_types.void
                 };
 
-                let constraint = Constraint::TypeEquality(return_ty, ty);
+                let constraint = Constraint::TypeEquality(ty, return_ty);
                 self.context.add_constraint(
                     constraint,
                     expression
@@ -249,7 +259,7 @@ impl<'ctx> FunctionChecker<'ctx> {
 impl<'ctx> FunctionChecker<'ctx> {
     fn check_expression(&mut self, expression: &taroc_hir::Expression, expected: Ty<'ctx>) {
         let actual = self.synthesize_expression(expression);
-        let constraint = Constraint::TypeEquality(expected, actual);
+        let constraint = Constraint::TypeEquality(actual, expected);
         self.context.add_constraint(constraint, expression.span);
     }
 }
@@ -360,7 +370,7 @@ impl<'ctx> FunctionChecker<'ctx> {
 
         // TODO: Mutability?
         // Constraint
-        let constraint = Constraint::TypeEquality(lhs_ty, rhs_ty);
+        let constraint = Constraint::TypeEquality(rhs_ty, lhs_ty);
         self.context.add_constraint(constraint, rhs.span);
         self.context.store.common_types.void
     }
@@ -380,10 +390,12 @@ impl<'ctx> FunctionChecker<'ctx> {
         // Unify Each Argument
         for (argument, &parameter_ty) in arguments.iter().zip(param_tys) {
             let argument_ty = self.synthesize_expression(&argument.expression);
-            let result = self.unify(parameter_ty, argument_ty);
+            let result = self.coerce_or_unify(argument.expression.id, parameter_ty, argument_ty);
 
             match result {
                 Err(message) => {
+                    let message =
+                        format!("type mismatch. expected {parameter_ty}, found {argument_ty}");
                     self.context
                         .diagnostics
                         .error(message, argument.expression.span);
@@ -410,7 +422,7 @@ impl<'ctx> FunctionChecker<'ctx> {
     fn synthesize_if_expression(&mut self, node: &taroc_hir::IfExpression) -> Ty<'ctx> {
         // Condition
         let condition = self.synthesize_expression(&node.condition);
-        let constraint = Constraint::TypeEquality(self.context.store.common_types.bool, condition);
+        let constraint = Constraint::TypeEquality(condition, self.context.store.common_types.bool);
         self.context.add_constraint(constraint, node.condition.span);
 
         // Then
@@ -419,7 +431,7 @@ impl<'ctx> FunctionChecker<'ctx> {
         // Else
         if let Some(else_block) = &node.else_block {
             let else_ty = self.synthesize_expression(else_block);
-            let constraint = Constraint::TypeEquality(then_ty, else_ty);
+            let constraint = Constraint::TypeEquality(else_ty, then_ty);
             self.context.add_constraint(constraint, else_block.span);
         };
 
@@ -434,9 +446,11 @@ impl<'ctx> FunctionChecker<'ctx> {
 
         for expression in expressions {
             let element = self.synthesize_expression(expression);
-            let result = self.unify(element_ty, element);
+            let result = self.coerce_or_unify(expression.id, element_ty, element);
             if let Err(err) = result {
-                self.context.diagnostics.error(err, expression.span);
+                self.context
+                    .diagnostics
+                    .error("TODO: report parameter err".into(), expression.span);
             }
         }
 
@@ -501,7 +515,28 @@ impl<'ctx> FunctionChecker<'ctx> {
         expression: &taroc_hir::Expression,
         operator: UnaryOperator,
     ) -> Ty<'ctx> {
-        todo!("unary operator")
+        let operand_ty = self.synthesize_expression(expression);
+
+        // References
+        match (operator, operand_ty.kind()) {
+            (UnaryOperator::Dereference, TyKind::Pointer(inner, _))
+            | (UnaryOperator::Dereference, TyKind::Reference(inner, _)) => {
+                return inner;
+            }
+
+            (UnaryOperator::Reference(mutbl), _) => {
+                let mutbl = if mutbl {
+                    Mutability::Mutable
+                } else {
+                    Mutability::Immutable
+                };
+                return self.mk_ty(TyKind::Reference(operand_ty, mutbl));
+            }
+
+            _ => {} // fall through to interface / error path
+        };
+
+        todo!("unary expr")
     }
 }
 impl<'ctx> FunctionChecker<'ctx> {
@@ -615,12 +650,19 @@ impl<'ctx> FunctionChecker<'ctx> {
             }
             Constraint::TypeEquality(lhs, rhs) => {
                 println!("Check: {} == {}", lhs, rhs);
-                let result = self.unify(lhs, rhs);
+                let result = self.coerce_or_unify(NodeID::from_raw(0), lhs, rhs);
+
                 match result {
-                    Ok(_) => {}
-                    Err(message) => {
-                        self.context.diagnostics.error(message, span);
-                    }
+                    Err(err) => match err {
+                        UnificationError::OccursCheckFailed => {
+                            todo!("ICE: report occurs check failure")
+                        }
+                        UnificationError::TypeMismatch => {
+                            let message = format!("type mismatch. expected {rhs}, found {lhs}");
+                            self.context.diagnostics.error(message, span);
+                        }
+                    },
+                    _ => {}
                 }
             }
         }
@@ -628,7 +670,7 @@ impl<'ctx> FunctionChecker<'ctx> {
 }
 
 impl<'ctx> FunctionChecker<'ctx> {
-    fn unify(&mut self, lhs: Ty<'ctx>, rhs: Ty<'ctx>) -> Result<(), String> {
+    fn unify(&mut self, lhs: Ty<'ctx>, rhs: Ty<'ctx>) -> Result<(), UnificationError> {
         if lhs == rhs {
             return Ok(());
         };
@@ -678,7 +720,7 @@ impl<'ctx> FunctionChecker<'ctx> {
                 match (lhs_parent, rhs_parent) {
                     (Some(s1), Some(s2)) => self.unify(s1, s2)?,
                     (None, None) => {}
-                    _ => return Err("ICE: ADT subtype presence mismatch".into()),
+                    _ => unreachable!("ICE: ADT subtype presence mismatch"),
                 };
 
                 // Arguments
@@ -689,7 +731,7 @@ impl<'ctx> FunctionChecker<'ctx> {
                         }
                         (GenericArgument::Const(c1), GenericArgument::Const(c2)) => {
                             if c1 != c2 {
-                                return Err("mismatch const generic argument".into());
+                                unreachable!("mismatch const generic argument");
                             }
                         }
                         _ => {
@@ -702,12 +744,12 @@ impl<'ctx> FunctionChecker<'ctx> {
                 return Ok(());
             }
             _ => {
-                return Err(format!("mismatched types, expected {}, found {}", lhs, rhs));
+                return Err(UnificationError::TypeMismatch);
             }
         }
     }
 
-    fn unify_var(&mut self, lhs: Ty<'ctx>, rhs: Ty<'ctx>) -> Result<(), String> {
+    fn unify_var(&mut self, lhs: Ty<'ctx>, rhs: Ty<'ctx>) -> Result<(), UnificationError> {
         match lhs.kind() {
             TyKind::Infer(InferTy::TyVar(id)) => {
                 let root = self.context.find_tyvar(id);
@@ -724,18 +766,25 @@ impl<'ctx> FunctionChecker<'ctx> {
                         return Ok(());
                     }
 
-                    // propagate binding if the *other* root is already bound
-                    if let Some(t) = self.context.tyvar_bindings[rhs_root].bound_ty {
-                        self.context.tyvar_bindings[root].bound_ty = Some(t);
+                    // pick the representative that already has a concrete type
+                    let (rep, other) = if self.context.tyvar_bindings[root].bound_ty.is_some() {
+                        (root, rhs_root)
+                    } else {
+                        (rhs_root, root)
+                    };
+
+                    // *move* the binding so the representative keeps it
+                    if let Some(t) = self.context.tyvar_bindings[other].bound_ty {
+                        self.context.tyvar_bindings[rep].bound_ty = Some(t);
                     }
 
-                    self.context.tyvar_bindings[root].parent = Some(rhs_root);
+                    self.context.tyvar_bindings[other].parent = Some(rep);
                     return Ok(());
                 }
 
                 // occurs-check to avoid α = List<α>
                 if self.occurs_in_ty(root, rhs) {
-                    return Err("infinite type detected (occurs-check failed)".into());
+                    return Err(UnificationError::OccursCheckFailed);
                 }
 
                 // bind var → rhs
@@ -766,9 +815,7 @@ impl<'ctx> FunctionChecker<'ctx> {
                     return Ok(());
                 }
 
-                Err(format!(
-                    "mismatched types: expected {rhs}, found untyped integer"
-                ))
+                return Err(UnificationError::TypeMismatch);
             }
             TyKind::Infer(InferTy::FloatVar(id)) => {
                 let root = self.context.find_floatvar(id);
@@ -786,7 +833,7 @@ impl<'ctx> FunctionChecker<'ctx> {
                     self.context.floatvar_bindings[root].bound_ty = Some(rhs);
                     return Ok(());
                 }
-                return Err(format!("expected a floating-point type, found `{rhs}`"));
+                return Err(UnificationError::TypeMismatch);
             }
 
             TyKind::Infer(InferTy::NilVar(id)) => {
@@ -805,16 +852,16 @@ impl<'ctx> FunctionChecker<'ctx> {
                     self.context.nilvar_bindings[root].bound_ty = Some(rhs);
                     return Ok(());
                 }
-                return Err(format!("`{rhs}` cannot be initialised with `nil`"));
+                return Err(UnificationError::TypeMismatch);
             }
-            _ => unreachable!("ICE: `unify_var` called for non inferred type {rhs}"),
+            _ => unreachable!("ICE: `unify_var` called for non inferred type {lhs}"),
         }
     }
 
     fn is_nil_compatible(&self, kind: TyKind<'ctx>) -> bool {
         match kind {
             TyKind::Pointer(..) => true,
-            TyKind::Adt(..) => false, // TODO: isOption type
+            TyKind::Adt(def, ..) => def.id == self.optional_def_id(), // TODO: isOption type
             _ => false,
         }
     }
@@ -946,5 +993,81 @@ impl<'ctx> FunctionChecker<'ctx> {
             // cannot contain a *TyVar* inside their structure, so return false.
             _ => false,
         }
+    }
+
+    fn optional_def_id(&self) -> DefinitionID {
+        let store = self.context.store.common_types.mappings.foundation.borrow();
+        let optional_id = store.get(&Symbol::with("Option"));
+        optional_id.cloned().expect("Optional Type")
+    }
+}
+
+impl<'ctx> FunctionChecker<'ctx> {
+    fn try_coerce(
+        &mut self,
+        provided: Ty<'ctx>,
+        expected: Ty<'ctx>,
+    ) -> Result<Option<Coercion>, UnificationError> {
+        println!("Try Coerce: {} -> {}", provided, expected);
+        match (provided.kind(), expected.kind()) {
+            // &mut T -> &T
+            (
+                TyKind::Reference(t1, Mutability::Mutable),
+                TyKind::Reference(t2, Mutability::Immutable),
+            ) => {
+                self.unify(t1, t2)?; // unify inside!
+                return Ok(Some(Coercion {
+                    ty: expected,
+                    adjustments: vec![Adjustment::MutRefConstCast],
+                }));
+            }
+            // *mut T -> *T
+            (
+                TyKind::Pointer(t1, Mutability::Mutable),
+                TyKind::Pointer(t2, Mutability::Immutable),
+            ) => {
+                self.unify(t1, t2)?; // unify inside!
+                return Ok(Some(Coercion {
+                    ty: expected,
+                    adjustments: vec![Adjustment::MutPtrConstCast],
+                }));
+            }
+
+            // nil -> Option<T>
+            (TyKind::Infer(InferTy::NilVar(_)), TyKind::Adt(def, ..))
+                if def.id == self.optional_def_id() =>
+            {
+                self.unify(provided, expected)?;
+                return Ok(Some(Coercion {
+                    ty: expected,
+                    adjustments: vec![Adjustment::WrapNilToOptionalNone],
+                }));
+            }
+            // T -> Option<T>
+            (_, TyKind::Adt(def, &[arg], _)) if def.id == self.optional_def_id() => {
+                self.unify(provided, arg.ty().unwrap())?; // unify inside!
+                return Ok(Some(Coercion {
+                    ty: expected,
+                    adjustments: vec![Adjustment::WrapOptional],
+                }));
+            }
+
+            _ => return Ok(None),
+        }
+    }
+
+    fn coerce_or_unify(
+        &mut self,
+        node: NodeID,
+        provided: Ty<'ctx>,
+        expected: Ty<'ctx>,
+    ) -> Result<(), UnificationError> {
+        if let Some(coercion) = self.try_coerce(provided, expected)? {
+            // TODO: Insert Adjustments
+            return Ok(());
+        }
+
+        self.unify(provided, expected)?;
+        return Ok(());
     }
 }

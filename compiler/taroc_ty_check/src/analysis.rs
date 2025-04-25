@@ -1,13 +1,13 @@
+use crate::utils;
 use rustc_hash::FxHashMap;
 use taroc_context::GlobalContext;
 use taroc_error::CompileResult;
 use taroc_hir::{DefinitionID, DefinitionKind};
 use taroc_span::{Span, Symbol};
 use taroc_ty::{
-    AssociatedTypeDefinition, ConformanceRecord, InterfaceMethodRequirement, InterfaceReference, Ty,
+    AssociatedTypeDefinition, ConformanceRecord, InterfaceMethodRequirement,
+    InterfaceOperatorRequirement, InterfaceReference, Ty,
 };
-
-use crate::utils;
 
 pub fn run(_: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
     CheckRecursiveTypes::run(context)?;
@@ -100,6 +100,10 @@ impl<'ctx> CheckInterfaceImplementation<'ctx> {
         for requirement in &definition.requirements.methods {
             self.check_method_requirement(id, interface, requirement, &mut conformance, span);
         }
+
+        for requirement in &definition.requirements.operators {
+            self.check_operator_requirement(id, interface, requirement, &mut conformance, span);
+        }
     }
 
     fn check_method_requirement(
@@ -109,7 +113,7 @@ impl<'ctx> CheckInterfaceImplementation<'ctx> {
         requirement: &InterfaceMethodRequirement<'ctx>,
         conformance: &mut ConformanceRecord<'ctx>,
         span: Span,
-    ) -> bool {
+    ) {
         // --- Candidate Lookup ---
         let functions_data = self.context.with_type_database(None, |db| {
             db.def_to_functions
@@ -127,10 +131,9 @@ impl<'ctx> CheckInterfaceImplementation<'ctx> {
                     requirement.name
                 );
                 self.context.diagnostics.error(message, span);
-                return false;
+                return;
             }
-            // TODO: Report
-            return false;
+            return;
         };
 
         let initial_map =
@@ -168,10 +171,8 @@ impl<'ctx> CheckInterfaceImplementation<'ctx> {
         if !found_candidate {
             let message = format!("no valid candidates found for '{}'", requirement.name);
             self.context.diagnostics.error(message, span);
-            return false;
+            return;
         }
-
-        return true;
     }
 }
 
@@ -214,5 +215,80 @@ impl<'ctx> CheckInterfaceImplementation<'ctx> {
             }
         }
         type_witnesses
+    }
+}
+
+impl<'ctx> CheckInterfaceImplementation<'ctx> {
+    fn check_operator_requirement(
+        &mut self,
+        id: DefinitionID,
+        interface: InterfaceReference<'ctx>,
+        requirement: &InterfaceOperatorRequirement<'ctx>,
+        conformance: &mut ConformanceRecord<'ctx>,
+        span: Span,
+    ) {
+        // --- Candidate Lookup ---
+        let functions_data = self.context.with_type_database(None, |db| {
+            db.def_to_functions
+                .entry(id)
+                .or_insert(Default::default())
+                .clone()
+        });
+
+        let functions_data = functions_data.borrow();
+
+        let candidates = functions_data.operators.get(&requirement.kind);
+        let Some(candidates) = candidates else {
+            if requirement.is_required {
+                let message = format!(
+                    "missing interface operator function requirement '{:?}'",
+                    requirement.kind
+                );
+                self.context.diagnostics.error(message, span);
+                return;
+            }
+            return;
+        };
+
+        let initial_map =
+            utils::create_substitution_map(interface.id, interface.arguments, self.context);
+
+        let signature =
+            utils::convert_labeled_signature_to_signature(&requirement.signature, self.context);
+
+        let expected = utils::substitute(signature, &initial_map, Some(conformance), self.context);
+
+        let mut found_candidate = false;
+        for candidate in candidates {
+            let recieved = utils::convert_labeled_signature_to_signature(candidate, self.context);
+            // println!("--- Checking ---  ");
+            // println!("{:?}", expected);
+            // println!("{:?}", recieved);
+            // println!("\n\n");
+
+            // Check Function Signatures
+            if expected != recieved {
+                continue;
+            }
+            // Check Parameter Labels
+            if !utils::compare_signature_labels(&requirement.signature, candidate) {
+                continue;
+            }
+
+            // TODO: Add Method Witness
+
+            // Exit Loop
+            found_candidate = true;
+            break;
+        }
+
+        if !found_candidate {
+            let message = format!(
+                "no valid candidates found operator function requirement {:?}",
+                requirement.kind
+            );
+            self.context.diagnostics.error(message, span);
+            return;
+        }
     }
 }

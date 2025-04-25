@@ -255,6 +255,7 @@ pub struct InterfacePropertyRequirement<'ctx> {
 pub struct InterfaceOperatorRequirement<'ctx> {
     pub kind: OperatorKind,
     pub signature: LabeledFunctionSignature<'ctx>,
+    pub is_required: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -361,6 +362,21 @@ pub struct VarBinding<'ctx, T> {
 pub enum Direction<'ctx> {
     Synth,
     Check(Ty<'ctx>),
+}
+
+pub enum Adjustment {
+    MutRefConstCast,        // &mut -> &
+    MutPtrConstCast,        // *mut -> *const
+    BoxExistential,         // S -> any P
+    OpaqueErase,            // some P -> any P
+    WrapOptional,           // T -> T?
+    WrapNilToOptionalNone,  // nil/NilVar -> T?
+    ExpressionBodiedReturn, // fn { <expr> } -> fn { return <expr> }
+}
+
+pub struct Coercion<'ctx> {
+    pub adjustments: Vec<Adjustment>,
+    pub ty: Ty<'ctx>,
 }
 
 // HELPERS

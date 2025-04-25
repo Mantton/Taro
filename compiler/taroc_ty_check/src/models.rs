@@ -195,3 +195,11 @@ impl<'ctx> InferenceContext<'ctx> {
         self.intvar_bindings[root].bound_ty
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnificationError {
+    /// Tried to bind a TyVar to a type that already contains that TyVar.
+    OccursCheckFailed,
+    /// Everything else: two concrete primitives that differ, etc.
+    TypeMismatch,
+}

@@ -463,7 +463,7 @@ impl<'ctx> TypeCollector<'ctx> {
             "MutableReference" => {
                 store.common_types.mappings.mut_ref.set(Some(id));
                 let ty = arguments.first().unwrap().ty().unwrap();
-                let kind = TyKind::Pointer(ty, Mutability::Mutable);
+                let kind = TyKind::Reference(ty, Mutability::Mutable);
                 let ty = self.context.store.interners.intern_ty(kind);
                 return Some(ty);
             }
@@ -837,6 +837,7 @@ impl<'ctx> HirVisitor for FunctionCollector<'ctx> {
                         let requirement = InterfaceOperatorRequirement {
                             kind: *kind,
                             signature,
+                            is_required: func.block.is_none(),
                         };
                         self.context.update_interface_def(parent, |def| {
                             def.requirements.operators.push(requirement);
