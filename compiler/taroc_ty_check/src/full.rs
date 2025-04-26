@@ -6,7 +6,7 @@ use crate::{
 use rustc_hash::FxHashMap;
 use taroc_context::GlobalContext;
 use taroc_error::CompileResult;
-use taroc_hir::{DefinitionID, Mutability, NodeID, UnaryOperator};
+use taroc_hir::{DefinitionID, Mutability, NodeID, OperatorKind, UnaryOperator};
 use taroc_span::{Span, Symbol};
 use taroc_ty::{
     Adjustment, Coercion, Constraint, GenericArgs, GenericArgument, GenericParameter, InferTy, Ty,
@@ -516,14 +516,16 @@ impl<'ctx> FunctionChecker<'ctx> {
     ) -> Ty<'ctx> {
         let operand_ty = self.synthesize_expression(expression);
 
-        // References
-        match (operator, operand_ty.kind()) {
-            (UnaryOperator::Dereference, TyKind::Pointer(inner, _))
-            | (UnaryOperator::Dereference, TyKind::Reference(inner, _)) => {
-                return inner;
-            }
-
-            (UnaryOperator::Reference(mutbl), _) => {
+        match operator {
+            UnaryOperator::Dereference => match operand_ty.kind() {
+                TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => return inner,
+                _ => {
+                    let message = format!("cannot dereference non-pointer type {operand_ty}");
+                    self.context.diagnostics.error(message, expression.span);
+                    return self.error_ty();
+                }
+            },
+            UnaryOperator::Reference(mutbl) => {
                 let mutbl = if mutbl {
                     Mutability::Mutable
                 } else {
@@ -531,11 +533,24 @@ impl<'ctx> FunctionChecker<'ctx> {
                 };
                 return self.mk_ty(TyKind::Reference(operand_ty, mutbl));
             }
+            UnaryOperator::Negate => todo!(),
+            UnaryOperator::BitwiseNot => todo!(),
+            UnaryOperator::LogicalNot => {
+                let kind = OperatorKind::Not;
+                // Fast Path, Remove
+                if matches!(operand_ty.kind(), TyKind::Bool) {
+                    return operand_ty; // result is bool
+                }
 
-            _ => {} // fall through to interface / error path
-        };
+                // Get the Definition of the Type
+                let id = self.context.ty_to_def(operand_ty);
 
-        todo!("unary expr")
+                // Once we have the definition, find the operators defined on the type
+                // Check Operator Functions
+                // Find Most Viable Selection, the function here MUST be generic enough to work for other operators
+                todo!("find viable use")
+            }
+        }
     }
 }
 impl<'ctx> FunctionChecker<'ctx> {
@@ -999,6 +1014,10 @@ impl<'ctx> FunctionChecker<'ctx> {
         let optional_id = store.get(&Symbol::with("Option"));
         optional_id.cloned().expect("Optional Type")
     }
+
+    fn error_ty(&self) -> Ty<'ctx> {
+        self.context.store.common_types.error
+    }
 }
 
 impl<'ctx> FunctionChecker<'ctx> {
@@ -1061,7 +1080,7 @@ impl<'ctx> FunctionChecker<'ctx> {
         provided: Ty<'ctx>,
         expected: Ty<'ctx>,
     ) -> Result<(), UnificationError> {
-        if let Some(coercion) = self.try_coerce(provided, expected)? {
+        if let Some(adjustment) = self.try_coerce(provided, expected)? {
             // TODO: Insert Adjustments
             return Ok(());
         }

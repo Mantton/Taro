@@ -146,6 +146,7 @@ pub enum Resolution {
     InterfaceSelfTypeAlias(DefinitionID),
     SelfTypeAlias(DefinitionID),
     Local(NodeID),
+    ImplicitSelfVariable,
     Error,
 }
 
@@ -155,18 +156,14 @@ impl Resolution {
             Resolution::Definition(i, _) => Some(*i),
             Resolution::InterfaceSelfTypeAlias(i) => Some(*i),
             Resolution::SelfTypeAlias(i) => Some(*i),
-            Resolution::Local(_) => None,
-            Resolution::Error => None,
+            _ => None,
         }
     }
 
     pub fn def_kind(&self) -> Option<DefinitionKind> {
         match self {
             Resolution::Definition(_, k) => Some(*k),
-            Resolution::InterfaceSelfTypeAlias(_) => None,
-            Resolution::SelfTypeAlias(_) => None,
-            Resolution::Local(_) => None,
-            Resolution::Error => None,
+            _ => None,
         }
     }
 
@@ -184,6 +181,7 @@ impl Resolution {
             Resolution::SelfTypeAlias(_) => "self type",
             Resolution::Local(_) => "local variable",
             Resolution::Error => "unresolved symbol",
+            Resolution::ImplicitSelfVariable => "self",
         }
     }
 }

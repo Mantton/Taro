@@ -13,3 +13,10 @@ pub enum LocalSource {
     Variable,
     TopLevelDecl,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FunctionSource {
+    Interface,
+    Adt,
+    Constructor,
+}

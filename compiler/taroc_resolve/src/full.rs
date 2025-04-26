@@ -160,6 +160,14 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
         work(self);
         self.scopes.pop();
     }
+
+    fn with_self_value_scope(&mut self, work: impl FnOnce(&mut Self)) {
+        let mut scope = LexicalScope::new(LexicalScopeSource::Plain);
+        scope.define(Symbol::with("self"), Resolution::ImplicitSelfVariable);
+        self.scopes.push(scope);
+        work(self);
+        self.scopes.pop();
+    }
 }
 
 impl HirVisitor for Actor<'_, '_> {
@@ -243,7 +251,9 @@ impl HirVisitor for Actor<'_, '_> {
             self.with_scope(LexicalScopeSource::Function, |this| {
                 this.visit_generics(&f.generics);
                 this.resolve_function_signature(&f.signature);
-                this.with_scope(LexicalScopeSource::Plain, |this| this.visit_block(body))
+                this.with_scope(LexicalScopeSource::Plain, |this| this.visit_block(body));
+
+                this.with_self_value_scope(|this| this.visit_block(body));
             })
         } else {
             self.visit_generics(&f.generics);
