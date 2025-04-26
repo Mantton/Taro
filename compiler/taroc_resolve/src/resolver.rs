@@ -4,7 +4,8 @@ use rustc_hash::{FxBuildHasher, FxHashMap};
 use taroc_context::{CompilerSession, GlobalContext, ResolutionData};
 use taroc_hir::{DefinitionID, DefinitionIndex, DefinitionKind, NodeID, PackageIndex, Resolution};
 use taroc_resolve_models::{
-    DefContextKind, DefinitionContext, ExternalDefinitionUsage, NameBinding, ResolvedAlias,
+    DefContextKind, DefinitionContext, ExternalDefinitionUsage, NameBinding, NameHolder,
+    ResolvedAlias,
 };
 use taroc_span::{FileID, Identifier, Span, Symbol};
 
@@ -202,7 +203,7 @@ impl<'ctx> Resolver<'ctx> {
                 let message = format!("'{}' is defined here.", identifier.symbol);
                 self.context
                     .diagnostics
-                    .info(message, previous_binding.span);
+                    .info(message, previous_binding.nearest().span);
                 return false;
             }
         }
@@ -214,29 +215,55 @@ impl<'ctx> Resolver<'ctx> {
         symbol: Symbol,
         binding: NameBinding<'ctx>,
         force: bool,
-    ) -> Result<Option<NameBinding<'ctx>>, NameBinding<'ctx>> {
+    ) -> Result<Option<NameHolder<'ctx>>, NameHolder<'ctx>> {
         // if forcing a new binding
         if force {
             let old = context
                 .resolutions
                 .borrow_mut()
                 .bindings
-                .insert(symbol, binding);
+                .insert(symbol, NameHolder::Single(binding));
             return Ok(old);
         }
 
         let mut resolutions = context.resolutions.borrow_mut();
 
         if resolutions.contains(&symbol) {
-            let target = resolutions
+            let current_binding = resolutions
                 .bindings
                 .get(&symbol)
-                .cloned()
-                .expect("symbol should be defined");
+                .expect("symbol must be contained");
 
-            return Err(target);
+            // Not a function, Duplicate Definition
+            if !binding.is_function() || !current_binding.nearest().is_function() {
+                let target = resolutions
+                    .bindings
+                    .get(&symbol)
+                    .cloned()
+                    .expect("symbol should be defined");
+
+                return Err(target);
+            };
+
+            // Overloaded Function
+
+            let bindings: &[NameBinding<'ctx>] = match current_binding {
+                NameHolder::Single(interned) => &[*interned],
+                NameHolder::Set(interneds) => *interneds,
+            };
+
+            let total = 1 + bindings.len();
+            let mut combined = Vec::with_capacity(total);
+            combined.push(binding);
+            combined.extend_from_slice(bindings);
+            let new_bindings = self.alloc_slice_copy(&combined);
+            let new_holder: NameHolder<'ctx> = NameHolder::Set(new_bindings);
+            resolutions.bindings.insert(symbol, new_holder);
+            return Ok(None);
         } else {
-            resolutions.bindings.insert(symbol, binding);
+            resolutions
+                .bindings
+                .insert(symbol, NameHolder::Single(binding));
             return Ok(None);
         }
     }

@@ -1,5 +1,6 @@
-use super::resolver::Resolver;
 use crate::{find::ResolutionState, models::ParentContext};
+
+use super::resolver::Resolver;
 use taroc_resolve_models::{
     Determinacy, ExternalDefUsageKind, ExternalDefinitionUsage, NameBinding, NameBindingData,
     NameBindingKind, PathResult,
@@ -123,13 +124,16 @@ impl<'res, 'ctx> UsageResolver<'res, 'ctx> {
         );
 
         match result {
-            Ok(binding) => {
-                *source_binding.borrow_mut() = Some(binding);
-                let binding = self.convert_usage_binding(binding, usage);
-                if is_import {
-                    self.resolver.force_define(parent, target, binding);
-                } else {
-                    self.resolver.define(parent, target, binding);
+            Ok(holder) => {
+                *source_binding.borrow_mut() = Some(holder);
+                let bindings = holder.all();
+                for binding in bindings {
+                    let binding = self.convert_usage_binding(binding, usage);
+                    if is_import {
+                        self.resolver.force_define(parent, target, binding);
+                    } else {
+                        self.resolver.define(parent, target, binding);
+                    }
                 }
             }
             Err(err) => {

@@ -1,4 +1,4 @@
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::cell::{Cell, RefCell};
 use taroc_data_structures::Interned;
 use taroc_hir::{DefinitionID, DefinitionKind, NodeID, Path, Resolution, SymbolNamespace};
@@ -78,6 +78,48 @@ impl DefContextKind {
     }
 }
 
+#[derive(Clone, Copy)]
+pub enum NameHolder<'arena> {
+    Single(NameBinding<'arena>),
+    Set(&'arena [NameBinding<'arena>]),
+}
+
+impl<'arena> NameHolder<'arena> {
+    pub fn nearest(&self) -> NameBinding<'arena> {
+        match self {
+            NameHolder::Single(v) => *v,
+            NameHolder::Set(set) => *set.iter().next().expect("non-empty set"),
+        }
+    }
+
+    pub fn all(&self) -> Vec<NameBinding<'arena>> {
+        match self {
+            NameHolder::Single(v) => vec![*v],
+            NameHolder::Set(set) => set.iter().map(|v| *v).collect(),
+        }
+    }
+
+    pub fn resolution(self) -> Resolution {
+        match self {
+            NameHolder::Single(value) => value.resolution(),
+            NameHolder::Set(values) => {
+                let mut set = FxHashSet::default();
+                for value in values.iter() {
+                    let id = value.def_id().expect("function set must provide def id");
+                    set.insert(id);
+                }
+                Resolution::FunctionSet(set)
+            }
+        }
+    }
+
+    pub fn context(self) -> Option<DefinitionContext<'arena>> {
+        match self {
+            NameHolder::Single(value) => value.context(),
+            NameHolder::Set(_) => None,
+        }
+    }
+}
 pub type NameBinding<'arena> = Interned<'arena, NameBindingData<'arena>>;
 pub struct NameBindingData<'arena> {
     pub kind: NameBindingKind<'arena>,
@@ -156,15 +198,15 @@ pub struct DefUsageBinding<'arena> {
     pub source: Identifier,
     pub target: Identifier,
     pub parent: DefinitionContext<'arena>,
-    pub source_binding: RefCell<Option<NameBinding<'arena>>>,
-    pub target_binding: RefCell<Option<NameBinding<'arena>>>,
+    pub source_binding: RefCell<Option<NameHolder<'arena>>>,
+    pub target_binding: RefCell<Option<NameHolder<'arena>>>,
     pub id: NodeID,
     pub is_nested: bool,
 }
 
 #[derive(Default)]
 pub struct ContextResolutions<'arena> {
-    pub bindings: FxHashMap<Symbol, NameBinding<'arena>>,
+    pub bindings: FxHashMap<Symbol, NameHolder<'arena>>,
 }
 
 impl<'arena> ContextResolutions<'arena> {
@@ -172,7 +214,7 @@ impl<'arena> ContextResolutions<'arena> {
         self.bindings.contains_key(symbol)
     }
 
-    pub fn find(&self, symbol: &Symbol) -> Option<NameBinding<'arena>> {
+    pub fn find(&self, symbol: &Symbol) -> Option<NameHolder<'arena>> {
         self.bindings.get(symbol).map(|v| *v)
     }
 }
@@ -346,7 +388,7 @@ pub enum LexicalScopeSource<'arena> {
 }
 
 pub enum LexicalScopeBinding<'arena> {
-    Declaration(NameBinding<'arena>),
+    Declaration(NameHolder<'arena>),
     Resolution(Resolution),
 }
 

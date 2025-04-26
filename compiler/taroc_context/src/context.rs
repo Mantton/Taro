@@ -347,7 +347,7 @@ impl<'ctx> GlobalContext<'ctx> {
         let ctx = self.def_context(id);
         let resolutions = ctx.resolutions.borrow();
         let holder = resolutions.find(&name)?;
-        let resolution = holder.resolution();
+        let resolution = holder.nearest().resolution();
         let id = resolution.def_id()?;
         Some(self.type_of(id))
     }
