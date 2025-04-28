@@ -133,3 +133,27 @@ impl OperatorKind {
         }
     }
 }
+
+impl OperatorKind {
+    /// Given a “plain” binary operator, returns the corresponding
+    /// assignment operator kind (e.g. `+` → `AddAssign`), or `None`
+    /// if there is no `op=` form.
+    pub fn assign_from_binary(op: BinaryOperator) -> Option<OperatorKind> {
+        match op {
+            BinaryOperator::Add => Some(OperatorKind::AddAssign),
+            BinaryOperator::Sub => Some(OperatorKind::SubAssign),
+            BinaryOperator::Mul => Some(OperatorKind::MulAssign),
+            BinaryOperator::Div => Some(OperatorKind::DivAssign),
+            BinaryOperator::Rem => Some(OperatorKind::RemAssign),
+
+            BinaryOperator::BitShl => Some(OperatorKind::BitShlAssign),
+            BinaryOperator::BitShr => Some(OperatorKind::BitShrAssign),
+            BinaryOperator::BitAnd => Some(OperatorKind::BitAndAssign),
+            BinaryOperator::BitOr => Some(OperatorKind::BitOrAssign),
+            BinaryOperator::BitXor => Some(OperatorKind::BitXorAssign),
+
+            // all other binary ops (like `==`, `<`, `&&`, etc.) have no assignment form
+            _ => None,
+        }
+    }
+}

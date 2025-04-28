@@ -319,7 +319,9 @@ impl<'ctx> FunctionChecker<'ctx> {
             taroc_hir::ExpressionKind::MethodCall(..) => todo!("method call expression"),
             taroc_hir::ExpressionKind::FieldAccess(..) => todo!("field access expression"),
             taroc_hir::ExpressionKind::Subscript(..) => todo!("subscript"),
-            taroc_hir::ExpressionKind::AssignOp(..) => todo!("assign op expression"),
+            taroc_hir::ExpressionKind::AssignOp(op, lhs, rhs) => {
+                self.synthesize_binary_assign_expression(lhs, rhs, *op, expression.span)
+            }
             taroc_hir::ExpressionKind::CastAs(..) => todo!("cast expression"),
             taroc_hir::ExpressionKind::MatchBinding(..) => todo!("match binding expression"),
             taroc_hir::ExpressionKind::Closure(..) => todo!("closure expression"),
@@ -558,6 +560,7 @@ impl<'ctx> FunctionChecker<'ctx> {
         expectation: Option<Ty<'ctx>>,
     ) -> Ty<'ctx> {
         let operand_ty = self.synthesize_expression(expression, None);
+        let operand_type_id = self.context.ty_to_def(operand_ty);
 
         let op = match operator {
             UnaryOperator::Dereference => match operand_ty.kind() {
@@ -582,7 +585,7 @@ impl<'ctx> FunctionChecker<'ctx> {
         };
 
         return self.resolve_operator_overload(
-            operand_ty,
+            operand_type_id,
             op,
             &[operand_ty],
             expectation,
@@ -599,10 +602,43 @@ impl<'ctx> FunctionChecker<'ctx> {
         span: Span,
     ) -> Ty<'ctx> {
         let lhs = self.synthesize_expression(lhs, None);
+        let lhs_type_id = self.context.ty_to_def(lhs);
+
         let rhs = self.synthesize_expression(rhs, None);
         let operand = OperatorKind::from_binary(operator);
 
-        return self.resolve_operator_overload(lhs, operand, &[lhs, rhs], expectation, span);
+        return self.resolve_operator_overload(
+            lhs_type_id,
+            operand,
+            &[lhs, rhs],
+            expectation,
+            span,
+        );
+    }
+
+    fn synthesize_binary_assign_expression(
+        &mut self,
+        lhs: &taroc_hir::Expression,
+        rhs: &taroc_hir::Expression,
+        operator: BinaryOperator,
+        span: Span,
+    ) -> Ty<'ctx> {
+        let lhs = self.synthesize_expression(lhs, None);
+        let lhs_type_id = self.context.ty_to_def(lhs);
+        let lhs = self.mk_ty(TyKind::Reference(lhs, Mutability::Mutable)); // Auto Ref lhs
+        let _ = Adjustment::AutoMutRef; // TODO
+
+        let rhs = self.synthesize_expression(rhs, None);
+        let operand = OperatorKind::assign_from_binary(operator).expect("operator");
+        let ty = self.resolve_operator_overload(
+            lhs_type_id,
+            operand,
+            &[lhs, rhs],
+            Some(self.void_ty()),
+            span,
+        );
+
+        ty
     }
 }
 impl<'ctx> FunctionChecker<'ctx> {
@@ -1068,7 +1104,11 @@ impl<'ctx> FunctionChecker<'ctx> {
     }
 
     fn error_ty(&self) -> Ty<'ctx> {
-        self.error_ty()
+        self.context.store.common_types.error
+    }
+
+    fn void_ty(&self) -> Ty<'ctx> {
+        self.context.store.common_types.void
     }
 }
 
@@ -1289,13 +1329,12 @@ impl<'ctx> FunctionChecker<'ctx> {
 impl<'ctx> FunctionChecker<'ctx> {
     fn resolve_operator_overload(
         &mut self,
-        ty: Ty<'ctx>,
+        id: Option<DefinitionID>,
         op: OperatorKind,
         args: &[Ty<'ctx>],
         expectation: Option<Ty<'ctx>>,
         span: Span,
     ) -> Ty<'ctx> {
-        let id = self.context.ty_to_def(ty);
         match id {
             Some(id) => {
                 self.resolve_known_definition_operator_overload(id, op, args, expectation, span)

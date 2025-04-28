@@ -830,6 +830,7 @@ impl<'ctx> HirVisitor for FunctionCollector<'ctx> {
                 );
                 let signature = utils::convert_to_labeled_signature(func, def_id, self.context);
                 let parent = self.parent.expect("parent must be defined");
+                println!("Defining {:?} for {}", kind, parent);
 
                 match context {
                     DeclarationContext::Interface => {

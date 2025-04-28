@@ -250,18 +250,18 @@ impl Parser {
             TokenKind::RChevron => Some(OperatorKind::Gt),
             TokenKind::LChevron => Some(OperatorKind::Lt),
 
-            TokenKind::PlusEq => Some(OperatorKind::Add),
-            TokenKind::MinusEq => Some(OperatorKind::Sub),
-            TokenKind::MulEq => Some(OperatorKind::Mul),
-            TokenKind::DivEq => Some(OperatorKind::Div),
-            TokenKind::RemEq => Some(OperatorKind::Rem),
+            TokenKind::PlusEq => Some(OperatorKind::AddAssign),
+            TokenKind::MinusEq => Some(OperatorKind::SubAssign),
+            TokenKind::MulEq => Some(OperatorKind::MulAssign),
+            TokenKind::DivEq => Some(OperatorKind::DivAssign),
+            TokenKind::RemEq => Some(OperatorKind::RemAssign),
 
-            TokenKind::AmpEq => Some(OperatorKind::BitAnd),
-            TokenKind::BarEq => Some(OperatorKind::BitOr),
-            TokenKind::CaretEq => Some(OperatorKind::BitXor),
+            TokenKind::AmpEq => Some(OperatorKind::BitAndAssign),
+            TokenKind::BarEq => Some(OperatorKind::BitOrAssign),
+            TokenKind::CaretEq => Some(OperatorKind::BitXorAssign),
 
-            TokenKind::ShlEq => Some(OperatorKind::BitShl),
-            TokenKind::ShrEq => Some(OperatorKind::BitShr),
+            TokenKind::ShlEq => Some(OperatorKind::BitShlAssign),
+            TokenKind::ShrEq => Some(OperatorKind::BitShrAssign),
             TokenKind::Bang => Some(OperatorKind::Not),
             _ => None,
         };
