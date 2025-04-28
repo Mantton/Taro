@@ -340,6 +340,7 @@ impl<'ctx> GlobalContext<'ctx> {
             TyKind::Error => None,
             TyKind::Ignore => None,
             TyKind::FnDef(id, ..) => Some(id),
+            _ => None,
         }
     }
 

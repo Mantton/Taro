@@ -1,5 +1,6 @@
 use super::NodeID;
 use index_vec::IndexVec;
+use rustc_hash::FxHashSet;
 use std::fmt::Display;
 
 pub struct Definitions {
@@ -147,6 +148,7 @@ pub enum Resolution {
     SelfTypeAlias(DefinitionID),
     Local(NodeID),
     ImplicitSelfVariable,
+    FunctionSet(FxHashSet<DefinitionID>),
     Error,
 }
 
@@ -182,6 +184,7 @@ impl Resolution {
             Resolution::Local(_) => "local variable",
             Resolution::Error => "unresolved symbol",
             Resolution::ImplicitSelfVariable => "self",
+            Resolution::FunctionSet(..) => "function set",
         }
     }
 }

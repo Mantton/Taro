@@ -768,7 +768,7 @@ impl<'ctx> HirVisitor for FunctionCollector<'ctx> {
                 self.parent = Some(self.context.extension_target(def_id));
             }
             DeclarationKind::Function(func) => {
-                let signature = utils::convert_to_labeled_signature(func, self.context);
+                let signature = utils::convert_to_labeled_signature(func, def_id, self.context);
 
                 {
                     let arguments = self.context.type_arguments(def_id);
@@ -828,7 +828,7 @@ impl<'ctx> HirVisitor for FunctionCollector<'ctx> {
                     self.parent.is_some(),
                     "operators must only appear in type bodies"
                 );
-                let signature = utils::convert_to_labeled_signature(func, self.context);
+                let signature = utils::convert_to_labeled_signature(func, def_id, self.context);
                 let parent = self.parent.expect("parent must be defined");
 
                 match context {
@@ -897,7 +897,7 @@ impl<'ctx> HirVisitor for FunctionCollector<'ctx> {
                     self.parent.is_some(),
                     "constructors must only appear in type bodies"
                 );
-                let signature = utils::convert_to_labeled_signature(func, self.context);
+                let signature = utils::convert_to_labeled_signature(func, def_id, self.context);
                 let parent = self.parent.expect("parent must be defined");
 
                 self.context.with_type_database(None, |database| {

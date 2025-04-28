@@ -11,6 +11,7 @@ use taroc_ty::{
 
 pub fn convert_to_labeled_signature<'ctx>(
     func: &taroc_hir::Function,
+    id: DefinitionID,
     context: GlobalContext<'ctx>,
 ) -> LabeledFunctionSignature<'ctx> {
     let is_async = func.signature.is_async;
@@ -41,6 +42,7 @@ pub fn convert_to_labeled_signature<'ctx>(
         output,
         is_async,
         is_variadic,
+        id,
     }
 }
 

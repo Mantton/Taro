@@ -124,6 +124,11 @@ impl<'ctx> ContextInterners<'ctx> {
         let value = self.arenas.arena.alloc(value);
         Interned::new_unchecked(value)
     }
+
+    pub fn intern_slice<T: Copy>(&self, value: &[T]) -> &'ctx [T] {
+        let value = self.arenas.arena.alloc_slice_copy(value);
+        value
+    }
 }
 
 pub struct ResolutionData<'ctx> {

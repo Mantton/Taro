@@ -53,6 +53,7 @@ pub enum TyKind<'arena> {
     Infer(InferTy),
     Error,
     Ignore,
+    OverloadedFn(&'arena [DefinitionID]),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -277,6 +278,7 @@ pub struct LabeledFunctionSignature<'ctx> {
     pub output: Ty<'ctx>,
     pub is_async: bool,
     pub is_variadic: bool,
+    pub id: DefinitionID,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -574,6 +576,7 @@ impl<'arena> Display for TyKind<'arena> {
                 }
                 Ok(())
             }
+            TyKind::OverloadedFn(..) => write!(f, "function"),
         }
     }
 }

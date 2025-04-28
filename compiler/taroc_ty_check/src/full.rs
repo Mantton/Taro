@@ -9,8 +9,8 @@ use taroc_error::CompileResult;
 use taroc_hir::{DefinitionID, Mutability, NodeID, OperatorKind, UnaryOperator};
 use taroc_span::{Span, Symbol};
 use taroc_ty::{
-    Adjustment, Coercion, Constraint, GenericArgs, GenericArgument, GenericParameter, InferTy, Ty,
-    TyKind, TyVid,
+    Adjustment, Coercion, Constraint, GenericArgs, GenericArgument, GenericParameter, InferTy,
+    LabeledFunctionSignature, Ty, TyKind, TyVid,
 };
 
 pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
@@ -127,18 +127,7 @@ impl<'ctx> FunctionChecker<'ctx> {
         // Block
         //
         let Some(block) = &function.block else { return };
-
-        if let Some(expr) = Self::is_expression_bodied(block) {
-            // ---- single-expression body ---------------------------------------
-            let actual = self.synthesize_expression(expr);
-            self.context
-                .add_constraint(Constraint::TypeEquality(actual, return_ty), expr.span);
-            let adjustment = Adjustment::ExpressionBodiedReturn;
-        } else {
-            // ---- regular block body ------------------------------------------
-            self.check_function_body(block, return_ty);
-        }
-
+        self.check_function_body(block, return_ty);
         // Constraints
         self.solve_constraints();
 
@@ -170,14 +159,14 @@ impl<'ctx> FunctionChecker<'ctx> {
         match &statement.kind {
             taroc_hir::StatementKind::Declaration(..) => {}
             taroc_hir::StatementKind::Expression(expression) => {
-                self.synthesize_expression(expression);
+                self.synthesize_expression(expression, None);
             }
             taroc_hir::StatementKind::Variable(local) => {
                 self.check_local(local);
             }
             taroc_hir::StatementKind::Return(expression) => {
                 let ty = if let Some(expression) = expression {
-                    self.synthesize_expression(expression)
+                    self.synthesize_expression(expression, Some(return_ty))
                 } else {
                     self.context.store.common_types.void
                 };
@@ -208,7 +197,7 @@ impl<'ctx> FunctionChecker<'ctx> {
                 self.check_expression(initializer, annotation);
                 annotation
             } else {
-                let provided = self.synthesize_expression(initializer);
+                let provided = self.synthesize_expression(initializer, None);
                 provided
             }
         } else if let Some(annotation) = &local.ty {
@@ -224,10 +213,10 @@ impl<'ctx> FunctionChecker<'ctx> {
     fn bind_pattern(&mut self, pattern: &taroc_hir::BindingPattern, ty: Ty<'ctx>) {
         match &pattern.kind {
             taroc_hir::BindingPatternKind::Wildcard => {}
-            taroc_hir::BindingPatternKind::Identifier(..) => {
+            taroc_hir::BindingPatternKind::Identifier(ident) => {
                 let id = pattern.id;
                 self.context.env.insert(id, ty);
-                // println!("Bound {} to {}", ident.symbol, ty)
+                println!("Bound {} to {}", ident.symbol, ty)
             }
             taroc_hir::BindingPatternKind::Tuple(patterns) => {
                 // Only tuple types can be destructured
@@ -257,7 +246,7 @@ impl<'ctx> FunctionChecker<'ctx> {
 }
 impl<'ctx> FunctionChecker<'ctx> {
     fn check_expression(&mut self, expression: &taroc_hir::Expression, expected: Ty<'ctx>) {
-        let actual = self.synthesize_expression(expression);
+        let actual = self.synthesize_expression(expression, Some(expected));
         let constraint = Constraint::TypeEquality(actual, expected);
         self.context.add_constraint(constraint, expression.span);
     }
@@ -267,14 +256,14 @@ impl<'ctx> FunctionChecker<'ctx> {
         match &statement.kind {
             taroc_hir::StatementKind::Declaration(..) => {}
             taroc_hir::StatementKind::Expression(expression) => {
-                return self.synthesize_expression(expression);
+                return self.synthesize_expression(expression, None);
             }
             taroc_hir::StatementKind::Variable(local) => {
                 self.check_local(local);
             }
             taroc_hir::StatementKind::Return(expression) => {
                 if let Some(expression) = expression {
-                    self.synthesize_expression(expression);
+                    self.synthesize_expression(expression, None);
                 }
             }
             //
@@ -287,12 +276,16 @@ impl<'ctx> FunctionChecker<'ctx> {
 
         return self.context.store.common_types.void;
     }
-    fn synthesize_expression(&mut self, expression: &taroc_hir::Expression) -> Ty<'ctx> {
+    fn synthesize_expression(
+        &mut self,
+        expression: &taroc_hir::Expression,
+        expectation: Option<Ty<'ctx>>,
+    ) -> Ty<'ctx> {
         match &expression.kind {
             taroc_hir::ExpressionKind::Malformed => {
                 unreachable!("ICE: malformed expression, should be caught in earlier passes")
             }
-            taroc_hir::ExpressionKind::Path(path) => self.synthesize_path_expression(path),
+            taroc_hir::ExpressionKind::Path(path) => self.synthesize_path_expression(path, None),
             taroc_hir::ExpressionKind::Tuple(expressions) => {
                 self.synthesize_tuple_expression(expressions)
             }
@@ -303,7 +296,7 @@ impl<'ctx> FunctionChecker<'ctx> {
                 self.synthesize_assign_expression(lhs, rhs)
             }
             taroc_hir::ExpressionKind::FunctionCall(expression, arguments) => {
-                self.synthesize_function_call_expression(expression, arguments)
+                self.synthesize_function_call_expression(expression, arguments, expectation)
             }
             taroc_hir::ExpressionKind::Block(block) => self.synthesize_block_expression(block),
             taroc_hir::ExpressionKind::If(node) => self.synthesize_if_expression(node),
@@ -312,7 +305,7 @@ impl<'ctx> FunctionChecker<'ctx> {
                 self.synthesize_tuple_access_expression(expr, index)
             }
             taroc_hir::ExpressionKind::Unary(op, expr) => {
-                self.synthesize_unary_expression(expr, *op)
+                self.synthesize_unary_expression(expr, *op, expectation)
             }
             taroc_hir::ExpressionKind::MethodCall(..) => todo!("method call expression"),
             taroc_hir::ExpressionKind::Binary(..) => todo!("binary expression"),
@@ -334,7 +327,7 @@ impl<'ctx> FunctionChecker<'ctx> {
         let mut element_types = Vec::with_capacity(elements.len());
 
         for element in elements {
-            let elem_ty = self.synthesize_expression(element);
+            let elem_ty = self.synthesize_expression(element, None);
             element_types.push(elem_ty);
         }
 
@@ -343,8 +336,25 @@ impl<'ctx> FunctionChecker<'ctx> {
         ty
     }
 
-    fn synthesize_path_expression(&mut self, path: &taroc_hir::Path) -> Ty<'ctx> {
-        lower::synthesize_path(path, &mut self.context)
+    fn synthesize_path_expression(
+        &mut self,
+        path: &taroc_hir::Path,
+        expectation: Option<Ty<'ctx>>,
+    ) -> Ty<'ctx> {
+        let id = path.segments.last().unwrap().id;
+        if let taroc_hir::Resolution::FunctionSet(candidates) = self.context.resolution(id) {
+            // 1. If we're in a *check* position against a fn‐type, pick the overload now
+            if let Some(_exp_ty @ TyKind::Function { .. }) = expectation.map(|e| e.kind()) {
+                todo!("checking again function ty, pick overoad now")
+            } else {
+                let candidates: Vec<_> = candidates.iter().cloned().collect();
+                let kind =
+                    TyKind::OverloadedFn(self.context.store.interners.intern_slice(&candidates));
+                return self.mk_ty(kind);
+            }
+        } else {
+            lower::synthesize_path(path, &mut self.context)
+        }
     }
 
     fn synthesize_literal_expression(&mut self, literal: &taroc_hir::Literal) -> Ty<'ctx> {
@@ -364,8 +374,8 @@ impl<'ctx> FunctionChecker<'ctx> {
         lhs: &taroc_hir::Expression,
         rhs: &taroc_hir::Expression,
     ) -> Ty<'ctx> {
-        let lhs_ty = self.synthesize_expression(lhs);
-        let rhs_ty = self.synthesize_expression(rhs);
+        let lhs_ty = self.synthesize_expression(lhs, None);
+        let rhs_ty = self.synthesize_expression(rhs, None);
 
         // TODO: Mutability?
         // Constraint
@@ -378,32 +388,56 @@ impl<'ctx> FunctionChecker<'ctx> {
         &mut self,
         target: &taroc_hir::Expression,
         arguments: &Vec<taroc_hir::ExpressionArgument>,
+        expectation: Option<Ty<'ctx>>,
     ) -> Ty<'ctx> {
         // Get Type of Target
-        let callee = self.synthesize_expression(target);
+        let callee = self.synthesize_expression(target, expectation);
         let callee = self.instantiate(callee);
 
-        // Check Callable
-        let (param_tys, ret_ty) = self.expect_callable(callee, arguments.len(), target.span);
+        match callee.kind() {
+            TyKind::OverloadedFn(candidates) => {
+                let mut schemes = vec![];
+                candidates.into_iter().for_each(|id| {
+                    let signature = self.context.fn_signature(*id);
+                    schemes.push(signature);
+                });
 
-        // Unify Each Argument
-        for (argument, &parameter_ty) in arguments.iter().zip(param_tys) {
-            let argument_ty = self.synthesize_expression(&argument.expression);
-            let result = self.coerce_or_unify(argument.expression.id, parameter_ty, argument_ty);
+                let mut arg_tys = vec![];
 
-            match result {
-                Err(message) => {
-                    let message =
-                        format!("type mismatch. expected {parameter_ty}, found {argument_ty}");
-                    self.context
-                        .diagnostics
-                        .error(message, argument.expression.span);
+                for argument in arguments.iter() {
+                    arg_tys.push(self.synthesize_expression(&argument.expression, None));
                 }
-                _ => {}
+
+                let ty = self.resolve_overloads(&schemes, Some(&arg_tys), expectation);
+                return ty;
+            }
+            _ => {
+                // Check Callable
+                let (param_tys, ret_ty) =
+                    self.expect_callable(callee, arguments.len(), target.span);
+
+                // Unify Each Argument
+                for (argument, &parameter_ty) in arguments.iter().zip(param_tys) {
+                    let argument_ty = self.synthesize_expression(&argument.expression, None);
+                    let result =
+                        self.coerce_or_unify(argument.expression.id, parameter_ty, argument_ty);
+
+                    match result {
+                        Err(message) => {
+                            let message = format!(
+                                "type mismatch. expected {parameter_ty}, found {argument_ty}"
+                            );
+                            self.context
+                                .diagnostics
+                                .error(message, argument.expression.span);
+                        }
+                        _ => {}
+                    }
+                }
+
+                return ret_ty;
             }
         }
-
-        ret_ty
     }
 
     fn synthesize_block_expression(&mut self, block: &taroc_hir::Block) -> Ty<'ctx> {
@@ -420,7 +454,7 @@ impl<'ctx> FunctionChecker<'ctx> {
 
     fn synthesize_if_expression(&mut self, node: &taroc_hir::IfExpression) -> Ty<'ctx> {
         // Condition
-        let condition = self.synthesize_expression(&node.condition);
+        let condition = self.synthesize_expression(&node.condition, None);
         let constraint = Constraint::TypeEquality(condition, self.context.store.common_types.bool);
         self.context.add_constraint(constraint, node.condition.span);
 
@@ -429,7 +463,7 @@ impl<'ctx> FunctionChecker<'ctx> {
 
         // Else
         if let Some(else_block) = &node.else_block {
-            let else_ty = self.synthesize_expression(else_block);
+            let else_ty = self.synthesize_expression(else_block, None);
             let constraint = Constraint::TypeEquality(else_ty, then_ty);
             self.context.add_constraint(constraint, else_block.span);
         };
@@ -444,7 +478,7 @@ impl<'ctx> FunctionChecker<'ctx> {
         let element_ty = self.context.fresh_ty_var();
 
         for expression in expressions {
-            let element = self.synthesize_expression(expression);
+            let element = self.synthesize_expression(expression, None);
             let result = self.coerce_or_unify(expression.id, element_ty, element);
             if let Err(err) = result {
                 self.context
@@ -483,7 +517,7 @@ impl<'ctx> FunctionChecker<'ctx> {
             _ => unreachable!("ICE: tuple index should be validated as an integer"),
         };
 
-        let ty = self.synthesize_expression(expression);
+        let ty = self.synthesize_expression(expression, None);
 
         let elements = match ty.kind() {
             TyKind::Tuple(elements) => elements,
@@ -513,10 +547,11 @@ impl<'ctx> FunctionChecker<'ctx> {
         &mut self,
         expression: &taroc_hir::Expression,
         operator: UnaryOperator,
+        expectation: Option<Ty<'ctx>>,
     ) -> Ty<'ctx> {
-        let operand_ty = self.synthesize_expression(expression);
+        let operand_ty = self.synthesize_expression(expression, None);
 
-        match operator {
+        let op = match operator {
             UnaryOperator::Dereference => match operand_ty.kind() {
                 TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => return inner,
                 _ => {
@@ -533,24 +568,18 @@ impl<'ctx> FunctionChecker<'ctx> {
                 };
                 return self.mk_ty(TyKind::Reference(operand_ty, mutbl));
             }
-            UnaryOperator::Negate => todo!(),
-            UnaryOperator::BitwiseNot => todo!(),
-            UnaryOperator::LogicalNot => {
-                let kind = OperatorKind::Not;
-                // Fast Path, Remove
-                if matches!(operand_ty.kind(), TyKind::Bool) {
-                    return operand_ty; // result is bool
-                }
+            UnaryOperator::Negate => OperatorKind::Neg,
+            UnaryOperator::BitwiseNot => OperatorKind::BitwiseNot,
+            UnaryOperator::LogicalNot => OperatorKind::Not,
+        };
 
-                // Get the Definition of the Type
-                let id = self.context.ty_to_def(operand_ty);
-
-                // Once we have the definition, find the operators defined on the type
-                // Check Operator Functions
-                // Find Most Viable Selection, the function here MUST be generic enough to work for other operators
-                todo!("find viable use")
-            }
-        }
+        return self.resolve_operator_overload(
+            operand_ty,
+            op,
+            &[operand_ty],
+            expectation,
+            expression.span,
+        );
     }
 }
 impl<'ctx> FunctionChecker<'ctx> {
@@ -1087,5 +1116,190 @@ impl<'ctx> FunctionChecker<'ctx> {
 
         self.unify(provided, expected)?;
         return Ok(());
+    }
+}
+
+impl<'ctx> FunctionChecker<'ctx> {
+    fn resolve_overloads(
+        &mut self,
+        schemes: &Vec<LabeledFunctionSignature<'ctx>>,
+        arg_tys: Option<&[Ty<'ctx>]>,
+        return_ty: Option<Ty<'ctx>>,
+    ) -> Ty<'ctx> {
+        // Collect (score, return_type, adjustments) for each viable candidate
+        // let mut candidates: Vec<(DefinitionID, usize, Ty<'ctx>, Vec<Adjustment>)> = Vec::new();
+        let mut candidates = vec![];
+        const LIMIT: usize = 128;
+
+        // Quick Filter
+
+        for scheme in schemes.into_iter().take(LIMIT) {
+            let constraints = self.context.take_constraints();
+            let result = self.evaluate_overload_candidate(&scheme, arg_tys, return_ty);
+            self.context.set_constraints(constraints);
+            if result.is_some() {
+                candidates.push(result.unwrap());
+            }
+        }
+
+        // pick the best
+        candidates.sort_by_key(|(score, _)| *score);
+        if candidates.is_empty() {
+            panic!("Type Error: no matching overloads");
+        }
+
+        if candidates.len() > 1 && candidates[0].0 == candidates[1].0 {
+            panic!("Type Error: ambiguous call or conversion");
+        }
+
+        let (_score, ret) = candidates.remove(0);
+        (ret)
+    }
+
+    fn evaluate_overload_candidate(
+        &mut self,
+        scheme: &LabeledFunctionSignature<'ctx>,
+        expected_arg_tys: Option<&[Ty<'ctx>]>,
+        expected_return_ty: Option<Ty<'ctx>>,
+    ) -> Option<(usize, Ty<'ctx>)> {
+        let signature = utils::convert_labeled_signature_to_signature(&scheme, *self.context);
+        let signature = self.instantiate(signature);
+        let (candidate_parameter_tys, candidate_return_ty) = match signature.kind() {
+            TyKind::Function { inputs, output, .. } => (inputs, output),
+            _ => unreachable!("must be function sig kin"),
+        };
+
+        // Arguments Provided
+        if let Some(expected_arg_tys) = expected_arg_tys {
+            // arity filter
+            if candidate_parameter_tys.len() != expected_arg_tys.len() {
+                return None;
+            }
+
+            // parameter unification/coercion
+            for (&param_ty, &arg_ty) in candidate_parameter_tys.iter().zip(expected_arg_tys.iter())
+            {
+                let result = self.coerce_or_unify(NodeID::from_usize(0), arg_ty, param_ty);
+                if result.is_err() {
+                    return None;
+                }
+            }
+        }
+
+        // Return Type Provided
+        if let Some(expected_return_ty) = expected_return_ty {
+            let result = self.coerce_or_unify(
+                NodeID::from_usize(0),
+                expected_return_ty,
+                candidate_return_ty,
+            );
+            if result.is_err() {
+                return None;
+            }
+        }
+
+        // Solve Constraints
+        // TODO: solve constraints
+        self.solve_constraints();
+
+        // specificity score (exact < generic < existential < conversion)
+        let score = match expected_arg_tys {
+            Some(arg_tys) => {
+                self.rank_specificity(&candidate_parameter_tys, arg_tys, candidate_return_ty)
+            }
+            None => 0, // no args yet, only use expected return type
+        };
+
+        return Some((score, candidate_return_ty));
+    }
+}
+
+impl<'ctx> FunctionChecker<'ctx> {
+    /// Compute a specificity score:
+    ///  - exact matches              → +0
+    ///  - generic binds (type var)   → +1
+    ///  - boxing to existential      → +3
+    ///  - other conversions (e.g. numeric widens) → +4
+    ///
+    /// Lower total score = more specific candidate.
+    pub fn rank_specificity(
+        &self,
+        param_tys: &[Ty<'ctx>],
+        arg_tys: &[Ty<'ctx>],
+        ret_ty: Ty<'ctx>,
+    ) -> usize {
+        assert_eq!(param_tys.len(), arg_tys.len());
+
+        param_tys
+            .iter()
+            .zip(arg_tys.iter())
+            .map(|(p, a)| {
+                // Apply the substitution to the parameter
+                let p_ty = *p;
+
+                if p_ty == *a {
+                    // exact match
+                    0
+                } else if let TyKind::Infer(InferTy::TyVar(_)) = p_ty.kind() {
+                    // a generic parameter that got bound to `a`
+                    1
+                } else if let TyKind::Existential(_) = p_ty.kind() {
+                    // a protocol/existential type requires boxing
+                    3
+                } else {
+                    // any other allowed conversion (numeric widen, mutability cast, etc.)
+                    4
+                }
+            })
+            .sum::<usize>()
+    }
+}
+
+impl<'ctx> FunctionChecker<'ctx> {
+    fn resolve_operator_overload(
+        &mut self,
+        ty: Ty<'ctx>,
+        op: OperatorKind,
+        args: &[Ty<'ctx>],
+        expectation: Option<Ty<'ctx>>,
+        span: Span,
+    ) -> Ty<'ctx> {
+        let id = self.context.ty_to_def(ty);
+        match id {
+            Some(id) => {
+                self.resolve_known_definition_operator_overload(id, op, args, expectation, span)
+            }
+            _ => todo!("operator overload on complex ty"),
+        }
+    }
+
+    fn resolve_known_definition_operator_overload(
+        &mut self,
+        id: DefinitionID,
+        op: OperatorKind,
+        args: &[Ty<'ctx>],
+        expectation: Option<Ty<'ctx>>,
+        span: Span,
+    ) -> Ty<'ctx> {
+        let package_index = Some(id.package().raw() as usize);
+        let functions = self.context.with_type_database(package_index, |db| {
+            db.def_to_functions
+                .entry(id)
+                .or_insert(Default::default())
+                .clone()
+        });
+
+        let functions = functions.borrow();
+        let functions = functions.operators.get(&op);
+
+        let Some(functions) = functions else {
+            let message = format!("no viable overloads available!");
+            self.context.diagnostics.error(message, span);
+            return self.context.store.common_types.error;
+        };
+
+        let ty = self.resolve_overloads(functions, Some(args), expectation);
+
+        return ty;
     }
 }

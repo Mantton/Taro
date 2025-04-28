@@ -348,6 +348,7 @@ impl PathSource {
                         | DefinitionKind::Variable
                 ) | Resolution::Local(..)
                     | Resolution::ImplicitSelfVariable
+                    | Resolution::FunctionSet(..)
             ),
         }
     }

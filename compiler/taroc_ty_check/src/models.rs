@@ -49,6 +49,7 @@ impl<'ctx> SubstitutionMap<'ctx> {
     }
 }
 
+#[derive(Clone)]
 pub struct InferenceContext<'ctx> {
     pub gcx: GlobalContext<'ctx>,
     constraints: Vec<(Constraint<'ctx>, Span)>,
@@ -106,6 +107,10 @@ impl<'ctx> InferenceContext<'ctx> {
     pub fn take_constraints(&mut self) -> Vec<(Constraint<'ctx>, Span)> {
         let constraints = std::mem::take(&mut self.constraints);
         return constraints;
+    }
+
+    pub fn set_constraints(&mut self, c: Vec<(Constraint<'ctx>, Span)>) {
+        self.constraints = c
     }
 }
 
