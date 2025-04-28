@@ -128,6 +128,7 @@ impl<'ctx> FunctionChecker<'ctx> {
         //
         let Some(block) = &function.block else { return };
         self.check_function_body(block, return_ty);
+
         // Constraints
         self.solve_constraints();
 
@@ -135,9 +136,14 @@ impl<'ctx> FunctionChecker<'ctx> {
     }
 
     fn check_function_body(&mut self, block: &taroc_hir::Block, return_ty: Ty<'ctx>) {
-        // TODO: Single Line Functions
-        for statement in &block.statements {
-            self.check_statement(statement, return_ty);
+        if let Some(expr) = Self::is_expression_bodied(block) {
+            // ---- single-expression body ---------------------------------------
+            self.check_expression(expr, return_ty);
+        } else {
+            // ---- regular block body ------------------------------------------
+            for statement in &block.statements {
+                self.check_statement(statement, return_ty);
+            }
         }
     }
 
