@@ -6,7 +6,7 @@ use crate::{
 use rustc_hash::FxHashMap;
 use taroc_context::GlobalContext;
 use taroc_error::CompileResult;
-use taroc_hir::{DefinitionID, Mutability, NodeID, OperatorKind, UnaryOperator};
+use taroc_hir::{BinaryOperator, DefinitionID, Mutability, NodeID, OperatorKind, UnaryOperator};
 use taroc_span::{Span, Symbol};
 use taroc_ty::{
     Adjustment, Coercion, Constraint, GenericArgs, GenericArgument, GenericParameter, InferTy,
@@ -307,8 +307,10 @@ impl<'ctx> FunctionChecker<'ctx> {
             taroc_hir::ExpressionKind::Unary(op, expr) => {
                 self.synthesize_unary_expression(expr, *op, expectation)
             }
+            taroc_hir::ExpressionKind::Binary(op, lhs, rhs) => {
+                self.synthesize_binary_expression(lhs, rhs, *op, expectation, expression.span)
+            }
             taroc_hir::ExpressionKind::MethodCall(..) => todo!("method call expression"),
-            taroc_hir::ExpressionKind::Binary(..) => todo!("binary expression"),
             taroc_hir::ExpressionKind::FieldAccess(..) => todo!("field access expression"),
             taroc_hir::ExpressionKind::Subscript(..) => todo!("subscript"),
             taroc_hir::ExpressionKind::AssignOp(..) => todo!("assign op expression"),
@@ -408,7 +410,7 @@ impl<'ctx> FunctionChecker<'ctx> {
                     arg_tys.push(self.synthesize_expression(&argument.expression, None));
                 }
 
-                let ty = self.resolve_overloads(&schemes, Some(&arg_tys), expectation);
+                let ty = self.resolve_overloads(&schemes, Some(&arg_tys), expectation, target.span);
                 return ty;
             }
             _ => {
@@ -524,7 +526,7 @@ impl<'ctx> FunctionChecker<'ctx> {
             _ => {
                 let message = format!("{ty} is not a tuple type.");
                 self.context.diagnostics.error(message, expression.span);
-                return self.context.store.common_types.error;
+                return self.error_ty();
             }
         };
 
@@ -536,7 +538,7 @@ impl<'ctx> FunctionChecker<'ctx> {
                 ),
                 index_expression.value.span,
             );
-            return self.context.store.common_types.error;
+            return self.error_ty();
         }
 
         // ───── 4. return the element type ─────
@@ -580,6 +582,21 @@ impl<'ctx> FunctionChecker<'ctx> {
             expectation,
             expression.span,
         );
+    }
+
+    fn synthesize_binary_expression(
+        &mut self,
+        lhs: &taroc_hir::Expression,
+        rhs: &taroc_hir::Expression,
+        operator: BinaryOperator,
+        expectation: Option<Ty<'ctx>>,
+        span: Span,
+    ) -> Ty<'ctx> {
+        let lhs = self.synthesize_expression(lhs, None);
+        let rhs = self.synthesize_expression(rhs, None);
+        let operand = OperatorKind::from_binary(operator);
+
+        return self.resolve_operator_overload(lhs, operand, &[lhs, rhs], expectation, span);
     }
 }
 impl<'ctx> FunctionChecker<'ctx> {
@@ -987,7 +1004,7 @@ impl<'ctx> FunctionChecker<'ctx> {
                 self.context.diagnostics.error(message, span);
                 (
                     &[],
-                    self.context.store.common_types.error, // propagate error so checking continues
+                    self.error_ty(), // propagate error so checking continues
                 )
             }
         }
@@ -1045,7 +1062,7 @@ impl<'ctx> FunctionChecker<'ctx> {
     }
 
     fn error_ty(&self) -> Ty<'ctx> {
-        self.context.store.common_types.error
+        self.error_ty()
     }
 }
 
@@ -1125,6 +1142,7 @@ impl<'ctx> FunctionChecker<'ctx> {
         schemes: &Vec<LabeledFunctionSignature<'ctx>>,
         arg_tys: Option<&[Ty<'ctx>]>,
         return_ty: Option<Ty<'ctx>>,
+        span: Span,
     ) -> Ty<'ctx> {
         // Collect (score, return_type, adjustments) for each viable candidate
         // let mut candidates: Vec<(DefinitionID, usize, Ty<'ctx>, Vec<Adjustment>)> = Vec::new();
@@ -1145,15 +1163,22 @@ impl<'ctx> FunctionChecker<'ctx> {
         // pick the best
         candidates.sort_by_key(|(score, _)| *score);
         if candidates.is_empty() {
-            panic!("Type Error: no matching overloads");
+            self.context
+                .diagnostics
+                .error("type error: no matching overloads".into(), span);
+            return self.error_ty();
         }
 
         if candidates.len() > 1 && candidates[0].0 == candidates[1].0 {
-            panic!("Type Error: ambiguous call or conversion");
+            let id = schemes.first().unwrap().id;
+            let symbol = self.context.def_symbol(id);
+            let message = format!("type error: ambigious call to function '{}'", symbol);
+            self.context.diagnostics.error(message, span);
+            return self.error_ty();
         }
 
         let (_score, ret) = candidates.remove(0);
-        (ret)
+        ret
     }
 
     fn evaluate_overload_candidate(
@@ -1295,10 +1320,10 @@ impl<'ctx> FunctionChecker<'ctx> {
         let Some(functions) = functions else {
             let message = format!("no viable overloads available!");
             self.context.diagnostics.error(message, span);
-            return self.context.store.common_types.error;
+            return self.error_ty();
         };
 
-        let ty = self.resolve_overloads(functions, Some(args), expectation);
+        let ty = self.resolve_overloads(functions, Some(args), expectation, span);
 
         return ty;
     }

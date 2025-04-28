@@ -100,3 +100,36 @@ pub enum OperatorKind {
 
     Index,
 }
+
+impl OperatorKind {
+    pub fn from_binary(binary: BinaryOperator) -> OperatorKind {
+        use OperatorKind::*;
+        match binary {
+            BinaryOperator::Add => Add,
+            BinaryOperator::Sub => Sub,
+            BinaryOperator::Mul => Mul,
+            BinaryOperator::Div => Div,
+            BinaryOperator::Rem => Rem,
+
+            BinaryOperator::BoolAnd => BoolAnd,
+            BinaryOperator::BoolOr => BoolOr,
+
+            BinaryOperator::BitAnd => BitAnd,
+            BinaryOperator::BitOr => BitOr,
+            BinaryOperator::BitXor => BitXor,
+            BinaryOperator::BitShl => BitShl,
+            BinaryOperator::BitShr => BitShr,
+
+            BinaryOperator::Eql => Eq,
+            BinaryOperator::Lt => Lt,
+            BinaryOperator::Gt => Gt,
+            BinaryOperator::Leq => Leq,
+            BinaryOperator::Geq => Geq,
+            BinaryOperator::Neq => Neq,
+
+            BinaryOperator::PatMatch => ExprMatch,
+
+            BinaryOperator::PtrEq => todo!("ptr equality"),
+        }
+    }
+}
