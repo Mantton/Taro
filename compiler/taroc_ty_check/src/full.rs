@@ -323,7 +323,9 @@ impl<'ctx> FunctionChecker<'ctx> {
             taroc_hir::ExpressionKind::AssignOp(op, lhs, rhs) => {
                 self.synthesize_binary_assign_expression(lhs, rhs, *op, expression.span)
             }
-            taroc_hir::ExpressionKind::MethodCall(..) => todo!("method call expression"),
+            taroc_hir::ExpressionKind::MethodCall(node) => {
+                self.synthesize_method_call_expression(node, expectation, expression.span)
+            }
             taroc_hir::ExpressionKind::FieldAccess(..) => todo!("field access expression"),
             taroc_hir::ExpressionKind::Subscript(..) => todo!("subscript"),
             taroc_hir::ExpressionKind::CastAs(..) => todo!("cast expression"),
@@ -659,6 +661,50 @@ impl<'ctx> FunctionChecker<'ctx> {
         );
 
         ty
+    }
+
+    fn synthesize_method_call_expression(
+        &mut self,
+        node: &taroc_hir::MethodCall,
+        expectation: Option<Ty<'ctx>>,
+        span: Span,
+    ) -> Ty<'ctx> {
+        // 1. Synthesize the receiver's type
+        let receiver_ty = self.synthesize_expression(&node.receiver, None);
+
+        // 2. Synthesize explicit argument types
+        let explicit_arg_tys: Vec<Ty<'ctx>> = node
+            .arguments
+            .iter()
+            .map(|arg| self.synthesize_expression(&arg.expression, None))
+            .collect();
+
+        // 3. Get the DefinitionID of the receiver type, if possible
+        let receiver_def_id = self.context.ty_to_def(receiver_ty); // Assuming this helper exists/can be made
+
+        match receiver_def_id {
+            Some(id) => {
+                // 4. Resolve using the DefinitionID
+                self.resolve_known_method_call(
+                    id,
+                    receiver_ty,
+                    &node.method,
+                    &explicit_arg_tys,
+                    expectation,
+                    span,
+                )
+            }
+            None => {
+                // Handle cases where the receiver type isn't a simple definition
+                // (e.g., inference variable, tuple, function pointer), existential
+                self.context.diagnostics.error(
+                    format!("cannot call method on unresolved type '{}'", receiver_ty),
+                    span,
+                );
+                self.error_ty()
+                // todo!("method call on complex ty or via trait extension")
+            }
+        }
     }
 }
 impl<'ctx> FunctionChecker<'ctx> {
@@ -1412,5 +1458,309 @@ impl<'ctx> FunctionChecker<'ctx> {
 
         let kind = TyKind::OverloadedFn(self.context.store.interners.intern_slice(&candidates));
         return self.mk_ty(kind);
+    }
+}
+
+impl<'ctx> FunctionChecker<'ctx> {
+    fn resolve_known_method_call(
+        &mut self,
+        receiver_def_id: DefinitionID,
+        receiver_ty: Ty<'ctx>, // Added: The actual type of the receiver expression
+        method_segment: &taroc_hir::PathSegment,
+        explicit_arg_tys: &[Ty<'ctx>], // Explicit arguments only
+        expectation: Option<Ty<'ctx>>,
+        span: Span,
+    ) -> Ty<'ctx> {
+        let name = method_segment.identifier.symbol;
+        let functions = self
+            .context
+            .with_type_database(receiver_def_id.package(), |db| {
+                db.def_to_functions
+                    .entry(receiver_def_id)
+                    .or_insert(Default::default())
+                    .clone()
+            });
+
+        let functions = functions.borrow();
+        let functions = functions.methods.get(&name);
+
+        let Some(candidates) = functions else {
+            let message = format!("no method named {}", name);
+            self.context
+                .diagnostics
+                .error(message, method_segment.identifier.span);
+            return self.error_ty();
+        };
+
+        // --- Resolve Using Method-Specific Logic ---
+        // Pass receiver type and explicit args separately
+        self.resolve_method_overloads(
+            &candidates,
+            receiver_ty,
+            explicit_arg_tys,
+            expectation,
+            name,
+            span,
+        )
+    }
+
+    /// Resolves method overloading, handling `self`, `&self`, `&mut self` receivers.
+    fn resolve_method_overloads(
+        &mut self,
+        schemes: &Vec<LabeledFunctionSignature<'ctx>>,
+        receiver_ty: Ty<'ctx>,
+        explicit_arg_tys: &[Ty<'ctx>],
+        return_ty_expectation: Option<Ty<'ctx>>,
+        method_name: Symbol,
+        span: Span,
+    ) -> Ty<'ctx> {
+        let mut candidates = vec![];
+        const LIMIT: usize = 128;
+
+        for scheme in schemes.iter().take(LIMIT) {
+            // Use a sandbox for constraints generated during this candidate check
+            let constraints_snapshot = self.context.take_constraints();
+
+            let result = self.evaluate_method_candidate(
+                scheme,
+                receiver_ty,
+                explicit_arg_tys,
+                return_ty_expectation,
+            );
+
+            // Restore constraints regardless of success/failure
+            self.context.set_constraints(constraints_snapshot);
+
+            if let Some(viable_candidate) = result {
+                candidates.push(viable_candidate);
+            }
+        }
+
+        // --- Pick the best candidate ---
+        // TODO: Refine sorting/ambiguity check if needed
+        candidates.sort_by_key(|(score, _, _)| *score);
+
+        if candidates.is_empty() {
+            // TODO: Improve this error message - perhaps list candidates considered and why they failed?
+            let message = format!(
+                "no matching method overload for '{}' found with receiver type '{}' and argument types ({})",
+                method_name, // Use actual method name if available
+                receiver_ty,
+                explicit_arg_tys
+                    .iter()
+                    .map(|t| format!("{}", t))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            self.context.diagnostics.error(message, span);
+            return self.error_ty();
+        }
+
+        if candidates.len() > 1 && candidates[0].0 == candidates[1].0 {
+            let method_name = schemes
+                .first()
+                .map(|s| self.context.def_symbol(s.id))
+                .unwrap_or_else(|| Symbol::intern("?"));
+            let message = format!(
+                "ambiguous method call for '{}': multiple candidates match equally well",
+                method_name // Use actual method name
+            );
+            // TODO: List ambiguous candidates
+            self.context.diagnostics.error(message, span);
+            return self.error_ty();
+        }
+
+        // Success!
+        let (_score, ret_ty, _adjustments) = candidates.remove(0); // TODO: Store adjustments
+        // We need to store the adjustments (for receiver and args) somewhere!
+        // E.g., self.context.insert_adjustments(call_expr_id, adjustments);
+        ret_ty
+    }
+
+    /// Evaluates a single method candidate against the receiver and arguments.
+    /// Returns (score, return_type, adjustments) if viable.
+    fn evaluate_method_candidate(
+        &mut self,
+        scheme: &LabeledFunctionSignature<'ctx>,
+        receiver_ty: Ty<'ctx>,
+        explicit_arg_tys: &[Ty<'ctx>],
+        return_ty_expectation: Option<Ty<'ctx>>,
+    ) -> Option<(usize, Ty<'ctx>, Vec<Adjustment>)> {
+        // Added Adjustments Vec
+
+        // 1. Instantiate the signature (replaces generics with InferTy variables)
+        let signature = utils::convert_labeled_signature_to_signature(&scheme, *self.context);
+        let signature = self.instantiate(signature);
+        let (candidate_parameter_tys, candidate_return_ty) = match signature.kind() {
+            // Expecting fn(SelfParam, ExplicitParam1, ...) -> Ret
+            TyKind::Function { inputs, output, .. } => (inputs, output),
+            _ => unreachable!("method signature must be a function type after instantiation"),
+        };
+
+        // 2. Check Arity (must have at least 1 param for receiver, plus explicit args)
+        if candidate_parameter_tys.len() != explicit_arg_tys.len() + 1 {
+            //println!("Arity mismatch: Candidate {} params, Explicit {} args", candidate_parameter_tys.len(), explicit_arg_tys.len());
+            return None; // Arity mismatch (receiver + explicit args vs candidate params)
+        }
+
+        let self_param_ty = candidate_parameter_tys[0];
+        let candidate_explicit_param_tys = &candidate_parameter_tys[1..];
+
+        let mut adjustments = Vec::new(); // Collect adjustments here
+        let mut score = 0;
+
+        // --- 3. Check Receiver Type ---
+        // This is the core difference: match receiver_ty against self_param_ty with auto-ref/deref.
+        // We check if receiver_ty *can be coerced or unified* with self_param_ty, potentially
+        // applying auto-(mut)-ref.
+        let receiver_match_result = self.try_match_receiver(receiver_ty, self_param_ty);
+
+        let Ok((receiver_score, receiver_adjustment)) = receiver_match_result else {
+            //println!("Receiver mismatch: Receiver {}, Expected Self {}", receiver_ty, self_param_ty);
+            return None; // Receiver doesn't match required self type
+        };
+        score += receiver_score;
+        if let Some(adj) = receiver_adjustment {
+            adjustments.push(adj); // TODO: Store adjustment properly keyed to receiver expr
+        }
+
+        // --- 4. Check Explicit Argument Types ---
+        for (_, (&candidate_param, &provided_arg)) in candidate_explicit_param_tys
+            .iter()
+            .zip(explicit_arg_tys.iter())
+            .enumerate()
+        {
+            // Use coerce_or_unify for explicit args
+            // We need the NodeID of the argument expression here ideally
+            let arg_node_id = NodeID::from_usize(0); // Placeholder! Pass real ID down
+            match self.try_coerce_or_unify_with_score(arg_node_id, provided_arg, candidate_param) {
+                Ok((arg_score, arg_adjustment)) => {
+                    score += arg_score;
+                    if let Some(adj) = arg_adjustment {
+                        adjustments.push(adj); // TODO: Store adjustment keyed to specific arg expr
+                    }
+                }
+                Err(_) => {
+                    //println!("Arg {} mismatch: Provided {}, Expected {}", i, provided_arg, candidate_param);
+                    return None; // Argument type mismatch
+                }
+            }
+        }
+
+        // --- 5. Check Return Type ---
+        if let Some(expected_ret_ty) = return_ty_expectation {
+            // Use coerce_or_unify for return type check
+            let ret_node_id = NodeID::from_usize(0); // Placeholder! Use call expr span/id
+            match self.try_coerce_or_unify_with_score(
+                ret_node_id,
+                candidate_return_ty,
+                expected_ret_ty,
+            ) {
+                Ok((ret_score, ret_adjustment)) => {
+                    score += ret_score; // Add score for return type coercion? Maybe not.
+                    if let Some(_) = ret_adjustment {
+                        // TODO
+                        // Adjustments on the *result* of the call are less common to track this way
+                        // adjustments.push(adj);
+                    }
+                }
+                Err(_) => {
+                    //println!("Return mismatch: Actual {}, Expected {}", candidate_return_ty, expected_ret_ty);
+                    return None; // Return type mismatch
+                }
+            }
+        }
+
+        // --- 6. Solve Constraints ---
+        // Constraints might have been generated during unification steps above.
+        // TODO: This needs to handle potential failures from constraint solving!
+        self.solve_constraints(); // Assume this reports errors via diagnostics if it fails hard
+
+        // TODO: Check if any errors were reported by solve_constraints?
+
+        // If we got here, the candidate is viable
+        Some((score, candidate_return_ty, adjustments))
+    }
+
+    /// Tries to match the receiver type against the expected self parameter type,
+    /// considering auto-ref/deref rules. Returns (score, Option<Adjustment>) on success.
+    fn try_match_receiver(
+        &mut self,
+        receiver_ty: Ty<'ctx>,
+        self_param_ty: Ty<'ctx>,
+    ) -> Result<(usize, Option<Adjustment>), UnificationError> {
+        // Most exact match: Unify directly
+        if self.unify(receiver_ty, self_param_ty).is_ok() {
+            return Ok((0, None)); // Exact match or unification works
+        }
+
+        // Try matching &self
+        if let TyKind::Reference(self_inner_ty, Mutability::Immutable) = self_param_ty.kind() {
+            // Try auto-ref: Can receiver_ty unify with self_inner_ty?
+            if self.unify(receiver_ty, self_inner_ty).is_ok() {
+                // Check if receiver is addressable, etc. (might be implicit for now)
+                return Ok((1, Some(Adjustment::AutoRef))); // Matched via &
+            }
+            // TODO: Add check for auto-deref then ref? &self method
+        }
+
+        // Try matching &mut self
+        if let TyKind::Reference(self_inner_ty, Mutability::Mutable) = self_param_ty.kind() {
+            // Try auto-mut-ref: Can receiver_ty unify with self_inner_ty?
+            if self.unify(receiver_ty, self_inner_ty).is_ok() {
+                // !!! Crucially, we also need to check if the original receiver expression
+                // !!! corresponds to a mutable place. This check needs context beyond types.
+                // For now, we assume it's possible if types unify.
+                return Ok((1, Some(Adjustment::AutoMutRef))); // Matched via &mut
+            }
+            // TODO: Add check for auto-deref then mut ref?
+        }
+
+        // TODO: Try matching `self` by value via auto-deref?
+        // if let TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) = receiver_ty.kind() {
+        //     // If self_param_ty isn't a ref/ptr, try unifying self_param_ty with inner
+        //     if !matches!(self_param_ty.kind(), TyKind::Reference(..) | TyKind::Pointer(..)) {
+        //          if self.unify(inner, self_param_ty).is_ok() {
+        //              // Requires Deref/DerefMut trait typically
+        //              return Ok((2, Some(Adjustment::AutoDeref)));
+        //          }
+        //     }
+        // }
+
+        // If none of the above worked
+        Err(UnificationError::TypeMismatch)
+    }
+
+    /// Like coerce_or_unify, but returns a score and adjustment info.
+    /// Placeholder NodeID needed.
+    fn try_coerce_or_unify_with_score(
+        &mut self,
+        node: NodeID, // Placeholder node ID
+        provided: Ty<'ctx>,
+        expected: Ty<'ctx>,
+    ) -> Result<(usize, Option<Adjustment>), UnificationError> {
+        // Try exact match / unification first
+        if self.unify(provided, expected).is_ok() {
+            return Ok((0, None)); // Score 0 for exact match/unification
+        }
+
+        // Then try coercions (add score > 0 for coercions)
+        match self.try_coerce(provided, expected) {
+            // Assuming try_coerce returns Result<Option<Coercion>, UnificationError>
+            Ok(Some(coercion)) => {
+                // Assign a score based on the *kind* of coercion if needed, otherwise a flat score.
+                let score = match coercion.adjustments.first() {
+                    // Simple heuristic
+                    Some(Adjustment::MutRefConstCast | Adjustment::MutPtrConstCast) => 3,
+                    Some(Adjustment::WrapNilToOptionalNone | Adjustment::WrapOptional) => 2,
+                    _ => 4, // Other coercions
+                };
+                // Return only the *first* adjustment for simplicity here?
+                // A single coercion might involve multiple steps in Adjustment enum later.
+                Ok((score, coercion.adjustments.into_iter().next()))
+            }
+            Ok(None) => Err(UnificationError::TypeMismatch), // No coercion applied, and unify failed
+            Err(e) => Err(e), // Coercion attempt itself failed unification internally
+        }
     }
 }

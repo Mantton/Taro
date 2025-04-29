@@ -374,7 +374,9 @@ pub enum Adjustment {
     WrapOptional,           // T -> T?
     WrapNilToOptionalNone,  // nil/NilVar -> T?
     ExpressionBodiedReturn, // fn { <expr> } -> fn { return <expr> }
+    AutoRef,                // T -> &T
     AutoMutRef,             // T -> &mut T
+    AutoDeref,              // &T -> T
 }
 
 pub struct Coercion<'ctx> {
