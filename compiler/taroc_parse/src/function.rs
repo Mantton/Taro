@@ -18,7 +18,11 @@ impl Parser {
     pub fn parse_constructor(&mut self) -> R<DeclarationKind> {
         self.expect(TokenKind::Init)?;
         let is_optional = self.eat(TokenKind::Question);
-        let func = self.parse_fn()?;
+        let mut func = self.parse_fn()?;
+        func.signature.prototype.output = Some(Box::new(Type {
+            span: self.current_token_span(),
+            kind: TypeKind::ImplicitSelf,
+        }));
         Ok(DeclarationKind::Constructor(func, is_optional))
     }
 

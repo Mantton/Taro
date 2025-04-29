@@ -48,9 +48,11 @@ impl<'ctx> CheckInterfaceImplementation<'ctx> {
     fn run<'a>(context: GlobalContext<'ctx>) -> CompileResult<()> {
         let mut actor = CheckInterfaceImplementation::new(context);
 
-        let types: Vec<DefinitionID> = actor.context.with_type_database(None, |database| {
-            database.def_to_ty.keys().cloned().collect()
-        });
+        let types: Vec<DefinitionID> = actor
+            .context
+            .with_type_database(context.session().index(), |database| {
+                database.def_to_ty.keys().cloned().collect()
+            });
 
         for ty in types {
             actor.check_type(ty)
@@ -66,7 +68,7 @@ impl<'ctx> CheckInterfaceImplementation<'ctx> {
             return;
         }
 
-        let conformances = self.context.with_type_database(None, |db| {
+        let conformances = self.context.with_type_database(id.package(), |db| {
             db.conformances.get(&id).cloned().unwrap_or_default()
         });
 
@@ -80,7 +82,7 @@ impl<'ctx> CheckInterfaceImplementation<'ctx> {
         let definition = definition.borrow();
         let span = self
             .context
-            .with_type_database(None, |db| {
+            .with_type_database(id.package(), |db| {
                 db.conformances_span.get(&(id, interface)).cloned()
             })
             .expect("span");
@@ -115,7 +117,7 @@ impl<'ctx> CheckInterfaceImplementation<'ctx> {
         span: Span,
     ) {
         // --- Candidate Lookup ---
-        let functions_data = self.context.with_type_database(None, |db| {
+        let functions_data = self.context.with_type_database(id.package(), |db| {
             db.def_to_functions
                 .entry(id)
                 .or_insert(Default::default())
@@ -228,7 +230,7 @@ impl<'ctx> CheckInterfaceImplementation<'ctx> {
         span: Span,
     ) {
         // --- Candidate Lookup ---
-        let functions_data = self.context.with_type_database(None, |db| {
+        let functions_data = self.context.with_type_database(id.package(), |db| {
             db.def_to_functions
                 .entry(id)
                 .or_insert(Default::default())

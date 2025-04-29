@@ -16,7 +16,9 @@ pub enum LocalSource {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FunctionSource {
+    Free,
     Interface,
     Adt,
     Constructor,
+    Operator,
 }

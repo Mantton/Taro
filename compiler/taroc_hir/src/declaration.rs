@@ -98,12 +98,6 @@ pub enum DeclarationContext {
     Interface,
 }
 
-pub enum FunctionContext {
-    Free,
-    Extern,
-    Declaration(DeclarationContext),
-}
-
 #[derive(Debug, Clone)]
 pub struct Bridge {
     pub values: HashMap<String, BridgeValue>,

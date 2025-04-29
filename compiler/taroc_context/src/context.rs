@@ -1,6 +1,6 @@
 use crate::{CompilerSession, GlobalContext, TypeDatabase};
 use std::{cell::RefCell, rc::Rc};
-use taroc_hir::{DefinitionID, DefinitionKind, NodeID, Resolution};
+use taroc_hir::{DefinitionID, DefinitionKind, NodeID, PackageIndex, Resolution};
 use taroc_resolve_models::{DefinitionContext, ResolvedAlias};
 use taroc_span::Symbol;
 use taroc_ty::{
@@ -266,18 +266,12 @@ impl<'ctx> GlobalContext<'ctx> {
             .expect("extension resolution")
     }
 
-    pub fn with_type_database<F, T>(self, index: Option<usize>, func: F) -> T
+    pub fn with_type_database<F, T>(self, index: PackageIndex, func: F) -> T
     where
         F: FnOnce(&mut TypeDatabase<'ctx>) -> T,
     {
-        let index = if let Some(index) = index {
-            index
-        } else {
-            self.session().package_index
-        };
-
         let mut cache = self.context.store.types.borrow_mut();
-        let database = cache.entry(index).or_insert(Default::default());
+        let database = cache.entry(index.index()).or_insert(Default::default());
         func(database)
     }
 

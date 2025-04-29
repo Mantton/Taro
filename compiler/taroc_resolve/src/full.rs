@@ -5,7 +5,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::hash_map::Entry;
 use taroc_error::CompileResult;
 use taroc_hir::{
-    Declaration, DeclarationContext, DefinitionID, DefinitionKind, LocalSource, NodeID, Resolution,
+    Declaration, DeclarationContext, DefinitionID, DefinitionKind, FunctionSource, LocalSource,
+    NodeID, Resolution,
     visitor::{self, HirVisitor},
 };
 use taroc_resolve_models::{
@@ -246,14 +247,16 @@ impl HirVisitor for Actor<'_, '_> {
         self.resolve_local(l);
     }
 
-    fn visit_function(&mut self, f: &taroc_hir::Function) -> Self::Result {
+    fn visit_function(&mut self, f: &taroc_hir::Function, s: FunctionSource) -> Self::Result {
         if let Some(body) = &f.block {
             self.with_scope(LexicalScopeSource::Function, |this| {
                 this.visit_generics(&f.generics);
                 this.resolve_function_signature(&f.signature);
-                this.with_scope(LexicalScopeSource::Plain, |this| this.visit_block(body));
-
-                this.with_self_value_scope(|this| this.visit_block(body));
+                if !matches!(s, FunctionSource::Constructor) {
+                    this.with_scope(LexicalScopeSource::Plain, |this| this.visit_block(body));
+                } else {
+                    this.with_self_value_scope(|this| this.visit_block(body));
+                }
             })
         } else {
             self.visit_generics(&f.generics);

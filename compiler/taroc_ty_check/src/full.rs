@@ -54,8 +54,12 @@ impl<'ctx> FullChecker<'ctx> {
             taroc_hir::DeclarationKind::Function(node) => {
                 self.check_function(node, declaration);
             }
-            taroc_hir::DeclarationKind::Constructor(..) => {}
-            taroc_hir::DeclarationKind::Operator(..) => {}
+            taroc_hir::DeclarationKind::Constructor(node, _) => {
+                self.check_function(node, declaration);
+            }
+            taroc_hir::DeclarationKind::Operator(_, node) => {
+                // self.check_function(node, declaration);
+            }
             taroc_hir::DeclarationKind::Variable(..) => {}
             taroc_hir::DeclarationKind::Constant(..) => {}
             taroc_hir::DeclarationKind::Computed(..) => {}
@@ -316,12 +320,12 @@ impl<'ctx> FunctionChecker<'ctx> {
             taroc_hir::ExpressionKind::Binary(op, lhs, rhs) => {
                 self.synthesize_binary_expression(lhs, rhs, *op, expectation, expression.span)
             }
-            taroc_hir::ExpressionKind::MethodCall(..) => todo!("method call expression"),
-            taroc_hir::ExpressionKind::FieldAccess(..) => todo!("field access expression"),
-            taroc_hir::ExpressionKind::Subscript(..) => todo!("subscript"),
             taroc_hir::ExpressionKind::AssignOp(op, lhs, rhs) => {
                 self.synthesize_binary_assign_expression(lhs, rhs, *op, expression.span)
             }
+            taroc_hir::ExpressionKind::MethodCall(..) => todo!("method call expression"),
+            taroc_hir::ExpressionKind::FieldAccess(..) => todo!("field access expression"),
+            taroc_hir::ExpressionKind::Subscript(..) => todo!("subscript"),
             taroc_hir::ExpressionKind::CastAs(..) => todo!("cast expression"),
             taroc_hir::ExpressionKind::MatchBinding(..) => todo!("match binding expression"),
             taroc_hir::ExpressionKind::Closure(..) => todo!("closure expression"),
@@ -352,18 +356,34 @@ impl<'ctx> FunctionChecker<'ctx> {
         expectation: Option<Ty<'ctx>>,
     ) -> Ty<'ctx> {
         let id = path.segments.last().unwrap().id;
-        if let taroc_hir::Resolution::FunctionSet(candidates) = self.context.resolution(id) {
-            // 1. If we're in a *check* position against a fn‐type, pick the overload now
-            if let Some(_exp_ty @ TyKind::Function { .. }) = expectation.map(|e| e.kind()) {
-                todo!("checking again function ty, pick overoad now")
-            } else {
-                let candidates: Vec<_> = candidates.iter().cloned().collect();
-                let kind =
-                    TyKind::OverloadedFn(self.context.store.interners.intern_slice(&candidates));
-                return self.mk_ty(kind);
+        let resolution = self.context.resolution(id);
+
+        match resolution {
+            taroc_hir::Resolution::FunctionSet(candidates) => {
+                // 1. If we're in a *check* position against a fn‐type, pick the overload now
+                if let Some(_exp_ty @ TyKind::Function { .. }) = expectation.map(|e| e.kind()) {
+                    todo!("checking again function ty, pick overoad now")
+                } else {
+                    let candidates: Vec<_> = candidates.iter().cloned().collect();
+                    let kind = TyKind::OverloadedFn(
+                        self.context.store.interners.intern_slice(&candidates),
+                    );
+                    return self.mk_ty(kind);
+                }
             }
-        } else {
-            lower::synthesize_path(path, &mut self.context)
+
+            taroc_hir::Resolution::Definition(_, taroc_hir::DefinitionKind::Variant) => {
+                self.context
+                    .diagnostics
+                    .warn("variant here".into(), path.span);
+                todo!("enum variant")
+            }
+
+            taroc_hir::Resolution::Definition(id, taroc_hir::DefinitionKind::Struct) => {
+                return self.resolve_constructor(id);
+            }
+
+            _ => return lower::synthesize_path(path, &mut self.context),
         }
     }
 
@@ -1351,8 +1371,7 @@ impl<'ctx> FunctionChecker<'ctx> {
         expectation: Option<Ty<'ctx>>,
         span: Span,
     ) -> Ty<'ctx> {
-        let package_index = Some(id.package().raw() as usize);
-        let functions = self.context.with_type_database(package_index, |db| {
+        let functions = self.context.with_type_database(id.package(), |db| {
             db.def_to_functions
                 .entry(id)
                 .or_insert(Default::default())
@@ -1371,5 +1390,27 @@ impl<'ctx> FunctionChecker<'ctx> {
         let ty = self.resolve_overloads(functions, Some(args), expectation, span);
 
         return ty;
+    }
+}
+
+impl<'ctx> FunctionChecker<'ctx> {
+    fn resolve_constructor(&mut self, id: DefinitionID) -> Ty<'ctx> {
+        let functions = self.context.with_type_database(id.package(), |db| {
+            db.def_to_functions
+                .entry(id)
+                .or_insert(Default::default())
+                .clone()
+        });
+
+        let functions = functions.borrow();
+        let candidates: Vec<_> = functions
+            .constructors
+            .iter()
+            .clone()
+            .map(|v| v.id)
+            .collect();
+
+        let kind = TyKind::OverloadedFn(self.context.store.interners.intern_slice(&candidates));
+        return self.mk_ty(kind);
     }
 }

@@ -7,6 +7,7 @@ use crate::{
     TypeParameter, TypeParameterKind, TypeParameters, Variant, VariantKind,
 };
 use std::ops::ControlFlow;
+use taroc_ast_ir::FunctionSource;
 use taroc_span::Identifier;
 
 use super::{
@@ -168,8 +169,8 @@ pub trait HirVisitor: Sized {
         walk_label(self, l)
     }
 
-    fn visit_function(&mut self, f: &Function) -> Self::Result {
-        walk_function(self, f)
+    fn visit_function(&mut self, f: &Function, c: FunctionSource) -> Self::Result {
+        walk_function(self, f, c)
     }
 
     fn visit_function_signature(&mut self, f: &FunctionSignature) -> Self::Result {
@@ -292,13 +293,13 @@ pub fn walk_declaration<V: HirVisitor>(
 
     match &declaration.kind {
         DeclarationKind::Function(f) => {
-            try_visit!(visitor.visit_function(f));
+            try_visit!(visitor.visit_function(f, FunctionSource::Free));
         }
         DeclarationKind::Constructor(function, _) => {
-            try_visit!(visitor.visit_function(function));
+            try_visit!(visitor.visit_function(function, FunctionSource::Constructor));
         }
         DeclarationKind::Operator(_, function) => {
-            try_visit!(visitor.visit_function(function));
+            try_visit!(visitor.visit_function(function, FunctionSource::Operator));
         }
         DeclarationKind::Variable(decl) => {
             try_visit!(visitor.visit_local(decl))
@@ -695,7 +696,11 @@ pub fn walk_expression_argument<V: HirVisitor>(
     V::Result::output()
 }
 
-pub fn walk_function<V: HirVisitor>(visitor: &mut V, function: &Function) -> V::Result {
+pub fn walk_function<V: HirVisitor>(
+    visitor: &mut V,
+    function: &Function,
+    c: FunctionSource,
+) -> V::Result {
     try_visit!(visitor.visit_generics(&function.generics));
     try_visit!(visitor.visit_function_signature(&function.signature));
     visit_optional!(visitor, visit_block, &function.block);

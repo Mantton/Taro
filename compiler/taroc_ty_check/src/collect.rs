@@ -701,32 +701,33 @@ impl<'ctx> ConformanceCollector<'ctx> {
             let reference = lower::lower_interface_reference(def_id, node, self.context);
 
             // Validate & Store
-            self.context.with_type_database(None, |database| {
-                let contains = database
-                    .conformances
-                    .entry(def_id)
-                    .or_default()
-                    .contains(&reference);
+            self.context
+                .with_type_database(def_id.package(), |database| {
+                    let contains = database
+                        .conformances
+                        .entry(def_id)
+                        .or_default()
+                        .contains(&reference);
 
-                if contains {
-                    let msg = format!(
-                        "redundant conformance to '{}'",
-                        node.path.segments.last().unwrap().identifier.symbol
-                    );
-                    self.context.diagnostics.error(msg, node.path.span);
-                    return;
-                }
+                    if contains {
+                        let msg = format!(
+                            "redundant conformance to '{}'",
+                            node.path.segments.last().unwrap().identifier.symbol
+                        );
+                        self.context.diagnostics.error(msg, node.path.span);
+                        return;
+                    }
 
-                database
-                    .conformances
-                    .entry(def_id)
-                    .or_default()
-                    .insert(reference);
+                    database
+                        .conformances
+                        .entry(def_id)
+                        .or_default()
+                        .insert(reference);
 
-                database
-                    .conformances_span
-                    .insert((def_id, reference), node.path.span);
-            });
+                    database
+                        .conformances_span
+                        .insert((def_id, reference), node.path.span);
+                });
         }
     }
 }
@@ -782,9 +783,10 @@ impl<'ctx> HirVisitor for FunctionCollector<'ctx> {
                 match context {
                     DeclarationContext::Module => {
                         // Top Level Function
-                        self.context.with_type_database(None, |database| {
-                            database.functions.insert(def_id, signature);
-                        });
+                        self.context
+                            .with_type_database(def_id.package(), |database| {
+                                database.functions.insert(def_id, signature);
+                            });
                     }
                     DeclarationContext::Interface => {
                         // Interface Requirements
@@ -806,20 +808,21 @@ impl<'ctx> HirVisitor for FunctionCollector<'ctx> {
                     _ => {
                         // Method
                         let parent = self.parent.expect("parent must be defined");
-                        self.context.with_type_database(None, |database| {
-                            let store = database
-                                .def_to_functions
-                                .entry(parent)
-                                .or_insert(Default::default());
-                            // TODO: Static
-                            store
-                                .clone()
-                                .borrow_mut()
-                                .methods
-                                .entry(decl.identifier.symbol)
-                                .or_default()
-                                .push(signature);
-                        });
+                        self.context
+                            .with_type_database(parent.package(), |database| {
+                                let store = database
+                                    .def_to_functions
+                                    .entry(parent)
+                                    .or_insert(Default::default());
+                                // TODO: Static
+                                store
+                                    .clone()
+                                    .borrow_mut()
+                                    .methods
+                                    .entry(decl.identifier.symbol)
+                                    .or_default()
+                                    .push(signature);
+                            });
                     }
                 }
             }
@@ -829,6 +832,7 @@ impl<'ctx> HirVisitor for FunctionCollector<'ctx> {
                     "operators must only appear in type bodies"
                 );
                 let signature = utils::convert_to_labeled_signature(func, def_id, self.context);
+                self.context.cache_signature(def_id, signature.clone());
                 let parent = self.parent.expect("parent must be defined");
                 println!("Defining {:?} for {}", kind, parent);
 
@@ -846,20 +850,21 @@ impl<'ctx> HirVisitor for FunctionCollector<'ctx> {
                     }
                     _ => {
                         // Operator Implementation
-                        self.context.with_type_database(None, |database| {
-                            let store = database
-                                .def_to_functions
-                                .entry(parent)
-                                .or_insert(Default::default());
+                        self.context
+                            .with_type_database(parent.package(), |database| {
+                                let store = database
+                                    .def_to_functions
+                                    .entry(parent)
+                                    .or_insert(Default::default());
 
-                            store
-                                .clone()
-                                .borrow_mut()
-                                .operators
-                                .entry(*kind)
-                                .or_default()
-                                .push(signature);
-                        });
+                                store
+                                    .clone()
+                                    .borrow_mut()
+                                    .operators
+                                    .entry(*kind)
+                                    .or_default()
+                                    .push(signature);
+                            });
                     }
                 }
             }
@@ -877,19 +882,20 @@ impl<'ctx> HirVisitor for FunctionCollector<'ctx> {
                         todo!()
                     }
                     _ => {
-                        self.context.with_type_database(None, |database| {
-                            let store = database
-                                .def_to_functions
-                                .entry(parent)
-                                .or_insert(Default::default());
+                        self.context
+                            .with_type_database(parent.package(), |database| {
+                                let store = database
+                                    .def_to_functions
+                                    .entry(parent)
+                                    .or_insert(Default::default());
 
-                            let signature = ComputedPropertySignature { ty };
-                            store
-                                .clone()
-                                .borrow_mut()
-                                .properties
-                                .insert(decl.identifier.symbol, signature)
-                        });
+                                let signature = ComputedPropertySignature { ty };
+                                store
+                                    .clone()
+                                    .borrow_mut()
+                                    .properties
+                                    .insert(decl.identifier.symbol, signature)
+                            });
                     }
                 }
             }
@@ -899,16 +905,18 @@ impl<'ctx> HirVisitor for FunctionCollector<'ctx> {
                     "constructors must only appear in type bodies"
                 );
                 let signature = utils::convert_to_labeled_signature(func, def_id, self.context);
+                self.context.cache_signature(def_id, signature.clone());
                 let parent = self.parent.expect("parent must be defined");
 
-                self.context.with_type_database(None, |database| {
-                    let store = database
-                        .def_to_functions
-                        .entry(parent)
-                        .or_insert(Default::default());
+                self.context
+                    .with_type_database(parent.package(), |database| {
+                        let store = database
+                            .def_to_functions
+                            .entry(parent)
+                            .or_insert(Default::default());
 
-                    store.clone().borrow_mut().constructors.push(signature)
-                });
+                        store.clone().borrow_mut().constructors.push(signature)
+                    });
             }
             _ => {}
         }
