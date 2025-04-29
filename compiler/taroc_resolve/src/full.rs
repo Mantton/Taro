@@ -352,9 +352,6 @@ impl Actor<'_, '_> {
             taroc_hir::DeclarationKind::Export(..) | taroc_hir::DeclarationKind::Import(..) => {
                 taroc_hir::visitor::walk_declaration(self, declaration, context)
             }
-            taroc_hir::DeclarationKind::Computed(_) => {
-                taroc_hir::visitor::walk_declaration(self, declaration, context)
-            }
             taroc_hir::DeclarationKind::AssociatedType(..) => {
                 taroc_hir::visitor::walk_declaration(self, declaration, context)
             }

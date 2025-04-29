@@ -138,9 +138,6 @@ impl DefinitionCollector<'_, '_> {
             | DeclarationKind::AssociatedType(..) => {
                 self.resolver.define(parent, decl.identifier, def);
             }
-            DeclarationKind::Computed(..) => {
-                // We don't want to define computed properties in the path scope
-            }
             DeclarationKind::Variable(..) => {
                 if !matches!(
                     context,

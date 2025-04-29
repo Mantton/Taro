@@ -341,9 +341,6 @@ pub fn walk_declaration<V: HirVisitor>(
             )
         }
         DeclarationKind::Bridge(_) => todo!(),
-        DeclarationKind::Computed(node) => {
-            try_visit!(visitor.visit_computed_property(node))
-        }
         DeclarationKind::AssociatedType(generics, default) => {
             try_visit!(visitor.visit_generics(generics));
             visit_optional!(visitor, visit_type, default);
@@ -699,7 +696,7 @@ pub fn walk_expression_argument<V: HirVisitor>(
 pub fn walk_function<V: HirVisitor>(
     visitor: &mut V,
     function: &Function,
-    c: FunctionSource,
+    _: FunctionSource,
 ) -> V::Result {
     try_visit!(visitor.visit_generics(&function.generics));
     try_visit!(visitor.visit_function_signature(&function.signature));

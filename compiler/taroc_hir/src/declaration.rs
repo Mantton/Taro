@@ -45,8 +45,6 @@ pub enum DeclarationKind {
     Namespace(Namespace),
     /// `bridge C {}`
     Bridge(Bridge),
-    /// `var count: Int {}`
-    Computed(ComputedProperty),
     /// `case Foo, case Bar {}, case Baz`
     EnumCase(EnumCase),
     /// `associatedtype Foo: Bar = Baz`

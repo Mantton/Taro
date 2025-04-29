@@ -2,9 +2,9 @@ use super::package::{Parser, R};
 use crate::restrictions::Modifiers;
 use std::collections::HashMap;
 use taroc_ast::{
-    AssociatedType, BindingPatternKind, Bridge, BridgeValue, ComputedVariable, Declaration,
-    DeclarationContext, DeclarationKind, DefinedType, DefinedTypeKind, EnumCase, Extend, Extern,
-    Generics, Local, Mutability, Namespace, PathTree, PathTreeNode, TypeAlias,
+    AssociatedType, BindingPatternKind, Bridge, BridgeValue, Declaration, DeclarationContext,
+    DeclarationKind, DefinedType, DefinedTypeKind, EnumCase, Extend, Extern, Generics, Local,
+    Mutability, Namespace, PathTree, PathTreeNode, TypeAlias,
 };
 use taroc_ast_ir::LocalSource;
 use taroc_span::{Identifier, SpannedMessage, Symbol};
@@ -139,25 +139,6 @@ impl Parser {
         } else {
             None
         };
-
-        if self.matches(TokenKind::LBrace) {
-            let identifier = match pattern.kind {
-                BindingPatternKind::Identifier(identifier) => identifier,
-                _ => {
-                    let msg = format!("expected identifeir pattern for computed property",);
-                    return Err(SpannedMessage::new(msg, self.current_token_span()));
-                }
-            };
-
-            let Some(ty) = ty else {
-                let msg = format!("expected type annotation for computed property",);
-                return Err(SpannedMessage::new(msg, self.current_token_span()));
-            };
-
-            let block = self.parse_block()?;
-            let kind = DeclarationKind::Computed(ComputedVariable { ty, block });
-            return Ok((identifier, kind));
-        }
 
         let initializer = if self.eat(TokenKind::Assign) {
             Some(self.parse_expression()?)

@@ -9,10 +9,10 @@ use taroc_hir::{
 };
 use taroc_span::{Identifier, Symbol};
 use taroc_ty::{
-    AdtDef, AdtKind, AssociatedTypeDefinition, ComputedPropertySignature, Constraint,
-    DefinitionConstraints, EnumDefinition, EnumVariant, EnumVariantKind, GenericArguments,
-    GenericParameter, InterfaceDefinition, InterfaceMethodRequirement,
-    InterfaceOperatorRequirement, StructDefinition, StructField, Ty, TyKind,
+    AdtDef, AdtKind, AssociatedTypeDefinition, Constraint, DefinitionConstraints, EnumDefinition,
+    EnumVariant, EnumVariantKind, GenericArguments, GenericParameter, InterfaceDefinition,
+    InterfaceMethodRequirement, InterfaceOperatorRequirement, StructDefinition, StructField, Ty,
+    TyKind,
 };
 
 pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
@@ -864,37 +864,6 @@ impl<'ctx> HirVisitor for FunctionCollector<'ctx> {
                                     .entry(*kind)
                                     .or_default()
                                     .push(signature);
-                            });
-                    }
-                }
-            }
-            DeclarationKind::Computed(node) => {
-                debug_assert!(
-                    self.parent.is_some(),
-                    "computed properties must only appear in type bodies"
-                );
-                let parent = self.parent.expect("parent must be defined");
-                let mut icx = InferenceContext::new(self.context);
-                let ty = lower::lower_type(&node.ty, &mut icx);
-
-                match context {
-                    DeclarationContext::Interface => {
-                        todo!()
-                    }
-                    _ => {
-                        self.context
-                            .with_type_database(parent.package(), |database| {
-                                let store = database
-                                    .def_to_functions
-                                    .entry(parent)
-                                    .or_insert(Default::default());
-
-                                let signature = ComputedPropertySignature { ty };
-                                store
-                                    .clone()
-                                    .borrow_mut()
-                                    .properties
-                                    .insert(decl.identifier.symbol, signature)
                             });
                     }
                 }

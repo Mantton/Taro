@@ -53,9 +53,6 @@ impl Actor<'_> {
             taroc_ast::DeclarationKind::Export(tree) => {
                 taroc_hir::DeclarationKind::Export(self.lower_path_tree(tree))
             }
-            taroc_ast::DeclarationKind::Computed(node) => {
-                taroc_hir::DeclarationKind::Computed(self.lower_computed_var(node))
-            }
             taroc_ast::DeclarationKind::AssociatedType(node) => {
                 taroc_hir::DeclarationKind::AssociatedType(
                     self.lower_generics(node.generics),

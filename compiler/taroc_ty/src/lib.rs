@@ -56,6 +56,23 @@ pub enum TyKind<'arena> {
     OverloadedFn(&'arena [DefinitionID]),
 }
 
+// In your type representation logic (e.g., impl Ty<'ctx> or a helper)
+impl<'ctx> Ty<'ctx> {
+    /// Attempts to retrieve the GenericArgs associated with this type,
+    /// assuming it represents an instance of the given adt_definition_id
+    /// (potentially through references).
+    pub fn get_adt_arguments(&self, target: DefinitionID) -> Option<GenericArguments<'ctx>> {
+        match self.kind() {
+            TyKind::Adt(def, args, _) if def.id == target => Some(args),
+            TyKind::Reference(inner_ty, _) => {
+                // Recurse on the inner type
+                inner_ty.get_adt_arguments(target)
+            }
+            _ => None, // Not the ADT or a reference to it
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IntTy {
     ISize,

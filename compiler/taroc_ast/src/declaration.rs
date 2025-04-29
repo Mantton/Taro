@@ -44,8 +44,6 @@ pub enum DeclarationKind {
     Namespace(Namespace),
     /// `bridge C {}`
     Bridge(Bridge),
-    /// `var count: Int {}`
-    Computed(ComputedVariable),
     // StoredProperty(StoredProperty),
     /// `associatedtype Foo`
     AssociatedType(AssociatedType),

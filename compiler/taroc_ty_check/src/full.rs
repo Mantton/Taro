@@ -58,11 +58,10 @@ impl<'ctx> FullChecker<'ctx> {
                 self.check_function(node, declaration);
             }
             taroc_hir::DeclarationKind::Operator(_, node) => {
-                // self.check_function(node, declaration);
+                self.check_function(node, declaration);
             }
             taroc_hir::DeclarationKind::Variable(..) => {}
             taroc_hir::DeclarationKind::Constant(..) => {}
-            taroc_hir::DeclarationKind::Computed(..) => {}
             //
             taroc_hir::DeclarationKind::Namespace(node) => {
                 self.check_declaration_list(&node.declarations);
@@ -326,10 +325,14 @@ impl<'ctx> FunctionChecker<'ctx> {
             taroc_hir::ExpressionKind::MethodCall(node) => {
                 self.synthesize_method_call_expression(node, expectation, expression.span)
             }
-            taroc_hir::ExpressionKind::FieldAccess(..) => todo!("field access expression"),
+            taroc_hir::ExpressionKind::FieldAccess(expr, segment) => {
+                self.synthesize_field_access_expression(expr, segment)
+            }
             taroc_hir::ExpressionKind::Subscript(..) => todo!("subscript"),
             taroc_hir::ExpressionKind::CastAs(..) => todo!("cast expression"),
             taroc_hir::ExpressionKind::MatchBinding(..) => todo!("match binding expression"),
+
+            // TODO: Later
             taroc_hir::ExpressionKind::Closure(..) => todo!("closure expression"),
             taroc_hir::ExpressionKind::InferMemberPath(..) => todo!("inferred path"),
             taroc_hir::ExpressionKind::Await(..) => todo!("await expressions"),
@@ -397,7 +400,7 @@ impl<'ctx> FunctionChecker<'ctx> {
             taroc_hir::Literal::Integer(_) => self.context.fresh_int_var(),
             taroc_hir::Literal::Float(_) => self.context.fresh_float_var(),
             taroc_hir::Literal::Nil => self.context.fresh_nil_var(),
-            taroc_hir::Literal::String(_) => todo!("string type"),
+            taroc_hir::Literal::String(_) => self.string_type(), // TODO: Adjustment?
         }
     }
 
@@ -705,6 +708,76 @@ impl<'ctx> FunctionChecker<'ctx> {
                 // todo!("method call on complex ty or via trait extension")
             }
         }
+    }
+
+    fn synthesize_field_access_expression(
+        &mut self,
+        receiver: &taroc_hir::Expression,
+        segment: &taroc_hir::PathSegment,
+    ) -> Ty<'ctx> {
+        debug_assert!(
+            segment.arguments.is_none(),
+            "ICE: field access segment must not have arguments"
+        );
+
+        let initial_receiver_ty = self.synthesize_expression(receiver, None);
+
+        let mut current_receiver_ty = initial_receiver_ty;
+        let mut deref_adjustments: Vec<Adjustment> = Vec::new();
+        let max_derefs = 10;
+
+        for _ in 0..max_derefs {
+            // Try to resolve field access on the current receiver type
+            if let Some(target_def_id) = self.context.ty_to_def(current_receiver_ty) {
+                // Try resolving *only struct fields* on this specific DefinitionID
+                let resolve_result = self.resolve_known_struct_field(
+                    target_def_id,
+                    current_receiver_ty, // Pass the potentially dereferenced type
+                    segment,
+                    receiver.span, // Pass overall span for errors
+                );
+
+                match resolve_result {
+                    Ok(field_ty) => {
+                        // Success! Field found.
+                        // Store the deref adjustments found so far.
+                        if !deref_adjustments.is_empty() {
+                            // self.context.add_adjustments(expr_id, deref_adjustments);
+                        }
+                        return field_ty; // Return the final instantiated field type
+                    }
+                    Err(_) => {
+                        // Field not found on this type definition.
+                        // Proceed to check for Deref below.
+                    }
+                }
+            } else {
+                // Not a type with a DefinitionID, cannot have struct fields.
+                break;
+            }
+
+            // --- Field not found on current type, attempt Auto-Deref ---
+            if let Some(deref_target_ty) = self.deref_target(current_receiver_ty) {
+                deref_adjustments.push(Adjustment::AutoDeref);
+                current_receiver_ty = deref_target_ty;
+                // Continue loop
+            } else {
+                // Cannot dereference further.
+                break; // Exit loop
+            }
+        } // End of auto-deref loop
+
+        // --- If loop finished without finding the field ---
+        let field_name = segment.identifier.symbol;
+        let message = format!(
+            "no field '{}' found for type '{}'",
+            field_name, initial_receiver_ty
+        );
+
+        self.context
+            .diagnostics
+            .error(message, segment.identifier.span);
+        return self.error_ty();
     }
 }
 impl<'ctx> FunctionChecker<'ctx> {
@@ -1175,6 +1248,26 @@ impl<'ctx> FunctionChecker<'ctx> {
 
     fn void_ty(&self) -> Ty<'ctx> {
         self.context.store.common_types.void
+    }
+
+    fn string_type(&self) -> Ty<'ctx> {
+        let store = self.context.store.common_types.mappings.foundation.borrow();
+        let id = store
+            .get(&Symbol::with("String"))
+            .cloned()
+            .expect("Foundational String Type");
+
+        return self.context.type_of(id);
+    }
+
+    fn deref_target(&self, ty: Ty<'ctx>) -> Option<Ty<'ctx>> {
+        match ty.kind() {
+            // Handle built-in reference types
+            TyKind::Reference(inner_ty, _) => Some(inner_ty),
+            // Handle built-in raw pointer types
+            TyKind::Pointer(inner_ty, _) => Some(inner_ty),
+            _ => None,
+        }
     }
 }
 
@@ -1762,5 +1855,72 @@ impl<'ctx> FunctionChecker<'ctx> {
             Ok(None) => Err(UnificationError::TypeMismatch), // No coercion applied, and unify failed
             Err(e) => Err(e), // Coercion attempt itself failed unification internally
         }
+    }
+}
+
+impl<'ctx> FunctionChecker<'ctx> {
+    /// Resolves field access *specifically for struct data fields*.
+    /// Returns Ok(InstantiatedFieldType) on success,
+    /// or Err(()) if the target is not a struct or the field name is not found.
+    fn resolve_known_struct_field(
+        &mut self,
+        target_def_id: DefinitionID, // The DefinitionID of the type (after deref)
+        target_concrete_ty: Ty<'ctx>, // The specific type instance (after deref)
+        field_segment: &taroc_hir::PathSegment,
+        span: Span, // Overall expression span for some errors
+    ) -> Result<Ty<'ctx>, ()> {
+        // Return Result<Type, ErrorSignal>
+        let kind = self.context.def_kind(target_def_id);
+        let name = field_segment.identifier.symbol;
+
+        // --- Ensure the target type is actually a struct ---
+        if !matches!(kind, taroc_hir::DefinitionKind::Struct) {
+            // This type (after deref) is not a struct, so it cannot have the field.
+            // Signal failure to the caller loop.
+            return Err(());
+        }
+
+        // --- Look up the field definition in the struct ---
+        let field_ty_opt = self
+            .context
+            .with_type_database(target_def_id.package(), |db| {
+                db.structs
+                    .get(&target_def_id)
+                    .and_then(|definition| definition.fields.get(&name))
+                    .map(|field_info| field_info.ty) // Get Option<Ty>
+            });
+
+        let Some(field_ty) = field_ty_opt else {
+            // Struct exists, but doesn't have this field name. Signal failure.
+            return Err(());
+        };
+
+        // --- Instantiate the field type if necessary ---
+        if !field_ty.needs_instantiation() {
+            // Field type is simple (e.g., i32), no instantiation needed.
+            return Ok(field_ty);
+        }
+
+        // Field type has generic parameters (e.g., T), need to substitute.
+        let parent_args = match target_concrete_ty.get_adt_arguments(target_def_id) {
+            Some(args) => args,
+            None => {
+                // Arguments are needed for instantiation but couldn't be retrieved.
+                let type_name = self.context.def_symbol(target_def_id);
+                self.context.diagnostics.error(
+                    format!("internal: cannot get generic arguments from receiver type '{}' (expected struct '{}') to instantiate field '{}'", target_concrete_ty, type_name, name),
+                    span // Use overall expression span
+                );
+                return Err(()); // Signal failure
+            }
+        };
+
+        // Create the substitution map
+        let subst_map = utils::create_substitution_map(target_def_id, parent_args, *self.context);
+
+        // Substitute into the field's generic type
+        let instantiated_ty = utils::substitute(field_ty, &subst_map, None, *self.context);
+
+        Ok(instantiated_ty)
     }
 }
