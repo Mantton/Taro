@@ -4,8 +4,8 @@ use taroc_context::GlobalContext;
 use taroc_hir::{DefinitionID, NodeID};
 use taroc_span::Span;
 use taroc_ty::{
-    Constraint, FloatVid, GenericArgument, GenericArguments, GenericParameter, InferTy, IntVid,
-    NilVid, Ty, TyKind, TyVid, VarBinding,
+    Adjustment, Constraint, FloatVid, GenericArgument, GenericArguments, GenericParameter, InferTy,
+    IntVid, NilVid, Ty, TyKind, TyVid, VarBinding,
 };
 
 use crate::utils;
@@ -49,10 +49,19 @@ impl<'ctx> SubstitutionMap<'ctx> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, Copy)]
+pub struct CollectedConstraint<'ctx> {
+    pub constraint: Constraint<'ctx>,
+    pub span: Span,
+    pub node: NodeID,
+}
+
+pub type TaggedAdjustments = FxHashMap<NodeID, Vec<Adjustment>>;
+
 pub struct InferenceContext<'ctx> {
     pub gcx: GlobalContext<'ctx>,
-    constraints: Vec<(Constraint<'ctx>, Span)>,
+    constraints: Vec<CollectedConstraint<'ctx>>,
+    adjustments: Vec<(Adjustment, NodeID)>,
     pub env: FxHashMap<NodeID, Ty<'ctx>>,
 
     pub intvar_bindings: IndexVec<IntVid, VarBinding<'ctx, IntVid>>,
@@ -77,7 +86,7 @@ impl<'ctx> InferenceContext<'ctx> {
             gcx: context,
             constraints: Vec::new(),
             env: FxHashMap::default(),
-
+            adjustments: Vec::new(),
             //
             intvar_bindings: Default::default(),
             tyvar_bindings: Default::default(),
@@ -94,23 +103,33 @@ impl<'ctx> InferenceContext<'ctx> {
     ) {
         let subst = utils::create_substitution_map(id, args, self.gcx);
         let definition = self.gcx.predicates_of(id);
-        for (constraint, span) in definition.constraints.iter() {
-            let dup = utils::substitute_constraint(*constraint, &subst, self.gcx);
-            self.constraints.push((dup, *span));
-        }
+        // for (constraint, span) in definition.constraints.iter() {
+        //     let dup = utils::substitute_constraint(*constraint, &subst, self.gcx);
+        //     self.constraints.push((dup, *span));
+        // }
     }
 
-    pub fn add_constraint(&mut self, constraint: Constraint<'ctx>, span: Span) {
-        self.constraints.push((constraint, span));
+    pub fn add_constraint(&mut self, constraint: Constraint<'ctx>, node: NodeID, span: Span) {
+        let data = CollectedConstraint {
+            constraint,
+            span,
+            node,
+        };
+        self.constraints.push(data);
     }
 
-    pub fn take_constraints(&mut self) -> Vec<(Constraint<'ctx>, Span)> {
-        let constraints = std::mem::take(&mut self.constraints);
-        return constraints;
+    pub fn take_constraints(&mut self) -> Vec<CollectedConstraint<'ctx>> {
+        std::mem::take(&mut self.constraints)
     }
 
-    pub fn set_constraints(&mut self, c: Vec<(Constraint<'ctx>, Span)>) {
+    pub fn set_constraints(&mut self, c: Vec<CollectedConstraint<'ctx>>) {
         self.constraints = c
+    }
+
+    pub fn add_adjustments(&mut self, items: Vec<Adjustment>, id: NodeID) {
+        for adjustment in items {
+            self.adjustments.push((adjustment, id));
+        }
     }
 }
 
@@ -199,6 +218,33 @@ impl<'ctx> InferenceContext<'ctx> {
     pub fn get_bound_int(&mut self, root: IntVid) -> Option<Ty<'ctx>> {
         self.intvar_bindings[root].bound_ty
     }
+
+    pub fn snapshot(&mut self) -> ContextSnapshot<'ctx> {
+        ContextSnapshot {
+            constraints: std::mem::take(&mut self.constraints),
+            adjustments: std::mem::take(&mut self.adjustments),
+            intvar_bindings: std::mem::take(&mut self.intvar_bindings),
+            tyvar_bindings: std::mem::take(&mut self.tyvar_bindings),
+            floatvar_bindings: std::mem::take(&mut self.floatvar_bindings),
+            nilvar_bindings: std::mem::take(&mut self.nilvar_bindings),
+        }
+    }
+    pub fn restore(&mut self, snapshot: ContextSnapshot<'ctx>) {
+        self.constraints = snapshot.constraints;
+        self.adjustments = snapshot.adjustments;
+        self.intvar_bindings = snapshot.intvar_bindings;
+        self.tyvar_bindings = snapshot.tyvar_bindings;
+        self.floatvar_bindings = snapshot.floatvar_bindings;
+        self.nilvar_bindings = snapshot.nilvar_bindings;
+    }
+}
+pub struct ContextSnapshot<'ctx> {
+    constraints: Vec<CollectedConstraint<'ctx>>,
+    adjustments: Vec<(Adjustment, NodeID)>,
+    pub intvar_bindings: IndexVec<IntVid, VarBinding<'ctx, IntVid>>,
+    pub tyvar_bindings: IndexVec<TyVid, VarBinding<'ctx, TyVid>>,
+    pub floatvar_bindings: IndexVec<FloatVid, VarBinding<'ctx, FloatVid>>,
+    pub nilvar_bindings: IndexVec<NilVid, VarBinding<'ctx, NilVid>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

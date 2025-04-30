@@ -115,12 +115,7 @@ impl<'ctx> GenericsCollector<'ctx> {
                 parameters.push(def);
 
                 // Type
-                let kind = TyKind::Parameter(GenericParameter {
-                    // parent: def_id,
-                    // id,
-                    index,
-                    name,
-                });
+                let kind = TyKind::Parameter(GenericParameter { index, name });
                 let ty = self.context.store.interners.intern_ty(kind);
                 self.context.cache_type(id, ty);
             }
@@ -776,7 +771,6 @@ impl<'ctx> HirVisitor for FunctionCollector<'ctx> {
                     let kind = TyKind::FnDef(def_id, arguments);
                     let ty = self.context.store.interners.intern_ty(kind);
                     self.context.cache_type(def_id, ty);
-
                     self.context.cache_signature(def_id, signature.clone());
                 };
 
@@ -832,9 +826,14 @@ impl<'ctx> HirVisitor for FunctionCollector<'ctx> {
                     "operators must only appear in type bodies"
                 );
                 let signature = utils::convert_to_labeled_signature(func, def_id, self.context);
-                self.context.cache_signature(def_id, signature.clone());
                 let parent = self.parent.expect("parent must be defined");
-                println!("Defining {:?} for {}", kind, parent);
+                {
+                    let arguments = self.context.type_arguments(def_id);
+                    let kind = TyKind::FnDef(def_id, arguments);
+                    let ty = self.context.store.interners.intern_ty(kind);
+                    self.context.cache_type(def_id, ty);
+                    self.context.cache_signature(def_id, signature.clone());
+                };
 
                 match context {
                     DeclarationContext::Interface => {
@@ -874,8 +873,15 @@ impl<'ctx> HirVisitor for FunctionCollector<'ctx> {
                     "constructors must only appear in type bodies"
                 );
                 let signature = utils::convert_to_labeled_signature(func, def_id, self.context);
-                self.context.cache_signature(def_id, signature.clone());
                 let parent = self.parent.expect("parent must be defined");
+
+                {
+                    let arguments = self.context.type_arguments(def_id);
+                    let kind = TyKind::FnDef(def_id, arguments);
+                    let ty = self.context.store.interners.intern_ty(kind);
+                    self.context.cache_type(def_id, ty);
+                    self.context.cache_signature(def_id, signature.clone());
+                };
 
                 self.context
                     .with_type_database(parent.package(), |database| {

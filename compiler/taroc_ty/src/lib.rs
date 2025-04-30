@@ -53,7 +53,7 @@ pub enum TyKind<'arena> {
     Infer(InferTy),
     Error,
     Ignore,
-    OverloadedFn(&'arena [DefinitionID]),
+    OverloadedFn(&'arena [DefinitionID], Option<GenericArguments<'arena>>),
 }
 
 // In your type representation logic (e.g., impl Ty<'ctx> or a helper)
@@ -113,8 +113,6 @@ pub struct AdtDef {
 // MARK: Generics
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GenericParameter {
-    // pub parent: DefinitionID,
-    // pub id: DefinitionID,
     pub index: usize,
     pub name: Symbol,
 }
@@ -383,6 +381,7 @@ pub enum Direction<'ctx> {
     Check(Ty<'ctx>),
 }
 
+#[derive(Debug, Clone, Copy)]
 pub enum Adjustment {
     MutRefConstCast,        // &mut -> &
     MutPtrConstCast,        // *mut -> *const
@@ -580,7 +579,7 @@ impl<'arena> Display for TyKind<'arena> {
             TyKind::Error => write!(f, "<error>"),
             TyKind::Ignore => write!(f, "_"),
             TyKind::FnDef(id, args) => {
-                write!(f, "{}", id)?;
+                write!(f, "fn {}", id)?;
                 if !args.is_empty() {
                     write!(f, "<")?;
                     for (i, arg) in args.iter().enumerate() {
