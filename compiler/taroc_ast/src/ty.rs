@@ -1,3 +1,5 @@
+use crate::FieldDefinition;
+
 use super::{expression::AnonConst, path::Path};
 use taroc_ast_ir::Mutability;
 use taroc_span::Span;
@@ -51,12 +53,12 @@ pub enum TypeKind {
         key: Box<Type>,
         value: Box<Type>,
     },
-    // Anonymous Struct Type
-    //
-    // `let foo : struct { age: int, name: int } = struct { age: 10, name: ""}`
-    // AnonStruct {
-    //     fields: Vec<FieldDefinition>,
-    // },
+    /// Anonymous Struct Type
+    ///
+    /// `let foo : struct { age: int, name: int } = struct { age: 10, name: ""}`
+    AnonStruct {
+        fields: Vec<FieldDefinition>,
+    },
     /// (T, V) -> X
     Function {
         inputs: Vec<Box<Type>>,
@@ -72,6 +74,6 @@ pub enum TypeKind {
     Opaque(Vec<Path>),
     /// `any T`
     Exisitential(Vec<Path>),
-    /// Tilde
+    /// `~T` -> Option<&T>
     OptionalReference(Box<Type>, Mutability),
 }

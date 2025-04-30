@@ -32,7 +32,7 @@ impl Parser {
             TokenKind::Identifier => self.parse_path_type(),
             TokenKind::LParen => self.parse_tuple_type(),
             TokenKind::LBracket => self.parse_collection_type(),
-            // TokenKind::Struct => self.parse_anon_struct_type(),
+            TokenKind::Struct => self.parse_anon_struct_type(),
             TokenKind::Tilde => {
                 self.bump();
                 let mutability = self.parse_mutability();
@@ -164,14 +164,11 @@ impl Parser {
         return Ok(TypeKind::Dictionary { key, value });
     }
 
-    // fn parse_anon_struct_type(&mut self) -> R<TypeKind> {
-    //     let lo = self.lo_span();
-    //     self.expect(TokenKind::Struct)?; // eat keyword
-    //     // let fields = self.parse_field_definitions(Delimiter::Brace)?;
-    //     let err = SpannedMessage::new("Planned Feature".into(), lo.to(self.hi_span()));
-    //     return Err(err);
-    //     // Ok(TypeKind::AnonStruct { fields })
-    // }
+    fn parse_anon_struct_type(&mut self) -> R<TypeKind> {
+        self.expect(TokenKind::Struct)?; // eat keyword
+        let fields = self.parse_field_definitions(Delimiter::Brace)?;
+        Ok(TypeKind::AnonStruct { fields })
+    }
 
     fn parse_optional_type(&mut self, ty: Type) -> R<TypeKind> {
         self.expect(TokenKind::Question)?;

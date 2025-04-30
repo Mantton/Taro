@@ -1,8 +1,7 @@
+use super::package::{Parser, R};
 use taroc_ast::{FieldDefinition, Mutability, Variant, VariantKind};
 use taroc_span::Identifier;
 use taroc_token::{Delimiter, TokenKind};
-
-use super::package::{Parser, R};
 
 impl Parser {
     pub fn parse_field_definition(&mut self) -> R<FieldDefinition> {

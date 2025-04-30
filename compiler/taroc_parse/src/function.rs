@@ -15,17 +15,6 @@ impl Parser {
         Ok((identifier, DeclarationKind::Function(func)))
     }
 
-    pub fn parse_constructor(&mut self) -> R<DeclarationKind> {
-        self.expect(TokenKind::Init)?;
-        let is_optional = self.eat(TokenKind::Question);
-        let mut func = self.parse_fn()?;
-        func.signature.prototype.output = Some(Box::new(Type {
-            span: self.current_token_span(),
-            kind: TypeKind::ImplicitSelf,
-        }));
-        Ok(DeclarationKind::Constructor(func, is_optional))
-    }
-
     pub fn parse_operator(&mut self) -> R<DeclarationKind> {
         self.expect(TokenKind::Operator)?;
         let operator = self.parse_operator_from_token()?;
@@ -76,7 +65,7 @@ impl Parser {
         let generics = Generics {
             type_parameters,
             where_clause,
-            inheritance: None,
+            conformances: None,
         };
 
         let func = Function {

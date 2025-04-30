@@ -46,7 +46,7 @@ pub enum TypeArgument {
 pub struct Generics {
     pub type_parameters: Option<TypeParameters>,
     pub where_clause: Option<GenericWhereClause>,
-    pub inheritance: Option<Inheritance>,
+    pub conformances: Option<Conformances>,
 }
 
 /// `where T: X & Y`
@@ -91,6 +91,6 @@ pub struct GenericBound {
 pub type GenericBounds = Vec<GenericBound>;
 
 #[derive(Debug)]
-pub struct Inheritance {
+pub struct Conformances {
     pub interfaces: Vec<Path>,
 }

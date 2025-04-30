@@ -2,9 +2,9 @@ use super::package::{Parser, R};
 use crate::restrictions::Modifiers;
 use std::collections::HashMap;
 use taroc_ast::{
-    AssociatedType, BindingPatternKind, Bridge, BridgeValue, Declaration, DeclarationContext,
-    DeclarationKind, DefinedType, DefinedTypeKind, EnumCase, Extend, Extern, Generics, Local,
-    Mutability, Namespace, PathTree, PathTreeNode, TypeAlias,
+    BindingPatternKind, Bridge, BridgeValue, Declaration, DeclarationContext, DeclarationKind,
+    EnumDefinition, Extend, Extern, Generics, InterfaceDefinition, Local, Mutability, Namespace,
+    PathTree, PathTreeNode, StructDefinition, TypeAlias, VariantKind,
 };
 use taroc_ast_ir::LocalSource;
 use taroc_span::{Identifier, SpannedMessage, Symbol};
@@ -76,6 +76,9 @@ impl Parser {
     ) -> R<Option<(Identifier, DeclarationKind)>> {
         let current_kind = self.current_kind();
         let (identifier, kind) = match current_kind {
+            TokenKind::Struct => self.parse_struct_declaration()?,
+            TokenKind::Enum => self.parse_enum_declaration()?,
+            TokenKind::Interface => self.parse_interface()?,
             TokenKind::Let => self.parse_variable_decl(context)?,
             TokenKind::Var => self.parse_variable_decl(context)?,
             TokenKind::Const => self.parse_const_decl()?,
@@ -87,21 +90,12 @@ impl Parser {
                 Identifier::emtpy(self.file.file),
                 self.parse_use_declaration(false)?,
             ),
-            TokenKind::AssociatedType => self.parse_associated_type()?,
             TokenKind::Type => self.parse_type_declaration()?,
-            TokenKind::Struct | TokenKind::Enum | TokenKind::Interface => {
-                self.parse_defined_type()?
-            }
             TokenKind::Function => self.parse_function()?,
-            TokenKind::Init => (Identifier::emtpy(self.file.file), self.parse_constructor()?),
             TokenKind::Extern => (Identifier::emtpy(self.file.file), self.parse_extern()?),
             TokenKind::Extend => (Identifier::emtpy(self.file.file), self.parse_extend()?),
             TokenKind::Bridge => self.parse_bridge()?,
             TokenKind::Namespace => self.parse_namespace()?,
-            TokenKind::Case => (
-                Identifier::emtpy(self.file.file),
-                self.parse_enum_case_decl()?,
-            ),
             TokenKind::Operator => (Identifier::emtpy(self.file.file), self.parse_operator()?),
             _ => return Ok(None),
         };
@@ -193,7 +187,7 @@ impl Parser {
         let generics = Generics {
             type_parameters,
             where_clause,
-            inheritance: None,
+            conformances: None,
         };
 
         let decl = TypeAlias { ty, generics };
@@ -219,8 +213,7 @@ impl Parser {
             .collect();
 
         let e = Extern {
-            abi,
-            span,
+            abi: taroc_span::Spanned { span, value: abi },
             declarations,
         };
 
@@ -234,7 +227,7 @@ impl Parser {
     fn parse_extend(&mut self) -> R<DeclarationKind> {
         self.expect(TokenKind::Extend)?;
         let ty = self.parse_type()?;
-        let inheritance = self.parse_inheritance()?;
+        let inheritance = self.parse_conformances()?;
         let where_clause = self.parse_generic_where_clause()?;
 
         let declarations = self
@@ -246,7 +239,7 @@ impl Parser {
         let generics = Generics {
             type_parameters: None,
             where_clause,
-            inheritance,
+            conformances: inheritance,
         };
 
         let extend = Extend {
@@ -410,54 +403,67 @@ impl Parser {
 }
 
 impl Parser {
-    fn parse_associated_type(&mut self) -> R<(Identifier, DeclarationKind)> {
-        self.expect(TokenKind::AssociatedType)?;
+    fn parse_struct_declaration(&mut self) -> R<(Identifier, DeclarationKind)> {
+        self.expect(TokenKind::Struct)?;
         let identifier = self.parse_identifier()?;
-
-        let inheritance = self.parse_inheritance()?;
-
-        let default = if self.eat(TokenKind::Assign) {
-            Some(self.parse_type()?)
-        } else {
-            None
-        };
-
+        let type_parameters = self.parse_type_parameters()?;
         let where_clause = self.parse_generic_where_clause()?;
-
         let generics = Generics {
-            type_parameters: None,
+            type_parameters,
             where_clause,
-            inheritance,
+            conformances: None,
         };
 
-        return Ok((
-            identifier,
-            DeclarationKind::AssociatedType(AssociatedType { generics, default }),
-        ));
+        let variant = self.parse_variant_kind()?;
+
+        match &variant {
+            VariantKind::Unit | VariantKind::Tuple(..) => self.expect_line_break_or_semi()?,
+            _ => {}
+        }
+        let s = StructDefinition { generics, variant };
+        let s = DeclarationKind::Struct(s);
+        Ok((identifier, s))
+    }
+
+    fn parse_enum_declaration(&mut self) -> R<(Identifier, DeclarationKind)> {
+        self.expect(TokenKind::Enum)?;
+        let identifier = self.parse_identifier()?;
+        let type_parameters = self.parse_type_parameters()?;
+        let where_clause = self.parse_generic_where_clause()?;
+        let generics = Generics {
+            type_parameters,
+            where_clause,
+            conformances: None,
+        };
+
+        let variants =
+            self.parse_delimiter_sequence(Delimiter::Brace, TokenKind::Comma, true, |p| {
+                p.parse_enum_variant()
+            })?;
+
+        let e = EnumDefinition { generics, variants };
+
+        Ok((identifier, DeclarationKind::Enum(e)))
     }
 }
 
 impl Parser {
-    fn parse_defined_type(&mut self) -> R<(Identifier, DeclarationKind)> {
-        let kind = if self.eat(TokenKind::Struct) {
-            DefinedTypeKind::Struct
-        } else if self.eat(TokenKind::Enum) {
-            DefinedTypeKind::Enum
-        } else if self.eat(TokenKind::Interface) {
-            DefinedTypeKind::Interface
-        } else {
-            let msg = format!(
-                "expected struct, enum or interface definition, got {} instead",
-                self.current_kind()
-            );
-            let err = SpannedMessage::new(msg, self.current_token_span());
-            return Err(err);
-        };
+    fn parse_interface(&mut self) -> R<(Identifier, DeclarationKind)> {
+        // interface foo : bar where bar::element {}
+        self.expect(TokenKind::Interface)?;
+        let ident = self.parse_identifier()?;
 
-        let identifier = self.parse_identifier()?;
-        let type_parameters = self.parse_type_parameters()?;
-        let inheritance = self.parse_inheritance()?;
-        let where_clause = self.parse_generic_where_clause()?;
+        let generics = {
+            let type_parameters = self.parse_type_parameters()?;
+            let where_clause = self.parse_generic_where_clause()?;
+            let conformances = self.parse_conformances()?;
+
+            Generics {
+                type_parameters,
+                where_clause,
+                conformances,
+            }
+        };
 
         let declarations = self
             .parse_block_sequence(|p| p.parse_declaration(true, DeclarationContext::Interface))?
@@ -465,28 +471,11 @@ impl Parser {
             .flatten()
             .collect();
 
-        let generics = Generics {
-            inheritance,
-            type_parameters,
-            where_clause,
-        };
-
-        let node = DefinedType {
-            kind,
+        let interface = InterfaceDefinition {
             declarations,
             generics,
         };
 
-        let kind = DeclarationKind::DefinedType(node);
-        return Ok((identifier, kind));
-    }
-}
-
-impl Parser {
-    fn parse_enum_case_decl(&mut self) -> R<DeclarationKind> {
-        self.expect(TokenKind::Case)?;
-        let members = self.parse_sequence(TokenKind::Comma, |this| this.parse_enum_variant())?;
-        let kind = DeclarationKind::EnumCase(EnumCase { members });
-        return Ok(kind);
+        Ok((ident, DeclarationKind::Interface(interface)))
     }
 }

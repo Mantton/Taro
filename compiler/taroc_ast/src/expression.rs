@@ -98,18 +98,14 @@ pub enum ExpressionKind {
     Range(Box<Expression>, Box<Expression>, bool),
     /// `_`
     Wildcard,
-    /// { a, b in a + b }
+    /// |a, b| a + b
     Closure(ClosureExpression),
     /// await foo.bar()
     Await(Box<Expression>),
     /// unsafe {}
     Unsafe(Block),
-    /// { }, only used by when expression atm
+    /// { }
     Block(Block),
-    /// Trailing closure
-    TrailingClosure(Box<Expression>, Box<Expression>),
-    /// ::Foo
-    InferMember(Path),
 }
 
 #[derive(Debug)]

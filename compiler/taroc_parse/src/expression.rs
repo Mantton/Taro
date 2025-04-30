@@ -437,19 +437,6 @@ impl Parser {
                 continue;
             }
 
-            // Parsing Closure: foo {}
-            if self.matches(TokenKind::LBrace)
-                && !self
-                    .restrictions
-                    .contains(Restrictions::NO_TRAILING_CLOSURES)
-            {
-                let closure = self.parse_closure_expression()?;
-                let span = expr.span.to(self.hi_span());
-                let kind = ExpressionKind::TrailingClosure(expr, closure);
-                expr = self.build_expr(kind, span);
-                continue;
-            }
-
             break;
         }
         Ok(expr)
@@ -930,11 +917,6 @@ impl Parser {
                 self.bump();
                 Ok(self.build_expr(kind, lo.to(self.hi_span())))
             }
-            TokenKind::Scope => {
-                let lo = self.lo_span();
-                let kind = self.parse_inferred_member_expression()?;
-                Ok(self.build_expr(kind, lo.to(self.hi_span())))
-            }
             _ => {
                 let msg = format!("expected expression found {} instead", self.current_kind());
                 let span = self.current_token_span();
@@ -1087,13 +1069,5 @@ impl Parser {
         };
 
         Ok(arm)
-    }
-}
-
-impl Parser {
-    fn parse_inferred_member_expression(&mut self) -> R<ExpressionKind> {
-        self.expect(TokenKind::Scope)?;
-        let path = self.parse_path()?;
-        return Ok(ExpressionKind::InferMember(path));
     }
 }

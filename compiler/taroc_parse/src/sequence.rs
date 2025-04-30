@@ -1,6 +1,5 @@
-use taroc_token::{Delimiter, TokenKind};
-
 use super::package::{Parser, R};
+use taroc_token::{Delimiter, TokenKind};
 
 impl Parser {
     pub fn parse_delimiter_sequence<T, F>(

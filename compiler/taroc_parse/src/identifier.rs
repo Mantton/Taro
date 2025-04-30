@@ -1,7 +1,6 @@
+use super::package::{Parser, R};
 use taroc_span::{Identifier, SpannedMessage};
 use taroc_token::TokenKind;
-
-use super::package::{Parser, R};
 
 impl Parser {
     pub fn parse_identifier(&mut self) -> R<Identifier> {

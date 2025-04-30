@@ -1,6 +1,5 @@
-use taroc_ast::{Block, StatementKind};
-
 use super::package::{Parser, R};
+use taroc_ast::{Block, StatementKind};
 
 impl Parser {
     pub fn parse_block(&mut self) -> R<Block> {

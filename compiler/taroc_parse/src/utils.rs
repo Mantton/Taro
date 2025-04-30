@@ -1,9 +1,8 @@
+use super::package::{Parser, R};
 use taroc_ast::Mutability;
 use taroc_error::{CompileError, CompileResult};
 use taroc_span::{Span, SpannedMessage, Symbol, with_session_globals};
 use taroc_token::{Token, TokenKind};
-
-use super::package::{Parser, R};
 
 impl Parser {
     pub fn current(&self) -> Option<Token> {

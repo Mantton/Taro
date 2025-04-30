@@ -14,7 +14,7 @@ pub struct Statement {
 #[derive(Debug)]
 pub enum StatementKind {
     Declaration(Declaration),
-    Expression(Box<Expression>), // Expression With SemiColon
+    Expression(Box<Expression>),
     Variable(Local),
     Break(Option<Identifier>),
     Continue(Option<Identifier>),

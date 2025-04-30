@@ -1,7 +1,6 @@
+use super::package::{Parser, R};
 use taroc_ast::{Visibility, VisibilityLevel};
 use taroc_token::TokenKind;
-
-use super::package::{Parser, R};
 
 impl Parser {
     pub fn parse_visibility(&mut self) -> R<Visibility> {

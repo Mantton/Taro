@@ -1,3 +1,7 @@
+use super::{
+    package::{Parser, R},
+    restrictions::Restrictions,
+};
 use taroc_ast::{
     BindingPattern, BindingPatternKind, DeclarationContext, ForStatement, GuardStatement, Label,
     Local, LoopStatement, Mutability, Statement, StatementConditionList, StatementKind,
@@ -5,11 +9,6 @@ use taroc_ast::{
 };
 use taroc_ast_ir::LocalSource;
 use taroc_token::TokenKind;
-
-use super::{
-    package::{Parser, R},
-    restrictions::Restrictions,
-};
 
 impl Parser {
     pub fn parse_statement(&mut self) -> R<Statement> {

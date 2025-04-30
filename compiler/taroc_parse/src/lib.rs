@@ -7,7 +7,6 @@ mod expression;
 mod function;
 mod generics;
 mod identifier;
-mod label;
 mod package;
 mod path;
 mod pattern;

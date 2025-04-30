@@ -1,4 +1,5 @@
 use super::{Label, expression::AnonConst, ty::Type, visibility::Visibility};
+use crate::Generics;
 use taroc_ast_ir::Mutability;
 use taroc_span::{Identifier, Span};
 
@@ -25,4 +26,16 @@ pub enum VariantKind {
     Unit,
     Tuple(Vec<FieldDefinition>),
     Struct(Vec<FieldDefinition>),
+}
+
+#[derive(Debug)]
+pub struct StructDefinition {
+    pub generics: Generics,
+    pub variant: VariantKind,
+}
+
+#[derive(Debug)]
+pub struct EnumDefinition {
+    pub generics: Generics,
+    pub variants: Vec<Variant>,
 }

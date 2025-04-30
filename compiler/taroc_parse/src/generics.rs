@@ -1,8 +1,8 @@
 use super::package::{Parser, R};
 use taroc_ast::{
-    ConformanceConstraint, GenericBound, GenericBounds, GenericRequirement, GenericRequirementList,
-    GenericWhereClause, Inheritance, RequiredTypeConstraint, TypeArgument, TypeArguments,
-    TypeParameter, TypeParameterKind, TypeParameters,
+    ConformanceConstraint, Conformances, GenericBound, GenericBounds, GenericRequirement,
+    GenericRequirementList, GenericWhereClause, RequiredTypeConstraint, TypeArgument,
+    TypeArguments, TypeParameter, TypeParameterKind, TypeParameters,
 };
 use taroc_span::SpannedMessage;
 use taroc_token::{Delimiter, TokenKind};
@@ -197,10 +197,10 @@ impl Parser {
 }
 
 impl Parser {
-    pub fn parse_inheritance(&mut self) -> R<Option<Inheritance>> {
+    pub fn parse_conformances(&mut self) -> R<Option<Conformances>> {
         if self.eat(TokenKind::Colon) {
             let interfaces = self.parse_sequence(TokenKind::Comma, |this| this.parse_path())?;
-            let node = Inheritance { interfaces };
+            let node = Conformances { interfaces };
             Ok(Some(node))
         } else {
             Ok(None)

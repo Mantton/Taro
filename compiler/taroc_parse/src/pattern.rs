@@ -1,14 +1,13 @@
+use super::{
+    package::{Parser, R},
+    restrictions::Restrictions,
+};
 use taroc_ast::{
     BindingMode, BindingPattern, BindingPatternKind, LabeledMatchingPattern, MatchingPattern,
     MatchingPatternKind, Mutability, PatternField,
 };
 use taroc_span::SpannedMessage;
 use taroc_token::{Delimiter, TokenKind};
-
-use super::{
-    package::{Parser, R},
-    restrictions::Restrictions,
-};
 
 impl Parser {
     pub fn parse_binding_pat(&mut self) -> R<BindingPattern> {

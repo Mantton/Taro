@@ -1,7 +1,6 @@
+use super::package::{Parser, R};
 use taroc_ast::{Path, PathSegment};
 use taroc_token::TokenKind;
-
-use super::package::{Parser, R};
 
 impl Parser {
     pub fn parse_path(&mut self) -> R<Path> {

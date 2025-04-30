@@ -1,6 +1,5 @@
-use taroc_span::Span;
-
 use super::package::Parser;
+use taroc_span::Span;
 
 impl Parser {
     pub fn lo_span(&self) -> Span {

@@ -7,7 +7,7 @@ impl Actor<'_> {
                 .lower_optional(g.type_parameters, |a, v| a.lower_type_parameters(v)),
             where_clause: self
                 .lower_optional(g.where_clause, |a, v| a.lower_generic_where_clause(v)),
-            inheritance: self.lower_optional(g.inheritance, |a, v| a.lower_inheritance(v)),
+            inheritance: self.lower_optional(g.conformances, |a, v| a.lower_inheritance(v)),
         }
     }
 
@@ -126,7 +126,10 @@ impl Actor<'_> {
         }
     }
 
-    fn lower_inheritance(&mut self, inheritance: taroc_ast::Inheritance) -> taroc_hir::Inheritance {
+    fn lower_inheritance(
+        &mut self,
+        inheritance: taroc_ast::Conformances,
+    ) -> taroc_hir::Inheritance {
         taroc_hir::Inheritance {
             interfaces: self.lower_sequence(inheritance.interfaces, |a, v| a.lower_tagged_path(v)),
         }
