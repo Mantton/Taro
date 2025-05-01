@@ -33,17 +33,12 @@ impl Parser {
 
 #[cfg(test)]
 mod test {
-    use taroc_span::create_session_globals_then;
-
     use crate::make_parser;
 
     #[test]
     fn test_plain_attribute() {
-        create_session_globals_then(|| {
-            let mut parser = make_parser!("@foo");
-            let attribute = parser.parse_attribute();
-
-            // assert_eq!(attribute.identifier.symbol.as_str(), "foo");
-        });
+        let mut parser = make_parser!("@foo");
+        let attribute = parser.parse_attribute().expect("").expect("");
+        assert_eq!(attribute.identifier.symbol.as_str(), "foo");
     }
 }

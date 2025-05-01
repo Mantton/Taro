@@ -6,19 +6,5 @@ pub enum Mutability {
     Immutable,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum LocalSource {
-    StoredProperty,
-    StaticProperty,
-    Variable,
-    TopLevelDecl,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FunctionSource {
-    Free,
-    Interface,
-    Adt,
-    Constructor,
-    Operator,
-}
+#[derive(Debug, Clone, Copy)]
+pub struct BindingMode(pub Mutability);

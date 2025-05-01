@@ -73,6 +73,7 @@ impl Parser {
             items.push(item);
 
             proceed = self.eat(separator);
+            self.consume_comments_and_new_lines();
 
             // can proceed but cursor points to ending token and allows a trailing sep, exit loop otherwise continue and perhaps throw error
             if proceed && self.matches_any(until) && allow_trailing_sep {
@@ -93,34 +94,6 @@ impl Parser {
     {
         self.expect(TokenKind::LBrace)?;
         self.consume_comments_and_new_lines();
-
-        let mut items = vec![];
-
-        while !self.matches(TokenKind::RBrace) && !self.is_at_end() {
-            self.consume_comments_and_new_lines();
-            if self.matches(TokenKind::RBrace) {
-                break;
-            }
-            let item = parse_action(self)?;
-            items.push(item);
-
-            if self.matches(TokenKind::RBrace) {
-                break;
-            }
-        }
-
-        self.expect(TokenKind::RBrace)?;
-        Ok(items)
-    }
-
-    pub fn parse_brace_sequence<T, F>(&mut self, opening: bool, mut parse_action: F) -> R<Vec<T>>
-    where
-        F: FnMut(&mut Parser) -> R<T>,
-    {
-        if opening {
-            self.expect(TokenKind::LBrace)?;
-            self.consume_comments_and_new_lines();
-        }
 
         let mut items = vec![];
 

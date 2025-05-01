@@ -1,6 +1,5 @@
-use crate::literal::convert_ast_literal;
-
 use super::package::Actor;
+use crate::literal::convert_ast_literal;
 use taroc_ast::{self, BinaryOperator};
 use taroc_span::Span;
 
@@ -28,10 +27,13 @@ impl Actor<'_> {
             taroc_ast::ExpressionKind::Path(path) => {
                 taroc_hir::ExpressionKind::Path(self.lower_path(path))
             }
+            taroc_ast::ExpressionKind::StructLiteral(literal) => {
+                taroc_hir::ExpressionKind::StructLiteral(self.lower_struct_literal(literal))
+            }
             taroc_ast::ExpressionKind::Tuple(vec) => taroc_hir::ExpressionKind::Tuple(
                 self.lower_sequence(vec, |a, e| a.lower_expression(e)),
             ),
-            taroc_ast::ExpressionKind::Array(vec) => taroc_hir::ExpressionKind::Array(
+            taroc_ast::ExpressionKind::Array(vec) => taroc_hir::ExpressionKind::ArrayLiteral(
                 self.lower_sequence(vec, |a, e| a.lower_expression(e)),
             ),
             taroc_ast::ExpressionKind::Binary(binary_operator, lhs, rhs) => {
@@ -84,7 +86,6 @@ impl Actor<'_> {
                 self.lower_expression(expression),
                 self.lower_type(ty),
             ),
-
             taroc_ast::ExpressionKind::AssignOp(binary_operator, lhs, rhs) => {
                 taroc_hir::ExpressionKind::AssignOp(
                     binary_operator,
@@ -102,11 +103,13 @@ impl Actor<'_> {
             taroc_ast::ExpressionKind::Block(b) => {
                 taroc_hir::ExpressionKind::Block(self.lower_block(b))
             }
-
-            taroc_ast::ExpressionKind::When(..) => todo!(),
-
-            // MARK: Special
-            taroc_ast::ExpressionKind::Dictionary(..) => todo!(),
+            taroc_ast::ExpressionKind::Await(expression) => {
+                (self.lower_expression(expression)).kind
+            }
+            taroc_ast::ExpressionKind::When(node) => {
+                taroc_hir::ExpressionKind::When(self.lower_when_expression(node))
+            }
+            taroc_ast::ExpressionKind::DictionaryLiteral(..) => todo!(),
             taroc_ast::ExpressionKind::Ternary(..) => todo!(),
             taroc_ast::ExpressionKind::ForceUnwrap(..) => todo!(),
             taroc_ast::ExpressionKind::OptionalUnwrap(..) => todo!(),
@@ -118,13 +121,9 @@ impl Actor<'_> {
             taroc_ast::ExpressionKind::Ensure(..) => todo!(),
             taroc_ast::ExpressionKind::Range(..) => todo!(),
             taroc_ast::ExpressionKind::Wildcard => todo!(),
-
-            // MARK: Revisit
             taroc_ast::ExpressionKind::Closure(..) => todo!(),
-            taroc_ast::ExpressionKind::Await(..) => todo!(),
             taroc_ast::ExpressionKind::Unsafe(..) => todo!(),
-            taroc_ast::ExpressionKind::TrailingClosure(..) => todo!(),
-            taroc_ast::ExpressionKind::InferMember(..) => todo!(),
+            taroc_ast::ExpressionKind::Malformed => todo!(),
         }
     }
 }
@@ -209,5 +208,58 @@ impl Actor<'_> {
         });
 
         result
+    }
+}
+
+impl Actor<'_> {
+    fn lower_struct_literal(&mut self, node: taroc_ast::StructLiteral) -> taroc_hir::StructLiteral {
+        taroc_hir::StructLiteral {
+            path: self.lower_path(node.path),
+            fields: self.lower_sequence(node.fields, |this, field| {
+                this.lower_expression_field(field)
+            }),
+        }
+    }
+
+    fn lower_expression_field(
+        &mut self,
+        node: taroc_ast::ExpressionField,
+    ) -> taroc_hir::ExpressionField {
+        taroc_hir::ExpressionField {
+            is_shorthand: node.is_shorthand,
+            span: node.span,
+            label: self.lower_optional(node.label, |this, label| this.lower_label(label)),
+            expression: self.lower_expression(node.expression),
+        }
+    }
+}
+
+impl Actor<'_> {
+    fn lower_when_expression(
+        &mut self,
+        node: taroc_ast::WhenExpression,
+    ) -> taroc_hir::WhenExpression {
+        taroc_hir::WhenExpression {
+            value: self.lower_optional(node.value, |this, value| this.lower_expression(value)),
+            arms: self.lower_sequence(node.arms, |this, arm| this.lower_when_arm(arm)),
+        }
+    }
+
+    fn lower_when_arm(&mut self, node: taroc_ast::WhenArm) -> taroc_hir::WhenArm {
+        let kind = match node.kind {
+            taroc_ast::WhenArmKind::Pattern(node) => {
+                taroc_hir::WhenArmKind::Pattern(self.lower_matching_pattern(node))
+            }
+            taroc_ast::WhenArmKind::Expression(nodes) => taroc_hir::WhenArmKind::Expression(
+                self.lower_sequence(nodes.conditions, |this, node| this.lower_expression(node)),
+            ),
+            taroc_ast::WhenArmKind::Default => taroc_hir::WhenArmKind::Default,
+        };
+
+        taroc_hir::WhenArm {
+            kind,
+            span: node.span,
+            body: self.lower_expression(node.body),
+        }
     }
 }

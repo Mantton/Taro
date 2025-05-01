@@ -1,5 +1,5 @@
-use super::{AnonConst, Label, Path};
-use taroc_ast_ir::Mutability;
+use super::{AnonConst, Path};
+use taroc_ast_ir::BindingMode;
 use taroc_span::{Identifier, Span};
 
 #[derive(Debug)]
@@ -7,9 +7,6 @@ pub struct MatchingPattern {
     pub span: Span,
     pub kind: MatchingPatternKind,
 }
-
-#[derive(Debug)]
-pub struct BindingMode(pub Mutability);
 
 #[derive(Debug)]
 pub enum MatchingPatternKind {
@@ -21,22 +18,16 @@ pub enum MatchingPatternKind {
     Binding(BindingMode, Identifier),
     // (a, b)
     Tuple(Vec<MatchingPattern>, Span),
-    // Foo::Bar(a, b)
+    // Foo::Bar
     Path(Path),
     // Foo::Bar(a, b)
-    PathTuple(Path, Vec<LabeledMatchingPattern>, Span),
+    PathTuple(Path, Vec<MatchingPattern>, Span),
     // Foo::Bar { a, b, .. }
     PathStruct(Path, Vec<PatternField>, Span, bool),
     // Foo | Bar
     Or(Vec<MatchingPattern>, Span),
     // Anon Consts in Pattern Type
     Literal(AnonConst),
-}
-
-#[derive(Debug)]
-pub struct LabeledMatchingPattern {
-    pub label: Option<Label>,
-    pub pattern: MatchingPattern,
 }
 
 #[derive(Debug)]

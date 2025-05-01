@@ -1,35 +1,57 @@
-use taroc_ast::{self, DeclarationContext};
-use taroc_span::{Span, Symbol};
-
 use super::package::Actor;
+use taroc_span::{Span, Symbol};
 
 impl Actor<'_> {
     pub fn lower_declaration(
         &mut self,
         declaration: taroc_ast::Declaration,
-        context: DeclarationContext,
     ) -> taroc_hir::Declaration {
         taroc_hir::Declaration {
             id: self.next(),
             span: declaration.span,
             identifier: declaration.identifier,
-            kind: self.lower_declaration_kind(declaration.kind, context),
+            kind: self.lower_declaration_kind(declaration.kind),
             attributes: self.lower_attributes(declaration.attributes),
             visibility: self.lower_visibility(declaration.visibility),
         }
     }
 
+    pub fn lower_associated_declaration(
+        &mut self,
+        declaration: taroc_ast::AssociatedDeclaration,
+    ) -> taroc_hir::AssociatedDeclaration {
+        taroc_hir::AssociatedDeclaration {
+            id: self.next(),
+            span: declaration.span,
+            identifier: declaration.identifier,
+            kind: self.lower_assoc_declaration_kind(declaration.kind),
+            attributes: self.lower_attributes(declaration.attributes),
+            visibility: self.lower_visibility(declaration.visibility),
+        }
+    }
+
+    pub fn lower_foreign_declaration(
+        &mut self,
+        declaration: taroc_ast::ForeignDeclaration,
+    ) -> taroc_hir::ForeignDeclaration {
+        taroc_hir::ForeignDeclaration {
+            id: self.next(),
+            span: declaration.span,
+            identifier: declaration.identifier,
+            kind: self.lower_foreign_declaration_kind(declaration.kind),
+            attributes: self.lower_attributes(declaration.attributes),
+            visibility: self.lower_visibility(declaration.visibility),
+        }
+    }
+}
+impl Actor<'_> {
     fn lower_declaration_kind(
         &mut self,
         kind: taroc_ast::DeclarationKind,
-        _: DeclarationContext,
     ) -> taroc_hir::DeclarationKind {
         match kind {
             taroc_ast::DeclarationKind::Function(function) => {
                 taroc_hir::DeclarationKind::Function(self.lower_function(function))
-            }
-            taroc_ast::DeclarationKind::Constructor(function, is_optional) => {
-                taroc_hir::DeclarationKind::Constructor(self.lower_function(function), is_optional)
             }
             taroc_ast::DeclarationKind::Variable(local) => {
                 taroc_hir::DeclarationKind::Variable(self.lower_local(local))
@@ -46,53 +68,64 @@ impl Actor<'_> {
             taroc_ast::DeclarationKind::Extern(extrn) => {
                 taroc_hir::DeclarationKind::Extern(self.lower_extern(extrn))
             }
-            taroc_ast::DeclarationKind::Bridge(..) => todo!(),
             taroc_ast::DeclarationKind::Import(tree) => {
                 taroc_hir::DeclarationKind::Import(self.lower_path_tree(tree))
             }
             taroc_ast::DeclarationKind::Export(tree) => {
                 taroc_hir::DeclarationKind::Export(self.lower_path_tree(tree))
             }
-            taroc_ast::DeclarationKind::AssociatedType(node) => {
-                taroc_hir::DeclarationKind::AssociatedType(
-                    self.lower_generics(node.generics),
-                    self.lower_optional(node.default, |a, ty| a.lower_type(ty)),
+            taroc_ast::DeclarationKind::Constant(node) => {
+                taroc_hir::DeclarationKind::Constant(self.lower_constant_decl(node))
+            }
+            taroc_ast::DeclarationKind::Interface(node) => {
+                taroc_hir::DeclarationKind::Interface(self.lower_interface_definition(node))
+            }
+            taroc_ast::DeclarationKind::Struct(node) => {
+                taroc_hir::DeclarationKind::Struct(self.lower_struct_definition(node))
+            }
+            taroc_ast::DeclarationKind::Enum(node) => {
+                taroc_hir::DeclarationKind::Enum(self.lower_enum_definition(node))
+            }
+            taroc_ast::DeclarationKind::Bridge(..) => todo!("bridge declaration"),
+            taroc_ast::DeclarationKind::Operator(..) => {
+                unreachable!("top level operators must be caught by")
+            }
+        }
+    }
+
+    fn lower_assoc_declaration_kind(
+        &mut self,
+        kind: taroc_ast::AssociatedDeclarationKind,
+    ) -> taroc_hir::AssociatedDeclarationKind {
+        match kind {
+            taroc_ast::AssociatedDeclarationKind::Constant(node) => {
+                taroc_hir::AssociatedDeclarationKind::Constant(self.lower_constant_decl(node))
+            }
+            taroc_ast::AssociatedDeclarationKind::Function(node) => {
+                taroc_hir::AssociatedDeclarationKind::Function(self.lower_function(node))
+            }
+            taroc_ast::AssociatedDeclarationKind::Type(node) => {
+                taroc_hir::AssociatedDeclarationKind::Type(self.lower_type_alias(node))
+            }
+            taroc_ast::AssociatedDeclarationKind::Operator(operator_kind, function) => {
+                taroc_hir::AssociatedDeclarationKind::Operator(
+                    operator_kind,
+                    self.lower_function(function),
                 )
             }
-            taroc_ast::DeclarationKind::Constant(ty, c) => {
-                taroc_hir::DeclarationKind::Constant(self.lower_type(ty), self.lower_anon_const(c))
-            }
-            taroc_ast::DeclarationKind::DefinedType(node) => {
-                let (kind, context) = match node.kind {
-                    taroc_ast::DefinedTypeKind::Struct => (
-                        taroc_hir::DefinedTypeKind::Struct,
-                        DeclarationContext::Struct,
-                    ),
-                    taroc_ast::DefinedTypeKind::Enum => {
-                        (taroc_hir::DefinedTypeKind::Enum, DeclarationContext::Enum)
-                    }
-                    taroc_ast::DefinedTypeKind::Interface => (
-                        taroc_hir::DefinedTypeKind::Interface,
-                        DeclarationContext::Interface,
-                    ),
-                };
-                let node = taroc_hir::DefinedType {
-                    generics: self.lower_generics(node.generics),
-                    declarations: self
-                        .lower_sequence(node.declarations, |a, v| a.lower_declaration(v, context)),
-                    kind,
-                };
-                taroc_hir::DeclarationKind::DefinedType(node)
-            }
-            taroc_ast::DeclarationKind::EnumCase(node) => {
-                let node = taroc_hir::EnumCase {
-                    members: self.lower_sequence(node.members, |a, v| a.lower_variant(v)),
-                };
+        }
+    }
 
-                taroc_hir::DeclarationKind::EnumCase(node)
+    fn lower_foreign_declaration_kind(
+        &mut self,
+        kind: taroc_ast::ForeignDeclarationKind,
+    ) -> taroc_hir::ForeignDeclarationKind {
+        match kind {
+            taroc_ast::ForeignDeclarationKind::Function(node) => {
+                taroc_hir::ForeignDeclarationKind::Function(self.lower_function(node))
             }
-            taroc_ast::DeclarationKind::Operator(kind, func) => {
-                taroc_hir::DeclarationKind::Operator(kind, self.lower_function(func))
+            taroc_ast::ForeignDeclarationKind::Type(node) => {
+                taroc_hir::ForeignDeclarationKind::Type(self.lower_type_alias(node))
             }
         }
     }
@@ -108,17 +141,15 @@ impl Actor<'_> {
 
     fn lower_namspace(&mut self, namespace: taroc_ast::Namespace) -> taroc_hir::Namespace {
         taroc_hir::Namespace {
-            declarations: self.lower_sequence(namespace.declarations, |a, d| {
-                a.lower_declaration(d, DeclarationContext::Namespace)
-            }),
+            declarations: self
+                .lower_sequence(namespace.declarations, |a, d| a.lower_declaration(d)),
         }
     }
 
     fn lower_extend(&mut self, e: taroc_ast::Extend) -> taroc_hir::Extend {
         taroc_hir::Extend {
-            declarations: self.lower_sequence(e.declarations, |a, d| {
-                a.lower_declaration(d, DeclarationContext::Extern)
-            }),
+            declarations: self
+                .lower_sequence(e.declarations, |a, d| a.lower_associated_declaration(d)),
             ty: self.lower_type(e.ty),
             generics: self.lower_generics(e.generics),
         }
@@ -128,10 +159,12 @@ impl Actor<'_> {
 impl Actor<'_> {
     fn lower_extern(&mut self, e: taroc_ast::Extern) -> taroc_hir::Extern {
         taroc_hir::Extern {
-            abi: self.lower_abi(e.abi, e.span),
-            declarations: self.lower_sequence(e.declarations, |a, d| {
-                a.lower_declaration(d, DeclarationContext::Extern)
-            }),
+            abi: taroc_span::Spanned {
+                span: e.abi.span,
+                value: self.lower_abi(e.abi.value, e.abi.span),
+            },
+            declarations: self
+                .lower_sequence(e.declarations, |a, d| a.lower_foreign_declaration(d)),
         }
     }
 
@@ -143,19 +176,6 @@ impl Actor<'_> {
                 self.context.diagnostics.error("unknown abi".into(), span);
                 taroc_hir::Abi::Error
             }
-        }
-    }
-}
-
-impl Actor<'_> {
-    fn lower_computed_var(
-        &mut self,
-        node: taroc_ast::ComputedVariable,
-    ) -> taroc_hir::ComputedProperty {
-        taroc_hir::ComputedProperty {
-            id: self.next(),
-            ty: self.lower_type(node.ty),
-            block: self.lower_block(node.block),
         }
     }
 }
@@ -180,6 +200,54 @@ impl Actor<'_> {
 
                 taroc_hir::PathTreeNode::Nested { nodes, span }
             }
+        }
+    }
+}
+
+impl Actor<'_> {
+    fn lower_constant_decl(
+        &mut self,
+        node: taroc_ast::ConstantDeclaration,
+    ) -> taroc_hir::ConstantDeclaration {
+        taroc_hir::ConstantDeclaration {
+            identifier: node.identifier,
+            ty: self.lower_type(node.ty),
+            expr: self.lower_optional(node.expr, |this, expr| this.lower_expression(expr)),
+        }
+    }
+}
+
+impl Actor<'_> {
+    fn lower_struct_definition(
+        &mut self,
+        node: taroc_ast::StructDefinition,
+    ) -> taroc_hir::StructDefinition {
+        taroc_hir::StructDefinition {
+            generics: self.lower_generics(node.generics),
+            variant: self.lower_variant_kind(node.variant),
+        }
+    }
+
+    fn lower_enum_definition(
+        &mut self,
+        node: taroc_ast::EnumDefinition,
+    ) -> taroc_hir::EnumDefinition {
+        taroc_hir::EnumDefinition {
+            generics: self.lower_generics(node.generics),
+            variants: self
+                .lower_sequence(node.variants, |this, variant| this.lower_variant(variant)),
+        }
+    }
+
+    fn lower_interface_definition(
+        &mut self,
+        node: taroc_ast::InterfaceDefinition,
+    ) -> taroc_hir::InterfaceDefinition {
+        taroc_hir::InterfaceDefinition {
+            generics: self.lower_generics(node.generics),
+            declarations: self.lower_sequence(node.declarations, |this, variant| {
+                this.lower_associated_declaration(variant)
+            }),
         }
     }
 }

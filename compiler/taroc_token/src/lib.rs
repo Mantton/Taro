@@ -35,15 +35,11 @@ pub enum TokenKind {
     Extern,
     Namespace,
     Operator,
-    Computed,
 
     Let,
     Var,
     Const,
     Mut,
-    Static,
-    Get,
-    Set,
 
     If,
     Else,
@@ -136,6 +132,14 @@ pub enum TokenKind {
     Ellipsis, // ...
     DotDot,   // ..
     DotDotEq, // ..=
+
+    // Protected
+    Mod,
+    Get,
+    Set,
+    Static,
+    Private,
+    Computed,
 }
 
 impl Display for TokenKind {
@@ -255,6 +259,8 @@ impl Display for TokenKind {
             TokenKind::Static => "static",
             TokenKind::Get => "get",
             TokenKind::Set => "set",
+            TokenKind::Mod => "mod",
+            TokenKind::Private => "private",
         };
         write!(f, "{}", text)
     }
@@ -393,9 +399,10 @@ pub enum Delimiter {
     Brace,
     /// `[ ... ]`
     Bracket,
-
     /// `< ... >`
     Chevron,
+    /// ` |...|`
+    Bar,
 }
 
 impl Delimiter {
@@ -405,6 +412,7 @@ impl Delimiter {
             Delimiter::Brace => TokenKind::LBrace,
             Delimiter::Bracket => TokenKind::LBracket,
             Delimiter::Chevron => TokenKind::LChevron,
+            Delimiter::Bar => TokenKind::Bar,
         }
     }
 
@@ -414,6 +422,7 @@ impl Delimiter {
             Delimiter::Brace => TokenKind::RBrace,
             Delimiter::Bracket => TokenKind::RBracket,
             Delimiter::Chevron => TokenKind::RChevron,
+            Delimiter::Bar => TokenKind::Bar,
         }
     }
 }

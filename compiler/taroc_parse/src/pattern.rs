@@ -3,8 +3,8 @@ use super::{
     restrictions::Restrictions,
 };
 use taroc_ast::{
-    BindingMode, BindingPattern, BindingPatternKind, LabeledMatchingPattern, MatchingPattern,
-    MatchingPatternKind, Mutability, PatternField,
+    BindingMode, BindingPattern, BindingPatternKind, MatchingPattern, MatchingPatternKind,
+    Mutability, PatternField,
 };
 use taroc_span::SpannedMessage;
 use taroc_token::{Delimiter, TokenKind};
@@ -48,7 +48,7 @@ impl Parser {
     pub fn parse_match_case_pat(&mut self) -> R<MatchingPattern> {
         let lo = self.lo_span();
         let cases =
-            self.parse_sequence_until(&[TokenKind::EqArrow], TokenKind::Bar, false, |p| {
+            self.parse_sequence_until(&[TokenKind::EqArrow], TokenKind::Comma, false, |p| {
                 p.parse_match_pat()
             })?;
 
@@ -146,11 +146,7 @@ impl Parser {
                         Delimiter::Parenthesis,
                         TokenKind::Comma,
                         false,
-                        |p| {
-                            let label = p.parse_label()?;
-                            let pattern = p.parse_match_pat()?;
-                            return Ok(LabeledMatchingPattern { label, pattern });
-                        },
+                        |p| p.parse_match_pat(),
                     )
                 })?;
 

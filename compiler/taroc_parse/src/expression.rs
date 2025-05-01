@@ -1,10 +1,11 @@
 use super::package::{Parser, R};
 use crate::restrictions::Restrictions;
 use taroc_ast::{
-    AnonConst, Block, ClosureExpression, EnsureMode, Expression, ExpressionArgument,
+    AnonConst, ClosureExpression, EnsureMode, Expression, ExpressionArgument, ExpressionField,
     ExpressionKind, FunctionParameter, FunctionPrototype, FunctionSignature, IfExpression, Literal,
-    LiteralKind, MapPair, MethodCall, Mutability, OptionalBindingCondition,
-    PatternBindingCondition, Type, TypeKind, UnaryOperator, WhenArm, WhenArmKind, WhenExpression,
+    LiteralKind, MapPair, MethodCall, Mutability, OptionalBindingCondition, Path,
+    PatternBindingCondition, StructLiteral, Type, TypeKind, UnaryOperator, WhenArm, WhenArmKind,
+    WhenExpression,
 };
 use taroc_span::{Span, SpannedMessage};
 use taroc_token::{Base, Delimiter, TokenKind};
@@ -24,6 +25,10 @@ impl Parser {
 impl Parser {
     pub fn build_expr(&mut self, kind: ExpressionKind, span: Span) -> Box<Expression> {
         Box::new(Expression { kind, span })
+    }
+
+    fn malformed_expr(&mut self, span: Span) -> Box<Expression> {
+        self.build_expr(ExpressionKind::Malformed, span)
     }
 }
 
@@ -514,8 +519,7 @@ impl Parser {
         let pattern = self.parse_match_pat()?;
         self.expect(TokenKind::Assign)?;
 
-        let mut binding_cond_res = Restrictions::empty();
-        binding_cond_res.insert(Restrictions::NO_TRAILING_CLOSURES);
+        let binding_cond_res = Restrictions::empty();
         let expression = self.with_restrictions(binding_cond_res, |p| p.parse_expression())?;
         let span = lo.to(self.hi_span());
 
@@ -559,153 +563,54 @@ impl Parser {
 
 impl Parser {
     fn parse_closure_expression(&mut self) -> R<Box<Expression>> {
-        // { a, b in a + b }
-
+        // |a| {} | || -> int {} | async || await ok()
         let lo = self.lo_span();
-        self.expect(TokenKind::LBrace)?;
-
-        let signature = {
-            self.drop_anchor();
-            let can_parse = self.can_parse_closure_signature();
-            self.raise_anchor();
-            let signature = if can_parse {
-                self.parse_closure_signature()?
-            } else {
-                FunctionSignature {
-                    prototype: FunctionPrototype {
-                        inputs: vec![],
-                        output: None,
-                    },
-                    span: Span::empty(self.file.file),
-                    is_async: false,
-                    is_static: false,
-                }
-            };
-            signature
+        let (is_async, prototype) = self.parse_closure_prototype()?;
+        let signature = FunctionSignature {
+            is_async,
+            prototype,
+            span: lo.to(self.hi_span()),
         };
 
-        let b_lo = self.lo_span();
-        let statements = self.parse_brace_sequence(false, |p| p.parse_statement())?;
-        let body = Block {
-            statements,
-            has_declarations: false,
-            span: b_lo.to(self.hi_span()),
-        };
-        let c = ClosureExpression {
+        let body = self.parse_block()?;
+
+        let closure = ClosureExpression {
             signature,
             body,
             span: lo.to(self.hi_span()),
         };
 
-        let kind = ExpressionKind::Closure(c);
-        Ok(self.build_expr(kind, lo.to(self.hi_span())))
+        let kind = ExpressionKind::Closure(closure);
+        let expr = self.build_expr(kind, lo);
+        Ok(expr)
     }
 
-    fn can_parse_closure_signature(&mut self) -> bool {
-        // if next token could not start signature
-        // { (...) -> ... in }
-        if !self.matches_any(&[
-            TokenKind::LParen,
-            TokenKind::Identifier,
-            TokenKind::Underscore,
-        ]) {
-            return false;
-        }
-
-        // Parsing Possible Closure paramters
-        if self.eat(TokenKind::LParen) {
-            // Skip until Closing Paren / end of paramter list
-            while !self.matches(TokenKind::RParen) && !self.matches(TokenKind::Eof) {
-                self.bump();
-            }
-
-            // Eat Closing Paren
-            if self.eat(TokenKind::RParen) {
-                if self.eat(TokenKind::RArrow) {
-                    if self.parse_type().is_err() {
-                        return false;
-                    }
-                }
-            }
-        } else if self.matches_any(&[TokenKind::Identifier, TokenKind::Underscore]) {
-            self.bump(); // Consume First Parameter
-            while self.eat(TokenKind::Comma) {
-                // if we see another parameter bump
-                if self.matches_any(&[TokenKind::Identifier, TokenKind::Underscore]) {
-                    self.bump();
-                    continue;
-                }
-
-                // Is not parameter token, (ident | underscore)
-                return false;
-            }
-
-            // Parse Signature Return Type
-            if self.eat(TokenKind::RArrow) {
-                if self.parse_type().is_err() {
-                    return false;
-                }
-            }
-        }
-
-        // Parse In Keyword
-        if !self.matches(TokenKind::In) {
-            return false;
-        }
-
-        // We have a valid signature
-        //
-        return true;
-    }
-
-    fn parse_closure_signature(&mut self) -> R<FunctionSignature> {
-        let lo = self.lo_span();
-
-        let params = if self.matches(TokenKind::LParen) {
-            self.parse_delimiter_sequence(Delimiter::Parenthesis, TokenKind::Comma, false, |p| {
-                p.parse_closure_param(true)
-            })?
+    fn parse_closure_prototype(&mut self) -> R<(bool, FunctionPrototype)> {
+        let is_async = self.eat(TokenKind::Async);
+        let inputs = if self.eat(TokenKind::BarBar) {
+            Vec::new()
         } else {
-            let mut has_next = true;
-            let mut params = vec![];
-            while has_next {
-                let param = self.parse_closure_param(false)?;
-                params.push(param);
-                has_next = self.eat(TokenKind::Comma)
-            }
-            params
+            self.parse_delimiter_sequence(Delimiter::Parenthesis, TokenKind::Comma, true, |p| {
+                p.parse_closure_parameter()
+            })?
         };
 
-        let return_type = if self.eat(TokenKind::RArrow) {
+        let output = if self.eat(TokenKind::RArrow) {
             Some(self.parse_type()?)
         } else {
             None
         };
-
-        self.expect(TokenKind::In)?;
-
-        let pt = FunctionPrototype {
-            inputs: params,
-            output: return_type,
-        };
-
-        let sg = FunctionSignature {
-            span: lo.to(self.hi_span()),
-            prototype: pt,
-            is_async: false,
-            is_static: false,
-        };
-
-        Ok(sg)
+        let proto = FunctionPrototype { inputs, output };
+        Ok((is_async, proto))
     }
 
-    fn parse_closure_param(&mut self, strict: bool) -> R<FunctionParameter> {
+    fn parse_closure_parameter(&mut self) -> R<FunctionParameter> {
         let lo = self.lo_span();
         let attributes = self.parse_attributes()?;
 
         let ident = self.parse_identifier()?;
         let mut is_variadic = false;
-        let ty = if !strict && self.eat(TokenKind::Colon) {
+        let ty = if self.eat(TokenKind::Colon) {
             let t = self.parse_type()?;
             is_variadic = self.eat(TokenKind::Ellipsis);
             t
@@ -729,11 +634,17 @@ impl Parser {
         Ok(param)
     }
 }
-
 impl Parser {
     fn parse_path_expression(&mut self) -> R<Box<Expression>> {
         let lo = self.lo_span();
         let path = self.parse_path()?;
+
+        // struct literal: <Path> {}
+        if self.matches(TokenKind::LBrace)
+            && !self.restrictions.contains(Restrictions::NO_STRUCT_LITERALS)
+        {
+            return self.parse_struct_literal(path, lo);
+        }
 
         let kind = ExpressionKind::Path(path);
         let expr = self.build_expr(kind, lo.to(self.hi_span()));
@@ -784,7 +695,7 @@ impl Parser {
             self.bump(); // eat colon
             self.bump(); // eat rbracket
 
-            let kind = ExpressionKind::Dictionary(vec![]);
+            let kind = ExpressionKind::DictionaryLiteral(vec![]);
             let expr = self.build_expr(kind, lo.to(self.hi_span()));
             return Ok(expr);
         }
@@ -835,7 +746,7 @@ impl Parser {
         self.expect(TokenKind::RBracket)?;
 
         let kind = match state {
-            SS::Dict => ExpressionKind::Dictionary(map_pairs),
+            SS::Dict => ExpressionKind::DictionaryLiteral(map_pairs),
             SS::Array => ExpressionKind::Array(array_elements),
             SS::Infer => {
                 let msg = "unable to infer content of sequence (array or dictionary)".to_string();
@@ -858,46 +769,15 @@ impl Parser {
             | TokenKind::True
             | TokenKind::False
             | TokenKind::Nil
-            | TokenKind::Void => {
-                let lit_kind = match self.current_kind() {
-                    TokenKind::Integer(base) => LiteralKind::Integer(base),
-                    TokenKind::Float(_) => LiteralKind::Float,
-                    TokenKind::String => LiteralKind::String,
-                    TokenKind::Rune => LiteralKind::Rune,
-                    TokenKind::True => LiteralKind::Bool(true),
-                    TokenKind::False => LiteralKind::Bool(false),
-                    TokenKind::Nil => LiteralKind::Nil,
-                    TokenKind::Void => LiteralKind::Void,
-                    _ => unreachable!(),
-                };
-
-                let lit = Literal {
-                    kind: lit_kind,
-                    content: self.symbol_from(self.current().unwrap().content)?,
-                };
-
-                let k = ExpressionKind::Literal(lit);
-                let expr = self.build_expr(k, self.current_token_span());
-                self.bump(); // consume token
-                Ok(expr)
-            }
+            | TokenKind::Void => self.parse_literal(),
             TokenKind::Identifier => self.parse_path_expression(),
             TokenKind::LParen => self.parse_tuple_expr(),
             TokenKind::LBracket => self.parse_collection_expr(),
             TokenKind::Let | TokenKind::Var => self.parse_optional_binding_condition(),
             TokenKind::Match => self.parse_pattern_binding_condition(),
-            TokenKind::LBrace => {
-                if self
-                    .restrictions
-                    .contains(Restrictions::ALLOW_BLOCK_EXPRESSION)
-                {
-                    let block = self.parse_block()?;
-                    let span = block.span;
-                    let kind = ExpressionKind::Block(block);
-                    Ok(self.build_expr(kind, span))
-                } else {
-                    self.parse_closure_expression()
-                }
+            TokenKind::LBrace => self.parse_block_expression(),
+            TokenKind::Async | TokenKind::Bar | TokenKind::BarBar => {
+                self.parse_closure_expression()
             }
             TokenKind::Unsafe => {
                 let lo = self.lo_span();
@@ -918,7 +798,7 @@ impl Parser {
                 Ok(self.build_expr(kind, lo.to(self.hi_span())))
             }
             _ => {
-                let msg = format!("expected expression found {} instead", self.current_kind());
+                let msg = format!("expected expression, found {}", self.current_kind());
                 let span = self.current_token_span();
                 Err(SpannedMessage::new(msg, span))
             }
@@ -955,6 +835,13 @@ impl Parser {
             _ => unreachable!("must manually check for token kind matching if | switch | match"),
         }
     }
+
+    fn parse_block_expression(&mut self) -> R<Box<Expression>> {
+        let block = self.parse_block()?;
+        let span = block.span;
+        let kind = ExpressionKind::Block(block);
+        Ok(self.build_expr(kind, span))
+    }
 }
 
 impl Parser {
@@ -966,7 +853,7 @@ impl Parser {
         // Conditions
         let mut if_restrictions = Restrictions::empty();
         if_restrictions.set(Restrictions::ALLOW_BINDING_CONDITION, true);
-        if_restrictions.set(Restrictions::NO_TRAILING_CLOSURES, true);
+        if_restrictions.set(Restrictions::NO_STRUCT_LITERALS, true);
         let conditions = self.with_restrictions(if_restrictions, |p| {
             p.parse_statement_condition_list(TokenKind::LBrace)
         })?;
@@ -978,10 +865,11 @@ impl Parser {
         let else_block = if self.eat(TokenKind::Else) {
             let else_block = if self.matches(TokenKind::If) {
                 self.parse_if_expr()?
+            } else if self.matches(TokenKind::LBrace) {
+                self.parse_block_expression()?
             } else {
-                let block = self.parse_block()?;
-                let span = block.span;
-                self.build_expr(ExpressionKind::Block(block), span)
+                self.emit_error("expected block".into(), self.current_token_span());
+                self.malformed_expr(self.current_token_span())
             };
 
             Some(else_block)
@@ -1008,7 +896,7 @@ impl Parser {
 
         let value = if !self.matches(TokenKind::LBrace) {
             let mut res = Restrictions::empty();
-            res.set(Restrictions::NO_TRAILING_CLOSURES, true);
+            res.set(Restrictions::NO_STRUCT_LITERALS, true);
             let value = self.with_restrictions(res, |p| p.parse_expression())?;
             Some(value)
         } else {
@@ -1044,13 +932,15 @@ impl Parser {
 
     fn parse_when_arm(&mut self) -> R<WhenArm> {
         let lo = self.lo_span();
+
         let kind = if self.eat(TokenKind::Is) {
             let pat = self.parse_match_case_pat()?;
             WhenArmKind::Pattern(pat)
+        } else if self.eat(TokenKind::Underscore) {
+            WhenArmKind::Default
         } else {
             let mut when_restrictions = Restrictions::empty();
             when_restrictions.insert(Restrictions::ALLOW_WILDCARD);
-            when_restrictions.insert(Restrictions::NO_TRAILING_CLOSURES);
             let cases = self.with_restrictions(when_restrictions, |p| {
                 p.parse_statement_condition_list(TokenKind::Colon)
             })?;
@@ -1058,9 +948,7 @@ impl Parser {
         };
 
         self.expect(TokenKind::EqArrow)?;
-        let mut body_restrictions = Restrictions::empty();
-        body_restrictions.set(Restrictions::ALLOW_BLOCK_EXPRESSION, true);
-        let body = self.with_restrictions(body_restrictions, |p| p.parse_expression())?;
+        let body = self.parse_expression()?;
 
         let arm = WhenArm {
             kind,
@@ -1069,5 +957,61 @@ impl Parser {
         };
 
         Ok(arm)
+    }
+}
+impl Parser {
+    fn parse_literal(&mut self) -> R<Box<Expression>> {
+        let lit_kind = match self.current_kind() {
+            TokenKind::Integer(base) => LiteralKind::Integer(base),
+            TokenKind::Float(_) => LiteralKind::Float,
+            TokenKind::String => LiteralKind::String,
+            TokenKind::Rune => LiteralKind::Rune,
+            TokenKind::True => LiteralKind::Bool(true),
+            TokenKind::False => LiteralKind::Bool(false),
+            TokenKind::Nil => LiteralKind::Nil,
+            TokenKind::Void => LiteralKind::Void,
+            _ => unreachable!(),
+        };
+
+        let lit = Literal {
+            kind: lit_kind,
+            content: self.symbol_from(self.current().unwrap().content)?,
+        };
+
+        let k = ExpressionKind::Literal(lit);
+        let expr = self.build_expr(k, self.current_token_span());
+        self.bump(); // consume token
+        Ok(expr)
+    }
+}
+
+impl Parser {
+    fn parse_struct_literal(&mut self, path: Path, span: Span) -> R<Box<Expression>> {
+        let fields = self.parse_expression_field_list()?;
+        let literal = StructLiteral { path, fields };
+        let kind = ExpressionKind::StructLiteral(literal);
+        let span = span.to(self.hi_span());
+        Ok(self.build_expr(kind, span))
+    }
+
+    fn parse_expression_field_list(&mut self) -> R<Vec<ExpressionField>> {
+        self.parse_delimiter_sequence(Delimiter::Brace, TokenKind::Comma, true, |p| {
+            p.parse_expression_field()
+        })
+    }
+
+    fn parse_expression_field(&mut self) -> R<ExpressionField> {
+        let lo = self.lo_span();
+        let label = self.parse_label()?;
+
+        let expr = self.parse_expression()?;
+        let field = ExpressionField {
+            is_shorthand: label.is_none(),
+            label,
+            expression: expr,
+            span: lo.to(self.hi_span()),
+        };
+
+        Ok(field)
     }
 }

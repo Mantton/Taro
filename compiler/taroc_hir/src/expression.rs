@@ -1,6 +1,3 @@
-use taroc_ast_ir::{BinaryOperator, UnaryOperator};
-use taroc_span::Span;
-
 use super::{
     NodeID,
     block::Block,
@@ -11,6 +8,8 @@ use super::{
     pattern::MatchingPattern,
     ty::Type,
 };
+use taroc_ast_ir::{BinaryOperator, UnaryOperator};
+use taroc_span::Span;
 
 #[derive(Debug, Clone)]
 pub struct Expression {
@@ -25,13 +24,15 @@ pub enum ExpressionKind {
     Literal(Literal),
     // foo | foo::bar | foo::bar<baz>
     Path(Path),
-    InferMemberPath(Path),
+    /// Foo::Bar { a: 10, b: 20 }
+    StructLiteral(StructLiteral),
     /// `[a, b, c]`
-    Array(Vec<Box<Expression>>),
+    ArrayLiteral(Vec<Box<Expression>>),
     /// `(a, b, c)`
     Tuple(Vec<Box<Expression>>),
     /// `if foo { } else { }`
     If(IfExpression),
+    When(WhenExpression),
     /// `main()`
     FunctionCall(Box<Expression>, Vec<ExpressionArgument>),
     /// `foo.bar()`
@@ -146,7 +147,43 @@ pub struct PatternBindingCondition {
 #[derive(Debug, Clone)]
 pub struct ClosureExpression {
     pub prototype: FunctionPrototype,
-    pub is_async: bool,
     pub body: Block,
     pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExpressionField {
+    pub is_shorthand: bool,
+    pub label: Option<Label>,
+    pub expression: Box<Expression>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct StructLiteral {
+    pub path: Path,
+    pub fields: Vec<ExpressionField>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WhenExpression {
+    pub value: Option<Box<Expression>>,
+    pub arms: Vec<WhenArm>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WhenArm {
+    pub kind: WhenArmKind,
+    pub body: Box<Expression>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum WhenArmKind {
+    // is <Pat> =>
+    Pattern(MatchingPattern),
+    // <expr> =>
+    Expression(Vec<Box<Expression>>),
+
+    Default,
 }

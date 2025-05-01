@@ -3,11 +3,9 @@ use super::{
     restrictions::Restrictions,
 };
 use taroc_ast::{
-    BindingPattern, BindingPatternKind, DeclarationContext, ForStatement, GuardStatement, Label,
-    Local, LoopStatement, Mutability, Statement, StatementConditionList, StatementKind,
-    WhileStatement,
+    BindingPattern, BindingPatternKind, ForStatement, GuardStatement, Label, Local, LoopStatement,
+    Mutability, Statement, StatementConditionList, StatementKind, WhileStatement,
 };
-use taroc_ast_ir::LocalSource;
 use taroc_token::TokenKind;
 
 impl Parser {
@@ -48,7 +46,7 @@ impl Parser {
                 }
 
                 // is decl
-                if let Some(decl) = self.parse_declaration(false, DeclarationContext::Statement)? {
+                if let Some(decl) = self.parse_declaration()? {
                     return Ok(StatementKind::Declaration(decl));
                 }
 
@@ -106,7 +104,6 @@ impl Parser {
             ty,
             initializer,
             is_shorthand: false,
-            source: LocalSource::Variable,
         };
 
         Ok(local)
@@ -254,7 +251,6 @@ impl Parser {
                 ty: None,
                 initializer: Some(initializer),
                 is_shorthand: true,
-                source: LocalSource::Variable,
             };
 
             let kind = StatementKind::Variable(local);

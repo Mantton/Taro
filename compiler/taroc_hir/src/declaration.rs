@@ -1,34 +1,36 @@
 use super::{
-    AttributeList, Block, NodeID, Visibility, function::Function, local::Local, path::Path,
-    ty::Type,
+    AttributeList, NodeID, Visibility, function::Function, local::Local, path::Path, ty::Type,
 };
-use crate::{AnonConst, Generics, Variant};
+use crate::{EnumDefinition, Expression, Generics, StructDefinition};
 use std::collections::HashMap;
 use taroc_ast_ir::OperatorKind;
-use taroc_span::{Identifier, Span};
+use taroc_span::{Identifier, Span, Spanned};
 
 #[derive(Debug, Clone)]
-pub struct Declaration {
+pub struct Declaration<K = DeclarationKind> {
     pub id: NodeID,
     pub span: Span,
     pub identifier: Identifier,
-    pub kind: DeclarationKind,
+    pub kind: K,
     pub visibility: Visibility,
     pub attributes: AttributeList,
 }
 
 #[derive(Debug, Clone)]
 pub enum DeclarationKind {
+    /// `interface Foo {}`
+    Interface(InterfaceDefinition),
+    /// `struct Foo {}` | `struct Foo()` | struct Foo
+    Struct(StructDefinition),
+    /// `enum Foo {}`
+    Enum(EnumDefinition),
     /// `fn main() {}`
     Function(Function),
-    /// `init()` | `init?()`
-    Constructor(Function, bool),
-    /// `operator +()`
-    Operator(OperatorKind, Function),
+
     /// `let | var VALUE = 10`
     Variable(Local),
     /// `const VALUE: Uint = 10`
-    Constant(Box<Type>, AnonConst),
+    Constant(ConstantDeclaration),
     /// `import foo::bar`
     Import(PathTree),
     /// `export foo::bar`
@@ -45,12 +47,22 @@ pub enum DeclarationKind {
     Namespace(Namespace),
     /// `bridge C {}`
     Bridge(Bridge),
-    /// `case Foo, case Bar {}, case Baz`
-    EnumCase(EnumCase),
-    /// `associatedtype Foo: Bar = Baz`
-    AssociatedType(Generics, Option<Box<Type>>),
-    /// `struct Foo {}` | `enum Foo {}` | `interface Foo {}`
-    DefinedType(DefinedType),
+}
+
+pub type AssociatedDeclaration = Declaration<AssociatedDeclarationKind>;
+#[derive(Debug, Clone)]
+pub enum AssociatedDeclarationKind {
+    Constant(ConstantDeclaration),
+    Function(Function),
+    Type(TypeAlias),
+    Operator(OperatorKind, Function),
+}
+
+pub type ForeignDeclaration = Declaration<ForeignDeclarationKind>;
+#[derive(Debug, Clone)]
+pub enum ForeignDeclarationKind {
+    Function(Function),
+    Type(TypeAlias),
 }
 
 #[derive(Debug, Clone)]
@@ -63,13 +75,13 @@ pub struct TypeAlias {
 pub struct Extend {
     pub ty: Box<Type>,
     pub generics: Generics,
-    pub declarations: Vec<Declaration>,
+    pub declarations: Vec<AssociatedDeclaration>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Extern {
-    pub abi: Abi,
-    pub declarations: Vec<Declaration>,
+    pub abi: Spanned<Abi>,
+    pub declarations: Vec<ForeignDeclaration>,
 }
 
 #[derive(Debug, Clone)]
@@ -82,18 +94,6 @@ pub enum Abi {
 #[derive(Debug, Clone)]
 pub struct Namespace {
     pub declarations: Vec<Declaration>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeclarationContext {
-    Module,
-    Extend,
-    Statement,
-    Extern,
-    Namespace,
-    Struct,
-    Enum,
-    Interface,
 }
 
 #[derive(Debug, Clone)]
@@ -128,27 +128,14 @@ pub enum PathTreeNode {
 }
 
 #[derive(Debug, Clone)]
-pub struct ComputedProperty {
-    pub id: NodeID,
-    pub ty: Box<Type>,
-    pub block: Block,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DefinedTypeKind {
-    Struct,
-    Enum,
-    Interface,
-}
-
-#[derive(Debug, Clone)]
-pub struct DefinedType {
-    pub kind: DefinedTypeKind,
+pub struct InterfaceDefinition {
     pub generics: Generics,
-    pub declarations: Vec<Declaration>,
+    pub declarations: Vec<AssociatedDeclaration>,
 }
 
 #[derive(Debug, Clone)]
-pub struct EnumCase {
-    pub members: Vec<Variant>,
+pub struct ConstantDeclaration {
+    pub identifier: Identifier,
+    pub ty: Box<Type>,
+    pub expr: Option<Box<Expression>>,
 }

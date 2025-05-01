@@ -29,7 +29,6 @@ pub use package::*;
 pub use path::*;
 pub use pattern::*;
 pub use statement::*;
+pub use taroc_ast_ir::*;
 pub use ty::*;
 pub use visibility::*;
-
-pub use taroc_ast_ir::*;

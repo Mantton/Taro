@@ -39,6 +39,10 @@ impl Parser {
                 Ok(TypeKind::OptionalReference(self.parse_type()?, mutability))
             }
             TokenKind::Some | TokenKind::Any => self.parse_interface_type(),
+            TokenKind::Underscore => {
+                self.bump();
+                Ok(TypeKind::Infer)
+            }
             _ => {
                 let msg = format!("expected type found {}", self.current_kind());
                 let err = SpannedMessage::new(msg, self.current_token_span());

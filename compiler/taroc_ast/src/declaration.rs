@@ -2,16 +2,16 @@ use super::{
     attribute::AttributeList, function::Function, local::Local, path::Path, ty::Type,
     visibility::Visibility,
 };
-use crate::{AnonConst, EnumDefinition, Generics, StructDefinition};
+use crate::{EnumDefinition, Expression, Generics, StructDefinition};
 use std::collections::HashMap;
 use taroc_ast_ir::OperatorKind;
 use taroc_span::{Identifier, Span, Spanned, Symbol};
 
 #[derive(Debug)]
-pub struct Declaration {
+pub struct Declaration<K = DeclarationKind> {
     pub span: Span,
     pub identifier: Identifier,
-    pub kind: DeclarationKind,
+    pub kind: K,
     pub visibility: Visibility,
     pub attributes: AttributeList,
 }
@@ -31,7 +31,7 @@ pub enum DeclarationKind {
     /// `let | var VALUE = 10`
     Variable(Local),
     /// `const VALUE: Uint = 10`
-    Constant(Box<Type>, AnonConst),
+    Constant(ConstantDeclaration),
     /// `import foo::bar`
     Import(PathTree),
     /// `export foo::bar`
@@ -48,6 +48,22 @@ pub enum DeclarationKind {
     Bridge(Bridge),
 }
 
+pub type AssociatedDeclaration = Declaration<AssociatedDeclarationKind>;
+#[derive(Debug)]
+pub enum AssociatedDeclarationKind {
+    Constant(ConstantDeclaration),
+    Function(Function),
+    Type(TypeAlias),
+    Operator(OperatorKind, Function),
+}
+
+pub type ForeignDeclaration = Declaration<ForeignDeclarationKind>;
+#[derive(Debug)]
+pub enum ForeignDeclarationKind {
+    Function(Function),
+    Type(TypeAlias),
+}
+
 #[derive(Debug)]
 pub struct TypeAlias {
     pub generics: Generics,
@@ -58,30 +74,18 @@ pub struct TypeAlias {
 pub struct Extend {
     pub ty: Box<Type>,
     pub generics: Generics,
-    pub declarations: Vec<Declaration>,
+    pub declarations: Vec<AssociatedDeclaration>,
 }
 
 #[derive(Debug)]
 pub struct Extern {
     pub abi: Spanned<Symbol>,
-    pub declarations: Vec<Declaration>,
+    pub declarations: Vec<ForeignDeclaration>,
 }
 
 #[derive(Debug)]
 pub struct Namespace {
     pub declarations: Vec<Declaration>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeclarationContext {
-    Module,
-    Extend,
-    Statement,
-    Extern,
-    Namespace,
-    Struct,
-    Enum,
-    Interface,
 }
 
 #[derive(Debug)]
@@ -113,5 +117,39 @@ pub enum PathTreeNode {
 #[derive(Debug)]
 pub struct InterfaceDefinition {
     pub generics: Generics,
-    pub declarations: Vec<Declaration>,
+    pub declarations: Vec<AssociatedDeclaration>,
+}
+
+#[derive(Debug)]
+pub struct ConstantDeclaration {
+    pub identifier: Identifier,
+    pub ty: Box<Type>,
+    pub expr: Option<Box<Expression>>,
+}
+
+impl TryFrom<DeclarationKind> for ForeignDeclarationKind {
+    type Error = DeclarationKind;
+
+    fn try_from(kind: DeclarationKind) -> Result<ForeignDeclarationKind, DeclarationKind> {
+        Ok(match kind {
+            DeclarationKind::Function(node) => ForeignDeclarationKind::Function(node),
+            DeclarationKind::TypeAlias(node) => ForeignDeclarationKind::Type(node),
+            _ => return Err(kind),
+        })
+    }
+}
+
+impl TryFrom<DeclarationKind> for AssociatedDeclarationKind {
+    type Error = DeclarationKind;
+
+    fn try_from(kind: DeclarationKind) -> Result<AssociatedDeclarationKind, DeclarationKind> {
+        Ok(match kind {
+            DeclarationKind::Constant(node) => AssociatedDeclarationKind::Constant(node),
+            DeclarationKind::Function(node) => AssociatedDeclarationKind::Function(node),
+            DeclarationKind::TypeAlias(node) => AssociatedDeclarationKind::Type(node),
+            DeclarationKind::Operator(op, node) => AssociatedDeclarationKind::Operator(op, node),
+
+            _ => return Err(kind),
+        })
+    }
 }

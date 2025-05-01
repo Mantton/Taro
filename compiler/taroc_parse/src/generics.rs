@@ -183,7 +183,7 @@ impl Parser {
 
 impl Parser {
     pub fn can_parse_type_arguments(&mut self) -> bool {
-        true
+        return true;
         // self.with_anchor(|p| {
         //     let v = p.parse_type_arguments();
 

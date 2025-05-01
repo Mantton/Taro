@@ -13,15 +13,18 @@ pub struct Expression {
 
 #[derive(Debug)]
 pub enum ExpressionKind {
+    Malformed,
     Literal(Literal),
     // foo | foo::bar | foo::bar<baz>
     Path(Path),
+    /// Foo::Bar { a: 10, b: 20 }
+    StructLiteral(StructLiteral),
     /// `[a, b, c]`
     Array(Vec<Box<Expression>>),
     /// `(a, b, c)`
     Tuple(Vec<Box<Expression>>),
     /// `["a" : 100]`
-    Dictionary(Vec<MapPair>),
+    DictionaryLiteral(Vec<MapPair>),
     /// `if foo { } else { }`
     If(IfExpression),
     /// `when foo {
@@ -138,6 +141,8 @@ pub enum WhenArmKind {
     Pattern(MatchingPattern),
     // <expr> =>
     Expression(StatementConditionList),
+    // _ =>
+    Default,
 }
 
 #[derive(Debug)]
@@ -190,4 +195,18 @@ pub struct ClosureExpression {
     pub signature: FunctionSignature,
     pub body: Block,
     pub span: Span,
+}
+
+#[derive(Debug)]
+pub struct ExpressionField {
+    pub is_shorthand: bool,
+    pub label: Option<Label>,
+    pub expression: Box<Expression>,
+    pub span: Span,
+}
+
+#[derive(Debug)]
+pub struct StructLiteral {
+    pub path: Path,
+    pub fields: Vec<ExpressionField>,
 }

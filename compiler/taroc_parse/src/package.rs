@@ -1,6 +1,6 @@
 use super::restrictions::Restrictions;
 use std::{collections::VecDeque, vec};
-use taroc_ast::{Declaration, DeclarationContext};
+use taroc_ast::Declaration;
 use taroc_context::{GlobalContext, WithDiagnostics};
 use taroc_error::{CompileError, CompileResult};
 use taroc_span::SpannedMessage;
@@ -78,34 +78,12 @@ impl Parser {
 
 impl Parser {
     pub fn parse(mut self) -> ParserResult {
-        let result = self.top_level();
-
+        let result = self.parse_module_declarations();
         match result {
             Err(err) => self.result.error(err),
-            _ => {}
+            Ok(data) => self.result.value = data,
         }
-
         self.result
-    }
-
-    fn top_level(&mut self) -> R<()> {
-        while !self.is_at_end() {
-            let Some(item) = self.parse_declaration(false, DeclarationContext::Module)? else {
-                break;
-            };
-            self.result.value.push(item);
-        }
-
-        if !self.is_at_end() {
-            let msg = format!(
-                "expected top-level declaration, found '{}' instead",
-                self.current_kind()
-            );
-            let err = SpannedMessage::new(msg, self.current_token_span());
-            Err(err)
-        } else {
-            Ok(())
-        }
     }
 }
 

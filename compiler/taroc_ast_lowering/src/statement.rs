@@ -12,9 +12,7 @@ impl Actor<'_> {
     fn lower_statement_kind(&mut self, kind: taroc_ast::StatementKind) -> taroc_hir::StatementKind {
         match kind {
             taroc_ast::StatementKind::Declaration(declaration) => {
-                taroc_hir::StatementKind::Declaration(
-                    self.lower_declaration(declaration, taroc_ast::DeclarationContext::Statement),
-                )
+                taroc_hir::StatementKind::Declaration(self.lower_declaration(declaration))
             }
             taroc_ast::StatementKind::Expression(expression) => {
                 taroc_hir::StatementKind::Expression(self.lower_expression(expression))

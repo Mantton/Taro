@@ -1,4 +1,5 @@
 use super::package::{Parser, R};
+use crate::declaration::FnParseMode;
 use taroc_ast::{
     BinaryOperator, DeclarationKind, Function, FunctionParameter, FunctionPrototype,
     FunctionSignature, Generics, Label, Mutability, OperatorKind, SelfKind, Type, TypeKind,
@@ -7,33 +8,27 @@ use taroc_span::{Identifier, SpannedMessage, Symbol};
 use taroc_token::{Delimiter, TokenKind};
 
 impl Parser {
-    pub fn parse_function(&mut self) -> R<(Identifier, DeclarationKind)> {
+    pub fn parse_function(&mut self, mode: FnParseMode) -> R<(Identifier, DeclarationKind)> {
         // func <name> <type_parameters>? (<parameter list>) <async?> -> <return_type>? <where_clause>?
         self.expect(TokenKind::Function)?;
         let identifier = self.parse_identifier()?;
-        let func = self.parse_fn()?;
+        let func = self.parse_fn(mode)?;
         Ok((identifier, DeclarationKind::Function(func)))
     }
 
-    pub fn parse_operator(&mut self) -> R<DeclarationKind> {
+    pub fn parse_operator(&mut self, mode: FnParseMode) -> R<DeclarationKind> {
         self.expect(TokenKind::Operator)?;
         let operator = self.parse_operator_from_token()?;
-        let func = self.parse_fn()?;
+        let func = self.parse_fn(mode)?;
         Ok(DeclarationKind::Operator(operator, func))
     }
 
-    fn parse_fn(&mut self) -> R<Function> {
+    fn parse_fn(&mut self, mode: FnParseMode) -> R<Function> {
         let lo = self.lo_span();
         let type_parameters = self.parse_type_parameters()?;
         let parameters = self.parse_function_parameters()?;
 
         let is_async = self.eat(TokenKind::Async);
-        if is_async && self.matches_any(&[TokenKind::Mut, TokenKind::Const]) {
-            self.emit_error(
-                "receiver must appear before async modifier".into(),
-                self.current_token_span(),
-            );
-        }
 
         let return_type = if self.eat(TokenKind::RArrow) {
             Some(self.parse_type()?)
@@ -52,12 +47,17 @@ impl Parser {
             span: lo.to(self.hi_span()),
             prototype,
             is_async,
-            is_static: false,
         };
 
         let block = if self.matches(TokenKind::LBrace) {
             Some(self.parse_block()?)
         } else {
+            if mode.req_body {
+                self.emit_error(
+                    "function requires body".into(),
+                    self.previous().unwrap().span,
+                );
+            }
             self.expect_line_break_or_semi()?;
             None
         };

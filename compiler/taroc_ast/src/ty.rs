@@ -76,4 +76,6 @@ pub enum TypeKind {
     Exisitential(Vec<Path>),
     /// `~T` -> Option<&T>
     OptionalReference(Box<Type>, Mutability),
+    /// _
+    Infer,
 }

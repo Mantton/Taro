@@ -1,3 +1,5 @@
+use crate::Generics;
+
 use super::{NodeID, Visibility, expression::AnonConst, ty::Type};
 use taroc_ast_ir::Mutability;
 use taroc_span::{Identifier, Span};
@@ -26,4 +28,16 @@ pub enum VariantKind {
     Unit,
     Tuple(Vec<FieldDefinition>),
     Struct(Vec<FieldDefinition>),
+}
+
+#[derive(Debug, Clone)]
+pub struct StructDefinition {
+    pub generics: Generics,
+    pub variant: VariantKind,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnumDefinition {
+    pub generics: Generics,
+    pub variants: Vec<Variant>,
 }

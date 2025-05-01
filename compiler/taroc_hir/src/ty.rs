@@ -1,5 +1,5 @@
 use super::{NodeID, path::Path};
-use crate::TaggedPath;
+use crate::{FieldDefinition, TaggedPath};
 use std::fmt::Debug;
 use taroc_span::Span;
 
@@ -33,6 +33,9 @@ pub enum TypeKind {
     Opaque(Vec<TaggedPath>),
     /// `any T`
     Exisitential(Vec<TaggedPath>),
+    AnonStruct {
+        fields: Vec<FieldDefinition>,
+    },
 }
 
 pub use taroc_ast_ir::Mutability;

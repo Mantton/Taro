@@ -1,4 +1,3 @@
-use taroc_ast::DeclarationContext;
 use taroc_context::GlobalContext;
 use taroc_error::CompileResult;
 use taroc_hir::{NodeID, NodeTagger};
@@ -63,7 +62,7 @@ impl Actor<'_> {
         let declarations = file
             .declarations
             .into_iter()
-            .map(|node| self.lower_declaration(node, DeclarationContext::Module))
+            .map(|node| self.lower_declaration(node))
             .collect();
 
         taroc_hir::File {

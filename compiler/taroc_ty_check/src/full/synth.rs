@@ -53,7 +53,9 @@ impl<'ctx> FunctionChecker<'ctx> {
             }
             taroc_hir::ExpressionKind::Block(block) => self.synthesize_block_expression(block),
             taroc_hir::ExpressionKind::If(node) => self.synthesize_if_expression(node),
-            taroc_hir::ExpressionKind::Array(exprs) => self.synthesize_array_expression(exprs),
+            taroc_hir::ExpressionKind::ArrayLiteral(exprs) => {
+                self.synthesize_array_expression(exprs)
+            }
             taroc_hir::ExpressionKind::TupleAccess(expr, index) => {
                 self.synthesize_tuple_access_expression(expr, index)
             }

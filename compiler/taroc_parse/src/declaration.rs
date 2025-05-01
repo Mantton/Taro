@@ -1,45 +1,68 @@
 use super::package::{Parser, R};
-use crate::restrictions::Modifiers;
 use std::collections::HashMap;
 use taroc_ast::{
-    BindingPatternKind, Bridge, BridgeValue, Declaration, DeclarationContext, DeclarationKind,
-    EnumDefinition, Extend, Extern, Generics, InterfaceDefinition, Local, Mutability, Namespace,
-    PathTree, PathTreeNode, StructDefinition, TypeAlias, VariantKind,
+    AssociatedDeclaration, AssociatedDeclarationKind, BindingPatternKind, Bridge, BridgeValue,
+    ConstantDeclaration, Declaration, DeclarationKind, EnumDefinition, Extend, Extern,
+    ForeignDeclaration, ForeignDeclarationKind, Generics, InterfaceDefinition, Local, Mutability,
+    Namespace, PathTree, PathTreeNode, StructDefinition, TypeAlias, VariantKind,
 };
-use taroc_ast_ir::LocalSource;
 use taroc_span::{Identifier, SpannedMessage, Symbol};
 use taroc_token::{Delimiter, TokenKind};
 
+pub struct FnParseMode {
+    pub req_body: bool,
+}
+
 impl Parser {
-    pub fn parse_declaration(
-        &mut self,
-        force: bool,
-        context: DeclarationContext,
-    ) -> R<Option<Declaration>> {
+    pub fn parse_module_declarations(&mut self) -> R<Vec<Declaration>> {
+        let mut items = vec![];
+        loop {
+            let Some(item) = self.parse_declaration()? else {
+                break;
+            };
+
+            items.push(item);
+        }
+
+        if !self.is_at_end() {
+            let msg = format!(
+                "expected top-level declaration, found '{}'",
+                self.current_kind()
+            );
+            let err = SpannedMessage::new(msg, self.current_token_span());
+            return Err(err);
+        }
+
+        return Ok(items);
+    }
+
+    pub fn parse_declaration(&mut self) -> R<Option<Declaration>> {
+        let declaration = self.parse_declaration_internal(FnParseMode { req_body: true })?;
+        let Some(declaration) = declaration else {
+            return Ok(declaration);
+        };
+
+        match &declaration.kind {
+            DeclarationKind::Operator(..) => {
+                let message = "operator functions not allowed here".into();
+                self.emit_error(message, declaration.span);
+                return Ok(None);
+            }
+            _ => return Ok(Some(declaration)),
+        }
+    }
+
+    fn parse_declaration_internal(&mut self, fn_mode: FnParseMode) -> R<Option<Declaration>> {
         self.consume_comments_and_new_lines();
         let start_span = self.lo_span();
         let attributes = self.parse_attributes()?;
         let visibility = self.parse_visibility()?;
-        let mut modifiers = Modifiers::empty();
-        let static_span = if self.eat(TokenKind::Static) {
-            modifiers.insert(Modifiers::STATIC);
-            self.previous().map(|f| f.span)
-        } else {
-            None
-        };
 
-        let Some((identifier, kind)) = self.parse_decl_kind(context)? else {
-            if force {
-                let msg = format!(
-                    "expected declaration, found '{}' instead",
-                    self.current_kind()
-                );
-                return Err(SpannedMessage::new(msg, self.current_token_span()));
-            }
+        let Some((identifier, kind)) = self.parse_decl_kind(fn_mode)? else {
             return Ok(None);
         };
 
-        let mut decl = Declaration {
+        let decl = Declaration {
             span: start_span.to(self.hi_span()),
             identifier,
             kind,
@@ -47,40 +70,81 @@ impl Parser {
             attributes,
         };
 
-        if modifiers.contains(Modifiers::STATIC) {
-            match &mut decl.kind {
-                DeclarationKind::Variable(local) => {
-                    local.source = if matches!(context, DeclarationContext::Struct) {
-                        LocalSource::StaticProperty
-                    } else {
-                        local.source
-                    }
-                }
-                DeclarationKind::Function(node) => node.signature.is_static = true,
-                _ if let Some(span) = static_span => {
-                    let message = "`static` is not allowed on this declaration";
-                    return Err(SpannedMessage::new(message.into(), span));
-                }
-                _ => unreachable!("ICE: static span must not be null"),
-            }
-        }
-
         Ok(Some(decl))
     }
 }
 
 impl Parser {
-    fn parse_decl_kind(
+    fn parse_foreign_declaration(&mut self) -> R<Option<ForeignDeclaration>> {
+        let mode = FnParseMode { req_body: false };
+        let result = self.parse_declaration_internal(mode)?;
+
+        let Some(result) = result else {
+            return Ok(None);
+        };
+
+        let item = match ForeignDeclarationKind::try_from(result.kind) {
+            Ok(kind) => {
+                let declaration = Declaration {
+                    span: result.span,
+                    identifier: result.identifier,
+                    kind,
+                    visibility: result.visibility,
+                    attributes: result.attributes,
+                };
+
+                Some(declaration)
+            }
+            Err(_) => {
+                let message = "this declaration kind is not allowed in extern blocks".into();
+                self.emit_error(message, result.span);
+                return Ok(None);
+            }
+        };
+
+        return Ok(item);
+    }
+
+    fn parse_associated_declaration(
         &mut self,
-        context: DeclarationContext,
-    ) -> R<Option<(Identifier, DeclarationKind)>> {
+        fn_mode: FnParseMode,
+    ) -> R<Option<AssociatedDeclaration>> {
+        let result = self.parse_declaration_internal(fn_mode)?;
+
+        let Some(result) = result else {
+            return Ok(None);
+        };
+
+        let kind = match AssociatedDeclarationKind::try_from(result.kind) {
+            Ok(kind) => kind,
+            Err(_) => {
+                let message =
+                    "this declaration kind is not allowed in `interface` or `extend` blocks".into();
+                self.emit_error(message, result.span);
+                return Ok(None);
+            }
+        };
+
+        let declaration = Declaration {
+            span: result.span,
+            identifier: result.identifier,
+            kind,
+            visibility: result.visibility,
+            attributes: result.attributes,
+        };
+
+        return Ok(Some(declaration));
+    }
+}
+
+impl Parser {
+    fn parse_decl_kind(&mut self, mode: FnParseMode) -> R<Option<(Identifier, DeclarationKind)>> {
         let current_kind = self.current_kind();
         let (identifier, kind) = match current_kind {
             TokenKind::Struct => self.parse_struct_declaration()?,
             TokenKind::Enum => self.parse_enum_declaration()?,
             TokenKind::Interface => self.parse_interface()?,
-            TokenKind::Let => self.parse_variable_decl(context)?,
-            TokenKind::Var => self.parse_variable_decl(context)?,
+            TokenKind::Var | TokenKind::Let => self.parse_variable_decl()?,
             TokenKind::Const => self.parse_const_decl()?,
             TokenKind::Import => (
                 Identifier::emtpy(self.file.file),
@@ -91,12 +155,15 @@ impl Parser {
                 self.parse_use_declaration(false)?,
             ),
             TokenKind::Type => self.parse_type_declaration()?,
-            TokenKind::Function => self.parse_function()?,
+            TokenKind::Function => self.parse_function(mode)?,
             TokenKind::Extern => (Identifier::emtpy(self.file.file), self.parse_extern()?),
             TokenKind::Extend => (Identifier::emtpy(self.file.file), self.parse_extend()?),
             TokenKind::Bridge => self.parse_bridge()?,
             TokenKind::Namespace => self.parse_namespace()?,
-            TokenKind::Operator => (Identifier::emtpy(self.file.file), self.parse_operator()?),
+            TokenKind::Operator => (
+                Identifier::emtpy(self.file.file),
+                self.parse_operator(mode)?,
+            ),
             _ => return Ok(None),
         };
 
@@ -105,10 +172,7 @@ impl Parser {
 }
 
 impl Parser {
-    fn parse_variable_decl(
-        &mut self,
-        context: DeclarationContext,
-    ) -> R<(Identifier, DeclarationKind)> {
+    fn parse_variable_decl(&mut self) -> R<(Identifier, DeclarationKind)> {
         let mutability = if self.eat(TokenKind::Let) {
             Mutability::Immutable
         } else if self.eat(TokenKind::Var) {
@@ -146,11 +210,6 @@ impl Parser {
             ty,
             initializer,
             is_shorthand: false,
-            source: if matches!(context, DeclarationContext::Struct) {
-                LocalSource::StoredProperty
-            } else {
-                LocalSource::TopLevelDecl
-            },
         };
 
         self.expect_line_break_or_semi()?;
@@ -163,9 +222,22 @@ impl Parser {
         self.expect(TokenKind::Colon)?;
         let ty = self.parse_type()?;
         self.expect(TokenKind::Assign)?;
-        let value = self.parse_anon_const()?;
+
+        let expr = if self.eat(TokenKind::Assign) {
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
         self.expect_line_break_or_semi()?;
-        let kind = DeclarationKind::Constant(ty, value);
+
+        let decl = ConstantDeclaration {
+            identifier,
+            ty,
+            expr,
+        };
+
+        let kind = DeclarationKind::Constant(decl);
         return Ok((identifier, kind));
     }
 }
@@ -201,25 +273,19 @@ impl Parser {
 impl Parser {
     fn parse_extern(&mut self) -> R<DeclarationKind> {
         self.expect(TokenKind::Extern)?;
-
         let abi = self.parse_string_content()?;
-
         let span = self.previous().unwrap().span;
+        let abi = taroc_span::Spanned { span, value: abi };
 
         let declarations = self
-            .parse_block_sequence(|p| p.parse_declaration(true, DeclarationContext::Extern))?
+            .parse_block_sequence(|p| p.parse_foreign_declaration())?
             .into_iter()
             .flatten()
             .collect();
 
-        let e = Extern {
-            abi: taroc_span::Spanned { span, value: abi },
-            declarations,
-        };
-
-        let k = DeclarationKind::Extern(e);
-
-        Ok(k)
+        let node = Extern { abi, declarations };
+        let kind = DeclarationKind::Extern(node);
+        Ok(kind)
     }
 }
 
@@ -231,7 +297,9 @@ impl Parser {
         let where_clause = self.parse_generic_where_clause()?;
 
         let declarations = self
-            .parse_block_sequence(|p| p.parse_declaration(true, DeclarationContext::Extend))?
+            .parse_block_sequence(|p| {
+                p.parse_associated_declaration(FnParseMode { req_body: true })
+            })?
             .into_iter()
             .flatten()
             .collect();
@@ -311,7 +379,7 @@ impl Parser {
         self.expect(TokenKind::Namespace)?;
         let ident = self.parse_identifier()?;
         let declarations = self
-            .parse_block_sequence(|p| p.parse_declaration(true, DeclarationContext::Interface))?
+            .parse_block_sequence(|p| p.parse_declaration())?
             .into_iter()
             .flatten()
             .collect();
@@ -466,7 +534,9 @@ impl Parser {
         };
 
         let declarations = self
-            .parse_block_sequence(|p| p.parse_declaration(true, DeclarationContext::Interface))?
+            .parse_block_sequence(|p| {
+                p.parse_associated_declaration(FnParseMode { req_body: false })
+            })?
             .into_iter()
             .flatten()
             .collect();

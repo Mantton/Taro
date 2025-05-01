@@ -8,7 +8,6 @@ impl Actor<'_> {
             pattern: self.lower_binding_pattern(local.pattern),
             ty: self.lower_optional(local.ty, |a, t| a.lower_type(t)),
             initializer: self.lower_optional(local.initializer, |a, e| a.lower_expression(e)),
-            source: local.source,
         }
     }
 }

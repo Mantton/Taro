@@ -1,19 +1,32 @@
+use super::{
+    GenericBound, GenericBounds, GenericRequirement, GenericRequirementList, GenericWhereClause,
+    NodeID, PathTree,
+};
 use crate::{
-    AnonConst, Attribute, BindingPattern, BindingPatternKind, Block, ClosureExpression,
-    Declaration, DeclarationKind, Expression, ExpressionArgument, ExpressionKind, FieldDefinition,
-    File, Function, FunctionParameter, FunctionPrototype, FunctionSignature, Generics, Inheritance,
+    AnonConst, AssociatedDeclaration, Attribute, BindingPattern, BindingPatternKind, Block,
+    ClosureExpression, Declaration, DeclarationKind, EnumDefinition, Expression,
+    ExpressionArgument, ExpressionField, ExpressionKind, FieldDefinition, File, ForeignDeclaration,
+    Function, FunctionParameter, FunctionPrototype, FunctionSignature, Generics, Inheritance,
     Label, Local, MatchingPattern, MatchingPatternKind, MethodCall, Module, Package, Path,
-    PathSegment, Statement, StatementKind, TaggedPath, Type, TypeArgument, TypeArguments, TypeKind,
-    TypeParameter, TypeParameterKind, TypeParameters, Variant, VariantKind,
+    PathSegment, PatternField, Statement, StatementKind, TaggedPath, Type, TypeArgument,
+    TypeArguments, TypeKind, TypeParameter, TypeParameterKind, TypeParameters, Variant,
+    VariantKind, WhenArm,
 };
 use std::ops::ControlFlow;
-use taroc_ast_ir::FunctionSource;
+use taroc_ast_ir::OperatorKind;
 use taroc_span::Identifier;
 
-use super::{
-    ComputedProperty, DeclarationContext, GenericBound, GenericBounds, GenericRequirement,
-    GenericRequirementList, GenericWhereClause, NodeID, PathTree,
-};
+pub enum FunctionContext {
+    Free,
+    Foreign,
+    Assoc(AssocContext),
+    AssocOperand(AssocContext, OperatorKind),
+}
+
+pub enum AssocContext {
+    Interface,
+    Extend,
+}
 
 pub trait VisitorResult {
     type Residual;
@@ -110,8 +123,20 @@ pub trait HirVisitor: Sized {
         walk_file(self, file)
     }
 
-    fn visit_declaration(&mut self, d: &Declaration, c: DeclarationContext) -> Self::Result {
-        walk_declaration(self, d, c)
+    fn visit_declaration(&mut self, d: &Declaration) -> Self::Result {
+        walk_declaration(self, d)
+    }
+
+    fn visit_assoc_declaration(
+        &mut self,
+        declaration: &AssociatedDeclaration,
+        context: AssocContext,
+    ) -> Self::Result {
+        walk_assoc_declaration(self, declaration, context)
+    }
+
+    fn visit_foreign_declaration(&mut self, d: &ForeignDeclaration) -> Self::Result {
+        walk_foreign_declaration(self, d)
     }
 
     fn visit_statement(&mut self, s: &Statement) -> Self::Result {
@@ -169,7 +194,7 @@ pub trait HirVisitor: Sized {
         walk_label(self, l)
     }
 
-    fn visit_function(&mut self, f: &Function, c: FunctionSource) -> Self::Result {
+    fn visit_function(&mut self, f: &Function, c: FunctionContext) -> Self::Result {
         walk_function(self, f, c)
     }
 
@@ -205,6 +230,13 @@ pub trait HirVisitor: Sized {
     }
     fn visit_variant_kind(&mut self, k: &VariantKind) -> Self::Result {
         walk_variant_kind(self, k)
+    }
+    fn visit_expression_field(&mut self, k: &ExpressionField) -> Self::Result {
+        walk_expr_field(self, k)
+    }
+
+    fn visit_pattern_field(&mut self, k: &PatternField) -> Self::Result {
+        walk_pat_field(self, k)
     }
 
     fn visit_path(&mut self, p: &Path) -> Self::Result {
@@ -246,16 +278,20 @@ pub trait HirVisitor: Sized {
         walk_generic_bound(self, n)
     }
 
-    fn visit_computed_property(&mut self, n: &ComputedProperty) -> Self::Result {
-        walk_computed_property(self, n)
-    }
-
     fn visit_inheritance(&mut self, n: &Inheritance) -> Self::Result {
         walk_inheritance(self, n)
     }
 
     fn visit_tagged_path(&mut self, node: &TaggedPath) -> Self::Result {
         walk_tagged_path(self, node)
+    }
+
+    fn visit_enum_def(&mut self, node: &EnumDefinition) -> Self::Result {
+        walk_enum_def(self, node)
+    }
+
+    fn visit_when_arm(&mut self, node: &WhenArm) -> Self::Result {
+        walk_when_arm(self, node)
     }
 }
 
@@ -274,89 +310,117 @@ pub fn walk_module<V: HirVisitor>(visitor: &mut V, module: &Module) -> V::Result
 
 pub fn walk_file<V: HirVisitor>(visitor: &mut V, file: &File) -> V::Result {
     let File { declarations, .. } = file;
-    walk_list!(
-        visitor,
-        visit_declaration,
-        declarations,
-        DeclarationContext::Module
-    );
+    walk_list!(visitor, visit_declaration, declarations);
     V::Result::output()
 }
 
-pub fn walk_declaration<V: HirVisitor>(
+pub fn walk_declaration<V: HirVisitor>(visitor: &mut V, declaration: &Declaration) -> V::Result {
+    walk_list!(visitor, visit_attribute, &declaration.attributes);
+    visitor.visit_ident(&declaration.identifier);
+
+    match &declaration.kind {
+        DeclarationKind::Interface(node) => {
+            try_visit!(visitor.visit_generics(&node.generics));
+            walk_list!(
+                visitor,
+                visit_assoc_declaration,
+                &node.declarations,
+                AssocContext::Interface
+            );
+        }
+        DeclarationKind::Struct(node) => {
+            try_visit!(visitor.visit_generics(&node.generics));
+            try_visit!(visitor.visit_variant_kind(&node.variant))
+        }
+        DeclarationKind::Enum(node) => {
+            try_visit!(visitor.visit_generics(&node.generics));
+            try_visit!(visitor.visit_enum_def(&node))
+        }
+        DeclarationKind::Function(node) => {
+            try_visit!(visitor.visit_function(node, FunctionContext::Free));
+        }
+        DeclarationKind::Variable(node) => {
+            try_visit!(visitor.visit_local(node));
+        }
+        DeclarationKind::Constant(node) => {
+            try_visit!(visitor.visit_type(&node.ty));
+            visit_optional!(visitor, visit_expression, &node.expr);
+        }
+        DeclarationKind::Import(node) => {
+            try_visit!(visitor.visit_export(node, declaration.id));
+        }
+        DeclarationKind::Export(node) => {
+            try_visit!(visitor.visit_export(node, declaration.id));
+        }
+        DeclarationKind::TypeAlias(node) => {
+            try_visit!(visitor.visit_generics(&node.generics));
+            visit_optional!(visitor, visit_type, &node.ty);
+        }
+        DeclarationKind::Extend(node) => {
+            try_visit!(visitor.visit_type(&node.ty));
+            try_visit!(visitor.visit_generics(&node.generics));
+            walk_list!(
+                visitor,
+                visit_assoc_declaration,
+                &node.declarations,
+                AssocContext::Extend
+            );
+        }
+        DeclarationKind::Namespace(node) => {
+            walk_list!(visitor, visit_declaration, &node.declarations)
+        }
+        DeclarationKind::Extern(node) => {
+            walk_list!(visitor, visit_foreign_declaration, &node.declarations,);
+        }
+        DeclarationKind::Bridge(_) => todo!("visit bridge node"),
+    }
+
+    V::Result::output()
+}
+
+pub fn walk_assoc_declaration<V: HirVisitor>(
     visitor: &mut V,
-    declaration: &Declaration,
-    _context: DeclarationContext,
+    declaration: &AssociatedDeclaration,
+    context: AssocContext,
 ) -> V::Result {
     walk_list!(visitor, visit_attribute, &declaration.attributes);
     visitor.visit_ident(&declaration.identifier);
 
     match &declaration.kind {
-        DeclarationKind::Function(f) => {
-            try_visit!(visitor.visit_function(f, FunctionSource::Free));
+        crate::AssociatedDeclarationKind::Constant(node) => {
+            try_visit!(visitor.visit_type(&node.ty));
+            visit_optional!(visitor, visit_expression, &node.expr);
         }
-        DeclarationKind::Constructor(function, _) => {
-            try_visit!(visitor.visit_function(function, FunctionSource::Constructor));
+        crate::AssociatedDeclarationKind::Function(node) => {
+            try_visit!(visitor.visit_function(node, FunctionContext::Assoc(context)));
         }
-        DeclarationKind::Operator(_, function) => {
-            try_visit!(visitor.visit_function(function, FunctionSource::Operator));
-        }
-        DeclarationKind::Variable(decl) => {
-            try_visit!(visitor.visit_local(decl))
-        }
-        DeclarationKind::Import(i) => {
-            try_visit!(visitor.visit_import(i, declaration.id));
-        }
-        DeclarationKind::Export(i) => {
-            try_visit!(visitor.visit_export(i, declaration.id));
-        }
-        DeclarationKind::Extend(extension) => {
-            try_visit!(visitor.visit_type(&extension.ty));
-            try_visit!(visitor.visit_generics(&extension.generics));
-            walk_list!(
-                visitor,
-                visit_declaration,
-                &extension.declarations,
-                DeclarationContext::Extend
-            )
-        }
-        DeclarationKind::TypeAlias(ty) => {
-            try_visit!(visitor.visit_generics(&ty.generics));
-            visit_optional!(visitor, visit_type, &ty.ty);
-        }
-        DeclarationKind::Extern(node) => {
-            walk_list!(
-                visitor,
-                visit_declaration,
-                &node.declarations,
-                DeclarationContext::Extern
-            )
-        }
-        DeclarationKind::Namespace(node) => {
-            walk_list!(
-                visitor,
-                visit_declaration,
-                &node.declarations,
-                DeclarationContext::Namespace
-            )
-        }
-        DeclarationKind::Bridge(_) => todo!(),
-        DeclarationKind::AssociatedType(generics, default) => {
-            try_visit!(visitor.visit_generics(generics));
-            visit_optional!(visitor, visit_type, default);
-        }
-        DeclarationKind::Constant(..) => todo!(),
-        DeclarationKind::EnumCase(node) => {
-            walk_list!(visitor, visit_variant, &node.members)
-        }
-        DeclarationKind::DefinedType(node) => {
+        crate::AssociatedDeclarationKind::Type(node) => {
             try_visit!(visitor.visit_generics(&node.generics));
-            let ctx = match &node.kind {
-                crate::DefinedTypeKind::Struct => DeclarationContext::Struct,
-                crate::DefinedTypeKind::Enum => DeclarationContext::Enum,
-                crate::DefinedTypeKind::Interface => DeclarationContext::Interface,
-            };
-            walk_list!(visitor, visit_declaration, &node.declarations, ctx)
+            visit_optional!(visitor, visit_type, &node.ty);
+        }
+        crate::AssociatedDeclarationKind::Operator(operator_kind, function) => {
+            let ctx = FunctionContext::AssocOperand(context, *operator_kind);
+            try_visit!(visitor.visit_function(function, ctx));
+        }
+    }
+
+    V::Result::output()
+}
+
+pub fn walk_foreign_declaration<V: HirVisitor>(
+    visitor: &mut V,
+    declaration: &ForeignDeclaration,
+) -> V::Result {
+    walk_list!(visitor, visit_attribute, &declaration.attributes);
+    visitor.visit_ident(&declaration.identifier);
+
+    match &declaration.kind {
+        crate::ForeignDeclarationKind::Function(function) => {
+            try_visit!(visitor.visit_function(function, FunctionContext::Foreign));
+        }
+        crate::ForeignDeclarationKind::Type(node) => {
+            try_visit!(visitor.visit_generics(&node.generics));
+            visit_optional!(visitor, visit_type, &node.ty);
         }
     }
 
@@ -366,7 +430,7 @@ pub fn walk_declaration<V: HirVisitor>(
 pub fn walk_statement<V: HirVisitor>(visitor: &mut V, s: &Statement) -> V::Result {
     match &s.kind {
         StatementKind::Declaration(decl) => {
-            try_visit!(visitor.visit_declaration(decl, DeclarationContext::Statement));
+            try_visit!(visitor.visit_declaration(decl));
         }
         StatementKind::Expression(expr) => {
             try_visit!(visitor.visit_expression(expr))
@@ -399,7 +463,11 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, expr: &Expression) -> V::
         ExpressionKind::Path(path) => {
             try_visit!(visitor.visit_path(path))
         }
-        ExpressionKind::Array(expressions) => {
+        ExpressionKind::StructLiteral(node) => {
+            try_visit!(visitor.visit_path(&node.path));
+            walk_list!(visitor, visit_expression_field, &node.fields);
+        }
+        ExpressionKind::ArrayLiteral(expressions) => {
             walk_list!(visitor, visit_expression, expressions)
         }
         ExpressionKind::Tuple(expressions) => {
@@ -456,18 +524,20 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, expr: &Expression) -> V::
             try_visit!(visitor.visit_expression(rhs));
         }
         ExpressionKind::Literal(_) => {}
-        ExpressionKind::Await(expr) => {
-            try_visit!(visitor.visit_expression(expr));
-        }
-
         ExpressionKind::Closure(func) => {
             try_visit!(visitor.visit_closure(func))
         }
         ExpressionKind::MatchBinding(..) => todo!(),
         ExpressionKind::Malformed => {}
-        ExpressionKind::InferMemberPath(_) => todo!(),
         ExpressionKind::Block(block) => {
             try_visit!(visitor.visit_block(block));
+        }
+        ExpressionKind::Await(expression) => {
+            try_visit!(visitor.visit_expression(expression));
+        }
+        ExpressionKind::When(node) => {
+            visit_optional!(visitor, visit_expression, &node.value);
+            walk_list!(visitor, visit_when_arm, &node.arms);
         }
     }
     V::Result::output()
@@ -492,6 +562,9 @@ pub fn walk_type<V: HirVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
             walk_list!(visitor, visit_tagged_path, items);
         }
         TypeKind::Infer => {}
+        TypeKind::AnonStruct { fields } => {
+            walk_list!(visitor, visit_field_definition, fields);
+        }
     }
     V::Result::output()
 }
@@ -503,7 +576,7 @@ pub fn walk_matching_pattern<V: HirVisitor>(
         MatchingPatternKind::Literal(lit) => {
             try_visit!(visitor.visit_anon_const(lit));
         }
-        MatchingPatternKind::Binding(ident) => {
+        MatchingPatternKind::Binding(_, ident) => {
             try_visit!(visitor.visit_ident(ident));
         }
         MatchingPatternKind::Wildcard => {}
@@ -516,9 +589,15 @@ pub fn walk_matching_pattern<V: HirVisitor>(
         MatchingPatternKind::Or(pats, _) => {
             walk_list!(visitor, visit_matching_pattern, pats);
         }
-        MatchingPatternKind::Rest => todo!(),
-        MatchingPatternKind::PathTuple(..) => todo!(),
-        MatchingPatternKind::PathStruct(..) => todo!(),
+        MatchingPatternKind::Rest => {}
+        MatchingPatternKind::PathTuple(path, pat, _) => {
+            try_visit!(visitor.visit_path(path));
+            walk_list!(visitor, visit_matching_pattern, pat);
+        }
+        MatchingPatternKind::PathStruct(path, fields, ..) => {
+            try_visit!(visitor.visit_path(path));
+            walk_list!(visitor, visit_pattern_field, fields);
+        }
     }
 
     V::Result::output()
@@ -659,6 +738,11 @@ pub fn walk_variant_kind<V: HirVisitor>(visitor: &mut V, variant_kind: &VariantK
     V::Result::output()
 }
 
+pub fn walk_expr_field<V: HirVisitor>(visitor: &mut V, field: &ExpressionField) -> V::Result {
+    try_visit!(visitor.visit_expression(&field.expression));
+    V::Result::output()
+}
+
 pub fn walk_path<V: HirVisitor>(visitor: &mut V, path: &Path) -> V::Result {
     walk_list!(visitor, visit_path_segment, &path.segments);
     V::Result::output()
@@ -696,7 +780,7 @@ pub fn walk_expression_argument<V: HirVisitor>(
 pub fn walk_function<V: HirVisitor>(
     visitor: &mut V,
     function: &Function,
-    _: FunctionSource,
+    _: FunctionContext,
 ) -> V::Result {
     try_visit!(visitor.visit_generics(&function.generics));
     try_visit!(visitor.visit_function_signature(&function.signature));
@@ -771,15 +855,6 @@ pub fn walk_generic_bound<V: HirVisitor>(visitor: &mut V, node: &GenericBound) -
     V::Result::output()
 }
 
-pub fn walk_computed_property<V: HirVisitor>(
-    visitor: &mut V,
-    node: &ComputedProperty,
-) -> V::Result {
-    try_visit!(visitor.visit_type(&node.ty));
-    try_visit!(visitor.visit_block(&node.block));
-    V::Result::output()
-}
-
 pub fn walk_inheritance<V: HirVisitor>(visitor: &mut V, node: &Inheritance) -> V::Result {
     walk_list!(visitor, visit_tagged_path, &node.interfaces);
     V::Result::output()
@@ -787,5 +862,32 @@ pub fn walk_inheritance<V: HirVisitor>(visitor: &mut V, node: &Inheritance) -> V
 
 pub fn walk_tagged_path<V: HirVisitor>(visitor: &mut V, node: &TaggedPath) -> V::Result {
     try_visit!(visitor.visit_path(&node.path));
+    V::Result::output()
+}
+
+pub fn walk_enum_def<V: HirVisitor>(visitor: &mut V, node: &EnumDefinition) -> V::Result {
+    walk_list!(visitor, visit_variant, &node.variants);
+    V::Result::output()
+}
+
+pub fn walk_pat_field<V: HirVisitor>(visitor: &mut V, node: &PatternField) -> V::Result {
+    try_visit!(visitor.visit_ident(&node.identifier));
+    visit_optional!(visitor, visit_matching_pattern, &node.pattern);
+    V::Result::output()
+}
+
+pub fn walk_when_arm<V: HirVisitor>(visitor: &mut V, node: &WhenArm) -> V::Result {
+    match &node.kind {
+        crate::WhenArmKind::Pattern(node) => {
+            try_visit!(visitor.visit_matching_pattern(node))
+        }
+        crate::WhenArmKind::Expression(nodes) => {
+            walk_list!(visitor, visit_expression, nodes);
+        }
+
+        _ => {}
+    }
+    try_visit!(visitor.visit_expression(&node.body));
+
     V::Result::output()
 }

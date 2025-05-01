@@ -3,11 +3,10 @@ use super::package::Parser;
 bitflags::bitflags! {
     #[derive(Clone, Copy, Debug)]
     pub struct Restrictions: u8 {
-        const ALLOW_BLOCK_EXPRESSION = 1 << 1;
-        const ALLOW_BINDING_CONDITION = 1 << 2;
-        const ALLOW_WILDCARD = 1 << 3;
-        const NO_TRAILING_CLOSURES = 1 << 4;
-        const ALLOW_REST_PATTERN = 1 << 5;
+        const ALLOW_BINDING_CONDITION = 1 << 0;
+        const ALLOW_WILDCARD = 1 << 1;
+        const ALLOW_REST_PATTERN = 1 << 2;
+        const NO_STRUCT_LITERALS = 1 << 3;
     }
 }
 
@@ -18,12 +17,5 @@ impl Parser {
         let res = f(self);
         self.restrictions = old;
         res
-    }
-}
-
-bitflags::bitflags! {
-    #[derive(Default)]
-    pub struct Modifiers: u8 {
-        const STATIC = 1 << 1;
     }
 }
