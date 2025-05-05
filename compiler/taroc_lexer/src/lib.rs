@@ -1009,7 +1009,6 @@ mod test {
         assert_token!("as", TokenKind::As, "as");
         assert_token!("in", TokenKind::In, "in");
         assert_token!("where", TokenKind::Where, "where");
-        assert_token!("void", TokenKind::Void, "void");
         assert_token!("await", TokenKind::Await, "await");
         assert_token!("namespace", TokenKind::Namespace, "namespace");
         assert_token!("public", TokenKind::Public, "public");
@@ -1072,7 +1071,6 @@ mod test {
         assert_token!("true", TokenKind::True, "true");
         assert_token!("false", TokenKind::False, "false");
         assert_token!("nil", TokenKind::Nil, "nil");
-        assert_token!("void", TokenKind::Void, "void");
     }
 
     #[test]

@@ -9,7 +9,6 @@ pub enum LiteralKind {
     Integer(Base),
     Float,
     Nil,
-    Void,
 }
 
 #[derive(Debug)]

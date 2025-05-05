@@ -1,5 +1,6 @@
 use super::package::Actor;
-use taroc_span::{Span, Symbol};
+use taroc_hir::TypeKind;
+use taroc_span::{Identifier, Span, Symbol};
 
 impl Actor<'_> {
     pub fn lower_declaration(
@@ -43,6 +44,20 @@ impl Actor<'_> {
             visibility: self.lower_visibility(declaration.visibility),
         }
     }
+
+    pub fn lower_function_declaration(
+        &mut self,
+        declaration: taroc_ast::FunctionDeclaration,
+    ) -> taroc_hir::FunctionDeclaration {
+        taroc_hir::FunctionDeclaration {
+            id: self.next(),
+            span: declaration.span,
+            identifier: declaration.identifier,
+            kind: self.lower_function_declaration_kind(declaration.kind),
+            attributes: self.lower_attributes(declaration.attributes),
+            visibility: self.lower_visibility(declaration.visibility),
+        }
+    }
 }
 impl Actor<'_> {
     fn lower_declaration_kind(
@@ -54,7 +69,7 @@ impl Actor<'_> {
                 taroc_hir::DeclarationKind::Function(self.lower_function(function))
             }
             taroc_ast::DeclarationKind::Variable(local) => {
-                taroc_hir::DeclarationKind::Variable(self.lower_local(local))
+                taroc_hir::DeclarationKind::Static(self.lower_local_to_static(local))
             }
             taroc_ast::DeclarationKind::Extend(extend) => {
                 taroc_hir::DeclarationKind::Extend(self.lower_extend(extend))
@@ -126,6 +141,32 @@ impl Actor<'_> {
             }
             taroc_ast::ForeignDeclarationKind::Type(node) => {
                 taroc_hir::ForeignDeclarationKind::Type(self.lower_type_alias(node))
+            }
+        }
+    }
+
+    fn lower_function_declaration_kind(
+        &mut self,
+        kind: taroc_ast::FunctionDeclarationKind,
+    ) -> taroc_hir::FunctionDeclarationKind {
+        match kind {
+            taroc_ast::FunctionDeclarationKind::Function(node) => {
+                taroc_hir::FunctionDeclarationKind::Function(self.lower_function(node))
+            }
+            taroc_ast::FunctionDeclarationKind::Struct(node) => {
+                taroc_hir::FunctionDeclarationKind::Struct(self.lower_struct_definition(node))
+            }
+            taroc_ast::FunctionDeclarationKind::Enum(node) => {
+                taroc_hir::FunctionDeclarationKind::Enum(self.lower_enum_definition(node))
+            }
+            taroc_ast::FunctionDeclarationKind::Constant(node) => {
+                taroc_hir::FunctionDeclarationKind::Constant(self.lower_constant_decl(node))
+            }
+            taroc_ast::FunctionDeclarationKind::Import(node) => {
+                taroc_hir::FunctionDeclarationKind::Import(self.lower_path_tree(node))
+            }
+            taroc_ast::FunctionDeclarationKind::TypeAlias(node) => {
+                taroc_hir::FunctionDeclarationKind::TypeAlias(self.lower_type_alias(node))
             }
         }
     }
@@ -248,6 +289,34 @@ impl Actor<'_> {
             declarations: self.lower_sequence(node.declarations, |this, variant| {
                 this.lower_associated_declaration(variant)
             }),
+        }
+    }
+}
+
+impl Actor<'_> {
+    fn lower_local_to_static(&mut self, local: taroc_ast::Local) -> taroc_hir::StaticDeclaration {
+        let identifier = match local.pattern.kind {
+            taroc_ast::BindingPatternKind::Identifier(identifier) => identifier,
+            _ => {
+                self.context.diagnostics.error(
+                    "static variables must be an identifier binding".into(),
+                    local.pattern.span,
+                );
+                Identifier::emtpy(local.pattern.span.file)
+            }
+        };
+        let ty = if let Some(ty) = local.ty {
+            self.lower_type(ty)
+        } else {
+            self.mk_ty(TypeKind::Malformed, local.pattern.span)
+        };
+
+        let expr = self.lower_optional(local.initializer, |this, expr| this.lower_expression(expr));
+
+        taroc_hir::StaticDeclaration {
+            identifier,
+            ty,
+            expr,
         }
     }
 }

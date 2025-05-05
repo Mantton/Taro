@@ -1,9 +1,6 @@
+use super::{NodeID, block::Block, expression::Expression, label::Label, local::Local};
+use crate::FunctionDeclaration;
 use taroc_span::{Identifier, Span};
-
-use super::{
-    NodeID, block::Block, declaration::Declaration, expression::Expression, label::Label,
-    local::Local,
-};
 
 #[derive(Debug, Clone)]
 pub struct Statement {
@@ -14,7 +11,7 @@ pub struct Statement {
 
 #[derive(Debug, Clone)]
 pub enum StatementKind {
-    Declaration(Declaration),
+    Declaration(FunctionDeclaration),
     Expression(Box<Expression>),
     Variable(Local),
     Break(Option<Identifier>),

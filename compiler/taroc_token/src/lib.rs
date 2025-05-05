@@ -18,7 +18,6 @@ pub enum TokenKind {
     True,
     False,
     Nil,
-    Void,
 
     Import,
     Export,
@@ -240,7 +239,6 @@ impl Display for TokenKind {
             TokenKind::Unsafe => "unsafe",
             TokenKind::Public => "public",
             TokenKind::Ellipsis => "...",
-            TokenKind::Void => "void",
             TokenKind::Await => "await",
             TokenKind::DotDot => "..",
             TokenKind::DotDotEq => "..=",
@@ -301,7 +299,6 @@ impl TokenKind {
             "as" => TokenKind::As,
             "in" => TokenKind::In,
             "where" => TokenKind::Where,
-            "void" => TokenKind::Void,
             "await" => TokenKind::Await,
             "namespace" => TokenKind::Namespace,
             "public" => TokenKind::Public,

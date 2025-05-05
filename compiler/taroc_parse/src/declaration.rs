@@ -3,8 +3,9 @@ use std::collections::HashMap;
 use taroc_ast::{
     AssociatedDeclaration, AssociatedDeclarationKind, BindingPatternKind, Bridge, BridgeValue,
     ConstantDeclaration, Declaration, DeclarationKind, EnumDefinition, Extend, Extern,
-    ForeignDeclaration, ForeignDeclarationKind, Generics, InterfaceDefinition, Local, Mutability,
-    Namespace, PathTree, PathTreeNode, StructDefinition, TypeAlias, VariantKind,
+    ForeignDeclaration, ForeignDeclarationKind, FunctionDeclaration, FunctionDeclarationKind,
+    Generics, InterfaceDefinition, Local, Mutability, Namespace, PathTree, PathTreeNode,
+    StructDefinition, TypeAlias, VariantKind,
 };
 use taroc_span::{Identifier, SpannedMessage, Symbol};
 use taroc_token::{Delimiter, TokenKind};
@@ -72,6 +73,37 @@ impl Parser {
 
         Ok(Some(decl))
     }
+
+    fn parse_decl_list<T>(
+        &mut self,
+        mut action: impl FnMut(&mut Parser) -> R<Option<T>>,
+    ) -> R<Vec<T>> {
+        self.expect(TokenKind::LBrace)?;
+
+        let mut decls = vec![];
+
+        while !self.matches(TokenKind::RBrace) && !self.is_at_end() {
+            self.consume_comments_and_new_lines();
+            if self.matches(TokenKind::RBrace) {
+                break;
+            }
+            match action(self)? {
+                Some(decl) => decls.push(decl),
+                None => {
+                    let msg = format!("expected declaration, found '{}'", self.current_kind());
+                    let err = SpannedMessage::new(msg, self.current_token_span());
+                    return Err(err);
+                }
+            }
+
+            if self.matches(TokenKind::RBrace) {
+                break;
+            }
+        }
+        self.expect(TokenKind::RBrace)?;
+
+        return Ok(decls);
+    }
 }
 
 impl Parser {
@@ -110,7 +142,6 @@ impl Parser {
         fn_mode: FnParseMode,
     ) -> R<Option<AssociatedDeclaration>> {
         let result = self.parse_declaration_internal(fn_mode)?;
-
         let Some(result) = result else {
             return Ok(None);
         };
@@ -126,6 +157,34 @@ impl Parser {
         };
 
         let declaration = Declaration {
+            span: result.span,
+            identifier: result.identifier,
+            kind,
+            visibility: result.visibility,
+            attributes: result.attributes,
+        };
+
+        return Ok(Some(declaration));
+    }
+
+    pub fn parse_function_declaration(&mut self) -> R<Option<FunctionDeclaration>> {
+        let mode = FnParseMode { req_body: true };
+        let result = self.parse_declaration_internal(mode)?;
+
+        let Some(result) = result else {
+            return Ok(None);
+        };
+
+        let kind = match FunctionDeclarationKind::try_from(result.kind) {
+            Ok(kind) => kind,
+            Err(_) => {
+                let message = "this declaration kind is not allowed in function blocks".into();
+                self.emit_error(message, result.span);
+                return Ok(None);
+            }
+        };
+
+        let declaration = FunctionDeclaration {
             span: result.span,
             identifier: result.identifier,
             kind,
@@ -277,11 +336,7 @@ impl Parser {
         let span = self.previous().unwrap().span;
         let abi = taroc_span::Spanned { span, value: abi };
 
-        let declarations = self
-            .parse_block_sequence(|p| p.parse_foreign_declaration())?
-            .into_iter()
-            .flatten()
-            .collect();
+        let declarations = self.parse_decl_list(|p| p.parse_foreign_declaration())?;
 
         let node = Extern { abi, declarations };
         let kind = DeclarationKind::Extern(node);
@@ -292,22 +347,19 @@ impl Parser {
 impl Parser {
     fn parse_extend(&mut self) -> R<DeclarationKind> {
         self.expect(TokenKind::Extend)?;
+        let type_parameters = self.parse_type_parameters()?;
+
         let ty = self.parse_type()?;
-        let inheritance = self.parse_conformances()?;
+        let conformances = self.parse_conformances()?;
         let where_clause = self.parse_generic_where_clause()?;
 
         let declarations = self
-            .parse_block_sequence(|p| {
-                p.parse_associated_declaration(FnParseMode { req_body: true })
-            })?
-            .into_iter()
-            .flatten()
-            .collect();
+            .parse_decl_list(|p| p.parse_associated_declaration(FnParseMode { req_body: true }))?;
 
         let generics = Generics {
-            type_parameters: None,
+            type_parameters,
             where_clause,
-            conformances: inheritance,
+            conformances,
         };
 
         let extend = Extend {
@@ -378,11 +430,7 @@ impl Parser {
     fn parse_namespace(&mut self) -> R<(Identifier, DeclarationKind)> {
         self.expect(TokenKind::Namespace)?;
         let ident = self.parse_identifier()?;
-        let declarations = self
-            .parse_block_sequence(|p| p.parse_declaration())?
-            .into_iter()
-            .flatten()
-            .collect();
+        let declarations = self.parse_decl_list(|p| p.parse_declaration())?;
 
         let namespace = Namespace { declarations };
         Ok((ident, DeclarationKind::Namespace(namespace)))
@@ -534,12 +582,7 @@ impl Parser {
         };
 
         let declarations = self
-            .parse_block_sequence(|p| {
-                p.parse_associated_declaration(FnParseMode { req_body: false })
-            })?
-            .into_iter()
-            .flatten()
-            .collect();
+            .parse_decl_list(|p| p.parse_associated_declaration(FnParseMode { req_body: false }))?;
 
         let interface = InterfaceDefinition {
             declarations,

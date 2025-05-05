@@ -25,8 +25,8 @@ pub struct FieldDefinition {
 
 #[derive(Debug, Clone)]
 pub enum VariantKind {
-    Unit,
-    Tuple(Vec<FieldDefinition>),
+    Unit(NodeID),
+    Tuple(NodeID, Vec<FieldDefinition>),
     Struct(Vec<FieldDefinition>),
 }
 
@@ -40,4 +40,14 @@ pub struct StructDefinition {
 pub struct EnumDefinition {
     pub generics: Generics,
     pub variants: Vec<Variant>,
+}
+
+impl VariantKind {
+    /// Return the `NodeId` of this variant's constructor, if it has one.
+    pub fn ctor_node_id(&self) -> Option<NodeID> {
+        match *self {
+            VariantKind::Struct(..) => None,
+            VariantKind::Tuple(id, _) | VariantKind::Unit(id) => Some(id),
+        }
+    }
 }

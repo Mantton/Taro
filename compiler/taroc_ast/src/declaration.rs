@@ -48,6 +48,17 @@ pub enum DeclarationKind {
     Bridge(Bridge),
 }
 
+pub type FunctionDeclaration = Declaration<FunctionDeclarationKind>;
+#[derive(Debug)]
+pub enum FunctionDeclarationKind {
+    Struct(StructDefinition),
+    Enum(EnumDefinition),
+    Function(Function),
+    Constant(ConstantDeclaration),
+    Import(PathTree),
+    TypeAlias(TypeAlias),
+}
+
 pub type AssociatedDeclaration = Declaration<AssociatedDeclarationKind>;
 #[derive(Debug)]
 pub enum AssociatedDeclarationKind {
@@ -149,6 +160,22 @@ impl TryFrom<DeclarationKind> for AssociatedDeclarationKind {
             DeclarationKind::TypeAlias(node) => AssociatedDeclarationKind::Type(node),
             DeclarationKind::Operator(op, node) => AssociatedDeclarationKind::Operator(op, node),
 
+            _ => return Err(kind),
+        })
+    }
+}
+
+impl TryFrom<DeclarationKind> for FunctionDeclarationKind {
+    type Error = DeclarationKind;
+
+    fn try_from(kind: DeclarationKind) -> Result<FunctionDeclarationKind, DeclarationKind> {
+        Ok(match kind {
+            DeclarationKind::Function(node) => FunctionDeclarationKind::Function(node),
+            DeclarationKind::Struct(node) => FunctionDeclarationKind::Struct(node),
+            DeclarationKind::Enum(node) => FunctionDeclarationKind::Enum(node),
+            DeclarationKind::Constant(node) => FunctionDeclarationKind::Constant(node),
+            DeclarationKind::Import(node) => FunctionDeclarationKind::Import(node),
+            DeclarationKind::TypeAlias(node) => FunctionDeclarationKind::TypeAlias(node),
             _ => return Err(kind),
         })
     }

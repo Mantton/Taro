@@ -1,9 +1,7 @@
-use crate::{find::ResolutionState, models::ParentContext};
-
 use super::resolver::Resolver;
 use taroc_resolve_models::{
-    Determinacy, ExternalDefUsageKind, ExternalDefinitionUsage, NameBinding, NameBindingData,
-    NameBindingKind, PathResult,
+    BindingKey, DefinitionContext, Determinacy, ExternalDefUsageKind, ExternalDefinitionUsage,
+    NameBinding, PathResult,
 };
 
 pub struct UsageResolver<'res, 'ctx> {
@@ -21,7 +19,6 @@ impl<'res, 'ctx> UsageResolver<'res, 'ctx> {
 
 impl<'res, 'ctx> UsageResolver<'res, 'ctx> {
     fn resolve_exports(&mut self) {
-        // Process each exprt.
         let exports = std::mem::take(&mut self.resolver.unresolved_exports);
         for export in exports {
             if self.resolve_usage(export) {
@@ -56,28 +53,21 @@ impl<'res, 'ctx> UsageResolver<'res, 'ctx> {
         );
         debug_assert!(!usage.is_resolved.get(), "Usage Has already been resolved");
 
-        let is_import = usage.is_import;
-        let parent_context = if !is_import {
-            Some(ParentContext {
-                file: usage.file,
-                module: usage.module,
-            })
-        } else {
-            None
-        };
-        let result = self.resolver.resolve_path_with_scopes(
+        // Resolve Module
+        let module_result = self.resolver.resolve_path_with_scopes(
             &usage.module_path,
+            None,
             &[],
-            ResolutionState::Usage(parent_context),
+            &usage.parent_scope,
         );
 
-        let module = match result {
+        let module = match module_result {
             PathResult::Context(ctx) => ctx,
             PathResult::NonContext(_) => {
                 if self.finalize {
                     let last = usage.module_path.last().unwrap().identifier;
                     let message = format!("'{}' does not have a namespace", last.symbol);
-                    self.resolver.context.diagnostics.error(message, last.span);
+                    self.resolver.gcx.diagnostics.error(message, last.span);
                 }
 
                 return false;
@@ -86,17 +76,14 @@ impl<'res, 'ctx> UsageResolver<'res, 'ctx> {
                 if self.finalize {
                     let last = usage.module_path.last().unwrap().identifier;
                     let message = format!("ambiguous usage '{}'", last.symbol);
-                    self.resolver.context.diagnostics.error(message, last.span);
+                    self.resolver.gcx.diagnostics.error(message, last.span);
                 }
                 return false;
             }
             PathResult::Failed { segment, .. } => {
                 if self.finalize {
-                    let message = format!("Unable to Resolve '{}'", segment.symbol);
-                    self.resolver
-                        .context
-                        .diagnostics
-                        .error(message, segment.span);
+                    let message = format!("cannot locate symbol '{}'", segment.symbol);
+                    self.resolver.gcx.diagnostics.error(message, segment.span);
                 }
                 return false;
             }
@@ -104,6 +91,7 @@ impl<'res, 'ctx> UsageResolver<'res, 'ctx> {
 
         usage.module_context.set(Some(module));
 
+        // Resolve Imported Symbol
         let (source, source_binding, parent, target) = match &usage.kind {
             ExternalDefUsageKind::Single(def_usage_binding) => (
                 def_usage_binding.source,
@@ -117,69 +105,101 @@ impl<'res, 'ctx> UsageResolver<'res, 'ctx> {
             }
         };
 
-        let result = self.resolver.resolve_symbol_in_context(
-            &source.symbol,
-            module,
-            ResolutionState::Usage(parent_context),
-        );
-
-        match result {
-            Ok(holder) => {
-                *source_binding.borrow_mut() = Some(holder);
-                let bindings = holder.all();
-                for binding in bindings {
-                    let binding = self.convert_usage_binding(binding, usage);
-                    if is_import {
-                        self.resolver.force_define(parent, target, binding);
-                    } else {
-                        self.resolver.define(parent, target, binding);
-                    }
-                }
+        let mut all_failed = true;
+        self.resolver.per_ns(|this, ns| {
+            let key = BindingKey::new(target.symbol, ns);
+            // Undetermined / Unresolved usage
+            if let Err(Determinacy::Undetermined) = source_binding[ns].get() {
+                let result =
+                    this.resolve_symbol_in_context(source.symbol, ns, module, &usage.parent_scope);
+                source_binding[ns].set(result);
+            } else {
+                return;
             }
-            Err(err) => {
-                let last = usage.module_path.last().unwrap().identifier;
-                match err {
-                    Determinacy::Determined => {
-                        if self.finalize {
-                            let title = if last.symbol.as_str() == "{{root}}" {
-                                "scope"
-                            } else {
-                                last.symbol.as_str()
-                            };
 
-                            let message =
-                                format!("unable to find symbol '{}' in {}", source.symbol, title);
-                            self.resolver
-                                .context
-                                .diagnostics
-                                .error(message, source.span);
+            // paren
+            let result = source_binding[ns].get();
+            let parent_context = parent.context;
+            match result {
+                Err(Determinacy::Undetermined) => {
+                    todo!("undetermined usage")
+                }
+                Ok(holder) if holder.nearest().is_importable() => {
+                    let bindings = holder.all();
+
+                    for binding in bindings {
+                        let binding = this.convert_usage_binding(binding, usage);
+                        if usage.is_import {
+                            this.import(parent_context, key, binding);
+                        } else {
+                            this.export(parent_context, key, binding);
                         }
                     }
-                    Determinacy::Undetermined => {
-                        if self.finalize {
-                            let last = usage.module_path.last().unwrap().identifier;
-                            let message = format!("ambiguous usage '{}'", last.symbol);
-                            self.resolver.context.diagnostics.error(message, last.span);
-                        }
+                    all_failed = false
+                }
+                __ @ (Ok(..) | Err(Determinacy::Determined)) => {
+                    // Cannot import
+                    if result.is_ok() {
+                        let message = format!(
+                            "cannot directly import associated symbol '{}'",
+                            source.symbol
+                        );
+                        this.gcx.diagnostics.error(message, usage.span);
+                        all_failed = false
                     }
                 }
-                return false;
-            }
+            };
+        });
+
+        if !all_failed {
+            usage.is_resolved.set(true);
+            return true;
         }
 
-        usage.is_resolved.set(true);
-        return true;
+        if !self.finalize {
+            return false;
+        }
+
+        let last = usage.module_path.last().unwrap().identifier;
+        let title = if last.symbol.as_str() == "{{root}}" {
+            "scope"
+        } else {
+            last.symbol.as_str()
+        };
+
+        let message = format!("unable to locate symbol '{}' in {}", source.symbol, title);
+        self.resolver.gcx.diagnostics.error(message, source.span);
+
+        // println!("Resolved _> {ok}, {}", self.finalize);
+
+        // if !ok {
+        //     self.resolver
+        //         .context
+        //         .diagnostics
+        //         .warn("Failing Resolution".into(), target.span);
+        // }
+        return false;
+    }
+}
+
+impl<'ctx> Resolver<'ctx> {
+    pub fn import(
+        &mut self,
+        parent: DefinitionContext<'ctx>,
+        key: BindingKey,
+        binding: NameBinding<'ctx>,
+    ) {
+        let mut explict_imports = parent.explicit_imports.borrow_mut();
+        let _ = self.define_in_resolution_map(key, binding, &mut explict_imports, true);
     }
 
-    fn convert_usage_binding(
+    fn export(
         &mut self,
+        parent: DefinitionContext<'ctx>,
+        key: BindingKey,
         binding: NameBinding<'ctx>,
-        usage: ExternalDefinitionUsage<'ctx>,
-    ) -> NameBinding<'ctx> {
-        self.resolver.alloc_binding(NameBindingData {
-            kind: NameBindingKind::ExternalUsage { binding, usage },
-            span: usage.span,
-            vis: taroc_hir::TVisibility::Public,
-        })
+    ) {
+        let mut explicit_exports = parent.explicit_exports.borrow_mut();
+        let _ = self.define_in_resolution_map(key, binding, &mut explicit_exports, true);
     }
 }

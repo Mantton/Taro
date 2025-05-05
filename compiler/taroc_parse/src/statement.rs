@@ -46,7 +46,7 @@ impl Parser {
                 }
 
                 // is decl
-                if let Some(decl) = self.parse_declaration()? {
+                if let Some(decl) = self.parse_function_declaration()? {
                     return Ok(StatementKind::Declaration(decl));
                 }
 

@@ -36,6 +36,7 @@ pub enum TypeKind {
     AnonStruct {
         fields: Vec<FieldDefinition>,
     },
+    Malformed,
 }
 
 pub use taroc_ast_ir::Mutability;

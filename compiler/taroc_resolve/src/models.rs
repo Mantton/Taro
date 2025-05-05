@@ -1,14 +1,14 @@
-use crate::resolver::Resolver;
+use taroc_context::GlobalContext;
 use taroc_hir::{DefinitionID, TypeAlias};
-use taroc_resolve_models::{DefinitionContext, NameBinding};
+use taroc_resolve_models::{DefinitionContext, NameBinding, ParentScope};
 use taroc_span::{FileID, Identifier, Span};
 
 pub trait ToNameBinding<'ctx> {
-    fn to_name_binding(self, arenas: &Resolver<'ctx>) -> NameBinding<'ctx>;
+    fn to_name_binding(self, arenas: GlobalContext<'ctx>) -> NameBinding<'ctx>;
 }
 
 impl<'ctx> ToNameBinding<'ctx> for NameBinding<'ctx> {
-    fn to_name_binding(self, _: &Resolver<'ctx>) -> NameBinding<'ctx> {
+    fn to_name_binding(self, _: GlobalContext<'ctx>) -> NameBinding<'ctx> {
         self
     }
 }
@@ -16,19 +16,11 @@ impl<'ctx> ToNameBinding<'ctx> for NameBinding<'ctx> {
 pub struct DefinitionExtensionData<'ctx> {
     pub ty: taroc_hir::Type,
     pub extension_context: DefinitionContext<'ctx>,
-    pub module_id: DefinitionID,
-    pub file_id: FileID,
-}
-
-#[derive(Clone, Copy)]
-pub struct ParentContext {
-    pub module: DefinitionID,
-    pub file: FileID,
 }
 
 pub struct UnresolvedAlias<'ctx> {
     pub _name: Identifier,
     pub span: Span,
     pub alias: TypeAlias,
-    pub parent: DefinitionContext<'ctx>,
+    pub parent: ParentScope<'ctx>,
 }

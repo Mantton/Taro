@@ -1,6 +1,4 @@
-use super::{
-    AttributeList, NodeID, Visibility, function::Function, local::Local, path::Path, ty::Type,
-};
+use super::{AttributeList, NodeID, Visibility, function::Function, path::Path, ty::Type};
 use crate::{EnumDefinition, Expression, Generics, StructDefinition};
 use std::collections::HashMap;
 use taroc_ast_ir::OperatorKind;
@@ -28,7 +26,7 @@ pub enum DeclarationKind {
     Function(Function),
 
     /// `let | var VALUE = 10`
-    Variable(Local),
+    Static(StaticDeclaration),
     /// `const VALUE: Uint = 10`
     Constant(ConstantDeclaration),
     /// `import foo::bar`
@@ -47,6 +45,20 @@ pub enum DeclarationKind {
     Namespace(Namespace),
     /// `bridge C {}`
     Bridge(Bridge),
+
+    ///
+    Malformed,
+}
+
+pub type FunctionDeclaration = Declaration<FunctionDeclarationKind>;
+#[derive(Debug, Clone)]
+pub enum FunctionDeclarationKind {
+    Struct(StructDefinition),
+    Enum(EnumDefinition),
+    Function(Function),
+    Constant(ConstantDeclaration),
+    Import(PathTree),
+    TypeAlias(TypeAlias),
 }
 
 pub type AssociatedDeclaration = Declaration<AssociatedDeclarationKind>;
@@ -135,6 +147,13 @@ pub struct InterfaceDefinition {
 
 #[derive(Debug, Clone)]
 pub struct ConstantDeclaration {
+    pub identifier: Identifier,
+    pub ty: Box<Type>,
+    pub expr: Option<Box<Expression>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StaticDeclaration {
     pub identifier: Identifier,
     pub ty: Box<Type>,
     pub expr: Option<Box<Expression>>,

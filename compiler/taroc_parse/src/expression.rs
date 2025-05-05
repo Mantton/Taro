@@ -768,8 +768,7 @@ impl Parser {
             | TokenKind::Rune
             | TokenKind::True
             | TokenKind::False
-            | TokenKind::Nil
-            | TokenKind::Void => self.parse_literal(),
+            | TokenKind::Nil => self.parse_literal(),
             TokenKind::Identifier => self.parse_path_expression(),
             TokenKind::LParen => self.parse_tuple_expr(),
             TokenKind::LBracket => self.parse_collection_expr(),
@@ -969,7 +968,6 @@ impl Parser {
             TokenKind::True => LiteralKind::Bool(true),
             TokenKind::False => LiteralKind::Bool(false),
             TokenKind::Nil => LiteralKind::Nil,
-            TokenKind::Void => LiteralKind::Void,
             _ => unreachable!(),
         };
 

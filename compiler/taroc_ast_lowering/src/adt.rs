@@ -13,8 +13,9 @@ impl Actor<'_> {
 
     pub fn lower_variant_kind(&mut self, kind: taroc_ast::VariantKind) -> taroc_hir::VariantKind {
         match kind {
-            taroc_ast::VariantKind::Unit => taroc_hir::VariantKind::Unit,
+            taroc_ast::VariantKind::Unit => taroc_hir::VariantKind::Unit(self.next()),
             taroc_ast::VariantKind::Tuple(fields) => taroc_hir::VariantKind::Tuple(
+                self.next(),
                 self.lower_sequence(fields, |a, ty| a.lower_field_definition(ty)),
             ),
             taroc_ast::VariantKind::Struct(fields) => taroc_hir::VariantKind::Struct(

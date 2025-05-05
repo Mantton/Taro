@@ -1,6 +1,4 @@
-use crate::{
-    alias::TypeAliasResolver, extend::ExtensionBinder, resolver::Resolver, usage::UsageResolver,
-};
+use crate::{alias::TypeAliasResolver, resolver::Resolver, usage::UsageResolver};
 use taroc_error::CompileResult;
 
 impl Resolver<'_> {
@@ -15,7 +13,7 @@ pub struct IterativeResolver<'res, 'ctx> {
 
 impl<'res, 'ctx> IterativeResolver<'res, 'ctx> {
     pub fn run(resolver: &'res mut Resolver<'ctx>) -> CompileResult<()> {
-        let context = resolver.context;
+        let context = resolver.gcx;
         let mut actor = IterativeResolver { resolver };
         actor.fixed_point_pass();
         context.diagnostics.report()
@@ -42,7 +40,7 @@ impl<'res, 'ctx> IterativeResolver<'res, 'ctx> {
             TypeAliasResolver::run(self.resolver, true);
         }
         if unresolved_extensions != 0 {
-            ExtensionBinder::run(self.resolver, true);
+            // ExtensionBinder::run(self.resolver, true);
         }
     }
 
@@ -55,7 +53,7 @@ impl<'res, 'ctx> IterativeResolver<'res, 'ctx> {
 
     fn process_extensions(&mut self) -> bool {
         let unresolved = self.resolver.unresolved_extensions.len();
-        ExtensionBinder::run(self.resolver, false);
+        // ExtensionBinder::run(self.resolver, false);
         self.resolver.unresolved_extensions.len() != unresolved
     }
 

@@ -11,9 +11,14 @@ pub struct DefContextData<'arena> {
     pub parent: Option<DefinitionContext<'arena>>,
     pub kind: DefContextKind,
     pub span: Span,
-    pub resolutions: RefCell<ContextResolutions<'arena>>,
+    pub namespace: RefCell<ResolutionMap<'arena>>,
+
+    // Block, Module & File Related Data
     pub glob_exports: RefCell<Vec<ExternalDefinitionUsage<'arena>>>,
     pub glob_imports: RefCell<Vec<ExternalDefinitionUsage<'arena>>>,
+
+    pub explicit_imports: RefCell<ResolutionMap<'arena>>,
+    pub explicit_exports: RefCell<ResolutionMap<'arena>>,
 }
 
 impl<'arena> DefinitionContext<'arena> {
@@ -26,7 +31,6 @@ impl<'arena> DefinitionContext<'arena> {
             DefContextKind::Block => None,
             DefContextKind::File => None,
             DefContextKind::Definition(definition_id, ..) => Some(*definition_id),
-            DefContextKind::Root => None,
         }
     }
 
@@ -35,7 +39,16 @@ impl<'arena> DefinitionContext<'arena> {
             DefContextKind::Block => None,
             DefContextKind::File => None,
             DefContextKind::Definition(id, kind, _) => Some(Resolution::Definition(id, kind)),
-            DefContextKind::Root => None,
+        }
+    }
+
+    pub fn nearest_context_scope(self) -> DefinitionContext<'arena> {
+        match self.kind {
+            DefContextKind::Definition(_, DefinitionKind::Enum | DefinitionKind::Interface, _) => {
+                self.parent
+                    .expect("enum or interface context without a parent")
+            }
+            _ => self,
         }
     }
 }
@@ -52,8 +65,7 @@ impl<'arena> std::ops::Deref for DefinitionContext<'arena> {
 pub enum DefContextKind {
     Block,
     File,
-    Definition(DefinitionID, DefinitionKind, Symbol),
-    Root,
+    Definition(DefinitionID, DefinitionKind, Option<Symbol>),
 }
 
 impl DefContextKind {
@@ -65,15 +77,6 @@ impl DefContextKind {
                 true
             }
             _ => false,
-        }
-    }
-
-    pub fn name(self) -> Symbol {
-        match self {
-            DefContextKind::Block => Symbol::with("BLOCK"),
-            DefContextKind::File => Symbol::with("FILE"),
-            DefContextKind::Definition(_, _, s) => s,
-            DefContextKind::Root => Symbol::with("{{root}}"),
         }
     }
 }
@@ -163,6 +166,18 @@ impl<'arena> NameBindingData<'arena> {
             _ => false,
         }
     }
+
+    pub fn is_importable(&self) -> bool {
+        !matches!(
+            self.resolution(),
+            Resolution::Definition(
+                _,
+                DefinitionKind::AssociatedType
+                    | DefinitionKind::AssociatedFunction
+                    | DefinitionKind::AssociatedOperator
+            )
+        )
+    }
 }
 
 pub enum NameBindingKind<'arena> {
@@ -179,14 +194,15 @@ pub type ExternalDefinitionUsage<'arena> = Interned<'arena, ExternalDefUsageData
 pub struct ExternalDefUsageData<'arena> {
     pub span: Span,
     pub module_path: Vec<Segment>,
-    pub module_context: Cell<Option<DefinitionContext<'arena>>>,
     pub file: FileID,
-    pub module: DefinitionID,
     pub kind: ExternalDefUsageKind<'arena>,
     pub root_id: NodeID,
     pub root_span: Span,
     pub is_import: bool,
     pub is_resolved: Cell<bool>,
+
+    pub module_context: Cell<Option<ContextOrResolutionRoot<'arena>>>,
+    pub parent_scope: ParentScope<'arena>,
 }
 
 pub enum ExternalDefUsageKind<'arena> {
@@ -197,25 +213,27 @@ pub enum ExternalDefUsageKind<'arena> {
 pub struct DefUsageBinding<'arena> {
     pub source: Identifier,
     pub target: Identifier,
-    pub parent: DefinitionContext<'arena>,
-    pub source_binding: RefCell<Option<NameHolder<'arena>>>,
-    pub target_binding: RefCell<Option<NameHolder<'arena>>>,
+    pub parent: ParentScope<'arena>,
+    pub source_binding: PerNS<Cell<Result<NameHolder<'arena>, Determinacy>>>,
+    pub target_binding: PerNS<Cell<Option<NameHolder<'arena>>>>,
     pub id: NodeID,
     pub is_nested: bool,
 }
 
-#[derive(Default)]
-pub struct ContextResolutions<'arena> {
-    pub bindings: FxHashMap<Symbol, NameHolder<'arena>>,
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub struct BindingKey {
+    symbol: Symbol,
+    namespace: SymbolNamespace,
+    disambiguator: u32,
 }
 
-impl<'arena> ContextResolutions<'arena> {
-    pub fn contains(&self, symbol: &Symbol) -> bool {
-        self.bindings.contains_key(symbol)
-    }
-
-    pub fn find(&self, symbol: &Symbol) -> Option<NameHolder<'arena>> {
-        self.bindings.get(symbol).map(|v| *v)
+impl BindingKey {
+    pub fn new(symbol: Symbol, namespace: SymbolNamespace) -> Self {
+        BindingKey {
+            symbol,
+            namespace,
+            disambiguator: 0,
+        }
     }
 }
 
@@ -265,7 +283,7 @@ impl<'a> From<&'a taroc_hir::PathSegment> for Segment {
 
 // MARK: PathResult
 pub enum PathResult<'arena> {
-    Context(DefinitionContext<'arena>),
+    Context(ContextOrResolutionRoot<'arena>),
     NonContext(Resolution),
     Indeterminate,
     Failed {
@@ -329,9 +347,9 @@ impl PathSource {
                             | DefinitionKind::Interface
                             | DefinitionKind::TypeParameter
                             | DefinitionKind::TypeAlias
-                            | DefinitionKind::AssociatedType,
                     ) | Resolution::SelfTypeAlias(..)
                         | Resolution::InterfaceSelfTypeAlias(..)
+                        | Resolution::PrimaryType(..)
                 )
             }
             PathSource::Interface => {
@@ -341,14 +359,10 @@ impl PathSource {
                 res,
                 Resolution::Definition(
                     _,
-                    DefinitionKind::Function
-                        | DefinitionKind::Constructor
-                        | DefinitionKind::Struct
-                        | DefinitionKind::Variant
-                        | DefinitionKind::Variable
+                    DefinitionKind::Function | DefinitionKind::Struct | DefinitionKind::Variant
                 ) | Resolution::Local(..)
-                    | Resolution::ImplicitSelfVariable
                     | Resolution::FunctionSet(..)
+                    | Resolution::SelfConstructor(..)
             ),
         }
     }
@@ -397,4 +411,79 @@ pub enum LexicalScopeBinding<'arena> {
 pub struct ResolvedAlias {
     pub ty: taroc_hir::Type,
     pub res: Resolution,
+}
+
+#[derive(Default)]
+pub struct ResolutionMap<'arena> {
+    pub data: FxHashMap<BindingKey, NameHolder<'arena>>,
+}
+
+impl<'ctx> ResolutionMap<'ctx> {
+    pub fn find(&self, key: BindingKey) -> Option<NameHolder<'ctx>> {
+        self.data.get(&key).cloned()
+    }
+}
+
+/// Just a helper ‒ separate structure for each namespace.
+#[derive(Copy, Clone, Default, Debug)]
+pub struct PerNS<T> {
+    pub value_ns: T,
+    pub type_ns: T,
+}
+
+impl<T> PerNS<T> {
+    pub fn map<U, F: FnMut(T) -> U>(self, mut f: F) -> PerNS<U> {
+        PerNS {
+            value_ns: f(self.value_ns),
+            type_ns: f(self.type_ns),
+        }
+    }
+}
+
+impl<T> ::std::ops::Index<SymbolNamespace> for PerNS<T> {
+    type Output = T;
+
+    fn index(&self, ns: SymbolNamespace) -> &T {
+        match ns {
+            SymbolNamespace::Value => &self.value_ns,
+            SymbolNamespace::Type => &self.type_ns,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum ContextOrResolutionRoot<'ctx> {
+    Context(DefinitionContext<'ctx>),
+    PackageRootAndDependencyPrelude,
+}
+
+#[derive(Clone, Copy)]
+pub struct ParentScope<'ctx> {
+    pub context: DefinitionContext<'ctx>,
+}
+
+#[derive(Clone, Copy)]
+pub enum ImplicitScopes<'ctx> {
+    PackageRoot,                      // package root
+    Context(DefinitionContext<'ctx>), // custom context
+    DependencyPrelude,                // dependencies (std + other packages)
+    StdPrelude,                       // std prelude
+    BuiltinPrelude,                   // builtin prelude (types)
+}
+
+#[derive(Clone, Copy)]
+pub enum ImplicitScopeSet<'ctx> {
+    All(SymbolNamespace),                      // all implicit scopes in given ns
+    PackageAndDependencyRoot(SymbolNamespace), // package root then dependency prelude
+    FullResolution(SymbolNamespace, DefinitionContext<'ctx>), // used during full resolution
+}
+
+impl ImplicitScopeSet<'_> {
+    pub fn namespace(self) -> SymbolNamespace {
+        match self {
+            ImplicitScopeSet::All(s) => s,
+            ImplicitScopeSet::PackageAndDependencyRoot(s) => s,
+            ImplicitScopeSet::FullResolution(s, _) => s,
+        }
+    }
 }

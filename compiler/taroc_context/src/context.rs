@@ -336,15 +336,6 @@ impl<'ctx> GlobalContext<'ctx> {
         }
     }
 
-    pub fn associated_type(self, id: DefinitionID, name: Symbol) -> Option<Ty<'ctx>> {
-        let ctx = self.def_context(id);
-        let resolutions = ctx.resolutions.borrow();
-        let holder = resolutions.find(&name)?;
-        let resolution = holder.nearest().resolution();
-        let id = resolution.def_id()?;
-        Some(self.type_of(id))
-    }
-
     pub fn predicates_of(self, id: DefinitionID) -> taroc_ty::DefinitionConstraints<'ctx> {
         let database = self.context.store.types.borrow();
         let database = database.get(&id.package().index()).expect("package types");

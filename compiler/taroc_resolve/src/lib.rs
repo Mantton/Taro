@@ -1,7 +1,6 @@
 #![feature(let_chains)]
 #![feature(if_let_guard)]
 use define::DefinitionCollector;
-use full::GenericsCollector;
 use iterative::IterativeResolver;
 use resolver::Resolver;
 use tag::HirNodeTagger;
@@ -20,13 +19,15 @@ mod tag;
 mod usage;
 
 pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
+    // Create Resolver
     let mut r = Resolver::new(context);
+    // Collection Phase
     HirNodeTagger::run(&package, &mut r);
-    DefinitionCollector::run(&package, &mut r)?; // Defines Symbols and their names spaces
-    GenericsCollector::run(&package, &mut r)?;
-    // Resolution Stage
+    DefinitionCollector::run(&package, &mut r)?; // Collect Definitions
+
+    // Resolution Phase
     IterativeResolver::run(&mut r)?; // Using an Iterative Fixed-Point Approach Perform Import Resolution, Extension Binding & Type Alias resolution
-    full::run(&package, &mut r)?;
+    // full::run(&package, &mut r)?;
     let data = r.produce();
 
     // Cleanup

@@ -1,8 +1,8 @@
 use taroc_span::{Identifier, Span};
 
 use super::{
-    block::Block, declaration::Declaration, expression::Expression, label::Label, local::Local,
-    pattern::BindingPattern,
+    block::Block, declaration::FunctionDeclaration, expression::Expression, label::Label,
+    local::Local, pattern::BindingPattern,
 };
 
 #[derive(Debug)]
@@ -13,7 +13,7 @@ pub struct Statement {
 
 #[derive(Debug)]
 pub enum StatementKind {
-    Declaration(Declaration),
+    Declaration(FunctionDeclaration),
     Expression(Box<Expression>),
     Variable(Local),
     Break(Option<Identifier>),

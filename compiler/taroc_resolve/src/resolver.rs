@@ -1,16 +1,24 @@
-use crate::models::{DefinitionExtensionData, ToNameBinding, UnresolvedAlias};
+use crate::{
+    arena::{alloc_binding, alloc_context},
+    models::{DefinitionExtensionData, ToNameBinding, UnresolvedAlias},
+};
 use indexmap::IndexMap;
 use rustc_hash::{FxBuildHasher, FxHashMap};
 use taroc_context::{CompilerSession, GlobalContext, ResolutionData};
-use taroc_hir::{DefinitionID, DefinitionIndex, DefinitionKind, NodeID, PackageIndex, Resolution};
+use taroc_hir::{
+    DefinitionID, DefinitionIndex, DefinitionKind, NodeID, PackageIndex, PrimaryType, Resolution,
+    SymbolNamespace, TVisibility,
+};
 use taroc_resolve_models::{
-    DefContextKind, DefinitionContext, ExternalDefinitionUsage, NameBinding, NameHolder,
-    ResolvedAlias,
+    BindingKey, DefContextKind, DefinitionContext, ExternalDefinitionUsage, NameBinding,
+    NameBindingData, NameBindingKind, NameHolder, ResolutionMap, ResolvedAlias,
 };
 use taroc_span::{FileID, Identifier, Span, Symbol};
 
 pub struct Resolver<'ctx> {
-    pub context: GlobalContext<'ctx>,
+    pub gcx: GlobalContext<'ctx>,
+    pub root_context: DefinitionContext<'ctx>,
+    pub dependencies: FxHashMap<Symbol, usize>,
     node_to_def: FxHashMap<NodeID, DefinitionID>,
     def_to_kind: FxHashMap<DefinitionID, DefinitionKind>,
     def_to_symbol: FxHashMap<DefinitionID, Symbol>,
@@ -22,8 +30,6 @@ pub struct Resolver<'ctx> {
     pub unresolved_imports: Vec<ExternalDefinitionUsage<'ctx>>,
     pub resolved_exports: Vec<ExternalDefinitionUsage<'ctx>>,
     pub resolved_imports: Vec<ExternalDefinitionUsage<'ctx>>,
-    pub root_context: Option<DefinitionContext<'ctx>>,
-    pub packages_root: Option<DefinitionContext<'ctx>>,
     pub next_index: u32,
     pub resolution_map: FxHashMap<NodeID, Resolution>,
     pub generics_table: FxHashMap<DefinitionID, Vec<(Symbol, DefinitionID)>>,
@@ -31,12 +37,28 @@ pub struct Resolver<'ctx> {
     pub resolved_extensions: FxHashMap<DefinitionID, DefinitionID>,
     pub unresolved_aliases: IndexMap<DefinitionID, UnresolvedAlias<'ctx>>,
     pub resolved_aliases: FxHashMap<DefinitionID, ResolvedAlias>,
+    pub builin_types_bindings: FxHashMap<Symbol, NameHolder<'ctx>>,
 }
 
 impl Resolver<'_> {
     pub fn new<'ctx>(context: GlobalContext<'ctx>) -> Resolver<'ctx> {
-        Resolver {
+        let root_id = DefinitionID::new(
+            PackageIndex::new(context.session().package_index),
+            DefinitionIndex::new(0),
+        );
+        let root_context = alloc_context(
             context,
+            None,
+            DefContextKind::Definition(root_id, DefinitionKind::Module, None),
+            Span::module(),
+        );
+
+        let dependencies = Default::default();
+
+        Resolver {
+            gcx: context,
+            root_context,
+            dependencies,
             node_to_def: Default::default(),
             def_to_kind: Default::default(),
             def_to_context: Default::default(),
@@ -48,8 +70,6 @@ impl Resolver<'_> {
             unresolved_imports: Vec::new(),
             resolved_exports: Vec::new(),
             resolved_imports: Vec::new(),
-            root_context: None,
-            packages_root: None,
             resolution_map: Default::default(),
             next_index: 0,
             generics_table: Default::default(),
@@ -57,13 +77,25 @@ impl Resolver<'_> {
             unresolved_aliases: Default::default(),
             resolved_aliases: Default::default(),
             resolved_extensions: Default::default(),
+            builin_types_bindings: PrimaryType::ALL
+                .iter()
+                .map(|ty| {
+                    let binding = (
+                        Resolution::PrimaryType(*ty),
+                        TVisibility::Public,
+                        Span::empty(FileID::from_raw(0)),
+                    )
+                        .to_name_binding(context);
+                    (Symbol::with(ty.name_str()), NameHolder::Single(binding))
+                })
+                .collect(),
         }
     }
 }
 
 impl<'ctx> Resolver<'ctx> {
     pub fn session(&self) -> CompilerSession {
-        self.context.session()
+        self.gcx.session()
     }
 
     pub fn new_context(
@@ -72,7 +104,7 @@ impl<'ctx> Resolver<'ctx> {
         kind: DefContextKind,
         span: Span,
     ) -> DefinitionContext<'ctx> {
-        let context = self.alloc_context(parent, kind, span);
+        let context = alloc_context(self.gcx, parent, kind, span);
 
         match kind {
             DefContextKind::Block => {}
@@ -80,7 +112,6 @@ impl<'ctx> Resolver<'ctx> {
             DefContextKind::Definition(id, ..) => {
                 self.def_to_context.insert(id, context);
             }
-            DefContextKind::Root => {}
         }
 
         context
@@ -113,7 +144,7 @@ impl<'ctx> Resolver<'ctx> {
             return *self.def_to_kind.get(&id).expect("bug! node not tagged");
         }
 
-        let resolutions = self.context.store.resolutions.borrow();
+        let resolutions = self.gcx.store.resolutions.borrow();
         let data = resolutions
             .get(&id.package().index())
             .expect("resolution data");
@@ -123,7 +154,7 @@ impl<'ctx> Resolver<'ctx> {
 
     pub fn get_context(&self, id: &DefinitionID) -> Option<DefinitionContext<'ctx>> {
         if !id.is_local(self.session().package_index) {
-            return Some(self.context.def_context(*id));
+            return Some(self.gcx.def_context(*id));
         };
 
         if matches!(self.def_kind(*id), DefinitionKind::TypeAlias)
@@ -153,26 +184,14 @@ impl<'ctx> Resolver<'ctx> {
         &mut self,
         parent: DefinitionContext<'ctx>,
         identifier: Identifier,
+        namespace: SymbolNamespace,
         definition: T,
     ) -> bool
     where
         T: ToNameBinding<'ctx>,
     {
-        let binding = definition.to_name_binding(&self);
-        self.define_in_parent(parent, identifier, binding, false)
-    }
-
-    pub fn force_define<T>(
-        &mut self,
-        parent: DefinitionContext<'ctx>,
-        identifier: Identifier,
-        definition: T,
-    ) -> bool
-    where
-        T: ToNameBinding<'ctx>,
-    {
-        let binding = definition.to_name_binding(&self);
-        self.define_in_parent(parent, identifier, binding, true)
+        let binding = definition.to_name_binding(self.gcx);
+        self.define_in_parent(parent, identifier, binding, namespace)
     }
 
     pub fn define_in_parent(
@@ -180,9 +199,10 @@ impl<'ctx> Resolver<'ctx> {
         parent: DefinitionContext<'ctx>,
         identifier: Identifier,
         binding: NameBinding<'ctx>,
-        force: bool,
+        ns: SymbolNamespace,
     ) -> bool {
-        let result = self.define_in_context(parent, identifier.symbol, binding, force);
+        let key = BindingKey::new(identifier.symbol, ns);
+        let result = self.define_in_context(parent, key, binding);
 
         match result {
             Ok(..) => {
@@ -198,10 +218,10 @@ impl<'ctx> Resolver<'ctx> {
                     "Duplicate Definition, '{}' is already defined in this scope",
                     identifier.symbol
                 );
-                self.context.diagnostics.error(message, identifier.span);
+                self.gcx.diagnostics.error(message, identifier.span);
 
                 let message = format!("'{}' is defined here.", identifier.symbol);
-                self.context
+                self.gcx
                     .diagnostics
                     .info(message, previous_binding.nearest().span);
                 return false;
@@ -212,33 +232,29 @@ impl<'ctx> Resolver<'ctx> {
     pub fn define_in_context(
         &self,
         context: DefinitionContext<'ctx>,
-        symbol: Symbol,
+        key: BindingKey,
         binding: NameBinding<'ctx>,
-        force: bool,
     ) -> Result<Option<NameHolder<'ctx>>, NameHolder<'ctx>> {
-        // if forcing a new binding
-        if force {
-            let old = context
-                .resolutions
-                .borrow_mut()
-                .bindings
-                .insert(symbol, NameHolder::Single(binding));
-            return Ok(old);
-        }
+        let mut resolutions = context.namespace.borrow_mut();
+        self.define_in_resolution_map(key, binding, &mut resolutions, false)
+    }
 
-        let mut resolutions = context.resolutions.borrow_mut();
+    pub fn define_in_resolution_map(
+        &self,
+        key: BindingKey,
+        binding: NameBinding<'ctx>,
+        map: &mut ResolutionMap<'ctx>,
+        overwrite: bool,
+    ) -> Result<Option<NameHolder<'ctx>>, NameHolder<'ctx>> {
+        let resolutions = &mut map.data;
 
-        if resolutions.contains(&symbol) {
-            let current_binding = resolutions
-                .bindings
-                .get(&symbol)
-                .expect("symbol must be contained");
+        if resolutions.contains_key(&key) && !overwrite {
+            let current_binding = resolutions.get(&key).expect("symbol must be contained");
 
             // Not a function, Duplicate Definition
             if !binding.is_function() || !current_binding.nearest().is_function() {
                 let target = resolutions
-                    .bindings
-                    .get(&symbol)
+                    .get(&key)
                     .cloned()
                     .expect("symbol should be defined");
 
@@ -249,7 +265,7 @@ impl<'ctx> Resolver<'ctx> {
 
             let bindings: &[NameBinding<'ctx>] = match current_binding {
                 NameHolder::Single(interned) => &[*interned],
-                NameHolder::Set(interneds) => *interneds,
+                NameHolder::Set(interneds) => interneds,
             };
 
             let total = 1 + bindings.len();
@@ -258,12 +274,10 @@ impl<'ctx> Resolver<'ctx> {
             combined.extend_from_slice(bindings);
             let new_bindings = self.alloc_slice_copy(&combined);
             let new_holder: NameHolder<'ctx> = NameHolder::Set(new_bindings);
-            resolutions.bindings.insert(symbol, new_holder);
+            resolutions.insert(key, new_holder);
             return Ok(None);
         } else {
-            resolutions
-                .bindings
-                .insert(symbol, NameHolder::Single(binding));
+            resolutions.insert(key, NameHolder::Single(binding));
             return Ok(None);
         }
     }
@@ -275,6 +289,26 @@ impl<'ctx> Resolver<'ctx> {
             // panic!("multiple resolutions recorded for node {node:?}")
         }
     }
+
+    pub fn per_ns<F: FnMut(&mut Self, SymbolNamespace)>(&mut self, mut f: F) {
+        f(self, SymbolNamespace::Type);
+        f(self, SymbolNamespace::Value);
+    }
+
+    pub fn convert_usage_binding(
+        &mut self,
+        binding: NameBinding<'ctx>,
+        usage: ExternalDefinitionUsage<'ctx>,
+    ) -> NameBinding<'ctx> {
+        alloc_binding(
+            self.gcx,
+            NameBindingData {
+                kind: NameBindingKind::ExternalUsage { binding, usage },
+                span: usage.span,
+                vis: taroc_hir::TVisibility::Public,
+            },
+        )
+    }
 }
 
 impl<'ctx> Resolver<'ctx> {
@@ -283,7 +317,7 @@ impl<'ctx> Resolver<'ctx> {
             node_to_def: self.node_to_def,
             def_to_kind: self.def_to_kind,
             resolution_map: self.resolution_map,
-            root: self.root_context.unwrap(),
+            root: self.root_context,
             generics_map: self.generics_table,
             def_to_context: self.def_to_context,
             alias_map: self.resolved_aliases,

@@ -3,7 +3,6 @@ pub fn convert_ast_literal(literal: taroc_ast::Literal) -> Result<taroc_hir::Lit
         taroc_ast::LiteralKind::Bool(v) => Ok(taroc_hir::Literal::Bool(v)),
         taroc_ast::LiteralKind::String => Ok(taroc_hir::Literal::String(literal.content)),
         taroc_ast::LiteralKind::Nil => Ok(taroc_hir::Literal::Nil),
-        taroc_ast::LiteralKind::Void => Ok(taroc_hir::Literal::Void),
         taroc_ast::LiteralKind::Rune => {
             let c: char = unescape_char(literal.content.as_str())
                 .map_err(|err| format!("malformed rune, {:?}", err))?;

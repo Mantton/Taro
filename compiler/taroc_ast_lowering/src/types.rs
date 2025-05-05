@@ -142,7 +142,7 @@ impl Actor<'_> {
 }
 
 impl Actor<'_> {
-    fn mk_ty(&mut self, kind: taroc_hir::TypeKind, span: Span) -> Box<taroc_hir::Type> {
+    pub fn mk_ty(&mut self, kind: taroc_hir::TypeKind, span: Span) -> Box<taroc_hir::Type> {
         let ty = taroc_hir::Type {
             id: self.next(),
             span,
