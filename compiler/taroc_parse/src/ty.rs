@@ -132,40 +132,32 @@ impl Parser {
     }
 
     fn parse_collection_type(&mut self) -> R<TypeKind> {
-        // Parses []T, [N]T, [T:V]
+        // Parses [T], [T;N], [T:V]
         // eat opening bracket
         self.expect(TokenKind::LBracket)?;
+        let ty = self.parse_type()?;
 
-        // expecting a list type: []T
-        if self.eat(TokenKind::RBracket) {
-            let ty = self.parse_type()?;
+        let kind = if self.eat(TokenKind::RBracket) {
             return Ok(TypeKind::List(ty));
-        }
-
-        self.drop_anchor();
-        match self.parse_array_type() {
-            Ok(k) => return Ok(k),
-            Err(_) if self.matches(TokenKind::Colon) => {
-                self.raise_anchor();
-                return self.parse_dictionary_type();
+        } else if self.eat(TokenKind::Colon) {
+            let value = self.parse_type()?;
+            TypeKind::Dictionary { key: ty, value }
+        } else if self.eat(TokenKind::Semicolon) {
+            let len = self.parse_anon_const()?;
+            TypeKind::Array {
+                size: len,
+                element: ty,
             }
-            Err(err) => return Err(err),
-        }
-    }
+        } else {
+            return Err(SpannedMessage::new(
+                "invalid collection type".into(),
+                self.current_token_span(),
+            ));
+        };
 
-    fn parse_array_type(&mut self) -> R<TypeKind> {
-        let size = self.parse_anon_const()?;
         self.expect(TokenKind::RBracket)?;
-        let element = self.parse_type()?;
-        return Ok(TypeKind::Array { size, element });
-    }
 
-    fn parse_dictionary_type(&mut self) -> R<TypeKind> {
-        let key = self.parse_type()?;
-        self.expect(TokenKind::Colon)?;
-        let value = self.parse_type()?;
-        self.expect(TokenKind::RBracket)?;
-        return Ok(TypeKind::Dictionary { key, value });
+        return Ok(kind);
     }
 
     fn parse_anon_struct_type(&mut self) -> R<TypeKind> {

@@ -183,16 +183,16 @@ impl Parser {
 
 impl Parser {
     pub fn can_parse_type_arguments(&mut self) -> bool {
-        return true;
-        // self.with_anchor(|p| {
-        //     let v = p.parse_type_arguments();
+        self.with_anchor(|p| {
+            let v = p.parse_type_arguments();
 
-        //     if v.is_err() {
-        //         return false;
-        //     }
+            if v.is_err() {
+                return false;
+            }
 
-        //     return TokenKind::is_generic_type_disambiguating_token(p.current_kind());
-        // })
+            let disambiguating = TokenKind::is_generic_type_disambiguating_token(p.current_kind());
+            disambiguating
+        })
     }
 }
 

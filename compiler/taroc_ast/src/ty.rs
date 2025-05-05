@@ -37,14 +37,14 @@ pub enum TypeKind {
     Optional(Box<Type>),
     /// An Array with a fixed size `N`
     ///
-    /// `[N]T`
+    /// `[T;N]`
     Array {
         size: AnonConst,
         element: Box<Type>,
     },
     /// A Dynamic, growable array
     ///
-    /// `[]T`
+    /// `[T]`
     List(Box<Type>),
     /// A hash-map
     ///

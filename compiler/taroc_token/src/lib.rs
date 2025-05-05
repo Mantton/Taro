@@ -324,6 +324,7 @@ impl TokenKind {
 impl TokenKind {
     pub fn is_generic_type_disambiguating_token(kind: Self) -> bool {
         use TokenKind::*;
+
         if matches!(
             kind,
             RParen
@@ -341,6 +342,7 @@ impl TokenKind {
                 | Assign
                 | Scope
                 | As
+                | RChevron
         ) {
             return true;
         }

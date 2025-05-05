@@ -48,7 +48,7 @@ impl Parser {
         self.expect_unshifted(delim.close())?;
 
         if matches!(delim, Delimiter::Chevron) {
-            self.angle_depth += 1;
+            self.angle_depth -= 1;
         }
 
         Ok(items)

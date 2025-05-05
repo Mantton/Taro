@@ -19,23 +19,23 @@ mod tag;
 mod usage;
 
 pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
-    // Create Resolver
-    let mut r = Resolver::new(context);
-    // Collection Phase
-    HirNodeTagger::run(&package, &mut r);
-    DefinitionCollector::run(&package, &mut r)?; // Collect Definitions
+    // // Create Resolver
+    // let mut r = Resolver::new(context);
+    // // Collection Phase
+    // HirNodeTagger::run(&package, &mut r);
+    // DefinitionCollector::run(&package, &mut r)?; // Collect Definitions
 
-    // Resolution Phase
-    IterativeResolver::run(&mut r)?; // Using an Iterative Fixed-Point Approach Perform Import Resolution, Extension Binding & Type Alias resolution
-    // full::run(&package, &mut r)?;
-    let data = r.produce();
+    // // Resolution Phase
+    // IterativeResolver::run(&mut r)?; // Using an Iterative Fixed-Point Approach Perform Import Resolution, Extension Binding & Type Alias resolution
+    // // full::run(&package, &mut r)?;
+    // let data = r.produce();
 
-    // Cleanup
-    context
-        .store
-        .resolutions
-        .borrow_mut()
-        .insert(context.session().package_index, data);
+    // // Cleanup
+    // context
+    //     .store
+    //     .resolutions
+    //     .borrow_mut()
+    //     .insert(context.session().package_index, data);
 
     Ok(())
 }

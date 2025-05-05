@@ -183,13 +183,14 @@ impl Parser {
         }
     }
 
-    pub fn _with_anchor<T, F>(&mut self, mut action: F) -> T
+    pub fn with_anchor<T, F>(&mut self, mut action: F) -> T
     where
         F: FnMut(&mut Parser) -> T,
     {
         self.drop_anchor();
         let result = action(self);
         self.raise_anchor();
+
         result
     }
 }

@@ -29,7 +29,6 @@ impl Parser {
 
     pub fn parse_path_segment(&mut self, allow_generics: bool) -> R<PathSegment> {
         let identifier = self.parse_identifier()?;
-
         let arguments = if allow_generics
             && self.matches(TokenKind::LChevron)
             && self.can_parse_type_arguments()
