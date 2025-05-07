@@ -144,7 +144,12 @@ pub fn install_revision(package: String, revision: String) -> Result<(), String>
         .ok()
         .map(|o| o.peel_to_commit().ok())
         .flatten()
-        .ok_or_else(|| format!("Cannot locate revision {} of package {}", revision, package))?;
+        .ok_or_else(|| {
+            format!(
+                "unable to locate revision {} of package {}",
+                revision, package
+            )
+        })?;
 
     let mut checkout_builder = CheckoutBuilder::new();
     checkout_builder.force(); // Ensures checkout overwrites changes in the working directory

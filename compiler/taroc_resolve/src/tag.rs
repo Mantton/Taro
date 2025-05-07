@@ -147,7 +147,11 @@ impl HirVisitor for HirNodeTagger<'_, '_> {
         &mut self,
         t: &taroc_hir::TypeParameter,
     ) -> <Self as HirVisitor>::Result {
-        self.tag(t.identifier.symbol, t.id, DefinitionKind::TypeParameter);
+        let k = match &t.kind {
+            taroc_hir::TypeParameterKind::Type { .. } => DefinitionKind::TypeParameter,
+            taroc_hir::TypeParameterKind::Constant { .. } => DefinitionKind::ConstParameter,
+        };
+        self.tag(t.identifier.symbol, t.id, k);
     }
 
     fn visit_field_definition(

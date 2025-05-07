@@ -8,8 +8,8 @@ use std::{
     rc::Rc,
 };
 use taroc_data_structures::Interned;
-use taroc_hir::{DefinitionID, DefinitionKind, NodeID, Resolution};
-use taroc_resolve_models::{DefinitionContext, ResolvedAlias};
+use taroc_hir::{DefinitionID, DefinitionKind, NodeID, PartialResolution, Resolution};
+use taroc_resolve_models::DefinitionContext;
 use taroc_span::Symbol;
 use taroc_ty::{
     DefinitionFunctionsData, EnumDefinition, FloatTy, GenericArgument, GenericParameter, IntTy,
@@ -138,10 +138,7 @@ pub struct ResolutionData<'ctx> {
     pub def_to_context: FxHashMap<DefinitionID, DefinitionContext<'ctx>>,
     pub def_to_symbol: FxHashMap<DefinitionID, Symbol>,
     pub def_to_parent: FxHashMap<DefinitionID, DefinitionID>,
-    pub resolution_map: FxHashMap<NodeID, Resolution>,
-    pub generics_map: FxHashMap<DefinitionID, Vec<(Symbol, DefinitionID)>>,
-    pub alias_map: FxHashMap<DefinitionID, ResolvedAlias>,
-    pub extension_map: FxHashMap<DefinitionID, DefinitionID>,
+    pub resolution_map: FxHashMap<NodeID, PartialResolution>,
 }
 
 #[derive(Debug, Default)]

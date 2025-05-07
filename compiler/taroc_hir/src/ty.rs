@@ -1,5 +1,5 @@
 use super::{NodeID, path::Path};
-use crate::{FieldDefinition, TaggedPath};
+use crate::{AnonConst, FieldDefinition, TaggedPath};
 use std::fmt::Debug;
 use taroc_span::Span;
 
@@ -27,6 +27,9 @@ pub enum TypeKind {
     },
     // Type to be inferred
     Infer,
+    Pointer(Box<Type>, Mutability),
+    Reference(Box<Type>, Mutability),
+    Array(Box<Type>, AnonConst),
 
     // Interface types
     /// `some T`

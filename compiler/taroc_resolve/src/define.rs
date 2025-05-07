@@ -1,8 +1,5 @@
 use super::resolver::Resolver;
-use crate::{
-    arena::alloc_binding,
-    models::{DefinitionExtensionData, ToNameBinding, UnresolvedAlias},
-};
+use crate::{arena::alloc_binding, models::ToNameBinding};
 use std::cell::Cell;
 use taroc_context::GlobalContext;
 use taroc_error::CompileResult;
@@ -45,13 +42,13 @@ impl<'res, 'ctx> DefinitionCollector<'res, 'ctx> {
 impl HirVisitor for DefinitionCollector<'_, '_> {
     fn visit_module(&mut self, m: &taroc_hir::Module) -> Self::Result {
         let id = self.resolver.def_id(m.id);
-        let context = self.resolver.new_context(
-            None,
-            DefContextKind::Definition(id, taroc_hir::DefinitionKind::Module, Some(m.name)),
-            Span::module(),
-        );
 
-        if m.id != NodeID::from(0) {
+        let context = if m.id != NodeID::from(0) {
+            let context = self.resolver.new_context(
+                None,
+                DefContextKind::Definition(id, taroc_hir::DefinitionKind::Module, Some(m.name)),
+                Span::module(),
+            );
             let def = (context, taroc_hir::TVisibility::Public, Span::module());
 
             self.resolver.define(
@@ -63,7 +60,11 @@ impl HirVisitor for DefinitionCollector<'_, '_> {
                 taroc_hir::SymbolNamespace::Type,
                 def,
             );
-        }
+
+            context
+        } else {
+            self.parent_scope.context
+        };
         let previous_context = self.parent_scope.context;
         self.parent_scope.context = context;
         visitor::walk_module(self, m);
@@ -77,7 +78,11 @@ impl HirVisitor for DefinitionCollector<'_, '_> {
             Span::empty(f.id),
         );
         self.resolver.file_map.insert(f.id, file_context);
+
+        let previous = self.parent_scope.context;
+        self.parent_scope.context = file_context;
         visitor::walk_file(self, f);
+        self.parent_scope.context = previous
     }
 
     fn visit_declaration(&mut self, d: &taroc_hir::Declaration) -> Self::Result {
@@ -159,7 +164,11 @@ impl DefinitionCollector<'_, '_> {
         let res = Resolution::Definition(id, kind);
         let vis = taroc_hir::TVisibility::Public; // TODO: Visibility
         let span = decl.identifier.span;
-        let parent = self.parent_scope.context;
+        let parent = if matches!(self.parent_scope.context.kind, DefContextKind::File) {
+            self.parent_scope.context.parent.unwrap()
+        } else {
+            self.parent_scope.context
+        };
         let def = (res, vis, span);
 
         match &decl.kind {
@@ -190,23 +199,13 @@ impl DefinitionCollector<'_, '_> {
                     def,
                 );
             }
-            DeclarationKind::TypeAlias(alias) => {
+            DeclarationKind::TypeAlias(_) => {
                 self.resolver.define(
                     parent,
                     decl.identifier,
                     taroc_hir::SymbolNamespace::Type,
                     def,
                 );
-
-                if alias.ty.is_some() {
-                    let node = UnresolvedAlias {
-                        _name: decl.identifier,
-                        span,
-                        alias: alias.clone(),
-                        parent: self.parent_scope,
-                    };
-                    self.resolver.unresolved_aliases.insert(id, node);
-                }
             }
             DeclarationKind::Namespace(..)
             | DeclarationKind::Bridge(..)
@@ -239,14 +238,9 @@ impl DefinitionCollector<'_, '_> {
                 &decl,
                 self.parent_scope,
             ),
-            DeclarationKind::Extend(node) => {
+            DeclarationKind::Extend(_) => {
                 let ctx_k = DefContextKind::Definition(id, kind, None);
                 let context = self.resolver.new_context(Some(parent), ctx_k, span);
-                let data = DefinitionExtensionData {
-                    ty: *node.ty.clone(),
-                    extension_context: context,
-                };
-                self.resolver.unresolved_extensions.insert(id, data);
                 self.parent_scope.context = context;
             }
             DeclarationKind::Extern(..) => {}

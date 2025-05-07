@@ -1,8 +1,15 @@
 use super::resolver::Resolver;
+use taroc_error::CompileResult;
 use taroc_resolve_models::{
     BindingKey, DefinitionContext, Determinacy, ExternalDefUsageKind, ExternalDefinitionUsage,
     NameBinding, PathResult,
 };
+
+impl Resolver<'_> {
+    pub fn unresolved_usage_count(&self) -> usize {
+        self.unresolved_exports.len() + self.unresolved_imports.len()
+    }
+}
 
 pub struct UsageResolver<'res, 'ctx> {
     pub resolver: &'res mut Resolver<'ctx>,
@@ -10,14 +17,39 @@ pub struct UsageResolver<'res, 'ctx> {
 }
 
 impl<'res, 'ctx> UsageResolver<'res, 'ctx> {
-    pub fn run(resolver: &'res mut Resolver<'ctx>, finalize: bool) {
-        let mut actor = UsageResolver { resolver, finalize };
-        actor.resolve_exports();
-        actor.resolve_imports();
+    pub fn run(resolver: &'res mut Resolver<'ctx>) -> CompileResult<()> {
+        let mut actor = UsageResolver {
+            resolver,
+            finalize: false,
+        };
+
+        let mut changed = true;
+        while changed {
+            changed = false;
+            changed |= actor.resolve()
+        }
+
+        let unresolved_usages = actor.resolver.unresolved_usage_count();
+
+        // Final Pass, Finalize Errors
+        if unresolved_usages != 0 {
+            actor.finalize = true;
+            actor.resolve();
+        }
+
+        actor.resolver.gcx.diagnostics.report()
     }
 }
 
 impl<'res, 'ctx> UsageResolver<'res, 'ctx> {
+    fn resolve(&mut self) -> bool {
+        let unresolved = self.resolver.unresolved_usage_count();
+        self.resolve_exports();
+        self.resolve_imports();
+        let updated = self.resolver.unresolved_usage_count();
+        updated != unresolved
+    }
+
     fn resolve_exports(&mut self) {
         let exports = std::mem::take(&mut self.resolver.unresolved_exports);
         for export in exports {
@@ -82,7 +114,7 @@ impl<'res, 'ctx> UsageResolver<'res, 'ctx> {
             }
             PathResult::Failed { segment, .. } => {
                 if self.finalize {
-                    let message = format!("cannot locate symbol '{}'", segment.symbol);
+                    let message = format!("unable to locate symbol '{}'", segment.symbol);
                     self.resolver.gcx.diagnostics.error(message, segment.span);
                 }
                 return false;

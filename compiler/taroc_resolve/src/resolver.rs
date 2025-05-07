@@ -1,24 +1,22 @@
 use crate::{
     arena::{alloc_binding, alloc_context},
-    models::{DefinitionExtensionData, ToNameBinding, UnresolvedAlias},
+    models::ToNameBinding,
 };
-use indexmap::IndexMap;
-use rustc_hash::{FxBuildHasher, FxHashMap};
+use rustc_hash::FxHashMap;
 use taroc_context::{CompilerSession, GlobalContext, ResolutionData};
 use taroc_hir::{
-    DefinitionID, DefinitionIndex, DefinitionKind, NodeID, PackageIndex, PrimaryType, Resolution,
-    SymbolNamespace, TVisibility,
+    DefinitionID, DefinitionIndex, DefinitionKind, NodeID, PackageIndex, PartialResolution,
+    PrimaryType, Resolution, SymbolNamespace, TVisibility,
 };
 use taroc_resolve_models::{
     BindingKey, DefContextKind, DefinitionContext, ExternalDefinitionUsage, NameBinding,
-    NameBindingData, NameBindingKind, NameHolder, ResolutionMap, ResolvedAlias,
+    NameBindingData, NameBindingKind, NameHolder, ResolutionMap,
 };
 use taroc_span::{FileID, Identifier, Span, Symbol};
 
 pub struct Resolver<'ctx> {
     pub gcx: GlobalContext<'ctx>,
     pub root_context: DefinitionContext<'ctx>,
-    pub dependencies: FxHashMap<Symbol, usize>,
     node_to_def: FxHashMap<NodeID, DefinitionID>,
     def_to_kind: FxHashMap<DefinitionID, DefinitionKind>,
     def_to_symbol: FxHashMap<DefinitionID, Symbol>,
@@ -31,12 +29,7 @@ pub struct Resolver<'ctx> {
     pub resolved_exports: Vec<ExternalDefinitionUsage<'ctx>>,
     pub resolved_imports: Vec<ExternalDefinitionUsage<'ctx>>,
     pub next_index: u32,
-    pub resolution_map: FxHashMap<NodeID, Resolution>,
-    pub generics_table: FxHashMap<DefinitionID, Vec<(Symbol, DefinitionID)>>,
-    pub unresolved_extensions: IndexMap<DefinitionID, DefinitionExtensionData<'ctx>, FxBuildHasher>,
-    pub resolved_extensions: FxHashMap<DefinitionID, DefinitionID>,
-    pub unresolved_aliases: IndexMap<DefinitionID, UnresolvedAlias<'ctx>>,
-    pub resolved_aliases: FxHashMap<DefinitionID, ResolvedAlias>,
+    pub resolution_map: FxHashMap<NodeID, PartialResolution>,
     pub builin_types_bindings: FxHashMap<Symbol, NameHolder<'ctx>>,
 }
 
@@ -53,12 +46,9 @@ impl Resolver<'_> {
             Span::module(),
         );
 
-        let dependencies = Default::default();
-
         Resolver {
             gcx: context,
             root_context,
-            dependencies,
             node_to_def: Default::default(),
             def_to_kind: Default::default(),
             def_to_context: Default::default(),
@@ -72,11 +62,6 @@ impl Resolver<'_> {
             resolved_imports: Vec::new(),
             resolution_map: Default::default(),
             next_index: 0,
-            generics_table: Default::default(),
-            unresolved_extensions: Default::default(),
-            unresolved_aliases: Default::default(),
-            resolved_aliases: Default::default(),
-            resolved_extensions: Default::default(),
             builin_types_bindings: PrimaryType::ALL
                 .iter()
                 .map(|ty| {
@@ -156,17 +141,9 @@ impl<'ctx> Resolver<'ctx> {
         if !id.is_local(self.session().package_index) {
             return Some(self.gcx.def_context(*id));
         };
-
-        if matches!(self.def_kind(*id), DefinitionKind::TypeAlias)
-        // && let Some(id) = self.resolved_aliases.get(id).map(|f| f.def_id()).flatten()
-        {
-            todo!();
-            // return Some(self.context.def_context(id));
-        }
-        let x = self.def_to_context.get(id).cloned();
-
-        return x;
+        self.def_to_context.get(id).cloned()
     }
+
     pub fn get_block_context(&self, id: &NodeID) -> Option<DefinitionContext<'ctx>> {
         self.block_map.get(id).cloned()
     }
@@ -284,7 +261,7 @@ impl<'ctx> Resolver<'ctx> {
 }
 
 impl<'ctx> Resolver<'ctx> {
-    pub fn rescord_resolution(&mut self, node: NodeID, resolution: Resolution) {
+    pub fn record_resolution(&mut self, node: NodeID, resolution: PartialResolution) {
         if let Some(_) = self.resolution_map.insert(node, resolution) {
             // panic!("multiple resolutions recorded for node {node:?}")
         }
@@ -314,16 +291,13 @@ impl<'ctx> Resolver<'ctx> {
 impl<'ctx> Resolver<'ctx> {
     pub fn produce(self) -> ResolutionData<'ctx> {
         ResolutionData {
+            root: self.root_context,
             node_to_def: self.node_to_def,
             def_to_kind: self.def_to_kind,
-            resolution_map: self.resolution_map,
-            root: self.root_context,
-            generics_map: self.generics_table,
             def_to_context: self.def_to_context,
-            alias_map: self.resolved_aliases,
-            extension_map: self.resolved_extensions,
-            def_to_parent: self.def_to_parent,
             def_to_symbol: self.def_to_symbol,
+            def_to_parent: self.def_to_parent,
+            resolution_map: self.resolution_map,
         }
     }
 }

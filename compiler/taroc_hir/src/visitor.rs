@@ -608,6 +608,16 @@ pub fn walk_type<V: HirVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
         TypeKind::AnonStruct { fields } => {
             walk_list!(visitor, visit_field_definition, fields);
         }
+        TypeKind::Pointer(ty, _) => {
+            try_visit!(visitor.visit_type(ty));
+        }
+        TypeKind::Reference(ty, _) => {
+            try_visit!(visitor.visit_type(ty));
+        }
+        TypeKind::Array(ty, len) => {
+            try_visit!(visitor.visit_type(ty));
+            try_visit!(visitor.visit_anon_const(len))
+        }
         TypeKind::Malformed => unreachable!(),
     }
     V::Result::output()

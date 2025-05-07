@@ -1,12 +1,10 @@
-use std::thread::Scope;
-
 use crate::{arena::alloc_binding, resolver::Resolver};
 use taroc_constants::STD_PREFIX;
-use taroc_hir::{Resolution, SymbolNamespace};
+use taroc_hir::{PartialResolution, Resolution, SymbolNamespace};
 use taroc_resolve_models::{
     BindingKey, ContextOrResolutionRoot, DefContextKind, DefinitionContext, Determinacy,
     ImplicitScopeSet, ImplicitScopes, LexicalScope, LexicalScopeBinding, LexicalScopeSource,
-    NameBindingData, NameBindingKind, NameHolder, ParentScope, PathResult, Segment,
+    NameBindingData, NameBindingKind, NameHolder, ParentScope, PathResult, PathSource, Segment,
 };
 use taroc_span::{Span, Symbol};
 
@@ -19,16 +17,12 @@ impl<'ctx> Resolver<'ctx> {
         parent_scope: &ParentScope<'ctx>,
     ) -> PathResult<'ctx> {
         // let name: Vec<&str> = path.iter().map(|v| v.identifier.symbol.as_str()).collect();
-        // println!("\n---- {}. {}", name.join("::"), path.len());
+        // println!("\n\n---- {}. {}", name.join("::"), path.len());
         let mut resulting_context: Option<ContextOrResolutionRoot> = None;
         for (index, segment) in path.iter().enumerate() {
-            // println!("Segment ({:?})", segment.id);
-            // self.context
-            //     .diagnostics
-            //     .info("Resolving".into(), segment.identifier.span);
-            let record_resolution = |this: &mut Self, resolution: Resolution| {
+            let record_resolution = |this: &mut Self, resolution: PartialResolution| {
                 if let Some(id) = segment.id {
-                    this.rescord_resolution(id, resolution.clone());
+                    this.record_resolution(id, resolution);
                 };
             };
 
@@ -53,13 +47,16 @@ impl<'ctx> Resolver<'ctx> {
                 }
             }
 
+            // self.gcx.diagnostics.warn(
+            //     format!("Resolving {} in {:?} NS", segment.identifier.symbol, ns),
+            //     segment.identifier.span,
+            // );
             // report special paths
             if name.is_path_segment_keyword() && index != 0 {
                 todo!("report misplace keyword")
             }
 
             // For Nested Paths, The Non-Last Segments should resolve to a type
-
             let named_symbol = if let Some(context) = resulting_context {
                 self.resolve_symbol_in_context(name, ns, context, parent_scope)
             } else {
@@ -72,7 +69,8 @@ impl<'ctx> Resolver<'ctx> {
                             // Glob Ambiguity
                             Err(Determinacy::Undetermined)
                         } else {
-                            record_resolution(self, resolution.clone());
+                            record_resolution(self, PartialResolution::new(resolution.clone()));
+
                             let def_id = resolution.def_id();
                             if let Some(id) = def_id
                                 && let Some(new_context) = self.get_context(&id)
@@ -81,16 +79,12 @@ impl<'ctx> Resolver<'ctx> {
                                     Some(ContextOrResolutionRoot::Context(new_context));
                                 continue;
                             } else {
-                                if !is_last {
-                                    self.gcx.diagnostics.error(
-                                        format!(
-                                            "{} does not have a namespace",
-                                            segment.identifier.symbol
-                                        ),
-                                        segment.identifier.span,
-                                    );
-                                }
-                                return PathResult::NonContext(resolution);
+                                return PathResult::NonContext(
+                                    PartialResolution::with_unresolved_segments(
+                                        resolution,
+                                        path.len() - 1,
+                                    ),
+                                );
                             }
                         }
                     }
@@ -102,6 +96,17 @@ impl<'ctx> Resolver<'ctx> {
                 Ok(named_symbol) => named_symbol,
                 Err(Determinacy::Undetermined) => return PathResult::Indeterminate,
                 Err(Determinacy::Determined) => {
+                    if let Some(ContextOrResolutionRoot::Context(ctx)) = resulting_context
+                        && namespace.is_some()
+                        && ctx.is_basic_def()
+                    {
+                        return PathResult::NonContext(
+                            PartialResolution::with_unresolved_segments(
+                                ctx.resolution().unwrap(),
+                                path.len() - index,
+                            ),
+                        );
+                    }
                     return PathResult::Failed {
                         segment: segment.identifier,
                         is_last_segment: is_last,
@@ -109,16 +114,21 @@ impl<'ctx> Resolver<'ctx> {
                 }
             };
 
+            // self.gcx
+            //     .diagnostics
+            //     .info("Resolved!".into(), segment.identifier.span);
+
             let resolution = named_symbol.resolution();
+            let maybe_assoc = PathSource::Type.is_allowed(&resolution);
 
             if let Some(next_context) = named_symbol.context() {
                 resulting_context = Some(ContextOrResolutionRoot::Context(next_context));
-                record_resolution(self, resolution.clone());
-            } else if is_last {
-                record_resolution(self, resolution.clone());
-                return PathResult::NonContext(resolution);
+                record_resolution(self, PartialResolution::new(resolution));
+            } else if namespace.is_some() && (is_last || maybe_assoc) {
+                record_resolution(self, PartialResolution::new(resolution.clone()));
+                return PathResult::NonContext(PartialResolution::new(resolution));
             } else if matches!(resolution, Resolution::Error) {
-                return PathResult::NonContext(Resolution::Error);
+                return PathResult::NonContext(PartialResolution::new(Resolution::Error));
             } else {
                 return PathResult::Failed {
                     segment: segment.identifier,
@@ -159,12 +169,25 @@ impl<'ctx> Resolver<'ctx> {
             }
         };
 
-        // let symbols: Vec<&Symbol> = resolutions.bindings.keys().collect();
-        // println!("Find {} in {:?}, {:?}", name, symbols, context.resolution());
+        // let symbols = context.namespace.borrow();
+        // let symbols: std::collections::HashSet<Symbol> =
+        //     symbols.data.keys().map(|f| f.symbol).collect();
+        // println!(
+        //     "\nSearching for {} in [{:?}]\nExplict Namespace ({:?})",
+        //     name, context.kind, symbols
+        // );
+
         let key = BindingKey::new(name, namespace);
 
         // Check Namespace
         let resolutions = context.namespace.borrow();
+        let holder = resolutions.find(key);
+        if let Some(holder) = holder {
+            return Ok(holder);
+        };
+
+        // Check Imports
+        let resolutions = context.explicit_imports.borrow();
         let holder = resolutions.find(key);
         if let Some(holder) = holder {
             return Ok(holder);
@@ -176,60 +199,6 @@ impl<'ctx> Resolver<'ctx> {
         if let Some(holder) = holder {
             return Ok(holder);
         };
-
-        // if context == self.packages_root.unwrap() {
-        //     if let Some(package) = self.resolve_package_root(name) {
-        //         let binding = self.alloc_binding(NameBindingData {
-        //             kind: NameBindingKind::Context(package),
-        //             span: context.span,
-        //             vis: TVisibility::Public,
-        //         });
-
-        //         let holder = NameHolder::Single(binding);
-        //         return Ok(holder);
-        //     } else {
-        //         match state {
-        //             ResolutionState::Usage(parent) if let Some(parent) = parent => {
-        //                 let module_context = self
-        //                     .get_context(&parent.module)
-        //                     .expect("modules must always have a definition context");
-        //                 let module_scope = LexicalScope {
-        //                     source: LexicalScopeSource::Context(module_context),
-        //                     table: Default::default(),
-        //                 };
-
-        //                 let file_context = self.get_file_context(&parent.file);
-        //                 let file_scope = LexicalScope {
-        //                     source: LexicalScopeSource::Context(file_context),
-        //                     table: Default::default(),
-        //                 };
-        //                 let scopes = vec![module_scope, file_scope];
-        //                 let result = self.resolve_symbol_in_lexical_scope(
-        //                     name,
-        //                     namespace,
-        //                     &scopes,
-        //                     ResolutionState::Full,
-        //                 );
-
-        //                 let Some(binding) = result else {
-        //                     return Err(Determinacy::Determined);
-        //                 };
-
-        //                 match binding {
-        //                     LexicalScopeBinding::Declaration(name_holder) => {
-        //                         return Ok(name_holder);
-        //                     }
-        //                     LexicalScopeBinding::Resolution(_) => {
-        //                         todo!("found resolution should not happen")
-        //                     }
-        //                 }
-        //             }
-        //             _ => {}
-        //         }
-        //     }
-
-        //     return Err(Determinacy::Determined);
-        // }
 
         let mut candidates = Vec::new();
         // Track if we encountered any undetermined resolutions
@@ -324,6 +293,7 @@ impl<'ctx> Resolver<'ctx> {
         let mut context = self.root_context;
         for (_, scope) in scopes.iter().enumerate().rev() {
             // Check Scope SymbolTable
+            // println!("{:?}", scope.table);
             let resolution = scope.table.get(&name);
             if let Some(resolution) = resolution {
                 return Some(LexicalScopeBinding::Resolution(resolution.clone()));
@@ -337,7 +307,9 @@ impl<'ctx> Resolver<'ctx> {
 
             match context.kind {
                 DefContextKind::Block | DefContextKind::File => {}
-                _ => break,
+                _ => {
+                    break;
+                }
             };
 
             let binding = self.resolve_symbol_in_context(
@@ -372,7 +344,6 @@ impl<'ctx> Resolver<'ctx> {
         set: ImplicitScopeSet<'ctx>,
         parent_scope: &ParentScope<'ctx>,
     ) -> Result<NameHolder<'ctx>, Determinacy> {
-        println!("Searching For {name}");
         if name.is_path_segment_keyword() {
             return Err(Determinacy::Determined);
         }
@@ -419,11 +390,18 @@ impl<'ctx> Resolver<'ctx> {
                             let holder = NameHolder::Single(binding);
                             Ok(holder)
                         }
-                        None => todo!("not found"),
+                        None => Err(Determinacy::Determined),
                     }
                 }
-                ImplicitScopes::StdPrelude => todo!(),
-                ImplicitScopes::BuiltinPrelude => todo!(),
+                ImplicitScopes::StdPrelude => Err(Determinacy::Determined), // TODO!
+                ImplicitScopes::BuiltinPrelude => {
+                    let holder = this.builin_types_bindings.get(&name);
+
+                    match holder {
+                        Some(holder) => Ok(*holder),
+                        None => Err(Determinacy::Determined),
+                    }
+                }
             };
 
             match result {

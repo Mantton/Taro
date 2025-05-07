@@ -1,5 +1,5 @@
 use super::package::Actor;
-use taroc_ast::Mutability;
+use taroc_hir::TypeKind;
 use taroc_span::{Identifier, Span, Symbol};
 
 impl Actor<'_> {
@@ -58,25 +58,10 @@ impl Actor<'_> {
                 taroc_hir::TypeKind::Path(path)
             }
             taroc_ast::TypeKind::Pointer(ty, mutability) => {
-                // *T == std::mem::MutablePointer<T>
-                // *const T = std::mem:ImmutablePointer<T>
-                let t = match mutability {
-                    taroc_ast::Mutability::Mutable => "MutablePointer",
-                    taroc_ast::Mutability::Immutable => "ImmutablePointer",
-                };
-
-                let mut path = self.mk_path(&["std", "mem", t], span);
-                let last_index = path.segments.len() - 1;
-                let segment = &mut path.segments[last_index];
-                segment.arguments = Some(taroc_hir::TypeArguments {
-                    span,
-                    arguments: vec![taroc_hir::TypeArgument::Type(self.lower_type(ty))],
-                });
-                taroc_hir::TypeKind::Path(path)
+                taroc_hir::TypeKind::Pointer(self.lower_type(ty), mutability)
             }
             taroc_ast::TypeKind::Reference(ty, mutability) => {
-                let internal = self.lower_type(ty);
-                self.mk_ref(internal, mutability, span)
+                taroc_hir::TypeKind::Pointer(self.lower_type(ty), mutability)
             }
             taroc_ast::TypeKind::Parenthesis(ty) => self.lower_type(ty).kind,
             taroc_ast::TypeKind::Tuple(vec) => {
@@ -116,7 +101,7 @@ impl Actor<'_> {
                 // ~T == std::option::Option<&T>
                 // ~mut T == std::option::Option<&mut T>
                 let internal = self.lower_type(ty);
-                let kind = self.mk_ref(internal, mutability, span);
+                let kind = TypeKind::Reference(internal, mutability);
                 let internal = self.mk_ty(kind, span);
 
                 let mut path = self.mk_path(&["std", "option", "Option"], span);
@@ -167,28 +152,5 @@ impl Actor<'_> {
         }
 
         taroc_hir::Path { segments, span }
-    }
-
-    fn mk_ref(
-        &mut self,
-        ty: Box<taroc_hir::Type>,
-        mutability: Mutability,
-        span: Span,
-    ) -> taroc_hir::TypeKind {
-        // &T == std::mem::MutableReference<T>
-        // &const T = std::mem:ImmutableReference<T>
-        let t = match mutability {
-            taroc_ast::Mutability::Mutable => "MutableReference",
-            taroc_ast::Mutability::Immutable => "ImmutableReference",
-        };
-
-        let mut path = self.mk_path(&["std", "mem", t], span);
-        let last_index = path.segments.len() - 1;
-        let segment = &mut path.segments[last_index];
-        segment.arguments = Some(taroc_hir::TypeArguments {
-            span,
-            arguments: vec![taroc_hir::TypeArgument::Type(ty)],
-        });
-        taroc_hir::TypeKind::Path(path)
     }
 }

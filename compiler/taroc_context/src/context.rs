@@ -1,7 +1,7 @@
 use crate::{CompilerSession, GlobalContext, TypeDatabase};
 use std::{cell::RefCell, rc::Rc};
 use taroc_hir::{DefinitionID, DefinitionKind, NodeID, PackageIndex, Resolution};
-use taroc_resolve_models::{DefinitionContext, ResolvedAlias};
+use taroc_resolve_models::DefinitionContext;
 use taroc_span::Symbol;
 use taroc_ty::{
     EnumDefinition, GenericArgument, GenericParameter, InterfaceDefinition,
@@ -66,20 +66,14 @@ impl<'ctx> GlobalContext<'ctx> {
         *ctx
     }
 
-    pub fn resolution(self, id: NodeID) -> Resolution {
-        let resolutions = self.context.store.resolutions.borrow();
-        let package = resolutions
-            .get(&self.session().package_index)
-            .expect("package");
-        let res = package.resolution_map.get(&id).expect("res");
-        res.clone()
-    }
-
-    pub fn resolution_generics(self, id: DefinitionID) -> Option<Vec<(Symbol, DefinitionID)>> {
-        let resolutions = self.context.store.resolutions.borrow();
-        let package = resolutions.get(&id.package().index()).expect("package");
-        return package.generics_map.get(&id).cloned();
-    }
+    // pub fn resolution(self, id: NodeID) -> Resolution {
+    //     let resolutions = self.context.store.resolutions.borrow();
+    //     let package = resolutions
+    //         .get(&self.session().package_index)
+    //         .expect("package");
+    //     let res = package.resolution_map.get(&id).expect("res");
+    //     res.clone()
+    // }
 
     pub fn type_of(self, id: DefinitionID) -> Ty<'ctx> {
         let database = self.context.store.types.borrow();
@@ -234,34 +228,6 @@ impl<'ctx> GlobalContext<'ctx> {
         };
 
         self.store.interners.mk_args(args)
-    }
-
-    pub fn alias_resolution(self, id: DefinitionID) -> ResolvedAlias {
-        debug_assert!(
-            self.def_kind(id) == taroc_hir::DefinitionKind::TypeAlias,
-            "must be alias"
-        );
-
-        let resolutions = self.context.store.resolutions.borrow();
-        let package = resolutions.get(&id.package().index()).expect("package");
-        package
-            .alias_map
-            .get(&id)
-            .expect("alias resolution")
-            .clone()
-    }
-
-    pub fn extension_target(self, id: DefinitionID) -> DefinitionID {
-        debug_assert!(
-            self.def_kind(id) == taroc_hir::DefinitionKind::Extension,
-            "must be extension definition"
-        );
-        let resolutions = self.context.store.resolutions.borrow();
-        let package = resolutions.get(&id.package().index()).expect("package");
-        *package
-            .extension_map
-            .get(&id)
-            .expect("extension resolution")
     }
 
     pub fn with_type_database<F, T>(self, index: PackageIndex, func: F) -> T

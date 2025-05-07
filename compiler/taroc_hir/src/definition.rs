@@ -95,6 +95,7 @@ pub enum DefinitionKind {
     Extension,
     Extern,
     TypeParameter,
+    ConstParameter,
     Field,
     Variant,
     Ctor(CtorOf, CtorKind),
@@ -130,6 +131,7 @@ impl DefinitionKind {
             DefinitionKind::AssociatedFunction => "associated function",
             DefinitionKind::AssociatedConstant => "associated constant",
             DefinitionKind::AssociatedOperator => "associated operator",
+            DefinitionKind::ConstParameter => "const param",
         }
     }
 }
@@ -157,7 +159,7 @@ impl Resolution {
         match self {
             Resolution::Definition(i, _) => Some(*i),
             Resolution::InterfaceSelfTypeAlias(i) => Some(*i),
-            Resolution::SelfTypeAlias(i) => Some(*i),
+            Resolution::SelfTypeAlias(_) => None,
             _ => None,
         }
     }
@@ -310,5 +312,46 @@ impl FloatTy {
             FloatTy::F32 => "float",
             FloatTy::F64 => "double",
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PartialResolution {
+    pub resolution: Resolution,
+    pub unresolved_segments: usize,
+}
+
+impl PartialResolution {
+    pub fn new(resolution: Resolution) -> Self {
+        PartialResolution {
+            resolution,
+            unresolved_segments: 0,
+        }
+    }
+
+    pub fn with_unresolved_segments(
+        resolution: Resolution,
+        mut unresolved_segments: usize,
+    ) -> Self {
+        if matches!(resolution, Resolution::Error) {
+            unresolved_segments = 0
+        }
+        PartialResolution {
+            resolution,
+            unresolved_segments,
+        }
+    }
+
+    #[inline]
+    pub fn resolution(&self) -> Resolution {
+        self.resolution.clone()
+    }
+
+    pub fn unresolved_segments(&self) -> usize {
+        self.unresolved_segments
+    }
+
+    pub fn full_resolution(&self) -> Option<Resolution> {
+        (self.unresolved_segments == 0).then_some(self.resolution.clone())
     }
 }

@@ -1,12 +1,28 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cell::{Cell, RefCell};
 use taroc_data_structures::Interned;
-use taroc_hir::{DefinitionID, DefinitionKind, NodeID, Path, Resolution, SymbolNamespace};
+use taroc_hir::{
+    DefinitionID, DefinitionKind, NodeID, PartialResolution, Path, Resolution, SymbolNamespace,
+};
 use taroc_span::{FileID, Identifier, Span, Symbol};
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct DefinitionContext<'arena>(pub Interned<'arena, DefContextData<'arena>>);
 
+impl<'ctx> DefinitionContext<'ctx> {
+    pub fn is_basic_def(self) -> bool {
+        matches!(
+            self.kind,
+            DefContextKind::Definition(
+                _,
+                DefinitionKind::Enum | DefinitionKind::Namespace | DefinitionKind::Interface,
+                _
+            )
+        )
+    }
+}
+
+#[derive(Debug)]
 pub struct DefContextData<'arena> {
     pub parent: Option<DefinitionContext<'arena>>,
     pub kind: DefContextKind,
@@ -81,7 +97,7 @@ impl DefContextKind {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub enum NameHolder<'arena> {
     Single(NameBinding<'arena>),
     Set(&'arena [NameBinding<'arena>]),
@@ -124,6 +140,7 @@ impl<'arena> NameHolder<'arena> {
     }
 }
 pub type NameBinding<'arena> = Interned<'arena, NameBindingData<'arena>>;
+#[derive(Debug)]
 pub struct NameBindingData<'arena> {
     pub kind: NameBindingKind<'arena>,
     pub span: Span,
@@ -180,6 +197,7 @@ impl<'arena> NameBindingData<'arena> {
     }
 }
 
+#[derive(Debug)]
 pub enum NameBindingKind<'arena> {
     Resolution(Resolution),
     Context(DefinitionContext<'arena>),
@@ -191,6 +209,7 @@ pub enum NameBindingKind<'arena> {
 
 pub type ExternalDefinitionUsage<'arena> = Interned<'arena, ExternalDefUsageData<'arena>>;
 
+#[derive(Debug)]
 pub struct ExternalDefUsageData<'arena> {
     pub span: Span,
     pub module_path: Vec<Segment>,
@@ -205,11 +224,13 @@ pub struct ExternalDefUsageData<'arena> {
     pub parent_scope: ParentScope<'arena>,
 }
 
+#[derive(Debug)]
 pub enum ExternalDefUsageKind<'arena> {
     Single(DefUsageBinding<'arena>),
     Glob { id: NodeID },
 }
 
+#[derive(Debug)]
 pub struct DefUsageBinding<'arena> {
     pub source: Identifier,
     pub target: Identifier,
@@ -222,7 +243,7 @@ pub struct DefUsageBinding<'arena> {
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct BindingKey {
-    symbol: Symbol,
+    pub symbol: Symbol,
     namespace: SymbolNamespace,
     disambiguator: u32,
 }
@@ -284,7 +305,7 @@ impl<'a> From<&'a taroc_hir::PathSegment> for Segment {
 // MARK: PathResult
 pub enum PathResult<'arena> {
     Context(ContextOrResolutionRoot<'arena>),
-    NonContext(Resolution),
+    NonContext(PartialResolution),
     Indeterminate,
     Failed {
         segment: Identifier,
@@ -347,6 +368,7 @@ impl PathSource {
                             | DefinitionKind::Interface
                             | DefinitionKind::TypeParameter
                             | DefinitionKind::TypeAlias
+                            | DefinitionKind::AssociatedType
                     ) | Resolution::SelfTypeAlias(..)
                         | Resolution::InterfaceSelfTypeAlias(..)
                         | Resolution::PrimaryType(..)
@@ -359,7 +381,11 @@ impl PathSource {
                 res,
                 Resolution::Definition(
                     _,
-                    DefinitionKind::Function | DefinitionKind::Struct | DefinitionKind::Variant
+                    DefinitionKind::Function
+                        | DefinitionKind::Struct
+                        | DefinitionKind::Variant
+                        | DefinitionKind::ConstParameter
+                        | DefinitionKind::Ctor(..)
                 ) | Resolution::Local(..)
                     | Resolution::FunctionSet(..)
                     | Resolution::SelfConstructor(..)
@@ -372,6 +398,14 @@ impl PathSource {
             PathSource::Type => "type".into(),
             PathSource::Interface => "interface".into(),
             PathSource::Expression => "value".into(),
+        }
+    }
+
+    pub fn defer_to_type_checker(&self) -> bool {
+        match self {
+            PathSource::Type => true,
+            PathSource::Interface => false,
+            PathSource::Expression => true,
         }
     }
 }
@@ -407,13 +441,7 @@ pub enum LexicalScopeBinding<'arena> {
     Resolution(Resolution),
 }
 
-#[derive(Clone)]
-pub struct ResolvedAlias {
-    pub ty: taroc_hir::Type,
-    pub res: Resolution,
-}
-
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct ResolutionMap<'arena> {
     pub data: FxHashMap<BindingKey, NameHolder<'arena>>,
 }
@@ -451,13 +479,13 @@ impl<T> ::std::ops::Index<SymbolNamespace> for PerNS<T> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum ContextOrResolutionRoot<'ctx> {
     Context(DefinitionContext<'ctx>),
     PackageRootAndDependencyPrelude,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct ParentScope<'ctx> {
     pub context: DefinitionContext<'ctx>,
 }
