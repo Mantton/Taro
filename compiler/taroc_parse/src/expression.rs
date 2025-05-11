@@ -488,7 +488,8 @@ impl Parser {
         let identifier = self.parse_identifier()?;
 
         let expression = if self.eat(TokenKind::Assign) {
-            let binding_cond_res = Restrictions::empty();
+            let mut binding_cond_res = Restrictions::empty();
+            binding_cond_res.insert(Restrictions::NO_STRUCT_LITERALS);
             let value = self.with_restrictions(binding_cond_res, |p| p.parse_expression())?;
             Some(value)
         } else {
@@ -519,7 +520,9 @@ impl Parser {
         let pattern = self.parse_match_pat()?;
         self.expect(TokenKind::Assign)?;
 
-        let binding_cond_res = Restrictions::empty();
+        let mut binding_cond_res = Restrictions::empty();
+        binding_cond_res.insert(Restrictions::NO_STRUCT_LITERALS);
+
         let expression = self.with_restrictions(binding_cond_res, |p| p.parse_expression())?;
         let span = lo.to(self.hi_span());
 

@@ -78,6 +78,11 @@ impl HirVisitor for DefinitionCollector<'_, '_> {
             Span::empty(f.id),
         );
         self.resolver.file_map.insert(f.id, file_context);
+        self.resolver
+            .file_to_imports
+            .entry(f.id)
+            .or_default()
+            .insert(self.resolver.gcx.session().index());
 
         let previous = self.parent_scope.context;
         self.parent_scope.context = file_context;

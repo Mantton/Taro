@@ -1,8 +1,8 @@
 use crate::{CompilerSession, GlobalContext, TypeDatabase};
 use std::{cell::RefCell, rc::Rc};
-use taroc_hir::{DefinitionID, DefinitionKind, NodeID, PackageIndex, Resolution};
+use taroc_hir::{DefinitionID, DefinitionKind, NodeID, PackageIndex, PartialResolution};
 use taroc_resolve_models::DefinitionContext;
-use taroc_span::Symbol;
+use taroc_span::{Identifier, Symbol};
 use taroc_ty::{
     EnumDefinition, GenericArgument, GenericParameter, InterfaceDefinition,
     LabeledFunctionSignature, StructDefinition, Ty, TyKind,
@@ -20,6 +20,7 @@ impl<'ctx> GlobalContext<'ctx> {
             .expect("current compiler session")
     }
 
+    #[track_caller]
     pub fn def_id(self, id: NodeID) -> DefinitionID {
         let resolutions = self.context.store.resolutions.borrow();
         let package = resolutions
@@ -45,10 +46,11 @@ impl<'ctx> GlobalContext<'ctx> {
         *kind
     }
 
-    pub fn def_symbol(self, id: DefinitionID) -> Symbol {
+    #[track_caller]
+    pub fn ident_for(self, id: DefinitionID) -> Identifier {
         let resolutions = self.context.store.resolutions.borrow();
         let package = resolutions.get(&id.package().index()).expect("package");
-        let symbol = package.def_to_symbol.get(&id).expect("def symbol");
+        let symbol = package.def_to_ident.get(&id).expect("def identifier");
         *symbol
     }
 
@@ -59,22 +61,31 @@ impl<'ctx> GlobalContext<'ctx> {
         *parent
     }
 
-    pub fn def_context(self, id: DefinitionID) -> DefinitionContext<'ctx> {
+    #[track_caller]
+    pub fn def_context(self, id: DefinitionID) -> Option<DefinitionContext<'ctx>> {
         let resolutions = self.context.store.resolutions.borrow();
         let package = resolutions.get(&id.package().index()).expect("package");
-        let ctx = package.def_to_context.get(&id).expect("def_context");
-        *ctx
+        let ctx = package.def_to_context.get(&id);
+        ctx.cloned()
     }
 
-    // pub fn resolution(self, id: NodeID) -> Resolution {
-    //     let resolutions = self.context.store.resolutions.borrow();
-    //     let package = resolutions
-    //         .get(&self.session().package_index)
-    //         .expect("package");
-    //     let res = package.resolution_map.get(&id).expect("res");
-    //     res.clone()
-    // }
+    #[track_caller]
+    pub fn resolution(self, id: NodeID) -> PartialResolution {
+        let resolutions = self.context.store.resolutions.borrow();
+        let package = resolutions
+            .get(&self.session().package_index)
+            .expect("package");
+        let res = package.resolution_map.get(&id).expect("res");
+        res.clone()
+    }
 
+    pub fn resolution_generics(self, id: DefinitionID) -> Option<Vec<(Symbol, DefinitionID)>> {
+        let resolutions = self.context.store.resolutions.borrow();
+        let package = resolutions.get(&id.package().index()).expect("package");
+        return package.generics_map.get(&id).cloned();
+    }
+
+    #[track_caller]
     pub fn type_of(self, id: DefinitionID) -> Ty<'ctx> {
         let database = self.context.store.types.borrow();
         let database = database.get(&id.package().index()).expect("package types");
@@ -84,17 +95,35 @@ impl<'ctx> GlobalContext<'ctx> {
             .expect("expected typeof of definition");
     }
 
-    pub fn generics_of(self, id: DefinitionID) -> taroc_ty::Generics {
+    pub fn type_of_opt(self, id: DefinitionID) -> Option<Ty<'ctx>> {
+        let database = self.context.store.types.borrow();
+        let database = database.get(&id.package().index()).expect("package types");
+        return database.def_to_ty.get(&id).cloned();
+    }
+
+    #[track_caller]
+    pub fn type_of_node(self, id: NodeID) -> Ty<'ctx> {
+        let database = self.context.store.types.borrow();
+        let database = database
+            .get(&self.session().index().index())
+            .expect("package types");
+        return *database
+            .node_to_ty
+            .get(&id)
+            .expect("expected typeof of node");
+    }
+
+    pub fn generics_of(self, id: DefinitionID) -> &'ctx taroc_ty::Generics {
         let database = self.context.store.types.borrow();
         let database = database.get(&id.package().index()).expect("package types");
 
         if let Some(x) = database.def_to_generics.get(&id) {
-            x.clone()
+            x
         } else {
-            taroc_ty::Generics {
+            self.context.store.interners.alloc(taroc_ty::Generics {
                 parameters: vec![],
                 has_self: false,
-            }
+            })
         }
     }
 
@@ -102,6 +131,7 @@ impl<'ctx> GlobalContext<'ctx> {
         let mut cache = self.context.store.types.borrow_mut();
         let package_index = id.package().index();
         let database = cache.entry(package_index).or_insert(Default::default());
+        let generics = self.context.store.interners.alloc(generics);
         let ok = database.def_to_generics.insert(id, generics).is_none();
         debug_assert!(ok, "duplicated generic information")
     }
@@ -128,21 +158,28 @@ impl<'ctx> GlobalContext<'ctx> {
         database.def_to_ty.insert(id, ty);
     }
 
+    pub fn cache_type_of_node(self, id: NodeID, ty: taroc_ty::Ty<'ctx>) {
+        let mut cache = self.context.store.types.borrow_mut();
+        let package_index = self.session().package_index;
+        let database = cache.entry(package_index).or_insert(Default::default());
+        database.node_to_ty.insert(id, ty);
+    }
+
     pub fn cache_signature(self, id: DefinitionID, sig: taroc_ty::LabeledFunctionSignature<'ctx>) {
         let mut cache = self.context.store.types.borrow_mut();
         let package_index = id.package().index();
         let database = cache.entry(package_index).or_insert(Default::default());
-        database.def_to_fn_signature.insert(id, sig);
+        let alloc = self.context.store.interners.alloc(sig);
+        database.def_to_fn_signature.insert(id, alloc);
     }
 
-    pub fn fn_signature(self, id: DefinitionID) -> LabeledFunctionSignature<'ctx> {
+    pub fn fn_signature(self, id: DefinitionID) -> &'ctx LabeledFunctionSignature<'ctx> {
         let database = self.context.store.types.borrow();
         let database = database.get(&id.package().index()).expect("package types");
         return database
             .def_to_fn_signature
             .get(&id)
-            .expect("expected fn sig of definition")
-            .clone();
+            .expect("expected fn sig of definition");
     }
 
     pub fn cache_struct_def(self, id: DefinitionID, def: taroc_ty::StructDefinition<'ctx>) {
@@ -296,7 +333,6 @@ impl<'ctx> GlobalContext<'ctx> {
             TyKind::AssociatedType(definition_id) => Some(definition_id),
             TyKind::Infer(..) => None,
             TyKind::Error => None,
-            TyKind::Ignore => None,
             TyKind::FnDef(id, ..) => Some(id),
             _ => None,
         }

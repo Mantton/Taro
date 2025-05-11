@@ -4,16 +4,20 @@ use taroc_context::GlobalContext;
 use taroc_error::CompileResult;
 use taroc_hir::Package;
 
-mod analysis;
 mod collect;
-mod full;
+mod extend;
 mod lower;
 mod models;
 mod utils;
 
 pub fn run(package: &Package, context: GlobalContext) -> CompileResult<()> {
-    collect::run(package, context)?;
-    analysis::run(package, context)?;
-    full::run(package, context)?;
+    collect::generics::run(package, context)?; // generics
+    collect::header::run(package, context)?; // type headers
+    extend::identify::run(package, context)?; // extension identities
+    extend::alias::run(package, context)?; // assoc types
+    collect::constraints::run(package, context)?; // constraints
+    collect::conformance::run(package, context)?; // conformances
+    collect::function::run(package, context)?; // function signatures
+    extend::members::run(package, context)?; // assoc members
     Ok(())
 }

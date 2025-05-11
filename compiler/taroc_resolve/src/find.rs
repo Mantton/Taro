@@ -1,12 +1,12 @@
 use crate::{arena::alloc_binding, resolver::Resolver};
 use taroc_constants::STD_PREFIX;
-use taroc_hir::{PartialResolution, Resolution, SymbolNamespace};
+use taroc_hir::{PackageIndex, PartialResolution, Resolution, SymbolNamespace};
 use taroc_resolve_models::{
     BindingKey, ContextOrResolutionRoot, DefContextKind, DefinitionContext, Determinacy,
     ImplicitScopeSet, ImplicitScopes, LexicalScope, LexicalScopeBinding, LexicalScopeSource,
     NameBindingData, NameBindingKind, NameHolder, ParentScope, PathResult, PathSource, Segment,
 };
-use taroc_span::{Span, Symbol};
+use taroc_span::{Identifier, Symbol};
 
 impl<'ctx> Resolver<'ctx> {
     pub fn resolve_path_with_scopes(
@@ -58,10 +58,14 @@ impl<'ctx> Resolver<'ctx> {
 
             // For Nested Paths, The Non-Last Segments should resolve to a type
             let named_symbol = if let Some(context) = resulting_context {
-                self.resolve_symbol_in_context(name, ns, context, parent_scope)
+                self.resolve_symbol_in_context(segment.identifier, ns, context, parent_scope)
             } else {
-                let lexical_resolution =
-                    self.resolve_symbol_in_lexical_scope(name, ns, scopes, parent_scope);
+                let lexical_resolution = self.resolve_symbol_in_lexical_scope(
+                    segment.identifier,
+                    ns,
+                    scopes,
+                    parent_scope,
+                );
                 match lexical_resolution {
                     Some(LexicalScopeBinding::Declaration(binding)) => Ok(binding),
                     Some(LexicalScopeBinding::Resolution(resolution)) => {
@@ -82,7 +86,7 @@ impl<'ctx> Resolver<'ctx> {
                                 return PathResult::NonContext(
                                     PartialResolution::with_unresolved_segments(
                                         resolution,
-                                        path.len() - 1,
+                                        path.len() - 1 - index,
                                     ),
                                 );
                             }
@@ -103,7 +107,7 @@ impl<'ctx> Resolver<'ctx> {
                         return PathResult::NonContext(
                             PartialResolution::with_unresolved_segments(
                                 ctx.resolution().unwrap(),
-                                path.len() - index,
+                                path.len() - index - 1,
                             ),
                         );
                     }
@@ -126,7 +130,10 @@ impl<'ctx> Resolver<'ctx> {
                 record_resolution(self, PartialResolution::new(resolution));
             } else if namespace.is_some() && (is_last || maybe_assoc) {
                 record_resolution(self, PartialResolution::new(resolution.clone()));
-                return PathResult::NonContext(PartialResolution::new(resolution));
+                return PathResult::NonContext(PartialResolution::with_unresolved_segments(
+                    resolution,
+                    path.len() - 1 - index,
+                ));
             } else if matches!(resolution, Resolution::Error) {
                 return PathResult::NonContext(PartialResolution::new(Resolution::Error));
             } else {
@@ -151,16 +158,17 @@ impl<'ctx> Resolver<'ctx> {
 impl<'ctx> Resolver<'ctx> {
     pub fn resolve_symbol_in_context(
         &self,
-        name: Symbol,
+        ident: Identifier,
         namespace: SymbolNamespace,
         context: ContextOrResolutionRoot<'ctx>,
         parent_scope: &ParentScope<'ctx>,
     ) -> Result<NameHolder<'ctx>, Determinacy> {
+        let name = ident.symbol;
         let context = match context {
             ContextOrResolutionRoot::Context(context) => context,
             ContextOrResolutionRoot::PackageRootAndDependencyPrelude => {
                 let binding = self.resolve_in_implicit_scopes(
-                    name,
+                    ident,
                     ImplicitScopeSet::PackageAndDependencyRoot(namespace),
                     parent_scope,
                 );
@@ -216,7 +224,7 @@ impl<'ctx> Resolver<'ctx> {
                         .get()
                         .expect("module should be resolved");
                     match self.resolve_symbol_in_context(
-                        name,
+                        ident,
                         namespace,
                         module_context,
                         parent_scope,
@@ -243,7 +251,7 @@ impl<'ctx> Resolver<'ctx> {
                         .get()
                         .expect("module should be resolved");
                     match self.resolve_symbol_in_context(
-                        name,
+                        ident,
                         namespace,
                         module_context,
                         parent_scope,
@@ -281,11 +289,12 @@ impl<'ctx> Resolver<'ctx> {
 impl<'ctx> Resolver<'ctx> {
     pub fn resolve_symbol_in_lexical_scope(
         &self,
-        name: Symbol,
+        ident: Identifier,
         namespace: SymbolNamespace,
         scopes: &[LexicalScope<'ctx>],
         parent_scope: &ParentScope<'ctx>,
     ) -> Option<LexicalScopeBinding<'ctx>> {
+        let name = ident.symbol;
         if name == Symbol::with("") {
             return Some(LexicalScopeBinding::Resolution(Resolution::Error));
         }
@@ -313,7 +322,7 @@ impl<'ctx> Resolver<'ctx> {
             };
 
             let binding = self.resolve_symbol_in_context(
-                name,
+                ident,
                 namespace,
                 ContextOrResolutionRoot::Context(context),
                 parent_scope,
@@ -328,7 +337,7 @@ impl<'ctx> Resolver<'ctx> {
         }
 
         self.resolve_in_implicit_scopes(
-            name,
+            ident,
             ImplicitScopeSet::FullResolution(namespace, context),
             parent_scope,
         )
@@ -340,19 +349,20 @@ impl<'ctx> Resolver<'ctx> {
 impl<'ctx> Resolver<'ctx> {
     pub fn resolve_in_implicit_scopes(
         &self,
-        name: Symbol,
+        ident: Identifier,
         set: ImplicitScopeSet<'ctx>,
         parent_scope: &ParentScope<'ctx>,
     ) -> Result<NameHolder<'ctx>, Determinacy> {
-        if name.is_path_segment_keyword() {
+        if ident.is_path_segment_keyword() {
             return Err(Determinacy::Determined);
         }
         let ns = set.namespace();
+        let name = ident.symbol;
         let result = self.visit_scopes(set, parent_scope, |this, scope| {
             let result = match scope {
                 ImplicitScopes::Context(definition_context) => {
                     let holder = this.resolve_symbol_in_context(
-                        name,
+                        ident,
                         ns,
                         ContextOrResolutionRoot::Context(definition_context),
                         parent_scope,
@@ -363,7 +373,7 @@ impl<'ctx> Resolver<'ctx> {
                 ImplicitScopes::PackageRoot => {
                     let root = this.root_context;
                     let result = this.resolve_symbol_in_context(
-                        name,
+                        ident,
                         ns,
                         ContextOrResolutionRoot::Context(root),
                         parent_scope,
@@ -379,10 +389,10 @@ impl<'ctx> Resolver<'ctx> {
                     let context = this.resolve_package_root(name);
 
                     match context {
-                        Some(context) => {
+                        Some((_, context)) => {
                             let binding = NameBindingData {
                                 kind: NameBindingKind::Context(context),
-                                span: Span::module(),
+                                span: ident.span,
                                 vis: taroc_hir::TVisibility::Public,
                             };
 
@@ -475,10 +485,13 @@ impl<'ctx> Resolver<'ctx> {
 }
 
 impl<'ctx> Resolver<'ctx> {
-    pub fn resolve_package_root(&self, name: Symbol) -> Option<DefinitionContext<'ctx>> {
+    pub fn resolve_package_root(
+        &self,
+        name: Symbol,
+    ) -> Option<(PackageIndex, DefinitionContext<'ctx>)> {
         // Refering to self
         if name.as_str() == &self.session().config.package_name() {
-            return Some(self.root_context);
+            return Some((self.session().index(), self.root_context));
         }
 
         // Refering to STD
@@ -491,7 +504,7 @@ impl<'ctx> Resolver<'ctx> {
                 .get(&0)
                 .expect("std to be resolved")
                 .root;
-            return Some(context);
+            return Some((PackageIndex::new(0), context));
         }
 
         // Refering to Dependency
@@ -511,7 +524,7 @@ impl<'ctx> Resolver<'ctx> {
                 .get(&index)
                 .expect("package to be resolved")
                 .root;
-            return Some(context);
+            return Some((PackageIndex::new(index), context));
         }
 
         return None;

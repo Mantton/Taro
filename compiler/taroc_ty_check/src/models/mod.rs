@@ -2,14 +2,13 @@ use index_vec::IndexVec;
 use rustc_hash::FxHashMap;
 use taroc_context::GlobalContext;
 use taroc_hir::{DefinitionID, NodeID};
-use taroc_span::Span;
+use taroc_span::{Span, Symbol};
 use taroc_ty::{
-    Adjustment, Constraint, FloatVid, GenericArgument, GenericArguments, GenericParameter, InferTy,
-    IntVid, NilVid, Ty, TyKind, TyVid, VarBinding,
+    Adjustment, Constraint, SimpleType, FloatVid, GenericArgument, GenericArguments,
+    GenericParameter, InferTy, IntVid, NilVid, Ty, TyKind, TyVid, VarBinding,
 };
 
-use crate::utils;
-
+pub mod constraints;
 /// Maps Generic Parameter IDs to concrete Types.
 #[derive(Debug, Clone, Default)]
 pub struct SubstitutionMap<'ctx> {
@@ -101,8 +100,8 @@ impl<'ctx> InferenceContext<'ctx> {
         id: DefinitionID,
         args: GenericArguments<'ctx>,
     ) {
-        let subst = utils::create_substitution_map(id, args, self.gcx);
-        let definition = self.gcx.predicates_of(id);
+        // let subst = utils::create_substitution_map(id, args, self.gcx);
+        // let definition = self.gcx.predicates_of(id);
         // for (constraint, span) in definition.constraints.iter() {
         //     let dup = utils::substitute_constraint(*constraint, &subst, self.gcx);
         //     self.constraints.push((dup, *span));
@@ -253,4 +252,18 @@ pub enum UnificationError {
     OccursCheckFailed,
     /// Everything else: two concrete primitives that differ, etc.
     TypeMismatch,
+}
+
+pub struct ExtensionTable<'ctx> {
+    data: FxHashMap<SimpleType, BucketSet<'ctx>>,
+}
+
+pub struct BucketSet<'ctx> {
+    // --- Global Scope ---
+    pub aliases: FxHashMap<Symbol, Ty<'ctx>>,
+    pub static_members: usize,
+
+    // --- Constrained Scope ---
+    pub unspecialized: usize,
+    pub specialized: usize,
 }

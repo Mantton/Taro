@@ -8,13 +8,13 @@ use std::{
     rc::Rc,
 };
 use taroc_data_structures::Interned;
-use taroc_hir::{DefinitionID, DefinitionKind, NodeID, PartialResolution, Resolution};
+use taroc_hir::{DefinitionID, DefinitionKind, NodeID, PackageIndex, PartialResolution};
 use taroc_resolve_models::DefinitionContext;
-use taroc_span::Symbol;
+use taroc_span::{FileID, Identifier, Symbol};
 use taroc_ty::{
     DefinitionFunctionsData, EnumDefinition, FloatTy, GenericArgument, GenericParameter, IntTy,
-    InterfaceDefinition, InterfaceReference, LabeledFunctionSignature, StructDefinition, Ty,
-    TyKind, UIntTy,
+    InterfaceDefinition, InterfaceTypeReference, LabeledFunctionSignature, PackageAliasTable,
+    SimpleType, StructDefinition, Ty, TyKind, UIntTy,
 };
 
 pub struct ContextStore<'ctx> {
@@ -125,6 +125,10 @@ impl<'ctx> ContextInterners<'ctx> {
         Interned::new_unchecked(value)
     }
 
+    pub fn alloc<T>(&self, value: T) -> &'ctx T {
+        self.arenas.arena.alloc(value)
+    }
+
     pub fn intern_slice<T: Copy>(&self, value: &[T]) -> &'ctx [T] {
         let value = self.arenas.arena.alloc_slice_copy(value);
         value
@@ -136,29 +140,36 @@ pub struct ResolutionData<'ctx> {
     pub node_to_def: FxHashMap<NodeID, DefinitionID>,
     pub def_to_kind: FxHashMap<DefinitionID, DefinitionKind>,
     pub def_to_context: FxHashMap<DefinitionID, DefinitionContext<'ctx>>,
-    pub def_to_symbol: FxHashMap<DefinitionID, Symbol>,
+    pub def_to_ident: FxHashMap<DefinitionID, Identifier>,
     pub def_to_parent: FxHashMap<DefinitionID, DefinitionID>,
     pub resolution_map: FxHashMap<NodeID, PartialResolution>,
+    pub generics_map: FxHashMap<DefinitionID, Vec<(Symbol, DefinitionID)>>,
+    pub file_to_imports: FxHashMap<FileID, FxHashSet<PackageIndex>>,
 }
 
 #[derive(Debug, Default)]
 pub struct TypeDatabase<'ctx> {
     pub def_to_ty: FxHashMap<DefinitionID, Ty<'ctx>>,
-    pub def_to_generics: FxHashMap<DefinitionID, taroc_ty::Generics>,
+    pub def_to_generics: FxHashMap<DefinitionID, &'ctx taroc_ty::Generics>,
     pub def_to_constraints: FxHashMap<DefinitionID, taroc_ty::DefinitionConstraints<'ctx>>,
     pub structs: FxHashMap<DefinitionID, StructDefinition<'ctx>>,
     pub enums: FxHashMap<DefinitionID, EnumDefinition<'ctx>>,
     pub interfaces: FxHashMap<DefinitionID, Rc<RefCell<InterfaceDefinition<'ctx>>>>,
     pub functions: FxHashMap<DefinitionID, LabeledFunctionSignature<'ctx>>,
     pub def_to_functions: FxHashMap<DefinitionID, Rc<RefCell<DefinitionFunctionsData<'ctx>>>>,
-    pub conformances: FxHashMap<DefinitionID, FxHashSet<InterfaceReference<'ctx>>>,
-    pub conformances_span: FxHashMap<(DefinitionID, InterfaceReference<'ctx>), taroc_span::Span>,
-    pub def_to_fn_signature: FxHashMap<DefinitionID, LabeledFunctionSignature<'ctx>>,
+    pub conformances: FxHashMap<DefinitionID, FxHashSet<InterfaceTypeReference<'ctx>>>,
+    pub conformances_span:
+        FxHashMap<(DefinitionID, InterfaceTypeReference<'ctx>), taroc_span::Span>,
+    pub def_to_fn_signature: FxHashMap<DefinitionID, &'ctx LabeledFunctionSignature<'ctx>>,
+    pub extension_ty_map: FxHashMap<DefinitionID, SimpleType>,
+    pub alias_table: PackageAliasTable,
+    pub node_to_ty: FxHashMap<NodeID, Ty<'ctx>>,
 }
 
 pub struct CommonTypes<'ctx> {
     pub bool: Ty<'ctx>,
     pub rune: Ty<'ctx>,
+    pub string: Ty<'ctx>,
     pub void: Ty<'ctx>,
 
     pub uint: Ty<'ctx>,
@@ -177,7 +188,6 @@ pub struct CommonTypes<'ctx> {
     pub float64: Ty<'ctx>,
 
     pub error: Ty<'ctx>,
-    pub ignore: Ty<'ctx>,
     pub self_type_parameter: Ty<'ctx>,
 
     pub mappings: CommonTypeMapping,
@@ -219,6 +229,7 @@ impl<'a> CommonTypes<'a> {
         CommonTypes {
             bool: mk(TyKind::Bool),
             rune: mk(TyKind::Rune),
+            string: mk(TyKind::String),
             void: {
                 let list = interner.intern_ty_list(&vec![]);
                 mk(TyKind::Tuple(list))
@@ -240,7 +251,6 @@ impl<'a> CommonTypes<'a> {
             float64: mk(TyKind::Float(FloatTy::F64)),
 
             error: mk(TyKind::Error),
-            ignore: mk(TyKind::Ignore),
 
             self_type_parameter: {
                 let parameter = GenericParameter {

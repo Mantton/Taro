@@ -5,7 +5,7 @@ use std::fmt::Display;
 use taroc_ast_ir::OperatorKind;
 use taroc_data_structures::Interned;
 use taroc_hir::{DefinitionID, Mutability};
-use taroc_span::{FileID, Span, Symbol};
+use taroc_span::{FileID, Span, Spanned, Symbol};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Ty<'arena>(Interned<'arena, TyKind<'arena>>);
@@ -23,6 +23,7 @@ impl<'arena> Ty<'arena> {
 pub enum TyKind<'arena> {
     Bool,
     Rune,
+    String,
     Int(IntTy),
     UInt(UIntTy),
     Float(FloatTy),
@@ -33,14 +34,11 @@ pub enum TyKind<'arena> {
     Array(Ty<'arena>, u32),
     Tuple(&'arena [Ty<'arena>]),
 
-    Adt(
-        AdtDef,
-        &'arena [GenericArgument<'arena>],
-        Option<Ty<'arena>>,
-    ),
+    Adt(AdtDef, &'arena [GenericArgument<'arena>]),
 
     // any <interface> | <interface>
-    Existential(&'arena [InterfaceReference<'arena>]),
+    Existential(&'arena [InterfaceTypeReference<'arena>]),
+    Opaque(&'arena [InterfaceTypeReference<'arena>]),
     Parameter(GenericParameter),
     FnDef(DefinitionID, &'arena [GenericArgument<'arena>]),
     Function {
@@ -52,7 +50,6 @@ pub enum TyKind<'arena> {
     AssociatedType(DefinitionID),
     Infer(InferTy),
     Error,
-    Ignore,
     OverloadedFn(&'arena [DefinitionID], Option<GenericArguments<'arena>>),
 }
 
@@ -63,7 +60,7 @@ impl<'ctx> Ty<'ctx> {
     /// (potentially through references).
     pub fn get_adt_arguments(&self, target: DefinitionID) -> Option<GenericArguments<'ctx>> {
         match self.kind() {
-            TyKind::Adt(def, args, _) if def.id == target => Some(args),
+            TyKind::Adt(def, args) if def.id == target => Some(args),
             TyKind::Reference(inner_ty, _) => {
                 // Recurse on the inner type
                 inner_ty.get_adt_arguments(target)
@@ -274,10 +271,25 @@ pub struct InterfaceOperatorRequirement<'ctx> {
     pub is_required: bool,
 }
 
+// For interface types (any/some Protocol)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct InterfaceReference<'ctx> {
+pub struct InterfaceTypeReference<'ctx> {
     pub id: DefinitionID,
-    pub arguments: GenericArguments<'ctx>,
+    pub arguments: GenericArguments<'ctx>, // Doesn't contain Self
+}
+
+// For conformance constraints (T: Protocol)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct InterfaceConformanceReference<'ctx> {
+    pub id: DefinitionID,
+    pub self_ty: Ty<'ctx>,                 // Explicit Self type (T)
+    pub arguments: GenericArguments<'ctx>, // Other generic arguments if any
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TypeErasure {
+    Existential, // any Protocol
+    Opaque,      // some Protocol
 }
 
 #[derive(Debug, Clone)]
@@ -329,12 +341,12 @@ pub struct ConformanceRecord<'ctx> {
     pub method_witnesses: FxHashMap<Symbol, DefinitionID>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Constraint<'ctx> {
     /// `T: P1 & P2 & …`
     Bound {
         ty: Ty<'ctx>,
-        interface: InterfaceReference<'ctx>,
+        interface: InterfaceTypeReference<'ctx>,
     },
 
     /// `T == U`
@@ -343,7 +355,7 @@ pub enum Constraint<'ctx> {
 
 #[derive(Debug, Clone, Default)]
 pub struct DefinitionConstraints<'ctx> {
-    pub constraints: Vec<(Constraint<'ctx>, Span)>,
+    pub constraints: Vec<Spanned<Constraint<'ctx>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -416,13 +428,84 @@ impl<'ctx> Ty<'ctx> {
                     inputs.iter().copied().any(visit) || visit(output)
                 }
                 TyKind::FnDef(_, args) => args.iter().filter_map(|ga| ga.ty()).any(visit),
-                TyKind::Adt(_, args, _) => args.iter().filter_map(|ga| ga.ty()).any(visit),
+                TyKind::Adt(_, args) => args.iter().filter_map(|ga| ga.ty()).any(visit),
                 // Existential, associated, infer, error, primitives …
                 _ => false,
             }
         }
         visit(self)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SimpleType {
+    Rune,
+    Bool,
+    String,
+    Array,
+    Int(IntTy),
+    UInt(UIntTy),
+    Float(FloatTy),
+    Adt(DefinitionID),
+    Interface(DefinitionID),
+    Reference(Mutability),
+    Pointer(Mutability),
+}
+
+impl<'ctx> Ty<'ctx> {
+    pub fn to_simple_type(self) -> SimpleType {
+        match self.kind() {
+            TyKind::Bool => SimpleType::Bool,
+            TyKind::Rune => SimpleType::Rune,
+            TyKind::String => SimpleType::String,
+            TyKind::Int(int_ty) => SimpleType::Int(int_ty),
+            TyKind::UInt(uint_ty) => SimpleType::UInt(uint_ty),
+            TyKind::Float(float_ty) => SimpleType::Float(float_ty),
+            TyKind::Pointer(_, mutability) => SimpleType::Pointer(mutability),
+            TyKind::Reference(_, mutability) => SimpleType::Reference(mutability),
+            TyKind::Array(..) => SimpleType::Array,
+            TyKind::Adt(adt_def, _) => SimpleType::Adt(adt_def.id),
+            TyKind::Tuple(..)
+            | TyKind::Existential(..)
+            | TyKind::Opaque(..)
+            | TyKind::Parameter(..)
+            | TyKind::FnDef(..)
+            | TyKind::Function { .. }
+            | TyKind::AssociatedType(..)
+            | TyKind::Infer(..)
+            | TyKind::Error
+            | TyKind::OverloadedFn(..) => unreachable!(),
+        }
+    }
+}
+
+/// keeps all aliases for one package
+#[derive(Default, Debug, Clone)]
+pub struct PackageAliasTable {
+    pub aliases: FxHashMap<DefinitionID, AliasEntry>, // NEW – file‑scope aliases
+    pub by_type: FxHashMap<SimpleType, AliasBucket>,  // existing per‑type buckets
+}
+
+#[derive(Default, Debug, Clone)]
+pub struct AliasBucket {
+    /// All aliases visible on this nominal type, regardless of where‑clauses.
+    pub aliases: FxHashMap<Symbol, (DefinitionID, Span)>,
+}
+
+/// Raw info kept for a single alias during harvesting
+#[derive(Debug, Clone)]
+pub struct AliasEntry {
+    pub ast_type: Box<taroc_hir::Type>, // AST Type
+    pub span: Span,                     // source range for diagnostics
+    pub ext_id: Option<DefinitionID>,   // which extension declared it (for blame)
+    pub alias_id: DefinitionID,
+    pub symbol: Symbol,
+}
+
+#[derive(Debug)]
+pub struct ExtensionBlockSignature<'ctx> {
+    pub ty: Ty<'ctx>,
+    pub constraints: Vec<Spanned<Constraint<'ctx>>>,
 }
 
 // DISPLAY
@@ -473,25 +556,25 @@ impl Display for FloatTy {
 }
 
 // Display for interface references (e.g., trait bounds)
-impl<'arena> Display for InterfaceReference<'arena> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.id)?;
-        if !self.arguments.is_empty() {
-            write!(f, "<")?;
-            for (i, arg) in self.arguments.iter().enumerate() {
-                if i > 0 {
-                    write!(f, ", ")?;
-                }
-                match arg {
-                    GenericArgument::Type(t) => write!(f, "{}", t)?,
-                    GenericArgument::Const(c) => write!(f, "{}", c)?,
-                }
-            }
-            write!(f, ">")?;
-        }
-        Ok(())
-    }
-}
+// impl<'arena> Display for InterfaceReference<'arena> {
+//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+//         write!(f, "{}", self.id)?;
+//         if !self.arguments.is_empty() {
+//             write!(f, "<")?;
+//             for (i, arg) in self.arguments.iter().enumerate() {
+//                 if i > 0 {
+//                     write!(f, ", ")?;
+//                 }
+//                 match arg {
+//                     GenericArgument::Type(t) => write!(f, "{}", t)?,
+//                     GenericArgument::Const(c) => write!(f, "{}", c)?,
+//                 }
+//             }
+//             write!(f, ">")?;
+//         }
+//         Ok(())
+//     }
+// }
 
 // Display for the core TyKind enum
 impl<'arena> Display for TyKind<'arena> {
@@ -499,6 +582,7 @@ impl<'arena> Display for TyKind<'arena> {
         match self {
             TyKind::Bool => write!(f, "bool"),
             TyKind::Rune => write!(f, "rune"),
+            TyKind::String => write!(f, "string"),
             TyKind::Int(i) => write!(f, "{}", i),
             TyKind::UInt(u) => write!(f, "{}", u),
             TyKind::Float(fl) => write!(f, "{}", fl),
@@ -526,10 +610,7 @@ impl<'arena> Display for TyKind<'arena> {
                 }
                 write!(f, ")")
             }
-            TyKind::Adt(def, args, parent) => {
-                if let Some(s) = parent {
-                    write!(f, "{}::", s)?;
-                }
+            TyKind::Adt(def, args) => {
                 write!(f, "{}", def.name)?;
                 if !args.is_empty() {
                     write!(f, "<")?;
@@ -552,7 +633,16 @@ impl<'arena> Display for TyKind<'arena> {
                     if i > 0 {
                         write!(f, " | ")?;
                     }
-                    write!(f, "{}", iface)?;
+                    // write!(f, "{}", iface)?;
+                }
+                Ok(())
+            }
+            TyKind::Opaque(ifaces) => {
+                for (i, iface) in ifaces.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " | ")?;
+                    }
+                    // write!(f, "{}", iface)?;
                 }
                 Ok(())
             }
@@ -577,7 +667,6 @@ impl<'arena> Display for TyKind<'arena> {
             TyKind::AssociatedType(def_id) => write!(f, "{}", def_id),
             TyKind::Infer(v) => write!(f, "{v:?}"),
             TyKind::Error => write!(f, "<error>"),
-            TyKind::Ignore => write!(f, "_"),
             TyKind::FnDef(id, args) => {
                 write!(f, "fn {}", id)?;
                 if !args.is_empty() {

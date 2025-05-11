@@ -199,8 +199,8 @@ pub trait HirVisitor: Sized {
         walk_label(self, l)
     }
 
-    fn visit_function(&mut self, f: &Function, c: FunctionContext) -> Self::Result {
-        walk_function(self, f, c)
+    fn visit_function(&mut self, id: NodeID, f: &Function, c: FunctionContext) -> Self::Result {
+        walk_function(self, id, f, c)
     }
 
     fn visit_function_signature(&mut self, f: &FunctionSignature) -> Self::Result {
@@ -342,7 +342,7 @@ pub fn walk_declaration<V: HirVisitor>(visitor: &mut V, declaration: &Declaratio
             try_visit!(visitor.visit_enum_def(&node))
         }
         DeclarationKind::Function(node) => {
-            try_visit!(visitor.visit_function(node, FunctionContext::Free));
+            try_visit!(visitor.visit_function(declaration.id, node, FunctionContext::Free));
         }
         DeclarationKind::Static(node) => {
             try_visit!(visitor.visit_ident(&node.identifier));
@@ -400,7 +400,11 @@ pub fn walk_assoc_declaration<V: HirVisitor>(
             visit_optional!(visitor, visit_expression, &node.expr);
         }
         crate::AssociatedDeclarationKind::Function(node) => {
-            try_visit!(visitor.visit_function(node, FunctionContext::Assoc(context)));
+            try_visit!(visitor.visit_function(
+                declaration.id,
+                node,
+                FunctionContext::Assoc(context)
+            ));
         }
         crate::AssociatedDeclarationKind::Type(node) => {
             try_visit!(visitor.visit_generics(&node.generics));
@@ -408,7 +412,7 @@ pub fn walk_assoc_declaration<V: HirVisitor>(
         }
         crate::AssociatedDeclarationKind::Operator(operator_kind, function) => {
             let ctx = FunctionContext::AssocOperand(context, *operator_kind);
-            try_visit!(visitor.visit_function(function, ctx));
+            try_visit!(visitor.visit_function(declaration.id, function, ctx));
         }
     }
 
@@ -424,7 +428,7 @@ pub fn walk_foreign_declaration<V: HirVisitor>(
 
     match &declaration.kind {
         crate::ForeignDeclarationKind::Function(function) => {
-            try_visit!(visitor.visit_function(function, FunctionContext::Foreign));
+            try_visit!(visitor.visit_function(declaration.id, function, FunctionContext::Foreign));
         }
         crate::ForeignDeclarationKind::Type(node) => {
             try_visit!(visitor.visit_generics(&node.generics));
@@ -452,7 +456,7 @@ pub fn walk_function_declaration<V: HirVisitor>(
             try_visit!(visitor.visit_enum_def(&node))
         }
         FunctionDeclarationKind::Function(node) => {
-            try_visit!(visitor.visit_function(node, FunctionContext::Free));
+            try_visit!(visitor.visit_function(declaration.id, node, FunctionContext::Free));
         }
         FunctionDeclarationKind::Constant(node) => {
             try_visit!(visitor.visit_type(&node.ty));
@@ -607,16 +611,6 @@ pub fn walk_type<V: HirVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
         TypeKind::Infer => {}
         TypeKind::AnonStruct { fields } => {
             walk_list!(visitor, visit_field_definition, fields);
-        }
-        TypeKind::Pointer(ty, _) => {
-            try_visit!(visitor.visit_type(ty));
-        }
-        TypeKind::Reference(ty, _) => {
-            try_visit!(visitor.visit_type(ty));
-        }
-        TypeKind::Array(ty, len) => {
-            try_visit!(visitor.visit_type(ty));
-            try_visit!(visitor.visit_anon_const(len))
         }
         TypeKind::Malformed => unreachable!(),
     }
@@ -833,6 +827,7 @@ pub fn walk_expression_argument<V: HirVisitor>(
 
 pub fn walk_function<V: HirVisitor>(
     visitor: &mut V,
+    _: NodeID,
     function: &Function,
     _: FunctionContext,
 ) -> V::Result {
@@ -862,7 +857,7 @@ pub fn walk_function_prototype<V: HirVisitor>(
 pub fn walk_generics<V: HirVisitor>(visitor: &mut V, node: &Generics) -> V::Result {
     visit_optional!(visitor, visit_type_parameters, &node.type_parameters);
     visit_optional!(visitor, visit_generic_where_clause, &node.where_clause);
-    visit_optional!(visitor, visit_inheritance, &node.inheritance);
+    visit_optional!(visitor, visit_inheritance, &node.conformance);
     V::Result::output()
 }
 

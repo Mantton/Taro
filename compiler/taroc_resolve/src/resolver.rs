@@ -2,7 +2,7 @@ use crate::{
     arena::{alloc_binding, alloc_context},
     models::ToNameBinding,
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use taroc_context::{CompilerSession, GlobalContext, ResolutionData};
 use taroc_hir::{
     DefinitionID, DefinitionIndex, DefinitionKind, NodeID, PackageIndex, PartialResolution,
@@ -19,7 +19,7 @@ pub struct Resolver<'ctx> {
     pub root_context: DefinitionContext<'ctx>,
     node_to_def: FxHashMap<NodeID, DefinitionID>,
     def_to_kind: FxHashMap<DefinitionID, DefinitionKind>,
-    def_to_symbol: FxHashMap<DefinitionID, Symbol>,
+    def_to_ident: FxHashMap<DefinitionID, Identifier>,
     def_to_context: FxHashMap<DefinitionID, DefinitionContext<'ctx>>,
     def_to_parent: FxHashMap<DefinitionID, DefinitionID>,
     pub block_map: FxHashMap<NodeID, DefinitionContext<'ctx>>,
@@ -31,6 +31,8 @@ pub struct Resolver<'ctx> {
     pub next_index: u32,
     pub resolution_map: FxHashMap<NodeID, PartialResolution>,
     pub builin_types_bindings: FxHashMap<Symbol, NameHolder<'ctx>>,
+    pub generics_table: FxHashMap<DefinitionID, Vec<(Symbol, DefinitionID)>>,
+    pub file_to_imports: FxHashMap<FileID, FxHashSet<PackageIndex>>,
 }
 
 impl Resolver<'_> {
@@ -52,7 +54,7 @@ impl Resolver<'_> {
             node_to_def: Default::default(),
             def_to_kind: Default::default(),
             def_to_context: Default::default(),
-            def_to_symbol: Default::default(),
+            def_to_ident: Default::default(),
             def_to_parent: Default::default(),
             block_map: Default::default(),
             file_map: Default::default(),
@@ -62,6 +64,8 @@ impl Resolver<'_> {
             resolved_imports: Vec::new(),
             resolution_map: Default::default(),
             next_index: 0,
+            generics_table: Default::default(),
+            file_to_imports: Default::default(),
             builin_types_bindings: PrimaryType::ALL
                 .iter()
                 .map(|ty| {
@@ -104,7 +108,7 @@ impl<'ctx> Resolver<'ctx> {
 
     pub fn create_def(
         &mut self,
-        symbol: Symbol,
+        ident: Identifier,
         node: NodeID,
         kind: DefinitionKind,
         _parent: DefinitionID,
@@ -115,7 +119,7 @@ impl<'ctx> Resolver<'ctx> {
         );
         self.node_to_def.insert(node, index);
         self.def_to_kind.insert(index, kind);
-        self.def_to_symbol.insert(index, symbol);
+        self.def_to_ident.insert(index, ident);
         self.next_index += 1;
         index
     }
@@ -137,9 +141,10 @@ impl<'ctx> Resolver<'ctx> {
         kind
     }
 
+    #[track_caller]
     pub fn get_context(&self, id: &DefinitionID) -> Option<DefinitionContext<'ctx>> {
         if !id.is_local(self.session().package_index) {
-            return Some(self.gcx.def_context(*id));
+            return self.gcx.def_context(*id);
         };
         self.def_to_context.get(id).cloned()
     }
@@ -295,9 +300,11 @@ impl<'ctx> Resolver<'ctx> {
             node_to_def: self.node_to_def,
             def_to_kind: self.def_to_kind,
             def_to_context: self.def_to_context,
-            def_to_symbol: self.def_to_symbol,
+            def_to_ident: self.def_to_ident,
             def_to_parent: self.def_to_parent,
             resolution_map: self.resolution_map,
+            generics_map: self.generics_table,
+            file_to_imports: self.file_to_imports,
         }
     }
 }

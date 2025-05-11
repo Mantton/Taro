@@ -347,7 +347,10 @@ impl Parser {
 impl Parser {
     fn parse_extend(&mut self) -> R<DeclarationKind> {
         self.expect(TokenKind::Extend)?;
-        let type_parameters = self.parse_type_parameters()?;
+        let t_params = self.parse_type_parameters()?;
+        if let Some(t_params) = t_params {
+            self.emit_error("type aprameters are not supported on extension blocks, they would be inferred based on the type extended".into(), t_params.span);
+        }
 
         let ty = self.parse_type()?;
         let conformances = self.parse_conformances()?;
@@ -357,7 +360,7 @@ impl Parser {
             .parse_decl_list(|p| p.parse_associated_declaration(FnParseMode { req_body: true }))?;
 
         let generics = Generics {
-            type_parameters,
+            type_parameters: None,
             where_clause,
             conformances,
         };

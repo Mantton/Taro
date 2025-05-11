@@ -96,5 +96,5 @@ pub struct TaggedPath {
 pub struct Generics {
     pub type_parameters: Option<TypeParameters>,
     pub where_clause: Option<GenericWhereClause>,
-    pub inheritance: Option<Inheritance>,
+    pub conformance: Option<Inheritance>,
 }

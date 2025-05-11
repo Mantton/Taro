@@ -7,7 +7,7 @@ impl Actor<'_> {
                 .lower_optional(g.type_parameters, |a, v| a.lower_type_parameters(v)),
             where_clause: self
                 .lower_optional(g.where_clause, |a, v| a.lower_generic_where_clause(v)),
-            inheritance: self.lower_optional(g.conformances, |a, v| a.lower_inheritance(v)),
+            conformance: self.lower_optional(g.conformances, |a, v| a.lower_inheritance(v)),
         }
     }
 

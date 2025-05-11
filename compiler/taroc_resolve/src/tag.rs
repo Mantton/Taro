@@ -7,7 +7,7 @@ use taroc_hir::{
         walk_path_tree,
     },
 };
-use taroc_span::Symbol;
+use taroc_span::{Identifier, Span, Symbol};
 
 pub struct HirNodeTagger<'res, 'ctx> {
     resolver: &'res mut Resolver<'ctx>,
@@ -23,8 +23,8 @@ impl<'res, 'ctx> HirNodeTagger<'res, 'ctx> {
         walk_package(&mut actor, package);
     }
 
-    fn tag(&mut self, symbol: Symbol, node: NodeID, kind: DefinitionKind) -> DefinitionID {
-        self.resolver.create_def(symbol, node, kind, self.parent)
+    fn tag(&mut self, ident: Identifier, node: NodeID, kind: DefinitionKind) -> DefinitionID {
+        self.resolver.create_def(ident, node, kind, self.parent)
     }
 
     fn with_parent<F: FnOnce(&mut Self)>(&mut self, parent: DefinitionID, f: F) {
@@ -36,7 +36,11 @@ impl<'res, 'ctx> HirNodeTagger<'res, 'ctx> {
 
 impl HirVisitor for HirNodeTagger<'_, '_> {
     fn visit_module(&mut self, m: &taroc_hir::Module) -> <Self as HirVisitor>::Result {
-        self.tag(m.name, m.id, DefinitionKind::Module);
+        self.tag(
+            Identifier::new(m.name, Span::module()),
+            m.id,
+            DefinitionKind::Module,
+        );
         walk_module(self, m)
     }
 
@@ -58,14 +62,14 @@ impl HirVisitor for HirNodeTagger<'_, '_> {
             DeclarationKind::Malformed => unreachable!(),
         };
 
-        let parent = self.tag(d.identifier.symbol, d.id, kind);
+        let parent = self.tag(d.identifier, d.id, kind);
 
         self.with_parent(parent, |actor| {
             match &d.kind {
                 DeclarationKind::Struct(data) => {
                     if let Some((kind, id)) = CtorKind::from_variant(&data.variant) {
                         let kind = DefinitionKind::Ctor(CtorOf::Struct, kind);
-                        actor.tag(d.identifier.symbol, id, kind);
+                        actor.tag(d.identifier, id, kind);
                     }
                 }
                 _ => {}
@@ -88,14 +92,14 @@ impl HirVisitor for HirNodeTagger<'_, '_> {
             taroc_hir::FunctionDeclarationKind::Enum(..) => DefinitionKind::Enum,
         };
 
-        let parent = self.tag(d.identifier.symbol, d.id, kind);
+        let parent = self.tag(d.identifier, d.id, kind);
 
         self.with_parent(parent, |actor| {
             match &d.kind {
                 FunctionDeclarationKind::Struct(data) => {
                     if let Some((kind, id)) = CtorKind::from_variant(&data.variant) {
                         let kind = DefinitionKind::Ctor(CtorOf::Struct, kind);
-                        actor.tag(d.identifier.symbol, id, kind);
+                        actor.tag(d.identifier, id, kind);
                     }
                 }
                 _ => {}
@@ -123,7 +127,7 @@ impl HirVisitor for HirNodeTagger<'_, '_> {
             }
         };
 
-        let parent = self.tag(declaration.identifier.symbol, declaration.id, kind);
+        let parent = self.tag(declaration.identifier, declaration.id, kind);
 
         self.with_parent(parent, |actor| {
             taroc_hir::visitor::walk_assoc_declaration(actor, declaration, context);
@@ -136,7 +140,7 @@ impl HirVisitor for HirNodeTagger<'_, '_> {
             taroc_hir::ForeignDeclarationKind::Type(..) => DefinitionKind::TypeAlias,
         };
 
-        let parent = self.tag(d.identifier.symbol, d.id, kind);
+        let parent = self.tag(d.identifier, d.id, kind);
 
         self.with_parent(parent, |actor| {
             taroc_hir::visitor::walk_foreign_declaration(actor, d);
@@ -151,23 +155,23 @@ impl HirVisitor for HirNodeTagger<'_, '_> {
             taroc_hir::TypeParameterKind::Type { .. } => DefinitionKind::TypeParameter,
             taroc_hir::TypeParameterKind::Constant { .. } => DefinitionKind::ConstParameter,
         };
-        self.tag(t.identifier.symbol, t.id, k);
+        self.tag(t.identifier, t.id, k);
     }
 
     fn visit_field_definition(
         &mut self,
         f: &taroc_hir::FieldDefinition,
     ) -> <Self as HirVisitor>::Result {
-        self.tag(f.identifier.symbol, f.id, DefinitionKind::Field);
+        self.tag(f.identifier, f.id, DefinitionKind::Field);
     }
 
     fn visit_variant(&mut self, v: &taroc_hir::Variant) -> <Self as HirVisitor>::Result {
-        let parent = self.tag(v.identifier.symbol, v.id, DefinitionKind::Variant);
+        let parent = self.tag(v.identifier, v.id, DefinitionKind::Variant);
 
         self.with_parent(parent, |this| {
             if let Some((kind, id)) = CtorKind::from_variant(&v.kind) {
                 this.tag(
-                    v.identifier.symbol,
+                    v.identifier,
                     id,
                     DefinitionKind::Ctor(CtorOf::Variant, kind),
                 );
@@ -190,7 +194,7 @@ impl HirVisitor for HirNodeTagger<'_, '_> {
             DefinitionKind::Export
         };
 
-        self.tag(Symbol::with(""), id, k);
+        self.tag(Identifier::new(Symbol::with(""), node.span), id, k);
         walk_path_tree(self, node, id, is_import)
     }
 }

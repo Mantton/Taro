@@ -1,8 +1,8 @@
 use super::resolver::Resolver;
 use taroc_error::CompileResult;
 use taroc_resolve_models::{
-    BindingKey, DefinitionContext, Determinacy, ExternalDefUsageKind, ExternalDefinitionUsage,
-    NameBinding, PathResult,
+    BindingKey, ContextOrResolutionRoot, DefContextKind, DefinitionContext, Determinacy,
+    ExternalDefUsageKind, ExternalDefinitionUsage, NameBinding, PathResult,
 };
 
 impl Resolver<'_> {
@@ -133,6 +133,19 @@ impl<'res, 'ctx> UsageResolver<'res, 'ctx> {
             ),
             ExternalDefUsageKind::Glob { .. } => {
                 usage.is_resolved.set(true);
+
+                if let ContextOrResolutionRoot::Context(ctx) = module
+                    && let DefContextKind::Definition(id, ..) = ctx.kind
+                {
+                    let package = id.package();
+                    let file = usage.span.file;
+                    self.resolver
+                        .file_to_imports
+                        .entry(file)
+                        .or_default()
+                        .insert(package);
+                };
+
                 return true;
             }
         };
@@ -143,7 +156,7 @@ impl<'res, 'ctx> UsageResolver<'res, 'ctx> {
             // Undetermined / Unresolved usage
             if let Err(Determinacy::Undetermined) = source_binding[ns].get() {
                 let result =
-                    this.resolve_symbol_in_context(source.symbol, ns, module, &usage.parent_scope);
+                    this.resolve_symbol_in_context(source, ns, module, &usage.parent_scope);
                 source_binding[ns].set(result);
             } else {
                 return;
@@ -159,7 +172,15 @@ impl<'res, 'ctx> UsageResolver<'res, 'ctx> {
                 Ok(holder) if holder.nearest().is_importable() => {
                     let bindings = holder.all();
 
-                    for binding in bindings {
+                    for (index, binding) in bindings.into_iter().enumerate() {
+                        if index == 0 {
+                            let package = binding.def_id().unwrap().package();
+                            let file = usage.span.file;
+                            this.file_to_imports
+                                .entry(file)
+                                .or_default()
+                                .insert(package);
+                        }
                         let binding = this.convert_usage_binding(binding, usage);
                         if usage.is_import {
                             this.import(parent_context, key, binding);
