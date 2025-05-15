@@ -160,6 +160,7 @@ impl Actor<'_> {
                     symbol: Symbol::with(component),
                 },
                 arguments: None,
+                span,
             };
 
             segments.push(segment);

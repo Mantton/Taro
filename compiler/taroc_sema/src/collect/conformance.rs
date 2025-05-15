@@ -1,6 +1,7 @@
 use taroc_context::GlobalContext;
 use taroc_error::CompileResult;
 use taroc_hir::{DefinitionID, DefinitionKind, visitor::HirVisitor};
+use taroc_ty::UncheckedConformanceRecord;
 
 use crate::{
     lower::{ItemCtx, LoweringRequest, TypeLowerer},
@@ -62,17 +63,31 @@ impl<'ctx> Actor<'ctx> {
 
         let self_ty = ty_from_simple(self.context, ty_key);
 
-        // collect interface references
-        let constraints = self.context.predicates_of(extend_id);
+        let is_conditional = node.where_clause.is_some();
         let icx = ItemCtx::new(self.context);
-        let mut references = vec![];
         for interface in interafaces {
             let reference = icx.lowerer().lower_interface_reference(
                 self_ty,
                 interface,
                 &LoweringRequest::default(),
             );
-            references.push(reference);
+            let record = UncheckedConformanceRecord {
+                target: ty_key,
+                interface: reference,
+                extension: extend_id,
+                is_conditional,
+                location: interface.path.span,
+            };
+
+            self.context.with_type_database(extend_id.package(), |db| {
+                let entry = db.unchecked_conformances.entry(ty_key).or_default();
+                entry.push(record);
+            })
+
+            // println!(
+            //     "Conforomance {self_ty} to '{}', conditional: {is_conditional}",
+            //     self.context.ident_for(reference.id).symbol
+            // )
         }
     }
 }

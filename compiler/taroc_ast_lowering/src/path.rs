@@ -23,6 +23,7 @@ impl Actor<'_> {
             id: self.next(),
             identifier: segment.identifier,
             arguments: self.lower_optional(segment.arguments, |a, tys| a.lower_type_arguments(tys)),
+            span: segment.span,
         }
     }
 }

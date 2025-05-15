@@ -76,3 +76,9 @@ pub struct Spanned<Value> {
     pub span: Span,
     pub value: Value,
 }
+
+impl<Value> Spanned<Value> {
+    pub fn new(value: Value, span: Span) -> Self {
+        Self { span, value }
+    }
+}

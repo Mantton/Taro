@@ -10,4 +10,4 @@ taroc_resolve = { path = "../taroc_resolve" }
 taroc_hir = { path = "../taroc_hir" }
 taroc_context = { path = "../taroc_context" }
 taroc_package = { path = "../taroc_package" }
-taroc_ty_check = { path = "../taroc_ty_check" }
+taroc_sema = { path = "../taroc_sema" }

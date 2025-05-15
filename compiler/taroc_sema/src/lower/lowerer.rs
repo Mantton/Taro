@@ -1,6 +1,8 @@
+use std::collections::VecDeque;
 use taroc_context::GlobalContext;
-use taroc_hir::{DefinitionID, DefinitionKind, NodeID, PrimaryType};
-use taroc_ty::{GenericArgument, GenericArguments, InterfaceTypeReference, Ty, TyKind};
+use taroc_hir::{DefinitionID, DefinitionKind, NodeID, PrimaryType, Resolution};
+use taroc_span::{Identifier, Spanned};
+use taroc_ty::{Constraint, GenericArgument, GenericArguments, InterfaceReference, Ty, TyKind};
 
 use crate::utils::{convert_ast_float_ty, convert_ast_int_ty, convert_ast_uint_ty};
 
@@ -8,6 +10,12 @@ use super::{LoweringContext, LoweringRequest};
 
 pub trait TypeLowerer<'ctx> {
     fn gcx(&self) -> GlobalContext<'ctx>;
+
+    fn probe_ty_param_constraints(
+        &self,
+        def_id: DefinitionID,
+        assoc_ident: Identifier,
+    ) -> Vec<Spanned<Constraint<'ctx>>>;
 
     fn lowerer(&self) -> &dyn TypeLowerer<'ctx>
     where
@@ -31,7 +39,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 Self::mk_ty(gcx, TyKind::Tuple(items))
             }
             taroc_hir::TypeKind::Path(path) => {
-                self.lower_partially_resolved_path(hir_ty.id, path, request)
+                self.lower_partially_resolved_path_type(hir_ty.id, path, request)
             }
             taroc_hir::TypeKind::Opaque(..) => todo!(),
             taroc_hir::TypeKind::Exisitential(..) => todo!(),
@@ -45,7 +53,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         result_ty
     }
 
-    fn lower_partially_resolved_path(
+    fn lower_partially_resolved_path_type(
         &self,
         id: NodeID,
         path: &taroc_hir::Path,
@@ -57,7 +65,9 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         if resolution.unresolved_segments() == 0 {
             return self.lower_path(id, path, request);
         } else {
-            return self.lower_unresolved_path(id, path, &resolution, request);
+            return self
+                .lower_unresolved_path_type(id, path, &resolution, request)
+                .unwrap_or_else(|_| gcx.store.common_types.error);
         }
     }
 
@@ -84,23 +94,18 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 // TODO: Prohibit Generics
                 gcx.type_of(id)
             }
-            taroc_hir::Resolution::Definition(_, DefinitionKind::Interface) => {
-                // TODO: Check Generics
-                // let arguments = self.lower_type_arguments(id, path.segments.last().unwrap());
-
-                // let Ok(arguments) = arguments else {
-                //     return gcx.store.common_types.error;
-                // };
-                // let reference = InterfaceReference { id, arguments };
-                // let references = gcx.store.interners.intern_slice(&[reference]);
-                // let kind = TyKind::Existential(references);
-                // Self::mk_ty(gcx, kind)
+            taroc_hir::Resolution::Definition(id, DefinitionKind::Interface) => {
+                let message = format!(
+                    "expected type, found interface '{}'",
+                    gcx.ident_for(id).symbol
+                );
+                gcx.diagnostics.error(message, path.span);
                 gcx.store.common_types.error
             }
             taroc_hir::Resolution::Definition(id, DefinitionKind::AssociatedType) => {
                 Self::mk_ty(gcx, TyKind::AssociatedType(id))
             }
-            taroc_hir::Resolution::InterfaceSelfTypeAlias(..) => {
+            taroc_hir::Resolution::InterfaceSelfTypeParameter(..) => {
                 // TODO: Prohibit Generics
                 gcx.store.common_types.self_type_parameter
             }
@@ -134,25 +139,102 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             taroc_hir::PrimaryType::Rune => gcx.store.common_types.rune,
         }
     }
-    fn lower_unresolved_path(
+
+    fn lower_unresolved_path_type(
         &self,
         id: NodeID,
         path: &taroc_hir::Path,
         resolution: &taroc_hir::PartialResolution,
         request: &LoweringRequest,
-    ) -> Ty<'ctx> {
-        assert_eq!(resolution.unresolved_segments(), 1);
+    ) -> Result<Ty<'ctx>, ()> {
         let gcx = self.gcx();
-        let segment = path.segments.last().unwrap();
+
+        // build resolved path
+        let resolved_segments =
+            path.segments[..path.segments.len() - resolution.unresolved_segments].to_vec();
+        let resolved_path = taroc_hir::Path {
+            span: resolved_segments
+                .first()
+                .map(|f| f.span)
+                .unwrap_or(path.span)
+                .to(resolved_segments
+                    .last()
+                    .map(|f| f.span)
+                    .unwrap_or(path.span)),
+            segments: resolved_segments,
+        };
+
+        let mut unresolved_segments: VecDeque<_> = VecDeque::from_iter(
+            path.segments[path.segments.len() - resolution.unresolved_segments..].iter(),
+        );
+        let mut base_ty = self.lower_path(id, &resolved_path, request);
+        let mut base_res = resolution.resolution();
+
+        while !unresolved_segments.is_empty() {
+            let segment = unresolved_segments.pop_front();
+            let Some(segment) = segment else {
+                break;
+            };
+            match &base_res {
+                taroc_hir::Resolution::InterfaceSelfTypeParameter(def_id)
+                | taroc_hir::Resolution::Definition(
+                    def_id,
+                    DefinitionKind::TypeParameter | DefinitionKind::AssociatedType,
+                ) => {
+                    let result = self
+                        .probe_single_ty_param_bound_for_assoc_item(*def_id, segment.identifier);
+                    let interface_reference = match result {
+                        Ok(result) => result,
+                        Err(_) => todo!("probe for single item"),
+                    };
+
+                    let def_id = interface_reference.id;
+
+                    let definition = gcx.with_type_database(def_id.package(), |db| {
+                        *db.interfaces.get(&def_id).unwrap()
+                    });
+                    let assoc_type_id = definition
+                        .assoc_types
+                        .get(&segment.identifier.symbol)
+                        .expect("expected assoc type definition");
+
+                    let _ = self.lower_type_arguments(*assoc_type_id, segment, request);
+                    let ty = Self::mk_ty(gcx, TyKind::AssociatedType(def_id));
+
+                    base_ty = ty;
+                    base_res = Resolution::Definition(*assoc_type_id, gcx.def_kind(*assoc_type_id));
+                    continue;
+                }
+                _ => {
+                    let result = self.probe_inherent_assoc_shared(segment, base_ty);
+
+                    let definition_id = match result {
+                        Ok(result) => result,
+                        Err(_) => todo!("probe internal"),
+                    };
+
+                    let _ = self.lower_type_arguments(definition_id, segment, request);
+                    let ty = Self::mk_ty(gcx, TyKind::AssociatedType(definition_id));
+
+                    base_ty = ty;
+                    base_res = Resolution::Definition(definition_id, gcx.def_kind(definition_id));
+                    continue;
+                }
+            };
+        }
+
+        Ok(base_ty)
+    }
+
+    fn probe_inherent_assoc_shared(
+        &self,
+        segment: &taroc_hir::PathSegment,
+        base_ty: Ty<'ctx>,
+    ) -> Result<DefinitionID, ()> {
+        let gcx = self.gcx();
         let name = segment.identifier.symbol;
         let span = segment.identifier.span;
-        let resolved_path = taroc_hir::Path {
-            span,
-            segments: path.segments[..path.segments.len() - 1].to_vec(),
-        };
-        let base_ty = self.lower_path(id, &resolved_path, request);
         let simple_ty = base_ty.to_simple_type();
-        // println!("Base {base_ty}");
 
         let file = segment.identifier.span.file;
         let visible_packages = {
@@ -189,7 +271,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 gcx.diagnostics.info(message, gcx.ident_for(candidate).span);
             }
 
-            return gcx.store.common_types.error;
+            return Err(());
         }
 
         let entry = match candidates.pop() {
@@ -197,7 +279,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 // no candidates, assoc type not found
                 let message = format!("unknown associated type named '{name}' in '{base_ty}'");
                 gcx.diagnostics.error(message, span);
-                return gcx.store.common_types.error;
+                return Err(());
             }
             Some(e) => e,
         };
@@ -205,8 +287,70 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         // println!("Assoc Type {name}");
         // return self.resolve_alias_ty(entry, request);
 
-        let kind = TyKind::AssociatedType(entry);
-        return Self::mk_ty(gcx, kind);
+        Ok(entry)
+    }
+
+    // Find Possible Interface Candidate
+    fn probe_single_ty_param_bound_for_assoc_item(
+        &self,
+        def_id: DefinitionID,
+        assoc_name: Identifier,
+    ) -> Result<InterfaceReference<'ctx>, ()> {
+        let constraints = &self.probe_ty_param_constraints(def_id, assoc_name);
+        self.probe_single_bound_for_assoc_item(
+            || {
+                let refs = constraints.iter().filter_map(|sc| match &sc.value {
+                    Constraint::Bound { interface, .. } => Some(*interface),
+                    _ => None,
+                });
+
+                refs
+            },
+            def_id,
+            assoc_name,
+        )
+    }
+
+    fn probe_single_bound_for_assoc_item<I>(
+        &self,
+        all_candidates: impl Fn() -> I,
+        def_id: DefinitionID,
+        ident: Identifier,
+    ) -> Result<InterfaceReference<'ctx>, ()>
+    where
+        I: Iterator<Item = InterfaceReference<'ctx>>,
+    {
+        let mut interfaces = all_candidates()
+            .filter(|reference| self.probe_interface_contains_associated_type(reference.id, ident));
+
+        let Some(candidate) = interfaces.next() else {
+            let bound = self.gcx().ident_for(def_id).symbol;
+            let message = format!(
+                "no associated type '{}' is defined in '{}'",
+                ident.symbol, bound
+            );
+            self.gcx().diagnostics.error(message, ident.span);
+            return Err(());
+        };
+
+        if let Some(_) = interfaces.next() {
+            todo!("ambiguous usage!")
+        }
+
+        return Ok(candidate);
+    }
+
+    fn probe_interface_contains_associated_type(
+        &self,
+        def_id: DefinitionID,
+        assoc_name: Identifier,
+    ) -> bool {
+        let gcx = self.gcx();
+
+        let definition =
+            gcx.with_type_database(def_id.package(), |db| *db.interfaces.get(&def_id).unwrap());
+
+        return definition.assoc_types.contains_key(&assoc_name.symbol);
     }
 
     fn lower_path_segment(
@@ -222,18 +366,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             return gcx.store.common_types.error;
         };
 
-        let base = if matches!(gcx.def_kind(id), DefinitionKind::TypeAlias) {
-            if let Some(base) = gcx.type_of_opt(id) {
-                return base;
-            } else {
-                println!("inheretnt");
-                let kind = TyKind::AssociatedType(id);
-                Self::mk_ty(gcx, kind)
-            }
-        } else {
-            let base = gcx.type_of(id);
-            base
-        };
+        let base = gcx.type_of(id);
 
         // instantiate
         // instantiate_ty_with_args(gcx, base, args)
@@ -336,7 +469,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         self_ty: Ty<'ctx>,
         node: &taroc_hir::TaggedPath,
         request: &LoweringRequest,
-    ) -> InterfaceTypeReference<'ctx> {
+    ) -> InterfaceReference<'ctx> {
         let gcx = self.gcx();
         let resolution = gcx.resolution(node.id).resolution();
         let interface_id = match resolution {
@@ -397,7 +530,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             };
         }
 
-        let reference = InterfaceTypeReference {
+        let reference = InterfaceReference {
             id: interface_id,
             arguments: gcx.store.interners.mk_args(result),
         };
@@ -405,7 +538,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         return reference;
     }
 
-    fn resolve_alias_ty(&self, id: DefinitionID, request: &LoweringRequest) -> Ty<'ctx> {
+    fn _resolve_alias_ty(&self, id: DefinitionID, request: &LoweringRequest) -> Ty<'ctx> {
         let gcx = self.gcx();
         let has_seen = {
             let seen = request.alias_visits.borrow();

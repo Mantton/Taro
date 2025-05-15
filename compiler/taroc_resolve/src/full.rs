@@ -257,18 +257,14 @@ impl Actor<'_, '_> {
             taroc_hir::DeclarationKind::Export(..) | taroc_hir::DeclarationKind::Import(..) => {
                 taroc_hir::visitor::walk_declaration(self, declaration)
             }
-            taroc_hir::DeclarationKind::Interface(..) => {
-                self.with_scope(LexicalScopeSource::Definition(def_kind), |this| {
-                    this.with_generics_scope(def_id, |this| {
-                        this.with_self_alias_scope(
-                            Resolution::InterfaceSelfTypeAlias(def_id),
-                            |this| {
-                                taroc_hir::visitor::walk_declaration(this, declaration);
-                            },
-                        );
-                    })
-                })
-            }
+            taroc_hir::DeclarationKind::Interface(..) => self.with_generics_scope(def_id, |this| {
+                this.with_self_alias_scope(
+                    Resolution::InterfaceSelfTypeParameter(def_id),
+                    |this| {
+                        taroc_hir::visitor::walk_declaration(this, declaration);
+                    },
+                );
+            }),
             taroc_hir::DeclarationKind::Struct(..) => {
                 self.with_scope(LexicalScopeSource::Definition(def_kind), |this| {
                     this.with_generics_scope(def_id, |this| {

@@ -13,8 +13,8 @@ use taroc_resolve_models::DefinitionContext;
 use taroc_span::{FileID, Identifier, Symbol};
 use taroc_ty::{
     DefinitionFunctionsData, EnumDefinition, FloatTy, GenericArgument, GenericParameter, IntTy,
-    InterfaceDefinition, InterfaceTypeReference, LabeledFunctionSignature, PackageAliasTable,
-    SimpleType, StructDefinition, Ty, TyKind, UIntTy,
+    InterfaceDefinition, InterfaceReference, LabeledFunctionSignature, PackageAliasTable,
+    SimpleType, StructDefinition, Ty, TyKind, UIntTy, UncheckedConformanceRecord,
 };
 
 pub struct ContextStore<'ctx> {
@@ -154,16 +154,14 @@ pub struct TypeDatabase<'ctx> {
     pub def_to_constraints: FxHashMap<DefinitionID, taroc_ty::DefinitionConstraints<'ctx>>,
     pub structs: FxHashMap<DefinitionID, StructDefinition<'ctx>>,
     pub enums: FxHashMap<DefinitionID, EnumDefinition<'ctx>>,
-    pub interfaces: FxHashMap<DefinitionID, Rc<RefCell<InterfaceDefinition<'ctx>>>>,
+    pub interfaces: FxHashMap<DefinitionID, &'ctx InterfaceDefinition<'ctx>>,
     pub functions: FxHashMap<DefinitionID, LabeledFunctionSignature<'ctx>>,
     pub def_to_functions: FxHashMap<DefinitionID, Rc<RefCell<DefinitionFunctionsData<'ctx>>>>,
-    pub conformances: FxHashMap<DefinitionID, FxHashSet<InterfaceTypeReference<'ctx>>>,
-    pub conformances_span:
-        FxHashMap<(DefinitionID, InterfaceTypeReference<'ctx>), taroc_span::Span>,
     pub def_to_fn_signature: FxHashMap<DefinitionID, &'ctx LabeledFunctionSignature<'ctx>>,
     pub extension_ty_map: FxHashMap<DefinitionID, SimpleType>,
     pub alias_table: PackageAliasTable,
     pub node_to_ty: FxHashMap<NodeID, Ty<'ctx>>,
+    pub unchecked_conformances: FxHashMap<SimpleType, Vec<UncheckedConformanceRecord<'ctx>>>,
 }
 
 pub struct CommonTypes<'ctx> {

@@ -307,6 +307,7 @@ impl Parser {
         let identifier = self.parse_identifier()?;
 
         let type_parameters = self.parse_type_parameters()?;
+        let conformances = self.parse_conformances()?;
         let ty = if self.eat(TokenKind::Assign) {
             Some(self.parse_type()?)
         } else {
@@ -318,7 +319,7 @@ impl Parser {
         let generics = Generics {
             type_parameters,
             where_clause,
-            conformances: None,
+            conformances,
         };
 
         let decl = TypeAlias { ty, generics };

@@ -28,6 +28,7 @@ impl Parser {
     }
 
     pub fn parse_path_segment(&mut self, allow_generics: bool) -> R<PathSegment> {
+        let lo = self.lo_span();
         let identifier = self.parse_identifier()?;
         let arguments = if allow_generics
             && self.matches(TokenKind::LChevron)
@@ -41,6 +42,7 @@ impl Parser {
         let segment = PathSegment {
             identifier,
             arguments,
+            span: lo.to(self.hi_span()),
         };
 
         Ok(segment)

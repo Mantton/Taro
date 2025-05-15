@@ -1,5 +1,5 @@
 [package]
-name = "taroc_ty_check"
+name = "taroc_sema"
 version = "0.1.0"
 edition = "2024"
 
@@ -13,3 +13,4 @@ taroc_token = { path = "../taroc_token" }
 rustc-hash = "2.1.1"
 index_vec = "0.1.4"
 smallvec = "1.15.0"
+petgraph = "0.7.1"

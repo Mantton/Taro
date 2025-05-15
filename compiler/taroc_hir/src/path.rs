@@ -13,4 +13,5 @@ pub struct PathSegment {
     pub id: NodeID,
     pub identifier: Identifier,
     pub arguments: Option<TypeArguments>,
+    pub span: Span,
 }

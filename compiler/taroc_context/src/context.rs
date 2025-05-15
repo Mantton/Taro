@@ -1,11 +1,10 @@
 use crate::{CompilerSession, GlobalContext, TypeDatabase};
-use std::{cell::RefCell, rc::Rc};
 use taroc_hir::{DefinitionID, DefinitionKind, NodeID, PackageIndex, PartialResolution};
 use taroc_resolve_models::DefinitionContext;
 use taroc_span::{Identifier, Symbol};
 use taroc_ty::{
-    EnumDefinition, GenericArgument, GenericParameter, InterfaceDefinition,
-    LabeledFunctionSignature, StructDefinition, Ty, TyKind,
+    EnumDefinition, GenericArgument, GenericParameter, LabeledFunctionSignature, StructDefinition,
+    Ty, TyKind,
 };
 
 impl<'ctx> GlobalContext<'ctx> {
@@ -30,12 +29,13 @@ impl<'ctx> GlobalContext<'ctx> {
         *def
     }
 
+    #[track_caller]
     pub fn parent(self, id: DefinitionID) -> DefinitionID {
         let resolutions = self.context.store.resolutions.borrow();
         let package = resolutions
             .get(&self.session().package_index)
             .expect("package");
-        let def = package.def_to_parent.get(&id).expect("res");
+        let def = package.def_to_parent.get(&id).expect("parent of id");
         *def
     }
 
@@ -87,6 +87,12 @@ impl<'ctx> GlobalContext<'ctx> {
 
     #[track_caller]
     pub fn type_of(self, id: DefinitionID) -> Ty<'ctx> {
+        let kind = self.def_kind(id);
+
+        if matches!(kind, DefinitionKind::Interface) {
+            panic!("ICE: fetching type_of interface")
+        }
+
         let database = self.context.store.types.borrow();
         let database = database.get(&id.package().index()).expect("package types");
         return *database
@@ -196,13 +202,6 @@ impl<'ctx> GlobalContext<'ctx> {
         database.enums.insert(id, def);
     }
 
-    pub fn cache_interface_def(self, id: DefinitionID, def: taroc_ty::InterfaceDefinition<'ctx>) {
-        let mut cache = self.context.store.types.borrow_mut();
-        let package_index = id.package().index();
-        let database = cache.entry(package_index).or_insert(Default::default());
-        database.interfaces.insert(id, Rc::new(RefCell::new(def)));
-    }
-
     pub fn update_struct_def<F>(self, id: DefinitionID, action: F)
     where
         F: FnOnce(&mut StructDefinition<'ctx>),
@@ -223,23 +222,6 @@ impl<'ctx> GlobalContext<'ctx> {
         let database = cache.entry(package_index).or_insert(Default::default());
         let entry = database.enums.get_mut(&id).expect("enum definition");
         action(entry);
-    }
-
-    pub fn update_interface_def<F>(self, id: DefinitionID, action: F)
-    where
-        F: FnOnce(&mut InterfaceDefinition<'ctx>),
-    {
-        let mut cache = self.context.store.types.borrow_mut();
-        let package_index = id.package().index();
-        let database = cache.entry(package_index).or_insert(Default::default());
-        let entry = database
-            .interfaces
-            .get(&id)
-            .expect("interface definition")
-            .clone();
-
-        let mut entry = entry.borrow_mut();
-        action(&mut entry);
     }
 
     pub fn type_arguments(self, id: DefinitionID) -> taroc_ty::GenericArguments<'ctx> {
@@ -274,16 +256,6 @@ impl<'ctx> GlobalContext<'ctx> {
         let mut cache = self.context.store.types.borrow_mut();
         let database = cache.entry(index.index()).or_insert(Default::default());
         func(database)
-    }
-
-    pub fn interface_definition(self, id: DefinitionID) -> Rc<RefCell<InterfaceDefinition<'ctx>>> {
-        let database = self.context.store.types.borrow();
-        let database = database.get(&id.package().index()).expect("package types");
-        return database
-            .interfaces
-            .get(&id)
-            .expect("expected interface of definition")
-            .clone();
     }
 
     pub fn ty_to_def(self, ty: Ty<'ctx>) -> Option<DefinitionID> {

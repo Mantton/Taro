@@ -124,8 +124,19 @@ impl<'arena> NameHolder<'arena> {
             NameHolder::Set(values) => {
                 let mut set = FxHashSet::default();
                 for value in values.iter() {
-                    let id = value.def_id().expect("function set must provide def id");
-                    set.insert(id);
+                    let resolution = value.resolution();
+
+                    match resolution {
+                        Resolution::Definition(definition_id, definition_kind)
+                            if matches!(
+                                definition_kind,
+                                DefinitionKind::Function | DefinitionKind::AssociatedFunction
+                            ) =>
+                        {
+                            set.insert(definition_id);
+                        }
+                        _ => unreachable!("ICE: invalid resolution for functionset"),
+                    }
                 }
                 Resolution::FunctionSet(set)
             }
@@ -148,14 +159,6 @@ pub struct NameBindingData<'arena> {
 }
 
 impl<'arena> NameBindingData<'arena> {
-    pub fn def_id(&self) -> Option<DefinitionID> {
-        match &self.kind {
-            NameBindingKind::Resolution(resolution) => resolution.def_id(),
-            NameBindingKind::Context(context) => context.def_id(),
-            NameBindingKind::ExternalUsage { binding, .. } => binding.def_id(),
-        }
-    }
-
     pub fn resolution(&self) -> Resolution {
         match &self.kind {
             NameBindingKind::Resolution(resolution) => resolution.clone(),
@@ -370,7 +373,7 @@ impl PathSource {
                             | DefinitionKind::TypeAlias
                             | DefinitionKind::AssociatedType
                     ) | Resolution::SelfTypeAlias(..)
-                        | Resolution::InterfaceSelfTypeAlias(..)
+                        | Resolution::InterfaceSelfTypeParameter(..)
                         | Resolution::PrimaryType(..)
                 )
             }

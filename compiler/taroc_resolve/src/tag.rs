@@ -36,12 +36,13 @@ impl<'res, 'ctx> HirNodeTagger<'res, 'ctx> {
 
 impl HirVisitor for HirNodeTagger<'_, '_> {
     fn visit_module(&mut self, m: &taroc_hir::Module) -> <Self as HirVisitor>::Result {
-        self.tag(
+        let parent = self.tag(
             Identifier::new(m.name, Span::module()),
             m.id,
             DefinitionKind::Module,
         );
-        walk_module(self, m)
+
+        self.with_parent(parent, |actor| walk_module(actor, m));
     }
 
     fn visit_declaration(&mut self, d: &taroc_hir::Declaration) -> <Self as HirVisitor>::Result {

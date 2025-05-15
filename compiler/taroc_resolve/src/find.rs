@@ -74,22 +74,12 @@ impl<'ctx> Resolver<'ctx> {
                             Err(Determinacy::Undetermined)
                         } else {
                             record_resolution(self, PartialResolution::new(resolution.clone()));
-
-                            let def_id = resolution.def_id();
-                            if let Some(id) = def_id
-                                && let Some(new_context) = self.get_context(&id)
-                            {
-                                resulting_context =
-                                    Some(ContextOrResolutionRoot::Context(new_context));
-                                continue;
-                            } else {
-                                return PathResult::NonContext(
-                                    PartialResolution::with_unresolved_segments(
-                                        resolution,
-                                        path.len() - 1 - index,
-                                    ),
-                                );
-                            }
+                            return PathResult::NonContext(
+                                PartialResolution::with_unresolved_segments(
+                                    resolution,
+                                    path.len() - 1 - index,
+                                ),
+                            );
                         }
                     }
                     _ => Err(Determinacy::Determined),

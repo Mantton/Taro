@@ -111,7 +111,7 @@ impl<'ctx> Resolver<'ctx> {
         ident: Identifier,
         node: NodeID,
         kind: DefinitionKind,
-        _parent: DefinitionID,
+        parent: DefinitionID,
     ) -> DefinitionID {
         let index = DefinitionID::new(
             PackageIndex::new(self.session().package_index),
@@ -120,6 +120,7 @@ impl<'ctx> Resolver<'ctx> {
         self.node_to_def.insert(node, index);
         self.def_to_kind.insert(index, kind);
         self.def_to_ident.insert(index, ident);
+        self.def_to_parent.insert(index, parent);
         self.next_index += 1;
         index
     }
@@ -188,11 +189,6 @@ impl<'ctx> Resolver<'ctx> {
 
         match result {
             Ok(..) => {
-                if let Some(parent) = parent.def_id()
-                    && let Some(child) = binding.def_id()
-                {
-                    self.def_to_parent.insert(child, parent);
-                }
                 return true;
             }
             Err(previous_binding) => {

@@ -5,11 +5,11 @@ use crate::{
 use taroc_context::GlobalContext;
 use taroc_error::CompileResult;
 use taroc_hir::{
-    NodeID,
+    DefinitionID, DefinitionKind, NodeID,
     visitor::{self, HirVisitor},
 };
 use taroc_span::Spanned;
-use taroc_ty::{Constraint, DefinitionConstraints};
+use taroc_ty::{Constraint, DefinitionConstraints, GenericArgument, InterfaceReference};
 
 pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
     Actor::run(package, context)
@@ -111,7 +111,7 @@ impl HirVisitor for Actor<'_> {
 impl<'ctx> Actor<'ctx> {
     fn collect_definition(&mut self, id: NodeID, generics: &taroc_hir::Generics) {
         let def_id = self.context.def_id(id);
-        let constraints = self.collect_internal(generics);
+        let constraints = self.collect_internal(def_id, generics);
         let predicates = DefinitionConstraints { constraints };
         self.context.cache_def_constraints(def_id, predicates);
     }
@@ -125,7 +125,7 @@ impl<'ctx> Actor<'ctx> {
             constraints.extend(implicit);
         }
 
-        let explicit = self.collect_internal(&node.generics);
+        let explicit = self.collect_internal(def_id, &node.generics);
         constraints.extend(explicit);
 
         let predicates = DefinitionConstraints { constraints };
@@ -135,11 +135,52 @@ impl<'ctx> Actor<'ctx> {
 impl<'ctx> Actor<'ctx> {
     fn collect_internal(
         &mut self,
+        def_id: DefinitionID,
         generics: &taroc_hir::Generics,
     ) -> Vec<Spanned<Constraint<'ctx>>> {
         let icx = ItemCtx::new(self.context);
         let mut constraints = vec![];
 
+        // inteface implict self type param constraint
+        if matches!(
+            self.context.def_kind(def_id),
+            taroc_hir::DefinitionKind::Interface
+        ) {
+            let gcx = self.context;
+            // Build constraint : Self : Interface
+            let generics = gcx.generics_of(def_id);
+
+            let self_ty = gcx.store.common_types.self_type_parameter;
+            let arguments: Vec<_> = generics
+                .parameters
+                .iter()
+                .enumerate()
+                .map(|(index, param)| match param.kind {
+                    taroc_ty::GenericParameterDefinitionKind::Type { .. } => {
+                        let ty = if index == 0 {
+                            gcx.store.common_types.self_type_parameter
+                        } else {
+                            gcx.type_of(param.id)
+                        };
+
+                        GenericArgument::Type(ty)
+                    }
+                    taroc_ty::GenericParameterDefinitionKind::Const { .. } => todo!(),
+                })
+                .collect();
+            let arguments = gcx.store.interners.intern_generic_args(&arguments);
+            let interface_ref = InterfaceReference {
+                id: def_id,
+                arguments,
+            };
+
+            let constraint = Constraint::Bound {
+                ty: self_ty,
+                interface: interface_ref,
+            };
+
+            constraints.push(Spanned::new(constraint, gcx.ident_for(def_id).span));
+        }
         // Type Parameters
         let hir_parameters = generics.type_parameters.as_ref().map(|f| &f.parameters);
         if let Some(hir_parameters) = hir_parameters {
@@ -215,6 +256,30 @@ impl<'ctx> Actor<'ctx> {
             }
         }
 
+        if let Some(conformances) = &generics.conformance
+            && matches!(
+                self.context.def_kind(def_id),
+                DefinitionKind::AssociatedType
+            )
+        {
+            let cx = ItemCtx::new(self.context);
+            let ty = self.context.type_of(def_id);
+            for conformance in conformances.interfaces.iter() {
+                let interface_ref = cx.lowerer().lower_interface_reference(
+                    ty,
+                    conformance,
+                    &LoweringRequest::default(),
+                );
+
+                let constraint = Constraint::Bound {
+                    ty,
+                    interface: interface_ref,
+                };
+
+                constraints.push(Spanned::new(constraint, conformance.path.span));
+            }
+        }
+
         return constraints;
     }
 }
@@ -243,6 +308,7 @@ impl<'ctx> Actor<'ctx> {
 
         let generics = self.context.generics_of(def_id);
         let mut constraints = vec![];
+
         for (index, parameter) in generics.parameters.iter().enumerate() {
             let argument = &arguments.arguments.get(index);
             let Some(argument) = argument else {

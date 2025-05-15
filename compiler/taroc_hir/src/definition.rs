@@ -146,7 +146,7 @@ pub enum SymbolNamespace {
 pub enum Resolution {
     PrimaryType(PrimaryType),
     Definition(DefinitionID, DefinitionKind),
-    InterfaceSelfTypeAlias(DefinitionID),
+    InterfaceSelfTypeParameter(DefinitionID),
     SelfTypeAlias(SelfTypeAlias),
     SelfConstructor(DefinitionID),
     Local(NodeID),
@@ -161,22 +161,6 @@ pub enum SelfTypeAlias {
 }
 
 impl Resolution {
-    pub fn def_id(&self) -> Option<DefinitionID> {
-        match self {
-            Resolution::Definition(i, _) => Some(*i),
-            Resolution::InterfaceSelfTypeAlias(i) => Some(*i),
-            Resolution::SelfTypeAlias(_) => None,
-            _ => None,
-        }
-    }
-
-    pub fn def_kind(&self) -> Option<DefinitionKind> {
-        match self {
-            Resolution::Definition(_, k) => Some(*k),
-            _ => None,
-        }
-    }
-
     pub fn is_error(&self) -> bool {
         match self {
             Resolution::Error => true,
@@ -187,7 +171,7 @@ impl Resolution {
     pub fn description(&self) -> &'static str {
         match self {
             Resolution::Definition(_, k) => k.description(),
-            Resolution::InterfaceSelfTypeAlias(_) => "self type",
+            Resolution::InterfaceSelfTypeParameter(_) => "self type",
             Resolution::SelfTypeAlias(_) => "self type",
             Resolution::Local(_) => "local variable",
             Resolution::Error => "unresolved symbol",

@@ -1,7 +1,7 @@
 use core::fmt;
 use indexmap::IndexMap;
 use rustc_hash::FxHashMap;
-use std::fmt::Display;
+use std::{collections::HashMap, fmt::Display};
 use taroc_ast_ir::OperatorKind;
 use taroc_data_structures::Interned;
 use taroc_hir::{DefinitionID, Mutability};
@@ -37,8 +37,8 @@ pub enum TyKind<'arena> {
     Adt(AdtDef, &'arena [GenericArgument<'arena>]),
 
     // any <interface> | <interface>
-    Existential(&'arena [InterfaceTypeReference<'arena>]),
-    Opaque(&'arena [InterfaceTypeReference<'arena>]),
+    Existential(&'arena [InterfaceReference<'arena>]),
+    Opaque(&'arena [InterfaceReference<'arena>]),
     Parameter(GenericParameter),
     FnDef(DefinitionID, &'arena [GenericArgument<'arena>]),
     Function {
@@ -65,6 +65,13 @@ impl<'ctx> Ty<'ctx> {
                 // Recurse on the inner type
                 inner_ty.get_adt_arguments(target)
             }
+            _ => None, // Not the ADT or a reference to it
+        }
+    }
+
+    pub fn adt_def(self) -> Option<AdtDef> {
+        match self.kind() {
+            TyKind::Adt(def, _) => Some(def),
             _ => None, // Not the ADT or a reference to it
         }
     }
@@ -238,9 +245,8 @@ pub enum EnumVariantKind<'ctx> {
 #[derive(Debug, Clone)]
 pub struct InterfaceDefinition<'ctx> {
     pub id: DefinitionID,
-    pub name: Symbol,
-    pub requirements: InterfaceRequirements<'ctx>,
-    pub parameters: GenericArguments<'ctx>,
+    pub superfaces: Vec<Spanned<InterfaceReference<'ctx>>>,
+    pub assoc_types: HashMap<Symbol, DefinitionID>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -273,17 +279,9 @@ pub struct InterfaceOperatorRequirement<'ctx> {
 
 // For interface types (any/some Protocol)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct InterfaceTypeReference<'ctx> {
+pub struct InterfaceReference<'ctx> {
     pub id: DefinitionID,
     pub arguments: GenericArguments<'ctx>, // Doesn't contain Self
-}
-
-// For conformance constraints (T: Protocol)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct InterfaceConformanceReference<'ctx> {
-    pub id: DefinitionID,
-    pub self_ty: Ty<'ctx>,                 // Explicit Self type (T)
-    pub arguments: GenericArguments<'ctx>, // Other generic arguments if any
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -334,11 +332,12 @@ pub struct ComputedPropertySignature<'ctx> {
 }
 
 #[derive(Debug)]
-pub struct ConformanceRecord<'ctx> {
-    pub ty: DefinitionID,
-    pub interface: DefinitionID,
-    pub type_witnesses: FxHashMap<Symbol, Ty<'ctx>>,
-    pub method_witnesses: FxHashMap<Symbol, DefinitionID>,
+pub struct UncheckedConformanceRecord<'ctx> {
+    pub target: SimpleType,
+    pub interface: InterfaceReference<'ctx>,
+    pub extension: DefinitionID,
+    pub is_conditional: bool,
+    pub location: Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -346,7 +345,7 @@ pub enum Constraint<'ctx> {
     /// `T: P1 & P2 & …`
     Bound {
         ty: Ty<'ctx>,
-        interface: InterfaceTypeReference<'ctx>,
+        interface: InterfaceReference<'ctx>,
     },
 
     /// `T == U`
@@ -453,6 +452,7 @@ pub enum SimpleType {
 }
 
 impl<'ctx> Ty<'ctx> {
+    #[track_caller]
     pub fn to_simple_type(self) -> SimpleType {
         match self.kind() {
             TyKind::Bool => SimpleType::Bool,
@@ -629,7 +629,7 @@ impl<'arena> Display for TyKind<'arena> {
                 Ok(())
             }
             TyKind::Existential(ifaces) => {
-                for (i, iface) in ifaces.iter().enumerate() {
+                for (i, _) in ifaces.iter().enumerate() {
                     if i > 0 {
                         write!(f, " | ")?;
                     }

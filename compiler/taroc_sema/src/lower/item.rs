@@ -1,0 +1,49 @@
+use taroc_context::GlobalContext;
+use taroc_span::Spanned;
+use taroc_ty::Constraint;
+
+use super::TypeLowerer;
+
+pub struct ItemCtx<'ctx> {
+    pub gcx: GlobalContext<'ctx>,
+}
+
+impl<'ctx> ItemCtx<'ctx> {
+    pub fn new(gcx: GlobalContext<'ctx>) -> ItemCtx<'ctx> {
+        ItemCtx { gcx }
+    }
+}
+
+impl<'ctx> TypeLowerer<'ctx> for ItemCtx<'ctx> {
+    fn gcx(&self) -> GlobalContext<'ctx> {
+        self.gcx
+    }
+
+    fn probe_ty_param_constraints(
+        &self,
+        def_id: taroc_hir::DefinitionID,
+        _: taroc_span::Identifier,
+    ) -> Vec<Spanned<Constraint<'ctx>>> {
+        let kind = self.gcx.def_kind(def_id);
+
+        match kind {
+            taroc_hir::DefinitionKind::Interface => self.gcx.predicates_of(def_id).constraints,
+            _ => {
+                let param = self.gcx.type_of(def_id);
+                let self_predicates = self.gcx.predicates_of(def_id);
+                let parent = self.gcx.parent(def_id);
+                let parent_predicates = self.gcx.predicates_of(parent);
+
+                parent_predicates
+                    .constraints
+                    .into_iter()
+                    .chain(self_predicates.constraints.into_iter())
+                    .filter_map(|c| match c.value {
+                        taroc_ty::Constraint::Bound { ty, .. } if ty == param => Some(c),
+                        _ => None,
+                    })
+                    .collect()
+            }
+        }
+    }
+}

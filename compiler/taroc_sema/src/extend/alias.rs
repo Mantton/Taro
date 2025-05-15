@@ -7,10 +7,8 @@ use taroc_ty::{AliasEntry, PackageAliasTable};
 use crate::lower::{ItemCtx, LoweringRequest, TypeLowerer};
 
 pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
-    Harvestor::run(package, context)
-
-    // Harvestor::run(package, context)?;
-    // resolve(context)
+    Harvestor::run(package, context)?;
+    resolve(context)
 }
 
 /// Extension Binding, Maps Extension Blocks to Nominal Types
