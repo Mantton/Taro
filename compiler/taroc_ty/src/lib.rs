@@ -46,8 +46,8 @@ pub enum TyKind<'arena> {
         output: Ty<'arena>,
         is_async: bool,
     },
-    // Represents Interface::AssociatedType (e.g., Self::Element or C::Element)
-    AssociatedType(DefinitionID),
+    // Represents Interface::AssociatedType (e.g., Self::Element or C::Element),
+    AssociatedType(AssocTyKind<'arena>),
     Infer(InferTy),
     Error,
     OverloadedFn(&'arena [DefinitionID], Option<GenericArguments<'arena>>),
@@ -411,6 +411,16 @@ pub struct Coercion<'ctx> {
     pub ty: Ty<'ctx>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AssocTyKind<'ctx> {
+    Inherent(DefinitionID),
+    DependentMember {
+        base: Ty<'ctx>,
+        name: Symbol,
+        anchors: &'ctx [DefinitionID], // all associated types reachable with this name from `base`
+    },
+}
+
 // HELPERS
 impl<'ctx> Ty<'ctx> {
     /// Fast “syntactic” check: does this type mention any generic parameters?
@@ -471,7 +481,7 @@ impl<'ctx> Ty<'ctx> {
             | TyKind::Parameter(..)
             | TyKind::FnDef(..)
             | TyKind::Function { .. }
-            | TyKind::AssociatedType(..)
+            | TyKind::AssociatedType { .. }
             | TyKind::Infer(..)
             | TyKind::Error
             | TyKind::OverloadedFn(..) => unreachable!(),
@@ -664,7 +674,7 @@ impl<'arena> Display for TyKind<'arena> {
                 }
                 write!(f, ") -> {}", output)
             }
-            TyKind::AssociatedType(def_id) => write!(f, "{}", def_id),
+            TyKind::AssociatedType { .. } => write!(f, "assoc()"),
             TyKind::Infer(v) => write!(f, "{v:?}"),
             TyKind::Error => write!(f, "<error>"),
             TyKind::FnDef(id, args) => {

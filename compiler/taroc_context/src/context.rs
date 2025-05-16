@@ -32,9 +32,7 @@ impl<'ctx> GlobalContext<'ctx> {
     #[track_caller]
     pub fn parent(self, id: DefinitionID) -> DefinitionID {
         let resolutions = self.context.store.resolutions.borrow();
-        let package = resolutions
-            .get(&self.session().package_index)
-            .expect("package");
+        let package = resolutions.get(&id.package().index()).expect("package");
         let def = package.def_to_parent.get(&id).expect("parent of id");
         *def
     }
@@ -302,7 +300,7 @@ impl<'ctx> GlobalContext<'ctx> {
             TyKind::Existential(..) => None,
             TyKind::Parameter(..) => None,
             TyKind::Function { .. } => None,
-            TyKind::AssociatedType(definition_id) => Some(definition_id),
+            TyKind::AssociatedType { .. } => None,
             TyKind::Infer(..) => None,
             TyKind::Error => None,
             TyKind::FnDef(id, ..) => Some(id),

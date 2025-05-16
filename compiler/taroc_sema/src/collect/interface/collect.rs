@@ -4,7 +4,7 @@ use taroc_context::GlobalContext;
 use taroc_error::CompileResult;
 use taroc_hir::visitor::HirVisitor;
 use taroc_span::{Identifier, Spanned};
-use taroc_ty::{InterfaceDefinition, TyKind};
+use taroc_ty::{AssocTyKind, InterfaceDefinition, TyKind};
 
 pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
     Actor::run(package, context)
@@ -94,7 +94,7 @@ impl<'ctx> Actor<'ctx> {
                     let ty = gcx
                         .store
                         .interners
-                        .intern_ty(TyKind::AssociatedType(assoc_id));
+                        .intern_ty(TyKind::AssociatedType(AssocTyKind::Inherent(assoc_id)));
                     gcx.cache_type(assoc_id, ty);
                 }
                 _ => {}

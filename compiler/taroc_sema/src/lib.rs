@@ -14,7 +14,7 @@ pub fn run(package: &Package, context: GlobalContext) -> CompileResult<()> {
     collect::generics::run(package, context)?; // generics
     collect::header::run(package, context)?; // type headers
     collect::interface::collect::run(package, context)?; // interface definitions
-    collect::interface::hierarchy::run(package, context)?; // build interace superset graph
+    collect::interface::hierarchy::run(package, context)?; // build interace superinterface graph
     extend::identify::run(package, context)?; // extension identities
     extend::alias::run(package, context)?; // assoc types
     collect::constraints::run(package, context)?; // constraints

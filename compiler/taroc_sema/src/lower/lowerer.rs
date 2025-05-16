@@ -1,12 +1,13 @@
+use super::{LoweringContext, LoweringRequest};
+use crate::utils::{convert_ast_float_ty, convert_ast_int_ty, convert_ast_uint_ty};
+use rustc_hash::FxHashSet;
 use std::collections::VecDeque;
 use taroc_context::GlobalContext;
 use taroc_hir::{DefinitionID, DefinitionKind, NodeID, PrimaryType, Resolution};
 use taroc_span::{Identifier, Spanned};
-use taroc_ty::{Constraint, GenericArgument, GenericArguments, InterfaceReference, Ty, TyKind};
-
-use crate::utils::{convert_ast_float_ty, convert_ast_int_ty, convert_ast_uint_ty};
-
-use super::{LoweringContext, LoweringRequest};
+use taroc_ty::{
+    AssocTyKind, Constraint, GenericArgument, GenericArguments, InterfaceReference, Ty, TyKind,
+};
 
 pub trait TypeLowerer<'ctx> {
     fn gcx(&self) -> GlobalContext<'ctx>;
@@ -103,7 +104,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 gcx.store.common_types.error
             }
             taroc_hir::Resolution::Definition(id, DefinitionKind::AssociatedType) => {
-                Self::mk_ty(gcx, TyKind::AssociatedType(id))
+                Self::mk_ty(gcx, TyKind::AssociatedType(AssocTyKind::Inherent(id)))
             }
             taroc_hir::Resolution::InterfaceSelfTypeParameter(..) => {
                 // TODO: Prohibit Generics
@@ -175,34 +176,54 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             let Some(segment) = segment else {
                 break;
             };
+
+            // gcx.diagnostics.warn("Resolving...".into(), segment.span);
             match &base_res {
                 taroc_hir::Resolution::InterfaceSelfTypeParameter(def_id)
                 | taroc_hir::Resolution::Definition(
                     def_id,
                     DefinitionKind::TypeParameter | DefinitionKind::AssociatedType,
                 ) => {
-                    let result = self
-                        .probe_single_ty_param_bound_for_assoc_item(*def_id, segment.identifier);
-                    let interface_reference = match result {
-                        Ok(result) => result,
-                        Err(_) => todo!("probe for single item"),
+                    let candidates = if let TyKind::AssociatedType(AssocTyKind::DependentMember {
+                        anchors,
+                        ..
+                    }) = base_ty.kind()
+                        && anchors.len() > 1
+                    {
+                        // Multiple candidates on this associated name!
+                        self.probe_assoc_candidates_for_nested_assoc_type(
+                            anchors,
+                            segment.identifier,
+                        )
+                    } else {
+                        self.probe_ty_param_bound_for_assoc_candidates(*def_id, segment.identifier)
                     };
 
-                    let def_id = interface_reference.id;
+                    if candidates.is_empty() {
+                        let message = format!(
+                            "no associated type '{}' is defined on '{}'",
+                            segment.identifier.symbol,
+                            gcx.ident_for(*def_id).symbol
+                        );
+                        gcx.diagnostics.error(message, segment.span);
+                        return Err(());
+                    }
 
-                    let definition = gcx.with_type_database(def_id.package(), |db| {
-                        *db.interfaces.get(&def_id).unwrap()
-                    });
-                    let assoc_type_id = definition
-                        .assoc_types
-                        .get(&segment.identifier.symbol)
-                        .expect("expected assoc type definition");
+                    let candidates: Vec<_> = candidates.into_iter().collect();
+                    let candidates = gcx.store.interners.intern_slice(&candidates);
 
-                    let _ = self.lower_type_arguments(*assoc_type_id, segment, request);
-                    let ty = Self::mk_ty(gcx, TyKind::AssociatedType(def_id));
-
+                    let ty = Self::mk_ty(
+                        gcx,
+                        TyKind::AssociatedType(AssocTyKind::DependentMember {
+                            base: base_ty,
+                            name: segment.identifier.symbol,
+                            anchors: candidates,
+                        }),
+                    );
                     base_ty = ty;
-                    base_res = Resolution::Definition(*assoc_type_id, gcx.def_kind(*assoc_type_id));
+                    let assoc_type_id = candidates[0];
+                    base_res = Resolution::Definition(assoc_type_id, gcx.def_kind(assoc_type_id));
+                    // gcx.diagnostics.info("Resolved...".into(), segment.span);
                     continue;
                 }
                 _ => {
@@ -210,14 +231,20 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
 
                     let definition_id = match result {
                         Ok(result) => result,
-                        Err(_) => todo!("probe internal"),
+                        Err(_) => return Err(()),
                     };
 
                     let _ = self.lower_type_arguments(definition_id, segment, request);
-                    let ty = Self::mk_ty(gcx, TyKind::AssociatedType(definition_id));
+
+                    let ty = Self::mk_ty(
+                        gcx,
+                        TyKind::AssociatedType(AssocTyKind::Inherent(definition_id)),
+                    );
 
                     base_ty = ty;
                     base_res = Resolution::Definition(definition_id, gcx.def_kind(definition_id));
+                    // gcx.diagnostics.info("Resolved...".into(), segment.span);
+
                     continue;
                 }
             };
@@ -290,14 +317,13 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         Ok(entry)
     }
 
-    // Find Possible Interface Candidate
-    fn probe_single_ty_param_bound_for_assoc_item(
+    fn probe_ty_param_bound_for_assoc_candidates(
         &self,
-        def_id: DefinitionID,
+        param_id: DefinitionID,
         assoc_name: Identifier,
-    ) -> Result<InterfaceReference<'ctx>, ()> {
-        let constraints = &self.probe_ty_param_constraints(def_id, assoc_name);
-        self.probe_single_bound_for_assoc_item(
+    ) -> FxHashSet<DefinitionID> {
+        let constraints = &self.probe_ty_param_constraints(param_id, assoc_name);
+        self.probe_assoc_types_for_candidates(
             || {
                 let refs = constraints.iter().filter_map(|sc| match &sc.value {
                     Constraint::Bound { interface, .. } => Some(*interface),
@@ -306,51 +332,79 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
 
                 refs
             },
-            def_id,
             assoc_name,
         )
     }
 
-    fn probe_single_bound_for_assoc_item<I>(
+    fn probe_assoc_types_for_candidates<I>(
         &self,
         all_candidates: impl Fn() -> I,
-        def_id: DefinitionID,
         ident: Identifier,
-    ) -> Result<InterfaceReference<'ctx>, ()>
+    ) -> FxHashSet<DefinitionID>
     where
         I: Iterator<Item = InterfaceReference<'ctx>>,
     {
-        let mut interfaces = all_candidates()
-            .filter(|reference| self.probe_interface_contains_associated_type(reference.id, ident));
+        let interfaces = all_candidates()
+            .filter_map(|reference| {
+                let result = self.probe_interface_contains_associated_type(reference.id, ident);
 
-        let Some(candidate) = interfaces.next() else {
-            let bound = self.gcx().ident_for(def_id).symbol;
-            let message = format!(
-                "no associated type '{}' is defined in '{}'",
-                ident.symbol, bound
-            );
-            self.gcx().diagnostics.error(message, ident.span);
-            return Err(());
-        };
+                if result.is_empty() {
+                    None
+                } else {
+                    Some(result)
+                }
+            })
+            .flatten();
 
-        if let Some(_) = interfaces.next() {
-            todo!("ambiguous usage!")
-        }
-
-        return Ok(candidate);
+        FxHashSet::from_iter(interfaces)
     }
 
     fn probe_interface_contains_associated_type(
         &self,
         def_id: DefinitionID,
         assoc_name: Identifier,
-    ) -> bool {
+    ) -> Vec<DefinitionID> {
         let gcx = self.gcx();
-
+        let mut reachable = vec![];
         let definition =
             gcx.with_type_database(def_id.package(), |db| *db.interfaces.get(&def_id).unwrap());
 
-        return definition.assoc_types.contains_key(&assoc_name.symbol);
+        if let Some(assoc) = definition.assoc_types.get(&assoc_name.symbol) {
+            reachable.push(*assoc);
+        }
+
+        // Check superinterfaces
+        let superinterfaces = gcx.with_type_database(def_id.package(), |db| {
+            db.superinterfaces.get(&def_id).cloned().unwrap_or_default()
+        });
+
+        for superinterface in superinterfaces.iter() {
+            let superset_reachable =
+                self.probe_interface_contains_associated_type(*superinterface, assoc_name);
+            reachable.extend(superset_reachable);
+        }
+
+        reachable
+    }
+
+    fn probe_assoc_candidates_for_nested_assoc_type(
+        &self,
+        candidates: &'ctx [DefinitionID],
+        assoc_name: Identifier,
+    ) -> FxHashSet<DefinitionID> {
+        let mut output = FxHashSet::default();
+        for candidate in candidates {
+            let result = self.probe_ty_param_bound_for_assoc_candidates(*candidate, assoc_name);
+            output.extend(result);
+        }
+
+        // for candidate in &output {
+        //     self.gcx()
+        //         .diagnostics
+        //         .info("Candidate".into(), self.gcx().ident_for(*candidate).span);
+        // }
+
+        output
     }
 
     fn lower_path_segment(

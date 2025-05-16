@@ -32,7 +32,10 @@ impl<'ctx> Actor<'ctx> {
         let mut actor = Actor::new(context);
         let interfaces =
             context.with_type_database(context.session().index(), |db| db.interfaces.clone());
-        let _ = actor.validate(interfaces);
+        let superinterfaces = actor.validate(interfaces);
+        context.with_type_database(context.session().index(), |db| {
+            db.superinterfaces = superinterfaces
+        });
         context.diagnostics.report()
     }
 }
@@ -95,8 +98,8 @@ impl<'ctx> Actor<'ctx> {
             }
         }
 
-        // compute supersets
-        let mut supersets = FxHashMap::default();
+        // compute superinterfaces
+        let mut superinterfaces = FxHashMap::default();
         for node in self.graph.node_indices() {
             let start_id = self.graph[node];
             let mut dfs = Dfs::new(&self.graph, node);
@@ -107,9 +110,9 @@ impl<'ctx> Actor<'ctx> {
                     set.insert(idx);
                 }
             }
-            supersets.insert(start_id, set);
+            superinterfaces.insert(start_id, set);
         }
 
-        supersets
+        superinterfaces
     }
 }

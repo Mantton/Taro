@@ -1,8 +1,7 @@
-use std::{iter::zip, marker::PhantomData};
+use std::marker::PhantomData;
 use taroc_context::GlobalContext;
 use taroc_hir::DefinitionID;
-use taroc_span::{Span, Spanned};
-use taroc_ty::{Constraint, FloatTy, GenericArguments, IntTy, SimpleType, Ty, UIntTy};
+use taroc_ty::{FloatTy, IntTy, SimpleType, Ty, UIntTy};
 
 pub fn convert_ast_int_ty(ity: taroc_hir::IntTy) -> IntTy {
     match ity {
@@ -32,21 +31,21 @@ pub fn convert_ast_float_ty(fty: taroc_hir::FloatTy) -> FloatTy {
 }
 
 pub fn def_id_of_ty<'ctx>(gcx: GlobalContext<'ctx>, ty: Ty<'ctx>) -> Option<DefinitionID> {
-    match ty.kind() {
-        taroc_ty::TyKind::Pointer(_, muta) => match muta {
-            taroc_hir::Mutability::Mutable => gcx.store.common_types.mappings.mut_ref.take(),
-            taroc_hir::Mutability::Immutable => gcx.store.common_types.mappings.const_ref.take(),
-        },
-        taroc_ty::TyKind::Reference(_, muta) => match muta {
-            taroc_hir::Mutability::Mutable => gcx.store.common_types.mappings.ptr.take(),
-            taroc_hir::Mutability::Immutable => gcx.store.common_types.mappings.const_ptr.take(),
-        },
-        taroc_ty::TyKind::Array(..) => gcx.store.common_types.mappings.array.take(),
-        taroc_ty::TyKind::Adt(adt_def, ..) => Some(adt_def.id),
-        taroc_ty::TyKind::FnDef(definition_id, ..) => Some(definition_id),
-        taroc_ty::TyKind::AssociatedType(definition_id) => Some(definition_id),
-        _ => None,
-    }
+    return gcx.ty_to_def(ty);
+    // match ty.kind() {
+    //     taroc_ty::TyKind::Pointer(_, muta) => match muta {
+    //         taroc_hir::Mutability::Mutable => gcx.store.common_types.mappings.mut_ref.take(),
+    //         taroc_hir::Mutability::Immutable => gcx.store.common_types.mappings.const_ref.take(),
+    //     },
+    //     taroc_ty::TyKind::Reference(_, muta) => match muta {
+    //         taroc_hir::Mutability::Mutable => gcx.store.common_types.mappings.ptr.take(),
+    //         taroc_hir::Mutability::Immutable => gcx.store.common_types.mappings.const_ptr.take(),
+    //     },
+    //     taroc_ty::TyKind::Array(..) => gcx.store.common_types.mappings.array.take(),
+    //     taroc_ty::TyKind::Adt(adt_def, ..) => Some(adt_def.id),
+    //     taroc_ty::TyKind::FnDef(definition_id, ..) => Some(definition_id),
+    //     _ => None,
+    // }
 }
 
 pub fn ty_from_simple<'ctx>(gcx: GlobalContext<'ctx>, ty: SimpleType) -> Ty<'ctx> {

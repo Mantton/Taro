@@ -77,7 +77,7 @@ impl<'ctx> Actor<'ctx> {
             | TyKind::Infer(..)
             | TyKind::Function { .. }
             | TyKind::Tuple(..)
-            | TyKind::AssociatedType(..)
+            | TyKind::AssociatedType { .. }
             | TyKind::Parameter(..) => unreachable!(
                 "ICE: resolver should have reported extending non-nominal types in prior pass"
             ),

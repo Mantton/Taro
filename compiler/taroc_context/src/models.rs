@@ -162,6 +162,7 @@ pub struct TypeDatabase<'ctx> {
     pub alias_table: PackageAliasTable,
     pub node_to_ty: FxHashMap<NodeID, Ty<'ctx>>,
     pub unchecked_conformances: FxHashMap<SimpleType, Vec<UncheckedConformanceRecord<'ctx>>>,
+    pub superinterfaces: FxHashMap<DefinitionID, FxHashSet<DefinitionID>>,
 }
 
 pub struct CommonTypes<'ctx> {
