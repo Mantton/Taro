@@ -1,8 +1,8 @@
-use taroc_context::GlobalContext;
+use crate::GlobalContext;
 use taroc_error::CompileResult;
 use taroc_hir::{NodeID, visitor::HirVisitor};
 use taroc_span::Symbol;
-use taroc_ty::{GenericParameter, TyKind};
+use crate::ty::{GenericParameter, TyKind};
 
 /// Collect & Cache Generics Information for a Definition
 pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
@@ -89,11 +89,11 @@ impl<'ctx> Actor<'ctx> {
             self.context.def_kind(def_id),
             taroc_hir::DefinitionKind::Interface
         ) {
-            let def = taroc_ty::GenericParameterDefinition {
+            let def = crate::ty::GenericParameterDefinition {
                 index: 0,
                 name: Symbol::with("Self"),
                 id: def_id,
-                kind: taroc_ty::GenericParameterDefinitionKind::Type { default: None },
+                kind: crate::ty::GenericParameterDefinitionKind::Type { default: None },
             };
             Some(def)
         } else {
@@ -121,18 +121,18 @@ impl<'ctx> Actor<'ctx> {
                 let name = param.identifier.symbol;
                 let index = start + index;
                 // Definition
-                let def = taroc_ty::GenericParameterDefinition {
+                let def = crate::ty::GenericParameterDefinition {
                     name,
                     id,
                     index,
                     kind: match &param.kind {
                         taroc_hir::TypeParameterKind::Type { default } => {
-                            taroc_ty::GenericParameterDefinitionKind::Type {
+                            crate::ty::GenericParameterDefinitionKind::Type {
                                 default: default.clone(),
                             }
                         }
                         taroc_hir::TypeParameterKind::Constant { default, .. } => {
-                            taroc_ty::GenericParameterDefinitionKind::Const {
+                            crate::ty::GenericParameterDefinitionKind::Const {
                                 has_default: default.is_some(),
                             }
                         }
@@ -148,7 +148,7 @@ impl<'ctx> Actor<'ctx> {
         }
 
         // Result
-        let generics = taroc_ty::Generics {
+        let generics = crate::ty::Generics {
             parameters,
             has_self,
         };

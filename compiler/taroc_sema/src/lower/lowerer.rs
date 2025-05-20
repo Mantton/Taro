@@ -1,13 +1,14 @@
 use super::{LoweringContext, LoweringRequest};
-use crate::utils::{convert_ast_float_ty, convert_ast_int_ty, convert_ast_uint_ty};
+use crate::GlobalContext;
+use crate::ty::{
+    AssocTyKind, Constraint, GenericArgument, GenericArguments, InterfaceReference,
+    SpannedConstraints, Ty, TyKind,
+};
+use crate::utils::{convert_ast_float_ty, convert_ast_int_ty, convert_ast_uint_ty, ty2str};
 use rustc_hash::FxHashSet;
 use std::collections::VecDeque;
-use taroc_context::GlobalContext;
 use taroc_hir::{DefinitionID, DefinitionKind, NodeID, PrimaryType, Resolution};
-use taroc_span::{Identifier, Spanned};
-use taroc_ty::{
-    AssocTyKind, Constraint, GenericArgument, GenericArguments, InterfaceReference, Ty, TyKind,
-};
+use taroc_span::Identifier;
 
 pub trait TypeLowerer<'ctx> {
     fn gcx(&self) -> GlobalContext<'ctx>;
@@ -16,7 +17,7 @@ pub trait TypeLowerer<'ctx> {
         &self,
         def_id: DefinitionID,
         assoc_ident: Identifier,
-    ) -> Vec<Spanned<Constraint<'ctx>>>;
+    ) -> &'ctx SpannedConstraints<'ctx>;
 
     fn lowerer(&self) -> &dyn TypeLowerer<'ctx>
     where
@@ -236,6 +237,8 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
 
                     let _ = self.lower_type_arguments(definition_id, segment, request);
 
+                    // let parent = gcx.parent(definition_id);
+                    // if let DefinitionKind::Interface = gcx.def_kind(parent) {}
                     let ty = Self::mk_ty(
                         gcx,
                         TyKind::AssociatedType(AssocTyKind::Inherent(definition_id)),
@@ -243,6 +246,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
 
                     base_ty = ty;
                     base_res = Resolution::Definition(definition_id, gcx.def_kind(definition_id));
+
                     // gcx.diagnostics.info("Resolved...".into(), segment.span);
 
                     continue;
@@ -265,7 +269,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
 
         let file = segment.identifier.span.file;
         let visible_packages = {
-            let index = gcx.session().index().index();
+            let index = gcx.session().index();
             let resolutions = gcx.store.resolutions.borrow();
             let Some(resolutions) = resolutions.get(&index) else {
                 unreachable!()
@@ -289,7 +293,10 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         }
 
         if candidates.len() > 1 {
-            let message = format!("ambiguous associated type named '{name}' in '{base_ty}'");
+            let message = format!(
+                "ambiguous associated type named '{name}' in '{}'",
+                ty2str(base_ty, gcx)
+            );
             gcx.diagnostics.error(message, span);
 
             for (index, &candidate) in candidates.iter().enumerate() {
@@ -304,7 +311,10 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         let entry = match candidates.pop() {
             None => {
                 // no candidates, assoc type not found
-                let message = format!("unknown associated type named '{name}' in '{base_ty}'");
+                let message = format!(
+                    "unknown associated type named '{name}' in '{}'",
+                    ty2str(base_ty, gcx)
+                );
                 gcx.diagnostics.error(message, span);
                 return Err(());
             }
@@ -398,12 +408,6 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             output.extend(result);
         }
 
-        // for candidate in &output {
-        //     self.gcx()
-        //         .diagnostics
-        //         .info("Candidate".into(), self.gcx().ident_for(*candidate).span);
-        // }
-
         output
     }
 
@@ -432,7 +436,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         def_id: DefinitionID,
         segment: &taroc_hir::PathSegment,
         request: &LoweringRequest,
-    ) -> Result<taroc_ty::GenericArguments<'ctx>, ()> {
+    ) -> Result<crate::ty::GenericArguments<'ctx>, ()> {
         let gcx = self.gcx();
         let arguments = if let Some(arguments) = &segment.arguments {
             arguments
@@ -486,13 +490,13 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
 
             match &parameter.kind {
                 // ---- provided default ----
-                taroc_ty::GenericParameterDefinitionKind::Type { default: Some(d) } => {
-                    let ty = self.lower_type(d, request);
+                crate::ty::GenericParameterDefinitionKind::Type { default: Some(d) } => {
+                    let ty = self.lower_type(&d, request);
                     output.push(GenericArgument::Type(ty));
                 }
 
                 // ---- no default ----
-                taroc_ty::GenericParameterDefinitionKind::Type { default: None } => {
+                crate::ty::GenericParameterDefinitionKind::Type { default: None } => {
                     if matches!(gcx.def_kind(id), DefinitionKind::Function) {
                         // For *functions* we leave the original parameter so
                         // `instantiate(FnDef)` can replace it with a fresh TyVar.
@@ -508,7 +512,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                     }
                 }
 
-                taroc_ty::GenericParameterDefinitionKind::Const { .. } => todo!(),
+                crate::ty::GenericParameterDefinitionKind::Const { .. } => todo!(),
             }
         }
         return gcx.store.interners.intern_generic_args(&output);
@@ -565,9 +569,9 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             } else {
                 // Get Default Argument
                 match &parameter.kind {
-                    taroc_ty::GenericParameterDefinitionKind::Type { default } => {
+                    crate::ty::GenericParameterDefinitionKind::Type { default } => {
                         let ty = if let Some(default) = default {
-                            self.lower_type(default, request)
+                            self.lower_type(&default, request)
                         } else {
                             gcx.diagnostics
                                 .warn("Defaulting To Err".into(), node.path.span);
@@ -577,7 +581,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                         result.push(GenericArgument::Type(ty));
                         continue;
                     }
-                    taroc_ty::GenericParameterDefinitionKind::Const { .. } => {
+                    crate::ty::GenericParameterDefinitionKind::Const { .. } => {
                         todo!()
                     }
                 }
@@ -715,11 +719,11 @@ fn convert_params_to_arguments<'ctx>(
     let mut args = vec![];
     for parameter in parameters {
         match &parameter.kind {
-            taroc_ty::GenericParameterDefinitionKind::Type { .. } => {
+            crate::ty::GenericParameterDefinitionKind::Type { .. } => {
                 let ty = gcx.type_of(parameter.id);
                 args.push(GenericArgument::Type(ty));
             }
-            taroc_ty::GenericParameterDefinitionKind::Const { .. } => todo!(),
+            crate::ty::GenericParameterDefinitionKind::Const { .. } => todo!(),
         }
     }
 

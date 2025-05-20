@@ -4,8 +4,8 @@ use define::DefinitionCollector;
 use generics::GenericsCollector;
 use resolver::Resolver;
 use tag::HirNodeTagger;
-use taroc_context::GlobalContext;
 use taroc_error::CompileResult;
+use taroc_sema::GlobalContext;
 use usage::UsageResolver;
 mod arena;
 mod define;
@@ -36,7 +36,7 @@ pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResul
         .store
         .resolutions
         .borrow_mut()
-        .insert(context.session().package_index, data);
+        .insert(context.session().index(), data);
 
     Ok(())
 }

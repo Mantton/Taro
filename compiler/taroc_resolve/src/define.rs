@@ -1,7 +1,7 @@
 use super::resolver::Resolver;
 use crate::{arena::alloc_binding, models::ToNameBinding};
 use std::cell::Cell;
-use taroc_context::GlobalContext;
+use taroc_sema::GlobalContext;
 use taroc_error::CompileResult;
 use taroc_hir::{
     self, Declaration, DeclarationKind, NodeID, PathTree, PathTreeNode, Resolution,

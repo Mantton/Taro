@@ -1,12 +1,12 @@
+use crate::GlobalContext;
+use crate::ty::{
+    Adjustment, Constraint, FloatVid, GenericArgument, GenericArguments, GenericParameter, InferTy,
+    IntVid, NilVid, SimpleType, Ty, TyKind, TyVid, VarBinding,
+};
 use index_vec::IndexVec;
 use rustc_hash::FxHashMap;
-use taroc_context::GlobalContext;
 use taroc_hir::{DefinitionID, NodeID};
 use taroc_span::{Span, Symbol};
-use taroc_ty::{
-    Adjustment, Constraint, SimpleType, FloatVid, GenericArgument, GenericArguments,
-    GenericParameter, InferTy, IntVid, NilVid, Ty, TyKind, TyVid, VarBinding,
-};
 
 pub mod constraints;
 /// Maps Generic Parameter IDs to concrete Types.

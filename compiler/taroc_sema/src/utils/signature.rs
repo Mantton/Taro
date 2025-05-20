@@ -1,6 +1,6 @@
-use taroc_context::GlobalContext;
+use crate::GlobalContext;
+use crate::ty::{LabeledFunctionParameter, LabeledFunctionSignature};
 use taroc_hir::DefinitionID;
-use taroc_ty::{LabeledFunctionParameter, LabeledFunctionSignature};
 
 use crate::lower::{ItemCtx, TypeLowerer};
 

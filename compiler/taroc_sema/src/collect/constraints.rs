@@ -2,14 +2,14 @@ use crate::{
     lower::{ItemCtx, LoweringRequest, TypeLowerer},
     utils::def_id_of_ty,
 };
-use taroc_context::GlobalContext;
+use crate::GlobalContext;
 use taroc_error::CompileResult;
 use taroc_hir::{
     DefinitionID, DefinitionKind, NodeID,
     visitor::{self, HirVisitor},
 };
 use taroc_span::Spanned;
-use taroc_ty::{Constraint, DefinitionConstraints, GenericArgument, InterfaceReference};
+use crate::ty::{Constraint, GenericArgument, InterfaceReference};
 
 pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
     Actor::run(package, context)
@@ -112,8 +112,7 @@ impl<'ctx> Actor<'ctx> {
     fn collect_definition(&mut self, id: NodeID, generics: &taroc_hir::Generics) {
         let def_id = self.context.def_id(id);
         let constraints = self.collect_internal(def_id, generics);
-        let predicates = DefinitionConstraints { constraints };
-        self.context.cache_def_constraints(def_id, predicates);
+        self.context.cache_def_constraints(def_id, constraints);
     }
 
     fn collect_extension(&mut self, id: NodeID, node: &taroc_hir::Extend) {
@@ -127,9 +126,7 @@ impl<'ctx> Actor<'ctx> {
 
         let explicit = self.collect_internal(def_id, &node.generics);
         constraints.extend(explicit);
-
-        let predicates = DefinitionConstraints { constraints };
-        self.context.cache_def_constraints(def_id, predicates);
+        self.context.cache_def_constraints(def_id, constraints);
     }
 }
 impl<'ctx> Actor<'ctx> {
@@ -156,7 +153,7 @@ impl<'ctx> Actor<'ctx> {
                 .iter()
                 .enumerate()
                 .map(|(index, param)| match param.kind {
-                    taroc_ty::GenericParameterDefinitionKind::Type { .. } => {
+                    crate::ty::GenericParameterDefinitionKind::Type { .. } => {
                         let ty = if index == 0 {
                             gcx.store.common_types.self_type_parameter
                         } else {
@@ -165,7 +162,7 @@ impl<'ctx> Actor<'ctx> {
 
                         GenericArgument::Type(ty)
                     }
-                    taroc_ty::GenericParameterDefinitionKind::Const { .. } => todo!(),
+                    crate::ty::GenericParameterDefinitionKind::Const { .. } => todo!(),
                 })
                 .collect();
             let arguments = gcx.store.interners.intern_generic_args(&arguments);
@@ -317,7 +314,7 @@ impl<'ctx> Actor<'ctx> {
 
             match (&parameter.kind, argument) {
                 (
-                    taroc_ty::GenericParameterDefinitionKind::Type { .. },
+                    crate::ty::GenericParameterDefinitionKind::Type { .. },
                     taroc_hir::TypeArgument::Type(ty),
                 ) => {
                     let param_ty = self.context.type_of(parameter.id);
@@ -334,7 +331,7 @@ impl<'ctx> Actor<'ctx> {
                     });
                 }
                 (
-                    taroc_ty::GenericParameterDefinitionKind::Const { .. },
+                    crate::ty::GenericParameterDefinitionKind::Const { .. },
                     taroc_hir::TypeArgument::Const(_),
                 ) => todo!(),
                 _ => {

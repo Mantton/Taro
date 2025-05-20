@@ -1,5 +1,5 @@
 use crate::resolver::Resolver;
-use taroc_context::GlobalContext;
+use taroc_sema::GlobalContext;
 use taroc_data_structures::Interned;
 use taroc_resolve_models::{
     DefContextData, DefContextKind, DefinitionContext, ExternalDefUsageData,

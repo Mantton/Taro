@@ -1,10 +1,10 @@
-use taroc_context::GlobalContext;
+use crate::GlobalContext;
 use taroc_error::CompileResult;
 use taroc_hir::{
     NodeID,
     visitor::{HirVisitor, walk_function},
 };
-use taroc_ty::TyKind;
+use crate::ty::TyKind;
 
 use crate::utils::convert_to_labeled_signature;
 

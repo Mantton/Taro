@@ -1,8 +1,8 @@
+use crate::GlobalContext;
 use crate::lower::{ItemCtx, LoweringRequest, TypeLowerer};
-use taroc_context::GlobalContext;
+use crate::ty::Ty;
 use taroc_error::CompileResult;
 use taroc_hir::{DefinitionKind, visitor::HirVisitor};
-use taroc_ty::Ty;
 
 pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
     Actor::run(package, context)

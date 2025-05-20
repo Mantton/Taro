@@ -1,4 +1,4 @@
-use taroc_context::GlobalContext;
+use taroc_sema::GlobalContext;
 use taroc_resolve_models::NameBinding;
 
 pub trait ToNameBinding<'ctx> {

@@ -1,3 +1,8 @@
+use crate::ty::{
+    DefinitionFunctionsData, EnumDefinition, FloatTy, GenericArgument, GenericParameter, IntTy,
+    InterfaceDefinition, LabeledFunctionSignature, PackageAliasTable, SimpleType,
+    SpannedConstraints, StructDefinition, Ty, TyKind, UIntTy, UncheckedConformanceRecord,
+};
 use bumpalo::Bump;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::{
@@ -11,17 +16,12 @@ use taroc_data_structures::Interned;
 use taroc_hir::{DefinitionID, DefinitionKind, NodeID, PackageIndex, PartialResolution};
 use taroc_resolve_models::DefinitionContext;
 use taroc_span::{FileID, Identifier, Symbol};
-use taroc_ty::{
-    DefinitionFunctionsData, EnumDefinition, FloatTy, GenericArgument, GenericParameter, IntTy,
-    InterfaceDefinition, InterfaceReference, LabeledFunctionSignature, PackageAliasTable,
-    SimpleType, StructDefinition, Ty, TyKind, UIntTy, UncheckedConformanceRecord,
-};
 
 pub struct ContextStore<'ctx> {
     pub interners: ContextInterners<'ctx>,
-    pub resolutions: RefCell<FxHashMap<usize, ResolutionData<'ctx>>>,
-    pub package_mapping: RefCell<FxHashMap<String, usize>>,
-    pub types: RefCell<FxHashMap<usize, TypeDatabase<'ctx>>>,
+    pub resolutions: RefCell<FxHashMap<PackageIndex, ResolutionData<'ctx>>>,
+    pub package_mapping: RefCell<FxHashMap<String, PackageIndex>>,
+    pub types: RefCell<FxHashMap<PackageIndex, TypeDatabase<'ctx>>>,
     pub common_types: CommonTypes<'ctx>,
 }
 
@@ -150,8 +150,9 @@ pub struct ResolutionData<'ctx> {
 #[derive(Debug, Default)]
 pub struct TypeDatabase<'ctx> {
     pub def_to_ty: FxHashMap<DefinitionID, Ty<'ctx>>,
-    pub def_to_generics: FxHashMap<DefinitionID, &'ctx taroc_ty::Generics>,
-    pub def_to_constraints: FxHashMap<DefinitionID, taroc_ty::DefinitionConstraints<'ctx>>,
+    pub def_to_generics: FxHashMap<DefinitionID, &'ctx crate::ty::Generics>,
+    pub def_to_constraints: FxHashMap<DefinitionID, &'ctx SpannedConstraints<'ctx>>,
+    pub def_to_canon_constraints: FxHashMap<DefinitionID, &'ctx SpannedConstraints<'ctx>>,
     pub structs: FxHashMap<DefinitionID, StructDefinition<'ctx>>,
     pub enums: FxHashMap<DefinitionID, EnumDefinition<'ctx>>,
     pub interfaces: FxHashMap<DefinitionID, &'ctx InterfaceDefinition<'ctx>>,

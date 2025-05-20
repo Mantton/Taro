@@ -124,6 +124,7 @@ impl Parser {
         let mut proceed = true;
         let mut items = Vec::new();
         while proceed {
+            self.consume_comments_and_new_lines();
             let item = action(self)?;
             items.push(item);
             proceed = self.eat(separator);

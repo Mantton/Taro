@@ -1,4 +1,4 @@
-use taroc_context::GlobalContext;
+use crate::GlobalContext;
 use taroc_error::CompileResult;
 use taroc_hir::visitor::HirVisitor;
 

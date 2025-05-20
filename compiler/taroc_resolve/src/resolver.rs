@@ -3,7 +3,6 @@ use crate::{
     models::ToNameBinding,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
-use taroc_context::{CompilerSession, GlobalContext, ResolutionData};
 use taroc_hir::{
     DefinitionID, DefinitionIndex, DefinitionKind, NodeID, PackageIndex, PartialResolution,
     PrimaryType, Resolution, SymbolNamespace, TVisibility,
@@ -12,6 +11,7 @@ use taroc_resolve_models::{
     BindingKey, DefContextKind, DefinitionContext, ExternalDefinitionUsage, NameBinding,
     NameBindingData, NameBindingKind, NameHolder, ResolutionMap,
 };
+use taroc_sema::{CompilerSession, GlobalContext, ResolutionData};
 use taroc_span::{FileID, Identifier, Span, Symbol};
 
 pub struct Resolver<'ctx> {
@@ -135,9 +135,7 @@ impl<'ctx> Resolver<'ctx> {
         }
 
         let resolutions = self.gcx.store.resolutions.borrow();
-        let data = resolutions
-            .get(&id.package().index())
-            .expect("resolution data");
+        let data = resolutions.get(&id.package()).expect("resolution data");
         let kind = *data.def_to_kind.get(&id).expect("def to kind");
         kind
     }

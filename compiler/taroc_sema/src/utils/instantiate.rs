@@ -1,5 +1,5 @@
-use taroc_context::GlobalContext;
-use taroc_ty::{GenericArguments, Ty};
+use crate::GlobalContext;
+use crate::ty::{GenericArguments, Ty};
 
 pub fn instantiate_ty_with_args<'ctx>(
     gcx: GlobalContext<'ctx>,

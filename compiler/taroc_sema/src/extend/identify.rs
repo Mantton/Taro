@@ -1,8 +1,8 @@
+use crate::GlobalContext;
+use crate::ty::{SimpleType, Ty, TyKind};
 use rustc_hash::FxHashMap;
-use taroc_context::GlobalContext;
 use taroc_error::CompileResult;
 use taroc_hir::{DefinitionID, DefinitionKind, visitor::HirVisitor};
-use taroc_ty::{SimpleType, Ty, TyKind};
 
 use crate::lower::{ItemCtx, LoweringContext, LoweringRequest, TypeLowerer};
 

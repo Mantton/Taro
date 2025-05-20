@@ -491,7 +491,7 @@ impl<'ctx> Resolver<'ctx> {
                 .store
                 .resolutions
                 .borrow()
-                .get(&0)
+                .get(&PackageIndex::new(0))
                 .expect("std to be resolved")
                 .root;
             return Some((PackageIndex::new(0), context));
@@ -514,7 +514,7 @@ impl<'ctx> Resolver<'ctx> {
                 .get(&index)
                 .expect("package to be resolved")
                 .root;
-            return Some((PackageIndex::new(index), context));
+            return Some((index, context));
         }
 
         return None;

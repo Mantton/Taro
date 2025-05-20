@@ -1,7 +1,7 @@
-use taroc_context::GlobalContext;
+use crate::GlobalContext;
 use taroc_error::CompileResult;
 use taroc_hir::{DefinitionID, DefinitionKind, visitor::HirVisitor};
-use taroc_ty::UncheckedConformanceRecord;
+use crate::ty::UncheckedConformanceRecord;
 
 use crate::{
     lower::{ItemCtx, LoweringRequest, TypeLowerer},

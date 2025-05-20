@@ -1,10 +1,10 @@
-use taroc_context::GlobalContext;
+use crate::GlobalContext;
 use taroc_error::CompileResult;
 use taroc_hir::{
     DefinitionID, DefinitionKind, Mutability, attributes_contain, visitor::HirVisitor,
 };
 use taroc_span::{Identifier, Symbol};
-use taroc_ty::{AdtDef, AdtKind, GenericArguments, Ty, TyKind};
+use crate::ty::{AdtDef, AdtKind, GenericArguments, Ty, TyKind};
 
 pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
     Actor::run(package, context)

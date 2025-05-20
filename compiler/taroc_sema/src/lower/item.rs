@@ -1,6 +1,5 @@
-use taroc_context::GlobalContext;
-use taroc_span::Spanned;
-use taroc_ty::Constraint;
+use crate::GlobalContext;
+use crate::ty::SpannedConstraints;
 
 use super::TypeLowerer;
 
@@ -23,26 +22,27 @@ impl<'ctx> TypeLowerer<'ctx> for ItemCtx<'ctx> {
         &self,
         def_id: taroc_hir::DefinitionID,
         _: taroc_span::Identifier,
-    ) -> Vec<Spanned<Constraint<'ctx>>> {
+    ) -> &'ctx SpannedConstraints<'ctx> {
         let kind = self.gcx.def_kind(def_id);
 
         match kind {
-            taroc_hir::DefinitionKind::Interface => self.gcx.predicates_of(def_id).constraints,
+            taroc_hir::DefinitionKind::Interface => self.gcx.predicates_of(def_id),
             _ => {
                 let param = self.gcx.type_of(def_id);
                 let self_predicates = self.gcx.predicates_of(def_id);
                 let parent = self.gcx.parent(def_id);
                 let parent_predicates = self.gcx.predicates_of(parent);
 
-                parent_predicates
-                    .constraints
+                let resulting: Vec<_> = parent_predicates
                     .into_iter()
-                    .chain(self_predicates.constraints.into_iter())
+                    .chain(self_predicates.into_iter())
                     .filter_map(|c| match c.value {
-                        taroc_ty::Constraint::Bound { ty, .. } if ty == param => Some(c),
+                        crate::ty::Constraint::Bound { ty, .. } if ty == param => Some(*c),
                         _ => None,
                     })
-                    .collect()
+                    .collect();
+
+                self.gcx.store.interners.alloc(resulting)
             }
         }
     }

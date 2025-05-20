@@ -10,6 +10,6 @@ taroc_error = { path = "../taroc_error" }
 taroc_ast = { path = "../taroc_ast" }
 taroc_lexer = { path = "../taroc_lexer" }
 taroc_parse = { path = "../taroc_parse" }
-taroc_context = { path = "../taroc_context" }
+taroc_sema = { path = "../taroc_sema" }
 taroc_hir = { path = "../taroc_hir" }
 taroc_ast_lowering = { path = "../taroc_ast_lowering" }

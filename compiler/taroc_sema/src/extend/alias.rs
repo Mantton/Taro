@@ -1,8 +1,8 @@
-use taroc_context::GlobalContext;
+use crate::GlobalContext;
+use crate::ty::{AliasEntry, PackageAliasTable};
 use taroc_error::CompileResult;
 use taroc_hir::{DefinitionID, visitor::HirVisitor};
 use taroc_span::Identifier;
-use taroc_ty::{AliasEntry, PackageAliasTable};
 
 use crate::lower::{ItemCtx, LoweringRequest, TypeLowerer};
 

@@ -1,7 +1,7 @@
 #![feature(iterator_try_collect)]
 use std::{ffi::OsStr, fs::read_dir};
 use taroc_constants::{FILE_EXTENSION, SOURCE_DIRECTORY};
-use taroc_context::GlobalContext;
+use taroc_sema::GlobalContext;
 use taroc_error::{CompileError, CompileResult};
 use taroc_span::{FileID, Position, Span, SpannedMessage, Symbol, with_session_globals};
 use taroc_token::{Base, Token, TokenKind};

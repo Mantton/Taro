@@ -1,7 +1,12 @@
+use crate::{
+    GlobalContext,
+    ty::{
+        Constraint, FloatTy, GenericArgument, GenericArguments, IntTy, InterfaceReference,
+        SimpleType, Ty, TyKind, UIntTy,
+    },
+};
 use std::marker::PhantomData;
-use taroc_context::GlobalContext;
-use taroc_hir::DefinitionID;
-use taroc_ty::{FloatTy, IntTy, SimpleType, Ty, UIntTy};
+use taroc_hir::{DefinitionID, Mutability};
 
 pub fn convert_ast_int_ty(ity: taroc_hir::IntTy) -> IntTy {
     match ity {
@@ -92,6 +97,155 @@ pub fn ty_from_simple<'ctx>(gcx: GlobalContext<'ctx>, ty: SimpleType) -> Ty<'ctx
         SimpleType::Interface(_) => todo!(),
     }
 }
+
+/// Render an entire type tree into a human‑readable string that uses real
+/// identifiers instead of raw `DefinitionID`s.
+pub fn ty2str<'ctx>(ty: Ty<'ctx>, gcx: GlobalContext<'ctx>) -> String {
+    match ty.kind() {
+        TyKind::Bool => "bool".into(),
+        TyKind::Rune => "rune".into(),
+        TyKind::String => "string".into(),
+        TyKind::Int(i) => format!("{i}"),
+        TyKind::UInt(u) => format!("{u}"),
+        TyKind::Float(fl) => format!("{fl}"),
+
+        TyKind::Pointer(inner, m) => {
+            format!(
+                "*{} {}",
+                if matches!(m, Mutability::Mutable) {
+                    "mut"
+                } else {
+                    "const"
+                },
+                ty2str(inner, gcx)
+            )
+        }
+        TyKind::Reference(inner, m) => {
+            format!(
+                "&{} {}",
+                if matches!(m, Mutability::Mutable) {
+                    "mut"
+                } else {
+                    "const"
+                },
+                ty2str(inner, gcx)
+            )
+        }
+
+        TyKind::Array(elem, size) => {
+            format!("[{}; {size}]", ty2str(elem, gcx))
+        }
+        TyKind::Tuple(elems) => {
+            let mut out = "(".to_owned();
+            for (i, t) in elems.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&ty2str(*t, gcx));
+            }
+            if elems.len() == 1 {
+                out.push(',');
+            } // 1‑tuple trailing comma
+            out.push(')');
+            out
+        }
+
+        TyKind::Adt(def, args) => {
+            let mut out = def.name.to_string(); // `AdtDef` already stores a name
+            if !args.is_empty() {
+                out.push_str(&generic_args2str(args, gcx));
+            }
+            out
+        }
+
+        TyKind::Existential(ifaces) | TyKind::Opaque(ifaces) => ifaces
+            .into_iter()
+            .map(|iface| interface_ref2str(*iface, gcx))
+            .collect::<Vec<_>>()
+            .join(" | "),
+
+        TyKind::Parameter(p) => p.name.to_string(),
+
+        TyKind::Function {
+            inputs,
+            output,
+            is_async,
+        } => {
+            let mut out = String::new();
+            if is_async {
+                out.push_str("async ");
+            }
+            out.push('(');
+            for (i, inp) in inputs.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&ty2str(*inp, gcx));
+            }
+            out.push_str(") -> ");
+            out.push_str(&ty2str(output, gcx));
+            out
+        }
+
+        TyKind::AssociatedType { .. } => "assoc()".into(),
+        TyKind::Infer(v) => format!("{v:?}"),
+        TyKind::Error => "<error>".into(),
+
+        TyKind::FnDef(id, args) => {
+            let mut out = format!("fn {}", gcx.ident_for(id).symbol.as_str());
+            if !args.is_empty() {
+                out.push_str(&generic_args2str(args, gcx));
+            }
+            out
+        }
+
+        TyKind::OverloadedFn(..) => "function".into(),
+    }
+}
+
+/// Turn a single interface reference (including its generic parameters)
+/// into a string, resolving the `DefinitionID` through the context.
+pub fn interface_ref2str<'ctx>(
+    iface: InterfaceReference<'ctx>,
+    gcx: GlobalContext<'ctx>,
+) -> String {
+    let mut out = gcx.ident_for(iface.id).symbol.as_str().to_owned();
+    if !iface.arguments.is_empty() {
+        out.push_str(&generic_args2str(iface.arguments, gcx));
+    }
+    out
+}
+
+/// Render one generic argument (`Type` or `Const`) to string.
+fn generic_arg2str<'ctx>(arg: GenericArgument<'ctx>, gcx: GlobalContext<'ctx>) -> String {
+    match arg {
+        GenericArgument::Type(t) => ty2str(t, gcx),
+        GenericArgument::Const(v) => v.to_string(),
+    }
+}
+
+/// Render an entire slice of generic arguments, adding the `<…>` wrapper.
+pub fn generic_args2str<'ctx>(args: GenericArguments<'ctx>, gcx: GlobalContext<'ctx>) -> String {
+    let inner = args
+        .iter()
+        .map(|a| generic_arg2str(*a, gcx))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("<{inner}>")
+}
+
+/// Convert a constraint (`T: P`, `T == U`) into a readable string.
+pub fn constraint2str<'ctx>(constraint: Constraint<'ctx>, gcx: GlobalContext<'ctx>) -> String {
+    match constraint {
+        Constraint::Bound { ty, interface } => {
+            format!("{}: {}", ty2str(ty, gcx), interface_ref2str(interface, gcx))
+        }
+        Constraint::TypeEquality(lhs, rhs) => {
+            format!("{} == {}", ty2str(lhs, gcx), ty2str(rhs, gcx))
+        }
+    }
+}
+
 pub struct TyBuilder<'ctx> {
     _data: PhantomData<GlobalContext<'ctx>>,
 }

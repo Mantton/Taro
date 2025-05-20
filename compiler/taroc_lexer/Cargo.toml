@@ -6,6 +6,6 @@ edition = "2024"
 [dependencies]
 taroc_span = { path = "../taroc_span" }
 taroc_error = { path = "../taroc_error" }
-taroc_context = { path = "../taroc_context" }
+taroc_sema = { path = "../taroc_sema" }
 taroc_token = { path = "../taroc_token" }
 taroc_constants = { path = "../taroc_constants" }

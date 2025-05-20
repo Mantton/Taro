@@ -9,7 +9,7 @@ serde = { version = "1.0.219", features = ["derive"] }
 taroc_error = { path = "../taroc_error" }
 taroc_package = { path = "../taroc_package" }
 taroc_constants = { path = "../taroc_constants" }
-taroc_context = { path = "../taroc_context" }
+taroc_sema = { path = "../taroc_sema" }
 taroc_span = { path = "../taroc_span" }
 taroc_lexer = { path = "../taroc_lexer" }
 taroc_diagnostics = { path = "../taroc_diagnostics" }

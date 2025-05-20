@@ -1,10 +1,10 @@
 use crate::lower::{ItemCtx, LoweringRequest, TypeLowerer};
 use std::collections::HashMap;
-use taroc_context::GlobalContext;
+use crate::GlobalContext;
 use taroc_error::CompileResult;
 use taroc_hir::visitor::HirVisitor;
 use taroc_span::{Identifier, Spanned};
-use taroc_ty::{AssocTyKind, InterfaceDefinition, TyKind};
+use crate::ty::{AssocTyKind, InterfaceDefinition, TyKind};
 
 pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
     Actor::run(package, context)

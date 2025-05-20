@@ -5,11 +5,12 @@ use std::{
     rc::Rc,
 };
 use taroc_constants::{LANGUAGE_HOME, MANIFEST_FILE, STD_PREFIX};
-use taroc_context::{CompilerSession, GlobalContext, with_global_context};
 use taroc_error::{CompileError, CompileResult};
+use taroc_hir::PackageIndex;
 use taroc_lexer::tokenize_package;
 use taroc_package::{CompilerConfig, Manifest, PackageIdentifier, sync_dependencies};
 use taroc_parse::parse_package;
+use taroc_sema::{CompilerSession, GlobalContext, with_global_context};
 use taroc_span::create_session_globals_then;
 
 pub fn run(arguments: CommandLineArguments) -> CompileResult<()> {
@@ -107,7 +108,7 @@ impl Builder {
                 .store
                 .package_mapping
                 .borrow_mut()
-                .insert(config.qualified.clone(), index);
+                .insert(config.qualified.clone(), PackageIndex::new(index));
         }
         let session = CompilerSession {
             package_index: index,

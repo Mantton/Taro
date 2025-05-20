@@ -75,6 +75,18 @@ impl<'ctx> Ty<'ctx> {
             _ => None, // Not the ADT or a reference to it
         }
     }
+
+    pub fn is_concrete(self) -> bool {
+        !matches!(
+            self.kind(),
+            TyKind::Parameter(_)
+                | TyKind::AssociatedType(_)
+                | TyKind::Opaque(_)
+                | TyKind::Existential(_)
+                | TyKind::Infer(_)
+                | TyKind::Error
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -331,7 +343,7 @@ pub struct ComputedPropertySignature<'ctx> {
     pub ty: Ty<'ctx>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct UncheckedConformanceRecord<'ctx> {
     pub target: SimpleType,
     pub interface: InterfaceReference<'ctx>,
@@ -352,10 +364,7 @@ pub enum Constraint<'ctx> {
     TypeEquality(Ty<'ctx>, Ty<'ctx>),
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct DefinitionConstraints<'ctx> {
-    pub constraints: Vec<Spanned<Constraint<'ctx>>>,
-}
+pub type SpannedConstraints<'ctx> = Vec<Spanned<Constraint<'ctx>>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum InferTy {
@@ -518,16 +527,6 @@ pub struct ExtensionBlockSignature<'ctx> {
     pub constraints: Vec<Spanned<Constraint<'ctx>>>,
 }
 
-// DISPLAY
-//
-// Implement Display for the interned type wrapper
-impl<'arena> Display for Ty<'arena> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Delegate to the underlying kind
-        write!(f, "{}", self.kind())
-    }
-}
-
 // Display for the various primitive type enums
 impl Display for IntTy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -562,166 +561,5 @@ impl Display for FloatTy {
             FloatTy::F64 => "double",
         };
         write!(f, "{}", s)
-    }
-}
-
-// Display for interface references (e.g., trait bounds)
-// impl<'arena> Display for InterfaceReference<'arena> {
-//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-//         write!(f, "{}", self.id)?;
-//         if !self.arguments.is_empty() {
-//             write!(f, "<")?;
-//             for (i, arg) in self.arguments.iter().enumerate() {
-//                 if i > 0 {
-//                     write!(f, ", ")?;
-//                 }
-//                 match arg {
-//                     GenericArgument::Type(t) => write!(f, "{}", t)?,
-//                     GenericArgument::Const(c) => write!(f, "{}", c)?,
-//                 }
-//             }
-//             write!(f, ">")?;
-//         }
-//         Ok(())
-//     }
-// }
-
-// Display for the core TyKind enum
-impl<'arena> Display for TyKind<'arena> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            TyKind::Bool => write!(f, "bool"),
-            TyKind::Rune => write!(f, "rune"),
-            TyKind::String => write!(f, "string"),
-            TyKind::Int(i) => write!(f, "{}", i),
-            TyKind::UInt(u) => write!(f, "{}", u),
-            TyKind::Float(fl) => write!(f, "{}", fl),
-            TyKind::Pointer(inner, mutability) => match mutability {
-                Mutability::Immutable => write!(f, "*const {}", inner),
-                Mutability::Mutable => write!(f, "*mut {}", inner),
-            },
-            TyKind::Reference(inner, mutability) => match mutability {
-                Mutability::Immutable => write!(f, "&const {}", inner),
-                Mutability::Mutable => write!(f, "&mut {}", inner),
-            },
-            TyKind::Array(elem, size) => write!(f, "[{}; {}]", elem, size),
-            TyKind::Tuple(elems) => {
-                write!(f, "(")?;
-                if elems.len() == 1 {
-                    // Single-element tuple needs a trailing comma
-                    write!(f, "{},", elems[0])?;
-                } else {
-                    for (i, ty) in elems.iter().enumerate() {
-                        if i > 0 {
-                            write!(f, ", ")?;
-                        }
-                        write!(f, "{}", ty)?;
-                    }
-                }
-                write!(f, ")")
-            }
-            TyKind::Adt(def, args) => {
-                write!(f, "{}", def.name)?;
-                if !args.is_empty() {
-                    write!(f, "<")?;
-                    for (i, arg) in args.iter().enumerate() {
-                        if i > 0 {
-                            write!(f, ", ")?;
-                        }
-                        match arg {
-                            GenericArgument::Type(t) => write!(f, "{}", t)?,
-                            GenericArgument::Const(c) => write!(f, "{}", c)?,
-                        }
-                    }
-                    write!(f, ">")?;
-                }
-
-                Ok(())
-            }
-            TyKind::Existential(ifaces) => {
-                for (i, _) in ifaces.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " | ")?;
-                    }
-                    // write!(f, "{}", iface)?;
-                }
-                Ok(())
-            }
-            TyKind::Opaque(ifaces) => {
-                for (i, iface) in ifaces.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " | ")?;
-                    }
-                    // write!(f, "{}", iface)?;
-                }
-                Ok(())
-            }
-            TyKind::Parameter(param) => write!(f, "{}", param.name),
-            TyKind::Function {
-                inputs,
-                output,
-                is_async,
-            } => {
-                if *is_async {
-                    write!(f, "async ")?;
-                }
-                write!(f, "(")?;
-                for (i, inp) in inputs.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}", inp)?;
-                }
-                write!(f, ") -> {}", output)
-            }
-            TyKind::AssociatedType { .. } => write!(f, "assoc()"),
-            TyKind::Infer(v) => write!(f, "{v:?}"),
-            TyKind::Error => write!(f, "<error>"),
-            TyKind::FnDef(id, args) => {
-                write!(f, "fn {}", id)?;
-                if !args.is_empty() {
-                    write!(f, "<")?;
-                    for (i, arg) in args.iter().enumerate() {
-                        if i > 0 {
-                            write!(f, ", ")?;
-                        }
-                        match arg {
-                            GenericArgument::Type(t) => write!(f, "{}", t)?,
-                            GenericArgument::Const(c) => write!(f, "{}", c)?,
-                        }
-                    }
-                    write!(f, ">")?;
-                }
-                Ok(())
-            }
-            TyKind::OverloadedFn(..) => write!(f, "function"),
-        }
-    }
-}
-
-/// A helper wrapper so we can implement `Display` for a slice of
-/// `GenericArgument<'ctx>`.
-pub struct GenericArgs<'a, 'ctx>(pub &'a [GenericArgument<'ctx>]);
-
-impl<'a, 'ctx> fmt::Display for GenericArgs<'a, 'ctx> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("<")?;
-        for (i, arg) in self.0.iter().enumerate() {
-            if i != 0 {
-                f.write_str(", ")?;
-            }
-            write!(f, "{arg}")?; // relies on the impl below
-        }
-        f.write_str(">") // closing bracket
-    }
-}
-
-/// Nice printing for one argument (`Int`, `const 4`, …).
-impl<'ctx> fmt::Display for GenericArgument<'ctx> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            GenericArgument::Type(ty) => write!(f, "{ty}"),
-            GenericArgument::Const(v) => write!(f, "{v}"),
-        }
     }
 }

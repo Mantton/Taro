@@ -3,11 +3,11 @@ use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::{Dfs, EdgeRef};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::str::FromStr;
-use taroc_context::GlobalContext;
+use crate::GlobalContext;
 use taroc_error::CompileResult;
 use taroc_hir::DefinitionID;
 use taroc_span::Spanned;
-use taroc_ty::{InterfaceDefinition, InterfaceReference};
+use crate::ty::{InterfaceDefinition, InterfaceReference};
 
 pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
     Actor::run(package, context)
