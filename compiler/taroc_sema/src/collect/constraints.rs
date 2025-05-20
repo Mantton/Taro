@@ -1,15 +1,15 @@
+use crate::GlobalContext;
+use crate::ty::{Constraint, GenericArgument, InterfaceReference};
 use crate::{
     lower::{ItemCtx, LoweringRequest, TypeLowerer},
     utils::def_id_of_ty,
 };
-use crate::GlobalContext;
 use taroc_error::CompileResult;
 use taroc_hir::{
     DefinitionID, DefinitionKind, NodeID,
     visitor::{self, HirVisitor},
 };
 use taroc_span::Spanned;
-use crate::ty::{Constraint, GenericArgument, InterfaceReference};
 
 pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
     Actor::run(package, context)

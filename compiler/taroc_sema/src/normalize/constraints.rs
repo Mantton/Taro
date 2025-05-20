@@ -183,19 +183,38 @@ fn saturate<'ctx>(state: &mut UFState<'ctx>, constraints: &[Spanned<Constraint<'
 
 fn seed_parent<'ctx>(state: &mut UFState<'ctx>, id: DefinitionID) {
     let gcx = state.gcx;
+
     if let DefinitionKind::Extension = gcx.def_kind(id) {
-        let target = gcx.with_type_database(id.package(), |db| db.extension_ty_map[&id]);
-        let parent = def_id_of_ty(gcx, ty_from_simple(gcx, target));
-        if let Some(parent) = parent {
-            // seed bounds from parent
-            for c in gcx.canon_predicates_of(parent) {
-                if let Constraint::Bound { ty, interface } = c.value {
-                    let rep = state.uf.find(state.ty2slot[&ty]);
-                    state.bounds[rep].insert(interface);
-                }
-            }
-        };
+        seed_extension_nominal(id, state);
     }
+
+    if let DefinitionKind::Extension = gcx.def_kind(gcx.parent(id)) {
+        // Seed from Nominal Decl -> Extension -> Function
+        // Seed Extension Target
+        seed_extension_nominal(gcx.parent(id), state);
+        // Seed Extension
+        for c in gcx.canon_predicates_of(gcx.parent(id)) {
+            if let Constraint::Bound { ty, interface } = c.value {
+                let rep = state.uf.find(state.ty2slot[&ty]);
+                state.bounds[rep].insert(interface);
+            }
+        }
+    }
+}
+
+fn seed_extension_nominal<'ctx>(id: DefinitionID, state: &mut UFState<'ctx>) {
+    let gcx = state.gcx;
+    let target = gcx.with_type_database(id.package(), |db| db.extension_ty_map[&id]);
+    let parent = def_id_of_ty(gcx, ty_from_simple(gcx, target));
+    if let Some(parent) = parent {
+        // seed bounds from parent
+        for c in gcx.canon_predicates_of(parent) {
+            if let Constraint::Bound { ty, interface } = c.value {
+                let rep = state.uf.find(state.ty2slot[&ty]);
+                state.bounds[rep].insert(interface);
+            }
+        }
+    };
 }
 fn analyse_and_prune<'ctx>(
     state: &mut UFState<'ctx>,

@@ -1,8 +1,8 @@
 use crate::GlobalContext;
+use crate::ty::{GenericParameter, TyKind};
 use taroc_error::CompileResult;
 use taroc_hir::{NodeID, visitor::HirVisitor};
 use taroc_span::Symbol;
-use crate::ty::{GenericParameter, TyKind};
 
 /// Collect & Cache Generics Information for a Definition
 pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {

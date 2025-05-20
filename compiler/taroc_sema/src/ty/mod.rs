@@ -344,11 +344,10 @@ pub struct ComputedPropertySignature<'ctx> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct UncheckedConformanceRecord<'ctx> {
+pub struct ConformanceRecord<'ctx> {
     pub target: SimpleType,
     pub interface: InterfaceReference<'ctx>,
     pub extension: DefinitionID,
-    pub is_conditional: bool,
     pub location: Span,
 }
 

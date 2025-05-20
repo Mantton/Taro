@@ -12,8 +12,6 @@ pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResul
     super::collect::constraints::run(package, context)?; // constraints
     super::collect::conformance::run(package, context)?; // conformances
     super::collect::function::run(package, context)?; // function signatures
-
-    super::conformance::run(package, context)?; // collect all unconditional conformances
     super::extend::members::run(package, context)?; // assoc members
     super::collect::fields::run(package, context)?; // adt fields
     Ok(())

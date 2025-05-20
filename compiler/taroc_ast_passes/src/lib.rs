@@ -1,5 +1,5 @@
-use taroc_sema::GlobalContext;
 use taroc_error::CompileResult;
+use taroc_sema::GlobalContext;
 
 pub fn run(
     package: taroc_ast::Package,

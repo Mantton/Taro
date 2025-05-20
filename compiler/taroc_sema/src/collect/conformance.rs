@@ -1,12 +1,15 @@
-use crate::GlobalContext;
-use taroc_error::CompileResult;
-use taroc_hir::{DefinitionID, DefinitionKind, visitor::HirVisitor};
-use crate::ty::UncheckedConformanceRecord;
-
+use crate::{
+    GlobalContext,
+    ty::{ConformanceRecord, InterfaceReference, SimpleType},
+    utils::{def_id_of_ty, interface_ref2str},
+};
 use crate::{
     lower::{ItemCtx, LoweringRequest, TypeLowerer},
     utils::ty_from_simple,
 };
+use taroc_error::CompileResult;
+use taroc_hir::{DefinitionID, DefinitionKind, PackageIndex, visitor::HirVisitor};
+use taroc_span::Span;
 
 pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
     Actor::run(package, context)
@@ -52,8 +55,8 @@ impl<'ctx> Actor<'ctx> {
             return;
         };
 
-        let interafaces = &conformances.interfaces;
-        if interafaces.is_empty() {
+        let interfaces = &conformances.interfaces;
+        if interfaces.is_empty() {
             return;
         }
 
@@ -63,31 +66,67 @@ impl<'ctx> Actor<'ctx> {
 
         let self_ty = ty_from_simple(self.context, ty_key);
 
-        let is_conditional = node.where_clause.is_some();
         let icx = ItemCtx::new(self.context);
-        for interface in interafaces {
+        for interface in interfaces {
             let reference = icx.lowerer().lower_interface_reference(
                 self_ty,
                 interface,
                 &LoweringRequest::default(),
             );
-            let record = UncheckedConformanceRecord {
+            let record = ConformanceRecord {
                 target: ty_key,
                 interface: reference,
                 extension: extend_id,
-                is_conditional,
                 location: interface.path.span,
             };
 
-            self.context.with_type_database(extend_id.package(), |db| {
-                let entry = db.unchecked_conformances.entry(ty_key).or_default();
-                entry.push(record);
-            })
+            let parent_pkg = def_id_of_ty(self.context, self_ty)
+                .map(|f| f.package())
+                .unwrap_or(PackageIndex::new(0));
+            if parent_pkg != extend_id.package() {
+                if let Some(prev) = self.find_previous_conformance(parent_pkg, ty_key, reference) {
+                    self.emit_redundant(interface.path.span, &prev);
+                }
+            }
 
-            // println!(
-            //     "Conforomance {self_ty} to '{}', conditional: {is_conditional}",
-            //     self.context.ident_for(reference.id).symbol
-            // )
+            if let Some(prev) =
+                self.find_previous_conformance(extend_id.package(), ty_key, reference)
+            {
+                self.emit_redundant(interface.path.span, &prev);
+            } else {
+                self.context.with_type_database(extend_id.package(), |db| {
+                    db.conformances
+                        .entry(ty_key)
+                        .or_default()
+                        .push(record.clone())
+                });
+            }
         }
+    }
+
+    fn find_previous_conformance(
+        &self,
+        package_id: PackageIndex,
+        ty_key: SimpleType,
+        interface: InterfaceReference<'ctx>,
+    ) -> Option<ConformanceRecord<'ctx>> {
+        self.context.with_type_database(package_id, |db| {
+            db.conformances
+                .get(&ty_key)
+                .into_iter()
+                .flat_map(|v| v.iter())
+                .find(|rec| rec.interface == interface)
+                .cloned()
+        })
+    }
+
+    fn emit_redundant(&self, span: Span, prev: &ConformanceRecord<'ctx>) {
+        let name = interface_ref2str(prev.interface, self.context);
+        self.context
+            .diagnostics
+            .warn(format!("redundant conformance to '{}'", name), span);
+        self.context
+            .diagnostics
+            .info("initial conformance is defined here".into(), prev.location);
     }
 }

@@ -1,5 +1,5 @@
-use taroc_sema::GlobalContext;
 use taroc_resolve_models::NameBinding;
+use taroc_sema::GlobalContext;
 
 pub trait ToNameBinding<'ctx> {
     fn to_name_binding(self, gcx: GlobalContext<'ctx>) -> NameBinding<'ctx>;

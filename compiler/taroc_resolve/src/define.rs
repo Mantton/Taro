@@ -1,7 +1,6 @@
 use super::resolver::Resolver;
 use crate::{arena::alloc_binding, models::ToNameBinding};
 use std::cell::Cell;
-use taroc_sema::GlobalContext;
 use taroc_error::CompileResult;
 use taroc_hir::{
     self, Declaration, DeclarationKind, NodeID, PathTree, PathTreeNode, Resolution,
@@ -13,6 +12,7 @@ use taroc_resolve_models::{
     DefUsageBinding, DefinitionContext, ExternalDefUsageData, ExternalDefUsageKind, NameBinding,
     NameBindingData, NameBindingKind, Segment,
 };
+use taroc_sema::GlobalContext;
 use taroc_span::{Identifier, Span, Symbol};
 
 pub struct DefinitionCollector<'res, 'ctx> {

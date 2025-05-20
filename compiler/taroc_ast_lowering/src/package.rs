@@ -1,6 +1,6 @@
-use taroc_sema::GlobalContext;
 use taroc_error::CompileResult;
 use taroc_hir::{NodeID, NodeTagger};
+use taroc_sema::GlobalContext;
 
 pub fn run(
     package: taroc_ast::Package,

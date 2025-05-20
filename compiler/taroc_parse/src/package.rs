@@ -1,8 +1,8 @@
 use super::restrictions::Restrictions;
 use std::{collections::VecDeque, vec};
 use taroc_ast::Declaration;
-use taroc_sema::{GlobalContext, WithDiagnostics};
 use taroc_error::{CompileError, CompileResult};
+use taroc_sema::{GlobalContext, WithDiagnostics};
 use taroc_span::SpannedMessage;
 
 pub type R<T> = Result<T, SpannedMessage>;

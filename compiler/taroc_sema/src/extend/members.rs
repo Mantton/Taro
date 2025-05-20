@@ -89,7 +89,8 @@ impl<'ctx> Actor<'ctx> {
                     // always static member
                 }
                 taroc_hir::AssociatedDeclarationKind::Function(node) => {
-                    let _ = gcx.predicates_of(gcx.def_id(member.id));
+                    let _ = gcx.canon_predicates_of(gcx.def_id(member.id));
+
                     if node.has_self() {
                         // println!("Collect Func Method")
                     } else {
@@ -97,7 +98,7 @@ impl<'ctx> Actor<'ctx> {
                     }
                 }
                 taroc_hir::AssociatedDeclarationKind::Operator(op, node) => {
-                    let _ = gcx.predicates_of(gcx.def_id(member.id));
+                    let _ = gcx.canon_predicates_of(gcx.def_id(member.id));
                     if !node.has_self() {
                         let message = format!("operator must have reciever 'self' parameter");
                         self.context.diagnostics.error(message, node.signature.span);

@@ -1,7 +1,7 @@
 use crate::ty::{
-    DefinitionFunctionsData, EnumDefinition, FloatTy, GenericArgument, GenericParameter, IntTy,
-    InterfaceDefinition, LabeledFunctionSignature, PackageAliasTable, SimpleType,
-    SpannedConstraints, StructDefinition, Ty, TyKind, UIntTy, UncheckedConformanceRecord,
+    ConformanceRecord, DefinitionFunctionsData, EnumDefinition, FloatTy, GenericArgument,
+    GenericParameter, IntTy, InterfaceDefinition, LabeledFunctionSignature, PackageAliasTable,
+    SimpleType, SpannedConstraints, StructDefinition, Ty, TyKind, UIntTy,
 };
 use bumpalo::Bump;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -162,8 +162,8 @@ pub struct TypeDatabase<'ctx> {
     pub extension_ty_map: FxHashMap<DefinitionID, SimpleType>,
     pub alias_table: PackageAliasTable,
     pub node_to_ty: FxHashMap<NodeID, Ty<'ctx>>,
-    pub unchecked_conformances: FxHashMap<SimpleType, Vec<UncheckedConformanceRecord<'ctx>>>,
     pub superinterfaces: FxHashMap<DefinitionID, FxHashSet<DefinitionID>>,
+    pub conformances: FxHashMap<SimpleType, Vec<ConformanceRecord<'ctx>>>,
 }
 
 pub struct CommonTypes<'ctx> {
