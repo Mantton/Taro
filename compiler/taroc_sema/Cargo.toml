@@ -19,3 +19,4 @@ taroc_package = { path = "../taroc_package" }
 taroc_ast_ir = { path = "../taroc_ast_ir" }
 indexmap = "2.8.0"
 taroc_diagnostics = { path = "../taroc_diagnostics" }
+ena = "0.14.3"

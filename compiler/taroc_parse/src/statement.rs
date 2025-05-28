@@ -127,6 +127,7 @@ impl Parser {
         self.expect(TokenKind::While)?;
         let mut while_restrictions = Restrictions::empty();
         while_restrictions.set(Restrictions::ALLOW_BINDING_CONDITION, true);
+        while_restrictions.set(Restrictions::NO_STRUCT_LITERALS, true);
 
         let conditions = self.with_restrictions(while_restrictions, |p| {
             p.parse_statement_condition_list(TokenKind::LBrace)

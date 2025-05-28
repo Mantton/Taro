@@ -16,5 +16,6 @@ pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResul
     super::collect::fields::run(package, context)?; // adt fields
     // TODO: Validate Interface Conformance
     // TODO: Check Recursive Types
+    super::check::run(package, context)?;
     Ok(())
 }

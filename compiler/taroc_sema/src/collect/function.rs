@@ -40,7 +40,7 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
         let signature = convert_to_labeled_signature(function, def_id, self.context);
         let arguments = self.context.type_arguments(def_id);
         let kind = TyKind::FnDef(def_id, arguments);
-        let ty = self.context.store.interners.intern_ty(kind);
+        let ty = self.context.mk_ty(kind);
         self.context.cache_type(def_id, ty);
         self.context.cache_signature(def_id, signature.clone());
         walk_function(self, id, function, context)

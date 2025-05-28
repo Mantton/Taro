@@ -109,8 +109,10 @@ impl Actor<'_> {
             taroc_ast::ExpressionKind::When(node) => {
                 taroc_hir::ExpressionKind::When(self.lower_when_expression(node))
             }
+            taroc_ast::ExpressionKind::Ternary(condition, then_expr, else_expr) => {
+                self.lower_ternary_expression(condition, then_expr, else_expr)
+            }
             taroc_ast::ExpressionKind::DictionaryLiteral(..) => todo!(),
-            taroc_ast::ExpressionKind::Ternary(..) => todo!(),
             taroc_ast::ExpressionKind::ForceUnwrap(..) => todo!(),
             taroc_ast::ExpressionKind::OptionalUnwrap(..) => todo!(),
             taroc_ast::ExpressionKind::OptionalEvaluation(..) => todo!(),
@@ -175,12 +177,11 @@ impl Actor<'_> {
         expr: taroc_ast::IfExpression,
     ) -> taroc_hir::IfExpression {
         let condition = self.lower_statement_conditions(expr.conditions);
-        let body = self.lower_block(expr.body);
         let else_block =
             self.lower_optional(expr.else_block, |this, expr| this.lower_expression(expr));
         taroc_hir::IfExpression {
             condition,
-            then_block: body,
+            then_block: self.lower_block_to_expression(expr.body),
             else_block,
         }
     }
@@ -261,5 +262,84 @@ impl Actor<'_> {
             span: node.span,
             body: self.lower_expression(node.body),
         }
+    }
+}
+
+impl Actor<'_> {
+    pub fn lower_block_to_expression(
+        &mut self,
+        block: taroc_ast::Block,
+    ) -> Box<taroc_hir::Expression> {
+        let block = self.lower_block(block);
+        let span = block.span;
+        Box::new(taroc_hir::Expression {
+            id: block.id,
+            kind: taroc_hir::ExpressionKind::Block(block),
+            span: span,
+        })
+    }
+}
+
+impl Actor<'_> {
+    fn lower_ternary_expression(
+        &mut self,
+        condition: Box<taroc_ast::Expression>,
+        then_expr: Box<taroc_ast::Expression>,
+        else_expr: Box<taroc_ast::Expression>,
+    ) -> taroc_hir::ExpressionKind {
+        /*
+        --- ast ---
+        a ? b : c
+
+        --- hir ---
+        if a { b } else { c }
+        */
+
+        // - condition
+        let condition = self.lower_expression(condition);
+
+        // - then
+        let then_block = {
+            let then_span = then_expr.span;
+            let then_expr = self.lower_expression(then_expr);
+            let then_stmt =
+                self.mk_statement(taroc_hir::StatementKind::Expression(then_expr), then_span);
+            let then_block = self.mk_block(vec![then_stmt], then_span);
+            self.mk_expression(taroc_hir::ExpressionKind::Block(then_block), then_span)
+        };
+
+        // - else
+        let else_block = {
+            let else_span = else_expr.span;
+            let else_expr = self.lower_expression(else_expr);
+            let else_stmt =
+                self.mk_statement(taroc_hir::StatementKind::Expression(else_expr), else_span);
+            let else_block = self.mk_block(vec![else_stmt], else_span);
+            self.mk_expression(taroc_hir::ExpressionKind::Block(else_block), else_span)
+        };
+
+        let if_node = taroc_hir::IfExpression {
+            condition,
+            then_block,
+            else_block: Some(else_block),
+        };
+
+        taroc_hir::ExpressionKind::If(if_node)
+    }
+}
+
+impl Actor<'_> {
+    pub fn mk_expression(
+        &mut self,
+        kind: taroc_hir::ExpressionKind,
+        span: Span,
+    ) -> Box<taroc_hir::Expression> {
+        let expr = taroc_hir::Expression {
+            id: self.next(),
+            kind,
+            span,
+        };
+
+        Box::new(expr)
     }
 }

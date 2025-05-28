@@ -125,7 +125,7 @@ pub struct ExpressionArgument {
 #[derive(Debug, Clone)]
 pub struct IfExpression {
     pub condition: Box<Expression>,
-    pub then_block: Block,
+    pub then_block: Box<Expression>,
     pub else_block: Option<Box<Expression>>,
 }
 

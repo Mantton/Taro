@@ -7,6 +7,8 @@ use taroc_data_structures::Interned;
 use taroc_hir::{DefinitionID, Mutability};
 use taroc_span::{FileID, Span, Spanned, Symbol};
 
+use crate::check::infer::keys::{FloatVarID, IntVarID};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Ty<'arena>(Interned<'arena, TyKind<'arena>>);
 
@@ -16,6 +18,14 @@ impl<'arena> Ty<'arena> {
     }
     pub fn kind(self) -> TyKind<'arena> {
         *self.0.0
+    }
+
+    pub fn is_error(self) -> bool {
+        matches!(self.kind(), TyKind::Error)
+    }
+
+    pub fn is_ty_var(self) -> bool {
+        matches!(self.kind(), TyKind::Infer(InferTy::TyVar(_)))
     }
 }
 
@@ -367,26 +377,18 @@ pub type SpannedConstraints<'ctx> = Vec<Spanned<Constraint<'ctx>>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum InferTy {
-    TyVar(TyVid),
-    IntVar(IntVid),
-    FloatVar(FloatVid),
-    NilVar(NilVid),
+    TyVar(TyVarID),
+    IntVar(IntVarID),
+    FloatVar(FloatVarID),
+    NilVar(NilVarID),
 }
 
 index_vec::define_index_type! {
-    pub struct TyVid = u32;
+    pub struct TyVarID = u32;
 }
 
 index_vec::define_index_type! {
-    pub struct IntVid = u32;
-}
-
-index_vec::define_index_type! {
-    pub struct FloatVid = u32;
-}
-
-index_vec::define_index_type! {
-    pub struct NilVid = u32;
+    pub struct NilVarID = u32;
 }
 
 #[derive(Debug, Default, Clone, Copy)]

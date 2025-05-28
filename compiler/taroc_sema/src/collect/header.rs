@@ -88,7 +88,7 @@ impl<'ctx> Actor<'ctx> {
                 id: def_id,
             };
             let kind = TyKind::Adt(adt_def, arguments);
-            self.context.store.interners.intern_ty(kind)
+            self.context.mk_ty(kind)
         };
 
         self.context.cache_type(def_id, ty);
@@ -123,35 +123,35 @@ impl<'ctx> Actor<'ctx> {
             "Array" => {
                 store.common_types.mappings.array.set(Some(id));
                 let kind = TyKind::Array(arguments.first().unwrap().ty().unwrap(), 0); // TODO
-                let ty = self.context.store.interners.intern_ty(kind);
+                let ty = self.context.mk_ty(kind);
                 return Some(ty);
             }
             "ImmutablePointer" => {
                 store.common_types.mappings.const_ptr.set(Some(id));
                 let ty = arguments.first().unwrap().ty().unwrap();
                 let kind = TyKind::Pointer(ty, Mutability::Immutable);
-                let ty = self.context.store.interners.intern_ty(kind);
+                let ty = self.context.mk_ty(kind);
                 return Some(ty);
             }
             "MutablePointer" => {
                 store.common_types.mappings.ptr.set(Some(id));
                 let ty = arguments.first().unwrap().ty().unwrap();
                 let kind = TyKind::Pointer(ty, Mutability::Mutable);
-                let ty = self.context.store.interners.intern_ty(kind);
+                let ty = self.context.mk_ty(kind);
                 return Some(ty);
             }
             "ImmutableReference" => {
                 store.common_types.mappings.const_ref.set(Some(id));
                 let ty = arguments.first().unwrap().ty().unwrap();
                 let kind = TyKind::Reference(ty, Mutability::Immutable);
-                let ty = self.context.store.interners.intern_ty(kind);
+                let ty = self.context.mk_ty(kind);
                 return Some(ty);
             }
             "MutableReference" => {
                 store.common_types.mappings.mut_ref.set(Some(id));
                 let ty = arguments.first().unwrap().ty().unwrap();
                 let kind = TyKind::Reference(ty, Mutability::Mutable);
-                let ty = self.context.store.interners.intern_ty(kind);
+                let ty = self.context.mk_ty(kind);
                 return Some(ty);
             }
             _ => return None,

@@ -522,7 +522,7 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, expr: &Expression) -> V::
         }
         ExpressionKind::If(node) => {
             try_visit!(visitor.visit_expression(&node.condition));
-            try_visit!(visitor.visit_block(&node.then_block));
+            try_visit!(visitor.visit_expression(&node.then_block));
             visit_optional!(visitor, visit_expression, &node.else_block);
         }
         ExpressionKind::FunctionCall(caller, args) => {

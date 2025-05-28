@@ -193,7 +193,7 @@ impl<'ctx> GlobalContext<'ctx> {
                         index: param.index,
                         name: param.name,
                     });
-                    let ty = self.store.interners.intern_ty(kind);
+                    let ty = self.mk_ty(kind);
                     self.cache_type(param.id, ty);
                     let argument = GenericArgument::Type(ty);
                     argument
@@ -301,5 +301,9 @@ impl<'ctx> GlobalContext<'ctx> {
         }
 
         return prepared;
+    }
+
+    pub fn mk_ty(self, k: TyKind<'ctx>) -> Ty<'ctx> {
+        self.store.interners.intern_ty(k)
     }
 }

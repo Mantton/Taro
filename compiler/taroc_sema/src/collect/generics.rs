@@ -142,7 +142,7 @@ impl<'ctx> Actor<'ctx> {
 
                 // Type
                 let kind = TyKind::Parameter(GenericParameter { index, name });
-                let ty = self.context.store.interners.intern_ty(kind);
+                let ty = self.context.mk_ty(kind);
                 self.context.cache_type(id, ty);
             }
         }
