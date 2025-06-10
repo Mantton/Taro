@@ -25,8 +25,17 @@ pub enum FunctionContext {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AssocContext {
-    Interface,
-    Extend,
+    Interface(NodeID),
+    Extend(NodeID),
+}
+
+impl AssocContext {
+    pub fn node_id(self) -> NodeID {
+        match self {
+            AssocContext::Interface(node_id) => node_id,
+            AssocContext::Extend(node_id) => node_id,
+        }
+    }
 }
 
 pub trait VisitorResult {
@@ -330,7 +339,7 @@ pub fn walk_declaration<V: HirVisitor>(visitor: &mut V, declaration: &Declaratio
                 visitor,
                 visit_assoc_declaration,
                 &node.declarations,
-                AssocContext::Interface
+                AssocContext::Interface(declaration.id)
             );
         }
         DeclarationKind::Struct(node) => {
@@ -370,7 +379,7 @@ pub fn walk_declaration<V: HirVisitor>(visitor: &mut V, declaration: &Declaratio
                 visitor,
                 visit_assoc_declaration,
                 &node.declarations,
-                AssocContext::Extend
+                AssocContext::Extend(declaration.id)
             );
         }
         DeclarationKind::Namespace(node) => {

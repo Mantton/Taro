@@ -12,7 +12,7 @@ pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResul
     super::collect::constraints::run(package, context)?; // constraints
     super::collect::conformance::run(package, context)?; // conformances
     super::collect::function::run(package, context)?; // function signatures
-    super::extend::members::run(package, context)?; // assoc members
+    super::extend::table::run(package, context)?; // assoc members and overload table generation
     super::collect::fields::run(package, context)?; // adt fields
     // TODO: Validate Interface Conformance
     // TODO: Check Recursive Types

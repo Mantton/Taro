@@ -1,8 +1,6 @@
-use std::ops::Deref;
-
-use crate::ty::Ty;
-
 use super::context::func::FnCtx;
+use crate::ty::Ty;
+use std::ops::Deref;
 
 pub struct CoerceRequest<'ctx> {
     expected: Ty<'ctx>,
@@ -33,49 +31,21 @@ impl<'fcx, 'gcx> CoerceCtx<'fcx, 'gcx> {
         CoerceCtx { fcx }
     }
 
-    fn coerce(&self, lhs: Ty<'gcx>, rhs: Ty<'gcx>) -> Result<(), ()> {
-        // TODO: Resolve Type Vars where possible
-
-        if lhs.is_ty_var() {
-            self.coerce_from_inference_variable(lhs, rhs)?;
-        }
-
-        return self.unify(lhs, rhs);
-    }
-
-    fn coerce_from_inference_variable(&self, lhs: Ty<'gcx>, rhs: Ty<'gcx>) -> Result<(), ()> {
-        assert!(lhs.is_ty_var());
-
-        if rhs.is_ty_var() {
-            // lhs & rhs are type variables
-            todo!()
-        } else {
-            self.unify(lhs, rhs)
-        }
-    }
-}
-
-impl<'fcx, 'gcx> CoerceCtx<'fcx, 'gcx> {
-    fn unify(&self, lhs: Ty<'gcx>, rhs: Ty<'gcx>) -> Result<(), ()> {
-        println!("Unify {lhs:?} {rhs:?}");
-        self.unify_raw(lhs, rhs)
-    }
-
-    fn unify_raw(&self, lhs: Ty<'gcx>, rhs: Ty<'gcx>) -> Result<(), ()> {
-        todo!()
+    fn coerce(&self, expected: Ty<'gcx>, provided: Ty<'gcx>) -> Result<(), ()> {
+        // TODO: Coercion Checks
+        return self.unify(expected, provided);
     }
 }
 
 impl<'rcx, 'gcx> FnCtx<'rcx, 'gcx> {
     pub fn coerce(
         &self,
-        expression: &taroc_hir::Expression,
+        _: &taroc_hir::Expression,
         expression_ty: Ty<'gcx>,
         expectation: Ty<'gcx>,
     ) -> Result<(), ()> {
         let ctx = CoerceCtx::new(self);
-
-        let result = ctx.coerce(expression_ty, expectation);
-        Ok(())
+        let result = ctx.coerce(expectation, expression_ty);
+        result
     }
 }

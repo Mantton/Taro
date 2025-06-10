@@ -53,6 +53,26 @@ impl HirVisitor for Actor<'_> {
 
         taroc_hir::visitor::walk_function_declaration(self, d);
     }
+
+    fn visit_variant(&mut self, v: &taroc_hir::Variant) -> Self::Result {
+        let def_id = self.context.def_id(v.id);
+        let parent = self.context.parent(def_id);
+        let ty = self.context.type_of(parent);
+        match &v.kind {
+            taroc_hir::VariantKind::Unit(ctor_id) => {
+                let ctor_def_id = self.context.def_id(*ctor_id);
+                self.context.cache_type(ctor_def_id, ty);
+            }
+            taroc_hir::VariantKind::Tuple(ctor_id, _) => {
+                let ctor_def_id = self.context.def_id(*ctor_id);
+                let arguments = self.context.type_arguments(parent);
+                let kind = TyKind::FnDef(ctor_def_id, arguments);
+                let ty = self.context.mk_ty(kind);
+                self.context.cache_type(ctor_def_id, ty);
+            }
+            taroc_hir::VariantKind::Struct(..) => {}
+        }
+    }
 }
 
 impl<'ctx> Actor<'ctx> {

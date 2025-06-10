@@ -1,113 +1,122 @@
+use std::cell::RefCell;
+
+use ena::unify::{InPlace, Snapshot, UnificationTable};
+
 use crate::{
     GlobalContext,
-    ty::{InferTy, Ty, TyKind},
+    ty::{Ty, TypeVariableID},
 };
-use ena::unify::UnificationTableStorage;
-use keys::{
-    FloatVarID, FloatVarValue, IntVarID, IntVarValue, TypeVariableOrigin, TypeVariableStorage,
-    TypeVariableTable,
-};
-use snapshot::IcxEventLogs;
-use std::cell::RefCell;
-use taroc_span::Span;
-
-pub mod keys;
-mod snapshot;
-pub mod ty_var;
 
 pub struct InferCtx<'ctx> {
     pub gcx: GlobalContext<'ctx>,
     pub inner: RefCell<InferCtxInner<'ctx>>,
-    mode: InferMode,
-}
-pub enum InferMode {
-    FnBody,
 }
 
 impl<'ctx> InferCtx<'ctx> {
-    pub fn new(gcx: GlobalContext<'ctx>, mode: InferMode) -> InferCtx<'ctx> {
+    pub fn new(gcx: GlobalContext<'ctx>) -> InferCtx<'ctx> {
         InferCtx {
             gcx,
-            mode,
             inner: RefCell::new(InferCtxInner::new()),
         }
     }
 }
 
 impl<'ctx> InferCtx<'ctx> {
-    pub fn next_int_var(&self) -> Ty<'ctx> {
-        let id = self
-            .inner
-            .borrow_mut()
-            .int_unification_table()
-            .new_key(IntVarValue::Unknown);
+    pub fn unify(&self, a: Ty<'ctx>, b: Ty<'ctx>) -> Result<(), ()> {
+        if a == b {
+            return Ok(());
+        }
 
-        let ty = self.gcx.mk_ty(TyKind::Infer(InferTy::IntVar(id)));
-        ty
-    }
-
-    pub fn next_float_var(&self) -> Ty<'ctx> {
-        let id = self
-            .inner
-            .borrow_mut()
-            .float_unification_table()
-            .new_key(FloatVarValue::Unknown);
-
-        let ty = self.gcx.mk_ty(TyKind::Infer(InferTy::FloatVar(id)));
-        ty
-    }
-
-    pub fn next_nil_var(&self) -> Ty<'ctx> {
-        self.gcx.store.common_types.error
-    }
-
-    pub fn next_ty_var(&self, location: Span) -> Ty<'ctx> {
-        let id = self
-            .inner
-            .borrow_mut()
-            .type_variables()
-            .new_var(TypeVariableOrigin { location });
-        self.gcx.mk_ty(TyKind::Infer(InferTy::TyVar(id)))
+        return Ok(());
     }
 }
 
-pub(crate) type UnificationTable<'a, 'tcx, T> = ena::unify::UnificationTable<
-    ena::unify::InPlace<T, &'a mut ena::unify::UnificationStorage<T>, &'a mut IcxEventLogs<'tcx>>,
->;
+impl<'ctx> InferCtx<'ctx> {
+    pub fn take_snapshot(&self) -> Snapshot<InPlace<TypeVariableKey<'ctx>>> {
+        self.inner.borrow_mut().var_unification_table.snapshot()
+    }
 
-#[derive(Default, Clone)]
+    pub fn restore_snapshot(&self, snapshot: Snapshot<InPlace<TypeVariableKey<'ctx>>>) {
+        self.inner
+            .borrow_mut()
+            .var_unification_table
+            .rollback_to(snapshot);
+    }
+}
+
 pub struct InferCtxInner<'ctx> {
-    event_logs: IcxEventLogs<'ctx>,
-    int_storage: UnificationTableStorage<IntVarID>,
-    float_storage: UnificationTableStorage<FloatVarID>,
-    // nil_storage: UnificationTableStorage<NilVarID>,
-    type_storage: TypeVariableStorage<'ctx>,
+    pub var_unification_table: UnificationTable<InPlace<TypeVariableKey<'ctx>>>,
 }
 
 impl<'ctx> InferCtxInner<'ctx> {
     pub fn new() -> InferCtxInner<'ctx> {
         InferCtxInner {
-            event_logs: Default::default(),
-            int_storage: Default::default(),
-            float_storage: Default::default(),
-            type_storage: Default::default(),
+            var_unification_table: UnificationTable::new(),
         }
+    }
+
+    pub fn fresh_type_var(&mut self) -> TypeVariableKey<'ctx> {
+        self.var_unification_table
+            .new_key(TypeVariableValue::Unknown)
     }
 }
 
-impl<'ctx> InferCtxInner<'ctx> {
-    #[inline]
-    fn int_unification_table(&mut self) -> UnificationTable<'_, 'ctx, IntVarID> {
-        self.int_storage.with_log(&mut self.event_logs)
+// This is what gets stored in the unification table
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TypeVariableValue<'ctx> {
+    Unknown,         // Variable is not yet bound to anything
+    Known(Ty<'ctx>), // Variable is bound to a concrete type
+}
+
+// Key type for the unification table
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TypeVariableKey<'ctx> {
+    pub id: TypeVariableID,
+    pub phantom: std::marker::PhantomData<&'ctx ()>,
+}
+
+// Implement the traits that ena needs
+impl<'ctx> ena::unify::UnifyKey for TypeVariableKey<'ctx> {
+    type Value = TypeVariableValue<'ctx>;
+
+    fn index(&self) -> u32 {
+        self.id.raw()
     }
 
-    #[inline]
-    fn float_unification_table(&mut self) -> UnificationTable<'_, 'ctx, FloatVarID> {
-        self.float_storage.with_log(&mut self.event_logs)
+    fn from_index(u: u32) -> Self {
+        TypeVariableKey {
+            id: TypeVariableID::from_raw(u),
+            phantom: std::marker::PhantomData,
+        }
     }
 
-    #[inline]
-    fn type_variables(&mut self) -> TypeVariableTable<'_, 'ctx> {
-        self.type_storage.with_log(&mut self.event_logs)
+    fn tag() -> &'static str {
+        "TypeVariableKey"
+    }
+}
+
+impl<'ctx> ena::unify::UnifyValue for TypeVariableValue<'ctx> {
+    type Error = ena::unify::NoError;
+
+    fn unify_values(value1: &Self, value2: &Self) -> Result<Self, Self::Error> {
+        match (value1, value2) {
+            (TypeVariableValue::Unknown, TypeVariableValue::Unknown) => {
+                Ok(TypeVariableValue::Unknown)
+            }
+            (TypeVariableValue::Known(ty), TypeVariableValue::Unknown)
+            | (TypeVariableValue::Unknown, TypeVariableValue::Known(ty)) => {
+                Ok(TypeVariableValue::Known(*ty))
+            }
+            (TypeVariableValue::Known(ty1), TypeVariableValue::Known(ty2)) => {
+                // Two concrete types - they must be equal
+                if ty1 == ty2 {
+                    Ok(TypeVariableValue::Known(*ty1))
+                } else {
+                    // This shouldn't happen in a well-typed program
+                    // You might want to handle this as an error
+                    Ok(TypeVariableValue::Known(*ty1))
+                }
+            }
+        }
     }
 }

@@ -259,7 +259,6 @@ impl<'ctx> GlobalContext<'ctx> {
             TyKind::Parameter(..) => None,
             TyKind::Function { .. } => None,
             TyKind::AssociatedType { .. } => None,
-            TyKind::Infer(..) => None,
             TyKind::Error => None,
             TyKind::FnDef(id, ..) => Some(id),
             _ => None,

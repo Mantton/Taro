@@ -6,7 +6,7 @@ use crate::{
 };
 
 impl<'rcx, 'gcx> FnCtx<'rcx, 'gcx> {
-    pub fn check_return(&self, expr: &taroc_hir::Expression, explicit: bool) {
+    pub fn check_return(&self, expr: &taroc_hir::Expression, _: bool) {
         let return_coercion = self
             .ret_coercion
             .as_ref()
@@ -14,7 +14,7 @@ impl<'rcx, 'gcx> FnCtx<'rcx, 'gcx> {
 
         let return_ty = return_coercion.borrow().expected_ty();
 
-        //
+        let _ = self.check_expression_coercible_to_type(expr, return_ty, None);
     }
 }
 
@@ -40,7 +40,7 @@ impl<'rcx, 'gcx> FnCtx<'rcx, 'gcx> {
             }
             taroc_hir::StatementKind::Variable(local) => {
                 self.check_local(local);
-                return Some(self.commons().void);
+                return Some(self.common_types().void);
             }
             taroc_hir::StatementKind::Break(_) => {}
             taroc_hir::StatementKind::Continue(_) => {}
@@ -74,14 +74,20 @@ impl<'rcx, 'gcx> FnCtx<'rcx, 'gcx> {
             let annotation_ty = self
                 .lowerer()
                 .lower_type(annotation, &LoweringRequest::default());
-            annotation_ty
+            Some(annotation_ty)
         } else {
-            self.next_ty_var(local.pattern.span)
+            None
         };
 
-        if let Some(initializer) = &local.initializer {
-            self.check_expression_coercible_to_type(initializer, ty, None);
-        }
+        let ty = if let Some(initializer) = &local.initializer {
+            if let Some(ty) = ty {
+                self.check_expression_coercible_to_type(initializer, ty, None)
+            } else {
+                self.check_expression(initializer)
+            }
+        } else {
+            todo!("expected initializer")
+        };
 
         self.resolve_binding_pattern(&local.pattern, ty);
     }

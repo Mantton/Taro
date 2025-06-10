@@ -5,7 +5,6 @@ use crate::{
         SimpleType, Ty, TyKind, UIntTy,
     },
 };
-use std::marker::PhantomData;
 use taroc_hir::{DefinitionID, Mutability};
 
 pub fn convert_ast_int_ty(ity: taroc_hir::IntTy) -> IntTy {
@@ -111,22 +110,22 @@ pub fn ty2str<'ctx>(ty: Ty<'ctx>, gcx: GlobalContext<'ctx>) -> String {
 
         TyKind::Pointer(inner, m) => {
             format!(
-                "*{} {}",
+                "*{}{}",
                 if matches!(m, Mutability::Mutable) {
-                    "mut"
+                    "mut "
                 } else {
-                    "const"
+                    ""
                 },
                 ty2str(inner, gcx)
             )
         }
         TyKind::Reference(inner, m) => {
             format!(
-                "&{} {}",
+                "&{}{}",
                 if matches!(m, Mutability::Mutable) {
-                    "mut"
+                    "mut "
                 } else {
-                    "const"
+                    ""
                 },
                 ty2str(inner, gcx)
             )
@@ -188,7 +187,6 @@ pub fn ty2str<'ctx>(ty: Ty<'ctx>, gcx: GlobalContext<'ctx>) -> String {
         }
 
         TyKind::AssociatedType { .. } => "assoc()".into(),
-        TyKind::Infer(v) => format!("{v:?}"),
         TyKind::Error => "<error>".into(),
 
         TyKind::FnDef(id, args) => {
@@ -199,7 +197,8 @@ pub fn ty2str<'ctx>(ty: Ty<'ctx>, gcx: GlobalContext<'ctx>) -> String {
             out
         }
 
-        TyKind::OverloadedFn(..) => "function".into(),
+        TyKind::Infer(id) => format!("TyVar({:?})", id),
+        TyKind::Fresh(id) => format!("FreshVar({:?})", id),
     }
 }
 
@@ -243,9 +242,6 @@ pub fn constraint2str<'ctx>(constraint: Constraint<'ctx>, gcx: GlobalContext<'ct
         Constraint::TypeEquality(lhs, rhs) => {
             format!("{} == {}", ty2str(lhs, gcx), ty2str(rhs, gcx))
         }
+        Constraint::Subtype { sub, sup } => format!("{} <: {}", sub.format(gcx), sup.format(gcx)),
     }
-}
-
-pub struct TyBuilder<'ctx> {
-    _data: PhantomData<GlobalContext<'ctx>>,
 }

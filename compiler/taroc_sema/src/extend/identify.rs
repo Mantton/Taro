@@ -73,11 +73,11 @@ impl<'ctx> Actor<'ctx> {
             TyKind::Existential(..)
             | TyKind::Opaque(..)
             | TyKind::FnDef(..)
-            | TyKind::OverloadedFn(..)
-            | TyKind::Infer(..)
             | TyKind::Function { .. }
             | TyKind::Tuple(..)
             | TyKind::AssociatedType { .. }
+            | TyKind::Infer(..)
+            | TyKind::Fresh(..)
             | TyKind::Parameter(..) => unreachable!(
                 "ICE: resolver should have reported extending non-nominal types in prior pass"
             ),

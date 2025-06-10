@@ -4,7 +4,9 @@ use crate::ty::{
     AssocTyKind, Constraint, GenericArgument, GenericArguments, InterfaceReference,
     SpannedConstraints, Ty, TyKind,
 };
-use crate::utils::{convert_ast_float_ty, convert_ast_int_ty, convert_ast_uint_ty, ty2str};
+use crate::utils::{
+    convert_ast_float_ty, convert_ast_int_ty, convert_ast_uint_ty, instantiate_ty_with_args, ty2str,
+};
 use rustc_hash::FxHashSet;
 use std::collections::VecDeque;
 use taroc_hir::{DefinitionID, DefinitionKind, NodeID, PrimaryType, Resolution};
@@ -427,8 +429,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         let base = gcx.type_of(id);
 
         // instantiate
-        // instantiate_ty_with_args(gcx, base, args)
-        base
+        instantiate_ty_with_args(gcx, base, args)
     }
 
     pub fn lower_type_arguments(

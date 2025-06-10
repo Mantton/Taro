@@ -91,8 +91,6 @@ pub fn download_dependency(
 
 /// Reference: https://github.com/rust-lang/git2-rs/blob/master/examples/fetch.rs
 fn fetch_repo(repo: &Repository, name: &String) -> Result<(), git2::Error> {
-    println!("Fetching Repository {}", name);
-
     let mut remote = repo
         .find_remote(VCS_REMOTE_NAME)
         .or_else(|_| repo.remote_anonymous(VCS_REMOTE_NAME))?;

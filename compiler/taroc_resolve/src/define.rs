@@ -109,7 +109,7 @@ impl HirVisitor for DefinitionCollector<'_, '_> {
             taroc_hir::AssociatedDeclarationKind::Type(..) => SymbolNamespace::Type,
         };
 
-        if context == AssocContext::Interface
+        if let AssocContext::Interface(..) = context
             && !matches!(
                 declaration.kind,
                 taroc_hir::AssociatedDeclarationKind::Operator(..)

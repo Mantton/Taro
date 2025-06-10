@@ -5,6 +5,8 @@ mod check;
 mod collect;
 mod context;
 mod extend;
+pub mod fold;
+mod freshen;
 mod lower;
 mod models;
 mod normalize;

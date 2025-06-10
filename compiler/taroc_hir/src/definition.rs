@@ -180,6 +180,14 @@ impl Resolution {
             Resolution::SelfConstructor(_) => "self constructor",
         }
     }
+
+    pub fn def_id(&self) -> DefinitionID {
+        match self {
+            Resolution::Definition(definition_id, _) => *definition_id,
+            Resolution::InterfaceSelfTypeParameter(definition_id) => *definition_id,
+            _ => unreachable!(),
+        }
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CtorOf {

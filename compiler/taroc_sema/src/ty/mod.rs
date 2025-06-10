@@ -1,4 +1,5 @@
 use core::fmt;
+use index_vec::define_index_type;
 use indexmap::IndexMap;
 use rustc_hash::FxHashMap;
 use std::{collections::HashMap, fmt::Display};
@@ -7,7 +8,7 @@ use taroc_data_structures::Interned;
 use taroc_hir::{DefinitionID, Mutability};
 use taroc_span::{FileID, Span, Spanned, Symbol};
 
-use crate::check::infer::keys::{FloatVarID, IntVarID};
+use crate::{GlobalContext, utils::ty2str};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Ty<'arena>(Interned<'arena, TyKind<'arena>>);
@@ -22,10 +23,6 @@ impl<'arena> Ty<'arena> {
 
     pub fn is_error(self) -> bool {
         matches!(self.kind(), TyKind::Error)
-    }
-
-    pub fn is_ty_var(self) -> bool {
-        matches!(self.kind(), TyKind::Infer(InferTy::TyVar(_)))
     }
 }
 
@@ -58,9 +55,19 @@ pub enum TyKind<'arena> {
     },
     // Represents Interface::AssociatedType (e.g., Self::Element or C::Element),
     AssociatedType(AssocTyKind<'arena>),
-    Infer(InferTy),
+    /// Fresh variable (for signature comparison/freshening)
+    Fresh(FreshVariableID),
+    /// Type inference variable (for generic instantiation)
+    Infer(TypeVariableID),
     Error,
-    OverloadedFn(&'arena [DefinitionID], Option<GenericArguments<'arena>>),
+}
+
+define_index_type! {
+    pub struct TypeVariableID = u32;  // For inference
+}
+
+define_index_type! {
+    pub struct FreshVariableID = u32;  // For inference
 }
 
 // In your type representation logic (e.g., impl Ty<'ctx> or a helper)
@@ -93,7 +100,6 @@ impl<'ctx> Ty<'ctx> {
                 | TyKind::AssociatedType(_)
                 | TyKind::Opaque(_)
                 | TyKind::Existential(_)
-                | TyKind::Infer(_)
                 | TyKind::Error
         )
     }
@@ -328,10 +334,17 @@ pub struct LabeledFunctionSignature<'ctx> {
     pub id: DefinitionID,
 }
 
+impl<'ctx> LabeledFunctionSignature<'ctx> {
+    pub fn min_parameter_count(&self) -> usize {
+        self.inputs.len() - self.inputs.iter().filter(|i| i.has_default).count()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LabeledFunctionParameter<'ctx> {
     pub label: Option<Symbol>,
     pub ty: Ty<'ctx>,
+    pub has_default: bool,
 }
 
 #[derive(Debug, Default)]
@@ -371,17 +384,14 @@ pub enum Constraint<'ctx> {
 
     /// `T == U`
     TypeEquality(Ty<'ctx>, Ty<'ctx>),
+    /// `T <: U` (T is a subtype of U)
+    Subtype {
+        sub: Ty<'ctx>, // the subtype
+        sup: Ty<'ctx>, // the supertype
+    },
 }
 
 pub type SpannedConstraints<'ctx> = Vec<Spanned<Constraint<'ctx>>>;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum InferTy {
-    TyVar(TyVarID),
-    IntVar(IntVarID),
-    FloatVar(FloatVarID),
-    NilVar(NilVarID),
-}
 
 index_vec::define_index_type! {
     pub struct TyVarID = u32;
@@ -492,9 +502,9 @@ impl<'ctx> Ty<'ctx> {
             | TyKind::FnDef(..)
             | TyKind::Function { .. }
             | TyKind::AssociatedType { .. }
+            | TyKind::Fresh(..)
             | TyKind::Infer(..)
-            | TyKind::Error
-            | TyKind::OverloadedFn(..) => unreachable!(),
+            | TyKind::Error => unreachable!(),
         }
     }
 }
@@ -533,10 +543,10 @@ impl Display for IntTy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
             IntTy::ISize => "isize",
-            IntTy::I8 => "i8",
-            IntTy::I16 => "i16",
-            IntTy::I32 => "i32",
-            IntTy::I64 => "i64",
+            IntTy::I8 => "int8",
+            IntTy::I16 => "int16",
+            IntTy::I32 => "int32",
+            IntTy::I64 => "int64",
         };
         write!(f, "{}", s)
     }
@@ -546,10 +556,10 @@ impl Display for UIntTy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
             UIntTy::USize => "usize",
-            UIntTy::U8 => "u8",
-            UIntTy::U16 => "u16",
-            UIntTy::U32 => "u32",
-            UIntTy::U64 => "u64",
+            UIntTy::U8 => "uint8",
+            UIntTy::U16 => "uint16",
+            UIntTy::U32 => "uint32",
+            UIntTy::U64 => "uint64",
         };
         write!(f, "{}", s)
     }
@@ -562,5 +572,11 @@ impl Display for FloatTy {
             FloatTy::F64 => "double",
         };
         write!(f, "{}", s)
+    }
+}
+
+impl<'gcx> Ty<'gcx> {
+    pub fn format(self, gcx: GlobalContext<'gcx>) -> String {
+        ty2str(self, gcx)
     }
 }

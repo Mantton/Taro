@@ -1,11 +1,7 @@
-use std::{cell::RefCell, ops::Deref};
-
-use rustc_hash::FxHashMap;
-use taroc_hir::{DefinitionID, NodeID};
-
-use crate::{check::coerce::CoerceRequest, ty::Ty};
-
 use super::root::TyCheckRootCtx;
+use crate::check::coerce::CoerceRequest;
+use std::{cell::RefCell, ops::Deref};
+use taroc_hir::DefinitionID;
 
 pub struct FnCtx<'rcx, 'ctx> {
     pub id: DefinitionID,

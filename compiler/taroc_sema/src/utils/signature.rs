@@ -53,6 +53,7 @@ pub fn convert_to_labeled_parameter<'ctx>(
         ty: icx
             .lowerer()
             .lower_type(&param.annotated_type, &Default::default()),
+        has_default: param.default_value.is_some(),
     }
 }
 

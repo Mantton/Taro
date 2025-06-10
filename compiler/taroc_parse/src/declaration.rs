@@ -219,10 +219,7 @@ impl Parser {
             TokenKind::Extend => (Identifier::emtpy(self.file.file), self.parse_extend()?),
             TokenKind::Bridge => self.parse_bridge()?,
             TokenKind::Namespace => self.parse_namespace()?,
-            TokenKind::Operator => (
-                Identifier::emtpy(self.file.file),
-                self.parse_operator(mode)?,
-            ),
+            TokenKind::Operator => self.parse_operator(mode)?,
             _ => return Ok(None),
         };
 

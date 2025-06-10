@@ -40,8 +40,8 @@ impl HirVisitor for Actor<'_> {
         c: taroc_hir::visitor::FunctionContext,
     ) -> Self::Result {
         // do not check interface functions
-        if let FunctionContext::Assoc(AssocContext::Interface)
-        | FunctionContext::AssocOperand(AssocContext::Interface, _) = c
+        if let FunctionContext::Assoc(AssocContext::Interface(..))
+        | FunctionContext::AssocOperand(AssocContext::Interface(..), _) = c
         {
             return;
         }
@@ -58,7 +58,7 @@ impl<'ctx> Actor<'ctx> {
         &self,
         id: taroc_hir::NodeID,
         func: &taroc_hir::Function,
-        fn_ctx: taroc_hir::visitor::FunctionContext,
+        _: taroc_hir::visitor::FunctionContext,
     ) {
         let id = self.context.def_id(id);
         let name = self.context.ident_for(id);
@@ -78,8 +78,13 @@ fn check_func<'rcx, 'gcx>(
     id: DefinitionID,
     node: &taroc_hir::Function,
 ) {
+    // Get Signature
     let signature = fcx.gcx.fn_signature(id);
     let signature = labeled_signature_to_ty(signature, fcx.gcx);
+
+    // Freshen Signature
+    let signature = fcx.freshen(signature);
+
     let (param_tys, return_ty) = match signature.kind() {
         TyKind::Function { inputs, output, .. } => (inputs, output),
         _ => unreachable!("function signature must be of function pointer type"),

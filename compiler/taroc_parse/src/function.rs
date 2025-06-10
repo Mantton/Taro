@@ -16,11 +16,16 @@ impl Parser {
         Ok((identifier, DeclarationKind::Function(func)))
     }
 
-    pub fn parse_operator(&mut self, mode: FnParseMode) -> R<DeclarationKind> {
+    pub fn parse_operator(&mut self, mode: FnParseMode) -> R<(Identifier, DeclarationKind)> {
         self.expect(TokenKind::Operator)?;
+        let lo = self.lo_span();
         let operator = self.parse_operator_from_token()?;
+        let span = lo.to(self.hi_span());
         let func = self.parse_fn(mode)?;
-        Ok(DeclarationKind::Operator(operator, func))
+        Ok((
+            Identifier::new(Symbol::with(""), span),
+            DeclarationKind::Operator(operator, func),
+        ))
     }
 
     fn parse_fn(&mut self, mode: FnParseMode) -> R<Function> {
