@@ -1,5 +1,6 @@
+use crate::coerce::CoerceRequest;
+
 use super::root::TyCheckRootCtx;
-use crate::check::coerce::CoerceRequest;
 use std::{cell::RefCell, ops::Deref};
 use taroc_hir::DefinitionID;
 

@@ -66,10 +66,10 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             _ => self.check_expression_kind(expression, expectation),
         };
 
-        self.gcx.diagnostics.warn(
-            format!("Mapping To {}", ty.format(self.gcx)),
-            expression.span,
-        );
+        // self.gcx.diagnostics.warn(
+        //     format!("Mapping To {}", ty.format(self.gcx)),
+        //     expression.span,
+        // );
 
         ty
     }
@@ -147,7 +147,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             taroc_hir::Literal::Rune(_) => self.common_types().rune,
             taroc_hir::Literal::String(_) => self.common_types().string,
             taroc_hir::Literal::Integer(_) => {
-                let opt_ty = expectation.to_option().and_then(|ty| match ty.kind() {
+                let opt_ty = expectation.to_option(self).and_then(|ty| match ty.kind() {
                     TyKind::Int(_) | TyKind::UInt(_) => Some(ty),
                     _ => None,
                 });
@@ -155,7 +155,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
                 opt_ty.unwrap_or_else(|| self.next_int_var())
             }
             taroc_hir::Literal::Float(_) => {
-                let opt_ty = expectation.to_option().and_then(|ty| match ty.kind() {
+                let opt_ty = expectation.to_option(self).and_then(|ty| match ty.kind() {
                     TyKind::Float(_) => Some(ty),
                     _ => None,
                 });
@@ -176,10 +176,12 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         _: &taroc_hir::Expression,
     ) -> Ty<'ctx> {
         // if we have an expected type that is a tuple, get it's elements to check against
-        let expected_tys = expectation.only_has_type().and_then(|ty| match ty.kind() {
-            TyKind::Tuple(elements) => Some(elements),
-            _ => None,
-        });
+        let expected_tys = expectation
+            .only_has_type(self)
+            .and_then(|ty| match ty.kind() {
+                TyKind::Tuple(elements) => Some(elements),
+                _ => None,
+            });
 
         let tys = elements.iter().enumerate().map(|(index, expression)| {
             // if we have an expectation check coercion, otherwise check without an expectation
@@ -249,7 +251,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
                 .check_expression_with_expectation_and_arguments(
                     calle,
                     Expectation::None,
-                    Some((expression, args, expectation.only_has_type())),
+                    Some((expression, args, expectation.only_has_type(self))),
                 ),
             _ => self.check_expression(calle),
         };

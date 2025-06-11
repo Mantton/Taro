@@ -63,7 +63,6 @@ fn collect_slots<'ctx>(constraints: &[Spanned<Constraint<'ctx>>]) -> FxHashMap<T
             Constraint::Bound { ty, .. } => {
                 intern(ty);
             }
-            Constraint::Subtype { .. } => {}
         }
     }
 
@@ -178,7 +177,6 @@ fn saturate<'ctx>(state: &mut UFState<'ctx>, constraints: &[Spanned<Constraint<'
                     state.kept.insert(cid);
                 }
             }
-            Constraint::Subtype { .. } => {}
         }
     }
 }
@@ -238,7 +236,6 @@ fn analyse_and_prune<'ctx>(
                     redundancies.push(cid);
                 }
             }
-            Constraint::Subtype { .. } => {}
         }
     }
 

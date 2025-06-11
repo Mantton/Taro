@@ -21,12 +21,24 @@ impl<'arena> Ty<'arena> {
     pub fn with_kind(k: Interned<'arena, TyKind<'arena>>) -> Ty<'arena> {
         Ty(k)
     }
+
+    #[inline]
     pub fn kind(self) -> TyKind<'arena> {
         *self.0.0
     }
 
     pub fn is_error(self) -> bool {
         matches!(self.kind(), TyKind::Error)
+    }
+
+    #[inline]
+    pub fn is_infer(self) -> bool {
+        matches!(self.kind(), TyKind::Infer(..))
+    }
+
+    #[inline]
+    pub fn is_ty_var(self) -> bool {
+        matches!(self.kind(), TyKind::Infer(InferTy::Ty(_)))
     }
 }
 
@@ -386,11 +398,6 @@ pub enum Constraint<'ctx> {
 
     /// `T == U`
     TypeEquality(Ty<'ctx>, Ty<'ctx>),
-    /// `T <: U` (T is a subtype of U)
-    Subtype {
-        sub: Ty<'ctx>, // the subtype
-        sup: Ty<'ctx>, // the supertype
-    },
 }
 
 pub type SpannedConstraints<'ctx> = Vec<Spanned<Constraint<'ctx>>>;

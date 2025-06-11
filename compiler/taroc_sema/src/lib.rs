@@ -2,8 +2,10 @@
 #![feature(if_let_guard)]
 
 mod check;
+mod coerce;
 mod collect;
 mod context;
+mod error;
 mod extend;
 pub mod fold;
 mod freshen;

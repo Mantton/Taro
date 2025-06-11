@@ -7,10 +7,11 @@ use taroc_hir::{
 };
 
 use crate::{
-    GlobalContext, check::context::root::TyCheckRootCtx, ty::TyKind, utils::labeled_signature_to_ty,
+    GlobalContext, check::context::root::TyCheckRootCtx, coerce::CoerceRequest, ty::TyKind,
+    utils::labeled_signature_to_ty,
 };
 
-use super::{coerce::CoerceRequest, context::func::FnCtx};
+use super::context::func::FnCtx;
 
 pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
     Actor::run(package, context)
@@ -62,7 +63,8 @@ impl<'ctx> Actor<'ctx> {
     ) {
         let id = self.context.def_id(id);
         let name = self.context.ident_for(id);
-        println!("--- Checking '{}'---", name.symbol);
+        let msg = format!("--- Checking '{}'---", name.symbol);
+        self.context.diagnostics.info(msg, name.span);
 
         let rcx = TyCheckRootCtx::new(self.context, id);
         let mut fcx = FnCtx::new(&rcx, id);

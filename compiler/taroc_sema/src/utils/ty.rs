@@ -247,6 +247,5 @@ pub fn constraint2str<'ctx>(constraint: Constraint<'ctx>, gcx: GlobalContext<'ct
         Constraint::TypeEquality(lhs, rhs) => {
             format!("{} == {}", ty2str(lhs, gcx), ty2str(rhs, gcx))
         }
-        Constraint::Subtype { sub, sup } => format!("{} <: {}", sub.format(gcx), sup.format(gcx)),
     }
 }

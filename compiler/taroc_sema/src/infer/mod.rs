@@ -1,5 +1,8 @@
 use crate::{
     GlobalContext,
+    error::TypeError,
+    fold::TypeFoldable,
+    infer::resolve::InferVarResolver,
     ty::{GenericArgument, GenericArguments, GenericParameterDefinition, InferTy, Ty, TyKind},
 };
 use ena::unify::UnificationTableStorage;
@@ -13,6 +16,8 @@ use taroc_hir::DefinitionID;
 use taroc_span::Span;
 
 pub mod keys;
+pub mod relate;
+mod resolve;
 mod snapshot;
 pub mod ty_var;
 
@@ -102,6 +107,56 @@ impl<'ctx> InferCtx<'ctx> {
     }
 }
 
+impl<'ctx> InferCtx<'ctx> {
+    pub fn resolve_vars_if_possible<T>(&self, value: T) -> T
+    where
+        T: TypeFoldable<'ctx>,
+    {
+        let mut resolver = InferVarResolver::new(self);
+        value.fold_with(&mut resolver)
+    }
+}
+
+impl<'ctx> InferCtx<'ctx> {
+    pub fn shallow_resolve(&self, ty: Ty<'ctx>) -> Ty<'ctx> {
+        let TyKind::Infer(inner) = ty.kind() else {
+            return ty;
+        };
+
+        match inner {
+            InferTy::Ty(vid) => {
+                // can resolve to float or int var, so resolve those too
+                let known = self.inner.borrow_mut().type_variables().probe(vid).known();
+                known.map_or(ty, |t| self.shallow_resolve(t))
+            }
+            InferTy::IntVar(vid) => {
+                match self
+                    .inner
+                    .borrow_mut()
+                    .int_unification_table()
+                    .probe_value(vid)
+                {
+                    IntVarValue::Unknown => ty,
+                    IntVarValue::Signed(k) => self.gcx.mk_ty(TyKind::Int(k)),
+                    IntVarValue::Unsigned(k) => self.gcx.mk_ty(TyKind::UInt(k)),
+                }
+            }
+            InferTy::FloatVar(vid) => {
+                match self
+                    .inner
+                    .borrow_mut()
+                    .float_unification_table()
+                    .probe_value(vid)
+                {
+                    FloatVarValue::Unknown => ty,
+                    FloatVarValue::Known(k) => self.gcx.mk_ty(TyKind::Float(k)),
+                }
+            }
+            InferTy::FreshTy(_) => ty,
+        }
+    }
+}
+
 pub(crate) type UnificationTable<'a, 'tcx, T> = ena::unify::UnificationTable<
     ena::unify::InPlace<T, &'a mut ena::unify::UnificationStorage<T>, &'a mut IcxEventLogs<'tcx>>,
 >;
@@ -141,3 +196,10 @@ impl<'ctx> InferCtxInner<'ctx> {
         self.type_storage.with_log(&mut self.event_logs)
     }
 }
+
+pub struct InferenceOutput<'gcx, T> {
+    pub value: T,
+    pub _data: &'gcx (),
+}
+
+pub type InferenceResult<'gcx, T> = Result<InferenceOutput<'gcx, T>, TypeError>;

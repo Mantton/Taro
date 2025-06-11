@@ -13,6 +13,16 @@ pub struct TyVarEqID<'ctx> {
     _data: PhantomData<&'ctx ()>,
 }
 
+impl<'gcx> From<TyVarID> for TyVarEqID<'gcx> {
+    #[inline]
+    fn from(vid: TyVarID) -> Self {
+        TyVarEqID {
+            _raw: vid,
+            _data: PhantomData,
+        }
+    }
+}
+
 impl<'ctx> TyVarEqID<'ctx> {
     pub fn new(value: TyVarID) -> TyVarEqID<'ctx> {
         return TyVarEqID {
@@ -41,6 +51,22 @@ impl<'ctx> UnifyKey for TyVarEqID<'ctx> {
 pub enum TyVarValue<'ctx> {
     Unknown,
     Known(Ty<'ctx>),
+}
+
+impl<'gcx> TyVarValue<'gcx> {
+    pub(crate) fn known(&self) -> Option<Ty<'gcx>> {
+        match *self {
+            TyVarValue::Unknown { .. } => None,
+            TyVarValue::Known(ty) => Some(ty),
+        }
+    }
+
+    pub(crate) fn is_unknown(&self) -> bool {
+        match *self {
+            TyVarValue::Unknown { .. } => true,
+            TyVarValue::Known { .. } => false,
+        }
+    }
 }
 
 impl<'ctx> UnifyValue for TyVarValue<'ctx> {
@@ -72,11 +98,6 @@ pub struct TypeVariableStorage<'gcx> {
     values: IndexVec<TyVarID, TypeVariableOrigin>,
 }
 
-pub struct TypeVariableTable<'a, 'gcx> {
-    _storage: &'a mut TypeVariableStorage<'gcx>,
-    undo_log: &'a mut IcxEventLogs<'gcx>,
-}
-
 impl<'gcx> TypeVariableStorage<'gcx> {
     #[inline]
     pub fn with_log<'a>(
@@ -97,6 +118,11 @@ impl<'gcx> TypeVariableStorage<'gcx> {
     pub fn finalize_rollback(&mut self) {}
 }
 
+pub struct TypeVariableTable<'a, 'gcx> {
+    _storage: &'a mut TypeVariableStorage<'gcx>,
+    undo_log: &'a mut IcxEventLogs<'gcx>,
+}
+
 impl<'gcx> TypeVariableTable<'_, 'gcx> {
     pub fn new_var(&mut self, origin: TypeVariableOrigin) -> TyVarID {
         let key = self.storage().new_key(TyVarValue::Unknown);
@@ -108,5 +134,16 @@ impl<'gcx> TypeVariableTable<'_, 'gcx> {
     #[inline]
     pub fn storage(&mut self) -> UnificationTable<'_, 'gcx, TyVarEqID<'gcx>> {
         self._storage.table.with_log(self.undo_log)
+    }
+}
+
+impl<'gcx> TypeVariableTable<'_, 'gcx> {
+    pub fn probe(&mut self, id: TyVarID) -> TyVarValue<'gcx> {
+        self.inlined_probe(id)
+    }
+
+    #[inline(always)]
+    pub fn inlined_probe(&mut self, vid: TyVarID) -> TyVarValue<'gcx> {
+        self.storage().inlined_probe_value(vid)
     }
 }
