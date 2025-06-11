@@ -1,17 +1,14 @@
-use std::collections::HashMap;
-
 use crate::{
     GlobalContext,
     fold::{TypeFoldable, TypeFolder, TypeSuperFoldable},
-    ty::{FreshVariableID, GenericParameter, Ty, TyKind},
+    ty::{GenericParameter, InferTy, Ty, TyKind},
 };
+use std::collections::HashMap;
 
 /// TypeFreshener that implements TypeFolder to automatically handle all type structures
 pub struct TypeFreshener<'ctx> {
     next_var_id: u32,
-    /// Maps generic type parameter names/IDs to fresh type variables
-    generic_substitutions: HashMap<GenericParameter, FreshVariableID>, // or String if you use names
-
+    generic_substitutions: HashMap<GenericParameter, u32>, // or String if you use names
     gcx: GlobalContext<'ctx>,
 }
 
@@ -25,8 +22,8 @@ impl<'ctx> TypeFreshener<'ctx> {
     }
 
     /// Generate a fresh type variable
-    fn fresh_type_var(&mut self) -> FreshVariableID {
-        let var = FreshVariableID::from_raw(self.next_var_id);
+    fn fresh_type_var(&mut self) -> u32 {
+        let var = self.next_var_id;
         self.next_var_id += 1;
         var
     }
@@ -47,13 +44,15 @@ impl<'ctx> TypeFolder<'ctx> for TypeFreshener<'ctx> {
             TyKind::Parameter(param) => {
                 // Check if we already have a mapping
                 if let Some(&existing_var) = self.generic_substitutions.get(&param) {
-                    return self.gcx().mk_ty(TyKind::Fresh(existing_var));
+                    return self
+                        .gcx()
+                        .mk_ty(TyKind::Infer(InferTy::FreshTy(existing_var)));
                 }
 
                 // Create fresh var and insert
                 let fresh_var = self.fresh_type_var();
                 self.generic_substitutions.insert(param, fresh_var);
-                self.gcx().mk_ty(TyKind::Fresh(fresh_var))
+                self.gcx().mk_ty(TyKind::Infer(InferTy::FreshTy(fresh_var)))
             }
 
             // Let the folder automatically handle structural types

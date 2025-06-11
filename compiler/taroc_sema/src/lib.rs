@@ -7,6 +7,7 @@ mod context;
 mod extend;
 pub mod fold;
 mod freshen;
+mod infer;
 mod lower;
 mod models;
 mod normalize;

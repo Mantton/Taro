@@ -82,9 +82,6 @@ fn check_func<'rcx, 'gcx>(
     let signature = fcx.gcx.fn_signature(id);
     let signature = labeled_signature_to_ty(signature, fcx.gcx);
 
-    // Freshen Signature
-    let signature = fcx.freshen(signature);
-
     let (param_tys, return_ty) = match signature.kind() {
         TyKind::Function { inputs, output, .. } => (inputs, output),
         _ => unreachable!("function signature must be of function pointer type"),

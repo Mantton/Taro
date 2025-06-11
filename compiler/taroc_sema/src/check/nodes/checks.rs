@@ -74,20 +74,14 @@ impl<'rcx, 'gcx> FnCtx<'rcx, 'gcx> {
             let annotation_ty = self
                 .lowerer()
                 .lower_type(annotation, &LoweringRequest::default());
-            Some(annotation_ty)
+            annotation_ty
         } else {
-            None
+            self.next_ty_var(local.pattern.span)
         };
 
-        let ty = if let Some(initializer) = &local.initializer {
-            if let Some(ty) = ty {
-                self.check_expression_coercible_to_type(initializer, ty, None)
-            } else {
-                self.check_expression(initializer)
-            }
-        } else {
-            todo!("expected initializer")
-        };
+        if let Some(initializer) = &local.initializer {
+            self.check_expression_coercible_to_type(initializer, ty, None);
+        }
 
         self.resolve_binding_pattern(&local.pattern, ty);
     }

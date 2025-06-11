@@ -67,7 +67,7 @@ impl HirVisitor for Actor<'_> {
 }
 
 impl<'ctx> Actor<'ctx> {
-    fn collect_interface_requirement(&self, declaration: &taroc_hir::AssociatedDeclaration) {
+    fn collect_interface_requirement(&self, _: &taroc_hir::AssociatedDeclaration) {
 
         // match &declaration.kind {
         //     taroc_hir::AssociatedDeclarationKind::Constant(node) => todo!(),

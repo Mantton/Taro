@@ -5,6 +5,7 @@ use crate::{
         SimpleType, Ty, TyKind, UIntTy,
     },
 };
+use ena::unify::UnifyKey;
 use taroc_hir::{DefinitionID, Mutability};
 
 pub fn convert_ast_int_ty(ity: taroc_hir::IntTy) -> IntTy {
@@ -197,8 +198,12 @@ pub fn ty2str<'ctx>(ty: Ty<'ctx>, gcx: GlobalContext<'ctx>) -> String {
             out
         }
 
-        TyKind::Infer(id) => format!("TyVar({:?})", id),
-        TyKind::Fresh(id) => format!("FreshVar({:?})", id),
+        TyKind::Infer(kind) => match kind {
+            crate::ty::InferTy::Ty(id) => format!("TyVar({})", id.raw()),
+            crate::ty::InferTy::IntVar(id) => format!("IntVar({})", id.index()),
+            crate::ty::InferTy::FloatVar(id) => format!("FloatVar({})", id.index()),
+            crate::ty::InferTy::FreshTy(index) => format!("FreshTy({})", index),
+        },
     }
 }
 

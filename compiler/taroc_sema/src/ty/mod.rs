@@ -8,7 +8,11 @@ use taroc_data_structures::Interned;
 use taroc_hir::{DefinitionID, Mutability};
 use taroc_span::{FileID, Span, Spanned, Symbol};
 
-use crate::{GlobalContext, utils::ty2str};
+use crate::{
+    GlobalContext,
+    infer::keys::{FloatVarID, IntVarID},
+    utils::ty2str,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Ty<'arena>(Interned<'arena, TyKind<'arena>>);
@@ -55,19 +59,9 @@ pub enum TyKind<'arena> {
     },
     // Represents Interface::AssociatedType (e.g., Self::Element or C::Element),
     AssociatedType(AssocTyKind<'arena>),
-    /// Fresh variable (for signature comparison/freshening)
-    Fresh(FreshVariableID),
     /// Type inference variable (for generic instantiation)
-    Infer(TypeVariableID),
+    Infer(InferTy),
     Error,
-}
-
-define_index_type! {
-    pub struct TypeVariableID = u32;  // For inference
-}
-
-define_index_type! {
-    pub struct FreshVariableID = u32;  // For inference
 }
 
 // In your type representation logic (e.g., impl Ty<'ctx> or a helper)
@@ -162,6 +156,14 @@ impl<'arena> GenericArgument<'arena> {
             GenericArgument::Const(_) => None,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InferTy {
+    Ty(TyVarID),
+    IntVar(IntVarID),
+    FloatVar(FloatVarID),
+    FreshTy(u32),
 }
 
 pub type GenericArguments<'arena> = &'arena [GenericArgument<'arena>];
@@ -502,7 +504,6 @@ impl<'ctx> Ty<'ctx> {
             | TyKind::FnDef(..)
             | TyKind::Function { .. }
             | TyKind::AssociatedType { .. }
-            | TyKind::Fresh(..)
             | TyKind::Infer(..)
             | TyKind::Error => unreachable!(),
         }

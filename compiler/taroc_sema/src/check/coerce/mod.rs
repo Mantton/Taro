@@ -33,7 +33,8 @@ impl<'fcx, 'gcx> CoerceCtx<'fcx, 'gcx> {
 
     fn coerce(&self, expected: Ty<'gcx>, provided: Ty<'gcx>) -> Result<(), ()> {
         // TODO: Coercion Checks
-        return self.unify(expected, provided);
+        // TODO: Try Unify when coercion fails
+        return Ok(());
     }
 }
 

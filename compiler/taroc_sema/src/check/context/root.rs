@@ -1,4 +1,8 @@
-use crate::{GlobalContext, check::infer::InferCtx, ty::Ty};
+use crate::{
+    GlobalContext,
+    infer::{InferCtx, InferMode},
+    ty::Ty,
+};
 use rustc_hash::FxHashMap;
 use std::{cell::RefCell, ops::Deref};
 use taroc_hir::{DefinitionID, NodeID};
@@ -11,7 +15,7 @@ pub struct TyCheckRootCtx<'ctx> {
 
 impl<'ctx> TyCheckRootCtx<'ctx> {
     pub fn new(gcx: GlobalContext<'ctx>, def_id: DefinitionID) -> TyCheckRootCtx<'ctx> {
-        let icx = InferCtx::new(gcx);
+        let icx = InferCtx::new(gcx, InferMode::FnBody);
         TyCheckRootCtx {
             fn_id: def_id,
             icx,

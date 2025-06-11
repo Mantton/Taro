@@ -1,6 +1,10 @@
 use taroc_hir::DefinitionID;
 
-use crate::{check::context::func::FnCtx, ty::Ty, utils::labeled_signature_to_ty};
+use crate::{
+    check::context::func::FnCtx,
+    ty::{Ty, TyKind},
+    utils::{instantiate_ty_with_args, labeled_signature_to_ty},
+};
 
 impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
     pub fn resolve_overloaded_function(
@@ -38,8 +42,15 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         check_labels: bool,
     ) -> Result<(), ()> {
         let signature = self.gcx.fn_signature(fn_id);
-        let signature_ty = labeled_signature_to_ty(signature, self.gcx);
-        let freshened_signature = self.freshen(signature_ty);
+        let instantiated_args = self.fresh_args_for_def(fn_id, call_expr.span);
+        let fn_signature_ty = labeled_signature_to_ty(signature, self.gcx);
+        let fn_signature_ty =
+            instantiate_ty_with_args(self.gcx, fn_signature_ty, instantiated_args);
+
+        let (signature_inputs, signature_output) = match fn_signature_ty.kind() {
+            TyKind::Function { inputs, output, .. } => (inputs, output),
+            _ => unreachable!("non function type"),
+        };
 
         // Arguments, TODO: Variadic
         let candidate_parameter_count = signature.inputs.len();
@@ -56,7 +67,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         let mut arg_index = 0;
         for (index, parameter) in signature.inputs.iter().enumerate() {
             let is_last = index == signature.inputs.len() - 1;
-            let parameter_ty = self.freshen(parameter.ty);
+            let parameter_ty = signature_inputs[index];
 
             // is variadic
             if is_last && signature.is_variadic {
@@ -98,9 +109,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         }
 
         if let Some(expected_ret_ty) = expected_return_ty {
-            let signature_ret_ty = self.freshen(signature.output);
-            let signature_ret_ty = self.freshen(signature_ret_ty);
-            let coercion_result = self.coerce(call_expr, signature_ret_ty, expected_ret_ty);
+            let coercion_result = self.coerce(call_expr, signature_output, expected_ret_ty);
 
             match coercion_result {
                 Ok(_) => {}

@@ -1,11 +1,10 @@
-use taroc_hir::{DefinitionKind, Resolution};
-
 use crate::{
     CommonTypes,
     check::{context::func::FnCtx, expectation::Expectation},
     ty::{Ty, TyKind},
     utils::{instantiate_ty_with_args, labeled_signature_to_ty},
 };
+use taroc_hir::{DefinitionKind, Resolution};
 
 type CallerInfo<'a, 'ctx> = (
     &'a taroc_hir::Expression,
@@ -66,6 +65,11 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             }
             _ => self.check_expression_kind(expression, expectation),
         };
+
+        self.gcx.diagnostics.warn(
+            format!("Mapping To {}", ty.format(self.gcx)),
+            expression.span,
+        );
 
         ty
     }
@@ -145,11 +149,10 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             taroc_hir::Literal::Integer(_) => {
                 let opt_ty = expectation.to_option().and_then(|ty| match ty.kind() {
                     TyKind::Int(_) | TyKind::UInt(_) => Some(ty),
-                    TyKind::Float(_) => Some(ty),
                     _ => None,
                 });
 
-                opt_ty.unwrap_or_else(|| self.common_types().int32)
+                opt_ty.unwrap_or_else(|| self.next_int_var())
             }
             taroc_hir::Literal::Float(_) => {
                 let opt_ty = expectation.to_option().and_then(|ty| match ty.kind() {
@@ -157,7 +160,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
                     _ => None,
                 });
 
-                opt_ty.unwrap_or_else(|| self.common_types().float32)
+                opt_ty.unwrap_or_else(|| self.next_float_var())
             }
             taroc_hir::Literal::Nil => {
                 println!("check nil coercible");
@@ -263,11 +266,11 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
     ) -> Ty<'ctx> {
         let (fn_parameter_tys, fn_return_ty) = match callee_ty.kind() {
             TyKind::Function { inputs, output, .. } => (inputs, output),
-            TyKind::FnDef(id, args) => {
+            TyKind::FnDef(id, _) => {
                 let signature = self.gcx.fn_signature(id);
+                let args = self.fresh_args_for_def(id, call_expr.span);
                 let signature = labeled_signature_to_ty(signature, self.gcx);
                 let signature = instantiate_ty_with_args(self.gcx, signature, args);
-                let signature = self.freshen(signature);
 
                 match signature.kind() {
                     TyKind::Function { inputs, output, .. } => (inputs, output),
@@ -350,7 +353,6 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             _ => self.instantiate_value_path(path, resolution),
         };
 
-        let ty = self.freshen(ty);
         ty
     }
 

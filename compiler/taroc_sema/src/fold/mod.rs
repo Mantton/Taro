@@ -57,7 +57,7 @@ impl<'ctx> TypeSuperFoldable<'ctx> for TyKind<'ctx> {
         match self {
             // Primitive/leaf types - no folding needed
             Bool | Rune | String | Int(_) | UInt(_) | Float(_) | Parameter(_) | Infer(_)
-            | Fresh(_) | Error => self,
+            | Error => self,
 
             // Types with single Ty parameter
             Pointer(t, m) => Pointer(t.fold_with(folder), m),
