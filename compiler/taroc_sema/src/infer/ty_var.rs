@@ -146,4 +146,30 @@ impl<'gcx> TypeVariableTable<'_, 'gcx> {
     pub fn inlined_probe(&mut self, vid: TyVarID) -> TyVarValue<'gcx> {
         self.storage().inlined_probe_value(vid)
     }
+
+    pub fn root_var(&mut self, vid: TyVarID) -> TyVarID {
+        self.storage().find(vid)._raw
+    }
+
+    pub fn equate(&mut self, a: TyVarID, b: TyVarID) {
+        debug_assert!(self.probe(a).is_unknown());
+        debug_assert!(self.probe(b).is_unknown());
+        self.storage().union(a, b);
+    }
+
+    pub fn instantiate(&mut self, vid: TyVarID, ty: Ty<'gcx>) {
+        let vid = self.root_var(vid);
+        debug_assert!(
+            !ty.is_ty_var(),
+            "instantiating ty var with var: {vid:?} {ty:?}"
+        );
+        debug_assert!(self.probe(vid).is_unknown());
+        debug_assert!(
+            self.storage().probe_value(vid).is_unknown(),
+            "instantiating type variable `{vid:?}` twice: new-value = {ty:?}, old-value={:?}",
+            self.storage().probe_value(vid)
+        );
+
+        self.storage().union_value(vid, TyVarValue::Known(ty));
+    }
 }

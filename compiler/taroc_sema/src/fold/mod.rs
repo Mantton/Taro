@@ -92,11 +92,7 @@ impl<'ctx> TypeSuperFoldable<'ctx> for TyKind<'ctx> {
             }
 
             // Function type - fold inputs and output
-            Function {
-                inputs,
-                output,
-                is_async,
-            } => {
+            Function { inputs, output } => {
                 let folded_inputs = inputs
                     .iter()
                     .map(|t| t.fold_with(folder))
@@ -107,7 +103,6 @@ impl<'ctx> TypeSuperFoldable<'ctx> for TyKind<'ctx> {
                 Function {
                     inputs: folded_inputs,
                     output: folded_output,
-                    is_async,
                 }
             }
 

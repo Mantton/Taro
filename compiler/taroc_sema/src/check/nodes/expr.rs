@@ -1,16 +1,14 @@
 use crate::{
     CommonTypes,
-    check::{context::func::FnCtx, expectation::Expectation},
-    ty::{Ty, TyKind},
+    check::{
+        context::func::FnCtx,
+        expectation::Expectation,
+        solver::{Goal, Obligation, OverloadArgument, OverloadGoal},
+    },
+    ty::{Constraint, InferTy, Ty, TyKind},
     utils::{instantiate_ty_with_args, labeled_signature_to_ty},
 };
 use taroc_hir::{DefinitionKind, Resolution};
-
-type CallerInfo<'a, 'ctx> = (
-    &'a taroc_hir::Expression,
-    &'a [taroc_hir::ExpressionArgument],
-    Option<Ty<'ctx>>, // expected return type of the call
-);
 
 impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
     pub fn check_expression(&self, expression: &taroc_hir::Expression) -> Ty<'ctx> {
@@ -22,7 +20,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         expression: &taroc_hir::Expression,
         expectation: Expectation<'ctx>,
     ) -> Ty<'ctx> {
-        self.check_expression_with_expectation_and_arguments(expression, expectation, None)
+        self.check_expression_with_expectation_and_arguments(expression, expectation)
     }
 
     pub fn check_expression_has_type(
@@ -42,7 +40,23 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         _: Option<&taroc_hir::Expression>,
     ) -> Ty<'ctx> {
         let ty = self.check_expression_with_hint(expression, expectation);
-        self.demand_coercion(expression, ty, expectation)
+        // break early
+        if ty == expectation {
+            return expectation;
+        }
+
+        let obligation = Obligation {
+            location: expression.span,
+            goal: Goal::Coerce {
+                from: ty,
+                to: expectation,
+            },
+        };
+        self.obligation_collector
+            .borrow_mut()
+            .add_obligation(obligation);
+
+        expectation
     }
 
     pub fn check_expression_with_hint(
@@ -57,20 +71,8 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         &self,
         expression: &taroc_hir::Expression,
         expectation: Expectation<'ctx>,
-        caller_info: Option<CallerInfo<'_, 'ctx>>,
     ) -> Ty<'ctx> {
-        let ty = match &expression.kind {
-            taroc_hir::ExpressionKind::Path(path) => {
-                self.check_path_expression(path, expression, caller_info)
-            }
-            _ => self.check_expression_kind(expression, expectation),
-        };
-
-        // self.gcx.diagnostics.warn(
-        //     format!("Mapping To {}", ty.format(self.gcx)),
-        //     expression.span,
-        // );
-
+        let ty = self.check_expression_kind(expression, expectation);
         ty
     }
 }
@@ -88,9 +90,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             taroc_hir::ExpressionKind::Literal(literal) => {
                 self.check_literal_expression(literal, expectation)
             }
-            taroc_hir::ExpressionKind::Path(path) => {
-                self.check_path_expression(path, expression, None)
-            }
+            taroc_hir::ExpressionKind::Path(path) => self.check_path_expression(path, expression),
             taroc_hir::ExpressionKind::Tuple(expressions) => {
                 self.check_tuple_expression(&expressions, expectation, expression)
             }
@@ -106,6 +106,8 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             taroc_hir::ExpressionKind::FunctionCall(callee, args) => {
                 self.check_function_call_expression(expression, callee, args, expectation)
             }
+            taroc_hir::ExpressionKind::Assign(lhs, rhs) => self.check_assign_expression(lhs, rhs),
+
             taroc_hir::ExpressionKind::StructLiteral(..) => self.error_ty(),
             taroc_hir::ExpressionKind::ArrayLiteral(..) => self.error_ty(),
             taroc_hir::ExpressionKind::MethodCall(..) => self.error_ty(),
@@ -114,7 +116,6 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             taroc_hir::ExpressionKind::FieldAccess(..) => self.error_ty(),
             taroc_hir::ExpressionKind::Subscript(..) => self.error_ty(),
             taroc_hir::ExpressionKind::AssignOp(..) => self.error_ty(),
-            taroc_hir::ExpressionKind::Assign(..) => self.error_ty(),
             taroc_hir::ExpressionKind::CastAs(..) => self.error_ty(),
             taroc_hir::ExpressionKind::MatchBinding(_) => self.error_ty(),
             taroc_hir::ExpressionKind::TupleAccess(..) => self.error_ty(),
@@ -147,7 +148,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             taroc_hir::Literal::Rune(_) => self.common_types().rune,
             taroc_hir::Literal::String(_) => self.common_types().string,
             taroc_hir::Literal::Integer(_) => {
-                let opt_ty = expectation.to_option(self).and_then(|ty| match ty.kind() {
+                let opt_ty = expectation.to_option().and_then(|ty| match ty.kind() {
                     TyKind::Int(_) | TyKind::UInt(_) => Some(ty),
                     _ => None,
                 });
@@ -155,7 +156,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
                 opt_ty.unwrap_or_else(|| self.next_int_var())
             }
             taroc_hir::Literal::Float(_) => {
-                let opt_ty = expectation.to_option(self).and_then(|ty| match ty.kind() {
+                let opt_ty = expectation.to_option().and_then(|ty| match ty.kind() {
                     TyKind::Float(_) => Some(ty),
                     _ => None,
                 });
@@ -176,12 +177,10 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         _: &taroc_hir::Expression,
     ) -> Ty<'ctx> {
         // if we have an expected type that is a tuple, get it's elements to check against
-        let expected_tys = expectation
-            .only_has_type(self)
-            .and_then(|ty| match ty.kind() {
-                TyKind::Tuple(elements) => Some(elements),
-                _ => None,
-            });
+        let expected_tys = expectation.only_has_type().and_then(|ty| match ty.kind() {
+            TyKind::Tuple(elements) => Some(elements),
+            _ => None,
+        });
 
         let tys = elements.iter().enumerate().map(|(index, expression)| {
             // if we have an expectation check coercion, otherwise check without an expectation
@@ -239,35 +238,94 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
 }
 
 impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
+    fn check_assign_expression(
+        &self,
+        lhs: &taroc_hir::Expression,
+        rhs: &taroc_hir::Expression,
+    ) -> Ty<'ctx> {
+        let lhs_ty = self.check_expression(lhs);
+        self.check_expression_coercible_to_type(rhs, lhs_ty, None);
+        return self.common_types().void;
+    }
+}
+
+impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
     pub fn check_function_call_expression(
         &self,
         expression: &taroc_hir::Expression,
-        calle: &taroc_hir::Expression,
+        callee: &taroc_hir::Expression,
         args: &[taroc_hir::ExpressionArgument],
         expectation: Expectation<'ctx>,
     ) -> Ty<'ctx> {
-        let callee_ty = match &calle.kind {
-            taroc_hir::ExpressionKind::Path(..) => self
-                .check_expression_with_expectation_and_arguments(
-                    calle,
-                    Expectation::None,
-                    Some((expression, args, expectation.only_has_type(self))),
-                ),
-            _ => self.check_expression(calle),
-        };
+        let callee_ty = self.check_expression(callee);
 
-        self.check_function_call_with_type(callee_ty, args, expectation, expression)
+        self.check_function_call_with_type(callee_ty, args, expression, expectation)
     }
 
     fn check_function_call_with_type(
         &self,
         callee_ty: Ty<'ctx>,
         args: &[taroc_hir::ExpressionArgument],
-        _expectation: Expectation<'ctx>,
         call_expr: &taroc_hir::Expression,
+        expectation: Expectation<'ctx>,
     ) -> Ty<'ctx> {
         let (fn_parameter_tys, fn_return_ty) = match callee_ty.kind() {
-            TyKind::Function { inputs, output, .. } => (inputs, output),
+            TyKind::Infer(InferTy::FnVar(_) | InferTy::TyVar(_)) => {
+                let beta: Vec<_> = args
+                    .iter()
+                    .map(|arg| {
+                        let argument = OverloadArgument {
+                            ty: self.next_ty_var(arg.span),
+                            span: arg.span,
+                            label: arg.label.as_ref().map(|l| l.identifier),
+                        };
+
+                        argument
+                    })
+                    .collect();
+
+                let beta = self.gcx.store.interners.intern_slice(&beta);
+                let rho = self.next_ty_var(call_expr.span);
+
+                for (arg, beta) in args.iter().zip(beta) {
+                    let arg_ty = self.check_expression(&arg.expression);
+                    self.obligation_collector
+                        .borrow_mut()
+                        .add_obligation(Obligation {
+                            location: call_expr.span,
+                            goal: Goal::Constraint(Constraint::TypeEquality(arg_ty, beta.ty)),
+                        });
+                }
+
+                // Obligation for return type
+                if let Some(e_ty) = expectation.only_has_type() {
+                    self.obligation_collector
+                        .borrow_mut()
+                        .add_obligation(Obligation {
+                            location: call_expr.span,
+                            goal: Goal::Coerce {
+                                from: rho,
+                                to: e_ty,
+                            },
+                        });
+                }
+
+                let goal = OverloadGoal {
+                    callee_var: callee_ty,
+                    result_var: rho,
+                    expected_result_ty: expectation.only_has_type(),
+                    arguments: beta,
+                };
+
+                self.obligation_collector
+                    .borrow_mut()
+                    .add_obligation(Obligation {
+                        location: call_expr.span,
+                        goal: Goal::Apply(goal),
+                    });
+
+                return rho;
+            }
             TyKind::FnDef(id, _) => {
                 let signature = self.gcx.fn_signature(id);
                 let args = self.fresh_args_for_def(id, call_expr.span);
@@ -290,14 +348,18 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
                     return callee_ty;
                 }
 
-                self.gcx
-                    .diagnostics
-                    .error("cannot call non-function type".into(), call_expr.span);
+                self.gcx.diagnostics.error(
+                    format!(
+                        "cannot invoke non-function type '{}'",
+                        callee_ty.format(self.gcx)
+                    ),
+                    call_expr.span,
+                );
                 return self.error_ty();
             }
         };
 
-        // TODO: Parameters & Labels
+        // TODO: Parameters, Defaults, Variadics, Labels
         // check argument count
         if args.len() != fn_parameter_tys.len() {
             self.gcx.diagnostics.error(
@@ -321,7 +383,6 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         &self,
         path: &taroc_hir::Path,
         expression: &taroc_hir::Expression,
-        caller_info: Option<CallerInfo<'_, 'ctx>>,
     ) -> Ty<'ctx> {
         let resolution = self.perform_path_resolution(expression.id, path);
 
@@ -335,22 +396,8 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             }
 
             Resolution::FunctionSet(candidates) => {
-                if let Some((call_expr, args, expected_return_ty)) = caller_info {
-                    // Now we have the expected return type directly!
-                    self.resolve_overloaded_function(
-                        &candidates.iter().cloned().collect::<Vec<_>>(),
-                        args,
-                        expected_return_ty,
-                        call_expr,
-                        true,
-                    )
-                } else {
-                    self.gcx.diagnostics.error(
-                        "Cannot determine which overload to use without call context".into(),
-                        path.span,
-                    );
-                    self.error_ty()
-                }
+                // TODO: Add candiates to FnVarData
+                self.next_fn_var(path.span)
             }
             _ => self.instantiate_value_path(path, resolution),
         };
@@ -369,10 +416,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             return full;
         }
 
-        // Find all candidates
-        self.gcx
-            .diagnostics
-            .warn("Resolve Assoc Item, Find candidates".into(), path.span);
+        todo!("partial res");
         return taroc_hir::Resolution::Error;
     }
 

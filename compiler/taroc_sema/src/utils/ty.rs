@@ -166,15 +166,8 @@ pub fn ty2str<'ctx>(ty: Ty<'ctx>, gcx: GlobalContext<'ctx>) -> String {
 
         TyKind::Parameter(p) => p.name.to_string(),
 
-        TyKind::Function {
-            inputs,
-            output,
-            is_async,
-        } => {
+        TyKind::Function { inputs, output } => {
             let mut out = String::new();
-            if is_async {
-                out.push_str("async ");
-            }
             out.push('(');
             for (i, inp) in inputs.iter().enumerate() {
                 if i > 0 {
@@ -199,9 +192,10 @@ pub fn ty2str<'ctx>(ty: Ty<'ctx>, gcx: GlobalContext<'ctx>) -> String {
         }
 
         TyKind::Infer(kind) => match kind {
-            crate::ty::InferTy::Ty(id) => format!("TyVar({})", id.raw()),
+            crate::ty::InferTy::TyVar(id) => format!("TyVar({})", id.raw()),
             crate::ty::InferTy::IntVar(id) => format!("IntVar({})", id.index()),
             crate::ty::InferTy::FloatVar(id) => format!("FloatVar({})", id.index()),
+            crate::ty::InferTy::FnVar(id) => format!("{{fn({})}}", id.index()),
             crate::ty::InferTy::FreshTy(index) => format!("FreshTy({})", index),
         },
     }

@@ -1,13 +1,12 @@
-use crate::coerce::CoerceRequest;
-
 use super::root::TyCheckRootCtx;
-use std::{cell::RefCell, ops::Deref};
+use crate::ty::Ty;
+use std::ops::Deref;
 use taroc_hir::DefinitionID;
 
 pub struct FnCtx<'rcx, 'ctx> {
     pub id: DefinitionID,
     pub rcx: &'rcx TyCheckRootCtx<'ctx>,
-    pub ret_coercion: Option<RefCell<CoerceRequest<'ctx>>>,
+    pub ret_ty: Option<Ty<'ctx>>,
 }
 
 impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
@@ -15,7 +14,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         FnCtx {
             rcx,
             id,
-            ret_coercion: None,
+            ret_ty: None,
         }
     }
 }

@@ -1,17 +1,15 @@
-use std::cell::RefCell;
-
+use super::context::func::FnCtx;
+use crate::{
+    GlobalContext,
+    check::{context::root::TyCheckRootCtx, solver::ObligationSolver},
+    ty::TyKind,
+    utils::labeled_signature_to_ty,
+};
 use taroc_error::CompileResult;
 use taroc_hir::{
     DefinitionID,
     visitor::{AssocContext, FunctionContext, HirVisitor},
 };
-
-use crate::{
-    GlobalContext, check::context::root::TyCheckRootCtx, coerce::CoerceRequest, ty::TyKind,
-    utils::labeled_signature_to_ty,
-};
-
-use super::context::func::FnCtx;
 
 pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
     Actor::run(package, context)
@@ -69,9 +67,6 @@ impl<'ctx> Actor<'ctx> {
         let rcx = TyCheckRootCtx::new(self.context, id);
         let mut fcx = FnCtx::new(&rcx, id);
         check_func(&mut fcx, id, func);
-
-        println!();
-        // Post Body Check Passes
     }
 }
 
@@ -89,7 +84,7 @@ fn check_func<'rcx, 'gcx>(
         _ => unreachable!("function signature must be of function pointer type"),
     };
 
-    fcx.ret_coercion = Some(RefCell::new(CoerceRequest::new(return_ty)));
+    fcx.ret_ty = Some(return_ty);
 
     for (parameter, &parameter_ty) in node.signature.prototype.inputs.iter().zip(param_tys) {
         fcx.locals.borrow_mut().insert(parameter.id, parameter_ty);
@@ -99,13 +94,33 @@ fn check_func<'rcx, 'gcx>(
         unreachable!("ICE: Checking Function without Body")
     };
 
-    if let Some(body) = is_expression_bodied(body) {
+    // Collect Obligations
+    collect(fcx, body);
+
+    // Solve Obligations
+    solve(fcx);
+    println!("--- \n")
+}
+
+fn collect<'rcx, 'gcx>(fcx: &mut FnCtx<'rcx, 'gcx>, node: &taroc_hir::Block) {
+    if let Some(body) = is_expression_bodied(node) {
         // --- single-expression body ---
         fcx.check_return(body, false);
     } else {
         // --- regular block body ---
-        fcx.check_block(body);
+        fcx.check_block(node);
     }
+}
+
+fn solve<'rcx, 'gcx>(fcx: &mut FnCtx<'rcx, 'gcx>) {
+    // Solve Obligigations
+    println!(
+        "\nPending Obligations {}",
+        fcx.obligation_collector.borrow().count()
+    );
+
+    let mut solver = ObligationSolver::new(&fcx.icx, fcx.obligation_collector.borrow_mut().take());
+    solver.solve();
 }
 
 fn is_expression_bodied(block: &taroc_hir::Block) -> Option<&taroc_hir::Expression> {

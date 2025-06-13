@@ -1,5 +1,6 @@
 use crate::{
     GlobalContext,
+    check::solver::ObligationCollector,
     infer::{InferCtx, InferMode},
     ty::Ty,
 };
@@ -11,6 +12,7 @@ pub struct TyCheckRootCtx<'ctx> {
     pub fn_id: DefinitionID,
     pub icx: InferCtx<'ctx>,
     pub locals: RefCell<FxHashMap<NodeID, Ty<'ctx>>>,
+    pub obligation_collector: RefCell<ObligationCollector<'ctx>>,
 }
 
 impl<'ctx> TyCheckRootCtx<'ctx> {
@@ -20,6 +22,7 @@ impl<'ctx> TyCheckRootCtx<'ctx> {
             fn_id: def_id,
             icx,
             locals: Default::default(),
+            obligation_collector: RefCell::new(ObligationCollector::new()),
         }
     }
 }

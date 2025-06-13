@@ -1,5 +1,4 @@
 use core::fmt;
-use index_vec::define_index_type;
 use indexmap::IndexMap;
 use rustc_hash::FxHashMap;
 use std::{collections::HashMap, fmt::Display};
@@ -38,7 +37,7 @@ impl<'arena> Ty<'arena> {
 
     #[inline]
     pub fn is_ty_var(self) -> bool {
-        matches!(self.kind(), TyKind::Infer(InferTy::Ty(_)))
+        matches!(self.kind(), TyKind::Infer(InferTy::TyVar(_)))
     }
 }
 
@@ -67,7 +66,6 @@ pub enum TyKind<'arena> {
     Function {
         inputs: &'arena [Ty<'arena>],
         output: Ty<'arena>,
-        is_async: bool,
     },
     // Represents Interface::AssociatedType (e.g., Self::Element or C::Element),
     AssociatedType(AssocTyKind<'arena>),
@@ -172,9 +170,10 @@ impl<'arena> GenericArgument<'arena> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InferTy {
-    Ty(TyVarID),
+    TyVar(TyVarID),
     IntVar(IntVarID),
     FloatVar(FloatVarID),
+    FnVar(FnVarID),
     FreshTy(u32),
 }
 
@@ -407,7 +406,7 @@ index_vec::define_index_type! {
 }
 
 index_vec::define_index_type! {
-    pub struct NilVarID = u32;
+    pub struct FnVarID = u32;
 }
 
 #[derive(Debug, Default, Clone, Copy)]

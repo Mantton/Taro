@@ -7,14 +7,11 @@ use crate::{
 
 impl<'rcx, 'gcx> FnCtx<'rcx, 'gcx> {
     pub fn check_return(&self, expr: &taroc_hir::Expression, _: bool) {
-        let return_coercion = self
-            .ret_coercion
-            .as_ref()
-            .expect("ICE: return check called outside function body");
+        let Some(ret_ty) = self.ret_ty else {
+            unreachable!("ICE: return check called outside function body")
+        };
 
-        let return_ty = return_coercion.borrow().expected_ty();
-
-        let _ = self.check_expression_coercible_to_type(expr, return_ty, None);
+        let _ = self.check_expression_coercible_to_type(expr, ret_ty, None);
     }
 }
 

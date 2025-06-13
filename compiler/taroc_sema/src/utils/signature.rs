@@ -67,7 +67,6 @@ pub fn labeled_signature_to_ty<'ctx>(
     let kind = TyKind::Function {
         inputs: context.store.interners.intern_ty_list(&inputs),
         output,
-        is_async: sig.is_async,
     };
 
     return context.store.interners.intern_ty(kind);

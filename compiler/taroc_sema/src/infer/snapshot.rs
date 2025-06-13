@@ -1,3 +1,5 @@
+use crate::infer::fn_var::FnVarEqID;
+
 use super::{
     InferCtxInner,
     keys::{FloatVarID, IntVarID, TyVarEqID},
@@ -16,6 +18,7 @@ pub enum IcxEvent<'ctx> {
     IntVar(ena::snapshot_vec::UndoLog<ena::unify::Delegate<IntVarID>>),
     FloatVar(ena::snapshot_vec::UndoLog<ena::unify::Delegate<FloatVarID>>),
     TypeVar(ena::snapshot_vec::UndoLog<ena::unify::Delegate<TyVarEqID<'ctx>>>),
+    FnVar(ena::snapshot_vec::UndoLog<ena::unify::Delegate<FnVarEqID<'ctx>>>),
 }
 
 macro_rules! impl_from {
@@ -35,6 +38,7 @@ impl_from! {
     IntVar(ena::snapshot_vec::UndoLog<ena::unify::Delegate<IntVarID>>),
     FloatVar(ena::snapshot_vec::UndoLog<ena::unify::Delegate<FloatVarID>>),
     TypeVar(ena::snapshot_vec::UndoLog<ena::unify::Delegate<TyVarEqID<'gcx>>>),
+    FnVar(ena::snapshot_vec::UndoLog<ena::unify::Delegate<FnVarEqID<'gcx>>>),
 }
 
 // Combined Event Log for all unifcation tables within the icx
