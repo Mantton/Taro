@@ -1,5 +1,8 @@
 use crate::ty::{Ty, TyVarID};
-use ena::unify::{UnificationTableStorage, UnifyKey, UnifyValue};
+use ena::{
+    undo_log::Rollback,
+    unify::{UnificationTableStorage, UnifyKey, UnifyValue},
+};
 use index_vec::IndexVec;
 use std::marker::PhantomData;
 use taroc_span::Span;
@@ -171,5 +174,14 @@ impl<'gcx> TypeVariableTable<'_, 'gcx> {
         );
 
         self.storage().union_value(vid, TyVarValue::Known(ty));
+    }
+}
+
+impl<'ctx>
+    ena::undo_log::Rollback<ena::snapshot_vec::UndoLog<ena::unify::Delegate<TyVarEqID<'ctx>>>>
+    for TypeVariableStorage<'ctx>
+{
+    fn reverse(&mut self, undo: ena::snapshot_vec::UndoLog<ena::unify::Delegate<TyVarEqID<'ctx>>>) {
+        self.table.reverse(undo)
     }
 }

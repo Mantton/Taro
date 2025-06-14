@@ -18,4 +18,5 @@ pub enum TypeError<'ctx> {
     TupleArity(ExpectedFound<usize>),
     TyMismatch(ExpectedFound<Ty<'ctx>>),
     ArgMismatch(ExpectedFound<GenericArgument<'ctx>>),
+    NoOverloadCandidateMatch,
 }

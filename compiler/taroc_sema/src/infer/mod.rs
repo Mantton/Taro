@@ -1,20 +1,21 @@
 use crate::{
     GlobalContext,
     error::TypeError,
-    fold::TypeFoldable,
     infer::{
-        fn_var::{FunctionVariableOrigin, FunctionVariableStorage, FunctionVariableTable},
-        resolve::InferVarResolver,
+        fn_var::{
+            FnVarData, FunctionVariableOrigin, FunctionVariableStorage, FunctionVariableTable,
+        },
+        snapshot::IcxEvent,
     },
     ty::{GenericArgument, GenericArguments, GenericParameterDefinition, InferTy, Ty, TyKind},
 };
-use ena::unify::UnificationTableStorage;
+use ena::{undo_log::Rollback, unify::UnificationTableStorage};
 use keys::{
     FloatVarID, FloatVarValue, IntVarID, IntVarValue, TypeVariableOrigin, TypeVariableStorage,
     TypeVariableTable,
 };
 use snapshot::IcxEventLogs;
-use std::cell::RefCell;
+use std::{cell::RefCell, rc::Rc};
 use taroc_hir::DefinitionID;
 use taroc_span::Span;
 
@@ -75,12 +76,16 @@ impl<'ctx> InferCtx<'ctx> {
         self.gcx.mk_ty(TyKind::Infer(InferTy::TyVar(id)))
     }
 
-    pub fn next_fn_var(&self, location: Span) -> Ty<'ctx> {
+    pub fn next_fn_var(&self, location: Span, mut data: FnVarData) -> Ty<'ctx> {
+        data.update(self.gcx);
         let id = self
             .inner
             .borrow_mut()
             .fn_variables()
-            .new_var(FunctionVariableOrigin { location });
+            .new_var(FunctionVariableOrigin {
+                location,
+                data: Rc::new(RefCell::new(data)),
+            });
         self.gcx.mk_ty(TyKind::Infer(InferTy::FnVar(id)))
     }
 }
@@ -120,12 +125,25 @@ impl<'ctx> InferCtx<'ctx> {
 }
 
 impl<'ctx> InferCtx<'ctx> {
-    pub fn resolve_vars_if_possible<T>(&self, value: T) -> T
+    fn start_snapshot(&self) -> self::snapshot::Snapshot<'ctx> {
+        let mut inner = self.inner.borrow_mut();
+        let snap = inner.event_logs.start_snapshot();
+        snap
+    }
+
+    fn rollback_to(&self, snapshot: self::snapshot::Snapshot<'ctx>) {
+        let mut inner = self.inner.borrow_mut();
+        inner.rollback_to(snapshot)
+    }
+
+    pub fn probe<R, F>(&self, f: F) -> R
     where
-        T: TypeFoldable<'ctx>,
+        F: FnOnce(&self::snapshot::Snapshot<'ctx>) -> R,
     {
-        let mut resolver = InferVarResolver::new(self);
-        value.fold_with(&mut resolver)
+        let snapshot = self.start_snapshot();
+        let r = f(&snapshot);
+        self.rollback_to(snapshot);
+        r
     }
 }
 
@@ -255,6 +273,25 @@ impl<'ctx> InferCtxInner<'ctx> {
     #[inline]
     pub fn fn_variables(&mut self) -> FunctionVariableTable<'_, 'ctx> {
         self.fn_storage.with_log(&mut self.event_logs)
+    }
+}
+
+impl<'ctx> InferCtxInner<'ctx> {
+    pub fn rollback_to(&mut self, snapshot: self::snapshot::Snapshot<'ctx>) {
+        while self.event_logs.logs.len() > snapshot.length {
+            let undo = self.event_logs.logs.pop().unwrap();
+            self.reverse(undo);
+        }
+
+        self.type_storage.finalize_rollback();
+
+        if self.event_logs.open_snapshots == 1 {
+            // After the root snapshot the undo log should be empty.
+            assert!(snapshot.length == 0);
+            assert!(self.event_logs.logs.is_empty());
+        }
+
+        self.event_logs.open_snapshots -= 1;
     }
 }
 

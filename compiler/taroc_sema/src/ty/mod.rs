@@ -39,6 +39,10 @@ impl<'arena> Ty<'arena> {
     pub fn is_ty_var(self) -> bool {
         matches!(self.kind(), TyKind::Infer(InferTy::TyVar(_)))
     }
+
+    pub fn is_fn(self) -> bool {
+        matches!(self.kind(), TyKind::FnDef(..) | TyKind::Function { .. })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

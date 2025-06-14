@@ -44,8 +44,18 @@ impl_from! {
 // Combined Event Log for all unifcation tables within the icx
 #[derive(Default, Clone)]
 pub struct IcxEventLogs<'ctx> {
-    logs: Vec<IcxEvent<'ctx>>,
-    open_snapshots: usize,
+    pub logs: Vec<IcxEvent<'ctx>>,
+    pub open_snapshots: usize,
+}
+
+impl<'ctx> IcxEventLogs<'ctx> {
+    pub fn start_snapshot(&mut self) -> Snapshot<'ctx> {
+        self.open_snapshots += 1;
+        Snapshot {
+            length: self.logs.len(),
+            _data: PhantomData,
+        }
+    }
 }
 
 impl<'tcx, T> ena::undo_log::UndoLogs<T> for IcxEventLogs<'tcx>
@@ -86,7 +96,8 @@ impl<'tcx> ena::undo_log::Rollback<IcxEvent<'tcx>> for InferCtxInner<'tcx> {
         match undo {
             IcxEvent::IntVar(undo) => self.int_storage.reverse(undo),
             IcxEvent::FloatVar(undo) => self.float_storage.reverse(undo),
-            _ => unreachable!("ICE: Placeholder Event"),
+            IcxEvent::TypeVar(undo) => self.type_storage.reverse(undo),
+            IcxEvent::FnVar(undo) => self.fn_storage.reverse(undo),
         }
     }
 }

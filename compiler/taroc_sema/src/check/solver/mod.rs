@@ -1,11 +1,10 @@
-use std::ops::Deref;
-
 use crate::{
     GlobalContext,
     error::TypeError,
     infer::InferCtx,
     ty::{Constraint, Ty},
 };
+use std::collections::VecDeque;
 use taroc_span::{Identifier, Span};
 
 mod apply;
@@ -22,6 +21,7 @@ pub enum Goal<'ctx> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct OverloadGoal<'ctx> {
+    pub callee_span: Span,
     pub callee_var: Ty<'ctx>,                      // α
     pub result_var: Ty<'ctx>,                      // ρ
     pub expected_result_ty: Option<Ty<'ctx>>,      // ⟂ or τctx
@@ -41,45 +41,85 @@ pub struct Obligation<'ctx> {
     pub goal: Goal<'ctx>,
 }
 
-pub struct ObligationCollector<'ctx> {
-    pending_obligations: Vec<Obligation<'ctx>>,
+pub enum SolverResult<'ctx> {
+    Deferred,
+    Solved(Vec<Obligation<'ctx>>), // New Obligations Spawned
+    Error(TypeError<'ctx>),
 }
 
-impl<'ctx> ObligationCollector<'ctx> {
-    pub fn new() -> ObligationCollector<'ctx> {
-        ObligationCollector {
-            pending_obligations: vec![],
+type PendingObligations<'ctx> = VecDeque<(Obligation<'ctx>, Option<bool>)>;
+
+#[derive(Default)]
+pub struct ObligationStore<'ctx> {
+    pending: PendingObligations<'ctx>,
+}
+impl<'ctx> ObligationStore<'ctx> {
+    fn add(&mut self, obligation: Obligation<'ctx>) {
+        self.pending.push_back((obligation, None));
+    }
+
+    fn drain_pending(
+        &mut self,
+        cond: impl Fn(&Obligation<'ctx>) -> bool,
+    ) -> PendingObligations<'ctx> {
+        let (unstalled, pending) = std::mem::take(&mut self.pending)
+            .into_iter()
+            .partition(|(o, _)| cond(o));
+        self.pending = pending;
+        unstalled
+    }
+}
+
+pub struct ObligationSolver<'ctx> {
+    obligations: ObligationStore<'ctx>,
+}
+
+impl<'ctx> ObligationSolver<'ctx> {
+    pub fn new() -> ObligationSolver<'ctx> {
+        ObligationSolver {
+            obligations: Default::default(),
+        }
+    }
+
+    pub fn add_obligation(&mut self, obligation: Obligation<'ctx>) {
+        self.obligations.add(obligation);
+    }
+}
+
+impl<'ctx> ObligationSolver<'ctx> {
+    pub fn solve(&mut self, icx: &InferCtx<'ctx>) {
+        if self.obligations.pending.is_empty() {
+            return;
+        }
+
+        loop {
+            let mut progress = false;
+
+            for ((obligation, _)) in self.obligations.drain_pending(|_| true) {
+                let mut delegate = SolverDelegate::new(icx);
+                delegate.solve(obligation);
+                delegate.solve_nested_obligations();
+            }
+
+            if !progress {
+                break;
+            }
         }
     }
 }
 
-impl<'ctx> ObligationCollector<'ctx> {
-    pub fn add_obligation(&mut self, obligation: Obligation<'ctx>) {
-        self.pending_obligations.push(obligation);
-    }
-
-    pub fn count(&self) -> usize {
-        self.pending_obligations.len()
-    }
-
-    pub fn take(&mut self) -> Vec<Obligation<'ctx>> {
-        std::mem::take(&mut self.pending_obligations)
-    }
-}
-
-pub struct ObligationSolver<'icx, 'ctx> {
+pub struct SolverDelegate<'icx, 'ctx> {
     icx: &'icx InferCtx<'ctx>,
-    pending_obligations: Vec<Obligation<'ctx>>,
+    nested_obligations: Vec<Obligation<'ctx>>,
+    has_error: bool,
 }
 
-impl<'icx, 'ctx> ObligationSolver<'icx, 'ctx> {
-    pub fn new(
-        icx: &'icx InferCtx<'ctx>,
-        obligations: Vec<Obligation<'ctx>>,
-    ) -> ObligationSolver<'icx, 'ctx> {
-        ObligationSolver {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
+    pub fn new(icx: &'icx InferCtx<'ctx>) -> SolverDelegate<'icx, 'ctx> {
+        SolverDelegate {
             icx,
-            pending_obligations: obligations,
+            nested_obligations: vec![],
+            has_error: false,
         }
     }
 
@@ -88,67 +128,66 @@ impl<'icx, 'ctx> ObligationSolver<'icx, 'ctx> {
     }
 }
 
-impl<'icx, 'ctx> ObligationSolver<'icx, 'ctx> {
-    pub fn solve(&mut self) {
-        const ITER_LIMIT: usize = 2; // safeguard against runaway loops
-        let mut iter = 0;
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
+    pub fn add_obligation(&mut self, obligation: Obligation<'ctx>) {
+        self.nested_obligations.push(obligation);
+    }
 
-        // Keep iterating while there is still work to do.
-        while self.solve_internal() {
-            iter += 1;
-            if iter >= ITER_LIMIT {
-                // You could surface something more structured than `dummy()`.
-                self.gcx().diagnostics.error(
-                    "obligation solver: iteration limit reached".into(),
-                    Span::module(),
-                );
-                break;
-            }
+    pub fn add_obligations(&mut self, obligations: Vec<Obligation<'ctx>>) {
+        for obligation in obligations.into_iter() {
+            self.add_obligation(obligation);
         }
     }
 
-    pub fn solve_internal(&mut self) -> bool {
-        let pending = std::mem::take(&mut self.pending_obligations);
-        let mut requeued = vec![];
-
-        for obligation in pending.into_iter() {
-            let result = self.try_solve(obligation);
-
-            match result {
-                Ok(requeue) => {
-                    if requeue {
-                        requeued.push(obligation);
-                    }
-                }
-                Err(err) => self
-                    .gcx()
-                    .diagnostics
-                    .error("encountered error".into(), obligation.location),
-            }
+    fn solve_nested_obligations(&mut self) {
+        for obligation in self.nested_obligations.iter() {
+            let mut delegate = SolverDelegate::new(self.icx);
+            delegate.solve(*obligation);
         }
-
-        // Put back anything that still needs another attempt.
-        let has_more_work = !requeued.is_empty();
-        self.pending_obligations = requeued;
-        has_more_work
     }
+}
 
-    fn try_solve(&self, obligation: Obligation<'ctx>) -> Result<bool, TypeError<'ctx>> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
+    fn solve(&mut self, obligation: Obligation<'ctx>) {
+        println!("---");
+
+        let result = self.try_solve(obligation);
+        println!("---\n");
+
+        match result {
+            SolverResult::Deferred => {}
+            SolverResult::Solved(obligations) => self.add_obligations(obligations),
+            SolverResult::Error(_) => self.has_error = true,
+        }
+    }
+    fn try_solve(&mut self, obligation: Obligation<'ctx>) -> SolverResult<'ctx> {
         match obligation.goal {
             Goal::Constraint(constraint) => {
-                self.solve_constraint(constraint)?;
+                let result = self.solve_constraint(constraint);
+                match result {
+                    Err(err) => return SolverResult::Error(err),
+                    _ => {}
+                }
             }
             Goal::Coerce { from, to } => {
-                let output = self.coerce(from, to)?;
-                if output.requeue() {
-                    return Ok(true);
+                let result = self.coerce(from, to);
+
+                match result {
+                    Ok(defer) => {
+                        if defer.requeue() {
+                            return SolverResult::Deferred;
+                        } else {
+                            return SolverResult::Solved(vec![]);
+                        }
+                    }
+                    Err(err) => return SolverResult::Error(err),
                 }
             }
             Goal::Apply(goal) => {
-                self.resolve_application(goal)?;
+                return self.solve_application(goal);
             }
         };
 
-        return Ok(false);
+        return SolverResult::Solved(vec![]);
     }
 }

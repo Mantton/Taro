@@ -5,6 +5,7 @@ use crate::{
         expectation::Expectation,
         solver::{Goal, Obligation, OverloadArgument, OverloadGoal},
     },
+    infer::fn_var::FnVarData,
     ty::{Constraint, InferTy, Ty, TyKind},
     utils::{instantiate_ty_with_args, labeled_signature_to_ty},
 };
@@ -52,9 +53,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
                 to: expectation,
             },
         };
-        self.obligation_collector
-            .borrow_mut()
-            .add_obligation(obligation);
+        self.add_obligation(obligation);
 
         expectation
     }
@@ -289,25 +288,21 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
 
                 for (arg, beta) in args.iter().zip(beta) {
                     let arg_ty = self.check_expression(&arg.expression);
-                    self.obligation_collector
-                        .borrow_mut()
-                        .add_obligation(Obligation {
-                            location: call_expr.span,
-                            goal: Goal::Constraint(Constraint::TypeEquality(arg_ty, beta.ty)),
-                        });
+                    self.add_obligation(Obligation {
+                        location: call_expr.span,
+                        goal: Goal::Constraint(Constraint::TypeEquality(arg_ty, beta.ty)),
+                    });
                 }
 
                 // Obligation for return type
                 if let Some(e_ty) = expectation.only_has_type() {
-                    self.obligation_collector
-                        .borrow_mut()
-                        .add_obligation(Obligation {
-                            location: call_expr.span,
-                            goal: Goal::Coerce {
-                                from: rho,
-                                to: e_ty,
-                            },
-                        });
+                    self.add_obligation(Obligation {
+                        location: call_expr.span,
+                        goal: Goal::Coerce {
+                            from: rho,
+                            to: e_ty,
+                        },
+                    });
                 }
 
                 let goal = OverloadGoal {
@@ -315,14 +310,13 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
                     result_var: rho,
                     expected_result_ty: expectation.only_has_type(),
                     arguments: beta,
+                    callee_span: call_expr.span,
                 };
 
-                self.obligation_collector
-                    .borrow_mut()
-                    .add_obligation(Obligation {
-                        location: call_expr.span,
-                        goal: Goal::Apply(goal),
-                    });
+                self.add_obligation(Obligation {
+                    location: call_expr.span,
+                    goal: Goal::Apply(goal),
+                });
 
                 return rho;
             }
@@ -396,8 +390,13 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             }
 
             Resolution::FunctionSet(candidates) => {
-                // TODO: Add candiates to FnVarData
-                self.next_fn_var(path.span)
+                let data = FnVarData {
+                    candidates: candidates.iter().cloned().collect(),
+                    maybe_variadic: false,
+                    min_required: 0,
+                };
+
+                self.next_fn_var(path.span, data)
             }
             _ => self.instantiate_value_path(path, resolution),
         };

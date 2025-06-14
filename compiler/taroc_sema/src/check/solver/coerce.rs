@@ -1,6 +1,6 @@
-use crate::{check::solver::ObligationSolver, error::TypeError, ty::Ty};
+use crate::{check::solver::SolverDelegate, error::TypeError, ty::Ty};
 
-impl<'icx, 'ctx> ObligationSolver<'icx, 'ctx> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     pub fn coerce(&self, from: Ty<'ctx>, to: Ty<'ctx>) -> CoercionResult<'ctx> {
         println!(
             "Coerce: {} to {}",
@@ -21,7 +21,7 @@ impl<'icx, 'ctx> ObligationSolver<'icx, 'ctx> {
     }
 }
 
-impl<'icx, 'ctx> ObligationSolver<'icx, 'ctx> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     fn coerce_from_inference_var(&self, from: Ty<'ctx>, to: Ty<'ctx>) -> CoercionResult<'ctx> {
         assert!(from.is_ty_var() && self.icx.shallow_resolve(from) == from);
         assert!(self.icx.shallow_resolve(to) == to);

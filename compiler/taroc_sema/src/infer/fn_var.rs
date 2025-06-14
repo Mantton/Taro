@@ -1,7 +1,11 @@
-use crate::ty::{FnVarID, Ty};
+use crate::{
+    GlobalContext,
+    ty::{FnVarID, Ty},
+};
 use ena::unify::{UnificationTableStorage, UnifyKey, UnifyValue};
 use index_vec::IndexVec;
-use std::marker::PhantomData;
+use std::{cell::RefCell, marker::PhantomData, rc::Rc};
+use taroc_hir::DefinitionID;
 use taroc_span::Span;
 
 use super::{UnificationTable, snapshot::IcxEventLogs};
@@ -84,9 +88,17 @@ impl<'ctx> UnifyValue for FnVarValue<'ctx> {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Clone)]
+pub struct FnVarData {
+    pub candidates: Vec<DefinitionID>,
+    pub maybe_variadic: bool,
+    pub min_required: usize,
+}
+
+#[derive(Clone)]
 pub struct FunctionVariableOrigin {
     pub location: Span,
+    pub data: Rc<RefCell<FnVarData>>,
 }
 
 #[derive(Default, Clone)]
@@ -142,5 +154,61 @@ impl<'gcx> FunctionVariableTable<'_, 'gcx> {
     #[inline(always)]
     pub fn inlined_probe(&mut self, vid: FnVarID) -> FnVarValue<'gcx> {
         self.storage().inlined_probe_value(vid)
+    }
+}
+
+impl<'a, 'gcx> FunctionVariableTable<'a, 'gcx> {
+    pub fn root_var(&mut self, vid: FnVarID) -> FnVarID {
+        self.storage().find(vid)._raw
+    }
+
+    pub fn var_data(&self, vid: FnVarID) -> Rc<RefCell<FnVarData>> {
+        let x = self._storage.values.get(vid).unwrap();
+        x.data.clone()
+    }
+
+    pub fn equate(&mut self, a: FnVarID, b: FnVarID) {
+        debug_assert!(self.probe(a).is_unknown());
+        debug_assert!(self.probe(b).is_unknown());
+        self.storage().union(a, b);
+    }
+
+    pub fn instantiate(&mut self, vid: FnVarID, ty: Ty<'gcx>) {
+        let vid = self.root_var(vid);
+        debug_assert!(ty.is_fn(), "must instantiate fnvar with function type");
+        debug_assert!(
+            !ty.is_ty_var(),
+            "instantiating ty var with var: {vid:?} {ty:?}"
+        );
+        debug_assert!(self.probe(vid).is_unknown());
+        debug_assert!(
+            self.storage().probe_value(vid).is_unknown(),
+            "instantiating type variable `{vid:?}` twice: new-value = {ty:?}, old-value={:?}",
+            self.storage().probe_value(vid)
+        );
+
+        self.storage().union_value(vid, FnVarValue::Known(ty));
+    }
+}
+
+impl FnVarData {
+    pub fn update(&mut self, gcx: GlobalContext) {
+        let candidates = &self.candidates;
+
+        self.maybe_variadic = candidates.iter().any(|c| gcx.fn_signature(*c).is_variadic);
+        self.min_required = candidates
+            .iter()
+            .map(|c| gcx.fn_signature(*c).min_parameter_count())
+            .min()
+            .unwrap_or(self.min_required);
+    }
+}
+
+impl<'ctx>
+    ena::undo_log::Rollback<ena::snapshot_vec::UndoLog<ena::unify::Delegate<FnVarEqID<'ctx>>>>
+    for FunctionVariableStorage<'ctx>
+{
+    fn reverse(&mut self, undo: ena::snapshot_vec::UndoLog<ena::unify::Delegate<FnVarEqID<'ctx>>>) {
+        self.table.reverse(undo)
     }
 }

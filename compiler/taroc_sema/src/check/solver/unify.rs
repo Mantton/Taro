@@ -1,19 +1,20 @@
 use crate::{
-    check::solver::ObligationSolver,
+    check::solver::SolverDelegate,
     error::{ExpectedFound, TypeError},
     infer::keys::{FloatVarValue, IntVarValue},
     ty::{GenericArgument, GenericArguments, Ty, TyKind},
 };
 type UnificationResult<'ctx> = Result<(), TypeError<'ctx>>;
 
-impl<'icx, 'ctx> ObligationSolver<'icx, 'ctx> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     pub fn unify(&self, a: Ty<'ctx>, b: Ty<'ctx>) -> UnificationResult<'ctx> {
         let a = self.icx.shallow_resolve(a);
         let b = self.icx.shallow_resolve(b);
 
         use crate::ty::InferTy::*;
-        println!("Unify {} & {}", a.format(self.gcx()), b.format(self.gcx()));
+        println!("Unify: {} & {}", a.format(self.gcx()), b.format(self.gcx()));
         match (a.kind(), b.kind()) {
+            // TyVars
             (TyKind::Infer(TyVar(a_id)), TyKind::Infer(TyVar(b_id))) => {
                 self.icx
                     .inner
@@ -33,6 +34,29 @@ impl<'icx, 'ctx> ObligationSolver<'icx, 'ctx> {
                     .inner
                     .borrow_mut()
                     .type_variables()
+                    .instantiate(id, a);
+            }
+
+            // FnVars
+            (TyKind::Infer(FnVar(a_id)), TyKind::Infer(FnVar(b_id))) => {
+                self.icx
+                    .inner
+                    .borrow_mut()
+                    .fn_variables()
+                    .equate(a_id, b_id);
+            }
+            (TyKind::Infer(FnVar(id)), _) if b.is_fn() => {
+                self.icx
+                    .inner
+                    .borrow_mut()
+                    .fn_variables()
+                    .instantiate(id, b);
+            }
+            (_, TyKind::Infer(FnVar(id))) if a.is_fn() => {
+                self.icx
+                    .inner
+                    .borrow_mut()
+                    .fn_variables()
                     .instantiate(id, a);
             }
             _ => return self.unify_inference_vars(a, b),
@@ -67,7 +91,7 @@ impl<'icx, 'ctx> ObligationSolver<'icx, 'ctx> {
                 self.icx
                     .instantiate_float_var_raw(id, FloatVarValue::Known(k));
             }
-
+            (Infer(_), Infer(_)) => return Err(TypeError::TyMismatch(ExpectedFound::new(a, b))),
             _ => return self.unify_nominal_types(a, b),
         }
 
@@ -126,7 +150,7 @@ impl<'icx, 'ctx> ObligationSolver<'icx, 'ctx> {
     }
 }
 
-impl<'icx, 'ctx> ObligationSolver<'icx, 'ctx> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     fn unify_generic_args(
         &self,
         a: GenericArguments<'ctx>,

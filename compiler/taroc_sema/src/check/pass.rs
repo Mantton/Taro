@@ -1,9 +1,6 @@
 use super::context::func::FnCtx;
 use crate::{
-    GlobalContext,
-    check::{context::root::TyCheckRootCtx, solver::ObligationSolver},
-    ty::TyKind,
-    utils::labeled_signature_to_ty,
+    GlobalContext, check::context::root::TyCheckRootCtx, ty::TyKind, utils::labeled_signature_to_ty,
 };
 use taroc_error::CompileResult;
 use taroc_hir::{
@@ -113,14 +110,8 @@ fn collect<'rcx, 'gcx>(fcx: &mut FnCtx<'rcx, 'gcx>, node: &taroc_hir::Block) {
 }
 
 fn solve<'rcx, 'gcx>(fcx: &mut FnCtx<'rcx, 'gcx>) {
-    // Solve Obligigations
-    println!(
-        "\nPending Obligations {}",
-        fcx.obligation_collector.borrow().count()
-    );
-
-    let mut solver = ObligationSolver::new(&fcx.icx, fcx.obligation_collector.borrow_mut().take());
-    solver.solve();
+    let mut solver = fcx.solver.borrow_mut();
+    solver.solve(&fcx.icx);
 }
 
 fn is_expression_bodied(block: &taroc_hir::Block) -> Option<&taroc_hir::Expression> {

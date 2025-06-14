@@ -1,8 +1,8 @@
 use crate::{
-    check::solver::ObligationSolver, error::TypeError, ty::Constraint, utils::constraint2str,
+    check::solver::SolverDelegate, error::TypeError, ty::Constraint, utils::constraint2str,
 };
 
-impl<'icx, 'ctx> ObligationSolver<'icx, 'ctx> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     pub fn solve_constraint(&self, constraint: Constraint<'ctx>) -> Result<(), TypeError<'ctx>> {
         println!("Solve: {}", constraint2str(constraint, self.icx.gcx));
 
