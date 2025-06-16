@@ -13,8 +13,6 @@ use crate::{
 impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     pub fn solve_application(&mut self, goal: OverloadGoal<'ctx>) -> SolverResult<'ctx> {
         let ty = self.icx.shallow_resolve(goal.callee_var);
-        println!("try resolve application {}", ty.format(self.gcx()));
-
         let fid = match ty.kind() {
             TyKind::Infer(InferTy::FnVar(fid)) => fid,
             _ => todo!("handle non-funtion var type"),
@@ -25,11 +23,9 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
 
         // Quick Filter
         {
-            println!("Initial Candidates: {}", data.candidates.len());
             data.candidates
                 .retain(|&c| quick_match(c, &goal.arguments, self.gcx()));
             data.update(self.gcx());
-            println!("Quick Filtered Candidates: {}", data.candidates.len());
         }
 
         // No survivors, exit resolution
@@ -37,33 +33,46 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
             return SolverResult::Error(TypeError::NoOverloadCandidateMatch);
         };
 
-        // single survivor
+        // single survivor, add obligations as subgoals
         if let [candidate] = data.candidates.as_slice() {
-            self.select_fn_for_application(*candidate, &goal);
-            return SolverResult::Solved(vec![]);
+            let obligations = self.select_fn_for_application(*candidate, &goal);
+            return SolverResult::Solved(obligations);
         }
 
         // mulitple survivors, check each
+        let mut valid_candidates = vec![];
         for &candidate in &data.candidates {
-            println!();
-            self.evaluate_candidate(candidate, &goal);
+            let ok = self.evaluate_candidate(candidate, &goal);
+            if ok {
+                valid_candidates.push(candidate);
+            }
         }
+
+        // single survivor after check, add obligations as subgoals
+        if let [candidate] = data.candidates.as_slice() {
+            let obligations = self.select_fn_for_application(*candidate, &goal);
+            return SolverResult::Solved(obligations);
+        }
+
+        // multiple survivors after initial check, we want to defer this obligation with the new, trimmed obligation list
 
         return SolverResult::Solved(vec![]);
     }
 
-    fn evaluate_candidate(&self, candidate: DefinitionID, goal: &OverloadGoal<'ctx>) {
-        println!("Evaluating Candidate");
+    fn evaluate_candidate(&self, candidate: DefinitionID, goal: &OverloadGoal<'ctx>) -> bool {
         let mut ctx = SolverDelegate::new(self.icx);
-        ctx.select_fn_for_application(candidate, goal);
+        let obligations = ctx.select_fn_for_application(candidate, goal);
+        ctx.add_obligations(obligations);
         ctx.solve_nested_obligations();
-
         let valid = !ctx.has_error;
-
-        println!("Valid Candidate {}", valid)
+        valid
     }
 
-    fn select_fn_for_application(&mut self, candidate: DefinitionID, goal: &OverloadGoal<'ctx>) {
+    fn select_fn_for_application(
+        &mut self,
+        candidate: DefinitionID,
+        goal: &OverloadGoal<'ctx>,
+    ) -> Vec<Obligation<'ctx>> {
         let mut pending = vec![];
         let gcx = self.gcx();
         let signature = gcx.fn_signature(candidate);
@@ -79,6 +88,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
             location: goal.callee_span,
             goal: Goal::Constraint(Constraint::TypeEquality(alpha, fn_ty)),
         };
+        pending.push(obligation);
 
         let (fn_inputs, fn_output) = match fn_sig_ty.kind() {
             TyKind::Function { inputs, output } => (inputs, output),
@@ -106,7 +116,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         };
 
         pending.push(obligation);
-        self.add_obligations(pending);
+        pending
     }
 }
 

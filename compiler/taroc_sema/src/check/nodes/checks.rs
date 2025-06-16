@@ -86,10 +86,10 @@ impl<'rcx, 'gcx> FnCtx<'rcx, 'gcx> {
     fn resolve_binding_pattern(&self, pattern: &taroc_hir::BindingPattern, ty: Ty<'gcx>) {
         match &pattern.kind {
             taroc_hir::BindingPatternKind::Wildcard => {}
-            taroc_hir::BindingPatternKind::Identifier(ident) => {
+            taroc_hir::BindingPatternKind::Identifier(_) => {
                 let id = pattern.id;
                 self.locals.borrow_mut().insert(id, ty);
-                println!("Bound {} to {}", ident.symbol, ty2str(ty, self.gcx))
+                // println!("Bound {} to {}", ident.symbol, ty2str(ty, self.gcx))
             }
             taroc_hir::BindingPatternKind::Tuple(patterns) => {
                 // Only tuple types can be destructured

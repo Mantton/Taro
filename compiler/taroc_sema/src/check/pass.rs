@@ -57,9 +57,9 @@ impl<'ctx> Actor<'ctx> {
         _: taroc_hir::visitor::FunctionContext,
     ) {
         let id = self.context.def_id(id);
-        let name = self.context.ident_for(id);
-        let msg = format!("--- Checking '{}'---", name.symbol);
-        self.context.diagnostics.info(msg, name.span);
+        // let name = self.context.ident_for(id);
+        // let msg = format!("--- Checking '{}'---", name.symbol);
+        // self.context.diagnostics.info(msg, name.span);
 
         let rcx = TyCheckRootCtx::new(self.context, id);
         let mut fcx = FnCtx::new(&rcx, id);
@@ -96,7 +96,7 @@ fn check_func<'rcx, 'gcx>(
 
     // Solve Obligations
     solve(fcx);
-    println!("--- \n")
+    // println!("--- \n")
 }
 
 fn collect<'rcx, 'gcx>(fcx: &mut FnCtx<'rcx, 'gcx>, node: &taroc_hir::Block) {

@@ -163,7 +163,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
                 opt_ty.unwrap_or_else(|| self.next_float_var())
             }
             taroc_hir::Literal::Nil => {
-                println!("check nil coercible");
+                // TODO: nil coercible
                 return self.common_types().error;
             }
         }

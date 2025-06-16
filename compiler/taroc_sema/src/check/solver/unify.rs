@@ -12,7 +12,6 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         let b = self.icx.shallow_resolve(b);
 
         use crate::ty::InferTy::*;
-        println!("Unify: {} & {}", a.format(self.gcx()), b.format(self.gcx()));
         match (a.kind(), b.kind()) {
             // TyVars
             (TyKind::Infer(TyVar(a_id)), TyKind::Infer(TyVar(b_id))) => {

@@ -2,12 +2,6 @@ use crate::{check::solver::SolverDelegate, error::TypeError, ty::Ty};
 
 impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     pub fn coerce(&self, from: Ty<'ctx>, to: Ty<'ctx>) -> CoercionResult<'ctx> {
-        println!(
-            "Coerce: {} to {}",
-            from.format(self.gcx()),
-            to.format(self.gcx())
-        );
-
         let from = self.icx.shallow_resolve(from);
         let to = self.icx.shallow_resolve(to);
 

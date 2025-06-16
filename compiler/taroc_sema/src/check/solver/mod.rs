@@ -143,17 +143,17 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         for obligation in self.nested_obligations.iter() {
             let mut delegate = SolverDelegate::new(self.icx);
             delegate.solve(*obligation);
+            delegate.solve_nested_obligations();
+            if delegate.has_error {
+                self.has_error = true;
+            }
         }
     }
 }
 
 impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     fn solve(&mut self, obligation: Obligation<'ctx>) {
-        println!("---");
-
         let result = self.try_solve(obligation);
-        println!("---\n");
-
         match result {
             SolverResult::Deferred => {}
             SolverResult::Solved(obligations) => self.add_obligations(obligations),
