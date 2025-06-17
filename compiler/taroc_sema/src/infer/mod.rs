@@ -1,11 +1,11 @@
 use crate::{
     GlobalContext,
-    error::TypeError,
+    fold::TypeFoldable,
     infer::{
         fn_var::{
             FnVarData, FunctionVariableOrigin, FunctionVariableStorage, FunctionVariableTable,
         },
-        snapshot::IcxEvent,
+        resolve::InferVarResolver,
     },
     ty::{GenericArgument, GenericArguments, GenericParameterDefinition, InferTy, Ty, TyKind},
 };
@@ -28,17 +28,12 @@ pub mod ty_var;
 pub struct InferCtx<'ctx> {
     pub gcx: GlobalContext<'ctx>,
     pub inner: RefCell<InferCtxInner<'ctx>>,
-    mode: InferMode,
-}
-pub enum InferMode {
-    FnBody,
 }
 
 impl<'ctx> InferCtx<'ctx> {
-    pub fn new(gcx: GlobalContext<'ctx>, mode: InferMode) -> InferCtx<'ctx> {
+    pub fn new(gcx: GlobalContext<'ctx>) -> InferCtx<'ctx> {
         InferCtx {
             gcx,
-            mode,
             inner: RefCell::new(InferCtxInner::new()),
         }
     }
@@ -160,17 +155,9 @@ impl<'ctx> InferCtx<'ctx> {
                 known.map_or(ty, |t| self.shallow_resolve(t))
             }
             InferTy::FnVar(vid) => {
-                let res = self
-                    .inner
-                    .borrow_mut()
-                    .fn_variables()
-                    .storage()
-                    .probe_value(vid);
-
-                match res {
-                    fn_var::FnVarValue::Unknown => ty,
-                    fn_var::FnVarValue::Known(ty) => ty,
-                }
+                // can resolve to another fn var, so resolve too
+                let known = self.inner.borrow_mut().fn_variables().probe(vid).known();
+                known.map_or(ty, |t| self.shallow_resolve(t))
             }
             InferTy::IntVar(vid) => {
                 match self
@@ -197,6 +184,14 @@ impl<'ctx> InferCtx<'ctx> {
             }
             InferTy::FreshTy(_) => ty,
         }
+    }
+
+    pub fn resolve_vars_if_possible<T>(&self, value: T) -> T
+    where
+        T: TypeFoldable<'ctx>,
+    {
+        let mut resolver = InferVarResolver::new(self);
+        value.fold_with(&mut resolver)
     }
 }
 
@@ -284,6 +279,7 @@ impl<'ctx> InferCtxInner<'ctx> {
         }
 
         self.type_storage.finalize_rollback();
+        self.fn_storage.finalize_rollback();
 
         if self.event_logs.open_snapshots == 1 {
             // After the root snapshot the undo log should be empty.
@@ -294,10 +290,3 @@ impl<'ctx> InferCtxInner<'ctx> {
         self.event_logs.open_snapshots -= 1;
     }
 }
-
-pub struct InferenceOutput<'gcx, T> {
-    pub value: T,
-    pub _data: &'gcx (),
-}
-
-pub type InferenceResult<'gcx, T> = Result<InferenceOutput<'gcx, T>, TypeError<'gcx>>;

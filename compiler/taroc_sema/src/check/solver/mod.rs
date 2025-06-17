@@ -2,7 +2,7 @@ use crate::{
     GlobalContext,
     error::TypeError,
     infer::InferCtx,
-    ty::{Constraint, Ty},
+    ty::{Constraint, ParamEnv, Ty},
 };
 use std::collections::VecDeque;
 use taroc_span::{Identifier, Span};
@@ -87,7 +87,7 @@ impl<'ctx> ObligationSolver<'ctx> {
 }
 
 impl<'ctx> ObligationSolver<'ctx> {
-    pub fn solve(&mut self, icx: &InferCtx<'ctx>) {
+    pub fn solve(&mut self, icx: &InferCtx<'ctx>, param_env: ParamEnv<'ctx>) {
         if self.obligations.pending.is_empty() {
             return;
         }
@@ -95,10 +95,20 @@ impl<'ctx> ObligationSolver<'ctx> {
         loop {
             let mut progress = false;
 
-            for ((obligation, _)) in self.obligations.drain_pending(|_| true) {
-                let mut delegate = SolverDelegate::new(icx);
-                delegate.solve(obligation);
-                delegate.solve_nested_obligations();
+            for (obligation, _) in self.obligations.drain_pending(|_| true) {
+                let mut delegate = SolverDelegate::new(icx, param_env);
+                let result = delegate.solve(obligation);
+                match result {
+                    0 => {
+                        self.obligations.add(obligation);
+                    }
+                    1 => {
+                        delegate.solve_nested_obligations();
+                        progress = true
+                    }
+                    2 => progress = true,
+                    _ => unreachable!(),
+                }
             }
 
             if !progress {
@@ -110,14 +120,16 @@ impl<'ctx> ObligationSolver<'ctx> {
 
 pub struct SolverDelegate<'icx, 'ctx> {
     icx: &'icx InferCtx<'ctx>,
+    param_env: ParamEnv<'ctx>,
     nested_obligations: Vec<Obligation<'ctx>>,
     has_error: bool,
 }
 
 impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
-    pub fn new(icx: &'icx InferCtx<'ctx>) -> SolverDelegate<'icx, 'ctx> {
+    pub fn new(icx: &'icx InferCtx<'ctx>, param_env: ParamEnv<'ctx>) -> SolverDelegate<'icx, 'ctx> {
         SolverDelegate {
             icx,
+            param_env,
             nested_obligations: vec![],
             has_error: false,
         }
@@ -141,7 +153,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
 
     fn solve_nested_obligations(&mut self) {
         for obligation in self.nested_obligations.iter() {
-            let mut delegate = SolverDelegate::new(self.icx);
+            let mut delegate = SolverDelegate::new(self.icx, self.param_env);
             delegate.solve(*obligation);
             delegate.solve_nested_obligations();
             if delegate.has_error {
@@ -152,22 +164,24 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
 }
 
 impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
-    fn solve(&mut self, obligation: Obligation<'ctx>) {
+    fn solve(&mut self, obligation: Obligation<'ctx>) -> usize {
         let result = self.try_solve(obligation);
         match result {
-            SolverResult::Deferred => {}
-            SolverResult::Solved(obligations) => self.add_obligations(obligations),
-            SolverResult::Error(_) => self.has_error = true,
+            SolverResult::Deferred => 0,
+            SolverResult::Solved(obligations) => {
+                self.add_obligations(obligations);
+                1
+            }
+            SolverResult::Error(_) => {
+                self.has_error = true;
+                2
+            }
         }
     }
     fn try_solve(&mut self, obligation: Obligation<'ctx>) -> SolverResult<'ctx> {
         match obligation.goal {
             Goal::Constraint(constraint) => {
-                let result = self.solve_constraint(constraint);
-                match result {
-                    Err(err) => return SolverResult::Error(err),
-                    _ => {}
-                }
+                return self.solve_constraint(constraint, obligation.location);
             }
             Goal::Coerce { from, to } => {
                 let result = self.coerce(from, to);
@@ -187,7 +201,5 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                 return self.solve_application(goal);
             }
         };
-
-        return SolverResult::Solved(vec![]);
     }
 }

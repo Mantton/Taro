@@ -19,4 +19,5 @@ pub enum TypeError<'ctx> {
     TyMismatch(ExpectedFound<Ty<'ctx>>),
     ArgMismatch(ExpectedFound<GenericArgument<'ctx>>),
     NoOverloadCandidateMatch,
+    ConformanceNotMet,
 }

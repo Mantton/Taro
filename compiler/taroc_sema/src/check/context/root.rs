@@ -1,7 +1,7 @@
 use crate::{
     GlobalContext,
     check::solver::{Obligation, ObligationSolver},
-    infer::{InferCtx, InferMode},
+    infer::InferCtx,
     ty::Ty,
 };
 use rustc_hash::FxHashMap;
@@ -17,7 +17,7 @@ pub struct TyCheckRootCtx<'ctx> {
 
 impl<'ctx> TyCheckRootCtx<'ctx> {
     pub fn new(gcx: GlobalContext<'ctx>, def_id: DefinitionID) -> TyCheckRootCtx<'ctx> {
-        let icx = InferCtx::new(gcx, InferMode::FnBody);
+        let icx = InferCtx::new(gcx);
         TyCheckRootCtx {
             fn_id: def_id,
             icx,

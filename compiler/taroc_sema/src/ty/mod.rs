@@ -389,6 +389,7 @@ pub struct ConformanceRecord<'ctx> {
     pub interface: InterfaceReference<'ctx>,
     pub extension: DefinitionID,
     pub location: Span,
+    pub is_conditional: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -404,6 +405,24 @@ pub enum Constraint<'ctx> {
 }
 
 pub type SpannedConstraints<'ctx> = Vec<Spanned<Constraint<'ctx>>>;
+
+#[derive(Clone, Copy)]
+pub enum ConformanceResult {
+    NotConformant,
+    /// Holds the ID of the extension to check for conditional conformance constraints
+    Conforms(Option<DefinitionID>),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ParamEnv<'ctx> {
+    pub constraints: &'ctx [Constraint<'ctx>],
+}
+
+impl<'ctx> ParamEnv<'ctx> {
+    pub fn new(constraints: &'ctx [Constraint<'ctx>]) -> ParamEnv<'ctx> {
+        ParamEnv { constraints }
+    }
+}
 
 index_vec::define_index_type! {
     pub struct TyVarID = u32;

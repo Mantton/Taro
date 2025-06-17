@@ -124,7 +124,10 @@ impl<'gcx> FunctionVariableStorage<'gcx> {
         &self.table
     }
 
-    pub fn finalize_rollback(&mut self) {}
+    pub fn finalize_rollback(&mut self) {
+        debug_assert!(self.values.len() >= self.storage().len());
+        self.values.truncate(self.storage().len());
+    }
 }
 
 pub struct FunctionVariableTable<'a, 'gcx> {

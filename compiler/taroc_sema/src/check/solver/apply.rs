@@ -1,5 +1,3 @@
-use taroc_hir::DefinitionID;
-
 use crate::{
     GlobalContext,
     check::solver::{
@@ -7,8 +5,9 @@ use crate::{
     },
     error::TypeError,
     ty::{Constraint, InferTy, TyKind},
-    utils::{instantiate_ty_with_args, labeled_signature_to_ty},
+    utils::{instantiate_constraint_with_args, instantiate_ty_with_args, labeled_signature_to_ty},
 };
+use taroc_hir::DefinitionID;
 
 impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     pub fn solve_application(&mut self, goal: OverloadGoal<'ctx>) -> SolverResult<'ctx> {
@@ -54,18 +53,21 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
             return SolverResult::Solved(obligations);
         }
 
-        // multiple survivors after initial check, we want to defer this obligation with the new, trimmed obligation list
-
-        return SolverResult::Solved(vec![]);
+        // multiple survivors after pass
+        // we want to defer this obligation with the new, trimmed obligation list
+        data.candidates = valid_candidates;
+        return SolverResult::Deferred;
     }
 
     fn evaluate_candidate(&self, candidate: DefinitionID, goal: &OverloadGoal<'ctx>) -> bool {
-        let mut ctx = SolverDelegate::new(self.icx);
-        let obligations = ctx.select_fn_for_application(candidate, goal);
-        ctx.add_obligations(obligations);
-        ctx.solve_nested_obligations();
-        let valid = !ctx.has_error;
-        valid
+        self.icx.probe(|_| {
+            let mut ctx = SolverDelegate::new(self.icx, self.param_env);
+            let obligations = ctx.select_fn_for_application(candidate, goal);
+            ctx.add_obligations(obligations);
+            ctx.solve_nested_obligations();
+            let valid = !ctx.has_error;
+            valid
+        })
     }
 
     fn select_fn_for_application(
@@ -116,6 +118,18 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         };
 
         pending.push(obligation);
+
+        // Instantiate Function Predicates
+        gcx.canon_predicates_of(candidate)
+            .iter()
+            .for_each(|spanned| {
+                let constraint = instantiate_constraint_with_args(gcx, spanned.value, fn_args);
+                pending.push(Obligation {
+                    location: goal.callee_span,
+                    goal: Goal::Constraint(constraint),
+                });
+            });
+
         pending
     }
 }

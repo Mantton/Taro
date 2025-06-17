@@ -73,11 +73,13 @@ impl<'ctx> Actor<'ctx> {
                 interface,
                 &LoweringRequest::default(),
             );
+            let is_conditional = !self.context.canon_predicates_of(extend_id).is_empty();
             let record = ConformanceRecord {
                 target: ty_key,
                 interface: reference,
                 extension: extend_id,
                 location: interface.path.span,
+                is_conditional,
             };
 
             let parent_pkg = def_id_of_ty(self.context, self_ty)

@@ -1,7 +1,9 @@
 use crate::normalize::constraints::canon_predicates_of;
 use crate::ty::{
-    GenericArgument, GenericParameter, LabeledFunctionSignature, SpannedConstraints, Ty, TyKind,
+    GenericArgument, GenericParameter, InterfaceReference, LabeledFunctionSignature, ParamEnv,
+    SpannedConstraints, Ty, TyKind,
 };
+use crate::utils::{interface_ref2str, ty_from_simple};
 use crate::{CompilerSession, GlobalContext, TypeDatabase};
 use taroc_hir::{DefinitionID, DefinitionKind, NodeID, PackageIndex, PartialResolution};
 use taroc_resolve_models::DefinitionContext;
@@ -304,5 +306,60 @@ impl<'ctx> GlobalContext<'ctx> {
 
     pub fn mk_ty(self, k: TyKind<'ctx>) -> Ty<'ctx> {
         self.store.interners.intern_ty(k)
+    }
+}
+
+impl<'ctx> GlobalContext<'ctx> {
+    pub fn param_env(self, id: DefinitionID) -> ParamEnv<'ctx> {
+        let predicates = self.canon_predicates_of(id);
+        let constraints: Vec<_> = predicates.iter().map(|p| p.value).collect();
+        let constraints = self.store.interners.intern_slice(&constraints);
+        ParamEnv { constraints }
+    }
+
+    pub fn try_simple_type(self, ty: Ty<'ctx>) -> Option<crate::ty::SimpleType> {
+        use crate::ty::SimpleType;
+        match ty.kind() {
+            TyKind::Bool => Some(SimpleType::Bool),
+            TyKind::Rune => Some(SimpleType::Rune),
+            TyKind::String => Some(SimpleType::String),
+            TyKind::Int(i) => Some(SimpleType::Int(i)),
+            TyKind::UInt(u) => Some(SimpleType::UInt(u)),
+            TyKind::Float(f) => Some(SimpleType::Float(f)),
+            TyKind::Pointer(_, m) => Some(SimpleType::Pointer(m)),
+            TyKind::Reference(_, m) => Some(SimpleType::Reference(m)),
+            TyKind::Array(..) => Some(SimpleType::Array),
+            TyKind::Adt(def, ..) => Some(SimpleType::Adt(def.id)),
+            _ => None,
+        }
+    }
+
+    pub fn has_conformance(
+        self,
+        ty: Ty<'ctx>,
+        interface: InterfaceReference<'ctx>,
+    ) -> crate::ty::ConformanceResult {
+        let Some(simple) = self.try_simple_type(ty) else {
+            return crate::ty::ConformanceResult::NotConformant;
+        };
+
+        let databases = self.context.store.types.borrow();
+        for db in databases.values() {
+            if let Some(records) = db.conformances.get(&simple) {
+                for r in records {
+                    // Check ID and None-Self Arguments
+                    if r.interface.id == interface.id
+                        && r.interface.arguments[1..] == r.interface.arguments[1..]
+                    {
+                        if r.is_conditional {
+                            return crate::ty::ConformanceResult::Conforms(Some(r.extension));
+                        } else {
+                            return crate::ty::ConformanceResult::Conforms(None);
+                        }
+                    }
+                }
+            }
+        }
+        crate::ty::ConformanceResult::NotConformant
     }
 }

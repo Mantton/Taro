@@ -1,5 +1,5 @@
 use super::root::TyCheckRootCtx;
-use crate::ty::Ty;
+use crate::ty::{ParamEnv, Ty};
 use std::ops::Deref;
 use taroc_hir::DefinitionID;
 
@@ -7,6 +7,7 @@ pub struct FnCtx<'rcx, 'ctx> {
     pub id: DefinitionID,
     pub rcx: &'rcx TyCheckRootCtx<'ctx>,
     pub ret_ty: Option<Ty<'ctx>>,
+    pub param_env: ParamEnv<'ctx>,
 }
 
 impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
@@ -15,7 +16,12 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             rcx,
             id,
             ret_ty: None,
+            param_env: rcx.gcx.param_env(id),
         }
+    }
+
+    pub fn param_env(&self) -> ParamEnv<'ctx> {
+        self.param_env
     }
 }
 

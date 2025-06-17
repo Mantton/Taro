@@ -111,7 +111,7 @@ fn collect<'rcx, 'gcx>(fcx: &mut FnCtx<'rcx, 'gcx>, node: &taroc_hir::Block) {
 
 fn solve<'rcx, 'gcx>(fcx: &mut FnCtx<'rcx, 'gcx>) {
     let mut solver = fcx.solver.borrow_mut();
-    solver.solve(&fcx.icx);
+    solver.solve(&fcx.icx, fcx.param_env());
 }
 
 fn is_expression_bodied(block: &taroc_hir::Block) -> Option<&taroc_hir::Expression> {

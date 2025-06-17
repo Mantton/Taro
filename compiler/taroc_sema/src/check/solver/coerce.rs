@@ -22,7 +22,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
 
         if to.is_ty_var() {
             // defer this coercion till we have more information regarding the inference vars
-            return (Ok(CoercionOutput::Defer));
+            return Ok(CoercionOutput::Defer);
         }
 
         self.unify(from, to)?;
