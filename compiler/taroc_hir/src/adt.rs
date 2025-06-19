@@ -1,4 +1,4 @@
-use crate::Generics;
+use crate::{CtorKind, Generics};
 
 use super::{NodeID, Visibility, expression::AnonConst, ty::Type};
 use taroc_ast_ir::Mutability;
@@ -48,6 +48,21 @@ impl VariantKind {
         match *self {
             VariantKind::Struct(..) => None,
             VariantKind::Tuple(id, _) | VariantKind::Unit(id) => Some(id),
+        }
+    }
+
+    pub fn ctor(&self) -> Option<(CtorKind, NodeID)> {
+        match self {
+            VariantKind::Unit(node_id) => Some((CtorKind::Const, *node_id)),
+            VariantKind::Tuple(node_id, _) => Some((CtorKind::Fn, *node_id)),
+            VariantKind::Struct(_) => None,
+        }
+    }
+    pub fn fields(&self) -> &[FieldDefinition] {
+        match self {
+            VariantKind::Unit(_) => &[],
+            VariantKind::Tuple(_, field_definitions) => &field_definitions,
+            VariantKind::Struct(field_definitions) => &field_definitions,
         }
     }
 }

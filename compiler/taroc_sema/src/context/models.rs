@@ -153,7 +153,7 @@ pub struct TypeDatabase<'ctx> {
     pub def_to_generics: FxHashMap<DefinitionID, &'ctx crate::ty::Generics>,
     pub def_to_constraints: FxHashMap<DefinitionID, &'ctx SpannedConstraints<'ctx>>,
     pub def_to_canon_constraints: FxHashMap<DefinitionID, &'ctx SpannedConstraints<'ctx>>,
-    pub structs: FxHashMap<DefinitionID, StructDefinition<'ctx>>,
+    pub structs: FxHashMap<DefinitionID, &'ctx StructDefinition<'ctx>>,
     pub enums: FxHashMap<DefinitionID, EnumDefinition<'ctx>>,
     pub interfaces: FxHashMap<DefinitionID, &'ctx InterfaceDefinition<'ctx>>,
     pub functions: FxHashMap<DefinitionID, LabeledFunctionSignature<'ctx>>,

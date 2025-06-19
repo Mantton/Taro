@@ -9,7 +9,7 @@ use super::{
     ty::Type,
 };
 use taroc_ast_ir::{BinaryOperator, UnaryOperator};
-use taroc_span::Span;
+use taroc_span::{Identifier, Span};
 
 #[derive(Debug, Clone)]
 pub struct Expression {
@@ -153,8 +153,7 @@ pub struct ClosureExpression {
 
 #[derive(Debug, Clone)]
 pub struct ExpressionField {
-    pub is_shorthand: bool,
-    pub label: Option<Label>,
+    pub label: Identifier,
     pub expression: Box<Expression>,
     pub span: Span,
 }

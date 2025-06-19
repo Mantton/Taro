@@ -3,7 +3,6 @@ use crate::ty::{
     GenericArgument, GenericParameter, InterfaceReference, LabeledFunctionSignature, ParamEnv,
     SpannedConstraints, Ty, TyKind,
 };
-use crate::utils::{interface_ref2str, ty_from_simple};
 use crate::{CompilerSession, GlobalContext, TypeDatabase};
 use taroc_hir::{DefinitionID, DefinitionKind, NodeID, PackageIndex, PartialResolution};
 use taroc_resolve_models::DefinitionContext;
@@ -214,6 +213,15 @@ impl<'ctx> GlobalContext<'ctx> {
         let mut cache = self.context.store.types.borrow_mut();
         let database = cache.entry(index).or_insert(Default::default());
         func(database)
+    }
+
+    #[track_caller]
+    pub fn with_session_type_database<F, T>(self, func: F) -> T
+    where
+        F: FnOnce(&mut TypeDatabase<'ctx>) -> T,
+    {
+        let index = self.session().index();
+        self.with_type_database(index, func)
     }
 
     pub fn ty_to_def(self, ty: Ty<'ctx>) -> Option<DefinitionID> {

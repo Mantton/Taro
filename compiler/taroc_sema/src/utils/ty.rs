@@ -198,6 +198,9 @@ pub fn ty2str<'ctx>(ty: Ty<'ctx>, gcx: GlobalContext<'ctx>) -> String {
             crate::ty::InferTy::FnVar(id) => format!("{{fn({})}}", id.index()),
             crate::ty::InferTy::FreshTy(index) => format!("FreshTy({})", index),
         },
+        TyKind::Placeholder => {
+            format!("{{placeholder}}")
+        }
     }
 }
 

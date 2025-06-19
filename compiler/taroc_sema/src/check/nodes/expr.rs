@@ -6,10 +6,13 @@ use crate::{
         solver::{Goal, Obligation, OverloadArgument, OverloadGoal},
     },
     infer::fn_var::FnVarData,
-    ty::{Constraint, InferTy, Ty, TyKind},
-    utils::{instantiate_ty_with_args, labeled_signature_to_ty},
+    lower::{LoweringRequest, TypeLowerer},
+    ty::{Constraint, InferTy, StructDefinition, Ty, TyKind},
+    utils::{instantiate_constraint_with_args, instantiate_ty_with_args, labeled_signature_to_ty},
 };
-use taroc_hir::{DefinitionKind, Resolution};
+use rustc_hash::FxHashMap;
+use taroc_hir::{DefinitionKind, NodeID, Resolution};
+use taroc_span::Span;
 
 impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
     pub fn check_expression(&self, expression: &taroc_hir::Expression) -> Ty<'ctx> {
@@ -41,21 +44,21 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         _: Option<&taroc_hir::Expression>,
     ) -> Ty<'ctx> {
         let ty = self.check_expression_with_hint(expression, expectation);
+        self.add_coercion_constraint(ty, expectation, expression.span);
+        expectation
+    }
+
+    pub fn add_coercion_constraint(&self, from: Ty<'ctx>, to: Ty<'ctx>, location: Span) {
         // break early
-        if ty == expectation {
-            return expectation;
+        if from == to {
+            return;
         }
 
         let obligation = Obligation {
-            location: expression.span,
-            goal: Goal::Coerce {
-                from: ty,
-                to: expectation,
-            },
+            location: location,
+            goal: Goal::Coerce { from, to },
         };
         self.add_obligation(obligation);
-
-        expectation
     }
 
     pub fn check_expression_with_hint(
@@ -106,8 +109,9 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
                 self.check_function_call_expression(expression, callee, args, expectation)
             }
             taroc_hir::ExpressionKind::Assign(lhs, rhs) => self.check_assign_expression(lhs, rhs),
-
-            taroc_hir::ExpressionKind::StructLiteral(..) => self.error_ty(),
+            taroc_hir::ExpressionKind::StructLiteral(lit) => {
+                self.check_struct_expression(lit, expression)
+            }
             taroc_hir::ExpressionKind::ArrayLiteral(..) => self.error_ty(),
             taroc_hir::ExpressionKind::MethodCall(..) => self.error_ty(),
             taroc_hir::ExpressionKind::Binary(..) => self.error_ty(),
@@ -437,5 +441,138 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         let def_id = resolution.def_id();
         let ty = self.gcx.type_of(def_id);
         return ty;
+    }
+}
+
+impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
+    fn check_struct_expression(
+        &self,
+        literal: &taroc_hir::StructLiteral,
+        expr: &taroc_hir::Expression,
+    ) -> Ty<'ctx> {
+        let result = self.check_struct_path(&literal.path, expr.id);
+
+        let (defintion, ty) = match result {
+            Ok(result) => result,
+            Err(_) => {
+                return self.error_ty();
+            }
+        };
+
+        self.check_struct_fields(ty, defintion, &literal.fields);
+
+        return ty;
+    }
+
+    fn check_struct_path(
+        &self,
+        path: &taroc_hir::Path,
+        id: NodeID,
+    ) -> Result<(&'ctx StructDefinition<'ctx>, Ty<'ctx>), ()> {
+        let (res, ty) = self.resolve_struct_path(path, id);
+
+        let def = match res {
+            Resolution::Error => return Err(()),
+            Resolution::Definition(_, DefinitionKind::Variant) => {
+                todo!("enum variant")
+            }
+            Resolution::Definition(_, DefinitionKind::Struct | DefinitionKind::TypeAlias)
+            | Resolution::SelfTypeAlias(_)
+            | Resolution::InterfaceSelfTypeParameter(_) => match ty.adt_def() {
+                Some(adt_def) => {
+                    let def = self
+                        .gcx
+                        .with_session_type_database(|db| db.structs[&adt_def.id]);
+                    Some((def, adt_def.id, ty.get_adt_arguments().expect("arguments")))
+                }
+                None => None,
+            },
+            _ => {
+                unreachable!()
+            }
+        };
+
+        if let Some(def) = def {
+            let (def, id, args) = def;
+            let gcx = self.gcx;
+            // Check Constraints on Struct
+            self.gcx.canon_predicates_of(id).iter().for_each(|spanned| {
+                let constraint = instantiate_constraint_with_args(gcx, spanned.value, args);
+                let o = Obligation {
+                    location: path.span,
+                    goal: Goal::Constraint(constraint),
+                };
+                self.add_obligation(o);
+            });
+            return Ok((def, ty));
+        } else {
+            self.gcx.diagnostics.error(
+                format!(
+                    "expected struct or enum struct variant, found {}",
+                    ty.format(self.gcx)
+                ),
+                path.span,
+            );
+            return Err(());
+        }
+    }
+
+    fn resolve_struct_path(&self, path: &taroc_hir::Path, id: NodeID) -> (Resolution, Ty<'ctx>) {
+        let partial_resolution = self.gcx.resolution(id);
+
+        if let Some(res) = partial_resolution.full_resolution() {
+            let ty = self
+                .lowerer()
+                .lower_resolved_path(id, path, &LoweringRequest::default());
+
+            return (res, ty);
+        }
+
+        todo!();
+    }
+
+    fn check_struct_fields(
+        &self,
+        struct_ty: Ty<'ctx>,
+        definition: &StructDefinition<'ctx>,
+        expressions: &[taroc_hir::ExpressionField],
+    ) {
+        let TyKind::Adt(id, args) = struct_ty.kind() else {
+            unreachable!("ICE: non-ADT Type passed to check_struct_fields");
+        };
+
+        // field state
+        let mut seen = FxHashMap::default();
+        let mut remaining: FxHashMap<_, _> = definition
+            .fields
+            .iter_enumerated()
+            .map(|(i, f)| return (f.name, (i, f)))
+            .collect();
+        for (index, expression) in expressions.iter().enumerate() {
+            let name = expression.label.symbol;
+
+            let field_ty = if let Some((i, field_def)) = remaining.remove(&name) {
+                // TODO: add field index note
+                seen.insert(name, expression.label.span);
+                let field_ty = instantiate_ty_with_args(self.gcx, field_def.ty, args);
+                field_ty
+            } else {
+                if let Some(prev) = seen.get(&name) {
+                    let m1 = format!("field {name} is provided multiple times");
+                    let m2 = format!("{name} is initially specified here");
+
+                    self.gcx.diagnostics.error(m1, expression.span);
+                    self.gcx.diagnostics.info(m2, *prev);
+                } else {
+                    let msg = format!("unknown field named '{name}'");
+                    self.gcx.diagnostics.error(msg, expression.label.span);
+                }
+
+                self.error_ty()
+            };
+
+            let expr_ty = self.check_expression_with_hint(&expression.expression, field_ty);
+            self.add_coercion_constraint(expr_ty, field_ty, expression.span);
+        }
     }
 }

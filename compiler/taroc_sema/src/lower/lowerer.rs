@@ -1,8 +1,9 @@
-use super::{LoweringContext, LoweringRequest};
+use super::LoweringRequest;
 use crate::GlobalContext;
+use crate::lower::LoweringContext;
 use crate::ty::{
-    AssocTyKind, Constraint, GenericArgument, GenericArguments, InterfaceReference,
-    SpannedConstraints, Ty, TyKind,
+    AssocTyKind, Constraint, GenericArgument, GenericArguments, GenericParameterDefinition,
+    InterfaceReference, SpannedConstraints, Ty, TyKind,
 };
 use crate::utils::{
     convert_ast_float_ty, convert_ast_int_ty, convert_ast_uint_ty, instantiate_ty_with_args, ty2str,
@@ -10,7 +11,7 @@ use crate::utils::{
 use rustc_hash::FxHashSet;
 use std::collections::VecDeque;
 use taroc_hir::{DefinitionID, DefinitionKind, NodeID, PrimaryType, Resolution};
-use taroc_span::Identifier;
+use taroc_span::{Identifier, Span};
 
 pub trait TypeLowerer<'ctx> {
     fn gcx(&self) -> GlobalContext<'ctx>;
@@ -27,6 +28,8 @@ pub trait TypeLowerer<'ctx> {
     {
         self
     }
+
+    fn ty_infer(&self, param: Option<&GenericParameterDefinition>, span: Span) -> Ty<'ctx>;
 }
 
 impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
@@ -67,7 +70,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         let resolution = gcx.resolution(id);
 
         if resolution.unresolved_segments() == 0 {
-            return self.lower_path(id, path, request);
+            return self.lower_resolved_path(id, path, request);
         } else {
             return self
                 .lower_unresolved_path_type(id, path, &resolution, request)
@@ -75,7 +78,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         }
     }
 
-    fn lower_path(
+    pub fn lower_resolved_path(
         &self,
         id: NodeID,
         path: &taroc_hir::Path,
@@ -93,7 +96,11 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             taroc_hir::Resolution::Definition(
                 id,
                 DefinitionKind::Enum | DefinitionKind::TypeAlias | DefinitionKind::Struct,
-            ) => return self.lower_path_segment(id, path.segments.last().unwrap(), request),
+            ) => {
+                let segment = path.segments.last().unwrap();
+                let _ = check_generics_prohibited(id, segment, gcx);
+                return self.lower_path_segment(id, segment, request);
+            }
             taroc_hir::Resolution::Definition(id, DefinitionKind::TypeParameter) => {
                 // TODO: Prohibit Generics
                 gcx.type_of(id)
@@ -171,7 +178,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         let mut unresolved_segments: VecDeque<_> = VecDeque::from_iter(
             path.segments[path.segments.len() - resolution.unresolved_segments..].iter(),
         );
-        let mut base_ty = self.lower_path(id, &resolved_path, request);
+        let mut base_ty = self.lower_resolved_path(id, &resolved_path, request);
         let mut base_res = resolution.resolution();
 
         while !unresolved_segments.is_empty() {
@@ -420,15 +427,8 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         request: &LoweringRequest,
     ) -> Ty<'ctx> {
         let gcx = self.gcx();
-
         let args = self.lower_type_arguments(id, segment, request);
-        let Ok(args) = args else {
-            return gcx.store.common_types.error;
-        };
-
         let base = gcx.type_of(id);
-
-        // instantiate
         instantiate_ty_with_args(gcx, base, args)
     }
 
@@ -437,85 +437,79 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         def_id: DefinitionID,
         segment: &taroc_hir::PathSegment,
         request: &LoweringRequest,
-    ) -> Result<crate::ty::GenericArguments<'ctx>, ()> {
-        let gcx = self.gcx();
-        let arguments = if let Some(arguments) = &segment.arguments {
-            arguments
-        } else {
-            // implicit params for extension self types
-            if matches!(request.context, LoweringContext::ExtensionSelfTy) {
-                return Ok(convert_params_to_arguments(gcx, def_id));
-            }
-            &taroc_hir::TypeArguments {
-                span: segment.identifier.span,
-                arguments: Default::default(),
-            }
-        };
-        let mut ok = check_generics_prohibited(def_id, &arguments, gcx);
-        if !ok {
-            return Err(());
-        }
-
-        ok = check_generic_arg_count(def_id, segment, gcx);
-        if !ok {
-            return Err(());
-        }
-
-        let arguments = self.lower_generic_args(def_id, arguments, request);
-        return Ok(arguments);
+    ) -> crate::ty::GenericArguments<'ctx> {
+        let arguments = self.lower_generic_args(def_id, segment, request);
+        return arguments;
     }
 
     fn lower_generic_args(
         &self,
         id: DefinitionID,
-        arguments: &taroc_hir::TypeArguments,
+        segment: &taroc_hir::PathSegment,
         request: &LoweringRequest,
     ) -> GenericArguments<'ctx> {
         let gcx = self.gcx();
+        let _ = check_generic_arg_count(id, segment, gcx);
+
         let generics = gcx.generics_of(id);
 
         let mut output = vec![];
 
-        for (index, parameter) in generics.parameters.iter().enumerate() {
-            // ───── Is there an explicit <…> argument in source? ─────
-            if let Some(hir_arg) = arguments.arguments.get(index) {
-                let lowered = match hir_arg {
-                    taroc_hir::TypeArgument::Type(ty) => {
-                        GenericArgument::Type(self.lower_type(ty, request))
-                    }
-                    taroc_hir::TypeArgument::Const(_) => todo!(), // const generics later
-                };
-                output.push(lowered);
-                continue;
-            }
+        let arguments = segment
+            .arguments
+            .clone()
+            .map(|v| v.arguments)
+            .unwrap_or_default();
+        let span = segment
+            .arguments
+            .as_ref()
+            .map(|f| f.span)
+            .unwrap_or(segment.span);
+        let mut args_iter = arguments.iter().peekable();
+        let mut params_iter = generics.parameters.iter().peekable();
 
-            match &parameter.kind {
-                // ---- provided default ----
-                crate::ty::GenericParameterDefinitionKind::Type { default: Some(d) } => {
-                    let ty = self.lower_type(&d, request);
-                    output.push(GenericArgument::Type(ty));
+        loop {
+            match (args_iter.peek(), params_iter.peek()) {
+                (Some(&arg), Some(&_)) => {
+                    let lowered = match arg {
+                        taroc_hir::TypeArgument::Type(ty) => {
+                            GenericArgument::Type(self.lower_type(ty, request))
+                        }
+                        taroc_hir::TypeArgument::Const(_) => todo!(), // const generics later
+                    };
+                    output.push(lowered);
+                    args_iter.next();
+                    params_iter.next();
                 }
-
-                // ---- no default ----
-                crate::ty::GenericParameterDefinitionKind::Type { default: None } => {
-                    if matches!(gcx.def_kind(id), DefinitionKind::Function) {
-                        // For *functions* we leave the original parameter so
-                        // `instantiate(FnDef)` can replace it with a fresh TyVar.
-                        // output.push(GenericArgument::Type(self.context.type_of(parameter.id)));
-                        todo!()
-                    } else {
-                        // For structs/enums/etc. this should already have been
-                        // rejected by `check_generic_arg_count`, but keep a
-                        // fallback just in case.
-                        gcx.diagnostics
-                            .error("missing generic argument".into(), arguments.span);
-                        output.push(GenericArgument::Type(gcx.store.common_types.error));
-                    }
+                (Some(_), None) => {
+                    break;
                 }
+                (None, Some(&param)) => {
+                    match &param.kind {
+                        // ---- provided default ----
+                        crate::ty::GenericParameterDefinitionKind::Type { default: Some(d) } => {
+                            let ty = self.lower_type(&d, request);
+                            output.push(GenericArgument::Type(ty));
+                        }
 
-                crate::ty::GenericParameterDefinitionKind::Const { .. } => todo!(),
+                        // ---- no default ----
+                        crate::ty::GenericParameterDefinitionKind::Type { default: None } => {
+                            if matches!(request.context, LoweringContext::ExtensionSelfTy) {
+                                output.push(GenericArgument::Type(gcx.mk_ty(TyKind::Placeholder)));
+                            } else {
+                                let ty = self.ty_infer(Some(param), span);
+                                output.push(GenericArgument::Type(ty));
+                            }
+                        }
+
+                        crate::ty::GenericParameterDefinitionKind::Const { .. } => todo!(),
+                    }
+                    params_iter.next();
+                }
+                (None, None) => break,
             }
         }
+
         return gcx.store.interners.intern_generic_args(&output);
     }
 
@@ -627,11 +621,14 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
 
 fn check_generics_prohibited(
     def_id: DefinitionID,
-    arguments: &taroc_hir::TypeArguments,
+    segment: &taroc_hir::PathSegment,
     context: GlobalContext<'_>,
 ) -> bool {
     let kind = context.def_kind(def_id);
 
+    let Some(arguments) = &segment.arguments else {
+        return true;
+    };
     // No type arguments => always OK
     if arguments.arguments.is_empty() {
         return true;
@@ -664,11 +661,17 @@ pub fn check_generic_arg_count(
     context: GlobalContext<'_>,
 ) -> bool {
     let generics = context.generics_of(id);
+    let should_infer = segment.arguments.is_none();
 
     let defaults_count = generics.default_count();
     let total_count = generics.total_count();
 
-    let min = total_count - defaults_count - generics.has_self as usize;
+    let min = if !should_infer {
+        total_count - defaults_count - generics.has_self as usize
+    } else {
+        0
+    };
+
     let provided = segment
         .arguments
         .as_ref()
@@ -708,25 +711,4 @@ pub fn check_generic_arg_count(
     }
 
     return false;
-}
-
-fn convert_params_to_arguments<'ctx>(
-    gcx: GlobalContext<'ctx>,
-    def_id: DefinitionID,
-) -> GenericArguments<'ctx> {
-    let generics = gcx.generics_of(def_id);
-    let parameters = &generics.parameters;
-
-    let mut args = vec![];
-    for parameter in parameters {
-        match &parameter.kind {
-            crate::ty::GenericParameterDefinitionKind::Type { .. } => {
-                let ty = gcx.type_of(parameter.id);
-                args.push(GenericArgument::Type(ty));
-            }
-            crate::ty::GenericParameterDefinitionKind::Const { .. } => todo!(),
-        }
-    }
-
-    gcx.store.interners.intern_generic_args(&args)
 }

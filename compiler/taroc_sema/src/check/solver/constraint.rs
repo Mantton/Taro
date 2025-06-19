@@ -51,8 +51,8 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                             if generics.has_self {
                                 args.push(GenericArgument::Type(ty));
                             }
-                            if let Some(def) = ty.adt_def() {
-                                if let Some(adt_args) = ty.get_adt_arguments(def.id) {
+                            if let Some(_) = ty.adt_def() {
+                                if let Some(adt_args) = ty.get_adt_arguments() {
                                     args.extend_from_slice(adt_args);
                                 }
                             }

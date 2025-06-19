@@ -1,8 +1,8 @@
 use super::func::FnCtx;
 use crate::lower::TypeLowerer;
 
-impl<'tcx> TypeLowerer<'tcx> for FnCtx<'_, 'tcx> {
-    fn gcx(&self) -> crate::GlobalContext<'tcx> {
+impl<'ctx> TypeLowerer<'ctx> for FnCtx<'_, 'ctx> {
+    fn gcx(&self) -> crate::GlobalContext<'ctx> {
         self.gcx
     }
 
@@ -10,7 +10,15 @@ impl<'tcx> TypeLowerer<'tcx> for FnCtx<'_, 'tcx> {
         &self,
         def_id: taroc_hir::DefinitionID,
         assoc_ident: taroc_span::Identifier,
-    ) -> &'tcx crate::ty::SpannedConstraints<'tcx> {
+    ) -> &'ctx crate::ty::SpannedConstraints<'ctx> {
         todo!()
+    }
+
+    fn ty_infer(
+        &self,
+        _: Option<&crate::ty::GenericParameterDefinition>,
+        span: taroc_span::Span,
+    ) -> crate::ty::Ty<'ctx> {
+        self.next_ty_var(span)
     }
 }

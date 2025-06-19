@@ -1,10 +1,11 @@
 use core::fmt;
+use index_vec::{IndexVec, define_index_type};
 use indexmap::IndexMap;
 use rustc_hash::FxHashMap;
 use std::{collections::HashMap, fmt::Display};
 use taroc_ast_ir::OperatorKind;
 use taroc_data_structures::Interned;
-use taroc_hir::{DefinitionID, Mutability};
+use taroc_hir::{CtorKind, DefinitionID, Mutability};
 use taroc_span::{FileID, Span, Spanned, Symbol};
 
 use crate::{
@@ -76,21 +77,14 @@ pub enum TyKind<'arena> {
     /// Type inference variable (for generic instantiation)
     Infer(InferTy),
     Error,
+    Placeholder,
 }
 
-// In your type representation logic (e.g., impl Ty<'ctx> or a helper)
 impl<'ctx> Ty<'ctx> {
-    /// Attempts to retrieve the GenericArgs associated with this type,
-    /// assuming it represents an instance of the given adt_definition_id
-    /// (potentially through references).
-    pub fn get_adt_arguments(&self, target: DefinitionID) -> Option<GenericArguments<'ctx>> {
+    pub fn get_adt_arguments(&self) -> Option<GenericArguments<'ctx>> {
         match self.kind() {
-            TyKind::Adt(def, args) if def.id == target => Some(args),
-            TyKind::Reference(inner_ty, _) => {
-                // Recurse on the inner type
-                inner_ty.get_adt_arguments(target)
-            }
-            _ => None, // Not the ADT or a reference to it
+            TyKind::Adt(_, args) => Some(args),
+            _ => None,
         }
     }
 
@@ -251,18 +245,22 @@ impl GenericParameterDefinitionKind {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct StructField<'ctx> {
+    pub id: DefinitionID,
     pub name: Symbol,
     pub ty: Ty<'ctx>,
     pub mutability: Mutability,
+    pub index: usize,
 }
 
 #[derive(Debug, Clone)]
 pub struct StructDefinition<'ctx> {
     pub id: DefinitionID,
     pub name: Symbol,
-    pub fields: FxHashMap<Symbol, StructField<'ctx>>,
+    pub fields: IndexVec<FieldIndex, StructField<'ctx>>,
+    pub ctor: Option<(CtorKind, DefinitionID)>,
+    pub variant_discrimimant: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -292,6 +290,14 @@ pub struct InterfaceDefinition<'ctx> {
     pub id: DefinitionID,
     pub superfaces: Vec<Spanned<InterfaceReference<'ctx>>>,
     pub assoc_types: HashMap<Symbol, DefinitionID>,
+}
+
+define_index_type! {
+    pub struct FieldIndex = u32;
+}
+
+define_index_type! {
+    pub struct VariantIndex = u32;
 }
 
 #[derive(Debug, Clone, Default)]
@@ -534,6 +540,7 @@ impl<'ctx> Ty<'ctx> {
             | TyKind::Function { .. }
             | TyKind::AssociatedType { .. }
             | TyKind::Infer(..)
+            | TyKind::Placeholder
             | TyKind::Error => unreachable!(),
         }
     }

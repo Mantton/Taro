@@ -1,4 +1,4 @@
-use crate::{check::context::func::FnCtx, ty::Ty};
+use crate::ty::Ty;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Expectation<'ctx> {

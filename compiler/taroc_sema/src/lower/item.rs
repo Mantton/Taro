@@ -46,4 +46,15 @@ impl<'ctx> TypeLowerer<'ctx> for ItemCtx<'ctx> {
             }
         }
     }
+
+    fn ty_infer(
+        &self,
+        _: Option<&crate::ty::GenericParameterDefinition>,
+        span: taroc_span::Span,
+    ) -> crate::ty::Ty<'ctx> {
+        let gcx = self.gcx();
+        gcx.diagnostics
+            .error("missing generic argument".into(), span);
+        gcx.store.common_types.error
+    }
 }

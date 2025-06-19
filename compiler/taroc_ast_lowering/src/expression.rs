@@ -1,7 +1,7 @@
 use super::package::Actor;
 use crate::literal::convert_ast_literal;
 use taroc_ast::{self, BinaryOperator};
-use taroc_span::Span;
+use taroc_span::{Identifier, Span};
 
 impl Actor<'_> {
     pub fn lower_expression(
@@ -227,9 +227,20 @@ impl Actor<'_> {
         node: taroc_ast::ExpressionField,
     ) -> taroc_hir::ExpressionField {
         taroc_hir::ExpressionField {
-            is_shorthand: node.is_shorthand,
             span: node.span,
-            label: self.lower_optional(node.label, |this, label| this.lower_label(label)),
+            label: if node.is_shorthand {
+                if let Some(ident) = self.ident_from_expr(&node.expression) {
+                    ident
+                } else {
+                    let msg = format!("shorthand expression fields must be identifiers");
+                    self.context.diagnostics.error(msg, node.span);
+                    Identifier::emtpy(node.span.file)
+                }
+            } else if let Some(label) = node.label {
+                label.identifier
+            } else {
+                unreachable!("ICE: either shorthand or should have label")
+            },
             expression: self.lower_expression(node.expression),
         }
     }
@@ -341,5 +352,16 @@ impl Actor<'_> {
         };
 
         Box::new(expr)
+    }
+}
+
+impl Actor<'_> {
+    pub fn ident_from_expr(&self, expr: &taroc_ast::Expression) -> Option<Identifier> {
+        match &expr.kind {
+            taroc_ast::ExpressionKind::Path(path) if path.segments.len() == 1 => {
+                path.segments.last().map(|f| f.identifier)
+            }
+            _ => None,
+        }
     }
 }

@@ -44,8 +44,6 @@ impl<'ctx> Resolver<'ctx> {
     ) -> ExternalDefinitionUsage<'ctx> {
         let allocated = self.gcx.store.interners.arenas.resolve.alloc(data);
         Interned::new_unchecked(allocated)
-        // In your actual code you might wrap this Interned pointer into a newtype
-        // or convert it appropriately.
     }
 
     pub fn alloc_slice_copy<T>(&self, src: &[T]) -> &'ctx mut [T]

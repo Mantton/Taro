@@ -1,3 +1,5 @@
+use taroc_hir::DefinitionID;
+
 use crate::GlobalContext;
 use crate::fold::{TypeFoldable, TypeFolder, TypeSuperFoldable};
 use crate::ty::{Constraint, GenericArgument, GenericArguments, InterfaceReference, Ty, TyKind};
@@ -74,4 +76,25 @@ pub fn instantiate_constraint_with_args<'ctx>(
 ) -> Constraint<'ctx> {
     let mut folder = InstantiateFolder { gcx, args };
     folder.fold_constraint(constraint)
+}
+
+fn convert_params_to_arguments<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    def_id: DefinitionID,
+) -> GenericArguments<'ctx> {
+    let generics = gcx.generics_of(def_id);
+    let parameters = &generics.parameters;
+
+    let mut args = vec![];
+    for parameter in parameters {
+        match &parameter.kind {
+            crate::ty::GenericParameterDefinitionKind::Type { .. } => {
+                let ty = gcx.type_of(parameter.id);
+                args.push(GenericArgument::Type(ty));
+            }
+            crate::ty::GenericParameterDefinitionKind::Const { .. } => todo!(),
+        }
+    }
+
+    gcx.store.interners.intern_generic_args(&args)
 }
