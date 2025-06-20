@@ -10,6 +10,7 @@ use taroc_span::{Identifier, Span};
 mod apply;
 mod coerce;
 mod constraint;
+mod field;
 mod unify;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -17,6 +18,7 @@ pub enum Goal<'ctx> {
     Constraint(Constraint<'ctx>),
     Coerce { from: Ty<'ctx>, to: Ty<'ctx> },
     Apply(OverloadGoal<'ctx>),
+    FieldAccess(FieldAccessGoal<'ctx>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -33,6 +35,14 @@ pub struct OverloadArgument<'ctx> {
     pub ty: Ty<'ctx>,
     pub span: Span,
     pub label: Option<Identifier>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FieldAccessGoal<'ctx> {
+    pub base_ty: Ty<'ctx>,
+    pub field: Identifier,
+    pub result_var: Ty<'ctx>,
+    pub field_span: Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -199,6 +209,9 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
             }
             Goal::Apply(goal) => {
                 return self.solve_application(goal);
+            }
+            Goal::FieldAccess(goal) => {
+                return self.solve_field_access(goal);
             }
         };
     }

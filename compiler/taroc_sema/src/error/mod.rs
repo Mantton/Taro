@@ -20,4 +20,6 @@ pub enum TypeError<'ctx> {
     ArgMismatch(ExpectedFound<GenericArgument<'ctx>>),
     NoOverloadCandidateMatch,
     ConformanceNotMet,
+    UnknownField,
+    NotAStruct,
 }

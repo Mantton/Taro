@@ -3,7 +3,7 @@ use crate::{
     check::{
         context::func::FnCtx,
         expectation::Expectation,
-        solver::{Goal, Obligation, OverloadArgument, OverloadGoal},
+        solver::{FieldAccessGoal, Goal, Obligation, OverloadArgument, OverloadGoal},
     },
     infer::fn_var::FnVarData,
     lower::{LoweringRequest, TypeLowerer},
@@ -112,16 +112,21 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             taroc_hir::ExpressionKind::StructLiteral(lit) => {
                 self.check_struct_expression(lit, expression)
             }
+            taroc_hir::ExpressionKind::FieldAccess(target, field) => {
+                self.check_field_access_expression(target, field, expression)
+            }
+            taroc_hir::ExpressionKind::TupleAccess(target, field) => {
+                self.check_tuple_access_expression()
+            }
             taroc_hir::ExpressionKind::ArrayLiteral(..) => self.error_ty(),
             taroc_hir::ExpressionKind::MethodCall(..) => self.error_ty(),
             taroc_hir::ExpressionKind::Binary(..) => self.error_ty(),
             taroc_hir::ExpressionKind::Unary(..) => self.error_ty(),
-            taroc_hir::ExpressionKind::FieldAccess(..) => self.error_ty(),
+
             taroc_hir::ExpressionKind::Subscript(..) => self.error_ty(),
             taroc_hir::ExpressionKind::AssignOp(..) => self.error_ty(),
             taroc_hir::ExpressionKind::CastAs(..) => self.error_ty(),
             taroc_hir::ExpressionKind::MatchBinding(_) => self.error_ty(),
-            taroc_hir::ExpressionKind::TupleAccess(..) => self.error_ty(),
             taroc_hir::ExpressionKind::When(..) => self.error_ty(),
             taroc_hir::ExpressionKind::Closure(_) => self.error_ty(),
             taroc_hir::ExpressionKind::Malformed => {
@@ -574,5 +579,36 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             let expr_ty = self.check_expression_with_hint(&expression.expression, field_ty);
             self.add_coercion_constraint(expr_ty, field_ty, expression.span);
         }
+    }
+}
+
+impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
+    fn check_field_access_expression(
+        &self,
+        base: &taroc_hir::Expression,
+        segment: &taroc_hir::PathSegment,
+        expression: &taroc_hir::Expression,
+    ) -> Ty<'ctx> {
+        let base_ty = self.check_expression(base);
+        let result_var = self.next_ty_var(segment.span);
+
+        let goal = FieldAccessGoal {
+            base_ty,
+            field: segment.identifier,
+            result_var,
+            field_span: segment.span,
+        };
+
+        self.add_obligation(Obligation {
+            location: expression.span,
+            goal: Goal::FieldAccess(goal),
+        });
+
+        result_var
+    }
+
+    fn check_tuple_access_expression(&self) -> Ty<'ctx> {
+        return self.error_ty();
+        todo!()
     }
 }

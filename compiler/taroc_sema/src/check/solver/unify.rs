@@ -90,7 +90,9 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                 self.icx
                     .instantiate_float_var_raw(id, FloatVarValue::Known(k));
             }
-            (Infer(_), Infer(_)) => return Err(TypeError::TyMismatch(ExpectedFound::new(a, b))),
+            (Infer(_), _) | (_, Infer(_)) => {
+                return Err(TypeError::TyMismatch(ExpectedFound::new(a, b)));
+            }
             _ => return self.unify_nominal_types(a, b),
         }
 
