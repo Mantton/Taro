@@ -1,5 +1,7 @@
 use crate::{
-    check::solver::{FieldAccessGoal, Goal, Obligation, SolverDelegate, SolverResult},
+    check::solver::{
+        FieldAccessGoal, Goal, Obligation, SolverDelegate, SolverResult, TupleAccessGoal,
+    },
     error::TypeError,
     ty::{Constraint, TyKind},
     utils::instantiate_ty_with_args,
@@ -26,6 +28,30 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
             }
             TyKind::Infer(_) => SolverResult::Deferred,
             _ => SolverResult::Error(TypeError::NotAStruct),
+        }
+    }
+}
+
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
+    pub fn solve_tuple_access(&mut self, goal: TupleAccessGoal<'ctx>) -> SolverResult<'ctx> {
+        let base_ty = self.icx.shallow_resolve(goal.base_ty);
+        match base_ty.kind() {
+            TyKind::Tuple(items) => {
+                if goal.index < items.len() {
+                    let item_ty = items[goal.index];
+                    let obligation = Obligation {
+                        location: goal.index_span,
+                        goal: Goal::Constraint(Constraint::TypeEquality(goal.result_var, item_ty)),
+                    };
+                    SolverResult::Solved(vec![obligation])
+                } else {
+                    SolverResult::Error(TypeError::TupleIndexOutOfBounds(
+                        crate::error::ExpectedFound::new(items.len(), goal.index),
+                    ))
+                }
+            }
+            TyKind::Infer(_) => SolverResult::Deferred,
+            _ => SolverResult::Error(TypeError::NotATuple),
         }
     }
 }

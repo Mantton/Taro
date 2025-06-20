@@ -19,6 +19,7 @@ pub enum Goal<'ctx> {
     Coerce { from: Ty<'ctx>, to: Ty<'ctx> },
     Apply(OverloadGoal<'ctx>),
     FieldAccess(FieldAccessGoal<'ctx>),
+    TupleAccess(TupleAccessGoal<'ctx>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -43,6 +44,14 @@ pub struct FieldAccessGoal<'ctx> {
     pub field: Identifier,
     pub result_var: Ty<'ctx>,
     pub field_span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TupleAccessGoal<'ctx> {
+    pub base_ty: Ty<'ctx>,
+    pub index: usize,
+    pub result_var: Ty<'ctx>,
+    pub index_span: Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -212,6 +221,9 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
             }
             Goal::FieldAccess(goal) => {
                 return self.solve_field_access(goal);
+            }
+            Goal::TupleAccess(goal) => {
+                return self.solve_tuple_access(goal);
             }
         };
     }

@@ -22,4 +22,6 @@ pub enum TypeError<'ctx> {
     ConformanceNotMet,
     UnknownField,
     NotAStruct,
+    TupleIndexOutOfBounds(ExpectedFound<usize>),
+    NotATuple,
 }

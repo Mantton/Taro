@@ -3,7 +3,9 @@ use crate::{
     check::{
         context::func::FnCtx,
         expectation::Expectation,
-        solver::{FieldAccessGoal, Goal, Obligation, OverloadArgument, OverloadGoal},
+        solver::{
+            FieldAccessGoal, Goal, Obligation, OverloadArgument, OverloadGoal, TupleAccessGoal,
+        },
     },
     infer::fn_var::FnVarData,
     lower::{LoweringRequest, TypeLowerer},
@@ -116,7 +118,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
                 self.check_field_access_expression(target, field, expression)
             }
             taroc_hir::ExpressionKind::TupleAccess(target, field) => {
-                self.check_tuple_access_expression()
+                self.check_tuple_access_expression(target, field, expression)
             }
             taroc_hir::ExpressionKind::ArrayLiteral(..) => self.error_ty(),
             taroc_hir::ExpressionKind::MethodCall(..) => self.error_ty(),
@@ -607,8 +609,38 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         result_var
     }
 
-    fn check_tuple_access_expression(&self) -> Ty<'ctx> {
-        return self.error_ty();
-        todo!()
+    fn check_tuple_access_expression(
+        &self,
+        base: &taroc_hir::Expression,
+        index: &taroc_hir::AnonConst,
+        expr: &taroc_hir::Expression,
+    ) -> Ty<'ctx> {
+        let index_value = match &index.value.kind {
+            taroc_hir::ExpressionKind::Literal(taroc_hir::Literal::Integer(i)) => *i as usize,
+            _ => {
+                self.gcx.diagnostics.error(
+                    "tuple indices must be integer literals".into(),
+                    index.value.span,
+                );
+                return self.error_ty();
+            }
+        };
+
+        let base_ty = self.check_expression(base);
+        let result_var = self.next_ty_var(index.value.span);
+
+        let goal = TupleAccessGoal {
+            base_ty,
+            index: index_value,
+            result_var,
+            index_span: index.value.span,
+        };
+
+        self.add_obligation(Obligation {
+            location: expr.span,
+            goal: Goal::TupleAccess(goal),
+        });
+
+        result_var
     }
 }
