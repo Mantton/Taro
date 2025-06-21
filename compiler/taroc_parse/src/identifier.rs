@@ -38,3 +38,18 @@ impl Parser {
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use crate::make_parser;
+    use taroc_span::session_test;
+
+    #[test]
+    fn test_identifier() {
+        session_test!({
+            let mut parser = make_parser!("foo");
+            let ident = parser.parse_identifier().expect("identifier");
+            assert_eq!(ident.symbol.as_str(), "foo");
+        });
+    }
+}

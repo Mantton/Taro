@@ -106,44 +106,47 @@ mod test {
     use taroc_token::Delimiter;
 
     use crate::make_parser;
+    use taroc_span::session_test;
 
     #[test]
     fn test_field_definition() {
-        let mut parser = make_parser!("foo:bar");
-        let field = parser.parse_field_definition().expect("field definition");
-        // assert_eq!(field.identifier.name, "foo");
-        assert_eq!(field.mutability, Mutability::Mutable);
-        assert_eq!(field.visibility.level, VisibilityLevel::Inherent);
-        assert!(matches!(field.ty.kind, TypeKind::Path(_)));
+        session_test!({
+            let mut parser = make_parser!("foo:bar");
+            let field = parser.parse_field_definition().expect("field definition");
+            assert_eq!(field.mutability, Mutability::Mutable);
+            assert_eq!(field.visibility.level, VisibilityLevel::Inherent);
+            assert!(matches!(field.ty.kind, TypeKind::Path(_)));
 
-        let mut parser = make_parser!("public const foo:bar");
-        let field = parser.parse_field_definition().expect("field definition");
-        // assert_eq!(field.identifier.name, "foo");
-        assert_eq!(field.mutability, Mutability::Immutable);
-        assert_eq!(field.visibility.level, VisibilityLevel::Public);
-        assert!(matches!(field.ty.kind, TypeKind::Path(_)))
+            let mut parser = make_parser!("public const foo:bar");
+            let field = parser.parse_field_definition().expect("field definition");
+            assert_eq!(field.mutability, Mutability::Immutable);
+            assert_eq!(field.visibility.level, VisibilityLevel::Public);
+            assert!(matches!(field.ty.kind, TypeKind::Path(_)))
+        });
     }
 
     #[test]
     fn test_field_definition_sequence() {
-        let input = r#"{
-            foo:T,
-            public const bar: T,
-            public baz: T,
-            const foobar: T
-        }"#;
+        session_test!({
+            let input = r#"{
+                foo:T,
+                public const bar: T,
+                public baz: T,
+                const foobar: T
+            }"#;
 
-        let mut parser = make_parser!(input);
-        let fields = parser
-            .parse_field_definitions(Delimiter::Brace)
-            .expect("definitions");
-        assert_eq!(4, fields.len());
-        assert_eq!(
-            vec!["foo", "bar", "baz", "foobar"],
-            fields
-                .iter()
-                .map(|f| f.identifier.symbol.as_str())
-                .collect::<Vec<&str>>()
-        )
+            let mut parser = make_parser!(input);
+            let fields = parser
+                .parse_field_definitions(Delimiter::Brace)
+                .expect("definitions");
+            assert_eq!(4, fields.len());
+            assert_eq!(
+                vec!["foo", "bar", "baz", "foobar"],
+                fields
+                    .iter()
+                    .map(|f| f.identifier.symbol.as_str())
+                    .collect::<Vec<&str>>()
+            )
+        });
     }
 }

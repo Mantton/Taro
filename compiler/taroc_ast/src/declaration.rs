@@ -55,7 +55,6 @@ pub enum FunctionDeclarationKind {
     Enum(EnumDefinition),
     Function(Function),
     Constant(ConstantDeclaration),
-    Import(PathTree),
     TypeAlias(TypeAlias),
 }
 
@@ -174,7 +173,6 @@ impl TryFrom<DeclarationKind> for FunctionDeclarationKind {
             DeclarationKind::Struct(node) => FunctionDeclarationKind::Struct(node),
             DeclarationKind::Enum(node) => FunctionDeclarationKind::Enum(node),
             DeclarationKind::Constant(node) => FunctionDeclarationKind::Constant(node),
-            DeclarationKind::Import(node) => FunctionDeclarationKind::Import(node),
             DeclarationKind::TypeAlias(node) => FunctionDeclarationKind::TypeAlias(node),
             _ => return Err(kind),
         })

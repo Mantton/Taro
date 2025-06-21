@@ -74,3 +74,20 @@ impl Parser {
         Ok(p)
     }
 }
+
+#[cfg(test)]
+mod test {
+    use crate::make_parser;
+    use taroc_span::session_test;
+
+    #[test]
+    fn test_simple_path() {
+        session_test!({
+            let mut parser = make_parser!("foo::bar");
+            let path = parser.parse_path().expect("path");
+            assert_eq!(path.segments.len(), 2);
+            assert_eq!(path.segments[0].identifier.symbol.as_str(), "foo");
+            assert_eq!(path.segments[1].identifier.symbol.as_str(), "bar");
+        });
+    }
+}

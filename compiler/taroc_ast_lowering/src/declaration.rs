@@ -162,9 +162,6 @@ impl Actor<'_> {
             taroc_ast::FunctionDeclarationKind::Constant(node) => {
                 taroc_hir::FunctionDeclarationKind::Constant(self.lower_constant_decl(node))
             }
-            taroc_ast::FunctionDeclarationKind::Import(node) => {
-                taroc_hir::FunctionDeclarationKind::Import(self.lower_path_tree(node))
-            }
             taroc_ast::FunctionDeclarationKind::TypeAlias(node) => {
                 taroc_hir::FunctionDeclarationKind::TypeAlias(self.lower_type_alias(node))
             }

@@ -11,12 +11,10 @@ pub struct Function {
 
 /// AST Representation of a function parameter
 ///
-/// ```
+/// ```text
 /// name: String
 /// name: String = "Default Value"
-/// _ name: String = "Default Value"
 /// @attribute name: String
-///
 /// ```
 #[derive(Debug)]
 pub struct FunctionParameter {

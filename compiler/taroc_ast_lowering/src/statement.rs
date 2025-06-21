@@ -118,10 +118,13 @@ impl Actor<'_> {
         statements: Vec<taroc_hir::Statement>,
         span: Span,
     ) -> taroc_hir::Block {
+        let has_declarations = statements
+            .iter()
+            .any(|f| matches!(f.kind, taroc_hir::StatementKind::Declaration(..)));
         taroc_hir::Block {
             id: self.next(),
             statements,
-            has_declarations: false,
+            has_declarations,
             span,
         }
     }

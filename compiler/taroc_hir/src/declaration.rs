@@ -57,7 +57,6 @@ pub enum FunctionDeclarationKind {
     Enum(EnumDefinition),
     Function(Function),
     Constant(ConstantDeclaration),
-    Import(PathTree),
     TypeAlias(TypeAlias),
 }
 

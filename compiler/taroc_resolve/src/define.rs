@@ -3,8 +3,8 @@ use crate::{arena::alloc_binding, models::ToNameBinding};
 use std::cell::Cell;
 use taroc_error::CompileResult;
 use taroc_hir::{
-    self, Declaration, DeclarationKind, NodeID, PathTree, PathTreeNode, Resolution,
-    SymbolNamespace,
+    self, Declaration, DeclarationKind, FunctionDeclarationKind, NodeID, PathTree, PathTreeNode,
+    Resolution, SymbolNamespace,
     visitor::{self, AssocContext, HirVisitor, walk_package},
 };
 use taroc_resolve_models::{DefContextKind, Determinacy, ParentScope, PerNS};
@@ -94,6 +94,13 @@ impl HirVisitor for DefinitionCollector<'_, '_> {
         let previous = self.parent_scope;
         self.define_declaration(d);
         visitor::walk_declaration(self, d);
+        self.parent_scope = previous;
+    }
+
+    fn visit_function_declaration(&mut self, d: &taroc_hir::FunctionDeclaration) -> Self::Result {
+        let previous = self.parent_scope;
+        self.define_function_declaration(d);
+        visitor::walk_function_declaration(self, d);
         self.parent_scope = previous;
     }
 
@@ -252,6 +259,52 @@ impl DefinitionCollector<'_, '_> {
             DeclarationKind::Malformed => unreachable!(),
         }
     }
+
+    fn define_function_declaration(&mut self, decl: &taroc_hir::FunctionDeclaration) {
+        let id = self.resolver.def_id(decl.id);
+        let kind = self.resolver.def_kind(id);
+        let name = decl.identifier.symbol;
+        let res = Resolution::Definition(id, kind);
+        let vis = taroc_hir::TVisibility::Public; // TODO: Visibility
+        let span = decl.identifier.span;
+        let parent = if matches!(self.parent_scope.context.kind, DefContextKind::File) {
+            self.parent_scope.context.parent.unwrap()
+        } else {
+            self.parent_scope.context
+        };
+        let def = (res, vis, span);
+
+        match &decl.kind {
+            FunctionDeclarationKind::Struct(node) => {
+                self.resolver
+                    .define(parent, decl.identifier, SymbolNamespace::Type, def);
+
+                if let Some(ctor_id) = node.variant.ctor_node_id() {
+                    let ctor_def_id = self.resolver.def_id(ctor_id);
+                    let kind = self.resolver.def_kind(id);
+                    let ctor_def = (Resolution::Definition(ctor_def_id, kind), vis, span);
+                    self.resolver
+                        .define(parent, decl.identifier, SymbolNamespace::Value, ctor_def);
+                }
+            }
+            FunctionDeclarationKind::Function(..) | FunctionDeclarationKind::Constant(..) => {
+                self.resolver
+                    .define(parent, decl.identifier, SymbolNamespace::Value, def);
+            }
+            FunctionDeclarationKind::TypeAlias(_) => {
+                self.resolver
+                    .define(parent, decl.identifier, SymbolNamespace::Type, def);
+            }
+            FunctionDeclarationKind::Enum(_) => {
+                let ctx_k = DefContextKind::Definition(id, kind, Some(name));
+                let context = self.resolver.new_context(Some(parent), ctx_k, span);
+                let def = (context, vis, span);
+                self.resolver
+                    .define(parent, decl.identifier, SymbolNamespace::Type, def);
+                self.parent_scope.context = context;
+            }
+        }
+    }
 }
 
 impl<'arena, 'context> DefinitionCollector<'arena, 'context> {
@@ -406,7 +459,7 @@ impl DefinitionCollector<'_, '_> {
                 self.resolver
                     .new_context(Some(parent), DefContextKind::Block, block.span);
             self.resolver.block_map.insert(block.id, context);
-            self.parent_scope.context = parent;
+            self.parent_scope.context = context;
         }
     }
 }

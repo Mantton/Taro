@@ -34,11 +34,14 @@ impl Parser {
 #[cfg(test)]
 mod test {
     use crate::make_parser;
+    use taroc_span::session_test;
 
     #[test]
     fn test_plain_attribute() {
-        let mut parser = make_parser!("@foo");
-        let attribute = parser.parse_attribute().expect("").expect("");
-        assert_eq!(attribute.identifier.symbol.as_str(), "foo");
+        session_test!({
+            let mut parser = make_parser!("@foo");
+            let attribute = parser.parse_attribute().expect("").expect("");
+            assert_eq!(attribute.identifier.symbol.as_str(), "foo");
+        });
     }
 }

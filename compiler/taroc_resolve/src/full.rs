@@ -365,9 +365,6 @@ impl Actor<'_, '_> {
             taroc_hir::FunctionDeclarationKind::Constant(_) => {
                 taroc_hir::visitor::walk_function_declaration(self, declaration);
             }
-            taroc_hir::FunctionDeclarationKind::Import(_) => {
-                taroc_hir::visitor::walk_function_declaration(self, declaration);
-            }
             taroc_hir::FunctionDeclarationKind::TypeAlias(..) => {
                 self.with_scope(LexicalScopeSource::Definition(def_kind), |this| {
                     this.with_generics_scope(def_id, |this| {

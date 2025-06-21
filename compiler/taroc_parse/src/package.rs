@@ -90,9 +90,12 @@ impl Parser {
 #[macro_export]
 macro_rules! make_parser {
     ($content:expr) => {{
-        let lexer = taroc_lexer::Lexer::new($content.into(), taroc_span::FileID::new(0));
+        let id = taroc_span::register_test_file!($content);
+        $crate::make_parser!($content, id)
+    }};
+    ($content:expr, $id:expr) => {{
+        let lexer = taroc_lexer::Lexer::new($content.into(), $id);
         let file = lexer.tokenize().expect("tokens");
-        let parser = $crate::package::Parser::new(file);
-        parser
+        $crate::package::Parser::new(file)
     }};
 }

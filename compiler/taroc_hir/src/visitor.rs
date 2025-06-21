@@ -471,9 +471,6 @@ pub fn walk_function_declaration<V: HirVisitor>(
             try_visit!(visitor.visit_type(&node.ty));
             visit_optional!(visitor, visit_expression, &node.expr);
         }
-        FunctionDeclarationKind::Import(node) => {
-            try_visit!(visitor.visit_export(node, declaration.id));
-        }
         FunctionDeclarationKind::TypeAlias(node) => {
             try_visit!(visitor.visit_generics(&node.generics));
             visit_optional!(visitor, visit_type, &node.ty);

@@ -86,7 +86,6 @@ impl HirVisitor for HirNodeTagger<'_, '_> {
     ) -> <Self as HirVisitor>::Result {
         let kind = match &d.kind {
             taroc_hir::FunctionDeclarationKind::Function(..) => DefinitionKind::Function,
-            taroc_hir::FunctionDeclarationKind::Import(..) => DefinitionKind::Import,
             taroc_hir::FunctionDeclarationKind::TypeAlias(..) => DefinitionKind::TypeAlias,
             taroc_hir::FunctionDeclarationKind::Constant(..) => DefinitionKind::Constant,
             taroc_hir::FunctionDeclarationKind::Struct(..) => DefinitionKind::Struct,

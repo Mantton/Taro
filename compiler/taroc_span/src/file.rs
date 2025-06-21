@@ -29,6 +29,15 @@ impl SourceFile {
             lines_and_chars: RefCell::new(None),
         }
     }
+
+    /// Create a new SourceFile with in-memory content, avoiding filesystem access.
+    pub fn new_with_content(path: PathBuf, content: String) -> SourceFile {
+        SourceFile {
+            path,
+            content: RefCell::new(Some(content)),
+            lines_and_chars: RefCell::new(None),
+        }
+    }
 }
 
 impl SourceFile {
