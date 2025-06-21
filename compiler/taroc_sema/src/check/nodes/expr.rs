@@ -120,11 +120,10 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             taroc_hir::ExpressionKind::TupleAccess(target, field) => {
                 self.check_tuple_access_expression(target, field, expression)
             }
+            taroc_hir::ExpressionKind::MethodCall(..) => todo!(),
             taroc_hir::ExpressionKind::ArrayLiteral(..) => self.error_ty(),
-            taroc_hir::ExpressionKind::MethodCall(..) => self.error_ty(),
             taroc_hir::ExpressionKind::Binary(..) => self.error_ty(),
             taroc_hir::ExpressionKind::Unary(..) => self.error_ty(),
-
             taroc_hir::ExpressionKind::Subscript(..) => self.error_ty(),
             taroc_hir::ExpressionKind::AssignOp(..) => self.error_ty(),
             taroc_hir::ExpressionKind::CastAs(..) => self.error_ty(),
@@ -426,8 +425,33 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             return full;
         }
 
+        let qualified = &path.segments[..path.segments.len() - partial_res.unresolved_segments];
+        let qualified_span = qualified
+            .first()
+            .unwrap()
+            .span
+            .to(qualified.last().unwrap().span);
+        let ast_ty = taroc_hir::Type {
+            id: qualified.last().unwrap().id,
+            span: qualified_span,
+            kind: taroc_hir::TypeKind::Path(taroc_hir::Path {
+                span: qualified_span,
+                segments: qualified.iter().cloned().collect(),
+            }),
+        };
+
+        let self_ty = self
+            .lowerer()
+            .lower_type(&ast_ty, &LoweringRequest::default());
+
+        let unresolved = path.segments.last().unwrap();
+
+        self.gcx
+            .diagnostics
+            .warn("Resolving".into(), unresolved.span);
+        let result =
+            self.resolve_qualified_method_call(unresolved.identifier, self_ty, ast_ty.span);
         todo!("partial res");
-        return taroc_hir::Resolution::Error;
     }
 
     fn instantiate_value_path(
