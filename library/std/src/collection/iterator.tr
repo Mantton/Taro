@@ -1,0 +1,6 @@
+import std::option::Option
+
+public interface IteratorInterface {
+    type Element
+    func next(&mut self) -> Option<Self::Element>
+}

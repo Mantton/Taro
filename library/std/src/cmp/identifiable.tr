@@ -1,0 +1,5 @@
+import std::hash::Hashable
+
+public interface Identifiable {
+    func identity() -> usize
+}

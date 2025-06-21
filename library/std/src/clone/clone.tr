@@ -1,0 +1,6 @@
+
+
+public interface Clone {
+    func clone(&self) -> Self
+    func clone_from(&mut self, _ source: &Self) {}
+}

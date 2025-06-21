@@ -1,0 +1,8 @@
+
+
+/// A Half-open interval from a lower bound up to, but not including, an upper bound
+public struct Range<Bound> {}
+
+
+/// An interval from a lower bound up to, and including, an upper bound.
+public struct ClosedRange<Bound> {}

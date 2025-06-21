@@ -1,0 +1,16 @@
+
+
+@builtin
+public struct MutablePointer<T> {}
+
+
+@builtin
+public struct ImmutablePointer<T> {}
+
+
+@builtin
+public struct MutableReference<T> {}
+
+
+@builtin
+public struct ImmutableReference<T> {}

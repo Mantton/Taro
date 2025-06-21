@@ -1,0 +1,6 @@
+
+
+public interface AdditiveArithmetic {
+    operator +(self, rhs: Self) -> Self
+    operator -(self, rhs: Self) -> Self
+}

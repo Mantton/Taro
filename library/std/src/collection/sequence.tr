@@ -1,0 +1,7 @@
+
+
+public interface Sequence {
+    type Iterator: IteratorInterface
+    type Element where Self::Element == Self::Iterator::Element
+    func makeIterator() -> Self::Iterator
+}

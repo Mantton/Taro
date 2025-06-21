@@ -1,0 +1,8 @@
+
+
+@NoCopy
+public struct List<T> {
+    data: *mut T,
+    cap: usize,
+    len: usize,
+}

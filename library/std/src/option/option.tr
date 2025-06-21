@@ -1,0 +1,28 @@
+import std::cmp::Equatable
+import std::clone::Clone
+import std::default::Default
+import std::hash::Hashable
+
+@foundation
+public enum Option<Value> {
+    Some(Value),
+    None
+}
+
+extend Option {
+    public func unwrap(&self) -> Value {}
+    public func isSome(&self) -> bool {}
+    public func isNone(&self) -> bool {}
+}
+
+extend Option: Equatable where Value: Equatable {}
+extend Option: Clone where Value: Clone {}
+extend Option: Hashable where Value: Hashable {}
+
+extend Option: Default {
+    func default() -> Self {
+        Option::None
+    }
+}
+
+public func unwrap<T>(value: Option<T>) -> T {}

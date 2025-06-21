@@ -1,0 +1,14 @@
+import std::option::Option
+
+
+@foundation
+public enum Result<Value, Error> {
+    Success(Value),
+    Failure(Error)
+}
+
+extend Result {
+    func isSuccess(&self) -> bool {}
+    func isFailure(&self) -> bool {}
+    func ok() -> Option<Value> {}
+}

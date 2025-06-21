@@ -1,0 +1,6 @@
+
+public interface Collection: Sequence {
+    func startIndex() -> usize
+    func endIndex() -> usize
+    operator [](&self, index: usize) -> Self::Element
+}

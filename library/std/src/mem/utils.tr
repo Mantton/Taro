@@ -1,0 +1,3 @@
+import std::default::Default
+
+public func take<T>(_ ref: &T) -> &T where T: Default {}

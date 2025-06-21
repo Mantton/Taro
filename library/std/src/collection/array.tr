@@ -1,0 +1,4 @@
+
+
+@builtin
+public struct Array<const N: usize, Element> {}
