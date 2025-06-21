@@ -71,3 +71,32 @@ pub fn labeled_signature_to_ty<'ctx>(
 
     return context.store.interners.intern_ty(kind);
 }
+
+pub fn convert_tuple_variant_signature<'ctx>(
+    fields: &[taroc_hir::FieldDefinition],
+    return_ty: Ty<'ctx>,
+    id: DefinitionID,
+    context: GlobalContext<'ctx>,
+) -> LabeledFunctionSignature<'ctx> {
+    let icx = ItemCtx::new(context);
+    let inputs: Vec<LabeledFunctionParameter<'ctx>> = fields
+        .iter()
+        .map(|f| LabeledFunctionParameter {
+            label: if f.identifier.symbol.as_str().is_empty() {
+                None
+            } else {
+                Some(f.identifier.symbol)
+            },
+            ty: icx.lowerer().lower_type(&f.ty, &Default::default()),
+            has_default: false,
+        })
+        .collect();
+
+    LabeledFunctionSignature {
+        inputs,
+        output: return_ty,
+        is_async: false,
+        is_variadic: false,
+        id,
+    }
+}

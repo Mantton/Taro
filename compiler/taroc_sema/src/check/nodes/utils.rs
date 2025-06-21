@@ -18,7 +18,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         if let TyKind::Adt(def, _) = self_ty.kind()
             && gcx.def_kind(def.id) == DefinitionKind::Enum
         {
-            todo!()
+            // could it though?
         }
 
         // Probe for "static" method

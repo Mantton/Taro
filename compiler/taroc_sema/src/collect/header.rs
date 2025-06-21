@@ -1,5 +1,6 @@
 use crate::GlobalContext;
 use crate::ty::{AdtDef, AdtKind, GenericArguments, Ty, TyKind};
+use crate::utils::convert_tuple_variant_signature;
 use taroc_error::CompileResult;
 use taroc_hir::{
     DefinitionID, DefinitionKind, Mutability, attributes_contain, visitor::HirVisitor,
@@ -57,18 +58,23 @@ impl HirVisitor for Actor<'_> {
     fn visit_variant(&mut self, v: &taroc_hir::Variant) -> Self::Result {
         let def_id = self.context.def_id(v.id);
         let parent = self.context.parent(def_id);
-        let ty = self.context.type_of(parent);
+        let parent_ty = self.context.type_of(parent);
         match &v.kind {
             taroc_hir::VariantKind::Unit(ctor_id) => {
                 let ctor_def_id = self.context.def_id(*ctor_id);
-                self.context.cache_type(ctor_def_id, ty);
+                self.context.cache_type(ctor_def_id, parent_ty);
             }
-            taroc_hir::VariantKind::Tuple(ctor_id, _) => {
+            taroc_hir::VariantKind::Tuple(ctor_id, fields) => {
                 let ctor_def_id = self.context.def_id(*ctor_id);
                 let arguments = self.context.type_arguments(parent);
                 let kind = TyKind::FnDef(ctor_def_id, arguments);
                 let ty = self.context.mk_ty(kind);
                 self.context.cache_type(ctor_def_id, ty);
+
+                // Constructor
+                let signature =
+                    convert_tuple_variant_signature(fields, parent_ty, ctor_def_id, self.context);
+                self.context.cache_signature(ctor_def_id, signature);
             }
             taroc_hir::VariantKind::Struct(..) => {}
         }
