@@ -97,7 +97,7 @@ impl<'ctx> Resolver<'ctx> {
                         return PathResult::NonContext(
                             PartialResolution::with_unresolved_segments(
                                 ctx.resolution().unwrap(),
-                                path.len() - index - 1,
+                                path.len() - index,
                             ),
                         );
                     }

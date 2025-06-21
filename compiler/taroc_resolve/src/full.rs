@@ -485,7 +485,7 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
                 taroc_hir::visitor::walk_expression(self, expr);
             }
             taroc_hir::ExpressionKind::StructLiteral(literal) => {
-                self.resolve_path_with_source(expr.id, &literal.path, PathSource::Type);
+                self.resolve_path_with_source(expr.id, &literal.path, PathSource::StructLiteral);
                 taroc_hir::visitor::walk_expression(self, expr);
             }
             _ => taroc_hir::visitor::walk_expression(self, expr),

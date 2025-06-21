@@ -116,6 +116,11 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             taroc_hir::Resolution::Definition(id, DefinitionKind::AssociatedType) => {
                 Self::mk_ty(gcx, TyKind::AssociatedType(AssocTyKind::Inherent(id)))
             }
+            taroc_hir::Resolution::Definition(id, DefinitionKind::Variant) => {
+                // TODO: Generic Args
+                let parent = gcx.parent(id);
+                return gcx.type_of(parent);
+            }
             taroc_hir::Resolution::InterfaceSelfTypeParameter(..) => {
                 // TODO: Prohibit Generics
                 gcx.store.common_types.self_type_parameter

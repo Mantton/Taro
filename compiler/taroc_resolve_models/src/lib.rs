@@ -348,13 +348,16 @@ pub enum ResolutionError {
 pub enum PathSource {
     Type,
     Interface,
-    Expression, // TODO: Method Call For Checking Constructor
+    Expression,
+    StructLiteral,
 }
 
 impl PathSource {
     pub fn namespace(&self) -> SymbolNamespace {
         match self {
-            PathSource::Type | PathSource::Interface => SymbolNamespace::Type,
+            PathSource::Type | PathSource::Interface | PathSource::StructLiteral => {
+                SymbolNamespace::Type
+            }
             PathSource::Expression => SymbolNamespace::Value,
         }
     }
@@ -393,6 +396,17 @@ impl PathSource {
                     | Resolution::FunctionSet(..)
                     | Resolution::SelfConstructor(..)
             ),
+            PathSource::StructLiteral => matches!(
+                res,
+                Resolution::Definition(
+                    _,
+                    DefinitionKind::Struct
+                        | DefinitionKind::Variant
+                        | DefinitionKind::TypeAlias
+                        | DefinitionKind::AssociatedType
+                ) | Resolution::SelfTypeAlias(_)
+                    | Resolution::InterfaceSelfTypeParameter(_)
+            ),
         }
     }
 
@@ -401,6 +415,7 @@ impl PathSource {
             PathSource::Type => "type".into(),
             PathSource::Interface => "interface".into(),
             PathSource::Expression => "value".into(),
+            PathSource::StructLiteral => "struct or enum variant".into(),
         }
     }
 
@@ -409,6 +424,7 @@ impl PathSource {
             PathSource::Type => true,
             PathSource::Interface => false,
             PathSource::Expression => true,
+            PathSource::StructLiteral => true,
         }
     }
 }
