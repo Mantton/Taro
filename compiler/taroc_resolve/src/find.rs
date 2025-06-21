@@ -77,7 +77,7 @@ impl<'ctx> Resolver<'ctx> {
                             return PathResult::NonContext(
                                 PartialResolution::with_unresolved_segments(
                                     resolution,
-                                    path.len() - 1 - index,
+                                    path.len() - 1,
                                 ),
                             );
                         }
@@ -120,9 +120,9 @@ impl<'ctx> Resolver<'ctx> {
                 record_resolution(self, PartialResolution::new(resolution));
             } else if namespace.is_some() && (is_last || maybe_assoc) {
                 record_resolution(self, PartialResolution::new(resolution.clone()));
+                let unresolved = path.len() - 1 - index;
                 return PathResult::NonContext(PartialResolution::with_unresolved_segments(
-                    resolution,
-                    path.len() - 1 - index,
+                    resolution, unresolved,
                 ));
             } else if matches!(resolution, Resolution::Error) {
                 return PathResult::NonContext(PartialResolution::new(Resolution::Error));
