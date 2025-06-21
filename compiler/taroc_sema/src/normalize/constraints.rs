@@ -195,8 +195,10 @@ fn seed_parent<'ctx>(state: &mut UFState<'ctx>, id: DefinitionID) {
         // Seed Extension
         for c in gcx.canon_predicates_of(gcx.parent(id)) {
             if let Constraint::Bound { ty, interface } = c.value {
-                let rep = state.uf.find(state.ty2slot[&ty]);
-                state.bounds[rep].insert(interface);
+                if let Some(&slot) = state.ty2slot.get(&ty) {
+                    let rep = state.uf.find(slot);
+                    state.bounds[rep].insert(interface);
+                }
             }
         }
     }
@@ -210,8 +212,10 @@ fn seed_extension_nominal<'ctx>(id: DefinitionID, state: &mut UFState<'ctx>) {
         // seed bounds from parent
         for c in gcx.canon_predicates_of(parent) {
             if let Constraint::Bound { ty, interface } = c.value {
-                let rep = state.uf.find(state.ty2slot[&ty]);
-                state.bounds[rep].insert(interface);
+                if let Some(&slot) = state.ty2slot.get(&ty) {
+                    let rep = state.uf.find(slot);
+                    state.bounds[rep].insert(interface);
+                }
             }
         }
     };
