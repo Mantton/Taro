@@ -24,4 +24,6 @@ pub enum TypeError<'ctx> {
     NotAStruct,
     TupleIndexOutOfBounds(ExpectedFound<usize>),
     NotATuple,
+    UnknownMethod,
+    InvalidMethodReceiver,
 }

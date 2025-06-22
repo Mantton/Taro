@@ -4,7 +4,8 @@ use crate::{
         context::func::FnCtx,
         expectation::Expectation,
         solver::{
-            FieldAccessGoal, Goal, Obligation, OverloadArgument, OverloadGoal, TupleAccessGoal,
+            FieldAccessGoal, Goal, MethodCallGoal, Obligation, OverloadArgument, OverloadGoal,
+            TupleAccessGoal,
         },
     },
     infer::fn_var::FnVarData,
@@ -120,7 +121,9 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             taroc_hir::ExpressionKind::TupleAccess(target, field) => {
                 self.check_tuple_access_expression(target, field, expression)
             }
-            taroc_hir::ExpressionKind::MethodCall(..) => todo!(),
+            taroc_hir::ExpressionKind::MethodCall(node) => {
+                self.check_method_call_expr(node, expression, expectation)
+            }
             taroc_hir::ExpressionKind::ArrayLiteral(..) => self.error_ty(),
             taroc_hir::ExpressionKind::Binary(..) => self.error_ty(),
             taroc_hir::ExpressionKind::Unary(..) => self.error_ty(),
@@ -674,5 +677,62 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         });
 
         result_var
+    }
+}
+
+impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
+    fn check_method_call_expr(
+        &self,
+        node: &taroc_hir::MethodCall,
+        expr: &taroc_hir::Expression,
+        expectation: Expectation<'ctx>,
+    ) -> Ty<'ctx> {
+        let recv_ty = self.check_expression(&node.receiver);
+
+        let beta: Vec<_> = node
+            .arguments
+            .iter()
+            .map(|arg| OverloadArgument {
+                ty: self.next_ty_var(arg.span),
+                span: arg.span,
+                label: arg.label.as_ref().map(|l| l.identifier),
+            })
+            .collect();
+        let beta = self.gcx.store.interners.intern_slice(&beta);
+        let rho = self.next_ty_var(expr.span);
+
+        for (arg, b) in node.arguments.iter().zip(beta) {
+            let arg_ty = self.check_expression(&arg.expression);
+            self.add_obligation(Obligation {
+                location: expr.span,
+                goal: Goal::Constraint(Constraint::TypeEquality(arg_ty, b.ty)),
+            });
+        }
+
+        if let Some(e_ty) = expectation.only_has_type() {
+            self.add_obligation(Obligation {
+                location: expr.span,
+                goal: Goal::Coerce {
+                    from: rho,
+                    to: e_ty,
+                },
+            });
+        }
+
+        let goal = MethodCallGoal {
+            call_span: expr.span,
+            method: node.method.identifier,
+            receiver_ty: recv_ty,
+            result_var: rho,
+            expected_result_ty: expectation.only_has_type(),
+            arguments: beta,
+        };
+
+        self.add_obligation(Obligation {
+            location: expr.span,
+            goal: Goal::MethodCall(goal),
+        });
+
+        rho
     }
 }

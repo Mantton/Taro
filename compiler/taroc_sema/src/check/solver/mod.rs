@@ -11,6 +11,7 @@ mod apply;
 mod coerce;
 mod constraint;
 mod field;
+mod method;
 mod unify;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -20,6 +21,7 @@ pub enum Goal<'ctx> {
     Apply(OverloadGoal<'ctx>),
     FieldAccess(FieldAccessGoal<'ctx>),
     TupleAccess(TupleAccessGoal<'ctx>),
+    MethodCall(MethodCallGoal<'ctx>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -52,6 +54,16 @@ pub struct TupleAccessGoal<'ctx> {
     pub index: usize,
     pub result_var: Ty<'ctx>,
     pub index_span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MethodCallGoal<'ctx> {
+    pub call_span: Span,
+    pub method: Identifier,
+    pub receiver_ty: Ty<'ctx>,
+    pub result_var: Ty<'ctx>,
+    pub expected_result_ty: Option<Ty<'ctx>>,
+    pub arguments: &'ctx [OverloadArgument<'ctx>],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -199,32 +211,25 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     }
     fn try_solve(&mut self, obligation: Obligation<'ctx>) -> SolverResult<'ctx> {
         match obligation.goal {
-            Goal::Constraint(constraint) => {
-                return self.solve_constraint(constraint, obligation.location);
-            }
+            Goal::Constraint(constraint) => self.solve_constraint(constraint, obligation.location),
             Goal::Coerce { from, to } => {
                 let result = self.coerce(from, to);
 
                 match result {
                     Ok(defer) => {
                         if defer.requeue() {
-                            return SolverResult::Deferred;
+                            SolverResult::Deferred
                         } else {
-                            return SolverResult::Solved(vec![]);
+                            SolverResult::Solved(vec![])
                         }
                     }
-                    Err(err) => return SolverResult::Error(err),
+                    Err(err) => SolverResult::Error(err),
                 }
             }
-            Goal::Apply(goal) => {
-                return self.solve_application(goal);
-            }
-            Goal::FieldAccess(goal) => {
-                return self.solve_field_access(goal);
-            }
-            Goal::TupleAccess(goal) => {
-                return self.solve_tuple_access(goal);
-            }
-        };
+            Goal::Apply(goal) => self.solve_application(goal),
+            Goal::FieldAccess(goal) => self.solve_field_access(goal),
+            Goal::TupleAccess(goal) => self.solve_tuple_access(goal),
+            Goal::MethodCall(goal) => self.solve_method_call(goal),
+        }
     }
 }

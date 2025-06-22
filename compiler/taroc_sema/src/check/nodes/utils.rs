@@ -1,10 +1,6 @@
-use crate::{
-    GlobalContext,
-    check::context::func::FnCtx,
-    ty::{Ty, TyKind},
-};
+use crate::{GlobalContext, check::context::func::FnCtx, ty::Ty};
 use rustc_hash::FxHashSet;
-use taroc_hir::{DefinitionID, DefinitionKind, PackageIndex, Resolution};
+use taroc_hir::{DefinitionID, PackageIndex, Resolution};
 use taroc_span::Identifier;
 
 impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
@@ -14,13 +10,6 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         self_ty: Ty<'ctx>,
     ) -> Result<Resolution, ()> {
         let gcx = self.gcx;
-
-        // Could be Enum Variant
-        if let TyKind::Adt(def, _) = self_ty.kind()
-            && gcx.def_kind(def.id) == DefinitionKind::Enum
-        {
-            // could it though?
-        }
 
         // Probe for associated function
         let candidates = associated_functions_for_ty(method, self_ty, gcx);
