@@ -231,7 +231,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
     fn check_if_expression(
         &self,
         node: &taroc_hir::IfExpression,
-        expression: &taroc_hir::Expression,
+        _: &taroc_hir::Expression,
         expectation: Expectation<'ctx>,
     ) -> Ty<'ctx> {
         // TODO: Coercions
@@ -239,7 +239,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
 
         let then_ty = self.check_expression_with_expectation(&node.then_block, expectation);
         if let Some(else_node) = &node.else_block {
-            let else_ty = self.check_expression_with_expectation(else_node, expectation);
+            let _ = self.check_expression_with_expectation(else_node, expectation);
         }
 
         return then_ty;
@@ -446,17 +446,25 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
 
         let unresolved = path.segments.last().unwrap();
 
-        self.gcx
-            .diagnostics
-            .warn("Resolving".into(), unresolved.span);
-        let result =
-            self.resolve_qualified_method_call(unresolved.identifier, self_ty, ast_ty.span);
-        todo!("partial res");
+        let result = self.resolve_qualified_method_call(unresolved.identifier, self_ty);
+
+        match result {
+            Ok(result) => result,
+            Err(_) => {
+                let msg = format!(
+                    "uknown method named '{}' on type '{}'",
+                    unresolved.identifier.symbol,
+                    self_ty.format(self.gcx)
+                );
+                self.gcx.diagnostics.error(msg, unresolved.identifier.span);
+                return Resolution::Error;
+            }
+        }
     }
 
     fn instantiate_value_path(
         &self,
-        path: &taroc_hir::Path,
+        _: &taroc_hir::Path,
         resolution: taroc_hir::Resolution,
     ) -> Ty<'ctx> {
         // TODO: Generics Checks
@@ -568,7 +576,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         definition: &StructDefinition<'ctx>,
         expressions: &[taroc_hir::ExpressionField],
     ) {
-        let TyKind::Adt(id, args) = struct_ty.kind() else {
+        let TyKind::Adt(_, args) = struct_ty.kind() else {
             unreachable!("ICE: non-ADT Type passed to check_struct_fields");
         };
 
@@ -579,10 +587,10 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             .iter_enumerated()
             .map(|(i, f)| return (f.name, (i, f)))
             .collect();
-        for (index, expression) in expressions.iter().enumerate() {
+        for (_, expression) in expressions.iter().enumerate() {
             let name = expression.label.symbol;
 
-            let field_ty = if let Some((i, field_def)) = remaining.remove(&name) {
+            let field_ty = if let Some((_, field_def)) = remaining.remove(&name) {
                 // TODO: add field index note
                 seen.insert(name, expression.label.span);
                 let field_ty = instantiate_ty_with_args(self.gcx, field_def.ty, args);
