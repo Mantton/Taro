@@ -1,7 +1,10 @@
-use crate::ty::{
-    ConformanceRecord, DefinitionFunctionsData, EnumDefinition, FloatTy, GenericArgument,
-    GenericParameter, IntTy, InterfaceDefinition, LabeledFunctionSignature, PackageAliasTable,
-    SimpleType, SpannedConstraints, StructDefinition, Ty, TyKind, UIntTy,
+use crate::{
+    extend::table::PackageFunctionTable,
+    ty::{
+        ConformanceRecord, EnumDefinition, FloatTy, GenericArgument, GenericParameter, IntTy,
+        InterfaceDefinition, LabeledFunctionSignature, PackageAliasTable, SimpleType,
+        SpannedConstraints, StructDefinition, Ty, TyKind, UIntTy,
+    },
 };
 use bumpalo::Bump;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -10,7 +13,6 @@ use std::{
     cell::{Cell, RefCell},
     hash::{Hash, Hasher},
     marker::PhantomData,
-    rc::Rc,
 };
 use taroc_data_structures::Interned;
 use taroc_hir::{DefinitionID, DefinitionKind, NodeID, PackageIndex, PartialResolution};
@@ -157,13 +159,13 @@ pub struct TypeDatabase<'ctx> {
     pub enums: FxHashMap<DefinitionID, EnumDefinition<'ctx>>,
     pub interfaces: FxHashMap<DefinitionID, &'ctx InterfaceDefinition<'ctx>>,
     pub functions: FxHashMap<DefinitionID, LabeledFunctionSignature<'ctx>>,
-    pub def_to_functions: FxHashMap<DefinitionID, Rc<RefCell<DefinitionFunctionsData<'ctx>>>>,
     pub def_to_fn_signature: FxHashMap<DefinitionID, &'ctx LabeledFunctionSignature<'ctx>>,
     pub extension_ty_map: FxHashMap<DefinitionID, SimpleType>,
     pub alias_table: PackageAliasTable,
     pub node_to_ty: FxHashMap<NodeID, Ty<'ctx>>,
     pub superinterfaces: FxHashMap<DefinitionID, FxHashSet<DefinitionID>>,
     pub conformances: FxHashMap<SimpleType, Vec<ConformanceRecord<'ctx>>>,
+    pub function_table: PackageFunctionTable,
 }
 
 pub struct CommonTypes<'ctx> {

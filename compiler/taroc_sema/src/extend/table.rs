@@ -17,7 +17,7 @@ pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResul
 
 struct Actor<'ctx> {
     context: GlobalContext<'ctx>,
-    package: PackageOverloadTable,
+    package: PackageFunctionTable,
 }
 
 impl<'ctx> Actor<'ctx> {
@@ -31,6 +31,7 @@ impl<'ctx> Actor<'ctx> {
     fn run<'a>(package: &taroc_hir::Package, context: GlobalContext<'ctx>) -> CompileResult<()> {
         let mut actor = Actor::new(context);
         taroc_hir::visitor::walk_package(&mut actor, package);
+        context.with_session_type_database(|db| db.function_table = actor.package);
         context.diagnostics.report()
     }
 }
@@ -118,12 +119,11 @@ impl<'ctx> Actor<'ctx> {
             db.extension_ty_map[&extension_id]
         });
 
-        let (overload_key, fingerprint) = self.key_for(assoc_id);
+        let fingerprint = self.fingerprint_for(assoc_id);
         let member_index = self.package.methods.entry(type_key).or_default(); // member index for type
-        let symbol_set = member_index.functions.entry(ident.symbol).or_default(); // overload sets of function name
-        let overload_data = symbol_set.signatures.entry(overload_key).or_default(); // overload data containing members matching arity and arguments
+        let member_set = member_index.functions.entry(ident.symbol).or_default(); // member sets of function name
 
-        let previous = overload_data.fingerprints.insert(fingerprint, assoc_id);
+        let previous = member_set.fingerprints.insert(fingerprint, assoc_id);
         if let Some(previous) = previous {
             let message = format!("invalid redeclaration of '{}'", ident.symbol);
             gcx.diagnostics.error(message, ident.span);
@@ -132,8 +132,7 @@ impl<'ctx> Actor<'ctx> {
             gcx.diagnostics.info(message, gcx.ident_for(previous).span);
         }
 
-        overload_data.members.push(assoc_id);
-        symbol_set.members.push(assoc_id);
+        member_set.members.push(assoc_id);
     }
 
     fn collect_assoc_operator(
@@ -149,12 +148,11 @@ impl<'ctx> Actor<'ctx> {
             db.extension_ty_map[&extension_id]
         });
 
-        let (overload_key, fingerprint) = self.key_for(assoc_id);
+        let fingerprint = self.fingerprint_for(assoc_id);
         let member_index = self.package.methods.entry(type_key).or_default(); // member index for type
-        let symbol_set = member_index.operators.entry(op).or_default(); // overload sets of function name
-        let overload_data = symbol_set.signatures.entry(overload_key).or_default(); // overload data containing members matching arity and arguments
+        let member_set = member_index.operators.entry(op).or_default(); // member sets of function name
 
-        let previous = overload_data.fingerprints.insert(fingerprint, assoc_id);
+        let previous = member_set.fingerprints.insert(fingerprint, assoc_id);
         if let Some(previous) = previous {
             let message = format!("invalid redeclaration operator '{:?}'", op);
             gcx.diagnostics.error(message, span);
@@ -163,8 +161,7 @@ impl<'ctx> Actor<'ctx> {
             gcx.diagnostics.info(message, gcx.ident_for(previous).span);
         }
 
-        overload_data.members.push(assoc_id);
-        symbol_set.members.push(assoc_id);
+        member_set.members.push(assoc_id);
     }
 
     fn collect_top_level_function(
@@ -175,11 +172,10 @@ impl<'ctx> Actor<'ctx> {
     ) {
         let gcx = self.context;
 
-        let (overload_key, fingerprint) = self.key_for(def_id);
-        let symbol_set = self.package.functions.entry(ident.symbol).or_default(); // table for top level symbols with name
-        let overload_data = symbol_set.signatures.entry(overload_key).or_default(); // overload data containing members matching arity and arguments
+        let fingerprint = self.fingerprint_for(def_id);
+        let member_set = self.package.functions.entry(ident.symbol).or_default(); // table for top level symbols with name
 
-        let previous = overload_data.fingerprints.insert(fingerprint, def_id);
+        let previous = member_set.fingerprints.insert(fingerprint, def_id);
         if let Some(previous) = previous {
             let message = format!("invalid redeclaration of '{}'", ident.symbol);
             gcx.diagnostics.error(message, ident.span);
@@ -188,11 +184,10 @@ impl<'ctx> Actor<'ctx> {
             gcx.diagnostics.info(message, gcx.ident_for(previous).span);
         }
 
-        overload_data.members.push(def_id);
-        symbol_set.members.push(def_id);
+        member_set.members.push(def_id);
     }
 
-    fn key_for(&self, id: DefinitionID) -> (OverloadKey, u64) {
+    fn fingerprint_for(&self, id: DefinitionID) -> u64 {
         let gcx = self.context;
         let signature = gcx.fn_signature(id);
         let generics = gcx.generics_of(id);
@@ -227,51 +222,42 @@ impl<'ctx> Actor<'ctx> {
         // Fingerprint takes into account -> Predicates, Type Params, Inputs, Output
         let fingerprint = LeanSignature {
             generic_count,
+            arity,
+            labels,
             signature,
             predicates,
         }
         .fingerprint();
 
-        let overload_key = OverloadKey { arity, labels };
-        (overload_key, fingerprint)
+        fingerprint
     }
 }
 
 // Package Level Structure Holding Ty -> Members
-#[derive(Default)]
-struct PackageOverloadTable {
-    functions: FxHashMap<Symbol, OverloadSymbolSet>,
-    methods: FxHashMap<SimpleType, TypeMemberIndex>,
+#[derive(Default, Debug)]
+pub struct PackageFunctionTable {
+    pub functions: FxHashMap<Symbol, MemberSet>,
+    pub methods: FxHashMap<SimpleType, TypeMemberIndex>,
 }
 
 // Per Member Structure holding associated members
-#[derive(Default)]
-struct TypeMemberIndex {
+#[derive(Default, Debug)]
+pub struct TypeMemberIndex {
     // constants: FxHashMap<Symbol, !>
-    functions: FxHashMap<Symbol, OverloadSymbolSet>,
-    operators: FxHashMap<OperatorKind, OverloadSymbolSet>,
+    pub functions: FxHashMap<Symbol, MemberSet>,
+    pub operators: FxHashMap<OperatorKind, MemberSet>,
 }
 
-#[derive(Default)]
-struct OverloadSymbolSet {
+#[derive(Default, Debug)]
+pub struct MemberSet {
     pub members: Vec<DefinitionID>, // all members for this symbol
-    pub signatures: FxHashMap<OverloadKey, OverloadKeyData>,
-}
-
-#[derive(Clone, PartialEq, Eq, Hash)]
-struct OverloadKey {
-    pub arity: usize,
-    pub labels: Vec<Option<Symbol>>,
-}
-
-#[derive(Default)]
-struct OverloadKeyData {
-    members: Vec<DefinitionID>,
-    fingerprints: FxHashMap<u64, DefinitionID>,
+    pub fingerprints: FxHashMap<u64, DefinitionID>,
 }
 
 struct LeanSignature<'ctx> {
+    labels: Vec<Option<Symbol>>,
     generic_count: usize,
+    arity: usize,
     signature: Ty<'ctx>,
     predicates: &'ctx Vec<Spanned<Constraint<'ctx>>>,
 }
@@ -284,6 +270,8 @@ impl<'ctx> LeanSignature<'ctx> {
         let mut main_hasher = FxHasher::default();
         self.generic_count.hash(&mut main_hasher);
         self.signature.hash(&mut main_hasher);
+        self.arity.hash(&mut main_hasher);
+        self.labels.hash(&mut main_hasher);
 
         // 2) Commutatively combine each constraint’s hash
         let mut acc: u64 = 0;

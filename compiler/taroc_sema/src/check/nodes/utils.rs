@@ -21,7 +21,8 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             // could it though?
         }
 
-        // Probe for "static" method
+        // Probe for associated function
+        let file = self_ty_span.file;
         todo!("probe for method")
     }
 }
