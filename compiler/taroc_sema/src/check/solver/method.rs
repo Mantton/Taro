@@ -27,7 +27,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
             return SolverResult::Error(TypeError::UnknownMethod);
         };
 
-        candidates.retain(|&c| quick_match_method(c, goal.arguments, gcx));
+        candidates.retain(|&c| quick_match_method(c, goal.arguments, goal.label_agnostic, gcx));
         if candidates.is_empty() {
             return SolverResult::Error(TypeError::NoOverloadCandidateMatch);
         }
@@ -139,6 +139,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
 fn quick_match_method<'ctx>(
     candidate: DefinitionID,
     call_arguments: &'ctx [OverloadArgument<'ctx>],
+    label_agnostic: bool,
     gcx: GlobalContext<'ctx>,
 ) -> bool {
     let fn_sig = gcx.fn_signature(candidate);
@@ -158,16 +159,19 @@ fn quick_match_method<'ctx>(
     }
 
     let upto = call_arity.min(param_count);
-    for index in 0..upto {
-        let call_label = call_arguments[index].label.map(|f| f.symbol);
-        let decl_label = fn_sig.inputs[index + 1].label;
-        let decl_defaulted = min_required < param_count && index >= min_required;
-        match (decl_label, decl_defaulted, call_label) {
-            (None, _, Some(_)) => return false,
-            (Some(_), false, None) => return false,
-            (Some(d), false, Some(c)) if c != d => return false,
-            _ => {}
+    if !label_agnostic {
+        for index in 0..upto {
+            let call_label = call_arguments[index].label.map(|f| f.symbol);
+            let decl_label = fn_sig.inputs[index + 1].label;
+            let decl_defaulted = min_required < param_count && index >= min_required;
+            match (decl_label, decl_defaulted, call_label) {
+                (None, _, Some(_)) => return false,
+                (Some(_), false, None) => return false,
+                (Some(d), false, Some(c)) if c != d => return false,
+                _ => {}
+            }
         }
     }
+
     true
 }

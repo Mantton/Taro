@@ -26,11 +26,13 @@ pub enum Goal<'ctx> {
     MethodCall(MethodCallGoal<'ctx>),
     UnaryOperator(UnaryOperatorGoal<'ctx>),
     BinaryOperator(BinaryOperatorGoal<'ctx>),
+    IndexOperator(OverloadGoal<'ctx>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct OverloadGoal<'ctx> {
     pub callee_span: Span,
+    pub expr_span: Span,
     pub callee_var: Ty<'ctx>,                      // α
     pub result_var: Ty<'ctx>,                      // ρ
     pub expected_result_ty: Option<Ty<'ctx>>,      // ⟂ or τctx
@@ -68,6 +70,7 @@ pub struct MethodCallGoal<'ctx> {
     pub result_var: Ty<'ctx>,
     pub expected_result_ty: Option<Ty<'ctx>>,
     pub arguments: &'ctx [OverloadArgument<'ctx>],
+    pub label_agnostic: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -256,6 +259,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
             Goal::MethodCall(goal) => self.solve_method_call(goal),
             Goal::UnaryOperator(goal) => self.solve_unary(goal),
             Goal::BinaryOperator(goal) => self.solve_binary(goal),
+            Goal::IndexOperator(goal) => self.solve_subscript(goal),
         }
     }
 }

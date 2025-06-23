@@ -3,12 +3,12 @@ use crate::{
     check::{
         nodes::utils::associated_operators_for_ty,
         solver::{
-            BinaryOperatorGoal, Goal, MethodCallGoal, Obligation, OverloadArgument, SolverDelegate,
-            SolverResult, UnaryOperatorGoal,
+            BinaryOperatorGoal, Goal, MethodCallGoal, Obligation, OverloadArgument, OverloadGoal,
+            SolverDelegate, SolverResult, UnaryOperatorGoal,
         },
     },
     error::TypeError,
-    ty::{Constraint, TyKind},
+    ty::{Constraint, Ty, TyKind},
 };
 use taroc_ast_ir::UnaryOperator;
 use taroc_hir::{BinaryOperator, Mutability, OperatorKind};
@@ -100,6 +100,7 @@ fn unary_goal_to_method_goal<'ctx>(goal: UnaryOperatorGoal<'ctx>) -> MethodCallG
         result_var: goal.result_var,
         expected_result_ty: goal.expectation,
         arguments: &[],
+        label_agnostic: true,
     }
 }
 
@@ -150,7 +151,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         for &candidate in &candidates {
             if self.evaluate_method_candidate(
                 candidate,
-                rhs,
+                lhs,
                 &binary_goal_to_method_goal(goal, gcx),
             ) {
                 valid.push(candidate);
@@ -159,7 +160,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
 
         if let [candidate] = valid.as_slice() {
             let obligations =
-                self.select_fn_for_method(*candidate, rhs, &binary_goal_to_method_goal(goal, gcx));
+                self.select_fn_for_method(*candidate, lhs, &binary_goal_to_method_goal(goal, gcx));
             return SolverResult::Solved(obligations);
         }
 
@@ -187,5 +188,72 @@ fn binary_goal_to_method_goal<'ctx>(
         result_var: goal.rho,
         expected_result_ty: goal.expectation,
         arguments,
+        label_agnostic: true,
+    }
+}
+
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
+    pub fn solve_subscript(&mut self, goal: OverloadGoal<'ctx>) -> SolverResult<'ctx> {
+        let gcx = self.gcx();
+        let lhs = self.icx.shallow_resolve(goal.callee_var);
+        if lhs.is_infer() {
+            return SolverResult::Deferred;
+        }
+        let candidates =
+            associated_operators_for_ty(OperatorKind::Index, lhs, gcx, goal.callee_span.file);
+
+        if candidates.is_empty() {
+            return SolverResult::Error(TypeError::NoOverloadCandidateMatch);
+        }
+
+        if let [candidate] = candidates.as_slice() {
+            let obligations = self.select_fn_for_method(
+                *candidate,
+                lhs,
+                &overload_goal_to_method_goal(goal, lhs),
+            );
+            return SolverResult::Solved(obligations);
+        }
+
+        let mut valid = vec![];
+        for &candidate in &candidates {
+            if self.evaluate_method_candidate(
+                candidate,
+                lhs,
+                &overload_goal_to_method_goal(goal, lhs),
+            ) {
+                valid.push(candidate);
+            }
+        }
+
+        if let [candidate] = valid.as_slice() {
+            let obligations = self.select_fn_for_method(
+                *candidate,
+                lhs,
+                &overload_goal_to_method_goal(goal, lhs),
+            );
+            return SolverResult::Solved(obligations);
+        }
+
+        if valid.is_empty() {
+            return SolverResult::Error(TypeError::NoOverloadCandidateMatch);
+        }
+
+        SolverResult::Deferred
+    }
+}
+
+fn overload_goal_to_method_goal<'ctx>(
+    goal: OverloadGoal<'ctx>,
+    rec: Ty<'ctx>,
+) -> MethodCallGoal<'ctx> {
+    MethodCallGoal {
+        call_span: goal.expr_span,
+        method: Identifier::emtpy(goal.callee_span.file),
+        receiver_ty: rec,
+        result_var: goal.result_var,
+        expected_result_ty: goal.expected_result_ty,
+        arguments: goal.arguments,
+        label_agnostic: false,
     }
 }

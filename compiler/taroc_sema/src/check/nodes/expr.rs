@@ -327,6 +327,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
                 }
 
                 let goal = OverloadGoal {
+                    expr_span: call_expr.span,
                     callee_var: callee_ty,
                     result_var: rho,
                     expected_result_ty: expectation.only_has_type(),
@@ -735,6 +736,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             result_var: rho,
             expected_result_ty: expectation.only_has_type(),
             arguments: beta,
+            label_agnostic: false,
         };
 
         self.add_obligation(Obligation {
@@ -832,6 +834,30 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         expression: &taroc_hir::Expression,
         expectation: Expectation<'ctx>,
     ) -> Ty<'ctx> {
-        todo!()
+        let lhs = self.check_expression(target);
+        let beta: Vec<_> = arguments
+            .iter()
+            .map(|arg| OverloadArgument {
+                ty: self.next_ty_var(arg.span),
+                span: arg.span,
+                label: arg.label.as_ref().map(|l| l.identifier),
+            })
+            .collect();
+        let rho = self.next_ty_var(expression.span);
+        let goal = OverloadGoal {
+            expr_span: expression.span,
+            callee_span: target.span,
+            callee_var: lhs,
+            result_var: rho,
+            expected_result_ty: expectation.only_has_type(),
+            arguments: self.gcx.store.interners.intern_slice(&beta),
+        };
+
+        self.add_obligation(Obligation {
+            location: expression.span,
+            goal: Goal::IndexOperator(goal),
+        });
+
+        rho
     }
 }
