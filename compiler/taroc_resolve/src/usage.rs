@@ -67,7 +67,7 @@ impl<'res, 'ctx> UsageResolver<'res, 'ctx> {
             if self.resolve_usage(import) {
                 self.resolver.resolved_imports.push(import);
             } else {
-                self.resolver.unresolved_exports.push(import);
+                self.resolver.unresolved_imports.push(import);
             }
         }
     }
@@ -80,7 +80,7 @@ impl<'res, 'ctx> UsageResolver<'res, 'ctx> {
         //     .diagnostics
         //     .warn("Resolving Usage".into(), usage.span);
         debug_assert!(
-            usage.module_path.len() >= 1,
+            !usage.module_path.is_empty(),
             "Module Path Must Not be Emtpy!"
         );
         debug_assert!(!usage.is_resolved.get(), "Usage Has already been resolved");

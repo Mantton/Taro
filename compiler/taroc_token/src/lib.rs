@@ -39,6 +39,7 @@ pub enum TokenKind {
     Var,
     Const,
     Mut,
+    Readonly,
 
     If,
     Else,
@@ -259,6 +260,7 @@ impl Display for TokenKind {
             TokenKind::Set => "set",
             TokenKind::Mod => "mod",
             TokenKind::Private => "private",
+            TokenKind::Readonly => "readonly",
         };
         write!(f, "{}", text)
     }
@@ -314,6 +316,8 @@ impl TokenKind {
             "get" => TokenKind::Get,
             "set" => TokenKind::Set,
             "static" => TokenKind::Static,
+            "private" => TokenKind::Private,
+            "readonly" => TokenKind::Readonly,
             _ => return None,
         };
 

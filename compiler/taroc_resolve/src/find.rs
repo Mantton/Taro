@@ -440,12 +440,8 @@ impl<'ctx> Resolver<'ctx> {
         };
 
         loop {
-            let visit = true;
-
-            if visit {
-                if let result @ Some(..) = visitor(self, scope) {
-                    return result;
-                }
+            if let result @ Some(..) = visitor(self, scope) {
+                return result;
             }
 
             scope = match scope {

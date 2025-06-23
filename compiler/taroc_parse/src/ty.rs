@@ -172,3 +172,55 @@ impl Parser {
         Ok(k)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::make_parser;
+    use taroc_ast_ir::Mutability;
+    use taroc_span::session_test;
+
+    #[test]
+    fn test_pointer_type() {
+        session_test!({
+            let mut parser = make_parser!("*mut Foo");
+            let ty = parser.parse_type().expect("type");
+            match ty.kind {
+                TypeKind::Pointer(inner, m) => {
+                    assert_eq!(m, Mutability::Mutable);
+                    assert!(matches!(inner.kind, TypeKind::Path(_)));
+                }
+                _ => panic!("expected pointer type"),
+            }
+        });
+    }
+
+    #[test]
+    fn test_list_type() {
+        session_test!({
+            let mut parser = make_parser!("[Foo]");
+            let ty = parser.parse_type().expect("type");
+            match ty.kind {
+                TypeKind::List(inner) => {
+                    assert!(matches!(inner.kind, TypeKind::Path(_)));
+                }
+                _ => panic!("expected list type"),
+            }
+        });
+    }
+
+    #[test]
+    fn test_dictionary_type() {
+        session_test!({
+            let mut parser = make_parser!("[Foo:Bar]");
+            let ty = parser.parse_type().expect("type");
+            match ty.kind {
+                TypeKind::Dictionary { key, value } => {
+                    assert!(matches!(key.kind, TypeKind::Path(_)));
+                    assert!(matches!(value.kind, TypeKind::Path(_)));
+                }
+                _ => panic!("expected dictionary type"),
+            }
+        });
+    }
+}

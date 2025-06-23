@@ -9,5 +9,6 @@ pub struct Visibility {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VisibilityLevel {
     Public,
+    Private,
     Inherent,
 }

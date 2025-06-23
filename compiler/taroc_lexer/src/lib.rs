@@ -973,6 +973,16 @@ mod test {
         };
     }
 
+    macro_rules! assert_error {
+        ($input: expr, $msg: expr) => {
+            let mut lexer = lexer($input);
+            match lexer.token() {
+                Ok(_) => panic!("Expected lexer error"),
+                Err(err) => assert_eq!(err.message, $msg),
+            }
+        };
+    }
+
     #[test]
     fn test_keywords() {
         assert_token!("enum", TokenKind::Enum, "enum");
@@ -1124,5 +1134,111 @@ mod test {
 
             "#
         );
+    }
+
+    #[test]
+    fn test_delimiters() {
+        assert_sequence_kind!(
+            "( ) [ ] { } ; ,",
+            TokenKind::LParen,
+            TokenKind::RParen,
+            TokenKind::LBracket,
+            TokenKind::RBracket,
+            TokenKind::LBrace,
+            TokenKind::RBrace,
+            TokenKind::Semicolon,
+            TokenKind::Comma
+        );
+
+        assert_sequence_kind!(
+            ": :: -> =>",
+            TokenKind::Colon,
+            TokenKind::Scope,
+            TokenKind::RArrow,
+            TokenKind::EqArrow
+        );
+
+        assert_sequence_kind!(
+            ". .. ... ..=",
+            TokenKind::Dot,
+            TokenKind::DotDot,
+            TokenKind::Ellipsis,
+            TokenKind::DotDotEq
+        );
+    }
+
+    #[test]
+    fn test_misc_tokens() {
+        assert_sequence_kind!(
+            "? ?. ?? @ _ | |> ^ ^= & &= | |= << >> <<= >>=",
+            TokenKind::Question,
+            TokenKind::QuestionDot,
+            TokenKind::QuestionQuestion,
+            TokenKind::At,
+            TokenKind::Underscore,
+            TokenKind::Bar,
+            TokenKind::Pipe,
+            TokenKind::Caret,
+            TokenKind::CaretEq,
+            TokenKind::Amp,
+            TokenKind::AmpEq,
+            TokenKind::Bar,
+            TokenKind::BarEq,
+            TokenKind::Shl,
+            TokenKind::Shr,
+            TokenKind::ShlEq,
+            TokenKind::ShrEq
+        );
+    }
+
+    #[test]
+    fn test_error_cases() {
+        assert_error!("/* unterminated", "unterminated multiline comment");
+        assert_error!("\"unterminated", "unterminated string literal");
+        assert_error!("`unterminated", "unterminated template-string literal");
+        assert_error!("'a", "unterminated rune literal");
+    }
+
+    #[test]
+    fn test_operator_tokens() {
+        assert_sequence_kind!(
+            "= := ! ~",
+            TokenKind::Assign,
+            TokenKind::DeclareVar,
+            TokenKind::Bang,
+            TokenKind::Tilde
+        );
+    }
+
+    #[test]
+    fn test_numeric_underscores() {
+        assert_token!("1_000", TokenKind::Integer(Base::Decimal), "1_000");
+        assert_token!("0b10_10", TokenKind::Integer(Base::Binary), "0b10_10");
+        assert_token!("0o70_70", TokenKind::Integer(Base::Octal), "0o70_70");
+        assert_token!("0xAB_CD", TokenKind::Integer(Base::Hexadecimal), "0xAB_CD");
+    }
+
+    #[test]
+    fn test_invalid_literals() {
+        assert_error!("0b", "invalid integer literal");
+        assert_error!("0xG", "invalid integer literal");
+        assert_error!("1e", "invalid float literal");
+    }
+
+    #[test]
+    fn test_line_terminated_literals() {
+        assert_error!(
+            "\"foo\nbar\"",
+            "string literals must be on a single line, use a template string instead"
+        );
+        assert_error!(
+            "`foo\nbar`",
+            "template identifiers must be on a single line"
+        );
+    }
+
+    #[test]
+    fn test_invalid_token() {
+        assert_error!("$", "invalid token");
     }
 }

@@ -7,7 +7,7 @@ impl Parser {
     pub fn parse_field_definition(&mut self) -> R<FieldDefinition> {
         let lo = self.lo_span();
         let visibility = self.parse_visibility()?;
-        let mutability = if self.eat(TokenKind::Const) {
+        let mutability = if self.eat(TokenKind::Readonly) {
             Mutability::Immutable
         } else {
             Mutability::Mutable
@@ -117,7 +117,7 @@ mod test {
             assert_eq!(field.visibility.level, VisibilityLevel::Inherent);
             assert!(matches!(field.ty.kind, TypeKind::Path(_)));
 
-            let mut parser = make_parser!("public const foo:bar");
+            let mut parser = make_parser!("public readonly foo:bar");
             let field = parser.parse_field_definition().expect("field definition");
             assert_eq!(field.mutability, Mutability::Immutable);
             assert_eq!(field.visibility.level, VisibilityLevel::Public);
@@ -130,9 +130,9 @@ mod test {
         session_test!({
             let input = r#"{
                 foo:T,
-                public const bar: T,
+                public readonly bar: T,
                 public baz: T,
-                const foobar: T
+                readonly foobar: T
             }"#;
 
             let mut parser = make_parser!(input);
