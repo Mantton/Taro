@@ -30,7 +30,6 @@ pub enum TypeError<'ctx> {
     TupleIndexOutOfBounds(ExpectedFound<usize>),
     NotATuple,
     UnknownMethod,
-    InvalidMethodReceiver,
     NoUnaryOperator(Ty<'ctx>, OperatorKind),
     NoBinaryOperator(Ty<'ctx>, Ty<'ctx>, OperatorKind),
     CannotDereference(Ty<'ctx>),
@@ -72,7 +71,6 @@ impl<'ctx> TypeError<'ctx> {
             ),
             TypeError::NotATuple => "not a tuple".into(),
             TypeError::UnknownMethod => "unknown method".into(),
-            TypeError::InvalidMethodReceiver => "invalid method receiver".into(),
             TypeError::NoUnaryOperator(ty, op) => {
                 format!("no unary operator '{:?}' for type '{}'", op, ty.format(gcx))
             }
