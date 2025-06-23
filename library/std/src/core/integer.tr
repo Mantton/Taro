@@ -1,0 +1,5 @@
+
+
+extend uint8 {
+    public operator +(self, rhs: Self) -> Self { self } // TODO: intrinsics
+}

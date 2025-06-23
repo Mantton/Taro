@@ -2,7 +2,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::cell::{Cell, RefCell};
 use taroc_data_structures::Interned;
 use taroc_hir::{
-    DefinitionID, DefinitionKind, NodeID, PartialResolution, Path, Resolution, SymbolNamespace,
+    DefinitionID, DefinitionKind, NodeID, PackageIndex, PartialResolution, Path, Resolution,
+    SymbolNamespace,
 };
 use taroc_span::{FileID, Identifier, Span, Symbol};
 
@@ -197,6 +198,14 @@ impl<'arena> NameBindingData<'arena> {
                     | DefinitionKind::AssociatedOperator
             )
         )
+    }
+
+    pub fn package_index(&self) -> Option<PackageIndex> {
+        match &self.kind {
+            NameBindingKind::Resolution(resolution) => resolution.def_id().map(|f| f.package()),
+            NameBindingKind::Context(ctx) => ctx.def_id().map(|f| f.package()),
+            NameBindingKind::ExternalUsage { binding, .. } => binding.package_index(),
+        }
     }
 }
 

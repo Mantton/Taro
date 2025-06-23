@@ -123,6 +123,21 @@ impl<'res, 'ctx> UsageResolver<'res, 'ctx> {
 
         usage.module_context.set(Some(module));
 
+        // File Imports
+        let mut added_target_package = false;
+        if let ContextOrResolutionRoot::Context(ctx) = module
+            && let DefContextKind::Definition(id, ..) = ctx.kind
+        {
+            let package = id.package();
+            let file = usage.span.file;
+            self.resolver
+                .file_to_imports
+                .entry(file)
+                .or_default()
+                .insert(package);
+            added_target_package = true;
+        };
+
         // Resolve Imported Symbol
         let (source, source_binding, parent, target) = match &usage.kind {
             ExternalDefUsageKind::Single(def_usage_binding) => (
@@ -133,19 +148,6 @@ impl<'res, 'ctx> UsageResolver<'res, 'ctx> {
             ),
             ExternalDefUsageKind::Glob { .. } => {
                 usage.is_resolved.set(true);
-
-                if let ContextOrResolutionRoot::Context(ctx) = module
-                    && let DefContextKind::Definition(id, ..) = ctx.kind
-                {
-                    let package = id.package();
-                    let file = usage.span.file;
-                    self.resolver
-                        .file_to_imports
-                        .entry(file)
-                        .or_default()
-                        .insert(package);
-                };
-
                 return true;
             }
         };
@@ -173,13 +175,15 @@ impl<'res, 'ctx> UsageResolver<'res, 'ctx> {
                     let bindings = holder.all();
 
                     for (index, binding) in bindings.into_iter().enumerate() {
-                        if index == 0 {
-                            // let package = binding.def_id().unwrap().package();
-                            // let file = usage.span.file;
-                            // this.file_to_imports
-                            //     .entry(file)
-                            //     .or_default()
-                            //     .insert(package);
+                        if index == 0
+                            && !added_target_package
+                            && let Some(package) = binding.package_index()
+                        {
+                            let file = usage.span.file;
+                            this.file_to_imports
+                                .entry(file)
+                                .or_default()
+                                .insert(package);
                         }
                         let binding = this.convert_usage_binding(binding, usage);
                         if usage.is_import {

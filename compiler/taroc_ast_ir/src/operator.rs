@@ -1,4 +1,6 @@
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+use crate::Mutability;
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum BinaryOperator {
     /// `+`
     Add,
@@ -43,12 +45,12 @@ pub enum BinaryOperator {
     PtrEq,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum UnaryOperator {
     // !
     LogicalNot,
     // &
-    Reference(bool),
+    Reference(Mutability),
     // *
     Dereference,
     // -
@@ -129,7 +131,20 @@ impl OperatorKind {
 
             BinaryOperator::PatMatch => ExprMatch,
 
-            BinaryOperator::PtrEq => todo!("ptr equality"),
+            BinaryOperator::PtrEq => {
+                unreachable!("ICE: pointer equality should be custom handled")
+            }
+        }
+    }
+
+    pub fn from_unary(unary: UnaryOperator) -> OperatorKind {
+        match unary {
+            UnaryOperator::LogicalNot => OperatorKind::Not,
+            UnaryOperator::Negate => OperatorKind::Neg,
+            UnaryOperator::BitwiseNot => OperatorKind::BitwiseNot,
+            UnaryOperator::Reference(_) | UnaryOperator::Dereference => {
+                unreachable!("ICE: reference and dereference unary operators are custom handled")
+            }
         }
     }
 }

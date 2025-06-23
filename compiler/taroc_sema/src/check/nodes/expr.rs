@@ -4,8 +4,8 @@ use crate::{
         context::func::FnCtx,
         expectation::Expectation,
         solver::{
-            FieldAccessGoal, Goal, MethodCallGoal, Obligation, OverloadArgument, OverloadGoal,
-            TupleAccessGoal,
+            BinaryOperatorGoal, FieldAccessGoal, Goal, MethodCallGoal, Obligation,
+            OverloadArgument, OverloadGoal, TupleAccessGoal, UnaryOperatorGoal,
         },
     },
     infer::fn_var::FnVarData,
@@ -14,7 +14,7 @@ use crate::{
     utils::{instantiate_constraint_with_args, instantiate_ty_with_args, labeled_signature_to_ty},
 };
 use rustc_hash::FxHashMap;
-use taroc_hir::{DefinitionKind, NodeID, Resolution};
+use taroc_hir::{BinaryOperator, DefinitionKind, NodeID, Resolution, UnaryOperator};
 use taroc_span::Span;
 
 impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
@@ -124,14 +124,22 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             taroc_hir::ExpressionKind::MethodCall(node) => {
                 self.check_method_call_expr(node, expression, expectation)
             }
-            taroc_hir::ExpressionKind::ArrayLiteral(..) => self.error_ty(),
-            taroc_hir::ExpressionKind::Binary(..) => self.error_ty(),
-            taroc_hir::ExpressionKind::Unary(..) => self.error_ty(),
-            taroc_hir::ExpressionKind::Subscript(..) => self.error_ty(),
-            taroc_hir::ExpressionKind::AssignOp(..) => self.error_ty(),
+            taroc_hir::ExpressionKind::Unary(op, expr) => {
+                self.check_unary_expression(*op, expr, expression, expectation)
+            }
+            taroc_hir::ExpressionKind::Binary(op, lhs, rhs) => {
+                self.check_binary_expression(*op, lhs, rhs, expression, expectation)
+            }
+            taroc_hir::ExpressionKind::AssignOp(op, lhs, rhs) => {
+                self.check_assign_op_expression(*op, lhs, rhs, expression)
+            }
+            taroc_hir::ExpressionKind::Subscript(target, arguments) => {
+                self.check_subscript_expression(target, arguments, expression, expectation)
+            }
             taroc_hir::ExpressionKind::CastAs(..) => self.error_ty(),
-            taroc_hir::ExpressionKind::MatchBinding(_) => self.error_ty(),
             taroc_hir::ExpressionKind::When(..) => self.error_ty(),
+            taroc_hir::ExpressionKind::MatchBinding(_) => self.error_ty(),
+            taroc_hir::ExpressionKind::ArrayLiteral(..) => self.error_ty(),
             taroc_hir::ExpressionKind::Closure(_) => self.error_ty(),
             taroc_hir::ExpressionKind::Malformed => {
                 unreachable!("ICE: trying to typecheck a malformed expression node")
@@ -480,7 +488,8 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
                 .expect("local must have type stored");
         };
 
-        let def_id = resolution.def_id();
+        let def_id = resolution.def_id().unwrap();
+
         let ty = self.gcx.type_of(def_id);
         return ty;
     }
@@ -734,5 +743,95 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         });
 
         rho
+    }
+}
+
+impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
+    fn check_unary_expression(
+        &self,
+        op: UnaryOperator,
+        rhs: &taroc_hir::Expression,
+        expr: &taroc_hir::Expression,
+        expectation: Expectation<'ctx>,
+    ) -> Ty<'ctx> {
+        let operand_ty = self.check_expression(rhs);
+        let result_var = self.next_ty_var(expr.span);
+
+        let goal = UnaryOperatorGoal {
+            operand_ty,
+            result_var,
+            operator: op,
+            span: expr.span,
+            expectation: expectation.only_has_type(),
+        };
+
+        self.add_obligation(Obligation {
+            location: expr.span,
+            goal: Goal::UnaryOperator(goal),
+        });
+
+        result_var
+    }
+
+    fn check_binary_expression(
+        &self,
+        op: BinaryOperator,
+        lhs: &taroc_hir::Expression,
+        rhs: &taroc_hir::Expression,
+        expr: &taroc_hir::Expression,
+        expectation: Expectation<'ctx>,
+    ) -> Ty<'ctx> {
+        let goal = BinaryOperatorGoal {
+            operator: op,
+            span: expr.span,
+            expectation: expectation.only_has_type(),
+            lhs: self.check_expression(lhs),
+            rhs: self.check_expression(rhs),
+            rho: self.next_ty_var(expr.span),
+            assigning: false,
+        };
+
+        self.add_obligation(Obligation {
+            location: expr.span,
+            goal: Goal::BinaryOperator(goal),
+        });
+
+        goal.rho
+    }
+
+    fn check_assign_op_expression(
+        &self,
+        op: BinaryOperator,
+        lhs: &taroc_hir::Expression,
+        rhs: &taroc_hir::Expression,
+        expr: &taroc_hir::Expression,
+    ) -> Ty<'ctx> {
+        let lhs = self.check_expression(lhs);
+        let goal = BinaryOperatorGoal {
+            operator: op,
+            span: expr.span,
+            expectation: None,
+            lhs,
+            rhs: self.check_expression(rhs),
+            rho: self.common_types().void,
+            assigning: true,
+        };
+
+        self.add_obligation(Obligation {
+            location: expr.span,
+            goal: Goal::BinaryOperator(goal),
+        });
+
+        self.common_types().void
+    }
+
+    fn check_subscript_expression(
+        &self,
+        target: &taroc_hir::Expression,
+        arguments: &[taroc_hir::ExpressionArgument],
+        expression: &taroc_hir::Expression,
+        expectation: Expectation<'ctx>,
+    ) -> Ty<'ctx> {
+        todo!()
     }
 }

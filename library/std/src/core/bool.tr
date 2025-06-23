@@ -1,0 +1,5 @@
+/// Operator Support For `boolean` type
+
+extend bool {
+    public operator !(self) -> Self { self } // TODO: intrinsic
+}

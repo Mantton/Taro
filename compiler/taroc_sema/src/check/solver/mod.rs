@@ -5,6 +5,7 @@ use crate::{
     ty::{Constraint, ParamEnv, Ty},
 };
 use std::collections::VecDeque;
+use taroc_hir::{BinaryOperator, UnaryOperator};
 use taroc_span::{Identifier, Span};
 
 mod apply;
@@ -12,6 +13,7 @@ mod coerce;
 mod constraint;
 mod field;
 mod method;
+mod op;
 mod unify;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -22,6 +24,8 @@ pub enum Goal<'ctx> {
     FieldAccess(FieldAccessGoal<'ctx>),
     TupleAccess(TupleAccessGoal<'ctx>),
     MethodCall(MethodCallGoal<'ctx>),
+    UnaryOperator(UnaryOperatorGoal<'ctx>),
+    BinaryOperator(BinaryOperatorGoal<'ctx>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -64,6 +68,26 @@ pub struct MethodCallGoal<'ctx> {
     pub result_var: Ty<'ctx>,
     pub expected_result_ty: Option<Ty<'ctx>>,
     pub arguments: &'ctx [OverloadArgument<'ctx>],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct UnaryOperatorGoal<'ctx> {
+    pub operand_ty: Ty<'ctx>,
+    pub result_var: Ty<'ctx>,
+    pub expectation: Option<Ty<'ctx>>,
+    pub operator: UnaryOperator,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BinaryOperatorGoal<'ctx> {
+    pub lhs: Ty<'ctx>,
+    pub rhs: Ty<'ctx>,
+    pub rho: Ty<'ctx>,
+    pub expectation: Option<Ty<'ctx>>,
+    pub operator: BinaryOperator,
+    pub span: Span,
+    pub assigning: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -230,6 +254,8 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
             Goal::FieldAccess(goal) => self.solve_field_access(goal),
             Goal::TupleAccess(goal) => self.solve_tuple_access(goal),
             Goal::MethodCall(goal) => self.solve_method_call(goal),
+            Goal::UnaryOperator(goal) => self.solve_unary(goal),
+            Goal::BinaryOperator(goal) => self.solve_binary(goal),
         }
     }
 }

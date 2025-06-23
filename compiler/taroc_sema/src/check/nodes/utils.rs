@@ -1,7 +1,7 @@
 use crate::{GlobalContext, check::context::func::FnCtx, ty::Ty};
 use rustc_hash::FxHashSet;
-use taroc_hir::{DefinitionID, PackageIndex, Resolution};
-use taroc_span::Identifier;
+use taroc_hir::{DefinitionID, OperatorKind, PackageIndex, Resolution};
+use taroc_span::{FileID, Identifier};
 
 impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
     pub fn resolve_qualified_method_call(
@@ -67,4 +67,32 @@ pub fn packages_at_file(file: taroc_span::FileID, gcx: GlobalContext) -> Vec<Pac
     packages.insert(gcx.session().index());
 
     packages.into_iter().collect()
+}
+
+pub fn associated_operators_for_ty<'ctx>(
+    op: OperatorKind,
+    self_ty: Ty<'ctx>,
+    gcx: GlobalContext<'ctx>,
+    file: FileID,
+) -> Vec<DefinitionID> {
+    let packages = packages_at_file(file, gcx);
+
+    let simple_ty = gcx.try_simple_type(self_ty);
+    let Some(simple_ty) = simple_ty else {
+        return vec![];
+    };
+    let mut candidates = vec![];
+    for package in packages {
+        gcx.with_type_database(package, |db| {
+            let Some(index) = db.function_table.methods.get(&simple_ty) else {
+                return;
+            };
+            let Some(set) = index.operators.get(&op) else {
+                return;
+            };
+            candidates.extend(set.members.iter().copied());
+        });
+    }
+
+    candidates
 }

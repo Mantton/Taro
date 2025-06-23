@@ -56,7 +56,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         SolverResult::Deferred
     }
 
-    fn evaluate_method_candidate(
+    pub fn evaluate_method_candidate(
         &self,
         candidate: DefinitionID,
         recv_ty: crate::ty::Ty<'ctx>,
@@ -71,7 +71,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         })
     }
 
-    fn select_fn_for_method(
+    pub fn select_fn_for_method(
         &mut self,
         candidate: DefinitionID,
         recv_ty: crate::ty::Ty<'ctx>,

@@ -1,3 +1,5 @@
+use taroc_hir::OperatorKind;
+
 use crate::ty::{GenericArgument, Ty};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,4 +28,8 @@ pub enum TypeError<'ctx> {
     NotATuple,
     UnknownMethod,
     InvalidMethodReceiver,
+    NoUnaryOperator(Ty<'ctx>, OperatorKind),
+    NoBinaryOperator(Ty<'ctx>, Ty<'ctx>, OperatorKind),
+    CannotDereference(Ty<'ctx>),
+    InvalidPointerEquality(Ty<'ctx>),
 }

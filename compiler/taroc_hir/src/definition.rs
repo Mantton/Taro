@@ -181,11 +181,11 @@ impl Resolution {
         }
     }
 
-    pub fn def_id(&self) -> DefinitionID {
+    pub fn def_id(&self) -> Option<DefinitionID> {
         match self {
-            Resolution::Definition(definition_id, _) => *definition_id,
-            Resolution::InterfaceSelfTypeParameter(definition_id) => *definition_id,
-            _ => unreachable!(),
+            Resolution::Definition(definition_id, _) => Some(*definition_id),
+            Resolution::InterfaceSelfTypeParameter(definition_id) => Some(*definition_id),
+            _ => None,
         }
     }
 }
