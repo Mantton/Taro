@@ -1,6 +1,24 @@
-use crate::{check::solver::SolverDelegate, error::TypeError, ty::Ty};
+use crate::{
+    check::solver::{SolverDelegate, SolverResult},
+    error::TypeError,
+    ty::Ty,
+};
 
 impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
+    pub fn solve_coerce(&self, from: Ty<'ctx>, to: Ty<'ctx>) -> SolverResult<'ctx> {
+        let result = self.coerce(from, to);
+        match result {
+            Ok(defer) => {
+                if defer.requeue() {
+                    SolverResult::Deferred
+                } else {
+                    SolverResult::Solved(vec![])
+                }
+            }
+            Err(err) => SolverResult::Error(err),
+        }
+    }
+
     pub fn coerce(&self, from: Ty<'ctx>, to: Ty<'ctx>) -> CoercionResult<'ctx> {
         let from = self.icx.shallow_resolve(from);
         let to = self.icx.shallow_resolve(to);
@@ -20,13 +38,12 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         assert!(from.is_ty_var() && self.icx.shallow_resolve(from) == from);
         assert!(self.icx.shallow_resolve(to) == to);
 
+        // defer this coercion till we have more information regarding the inference vars
         if to.is_ty_var() {
-            // defer this coercion till we have more information regarding the inference vars
             return Ok(CoercionOutput::Defer);
         }
 
         self.unify(from, to)?;
-
         return Ok(CoercionOutput::Resolved(to));
     }
 }

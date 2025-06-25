@@ -1,9 +1,10 @@
+use indexmap::IndexSet;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cell::{Cell, RefCell};
 use taroc_data_structures::Interned;
 use taroc_hir::{
-    DefinitionID, DefinitionKind, NodeID, PackageIndex, PartialResolution, Path, Resolution,
-    SymbolNamespace,
+    CtorKind, DefinitionID, DefinitionKind, NodeID, PackageIndex, PartialResolution, Path,
+    Resolution, SymbolNamespace,
 };
 use taroc_span::{FileID, Identifier, Span, Symbol};
 
@@ -340,6 +341,11 @@ pub enum PatternSource {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub enum MatchPatternSource {
+    WhenArm,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub enum Determinacy {
     Determined,
     Undetermined,
@@ -351,6 +357,15 @@ pub enum ResolutionError {
     IdentifierBoundMoreThanOnceInParameterList,
     IdentifierBoundMoreThanOnceInSamePattern,
     CannotExtend { segment: Symbol },
+    InconsistentBindingMode(Symbol, Span),
+    VariableNotBoundInPattern(BindingError),
+}
+
+#[derive(Debug)]
+pub struct BindingError {
+    pub name: Symbol,
+    pub origin: IndexSet<Span>,
+    pub target: IndexSet<Span>,
 }
 
 #[derive(Clone, Copy)]
@@ -359,6 +374,8 @@ pub enum PathSource {
     Interface,
     Expression,
     StructLiteral,
+    MatchPatternUnit,
+    MatchPatternTupleStruct,
 }
 
 impl PathSource {
@@ -368,6 +385,8 @@ impl PathSource {
                 SymbolNamespace::Type
             }
             PathSource::Expression => SymbolNamespace::Value,
+            PathSource::MatchPatternUnit => SymbolNamespace::Value,
+            PathSource::MatchPatternTupleStruct => SymbolNamespace::Value,
         }
     }
 
@@ -416,6 +435,14 @@ impl PathSource {
                 ) | Resolution::SelfTypeAlias(_)
                     | Resolution::InterfaceSelfTypeParameter(_)
             ),
+            PathSource::MatchPatternUnit => matches!(
+                res,
+                Resolution::Definition(_, DefinitionKind::Ctor(_, CtorKind::Const))
+            ),
+            PathSource::MatchPatternTupleStruct => matches!(
+                res,
+                Resolution::Definition(_, DefinitionKind::Ctor(_, CtorKind::Fn))
+            ),
         }
     }
 
@@ -425,6 +452,8 @@ impl PathSource {
             PathSource::Interface => "interface".into(),
             PathSource::Expression => "value".into(),
             PathSource::StructLiteral => "struct or enum variant".into(),
+            PathSource::MatchPatternUnit => "unit enum variant".into(),
+            PathSource::MatchPatternTupleStruct => "tuple enum variant".into(),
         }
     }
 
@@ -434,6 +463,8 @@ impl PathSource {
             PathSource::Interface => false,
             PathSource::Expression => true,
             PathSource::StructLiteral => true,
+            PathSource::MatchPatternUnit => true,
+            PathSource::MatchPatternTupleStruct => true,
         }
     }
 }

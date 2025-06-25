@@ -46,6 +46,6 @@ pub enum BindingPatternKind {
 #[derive(Debug)]
 pub struct PatternField {
     pub identifier: Identifier,
-    pub pattern: Option<MatchingPattern>,
+    pub pattern: MatchingPattern,
     pub span: Span,
 }

@@ -48,7 +48,7 @@ impl Parser {
     pub fn parse_match_case_pat(&mut self) -> R<MatchingPattern> {
         let lo = self.lo_span();
         let cases =
-            self.parse_sequence_until(&[TokenKind::EqArrow], TokenKind::Comma, false, |p| {
+            self.parse_sequence_until(&[TokenKind::EqArrow], TokenKind::Bar, false, |p| {
                 p.parse_match_pat()
             })?;
 
@@ -101,7 +101,7 @@ impl Parser {
                 self.bump();
                 Ok(MatchingPatternKind::Rest)
             }
-            TokenKind::Identifier => self.parse_match_path_kind(),
+            TokenKind::Var | TokenKind::Identifier => self.parse_match_path_kind(),
             _ => {
                 let ac = self.parse_anon_const()?;
                 Ok(MatchingPatternKind::Literal(ac))
@@ -120,13 +120,17 @@ impl Parser {
 
     fn parse_match_path_kind(&mut self) -> R<MatchingPatternKind> {
         // Cannot Possibly be a path pattern
-        if self.matches(TokenKind::Identifier)
+        if (self.matches(TokenKind::Identifier) | self.matches(TokenKind::Var))
             && !(self.next_matches(1, TokenKind::LChevron)
                 | self.next_matches(1, TokenKind::Scope)
                 | self.next_matches(1, TokenKind::LBrace)
                 | self.next_matches(1, TokenKind::LParen))
         {
-            let mode = BindingMode(Mutability::Immutable);
+            let mode = BindingMode(if self.eat(TokenKind::Var) {
+                Mutability::Mutable
+            } else {
+                Mutability::Immutable
+            });
             let ident = self.parse_identifier()?;
             return Ok(MatchingPatternKind::Binding(mode, ident));
         }
@@ -191,9 +195,13 @@ impl Parser {
 
         let identifier = self.parse_identifier()?;
         let pattern = if self.eat(TokenKind::Colon) {
-            Some(self.parse_match_pat()?)
+            self.parse_match_pat()?
         } else {
-            None
+            // Defualt to Ident Pattern
+            MatchingPattern {
+                span: identifier.span,
+                kind: MatchingPatternKind::Binding(BindingMode(Mutability::Immutable), identifier),
+            }
         };
 
         let field = PatternField {

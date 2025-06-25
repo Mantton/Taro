@@ -52,7 +52,7 @@ impl Actor<'_> {
             Src::Wildcard => Dest::Wildcard,
 
             // `..`
-            Src::Rest => Dest::Rest,
+            Src::Rest => todo!(),
 
             // `foo` | `var foo`
             Src::Binding(mode, ident) => Dest::Binding(mode, ident),
@@ -86,7 +86,7 @@ impl Actor<'_> {
                         id: self.next(),
                         span: f.span,
                         identifier: f.identifier,
-                        pattern: f.pattern.map(|p| self.lower_matching_pattern(p)),
+                        pattern: self.lower_matching_pattern(f.pattern),
                     })
                     .collect();
                 Dest::PathStruct(self.lower_path(path), lowered_fields, span, has_rest)

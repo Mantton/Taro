@@ -81,11 +81,11 @@ pub enum ExpressionKind {
     OptionalBinding(OptionalBindingCondition),
     /// A Binding Condition used for Tagged Unions
     ///
-    /// `if match Option::Some(value) = foo {}`
+    /// `if match foo to Option::Some(value) {}`
     ///
-    /// `guard match Option::Some(value) = foo else { return }`
+    /// `guard match foo to Option::Some(value)  else { return }`
     ///
-    /// `while match Option::Some(value) = foo {}`
+    /// `while match foo to Option::Some(value) {}`
     MatchBinding(PatternBindingCondition),
     /// `a ?? b`
     OptionalDefault(Box<Expression>, Box<Expression>),
@@ -126,12 +126,14 @@ pub struct MapPair {
 pub struct WhenExpression {
     pub value: Option<Box<Expression>>,
     pub arms: Vec<WhenArm>,
+    pub kw_span: Span,
 }
 
 #[derive(Debug)]
 pub struct WhenArm {
     pub kind: WhenArmKind,
     pub body: Box<Expression>,
+    pub guard: Option<Box<Expression>>,
     pub span: Span,
 }
 

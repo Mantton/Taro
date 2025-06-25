@@ -1,6 +1,7 @@
 use super::package::Actor;
 use crate::literal::convert_ast_literal;
 use taroc_ast::{self, BinaryOperator};
+use taroc_hir::{ExpressionKind, Literal, WhenExpressionKind};
 use taroc_span::{Identifier, Span};
 
 impl Actor<'_> {
@@ -251,9 +252,26 @@ impl Actor<'_> {
         &mut self,
         node: taroc_ast::WhenExpression,
     ) -> taroc_hir::WhenExpression {
+        let kind = if node.value.is_none() || node.arms.is_empty() {
+            WhenExpressionKind::Expression
+        } else {
+            if matches!(
+                node.arms.first().unwrap().kind,
+                taroc_ast::WhenArmKind::Pattern(..)
+            ) {
+                WhenExpressionKind::Pattern
+            } else {
+                WhenExpressionKind::Expression
+            }
+        };
         taroc_hir::WhenExpression {
-            value: self.lower_optional(node.value, |this, value| this.lower_expression(value)),
+            value: if let Some(value) = node.value {
+                self.lower_expression(value)
+            } else {
+                self.mk_expression(ExpressionKind::Literal(Literal::Bool(true)), node.kw_span)
+            },
             arms: self.lower_sequence(node.arms, |this, arm| this.lower_when_arm(arm)),
+            kind,
         }
     }
 
@@ -272,6 +290,7 @@ impl Actor<'_> {
             kind,
             span: node.span,
             body: self.lower_expression(node.body),
+            guard: self.lower_optional(node.guard, |this, node| this.lower_expression(node)),
         }
     }
 }

@@ -1,5 +1,6 @@
 use crate::{
     GlobalContext,
+    check::solver::{cast::CastGoal, when::WhenCaseGoal},
     error::TypeError,
     infer::InferCtx,
     ty::{Constraint, ParamEnv, Ty},
@@ -9,12 +10,14 @@ use taroc_hir::{BinaryOperator, UnaryOperator};
 use taroc_span::{Identifier, Span};
 
 mod apply;
+pub mod cast;
 mod coerce;
 mod constraint;
 mod field;
 mod method;
 mod op;
 mod unify;
+pub mod when;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Goal<'ctx> {
@@ -27,6 +30,8 @@ pub enum Goal<'ctx> {
     UnaryOperator(UnaryOperatorGoal<'ctx>),
     BinaryOperator(BinaryOperatorGoal<'ctx>),
     IndexOperator(OverloadGoal<'ctx>),
+    Cast(CastGoal<'ctx>),
+    WhenCase(WhenCaseGoal<'ctx>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -239,20 +244,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     fn try_solve(&mut self, obligation: Obligation<'ctx>) -> SolverResult<'ctx> {
         match obligation.goal {
             Goal::Constraint(constraint) => self.solve_constraint(constraint, obligation.location),
-            Goal::Coerce { from, to } => {
-                let result = self.coerce(from, to);
-
-                match result {
-                    Ok(defer) => {
-                        if defer.requeue() {
-                            SolverResult::Deferred
-                        } else {
-                            SolverResult::Solved(vec![])
-                        }
-                    }
-                    Err(err) => SolverResult::Error(err),
-                }
-            }
+            Goal::Coerce { from, to, .. } => self.solve_coerce(from, to),
             Goal::Apply(goal) => self.solve_application(goal),
             Goal::FieldAccess(goal) => self.solve_field_access(goal),
             Goal::TupleAccess(goal) => self.solve_tuple_access(goal),
@@ -260,6 +252,8 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
             Goal::UnaryOperator(goal) => self.solve_unary(goal),
             Goal::BinaryOperator(goal) => self.solve_binary(goal),
             Goal::IndexOperator(goal) => self.solve_subscript(goal),
+            Goal::Cast(goal) => self.solve_cast(goal),
+            Goal::WhenCase(goal) => self.solve_when_case_goal(goal),
         }
     }
 }

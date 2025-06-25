@@ -589,7 +589,7 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, expr: &Expression) -> V::
             try_visit!(visitor.visit_expression(expression));
         }
         ExpressionKind::When(node) => {
-            visit_optional!(visitor, visit_expression, &node.value);
+            try_visit!(visitor.visit_expression(&node.value));
             walk_list!(visitor, visit_when_arm, &node.arms);
         }
     }
@@ -643,7 +643,6 @@ pub fn walk_matching_pattern<V: HirVisitor>(
         MatchingPatternKind::Or(pats, _) => {
             walk_list!(visitor, visit_matching_pattern, pats);
         }
-        MatchingPatternKind::Rest => {}
         MatchingPatternKind::PathTuple(path, pat, _) => {
             try_visit!(visitor.visit_path(path));
             walk_list!(visitor, visit_matching_pattern, pat);
@@ -927,7 +926,7 @@ pub fn walk_enum_def<V: HirVisitor>(visitor: &mut V, node: &EnumDefinition) -> V
 
 pub fn walk_pat_field<V: HirVisitor>(visitor: &mut V, node: &PatternField) -> V::Result {
     try_visit!(visitor.visit_ident(&node.identifier));
-    visit_optional!(visitor, visit_matching_pattern, &node.pattern);
+    try_visit!(visitor.visit_matching_pattern(&node.pattern));
     V::Result::output()
 }
 
@@ -942,6 +941,7 @@ pub fn walk_when_arm<V: HirVisitor>(visitor: &mut V, node: &WhenArm) -> V::Resul
 
         _ => {}
     }
+    visit_optional!(visitor, visit_expression, &node.guard);
     try_visit!(visitor.visit_expression(&node.body));
 
     V::Result::output()

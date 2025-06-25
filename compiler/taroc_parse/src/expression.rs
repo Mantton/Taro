@@ -896,6 +896,8 @@ impl Parser {
 
         self.expect(TokenKind::When)?;
 
+        let kw_span = self.previous().unwrap().span;
+
         let value = if !self.matches(TokenKind::LBrace) {
             let mut res = Restrictions::empty();
             res.set(Restrictions::NO_STRUCT_LITERALS, true);
@@ -916,18 +918,25 @@ impl Parser {
             }
 
             let item = self.parse_when_arm()?;
+            let _ = matches!(item.body.kind, ExpressionKind::Block(..));
             arms.push(item);
 
             if self.matches(TokenKind::RBrace) {
                 break;
             }
 
+            self.eat(TokenKind::Comma);
+
             self.expect(TokenKind::Newline)?;
         }
 
         self.expect(TokenKind::RBrace)?;
 
-        let node = WhenExpression { arms, value };
+        let node = WhenExpression {
+            arms,
+            value,
+            kw_span,
+        };
         let k = ExpressionKind::When(node);
         Ok(self.build_expr(k, lo.to(self.hi_span())))
     }
@@ -949,12 +958,19 @@ impl Parser {
             WhenArmKind::Expression(cases)
         };
 
+        let guard = if self.eat(TokenKind::If) {
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
         self.expect(TokenKind::EqArrow)?;
         let body = self.parse_expression()?;
 
         let arm = WhenArm {
             kind,
             body,
+            guard,
             span: lo.to(self.hi_span()),
         };
 

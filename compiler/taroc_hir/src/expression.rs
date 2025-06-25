@@ -59,7 +59,7 @@ pub enum ExpressionKind {
     CastAs(Box<Expression>, Box<Type>),
     /// A Binding Condition used for Tagged Unions
     ///
-    /// `if match foo to Some(value) {}`
+    /// `if match Some(value) = foo {}`
     MatchBinding(PatternBindingCondition),
     /// |a, b| { a + b }
     Closure(ClosureExpression),
@@ -166,14 +166,22 @@ pub struct StructLiteral {
 
 #[derive(Debug, Clone)]
 pub struct WhenExpression {
-    pub value: Option<Box<Expression>>,
+    pub value: Box<Expression>,
     pub arms: Vec<WhenArm>,
+    pub kind: WhenExpressionKind,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum WhenExpressionKind {
+    Expression,
+    Pattern,
 }
 
 #[derive(Debug, Clone)]
 pub struct WhenArm {
     pub kind: WhenArmKind,
     pub body: Box<Expression>,
+    pub guard: Option<Box<Expression>>,
     pub span: Span,
 }
 

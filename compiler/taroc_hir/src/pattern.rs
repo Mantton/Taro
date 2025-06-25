@@ -13,8 +13,6 @@ pub struct MatchingPattern {
 pub enum MatchingPatternKind {
     /// _
     Wildcard,
-    /// ..
-    Rest,
     // foo | var foo
     Binding(BindingMode, Identifier),
     // (a, b)
@@ -49,6 +47,29 @@ pub enum BindingPatternKind {
 pub struct PatternField {
     pub id: NodeID,
     pub identifier: Identifier,
-    pub pattern: Option<MatchingPattern>,
+    pub pattern: MatchingPattern,
     pub span: Span,
+}
+
+impl MatchingPattern {
+    pub fn walk(&self, action: &mut impl FnMut(&MatchingPattern) -> bool) {
+        if !action(self) {
+            return;
+        }
+
+        match &self.kind {
+            MatchingPatternKind::Wildcard
+            | MatchingPatternKind::Literal(..)
+            | MatchingPatternKind::Binding(..)
+            | MatchingPatternKind::Path(..) => {}
+            MatchingPatternKind::PathStruct(_, fields, ..) => {
+                fields.iter().for_each(|f| f.pattern.walk(action))
+            }
+            MatchingPatternKind::Tuple(sub_pats, ..)
+            | MatchingPatternKind::PathTuple(_, sub_pats, _)
+            | MatchingPatternKind::Or(sub_pats, _) => {
+                sub_pats.iter().for_each(|p| p.walk(action));
+            }
+        }
+    }
 }

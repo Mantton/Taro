@@ -34,6 +34,8 @@ pub enum TypeError<'ctx> {
     NoBinaryOperator(Ty<'ctx>, Ty<'ctx>, OperatorKind),
     CannotDereference(Ty<'ctx>),
     InvalidPointerEquality(Ty<'ctx>),
+    CannotCast(Ty<'ctx>, Ty<'ctx>),
+    CannotMatchAgainst(Ty<'ctx>, Ty<'ctx>),
 }
 
 impl<'ctx> TypeError<'ctx> {
@@ -85,6 +87,16 @@ impl<'ctx> TypeError<'ctx> {
             }
             TypeError::InvalidPointerEquality(ty) => {
                 format!("cannot use pointer equality for type '{}'", ty.format(gcx))
+            }
+            TypeError::CannotCast(ty, ty1) => {
+                format!("cannot cast '{}' to '{}", ty.format(gcx), ty1.format(gcx))
+            }
+            TypeError::CannotMatchAgainst(ty, ty1) => {
+                format!(
+                    "cannot match '{}' to '{}, add a supporting '~=' operator",
+                    ty.format(gcx),
+                    ty1.format(gcx)
+                )
             }
         }
     }
