@@ -1,7 +1,7 @@
 use super::package::Actor;
 use crate::literal::convert_ast_literal;
 use taroc_ast::{self, BinaryOperator};
-use taroc_hir::{ExpressionKind, Literal, WhenExpressionKind};
+use taroc_hir::{ExpressionKind, Literal};
 use taroc_span::{Identifier, Span};
 
 impl Actor<'_> {
@@ -118,8 +118,7 @@ impl Actor<'_> {
             taroc_ast::ExpressionKind::OptionalUnwrap(..) => todo!(),
             taroc_ast::ExpressionKind::OptionalEvaluation(..) => todo!(),
             taroc_ast::ExpressionKind::Pipe(..) => todo!(),
-            taroc_ast::ExpressionKind::OptionalBinding(..) => todo!(),
-            taroc_ast::ExpressionKind::MatchBinding(..) => todo!(),
+            taroc_ast::ExpressionKind::PatternBinding(..) => todo!(),
             taroc_ast::ExpressionKind::OptionalDefault(..) => todo!(),
             taroc_ast::ExpressionKind::Ensure(..) => todo!(),
             taroc_ast::ExpressionKind::Range(..) => todo!(),
@@ -252,18 +251,6 @@ impl Actor<'_> {
         &mut self,
         node: taroc_ast::WhenExpression,
     ) -> taroc_hir::WhenExpression {
-        let kind = if node.value.is_none() || node.arms.is_empty() {
-            WhenExpressionKind::Expression
-        } else {
-            if matches!(
-                node.arms.first().unwrap().kind,
-                taroc_ast::WhenArmKind::Pattern(..)
-            ) {
-                WhenExpressionKind::Pattern
-            } else {
-                WhenExpressionKind::Expression
-            }
-        };
         taroc_hir::WhenExpression {
             value: if let Some(value) = node.value {
                 self.lower_expression(value)
@@ -271,23 +258,12 @@ impl Actor<'_> {
                 self.mk_expression(ExpressionKind::Literal(Literal::Bool(true)), node.kw_span)
             },
             arms: self.lower_sequence(node.arms, |this, arm| this.lower_when_arm(arm)),
-            kind,
         }
     }
 
     fn lower_when_arm(&mut self, node: taroc_ast::WhenArm) -> taroc_hir::WhenArm {
-        let kind = match node.kind {
-            taroc_ast::WhenArmKind::Pattern(node) => {
-                taroc_hir::WhenArmKind::Pattern(self.lower_matching_pattern(node))
-            }
-            taroc_ast::WhenArmKind::Expression(nodes) => taroc_hir::WhenArmKind::Expression(
-                self.lower_sequence(nodes.conditions, |this, node| this.lower_expression(node)),
-            ),
-            taroc_ast::WhenArmKind::Default => taroc_hir::WhenArmKind::Default,
-        };
-
         taroc_hir::WhenArm {
-            kind,
+            pattern: self.lower_pattern(node.pattern),
             span: node.span,
             body: self.lower_expression(node.body),
             guard: self.lower_optional(node.guard, |this, node| this.lower_expression(node)),

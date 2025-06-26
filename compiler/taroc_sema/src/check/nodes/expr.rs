@@ -7,7 +7,7 @@ use crate::{
         solver::{
             BinaryOperatorGoal, FieldAccessGoal, Goal, MethodCallGoal, Obligation,
             OverloadArgument, OverloadGoal, TupleAccessGoal, UnaryOperatorGoal, cast::CastGoal,
-            when::WhenCaseGoal,
+            pattern::PatternResolutionGoal,
         },
     },
     infer::fn_var::FnVarData,
@@ -905,37 +905,23 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
 
 impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
     fn check_when_expression(&self, node: &taroc_hir::WhenExpression, span: Span) -> Ty<'ctx> {
-        match node.kind {
-            taroc_hir::WhenExpressionKind::Expression => {
-                self.check_when_expression_kind_expression(node, span)
-            }
-            taroc_hir::WhenExpressionKind::Pattern => {
-                self.check_when_pattern_kind_expression(node, span)
-            }
-        }
-    }
-
-    fn check_when_pattern_kind_expression(
-        &self,
-        node: &taroc_hir::WhenExpression,
-        span: Span,
-    ) -> Ty<'ctx> {
         let alpha = self.check_expression(&node.value); // type of scrutinee
         let rho = self.next_ty_var(span); // result type of when block
 
         // Patterns
         for arm in node.arms.iter() {
-            match &arm.kind {
-                taroc_hir::WhenArmKind::Pattern(pat) => {
-                    // instantiate types for each local variable
-                    GatherLocalsVisitor::gather_from_when_arm(self, pat);
-                }
-                taroc_hir::WhenArmKind::Expression(_) => {
-                    unreachable!("ICE: cannot check when pattern kind with expression arm")
-                }
+            // instantiate types for each local variable
+            GatherLocalsVisitor::gather_from_when_arm(self, &arm.pattern);
+            // add constraints to check pattern node later down the line
+            let goal = PatternResolutionGoal {
+                pattern: self.gcx.unsafe_ref(&arm.pattern),
+                scrutinee_ty: alpha,
+            };
 
-                _ => {}
-            }
+            self.add_obligation(Obligation {
+                location: arm.pattern.span,
+                goal: Goal::PatternResolution(goal),
+            });
         }
 
         // Expressions
@@ -943,49 +929,6 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             if let Some(guard) = &arm.guard {
                 let guard_ty = self.check_expression(&guard);
                 self.add_coercion_constraint(guard_ty, self.common_types().bool, guard.span);
-            }
-
-            let arm_ty = self.check_expression(&arm.body);
-            self.add_coercion_constraint(arm_ty, rho, arm.body.span);
-        }
-
-        rho
-    }
-
-    fn check_when_expression_kind_expression(
-        &self,
-        node: &taroc_hir::WhenExpression,
-        span: Span,
-    ) -> Ty<'ctx> {
-        let alpha = self.check_expression(&node.value); // type of scrutinee
-        let rho = self.next_ty_var(span); // result type of when block
-
-        // Expressions
-        for arm in node.arms.iter() {
-            if let Some(guard) = &arm.guard {
-                let guard_ty = self.check_expression(&guard);
-                self.add_coercion_constraint(guard_ty, self.common_types().bool, guard.span);
-            }
-
-            match &arm.kind {
-                taroc_hir::WhenArmKind::Expression(expressions) => {
-                    for expression in expressions {
-                        let k = self.check_expression(expression);
-                        let goal = WhenCaseGoal {
-                            span: expression.span,
-                            scrutinee_ty: alpha,
-                            ty: k,
-                        };
-                        self.add_obligation(Obligation {
-                            location: expression.span,
-                            goal: Goal::WhenCase(goal),
-                        });
-                    }
-                }
-                taroc_hir::WhenArmKind::Default => {}
-                taroc_hir::WhenArmKind::Pattern(_) => {
-                    unreachable!("ICE: cannot check when expression kind with pattern arm")
-                }
             }
 
             let arm_ty = self.check_expression(&arm.body);

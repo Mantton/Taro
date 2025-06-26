@@ -1,14 +1,14 @@
 use super::resolver::Resolver;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use taroc_error::CompileResult;
 use taroc_hir::{
-    BindingMode, Declaration, DefinitionID, DefinitionKind, MatchingPatternKind, NodeID,
-    PartialResolution, Resolution, SelfTypeAlias, SymbolNamespace,
+    Declaration, DefinitionID, DefinitionKind, NodeID, PartialResolution, PatternKind, Resolution,
+    SelfTypeAlias, SymbolNamespace,
     visitor::{self, AssocContext, HirVisitor},
 };
 use taroc_resolve_models::{
-    BindingError, ContextOrResolutionRoot, LexicalScope, LexicalScopeSource, MatchPatternSource,
-    ParentScope, PatBoundCtx, PathResult, PathSource, PatternSource, ResolutionError, Segment,
+    BindingError, ContextOrResolutionRoot, LexicalScope, LexicalScopeSource, ParentScope,
+    PatBoundCtx, PathResult, PathSource, PatternSource, ResolutionError, Segment,
 };
 use taroc_span::{FileID, Identifier, Span, Spanned, Symbol};
 
@@ -505,7 +505,7 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
             self.visit_expression(expr)
         }
 
-        self.resolve_top_level_binding_pattern(&local.pattern, PatternSource::Variable);
+        self.resolve_top_level_pattern(&local.pattern, PatternSource::Variable);
     }
 
     fn resolve_function_signature(&mut self, sg: &taroc_hir::FunctionSignature) {
@@ -516,7 +516,7 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
         self.resolve_function_parameters(&sg.prototype.inputs);
     }
     fn resolve_function_parameters(&mut self, params: &Vec<taroc_hir::FunctionParameter>) {
-        let mut seen = FxHashSet::default();
+        let mut bindings = vec![(PatBoundCtx::Product, Default::default())];
         for param in params.iter() {
             self.visit_type(&param.annotated_type);
 
@@ -524,90 +524,16 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
                 self.visit_expression(e)
             }
 
-            let pat = taroc_hir::BindingPattern {
+            let pat = taroc_hir::Pattern {
                 id: param.id,
                 span: param.span,
-                kind: taroc_hir::BindingPatternKind::Identifier(param.name.clone()),
+                kind: taroc_hir::PatternKind::Identifier(param.name),
             };
 
-            self.resolve_binding_pattern(&pat, PatternSource::FunctionParameter, &mut seen);
-        }
-    }
-}
-
-impl<'res, 'ctx> Actor<'res, 'ctx> {
-    fn resolve_top_level_binding_pattern(
-        &mut self,
-        pat: &taroc_hir::BindingPattern,
-        source: PatternSource,
-    ) {
-        let mut bindings = FxHashSet::default();
-        self.resolve_binding_pattern(pat, source, &mut bindings)
-    }
-    fn resolve_binding_pattern(
-        &mut self,
-        pat: &taroc_hir::BindingPattern,
-        source: PatternSource,
-        bindings: &mut FxHashSet<Symbol>,
-    ) {
-        match &pat.kind {
-            taroc_hir::BindingPatternKind::Wildcard => {}
-            taroc_hir::BindingPatternKind::Identifier(identifier) => {
-                let res = self
-                    .try_resolve_as_non_binding(source, &identifier)
-                    .unwrap_or_else(|| {
-                        self.fresh_var_from_binding_pattern(&identifier, pat.id, source, bindings)
-                    });
-
-                self.resolver
-                    .record_resolution(pat.id, PartialResolution::new(res));
-            }
-            taroc_hir::BindingPatternKind::Tuple(binding_patterns) => {
-                for pattern in binding_patterns {
-                    self.resolve_binding_pattern(pattern, source, bindings);
-                }
-            }
-        }
-    }
-
-    fn try_resolve_as_non_binding(
-        &mut self,
-        _source: PatternSource,
-        _ident: &Identifier,
-    ) -> Option<Resolution> {
-        return None;
-    }
-    fn fresh_var_from_binding_pattern(
-        &mut self,
-        ident: &Identifier,
-        id: NodeID,
-        source: PatternSource,
-        bindings: &mut FxHashSet<Symbol>,
-    ) -> Resolution {
-        let seen = bindings.contains(&ident.symbol);
-
-        if seen {
-            let err = match source {
-                PatternSource::FunctionParameter => {
-                    ResolutionError::IdentifierBoundMoreThanOnceInParameterList
-                }
-                _ => ResolutionError::IdentifierBoundMoreThanOnceInSamePattern,
-            };
-
-            self.report_error(err, ident.span);
+            self.resolve_pattern_inner(&pat, PatternSource::FunctionParameter, &mut bindings);
         }
 
-        let res = Resolution::Local(id);
-
-        bindings.insert(ident.symbol.clone());
-
-        let indx = self.scopes.len() - 1;
-        self.scopes
-            .get_mut(indx)
-            .unwrap()
-            .define(ident.symbol, res.clone());
-
-        return res;
+        self.apply_pattern_bindings(bindings);
     }
 }
 
@@ -616,16 +542,7 @@ type PatternBindings = Vec<(PatBoundCtx, FxHashMap<Symbol, Resolution>)>;
 impl<'res, 'ctx> Actor<'res, 'ctx> {
     fn resolve_when_arm(&mut self, node: &taroc_hir::WhenArm) {
         self.with_scope(LexicalScopeSource::Plain, |this| {
-            match &node.kind {
-                taroc_hir::WhenArmKind::Pattern(pat) => {
-                    this.resolve_top_level_matching_pattern(pat, MatchPatternSource::WhenArm)
-                }
-                taroc_hir::WhenArmKind::Expression(exprs) => {
-                    exprs.iter().for_each(|expr| this.visit_expression(expr));
-                }
-                taroc_hir::WhenArmKind::Default => {}
-            }
-
+            this.resolve_top_level_pattern(&node.pattern, PatternSource::WhenArm);
             if let Some(guard) = &node.guard {
                 this.visit_expression(guard)
             }
@@ -633,13 +550,9 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
         })
     }
 
-    fn resolve_top_level_matching_pattern(
-        &mut self,
-        pat: &taroc_hir::MatchingPattern,
-        source: MatchPatternSource,
-    ) {
+    fn resolve_top_level_pattern(&mut self, pat: &taroc_hir::Pattern, source: PatternSource) {
         let mut bindings = vec![(PatBoundCtx::Product, Default::default())];
-        self.resolve_match_pattern(pat, source, &mut bindings);
+        self.resolve_pattern(pat, source, &mut bindings);
         self.apply_pattern_bindings(bindings);
     }
 
@@ -657,52 +570,52 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
         }
     }
 
-    fn resolve_match_pattern(
+    fn resolve_pattern(
         &mut self,
-        pat: &taroc_hir::MatchingPattern,
-        source: MatchPatternSource,
+        pat: &taroc_hir::Pattern,
+        source: PatternSource,
         bindings: &mut PatternBindings,
     ) {
-        self.resolve_match_pattern_inner(pat, source, bindings);
+        self.resolve_pattern_inner(pat, source, bindings);
         self.check_match_pattern_consistency(pat);
     }
 
-    fn resolve_match_pattern_inner(
+    fn resolve_pattern_inner(
         &mut self,
-        pat: &taroc_hir::MatchingPattern,
-        source: MatchPatternSource,
+        pat: &taroc_hir::Pattern,
+        source: PatternSource,
         bindings: &mut PatternBindings,
     ) {
         pat.walk(&mut |pat| {
             match &pat.kind {
-                taroc_hir::MatchingPatternKind::Wildcard
-                | taroc_hir::MatchingPatternKind::Literal(_)
-                | taroc_hir::MatchingPatternKind::Tuple(..) => {}
-                taroc_hir::MatchingPatternKind::Binding(_, ident) => {
-                    let res = self.fresh_match_binding(*ident, pat.id, bindings);
+                taroc_hir::PatternKind::Wildcard
+                | taroc_hir::PatternKind::Literal(_)
+                | taroc_hir::PatternKind::Tuple(..) => {}
+                taroc_hir::PatternKind::Identifier(ident) => {
+                    let res = self.fresh_var_binding(*ident, pat.id, bindings, source);
                     self.resolver
                         .record_resolution(pat.id, PartialResolution::new(res));
                 }
-                taroc_hir::MatchingPatternKind::Path(path) => {
+                taroc_hir::PatternKind::Path(path) => {
                     self.resolve_path_with_source(pat.id, path, PathSource::MatchPatternUnit);
                 }
-                taroc_hir::MatchingPatternKind::PathTuple(path, ..) => {
+                taroc_hir::PatternKind::PathTuple(path, ..) => {
                     self.resolve_path_with_source(
                         pat.id,
                         path,
                         PathSource::MatchPatternTupleStruct,
                     );
                 }
-                taroc_hir::MatchingPatternKind::PathStruct(path, ..) => {
+                taroc_hir::PatternKind::PathStruct(path, ..) => {
                     self.resolve_path_with_source(pat.id, path, PathSource::StructLiteral);
                 }
-                taroc_hir::MatchingPatternKind::Or(pats, _) => {
+                taroc_hir::PatternKind::Or(pats, _) => {
                     // Add new set of bindings
                     bindings.push((PatBoundCtx::Or, Default::default()));
                     for pat in pats {
                         // add another binding set to stack so each subpattern can reject duplicates
                         bindings.push((PatBoundCtx::Product, Default::default()));
-                        self.resolve_match_pattern_inner(pat, source, bindings);
+                        self.resolve_pattern_inner(pat, source, bindings);
                         // Move up the non-overlapping bindings to the or-pattern.
                         // Existing bindings just get "merged".
                         let collected = bindings.pop().unwrap().1;
@@ -723,11 +636,12 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
         });
     }
 
-    fn fresh_match_binding(
+    fn fresh_var_binding(
         &mut self,
         ident: Identifier,
         id: NodeID,
         bindings: &mut PatternBindings,
+        source: PatternSource,
     ) -> Resolution {
         // Already bound in produce pattern: (a, a)
         let already_bound_and = bindings
@@ -735,10 +649,14 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
             .any(|(ctx, map)| *ctx == PatBoundCtx::Product && map.contains_key(&ident.symbol));
 
         if already_bound_and {
-            self.report_error(
-                ResolutionError::IdentifierBoundMoreThanOnceInSamePattern,
-                ident.span,
-            );
+            let err = match source {
+                PatternSource::FunctionParameter => {
+                    ResolutionError::IdentifierBoundMoreThanOnceInParameterList
+                }
+                _ => ResolutionError::IdentifierBoundMoreThanOnceInSamePattern,
+            };
+
+            self.report_error(err, ident.span);
         }
 
         let already_bound_or = bindings.iter().find_map(|(ctx, map)| {
@@ -762,15 +680,16 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
             .unwrap()
             .1
             .insert(ident.symbol, res.clone());
+
         res
     }
 }
 
 impl<'res, 'ctx> Actor<'res, 'ctx> {
-    fn check_match_pattern_consistency(&mut self, pattern: &taroc_hir::MatchingPattern) {
+    fn check_match_pattern_consistency(&mut self, pattern: &taroc_hir::Pattern) {
         let mut is_or_pattern = false;
         pattern.walk(&mut |pat| match pat.kind {
-            MatchingPatternKind::Or(..) => {
+            PatternKind::Or(..) => {
                 is_or_pattern = true;
                 false
             }
@@ -792,16 +711,16 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
     }
     fn compute_and_check_match_pattern_binding_map(
         &mut self,
-        pat: &taroc_hir::MatchingPattern,
-    ) -> FxHashMap<Symbol, (Span, BindingMode)> {
+        pat: &taroc_hir::Pattern,
+    ) -> FxHashMap<Symbol, Span> {
         let mut map = FxHashMap::default();
 
         pat.walk(&mut |pat| {
             match &pat.kind {
-                MatchingPatternKind::Binding(mode, ident) if self.is_base_res_local(pat.id) => {
-                    map.insert(ident.symbol, (ident.span, *mode));
+                PatternKind::Identifier(ident) if self.is_base_res_local(pat.id) => {
+                    map.insert(ident.symbol, ident.span);
                 }
-                MatchingPatternKind::Or(sub_patterns, _) => {
+                PatternKind::Or(sub_patterns, _) => {
                     let res = self.compute_and_check_or_match_pattern_binding_map(sub_patterns);
                     map.extend(res);
                 }
@@ -816,10 +735,9 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
 
     fn compute_and_check_or_match_pattern_binding_map(
         &mut self,
-        pats: &[taroc_hir::MatchingPattern],
-    ) -> FxHashMap<Symbol, (Span, BindingMode)> {
+        pats: &[taroc_hir::Pattern],
+    ) -> FxHashMap<Symbol, Span> {
         let mut missing_vars = FxHashMap::default();
-        let mut inconsistent_vars = FxHashMap::default();
 
         let binding_maps = pats
             .iter()
@@ -836,15 +754,8 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
                 .filter(|(_, p)| p.id != pat_outer.id)
                 .flat_map(|(m, _)| m);
 
-            for (&name, binding) in others {
+            for (&name, &span) in others {
                 match map_outer.get(&name) {
-                    Some(outer) => {
-                        if outer.1 != binding.1 {
-                            inconsistent_vars
-                                .entry(name)
-                                .or_insert((binding.0, outer.0));
-                        }
-                    }
                     None => {
                         let err = missing_vars.entry(name).or_insert_with(|| BindingError {
                             name,
@@ -852,9 +763,10 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
                             target: Default::default(),
                         });
 
-                        err.origin.insert(binding.0);
+                        err.origin.insert(span);
                         err.target.insert(pat_outer.span);
                     }
+                    _ => {}
                 }
             }
         }
@@ -862,10 +774,6 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
         for (_, v) in missing_vars {
             let span = *v.origin.iter().next().unwrap();
             self.report_error(ResolutionError::VariableNotBoundInPattern(v), span);
-        }
-
-        for (name, x) in inconsistent_vars {
-            self.report_error(ResolutionError::InconsistentBindingMode(name, x.1), x.0);
         }
 
         let mut binding_map = FxHashMap::default();

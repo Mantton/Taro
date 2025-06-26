@@ -371,3 +371,9 @@ impl<'ctx> GlobalContext<'ctx> {
         crate::ty::ConformanceResult::NotConformant
     }
 }
+
+impl<'ctx> GlobalContext<'ctx> {
+    pub fn unsafe_ref<T>(&self, a: &T) -> &'ctx T {
+        unsafe { std::mem::transmute(a) }
+    }
+}

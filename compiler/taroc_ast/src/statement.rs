@@ -1,9 +1,10 @@
-use taroc_span::{Identifier, Span};
+use crate::Pattern;
 
 use super::{
     block::Block, declaration::FunctionDeclaration, expression::Expression, label::Label,
-    local::Local, pattern::BindingPattern,
+    local::Local,
 };
+use taroc_span::{Identifier, Span};
 
 #[derive(Debug)]
 pub struct Statement {
@@ -42,7 +43,7 @@ pub struct WhileStatement {
 #[derive(Debug)]
 pub struct ForStatement {
     pub label: Option<Label>,
-    pub pattern: BindingPattern,
+    pub pattern: Pattern,
     pub iterator: Box<Expression>,
     pub clause: Option<Box<Expression>>,
     pub block: Block,

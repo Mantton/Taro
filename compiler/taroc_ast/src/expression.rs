@@ -1,9 +1,9 @@
 use super::{
-    Block, FunctionSignature, Label, Literal, MatchingPattern, Path, PathSegment,
-    StatementConditionList, Type,
+    Block, FunctionSignature, Label, Literal, Path, PathSegment, Pattern, StatementConditionList,
+    Type,
 };
-use taroc_ast_ir::{BinaryOperator, Mutability, UnaryOperator};
-use taroc_span::{Identifier, Span};
+use taroc_ast_ir::{BinaryOperator, UnaryOperator};
+use taroc_span::Span;
 
 #[derive(Debug)]
 pub struct Expression {
@@ -28,9 +28,7 @@ pub enum ExpressionKind {
     /// `if foo { } else { }`
     If(IfExpression),
     /// `when foo {
-    ///     _ => ...
-    ///     <expr> => ...
-    ///     is <pattern> => ...
+    ///     <pattern> => ...
     /// }`
     When(WhenExpression),
     /// `main()`
@@ -65,38 +63,20 @@ pub enum ExpressionKind {
     OptionalEvaluation(Box<Expression>),
     /// `a |> b`
     Pipe(Box<Expression>, Box<Expression>),
-    /// A Binding Condition used to unwrap an optional value, conditions may only appear `if`, `guard` & `while` conditions
-    ///
-    /// `if let foo {}`
-    ///
-    /// `if let foo = bar {}`
-    ///
-    /// `guard let foo else { return }`
-    ///
-    /// `guard let foo = bar else { return }`
-    ///
-    /// `while let foo {}`
-    ///
-    /// `while let foo = bar {}`
-    OptionalBinding(OptionalBindingCondition),
     /// A Binding Condition used for Tagged Unions
     ///
-    /// `if match foo to Option::Some(value) {}`
+    /// `if let Option::Some(value) = foo {}`
     ///
-    /// `guard match foo to Option::Some(value)  else { return }`
+    /// `guard let Option::Some(value) = foo else { return }`
     ///
-    /// `while match foo to Option::Some(value) {}`
-    MatchBinding(PatternBindingCondition),
+    /// `while let Option::Some(value) = foo {}`
+    PatternBinding(PatternBindingCondition),
     /// `a ?? b`
     OptionalDefault(Box<Expression>, Box<Expression>),
-    /// An ensure statement offers a cleaner way to deal with the `Result<T, E>` type.
+    /// An ensure statement offers a cleaner way to deal with the `Result<T, E>` or `Option<T>` type.
     ///
-    /// `let foo = ensure bar()` // `foo` will be of type `T` or the function will return `Result.Failure(E)`
-    ///
-    /// `let foo = ensure? bar()` // `foo` will be of type `Optional<T>`, the function will not return early, rather the error value will be discarded
-    ///
-    /// `let foo = ensure! bar()` // `foo` will be of type `T` if the result expects Result<Option<T>>, the function will not return early, rather the error value will be discarded
-    Ensure(EnsureMode, Box<Expression>),
+    /// `let foo = ensure bar()` // `foo` will be of type `T` or the function will return `Result.Failure(E)` | Option.None
+    Ensure(Box<Expression>),
     /// lhs..rhs | lhs..=rhs, bool indicates inclusiveness
     Range(Box<Expression>, Box<Expression>, bool),
     /// `_`
@@ -131,20 +111,10 @@ pub struct WhenExpression {
 
 #[derive(Debug)]
 pub struct WhenArm {
-    pub kind: WhenArmKind,
+    pub pattern: Pattern,
     pub body: Box<Expression>,
     pub guard: Option<Box<Expression>>,
     pub span: Span,
-}
-
-#[derive(Debug)]
-pub enum WhenArmKind {
-    // is <Pat> =>
-    Pattern(MatchingPattern),
-    // <expr> =>
-    Expression(StatementConditionList),
-    // _ =>
-    Default,
 }
 
 #[derive(Debug)]
@@ -152,13 +122,6 @@ pub struct ExpressionArgument {
     pub label: Option<Label>,
     pub expression: Box<Expression>,
     pub span: Span,
-}
-
-#[derive(Debug)]
-pub enum EnsureMode {
-    Full,     // !
-    Partial,  // ?
-    Inherent, //
 }
 
 #[derive(Debug)]
@@ -177,18 +140,10 @@ pub struct MethodCall {
 }
 
 #[derive(Debug)]
-pub struct OptionalBindingCondition {
-    pub is_shorthand: bool,
-    pub identifier: Identifier,
-    pub expression: Option<Box<Expression>>,
-    pub mutability: Mutability,
-    pub span: Span,
-}
-
-#[derive(Debug)]
 pub struct PatternBindingCondition {
-    pub pattern: MatchingPattern,
+    pub pattern: Pattern,
     pub expression: Box<Expression>,
+    pub shorthand: bool,
     pub span: Span,
 }
 

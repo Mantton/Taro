@@ -1,10 +1,10 @@
 use super::package::{Parser, R};
 use std::collections::HashMap;
 use taroc_ast::{
-    AssociatedDeclaration, AssociatedDeclarationKind, BindingPatternKind, Bridge, BridgeValue,
-    ConstantDeclaration, Declaration, DeclarationKind, EnumDefinition, Extend, Extern,
-    ForeignDeclaration, ForeignDeclarationKind, FunctionDeclaration, FunctionDeclarationKind,
-    Generics, InterfaceDefinition, Local, Mutability, Namespace, PathTree, PathTreeNode,
+    AssociatedDeclaration, AssociatedDeclarationKind, Bridge, BridgeValue, ConstantDeclaration,
+    Declaration, DeclarationKind, EnumDefinition, Extend, Extern, ForeignDeclaration,
+    ForeignDeclarationKind, FunctionDeclaration, FunctionDeclarationKind, Generics,
+    InterfaceDefinition, Local, Mutability, Namespace, PathTree, PathTreeNode, PatternKind,
     StructDefinition, TypeAlias, VariantKind,
 };
 use taroc_span::{Identifier, SpannedMessage, Symbol};
@@ -237,10 +237,10 @@ impl Parser {
             unreachable!()
         };
 
-        let pattern = self.parse_binding_pat()?;
+        let pattern = self.parse_pattern()?;
         let ident =
             match pattern.kind {
-                BindingPatternKind::Identifier(identifier) => identifier,
+                PatternKind::Identifier(identifier) => identifier,
                 _ => return Err(SpannedMessage::new(
                     "Top Level Variables and Constants MUST use Identifier Binding Pattern Only"
                         .into(),

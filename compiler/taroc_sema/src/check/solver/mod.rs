@@ -1,6 +1,6 @@
 use crate::{
     GlobalContext,
-    check::solver::{cast::CastGoal, when::WhenCaseGoal},
+    check::solver::{cast::CastGoal, pattern::PatternResolutionGoal},
     error::TypeError,
     infer::InferCtx,
     ty::{Constraint, ParamEnv, Ty},
@@ -16,8 +16,8 @@ mod constraint;
 mod field;
 mod method;
 mod op;
+pub mod pattern;
 mod unify;
-pub mod when;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Goal<'ctx> {
@@ -31,7 +31,7 @@ pub enum Goal<'ctx> {
     BinaryOperator(BinaryOperatorGoal<'ctx>),
     IndexOperator(OverloadGoal<'ctx>),
     Cast(CastGoal<'ctx>),
-    WhenCase(WhenCaseGoal<'ctx>),
+    PatternResolution(PatternResolutionGoal<'ctx>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -253,7 +253,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
             Goal::BinaryOperator(goal) => self.solve_binary(goal),
             Goal::IndexOperator(goal) => self.solve_subscript(goal),
             Goal::Cast(goal) => self.solve_cast(goal),
-            Goal::WhenCase(goal) => self.solve_when_case_goal(goal),
+            Goal::PatternResolution(goal) => self.solve_pattern_resolve(goal),
         }
     }
 }

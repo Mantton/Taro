@@ -38,7 +38,6 @@ pub enum TokenKind {
     Let,
     Var,
     Const,
-    Mut,
     Readonly,
 
     If,
@@ -62,23 +61,20 @@ pub enum TokenKind {
 
     As,
     In,
-    Is,
     Where,
-    Match,
 
     Some,
     Any,
 
-    Assign,     // =, Variable Assignment
-    DeclareVar, // :=, Variable Declaration
-    Plus,       // +, Arithmetic Add
-    Minus,      // -, Arithmetic Sub
-    Star,       // *, Arithmetic Mul
-    Quotient,   // /, Arithmetic Div
-    Modulus,    // %, Arithmetic Remainder
-    Amp,        // &, Bitwise And,
-    Bang,       // !, Binary Not
-    Tilde,      // ~, Bitwise Not
+    Assign,   // =, Variable Assignment
+    Plus,     // +, Arithmetic Add
+    Minus,    // -, Arithmetic Sub
+    Star,     // *, Arithmetic Mul
+    Quotient, // /, Arithmetic Div
+    Modulus,  // %, Arithmetic Remainder
+    Amp,      // &, Bitwise And,
+    Bang,     // !, Binary Not
+    Tilde,    // ~, Bitwise Not
 
     LChevron, // <
     RChevron, // >
@@ -187,7 +183,6 @@ impl Display for TokenKind {
             TokenKind::In => "in",
             TokenKind::Where => "where",
             TokenKind::Assign => "=",
-            TokenKind::DeclareVar => ":=",
             TokenKind::Plus => "+",
             TokenKind::Minus => "-",
             TokenKind::Star => "*",
@@ -244,16 +239,13 @@ impl Display for TokenKind {
             TokenKind::DotDot => "..",
             TokenKind::DotDotEq => "..=",
             TokenKind::Namespace => "namespace",
-            TokenKind::Match => "match",
             TokenKind::When => "when",
             TokenKind::EqArrow => "=>",
-            TokenKind::Is => "is",
             TokenKind::Some => "some",
             TokenKind::Any => "any",
             TokenKind::Export => "export",
             TokenKind::PtrEq => "===",
             TokenKind::Operator => "operator",
-            TokenKind::Mut => "mut",
             TokenKind::Computed => "computed",
             TokenKind::Static => "static",
             TokenKind::Get => "get",
@@ -305,13 +297,10 @@ impl TokenKind {
             "namespace" => TokenKind::Namespace,
             "public" => TokenKind::Public,
             "when" => TokenKind::When,
-            "match" => TokenKind::Match,
-            "is" => TokenKind::Is,
             "some" => TokenKind::Some,
             "any" => TokenKind::Any,
             "export" => TokenKind::Export,
             "operator" => TokenKind::Operator,
-            "mut" => TokenKind::Mut,
             "computed" => TokenKind::Computed,
             "get" => TokenKind::Get,
             "set" => TokenKind::Set,

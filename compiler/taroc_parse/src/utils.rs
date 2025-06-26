@@ -258,14 +258,10 @@ impl Parser {
     }
 
     pub fn parse_mutability(&mut self) -> Mutability {
-        if self.eat(TokenKind::Mut) {
-            Mutability::Mutable
-        } else {
-            if self.eat(TokenKind::Const) {
-                let message = format!("unnecessary `const` modifier");
-                self.emit_warning(message, self.previous().unwrap().span);
-            }
+        if self.eat(TokenKind::Const) {
             Mutability::Immutable
+        } else {
+            Mutability::Mutable
         }
     }
 }

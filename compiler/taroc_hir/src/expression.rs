@@ -5,7 +5,7 @@ use super::{
     label::Label,
     literal::Literal,
     path::{Path, PathSegment},
-    pattern::MatchingPattern,
+    pattern::Pattern,
     ty::Type,
 };
 use taroc_ast_ir::{BinaryOperator, UnaryOperator};
@@ -140,7 +140,7 @@ pub struct MethodCall {
 #[derive(Debug, Clone)]
 pub struct PatternBindingCondition {
     pub expression: Box<Expression>,
-    pub pattern: MatchingPattern,
+    pub pattern: Pattern,
     pub span: Span,
 }
 
@@ -168,29 +168,12 @@ pub struct StructLiteral {
 pub struct WhenExpression {
     pub value: Box<Expression>,
     pub arms: Vec<WhenArm>,
-    pub kind: WhenExpressionKind,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum WhenExpressionKind {
-    Expression,
-    Pattern,
 }
 
 #[derive(Debug, Clone)]
 pub struct WhenArm {
-    pub kind: WhenArmKind,
+    pub pattern: Pattern,
     pub body: Box<Expression>,
     pub guard: Option<Box<Expression>>,
     pub span: Span,
-}
-
-#[derive(Debug, Clone)]
-pub enum WhenArmKind {
-    // is <Pat> =>
-    Pattern(MatchingPattern),
-    // <expr> =>
-    Expression(Vec<Box<Expression>>),
-
-    Default,
 }

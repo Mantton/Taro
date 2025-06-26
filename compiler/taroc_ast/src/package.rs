@@ -1,6 +1,5 @@
-use taroc_span::{FileID, Symbol};
-
 use super::Declaration;
+use taroc_span::{FileID, Symbol};
 
 #[derive(Debug)]
 pub struct Package {

@@ -1,75 +1,76 @@
 use super::{NodeID, expression::AnonConst, path::Path};
-use taroc_ast_ir::BindingMode;
 use taroc_span::{Identifier, Span};
 
 #[derive(Debug, Clone)]
-pub struct MatchingPattern {
+pub struct Pattern {
     pub id: NodeID,
     pub span: Span,
-    pub kind: MatchingPatternKind,
+    pub kind: PatternKind,
 }
 
 #[derive(Debug, Clone)]
-pub enum MatchingPatternKind {
+pub enum PatternKind {
     /// _
     Wildcard,
-    // foo | var foo
-    Binding(BindingMode, Identifier),
+    // foo
+    Identifier(Identifier),
     // (a, b)
-    Tuple(Vec<MatchingPattern>, Span),
-    // Foo::Bar(a, b)
+    Tuple(Vec<Pattern>, Span),
+    // Foo::Bar
     Path(Path),
     // Foo::Bar(a, b)
-    PathTuple(Path, Vec<MatchingPattern>, Span),
+    PathTuple(Path, Vec<Pattern>, Span),
     // Foo::Bar { a, b, .. }
     PathStruct(Path, Vec<PatternField>, Span, bool),
     // Foo | Bar
-    Or(Vec<MatchingPattern>, Span),
+    Or(Vec<Pattern>, Span),
     // Anon Consts in Pattern Type
     Literal(AnonConst),
-}
-
-#[derive(Debug, Clone)]
-pub struct BindingPattern {
-    pub id: NodeID,
-    pub span: Span,
-    pub kind: BindingPatternKind,
-}
-
-#[derive(Debug, Clone)]
-pub enum BindingPatternKind {
-    Wildcard,
-    Identifier(Identifier),
-    Tuple(Vec<BindingPattern>),
 }
 
 #[derive(Debug, Clone)]
 pub struct PatternField {
     pub id: NodeID,
     pub identifier: Identifier,
-    pub pattern: MatchingPattern,
+    pub pattern: Pattern,
     pub span: Span,
 }
 
-impl MatchingPattern {
-    pub fn walk(&self, action: &mut impl FnMut(&MatchingPattern) -> bool) {
+impl Pattern {
+    pub fn walk(&self, action: &mut impl FnMut(&Pattern) -> bool) {
         if !action(self) {
             return;
         }
 
         match &self.kind {
-            MatchingPatternKind::Wildcard
-            | MatchingPatternKind::Literal(..)
-            | MatchingPatternKind::Binding(..)
-            | MatchingPatternKind::Path(..) => {}
-            MatchingPatternKind::PathStruct(_, fields, ..) => {
+            PatternKind::Wildcard
+            | PatternKind::Literal(..)
+            | PatternKind::Identifier(..)
+            | PatternKind::Path(..) => {}
+            PatternKind::PathStruct(_, fields, ..) => {
                 fields.iter().for_each(|f| f.pattern.walk(action))
             }
-            MatchingPatternKind::Tuple(sub_pats, ..)
-            | MatchingPatternKind::PathTuple(_, sub_pats, _)
-            | MatchingPatternKind::Or(sub_pats, _) => {
+            PatternKind::Tuple(sub_pats, ..)
+            | PatternKind::PathTuple(_, sub_pats, _)
+            | PatternKind::Or(sub_pats, _) => {
                 sub_pats.iter().for_each(|p| p.walk(action));
             }
         }
+    }
+}
+
+use std::hash::{Hash, Hasher};
+
+impl PartialEq for Pattern {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for Pattern {}
+
+impl Hash for Pattern {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
     }
 }

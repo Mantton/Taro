@@ -1,6 +1,6 @@
 use taroc_hir::{
-    MatchingPatternKind, NodeID,
-    visitor::{HirVisitor, walk_matching_pattern},
+    NodeID, PatternKind,
+    visitor::{HirVisitor, walk_pattern},
 };
 use taroc_span::Span;
 
@@ -11,9 +11,9 @@ pub(super) struct GatherLocalsVisitor<'rcx, 'gcx> {
 }
 
 impl<'rcx, 'gcx> GatherLocalsVisitor<'rcx, 'gcx> {
-    pub fn gather_from_when_arm(fcx: &'rcx FnCtx<'rcx, 'gcx>, pat: &taroc_hir::MatchingPattern) {
+    pub fn gather_from_when_arm(fcx: &'rcx FnCtx<'rcx, 'gcx>, pat: &taroc_hir::Pattern) {
         let mut v = GatherLocalsVisitor { fcx };
-        v.visit_matching_pattern(pat)
+        v.visit_pattern(pat)
     }
 
     fn assign(&mut self, span: Span, id: NodeID) -> Ty<'gcx> {
@@ -24,11 +24,11 @@ impl<'rcx, 'gcx> GatherLocalsVisitor<'rcx, 'gcx> {
 }
 
 impl HirVisitor for GatherLocalsVisitor<'_, '_> {
-    fn visit_matching_pattern(&mut self, p: &taroc_hir::MatchingPattern) -> Self::Result {
-        let MatchingPatternKind::Binding(..) = &p.kind else {
-            return walk_matching_pattern(self, p);
+    fn visit_pattern(&mut self, p: &taroc_hir::Pattern) -> Self::Result {
+        let PatternKind::Identifier(..) = &p.kind else {
+            return walk_pattern(self, p);
         };
         let _ = self.assign(p.span, p.id);
-        return walk_matching_pattern(self, p);
+        return walk_pattern(self, p);
     }
 }

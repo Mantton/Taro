@@ -2,54 +2,16 @@ use super::{
     package::{Parser, R},
     restrictions::Restrictions,
 };
-use taroc_ast::{
-    BindingMode, BindingPattern, BindingPatternKind, MatchingPattern, MatchingPatternKind,
-    Mutability, PatternField,
-};
+use taroc_ast::{Pattern, PatternField, PatternKind};
 use taroc_span::SpannedMessage;
 use taroc_token::{Delimiter, TokenKind};
 
 impl Parser {
-    pub fn parse_binding_pat(&mut self) -> R<BindingPattern> {
-        if self.matches(TokenKind::Identifier) {
-            let lo = self.lo_span();
-            let ident = self.parse_identifier()?;
-            let kind = BindingPatternKind::Identifier(ident);
-            return Ok(BindingPattern {
-                span: lo.to(self.hi_span()),
-                kind,
-            });
-        } else if self.matches(TokenKind::LParen) {
-            let lo = self.lo_span();
-            let items = self.parse_delimiter_sequence(
-                Delimiter::Parenthesis,
-                TokenKind::Comma,
-                false,
-                |p| p.parse_binding_pat(),
-            )?;
-            let kind = BindingPatternKind::Tuple(items);
-            return Ok(BindingPattern {
-                span: lo.to(self.hi_span()),
-                kind,
-            });
-        } else if self.eat(TokenKind::Underscore) {
-            let span = self.previous().unwrap().span;
-            let kind = BindingPatternKind::Wildcard;
-            return Ok(BindingPattern { span, kind });
-        } else {
-            let msg = format!("expected binding pattern, got {}", self.current_kind());
-            let err = SpannedMessage::new(msg, self.current_token_span());
-            return Err(err);
-        }
-    }
-}
-
-impl Parser {
-    pub fn parse_match_case_pat(&mut self) -> R<MatchingPattern> {
+    pub fn parse_when_arm_pattern(&mut self) -> R<Pattern> {
         let lo = self.lo_span();
         let cases =
-            self.parse_sequence_until(&[TokenKind::EqArrow], TokenKind::Bar, false, |p| {
-                p.parse_match_pat()
+            self.parse_sequence_until(&[TokenKind::EqArrow], TokenKind::Comma, false, |p| {
+                p.parse_pattern()
             })?;
 
         if cases.is_empty() {
@@ -65,18 +27,18 @@ impl Parser {
 
         // has multiple patterns is an or pattern
         let span = lo.to(self.hi_span());
-        let kind = MatchingPatternKind::Or(cases, span);
+        let kind = PatternKind::Or(cases, span);
 
-        let pat = MatchingPattern { span, kind };
+        let pat = Pattern { span, kind };
 
         Ok(pat)
     }
 
-    pub fn parse_match_pat(&mut self) -> R<MatchingPattern> {
+    pub fn parse_pattern(&mut self) -> R<Pattern> {
         let lo = self.lo_span();
-        let k = self.parse_match_pat_kind()?;
+        let k = self.parse_pattern_kind()?;
 
-        let o = MatchingPattern {
+        let o = Pattern {
             span: lo.to(self.hi_span()),
             kind: k,
         };
@@ -84,12 +46,12 @@ impl Parser {
         Ok(o)
     }
 
-    fn parse_match_pat_kind(&mut self) -> R<MatchingPatternKind> {
+    fn parse_pattern_kind(&mut self) -> R<PatternKind> {
         match self.current_kind() {
-            TokenKind::LParen => self.parse_match_tuple_kind(),
+            TokenKind::LParen => self.parse_pattern_tuple_kind(),
             TokenKind::Underscore => {
                 self.bump();
-                Ok(MatchingPatternKind::Wildcard)
+                Ok(PatternKind::Wildcard)
             }
             TokenKind::DotDot => {
                 if !self.restrictions.contains(Restrictions::ALLOW_REST_PATTERN) {
@@ -99,26 +61,26 @@ impl Parser {
                     );
                 }
                 self.bump();
-                Ok(MatchingPatternKind::Rest)
+                Ok(PatternKind::Rest)
             }
-            TokenKind::Var | TokenKind::Identifier => self.parse_match_path_kind(),
+            TokenKind::Var | TokenKind::Identifier => self.parse_pattern_path_kind(),
             _ => {
                 let ac = self.parse_anon_const()?;
-                Ok(MatchingPatternKind::Literal(ac))
+                Ok(PatternKind::Literal(ac))
             }
         }
     }
 
-    fn parse_match_tuple_kind(&mut self) -> R<MatchingPatternKind> {
+    fn parse_pattern_tuple_kind(&mut self) -> R<PatternKind> {
         let lo = self.lo_span();
         let pats =
             self.parse_delimiter_sequence(Delimiter::Parenthesis, TokenKind::Comma, true, |p| {
-                p.parse_match_pat()
+                p.parse_pattern()
             })?;
-        Ok(MatchingPatternKind::Tuple(pats, lo.to(self.hi_span())))
+        Ok(PatternKind::Tuple(pats, lo.to(self.hi_span())))
     }
 
-    fn parse_match_path_kind(&mut self) -> R<MatchingPatternKind> {
+    fn parse_pattern_path_kind(&mut self) -> R<PatternKind> {
         // Cannot Possibly be a path pattern
         if (self.matches(TokenKind::Identifier) | self.matches(TokenKind::Var))
             && !(self.next_matches(1, TokenKind::LChevron)
@@ -126,13 +88,8 @@ impl Parser {
                 | self.next_matches(1, TokenKind::LBrace)
                 | self.next_matches(1, TokenKind::LParen))
         {
-            let mode = BindingMode(if self.eat(TokenKind::Var) {
-                Mutability::Mutable
-            } else {
-                Mutability::Immutable
-            });
             let ident = self.parse_identifier()?;
-            return Ok(MatchingPatternKind::Binding(mode, ident));
+            return Ok(PatternKind::Identifier(ident));
         }
 
         let path = self.parse_path()?;
@@ -140,7 +97,7 @@ impl Parser {
         match self.current_kind() {
             TokenKind::LParen => {
                 // Path-Tuple Kind
-                // Foo::Bar (a, b) | Foo::Bar(label: value)
+                // Foo::Bar (a, b)
                 let lo = self.lo_span();
 
                 let mut res = Restrictions::empty();
@@ -150,25 +107,21 @@ impl Parser {
                         Delimiter::Parenthesis,
                         TokenKind::Comma,
                         false,
-                        |p| p.parse_match_pat(),
+                        |p| p.parse_pattern(),
                     )
                 })?;
 
-                Ok(MatchingPatternKind::PathTuple(
-                    path,
-                    items,
-                    lo.to(self.hi_span()),
-                ))
+                Ok(PatternKind::PathTuple(path, items, lo.to(self.hi_span())))
             }
             TokenKind::LBrace => {
                 // Path-Struct Kind
                 let lo = self.lo_span();
                 let (items, ignore_rest) = self.parse_pattern_fields()?;
                 let span = lo.to(self.hi_span());
-                let k = MatchingPatternKind::PathStruct(path, items, span, ignore_rest);
+                let k = PatternKind::PathStruct(path, items, span, ignore_rest);
                 Ok(k)
             }
-            _ => Ok(MatchingPatternKind::Path(path)),
+            _ => Ok(PatternKind::Path(path)),
         }
     }
 }
@@ -195,12 +148,11 @@ impl Parser {
 
         let identifier = self.parse_identifier()?;
         let pattern = if self.eat(TokenKind::Colon) {
-            self.parse_match_pat()?
+            self.parse_pattern()?
         } else {
-            // Defualt to Ident Pattern
-            MatchingPattern {
+            Pattern {
                 span: identifier.span,
-                kind: MatchingPatternKind::Binding(BindingMode(Mutability::Immutable), identifier),
+                kind: PatternKind::Identifier(identifier),
             }
         };
 

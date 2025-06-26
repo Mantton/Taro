@@ -367,9 +367,7 @@ impl Lexer {
                 }
             }
             ':' => {
-                if self.matches('=') {
-                    self.build(TokenKind::DeclareVar)
-                } else if self.matches(':') {
+                if self.matches(':') {
                     self.build(TokenKind::Scope)
                 } else {
                     self.build(TokenKind::Colon)
@@ -1023,7 +1021,6 @@ mod test {
         assert_token!("namespace", TokenKind::Namespace, "namespace");
         assert_token!("public", TokenKind::Public, "public");
         assert_token!("when", TokenKind::When, "when");
-        assert_token!("match", TokenKind::Match, "match");
     }
 
     #[test]
@@ -1202,9 +1199,8 @@ mod test {
     #[test]
     fn test_operator_tokens() {
         assert_sequence_kind!(
-            "= := ! ~",
+            "= ! ~",
             TokenKind::Assign,
-            TokenKind::DeclareVar,
             TokenKind::Bang,
             TokenKind::Tilde
         );

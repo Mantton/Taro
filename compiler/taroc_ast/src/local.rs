@@ -1,11 +1,11 @@
+use super::{expression::Expression, ty::Type};
+use crate::Pattern;
 use taroc_ast_ir::Mutability;
-
-use super::{expression::Expression, pattern::BindingPattern, ty::Type};
 
 #[derive(Debug)]
 pub struct Local {
     pub mutability: Mutability,
-    pub pattern: BindingPattern,
+    pub pattern: Pattern,
     pub ty: Option<Box<Type>>,
     pub initializer: Option<Box<Expression>>,
     pub is_shorthand: bool,

@@ -2,7 +2,7 @@
 
 @NoCopy
 public struct List<T> {
-    data: *mut T,
+    data: *T,
     cap: usize,
     len: usize,
 }

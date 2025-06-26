@@ -3,14 +3,14 @@ use super::{
     NodeID, PathTree,
 };
 use crate::{
-    AnonConst, AssociatedDeclaration, Attribute, BindingPattern, BindingPatternKind, Block,
-    ClosureExpression, Declaration, DeclarationKind, EnumDefinition, Expression,
-    ExpressionArgument, ExpressionField, ExpressionKind, FieldDefinition, File, ForeignDeclaration,
-    Function, FunctionDeclaration, FunctionDeclarationKind, FunctionParameter, FunctionPrototype,
-    FunctionSignature, Generics, Inheritance, Label, Local, MatchingPattern, MatchingPatternKind,
-    MethodCall, Module, Package, Path, PathSegment, PatternField, Statement, StatementKind,
-    TaggedPath, Type, TypeArgument, TypeArguments, TypeKind, TypeParameter, TypeParameterKind,
-    TypeParameters, Variant, VariantKind, WhenArm,
+    AnonConst, AssociatedDeclaration, Attribute, Block, ClosureExpression, Declaration,
+    DeclarationKind, EnumDefinition, Expression, ExpressionArgument, ExpressionField,
+    ExpressionKind, FieldDefinition, File, ForeignDeclaration, Function, FunctionDeclaration,
+    FunctionDeclarationKind, FunctionParameter, FunctionPrototype, FunctionSignature, Generics,
+    Inheritance, Label, Local, MethodCall, Module, Package, Path, PathSegment, Pattern,
+    PatternField, PatternKind, Statement, StatementKind, TaggedPath, Type, TypeArgument,
+    TypeArguments, TypeKind, TypeParameter, TypeParameterKind, TypeParameters, Variant,
+    VariantKind, WhenArm,
 };
 use std::ops::ControlFlow;
 use taroc_ast_ir::OperatorKind;
@@ -163,11 +163,8 @@ pub trait HirVisitor: Sized {
         walk_type(self, ty)
     }
 
-    fn visit_matching_pattern(&mut self, p: &MatchingPattern) -> Self::Result {
-        walk_matching_pattern(self, p)
-    }
-    fn visit_binding_pattern(&mut self, p: &BindingPattern) -> Self::Result {
-        walk_binding_pattern(self, p)
+    fn visit_pattern(&mut self, p: &Pattern) -> Self::Result {
+        walk_pattern(self, p)
     }
 
     fn visit_import(&mut self, i: &PathTree, id: NodeID) -> Self::Result {
@@ -622,32 +619,29 @@ pub fn walk_type<V: HirVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
     }
     V::Result::output()
 }
-pub fn walk_matching_pattern<V: HirVisitor>(
-    visitor: &mut V,
-    pattern: &MatchingPattern,
-) -> V::Result {
+pub fn walk_pattern<V: HirVisitor>(visitor: &mut V, pattern: &Pattern) -> V::Result {
     match &pattern.kind {
-        MatchingPatternKind::Literal(lit) => {
+        PatternKind::Literal(lit) => {
             try_visit!(visitor.visit_anon_const(lit));
         }
-        MatchingPatternKind::Binding(_, ident) => {
+        PatternKind::Identifier(ident) => {
             try_visit!(visitor.visit_ident(ident));
         }
-        MatchingPatternKind::Wildcard => {}
-        MatchingPatternKind::Path(path) => {
+        PatternKind::Wildcard => {}
+        PatternKind::Path(path) => {
             try_visit!(visitor.visit_path(path));
         }
-        MatchingPatternKind::Tuple(pats, _) => {
-            walk_list!(visitor, visit_matching_pattern, pats);
+        PatternKind::Tuple(pats, _) => {
+            walk_list!(visitor, visit_pattern, pats);
         }
-        MatchingPatternKind::Or(pats, _) => {
-            walk_list!(visitor, visit_matching_pattern, pats);
+        PatternKind::Or(pats, _) => {
+            walk_list!(visitor, visit_pattern, pats);
         }
-        MatchingPatternKind::PathTuple(path, pat, _) => {
+        PatternKind::PathTuple(path, pat, _) => {
             try_visit!(visitor.visit_path(path));
-            walk_list!(visitor, visit_matching_pattern, pat);
+            walk_list!(visitor, visit_pattern, pat);
         }
-        MatchingPatternKind::PathStruct(path, fields, ..) => {
+        PatternKind::PathStruct(path, fields, ..) => {
             try_visit!(visitor.visit_path(path));
             walk_list!(visitor, visit_pattern_field, fields);
         }
@@ -655,19 +649,7 @@ pub fn walk_matching_pattern<V: HirVisitor>(
 
     V::Result::output()
 }
-pub fn walk_binding_pattern<V: HirVisitor>(visitor: &mut V, pattern: &BindingPattern) -> V::Result {
-    match &pattern.kind {
-        BindingPatternKind::Wildcard => {}
-        BindingPatternKind::Identifier(ident) => {
-            try_visit!(visitor.visit_ident(ident));
-        }
-        BindingPatternKind::Tuple(pats) => {
-            walk_list!(visitor, visit_binding_pattern, pats);
-        }
-    }
 
-    V::Result::output()
-}
 pub fn walk_import<V: HirVisitor>(visitor: &mut V, tree: &PathTree, id: NodeID) -> V::Result {
     try_visit!(visitor.visit_path_tree(tree, id, false, true));
     V::Result::output()
@@ -750,7 +732,7 @@ pub fn walk_function_parameter<V: HirVisitor>(
     V::Result::output()
 }
 pub fn walk_local<V: HirVisitor>(visitor: &mut V, local: &Local) -> V::Result {
-    try_visit!(visitor.visit_binding_pattern(&local.pattern));
+    try_visit!(visitor.visit_pattern(&local.pattern));
     visit_optional!(visitor, visit_type, &local.ty);
     visit_optional!(visitor, visit_expression, &local.initializer);
     V::Result::output()
@@ -926,21 +908,12 @@ pub fn walk_enum_def<V: HirVisitor>(visitor: &mut V, node: &EnumDefinition) -> V
 
 pub fn walk_pat_field<V: HirVisitor>(visitor: &mut V, node: &PatternField) -> V::Result {
     try_visit!(visitor.visit_ident(&node.identifier));
-    try_visit!(visitor.visit_matching_pattern(&node.pattern));
+    try_visit!(visitor.visit_pattern(&node.pattern));
     V::Result::output()
 }
 
 pub fn walk_when_arm<V: HirVisitor>(visitor: &mut V, node: &WhenArm) -> V::Result {
-    match &node.kind {
-        crate::WhenArmKind::Pattern(node) => {
-            try_visit!(visitor.visit_matching_pattern(node))
-        }
-        crate::WhenArmKind::Expression(nodes) => {
-            walk_list!(visitor, visit_expression, nodes);
-        }
-
-        _ => {}
-    }
+    try_visit!(visitor.visit_pattern(&node.pattern));
     visit_optional!(visitor, visit_expression, &node.guard);
     try_visit!(visitor.visit_expression(&node.body));
 

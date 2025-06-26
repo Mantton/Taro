@@ -3,9 +3,10 @@ use super::{
     restrictions::Restrictions,
 };
 use taroc_ast::{
-    BindingPattern, BindingPatternKind, ForStatement, GuardStatement, Label, Local, LoopStatement,
-    Mutability, Statement, StatementConditionList, StatementKind, WhileStatement,
+    ForStatement, GuardStatement, Label, Local, LoopStatement, Mutability, PatternKind, Statement,
+    StatementConditionList, StatementKind, WhileStatement,
 };
+use taroc_span::SpannedMessage;
 use taroc_token::TokenKind;
 
 impl Parser {
@@ -40,11 +41,6 @@ impl Parser {
             TokenKind::Defer => self.parse_defer_stmt(),
             TokenKind::Guard => self.parse_guard_stmt(),
             _ => {
-                // is shorthand decl
-                if let Some(kind) = self.parse_variable_shorthand()? {
-                    return Ok(kind);
-                }
-
                 // is decl
                 if let Some(decl) = self.parse_function_declaration()? {
                     return Ok(StatementKind::Declaration(decl));
@@ -84,7 +80,16 @@ impl Parser {
             unreachable!("expected `let` | `var` token")
         };
 
-        let pattern = self.parse_binding_pat()?;
+        let pattern = self.parse_pattern()?;
+        if !matches!(
+            pattern.kind,
+            PatternKind::Identifier(..) | PatternKind::Wildcard | PatternKind::Tuple(..)
+        ) {
+            return Err(SpannedMessage::new(
+                "local variables must be bound identifier, tuple or wildcard patterns".into(),
+                pattern.span,
+            ));
+        }
 
         let ty = if self.eat(TokenKind::Colon) {
             Some(self.parse_type()?)
@@ -145,7 +150,7 @@ impl Parser {
 
     fn parse_for_stmt(&mut self, label: Option<Label>) -> R<StatementKind> {
         self.expect(TokenKind::For)?;
-        let pattern = self.parse_binding_pat()?;
+        let pattern = self.parse_pattern()?;
         self.expect(TokenKind::In)?;
 
         let for_restrictions = Restrictions::empty();
@@ -233,33 +238,6 @@ impl Parser {
         let g = GuardStatement { conditions, block };
 
         Ok(StatementKind::Guard(g))
-    }
-}
-
-impl Parser {
-    fn parse_variable_shorthand(&mut self) -> R<Option<StatementKind>> {
-        if self.matches(TokenKind::Identifier) && self.next_matches(1, TokenKind::DeclareVar) {
-            let identifier = self.parse_identifier()?;
-            self.expect(TokenKind::DeclareVar)?;
-
-            let initializer = self.parse_expression()?;
-            let local = Local {
-                mutability: Mutability::Mutable,
-                pattern: BindingPattern {
-                    span: identifier.span,
-                    kind: BindingPatternKind::Identifier(identifier),
-                },
-                ty: None,
-                initializer: Some(initializer),
-                is_shorthand: true,
-            };
-
-            let kind = StatementKind::Variable(local);
-            self.expect_line_break_or_semi()?;
-            Ok(Some(kind))
-        } else {
-            Ok(None)
-        }
     }
 }
 

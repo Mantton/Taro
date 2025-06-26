@@ -1,6 +1,5 @@
-use taroc_span::{Identifier, Span};
-
 use super::generics::TypeArguments;
+use taroc_span::{Identifier, Span};
 
 #[derive(Debug)]
 pub struct Path {

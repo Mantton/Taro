@@ -80,43 +80,7 @@ impl<'rcx, 'gcx> FnCtx<'rcx, 'gcx> {
             self.check_expression_coercible_to_type(initializer, ty, None);
         }
 
-        self.resolve_binding_pattern(&local.pattern, ty);
-    }
-
-    fn resolve_binding_pattern(&self, pattern: &taroc_hir::BindingPattern, ty: Ty<'gcx>) {
-        match &pattern.kind {
-            taroc_hir::BindingPatternKind::Wildcard => {}
-            taroc_hir::BindingPatternKind::Identifier(_) => {
-                let id = pattern.id;
-                self.locals.borrow_mut().insert(id, ty);
-                // println!("Bound {} to {}", ident.symbol, ty2str(ty, self.gcx))
-            }
-            taroc_hir::BindingPatternKind::Tuple(patterns) => {
-                // Only tuple types can be destructured
-                if let TyKind::Tuple(elements) = ty.kind() {
-                    // Arity mismatch
-                    if elements.len() != patterns.len() {
-                        let message = format!(
-                            "mismatched tuple length: expected `{}`, found `{}`",
-                            elements.len(),
-                            patterns.len()
-                        );
-                        self.gcx.diagnostics.error(message, pattern.span);
-                    } else {
-                        // Recurse into each sub-pattern
-                        for (pattern, &ty) in patterns.iter().zip(elements.iter()) {
-                            self.resolve_binding_pattern(pattern, ty);
-                        }
-                    }
-                } else {
-                    // Cannot destruct non-tuple
-                    let message = format!(
-                        "cannot destructure non-tuple type `{}`",
-                        ty2str(ty, self.gcx)
-                    );
-                    self.gcx.diagnostics.error(message, pattern.span);
-                }
-            }
-        }
+        // self.resolve_binding_pattern(&local.pattern, ty);
+        todo!("gather locals")
     }
 }

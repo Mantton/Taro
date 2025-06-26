@@ -293,7 +293,7 @@ impl Actor<'_> {
 impl Actor<'_> {
     fn lower_local_to_static(&mut self, local: taroc_ast::Local) -> taroc_hir::StaticDeclaration {
         let identifier = match local.pattern.kind {
-            taroc_ast::BindingPatternKind::Identifier(identifier) => identifier,
+            taroc_ast::PatternKind::Identifier(identifier) => identifier,
             _ => {
                 self.context.diagnostics.error(
                     "static variables must be an identifier binding".into(),
