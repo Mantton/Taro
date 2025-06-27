@@ -577,7 +577,7 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, expr: &Expression) -> V::
         ExpressionKind::Closure(func) => {
             try_visit!(visitor.visit_closure(func))
         }
-        ExpressionKind::MatchBinding(..) => todo!(),
+        ExpressionKind::PatternBinding(..) => todo!(),
         ExpressionKind::Malformed => {}
         ExpressionKind::Block(block) => {
             try_visit!(visitor.visit_block(block));
@@ -621,16 +621,17 @@ pub fn walk_type<V: HirVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
 }
 pub fn walk_pattern<V: HirVisitor>(visitor: &mut V, pattern: &Pattern) -> V::Result {
     match &pattern.kind {
-        PatternKind::Literal(lit) => {
-            try_visit!(visitor.visit_anon_const(lit));
-        }
+        PatternKind::Expression(k) => match k {
+            crate::PatternExpressionKind::Path(path) => try_visit!(visitor.visit_path(path)),
+            crate::PatternExpressionKind::AnonConst(expression) => {
+                try_visit!(visitor.visit_expression(expression));
+            }
+        },
         PatternKind::Identifier(ident) => {
             try_visit!(visitor.visit_ident(ident));
         }
         PatternKind::Wildcard => {}
-        PatternKind::Path(path) => {
-            try_visit!(visitor.visit_path(path));
-        }
+
         PatternKind::Tuple(pats, _) => {
             walk_list!(visitor, visit_pattern, pats);
         }

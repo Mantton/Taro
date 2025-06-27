@@ -6,30 +6,30 @@ use crate::{
 };
 type UnificationResult<'ctx> = Result<(), TypeError<'ctx>>;
 
-impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
+impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     pub fn unify(&self, a: Ty<'ctx>, b: Ty<'ctx>) -> UnificationResult<'ctx> {
-        let a = self.icx.shallow_resolve(a);
-        let b = self.icx.shallow_resolve(b);
+        let a = self.icx().shallow_resolve(a);
+        let b = self.icx().shallow_resolve(b);
 
         use crate::ty::InferTy::*;
         match (a.kind(), b.kind()) {
             // TyVars
             (TyKind::Infer(TyVar(a_id)), TyKind::Infer(TyVar(b_id))) => {
-                self.icx
+                self.icx()
                     .inner
                     .borrow_mut()
                     .type_variables()
                     .equate(a_id, b_id);
             }
             (TyKind::Infer(TyVar(id)), _) => {
-                self.icx
+                self.icx()
                     .inner
                     .borrow_mut()
                     .type_variables()
                     .instantiate(id, b);
             }
             (_, TyKind::Infer(TyVar(id))) => {
-                self.icx
+                self.icx()
                     .inner
                     .borrow_mut()
                     .type_variables()
@@ -38,21 +38,21 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
 
             // FnVars
             (TyKind::Infer(FnVar(a_id)), TyKind::Infer(FnVar(b_id))) => {
-                self.icx
+                self.icx()
                     .inner
                     .borrow_mut()
                     .fn_variables()
                     .equate(a_id, b_id);
             }
             (TyKind::Infer(FnVar(id)), _) if b.is_fn() => {
-                self.icx
+                self.icx()
                     .inner
                     .borrow_mut()
                     .fn_variables()
                     .instantiate(id, b);
             }
             (_, TyKind::Infer(FnVar(id))) if a.is_fn() => {
-                self.icx
+                self.icx()
                     .inner
                     .borrow_mut()
                     .fn_variables()
@@ -72,22 +72,23 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
 
             // Integers
             (Infer(IntVar(a_id)), Infer(IntVar(b_id))) => {
-                self.icx.equate_int_vars_raw(a_id, b_id);
+                self.icx().equate_int_vars_raw(a_id, b_id);
             }
             (Infer(IntVar(id)), Int(k)) | (Int(k), Infer(IntVar(id))) => {
-                self.icx.instantiate_int_var_raw(id, IntVarValue::Signed(k));
+                self.icx()
+                    .instantiate_int_var_raw(id, IntVarValue::Signed(k));
             }
             (Infer(IntVar(id)), UInt(k)) | (UInt(k), Infer(IntVar(id))) => {
-                self.icx
+                self.icx()
                     .instantiate_int_var_raw(id, IntVarValue::Unsigned(k));
             }
 
             // Floats
             (Infer(FloatVar(a_id)), Infer(FloatVar(b_id))) => {
-                self.icx.equate_float_vars_raw(a_id, b_id);
+                self.icx().equate_float_vars_raw(a_id, b_id);
             }
             (Infer(FloatVar(id)), Float(k)) | (Float(k), Infer(FloatVar(id))) => {
-                self.icx
+                self.icx()
                     .instantiate_float_var_raw(id, FloatVarValue::Known(k));
             }
             (Infer(_), _) | (_, Infer(_)) => {
@@ -151,7 +152,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     }
 }
 
-impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
+impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     fn unify_generic_args(
         &self,
         a: GenericArguments<'ctx>,

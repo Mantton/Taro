@@ -2,8 +2,8 @@ use super::resolver::Resolver;
 use rustc_hash::FxHashMap;
 use taroc_error::CompileResult;
 use taroc_hir::{
-    Declaration, DefinitionID, DefinitionKind, NodeID, PartialResolution, PatternKind, Resolution,
-    SelfTypeAlias, SymbolNamespace,
+    Declaration, DefinitionID, DefinitionKind, NodeID, PartialResolution, PatternExpressionKind,
+    PatternKind, Resolution, SelfTypeAlias, SymbolNamespace,
     visitor::{self, AssocContext, HirVisitor},
 };
 use taroc_resolve_models::{
@@ -588,15 +588,13 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
     ) {
         pat.walk(&mut |pat| {
             match &pat.kind {
-                taroc_hir::PatternKind::Wildcard
-                | taroc_hir::PatternKind::Literal(_)
-                | taroc_hir::PatternKind::Tuple(..) => {}
+                taroc_hir::PatternKind::Wildcard | taroc_hir::PatternKind::Tuple(..) => {}
                 taroc_hir::PatternKind::Identifier(ident) => {
                     let res = self.fresh_var_binding(*ident, pat.id, bindings, source);
                     self.resolver
                         .record_resolution(pat.id, PartialResolution::new(res));
                 }
-                taroc_hir::PatternKind::Path(path) => {
+                taroc_hir::PatternKind::Expression(PatternExpressionKind::Path(path)) => {
                     self.resolve_path_with_source(pat.id, path, PathSource::MatchPatternUnit);
                 }
                 taroc_hir::PatternKind::PathTuple(path, ..) => {
@@ -630,6 +628,7 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
 
                     return false;
                 }
+                _ => {}
             };
 
             return true;

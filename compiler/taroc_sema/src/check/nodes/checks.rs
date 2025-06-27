@@ -1,8 +1,11 @@
 use crate::{
-    check::{context::func::FnCtx, expectation::Expectation},
-    lower::{LoweringRequest, TypeLowerer},
-    ty::{Ty, TyKind},
-    utils::ty2str,
+    check::{
+        context::func::FnCtx,
+        expectation::Expectation,
+        gather::GatherLocalsVisitor,
+        solver::{Goal, Obligation, pattern::PatternResolutionGoal},
+    },
+    ty::Ty,
 };
 
 impl<'rcx, 'gcx> FnCtx<'rcx, 'gcx> {
@@ -67,20 +70,25 @@ impl<'rcx, 'gcx> FnCtx<'rcx, 'gcx> {
     }
 
     pub fn check_local(&self, local: &taroc_hir::Local) {
-        let ty = if let Some(annotation) = &local.ty {
-            let annotation_ty = self
-                .lowerer()
-                .lower_type(annotation, &LoweringRequest::default());
-            annotation_ty
-        } else {
-            self.next_ty_var(local.pattern.span)
-        };
-
+        GatherLocalsVisitor::from_local(self, local);
+        let ty = self.local_ty(local.id);
         if let Some(initializer) = &local.initializer {
             self.check_expression_coercible_to_type(initializer, ty, None);
         }
+        self.request_pattern_resolution(&local.pattern, ty);
+    }
 
-        // self.resolve_binding_pattern(&local.pattern, ty);
-        todo!("gather locals")
+    pub fn request_pattern_resolution(&self, pattern: &taroc_hir::Pattern, scrutinee_ty: Ty<'gcx>) {
+        let goal = PatternResolutionGoal {
+            pattern: self.gcx.unsafe_ref(pattern),
+            scrutinee_ty,
+        };
+
+        let obligation = Obligation {
+            location: pattern.span,
+            goal: Goal::PatternResolution(goal),
+        };
+
+        self.add_obligation(obligation);
     }
 }

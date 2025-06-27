@@ -39,3 +39,13 @@ impl<'ctx> TyCheckRootCtx<'ctx> {
         self.solver.borrow_mut().add_obligation(obligation);
     }
 }
+
+impl<'ctx> TyCheckRootCtx<'ctx> {
+    pub fn local_ty(&self, id: NodeID) -> Ty<'ctx> {
+        *self
+            .locals
+            .borrow()
+            .get(&id)
+            .expect("ICE: local ty should have type mapped")
+    }
+}

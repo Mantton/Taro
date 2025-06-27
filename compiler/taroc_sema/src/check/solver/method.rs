@@ -13,10 +13,10 @@ use crate::{
 use taroc_hir::DefinitionID;
 
 // TODO: AutoDeref
-impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
+impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     pub fn solve_method_call(&mut self, goal: MethodCallGoal<'ctx>) -> SolverResult<'ctx> {
         let gcx = self.gcx();
-        let recv_ty = self.icx.shallow_resolve(goal.receiver_ty);
+        let recv_ty = self.icx().shallow_resolve(goal.receiver_ty);
         let Some(_) = gcx.try_simple_type(recv_ty) else {
             return SolverResult::Deferred;
         };
@@ -62,8 +62,8 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         recv_ty: crate::ty::Ty<'ctx>,
         goal: &MethodCallGoal<'ctx>,
     ) -> bool {
-        self.icx.probe(|_| {
-            let mut ctx = SolverDelegate::new(self.icx, self.param_env);
+        self.icx().probe(|_| {
+            let mut ctx = SolverDelegate::new(self.fcx, self.param_env);
             let obligations = ctx.select_fn_for_method(candidate, recv_ty, goal);
             ctx.add_obligations(obligations);
             ctx.solve_nested_obligations();
@@ -80,7 +80,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         let mut pending = vec![];
         let gcx = self.gcx();
         let signature = gcx.fn_signature(candidate);
-        let fn_args = self.icx.fresh_args_for_def(candidate, goal.call_span);
+        let fn_args = self.icx().fresh_args_for_def(candidate, goal.call_span);
         let fn_sig_ty =
             instantiate_ty_with_args(gcx, labeled_signature_to_ty(signature, gcx), fn_args);
 

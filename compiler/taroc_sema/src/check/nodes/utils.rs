@@ -1,4 +1,9 @@
-use crate::{GlobalContext, check::context::func::FnCtx, ty::Ty};
+use crate::{
+    GlobalContext,
+    check::context::func::FnCtx,
+    lower::{LoweringRequest, TypeLowerer},
+    ty::Ty,
+};
 use rustc_hash::FxHashSet;
 use taroc_hir::{DefinitionID, OperatorKind, PackageIndex, Resolution};
 use taroc_span::{FileID, Identifier};
@@ -95,4 +100,15 @@ pub fn associated_operators_for_ty<'ctx>(
     }
 
     candidates
+}
+
+impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
+    pub fn lower_ty(&self, ast_ty: &taroc_hir::Type) -> Ty<'ctx> {
+        let ty = self
+            .lowerer()
+            .lower_type(ast_ty, &LoweringRequest::default());
+
+        // TODO: Well Formed Obligations
+        ty
+    }
 }

@@ -7,7 +7,7 @@ use crate::{
     utils::instantiate_constraint_with_args,
 };
 
-impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
+impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     pub fn solve_constraint(
         &mut self,
         constraint: Constraint<'ctx>,
@@ -17,8 +17,8 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
 
         match constraint {
             Constraint::Bound { ty, interface } => {
-                let ty = self.icx.shallow_resolve(ty);
-                let interface = self.icx.resolve_vars_if_possible(interface);
+                let ty = self.icx().shallow_resolve(ty);
+                let interface = self.icx().resolve_vars_if_possible(interface);
 
                 if self.in_param_env(ty, interface) {
                     // satisfied by environment

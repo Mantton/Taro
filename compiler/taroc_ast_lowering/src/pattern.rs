@@ -30,7 +30,10 @@ impl Actor<'_> {
             }
 
             // `Foo::Bar`
-            Src::Path(path) => Dest::Path(self.lower_path(path)),
+            Src::Path(path) => {
+                let k = taroc_hir::PatternExpressionKind::Path(self.lower_path(path));
+                Dest::Expression(k)
+            }
 
             // `Foo::Bar(a, b)`
             Src::PathTuple(path, items, span) => {
@@ -59,7 +62,9 @@ impl Actor<'_> {
             }
 
             // literal pattern (anon consts)
-            Src::Literal(c) => Dest::Literal(self.lower_anon_const(c)),
+            Src::Literal(c) => Dest::Expression(taroc_hir::PatternExpressionKind::AnonConst(
+                self.lower_anon_const(c).value,
+            )),
         }
     }
 }

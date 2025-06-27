@@ -9,15 +9,24 @@ use crate::{
 };
 use taroc_hir::DefinitionID;
 
-impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
+impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     pub fn solve_application(&mut self, goal: OverloadGoal<'ctx>) -> SolverResult<'ctx> {
-        let ty = self.icx.shallow_resolve(goal.callee_var);
+        let ty = self.icx().shallow_resolve(goal.callee_var);
         let fid = match ty.kind() {
             TyKind::Infer(InferTy::FnVar(fid)) => fid,
-            _ => todo!("handle non-funtion var type"),
+            TyKind::Infer(InferTy::TyVar(..)) => {
+                self.gcx().diagnostics.warn(
+                    format!("Defering Due to {}", ty.format(self.gcx())),
+                    goal.callee_span,
+                );
+                return SolverResult::Deferred;
+            }
+            _ => {
+                todo!("handle non-funtion var type")
+            }
         };
 
-        let data = self.icx.inner.borrow_mut().fn_variables().var_data(fid);
+        let data = self.icx().inner.borrow_mut().fn_variables().var_data(fid);
         let mut data = data.borrow_mut();
 
         // Quick Filter
@@ -60,8 +69,8 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     }
 
     fn evaluate_candidate(&self, candidate: DefinitionID, goal: &OverloadGoal<'ctx>) -> bool {
-        self.icx.probe(|_| {
-            let mut ctx = SolverDelegate::new(self.icx, self.param_env);
+        self.icx().probe(|_| {
+            let mut ctx = SolverDelegate::new(self.fcx, self.param_env);
             let obligations = ctx.select_fn_for_application(candidate, goal);
             ctx.add_obligations(obligations);
             ctx.solve_nested_obligations();
@@ -78,7 +87,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         let mut pending = vec![];
         let gcx = self.gcx();
         let signature = gcx.fn_signature(candidate);
-        let fn_args = self.icx.fresh_args_for_def(candidate, goal.callee_span);
+        let fn_args = self.icx().fresh_args_for_def(candidate, goal.callee_span);
         let fn_ty = instantiate_ty_with_args(gcx, gcx.type_of(candidate), fn_args);
 
         let fn_sig_ty =

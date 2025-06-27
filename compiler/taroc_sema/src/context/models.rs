@@ -3,7 +3,7 @@ use crate::{
     ty::{
         ConformanceRecord, EnumDefinition, FloatTy, GenericArgument, GenericParameter, IntTy,
         InterfaceDefinition, LabeledFunctionSignature, PackageAliasTable, SimpleType,
-        SpannedConstraints, StructDefinition, Ty, TyKind, UIntTy,
+        SpannedConstraints, StructDefinition, Ty, TyKind, UIntTy, VariantDefinition,
     },
 };
 use bumpalo::Bump;
@@ -156,7 +156,8 @@ pub struct TypeDatabase<'ctx> {
     pub def_to_constraints: FxHashMap<DefinitionID, &'ctx SpannedConstraints<'ctx>>,
     pub def_to_canon_constraints: FxHashMap<DefinitionID, &'ctx SpannedConstraints<'ctx>>,
     pub structs: FxHashMap<DefinitionID, &'ctx StructDefinition<'ctx>>,
-    pub enums: FxHashMap<DefinitionID, EnumDefinition<'ctx>>,
+    pub variants: FxHashMap<DefinitionID, &'ctx VariantDefinition<'ctx>>,
+    pub enums: FxHashMap<DefinitionID, &'ctx EnumDefinition<'ctx>>,
     pub interfaces: FxHashMap<DefinitionID, &'ctx InterfaceDefinition<'ctx>>,
     pub functions: FxHashMap<DefinitionID, LabeledFunctionSignature<'ctx>>,
     pub def_to_fn_signature: FxHashMap<DefinitionID, &'ctx LabeledFunctionSignature<'ctx>>,

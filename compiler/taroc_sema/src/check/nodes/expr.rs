@@ -12,7 +12,7 @@ use crate::{
     },
     infer::fn_var::FnVarData,
     lower::{LoweringRequest, TypeLowerer},
-    ty::{Constraint, InferTy, StructDefinition, Ty, TyKind},
+    ty::{Constraint, InferTy, Ty, TyKind, VariantDefinition},
     utils::{instantiate_constraint_with_args, instantiate_ty_with_args, labeled_signature_to_ty},
 };
 use rustc_hash::FxHashMap;
@@ -144,7 +144,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             taroc_hir::ExpressionKind::When(node) => {
                 self.check_when_expression(node, expression.span)
             }
-            taroc_hir::ExpressionKind::MatchBinding(_) => {
+            taroc_hir::ExpressionKind::PatternBinding(_) => {
                 todo!("ICE: unimplemented tycheck expression node")
             }
             taroc_hir::ExpressionKind::ArrayLiteral(..) => {
@@ -438,7 +438,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         ty
     }
 
-    fn perform_path_resolution(
+    pub fn perform_path_resolution(
         &self,
         id: taroc_hir::NodeID,
         path: &taroc_hir::Path,
@@ -476,7 +476,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             Ok(result) => result,
             Err(_) => {
                 let msg = format!(
-                    "uknown method named '{}' on type '{}'",
+                    "unknown associated symbol named '{}' on type '{}'",
                     unresolved.identifier.symbol,
                     self_ty.format(self.gcx)
                 );
@@ -486,7 +486,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         }
     }
 
-    fn instantiate_value_path(
+    pub fn instantiate_value_path(
         &self,
         _: &taroc_hir::Path,
         resolution: taroc_hir::Resolution,
@@ -528,18 +528,15 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         return ty;
     }
 
-    fn check_struct_path(
+    pub fn check_struct_path(
         &self,
         path: &taroc_hir::Path,
         id: NodeID,
-    ) -> Result<(&'ctx StructDefinition<'ctx>, Ty<'ctx>), ()> {
+    ) -> Result<(&'ctx VariantDefinition<'ctx>, Ty<'ctx>), ()> {
         let (res, ty) = self.resolve_struct_path(path, id);
 
         let def = match res {
             Resolution::Error => return Err(()),
-            Resolution::Definition(_, DefinitionKind::Variant) => {
-                todo!("enum variant")
-            }
             Resolution::Definition(_, DefinitionKind::Struct | DefinitionKind::TypeAlias)
             | Resolution::SelfTypeAlias(_)
             | Resolution::InterfaceSelfTypeParameter(_) => match ty.adt_def() {
@@ -547,10 +544,23 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
                     let def = self
                         .gcx
                         .with_session_type_database(|db| db.structs[&adt_def.id]);
+                    Some((
+                        def.variant,
+                        adt_def.id,
+                        ty.get_adt_arguments().expect("arguments"),
+                    ))
+                }
+                None => None,
+            },
+            Resolution::Definition(id, DefinitionKind::Variant) => match ty.adt_def() {
+                Some(adt_def) => {
+                    let def = self.gcx.with_session_type_database(|db| db.variants[&id]);
+
                     Some((def, adt_def.id, ty.get_adt_arguments().expect("arguments")))
                 }
                 None => None,
             },
+
             _ => {
                 unreachable!()
             }
@@ -598,7 +608,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
     fn check_struct_fields(
         &self,
         struct_ty: Ty<'ctx>,
-        definition: &StructDefinition<'ctx>,
+        definition: &VariantDefinition<'ctx>,
         expressions: &[taroc_hir::ExpressionField],
     ) {
         let TyKind::Adt(_, args) = struct_ty.kind() else {
@@ -911,7 +921,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         // Patterns
         for arm in node.arms.iter() {
             // instantiate types for each local variable
-            GatherLocalsVisitor::gather_from_when_arm(self, &arm.pattern);
+            GatherLocalsVisitor::from_when_arm(self, &arm.pattern);
             // add constraints to check pattern node later down the line
             let goal = PatternResolutionGoal {
                 pattern: self.gcx.unsafe_ref(&arm.pattern),

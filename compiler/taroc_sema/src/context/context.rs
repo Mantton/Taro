@@ -24,7 +24,7 @@ impl<'ctx> GlobalContext<'ctx> {
     pub fn def_id(self, id: NodeID) -> DefinitionID {
         let resolutions = self.context.store.resolutions.borrow();
         let package = resolutions.get(&self.session().index()).expect("package");
-        let def = package.node_to_def.get(&id).expect("res");
+        let def = package.node_to_def.get(&id).expect("def_id");
         *def
     }
 

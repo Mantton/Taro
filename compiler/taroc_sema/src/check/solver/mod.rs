@@ -1,6 +1,9 @@
 use crate::{
     GlobalContext,
-    check::solver::{cast::CastGoal, pattern::PatternResolutionGoal},
+    check::{
+        context::func::FnCtx,
+        solver::{cast::CastGoal, pattern::PatternResolutionGoal},
+    },
     error::TypeError,
     infer::InferCtx,
     ty::{Constraint, ParamEnv, Ty},
@@ -150,7 +153,7 @@ impl<'ctx> ObligationSolver<'ctx> {
 }
 
 impl<'ctx> ObligationSolver<'ctx> {
-    pub fn solve(&mut self, icx: &InferCtx<'ctx>, param_env: ParamEnv<'ctx>) {
+    pub fn solve(&mut self, fcx: &FnCtx<'_, 'ctx>, param_env: ParamEnv<'ctx>) {
         if self.obligations.pending.is_empty() {
             return;
         }
@@ -159,7 +162,7 @@ impl<'ctx> ObligationSolver<'ctx> {
             let mut progress = false;
 
             for (obligation, _) in self.obligations.drain_pending(|_| true) {
-                let mut delegate = SolverDelegate::new(icx, param_env);
+                let mut delegate = SolverDelegate::new(fcx, param_env);
                 let result = delegate.solve(obligation);
                 match result {
                     0 => {
@@ -181,17 +184,20 @@ impl<'ctx> ObligationSolver<'ctx> {
     }
 }
 
-pub struct SolverDelegate<'icx, 'ctx> {
-    icx: &'icx InferCtx<'ctx>,
+pub struct SolverDelegate<'icx, 'ctx, 'rcx> {
+    fcx: &'icx FnCtx<'rcx, 'ctx>,
     param_env: ParamEnv<'ctx>,
     nested_obligations: Vec<Obligation<'ctx>>,
     has_error: bool,
 }
 
-impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
-    pub fn new(icx: &'icx InferCtx<'ctx>, param_env: ParamEnv<'ctx>) -> SolverDelegate<'icx, 'ctx> {
+impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
+    pub fn new(
+        fcx: &'icx FnCtx<'rcx, 'ctx>,
+        param_env: ParamEnv<'ctx>,
+    ) -> SolverDelegate<'icx, 'ctx, 'rcx> {
         SolverDelegate {
-            icx,
+            fcx,
             param_env,
             nested_obligations: vec![],
             has_error: false,
@@ -199,11 +205,14 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     }
 
     pub fn gcx(&self) -> GlobalContext<'ctx> {
-        return self.icx.gcx;
+        return self.fcx.gcx;
+    }
+    pub fn icx(&self) -> &InferCtx<'ctx> {
+        return &self.fcx.icx;
     }
 }
 
-impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
+impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     pub fn add_obligation(&mut self, obligation: Obligation<'ctx>) {
         self.nested_obligations.push(obligation);
     }
@@ -216,7 +225,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
 
     fn solve_nested_obligations(&mut self) {
         for obligation in self.nested_obligations.iter() {
-            let mut delegate = SolverDelegate::new(self.icx, self.param_env);
+            let mut delegate = SolverDelegate::new(self.fcx, self.param_env);
             delegate.solve(*obligation);
             delegate.solve_nested_obligations();
             if delegate.has_error {
@@ -226,7 +235,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     }
 }
 
-impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
+impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     fn solve(&mut self, obligation: Obligation<'ctx>) -> usize {
         let result = self.try_solve(obligation);
         match result {

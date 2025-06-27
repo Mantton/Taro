@@ -14,7 +14,7 @@ pub struct CastGoal<'ctx> {
     pub optional: bool,
 }
 
-impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
+impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     pub fn solve_cast(&mut self, goal: CastGoal<'ctx>) -> SolverResult<'ctx> {
         // TODO: Casting
         SolverResult::Error(TypeError::CannotCast(goal.from_ty, goal.to_ty))

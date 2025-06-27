@@ -4,7 +4,7 @@ use crate::{
     ty::Ty,
 };
 
-impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
+impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     pub fn solve_coerce(&self, from: Ty<'ctx>, to: Ty<'ctx>) -> SolverResult<'ctx> {
         let result = self.coerce(from, to);
         match result {
@@ -20,8 +20,8 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     }
 
     pub fn coerce(&self, from: Ty<'ctx>, to: Ty<'ctx>) -> CoercionResult<'ctx> {
-        let from = self.icx.shallow_resolve(from);
-        let to = self.icx.shallow_resolve(to);
+        let from = self.icx().shallow_resolve(from);
+        let to = self.icx().shallow_resolve(to);
 
         if from.is_ty_var() {
             return self.coerce_from_inference_var(from, to);
@@ -33,10 +33,10 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     }
 }
 
-impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
+impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     fn coerce_from_inference_var(&self, from: Ty<'ctx>, to: Ty<'ctx>) -> CoercionResult<'ctx> {
-        assert!(from.is_ty_var() && self.icx.shallow_resolve(from) == from);
-        assert!(self.icx.shallow_resolve(to) == to);
+        assert!(from.is_ty_var() && self.icx().shallow_resolve(from) == from);
+        assert!(self.icx().shallow_resolve(to) == to);
 
         // defer this coercion till we have more information regarding the inference vars
         if to.is_ty_var() {

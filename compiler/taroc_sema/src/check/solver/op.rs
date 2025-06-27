@@ -14,7 +14,7 @@ use taroc_ast_ir::UnaryOperator;
 use taroc_hir::{BinaryOperator, Mutability, OperatorKind};
 use taroc_span::Identifier;
 
-impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
+impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     pub fn solve_unary(&mut self, goal: UnaryOperatorGoal<'ctx>) -> SolverResult<'ctx> {
         match goal.operator {
             UnaryOperator::Reference(mutability) => self.solve_ref(goal, mutability),
@@ -30,14 +30,14 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         goal: UnaryOperatorGoal<'ctx>,
         mutability: Mutability,
     ) -> SolverResult<'ctx> {
-        let ty = self.icx.shallow_resolve(goal.operand_ty);
+        let ty = self.icx().shallow_resolve(goal.operand_ty);
         let location = goal.span;
         let res = self.gcx().mk_ty(TyKind::Reference(ty, mutability));
         let goal = Goal::Constraint(Constraint::TypeEquality(goal.result_var, res));
         return SolverResult::Solved(vec![Obligation { goal, location }]);
     }
     fn solve_deref(&mut self, goal: UnaryOperatorGoal<'ctx>) -> SolverResult<'ctx> {
-        let ty = self.icx.shallow_resolve(goal.operand_ty);
+        let ty = self.icx().shallow_resolve(goal.operand_ty);
         if ty.is_infer() {
             return SolverResult::Deferred;
         }
@@ -54,7 +54,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
 
     fn solve_unary_via_operator(&mut self, goal: UnaryOperatorGoal<'ctx>) -> SolverResult<'ctx> {
         let gcx = self.gcx();
-        let ty = self.icx.shallow_resolve(goal.operand_ty);
+        let ty = self.icx().shallow_resolve(goal.operand_ty);
         if ty.is_infer() {
             return SolverResult::Deferred;
         }
@@ -104,11 +104,11 @@ fn unary_goal_to_method_goal<'ctx>(goal: UnaryOperatorGoal<'ctx>) -> MethodCallG
     }
 }
 
-impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
+impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     pub fn solve_binary(&mut self, goal: BinaryOperatorGoal<'ctx>) -> SolverResult<'ctx> {
         let gcx = self.gcx();
-        let lhs = self.icx.shallow_resolve(goal.lhs);
-        let rhs = self.icx.shallow_resolve(goal.rhs);
+        let lhs = self.icx().shallow_resolve(goal.lhs);
+        let rhs = self.icx().shallow_resolve(goal.rhs);
         if lhs.is_infer() {
             return SolverResult::Deferred;
         }
@@ -192,10 +192,10 @@ fn binary_goal_to_method_goal<'ctx>(
     }
 }
 
-impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
+impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     pub fn solve_subscript(&mut self, goal: OverloadGoal<'ctx>) -> SolverResult<'ctx> {
         let gcx = self.gcx();
-        let lhs = self.icx.shallow_resolve(goal.callee_var);
+        let lhs = self.icx().shallow_resolve(goal.callee_var);
         if lhs.is_infer() {
             return SolverResult::Deferred;
         }

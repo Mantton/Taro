@@ -1,6 +1,5 @@
 use core::fmt;
 use index_vec::{IndexVec, define_index_type};
-use indexmap::IndexMap;
 use rustc_hash::FxHashMap;
 use std::{collections::HashMap, fmt::Display};
 use taroc_ast_ir::OperatorKind;
@@ -246,43 +245,30 @@ impl GenericParameterDefinitionKind {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct StructField<'ctx> {
+pub struct AdtFieldDefinition<'ctx> {
     pub id: DefinitionID,
     pub name: Symbol,
-    pub ty: Ty<'ctx>,
-    pub mutability: Mutability,
     pub index: usize,
+    pub ty: Ty<'ctx>,
+}
+
+#[derive(Debug, Clone)]
+pub struct VariantDefinition<'ctx> {
+    pub id: DefinitionID,
+    pub ctor: Option<(CtorKind, DefinitionID)>,
+    pub name: Symbol,
+    pub discriminant: usize,
+    pub fields: IndexVec<FieldIndex, AdtFieldDefinition<'ctx>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct StructDefinition<'ctx> {
-    pub id: DefinitionID,
-    pub name: Symbol,
-    pub fields: IndexVec<FieldIndex, StructField<'ctx>>,
-    pub ctor: Option<(CtorKind, DefinitionID)>,
-    pub variant_discrimimant: Option<usize>,
+    pub variant: &'ctx VariantDefinition<'ctx>,
 }
 
 #[derive(Debug, Clone)]
 pub struct EnumDefinition<'ctx> {
-    pub id: DefinitionID,
-    pub name: Symbol,
-    pub variants: IndexMap<Symbol, EnumVariant<'ctx>>,
-}
-
-#[derive(Debug, Clone)]
-pub struct EnumVariant<'ctx> {
-    pub id: DefinitionID,
-    pub name: Symbol,
-    pub kind: EnumVariantKind<'ctx>,
-    pub discriminant: usize,
-}
-
-#[derive(Debug, Clone)]
-pub enum EnumVariantKind<'ctx> {
-    Unit,
-    Tuple(Vec<Ty<'ctx>>),
-    Struct(StructDefinition<'ctx>),
+    pub variants: Vec<&'ctx VariantDefinition<'ctx>>,
 }
 
 #[derive(Debug, Clone)]

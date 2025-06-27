@@ -59,55 +59,14 @@ pub enum ExpressionKind {
     CastAs(Box<Expression>, Box<Type>),
     /// A Binding Condition used for Tagged Unions
     ///
-    /// `if match Some(value) = foo {}`
-    MatchBinding(PatternBindingCondition),
+    /// `if let Some(value) = foo {}`
+    PatternBinding(PatternBinding),
     /// |a, b| { a + b }
     Closure(ClosureExpression),
     /// { <stmt_list> }
     Block(Block),
     /// await foo.bar()
     Await(Box<Expression>),
-    // Lowered away
-
-    // `(a)`
-    // Parenthesis(Box<Expression>),
-    // `a ? b : c`
-    // Ternary(Box<Expression>, Box<Expression>, Box<Expression>),
-    // `a!`
-    // ForceUnwrap(Box<Expression>),
-    // `a?`
-    // OptionalUnwrap(Box<Expression>),
-    //
-    // OptionalEvaluation(Box<Expression>),
-    // `a |> b`
-    // Pipe(Box<Expression>, Box<Expression>),
-    // `a ?? b`
-    // OptionalDefault(Box<Expression>, Box<Expression>),
-    //
-    // An ensure statement offers a cleaner way to deal with the `Result<T, E>` type.
-    //
-    // `let foo = ensure bar()` // `foo` will be of type `T` or the function will return `Result.Failure(E)`
-    //
-    // `let foo = ensure? bar()` // `foo` will be of type `Optional<T>`, the function will not return early, rather the error value will be discarded
-    //
-    // `let foo = ensure! bar()` // `foo` will be of type `T` if the result expects Result<Option<T>>, the function will not return early, rather the error value will be discarded
-    // Ensure(EnsureMode, Box<Expression>),
-    // `["a" : 100]`
-    // Dictionary(Vec<MapPair>),
-    // A Binding Condition used to unwrap an optional value, conditions may only appear `if`, `guard` & `while` conditions
-
-    // `if let foo {}`
-
-    // `if let foo = bar {}`
-
-    // `guard let foo else { return }`
-
-    // `guard let foo = bar else { return }`
-
-    // `while let foo {}`
-
-    // `while let foo = bar {}`
-    // OptionalBinding(OptionalBindingCondition),
 }
 
 #[derive(Debug, Clone)]
@@ -138,7 +97,7 @@ pub struct MethodCall {
 }
 
 #[derive(Debug, Clone)]
-pub struct PatternBindingCondition {
+pub struct PatternBinding {
     pub expression: Box<Expression>,
     pub pattern: Pattern,
     pub span: Span,

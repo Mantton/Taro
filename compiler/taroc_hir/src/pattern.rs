@@ -1,4 +1,6 @@
-use super::{NodeID, expression::AnonConst, path::Path};
+use crate::Expression;
+
+use super::{NodeID, path::Path};
 use taroc_span::{Identifier, Span};
 
 #[derive(Debug, Clone)]
@@ -16,16 +18,19 @@ pub enum PatternKind {
     Identifier(Identifier),
     // (a, b)
     Tuple(Vec<Pattern>, Span),
-    // Foo::Bar
-    Path(Path),
     // Foo::Bar(a, b)
     PathTuple(Path, Vec<Pattern>, Span),
     // Foo::Bar { a, b, .. }
     PathStruct(Path, Vec<PatternField>, Span, bool),
     // Foo | Bar
     Or(Vec<Pattern>, Span),
-    // Anon Consts in Pattern Type
-    Literal(AnonConst),
+    Expression(PatternExpressionKind),
+}
+
+#[derive(Debug, Clone)]
+pub enum PatternExpressionKind {
+    Path(Path),
+    AnonConst(Box<Expression>),
 }
 
 #[derive(Debug, Clone)]
@@ -43,10 +48,7 @@ impl Pattern {
         }
 
         match &self.kind {
-            PatternKind::Wildcard
-            | PatternKind::Literal(..)
-            | PatternKind::Identifier(..)
-            | PatternKind::Path(..) => {}
+            PatternKind::Wildcard | PatternKind::Expression(..) | PatternKind::Identifier(..) => {}
             PatternKind::PathStruct(_, fields, ..) => {
                 fields.iter().for_each(|f| f.pattern.walk(action))
             }

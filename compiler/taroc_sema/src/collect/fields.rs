@@ -1,12 +1,12 @@
-use crate::{GlobalContext, ty::StructDefinition};
+use crate::lower::{ItemCtx, LoweringRequest, TypeLowerer};
+use crate::ty::{EnumDefinition, StructDefinition};
+use crate::{GlobalContext, ty::VariantDefinition};
 use taroc_error::CompileResult;
 use taroc_hir::{
     DefinitionID, attributes_contain,
     visitor::{HirVisitor, walk_declaration, walk_function_declaration},
 };
 use taroc_span::{Identifier, Symbol};
-
-use crate::lower::{ItemCtx, LoweringRequest, TypeLowerer};
 
 pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
     Actor::run(package, context)
@@ -40,10 +40,11 @@ impl HirVisitor for Actor<'_> {
                     self.context.def_id(d.id),
                     d.identifier,
                     &def.variant,
-                    None,
                 );
             }
-            taroc_hir::DeclarationKind::Enum(_) => {}
+            taroc_hir::DeclarationKind::Enum(node) => {
+                self.collect_enum_definition(self.context.def_id(d.id), d.identifier, node);
+            }
             _ => walk_declaration(self, d),
         }
     }
@@ -55,10 +56,11 @@ impl HirVisitor for Actor<'_> {
                     self.context.def_id(d.id),
                     d.identifier,
                     &def.variant,
-                    None,
                 );
             }
-            taroc_hir::FunctionDeclarationKind::Enum(_) => {}
+            taroc_hir::FunctionDeclarationKind::Enum(node) => {
+                self.collect_enum_definition(self.context.def_id(d.id), d.identifier, node);
+            }
             _ => walk_function_declaration(self, d),
         }
     }
@@ -70,13 +72,13 @@ impl HirVisitor for Actor<'_> {
 }
 
 impl<'ctx> Actor<'ctx> {
-    fn collect_struct_definition(
+    fn collect_variant_definition(
         &mut self,
         id: DefinitionID,
         ident: Identifier,
         variant: &taroc_hir::VariantKind,
         discrimimant: Option<usize>,
-    ) {
+    ) -> &'ctx VariantDefinition<'ctx> {
         let gcx = self.context;
         let icx = ItemCtx::new(self.context);
 
@@ -86,31 +88,81 @@ impl<'ctx> Actor<'ctx> {
             .iter()
             .enumerate()
             .map(|(i, f)| {
-                return crate::ty::StructField {
+                return crate::ty::AdtFieldDefinition {
                     id: gcx.def_id(f.id),
                     name: f.identifier.symbol,
                     ty: icx.lowerer().lower_type(&f.ty, &LoweringRequest::default()),
-                    mutability: f.mutability,
                     index: i,
                 };
             })
             .collect();
 
-        let definition = gcx.store.interners.alloc(StructDefinition {
+        let s_def = VariantDefinition {
             id,
             name: ident.symbol,
             fields,
             ctor: variant.ctor().map(|(k, id)| (k, gcx.def_id(id))),
-            variant_discrimimant: discrimimant,
-        });
+            discriminant: discrimimant.unwrap_or(0),
+        };
+        let definition = gcx.store.interners.alloc(s_def);
 
         let current_sess = gcx.session().index();
         let ok = gcx
-            .with_type_database(current_sess, |db| db.structs.insert(id, definition))
+            .with_type_database(current_sess, |db| db.variants.insert(id, definition))
             .is_none();
 
         if !ok {
+            unreachable!("ICE: overwriting existing variant definition")
+        }
+
+        definition
+    }
+
+    fn collect_struct_definition(
+        &mut self,
+        id: DefinitionID,
+        ident: Identifier,
+        variant: &taroc_hir::VariantKind,
+    ) {
+        let variant = self.collect_variant_definition(id, ident, variant, None);
+        let def = self
+            .context
+            .store
+            .interners
+            .alloc(StructDefinition { variant });
+        let ok = self
+            .context
+            .with_session_type_database(|db| db.structs.insert(id, def).is_none());
+
+        if !ok {
             unreachable!("ICE: overwriting existing struct definition")
+        }
+    }
+
+    fn collect_enum_definition(
+        &mut self,
+        id: DefinitionID,
+        _: Identifier,
+        enum_def: &taroc_hir::EnumDefinition,
+    ) {
+        let gcx = self.context;
+        let mut variants = Vec::new();
+        for (index, variant) in enum_def.variants.iter().enumerate() {
+            let variant_id = gcx.def_id(variant.id);
+            let variant_def = self.collect_variant_definition(
+                variant_id,
+                variant.identifier,
+                &variant.kind,
+                Some(index),
+            );
+
+            variants.push(variant_def);
+        }
+
+        let definition = gcx.store.interners.alloc(EnumDefinition { variants });
+        let ok = gcx.with_session_type_database(|db| db.enums.insert(id, definition).is_none());
+        if !ok {
+            unreachable!("ICE: overwriting existing enum definition")
         }
     }
 }

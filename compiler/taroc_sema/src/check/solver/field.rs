@@ -7,15 +7,20 @@ use crate::{
     utils::instantiate_ty_with_args,
 };
 
-impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
+impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     pub fn solve_field_access(&mut self, goal: FieldAccessGoal<'ctx>) -> SolverResult<'ctx> {
-        let base_ty = self.icx.shallow_resolve(goal.base_ty);
+        let base_ty = self.icx().shallow_resolve(goal.base_ty);
         match base_ty.kind() {
             TyKind::Adt(def, args) => {
                 let def = self
                     .gcx()
                     .with_session_type_database(|db| db.structs[&def.id]);
-                if let Some(field) = def.fields.iter().find(|f| f.name == goal.field.symbol) {
+                if let Some(field) = def
+                    .variant
+                    .fields
+                    .iter()
+                    .find(|f| f.name == goal.field.symbol)
+                {
                     let field_ty = instantiate_ty_with_args(self.gcx(), field.ty, args);
                     let obligation = Obligation {
                         location: goal.field.span,
@@ -32,9 +37,9 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     }
 }
 
-impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
+impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     pub fn solve_tuple_access(&mut self, goal: TupleAccessGoal<'ctx>) -> SolverResult<'ctx> {
-        let base_ty = self.icx.shallow_resolve(goal.base_ty);
+        let base_ty = self.icx().shallow_resolve(goal.base_ty);
         match base_ty.kind() {
             TyKind::Tuple(items) => {
                 if goal.index < items.len() {

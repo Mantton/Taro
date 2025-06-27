@@ -175,9 +175,8 @@ impl HirVisitor for HirNodeTagger<'_, '_> {
                     id,
                     DefinitionKind::Ctor(CtorOf::Variant, kind),
                 );
-
-                visitor::walk_variant(this, v)
             }
+            visitor::walk_variant(this, v)
         });
     }
 
