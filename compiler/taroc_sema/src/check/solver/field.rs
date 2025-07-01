@@ -28,7 +28,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
                     };
                     SolverResult::Solved(vec![obligation])
                 } else {
-                    SolverResult::Error(TypeError::UnknownField)
+                    SolverResult::Error(TypeError::UnknownField(goal.field.symbol, base_ty))
                 }
             }
             TyKind::Infer(_) => SolverResult::Deferred,

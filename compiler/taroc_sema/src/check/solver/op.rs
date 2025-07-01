@@ -109,7 +109,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
         let gcx = self.gcx();
         let lhs = self.icx().shallow_resolve(goal.lhs);
         let rhs = self.icx().shallow_resolve(goal.rhs);
-        if lhs.is_infer() {
+        if lhs.is_infer() || rhs.is_infer() {
             return SolverResult::Deferred;
         }
 

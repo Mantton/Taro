@@ -1,8 +1,10 @@
 use taroc_hir::OperatorKind;
+use taroc_span::Symbol;
 
 use crate::{
     GlobalContext,
-    ty::{GenericArgument, Ty},
+    ty::{GenericArgument, InterfaceReference, Ty},
+    utils::interface_ref2str,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,8 +26,8 @@ pub enum TypeError<'ctx> {
     TyMismatch(ExpectedFound<Ty<'ctx>>),
     ArgMismatch(ExpectedFound<GenericArgument<'ctx>>),
     NoOverloadCandidateMatch,
-    ConformanceNotMet,
-    UnknownField,
+    ConformanceNotMet(Ty<'ctx>, InterfaceReference<'ctx>),
+    UnknownField(Symbol, Ty<'ctx>),
     NotAStruct,
     TupleIndexOutOfBounds(ExpectedFound<usize>),
     NotATuple,
@@ -64,8 +66,14 @@ impl<'ctx> TypeError<'ctx> {
                 format!("expected argument {expected}, found {found}")
             }
             TypeError::NoOverloadCandidateMatch => "no overload candidate matches".into(),
-            TypeError::ConformanceNotMet => "required interface conformance not met".into(),
-            TypeError::UnknownField => "unknown field".into(),
+            TypeError::ConformanceNotMet(ty, interface) => format!(
+                "{} does not conform to {}",
+                ty.format(gcx),
+                interface_ref2str(interface, gcx)
+            ),
+            TypeError::UnknownField(name, ty) => {
+                format!("unknown field named \"{name}\" on {}", ty.format(gcx))
+            }
             TypeError::NotAStruct => "not a struct".into(),
             TypeError::TupleIndexOutOfBounds(ef) => format!(
                 "tuple index out of bounds: length is {}, index is {}",

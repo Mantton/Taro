@@ -8,9 +8,9 @@ use crate::{
     infer::InferCtx,
     ty::{Constraint, ParamEnv, Ty},
 };
-use std::collections::VecDeque;
+use std::{collections::VecDeque, vec};
 use taroc_hir::{BinaryOperator, UnaryOperator};
-use taroc_span::{Identifier, Span};
+use taroc_span::{Identifier, Span, Spanned};
 
 mod apply;
 pub mod cast;
@@ -153,27 +153,42 @@ impl<'ctx> ObligationSolver<'ctx> {
 }
 
 impl<'ctx> ObligationSolver<'ctx> {
-    pub fn solve(&mut self, fcx: &FnCtx<'_, 'ctx>, param_env: ParamEnv<'ctx>) {
+    pub fn solve(
+        &mut self,
+        fcx: &FnCtx<'_, 'ctx>,
+        param_env: ParamEnv<'ctx>,
+    ) -> Vec<Spanned<TypeError<'ctx>>> {
         if self.obligations.pending.is_empty() {
-            return;
+            return vec![];
         }
+
+        let mut errors = vec![];
 
         loop {
             let mut progress = false;
 
             for (obligation, _) in self.obligations.drain_pending(|_| true) {
                 let mut delegate = SolverDelegate::new(fcx, param_env);
-                let result = delegate.solve(obligation);
-                match result {
-                    0 => {
+                let result = delegate.solve_root_goal(obligation.goal, obligation.location);
+                let GoalResult {
+                    certainty,
+                    progressed,
+                } = match result {
+                    Ok(i) => i,
+                    Err(err) => {
+                        errors.push(err);
+                        continue;
+                    }
+                };
+                // println!("{:?}", result.ok().unwrap());
+
+                progress |= progressed;
+                match certainty {
+                    Certainty::Yes => {}
+                    Certainty::Maybe => {
+                        // deferred
                         self.obligations.add(obligation);
                     }
-                    1 => {
-                        delegate.solve_nested_obligations();
-                        progress = true
-                    }
-                    2 => progress = true,
-                    _ => unreachable!(),
                 }
             }
 
@@ -181,6 +196,9 @@ impl<'ctx> ObligationSolver<'ctx> {
                 break;
             }
         }
+
+        // println!("Incomplete {}", self.obligations.pending.len());
+        errors
     }
 }
 
@@ -188,7 +206,6 @@ pub struct SolverDelegate<'icx, 'ctx, 'rcx> {
     fcx: &'icx FnCtx<'rcx, 'ctx>,
     param_env: ParamEnv<'ctx>,
     nested_obligations: Vec<Obligation<'ctx>>,
-    has_error: bool,
 }
 
 impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
@@ -200,7 +217,6 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
             fcx,
             param_env,
             nested_obligations: vec![],
-            has_error: false,
         }
     }
 
@@ -222,37 +238,87 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
             self.add_obligation(obligation);
         }
     }
+}
 
-    fn solve_nested_obligations(&mut self) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GoalResult {
+    certainty: Certainty,
+    progressed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Certainty {
+    Yes,
+    Maybe,
+}
+
+impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
+    fn solve_root_goal(
+        &mut self,
+        goal: Goal<'ctx>,
+        span: Span,
+    ) -> Result<GoalResult, Spanned<TypeError<'ctx>>> {
+        let result = self.solve(goal, span)?;
+
+        if let Certainty::Yes = result.certainty {
+            let result = self.solve_nested_goals()?;
+            return Ok(GoalResult {
+                certainty: result.certainty,
+                progressed: true,
+            });
+        }
+
+        Ok(result)
+    }
+
+    pub fn solve_nested_goals(&mut self) -> Result<GoalResult, Spanned<TypeError<'ctx>>> {
+        let mut progressed = false;
+        let mut certainty = Certainty::Yes;
+
         for obligation in self.nested_obligations.iter() {
             let mut delegate = SolverDelegate::new(self.fcx, self.param_env);
-            delegate.solve(*obligation);
-            delegate.solve_nested_obligations();
-            if delegate.has_error {
-                self.has_error = true;
+            let result = delegate.solve_root_goal(obligation.goal, obligation.location)?;
+
+            progressed |= result.progressed;
+            if let Certainty::Maybe = result.certainty {
+                certainty = result.certainty;
+                break;
             }
         }
+
+        Ok(GoalResult {
+            certainty,
+            progressed,
+        })
     }
 }
 
 impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
-    fn solve(&mut self, obligation: Obligation<'ctx>) -> usize {
-        let result = self.try_solve(obligation);
+    fn solve(
+        &mut self,
+        goal: Goal<'ctx>,
+        location: Span,
+    ) -> Result<GoalResult, Spanned<TypeError<'ctx>>> {
+        let result = self.try_solve(goal, location);
         match result {
-            SolverResult::Deferred => 0,
+            SolverResult::Deferred => Ok(GoalResult {
+                certainty: Certainty::Maybe,
+                progressed: false,
+            }),
             SolverResult::Solved(obligations) => {
                 self.add_obligations(obligations);
-                1
+                Ok(GoalResult {
+                    certainty: Certainty::Yes,
+                    progressed: true,
+                })
             }
-            SolverResult::Error(_) => {
-                self.has_error = true;
-                2
-            }
+            SolverResult::Error(err) => Err(Spanned::new(err, location)),
         }
     }
-    fn try_solve(&mut self, obligation: Obligation<'ctx>) -> SolverResult<'ctx> {
-        match obligation.goal {
-            Goal::Constraint(constraint) => self.solve_constraint(constraint, obligation.location),
+
+    fn try_solve(&mut self, goal: Goal<'ctx>, location: Span) -> SolverResult<'ctx> {
+        match goal {
+            Goal::Constraint(constraint) => self.solve_constraint(constraint, location),
             Goal::Coerce { from, to, .. } => self.solve_coerce(from, to),
             Goal::Apply(goal) => self.solve_application(goal),
             Goal::FieldAccess(goal) => self.solve_field_access(goal),

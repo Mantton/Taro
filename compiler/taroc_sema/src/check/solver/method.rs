@@ -66,8 +66,8 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
             let mut ctx = SolverDelegate::new(self.fcx, self.param_env);
             let obligations = ctx.select_fn_for_method(candidate, recv_ty, goal);
             ctx.add_obligations(obligations);
-            ctx.solve_nested_obligations();
-            !ctx.has_error
+            let result = ctx.solve_nested_goals();
+            result.is_ok()
         })
     }
 

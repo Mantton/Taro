@@ -38,7 +38,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
 
                 match gcx.has_conformance(ty, interface) {
                     ConformanceResult::NotConformant => {
-                        return SolverResult::Error(TypeError::ConformanceNotMet);
+                        return SolverResult::Error(TypeError::ConformanceNotMet(ty, interface));
                     }
                     ConformanceResult::Conforms(cond) => {
                         let mut subobligations = vec![];

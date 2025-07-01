@@ -96,6 +96,7 @@ fn check_func<'rcx, 'gcx>(
 
     // Solve Obligations
     solve(fcx);
+
     // println!("--- \n")
 }
 
@@ -111,7 +112,19 @@ fn collect<'rcx, 'gcx>(fcx: &mut FnCtx<'rcx, 'gcx>, node: &taroc_hir::Block) {
 
 fn solve<'rcx, 'gcx>(fcx: &mut FnCtx<'rcx, 'gcx>) {
     let mut solver = fcx.solver.borrow_mut();
-    solver.solve(&fcx, fcx.param_env());
+    let mut errors = solver.solve(&fcx, fcx.param_env());
+
+    // Defualt IntVars, FloatVars and NilVars
+
+    // Re-Run Solver
+    errors.extend(solver.solve(&fcx, fcx.param_env()));
+
+    // Report Errors
+    for err in errors.into_iter() {
+        fcx.gcx
+            .diagnostics
+            .error(err.value.format(fcx.gcx), err.span);
+    }
 }
 
 fn is_expression_bodied(block: &taroc_hir::Block) -> Option<&taroc_hir::Expression> {
