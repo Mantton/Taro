@@ -1,3 +1,8 @@
+use crate::{
+    GlobalContext,
+    infer::keys::{FloatVarID, IntVarID},
+    utils::ty2str,
+};
 use core::fmt;
 use index_vec::{IndexVec, define_index_type};
 use rustc_hash::FxHashMap;
@@ -5,13 +10,7 @@ use std::{collections::HashMap, fmt::Display};
 use taroc_ast_ir::OperatorKind;
 use taroc_data_structures::Interned;
 use taroc_hir::{CtorKind, DefinitionID, Mutability};
-use taroc_span::{FileID, Span, Spanned, Symbol};
-
-use crate::{
-    GlobalContext,
-    infer::keys::{FloatVarID, IntVarID},
-    utils::ty2str,
-};
+use taroc_span::{Span, Spanned, Symbol};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Ty<'arena>(Interned<'arena, TyKind<'arena>>);
@@ -179,8 +178,6 @@ pub type GenericArguments<'arena> = &'arena [GenericArgument<'arena>];
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Visibility {
     Public,
-    ModuleRestricted(DefinitionID),
-    FileRestricted(FileID),
 }
 
 #[derive(Debug, Clone)]
@@ -290,7 +287,6 @@ define_index_type! {
 pub struct InterfaceRequirements<'ctx> {
     pub methods: Vec<InterfaceMethodRequirement<'ctx>>,
     pub operators: Vec<InterfaceOperatorRequirement<'ctx>>,
-    pub properties: Vec<InterfacePropertyRequirement<'ctx>>,
     pub types: Vec<AssociatedTypeDefinition<'ctx>>,
 }
 
@@ -299,12 +295,6 @@ pub struct InterfaceMethodRequirement<'ctx> {
     pub name: Symbol,
     pub signature: LabeledFunctionSignature<'ctx>,
     pub is_required: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct InterfacePropertyRequirement<'ctx> {
-    pub name: Symbol,
-    pub signature: ComputedPropertySignature<'ctx>,
 }
 
 #[derive(Debug, Clone)]
@@ -356,25 +346,6 @@ pub struct LabeledFunctionParameter<'ctx> {
     pub has_default: bool,
 }
 
-#[derive(Debug, Default)]
-pub struct DefinitionFunctionsData<'ctx> {
-    // Methods
-    pub methods: FxHashMap<Symbol, Vec<LabeledFunctionSignature<'ctx>>>,
-    pub static_methods: FxHashMap<Symbol, Vec<LabeledFunctionSignature<'ctx>>>,
-    // Operators
-    pub operators: FxHashMap<OperatorKind, Vec<LabeledFunctionSignature<'ctx>>>,
-    // Properties
-    pub properties: FxHashMap<Symbol, ComputedPropertySignature<'ctx>>,
-    pub static_properties: FxHashMap<Symbol, Vec<LabeledFunctionSignature<'ctx>>>,
-    // Constructors
-    pub constructors: Vec<LabeledFunctionSignature<'ctx>>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ComputedPropertySignature<'ctx> {
-    pub ty: Ty<'ctx>,
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct ConformanceRecord<'ctx> {
     pub target: SimpleType,
@@ -424,17 +395,6 @@ index_vec::define_index_type! {
     pub struct FnVarID = u32;
 }
 
-#[derive(Debug, Default, Clone, Copy)]
-pub struct VarBinding<'ctx, T> {
-    pub parent: Option<T>,
-    pub bound_ty: Option<Ty<'ctx>>,
-}
-
-pub enum Direction<'ctx> {
-    Synth,
-    Check(Ty<'ctx>),
-}
-
 #[derive(Debug, Clone, Copy)]
 pub enum Adjustment {
     MutRefConstCast,        // &mut -> &
@@ -447,11 +407,6 @@ pub enum Adjustment {
     AutoRef,                // T -> &T
     AutoMutRef,             // T -> &mut T
     AutoDeref,              // &T -> T
-}
-
-pub struct Coercion<'ctx> {
-    pub adjustments: Vec<Adjustment>,
-    pub ty: Ty<'ctx>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -553,12 +508,6 @@ pub struct AliasEntry {
     pub ext_id: Option<DefinitionID>,   // which extension declared it (for blame)
     pub alias_id: DefinitionID,
     pub symbol: Symbol,
-}
-
-#[derive(Debug)]
-pub struct ExtensionBlockSignature<'ctx> {
-    pub ty: Ty<'ctx>,
-    pub constraints: Vec<Spanned<Constraint<'ctx>>>,
 }
 
 // Display for the various primitive type enums

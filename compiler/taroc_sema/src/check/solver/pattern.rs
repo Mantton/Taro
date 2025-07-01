@@ -1,13 +1,12 @@
-use rustc_hash::FxHashMap;
-use taroc_hir::{CtorKind, DefinitionKind, NodeID, Resolution};
-use taroc_span::Span;
-
 use crate::{
     check::solver::{Goal, Obligation, SolverDelegate, SolverResult},
     error::{ExpectedFound, TypeError},
     ty::{Constraint, Ty, TyKind, VariantDefinition},
     utils::instantiate_ty_with_args,
 };
+use rustc_hash::FxHashMap;
+use taroc_hir::{CtorKind, DefinitionKind, NodeID, Resolution};
+use taroc_span::Span;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PatternResolutionGoal<'ctx> {
@@ -381,7 +380,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
 
                 let enum_def = self
                     .gcx()
-                    .with_session_type_database(|db| db.enums.get(&enum_id).expect("").clone());
+                    .with_session_type_database(|db| *db.enums.get(&enum_id).expect(""));
                 let Some(&variant) = enum_def.variants.iter().find(|v| v.id == variant_id) else {
                     unreachable!()
                 };
