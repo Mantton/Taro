@@ -1,6 +1,5 @@
 use crate::GlobalContext;
 use crate::ty::{AdtDef, AdtKind, GenericArguments, Ty, TyKind};
-use crate::utils::convert_tuple_variant_signature;
 use taroc_error::CompileResult;
 use taroc_hir::{
     DefinitionID, DefinitionKind, Mutability, attributes_contain, visitor::HirVisitor,
@@ -64,17 +63,12 @@ impl HirVisitor for Actor<'_> {
                 let ctor_def_id = self.context.def_id(*ctor_id);
                 self.context.cache_type(ctor_def_id, parent_ty);
             }
-            taroc_hir::VariantKind::Tuple(ctor_id, fields) => {
+            taroc_hir::VariantKind::Tuple(ctor_id, _) => {
                 let ctor_def_id = self.context.def_id(*ctor_id);
                 let arguments = self.context.type_arguments(parent);
                 let kind = TyKind::FnDef(ctor_def_id, arguments);
                 let ty = self.context.mk_ty(kind);
                 self.context.cache_type(ctor_def_id, ty);
-
-                // Constructor
-                let signature =
-                    convert_tuple_variant_signature(fields, parent_ty, ctor_def_id, self.context);
-                self.context.cache_signature(ctor_def_id, signature);
             }
             taroc_hir::VariantKind::Struct(..) => {}
         }

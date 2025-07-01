@@ -1,5 +1,5 @@
-use crate::GlobalContext;
 use crate::ty::TyKind;
+use crate::{GlobalContext, utils::convert_tuple_variant_signature};
 use taroc_error::CompileResult;
 use taroc_hir::{
     NodeID,
@@ -44,5 +44,21 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
         self.context.cache_type(def_id, ty);
         self.context.cache_signature(def_id, signature.clone());
         walk_function(self, id, function, context)
+    }
+
+    fn visit_variant(&mut self, v: &taroc_hir::Variant) -> Self::Result {
+        let def_id = self.context.def_id(v.id);
+        let parent = self.context.parent(def_id);
+        let parent_ty = self.context.type_of(parent);
+        match &v.kind {
+            taroc_hir::VariantKind::Tuple(ctor_id, fields) => {
+                let ctor_def_id = self.context.def_id(*ctor_id);
+                // Constructor
+                let signature =
+                    convert_tuple_variant_signature(fields, parent_ty, ctor_def_id, self.context);
+                self.context.cache_signature(ctor_def_id, signature);
+            }
+            _ => {}
+        }
     }
 }
