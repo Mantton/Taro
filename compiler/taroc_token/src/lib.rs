@@ -23,10 +23,11 @@ pub enum TokenKind {
     Export,
 
     Public,
+    Private,
+
     Function,
     Struct,
     Enum,
-    Bridge,
     Interface,
     Type,
     Conform,
@@ -42,7 +43,8 @@ pub enum TokenKind {
 
     If,
     Else,
-    When,
+    Match,
+    Case,
 
     Defer,
     Guard,
@@ -54,7 +56,6 @@ pub enum TokenKind {
     For,
 
     Ensure,
-    Unsafe,
 
     Await,
     Async,
@@ -82,7 +83,6 @@ pub enum TokenKind {
     Neq,      // !=
     Leq,      // <=
     Geq,      // >=
-    Teq,      // ~=, Expression Matches
 
     AmpAmp, // &&
     BarBar, // ||
@@ -128,14 +128,6 @@ pub enum TokenKind {
     Ellipsis, // ...
     DotDot,   // ..
     DotDotEq, // ..=
-
-    // Protected
-    Mod,
-    Get,
-    Set,
-    Static,
-    Private,
-    Computed,
 }
 
 impl Display for TokenKind {
@@ -158,7 +150,6 @@ impl Display for TokenKind {
             TokenKind::Struct => "struct",
             TokenKind::Enum => "enum",
             TokenKind::Import => "import",
-            TokenKind::Bridge => "bridge",
             TokenKind::Interface => "interface",
             TokenKind::Type => "type",
             TokenKind::Conform => "conform",
@@ -197,7 +188,6 @@ impl Display for TokenKind {
             TokenKind::Neq => "!=",
             TokenKind::Leq => "<=",
             TokenKind::Geq => ">=",
-            TokenKind::Teq => "~=",
             TokenKind::AmpAmp => "&&",
             TokenKind::BarBar => "||",
             TokenKind::Comma => ",",
@@ -232,27 +222,22 @@ impl Display for TokenKind {
             TokenKind::QuestionDot => "?.",
             TokenKind::QuestionQuestion => "??",
             TokenKind::At => "@",
-            TokenKind::Unsafe => "unsafe",
             TokenKind::Public => "public",
             TokenKind::Ellipsis => "...",
             TokenKind::Await => "await",
             TokenKind::DotDot => "..",
             TokenKind::DotDotEq => "..=",
             TokenKind::Namespace => "namespace",
-            TokenKind::When => "when",
+            TokenKind::Match => "match",
             TokenKind::EqArrow => "=>",
             TokenKind::Some => "some",
             TokenKind::Any => "any",
             TokenKind::Export => "export",
             TokenKind::PtrEq => "===",
             TokenKind::Operator => "operator",
-            TokenKind::Computed => "computed",
-            TokenKind::Static => "static",
-            TokenKind::Get => "get",
-            TokenKind::Set => "set",
-            TokenKind::Mod => "mod",
             TokenKind::Private => "private",
             TokenKind::Readonly => "readonly",
+            TokenKind::Case => "case",
         };
         write!(f, "{}", text)
     }
@@ -268,7 +253,6 @@ impl TokenKind {
             "struct" => TokenKind::Struct,
             "enum" => TokenKind::Enum,
             "import" => TokenKind::Import,
-            "bridge" => TokenKind::Bridge,
             "interface" => TokenKind::Interface,
             "type" => TokenKind::Type,
             "conform" => TokenKind::Conform,
@@ -289,24 +273,20 @@ impl TokenKind {
             "guard" => TokenKind::Guard,
             "for" => TokenKind::For,
             "async" => TokenKind::Async,
-            "unsafe" => TokenKind::Unsafe,
             "as" => TokenKind::As,
             "in" => TokenKind::In,
             "where" => TokenKind::Where,
             "await" => TokenKind::Await,
             "namespace" => TokenKind::Namespace,
             "public" => TokenKind::Public,
-            "when" => TokenKind::When,
+            "match" => TokenKind::Match,
             "some" => TokenKind::Some,
             "any" => TokenKind::Any,
             "export" => TokenKind::Export,
             "operator" => TokenKind::Operator,
-            "computed" => TokenKind::Computed,
-            "get" => TokenKind::Get,
-            "set" => TokenKind::Set,
-            "static" => TokenKind::Static,
             "private" => TokenKind::Private,
             "readonly" => TokenKind::Readonly,
+            "case" => TokenKind::Case,
             _ => return None,
         };
 

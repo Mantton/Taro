@@ -1,13 +1,12 @@
 use super::package::{Parser, R};
-use std::collections::HashMap;
 use taroc_ast::{
-    AssociatedDeclaration, AssociatedDeclarationKind, Bridge, BridgeValue, ConstantDeclaration,
-    Declaration, DeclarationKind, EnumDefinition, Extend, Extern, ForeignDeclaration,
+    AssociatedDeclaration, AssociatedDeclarationKind, ConstantDeclaration, Declaration,
+    DeclarationKind, EnumCase, EnumDefinition, Extend, Extern, ForeignDeclaration,
     ForeignDeclarationKind, FunctionDeclaration, FunctionDeclarationKind, Generics,
     InterfaceDefinition, Local, Mutability, Namespace, PathTree, PathTreeNode, PatternKind,
     StructDefinition, TypeAlias, VariantKind,
 };
-use taroc_span::{Identifier, SpannedMessage, Symbol};
+use taroc_span::{Identifier, SpannedMessage};
 use taroc_token::{Delimiter, TokenKind};
 
 pub struct FnParseMode {
@@ -217,7 +216,6 @@ impl Parser {
             TokenKind::Function => self.parse_function(mode)?,
             TokenKind::Extern => (Identifier::emtpy(self.file.file), self.parse_extern()?),
             TokenKind::Extend => (Identifier::emtpy(self.file.file), self.parse_extend()?),
-            TokenKind::Bridge => self.parse_bridge()?,
             TokenKind::Namespace => self.parse_namespace()?,
             TokenKind::Operator => self.parse_operator(mode)?,
             _ => return Ok(None),
@@ -374,60 +372,6 @@ impl Parser {
 }
 
 impl Parser {
-    fn parse_bridge(&mut self) -> R<(Identifier, DeclarationKind)> {
-        self.expect(TokenKind::Bridge)?;
-        let ident = self.parse_identifier()?;
-
-        let body = self.parse_bridge_body();
-
-        Ok((ident, DeclarationKind::Bridge(body?)))
-    }
-
-    fn parse_bridge_body(&mut self) -> R<Bridge> {
-        let values = self.parse_block_sequence(|p| p.parse_bridge_value())?;
-
-        let mut map = HashMap::new();
-        for (ident, value) in values.into_iter() {
-            map.insert(ident, value);
-        }
-
-        let b = Bridge { values: map };
-
-        Ok(b)
-    }
-
-    fn parse_bridge_value(&mut self) -> R<(Symbol, BridgeValue)> {
-        let key = self.parse_string_content()?;
-
-        self.expect(TokenKind::Assign)?;
-
-        let value = match self.current_kind() {
-            TokenKind::String => BridgeValue::String(self.parse_string_content()?),
-            TokenKind::LBracket => {
-                let items = self.parse_delimiter_sequence(
-                    Delimiter::Bracket,
-                    TokenKind::Comma,
-                    true,
-                    |p| p.parse_string_content(),
-                )?;
-
-                BridgeValue::Array(items)
-            }
-            TokenKind::LBrace => {
-                let value = self.parse_bridge_body()?;
-                BridgeValue::Dict(Box::new(value))
-            }
-            _ => {
-                let msg = format!("expected bridge value, got {} instead", self.current_kind());
-                let err = SpannedMessage::new(msg, self.current_token_span());
-                return Err(err);
-            }
-        };
-        Ok((key, value))
-    }
-}
-
-impl Parser {
     fn parse_namespace(&mut self) -> R<(Identifier, DeclarationKind)> {
         self.expect(TokenKind::Namespace)?;
         let ident = self.parse_identifier()?;
@@ -553,14 +497,15 @@ impl Parser {
             conformances: None,
         };
 
-        let variants =
-            self.parse_delimiter_sequence(Delimiter::Brace, TokenKind::Comma, true, |p| {
-                p.parse_enum_variant()
-            })?;
-
-        let e = EnumDefinition { generics, variants };
-
+        let cases = self.parse_block_sequence(|this| this.parse_enum_case())?;
+        let e = EnumDefinition { generics, cases };
         Ok((identifier, DeclarationKind::Enum(e)))
+    }
+
+    fn parse_enum_case(&mut self) -> R<EnumCase> {
+        self.expect(TokenKind::Case)?;
+        let variants = self.parse_sequence(TokenKind::Comma, |this| this.parse_enum_variant())?;
+        Ok(EnumCase { variants })
     }
 }
 

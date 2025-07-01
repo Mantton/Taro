@@ -243,7 +243,6 @@ impl Parser {
             TokenKind::Neq => Some(OperatorKind::Neq),
             TokenKind::Geq => Some(OperatorKind::Geq),
             TokenKind::Leq => Some(OperatorKind::Leq),
-            TokenKind::Teq => Some(OperatorKind::ExprMatch),
 
             TokenKind::RChevron => Some(OperatorKind::Gt),
             TokenKind::LChevron => Some(OperatorKind::Lt),
@@ -309,7 +308,6 @@ impl Parser {
             TokenKind::Neq => Some(BinaryOperator::Neq),
             TokenKind::Geq => Some(BinaryOperator::Geq),
             TokenKind::Leq => Some(BinaryOperator::Leq),
-            TokenKind::Teq => Some(BinaryOperator::PatMatch),
 
             TokenKind::RChevron => Some(BinaryOperator::Gt),
             TokenKind::LChevron => Some(BinaryOperator::Lt),

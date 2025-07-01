@@ -38,8 +38,6 @@ pub enum BinaryOperator {
     Geq,
     /// `!=`
     Neq,
-    /// `~=`
-    PatMatch,
     /// Pointer Equality
     /// `===`
     PtrEq,
@@ -76,7 +74,6 @@ pub enum OperatorKind {
     Neg,
     Not,
     BitwiseNot,
-    ExprMatch,
 
     AddAssign,
     SubAssign,
@@ -128,8 +125,6 @@ impl OperatorKind {
             BinaryOperator::Leq => Leq,
             BinaryOperator::Geq => Geq,
             BinaryOperator::Neq => Neq,
-
-            BinaryOperator::PatMatch => ExprMatch,
 
             BinaryOperator::PtrEq => {
                 unreachable!("ICE: pointer equality should be custom handled")

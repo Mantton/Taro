@@ -176,7 +176,6 @@ impl Parser {
                 | TokenKind::Leq
                 | TokenKind::Neq
                 | TokenKind::Eql
-                | TokenKind::Teq
                 | TokenKind::PtrEq
         ) {
             expr = self.build_binary_expr(expr, |p| p.parse_bit_or_expr())?;
@@ -321,7 +320,7 @@ impl Parser {
     fn parse_prefix_expr(&mut self) -> R<Box<Expression>> {
         let lo = self.lo_span();
         // Expression Statements
-        if (self.matches(TokenKind::If) || self.matches(TokenKind::When))
+        if (self.matches(TokenKind::If) || self.matches(TokenKind::Match))
             && !self
                 .restrictions
                 .contains(Restrictions::ALLOW_BINDING_CONDITION)
@@ -755,13 +754,6 @@ impl Parser {
             TokenKind::Async | TokenKind::Bar | TokenKind::BarBar => {
                 self.parse_closure_expression()
             }
-            TokenKind::Unsafe => {
-                let lo = self.lo_span();
-                self.bump();
-                let block = self.parse_block()?;
-                let kind = ExpressionKind::Unsafe(block);
-                Ok(self.build_expr(kind, lo.to(self.hi_span())))
-            }
             TokenKind::Underscore => {
                 if !self.restrictions.contains(Restrictions::ALLOW_WILDCARD) {
                     let msg = format!("wildcard expressions are not permitted here");
@@ -807,7 +799,7 @@ impl Parser {
     fn parse_stmt_expr(&mut self) -> R<Box<Expression>> {
         match self.current_kind() {
             TokenKind::If => self.parse_if_expr(),
-            TokenKind::When => self.parse_when_expression(),
+            TokenKind::Match => self.parse_match_expression(),
             _ => unreachable!("must manually check for token kind matching if | switch | match"),
         }
     }
@@ -865,10 +857,10 @@ impl Parser {
 }
 
 impl Parser {
-    pub fn parse_when_expression(&mut self) -> R<Box<Expression>> {
+    pub fn parse_match_expression(&mut self) -> R<Box<Expression>> {
         let lo = self.lo_span();
 
-        self.expect(TokenKind::When)?;
+        self.expect(TokenKind::Match)?;
 
         let kw_span = self.previous().unwrap().span;
 
@@ -891,7 +883,7 @@ impl Parser {
                 break;
             }
 
-            let item = self.parse_when_arm()?;
+            let item = self.parse_match_arm()?;
             let _ = matches!(item.body.kind, ExpressionKind::Block(..));
             arms.push(item);
 
@@ -915,8 +907,9 @@ impl Parser {
         Ok(self.build_expr(k, lo.to(self.hi_span())))
     }
 
-    fn parse_when_arm(&mut self) -> R<WhenArm> {
+    fn parse_match_arm(&mut self) -> R<WhenArm> {
         let lo = self.lo_span();
+        self.expect(TokenKind::Case)?;
         let pattern = self.parse_when_arm_pattern()?;
         let guard = if self.eat(TokenKind::If) {
             Some(self.parse_expression()?)

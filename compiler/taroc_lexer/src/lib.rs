@@ -423,13 +423,7 @@ impl Lexer {
                     self.build(TokenKind::Assign)
                 }
             }
-            '~' => {
-                if self.matches('=') {
-                    self.build(TokenKind::Teq)
-                } else {
-                    self.build(TokenKind::Tilde)
-                }
-            }
+            '~' => self.build(TokenKind::Tilde),
             '<' => {
                 if self.matches('=') {
                     self.build(TokenKind::Leq)
@@ -992,7 +986,6 @@ mod test {
         assert_token!("struct", TokenKind::Struct, "struct");
         assert_token!("enum", TokenKind::Enum, "enum");
         assert_token!("import", TokenKind::Import, "import");
-        assert_token!("bridge", TokenKind::Bridge, "bridge");
         assert_token!("interface", TokenKind::Interface, "interface");
         assert_token!("type", TokenKind::Type, "type");
         assert_token!("conform", TokenKind::Conform, "conform");
@@ -1013,14 +1006,14 @@ mod test {
         assert_token!("guard", TokenKind::Guard, "guard");
         assert_token!("for", TokenKind::For, "for");
         assert_token!("async", TokenKind::Async, "async");
-        assert_token!("unsafe", TokenKind::Unsafe, "unsafe");
         assert_token!("as", TokenKind::As, "as");
         assert_token!("in", TokenKind::In, "in");
         assert_token!("where", TokenKind::Where, "where");
         assert_token!("await", TokenKind::Await, "await");
         assert_token!("namespace", TokenKind::Namespace, "namespace");
         assert_token!("public", TokenKind::Public, "public");
-        assert_token!("when", TokenKind::When, "when");
+        assert_token!("match", TokenKind::Match, "match");
+        assert_token!("case", TokenKind::Case, "case");
     }
 
     #[test]
@@ -1046,14 +1039,13 @@ mod test {
         assert_sequence_kind!("&& ||", TokenKind::AmpAmp, TokenKind::BarBar);
 
         assert_sequence_kind!(
-            "< > == != <= >= ~= ===",
+            "< > == != <= >= ===",
             TokenKind::LChevron,
             TokenKind::RChevron,
             TokenKind::Eql,
             TokenKind::Neq,
             TokenKind::Leq,
             TokenKind::Geq,
-            TokenKind::Teq,
             TokenKind::PtrEq
         );
     }

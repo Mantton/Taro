@@ -124,7 +124,6 @@ impl Actor<'_> {
             taroc_ast::ExpressionKind::Range(..) => todo!(),
             taroc_ast::ExpressionKind::Wildcard => todo!(),
             taroc_ast::ExpressionKind::Closure(..) => todo!(),
-            taroc_ast::ExpressionKind::Unsafe(..) => todo!(),
             taroc_ast::ExpressionKind::Malformed => todo!(),
         }
     }

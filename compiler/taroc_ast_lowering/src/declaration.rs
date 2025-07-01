@@ -101,7 +101,6 @@ impl Actor<'_> {
             taroc_ast::DeclarationKind::Enum(node) => {
                 taroc_hir::DeclarationKind::Enum(self.lower_enum_definition(node))
             }
-            taroc_ast::DeclarationKind::Bridge(..) => todo!("bridge declaration"),
             taroc_ast::DeclarationKind::Operator(..) => {
                 unreachable!("top level operators must be caught by")
             }
@@ -273,7 +272,12 @@ impl Actor<'_> {
         taroc_hir::EnumDefinition {
             generics: self.lower_generics(node.generics),
             variants: self
-                .lower_sequence(node.variants, |this, variant| this.lower_variant(variant)),
+                .lower_sequence(node.cases, |this, case| {
+                    this.lower_sequence(case.variants, |this, variant| this.lower_variant(variant))
+                })
+                .into_iter()
+                .flatten()
+                .collect(),
         }
     }
 

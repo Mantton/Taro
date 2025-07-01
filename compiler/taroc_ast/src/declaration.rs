@@ -3,7 +3,6 @@ use super::{
     visibility::Visibility,
 };
 use crate::{EnumDefinition, Expression, Generics, StructDefinition};
-use std::collections::HashMap;
 use taroc_ast_ir::OperatorKind;
 use taroc_span::{Identifier, Span, Spanned, Symbol};
 
@@ -44,8 +43,6 @@ pub enum DeclarationKind {
     Extern(Extern),
     /// `namespace Foo {}`
     Namespace(Namespace),
-    /// `bridge C {}`
-    Bridge(Bridge),
 }
 
 pub type FunctionDeclaration = Declaration<FunctionDeclarationKind>;
@@ -96,18 +93,6 @@ pub struct Extern {
 #[derive(Debug)]
 pub struct Namespace {
     pub declarations: Vec<Declaration>,
-}
-
-#[derive(Debug)]
-pub struct Bridge {
-    pub values: HashMap<Symbol, BridgeValue>,
-}
-
-#[derive(Debug)]
-pub enum BridgeValue {
-    String(Symbol),
-    Array(Vec<Symbol>),
-    Dict(Box<Bridge>),
 }
 
 #[derive(Debug)]

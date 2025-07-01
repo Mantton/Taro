@@ -85,8 +85,6 @@ pub enum ExpressionKind {
     Closure(ClosureExpression),
     /// await foo.bar()
     Await(Box<Expression>),
-    /// unsafe {}
-    Unsafe(Block),
     /// { }
     Block(Block),
 }
