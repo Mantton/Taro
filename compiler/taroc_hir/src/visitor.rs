@@ -7,10 +7,10 @@ use crate::{
     DeclarationKind, EnumDefinition, Expression, ExpressionArgument, ExpressionField,
     ExpressionKind, FieldDefinition, File, ForeignDeclaration, Function, FunctionDeclaration,
     FunctionDeclarationKind, FunctionParameter, FunctionPrototype, FunctionSignature, Generics,
-    Inheritance, Label, Local, MethodCall, Module, Package, Path, PathSegment, Pattern,
+    Inheritance, Label, Local, MatchArm, MethodCall, Module, Package, Path, PathSegment, Pattern,
     PatternField, PatternKind, Statement, StatementKind, TaggedPath, Type, TypeArgument,
     TypeArguments, TypeKind, TypeParameter, TypeParameterKind, TypeParameters, Variant,
-    VariantKind, WhenArm,
+    VariantKind,
 };
 use std::ops::ControlFlow;
 use taroc_ast_ir::OperatorKind;
@@ -301,8 +301,8 @@ pub trait HirVisitor: Sized {
         walk_enum_def(self, node)
     }
 
-    fn visit_when_arm(&mut self, node: &WhenArm) -> Self::Result {
-        walk_when_arm(self, node)
+    fn visit_match_arm(&mut self, node: &MatchArm) -> Self::Result {
+        walk_match_arm(self, node)
     }
 }
 
@@ -385,7 +385,6 @@ pub fn walk_declaration<V: HirVisitor>(visitor: &mut V, declaration: &Declaratio
         DeclarationKind::Extern(node) => {
             walk_list!(visitor, visit_foreign_declaration, &node.declarations,);
         }
-        DeclarationKind::Bridge(_) => todo!("visit bridge node"),
         DeclarationKind::Malformed => unreachable!(),
     }
 
@@ -585,9 +584,9 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, expr: &Expression) -> V::
         ExpressionKind::Await(expression) => {
             try_visit!(visitor.visit_expression(expression));
         }
-        ExpressionKind::When(node) => {
+        ExpressionKind::Match(node) => {
             try_visit!(visitor.visit_expression(&node.value));
-            walk_list!(visitor, visit_when_arm, &node.arms);
+            walk_list!(visitor, visit_match_arm, &node.arms);
         }
     }
     V::Result::output()
@@ -913,7 +912,7 @@ pub fn walk_pat_field<V: HirVisitor>(visitor: &mut V, node: &PatternField) -> V:
     V::Result::output()
 }
 
-pub fn walk_when_arm<V: HirVisitor>(visitor: &mut V, node: &WhenArm) -> V::Result {
+pub fn walk_match_arm<V: HirVisitor>(visitor: &mut V, node: &MatchArm) -> V::Result {
     try_visit!(visitor.visit_pattern(&node.pattern));
     visit_optional!(visitor, visit_expression, &node.guard);
     try_visit!(visitor.visit_expression(&node.body));

@@ -3,8 +3,8 @@ use crate::restrictions::Restrictions;
 use taroc_ast::{
     AnonConst, ClosureExpression, Expression, ExpressionArgument, ExpressionField, ExpressionKind,
     FunctionParameter, FunctionPrototype, FunctionSignature, IfExpression, Literal, LiteralKind,
-    MapPair, MethodCall, Path, PathSegment, PatternBindingCondition, PatternKind, StructLiteral,
-    Type, TypeKind, UnaryOperator, WhenArm, WhenExpression,
+    MapPair, MatchArm, MatchExpression, MethodCall, Path, PathSegment, PatternBindingCondition,
+    PatternKind, StructLiteral, Type, TypeKind, UnaryOperator,
 };
 use taroc_span::{Span, SpannedMessage};
 use taroc_token::{Base, Delimiter, TokenKind};
@@ -898,19 +898,19 @@ impl Parser {
 
         self.expect(TokenKind::RBrace)?;
 
-        let node = WhenExpression {
+        let node = MatchExpression {
             arms,
             value,
             kw_span,
         };
-        let k = ExpressionKind::When(node);
+        let k = ExpressionKind::Match(node);
         Ok(self.build_expr(k, lo.to(self.hi_span())))
     }
 
-    fn parse_match_arm(&mut self) -> R<WhenArm> {
+    fn parse_match_arm(&mut self) -> R<MatchArm> {
         let lo = self.lo_span();
         self.expect(TokenKind::Case)?;
-        let pattern = self.parse_when_arm_pattern()?;
+        let pattern = self.parse_match_arm_pattern()?;
         let guard = if self.eat(TokenKind::If) {
             Some(self.parse_expression()?)
         } else {
@@ -919,7 +919,7 @@ impl Parser {
 
         self.expect(TokenKind::EqArrow)?;
         let body = self.parse_expression()?;
-        let arm = WhenArm {
+        let arm = MatchArm {
             pattern,
             body,
             guard,

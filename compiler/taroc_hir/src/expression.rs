@@ -32,7 +32,7 @@ pub enum ExpressionKind {
     Tuple(Vec<Box<Expression>>),
     /// `if foo { } else { }`
     If(IfExpression),
-    When(WhenExpression),
+    Match(MatchExpression),
     /// `main()`
     FunctionCall(Box<Expression>, Vec<ExpressionArgument>),
     /// `foo.bar()`
@@ -124,13 +124,13 @@ pub struct StructLiteral {
 }
 
 #[derive(Debug, Clone)]
-pub struct WhenExpression {
+pub struct MatchExpression {
     pub value: Box<Expression>,
-    pub arms: Vec<WhenArm>,
+    pub arms: Vec<MatchArm>,
 }
 
 #[derive(Debug, Clone)]
-pub struct WhenArm {
+pub struct MatchArm {
     pub pattern: Pattern,
     pub body: Box<Expression>,
     pub guard: Option<Box<Expression>>,

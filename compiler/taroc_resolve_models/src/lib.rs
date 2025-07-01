@@ -338,7 +338,7 @@ pub enum PatBoundCtx {
 pub enum PatternSource {
     Variable,
     FunctionParameter,
-    WhenArm,
+    MatchArm,
 }
 
 #[derive(Debug, Clone, Copy)]

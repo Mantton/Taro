@@ -141,8 +141,8 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             taroc_hir::ExpressionKind::CastAs(target, ty) => {
                 self.check_cast_expression(target, ty, expression)
             }
-            taroc_hir::ExpressionKind::When(node) => {
-                self.check_when_expression(node, expression.span)
+            taroc_hir::ExpressionKind::Match(node) => {
+                self.check_match_expression(node, expression.span)
             }
             taroc_hir::ExpressionKind::PatternBinding(_) => {
                 todo!("ICE: unimplemented tycheck expression node")
@@ -914,14 +914,14 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
 }
 
 impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
-    fn check_when_expression(&self, node: &taroc_hir::WhenExpression, span: Span) -> Ty<'ctx> {
+    fn check_match_expression(&self, node: &taroc_hir::MatchExpression, span: Span) -> Ty<'ctx> {
         let alpha = self.check_expression(&node.value); // type of scrutinee
-        let rho = self.next_ty_var(span); // result type of when block
+        let rho = self.next_ty_var(span); // result type of match block
 
         // Patterns
         for arm in node.arms.iter() {
             // instantiate types for each local variable
-            GatherLocalsVisitor::from_when_arm(self, &arm.pattern);
+            GatherLocalsVisitor::from_match_arm(self, &arm.pattern);
             // add constraints to check pattern node later down the line
             let goal = PatternResolutionGoal {
                 pattern: self.gcx.unsafe_ref(&arm.pattern),

@@ -7,7 +7,7 @@ use taroc_span::SpannedMessage;
 use taroc_token::{Delimiter, TokenKind};
 
 impl Parser {
-    pub fn parse_when_arm_pattern(&mut self) -> R<Pattern> {
+    pub fn parse_match_arm_pattern(&mut self) -> R<Pattern> {
         let lo = self.lo_span();
         let cases =
             self.parse_sequence_until(&[TokenKind::EqArrow], TokenKind::Comma, false, |p| {

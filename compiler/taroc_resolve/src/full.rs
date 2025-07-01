@@ -214,8 +214,8 @@ impl HirVisitor for Actor<'_, '_> {
         }
     }
 
-    fn visit_when_arm(&mut self, node: &taroc_hir::WhenArm) -> Self::Result {
-        self.resolve_when_arm(node)
+    fn visit_match_arm(&mut self, node: &taroc_hir::MatchArm) -> Self::Result {
+        self.resolve_match_arm(node)
     }
 }
 
@@ -257,7 +257,6 @@ impl Actor<'_, '_> {
                     taroc_hir::visitor::walk_declaration(this, declaration)
                 })
             }
-            taroc_hir::DeclarationKind::Bridge(_) => {}
             taroc_hir::DeclarationKind::Export(..) | taroc_hir::DeclarationKind::Import(..) => {
                 taroc_hir::visitor::walk_declaration(self, declaration)
             }
@@ -540,9 +539,9 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
 type PatternBindings = Vec<(PatBoundCtx, FxHashMap<Symbol, Resolution>)>;
 
 impl<'res, 'ctx> Actor<'res, 'ctx> {
-    fn resolve_when_arm(&mut self, node: &taroc_hir::WhenArm) {
+    fn resolve_match_arm(&mut self, node: &taroc_hir::MatchArm) {
         self.with_scope(LexicalScopeSource::Plain, |this| {
-            this.resolve_top_level_pattern(&node.pattern, PatternSource::WhenArm);
+            this.resolve_top_level_pattern(&node.pattern, PatternSource::MatchArm);
             if let Some(guard) = &node.guard {
                 this.visit_expression(guard)
             }

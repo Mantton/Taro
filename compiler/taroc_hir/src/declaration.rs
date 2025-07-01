@@ -1,6 +1,5 @@
 use super::{AttributeList, NodeID, Visibility, function::Function, path::Path, ty::Type};
 use crate::{EnumDefinition, Expression, Generics, StructDefinition};
-use std::collections::HashMap;
 use taroc_ast_ir::OperatorKind;
 use taroc_span::{Identifier, Span, Spanned};
 
@@ -43,9 +42,6 @@ pub enum DeclarationKind {
     Extern(Extern),
     /// `namespace Foo {}`
     Namespace(Namespace),
-    /// `bridge C {}`
-    Bridge(Bridge),
-
     ///
     Malformed,
 }
@@ -105,18 +101,6 @@ pub enum Abi {
 #[derive(Debug, Clone)]
 pub struct Namespace {
     pub declarations: Vec<Declaration>,
-}
-
-#[derive(Debug, Clone)]
-pub struct Bridge {
-    pub values: HashMap<String, BridgeValue>,
-}
-
-#[derive(Debug, Clone)]
-pub enum BridgeValue {
-    String(String),
-    Array(Vec<String>),
-    Dict(Box<Bridge>),
 }
 
 #[derive(Debug, Clone)]

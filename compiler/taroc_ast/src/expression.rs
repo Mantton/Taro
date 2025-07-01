@@ -27,10 +27,10 @@ pub enum ExpressionKind {
     DictionaryLiteral(Vec<MapPair>),
     /// `if foo { } else { }`
     If(IfExpression),
-    /// `when foo {
-    ///     <pattern> => ...
+    /// `match foo {
+    ///     case <pattern> => ...
     /// }`
-    When(WhenExpression),
+    Match(MatchExpression),
     /// `main()`
     FunctionCall(Box<Expression>, Vec<ExpressionArgument>),
     /// `foo.bar()`
@@ -101,14 +101,14 @@ pub struct MapPair {
 }
 
 #[derive(Debug)]
-pub struct WhenExpression {
+pub struct MatchExpression {
     pub value: Option<Box<Expression>>,
-    pub arms: Vec<WhenArm>,
+    pub arms: Vec<MatchArm>,
     pub kw_span: Span,
 }
 
 #[derive(Debug)]
-pub struct WhenArm {
+pub struct MatchArm {
     pub pattern: Pattern,
     pub body: Box<Expression>,
     pub guard: Option<Box<Expression>>,

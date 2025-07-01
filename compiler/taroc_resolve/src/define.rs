@@ -220,7 +220,6 @@ impl DefinitionCollector<'_, '_> {
                 );
             }
             DeclarationKind::Namespace(..)
-            | DeclarationKind::Bridge(..)
             | DeclarationKind::Enum(..)
             | DeclarationKind::Interface(..) => {
                 let ctx_k = DefContextKind::Definition(id, kind, Some(name));

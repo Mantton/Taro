@@ -54,7 +54,6 @@ impl HirVisitor for HirNodeTagger<'_, '_> {
             taroc_hir::DeclarationKind::TypeAlias(..) => DefinitionKind::TypeAlias,
             taroc_hir::DeclarationKind::Extern(..) => DefinitionKind::Extern,
             taroc_hir::DeclarationKind::Namespace(..) => DefinitionKind::Namespace,
-            taroc_hir::DeclarationKind::Bridge(..) => DefinitionKind::Bridged,
             taroc_hir::DeclarationKind::Export(..) => DefinitionKind::Export,
             taroc_hir::DeclarationKind::Constant(..) => DefinitionKind::Constant,
             taroc_hir::DeclarationKind::Interface(..) => DefinitionKind::Interface,

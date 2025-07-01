@@ -107,8 +107,8 @@ impl Actor<'_> {
             taroc_ast::ExpressionKind::Await(expression) => {
                 (self.lower_expression(expression)).kind
             }
-            taroc_ast::ExpressionKind::When(node) => {
-                taroc_hir::ExpressionKind::When(self.lower_when_expression(node))
+            taroc_ast::ExpressionKind::Match(node) => {
+                taroc_hir::ExpressionKind::Match(self.lower_match_expression(node))
             }
             taroc_ast::ExpressionKind::Ternary(condition, then_expr, else_expr) => {
                 self.lower_ternary_expression(condition, then_expr, else_expr)
@@ -246,22 +246,22 @@ impl Actor<'_> {
 }
 
 impl Actor<'_> {
-    fn lower_when_expression(
+    fn lower_match_expression(
         &mut self,
-        node: taroc_ast::WhenExpression,
-    ) -> taroc_hir::WhenExpression {
-        taroc_hir::WhenExpression {
+        node: taroc_ast::MatchExpression,
+    ) -> taroc_hir::MatchExpression {
+        taroc_hir::MatchExpression {
             value: if let Some(value) = node.value {
                 self.lower_expression(value)
             } else {
                 self.mk_expression(ExpressionKind::Literal(Literal::Bool(true)), node.kw_span)
             },
-            arms: self.lower_sequence(node.arms, |this, arm| this.lower_when_arm(arm)),
+            arms: self.lower_sequence(node.arms, |this, arm| this.lower_match_arm(arm)),
         }
     }
 
-    fn lower_when_arm(&mut self, node: taroc_ast::WhenArm) -> taroc_hir::WhenArm {
-        taroc_hir::WhenArm {
+    fn lower_match_arm(&mut self, node: taroc_ast::MatchArm) -> taroc_hir::MatchArm {
+        taroc_hir::MatchArm {
             pattern: self.lower_pattern(node.pattern),
             span: node.span,
             body: self.lower_expression(node.body),

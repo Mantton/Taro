@@ -10,7 +10,7 @@ pub(super) struct GatherLocalsVisitor<'rcx, 'gcx> {
 }
 
 impl<'rcx, 'gcx> GatherLocalsVisitor<'rcx, 'gcx> {
-    pub fn from_when_arm(fcx: &'rcx FnCtx<'rcx, 'gcx>, pat: &taroc_hir::Pattern) {
+    pub fn from_match_arm(fcx: &'rcx FnCtx<'rcx, 'gcx>, pat: &taroc_hir::Pattern) {
         let mut v = GatherLocalsVisitor { fcx };
         v.visit_pattern(pat)
     }
