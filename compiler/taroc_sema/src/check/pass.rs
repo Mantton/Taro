@@ -1,6 +1,9 @@
 use super::context::func::FnCtx;
 use crate::{
-    GlobalContext, check::context::root::TyCheckRootCtx, ty::TyKind, utils::labeled_signature_to_ty,
+    GlobalContext,
+    check::context::root::TyCheckRootCtx,
+    ty::{Constraint, GenericArgument, GenericParameter, ParamEnv, Ty, TyKind},
+    utils::{GenericsBuilder, instantiate_ty_with_args, labeled_signature_to_ty},
 };
 use taroc_error::CompileResult;
 use taroc_hir::{
@@ -75,6 +78,7 @@ fn check_func<'rcx, 'gcx>(
     // Get Signature
     let signature = fcx.gcx.fn_signature(id);
     let signature = labeled_signature_to_ty(signature, fcx.gcx);
+    let signature = apply_env(id, &fcx.param_env(), signature, fcx.gcx);
 
     let (param_tys, return_ty) = match signature.kind() {
         TyKind::Function { inputs, output, .. } => (inputs, output),
@@ -139,4 +143,28 @@ fn is_expression_bodied(block: &taroc_hir::Block) -> Option<&taroc_hir::Expressi
         }
         _ => None, // otherwise treat as regular block
     }
+}
+
+fn apply_env<'ctx>(
+    id: DefinitionID,
+    env: &ParamEnv<'ctx>,
+    ty: Ty<'ctx>,
+    gcx: GlobalContext<'ctx>,
+) -> Ty<'ctx> {
+    let arguments = GenericsBuilder::for_item(gcx, id, |p, _| {
+        let ty = gcx.mk_ty(TyKind::Parameter(GenericParameter {
+            index: p.index,
+            name: p.name,
+        }));
+
+        let target = env.constraints.iter().find_map(|&c| match c {
+            Constraint::TypeEquality(a, b) if a == ty => Some(b),
+            Constraint::TypeEquality(a, b) if b == ty => Some(a),
+            _ => None,
+        });
+
+        GenericArgument::Type(target.unwrap_or(ty))
+    });
+
+    instantiate_ty_with_args(gcx, ty, arguments)
 }

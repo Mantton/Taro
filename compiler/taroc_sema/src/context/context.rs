@@ -7,7 +7,9 @@ use crate::utils::{
     GenericsBuilder, convert_ast_float_ty, convert_ast_int_ty, convert_ast_uint_ty,
 };
 use crate::{CompilerSession, GlobalContext, TypeDatabase};
-use taroc_hir::{DefinitionID, DefinitionKind, NodeID, PackageIndex, PartialResolution};
+use taroc_hir::{
+    DefinitionID, DefinitionIndex, DefinitionKind, NodeID, PackageIndex, PartialResolution,
+};
 use taroc_resolve_models::DefinitionContext;
 use taroc_span::{Identifier, Symbol};
 
@@ -364,6 +366,10 @@ impl<'ctx> GlobalContext<'ctx> {
         });
 
         alias
+    }
+
+    pub fn package_root(self) -> DefinitionID {
+        DefinitionID::new(self.session().index(), DefinitionIndex::new(0))
     }
 }
 

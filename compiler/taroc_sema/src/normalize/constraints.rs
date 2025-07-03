@@ -1,6 +1,6 @@
 use crate::GlobalContext;
 use crate::ty::{Constraint, InterfaceReference, SpannedConstraints, Ty};
-use crate::utils::{constraint2str, ty_from_simple};
+use crate::utils::constraint2str;
 use petgraph::unionfind::UnionFind;
 use rustc_hash::{FxHashMap, FxHashSet};
 use taroc_hir::{DefinitionID, DefinitionKind};
@@ -31,12 +31,28 @@ pub fn canon_predicates_of<'ctx>(
 }
 
 fn normalize<'ctx>(id: DefinitionID, gcx: GlobalContext<'ctx>) -> SpannedConstraints<'ctx> {
-    let predicates = gcx.predicates_of(id);
-    let mut state = build(gcx, predicates);
-    seed_parent(&mut state, id);
-    saturate(&mut state, predicates);
+    let parent = if let DefinitionKind::Extension = gcx.def_kind(id) {
+        let alias = gcx.extension_self_alias(id);
+        match alias {
+            taroc_hir::SelfTypeAlias::Def(id) => id,
+            taroc_hir::SelfTypeAlias::Primary(_) => return vec![], // no predicates
+        }
+    } else {
+        gcx.parent(id)
+    };
 
-    let result = analyse_and_prune(&mut state, predicates);
+    if id == gcx.package_root() {
+        return vec![];
+    }
+
+    // Retrieve all constraints ( Parent + Self )
+    let mut predicates = gcx.predicates_of(id).clone();
+    let parent_normalized_constraints = canon_predicates_of(parent, gcx);
+    predicates.extend(parent_normalized_constraints);
+
+    let mut state = build(gcx, &predicates);
+    saturate(&mut state, &predicates);
+    let result = analyse_and_prune(&mut state, &predicates);
     return result;
 }
 
@@ -181,45 +197,6 @@ fn saturate<'ctx>(state: &mut UFState<'ctx>, constraints: &[Spanned<Constraint<'
     }
 }
 
-fn seed_parent<'ctx>(state: &mut UFState<'ctx>, id: DefinitionID) {
-    let gcx = state.gcx;
-
-    if let DefinitionKind::Extension = gcx.def_kind(id) {
-        seed_extension_nominal(id, state);
-    }
-
-    if let DefinitionKind::Extension = gcx.def_kind(gcx.parent(id)) {
-        // Seed from Nominal Decl -> Extension -> Function
-        // Seed Extension Target
-        seed_extension_nominal(gcx.parent(id), state);
-        // Seed Extension
-        for c in gcx.canon_predicates_of(gcx.parent(id)) {
-            if let Constraint::Bound { ty, interface } = c.value {
-                if let Some(&slot) = state.ty2slot.get(&ty) {
-                    let rep = state.uf.find(slot);
-                    state.bounds[rep].insert(interface);
-                }
-            }
-        }
-    }
-}
-
-fn seed_extension_nominal<'ctx>(id: DefinitionID, state: &mut UFState<'ctx>) {
-    let gcx = state.gcx;
-    let target = gcx.extension_key(id);
-    let parent = gcx.ty_to_def(ty_from_simple(gcx, target));
-    if let Some(parent) = parent {
-        // seed bounds from parent
-        for c in gcx.canon_predicates_of(parent) {
-            if let Constraint::Bound { ty, interface } = c.value {
-                if let Some(&slot) = state.ty2slot.get(&ty) {
-                    let rep = state.uf.find(slot);
-                    state.bounds[rep].insert(interface);
-                }
-            }
-        }
-    };
-}
 fn analyse_and_prune<'ctx>(
     state: &mut UFState<'ctx>,
     constraints: &[Spanned<Constraint<'ctx>>],
@@ -268,7 +245,7 @@ fn analyse_and_prune<'ctx>(
         state
             .gcx
             .diagnostics
-            .error(message, constraints[conf.rhs].span);
+            .error(message, constraints[conf.lhs].span);
     }
 
     return constraints
