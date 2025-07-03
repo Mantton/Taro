@@ -197,7 +197,6 @@ impl<'ctx> ObligationSolver<'ctx> {
             }
         }
 
-        // println!("Incomplete {}", self.obligations.pending.len());
         errors
     }
 }

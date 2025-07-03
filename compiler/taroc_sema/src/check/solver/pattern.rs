@@ -179,7 +179,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
         // Add Coercion Constraint to scrutinee
         let mut sub_obligations = vec![Obligation {
             location: span,
-            goal: Goal::Constraint(Constraint::TypeEquality(res.ty, expectation)),
+            goal: Goal::Constraint(Constraint::TypeEquality(expectation, res.ty)),
         }];
 
         if subpats.len() != fields.len() {
@@ -217,13 +217,13 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
         path_span: Span,
     ) -> SolverResult<'ctx> {
         let Some(res) = res else {
-            return SolverResult::Error(TypeError::NotAStruct);
+            return SolverResult::Error(TypeError::NotAStruct(self.gcx().store.common_types.error));
         };
 
         // Add Coercion Constraint to scrutinee
         let mut sub_obligations = vec![Obligation {
             location: path_span,
-            goal: Goal::Constraint(Constraint::TypeEquality(res.ty, expectation)),
+            goal: Goal::Constraint(Constraint::TypeEquality(expectation, res.ty)),
         }];
 
         let definiton = match res.kind {
@@ -246,7 +246,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
         adt_ty: Ty<'ctx>,
         definition: &'ctx VariantDefinition<'ctx>,
         fields: &'ctx [taroc_hir::PatternField],
-        ignore_rest: bool,
+        _ignore_rest: bool,
     ) -> Vec<Obligation<'ctx>> {
         let TyKind::Adt(_, args) = adt_ty.kind() else {
             unreachable!("pattern is not of adt type")

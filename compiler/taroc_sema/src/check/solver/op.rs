@@ -33,7 +33,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
         let ty = self.icx().shallow_resolve(goal.operand_ty);
         let location = goal.span;
         let res = self.gcx().mk_ty(TyKind::Reference(ty, mutability));
-        let goal = Goal::Constraint(Constraint::TypeEquality(goal.result_var, res));
+        let goal = Goal::Constraint(Constraint::TypeEquality(res, goal.result_var));
         return SolverResult::Solved(vec![Obligation { goal, location }]);
     }
     fn solve_deref(&mut self, goal: UnaryOperatorGoal<'ctx>) -> SolverResult<'ctx> {
@@ -45,7 +45,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
 
         match ty.kind() {
             TyKind::Reference(ty, _) | TyKind::Pointer(ty, _) => {
-                let goal = Goal::Constraint(Constraint::TypeEquality(goal.result_var, ty));
+                let goal = Goal::Constraint(Constraint::TypeEquality(ty, goal.result_var));
                 return SolverResult::Solved(vec![Obligation { goal, location }]);
             }
             _ => return SolverResult::Error(TypeError::CannotDereference(ty)),
@@ -121,8 +121,8 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
                 ) => {
                     let location = goal.span;
                     let goal = Goal::Constraint(Constraint::TypeEquality(
-                        goal.rho,
                         gcx.store.common_types.bool,
+                        goal.rho,
                     ));
                     return SolverResult::Solved(vec![Obligation { goal, location }]);
                 }

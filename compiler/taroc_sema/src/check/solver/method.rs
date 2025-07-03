@@ -7,7 +7,7 @@ use crate::{
         },
     },
     error::TypeError,
-    ty::{Constraint, TyKind},
+    ty::{Constraint, Ty, TyKind},
     utils::{instantiate_constraint_with_args, instantiate_ty_with_args, labeled_signature_to_ty},
 };
 use taroc_hir::DefinitionID;
@@ -74,7 +74,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     pub fn select_fn_for_method(
         &mut self,
         candidate: DefinitionID,
-        recv_ty: crate::ty::Ty<'ctx>,
+        recv_ty: Ty<'ctx>,
         goal: &MethodCallGoal<'ctx>,
     ) -> Vec<Obligation<'ctx>> {
         let mut pending = vec![];
@@ -92,7 +92,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
         if !inputs.is_empty() {
             pending.push(Obligation {
                 location: goal.call_span,
-                goal: Goal::Constraint(Constraint::TypeEquality(recv_ty, inputs[0])),
+                goal: Goal::Constraint(Constraint::TypeEquality(inputs[0], recv_ty)),
             });
         }
 

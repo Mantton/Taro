@@ -1,8 +1,9 @@
 use crate::{
     check::solver::{SolverDelegate, SolverResult},
     error::TypeError,
-    ty::Ty,
+    ty::{Ty, TyKind},
 };
+use taroc_hir::Mutability;
 
 impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     pub fn solve_coerce(&self, from: Ty<'ctx>, to: Ty<'ctx>) -> SolverResult<'ctx> {
@@ -27,9 +28,52 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
             return self.coerce_from_inference_var(from, to);
         }
 
-        self.unify(from, to)?;
+        match to.kind() {
+            TyKind::Reference(_, to_mutability) => {
+                return self.coerce_reference(from, to, to_mutability);
+            }
+            _ => {}
+        }
 
+        self.unify(from, to)?;
         return Ok(CoercionOutput::Resolved(to));
+    }
+}
+
+impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
+    fn coerce_reference(
+        &self,
+        from: Ty<'ctx>,
+        to: Ty<'ctx>,
+        to_mut: Mutability,
+    ) -> CoercionResult<'ctx> {
+        let from_ty = match from.kind() {
+            TyKind::Reference(from_ty, from_mut) => {
+                coerce_mutbl(from_mut, to_mut)?;
+                from_ty
+            }
+            _ => {
+                self.unify(from, to)?;
+                return Ok(CoercionOutput::Resolved(to));
+            }
+        };
+
+        let to_ty = match to.kind() {
+            TyKind::Reference(to_ty, _) => to_ty,
+            _ => unreachable!(),
+        };
+
+        self.unify(from_ty, to_ty)?;
+        return Ok(CoercionOutput::Resolved(to_ty));
+    }
+}
+
+fn coerce_mutbl<'ctx>(from: Mutability, to: Mutability) -> Result<(), TypeError<'ctx>> {
+    match (from, to) {
+        (Mutability::Mutable, Mutability::Mutable) => Ok(()),
+        (Mutability::Mutable, Mutability::Immutable) => Ok(()),
+        (Mutability::Immutable, Mutability::Mutable) => Err(TypeError::Mutability),
+        (Mutability::Immutable, Mutability::Immutable) => Ok(()),
     }
 }
 

@@ -113,9 +113,9 @@ pub fn ty2str<'ctx>(ty: Ty<'ctx>, gcx: GlobalContext<'ctx>) -> String {
             format!(
                 "*{}{}",
                 if matches!(m, Mutability::Mutable) {
-                    "mut "
-                } else {
                     ""
+                } else {
+                    "const "
                 },
                 ty2str(inner, gcx)
             )
@@ -124,9 +124,9 @@ pub fn ty2str<'ctx>(ty: Ty<'ctx>, gcx: GlobalContext<'ctx>) -> String {
             format!(
                 "&{}{}",
                 if matches!(m, Mutability::Mutable) {
-                    "mut "
-                } else {
                     ""
+                } else {
+                    "const "
                 },
                 ty2str(inner, gcx)
             )

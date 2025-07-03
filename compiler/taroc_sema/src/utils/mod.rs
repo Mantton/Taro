@@ -1,3 +1,4 @@
+pub mod autoderef;
 mod instantiate;
 mod signature;
 mod ty;

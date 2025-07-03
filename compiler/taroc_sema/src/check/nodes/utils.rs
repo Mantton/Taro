@@ -3,10 +3,11 @@ use crate::{
     check::context::func::FnCtx,
     lower::{LoweringRequest, TypeLowerer},
     ty::Ty,
+    utils::autoderef::Autoderef,
 };
 use rustc_hash::FxHashSet;
 use taroc_hir::{DefinitionID, OperatorKind, PackageIndex, Resolution};
-use taroc_span::{FileID, Identifier};
+use taroc_span::{FileID, Identifier, Span};
 
 impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
     pub fn resolve_qualified_method_call(
@@ -110,5 +111,11 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
 
         // TODO: Well Formed Obligations
         ty
+    }
+}
+
+impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
+    pub fn autoderef(&'rcx self, span: Span, ty: Ty<'ctx>) -> Autoderef<'rcx, 'ctx> {
+        Autoderef::new(&self.icx, ty, span)
     }
 }

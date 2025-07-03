@@ -382,8 +382,8 @@ impl Parser {
 
                 // parsing tuple index: `foo.<integer>`
                 if self.current_kind() == TokenKind::Integer(Base::Decimal) {
-                    let c = self.parse_anon_const()?;
-                    let k = ExpressionKind::TupleAccess(expr, c);
+                    let c = self.parse_literal()?;
+                    let k = ExpressionKind::TupleAccess(expr, AnonConst { value: c });
                     let span = lo.to(self.hi_span());
                     expr = self.build_expr(k, span);
                     continue;

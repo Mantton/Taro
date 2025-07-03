@@ -892,9 +892,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         expression: &taroc_hir::Expression,
     ) -> Ty<'ctx> {
         let from_ty = self.check_expression(target);
-        let to_ty = self
-            .lowerer()
-            .lower_type(ast_ty, &LoweringRequest::default());
+        let to_ty = self.lower_ty(ast_ty);
 
         let goal = CastGoal {
             span: expression.span,
