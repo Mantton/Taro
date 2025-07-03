@@ -1,7 +1,10 @@
 use crate::normalize::constraints::canon_predicates_of;
 use crate::ty::{
-    GenericArgument, GenericParameter, InterfaceReference, LabeledFunctionSignature, ParamEnv,
-    SpannedConstraints, Ty, TyKind,
+    InterfaceReference, LabeledFunctionSignature, ParamEnv, SimpleType, SpannedConstraints, Ty,
+    TyKind,
+};
+use crate::utils::{
+    GenericsBuilder, convert_ast_float_ty, convert_ast_int_ty, convert_ast_uint_ty,
 };
 use crate::{CompilerSession, GlobalContext, TypeDatabase};
 use taroc_hir::{DefinitionID, DefinitionKind, NodeID, PackageIndex, PartialResolution};
@@ -124,6 +127,8 @@ impl<'ctx> GlobalContext<'ctx> {
             self.context.store.interners.alloc(crate::ty::Generics {
                 parameters: vec![],
                 has_self: false,
+                parent: None,
+                parent_count: 0,
             })
         }
     }
@@ -181,28 +186,7 @@ impl<'ctx> GlobalContext<'ctx> {
     }
 
     pub fn type_arguments(self, id: DefinitionID) -> crate::ty::GenericArguments<'ctx> {
-        let generics = self.generics_of(id);
-
-        let args: Vec<GenericArgument<'ctx>> = if generics.parameters.is_empty() {
-            vec![]
-        } else {
-            generics
-                .parameters
-                .iter()
-                .map(|param| {
-                    let kind = TyKind::Parameter(GenericParameter {
-                        index: param.index,
-                        name: param.name,
-                    });
-                    let ty = self.mk_ty(kind);
-                    self.cache_type(param.id, ty);
-                    let argument = GenericArgument::Type(ty);
-                    argument
-                })
-                .collect()
-        };
-
-        self.store.interners.mk_args(args)
+        GenericsBuilder::identity_for_item(self, id)
     }
 
     #[track_caller]
@@ -226,26 +210,6 @@ impl<'ctx> GlobalContext<'ctx> {
 
     pub fn ty_to_def(self, ty: Ty<'ctx>) -> Option<DefinitionID> {
         match ty.kind() {
-            TyKind::Bool => self.context.store.common_types.mappings.bool.get(),
-            TyKind::Rune => self.context.store.common_types.mappings.rune.get(),
-            TyKind::Int(int_ty) => match int_ty {
-                crate::ty::IntTy::ISize => self.context.store.common_types.mappings.int.get(),
-                crate::ty::IntTy::I8 => self.context.store.common_types.mappings.int8.get(),
-                crate::ty::IntTy::I16 => self.context.store.common_types.mappings.int16.get(),
-                crate::ty::IntTy::I32 => self.context.store.common_types.mappings.int32.get(),
-                crate::ty::IntTy::I64 => self.context.store.common_types.mappings.int64.get(),
-            },
-            TyKind::UInt(uint_ty) => match uint_ty {
-                crate::ty::UIntTy::USize => self.context.store.common_types.mappings.uint.get(),
-                crate::ty::UIntTy::U8 => self.context.store.common_types.mappings.uint8.get(),
-                crate::ty::UIntTy::U16 => self.context.store.common_types.mappings.uint16.get(),
-                crate::ty::UIntTy::U32 => self.context.store.common_types.mappings.uint32.get(),
-                crate::ty::UIntTy::U64 => self.context.store.common_types.mappings.uint64.get(),
-            },
-            TyKind::Float(float_ty) => match float_ty {
-                crate::ty::FloatTy::F32 => self.context.store.common_types.mappings.float32.get(),
-                crate::ty::FloatTy::F64 => self.context.store.common_types.mappings.float64.get(),
-            },
             TyKind::Pointer(_, mutability) => match mutability {
                 taroc_hir::Mutability::Mutable => {
                     self.context.store.common_types.mappings.ptr.get()
@@ -369,6 +333,37 @@ impl<'ctx> GlobalContext<'ctx> {
             }
         }
         crate::ty::ConformanceResult::NotConformant
+    }
+}
+
+impl<'ctx> GlobalContext<'ctx> {
+    pub fn extension_key(self, id: DefinitionID) -> SimpleType {
+        match self.extension_self_alias(id) {
+            taroc_hir::SelfTypeAlias::Def(id) => self.type_of(id).to_simple_type(),
+            taroc_hir::SelfTypeAlias::Primary(k) => match k {
+                taroc_hir::PrimaryType::Int(k) => SimpleType::Int(convert_ast_int_ty(k)),
+                taroc_hir::PrimaryType::UInt(k) => SimpleType::UInt(convert_ast_uint_ty(k)),
+                taroc_hir::PrimaryType::Float(k) => SimpleType::Float(convert_ast_float_ty(k)),
+                taroc_hir::PrimaryType::String => SimpleType::String,
+                taroc_hir::PrimaryType::Bool => SimpleType::Bool,
+                taroc_hir::PrimaryType::Rune => SimpleType::Rune,
+            },
+        }
+    }
+
+    pub fn extension_self_alias(self, id: DefinitionID) -> taroc_hir::SelfTypeAlias {
+        debug_assert!(
+            self.def_kind(id) == DefinitionKind::Extension,
+            "must be extension node"
+        );
+
+        let alias = self.with_session_type_database(|db| {
+            *db.extension_ty_map
+                .get(&id)
+                .expect("extension self type mapping")
+        });
+
+        alias
     }
 }
 

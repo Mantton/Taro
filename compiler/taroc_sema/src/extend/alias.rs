@@ -53,15 +53,7 @@ impl HirVisitor for Harvestor<'_> {
 
 impl<'ctx> Harvestor<'ctx> {
     fn harvest_extend(&mut self, def_id: DefinitionID, node: &taroc_hir::Extend) {
-        let target = self
-            .context
-            .with_type_database(self.context.session().index(), |db| {
-                db.extension_ty_map.get(&def_id).cloned()
-            });
-
-        let Some(target_ty) = target else {
-            return;
-        };
+        let target_ty = self.context.extension_key(def_id);
 
         for declaration in &node.declarations {
             let alias = match &declaration.kind {

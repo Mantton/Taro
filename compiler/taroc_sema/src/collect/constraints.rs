@@ -1,9 +1,6 @@
 use crate::GlobalContext;
+use crate::lower::{ItemCtx, LoweringRequest, TypeLowerer};
 use crate::ty::{Constraint, GenericArgument, InterfaceReference};
-use crate::{
-    lower::{ItemCtx, LoweringRequest, TypeLowerer},
-    utils::def_id_of_ty,
-};
 use taroc_error::CompileResult;
 use taroc_hir::{
     DefinitionID, DefinitionKind, NodeID,
@@ -299,7 +296,7 @@ impl<'ctx> Actor<'ctx> {
         };
 
         // get def_id
-        let Some(def_id) = def_id_of_ty(self.context, self.context.type_of_node(ty.id)) else {
+        let Some(def_id) = self.context.ty_to_def(self.context.type_of_node(ty.id)) else {
             return None;
         };
 

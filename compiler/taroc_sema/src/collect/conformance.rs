@@ -1,7 +1,7 @@
 use crate::{
     GlobalContext,
     ty::{ConformanceRecord, InterfaceReference, SimpleType},
-    utils::{def_id_of_ty, interface_ref2str},
+    utils::interface_ref2str,
 };
 use crate::{
     lower::{ItemCtx, LoweringRequest, TypeLowerer},
@@ -60,9 +60,7 @@ impl<'ctx> Actor<'ctx> {
             return;
         }
 
-        let ty_key = self.context.with_type_database(extend_id.package(), |db| {
-            *db.extension_ty_map.get(&extend_id).unwrap()
-        });
+        let ty_key = self.context.extension_key(extend_id);
 
         let self_ty = ty_from_simple(self.context, ty_key);
 
@@ -82,7 +80,9 @@ impl<'ctx> Actor<'ctx> {
                 is_conditional,
             };
 
-            let parent_pkg = def_id_of_ty(self.context, self_ty)
+            let parent_pkg = self
+                .context
+                .ty_to_def(self_ty)
                 .map(|f| f.package())
                 .unwrap_or(PackageIndex::new(0));
             if parent_pkg != extend_id.package() {

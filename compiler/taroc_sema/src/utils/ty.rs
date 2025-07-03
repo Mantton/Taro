@@ -35,24 +35,6 @@ pub fn convert_ast_float_ty(fty: taroc_hir::FloatTy) -> FloatTy {
     }
 }
 
-pub fn def_id_of_ty<'ctx>(gcx: GlobalContext<'ctx>, ty: Ty<'ctx>) -> Option<DefinitionID> {
-    return gcx.ty_to_def(ty);
-    // match ty.kind() {
-    //     taroc_ty::TyKind::Pointer(_, muta) => match muta {
-    //         taroc_hir::Mutability::Mutable => gcx.store.common_types.mappings.mut_ref.take(),
-    //         taroc_hir::Mutability::Immutable => gcx.store.common_types.mappings.const_ref.take(),
-    //     },
-    //     taroc_ty::TyKind::Reference(_, muta) => match muta {
-    //         taroc_hir::Mutability::Mutable => gcx.store.common_types.mappings.ptr.take(),
-    //         taroc_hir::Mutability::Immutable => gcx.store.common_types.mappings.const_ptr.take(),
-    //     },
-    //     taroc_ty::TyKind::Array(..) => gcx.store.common_types.mappings.array.take(),
-    //     taroc_ty::TyKind::Adt(adt_def, ..) => Some(adt_def.id),
-    //     taroc_ty::TyKind::FnDef(definition_id, ..) => Some(definition_id),
-    //     _ => None,
-    // }
-}
-
 pub fn ty_from_simple<'ctx>(gcx: GlobalContext<'ctx>, ty: SimpleType) -> Ty<'ctx> {
     let common = &gcx.store.common_types;
     let optional = |id: Option<DefinitionID>| {

@@ -1,5 +1,3 @@
-use taroc_hir::DefinitionID;
-
 use crate::GlobalContext;
 use crate::fold::{TypeFoldable, TypeFolder, TypeSuperFoldable};
 use crate::ty::{Constraint, GenericArgument, GenericArguments, InterfaceReference, Ty, TyKind};
@@ -16,8 +14,13 @@ impl<'ctx> TypeFolder<'ctx> for InstantiateFolder<'ctx> {
 
     fn fold_ty(&mut self, ty: Ty<'ctx>) -> Ty<'ctx> {
         match ty.kind() {
-            TyKind::Parameter(p) => self.args.get(p.index).and_then(|ga| ga.ty()).unwrap_or(ty),
-
+            TyKind::Parameter(p) => {
+                if let Some(ty) = self.args.get(p.index) {
+                    ty.ty().expect("Argument is not a Type")
+                } else {
+                    unreachable!("index must be present");
+                }
+            }
             // Delegate to `TypeFoldable` on the *kind* itself, then rebuild
             // a fresh `Ty` only if something actually changed.
             _ => ty.super_fold_with(self),
@@ -76,25 +79,4 @@ pub fn instantiate_constraint_with_args<'ctx>(
 ) -> Constraint<'ctx> {
     let mut folder = InstantiateFolder { gcx, args };
     folder.fold_constraint(constraint)
-}
-
-fn convert_params_to_arguments<'ctx>(
-    gcx: GlobalContext<'ctx>,
-    def_id: DefinitionID,
-) -> GenericArguments<'ctx> {
-    let generics = gcx.generics_of(def_id);
-    let parameters = &generics.parameters;
-
-    let mut args = vec![];
-    for parameter in parameters {
-        match &parameter.kind {
-            crate::ty::GenericParameterDefinitionKind::Type { .. } => {
-                let ty = gcx.type_of(parameter.id);
-                args.push(GenericArgument::Type(ty));
-            }
-            crate::ty::GenericParameterDefinitionKind::Const { .. } => todo!(),
-        }
-    }
-
-    gcx.store.interners.intern_generic_args(&args)
 }

@@ -115,9 +115,7 @@ impl<'ctx> Actor<'ctx> {
         _: &taroc_hir::Function,
     ) {
         let gcx = self.context;
-        let type_key = gcx.with_type_database(extension_id.package(), |db| {
-            db.extension_ty_map[&extension_id]
-        });
+        let type_key = self.context.extension_key(extension_id);
 
         let fingerprint = self.fingerprint_for(assoc_id);
         let member_index = self.package.methods.entry(type_key).or_default(); // member index for type
@@ -144,9 +142,7 @@ impl<'ctx> Actor<'ctx> {
         _: &taroc_hir::Function,
     ) {
         let gcx = self.context;
-        let type_key = gcx.with_type_database(extension_id.package(), |db| {
-            db.extension_ty_map[&extension_id]
-        });
+        let type_key = self.context.extension_key(extension_id);
 
         let fingerprint = self.fingerprint_for(assoc_id);
         let member_index = self.package.methods.entry(type_key).or_default(); // member index for type

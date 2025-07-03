@@ -142,7 +142,7 @@ impl<'ctx> Actor<'ctx> {
         match symbol.as_str() {
             "Array" => {
                 store.common_types.mappings.array.set(Some(id));
-                let kind = TyKind::Array(arguments.first().unwrap().ty().unwrap(), 0); // TODO
+                let kind = TyKind::Array(arguments[1].ty().unwrap(), 0); // TODO
                 let ty = self.context.mk_ty(kind);
                 return Some(ty);
             }

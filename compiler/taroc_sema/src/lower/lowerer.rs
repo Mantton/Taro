@@ -471,6 +471,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             .map(|f| f.span)
             .unwrap_or(segment.span);
         let mut args_iter = arguments.iter().peekable();
+        // TODO!: Look Into
         let mut params_iter = generics.parameters.iter().peekable();
 
         loop {

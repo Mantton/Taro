@@ -1,6 +1,6 @@
 use crate::GlobalContext;
 use crate::ty::{Constraint, InterfaceReference, SpannedConstraints, Ty};
-use crate::utils::{constraint2str, def_id_of_ty, ty_from_simple};
+use crate::utils::{constraint2str, ty_from_simple};
 use petgraph::unionfind::UnionFind;
 use rustc_hash::{FxHashMap, FxHashSet};
 use taroc_hir::{DefinitionID, DefinitionKind};
@@ -206,8 +206,8 @@ fn seed_parent<'ctx>(state: &mut UFState<'ctx>, id: DefinitionID) {
 
 fn seed_extension_nominal<'ctx>(id: DefinitionID, state: &mut UFState<'ctx>) {
     let gcx = state.gcx;
-    let target = gcx.with_type_database(id.package(), |db| db.extension_ty_map[&id]);
-    let parent = def_id_of_ty(gcx, ty_from_simple(gcx, target));
+    let target = gcx.extension_key(id);
+    let parent = gcx.ty_to_def(ty_from_simple(gcx, target));
     if let Some(parent) = parent {
         // seed bounds from parent
         for c in gcx.canon_predicates_of(parent) {

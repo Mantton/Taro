@@ -1,7 +1,7 @@
 use crate::{
     GlobalContext,
     infer::keys::{FloatVarID, IntVarID},
-    utils::ty2str,
+    utils::{constraint2str, interface_ref2str, ty2str},
 };
 use core::fmt;
 use index_vec::{IndexVec, define_index_type};
@@ -181,7 +181,6 @@ pub enum InferTy {
 }
 
 pub type GenericArguments<'arena> = &'arena [GenericArgument<'arena>];
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Visibility {
     Public,
@@ -191,6 +190,8 @@ pub enum Visibility {
 pub struct Generics {
     pub parameters: Vec<GenericParameterDefinition>,
     pub has_self: bool,
+    pub parent: Option<DefinitionID>,
+    pub parent_count: usize,
 }
 
 impl Generics {
@@ -557,5 +558,17 @@ impl Display for FloatTy {
 impl<'gcx> Ty<'gcx> {
     pub fn format(self, gcx: GlobalContext<'gcx>) -> String {
         ty2str(self, gcx)
+    }
+}
+
+impl<'gcx> Constraint<'gcx> {
+    pub fn format(self, gcx: GlobalContext<'gcx>) -> String {
+        constraint2str(self, gcx)
+    }
+}
+
+impl<'gcx> InterfaceReference<'gcx> {
+    pub fn format(self, gcx: GlobalContext<'gcx>) -> String {
+        interface_ref2str(self, gcx)
     }
 }

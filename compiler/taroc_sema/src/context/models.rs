@@ -15,7 +15,9 @@ use std::{
     marker::PhantomData,
 };
 use taroc_data_structures::Interned;
-use taroc_hir::{DefinitionID, DefinitionKind, NodeID, PackageIndex, PartialResolution};
+use taroc_hir::{
+    DefinitionID, DefinitionKind, NodeID, PackageIndex, PartialResolution, SelfTypeAlias,
+};
 use taroc_resolve_models::DefinitionContext;
 use taroc_span::{FileID, Identifier, Symbol};
 
@@ -161,7 +163,7 @@ pub struct TypeDatabase<'ctx> {
     pub interfaces: FxHashMap<DefinitionID, &'ctx InterfaceDefinition<'ctx>>,
     pub functions: FxHashMap<DefinitionID, LabeledFunctionSignature<'ctx>>,
     pub def_to_fn_signature: FxHashMap<DefinitionID, &'ctx LabeledFunctionSignature<'ctx>>,
-    pub extension_ty_map: FxHashMap<DefinitionID, SimpleType>,
+    pub extension_ty_map: FxHashMap<DefinitionID, SelfTypeAlias>,
     pub alias_table: PackageAliasTable,
     pub node_to_ty: FxHashMap<NodeID, Ty<'ctx>>,
     pub superinterfaces: FxHashMap<DefinitionID, FxHashSet<DefinitionID>>,
@@ -203,25 +205,6 @@ pub struct CommonTypeMapping {
     pub const_ptr: Cell<Option<DefinitionID>>,
     pub mut_ref: Cell<Option<DefinitionID>>,
     pub const_ref: Cell<Option<DefinitionID>>,
-
-    pub bool: Cell<Option<DefinitionID>>,
-    pub rune: Cell<Option<DefinitionID>>,
-
-    pub uint: Cell<Option<DefinitionID>>,
-    pub uint8: Cell<Option<DefinitionID>>,
-    pub uint16: Cell<Option<DefinitionID>>,
-    pub uint32: Cell<Option<DefinitionID>>,
-    pub uint64: Cell<Option<DefinitionID>>,
-
-    pub int: Cell<Option<DefinitionID>>,
-    pub int8: Cell<Option<DefinitionID>>,
-    pub int16: Cell<Option<DefinitionID>>,
-    pub int32: Cell<Option<DefinitionID>>,
-    pub int64: Cell<Option<DefinitionID>>,
-
-    pub float32: Cell<Option<DefinitionID>>,
-    pub float64: Cell<Option<DefinitionID>>,
-
     pub foundation: RefCell<FxHashMap<Symbol, DefinitionID>>,
 }
 

@@ -1,10 +1,8 @@
 use crate::GlobalContext;
-use crate::ty::{SimpleType, Ty, TyKind};
 use rustc_hash::FxHashMap;
 use taroc_error::CompileResult;
+use taroc_hir::SelfTypeAlias;
 use taroc_hir::{DefinitionID, DefinitionKind, visitor::HirVisitor};
-
-use crate::lower::{ItemCtx, LoweringContext, LoweringRequest, TypeLowerer};
 
 pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
     Actor::run(package, context)
@@ -13,7 +11,7 @@ pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResul
 /// Extension Binding, Maps Extension Blocks to Nominal Types
 struct Actor<'ctx> {
     context: GlobalContext<'ctx>,
-    table: FxHashMap<DefinitionID, SimpleType>,
+    table: FxHashMap<DefinitionID, SelfTypeAlias>,
 }
 
 impl<'ctx> Actor<'ctx> {
@@ -48,46 +46,25 @@ impl HirVisitor for Actor<'_> {
             _ => unreachable!(),
         };
 
-        let ctx = ItemCtx::new(self.context);
-        let self_ty = ctx.lowerer().lower_type(
-            &node.ty,
-            &LoweringRequest::new(LoweringContext::ExtensionSelfTy),
-        );
-        self.identify(def_id, self_ty);
-    }
-}
+        let resolution = self.context.resolution(node.ty.id);
 
-impl<'ctx> Actor<'ctx> {
-    fn identify(&mut self, extend_id: DefinitionID, self_ty: Ty<'ctx>) {
-        match self_ty.kind() {
-            TyKind::Bool
-            | TyKind::Rune
-            | TyKind::String
-            | TyKind::Int(_)
-            | TyKind::UInt(_)
-            | TyKind::Float(_)
-            | TyKind::Pointer(..)
-            | TyKind::Reference(..)
-            | TyKind::Array(..)
-            | TyKind::Adt(..) => self.identify_internal(extend_id, self_ty),
-            TyKind::Existential(..)
-            | TyKind::Opaque(..)
-            | TyKind::FnDef(..)
-            | TyKind::Function { .. }
-            | TyKind::Tuple(..)
-            | TyKind::AssociatedType { .. }
-            | TyKind::Infer(..)
-            | TyKind::Placeholder
-            | TyKind::Parameter(..) => unreachable!(
-                "ICE: resolver should have reported extending non-nominal types in prior pass"
-            ),
-            TyKind::Error => return, // prereported
-        }
-    }
-}
+        let Some(resolution) = resolution.full_resolution() else {
+            todo!("report assoc type extension")
+        };
 
-impl<'ctx> Actor<'ctx> {
-    fn identify_internal(&mut self, extend_id: DefinitionID, ty: Ty<'ctx>) {
-        self.table.insert(extend_id, ty.to_simple_type());
+        let self_ty = match resolution {
+            taroc_hir::Resolution::PrimaryType(k) => taroc_hir::SelfTypeAlias::Primary(k),
+            taroc_hir::Resolution::Definition(
+                id,
+                DefinitionKind::Struct
+                | DefinitionKind::Enum
+                | DefinitionKind::Interface
+                | DefinitionKind::TypeAlias
+                | DefinitionKind::Namespace,
+            ) => taroc_hir::SelfTypeAlias::Def(id),
+            _ => unreachable!("ICE: unextendable node"),
+        };
+
+        self.table.insert(def_id, self_ty);
     }
 }

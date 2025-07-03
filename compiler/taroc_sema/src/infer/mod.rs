@@ -8,6 +8,7 @@ use crate::{
         resolve::InferVarResolver,
     },
     ty::{GenericArgument, GenericArguments, GenericParameterDefinition, InferTy, Ty, TyKind},
+    utils::GenericsBuilder,
 };
 use ena::{undo_log::Rollback, unify::UnificationTableStorage};
 use keys::{
@@ -87,15 +88,7 @@ impl<'ctx> InferCtx<'ctx> {
 
 impl<'ctx> InferCtx<'ctx> {
     pub fn fresh_args_for_def(&self, def_id: DefinitionID, span: Span) -> GenericArguments<'ctx> {
-        let generics = self.gcx.generics_of(def_id);
-        let args: Vec<GenericArgument> = generics
-            .parameters
-            .iter()
-            .map(|param| self.var_for_generic_param(param, span))
-            .collect();
-
-        let args = self.gcx.store.interners.intern_generic_args(&args);
-        args
+        GenericsBuilder::for_item(self.gcx, def_id, |p, _| self.var_for_generic_param(p, span))
     }
 
     pub fn var_for_generic_param(
