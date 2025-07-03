@@ -35,6 +35,7 @@ pub enum Goal<'ctx> {
     IndexOperator(OverloadGoal<'ctx>),
     Cast(CastGoal<'ctx>),
     PatternResolution(PatternResolutionGoal<'ctx>),
+    RecieverCoerce { from: Ty<'ctx>, to: Ty<'ctx> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -328,6 +329,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
             Goal::IndexOperator(goal) => self.solve_subscript(goal),
             Goal::Cast(goal) => self.solve_cast(goal),
             Goal::PatternResolution(goal) => self.solve_pattern_resolve(goal),
+            Goal::RecieverCoerce { from, to } => self.solve_reciever_coerce(from, to, location),
         }
     }
 }

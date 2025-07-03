@@ -1,9 +1,10 @@
 use crate::{
     check::solver::{SolverDelegate, SolverResult},
-    error::TypeError,
+    error::{ExpectedFound, TypeError},
     ty::{Ty, TyKind},
 };
 use taroc_hir::Mutability;
+use taroc_span::Span;
 
 impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     pub fn solve_coerce(&self, from: Ty<'ctx>, to: Ty<'ctx>) -> SolverResult<'ctx> {
@@ -35,7 +36,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
             _ => {}
         }
 
-        self.unify(from, to)?;
+        self.unify(to, from)?;
         return Ok(CoercionOutput::Resolved(to));
     }
 }
@@ -102,5 +103,95 @@ pub type CoercionResult<'ctx> = Result<CoercionOutput<'ctx>, TypeError<'ctx>>;
 impl<'ctx> CoercionOutput<'ctx> {
     pub fn requeue(self) -> bool {
         return matches!(self, CoercionOutput::Defer);
+    }
+}
+
+impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
+    pub fn solve_reciever_coerce(
+        &self,
+        from: Ty<'ctx>,
+        to: Ty<'ctx>,
+        location: Span,
+    ) -> SolverResult<'ctx> {
+        let from = self.icx().shallow_resolve(from);
+        let to = self.icx().shallow_resolve(to);
+        if from.is_ty_var() {
+            return SolverResult::Deferred;
+        }
+
+        // Break Early
+        if from == to {
+            return SolverResult::Solved(vec![]);
+        }
+
+        // By Value
+        {
+            let can_pass_by_value = self.icx().probe(|_| {
+                let result = self.coerce(from, to);
+                return result.is_ok();
+            });
+
+            if can_pass_by_value {
+                return self.solve_coerce(from, to);
+            }
+        }
+
+        // By Const Reference
+        {
+            let potential_ty = self
+                .gcx()
+                .mk_ty(TyKind::Reference(from, Mutability::Immutable));
+
+            let ok = self.icx().probe(|_| {
+                let result = self.unify(potential_ty, to);
+                result.is_ok()
+            });
+
+            if ok {
+                // TODO: Adjustments
+                return SolverResult::Solved(vec![]);
+            }
+        }
+
+        // By Mut Reference
+        {
+            let potential_ty = self
+                .gcx()
+                .mk_ty(TyKind::Reference(from, Mutability::Mutable));
+
+            let ok = self.icx().probe(|_| {
+                let result = self.unify(potential_ty, to);
+                result.is_ok()
+            });
+
+            if ok {
+                // TODO: Adjustments
+                return SolverResult::Solved(vec![]);
+            }
+        }
+
+        // By Dereferencing
+        {
+            let mut autoderef = self.fcx.autoderef(location, from);
+            let mut success = false;
+            while let Some(potential_ty) = autoderef.next() {
+                success |= self.icx().probe(|_| {
+                    let result = self.unify(potential_ty, to);
+                    result.is_ok()
+                });
+
+                if success {
+                    break;
+                }
+            }
+
+            if success {
+                // TODO: Adjustments
+                // TODO: NoCopy Check
+                return SolverResult::Solved(vec![]);
+            }
+        }
+
+        SolverResult::Error(TypeError::InvalidReciever(ExpectedFound::new(to, from)))
     }
 }

@@ -11,8 +11,8 @@ use crate::{
     ty::{Constraint, Ty, TyKind},
 };
 use taroc_ast_ir::UnaryOperator;
-use taroc_hir::{BinaryOperator, Mutability, OperatorKind};
-use taroc_span::Identifier;
+use taroc_hir::{BinaryOperator, DefinitionID, Mutability, OperatorKind};
+use taroc_span::{Identifier, Span};
 
 impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     pub fn solve_unary(&mut self, goal: UnaryOperatorGoal<'ctx>) -> SolverResult<'ctx> {
@@ -53,13 +53,12 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     }
 
     fn solve_unary_via_operator(&mut self, goal: UnaryOperatorGoal<'ctx>) -> SolverResult<'ctx> {
-        let gcx = self.gcx();
         let ty = self.icx().shallow_resolve(goal.operand_ty);
         if ty.is_infer() {
             return SolverResult::Deferred;
         }
         let kind = OperatorKind::from_unary(goal.operator);
-        let candidates = associated_operators_for_ty(kind, ty, gcx, goal.span.file);
+        let candidates = self.collect_all_operator_candidates(ty, goal.span, kind);
 
         if candidates.is_empty() {
             return SolverResult::Error(TypeError::NoUnaryOperator(ty, kind));
@@ -135,7 +134,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
         } else {
             OperatorKind::assign_from_binary(goal.operator).expect("Assign Op")
         };
-        let candidates = associated_operators_for_ty(kind, lhs, gcx, goal.span.file);
+        let candidates = self.collect_all_operator_candidates(lhs, goal.span, kind);
 
         if candidates.is_empty() {
             return SolverResult::Error(TypeError::NoBinaryOperator(lhs, rhs, kind));
@@ -172,6 +171,25 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     }
 }
 
+impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
+    pub fn collect_all_operator_candidates(
+        &self,
+        recv_ty: Ty<'ctx>,
+        recv_span: Span,
+        operator: OperatorKind,
+    ) -> Vec<DefinitionID> {
+        let mut candidates = vec![];
+        let mut autoderef = self.fcx.autoderef(recv_span, recv_ty);
+        while let Some(recv) = autoderef.next() {
+            let recv_candidates =
+                associated_operators_for_ty(operator, recv, self.gcx(), recv_span.file);
+            candidates.extend(recv_candidates);
+        }
+        candidates.dedup();
+        candidates
+    }
+}
+
 fn binary_goal_to_method_goal<'ctx>(
     goal: BinaryOperatorGoal<'ctx>,
     gcx: GlobalContext<'ctx>,
@@ -194,14 +212,13 @@ fn binary_goal_to_method_goal<'ctx>(
 
 impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     pub fn solve_subscript(&mut self, goal: OverloadGoal<'ctx>) -> SolverResult<'ctx> {
-        let gcx = self.gcx();
         let lhs = self.icx().shallow_resolve(goal.callee_var);
         if lhs.is_infer() {
             return SolverResult::Deferred;
         }
-        let candidates =
-            associated_operators_for_ty(OperatorKind::Index, lhs, gcx, goal.callee_span.file);
 
+        let candidates =
+            self.collect_all_operator_candidates(lhs, goal.callee_span, OperatorKind::Index);
         if candidates.is_empty() {
             return SolverResult::Error(TypeError::NoOverloadCandidateMatch);
         }

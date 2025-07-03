@@ -7,12 +7,12 @@ use crate::{
         },
     },
     error::TypeError,
-    ty::{Constraint, Ty, TyKind},
+    ty::{Ty, TyKind},
     utils::{instantiate_constraint_with_args, instantiate_ty_with_args, labeled_signature_to_ty},
 };
 use taroc_hir::DefinitionID;
+use taroc_span::{Identifier, Span};
 
-// TODO: AutoDeref
 impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     pub fn solve_method_call(&mut self, goal: MethodCallGoal<'ctx>) -> SolverResult<'ctx> {
         let gcx = self.gcx();
@@ -21,10 +21,11 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
             return SolverResult::Deferred;
         };
 
-        let mut candidates = associated_functions_for_ty(goal.method, recv_ty, gcx);
-
+        // Iteratively Collect All Possible Candidates By Auto Dereferening the reciever ty
+        let mut candidates =
+            self.collect_all_method_candidates(recv_ty, goal.call_span, goal.method);
         if candidates.is_empty() {
-            return SolverResult::Error(TypeError::UnknownMethod);
+            return SolverResult::Error(TypeError::UnknownMethod(goal.method.symbol, recv_ty));
         };
 
         candidates.retain(|&c| quick_match_method(c, goal.arguments, goal.label_agnostic, gcx));
@@ -92,7 +93,10 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
         if !inputs.is_empty() {
             pending.push(Obligation {
                 location: goal.call_span,
-                goal: Goal::Constraint(Constraint::TypeEquality(inputs[0], recv_ty)),
+                goal: Goal::RecieverCoerce {
+                    from: recv_ty,
+                    to: inputs[0],
+                },
             });
         }
 
@@ -133,6 +137,24 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
         });
 
         pending
+    }
+}
+
+impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
+    pub fn collect_all_method_candidates(
+        &self,
+        recv_ty: Ty<'ctx>,
+        recv_span: Span,
+        method: Identifier,
+    ) -> Vec<DefinitionID> {
+        let mut candidates = vec![];
+        let mut autoderef = self.fcx.autoderef(recv_span, recv_ty);
+        while let Some(recv) = autoderef.next() {
+            let recv_candidates = associated_functions_for_ty(method, recv, self.gcx());
+            candidates.extend(recv_candidates);
+        }
+        candidates.dedup();
+        candidates
     }
 }
 

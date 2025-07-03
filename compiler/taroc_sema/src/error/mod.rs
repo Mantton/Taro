@@ -1,11 +1,10 @@
-use taroc_hir::OperatorKind;
-use taroc_span::Symbol;
-
 use crate::{
     GlobalContext,
     ty::{GenericArgument, InterfaceReference, Ty},
     utils::interface_ref2str,
 };
+use taroc_hir::OperatorKind;
+use taroc_span::Symbol;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExpectedFound<T> {
@@ -19,6 +18,7 @@ impl<T> ExpectedFound<T> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 pub enum TypeError<'ctx> {
     Mutability,
     ArgCount,
@@ -31,13 +31,14 @@ pub enum TypeError<'ctx> {
     NotAStruct(Ty<'ctx>),
     TupleIndexOutOfBounds(ExpectedFound<usize>),
     NotATuple,
-    UnknownMethod,
+    UnknownMethod(Symbol, Ty<'ctx>),
     NoUnaryOperator(Ty<'ctx>, OperatorKind),
     NoBinaryOperator(Ty<'ctx>, Ty<'ctx>, OperatorKind),
     CannotDereference(Ty<'ctx>),
     InvalidPointerEquality(Ty<'ctx>),
     CannotCast(Ty<'ctx>, Ty<'ctx>),
     CannotMatchAgainst(Ty<'ctx>, Ty<'ctx>),
+    InvalidReciever(ExpectedFound<Ty<'ctx>>),
 }
 
 impl<'ctx> TypeError<'ctx> {
@@ -82,7 +83,9 @@ impl<'ctx> TypeError<'ctx> {
                 ef.expected, ef.found
             ),
             TypeError::NotATuple => "not a tuple".into(),
-            TypeError::UnknownMethod => "unknown method".into(),
+            TypeError::UnknownMethod(name, ty) => {
+                format!("unknown method named {} on {}", name, ty.format(gcx))
+            }
             TypeError::NoUnaryOperator(ty, op) => {
                 format!("no unary operator '{:?}' for type '{}'", op, ty.format(gcx))
             }
@@ -108,6 +111,11 @@ impl<'ctx> TypeError<'ctx> {
                     ty1.format(gcx)
                 )
             }
+            TypeError::InvalidReciever(ef) => format!(
+                "invalid reciever, expected {}, recieved {}",
+                ef.expected.format(gcx),
+                ef.found.format(gcx)
+            ),
         }
     }
 }
