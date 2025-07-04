@@ -91,6 +91,15 @@ fn check_func<'rcx, 'gcx>(
         fcx.locals.borrow_mut().insert(parameter.id, parameter_ty);
     }
 
+    for (index, param) in node.signature.prototype.inputs.iter().enumerate() {
+        let Some(expression) = &param.default_value else {
+            continue;
+        };
+
+        let param_ty = param_tys[index];
+        fcx.check_expression_coercible_to_type(expression, param_ty, None);
+    }
+
     let Some(body) = &node.block else {
         unreachable!("ICE: Checking Function without Body")
     };

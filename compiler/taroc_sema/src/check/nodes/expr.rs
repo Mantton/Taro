@@ -4,6 +4,7 @@ use crate::{
         context::func::FnCtx,
         expectation::Expectation,
         gather::GatherLocalsVisitor,
+        nodes::apply::{ValidationError, match_arguments_to_parameters, validate_arity},
         solver::{
             BinaryOperatorGoal, FieldAccessGoal, Goal, MethodCallGoal, Obligation,
             OverloadArgument, OverloadGoal, TupleAccessGoal, UnaryOperatorGoal, cast::CastGoal,
@@ -12,11 +13,11 @@ use crate::{
     },
     infer::fn_var::FnVarData,
     lower::{LoweringRequest, TypeLowerer},
-    ty::{Constraint, InferTy, Ty, TyKind, VariantDefinition},
+    ty::{Constraint, GenericArguments, InferTy, Ty, TyKind, VariantDefinition},
     utils::{instantiate_constraint_with_args, instantiate_ty_with_args, labeled_signature_to_ty},
 };
 use rustc_hash::FxHashMap;
-use taroc_hir::{BinaryOperator, DefinitionKind, NodeID, Resolution, UnaryOperator};
+use taroc_hir::{BinaryOperator, DefinitionID, DefinitionKind, NodeID, Resolution, UnaryOperator};
 use taroc_span::Span;
 
 impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
@@ -301,76 +302,11 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         call_expr: &taroc_hir::Expression,
         expectation: Expectation<'ctx>,
     ) -> Ty<'ctx> {
-        let (fn_parameter_tys, fn_return_ty) = match callee_ty.kind() {
+        let fn_return_ty = match callee_ty.kind() {
             TyKind::Infer(InferTy::FnVar(_) | InferTy::TyVar(_)) => {
-                let beta: Vec<_> = args
-                    .iter()
-                    .map(|arg| {
-                        let argument = OverloadArgument {
-                            ty: self.next_ty_var(arg.span),
-                            span: arg.span,
-                            label: arg.label.as_ref().map(|l| l.identifier),
-                        };
-
-                        argument
-                    })
-                    .collect();
-
-                let beta = self.gcx.store.interners.intern_slice(&beta);
-                let rho = self.next_ty_var(call_expr.span);
-
-                for (arg, beta) in args.iter().zip(beta) {
-                    let arg_ty = self.check_expression(&arg.expression);
-                    self.add_obligation(Obligation {
-                        location: call_expr.span,
-                        goal: Goal::Constraint(Constraint::TypeEquality(arg_ty, beta.ty)),
-                    });
-                }
-
-                // Obligation for return type
-                if let Some(e_ty) = expectation.only_has_type() {
-                    self.add_obligation(Obligation {
-                        location: call_expr.span,
-                        goal: Goal::Coerce {
-                            from: rho,
-                            to: e_ty,
-                        },
-                    });
-                }
-
-                let goal = OverloadGoal {
-                    expr_span: call_expr.span,
-                    callee_var: callee_ty,
-                    result_var: rho,
-                    expected_result_ty: expectation.only_has_type(),
-                    arguments: beta,
-                    callee_span: call_expr.span,
-                };
-
-                self.add_obligation(Obligation {
-                    location: call_expr.span,
-                    goal: Goal::Apply(goal),
-                });
-
-                return rho;
+                self.check_call_overloaded(callee_ty, args, call_expr, expectation)
             }
-            TyKind::FnDef(id, _) => {
-                let signature = self.gcx.fn_signature(id);
-                let args = self.fresh_args_for_def(id, call_expr.span);
-                let signature = labeled_signature_to_ty(signature, self.gcx);
-                let signature = instantiate_ty_with_args(self.gcx, signature, args);
-
-                match signature.kind() {
-                    TyKind::Function { inputs, output, .. } => (inputs, output),
-                    _ => {
-                        self.gcx
-                            .diagnostics
-                            .error("invalid function signature".into(), call_expr.span);
-                        return self.error_ty();
-                    }
-                }
-            }
-
+            TyKind::FnDef(id, fn_args) => self.check_call_single(id, fn_args, args, call_expr.span),
             _ => {
                 if callee_ty.is_error() {
                     return callee_ty;
@@ -387,22 +323,134 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             }
         };
 
-        // TODO: Parameters, Defaults, Variadics, Labels
-        // check argument count
-        if args.len() != fn_parameter_tys.len() {
-            self.gcx.diagnostics.error(
-                format!(
-                    "Expected {} arguments, found {}",
-                    fn_parameter_tys.len(),
-                    args.len()
-                )
-                .into(),
-                call_expr.span,
-            );
-            return self.error_ty();
+        fn_return_ty
+    }
+
+    fn check_call_single(
+        &self,
+        id: DefinitionID,
+        fn_args: GenericArguments<'ctx>,
+        call_arguments: &[taroc_hir::ExpressionArgument],
+        full_span: Span,
+    ) -> Ty<'ctx> {
+        let gcx = self.gcx;
+        let signature = gcx.fn_signature(id);
+        let signature_ty = labeled_signature_to_ty(signature, gcx);
+        let signature_ty = instantiate_ty_with_args(gcx, signature_ty, fn_args);
+
+        let (inputs, output) = match signature_ty.kind() {
+            TyKind::Function { inputs, output } => (inputs, output),
+            _ => unreachable!(),
+        };
+
+        let provided_arguments: Vec<OverloadArgument> = call_arguments
+            .iter()
+            .map(|node| {
+                let ty = self.check_expression(&node.expression);
+                OverloadArgument {
+                    ty,
+                    span: node.span,
+                    label: node.label.as_ref().map(|n| n.identifier),
+                }
+            })
+            .collect();
+
+        // Arity Check
+        match validate_arity(signature, &provided_arguments) {
+            Err(err) => {
+                gcx.diagnostics.error(format!("{err}"), full_span);
+                return self.error_ty();
+            }
+            _ => {}
         }
 
-        fn_return_ty
+        // Label / Positional Check
+        let positions = match match_arguments_to_parameters(signature, &provided_arguments) {
+            Ok(p) => p,
+            Err(err) => {
+                gcx.diagnostics.error(format!("{err}"), full_span);
+                return self.error_ty();
+            }
+        };
+
+        for (param_idx, arg_idx) in positions.iter().enumerate() {
+            let param_defaults = signature.inputs[param_idx].has_default;
+            let param_ty = inputs[param_idx];
+
+            if let Some(arg_idx) = arg_idx {
+                let argument = provided_arguments[*arg_idx];
+                let arg_ty = argument.ty;
+                self.add_coercion_constraint(arg_ty, param_ty, argument.span);
+            } else if !param_defaults {
+                let err = ValidationError::MissingRequiredParameter {
+                    param_index: param_idx,
+                    param_name: signature.inputs[param_idx].name,
+                };
+                gcx.diagnostics.error(format!("{err}"), full_span);
+                return self.error_ty();
+            }
+        }
+
+        output
+    }
+
+    fn check_call_overloaded(
+        &self,
+        callee_ty: Ty<'ctx>,
+        args: &[taroc_hir::ExpressionArgument],
+        call_expr: &taroc_hir::Expression,
+        expectation: Expectation<'ctx>,
+    ) -> Ty<'ctx> {
+        let beta: Vec<_> = args
+            .iter()
+            .map(|arg| {
+                let argument = OverloadArgument {
+                    ty: self.next_ty_var(arg.span),
+                    span: arg.span,
+                    label: arg.label.as_ref().map(|l| l.identifier),
+                };
+
+                argument
+            })
+            .collect();
+
+        let beta = self.gcx.store.interners.intern_slice(&beta);
+        let rho = self.next_ty_var(call_expr.span);
+
+        for (arg, beta) in args.iter().zip(beta) {
+            let arg_ty = self.check_expression(&arg.expression);
+            self.add_obligation(Obligation {
+                location: call_expr.span,
+                goal: Goal::Constraint(Constraint::TypeEquality(arg_ty, beta.ty)),
+            });
+        }
+
+        // Obligation for return type
+        if let Some(e_ty) = expectation.only_has_type() {
+            self.add_obligation(Obligation {
+                location: call_expr.span,
+                goal: Goal::Coerce {
+                    from: rho,
+                    to: e_ty,
+                },
+            });
+        }
+
+        let goal = OverloadGoal {
+            expr_span: call_expr.span,
+            callee_var: callee_ty,
+            result_var: rho,
+            expected_result_ty: expectation.only_has_type(),
+            arguments: beta,
+            callee_span: call_expr.span,
+        };
+
+        self.add_obligation(Obligation {
+            location: call_expr.span,
+            goal: Goal::Apply(goal),
+        });
+
+        return rho;
     }
 }
 
@@ -488,7 +536,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
 
     pub fn instantiate_value_path(
         &self,
-        _: &taroc_hir::Path,
+        path: &taroc_hir::Path,
         resolution: taroc_hir::Resolution,
     ) -> Ty<'ctx> {
         // TODO: Generics Checks
@@ -504,6 +552,9 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         let def_id = resolution.def_id().unwrap();
 
         let ty = self.gcx.type_of(def_id);
+
+        let ty = instantiate_ty_with_args(self.gcx, ty, self.fresh_args_for_def(def_id, path.span));
+        // TODO: ARGUMENTS
         return ty;
     }
 }

@@ -91,6 +91,29 @@ impl HirVisitor for Actor<'_> {
 
         taroc_hir::visitor::walk_assoc_declaration(self, declaration, context);
     }
+
+    fn visit_variant_kind(&mut self, k: &taroc_hir::VariantKind) -> Self::Result {
+        let gcx = self.context;
+        let id = k.ctor_node_id();
+        let Some(id) = id else { return };
+        let def_id = gcx.def_id(id);
+        let parent = gcx.parent(def_id); // Variant
+        let parent = if let DefinitionKind::Struct = gcx.def_kind(parent) {
+            parent
+        } else if let DefinitionKind::Variant = gcx.def_kind(parent) {
+            gcx.parent(parent)
+        } else {
+            unreachable!()
+        };
+
+        assert!(matches!(
+            gcx.def_kind(parent),
+            DefinitionKind::Enum | DefinitionKind::Struct
+        ));
+
+        let parent_generics = gcx.generics_of(parent);
+        gcx.cache_generics(def_id, parent_generics.clone());
+    }
 }
 
 impl<'ctx> Actor<'ctx> {
@@ -141,7 +164,9 @@ impl<'ctx> Actor<'ctx> {
         let mut own_start = has_self as usize;
         let mut parent_has_self = false;
         let parent_def_id = if let DefinitionKind::AssociatedFunction
-        | DefinitionKind::AssociatedOperator = gcx.def_kind(def_id)
+        | DefinitionKind::AssociatedOperator
+        | DefinitionKind::AssociatedConstant
+        | DefinitionKind::Ctor(..) = gcx.def_kind(def_id)
         {
             Some(gcx.parent(def_id))
         } else {

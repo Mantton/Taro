@@ -332,7 +332,7 @@ pub struct AssociatedTypeDefinition<'ctx> {
     pub default_type: Option<Ty<'ctx>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LabeledFunctionSignature<'ctx> {
     pub inputs: Vec<LabeledFunctionParameter<'ctx>>,
     pub output: Ty<'ctx>,
@@ -347,9 +347,10 @@ impl<'ctx> LabeledFunctionSignature<'ctx> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LabeledFunctionParameter<'ctx> {
     pub label: Option<Symbol>,
+    pub name: Symbol,
     pub ty: Ty<'ctx>,
     pub has_default: bool,
 }

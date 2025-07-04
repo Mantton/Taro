@@ -1,6 +1,7 @@
 use crate::GlobalContext;
 use crate::ty::{LabeledFunctionParameter, LabeledFunctionSignature, Ty, TyKind};
 use taroc_hir::DefinitionID;
+use taroc_span::Symbol;
 
 use crate::lower::{ItemCtx, TypeLowerer};
 
@@ -50,6 +51,7 @@ pub fn convert_to_labeled_parameter<'ctx>(
     let label = param.label.as_ref().map(|f| f.identifier.symbol);
     LabeledFunctionParameter {
         label,
+        name: param.name.symbol,
         ty: icx
             .lowerer()
             .lower_type(&param.annotated_type, &Default::default()),
@@ -82,11 +84,8 @@ pub fn convert_tuple_variant_signature<'ctx>(
     let inputs: Vec<LabeledFunctionParameter<'ctx>> = fields
         .iter()
         .map(|f| LabeledFunctionParameter {
-            label: if f.identifier.symbol.as_str().is_empty() {
-                None
-            } else {
-                Some(f.identifier.symbol)
-            },
+            label: None,
+            name: Symbol::with(""),
             ty: icx.lowerer().lower_type(&f.ty, &Default::default()),
             has_default: false,
         })
