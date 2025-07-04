@@ -101,6 +101,7 @@ impl<'ctx> Resolver<'ctx> {
                             ),
                         );
                     }
+
                     return PathResult::Failed {
                         segment: segment.identifier,
                         is_last_segment: is_last,
@@ -171,7 +172,7 @@ impl<'ctx> Resolver<'ctx> {
         // let symbols: std::collections::HashSet<Symbol> =
         //     symbols.data.keys().map(|f| f.symbol).collect();
         // println!(
-        //     "\nSearching for {} in [{:?}]\nExplict Namespace ({:?})",
+        //     "\n\nSearching for {} in [{:?}]\nExplict Namespace ({:?})",
         //     name, context.kind, symbols
         // );
 
@@ -185,19 +186,6 @@ impl<'ctx> Resolver<'ctx> {
         };
 
         // Check Imports
-        let resolutions = context.explicit_imports.borrow();
-        let holder = resolutions.find(key);
-        if let Some(holder) = holder {
-            return Ok(holder);
-        };
-
-        // Check Export namespace
-        let resolutions = context.explicit_exports.borrow();
-        let holder = resolutions.find(key);
-        if let Some(holder) = holder {
-            return Ok(holder);
-        };
-
         let mut candidates = Vec::new();
         // Track if we encountered any undetermined resolutions
         let mut has_undetermined = false;
@@ -236,6 +224,7 @@ impl<'ctx> Resolver<'ctx> {
                     if !export.is_resolved.get() {
                         continue;
                     }
+
                     let module_context = export
                         .module_context
                         .get()
@@ -246,7 +235,9 @@ impl<'ctx> Resolver<'ctx> {
                         module_context,
                         parent_scope,
                     ) {
-                        Ok(holder) => candidates.push(holder),
+                        Ok(holder) => {
+                            candidates.push(holder);
+                        }
                         Err(Determinacy::Undetermined) => {
                             has_undetermined = true;
                         }
@@ -305,7 +296,7 @@ impl<'ctx> Resolver<'ctx> {
             };
 
             match context.kind {
-                DefContextKind::Block | DefContextKind::File => {}
+                DefContextKind::Block | DefContextKind::File => {} // we see through these
                 _ => {
                     break;
                 }

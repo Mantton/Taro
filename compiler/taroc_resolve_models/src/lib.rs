@@ -34,9 +34,6 @@ pub struct DefContextData<'arena> {
     // Block, Module & File Related Data
     pub glob_exports: RefCell<Vec<ExternalDefinitionUsage<'arena>>>,
     pub glob_imports: RefCell<Vec<ExternalDefinitionUsage<'arena>>>,
-
-    pub explicit_imports: RefCell<ResolutionMap<'arena>>,
-    pub explicit_exports: RefCell<ResolutionMap<'arena>>,
 }
 
 impl<'arena> DefinitionContext<'arena> {
@@ -257,7 +254,7 @@ pub struct DefUsageBinding<'arena> {
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct BindingKey {
     pub symbol: Symbol,
-    namespace: SymbolNamespace,
+    pub namespace: SymbolNamespace,
     disambiguator: u32,
 }
 
@@ -543,6 +540,7 @@ pub enum ContextOrResolutionRoot<'ctx> {
 #[derive(Clone, Copy, Debug)]
 pub struct ParentScope<'ctx> {
     pub context: DefinitionContext<'ctx>,
+    pub file: DefinitionContext<'ctx>,
 }
 
 #[derive(Clone, Copy)]

@@ -20,8 +20,6 @@ pub fn alloc_context<'ctx>(
         namespace: Default::default(),
         glob_exports: Default::default(),
         glob_imports: Default::default(),
-        explicit_imports: Default::default(),
-        explicit_exports: Default::default(),
     };
     // Allocate the context data in the bump arena.
     let allocated = context.store.interners.arenas.resolve.alloc(data);

@@ -1,9 +1,11 @@
 use super::resolver::Resolver;
 use taroc_error::CompileResult;
+use taroc_hir::SymbolNamespace;
 use taroc_resolve_models::{
-    BindingKey, ContextOrResolutionRoot, DefContextKind, DefinitionContext, Determinacy,
-    ExternalDefUsageKind, ExternalDefinitionUsage, NameBinding, PathResult,
+    ContextOrResolutionRoot, DefContextKind, DefinitionContext, Determinacy, ExternalDefUsageKind,
+    ExternalDefinitionUsage, NameBinding, PathResult,
 };
+use taroc_span::Identifier;
 
 impl Resolver<'_> {
     pub fn unresolved_usage_count(&self) -> usize {
@@ -154,7 +156,7 @@ impl<'res, 'ctx> UsageResolver<'res, 'ctx> {
 
         let mut all_failed = true;
         self.resolver.per_ns(|this, ns| {
-            let key = BindingKey::new(target.symbol, ns);
+            // let key = BindingKey::new(target.symbol, ns);
             // Undetermined / Unresolved usage
             if let Err(Determinacy::Undetermined) = source_binding[ns].get() {
                 let result =
@@ -166,7 +168,6 @@ impl<'res, 'ctx> UsageResolver<'res, 'ctx> {
 
             // paren
             let result = source_binding[ns].get();
-            let parent_context = parent.context;
             match result {
                 Err(Determinacy::Undetermined) => {
                     todo!("undetermined usage")
@@ -187,9 +188,9 @@ impl<'res, 'ctx> UsageResolver<'res, 'ctx> {
                         }
                         let binding = this.convert_usage_binding(binding, usage);
                         if usage.is_import {
-                            this.import(parent_context, key, binding);
+                            this.import(parent.file, target, ns, binding);
                         } else {
-                            this.export(parent_context, key, binding);
+                            this.export(parent.context, target, ns, binding);
                         }
                     }
                     all_failed = false
@@ -243,20 +244,26 @@ impl<'ctx> Resolver<'ctx> {
     pub fn import(
         &mut self,
         parent: DefinitionContext<'ctx>,
-        key: BindingKey,
+        name: Identifier,
+        ns: SymbolNamespace,
         binding: NameBinding<'ctx>,
     ) {
-        let mut explict_imports = parent.explicit_imports.borrow_mut();
-        let _ = self.define_in_resolution_map(key, binding, &mut explict_imports, true);
+        assert!(matches!(
+            parent.kind,
+            DefContextKind::File | DefContextKind::Block
+        ));
+
+        self.define_in_parent(parent, name, binding, ns);
     }
 
     fn export(
         &mut self,
         parent: DefinitionContext<'ctx>,
-        key: BindingKey,
+        name: Identifier,
+        ns: SymbolNamespace,
         binding: NameBinding<'ctx>,
     ) {
-        let mut explicit_exports = parent.explicit_exports.borrow_mut();
-        let _ = self.define_in_resolution_map(key, binding, &mut explicit_exports, true);
+        assert!(matches!(parent.kind, DefContextKind::Definition(..)));
+        self.define_in_parent(parent, name, binding, ns);
     }
 }

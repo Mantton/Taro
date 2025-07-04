@@ -31,6 +31,7 @@ impl<'res, 'ctx> DefinitionCollector<'res, 'ctx> {
             resolver,
             parent_scope: ParentScope {
                 context: root_context,
+                file: root_context,
             },
         };
 
@@ -72,11 +73,9 @@ impl HirVisitor for DefinitionCollector<'_, '_> {
     }
 
     fn visit_file(&mut self, f: &taroc_hir::File) -> Self::Result {
-        let file_context = self.resolver.new_context(
-            Some(self.parent_scope.context),
-            DefContextKind::File,
-            Span::empty(f.id),
-        );
+        let file_context = self
+            .resolver
+            .new_context(None, DefContextKind::File, Span::empty(f.id));
         self.resolver.file_map.insert(f.id, file_context);
         self.resolver
             .file_to_imports
@@ -84,10 +83,8 @@ impl HirVisitor for DefinitionCollector<'_, '_> {
             .or_default()
             .insert(self.resolver.gcx.session().index());
 
-        let previous = self.parent_scope.context;
-        self.parent_scope.context = file_context;
+        self.parent_scope.file = file_context;
         visitor::walk_file(self, f);
-        self.parent_scope.context = previous
     }
 
     fn visit_declaration(&mut self, d: &taroc_hir::Declaration) -> Self::Result {
@@ -167,7 +164,24 @@ impl HirVisitor for DefinitionCollector<'_, '_> {
         }
     }
 }
+impl<'res, 'ctx> DefinitionCollector<'res, 'ctx> {
+    pub fn define<T>(&mut self, identifier: Identifier, namespace: SymbolNamespace, definition: T)
+    where
+        T: ToNameBinding<'ctx>,
+    {
+        // Define in File
+        self.resolver.define(
+            self.parent_scope.file,
+            identifier,
+            namespace,
+            definition.clone(),
+        );
 
+        // Define in Context
+        self.resolver
+            .define(self.parent_scope.context, identifier, namespace, definition);
+    }
+}
 impl DefinitionCollector<'_, '_> {
     fn define_declaration(&mut self, decl: &taroc_hir::Declaration) {
         let id = self.resolver.def_id(decl.id);
@@ -176,61 +190,37 @@ impl DefinitionCollector<'_, '_> {
         let res = Resolution::Definition(id, kind);
         let vis = taroc_hir::TVisibility::Public; // TODO: Visibility
         let span = decl.identifier.span;
-        let parent = if matches!(self.parent_scope.context.kind, DefContextKind::File) {
-            self.parent_scope.context.parent.unwrap()
-        } else {
-            self.parent_scope.context
-        };
         let def = (res, vis, span);
 
         match &decl.kind {
             DeclarationKind::Struct(node) => {
-                self.resolver
-                    .define(parent, decl.identifier, SymbolNamespace::Type, def);
+                self.define(decl.identifier, SymbolNamespace::Type, def);
 
                 // Define Constructor in Value NS
                 if let Some(ctor_id) = node.variant.ctor_node_id() {
                     let ctor_def_id = self.resolver.def_id(ctor_id);
                     let kind = self.resolver.def_kind(id);
                     let def = (Resolution::Definition(ctor_def_id, kind), vis, span);
-                    self.resolver.define(
-                        parent,
-                        decl.identifier,
-                        taroc_hir::SymbolNamespace::Value,
-                        def,
-                    );
+                    self.define(decl.identifier, taroc_hir::SymbolNamespace::Value, def);
                 }
             }
             DeclarationKind::Function(..)
             | DeclarationKind::Static(..)
             | DeclarationKind::Constant(..) => {
-                self.resolver.define(
-                    parent,
-                    decl.identifier,
-                    taroc_hir::SymbolNamespace::Value,
-                    def,
-                );
+                self.define(decl.identifier, taroc_hir::SymbolNamespace::Value, def);
             }
             DeclarationKind::TypeAlias(_) => {
-                self.resolver.define(
-                    parent,
-                    decl.identifier,
-                    taroc_hir::SymbolNamespace::Type,
-                    def,
-                );
+                self.define(decl.identifier, taroc_hir::SymbolNamespace::Type, def);
             }
             DeclarationKind::Namespace(..)
             | DeclarationKind::Enum(..)
             | DeclarationKind::Interface(..) => {
                 let ctx_k = DefContextKind::Definition(id, kind, Some(name));
-                let context = self.resolver.new_context(Some(parent), ctx_k, span);
+                let context =
+                    self.resolver
+                        .new_context(Some(self.parent_scope.context), ctx_k, span);
                 let def = (context, vis, span);
-                self.resolver.define(
-                    parent,
-                    decl.identifier,
-                    taroc_hir::SymbolNamespace::Type,
-                    def,
-                );
+                self.define(decl.identifier, taroc_hir::SymbolNamespace::Type, def);
                 self.parent_scope.context = context;
             }
             DeclarationKind::Import(node) => self.define_external_symbol_usage(
@@ -251,7 +241,9 @@ impl DefinitionCollector<'_, '_> {
             ),
             DeclarationKind::Extend(_) => {
                 let ctx_k = DefContextKind::Definition(id, kind, None);
-                let context = self.resolver.new_context(Some(parent), ctx_k, span);
+                let context =
+                    self.resolver
+                        .new_context(Some(self.parent_scope.context), ctx_k, span);
                 self.parent_scope.context = context;
             }
             DeclarationKind::Extern(..) => {}
@@ -266,11 +258,7 @@ impl DefinitionCollector<'_, '_> {
         let res = Resolution::Definition(id, kind);
         let vis = taroc_hir::TVisibility::Public; // TODO: Visibility
         let span = decl.identifier.span;
-        let parent = if matches!(self.parent_scope.context.kind, DefContextKind::File) {
-            self.parent_scope.context.parent.unwrap()
-        } else {
-            self.parent_scope.context
-        };
+        let parent = self.parent_scope.context;
         let def = (res, vis, span);
 
         match &decl.kind {
@@ -412,7 +400,7 @@ impl<'res, 'ctx> DefinitionCollector<'res, 'ctx> {
         let data = ExternalDefUsageData {
             file: span.file,
             span,
-            module_path,
+            module_path: module_path.clone(),
             kind,
             root_id,
             root_span,
@@ -443,7 +431,7 @@ impl<'res, 'ctx> DefinitionCollector<'res, 'ctx> {
             match &ptr.0.kind {
                 ExternalDefUsageKind::Single(..) => {}
                 ExternalDefUsageKind::Glob { .. } => {
-                    parent_scope.context.glob_imports.borrow_mut().push(ptr)
+                    parent_scope.file.glob_imports.borrow_mut().push(ptr)
                 }
             };
         }

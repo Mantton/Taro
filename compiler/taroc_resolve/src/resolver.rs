@@ -212,7 +212,7 @@ impl<'ctx> Resolver<'ctx> {
         binding: NameBinding<'ctx>,
     ) -> Result<Option<NameHolder<'ctx>>, NameHolder<'ctx>> {
         let mut resolutions = context.namespace.borrow_mut();
-        self.define_in_resolution_map(key, binding, &mut resolutions, false)
+        self.define_in_resolution_map(key, binding, &mut resolutions)
     }
 
     pub fn define_in_resolution_map(
@@ -220,11 +220,10 @@ impl<'ctx> Resolver<'ctx> {
         key: BindingKey,
         binding: NameBinding<'ctx>,
         map: &mut ResolutionMap<'ctx>,
-        overwrite: bool,
     ) -> Result<Option<NameHolder<'ctx>>, NameHolder<'ctx>> {
         let resolutions = &mut map.data;
 
-        if resolutions.contains_key(&key) && !overwrite {
+        if resolutions.contains_key(&key) {
             let current_binding = resolutions.get(&key).expect("symbol must be contained");
 
             // Not a function, Duplicate Definition
@@ -250,11 +249,11 @@ impl<'ctx> Resolver<'ctx> {
             combined.extend_from_slice(bindings);
             let new_bindings = self.alloc_slice_copy(&combined);
             let new_holder: NameHolder<'ctx> = NameHolder::Set(new_bindings);
-            resolutions.insert(key, new_holder);
-            return Ok(None);
+            let prev = resolutions.insert(key, new_holder);
+            return Ok(prev);
         } else {
-            resolutions.insert(key, NameHolder::Single(binding));
-            return Ok(None);
+            let prev = resolutions.insert(key, NameHolder::Single(binding));
+            return Ok(prev);
         }
     }
 }

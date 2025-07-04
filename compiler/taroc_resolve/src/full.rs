@@ -32,7 +32,10 @@ impl Actor<'_, '_> {
             resolver,
             scopes: Default::default(),
             current_file: None,
-            parent_scope: ParentScope { context: root },
+            parent_scope: ParentScope {
+                context: root,
+                file: root,
+            },
         }
     }
 
@@ -896,7 +899,7 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
     fn report_error(&mut self, err: ResolutionError, span: Span) {
         let message = match err {
             ResolutionError::FailedToResolve { segment } => {
-                format!("failed to resolve '{}'", segment)
+                format!("failed to resolve '{}' in scope", segment)
             }
             ResolutionError::Ambiguous { segment } => {
                 format!("ambiguous usage of glob '{}'", segment)
