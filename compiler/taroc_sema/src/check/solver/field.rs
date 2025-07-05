@@ -9,7 +9,7 @@ use crate::{
 
 impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     pub fn solve_field_access(&mut self, goal: FieldAccessGoal<'ctx>) -> SolverResult<'ctx> {
-        let base_ty = self.icx().shallow_resolve(goal.base_ty);
+        let base_ty = self.structurally_resolve(goal.base_ty);
 
         if base_ty.is_infer() {
             return SolverResult::Deferred;
@@ -62,7 +62,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
 
 impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     pub fn solve_tuple_access(&mut self, goal: TupleAccessGoal<'ctx>) -> SolverResult<'ctx> {
-        let base_ty = self.icx().shallow_resolve(goal.base_ty);
+        let base_ty = self.structurally_resolve(goal.base_ty);
         match base_ty.kind() {
             TyKind::Tuple(items) => {
                 if goal.index < items.len() {

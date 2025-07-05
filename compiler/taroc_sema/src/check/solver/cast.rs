@@ -15,8 +15,8 @@ pub struct CastGoal<'ctx> {
 
 impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     pub fn solve_cast(&mut self, goal: CastGoal<'ctx>) -> SolverResult<'ctx> {
-        let from_ty = self.icx().shallow_resolve(goal.from_ty);
-        let to_ty = self.icx().shallow_resolve(goal.to_ty);
+        let from_ty = self.structurally_resolve(goal.from_ty);
+        let to_ty = self.structurally_resolve(goal.to_ty);
 
         if from_ty.is_infer() || to_ty.is_infer() {
             return SolverResult::Deferred;

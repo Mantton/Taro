@@ -22,8 +22,8 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     }
 
     pub fn coerce(&self, from: Ty<'ctx>, to: Ty<'ctx>) -> CoercionResult<'ctx> {
-        let from = self.icx().shallow_resolve(from);
-        let to = self.icx().shallow_resolve(to);
+        let from = self.structurally_resolve(from);
+        let to = self.structurally_resolve(to);
 
         if from.is_ty_var() {
             return self.coerce_from_inference_var(from, to);
@@ -80,8 +80,8 @@ fn coerce_mutbl<'ctx>(from: Mutability, to: Mutability) -> Result<(), TypeError<
 
 impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     fn coerce_from_inference_var(&self, from: Ty<'ctx>, to: Ty<'ctx>) -> CoercionResult<'ctx> {
-        assert!(from.is_ty_var() && self.icx().shallow_resolve(from) == from);
-        assert!(self.icx().shallow_resolve(to) == to);
+        assert!(from.is_ty_var() && self.structurally_resolve(from) == from);
+        assert!(self.structurally_resolve(to) == to);
 
         // defer this coercion till we have more information regarding the inference vars
         if to.is_ty_var() {
@@ -113,8 +113,8 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
         to: Ty<'ctx>,
         location: Span,
     ) -> SolverResult<'ctx> {
-        let from = self.icx().shallow_resolve(from);
-        let to = self.icx().shallow_resolve(to);
+        let from = self.structurally_resolve(from);
+        let to = self.structurally_resolve(to);
         if from.is_ty_var() {
             return SolverResult::Deferred;
         }

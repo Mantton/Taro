@@ -19,7 +19,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
         &mut self,
         goal: PatternResolutionGoal<'ctx>,
     ) -> SolverResult<'ctx> {
-        let ty = self.icx().shallow_resolve(goal.scrutinee_ty);
+        let ty = self.structurally_resolve(goal.scrutinee_ty);
 
         if ty.is_ty_var() {
             return SolverResult::Deferred;

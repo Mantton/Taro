@@ -16,7 +16,7 @@ use taroc_span::{Identifier, Span};
 impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     pub fn solve_method_call(&mut self, goal: MethodCallGoal<'ctx>) -> SolverResult<'ctx> {
         let gcx = self.gcx();
-        let recv_ty = self.icx().shallow_resolve(goal.receiver_ty);
+        let recv_ty = self.structurally_resolve(goal.receiver_ty);
         let Some(_) = gcx.try_simple_type(recv_ty) else {
             return SolverResult::Deferred;
         };

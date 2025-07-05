@@ -11,7 +11,7 @@ use taroc_hir::DefinitionID;
 
 impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     pub fn solve_application(&mut self, goal: OverloadGoal<'ctx>) -> SolverResult<'ctx> {
-        let ty = self.icx().shallow_resolve(goal.callee_var);
+        let ty = self.structurally_resolve(goal.callee_var);
         let fid = match ty.kind() {
             TyKind::Infer(InferTy::FnVar(fid)) => fid,
             TyKind::Infer(InferTy::TyVar(..)) => {

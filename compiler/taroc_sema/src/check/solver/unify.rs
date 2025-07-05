@@ -2,14 +2,15 @@ use crate::{
     check::solver::SolverDelegate,
     error::{ExpectedFound, TypeError},
     infer::keys::{FloatVarValue, IntVarValue},
+    normalize::assoc::normalize_ty,
     ty::{GenericArgument, GenericArguments, Ty, TyKind},
 };
 type UnificationResult<'ctx> = Result<(), TypeError<'ctx>>;
 
 impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     pub fn unify(&self, a: Ty<'ctx>, b: Ty<'ctx>) -> UnificationResult<'ctx> {
-        let a = self.icx().shallow_resolve(a);
-        let b = self.icx().shallow_resolve(b);
+        let a = self.structurally_resolve(a);
+        let b = self.structurally_resolve(b);
 
         use crate::ty::InferTy::*;
         match (a.kind(), b.kind()) {
@@ -183,5 +184,13 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
             }
             _ => return Err(TypeError::ArgMismatch(ExpectedFound::new(a, b))),
         }
+    }
+}
+
+impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
+    pub fn structurally_resolve(&self, mut ty: Ty<'ctx>) -> Ty<'ctx> {
+        ty = self.icx().shallow_resolve(ty);
+        ty = normalize_ty(ty, self.gcx());
+        ty
     }
 }

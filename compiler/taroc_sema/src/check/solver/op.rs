@@ -30,14 +30,14 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
         goal: UnaryOperatorGoal<'ctx>,
         mutability: Mutability,
     ) -> SolverResult<'ctx> {
-        let ty = self.icx().shallow_resolve(goal.operand_ty);
+        let ty = self.structurally_resolve(goal.operand_ty);
         let location = goal.span;
         let res = self.gcx().mk_ty(TyKind::Reference(ty, mutability));
         let goal = Goal::Constraint(Constraint::TypeEquality(res, goal.result_var));
         return SolverResult::Solved(vec![Obligation { goal, location }]);
     }
     fn solve_deref(&mut self, goal: UnaryOperatorGoal<'ctx>) -> SolverResult<'ctx> {
-        let ty = self.icx().shallow_resolve(goal.operand_ty);
+        let ty = self.structurally_resolve(goal.operand_ty);
         if ty.is_infer() {
             return SolverResult::Deferred;
         }
@@ -53,7 +53,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     }
 
     fn solve_unary_via_operator(&mut self, goal: UnaryOperatorGoal<'ctx>) -> SolverResult<'ctx> {
-        let ty = self.icx().shallow_resolve(goal.operand_ty);
+        let ty = self.structurally_resolve(goal.operand_ty);
         if ty.is_infer() {
             return SolverResult::Deferred;
         }
@@ -106,8 +106,8 @@ fn unary_goal_to_method_goal<'ctx>(goal: UnaryOperatorGoal<'ctx>) -> MethodCallG
 impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     pub fn solve_binary(&mut self, goal: BinaryOperatorGoal<'ctx>) -> SolverResult<'ctx> {
         let gcx = self.gcx();
-        let lhs = self.icx().shallow_resolve(goal.lhs);
-        let rhs = self.icx().shallow_resolve(goal.rhs);
+        let lhs = self.structurally_resolve(goal.lhs);
+        let rhs = self.structurally_resolve(goal.rhs);
         if lhs.is_infer() || rhs.is_infer() {
             return SolverResult::Deferred;
         }
@@ -212,7 +212,7 @@ fn binary_goal_to_method_goal<'ctx>(
 
 impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     pub fn solve_subscript(&mut self, goal: OverloadGoal<'ctx>) -> SolverResult<'ctx> {
-        let lhs = self.icx().shallow_resolve(goal.callee_var);
+        let lhs = self.structurally_resolve(goal.callee_var);
         if lhs.is_infer() {
             return SolverResult::Deferred;
         }
