@@ -25,7 +25,7 @@ impl<'ctx> Harvestor<'ctx> {
         }
     }
 
-    fn run<'a>(package: &taroc_hir::Package, context: GlobalContext<'ctx>) -> CompileResult<()> {
+    fn run(package: &taroc_hir::Package, context: GlobalContext<'ctx>) -> CompileResult<()> {
         let mut actor = Harvestor::new(context);
         taroc_hir::visitor::walk_package(&mut actor, package);
         context.with_type_database(context.session().index(), |db| {
@@ -130,7 +130,6 @@ fn resolve(context: GlobalContext) -> CompileResult<()> {
     let package = context.session().index();
     let table = context.with_type_database(package, |db| db.alias_table.clone());
     let icx = ItemCtx::new(context);
-
     for (_, entry) in table.aliases.iter() {
         // println!("Resolving Alias '{}'", entry.symbol);
         let ty = icx

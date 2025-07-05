@@ -18,7 +18,7 @@ impl<'ctx> TypeFolder<'ctx> for InstantiateFolder<'ctx> {
                 if let Some(ty) = self.args.get(p.index) {
                     ty.ty().expect("Argument is not a Type")
                 } else {
-                    unreachable!("index must be present");
+                    ty
                 }
             }
             // Delegate to `TypeFoldable` on the *kind* itself, then rebuild

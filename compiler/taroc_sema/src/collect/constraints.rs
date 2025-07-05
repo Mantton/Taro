@@ -22,7 +22,7 @@ impl<'ctx> Actor<'ctx> {
         Actor { context }
     }
 
-    fn run<'a>(package: &taroc_hir::Package, context: GlobalContext<'ctx>) -> CompileResult<()> {
+    fn run(package: &taroc_hir::Package, context: GlobalContext<'ctx>) -> CompileResult<()> {
         let mut actor = Actor::new(context);
         taroc_hir::visitor::walk_package(&mut actor, package);
         context.diagnostics.report()

@@ -21,7 +21,7 @@ impl<'ctx> Actor<'ctx> {
         Actor { context }
     }
 
-    fn run<'a>(package: &taroc_hir::Package, context: GlobalContext<'ctx>) -> CompileResult<()> {
+    fn run(package: &taroc_hir::Package, context: GlobalContext<'ctx>) -> CompileResult<()> {
         let mut actor = Actor::new(context);
         taroc_hir::visitor::walk_package(&mut actor, package);
         context.diagnostics.report()
@@ -104,7 +104,7 @@ impl<'ctx> Actor<'ctx> {
             ctor: variant.ctor().map(|(k, id)| (k, gcx.def_id(id))),
             discriminant: discrimimant.unwrap_or(0),
         };
-        let definition = gcx.store.interners.alloc(s_def);
+        let definition = gcx.alloc(s_def);
 
         let current_sess = gcx.session().index();
         let ok = gcx
@@ -159,7 +159,7 @@ impl<'ctx> Actor<'ctx> {
             variants.push(variant_def);
         }
 
-        let definition = gcx.store.interners.alloc(EnumDefinition { variants });
+        let definition = gcx.alloc(EnumDefinition { variants });
         let ok = gcx.with_session_type_database(|db| db.enums.insert(id, definition).is_none());
         if !ok {
             unreachable!("ICE: overwriting existing enum definition")

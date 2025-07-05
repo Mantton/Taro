@@ -6,7 +6,7 @@ use crate::{
     utils::autoderef::Autoderef,
 };
 use rustc_hash::FxHashSet;
-use taroc_hir::{DefinitionID, OperatorKind, PackageIndex, Resolution};
+use taroc_hir::{DefinitionID, OperatorKind, Resolution};
 use taroc_span::{FileID, Identifier, Span};
 
 impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
@@ -38,7 +38,7 @@ pub fn associated_functions_for_ty<'ctx>(
     gcx: GlobalContext<'ctx>,
 ) -> Vec<DefinitionID> {
     let file = method.span.file;
-    let packages = packages_at_file(file, gcx);
+    let packages = gcx.packages_at_file(file);
     let simple_ty = self_ty.to_simple_type();
     let mut candidates = vec![];
     for package in packages {
@@ -56,32 +56,13 @@ pub fn associated_functions_for_ty<'ctx>(
     candidates
 }
 
-pub fn packages_at_file(file: taroc_span::FileID, gcx: GlobalContext) -> Vec<PackageIndex> {
-    let mut packages = {
-        let index = gcx.session().index();
-        let resolutions = gcx.store.resolutions.borrow();
-        let Some(resolutions) = resolutions.get(&index) else {
-            unreachable!()
-        };
-        resolutions
-            .file_to_imports
-            .get(&file)
-            .cloned()
-            .unwrap_or_default()
-    };
-
-    packages.insert(gcx.session().index());
-
-    packages.into_iter().collect()
-}
-
 pub fn associated_operators_for_ty<'ctx>(
     op: OperatorKind,
     self_ty: Ty<'ctx>,
     gcx: GlobalContext<'ctx>,
     file: FileID,
 ) -> Vec<DefinitionID> {
-    let packages = packages_at_file(file, gcx);
+    let packages = gcx.packages_at_file(file);
 
     let simple_ty = gcx.try_simple_type(self_ty);
     let Some(simple_ty) = simple_ty else {

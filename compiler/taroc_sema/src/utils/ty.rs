@@ -6,7 +6,8 @@ use crate::{
     },
 };
 use ena::unify::UnifyKey;
-use taroc_hir::{DefinitionID, Mutability};
+use taroc_hir::{DefinitionID, Mutability, SelfTypeAlias};
+use taroc_span::Identifier;
 
 pub fn convert_ast_int_ty(ity: taroc_hir::IntTy) -> IntTy {
     match ity {
@@ -162,7 +163,21 @@ pub fn ty2str<'ctx>(ty: Ty<'ctx>, gcx: GlobalContext<'ctx>) -> String {
             out
         }
 
-        TyKind::AssociatedType { .. } => "assoc()".into(),
+        TyKind::AssociatedType(kind) => match kind {
+            crate::ty::AssocTyKind::Inherent(definition_id) => {
+                let parent = gcx.parent_resolving_extension(definition_id);
+                let parent_name = format_self_ty(gcx, parent);
+                let self_name = gcx.ident_for(definition_id).symbol;
+                format!("{parent_name}::{self_name}")
+            }
+            crate::ty::AssocTyKind::DependentMember {
+                base,
+                name: Identifier { symbol: name, .. },
+                ..
+            } => {
+                format!("{}::{name}", base.format(gcx))
+            }
+        },
         TyKind::Error => "<error>".into(),
 
         TyKind::FnDef(id, args) => {
@@ -183,6 +198,13 @@ pub fn ty2str<'ctx>(ty: Ty<'ctx>, gcx: GlobalContext<'ctx>) -> String {
         TyKind::Placeholder => {
             format!("{{placeholder}}")
         }
+    }
+}
+
+pub fn format_self_ty<'ctx>(gcx: GlobalContext<'ctx>, alias: SelfTypeAlias) -> String {
+    match alias {
+        SelfTypeAlias::Def(definition_id) => gcx.ident_for(definition_id).symbol.as_str().into(),
+        SelfTypeAlias::Primary(primary_type) => primary_type.name_str().into(),
     }
 }
 

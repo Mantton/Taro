@@ -2,8 +2,8 @@ use crate::{
     extend::table::PackageFunctionTable,
     ty::{
         ConformanceRecord, EnumDefinition, FloatTy, GenericArgument, GenericParameter, IntTy,
-        InterfaceDefinition, LabeledFunctionSignature, PackageAliasTable, SimpleType,
-        SpannedConstraints, StructDefinition, Ty, TyKind, UIntTy, VariantDefinition,
+        InterfaceDefinition, InterfaceRequirements, LabeledFunctionSignature, PackageAliasTable,
+        SimpleType, SpannedConstraints, StructDefinition, Ty, TyKind, UIntTy, VariantDefinition,
     },
 };
 use bumpalo::Bump;
@@ -168,6 +168,7 @@ pub struct TypeDatabase<'ctx> {
     pub node_to_ty: FxHashMap<NodeID, Ty<'ctx>>,
     pub superinterfaces: FxHashMap<DefinitionID, FxHashSet<DefinitionID>>,
     pub conformances: FxHashMap<SimpleType, Vec<ConformanceRecord<'ctx>>>,
+    pub interface_requirements: FxHashMap<DefinitionID, &'ctx InterfaceRequirements<'ctx>>,
     pub function_table: PackageFunctionTable,
 }
 

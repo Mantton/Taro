@@ -231,7 +231,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                         gcx,
                         TyKind::AssociatedType(AssocTyKind::DependentMember {
                             base: base_ty,
-                            name: segment.identifier.symbol,
+                            name: segment.identifier,
                             anchors: candidates,
                         }),
                     );

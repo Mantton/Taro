@@ -1,5 +1,5 @@
 
 
 public interface Clone {
-    func clone(&self) -> Self
+    func clone(&const self) -> Self
 }

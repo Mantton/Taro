@@ -28,7 +28,7 @@ impl<'ctx> Actor<'ctx> {
         }
     }
 
-    fn run<'a>(package: &taroc_hir::Package, context: GlobalContext<'ctx>) -> CompileResult<()> {
+    fn run(package: &taroc_hir::Package, context: GlobalContext<'ctx>) -> CompileResult<()> {
         let mut actor = Actor::new(context);
         taroc_hir::visitor::walk_package(&mut actor, package);
         context.with_session_type_database(|db| db.function_table = actor.package);
@@ -56,26 +56,12 @@ impl HirVisitor for Actor<'_> {
         context: taroc_hir::visitor::AssocContext,
     ) -> Self::Result {
         match context {
-            taroc_hir::visitor::AssocContext::Interface(..) => {
-                self.collect_interface_requirement(declaration);
-            }
+            taroc_hir::visitor::AssocContext::Interface(..) => return,
             taroc_hir::visitor::AssocContext::Extend(parent_id) => {
                 let parent_id = self.context.def_id(parent_id);
                 self.collect_extended_member(declaration, parent_id);
             }
         }
-    }
-}
-
-impl<'ctx> Actor<'ctx> {
-    fn collect_interface_requirement(&self, _: &taroc_hir::AssociatedDeclaration) {
-
-        // match &declaration.kind {
-        //     taroc_hir::AssociatedDeclarationKind::Constant(node) => todo!(),
-        //     taroc_hir::AssociatedDeclarationKind::Function(node) => todo!(),
-        //     taroc_hir::AssociatedDeclarationKind::Type(node) => todo!(),
-        //     taroc_hir::AssociatedDeclarationKind::Operator(op, node) => todo!(),
-        // }
     }
 }
 

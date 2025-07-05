@@ -26,9 +26,6 @@ pub trait TypeFoldable<'ctx>: Sized {
 
 impl<'ctx> TypeFoldable<'ctx> for Ty<'ctx> {
     fn fold_with<F: TypeFolder<'ctx>>(self, folder: &mut F) -> Self {
-        if !self.needs_instantiation() {
-            return self;
-        }
         folder.fold_ty(self)
     }
 }
@@ -104,6 +101,22 @@ impl<'ctx> TypeSuperFoldable<'ctx> for TyKind<'ctx> {
                     inputs: folded_inputs,
                     output: folded_output,
                 }
+            }
+
+            AssociatedType(k) => {
+                let k = match k {
+                    crate::ty::AssocTyKind::Inherent(_) => k,
+                    crate::ty::AssocTyKind::DependentMember {
+                        base,
+                        name,
+                        anchors,
+                    } => crate::ty::AssocTyKind::DependentMember {
+                        base: folder.fold_ty(base),
+                        name,
+                        anchors,
+                    },
+                };
+                TyKind::AssociatedType(k)
             }
 
             _ => self,

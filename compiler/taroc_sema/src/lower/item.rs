@@ -42,7 +42,7 @@ impl<'ctx> TypeLowerer<'ctx> for ItemCtx<'ctx> {
                     })
                     .collect();
 
-                self.gcx.store.interners.alloc(resulting)
+                self.gcx.alloc(resulting)
             }
         }
     }

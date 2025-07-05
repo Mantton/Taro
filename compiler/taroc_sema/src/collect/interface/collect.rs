@@ -19,7 +19,7 @@ impl<'ctx> Actor<'ctx> {
         Actor { context }
     }
 
-    fn run<'a>(package: &taroc_hir::Package, context: GlobalContext<'ctx>) -> CompileResult<()> {
+    fn run(package: &taroc_hir::Package, context: GlobalContext<'ctx>) -> CompileResult<()> {
         let mut actor = Actor::new(context);
         taroc_hir::visitor::walk_package(&mut actor, package);
         context.diagnostics.report()
@@ -107,7 +107,7 @@ impl<'ctx> Actor<'ctx> {
             assoc_types,
         };
 
-        let definition = gcx.store.interners.alloc(definition);
+        let definition = gcx.alloc(definition);
         gcx.with_type_database(def_id.package(), |db| {
             db.interfaces.insert(def_id, definition)
         });

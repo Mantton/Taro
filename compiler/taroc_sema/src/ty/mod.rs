@@ -10,7 +10,7 @@ use std::{collections::HashMap, fmt::Display};
 use taroc_ast_ir::OperatorKind;
 use taroc_data_structures::Interned;
 use taroc_hir::{CtorKind, DefinitionID, Mutability};
-use taroc_span::{Span, Spanned, Symbol};
+use taroc_span::{Identifier, Span, Spanned, Symbol};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Ty<'arena>(Interned<'arena, TyKind<'arena>>);
@@ -108,6 +108,7 @@ impl<'ctx> Ty<'ctx> {
                 | TyKind::Opaque(_)
                 | TyKind::Existential(_)
                 | TyKind::Error
+                | TyKind::Infer(_)
         )
     }
 }
@@ -300,15 +301,16 @@ pub struct InterfaceRequirements<'ctx> {
 
 #[derive(Debug, Clone)]
 pub struct InterfaceMethodRequirement<'ctx> {
+    pub id: DefinitionID,
     pub name: Symbol,
-    pub signature: LabeledFunctionSignature<'ctx>,
+    pub signature: &'ctx LabeledFunctionSignature<'ctx>,
     pub is_required: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct InterfaceOperatorRequirement<'ctx> {
     pub kind: OperatorKind,
-    pub signature: LabeledFunctionSignature<'ctx>,
+    pub signature: &'ctx LabeledFunctionSignature<'ctx>,
     pub is_required: bool,
 }
 
@@ -327,12 +329,13 @@ pub enum TypeErasure {
 
 #[derive(Debug, Clone)]
 pub struct AssociatedTypeDefinition<'ctx> {
+    pub id: DefinitionID,
     pub name: Symbol,
     // Optional: A default type if the implementer doesn't provide one
     pub default_type: Option<Ty<'ctx>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct LabeledFunctionSignature<'ctx> {
     pub inputs: Vec<LabeledFunctionParameter<'ctx>>,
     pub output: Ty<'ctx>,
@@ -347,7 +350,31 @@ impl<'ctx> LabeledFunctionSignature<'ctx> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl<'ctx> LabeledFunctionSignature<'ctx> {
+    /// Compare two signatures ignoring types (`ty`, `output`) and the `id`.
+    ///
+    /// Returns `true` when:
+    /// * both have the same `is_async` / `is_variadic` flags,
+    /// * the parameter list is the same length, and
+    /// * every parameter’s `label`, and `has_default` match in order.
+    pub fn same_shape(&self, other: &Self) -> bool {
+        // Quick field/length checks first.
+        if self.is_async != other.is_async
+            || self.is_variadic != other.is_variadic
+            || self.inputs.len() != other.inputs.len()
+        {
+            return false;
+        }
+
+        // Compare each parameter, ignoring `ty`.
+        self.inputs
+            .iter()
+            .zip(&other.inputs)
+            .all(|(a, b)| a.label == b.label && a.has_default == b.has_default)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct LabeledFunctionParameter<'ctx> {
     pub label: Option<Symbol>,
     pub name: Symbol,
@@ -423,7 +450,7 @@ pub enum AssocTyKind<'ctx> {
     Inherent(DefinitionID),
     DependentMember {
         base: Ty<'ctx>,
-        name: Symbol,
+        name: Identifier,
         anchors: &'ctx [DefinitionID], // all associated types reachable with this name from `base`
     },
 }
@@ -445,6 +472,10 @@ impl<'ctx> Ty<'ctx> {
                 }
                 TyKind::FnDef(_, args) => args.iter().filter_map(|ga| ga.ty()).any(visit),
                 TyKind::Adt(_, args) => args.iter().filter_map(|ga| ga.ty()).any(visit),
+                TyKind::AssociatedType(k) => match k {
+                    AssocTyKind::Inherent(_) => false,
+                    AssocTyKind::DependentMember { base, .. } => base.needs_instantiation(),
+                },
                 // Existential, associated, infer, error, primitives …
                 _ => false,
             }
@@ -466,6 +497,32 @@ pub enum SimpleType {
     Interface(DefinitionID),
     Reference(Mutability),
     Pointer(Mutability),
+}
+
+impl SimpleType {
+    pub fn format<'ctx>(&self, gcx: GlobalContext<'ctx>) -> String {
+        use SimpleType::*;
+        match *self {
+            Rune => "rune".into(),
+            Bool => "bool".into(),
+            String => "string".into(),
+            Array => "array".into(),
+            Int(ref k) => k.to_string(),
+            UInt(ref k) => k.to_string(),
+            Float(ref k) => k.to_string(),
+            Adt(id) | Interface(id) => gcx.ident_for(id).symbol.to_string(),
+            Reference(mutability) => match mutability {
+                Mutability::Immutable => "&T",
+                Mutability::Mutable => "&T",
+            }
+            .into(),
+            Pointer(mutability) => match mutability {
+                Mutability::Immutable => "*const T",
+                Mutability::Mutable => "*T",
+            }
+            .into(),
+        }
+    }
 }
 
 impl<'ctx> Ty<'ctx> {

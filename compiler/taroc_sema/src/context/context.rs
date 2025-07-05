@@ -9,6 +9,7 @@ use crate::utils::{
 use crate::{CompilerSession, GlobalContext, TypeDatabase};
 use taroc_hir::{
     DefinitionID, DefinitionIndex, DefinitionKind, NodeID, PackageIndex, PartialResolution,
+    SelfTypeAlias,
 };
 use taroc_resolve_models::DefinitionContext;
 use taroc_span::{Identifier, Symbol};
@@ -374,7 +375,50 @@ impl<'ctx> GlobalContext<'ctx> {
 }
 
 impl<'ctx> GlobalContext<'ctx> {
-    pub fn unsafe_ref<T>(&self, a: &T) -> &'ctx T {
+    pub fn unsafe_ref<T>(self, a: &T) -> &'ctx T {
         unsafe { std::mem::transmute(a) }
+    }
+
+    pub fn alloc<T>(self, a: T) -> &'ctx T {
+        self.store.interners.alloc(a)
+    }
+}
+
+impl<'ctx> GlobalContext<'ctx> {
+    pub fn parent_resolving_extension(self, id: DefinitionID) -> SelfTypeAlias {
+        let parent = self.parent(id);
+
+        if matches!(self.def_kind(parent), DefinitionKind::Extension) {
+            return self
+                .with_type_database(id.package(), |db| db.extension_ty_map[&parent].clone());
+        }
+
+        return SelfTypeAlias::Def(id);
+    }
+    pub fn packages_at_file(self, file: taroc_span::FileID) -> Vec<PackageIndex> {
+        let session_idx = self.session().index();
+
+        // 2. Collect all packages referenced from `file`,
+        //    but *exclude* the session’s own package so it
+        //    can be inserted only once at the front later.
+        let mut packages: Vec<_> = {
+            let resolutions_ref = self.store.resolutions.borrow();
+            let Some(resolutions) = resolutions_ref.get(&session_idx) else {
+                unreachable!()
+            };
+
+            resolutions
+                .file_to_imports
+                .get(&file)
+                .cloned() // HashSet<PackageIndex>
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|&idx| idx != session_idx)
+                .collect()
+        };
+
+        packages.insert(0, session_idx);
+
+        packages
     }
 }

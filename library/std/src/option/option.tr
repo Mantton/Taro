@@ -1,7 +1,7 @@
 import std::cmp::Equatable
 import std::clone::Clone
 import std::default::Default
-import std::hash::Hashable
+import std::hash::{Hashable, Hasher}
 
 @foundation
 public enum Option<Value> {
@@ -16,8 +16,12 @@ extend Option {
 }
 
 extend Option: Equatable where Value: Equatable {}
-extend Option: Clone where Value: Clone {}
-extend Option: Hashable where Value: Hashable {}
+extend Option: Clone where Value: Clone {
+    func clone(&const self) -> Self {}
+}
+extend Option: Hashable where Value: Hashable {
+    func hash<H: Hasher>(&const self, into: &H) {}
+}
 
 extend Option: Default {
     func default() -> Self {

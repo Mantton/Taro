@@ -14,8 +14,9 @@ pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResul
     super::collect::function::run(package, context)?; // function signatures
     super::extend::table::run(package, context)?; // assoc members and overload table generation
     super::collect::fields::run(package, context)?; // adt fields
-    // TODO: Validate Interface Conformance
+    super::collect::interface::requirements::run(package, context)?; // interface requirements
+    super::collect::interface::conformance::run(context)?; // validate interface conformance
     // TODO: Check Recursive Types
-    super::check::run(package, context)?;
+    // super::check::run(package, context)?;
     Ok(())
 }

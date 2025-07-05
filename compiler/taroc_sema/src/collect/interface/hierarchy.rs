@@ -28,7 +28,7 @@ impl<'ctx> Actor<'ctx> {
         }
     }
 
-    fn run<'a>(_: &taroc_hir::Package, context: GlobalContext<'ctx>) -> CompileResult<()> {
+    fn run(_: &taroc_hir::Package, context: GlobalContext<'ctx>) -> CompileResult<()> {
         let mut actor = Actor::new(context);
         let interfaces =
             context.with_type_database(context.session().index(), |db| db.interfaces.clone());
