@@ -375,12 +375,12 @@ impl<'ctx> GlobalContext<'ctx> {
 }
 
 impl<'ctx> GlobalContext<'ctx> {
-    pub fn unsafe_ref<T>(self, a: &T) -> &'ctx T {
-        unsafe { std::mem::transmute(a) }
-    }
-
     pub fn alloc<T>(self, a: T) -> &'ctx T {
         self.store.interners.alloc(a)
+    }
+
+    pub fn alloc_slice<T: Copy>(self, a: &[T]) -> &'ctx [T] {
+        self.store.interners.intern_slice(a)
     }
 }
 

@@ -6,7 +6,7 @@ use crate::{
 use taroc_hir::Mutability;
 use taroc_span::Span;
 
-impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     pub fn solve_coerce(&self, from: Ty<'ctx>, to: Ty<'ctx>) -> SolverResult<'ctx> {
         let result = self.coerce(from, to);
         match result {
@@ -41,7 +41,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     }
 }
 
-impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     fn coerce_reference(
         &self,
         from: Ty<'ctx>,
@@ -78,7 +78,7 @@ fn coerce_mutbl<'ctx>(from: Mutability, to: Mutability) -> Result<(), TypeError<
     }
 }
 
-impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     fn coerce_from_inference_var(&self, from: Ty<'ctx>, to: Ty<'ctx>) -> CoercionResult<'ctx> {
         assert!(from.is_ty_var() && self.structurally_resolve(from) == from);
         assert!(self.structurally_resolve(to) == to);
@@ -106,7 +106,7 @@ impl<'ctx> CoercionOutput<'ctx> {
     }
 }
 
-impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     pub fn solve_reciever_coerce(
         &self,
         from: Ty<'ctx>,
@@ -172,7 +172,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
 
         // By Dereferencing
         {
-            let mut autoderef = self.fcx.autoderef(location, from);
+            let mut autoderef = self.autoderef(location, from);
             let mut success = false;
             while let Some(potential_ty) = autoderef.next() {
                 success |= self.icx().probe(|_| {

@@ -7,7 +7,7 @@ use crate::{
 };
 type UnificationResult<'ctx> = Result<(), TypeError<'ctx>>;
 
-impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     pub fn unify(&self, a: Ty<'ctx>, b: Ty<'ctx>) -> UnificationResult<'ctx> {
         let a = self.structurally_resolve(a);
         let b = self.structurally_resolve(b);
@@ -153,7 +153,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     }
 }
 
-impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     fn unify_generic_args(
         &self,
         a: GenericArguments<'ctx>,
@@ -187,7 +187,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     }
 }
 
-impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     pub fn structurally_resolve(&self, mut ty: Ty<'ctx>) -> Ty<'ctx> {
         ty = self.icx().shallow_resolve(ty);
         ty = normalize_ty(ty, self.gcx());

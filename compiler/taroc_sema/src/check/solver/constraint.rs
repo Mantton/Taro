@@ -7,7 +7,7 @@ use crate::{
     utils::instantiate_constraint_with_args,
 };
 
-impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     pub fn solve_constraint(
         &mut self,
         constraint: Constraint<'ctx>,

@@ -14,7 +14,7 @@ use taroc_ast_ir::UnaryOperator;
 use taroc_hir::{BinaryOperator, DefinitionID, Mutability, OperatorKind};
 use taroc_span::{Identifier, Span};
 
-impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     pub fn solve_unary(&mut self, goal: UnaryOperatorGoal<'ctx>) -> SolverResult<'ctx> {
         match goal.operator {
             UnaryOperator::Reference(mutability) => self.solve_ref(goal, mutability),
@@ -103,7 +103,7 @@ fn unary_goal_to_method_goal<'ctx>(goal: UnaryOperatorGoal<'ctx>) -> MethodCallG
     }
 }
 
-impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     pub fn solve_binary(&mut self, goal: BinaryOperatorGoal<'ctx>) -> SolverResult<'ctx> {
         let gcx = self.gcx();
         let lhs = self.structurally_resolve(goal.lhs);
@@ -171,7 +171,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     }
 }
 
-impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     pub fn collect_all_operator_candidates(
         &self,
         recv_ty: Ty<'ctx>,
@@ -179,7 +179,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
         operator: OperatorKind,
     ) -> Vec<DefinitionID> {
         let mut candidates = vec![];
-        let mut autoderef = self.fcx.autoderef(recv_span, recv_ty);
+        let mut autoderef = self.autoderef(recv_span, recv_ty);
         while let Some(recv) = autoderef.next() {
             let recv_candidates =
                 associated_operators_for_ty(operator, recv, self.gcx(), recv_span.file);
@@ -210,7 +210,7 @@ fn binary_goal_to_method_goal<'ctx>(
     }
 }
 
-impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     pub fn solve_subscript(&mut self, goal: OverloadGoal<'ctx>) -> SolverResult<'ctx> {
         let lhs = self.structurally_resolve(goal.callee_var);
         if lhs.is_infer() {

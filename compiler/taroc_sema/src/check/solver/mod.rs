@@ -2,11 +2,12 @@ use crate::{
     GlobalContext,
     check::{
         context::func::FnCtx,
-        solver::{cast::CastGoal, pattern::PatternResolutionGoal},
+        solver::{cast::CastGoal, shape::Shape},
     },
     error::TypeError,
     infer::InferCtx,
     ty::{Constraint, ParamEnv, Ty},
+    utils::autoderef::Autoderef,
 };
 use std::{collections::VecDeque, vec};
 use taroc_hir::{BinaryOperator, UnaryOperator};
@@ -19,13 +20,16 @@ mod constraint;
 mod field;
 mod method;
 mod op;
-pub mod pattern;
+pub mod shape;
 mod unify;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Goal<'ctx> {
     Constraint(Constraint<'ctx>),
-    Coerce { from: Ty<'ctx>, to: Ty<'ctx> },
+    Coerce {
+        from: Ty<'ctx>,
+        to: Ty<'ctx>,
+    },
     Apply(OverloadGoal<'ctx>),
     FieldAccess(FieldAccessGoal<'ctx>),
     TupleAccess(TupleAccessGoal<'ctx>),
@@ -34,8 +38,14 @@ pub enum Goal<'ctx> {
     BinaryOperator(BinaryOperatorGoal<'ctx>),
     IndexOperator(OverloadGoal<'ctx>),
     Cast(CastGoal<'ctx>),
-    PatternResolution(PatternResolutionGoal<'ctx>),
-    RecieverCoerce { from: Ty<'ctx>, to: Ty<'ctx> },
+    RecieverCoerce {
+        from: Ty<'ctx>,
+        to: Ty<'ctx>,
+    },
+    Shape {
+        scrutinee_ty: Ty<'ctx>,
+        shape: Shape<'ctx>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -202,33 +212,38 @@ impl<'ctx> ObligationSolver<'ctx> {
     }
 }
 
-pub struct SolverDelegate<'icx, 'ctx, 'rcx> {
-    fcx: &'icx FnCtx<'rcx, 'ctx>,
+pub struct SolverDelegate<'icx, 'ctx> {
+    _icx: &'icx InferCtx<'ctx>,
     param_env: ParamEnv<'ctx>,
     nested_obligations: Vec<Obligation<'ctx>>,
 }
 
-impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
-    pub fn new(
-        fcx: &'icx FnCtx<'rcx, 'ctx>,
-        param_env: ParamEnv<'ctx>,
-    ) -> SolverDelegate<'icx, 'ctx, 'rcx> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
+    pub fn new(icx: &'icx InferCtx<'ctx>, param_env: ParamEnv<'ctx>) -> SolverDelegate<'icx, 'ctx> {
         SolverDelegate {
-            fcx,
+            _icx: icx,
             param_env,
             nested_obligations: vec![],
         }
     }
 
+    #[inline]
     pub fn gcx(&self) -> GlobalContext<'ctx> {
-        return self.fcx.gcx;
+        return self.icx().gcx;
     }
-    pub fn icx(&self) -> &InferCtx<'ctx> {
-        return &self.fcx.icx;
+
+    #[inline]
+    pub fn icx(&self) -> &'icx InferCtx<'ctx> {
+        return &self._icx;
+    }
+
+    #[inline]
+    pub fn autoderef(&self, span: Span, ty: Ty<'ctx>) -> Autoderef<'icx, 'ctx> {
+        Autoderef::new(self.icx(), ty, span)
     }
 }
 
-impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     pub fn add_obligation(&mut self, obligation: Obligation<'ctx>) {
         self.nested_obligations.push(obligation);
     }
@@ -252,7 +267,7 @@ pub enum Certainty {
     Maybe,
 }
 
-impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     fn solve_root_goal(
         &mut self,
         goal: Goal<'ctx>,
@@ -276,7 +291,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
         let mut certainty = Certainty::Yes;
 
         for obligation in self.nested_obligations.iter() {
-            let mut delegate = SolverDelegate::new(self.fcx, self.param_env);
+            let mut delegate = SolverDelegate::new(self.icx(), self.param_env);
             let result = delegate.solve_root_goal(obligation.goal, obligation.location)?;
 
             progressed |= result.progressed;
@@ -293,7 +308,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     }
 }
 
-impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     fn solve(
         &mut self,
         goal: Goal<'ctx>,
@@ -328,7 +343,10 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
             Goal::BinaryOperator(goal) => self.solve_binary(goal),
             Goal::IndexOperator(goal) => self.solve_subscript(goal),
             Goal::Cast(goal) => self.solve_cast(goal),
-            Goal::PatternResolution(goal) => self.solve_pattern_resolve(goal),
+            Goal::Shape {
+                scrutinee_ty,
+                shape,
+            } => self.solve_shape(shape, scrutinee_ty, location),
             Goal::RecieverCoerce { from, to } => self.solve_reciever_coerce(from, to, location),
         }
     }

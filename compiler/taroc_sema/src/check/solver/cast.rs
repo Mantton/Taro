@@ -1,6 +1,5 @@
 use crate::{
     check::solver::{SolverDelegate, SolverResult},
-    error::TypeError,
     ty::Ty,
 };
 use taroc_span::Span;
@@ -13,7 +12,7 @@ pub struct CastGoal<'ctx> {
     pub optional: bool,
 }
 
-impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     pub fn solve_cast(&mut self, goal: CastGoal<'ctx>) -> SolverResult<'ctx> {
         let from_ty = self.structurally_resolve(goal.from_ty);
         let to_ty = self.structurally_resolve(goal.to_ty);

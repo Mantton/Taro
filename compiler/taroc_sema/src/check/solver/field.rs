@@ -7,7 +7,7 @@ use crate::{
     utils::instantiate_ty_with_args,
 };
 
-impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     pub fn solve_field_access(&mut self, goal: FieldAccessGoal<'ctx>) -> SolverResult<'ctx> {
         let base_ty = self.structurally_resolve(goal.base_ty);
 
@@ -15,7 +15,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
             return SolverResult::Deferred;
         }
 
-        let mut autoderef = self.fcx.autoderef(goal.field_span, base_ty);
+        let mut autoderef = self.autoderef(goal.field_span, base_ty);
 
         while let Some(dereferenced_ty) = autoderef.next() {
             match dereferenced_ty.kind() {
@@ -60,7 +60,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     }
 }
 
-impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     pub fn solve_tuple_access(&mut self, goal: TupleAccessGoal<'ctx>) -> SolverResult<'ctx> {
         let base_ty = self.structurally_resolve(goal.base_ty);
         match base_ty.kind() {

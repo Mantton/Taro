@@ -1,10 +1,5 @@
 use crate::{
-    check::{
-        context::func::FnCtx,
-        expectation::Expectation,
-        gather::GatherLocalsVisitor,
-        solver::{Goal, Obligation, pattern::PatternResolutionGoal},
-    },
+    check::{context::func::FnCtx, expectation::Expectation, gather::GatherLocalsVisitor},
     ty::Ty,
 };
 
@@ -75,20 +70,6 @@ impl<'rcx, 'gcx> FnCtx<'rcx, 'gcx> {
         if let Some(initializer) = &local.initializer {
             self.check_expression_coercible_to_type(initializer, ty, None);
         }
-        self.request_pattern_resolution(&local.pattern, ty);
-    }
-
-    pub fn request_pattern_resolution(&self, pattern: &taroc_hir::Pattern, scrutinee_ty: Ty<'gcx>) {
-        let goal = PatternResolutionGoal {
-            pattern: self.gcx.unsafe_ref(pattern),
-            scrutinee_ty,
-        };
-
-        let obligation = Obligation {
-            location: pattern.span,
-            goal: Goal::PatternResolution(goal),
-        };
-
-        self.add_obligation(obligation);
+        self.add_shape_obligation(&local.pattern, ty);
     }
 }

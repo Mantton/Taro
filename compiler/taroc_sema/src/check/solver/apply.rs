@@ -9,7 +9,7 @@ use crate::{
 };
 use taroc_hir::DefinitionID;
 
-impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     pub fn solve_application(&mut self, goal: OverloadGoal<'ctx>) -> SolverResult<'ctx> {
         let ty = self.structurally_resolve(goal.callee_var);
         let fid = match ty.kind() {
@@ -70,7 +70,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
 
     fn evaluate_candidate(&self, candidate: DefinitionID, goal: &OverloadGoal<'ctx>) -> bool {
         self.icx().probe(|_| {
-            let mut ctx = SolverDelegate::new(self.fcx, self.param_env);
+            let mut ctx = SolverDelegate::new(self.icx(), self.param_env);
             let obligations = ctx.select_fn_for_application(candidate, goal);
             ctx.add_obligations(obligations);
             let result = ctx.solve_nested_goals();

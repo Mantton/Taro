@@ -8,7 +8,6 @@ use crate::{
         solver::{
             BinaryOperatorGoal, FieldAccessGoal, Goal, MethodCallGoal, Obligation,
             OverloadArgument, OverloadGoal, TupleAccessGoal, UnaryOperatorGoal, cast::CastGoal,
-            pattern::PatternResolutionGoal,
         },
     },
     infer::fn_var::FnVarData,
@@ -971,16 +970,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         for arm in node.arms.iter() {
             // instantiate types for each local variable
             GatherLocalsVisitor::from_match_arm(self, &arm.pattern);
-            // add constraints to check pattern node later down the line
-            let goal = PatternResolutionGoal {
-                pattern: self.gcx.unsafe_ref(&arm.pattern),
-                scrutinee_ty: alpha,
-            };
-
-            self.add_obligation(Obligation {
-                location: arm.pattern.span,
-                goal: Goal::PatternResolution(goal),
-            });
+            self.add_shape_obligation(&arm.pattern, alpha);
         }
 
         // Expressions

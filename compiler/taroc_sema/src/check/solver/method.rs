@@ -13,7 +13,7 @@ use crate::{
 use taroc_hir::DefinitionID;
 use taroc_span::{Identifier, Span};
 
-impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     pub fn solve_method_call(&mut self, goal: MethodCallGoal<'ctx>) -> SolverResult<'ctx> {
         let gcx = self.gcx();
         let recv_ty = self.structurally_resolve(goal.receiver_ty);
@@ -64,7 +64,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
         goal: &MethodCallGoal<'ctx>,
     ) -> bool {
         self.icx().probe(|_| {
-            let mut ctx = SolverDelegate::new(self.fcx, self.param_env);
+            let mut ctx = SolverDelegate::new(self.icx(), self.param_env);
             let obligations = ctx.select_fn_for_method(candidate, recv_ty, goal);
             ctx.add_obligations(obligations);
             let result = ctx.solve_nested_goals();
@@ -140,7 +140,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
     }
 }
 
-impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     pub fn collect_all_method_candidates(
         &self,
         recv_ty: Ty<'ctx>,
@@ -148,7 +148,7 @@ impl<'icx, 'ctx, 'rcx> SolverDelegate<'icx, 'ctx, 'rcx> {
         method: Identifier,
     ) -> Vec<DefinitionID> {
         let mut candidates = vec![];
-        let mut autoderef = self.fcx.autoderef(recv_span, recv_ty);
+        let mut autoderef = self.autoderef(recv_span, recv_ty);
         while let Some(recv) = autoderef.next() {
             let recv_candidates = associated_functions_for_ty(method, recv, self.gcx());
             candidates.extend(recv_candidates);
