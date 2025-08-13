@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 taroc_driver = { path = "../taroc_driver" }
+taroc_mir = { path = "../taroc_mir" }
