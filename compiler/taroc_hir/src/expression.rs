@@ -8,7 +8,7 @@ use super::{
     pattern::Pattern,
     ty::Type,
 };
-use taroc_ast_ir::{BinaryOperator, UnaryOperator};
+use taroc_ast_ir::{BinaryOperator, Mutability, UnaryOperator};
 use taroc_span::{Identifier, Span};
 
 #[derive(Debug, Clone)]
@@ -37,6 +37,10 @@ pub enum ExpressionKind {
     FunctionCall(Box<Expression>, Vec<ExpressionArgument>),
     /// `foo.bar()`
     MethodCall(MethodCall),
+    /// &a | &const T
+    Reference(Box<Expression>, Mutability),
+    /// *a
+    Dereference(Box<Expression>),
     /// `a + b`
     Binary(BinaryOperator, Box<Expression>, Box<Expression>),
     // !a

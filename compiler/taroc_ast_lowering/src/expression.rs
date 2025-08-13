@@ -37,6 +37,12 @@ impl Actor<'_> {
             taroc_ast::ExpressionKind::Array(vec) => taroc_hir::ExpressionKind::ArrayLiteral(
                 self.lower_sequence(vec, |a, e| a.lower_expression(e)),
             ),
+            taroc_ast::ExpressionKind::Reference(expression, mutab) => {
+                taroc_hir::ExpressionKind::Reference(self.lower_expression(expression), mutab)
+            }
+            taroc_ast::ExpressionKind::Dereference(expression) => {
+                taroc_hir::ExpressionKind::Dereference(self.lower_expression(expression))
+            }
             taroc_ast::ExpressionKind::Binary(binary_operator, lhs, rhs) => {
                 taroc_hir::ExpressionKind::Binary(
                     binary_operator,

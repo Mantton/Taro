@@ -6,8 +6,9 @@ use crate::{
         gather::GatherLocalsVisitor,
         nodes::apply::{ValidationError, match_arguments_to_parameters, validate_arity},
         solver::{
-            BinaryOperatorGoal, FieldAccessGoal, Goal, MethodCallGoal, Obligation,
-            OverloadArgument, OverloadGoal, TupleAccessGoal, UnaryOperatorGoal, cast::CastGoal,
+            BinaryOperatorGoal, DerefGoal, FieldAccessGoal, Goal, MethodCallGoal, Obligation,
+            OverloadArgument, OverloadGoal, ReferenceGoal, TupleAccessGoal, UnaryOperatorGoal,
+            cast::CastGoal,
         },
     },
     infer::fn_var::FnVarData,
@@ -16,7 +17,9 @@ use crate::{
     utils::{instantiate_constraint_with_args, instantiate_ty_with_args, labeled_signature_to_ty},
 };
 use rustc_hash::FxHashMap;
-use taroc_hir::{BinaryOperator, DefinitionID, DefinitionKind, NodeID, Resolution, UnaryOperator};
+use taroc_hir::{
+    BinaryOperator, DefinitionID, DefinitionKind, Mutability, NodeID, Resolution, UnaryOperator,
+};
 use taroc_span::Span;
 
 impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
@@ -98,6 +101,12 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
                 self.check_literal_expression(literal, expectation)
             }
             taroc_hir::ExpressionKind::Path(path) => self.check_path_expression(path, expression),
+            taroc_hir::ExpressionKind::Reference(node, mutability) => {
+                self.check_reference_expression(node, *mutability, expression.span)
+            }
+            taroc_hir::ExpressionKind::Dereference(node) => {
+                self.check_dereference_expression(node, expression.span)
+            }
             taroc_hir::ExpressionKind::Tuple(expressions) => {
                 self.check_tuple_expression(&expressions, expectation, expression)
             }
@@ -200,6 +209,45 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
                 return self.common_types().error;
             }
         }
+    }
+
+    fn check_reference_expression(
+        &self,
+        node: &taroc_hir::Expression,
+        mutability: Mutability,
+        span: Span,
+    ) -> Ty<'ctx> {
+        let ty = self.check_expression(node);
+        let alpha = self.next_ty_var(span);
+        let goal = Goal::Ref(ReferenceGoal {
+            ty,
+            mutability,
+            alpha,
+        });
+
+        let obligation = Obligation {
+            location: span,
+            goal,
+        };
+
+        self.add_obligation(obligation);
+
+        alpha
+    }
+
+    fn check_dereference_expression(&self, node: &taroc_hir::Expression, span: Span) -> Ty<'ctx> {
+        let ty = self.check_expression(node);
+        let alpha = self.next_ty_var(span);
+        let goal = Goal::Deref(DerefGoal { ty, alpha });
+
+        let obligation = Obligation {
+            location: span,
+            goal,
+        };
+
+        self.add_obligation(obligation);
+
+        alpha
     }
 
     fn check_tuple_expression(

@@ -339,11 +339,19 @@ impl Parser {
             }
             TokenKind::Star => {
                 self.bump();
-                UnaryOperator::Dereference
+                let expr = self.parse_prefix_expr()?;
+                return Ok(
+                    self.build_expr(ExpressionKind::Dereference(expr), lo.to(self.hi_span()))
+                );
             }
             TokenKind::Amp => {
                 self.bump();
-                UnaryOperator::Reference(self.parse_mutability())
+                let mutability = self.parse_mutability();
+                let expr = self.parse_prefix_expr()?;
+                return Ok(self.build_expr(
+                    ExpressionKind::Reference(expr, mutability),
+                    lo.to(self.hi_span()),
+                ));
             }
             TokenKind::Minus => {
                 self.bump();

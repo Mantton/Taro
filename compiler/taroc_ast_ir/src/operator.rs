@@ -1,5 +1,3 @@
-use crate::Mutability;
-
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum BinaryOperator {
     /// `+`
@@ -47,10 +45,6 @@ pub enum BinaryOperator {
 pub enum UnaryOperator {
     // !
     LogicalNot,
-    // &
-    Reference(Mutability),
-    // *
-    Dereference,
     // -
     Negate,
     // ~
@@ -137,9 +131,6 @@ impl OperatorKind {
             UnaryOperator::LogicalNot => OperatorKind::Not,
             UnaryOperator::Negate => OperatorKind::Neg,
             UnaryOperator::BitwiseNot => OperatorKind::BitwiseNot,
-            UnaryOperator::Reference(_) | UnaryOperator::Dereference => {
-                unreachable!("ICE: reference and dereference unary operators are custom handled")
-            }
         }
     }
 }

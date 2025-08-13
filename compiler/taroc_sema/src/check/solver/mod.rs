@@ -10,7 +10,7 @@ use crate::{
     utils::autoderef::Autoderef,
 };
 use std::{collections::VecDeque, vec};
-use taroc_hir::{BinaryOperator, UnaryOperator};
+use taroc_hir::{BinaryOperator, Mutability, UnaryOperator};
 use taroc_span::{Identifier, Span, Spanned};
 
 mod apply;
@@ -20,6 +20,7 @@ mod constraint;
 mod field;
 mod method;
 mod op;
+mod reference;
 pub mod shape;
 mod unify;
 
@@ -46,6 +47,8 @@ pub enum Goal<'ctx> {
         scrutinee_ty: Ty<'ctx>,
         shape: Shape<'ctx>,
     },
+    Ref(ReferenceGoal<'ctx>),
+    Deref(DerefGoal<'ctx>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -110,6 +113,19 @@ pub struct BinaryOperatorGoal<'ctx> {
     pub operator: BinaryOperator,
     pub span: Span,
     pub assigning: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ReferenceGoal<'ctx> {
+    pub ty: Ty<'ctx>,
+    pub mutability: Mutability,
+    pub alpha: Ty<'ctx>, // resulting type
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DerefGoal<'ctx> {
+    pub ty: Ty<'ctx>,
+    pub alpha: Ty<'ctx>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -348,6 +364,8 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                 shape,
             } => self.solve_shape(shape, scrutinee_ty, location),
             Goal::RecieverCoerce { from, to } => self.solve_reciever_coerce(from, to, location),
+            Goal::Ref(goal) => self.solve_ref(goal, location),
+            Goal::Deref(goal) => self.solve_deref(goal, location),
         }
     }
 }

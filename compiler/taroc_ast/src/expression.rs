@@ -2,7 +2,7 @@ use super::{
     Block, FunctionSignature, Label, Literal, Path, PathSegment, Pattern, StatementConditionList,
     Type,
 };
-use taroc_ast_ir::{BinaryOperator, UnaryOperator};
+use taroc_ast_ir::{BinaryOperator, Mutability, UnaryOperator};
 use taroc_span::Span;
 
 #[derive(Debug)]
@@ -35,9 +35,13 @@ pub enum ExpressionKind {
     FunctionCall(Box<Expression>, Vec<ExpressionArgument>),
     /// `foo.bar()`
     MethodCall(MethodCall),
+    /// &a | &const T
+    Reference(Box<Expression>, Mutability),
+    /// *a
+    Dereference(Box<Expression>),
     /// `a + b`
     Binary(BinaryOperator, Box<Expression>, Box<Expression>),
-    /// `!a`
+    /// `!a` | '-a' | '~a'
     Unary(UnaryOperator, Box<Expression>),
     /// `a.b`
     FieldAccess(Box<Expression>, PathSegment),

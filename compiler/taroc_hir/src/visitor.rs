@@ -522,6 +522,12 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, expr: &Expression) -> V::
         ExpressionKind::Tuple(expressions) => {
             walk_list!(visitor, visit_expression, expressions)
         }
+        ExpressionKind::Reference(expression, _) => {
+            try_visit!(visitor.visit_expression(expression));
+        }
+        ExpressionKind::Dereference(expression) => {
+            try_visit!(visitor.visit_expression(expression));
+        }
         ExpressionKind::If(node) => {
             try_visit!(visitor.visit_expression(&node.condition));
             try_visit!(visitor.visit_expression(&node.then_block));

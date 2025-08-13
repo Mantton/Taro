@@ -10,46 +10,12 @@ use crate::{
     error::TypeError,
     ty::{Constraint, Ty, TyKind},
 };
-use taroc_ast_ir::UnaryOperator;
-use taroc_hir::{BinaryOperator, DefinitionID, Mutability, OperatorKind};
+use taroc_hir::{BinaryOperator, DefinitionID, OperatorKind};
 use taroc_span::{Identifier, Span};
 
 impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     pub fn solve_unary(&mut self, goal: UnaryOperatorGoal<'ctx>) -> SolverResult<'ctx> {
-        match goal.operator {
-            UnaryOperator::Reference(mutability) => self.solve_ref(goal, mutability),
-            UnaryOperator::Dereference => self.solve_deref(goal),
-            UnaryOperator::LogicalNot => self.solve_unary_via_operator(goal),
-            UnaryOperator::Negate => self.solve_unary_via_operator(goal),
-            UnaryOperator::BitwiseNot => self.solve_unary_via_operator(goal),
-        }
-    }
-
-    fn solve_ref(
-        &mut self,
-        goal: UnaryOperatorGoal<'ctx>,
-        mutability: Mutability,
-    ) -> SolverResult<'ctx> {
-        let ty = self.structurally_resolve(goal.operand_ty);
-        let location = goal.span;
-        let res = self.gcx().mk_ty(TyKind::Reference(ty, mutability));
-        let goal = Goal::Constraint(Constraint::TypeEquality(res, goal.result_var));
-        return SolverResult::Solved(vec![Obligation { goal, location }]);
-    }
-    fn solve_deref(&mut self, goal: UnaryOperatorGoal<'ctx>) -> SolverResult<'ctx> {
-        let ty = self.structurally_resolve(goal.operand_ty);
-        if ty.is_infer() {
-            return SolverResult::Deferred;
-        }
-        let location = goal.span;
-
-        match ty.kind() {
-            TyKind::Reference(ty, _) | TyKind::Pointer(ty, _) => {
-                let goal = Goal::Constraint(Constraint::TypeEquality(ty, goal.result_var));
-                return SolverResult::Solved(vec![Obligation { goal, location }]);
-            }
-            _ => return SolverResult::Error(TypeError::CannotDereference(ty)),
-        }
+        self.solve_unary_via_operator(goal)
     }
 
     fn solve_unary_via_operator(&mut self, goal: UnaryOperatorGoal<'ctx>) -> SolverResult<'ctx> {
