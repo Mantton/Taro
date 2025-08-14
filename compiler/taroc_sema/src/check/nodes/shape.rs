@@ -198,7 +198,11 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
                 _,
                 DefinitionKind::AssociatedConstant | DefinitionKind::AssociatedFunction,
             ) => {
-                todo!("report unexpected res, requires ctor, found associated symbol")
+                self.gcx.diagnostics.error(
+                    "expected tuple-like enum/struct ctor, found associated sybol".into(),
+                    path.span,
+                );
+                return None;
             }
             Resolution::Definition(id, DefinitionKind::Ctor(_, CtorKind::Fn)) => {
                 let gcx = self.gcx;

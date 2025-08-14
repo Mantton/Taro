@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::{
     check::solver::{Goal, Obligation, SolverDelegate, SolverResult},
     error::{ExpectedFound, TypeError},
@@ -258,14 +260,15 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
 
         let mut used = FxHashMap::default();
         let mut non_exisitent = vec![];
+        let mut already_bound = HashSet::new();
 
         let mut obligations = vec![];
         for field in fields {
             let ident = field.ident.symbol;
 
             let ty = match used.entry(ident) {
-                std::collections::hash_map::Entry::Occupied(_) => {
-                    // TODO: report field already bound
+                std::collections::hash_map::Entry::Occupied(pre) => {
+                    already_bound.insert((ident, field.span, *pre.get())); // ident, span, previous_span
                     self.gcx().store.common_types.error
                 }
                 std::collections::hash_map::Entry::Vacant(entry) => {
@@ -291,7 +294,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
             obligations.push(obligation);
         }
 
-        // TODO: report unmentioned fields
+        // TODO: report unmentioned fields/ non existent fields
 
         obligations
     }

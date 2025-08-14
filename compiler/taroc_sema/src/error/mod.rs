@@ -29,6 +29,7 @@ pub enum TypeError<'ctx> {
     ConformanceNotMet(Ty<'ctx>, InterfaceReference<'ctx>),
     UnknownField(Symbol, Ty<'ctx>),
     NotAStruct(Ty<'ctx>),
+    NotAFunction(Ty<'ctx>),
     TupleIndexOutOfBounds(ExpectedFound<usize>),
     NotATuple,
     UnknownMethod(Symbol, Ty<'ctx>),
@@ -116,6 +117,7 @@ impl<'ctx> TypeError<'ctx> {
                 ef.expected.format(gcx),
                 ef.found.format(gcx)
             ),
+            TypeError::NotAFunction(ty) => format!("{} is not a function", ty.format(gcx)),
         }
     }
 }

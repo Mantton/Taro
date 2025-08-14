@@ -15,15 +15,9 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         let fid = match ty.kind() {
             TyKind::Infer(InferTy::FnVar(fid)) => fid,
             TyKind::Infer(InferTy::TyVar(..)) => {
-                self.gcx().diagnostics.warn(
-                    format!("Defering Due to {}", ty.format(self.gcx())),
-                    goal.callee_span,
-                );
                 return SolverResult::Deferred;
             }
-            _ => {
-                todo!("handle non-funtion var type")
-            }
+            _ => return SolverResult::Error(TypeError::NotAFunction(ty)),
         };
 
         let data = self.icx().inner.borrow_mut().fn_variables().var_data(fid);
