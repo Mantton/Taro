@@ -375,7 +375,37 @@ impl Parser {
     fn parse_namespace(&mut self) -> R<(Identifier, DeclarationKind)> {
         self.expect(TokenKind::Namespace)?;
         let ident = self.parse_identifier()?;
-        let declarations = self.parse_decl_list(|p| p.parse_declaration())?;
+        let declarations = self.parse_decl_list(|p| {
+            let decl = p.parse_declaration()?;
+            let Some(decl) = decl else { return Ok(None) };
+
+            match decl.kind {
+                DeclarationKind::Operator(..) => {
+                    let error = SpannedMessage::new(
+                        "operator declarations are not permitted in namespace blocks".into(),
+                        decl.span,
+                    );
+                    return Err(error);
+                }
+                DeclarationKind::Variable(..) => {
+                    let error = SpannedMessage::new(
+                        "variable declarations are not permitted in namespace blocks".into(),
+                        decl.span,
+                    );
+                    return Err(error);
+                }
+                DeclarationKind::Extend(..) => {
+                    let error = SpannedMessage::new(
+                        "extension blocks are not permitted in namespace blocks".into(),
+                        decl.span,
+                    );
+                    return Err(error);
+                }
+                _ => {}
+            }
+
+            return Ok(Some(decl));
+        })?;
 
         let namespace = Namespace { declarations };
         Ok((ident, DeclarationKind::Namespace(namespace)))

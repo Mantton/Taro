@@ -3,8 +3,8 @@ use crate::{arena::alloc_binding, models::ToNameBinding};
 use std::cell::Cell;
 use taroc_error::CompileResult;
 use taroc_hir::{
-    self, Declaration, DeclarationKind, FunctionDeclarationKind, NodeID, PathTree, PathTreeNode,
-    Resolution, SymbolNamespace,
+    self, Declaration, DeclarationKind, DefinitionKind, FunctionDeclarationKind, NodeID, PathTree,
+    PathTreeNode, Resolution, SymbolNamespace,
     visitor::{self, AssocContext, HirVisitor, walk_package},
 };
 use taroc_resolve_models::{DefContextKind, Determinacy, ParentScope, PerNS};
@@ -169,13 +169,17 @@ impl<'res, 'ctx> DefinitionCollector<'res, 'ctx> {
     where
         T: ToNameBinding<'ctx>,
     {
-        // Define in File
-        self.resolver.define(
-            self.parent_scope.file,
-            identifier,
-            namespace,
-            definition.clone(),
-        );
+        // If Defining in Module, also Define in File
+        if let DefContextKind::Definition(_, DefinitionKind::Module, _) =
+            self.parent_scope.context.kind
+        {
+            self.resolver.define(
+                self.parent_scope.file,
+                identifier,
+                namespace,
+                definition.clone(),
+            );
+        }
 
         // Define in Context
         self.resolver

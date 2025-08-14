@@ -124,7 +124,7 @@ impl<'ctx> ContextInterners<'ctx> {
         return self.arenas.types.alloc_slice_copy(&args);
     }
 
-    pub fn intern<T>(&self, value: T) -> Interned<T> {
+    pub fn intern<T>(&self, value: T) -> Interned<'ctx, T> {
         let value = self.arenas.arena.alloc(value);
         Interned::new_unchecked(value)
     }

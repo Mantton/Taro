@@ -1,4 +1,3 @@
-#![feature(let_chains)]
 #![feature(if_let_guard)]
 use define::DefinitionCollector;
 use generics::GenericsCollector;

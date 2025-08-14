@@ -552,25 +552,24 @@ impl Lexer {
 
     fn multi_line_comment(&mut self) -> LR<Token> {
         let lo = self.position();
-        // iterate till the peek token is on the star and the upper token is on the closing slash
-        while self.first() != Some('*') && self.second() != Some('/') && self.has_next() {
+
+        // Scan until we see "*/" or run out of input.
+        while self.has_next() {
+            if self.first() == Some('*') && self.second() == Some('/') {
+                let hi = self.position();
+                let span = lo.to(hi, self.file);
+                self.next(); // eat '*'
+                self.next(); // eat '/'
+                return Ok(self.build_with_content_span(TokenKind::MultiLineComment, span));
+            }
             self.next();
         }
 
-        // valid match
-        if self.has_next() && self.first() == Some('*') && self.second() == Some('/') {
-            let hi = self.position();
-            let span = lo.to(hi, self.file);
-            self.next(); // eat star
-            self.next(); // eat slash
-            return Ok(self.build_with_content_span(TokenKind::MultiLineComment, span));
-        } else {
-            let message = SpannedMessage {
-                message: "unterminated multiline comment".into(),
-                span: self.position_span(),
-            };
-            return Err(message);
-        }
+        // EOF without closing "*/"
+        Err(SpannedMessage {
+            message: "unterminated multiline comment".into(),
+            span: self.position_span(),
+        })
     }
 }
 

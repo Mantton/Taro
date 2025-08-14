@@ -28,7 +28,6 @@ pub enum TypeError<'ctx> {
     NoOverloadCandidateMatch,
     ConformanceNotMet(Ty<'ctx>, InterfaceReference<'ctx>),
     UnknownField(Symbol, Ty<'ctx>),
-    NotAStruct(Ty<'ctx>),
     NotAFunction(Ty<'ctx>),
     TupleIndexOutOfBounds(ExpectedFound<usize>),
     NotATuple,
@@ -75,9 +74,6 @@ impl<'ctx> TypeError<'ctx> {
             ),
             TypeError::UnknownField(name, ty) => {
                 format!("unknown field named \"{name}\" on {}", ty.format(gcx))
-            }
-            TypeError::NotAStruct(ty) => {
-                format!("{} is not a struct", ty.format(gcx))
             }
             TypeError::TupleIndexOutOfBounds(ef) => format!(
                 "tuple index out of bounds: length is {}, index is {}",
