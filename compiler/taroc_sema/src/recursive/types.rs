@@ -1,15 +1,13 @@
-use std::cell::RefCell;
-
-use index_vec::IndexVec;
-use taroc_error::CompileResult;
-use taroc_hir::DefinitionID;
-
 use crate::{
     GlobalContext,
     normalize::assoc::normalize_ty,
     recursive::type_graph::{EdgeInfo, TypeGraph},
     ty::{AdtFieldDefinition, EnumDefinition, FieldIndex, StructDefinition, Ty, TyKind},
 };
+use index_vec::IndexVec;
+use std::cell::RefCell;
+use taroc_error::CompileResult;
+use taroc_hir::DefinitionID;
 
 pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
     Actor::run(package, context)
@@ -138,10 +136,9 @@ impl<'ctx> Actor<'ctx> {
 
     fn emit_cycle(&self, cycle: Vec<DefinitionID>) {
         let gcx = self.context;
-        println!("{}", cycle.len());
         let first_ident = gcx.ident_for(cycle[0]);
         let message = format!(
-            "'{}' cannot have a field that recursively contains it.",
+            "'{}' cannot have a field that recursively contains itself. Add some form of indirection",
             first_ident.symbol
         );
         gcx.diagnostics.error(message, first_ident.span);
