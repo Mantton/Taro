@@ -1,4 +1,5 @@
 use index_vec::IndexVec;
+use taroc_ast_ir::{BinaryOperator, UnaryOperator};
 
 pub struct Body {
     pub blocks: Blocks,
@@ -91,8 +92,17 @@ pub enum Operand {
 pub enum RValue {
     Use(Operand),
     AddressOf(Place),
-    BinaryOp(u8, Operand, Operand),
-    UnaryOp(u8, Operand),
+    BinaryOperation(BinaryOperator, Operand, Operand), // Builtin Binary Operations
+    UnaryOperation(UnaryOperator, Operand),            // BuiltIn Unary Operations
+    SizeOf(usize),
     Cast,
     Discriminant(Place),
+    AggregateInit(AggregateKind, Vec<Operand>), // creates an aggregate value like array, tuple or struct
+}
+
+pub enum AggregateKind {
+    Array,
+    Tuple,
+    Adt,
+    FatRawPointer,
 }
