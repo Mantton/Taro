@@ -3,16 +3,13 @@ use crate::ty::{
     InterfaceReference, LabeledFunctionSignature, ParamEnv, SimpleType, SpannedConstraints, Ty,
     TyKind,
 };
-use crate::utils::{
-    GenericsBuilder, convert_ast_float_ty, convert_ast_int_ty, convert_ast_uint_ty,
-};
+use crate::utils::GenericsBuilder;
 use crate::{CompilerSession, GlobalContext, TypeDatabase};
 use taroc_hir::{
     DefinitionID, DefinitionIndex, DefinitionKind, NodeID, PackageIndex, PartialResolution,
-    SelfTypeAlias,
 };
 use taroc_resolve_models::DefinitionContext;
-use taroc_span::{Identifier, Symbol};
+use taroc_span::Identifier;
 
 impl<'ctx> GlobalContext<'ctx> {
     pub fn set_session(self, session: CompilerSession) {
@@ -80,12 +77,6 @@ impl<'ctx> GlobalContext<'ctx> {
         res.clone()
     }
 
-    pub fn resolution_generics(self, id: DefinitionID) -> Option<Vec<(Symbol, DefinitionID)>> {
-        let resolutions = self.context.store.resolutions.borrow();
-        let package = resolutions.get(&id.package()).expect("package");
-        return package.generics_map.get(&id).cloned();
-    }
-
     #[track_caller]
     pub fn type_of(self, id: DefinitionID) -> Ty<'ctx> {
         let kind = self.def_kind(id);
@@ -121,8 +112,8 @@ impl<'ctx> GlobalContext<'ctx> {
     }
 
     pub fn generics_of(self, id: DefinitionID) -> &'ctx crate::ty::Generics {
-        let database = self.context.store.types.borrow();
-        let database = database.get(&id.package()).expect("package types");
+        let mut database = self.context.store.types.borrow_mut();
+        let database = database.entry(id.package()).or_default();
 
         if let Some(x) = database.def_to_generics.get(&id) {
             x
@@ -305,6 +296,7 @@ impl<'ctx> GlobalContext<'ctx> {
             TyKind::Reference(_, m) => Some(SimpleType::Reference(m)),
             TyKind::Array(..) => Some(SimpleType::Array),
             TyKind::Adt(def, ..) => Some(SimpleType::Adt(def.id)),
+            TyKind::Tuple(elems) => Some(SimpleType::Tuple(elems.len() as u16)),
             _ => None,
         }
     }
@@ -341,32 +333,23 @@ impl<'ctx> GlobalContext<'ctx> {
 
 impl<'ctx> GlobalContext<'ctx> {
     pub fn extension_key(self, id: DefinitionID) -> SimpleType {
-        match self.extension_self_alias(id) {
-            taroc_hir::SelfTypeAlias::Def(id) => self.type_of(id).to_simple_type(),
-            taroc_hir::SelfTypeAlias::Primary(k) => match k {
-                taroc_hir::PrimaryType::Int(k) => SimpleType::Int(convert_ast_int_ty(k)),
-                taroc_hir::PrimaryType::UInt(k) => SimpleType::UInt(convert_ast_uint_ty(k)),
-                taroc_hir::PrimaryType::Float(k) => SimpleType::Float(convert_ast_float_ty(k)),
-                taroc_hir::PrimaryType::String => SimpleType::String,
-                taroc_hir::PrimaryType::Bool => SimpleType::Bool,
-                taroc_hir::PrimaryType::Rune => SimpleType::Rune,
-            },
-        }
-    }
-
-    pub fn extension_self_alias(self, id: DefinitionID) -> taroc_hir::SelfTypeAlias {
-        debug_assert!(
-            self.def_kind(id) == DefinitionKind::Extension,
-            "must be extension node"
-        );
-
-        let alias = self.with_session_type_database(|db| {
-            *db.extension_ty_map
+        let ty = self.with_session_type_database(|db| {
+            *db.extension_tys
                 .get(&id)
                 .expect("extension self type mapping")
         });
 
-        alias
+        self.try_simple_type(ty).unwrap()
+    }
+
+    pub fn extension_ty(self, id: DefinitionID) -> Ty<'ctx> {
+        let ty = self.with_session_type_database(|db| {
+            *db.extension_tys
+                .get(&id)
+                .expect("extension self type mapping")
+        });
+
+        ty
     }
 
     pub fn package_root(self) -> DefinitionID {
@@ -385,16 +368,6 @@ impl<'ctx> GlobalContext<'ctx> {
 }
 
 impl<'ctx> GlobalContext<'ctx> {
-    pub fn parent_resolving_extension(self, id: DefinitionID) -> SelfTypeAlias {
-        let parent = self.parent(id);
-
-        if matches!(self.def_kind(parent), DefinitionKind::Extension) {
-            return self
-                .with_type_database(id.package(), |db| db.extension_ty_map[&parent].clone());
-        }
-
-        return SelfTypeAlias::Def(id);
-    }
     pub fn packages_at_file(self, file: taroc_span::FileID) -> Vec<PackageIndex> {
         let session_idx = self.session().index();
 

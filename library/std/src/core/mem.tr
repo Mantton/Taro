@@ -1,16 +1,8 @@
 
 
-@builtin
-public struct MutablePointer<T> {}
+public type MutablePointer<T> = *T
+public type ImmutablePointer<T> = *const T
 
 
-@builtin
-public struct ImmutablePointer<T> {}
-
-
-@builtin
-public struct MutableReference<T> {}
-
-
-@builtin
-public struct ImmutableReference<T> {}
+public type MutableReference<T> = &T
+public type ImmutableReference<T> = &const T

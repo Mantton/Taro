@@ -1,9 +1,10 @@
 use super::resolver::Resolver;
 use rustc_hash::FxHashMap;
+use std::collections::hash_map::Entry;
 use taroc_error::CompileResult;
 use taroc_hir::{
-    Declaration, DefinitionID, DefinitionKind, NodeID, PartialResolution, PatternExpressionKind,
-    PatternKind, Resolution, SelfTypeAlias, SymbolNamespace,
+    Declaration, DefinitionKind, NodeID, PartialResolution, PatternExpressionKind, PatternKind,
+    Resolution, SymbolNamespace,
     visitor::{self, AssocContext, HirVisitor},
 };
 use taroc_resolve_models::{
@@ -57,23 +58,51 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
         result
     }
 
-    fn with_generics_scope(&mut self, id: DefinitionID, work: impl FnOnce(&mut Self)) {
-        let generics = if id.is_local(self.resolver.session().package_index) {
-            self.resolver.generics_table.get(&id).cloned()
-        } else {
-            self.resolver.gcx.resolution_generics(id)
-        };
-
-        let Some(generics) = generics else {
+    fn with_generics_scope(
+        &mut self,
+        generics: &taroc_hir::Generics,
+        work: impl FnOnce(&mut Self),
+    ) {
+        let type_parameters = &generics.type_parameters;
+        let Some(type_parameters) = type_parameters else {
             work(self);
             return;
         };
 
+        let mut seen_bindings: FxHashMap<Symbol, Span> = Default::default();
+
         let mut scope = LexicalScope::new(LexicalScopeSource::Plain);
-        for (symbol, id) in generics.into_iter() {
+        for param in &type_parameters.parameters {
+            let def_id = self.resolver.def_id(param.id);
+            let name = param.identifier.symbol;
+            let entry = seen_bindings.entry(name);
+
+            match entry {
+                Entry::Occupied(_) => {
+                    // param has already been defined
+                    let msg = format!("TypeParameter '{name}' is already defined");
+                    self.resolver
+                        .gcx
+                        .diagnostics
+                        .error(msg, param.identifier.span);
+                    continue;
+                }
+                Entry::Vacant(entry) => {
+                    // mark as seen
+                    entry.insert(param.identifier.span);
+                }
+            }
+
+            self.resolver.record_resolution(
+                param.id,
+                PartialResolution::new(Resolution::Definition(
+                    def_id,
+                    DefinitionKind::TypeParameter,
+                )),
+            );
             scope.define(
-                symbol,
-                Resolution::Definition(id, DefinitionKind::TypeParameter),
+                name,
+                Resolution::Definition(def_id, DefinitionKind::TypeParameter),
             );
         }
 
@@ -228,9 +257,9 @@ impl Actor<'_, '_> {
         let def_kind = self.resolver.def_kind(def_id);
 
         match &declaration.kind {
-            taroc_hir::DeclarationKind::Function(..) => {
+            taroc_hir::DeclarationKind::Function(node) => {
                 self.with_scope(LexicalScopeSource::Definition(def_kind), |this| {
-                    this.with_generics_scope(def_id, |this| {
+                    this.with_generics_scope(&node.generics, |this| {
                         taroc_hir::visitor::walk_declaration(this, declaration);
                     });
                 });
@@ -238,9 +267,9 @@ impl Actor<'_, '_> {
             taroc_hir::DeclarationKind::Extend(extend) => {
                 self.resolve_extend(extend, declaration);
             }
-            taroc_hir::DeclarationKind::TypeAlias(..) => {
+            taroc_hir::DeclarationKind::TypeAlias(node) => {
                 self.with_scope(LexicalScopeSource::Definition(def_kind), |this| {
-                    this.with_generics_scope(def_id, |this| {
+                    this.with_generics_scope(&node.generics, |this| {
                         taroc_hir::visitor::walk_declaration(this, declaration);
                     })
                 });
@@ -263,35 +292,31 @@ impl Actor<'_, '_> {
             taroc_hir::DeclarationKind::Export(..) | taroc_hir::DeclarationKind::Import(..) => {
                 taroc_hir::visitor::walk_declaration(self, declaration)
             }
-            taroc_hir::DeclarationKind::Interface(..) => self.with_generics_scope(def_id, |this| {
-                this.with_self_alias_scope(
-                    Resolution::InterfaceSelfTypeParameter(def_id),
-                    |this| {
-                        taroc_hir::visitor::walk_declaration(this, declaration);
-                    },
-                );
-            }),
-            taroc_hir::DeclarationKind::Struct(..) => {
+            taroc_hir::DeclarationKind::Interface(node) => {
+                self.with_generics_scope(&node.generics, |this| {
+                    this.with_self_alias_scope(
+                        Resolution::InterfaceSelfTypeParameter(def_id),
+                        |this| {
+                            taroc_hir::visitor::walk_declaration(this, declaration);
+                        },
+                    );
+                })
+            }
+            taroc_hir::DeclarationKind::Struct(node) => {
                 self.with_scope(LexicalScopeSource::Definition(def_kind), |this| {
-                    this.with_generics_scope(def_id, |this| {
-                        this.with_self_alias_scope(
-                            Resolution::SelfTypeAlias(taroc_hir::SelfTypeAlias::Def(def_id)),
-                            |this| {
-                                taroc_hir::visitor::walk_declaration(this, declaration);
-                            },
-                        );
+                    this.with_generics_scope(&node.generics, |this| {
+                        this.with_self_alias_scope(Resolution::SelfTypeAlias(def_id), |this| {
+                            taroc_hir::visitor::walk_declaration(this, declaration);
+                        });
                     })
                 })
             }
-            taroc_hir::DeclarationKind::Enum(..) => {
+            taroc_hir::DeclarationKind::Enum(node) => {
                 self.with_scope(LexicalScopeSource::Definition(def_kind), |this| {
-                    this.with_generics_scope(def_id, |this| {
-                        this.with_self_alias_scope(
-                            Resolution::SelfTypeAlias(SelfTypeAlias::Def(def_id)),
-                            |this| {
-                                taroc_hir::visitor::walk_declaration(this, declaration);
-                            },
-                        );
+                    this.with_generics_scope(&node.generics, |this| {
+                        this.with_self_alias_scope(Resolution::SelfTypeAlias(def_id), |this| {
+                            taroc_hir::visitor::walk_declaration(this, declaration);
+                        });
                     })
                 })
             }
@@ -310,23 +335,23 @@ impl Actor<'_, '_> {
             taroc_hir::AssociatedDeclarationKind::Constant(_) => {
                 taroc_hir::visitor::walk_assoc_declaration(self, declaration, ctx);
             }
-            taroc_hir::AssociatedDeclarationKind::Function(..) => {
+            taroc_hir::AssociatedDeclarationKind::Function(node) => {
                 self.with_scope(LexicalScopeSource::Definition(def_kind), |this| {
-                    this.with_generics_scope(def_id, |this| {
+                    this.with_generics_scope(&node.generics, |this| {
                         taroc_hir::visitor::walk_assoc_declaration(this, declaration, ctx);
                     });
                 });
             }
-            taroc_hir::AssociatedDeclarationKind::Type(..) => {
+            taroc_hir::AssociatedDeclarationKind::Type(node) => {
                 self.with_scope(LexicalScopeSource::Definition(def_kind), |this| {
-                    this.with_generics_scope(def_id, |this| {
+                    this.with_generics_scope(&node.generics, |this| {
                         taroc_hir::visitor::walk_assoc_declaration(this, declaration, ctx);
                     })
                 });
             }
-            taroc_hir::AssociatedDeclarationKind::Operator(_, ..) => {
+            taroc_hir::AssociatedDeclarationKind::Operator(_, node) => {
                 self.with_scope(LexicalScopeSource::Definition(def_kind), |this| {
-                    this.with_generics_scope(def_id, |this| {
+                    this.with_generics_scope(&node.generics, |this| {
                         taroc_hir::visitor::walk_assoc_declaration(this, declaration, ctx);
                     })
                 });
@@ -337,33 +362,27 @@ impl Actor<'_, '_> {
         let def_id = self.resolver.def_id(declaration.id);
         let def_kind = self.resolver.def_kind(def_id);
         match &declaration.kind {
-            taroc_hir::FunctionDeclarationKind::Struct(..) => {
+            taroc_hir::FunctionDeclarationKind::Struct(node) => {
                 self.with_scope(LexicalScopeSource::Definition(def_kind), |this| {
-                    this.with_generics_scope(def_id, |this| {
-                        this.with_self_alias_scope(
-                            Resolution::SelfTypeAlias(SelfTypeAlias::Def(def_id)),
-                            |this| {
-                                taroc_hir::visitor::walk_function_declaration(this, declaration);
-                            },
-                        );
+                    this.with_generics_scope(&node.generics, |this| {
+                        this.with_self_alias_scope(Resolution::SelfTypeAlias(def_id), |this| {
+                            taroc_hir::visitor::walk_function_declaration(this, declaration);
+                        });
                     })
                 })
             }
-            taroc_hir::FunctionDeclarationKind::Enum(..) => {
+            taroc_hir::FunctionDeclarationKind::Enum(node) => {
                 self.with_scope(LexicalScopeSource::Definition(def_kind), |this| {
-                    this.with_generics_scope(def_id, |this| {
-                        this.with_self_alias_scope(
-                            Resolution::SelfTypeAlias(SelfTypeAlias::Def(def_id)),
-                            |this| {
-                                taroc_hir::visitor::walk_function_declaration(this, declaration);
-                            },
-                        );
+                    this.with_generics_scope(&node.generics, |this| {
+                        this.with_self_alias_scope(Resolution::SelfTypeAlias(def_id), |this| {
+                            taroc_hir::visitor::walk_function_declaration(this, declaration);
+                        });
                     })
                 })
             }
-            taroc_hir::FunctionDeclarationKind::Function(..) => {
+            taroc_hir::FunctionDeclarationKind::Function(node) => {
                 self.with_scope(LexicalScopeSource::Definition(def_kind), |this| {
-                    this.with_generics_scope(def_id, |this| {
+                    this.with_generics_scope(&node.generics, |this| {
                         taroc_hir::visitor::walk_function_declaration(this, declaration);
                     });
                 });
@@ -371,9 +390,9 @@ impl Actor<'_, '_> {
             taroc_hir::FunctionDeclarationKind::Constant(_) => {
                 taroc_hir::visitor::walk_function_declaration(self, declaration);
             }
-            taroc_hir::FunctionDeclarationKind::TypeAlias(..) => {
+            taroc_hir::FunctionDeclarationKind::TypeAlias(node) => {
                 self.with_scope(LexicalScopeSource::Definition(def_kind), |this| {
-                    this.with_generics_scope(def_id, |this| {
+                    this.with_generics_scope(&node.generics, |this| {
                         taroc_hir::visitor::walk_function_declaration(this, declaration);
                     })
                 });
@@ -384,16 +403,16 @@ impl Actor<'_, '_> {
         let def_id = self.resolver.def_id(declaration.id);
         let def_kind = self.resolver.def_kind(def_id);
         match &declaration.kind {
-            taroc_hir::ForeignDeclarationKind::Function(..) => {
+            taroc_hir::ForeignDeclarationKind::Function(node) => {
                 self.with_scope(LexicalScopeSource::Definition(def_kind), |this| {
-                    this.with_generics_scope(def_id, |this| {
+                    this.with_generics_scope(&node.generics, |this| {
                         taroc_hir::visitor::walk_foreign_declaration(this, declaration);
                     });
                 });
             }
-            taroc_hir::ForeignDeclarationKind::Type(..) => {
+            taroc_hir::ForeignDeclarationKind::Type(node) => {
                 self.with_scope(LexicalScopeSource::Definition(def_kind), |this| {
-                    this.with_generics_scope(def_id, |this| {
+                    this.with_generics_scope(&node.generics, |this| {
                         taroc_hir::visitor::walk_foreign_declaration(this, declaration);
                     });
                 });
@@ -418,68 +437,13 @@ impl<'res, 'ctx> Actor<'res, 'ctx> {
 
 impl<'res, 'ctx> Actor<'res, 'ctx> {
     fn resolve_extend(&mut self, node: &taroc_hir::Extend, decl: &Declaration) {
-        let target = self.resolve_extension_target(&node.ty);
-        let Some(target) = target else { return };
-        let self_res = Resolution::SelfTypeAlias(target);
-
-        match target {
-            SelfTypeAlias::Def(definition_id) => self.with_generics_scope(definition_id, |this| {
-                this.with_self_alias_scope(self_res, |this| {
-                    taroc_hir::visitor::walk_declaration(this, &decl);
-                });
-            }),
-            SelfTypeAlias::Primary(_) => {
-                self.with_self_alias_scope(self_res, |this| {
-                    taroc_hir::visitor::walk_declaration(this, &decl);
-                });
-            }
-        }
-    }
-
-    fn resolve_extension_target(&mut self, ty: &taroc_hir::Type) -> Option<SelfTypeAlias> {
-        let path = match &ty.kind {
-            taroc_hir::TypeKind::Path(path) => path,
-            _ => {
-                self.resolver
-                    .gcx
-                    .diagnostics
-                    .error("cannot extend non-nominal type".into(), ty.span);
-                return None;
-            }
-        };
-        let result = self.resolve_path_with_source(ty.id, path, PathSource::Type);
-
-        if result.unresolved_segments != 0 {
-            if !matches!(result.resolution(), Resolution::Error) {
-                self.resolver
-                    .gcx
-                    .diagnostics
-                    .error("ambiguous extension, cannot extend type".into(), ty.span);
-            } else {
-                self.resolver
-                    .gcx
-                    .diagnostics
-                    .error("cannot locate type".into(), ty.span);
-            }
-
-            return None;
-        }
-
-        let res = result.resolution();
-
-        let res = match res {
-            Resolution::PrimaryType(primary_type) => SelfTypeAlias::Primary(primary_type),
-            Resolution::Definition(definition_id, _) => SelfTypeAlias::Def(definition_id),
-            _ => {
-                self.resolver
-                    .gcx
-                    .diagnostics
-                    .error("cannot extend non-nominal type".into(), ty.span);
-                return None;
-            }
-        };
-
-        return Some(res);
+        let def_id = self.resolver.def_id(decl.id);
+        self.with_generics_scope(&node.generics, |this| {
+            let self_res = Resolution::SelfTypeAlias(def_id);
+            this.with_self_alias_scope(self_res, |this| {
+                taroc_hir::visitor::walk_declaration(this, &decl);
+            });
+        });
     }
 }
 

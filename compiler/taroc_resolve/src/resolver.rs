@@ -31,7 +31,6 @@ pub struct Resolver<'ctx> {
     pub next_index: u32,
     pub resolution_map: FxHashMap<NodeID, PartialResolution>,
     pub builin_types_bindings: FxHashMap<Symbol, NameHolder<'ctx>>,
-    pub generics_table: FxHashMap<DefinitionID, Vec<(Symbol, DefinitionID)>>,
     pub file_to_imports: FxHashMap<FileID, FxHashSet<PackageIndex>>,
 }
 
@@ -64,7 +63,6 @@ impl Resolver<'_> {
             resolved_imports: Vec::new(),
             resolution_map: Default::default(),
             next_index: 0,
-            generics_table: Default::default(),
             file_to_imports: Default::default(),
             builin_types_bindings: PrimaryType::ALL
                 .iter()
@@ -296,7 +294,6 @@ impl<'ctx> Resolver<'ctx> {
             def_to_ident: self.def_to_ident,
             def_to_parent: self.def_to_parent,
             resolution_map: self.resolution_map,
-            generics_map: self.generics_table,
             file_to_imports: self.file_to_imports,
         }
     }

@@ -83,7 +83,6 @@ impl<'ctx> Actor<'ctx> {
                             hir_ty,
                             &LoweringRequest {
                                 alias_visits: RefCell::new(vec![def_id]),
-                                context: crate::lower::LoweringContext::Default,
                             },
                         )
                     }),

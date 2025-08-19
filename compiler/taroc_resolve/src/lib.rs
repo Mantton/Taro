@@ -1,6 +1,5 @@
 #![feature(if_let_guard)]
 use define::DefinitionCollector;
-use generics::GenericsCollector;
 use resolver::Resolver;
 use tag::HirNodeTagger;
 use taroc_error::CompileResult;
@@ -10,7 +9,6 @@ mod arena;
 mod define;
 mod find;
 mod full;
-mod generics;
 mod models;
 mod resolver;
 mod tag;
@@ -23,7 +21,6 @@ pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResul
     // Collection Phase
     HirNodeTagger::run(&package, &mut r);
     DefinitionCollector::run(&package, &mut r)?; // Collect Definitions
-    GenericsCollector::run(package, &mut r)?; // Collect Generics
 
     // Resolution Phase
     UsageResolver::run(&mut r)?;

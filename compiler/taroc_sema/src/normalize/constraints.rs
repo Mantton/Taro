@@ -3,7 +3,7 @@ use crate::ty::{Constraint, InterfaceReference, SpannedConstraints, Ty};
 use crate::utils::constraint2str;
 use petgraph::unionfind::UnionFind;
 use rustc_hash::{FxHashMap, FxHashSet};
-use taroc_hir::{DefinitionID, DefinitionKind};
+use taroc_hir::DefinitionID;
 use taroc_span::Spanned;
 
 type Slot = usize;
@@ -31,15 +31,7 @@ pub fn canon_predicates_of<'ctx>(
 }
 
 fn normalize<'ctx>(id: DefinitionID, gcx: GlobalContext<'ctx>) -> SpannedConstraints<'ctx> {
-    let parent = if let DefinitionKind::Extension = gcx.def_kind(id) {
-        let alias = gcx.extension_self_alias(id);
-        match alias {
-            taroc_hir::SelfTypeAlias::Def(id) => id,
-            taroc_hir::SelfTypeAlias::Primary(_) => return vec![], // no predicates
-        }
-    } else {
-        gcx.parent(id)
-    };
+    let parent = gcx.parent(id);
 
     if id == gcx.package_root() {
         return vec![];

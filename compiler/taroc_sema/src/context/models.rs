@@ -15,9 +15,7 @@ use std::{
     marker::PhantomData,
 };
 use taroc_data_structures::Interned;
-use taroc_hir::{
-    DefinitionID, DefinitionKind, NodeID, PackageIndex, PartialResolution, SelfTypeAlias,
-};
+use taroc_hir::{DefinitionID, DefinitionKind, NodeID, PackageIndex, PartialResolution};
 use taroc_resolve_models::DefinitionContext;
 use taroc_span::{FileID, Identifier, Symbol};
 
@@ -147,7 +145,6 @@ pub struct ResolutionData<'ctx> {
     pub def_to_ident: FxHashMap<DefinitionID, Identifier>,
     pub def_to_parent: FxHashMap<DefinitionID, DefinitionID>,
     pub resolution_map: FxHashMap<NodeID, PartialResolution>,
-    pub generics_map: FxHashMap<DefinitionID, Vec<(Symbol, DefinitionID)>>,
     pub file_to_imports: FxHashMap<FileID, FxHashSet<PackageIndex>>,
 }
 
@@ -163,7 +160,7 @@ pub struct TypeDatabase<'ctx> {
     pub interfaces: FxHashMap<DefinitionID, &'ctx InterfaceDefinition<'ctx>>,
     pub functions: FxHashMap<DefinitionID, LabeledFunctionSignature<'ctx>>,
     pub def_to_fn_signature: FxHashMap<DefinitionID, &'ctx LabeledFunctionSignature<'ctx>>,
-    pub extension_ty_map: FxHashMap<DefinitionID, SelfTypeAlias>,
+    pub extension_tys: FxHashMap<DefinitionID, Ty<'ctx>>,
     pub alias_table: PackageAliasTable,
     pub node_to_ty: FxHashMap<NodeID, Ty<'ctx>>,
     pub superinterfaces: FxHashMap<DefinitionID, FxHashSet<DefinitionID>>,

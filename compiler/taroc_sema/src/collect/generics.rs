@@ -12,19 +12,16 @@ pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResul
 
 struct Actor<'ctx> {
     context: GlobalContext<'ctx>,
-    pass: u8,
 }
 
 impl<'ctx> Actor<'ctx> {
     fn new(context: GlobalContext<'ctx>) -> Actor<'ctx> {
-        Actor { context, pass: 0 }
+        Actor { context }
     }
 
     fn run(package: &taroc_hir::Package, context: GlobalContext<'ctx>) -> CompileResult<()> {
         let mut actor = Actor::new(context);
         taroc_hir::visitor::walk_package(&mut actor, package); // Collect Top Level
-        actor.pass = 1;
-        taroc_hir::visitor::walk_package(&mut actor, package); // Collect Extensions
         context.diagnostics.report()
     }
 }
@@ -33,32 +30,20 @@ impl HirVisitor for Actor<'_> {
     fn visit_declaration(&mut self, d: &taroc_hir::Declaration) -> Self::Result {
         let id = d.id;
 
-        // Intial Pass, Collect Top Level
-        if self.pass == 0 {
-            match &d.kind {
-                taroc_hir::DeclarationKind::Interface(node) => self.collect(id, &node.generics),
-                taroc_hir::DeclarationKind::Struct(node) => self.collect(id, &node.generics),
-                taroc_hir::DeclarationKind::Enum(node) => self.collect(id, &node.generics),
-                taroc_hir::DeclarationKind::Function(node) => self.collect(id, &node.generics),
-                taroc_hir::DeclarationKind::TypeAlias(node) => self.collect(id, &node.generics),
-                taroc_hir::DeclarationKind::Extend(_) => return,
-                _ => {}
-            }
-        } else {
-            // Extension Pass
-            match &d.kind {
-                taroc_hir::DeclarationKind::Extend(node) => self.collect(id, &node.generics),
-                _ => return,
-            }
+        match &d.kind {
+            taroc_hir::DeclarationKind::Interface(node) => self.collect(id, &node.generics),
+            taroc_hir::DeclarationKind::Struct(node) => self.collect(id, &node.generics),
+            taroc_hir::DeclarationKind::Enum(node) => self.collect(id, &node.generics),
+            taroc_hir::DeclarationKind::Function(node) => self.collect(id, &node.generics),
+            taroc_hir::DeclarationKind::TypeAlias(node) => self.collect(id, &node.generics),
+            taroc_hir::DeclarationKind::Extend(node) => self.collect(id, &node.generics),
+            _ => {}
         }
 
         taroc_hir::visitor::walk_declaration(self, d);
     }
 
     fn visit_function_declaration(&mut self, d: &taroc_hir::FunctionDeclaration) -> Self::Result {
-        if self.pass == 1 {
-            return;
-        }
         let id = d.id;
         match &d.kind {
             taroc_hir::FunctionDeclarationKind::Struct(node) => self.collect(id, &node.generics),
@@ -124,21 +109,6 @@ impl<'ctx> Actor<'ctx> {
         // );
         let gcx = self.context;
         let def_id = gcx.def_id(id);
-
-        // Extensions Share Generics of their Self Types
-        if let DefinitionKind::Extension = gcx.def_kind(def_id) {
-            let alias = gcx.extension_self_alias(def_id);
-            let id = match alias {
-                taroc_hir::SelfTypeAlias::Def(definition_id) => Some(definition_id),
-                taroc_hir::SelfTypeAlias::Primary(_) => None,
-            };
-
-            let Some(id) = id else { return };
-            let self_ty_generics = gcx.generics_of(id);
-
-            gcx.cache_generics(def_id, self_ty_generics.clone());
-            return;
-        }
 
         // Interfaces have implicit self type parameter
         let interface_self_type =

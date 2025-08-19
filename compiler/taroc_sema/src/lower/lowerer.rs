@@ -1,6 +1,5 @@
 use super::LoweringRequest;
 use crate::GlobalContext;
-use crate::lower::LoweringContext;
 use crate::ty::{
     AssocTyKind, Constraint, GenericArgument, GenericArguments, GenericParameterDefinition,
     InterfaceReference, SpannedConstraints, Ty, TyKind,
@@ -54,6 +53,19 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             taroc_hir::TypeKind::Infer => todo!(),
             taroc_hir::TypeKind::Function { .. } => todo!(),
             taroc_hir::TypeKind::Malformed => unreachable!(),
+            taroc_hir::TypeKind::Pointer(ty, mutab) => {
+                let target = self.lower_type(ty, request);
+                Self::mk_ty(gcx, TyKind::Pointer(target, *mutab))
+            }
+            taroc_hir::TypeKind::Reference(ty, mutab) => {
+                let target = self.lower_type(ty, request);
+                Self::mk_ty(gcx, TyKind::Reference(target, *mutab))
+            }
+            taroc_hir::TypeKind::Array(elem, _) => {
+                let target = self.lower_type(elem, request);
+                let size = 1; // TODO: Constants
+                Self::mk_ty(gcx, TyKind::Array(target, size))
+            }
         };
 
         gcx.cache_type_of_node(hir_ty.id, result_ty);
@@ -125,10 +137,13 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 // TODO: Prohibit Generics
                 gcx.store.common_types.self_type_parameter
             }
-            taroc_hir::Resolution::SelfTypeAlias(k) => match k {
-                taroc_hir::SelfTypeAlias::Def(id) => gcx.type_of(id),
-                taroc_hir::SelfTypeAlias::Primary(ty) => self.lower_primary_type(ty),
-            },
+            taroc_hir::Resolution::SelfTypeAlias(id) => {
+                if let DefinitionKind::Extension = gcx.def_kind(id) {
+                    gcx.extension_ty(id)
+                } else {
+                    gcx.type_of(id)
+                }
+            }
             taroc_hir::Resolution::SelfConstructor(..)
             | taroc_hir::Resolution::Local(..)
             | taroc_hir::Resolution::FunctionSet(..) => unreachable!(),
@@ -500,12 +515,8 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
 
                         // ---- no default ----
                         crate::ty::GenericParameterDefinitionKind::Type { default: None } => {
-                            if matches!(request.context, LoweringContext::ExtensionSelfTy) {
-                                output.push(GenericArgument::Type(gcx.mk_ty(TyKind::Placeholder)));
-                            } else {
-                                let ty = self.ty_infer(Some(param), span);
-                                output.push(GenericArgument::Type(ty));
-                            }
+                            let ty = self.ty_infer(Some(param), span);
+                            output.push(GenericArgument::Type(ty));
                         }
 
                         crate::ty::GenericParameterDefinitionKind::Const { .. } => todo!(),

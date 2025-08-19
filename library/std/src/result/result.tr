@@ -7,7 +7,7 @@ public enum Result<Value, Error> {
     case Failure(Error)
 }
 
-extend Result {
+extend<Value, Error> Result<Value, Error> {
     func isSuccess(&self) -> bool {}
     func isFailure(&self) -> bool {}
     func ok() -> Option<Value> {}

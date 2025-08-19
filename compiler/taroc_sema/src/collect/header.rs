@@ -1,9 +1,7 @@
 use crate::GlobalContext;
-use crate::ty::{AdtDef, AdtKind, GenericArguments, Ty, TyKind};
+use crate::ty::{AdtDef, AdtKind, TyKind};
 use taroc_error::CompileResult;
-use taroc_hir::{
-    DefinitionID, DefinitionKind, Mutability, attributes_contain, visitor::HirVisitor,
-};
+use taroc_hir::{DefinitionKind, attributes_contain, visitor::HirVisitor};
 use taroc_span::{Identifier, Symbol};
 
 pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
@@ -86,18 +84,9 @@ impl<'ctx> Actor<'ctx> {
         let def_id = self.context.def_id(id);
         let def_kind = self.context.def_kind(def_id);
         let arguments = self.context.type_arguments(def_id);
-        let is_std = self.context.session().config.is_std;
         // println!("Collecting Type Header for '{name}'");
 
-        let ty = if is_std && attributes_contain(attrs, Symbol::with("builtin")) {
-            if let Some(builtin) = self.check_generic_builtin(name, def_id, arguments) {
-                builtin
-            } else {
-                let message = format!("uknown builtin type {}", name);
-                self.context.diagnostics.error(message, ident.span);
-                self.context.store.common_types.error
-            }
-        } else {
+        let ty = {
             let adt_def = AdtDef {
                 name,
                 kind: if matches!(def_kind, DefinitionKind::Struct) {
@@ -130,51 +119,5 @@ impl<'ctx> Actor<'ctx> {
                 self.context.diagnostics.error(message, ident.span);
             }
         }
-    }
-
-    fn check_generic_builtin(
-        &self,
-        symbol: Symbol,
-        id: DefinitionID,
-        arguments: GenericArguments<'ctx>,
-    ) -> Option<Ty<'ctx>> {
-        let store = &self.context.store;
-        match symbol.as_str() {
-            "Array" => {
-                store.common_types.mappings.array.set(Some(id));
-                let kind = TyKind::Array(arguments[1].ty().unwrap(), 0); // TODO
-                let ty = self.context.mk_ty(kind);
-                return Some(ty);
-            }
-            "ImmutablePointer" => {
-                store.common_types.mappings.const_ptr.set(Some(id));
-                let ty = arguments.first().unwrap().ty().unwrap();
-                let kind = TyKind::Pointer(ty, Mutability::Immutable);
-                let ty = self.context.mk_ty(kind);
-                return Some(ty);
-            }
-            "MutablePointer" => {
-                store.common_types.mappings.ptr.set(Some(id));
-                let ty = arguments.first().unwrap().ty().unwrap();
-                let kind = TyKind::Pointer(ty, Mutability::Mutable);
-                let ty = self.context.mk_ty(kind);
-                return Some(ty);
-            }
-            "ImmutableReference" => {
-                store.common_types.mappings.const_ref.set(Some(id));
-                let ty = arguments.first().unwrap().ty().unwrap();
-                let kind = TyKind::Reference(ty, Mutability::Immutable);
-                let ty = self.context.mk_ty(kind);
-                return Some(ty);
-            }
-            "MutableReference" => {
-                store.common_types.mappings.mut_ref.set(Some(id));
-                let ty = arguments.first().unwrap().ty().unwrap();
-                let kind = TyKind::Reference(ty, Mutability::Mutable);
-                let ty = self.context.mk_ty(kind);
-                return Some(ty);
-            }
-            _ => return None,
-        };
     }
 }

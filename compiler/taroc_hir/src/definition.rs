@@ -145,17 +145,11 @@ pub enum Resolution {
     PrimaryType(PrimaryType),
     Definition(DefinitionID, DefinitionKind),
     InterfaceSelfTypeParameter(DefinitionID),
-    SelfTypeAlias(SelfTypeAlias),
+    SelfTypeAlias(DefinitionID),
     SelfConstructor(DefinitionID),
     Local(NodeID),
     FunctionSet(FxHashSet<DefinitionID>),
     Error,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum SelfTypeAlias {
-    Def(DefinitionID),
-    Primary(PrimaryType),
 }
 
 impl Resolution {

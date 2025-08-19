@@ -621,6 +621,16 @@ pub fn walk_type<V: HirVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
             walk_list!(visitor, visit_field_definition, fields);
         }
         TypeKind::Malformed => unreachable!(),
+        TypeKind::Pointer(ty, _) => {
+            try_visit!(visitor.visit_type(ty));
+        }
+        TypeKind::Reference(ty, _) => {
+            try_visit!(visitor.visit_type(ty));
+        }
+        TypeKind::Array(elem, _) => {
+            try_visit!(visitor.visit_type(elem));
+            // TODO: Visit Const Size Value
+        }
     }
     V::Result::output()
 }

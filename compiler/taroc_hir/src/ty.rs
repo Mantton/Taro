@@ -1,5 +1,5 @@
 use super::{NodeID, path::Path};
-use crate::{FieldDefinition, TaggedPath};
+use crate::{AnonConst, FieldDefinition, TaggedPath};
 use std::fmt::Debug;
 use taroc_span::Span;
 
@@ -12,6 +12,12 @@ pub struct Type {
 
 #[derive(Debug, Clone)]
 pub enum TypeKind {
+    /// Pointer : *T | *const T
+    Pointer(Box<Type>, Mutability),
+    /// Reference: &T | &const T
+    Reference(Box<Type>, Mutability),
+    /// Array: [T; N]
+    Array(Box<Type>, AnonConst),
     /// Tuple Type
     ///
     /// `(T, V)`

@@ -9,21 +9,21 @@ public enum Option<Value> {
     case None
 }
 
-extend Option {
+extend<Value> Option<Value> {
     public func unwrap(&self) -> Value {}
     public func isSome(&self) -> bool {}
     public func isNone(&self) -> bool {}
 }
 
-extend Option: Equatable where Value: Equatable {}
-extend Option: Clone where Value: Clone {
+extend<Value> Option<Value>: Equatable where Value: Equatable {}
+extend<Value> Option<Value>: Clone where Value: Clone {
     func clone(&const self) -> Self {}
 }
-extend Option: Hashable where Value: Hashable {
+extend<Value> Option<Value>: Hashable where Value: Hashable {
     func hash<H: Hasher>(&const self, into: &H) {}
 }
 
-extend Option: Default {
+extend<Value> Option<Value>: Default {
     func default() -> Self {
         Option::None
     }

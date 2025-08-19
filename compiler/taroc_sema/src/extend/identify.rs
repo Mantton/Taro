@@ -1,8 +1,10 @@
 use crate::GlobalContext;
+use crate::lower::{ItemCtx, LoweringRequest, TypeLowerer};
+use crate::ty::Ty;
 use rustc_hash::FxHashMap;
 use taroc_error::CompileResult;
-use taroc_hir::SelfTypeAlias;
-use taroc_hir::{DefinitionID, DefinitionKind, visitor::HirVisitor};
+use taroc_hir::DefinitionID;
+use taroc_hir::{DefinitionKind, visitor::HirVisitor};
 
 pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
     Actor::run(package, context)
@@ -11,7 +13,7 @@ pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResul
 /// Extension Binding, Maps Extension Blocks to Nominal Types
 struct Actor<'ctx> {
     context: GlobalContext<'ctx>,
-    table: FxHashMap<DefinitionID, SelfTypeAlias>,
+    table: FxHashMap<DefinitionID, Ty<'ctx>>,
 }
 
 impl<'ctx> Actor<'ctx> {
@@ -26,7 +28,7 @@ impl<'ctx> Actor<'ctx> {
         let mut actor = Actor::new(context);
         taroc_hir::visitor::walk_package(&mut actor, package);
         context.with_type_database(context.session().index(), |db| {
-            db.extension_ty_map = actor.table;
+            db.extension_tys = actor.table;
         });
         context.diagnostics.report()
     }
@@ -40,31 +42,23 @@ impl HirVisitor for Actor<'_> {
             return;
         }
 
-        //
         let node = match &declaration.kind {
             taroc_hir::DeclarationKind::Extend(node) => node,
             _ => unreachable!(),
         };
 
-        let resolution = self.context.resolution(node.ty.id);
+        let icx = ItemCtx::new(self.context);
+        let ty = icx.lowerer().lower_type(&node.ty, &LoweringRequest::new());
 
-        let Some(resolution) = resolution.full_resolution() else {
-            todo!("report assoc type extension")
+        let simple = self.context.try_simple_type(ty);
+
+        if simple.is_none() {
+            self.context.diagnostics.error(
+                format!("Cannot Extend {}", ty.format(self.context)),
+                node.ty.span,
+            );
         };
 
-        let self_ty = match resolution {
-            taroc_hir::Resolution::PrimaryType(k) => taroc_hir::SelfTypeAlias::Primary(k),
-            taroc_hir::Resolution::Definition(
-                id,
-                DefinitionKind::Struct
-                | DefinitionKind::Enum
-                | DefinitionKind::Interface
-                | DefinitionKind::TypeAlias
-                | DefinitionKind::Namespace,
-            ) => taroc_hir::SelfTypeAlias::Def(id),
-            _ => unreachable!("ICE: unextendable node"),
-        };
-
-        self.table.insert(def_id, self_ty);
+        self.table.insert(def_id, ty);
     }
 }

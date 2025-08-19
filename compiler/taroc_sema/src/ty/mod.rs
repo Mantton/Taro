@@ -182,10 +182,6 @@ pub enum InferTy {
 }
 
 pub type GenericArguments<'arena> = &'arena [GenericArgument<'arena>];
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Visibility {
-    Public,
-}
 
 #[derive(Debug, Clone)]
 pub struct Generics {
@@ -497,6 +493,7 @@ pub enum SimpleType {
     Interface(DefinitionID),
     Reference(Mutability),
     Pointer(Mutability),
+    Tuple(u16),
 }
 
 impl SimpleType {
@@ -521,6 +518,7 @@ impl SimpleType {
                 Mutability::Mutable => "*T",
             }
             .into(),
+            Tuple(size) => format!("tuple(T0...T{size}"),
         }
     }
 }

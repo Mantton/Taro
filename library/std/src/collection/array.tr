@@ -1,4 +1,3 @@
 
 
-@builtin
-public struct Array<const N: usize, Element> {}
+public type Array<const N: usize, Element> = [Element;N]

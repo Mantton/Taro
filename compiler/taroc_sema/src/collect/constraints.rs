@@ -117,10 +117,6 @@ impl<'ctx> Actor<'ctx> {
 
         let mut constraints = vec![];
 
-        if let Some(implicit) = self.collect_implicit_extension_constraint(&node.ty) {
-            constraints.extend(implicit);
-        }
-
         let explicit = self.collect_internal(def_id, &node.generics);
         constraints.extend(explicit);
         self.context.cache_def_constraints(def_id, constraints);
@@ -275,68 +271,5 @@ impl<'ctx> Actor<'ctx> {
         }
 
         return constraints;
-    }
-}
-
-impl<'ctx> Actor<'ctx> {
-    fn collect_implicit_extension_constraint(
-        &mut self,
-        ty: &taroc_hir::Type,
-    ) -> Option<Vec<Spanned<Constraint<'ctx>>>> {
-        // let icx = ItemCtx::new(self.context);
-        // get path
-        let taroc_hir::TypeKind::Path(path) = &ty.kind else {
-            return None;
-        };
-
-        // get arguments
-        let segment = path.segments.last().unwrap();
-        let Some(arguments) = &segment.arguments else {
-            return None;
-        };
-
-        // get def_id
-        let Some(def_id) = self.context.ty_to_def(self.context.type_of_node(ty.id)) else {
-            return None;
-        };
-
-        let generics = self.context.generics_of(def_id);
-        let mut constraints = vec![];
-
-        for (index, parameter) in generics.parameters.iter().enumerate() {
-            let argument = &arguments.arguments.get(index);
-            let Some(argument) = argument else {
-                break;
-            };
-
-            match (&parameter.kind, argument) {
-                (
-                    crate::ty::GenericParameterDefinitionKind::Type { .. },
-                    taroc_hir::TypeArgument::Type(ty),
-                ) => {
-                    let param_ty = self.context.type_of(parameter.id);
-                    let arg_ty = self.context.type_of_node(ty.id);
-
-                    if arg_ty == param_ty {
-                        continue;
-                    }
-
-                    let constraint = Constraint::TypeEquality(arg_ty, param_ty);
-                    constraints.push(Spanned {
-                        span: ty.span,
-                        value: constraint,
-                    });
-                }
-                (
-                    crate::ty::GenericParameterDefinitionKind::Const { .. },
-                    taroc_hir::TypeArgument::Const(_),
-                ) => todo!(),
-                _ => {
-                    unreachable!("mismatched arguments")
-                }
-            }
-        }
-
-        Some(constraints)
     }
 }

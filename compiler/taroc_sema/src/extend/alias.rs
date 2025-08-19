@@ -52,9 +52,10 @@ impl HirVisitor for Harvestor<'_> {
 }
 
 impl<'ctx> Harvestor<'ctx> {
-    fn harvest_extend(&mut self, def_id: DefinitionID, node: &taroc_hir::Extend) {
-        let target_ty = self.context.extension_key(def_id);
-
+    fn harvest_extend(&mut self, _: DefinitionID, node: &taroc_hir::Extend) {
+        let target_ty = self.context.type_of_node(node.ty.id);
+        let target_ty = self.context.try_simple_type(target_ty);
+        let Some(target_ty) = target_ty else { return };
         for declaration in &node.declarations {
             let alias = match &declaration.kind {
                 taroc_hir::AssociatedDeclarationKind::Type(node) => node,
