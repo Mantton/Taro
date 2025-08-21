@@ -128,6 +128,9 @@ fn solve<'rcx, 'gcx>(fcx: &mut FnCtx<'rcx, 'gcx>) {
     let mut errors = solver.solve(&fcx, fcx.param_env());
 
     // Defualt IntVars, FloatVars and NilVars
+    // After the initial solve pass, default any unconstrained numeric vars
+    // to concrete defaults so the next pass can propagate them.
+    fcx.icx.default_numeric_vars();
 
     // Re-Run Solver
     errors.extend(solver.solve(&fcx, fcx.param_env()));

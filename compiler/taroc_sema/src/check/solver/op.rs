@@ -8,7 +8,7 @@ use crate::{
         },
     },
     error::TypeError,
-    ty::{Constraint, Ty, TyKind},
+    ty::{Constraint, InferTy, Ty, TyKind},
 };
 use taroc_hir::{BinaryOperator, DefinitionID, OperatorKind};
 use taroc_span::{Identifier, Span};
@@ -74,7 +74,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         let gcx = self.gcx();
         let lhs = self.structurally_resolve(goal.lhs);
         let rhs = self.structurally_resolve(goal.rhs);
-        if lhs.is_infer() || rhs.is_infer() {
+        if lhs.is_infer() {
             return SolverResult::Deferred;
         }
 
@@ -95,6 +95,19 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
             }
         }
 
+        let mut obligations = vec![];
+        let is_infer = matches!(
+            rhs.kind(),
+            TyKind::Infer(InferTy::TyVar(..) | InferTy::IntVar(..) | InferTy::FloatVar(..))
+        );
+
+        if is_infer {
+            obligations.push(Obligation {
+                location: goal.span,
+                goal: Goal::Constraint(Constraint::TypeEquality(lhs, rhs)),
+            });
+        }
+
         let kind = if !goal.assigning {
             OperatorKind::from_binary(goal.operator)
         } else {
@@ -107,8 +120,11 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         }
 
         if let [candidate] = candidates.as_slice() {
-            let obligations =
-                self.select_fn_for_method(*candidate, lhs, &binary_goal_to_method_goal(goal, gcx));
+            obligations.extend(self.select_fn_for_method(
+                *candidate,
+                lhs,
+                &binary_goal_to_method_goal(goal, gcx),
+            ));
             return SolverResult::Solved(obligations);
         }
 
@@ -124,8 +140,11 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         }
 
         if let [candidate] = valid.as_slice() {
-            let obligations =
-                self.select_fn_for_method(*candidate, lhs, &binary_goal_to_method_goal(goal, gcx));
+            obligations.extend(self.select_fn_for_method(
+                *candidate,
+                lhs,
+                &binary_goal_to_method_goal(goal, gcx),
+            ));
             return SolverResult::Solved(obligations);
         }
 
@@ -161,7 +180,11 @@ fn binary_goal_to_method_goal<'ctx>(
     gcx: GlobalContext<'ctx>,
 ) -> MethodCallGoal<'ctx> {
     let arguments = gcx.store.interners.intern_slice(&[OverloadArgument {
-        ty: goal.rhs,
+        ty: if goal.rhs.is_infer() {
+            goal.lhs
+        } else {
+            goal.rhs
+        },
         span: goal.span,
         label: None,
     }]);

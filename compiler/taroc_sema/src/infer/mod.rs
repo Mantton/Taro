@@ -7,7 +7,10 @@ use crate::{
         },
         resolve::InferVarResolver,
     },
-    ty::{GenericArgument, GenericArguments, GenericParameterDefinition, InferTy, Ty, TyKind},
+    ty::{
+        FloatTy, GenericArgument, GenericArguments, GenericParameterDefinition, InferTy, IntTy, Ty,
+        TyKind,
+    },
     utils::GenericsBuilder,
 };
 use ena::{undo_log::Rollback, unify::UnificationTableStorage};
@@ -36,6 +39,49 @@ impl<'ctx> InferCtx<'ctx> {
         InferCtx {
             gcx,
             inner: RefCell::new(InferCtxInner::new()),
+        }
+    }
+}
+
+impl<'ctx> InferCtx<'ctx> {
+    /// Default any unconstrained integer/float inference variables to concrete types
+    /// so subsequent solver passes can make progress.
+    ///
+    /// - `IntVar(Unknown)` -> `Int(I32)`
+    /// - `FloatVar(Unknown)` -> `Float(F64)`
+    pub fn default_numeric_vars(&self) {
+        let mut inner = self.inner.borrow_mut();
+
+        // Default integer vars
+        let int_len = inner.int_storage.len();
+        {
+            let mut table = inner.int_unification_table();
+            for i in 0..int_len {
+                let id = IntVarID::new(i as u32);
+                let root = table.find(id);
+                match table.probe_value(root) {
+                    IntVarValue::Unknown => {
+                        table.union_value(root, IntVarValue::Signed(IntTy::I32));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Default float vars
+        let float_len = inner.float_storage.len();
+        {
+            let mut table = inner.float_unification_table();
+            for i in 0..float_len {
+                let id = FloatVarID::new(i as u32);
+                let root = table.find(id);
+                match table.probe_value(root) {
+                    FloatVarValue::Unknown => {
+                        table.union_value(root, FloatVarValue::Known(FloatTy::F64));
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 }
