@@ -197,7 +197,7 @@ impl<'ctx> Actor<'ctx> {
             generics.parameters.len()
         };
 
-        let fn_ty = labeled_signature_to_ty(signature, gcx); // TODO: Freshen
+        let fn_ty = labeled_signature_to_ty(signature, gcx);
         let mut freshener = TypeFreshener::new(gcx);
         let signature = freshener.freshen(fn_ty);
 
