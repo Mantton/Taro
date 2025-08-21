@@ -1,9 +1,10 @@
 use crate::{
     GlobalContext,
     check::context::func::FnCtx,
+    check::solver::{Goal, Obligation},
     lower::{LoweringRequest, TypeLowerer},
-    ty::Ty,
-    utils::autoderef::Autoderef,
+    ty::{GenericArgument, Ty, TyKind},
+    utils::instantiate_constraint_with_args,
 };
 use rustc_hash::FxHashSet;
 use taroc_hir::{DefinitionID, OperatorKind, Resolution};
@@ -90,13 +91,80 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             .lowerer()
             .lower_type(ast_ty, &LoweringRequest::default());
 
-        // TODO: Well Formed Obligations
+        // Add well‑formedness obligations for any instantiated generics
+        self.add_well_formed_obligations_for_type(ty, ast_ty.span);
         ty
     }
 }
 
 impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
-    pub fn autoderef(&'rcx self, span: Span, ty: Ty<'ctx>) -> Autoderef<'rcx, 'ctx> {
-        Autoderef::new(&self.icx, ty, span)
+    fn add_well_formed_obligations_for_type(&self, ty: Ty<'ctx>, location: Span) {
+        // Recurse through the type, and for any ADT or function definition
+        // with generic arguments, instantiate its canonical predicates and
+        // add them as obligations at this location.
+        self.recurse_wf(ty, location);
+    }
+
+    fn recurse_wf(&self, ty: Ty<'ctx>, location: Span) {
+        let gcx = self.gcx;
+        match ty.kind() {
+            TyKind::Adt(def, args) => {
+                // 1) Enforce the ADT’s own canonical predicates with these args
+                let preds = gcx.canon_predicates_of(def.id);
+                for sp in preds.iter() {
+                    let instantiated = instantiate_constraint_with_args(gcx, sp.value, args);
+                    self.add_obligation(Obligation {
+                        location,
+                        goal: Goal::Constraint(instantiated),
+                    });
+                }
+
+                // 2) Recurse into type arguments
+                for ga in args.iter() {
+                    if let GenericArgument::Type(arg_ty) = *ga {
+                        self.recurse_wf(arg_ty, location);
+                    }
+                }
+            }
+            TyKind::FnDef(_id, args) => {
+                // Function definitions can also have predicates; enforce them.
+                // We treat them similarly to ADTs if used as types.
+                if let Some(def_id) = gcx.ty_to_def(ty) {
+                    let preds = gcx.canon_predicates_of(def_id);
+                    for sp in preds.iter() {
+                        let instantiated = instantiate_constraint_with_args(gcx, sp.value, args);
+                        self.add_obligation(Obligation {
+                            location,
+                            goal: Goal::Constraint(instantiated),
+                        });
+                    }
+                }
+                for ga in args.iter() {
+                    if let GenericArgument::Type(arg_ty) = *ga {
+                        self.recurse_wf(arg_ty, location);
+                    }
+                }
+            }
+            TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => {
+                self.recurse_wf(inner, location);
+            }
+            TyKind::Array(elem, _) => {
+                self.recurse_wf(elem, location);
+            }
+            TyKind::Tuple(elems) => {
+                for &e in elems.iter() {
+                    self.recurse_wf(e, location);
+                }
+            }
+            TyKind::Function { inputs, output } => {
+                for &i in inputs.iter() {
+                    self.recurse_wf(i, location);
+                }
+                self.recurse_wf(output, location);
+            }
+            // Associated types, existentials, parameters, primitives, etc.:
+            // no direct well‑formed checks to add here.
+            _ => {}
+        }
     }
 }
