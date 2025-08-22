@@ -1,5 +1,11 @@
 /// Operator Support For `boolean` type
-
 extend bool {
-    public operator !(self) -> Self { self } // TODO: intrinsic
+    public operator !(self) -> Self { !self }
+
+    public operator &&(self, rhs: Self) -> Self { self && rhs }
+    public operator ||(self, rhs: Self) -> Self { self || rhs }
+
+    public operator &(self, rhs: Self) -> Self { self & rhs }
+    public operator |(self, rhs: Self) -> Self { self | rhs }
+    public operator ^(self, rhs: Self) -> Self { self ^ rhs }
 }
