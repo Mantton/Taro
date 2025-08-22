@@ -37,7 +37,6 @@ pub enum TypeError<'ctx> {
     CannotDereference(Ty<'ctx>),
     InvalidPointerEquality(Ty<'ctx>),
     CannotCast(Ty<'ctx>, Ty<'ctx>),
-    CannotMatchAgainst(Ty<'ctx>, Ty<'ctx>),
     InvalidReciever(ExpectedFound<Ty<'ctx>>),
 }
 
@@ -100,13 +99,6 @@ impl<'ctx> TypeError<'ctx> {
             }
             TypeError::CannotCast(ty, ty1) => {
                 format!("cannot cast '{}' to '{}", ty.format(gcx), ty1.format(gcx))
-            }
-            TypeError::CannotMatchAgainst(ty, ty1) => {
-                format!(
-                    "cannot match '{}' to '{}, add a supporting '~=' operator",
-                    ty.format(gcx),
-                    ty1.format(gcx)
-                )
             }
             TypeError::InvalidReciever(ef) => format!(
                 "invalid reciever, expected {}, recieved {}",
