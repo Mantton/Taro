@@ -429,8 +429,6 @@ index_vec::define_index_type! {
 
 #[derive(Debug, Clone, Copy)]
 pub enum Adjustment {
-    MutRefConstCast,        // &mut -> &
-    MutPtrConstCast,        // *mut -> *const
     BoxExistential,         // S -> any P
     OpaqueErase,            // some P -> any P
     WrapOptional,           // T -> T?

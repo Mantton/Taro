@@ -1,3 +1,4 @@
+use crate::ty::Adjustment;
 use crate::{
     check::solver::{SolverDelegate, SolverResult},
     error::{ExpectedFound, TypeError},
@@ -37,7 +38,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         }
 
         self.unify(to, from)?;
-        return Ok(CoercionOutput::Resolved(to));
+        return Ok(CoercionOutput::Resolved);
     }
 }
 
@@ -55,7 +56,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
             }
             _ => {
                 self.unify(from, to)?;
-                return Ok(CoercionOutput::Resolved(to));
+                return Ok(CoercionOutput::Resolved);
             }
         };
 
@@ -65,7 +66,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         };
 
         self.unify(from_ty, to_ty)?;
-        return Ok(CoercionOutput::Resolved(to_ty));
+        return Ok(CoercionOutput::Resolved);
     }
 }
 
@@ -89,18 +90,18 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         }
 
         self.unify(from, to)?;
-        return Ok(CoercionOutput::Resolved(to));
+        return Ok(CoercionOutput::Resolved);
     }
 }
 
-pub enum CoercionOutput<'ctx> {
+pub enum CoercionOutput {
     Defer,
-    Resolved(Ty<'ctx>),
+    Resolved,
 }
 
-pub type CoercionResult<'ctx> = Result<CoercionOutput<'ctx>, TypeError<'ctx>>;
+pub type CoercionResult<'ctx> = Result<CoercionOutput, TypeError<'ctx>>;
 
-impl<'ctx> CoercionOutput<'ctx> {
+impl<'ctx> CoercionOutput {
     pub fn requeue(self) -> bool {
         return matches!(self, CoercionOutput::Defer);
     }
@@ -148,7 +149,9 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
             });
 
             if ok {
-                // TODO: Adjustments
+                // record auto-ref adjustment
+                self.icx()
+                    .record_adjustments(location, vec![Adjustment::AutoRef]);
                 return SolverResult::Solved(vec![]);
             }
         }
@@ -165,7 +168,9 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
             });
 
             if ok {
-                // TODO: Adjustments
+                // record auto-mut-ref adjustment
+                self.icx()
+                    .record_adjustments(location, vec![Adjustment::AutoMutRef]);
                 return SolverResult::Solved(vec![]);
             }
         }
@@ -174,6 +179,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         {
             let mut autoderef = self.autoderef(location, from);
             let mut success = false;
+            let mut steps = 0usize;
             while let Some(potential_ty) = autoderef.next() {
                 success |= self.icx().probe(|_| {
                     let result = self.unify(potential_ty, to);
@@ -183,10 +189,18 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                 if success {
                     break;
                 }
+                steps += 1;
             }
 
             if success {
-                // TODO: Adjustments
+                // record auto-deref adjustments (one per deref step performed)
+                if steps > 0 {
+                    let mut v = Vec::with_capacity(steps);
+                    for _ in 0..steps {
+                        v.push(Adjustment::AutoDeref);
+                    }
+                    self.icx().record_adjustments(location, v);
+                }
                 // TODO: NoCopy Check
                 return SolverResult::Solved(vec![]);
             }

@@ -1,3 +1,4 @@
+use crate::infer::{OverloadCallKind, OverloadResolution};
 use crate::{
     GlobalContext,
     check::{
@@ -31,8 +32,12 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         }
 
         if let [candidate] = candidates.as_slice() {
-            let obligations =
-                self.select_fn_for_method(*candidate, ty, &unary_goal_to_method_goal(goal));
+            let obligations = self.select_fn_for_method(
+                *candidate,
+                ty,
+                &unary_goal_to_method_goal(goal),
+                Some(OverloadCallKind::Unary(goal.operator)),
+            );
             return SolverResult::Solved(obligations);
         }
 
@@ -44,8 +49,12 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         }
 
         if let [candidate] = valid.as_slice() {
-            let obligations =
-                self.select_fn_for_method(*candidate, ty, &unary_goal_to_method_goal(goal));
+            let obligations = self.select_fn_for_method(
+                *candidate,
+                ty,
+                &unary_goal_to_method_goal(goal),
+                Some(OverloadCallKind::Unary(goal.operator)),
+            );
             return SolverResult::Solved(obligations);
         }
 
@@ -95,6 +104,17 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
             }
         }
 
+        // Try intrinsic resolution first (e.g., u8 + u8, bool && bool)
+        if let Some(obligations) = self.solve_binary_intrinsic(&goal, lhs, rhs) {
+            // Mark as intrinsic dispatch
+            self.icx().record_overload_call(
+                goal.span,
+                OverloadCallKind::Binary(goal.operator),
+                OverloadResolution::Intrinsic,
+            );
+            return SolverResult::Solved(obligations);
+        }
+
         let mut obligations = vec![];
         let is_infer = matches!(
             rhs.kind(),
@@ -124,6 +144,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                 *candidate,
                 lhs,
                 &binary_goal_to_method_goal(goal, gcx),
+                Some(OverloadCallKind::Binary(goal.operator)),
             ));
             return SolverResult::Solved(obligations);
         }
@@ -144,6 +165,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                 *candidate,
                 lhs,
                 &binary_goal_to_method_goal(goal, gcx),
+                Some(OverloadCallKind::Binary(goal.operator)),
             ));
             return SolverResult::Solved(obligations);
         }
@@ -153,6 +175,111 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         }
 
         SolverResult::Deferred
+    }
+}
+
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
+    /// Try to resolve “intrinsic” binary operations on primitives without invoking overloads.
+    /// Returns Some(obligations) if handled intrinsically; None to fall back to overload search.
+    fn solve_binary_intrinsic(
+        &self,
+        goal: &BinaryOperatorGoal<'ctx>,
+        lhs: Ty<'ctx>,
+        rhs: Ty<'ctx>,
+    ) -> Option<Vec<Obligation<'ctx>>> {
+        use BinaryOperator::*;
+        use TyKind::*;
+
+        let gcx = self.gcx();
+
+        let mut obligations = vec![];
+
+        let numeric_same = |a: Ty<'ctx>, b: Ty<'ctx>| -> bool {
+            match (a.kind(), b.kind()) {
+                (Int(ka), Int(kb)) => ka == kb,
+                (UInt(ka), UInt(kb)) => ka == kb,
+                (Float(ka), Float(kb)) => ka == kb,
+                _ => false,
+            }
+        };
+
+        match goal.operator {
+            Add | Sub | Mul | Div | Rem => {
+                if numeric_same(lhs, rhs) {
+                    obligations.push(Obligation {
+                        location: goal.span,
+                        goal: Goal::Constraint(Constraint::TypeEquality(goal.rho, lhs)),
+                    });
+                    if let Some(exp) = goal.expectation {
+                        obligations.push(Obligation {
+                            location: goal.span,
+                            goal: Goal::Coerce {
+                                from: goal.rho,
+                                to: exp,
+                            },
+                        });
+                    }
+                    return Some(obligations);
+                }
+            }
+            BitAnd | BitOr | BitXor | BitShl | BitShr => {
+                match (lhs.kind(), rhs.kind()) {
+                    (Int(ka), Int(kb)) if ka == kb => {
+                        obligations.push(Obligation {
+                            location: goal.span,
+                            goal: Goal::Constraint(Constraint::TypeEquality(goal.rho, lhs)),
+                        });
+                        return Some(obligations);
+                    }
+                    (UInt(ka), UInt(kb)) if ka == kb => {
+                        obligations.push(Obligation {
+                            location: goal.span,
+                            goal: Goal::Constraint(Constraint::TypeEquality(goal.rho, lhs)),
+                        });
+                        return Some(obligations);
+                    }
+                    // For shifts, allow any integer width on RHS, but still exact match for LHS result
+                    (Int(_), Int(_) | UInt(_)) | (UInt(_), Int(_) | UInt(_))
+                        if matches!(goal.operator, BitShl | BitShr) =>
+                    {
+                        obligations.push(Obligation {
+                            location: goal.span,
+                            goal: Goal::Constraint(Constraint::TypeEquality(goal.rho, lhs)),
+                        });
+                        return Some(obligations);
+                    }
+                    _ => {}
+                }
+            }
+            BoolAnd | BoolOr => {
+                if matches!(lhs.kind(), Bool) && matches!(rhs.kind(), Bool) {
+                    obligations.push(Obligation {
+                        location: goal.span,
+                        goal: Goal::Constraint(Constraint::TypeEquality(
+                            goal.rho,
+                            gcx.store.common_types.bool,
+                        )),
+                    });
+                    return Some(obligations);
+                }
+            }
+            Eql | Neq | Lt | Gt | Leq | Geq => {
+                // Simple numeric comparisons: require same numeric type; result is bool.
+                if numeric_same(lhs, rhs) {
+                    obligations.push(Obligation {
+                        location: goal.span,
+                        goal: Goal::Constraint(Constraint::TypeEquality(
+                            goal.rho,
+                            gcx.store.common_types.bool,
+                        )),
+                    });
+                    return Some(obligations);
+                }
+            }
+            PtrEq => unreachable!(),
+        }
+
+        None
     }
 }
 
@@ -217,6 +344,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                 *candidate,
                 lhs,
                 &overload_goal_to_method_goal(goal, lhs),
+                Some(OverloadCallKind::Index),
             );
             return SolverResult::Solved(obligations);
         }
@@ -237,6 +365,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                 *candidate,
                 lhs,
                 &overload_goal_to_method_goal(goal, lhs),
+                Some(OverloadCallKind::Index),
             );
             return SolverResult::Solved(obligations);
         }

@@ -1,5 +1,3 @@
-use taroc_hir::{CtorKind, DefinitionKind, NodeID, Resolution};
-
 use crate::{
     check::{
         context::func::FnCtx,
@@ -11,6 +9,7 @@ use crate::{
     lower::TypeLowerer,
     ty::{Ty, TyKind, VariantDefinition},
 };
+use taroc_hir::{CtorKind, DefinitionKind, NodeID, Resolution};
 
 impl<'rcx, 'gcx> FnCtx<'rcx, 'gcx> {
     pub fn add_shape_obligation(&self, pattern: &taroc_hir::Pattern, scrutinee_ty: Ty<'gcx>) {
@@ -53,7 +52,7 @@ impl<'rcx, 'gcx> FnCtx<'rcx, 'gcx> {
                 };
 
                 let variant = match res.kind {
-                    ResolvedPatternKind::TupleStruct(_, variant) => variant,
+                    ResolvedPatternKind::TupleStruct(variant) => variant,
                     _ => unreachable!(),
                 };
 
@@ -165,7 +164,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         let ty = self.instantiate_value_path(path, res.clone());
         Some(ResolvedPattern {
             ty,
-            kind: ResolvedPatternKind::Path(res),
+            kind: ResolvedPatternKind::Path,
         })
     }
 
@@ -221,7 +220,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
 
         return Some(ResolvedPattern {
             ty,
-            kind: ResolvedPatternKind::TupleStruct(res, variant),
+            kind: ResolvedPatternKind::TupleStruct(variant),
         });
     }
 
@@ -245,7 +244,7 @@ struct ResolvedPattern<'ctx> {
 }
 
 enum ResolvedPatternKind<'ctx> {
-    Path(Resolution),
-    TupleStruct(Resolution, &'ctx VariantDefinition<'ctx>),
+    Path,
+    TupleStruct(&'ctx VariantDefinition<'ctx>),
     Struct(&'ctx VariantDefinition<'ctx>),
 }
