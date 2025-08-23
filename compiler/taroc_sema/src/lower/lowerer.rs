@@ -68,7 +68,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             }
         };
 
-        gcx.cache_type_of_node(hir_ty.id, result_ty);
+        // gcx.cache_type_of_node(hir_ty.id, result_ty); // TODO
         result_ty
     }
 

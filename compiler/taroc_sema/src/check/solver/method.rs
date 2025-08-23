@@ -12,7 +12,6 @@ use crate::{
 };
 use taroc_hir::DefinitionID;
 use taroc_span::{Identifier, Span};
-use crate::infer::{OverloadCallKind, OverloadResolution};
 
 impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     pub fn solve_method_call(&mut self, goal: MethodCallGoal<'ctx>) -> SolverResult<'ctx> {
@@ -35,12 +34,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         }
 
         if let [candidate] = candidates.as_slice() {
-            let obligations = self.select_fn_for_method(
-                *candidate,
-                recv_ty,
-                &goal,
-                Some(OverloadCallKind::Method),
-            );
+            let obligations = self.select_fn_for_method(*candidate, recv_ty, &goal);
             return SolverResult::Solved(obligations);
         }
 
@@ -52,12 +46,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         }
 
         if let [candidate] = valid.as_slice() {
-            let obligations = self.select_fn_for_method(
-                *candidate,
-                recv_ty,
-                &goal,
-                Some(OverloadCallKind::Method),
-            );
+            let obligations = self.select_fn_for_method(*candidate, recv_ty, &goal);
             return SolverResult::Solved(obligations);
         }
 
@@ -76,12 +65,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     ) -> bool {
         self.icx().probe(|_| {
             let mut ctx = SolverDelegate::new(self.icx(), self.param_env);
-            let obligations = ctx.select_fn_for_method(
-                candidate,
-                recv_ty,
-                goal,
-                Some(OverloadCallKind::Method),
-            );
+            let obligations = ctx.select_fn_for_method(candidate, recv_ty, goal);
             ctx.add_obligations(obligations);
             let result = ctx.solve_nested_goals();
             result.is_ok()
@@ -93,7 +77,6 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         candidate: DefinitionID,
         recv_ty: Ty<'ctx>,
         goal: &MethodCallGoal<'ctx>,
-        record_kind: Option<OverloadCallKind>,
     ) -> Vec<Obligation<'ctx>> {
         let mut pending = vec![];
         let gcx = self.gcx();
@@ -153,10 +136,10 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
             });
         });
 
-        if let Some(kind) = record_kind {
-            self.icx()
-                .record_overload_call(goal.call_span, kind, OverloadResolution::Member(candidate));
-        }
+        // if let Some(kind) = record_kind {
+        //     self.icx()
+        //         .record_overload_call(goal.call_span, kind, OverloadResolution::Member(candidate));
+        // }
 
         pending
     }

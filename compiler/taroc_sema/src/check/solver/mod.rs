@@ -254,7 +254,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     }
 
     #[inline]
-    pub fn autoderef(&self, span: Span, ty: Ty<'ctx>) -> Autoderef<'icx, 'ctx> {
+    pub fn autoderef(&self, span: Span, ty: Ty<'ctx>) -> Autoderef<'ctx> {
         Autoderef::new(self.icx(), ty, span)
     }
 }

@@ -148,12 +148,12 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                 result.is_ok()
             });
 
-            if ok {
-                // record auto-ref adjustment
-                self.icx()
-                    .record_adjustments(location, vec![Adjustment::AutoRef]);
-                return SolverResult::Solved(vec![]);
-            }
+            // if ok {
+            //     // record auto-ref adjustment
+            //     self.icx()
+            //         .record_adjustments(location, vec![Adjustment::AutoRef]);
+            //     return SolverResult::Solved(vec![]);
+            // }
         }
 
         // By Mut Reference
@@ -167,12 +167,12 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                 result.is_ok()
             });
 
-            if ok {
-                // record auto-mut-ref adjustment
-                self.icx()
-                    .record_adjustments(location, vec![Adjustment::AutoMutRef]);
-                return SolverResult::Solved(vec![]);
-            }
+            // if ok {
+            //     // record auto-mut-ref adjustment
+            //     self.icx()
+            //         .record_adjustments(location, vec![Adjustment::AutoMutRef]);
+            //     return SolverResult::Solved(vec![]);
+            // }
         }
 
         // By Dereferencing
@@ -199,7 +199,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                     for _ in 0..steps {
                         v.push(Adjustment::AutoDeref);
                     }
-                    self.icx().record_adjustments(location, v);
+                    // self.icx().record_adjustments(location, v);
                 }
                 // TODO: NoCopy Check
                 return SolverResult::Solved(vec![]);
