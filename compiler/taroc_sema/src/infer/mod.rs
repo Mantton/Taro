@@ -20,7 +20,7 @@ use keys::{
 };
 use snapshot::IcxEventLogs;
 use std::{cell::RefCell, rc::Rc};
-use taroc_hir::{BinaryOperator, DefinitionID, UnaryOperator};
+use taroc_hir::DefinitionID;
 use taroc_span::Span;
 
 pub mod fn_var;
@@ -274,8 +274,6 @@ pub struct InferCtxInner<'ctx> {
     float_storage: UnificationTableStorage<FloatVarID>,
     type_storage: TypeVariableStorage<'ctx>,
     fn_storage: FunctionVariableStorage<'ctx>,
-    pub overload_calls: Vec<OverloadCallRecord>,
-    pub adjustments: Vec<AdjustmentRecord>,
 }
 
 impl<'ctx> InferCtxInner<'ctx> {
@@ -286,8 +284,6 @@ impl<'ctx> InferCtxInner<'ctx> {
             float_storage: Default::default(),
             type_storage: Default::default(),
             fn_storage: Default::default(),
-            overload_calls: Default::default(),
-            adjustments: Default::default(),
         }
     }
 }
@@ -334,58 +330,30 @@ impl<'ctx> InferCtxInner<'ctx> {
     }
 }
 
-// MARK: Tracking structures and helpers
-#[derive(Debug, Clone, Copy)]
-pub enum OverloadResolution {
-    Intrinsic,
-    Member(DefinitionID),
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum OverloadCallKind {
-    Method,
-    Unary(UnaryOperator),
-    Binary(BinaryOperator),
-    Index,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct OverloadCallRecord {
-    pub span: Span,
-    pub kind: OverloadCallKind,
-    pub resolution: OverloadResolution,
-}
-
-#[derive(Debug, Clone)]
-pub struct AdjustmentRecord {
-    pub span: Span,
-    pub adjustments: Vec<crate::ty::Adjustment>,
-}
-
 impl<'ctx> InferCtx<'ctx> {
-    pub fn record_overload_call(
-        &self,
-        span: Span,
-        kind: OverloadCallKind,
-        resolution: OverloadResolution,
-    ) {
-        self.inner
-            .borrow_mut()
-            .overload_calls
-            .push(OverloadCallRecord {
-                span,
-                kind,
-                resolution,
-            });
-    }
+    // pub fn record_overload_call(
+    //     &self,
+    //     span: Span,
+    //     kind: OverloadCallKind,
+    //     resolution: OverloadResolution,
+    // ) {
+    //     self.inner
+    //         .borrow_mut()
+    //         .overload_calls
+    //         .push(OverloadCallRecord {
+    //             span,
+    //             kind,
+    //             resolution,
+    //         });
+    // }
 
-    pub fn record_adjustments(&self, span: Span, adjustments: Vec<crate::ty::Adjustment>) {
-        if adjustments.is_empty() {
-            return;
-        }
-        self.inner
-            .borrow_mut()
-            .adjustments
-            .push(AdjustmentRecord { span, adjustments });
-    }
+    // pub fn record_adjustments(&self, span: Span, adjustments: Vec<crate::ty::Adjustment>) {
+    //     if adjustments.is_empty() {
+    //         return;
+    //     }
+    //     self.inner
+    //         .borrow_mut()
+    //         .adjustments
+    //         .push(AdjustmentRecord { span, adjustments });
+    // }
 }

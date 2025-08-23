@@ -1,14 +1,12 @@
 use crate::{infer::InferCtx, ty::Ty};
 use taroc_span::Span;
 
-pub struct Autoderef<'icx, 'gcx> {
-    icx: &'icx InferCtx<'gcx>,
-    span: Span,
+pub struct Autoderef<'gcx> {
     ty: Ty<'gcx>,
     at_start: bool,
 }
 
-impl<'icx, 'gcx> Iterator for Autoderef<'icx, 'gcx> {
+impl<'gcx> Iterator for Autoderef<'gcx> {
     type Item = Ty<'gcx>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -25,11 +23,9 @@ impl<'icx, 'gcx> Iterator for Autoderef<'icx, 'gcx> {
     }
 }
 
-impl<'icx, 'gcx> Autoderef<'icx, 'gcx> {
-    pub fn new(icx: &'icx InferCtx<'gcx>, base_ty: Ty<'gcx>, span: Span) -> Self {
+impl<'gcx> Autoderef<'gcx> {
+    pub fn new(icx: &InferCtx<'gcx>, base_ty: Ty<'gcx>, _: Span) -> Self {
         Autoderef {
-            icx,
-            span,
             ty: icx.resolve_vars_if_possible(base_ty),
             at_start: true,
         }

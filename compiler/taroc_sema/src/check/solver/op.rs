@@ -1,4 +1,3 @@
-use crate::infer::{OverloadCallKind, OverloadResolution};
 use crate::{
     GlobalContext,
     check::{
@@ -32,12 +31,8 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         }
 
         if let [candidate] = candidates.as_slice() {
-            let obligations = self.select_fn_for_method(
-                *candidate,
-                ty,
-                &unary_goal_to_method_goal(goal),
-                Some(OverloadCallKind::Unary(goal.operator)),
-            );
+            let obligations =
+                self.select_fn_for_method(*candidate, ty, &unary_goal_to_method_goal(goal));
             return SolverResult::Solved(obligations);
         }
 
@@ -49,12 +44,8 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         }
 
         if let [candidate] = valid.as_slice() {
-            let obligations = self.select_fn_for_method(
-                *candidate,
-                ty,
-                &unary_goal_to_method_goal(goal),
-                Some(OverloadCallKind::Unary(goal.operator)),
-            );
+            let obligations =
+                self.select_fn_for_method(*candidate, ty, &unary_goal_to_method_goal(goal));
             return SolverResult::Solved(obligations);
         }
 
@@ -106,12 +97,6 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
 
         // Try intrinsic resolution first (e.g., u8 + u8, bool && bool)
         if let Some(obligations) = self.solve_binary_intrinsic(&goal, lhs, rhs) {
-            // Mark as intrinsic dispatch
-            self.icx().record_overload_call(
-                goal.span,
-                OverloadCallKind::Binary(goal.operator),
-                OverloadResolution::Intrinsic,
-            );
             return SolverResult::Solved(obligations);
         }
 
@@ -144,7 +129,6 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                 *candidate,
                 lhs,
                 &binary_goal_to_method_goal(goal, gcx),
-                Some(OverloadCallKind::Binary(goal.operator)),
             ));
             return SolverResult::Solved(obligations);
         }
@@ -165,7 +149,6 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                 *candidate,
                 lhs,
                 &binary_goal_to_method_goal(goal, gcx),
-                Some(OverloadCallKind::Binary(goal.operator)),
             ));
             return SolverResult::Solved(obligations);
         }
@@ -344,7 +327,6 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                 *candidate,
                 lhs,
                 &overload_goal_to_method_goal(goal, lhs),
-                Some(OverloadCallKind::Index),
             );
             return SolverResult::Solved(obligations);
         }
@@ -365,7 +347,6 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                 *candidate,
                 lhs,
                 &overload_goal_to_method_goal(goal, lhs),
-                Some(OverloadCallKind::Index),
             );
             return SolverResult::Solved(obligations);
         }

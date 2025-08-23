@@ -4,14 +4,13 @@ use crate::ty::Ty;
 pub enum Expectation<'ctx> {
     None,
     HasType(Ty<'ctx>),
-    CastableToType(Ty<'ctx>),
 }
 
 impl<'rcx, 'gcx> Expectation<'gcx> {
     pub fn to_option(self) -> Option<Ty<'gcx>> {
         match self {
             Expectation::None => None,
-            Expectation::HasType(ty) | Expectation::CastableToType(ty) => Some(ty),
+            Expectation::HasType(ty) => Some(ty),
         }
     }
 

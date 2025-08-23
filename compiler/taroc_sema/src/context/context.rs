@@ -99,18 +99,6 @@ impl<'ctx> GlobalContext<'ctx> {
         return database.def_to_ty.get(&id).cloned();
     }
 
-    #[track_caller]
-    pub fn type_of_node(self, id: NodeID) -> Ty<'ctx> {
-        let database = self.context.store.types.borrow();
-        let database = database
-            .get(&self.session().index())
-            .expect("package types");
-        return *database
-            .node_to_ty
-            .get(&id)
-            .expect("expected typeof of node");
-    }
-
     pub fn generics_of(self, id: DefinitionID) -> &'ctx crate::ty::Generics {
         let mut database = self.context.store.types.borrow_mut();
         let database = database.entry(id.package()).or_default();
@@ -153,13 +141,6 @@ impl<'ctx> GlobalContext<'ctx> {
         let package_index = id.package();
         let database = cache.entry(package_index).or_insert(Default::default());
         database.def_to_ty.insert(id, ty);
-    }
-
-    pub fn cache_type_of_node(self, id: NodeID, ty: crate::ty::Ty<'ctx>) {
-        let mut cache = self.context.store.types.borrow_mut();
-        let package_index = self.session().index();
-        let database = cache.entry(package_index).or_insert(Default::default());
-        database.node_to_ty.insert(id, ty);
     }
 
     pub fn cache_signature(self, id: DefinitionID, sig: crate::ty::LabeledFunctionSignature<'ctx>) {
