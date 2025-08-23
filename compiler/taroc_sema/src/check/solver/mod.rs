@@ -1,9 +1,6 @@
 use crate::{
     GlobalContext,
-    check::{
-        context::func::FnCtx,
-        solver::{cast::CastGoal, shape::Shape},
-    },
+    check::solver::{cast::CastGoal, shape::Shape},
     error::TypeError,
     infer::InferCtx,
     ty::{Constraint, ParamEnv, Ty},
@@ -182,7 +179,7 @@ impl<'ctx> ObligationSolver<'ctx> {
 impl<'ctx> ObligationSolver<'ctx> {
     pub fn solve(
         &mut self,
-        fcx: &FnCtx<'_, 'ctx>,
+        icx: &InferCtx<'ctx>,
         param_env: ParamEnv<'ctx>,
     ) -> Vec<Spanned<TypeError<'ctx>>> {
         if self.obligations.pending.is_empty() {
@@ -195,7 +192,7 @@ impl<'ctx> ObligationSolver<'ctx> {
             let mut progress = false;
 
             for (obligation, _) in self.obligations.drain_pending(|_| true) {
-                let mut delegate = SolverDelegate::new(fcx, param_env);
+                let mut delegate = SolverDelegate::new(icx, param_env);
                 let result = delegate.solve_root_goal(obligation.goal, obligation.location);
                 let GoalResult {
                     certainty,

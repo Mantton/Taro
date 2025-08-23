@@ -1,7 +1,6 @@
 use crate::GlobalContext;
-use crate::check::context::func::FnCtx;
-use crate::check::context::root::TyCheckRootCtx;
-use crate::check::solver::{Goal, Obligation};
+use crate::check::solver::{Goal, Obligation, ObligationSolver};
+use crate::infer::InferCtx;
 use crate::lower::TypeLowerer;
 use crate::ty::{GenericArgument, Ty, TyKind};
 use crate::utils::{instantiate_constraint_with_args, labeled_signature_to_ty};
@@ -45,16 +44,16 @@ impl HirVisitor for Actor<'_> {
             taroc_hir::DeclarationKind::TypeAlias(node) => {
                 // Ensure the aliased type itself is well-formed under alias env
                 let def_id = self.context.def_id(d.id);
-                let rcx = TyCheckRootCtx::new(self.context, def_id);
-                let mut fcx = FnCtx::new(&rcx, def_id);
+                let mut solver = ObligationSolver::new();
+                let icx = InferCtx::new(self.context);
                 if let Some(ty_node) = &node.ty {
-                    let icx = crate::lower::ItemCtx::new(self.context);
-                    let ty = icx
+                    let lcx = crate::lower::ItemCtx::new(self.context);
+                    let ty = lcx
                         .lowerer()
                         .lower_type(ty_node, &crate::lower::LoweringRequest::default());
-                    add_wf_obligations(&fcx, ty, ty_node.span);
+                    add_wf_obligations(self.context, &mut solver, ty, ty_node.span);
                 }
-                solve(&mut fcx);
+                solve(self.context, &icx, &mut solver, def_id);
             }
             _ => {}
         }
@@ -76,16 +75,16 @@ impl HirVisitor for Actor<'_> {
             taroc_hir::FunctionDeclarationKind::TypeAlias(node) => {
                 // Associated type alias
                 let def_id = self.context.def_id(d.id);
-                let rcx = TyCheckRootCtx::new(self.context, def_id);
-                let mut fcx = FnCtx::new(&rcx, def_id);
+                let mut solver = ObligationSolver::new();
+                let icx = InferCtx::new(self.context);
                 if let Some(ty_node) = &node.ty {
-                    let icx = crate::lower::ItemCtx::new(self.context);
-                    let ty = icx
+                    let lcx = crate::lower::ItemCtx::new(self.context);
+                    let ty = lcx
                         .lowerer()
                         .lower_type(ty_node, &crate::lower::LoweringRequest::default());
-                    add_wf_obligations(&fcx, ty, ty_node.span);
+                    add_wf_obligations(self.context, &mut solver, ty, ty_node.span);
                 }
-                solve(&mut fcx);
+                solve(self.context, &icx, &mut solver, def_id);
             }
             _ => {}
         }
@@ -97,15 +96,15 @@ impl HirVisitor for Actor<'_> {
 impl<'ctx> Actor<'ctx> {
     fn check_struct_or_enum(&mut self, def_id: DefinitionID) {
         let gcx = self.context;
-        let rcx = TyCheckRootCtx::new(gcx, def_id);
-        let mut fcx = FnCtx::new(&rcx, def_id);
+        let mut solver = ObligationSolver::new();
+        let icx = InferCtx::new(gcx);
 
         // Pull fields from type DB
         // Struct
         if let Some(sdef) = gcx.with_session_type_database(|db| db.structs.get(&def_id).copied()) {
             for field in sdef.variant.fields.iter() {
                 let span = gcx.ident_for(field.id).span;
-                add_wf_obligations(&fcx, field.ty, span);
+                add_wf_obligations(gcx, &mut solver, field.ty, span);
             }
         }
         // Enum
@@ -113,49 +112,57 @@ impl<'ctx> Actor<'ctx> {
             for variant in edef.variants.iter() {
                 for field in variant.fields.iter() {
                     let span = gcx.ident_for(field.id).span;
-                    add_wf_obligations(&fcx, field.ty, span);
+                    add_wf_obligations(gcx, &mut solver, field.ty, span);
                 }
             }
         }
-
-        solve(&mut fcx);
+        solve(gcx, &icx, &mut solver, def_id);
     }
 
     fn check_function_signature(&mut self, id: NodeID, f: &taroc_hir::Function) {
         let gcx = self.context;
         let def_id = gcx.def_id(id);
-        let rcx = TyCheckRootCtx::new(gcx, def_id);
-        let mut fcx = FnCtx::new(&rcx, def_id);
+        let mut solver = ObligationSolver::new();
+        let icx = InferCtx::new(gcx);
 
         // Convert signature → Ty and apply env equalities
         let sig = gcx.fn_signature(def_id);
         let sig_ty = labeled_signature_to_ty(sig, gcx);
         // Recurse WF across inputs/outputs of function type
         let span = f.signature.span;
-        add_wf_obligations(&fcx, sig_ty, span);
-        solve(&mut fcx);
+        add_wf_obligations(gcx, &mut solver, sig_ty, span);
+        solve(gcx, &icx, &mut solver, def_id);
     }
 }
 
-fn add_wf_obligations<'rcx, 'ctx>(fcx: &FnCtx<'rcx, 'ctx>, ty: Ty<'ctx>, location: Span) {
-    recurse_wf(fcx, ty, location);
+fn add_wf_obligations<'ctx>(
+    gcx: crate::GlobalContext<'ctx>,
+    solver: &mut ObligationSolver<'ctx>,
+    ty: Ty<'ctx>,
+    location: Span,
+) {
+    recurse_wf(gcx, solver, ty, location);
 }
 
-fn recurse_wf<'rcx, 'ctx>(fcx: &FnCtx<'rcx, 'ctx>, ty: Ty<'ctx>, location: Span) {
-    let gcx = fcx.gcx;
+fn recurse_wf<'ctx>(
+    gcx: crate::GlobalContext<'ctx>,
+    solver: &mut ObligationSolver<'ctx>,
+    ty: Ty<'ctx>,
+    location: Span,
+) {
     match ty.kind() {
         TyKind::Adt(def, args) => {
             let preds = gcx.canon_predicates_of(def.id);
             for sp in preds.iter() {
                 let instantiated = instantiate_constraint_with_args(gcx, sp.value, args);
-                fcx.add_obligation(Obligation {
+                solver.add_obligation(Obligation {
                     location,
                     goal: Goal::Constraint(instantiated),
                 });
             }
             for ga in args.iter() {
                 if let GenericArgument::Type(arg_ty) = *ga {
-                    recurse_wf(fcx, arg_ty, location);
+                    recurse_wf(gcx, solver, arg_ty, location);
                 }
             }
         }
@@ -164,7 +171,7 @@ fn recurse_wf<'rcx, 'ctx>(fcx: &FnCtx<'rcx, 'ctx>, ty: Ty<'ctx>, location: Span)
                 let preds = gcx.canon_predicates_of(def_id);
                 for sp in preds.iter() {
                     let instantiated = instantiate_constraint_with_args(gcx, sp.value, args);
-                    fcx.add_obligation(Obligation {
+                    solver.add_obligation(Obligation {
                         location,
                         goal: Goal::Constraint(instantiated),
                     });
@@ -172,35 +179,40 @@ fn recurse_wf<'rcx, 'ctx>(fcx: &FnCtx<'rcx, 'ctx>, ty: Ty<'ctx>, location: Span)
             }
             for ga in args.iter() {
                 if let GenericArgument::Type(arg_ty) = *ga {
-                    recurse_wf(fcx, arg_ty, location);
+                    recurse_wf(gcx, solver, arg_ty, location);
                 }
             }
         }
-        TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => recurse_wf(fcx, inner, location),
-        TyKind::Array(elem, _) => recurse_wf(fcx, elem, location),
+        TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => {
+            recurse_wf(gcx, solver, inner, location)
+        }
+        TyKind::Array(elem, _) => recurse_wf(gcx, solver, elem, location),
         TyKind::Tuple(elems) => {
             for &e in elems.iter() {
-                recurse_wf(fcx, e, location);
+                recurse_wf(gcx, solver, e, location);
             }
         }
         TyKind::Function { inputs, output } => {
             for &i in inputs.iter() {
-                recurse_wf(fcx, i, location);
+                recurse_wf(gcx, solver, i, location);
             }
-            recurse_wf(fcx, output, location);
+            recurse_wf(gcx, solver, output, location);
         }
         _ => {}
     }
 }
 
-fn solve<'rcx, 'gcx>(fcx: &mut FnCtx<'rcx, 'gcx>) {
-    let mut solver = fcx.solver.borrow_mut();
-    let mut errors = solver.solve(&fcx, fcx.param_env());
-    fcx.icx.default_numeric_vars();
-    errors.extend(solver.solve(&fcx, fcx.param_env()));
+fn solve<'ctx>(
+    gcx: crate::GlobalContext<'ctx>,
+    icx: &InferCtx<'ctx>,
+    solver: &mut ObligationSolver<'ctx>,
+    def_id: taroc_hir::DefinitionID,
+) {
+    let param_env = gcx.param_env(def_id);
+    let mut errors = solver.solve(icx, param_env);
+    icx.default_numeric_vars();
+    errors.extend(solver.solve(icx, param_env));
     for err in errors.into_iter() {
-        fcx.gcx
-            .diagnostics
-            .error(err.value.format(fcx.gcx), err.span);
+        gcx.diagnostics.error(err.value.format(gcx), err.span);
     }
 }
