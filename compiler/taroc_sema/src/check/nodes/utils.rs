@@ -93,6 +93,11 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
 
         // Add well‑formedness obligations for any instantiated generics
         self.add_well_formed_obligations_for_type(ty, ast_ty.span);
+        // Record the lowered type for this type node
+        self.results
+            .borrow_mut()
+            .node_types
+            .insert(ast_ty.id, ty);
         ty
     }
 }

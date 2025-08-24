@@ -31,6 +31,8 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         }
 
         if let [candidate] = candidates.as_slice() {
+            // Record resolved operator association
+            self.record_assoc_resolution(goal.node_id, *candidate);
             let obligations =
                 self.select_fn_for_method(*candidate, ty, &unary_goal_to_method_goal(goal));
             return SolverResult::Solved(obligations);
@@ -44,6 +46,8 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         }
 
         if let [candidate] = valid.as_slice() {
+            // Record resolved operator association
+            self.record_assoc_resolution(goal.node_id, *candidate);
             let obligations =
                 self.select_fn_for_method(*candidate, ty, &unary_goal_to_method_goal(goal));
             return SolverResult::Solved(obligations);
@@ -127,6 +131,8 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         }
 
         if let [candidate] = candidates.as_slice() {
+            // Record resolved operator association
+            self.record_assoc_resolution(goal.node_id, *candidate);
             obligations.extend(self.select_fn_for_method(
                 *candidate,
                 lhs,
@@ -147,6 +153,8 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         }
 
         if let [candidate] = valid.as_slice() {
+            // Record resolved operator association
+            self.record_assoc_resolution(goal.node_id, *candidate);
             obligations.extend(self.select_fn_for_method(
                 *candidate,
                 lhs,
@@ -329,6 +337,8 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         }
 
         if let [candidate] = candidates.as_slice() {
+            // Record resolved operator association
+            self.record_assoc_resolution(goal.expr_id, *candidate);
             let obligations = self.select_fn_for_method(
                 *candidate,
                 lhs,
@@ -349,6 +359,8 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         }
 
         if let [candidate] = valid.as_slice() {
+            // Record resolved operator association
+            self.record_assoc_resolution(goal.expr_id, *candidate);
             let obligations = self.select_fn_for_method(
                 *candidate,
                 lhs,

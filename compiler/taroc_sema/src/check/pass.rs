@@ -126,6 +126,27 @@ fn collect<'rcx, 'gcx>(fcx: &mut FnCtx<'rcx, 'gcx>, node: &taroc_hir::Block) {
 fn solve<'rcx, 'gcx>(fcx: &mut FnCtx<'rcx, 'gcx>) {
     let mut solver = fcx.solver.borrow_mut();
     let mut errors = solver.solve(&fcx, fcx.param_env());
+    // Commit adjustments from this solve pass into TypingResult
+    {
+        let adjustments = solver.take_adjustments();
+        if !adjustments.is_empty() {
+            let mut results = fcx.results.borrow_mut();
+            for (node, mut adjs) in adjustments.into_iter() {
+                results
+                    .adjustments
+                    .entry(node)
+                    .or_default()
+                    .append(&mut adjs);
+            }
+        }
+        let assoc = solver.take_assoc_resolution();
+        if !assoc.is_empty() {
+            let mut results = fcx.results.borrow_mut();
+            for (node, res) in assoc.into_iter() {
+                results.assoc_resolution.insert(node, res);
+            }
+        }
+    }
 
     // Defualt IntVars, FloatVars and NilVars
     // After the initial solve pass, default any unconstrained numeric vars
@@ -134,6 +155,29 @@ fn solve<'rcx, 'gcx>(fcx: &mut FnCtx<'rcx, 'gcx>) {
 
     // Re-Run Solver
     errors.extend(solver.solve(&fcx, fcx.param_env()));
+    // Commit adjustments from the second pass as well
+    {
+        let adjustments = solver.take_adjustments();
+        if !adjustments.is_empty() {
+            let mut results = fcx.results.borrow_mut();
+            for (node, mut adjs) in adjustments.into_iter() {
+                results
+                    .adjustments
+                    .entry(node)
+                    .or_default()
+                    .append(&mut adjs);
+            }
+        }
+        let assoc = solver.take_assoc_resolution();
+        if !assoc.is_empty() {
+            let mut results = fcx.results.borrow_mut();
+            for (node, res) in assoc.into_iter() {
+                results.assoc_resolution.insert(node, res);
+            }
+        }
+    }
+
+    // println!("{:?}", fcx.results.borrow().adjustments);
 
     // Report Errors
     for err in errors.into_iter() {

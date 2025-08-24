@@ -8,7 +8,7 @@ use crate::{
     utils::autoderef::Autoderef,
 };
 use std::{cell::RefCell, collections::VecDeque, vec};
-use taroc_hir::{BinaryOperator, Mutability, NodeID, UnaryOperator};
+use taroc_hir::{BinaryOperator, DefinitionID, Mutability, NodeID, UnaryOperator};
 use taroc_span::{Identifier, Span, Spanned};
 
 mod apply;
@@ -176,17 +176,31 @@ impl<'ctx> ObligationStore<'ctx> {
 
 pub struct ObligationSolver<'ctx> {
     obligations: ObligationStore<'ctx>,
+    adjustments: NodeMap<Vec<Adjustment>>, // collected from delegates when goals are solved
+    assoc_resolution: NodeMap<Result<DefinitionID, ()>>, // collected resolved methods/operators
 }
 
 impl<'ctx> ObligationSolver<'ctx> {
     pub fn new() -> ObligationSolver<'ctx> {
         ObligationSolver {
             obligations: Default::default(),
+            adjustments: Default::default(),
+            assoc_resolution: Default::default(),
         }
     }
 
     pub fn add_obligation(&mut self, obligation: Obligation<'ctx>) {
         self.obligations.add(obligation);
+    }
+
+    /// Consume and return all collected adjustments.
+    pub fn take_adjustments(&mut self) -> NodeMap<Vec<Adjustment>> {
+        std::mem::take(&mut self.adjustments)
+    }
+
+    /// Consume and return all collected associated resolutions.
+    pub fn take_assoc_resolution(&mut self) -> NodeMap<Result<DefinitionID, ()>> {
+        std::mem::take(&mut self.assoc_resolution)
     }
 }
 
@@ -222,7 +236,18 @@ impl<'ctx> ObligationSolver<'ctx> {
 
                 progress |= progressed;
                 match certainty {
-                    Certainty::Yes => {}
+                    Certainty::Yes => {
+                        // Merge adjustments recorded by this delegate into solver store
+                        let child_adj = delegate.take_adjustments();
+                        for (node, mut adjs) in child_adj.into_iter() {
+                            self.adjustments.entry(node).or_default().append(&mut adjs);
+                        }
+                        // Merge assoc resolutions from this delegate
+                        let child_assoc = delegate.take_assoc_resolution();
+                        for (node, res) in child_assoc.into_iter() {
+                            self.assoc_resolution.insert(node, res);
+                        }
+                    }
                     Certainty::Maybe => {
                         // deferred
                         self.obligations.add(obligation);
@@ -244,6 +269,7 @@ pub struct SolverDelegate<'icx, 'ctx> {
     param_env: ParamEnv<'ctx>,
     nested_obligations: Vec<Obligation<'ctx>>,
     adjustments: RefCell<NodeMap<Vec<Adjustment>>>,
+    assoc_resolution: RefCell<NodeMap<Result<DefinitionID, ()>>>,
 }
 
 impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
@@ -253,6 +279,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
             param_env,
             nested_obligations: vec![],
             adjustments: Default::default(),
+            assoc_resolution: Default::default(),
         }
     }
 
@@ -270,6 +297,16 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     pub fn autoderef(&self, span: Span, ty: Ty<'ctx>) -> Autoderef<'ctx> {
         Autoderef::new(self.icx(), ty, span)
     }
+
+    /// Drain and return adjustments recorded in this delegate.
+    pub fn take_adjustments(&mut self) -> NodeMap<Vec<Adjustment>> {
+        std::mem::take(&mut self.adjustments.borrow_mut())
+    }
+
+    /// Drain and return assoc resolutions recorded in this delegate.
+    pub fn take_assoc_resolution(&mut self) -> NodeMap<Result<DefinitionID, ()>> {
+        std::mem::take(&mut self.assoc_resolution.borrow_mut())
+    }
 }
 
 impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
@@ -281,6 +318,11 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         for obligation in obligations.into_iter() {
             self.add_obligation(obligation);
         }
+    }
+
+    #[inline]
+    pub fn record_assoc_resolution(&mut self, node: NodeID, def: DefinitionID) {
+        self.assoc_resolution.borrow_mut().insert(node, Ok(def));
     }
 }
 
@@ -327,6 +369,22 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
             if let Certainty::Maybe = result.certainty {
                 certainty = result.certainty;
                 break;
+            }
+
+            // Merge adjustments from the child delegate into this (parent) delegate
+            let child_adj = delegate.take_adjustments();
+            for (node, mut adjs) in child_adj.into_iter() {
+                self.adjustments
+                    .borrow_mut()
+                    .entry(node)
+                    .or_default()
+                    .append(&mut adjs);
+            }
+
+            // Merge assoc resolutions from child into this delegate
+            let child_assoc = delegate.take_assoc_resolution();
+            for (node, res) in child_assoc.into_iter() {
+                self.assoc_resolution.borrow_mut().insert(node, res);
             }
         }
 
