@@ -15,6 +15,16 @@ use taroc_span::{Identifier, Span};
 
 impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     pub fn solve_unary(&mut self, goal: UnaryOperatorGoal<'ctx>) -> SolverResult<'ctx> {
+        // Try intrinsic resolution first (e.g., -i32, ~u8, !bool)
+        let ty = self.structurally_resolve(goal.operand_ty);
+        if ty.is_infer() {
+            return SolverResult::Deferred;
+        }
+
+        if let Some(obligations) = self.solve_unary_intrinsic(&goal, ty) {
+            return SolverResult::Solved(obligations);
+        }
+
         self.solve_unary_via_operator(goal)
     }
 
@@ -72,6 +82,72 @@ fn unary_goal_to_method_goal<'ctx>(goal: UnaryOperatorGoal<'ctx>) -> MethodCallG
         label_agnostic: true,
         call_expr_id: goal.node_id,
         reciever_id: goal.rhs_id,
+    }
+}
+
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
+    /// Try to resolve “intrinsic” unary operations on primitives without invoking overloads.
+    /// Returns Some(obligations) if handled intrinsically; None to fall back to overload search.
+    fn solve_unary_intrinsic(
+        &self,
+        goal: &UnaryOperatorGoal<'ctx>,
+        operand: Ty<'ctx>,
+    ) -> Option<Vec<Obligation<'ctx>>> {
+        use crate::ty::TyKind::*;
+        use taroc_ast_ir::UnaryOperator::*;
+
+        let gcx = self.gcx();
+        let mut obligations = vec![];
+
+        match goal.operator {
+            // Numeric negation on ints, uints, and floats yields same type
+            Negate => match operand.kind() {
+                Int(_) | UInt(_) | Float(_) => {
+                    obligations.push(Obligation {
+                        location: goal.span,
+                        goal: Goal::Constraint(Constraint::TypeEquality(goal.result_var, operand)),
+                    });
+                    if let Some(exp) = goal.expectation {
+                        obligations.push(Obligation {
+                            location: goal.span,
+                            goal: Goal::Coerce {
+                                from: goal.result_var,
+                                to: exp,
+                                node: goal.node_id,
+                            },
+                        });
+                    }
+                    return Some(obligations);
+                }
+                _ => {}
+            },
+            // Bitwise not on integers yields same type
+            BitwiseNot => match operand.kind() {
+                Int(_) | UInt(_) => {
+                    obligations.push(Obligation {
+                        location: goal.span,
+                        goal: Goal::Constraint(Constraint::TypeEquality(goal.result_var, operand)),
+                    });
+                    return Some(obligations);
+                }
+                _ => {}
+            },
+            // Logical not only on bool; result is bool
+            LogicalNot => {
+                if matches!(operand.kind(), Bool) {
+                    obligations.push(Obligation {
+                        location: goal.span,
+                        goal: Goal::Constraint(Constraint::TypeEquality(
+                            goal.result_var,
+                            gcx.store.common_types.bool,
+                        )),
+                    });
+                    return Some(obligations);
+                }
+            }
+        }
+
+        None
     }
 }
 
@@ -181,28 +257,112 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         rhs: Ty<'ctx>,
     ) -> Option<Vec<Obligation<'ctx>>> {
         use BinaryOperator::*;
+        use InferTy::*;
         use TyKind::*;
 
-        let gcx = self.gcx();
-
-        let mut obligations = vec![];
-
-        let numeric_same = |a: Ty<'ctx>, b: Ty<'ctx>| -> bool {
+        let is_same_int = |a: Ty<'ctx>, b: Ty<'ctx>| -> bool {
             match (a.kind(), b.kind()) {
                 (Int(ka), Int(kb)) => ka == kb,
                 (UInt(ka), UInt(kb)) => ka == kb,
-                (Float(ka), Float(kb)) => ka == kb,
                 _ => false,
             }
         };
+        let is_same_float = |a: Ty<'ctx>, b: Ty<'ctx>| -> bool {
+            matches!((a.kind(), b.kind()), (Float(ka), Float(kb)) if ka == kb)
+        };
+
+        let push_rho_eq = |obligations: &mut Vec<_>, ty: Ty<'ctx>| {
+            obligations.push(Obligation {
+                location: goal.span,
+                goal: Goal::Constraint(Constraint::TypeEquality(goal.rho, ty)),
+            });
+        };
+
+        let maybe_defer_literal_fit = |obligations: &mut Vec<_>, ty: Ty<'ctx>| {
+            // TODO: range check for numeric literals (u8: 300 is error, etc.)
+            // obligations.push(Obligation {
+            //     location: goal.span,
+            //     goal: Goal::LiteralFits {
+            //         node: goal.node_id,
+            //         ty,
+            //     },
+            // });
+        };
+
+        // ------ Helper that eagerly unifies inference vars for numeric binops ------
+        let unify_numeric_binop =
+            |obligations: &mut Vec<_>, lhs: Ty<'ctx>, rhs: Ty<'ctx>| -> Option<()> {
+                match (lhs.kind(), rhs.kind()) {
+                    // Concrete ⨉ IntVar  ⇒ bind IntVar to concrete, result = concrete
+                    (Int(_) | UInt(_), Infer(IntVar(_))) => {
+                        obligations.push(Obligation {
+                            location: goal.span,
+                            goal: Goal::Constraint(Constraint::TypeEquality(rhs, lhs)),
+                        });
+                        push_rho_eq(obligations, lhs);
+                        maybe_defer_literal_fit(obligations, lhs);
+                        Some(())
+                    }
+                    (Float(_), Infer(FloatVar(_))) => {
+                        obligations.push(Obligation {
+                            location: goal.span,
+                            goal: Goal::Constraint(Constraint::TypeEquality(rhs, lhs)),
+                        });
+                        push_rho_eq(obligations, lhs);
+                        maybe_defer_literal_fit(obligations, lhs);
+                        Some(())
+                    }
+
+                    // IntVar ⨉ concrete ⇒ bind IntVar to concrete, result = concrete
+                    (Infer(IntVar(_)), Int(_) | UInt(_)) => {
+                        obligations.push(Obligation {
+                            location: goal.span,
+                            goal: Goal::Constraint(Constraint::TypeEquality(lhs, rhs)),
+                        });
+                        push_rho_eq(obligations, rhs);
+                        maybe_defer_literal_fit(obligations, rhs);
+                        Some(())
+                    }
+                    (Infer(FloatVar(_)), Float(_)) => {
+                        obligations.push(Obligation {
+                            location: goal.span,
+                            goal: Goal::Constraint(Constraint::TypeEquality(lhs, rhs)),
+                        });
+                        push_rho_eq(obligations, rhs);
+                        maybe_defer_literal_fit(obligations, rhs);
+                        Some(())
+                    }
+
+                    // Both sides inference of the *same* numeric kind ⇒ tie them together; result is that var
+                    (Infer(IntVar(_)), Infer(IntVar(_))) => {
+                        obligations.push(Obligation {
+                            location: goal.span,
+                            goal: Goal::Constraint(Constraint::TypeEquality(lhs, rhs)),
+                        });
+                        push_rho_eq(obligations, lhs);
+                        Some(())
+                    }
+                    (Infer(FloatVar(_)), Infer(FloatVar(_))) => {
+                        obligations.push(Obligation {
+                            location: goal.span,
+                            goal: Goal::Constraint(Constraint::TypeEquality(lhs, rhs)),
+                        });
+                        push_rho_eq(obligations, lhs);
+                        Some(())
+                    }
+
+                    _ => None,
+                }
+            };
+
+        let gcx = self.gcx();
+        let mut obligations = vec![];
 
         match goal.operator {
             Add | Sub | Mul | Div | Rem => {
-                if numeric_same(lhs, rhs) {
-                    obligations.push(Obligation {
-                        location: goal.span,
-                        goal: Goal::Constraint(Constraint::TypeEquality(goal.rho, lhs)),
-                    });
+                // Fast path: both sides already same concrete numeric type
+                if is_same_int(lhs, rhs) || is_same_float(lhs, rhs) {
+                    push_rho_eq(&mut obligations, lhs);
                     if let Some(exp) = goal.expectation {
                         obligations.push(Obligation {
                             location: goal.span,
@@ -215,36 +375,69 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                     }
                     return Some(obligations);
                 }
+
+                // Eagerly unify inference vars with the concrete side (or with each other)
+                if unify_numeric_binop(&mut obligations, lhs, rhs).is_some() {
+                    if let Some(exp) = goal.expectation {
+                        obligations.push(Obligation {
+                            location: goal.span,
+                            goal: Goal::Coerce {
+                                from: goal.rho,
+                                to: exp,
+                                node: goal.node_id,
+                            },
+                        });
+                    }
+                    return Some(obligations);
+                }
+
+                // Mixed int/float or non-numeric ⇒ not intrinsic
             }
+
+            // -------- Bitwise & | ^ and Shifts << >> --------
             BitAnd | BitOr | BitXor | BitShl | BitShr => {
-                match (lhs.kind(), rhs.kind()) {
-                    (Int(ka), Int(kb)) if ka == kb => {
-                        obligations.push(Obligation {
-                            location: goal.span,
-                            goal: Goal::Constraint(Constraint::TypeEquality(goal.rho, lhs)),
-                        });
+                // Allow boolean bitwise (&, |, ^) → bool
+                if matches!(goal.operator, BitAnd | BitOr | BitXor)
+                    && matches!((lhs.kind(), rhs.kind()), (Bool, Bool))
+                {
+                    obligations.push(Obligation {
+                        location: goal.span,
+                        goal: Goal::Constraint(Constraint::TypeEquality(
+                            goal.rho,
+                            gcx.store.common_types.bool,
+                        )),
+                    });
+                    return Some(obligations);
+                }
+
+                // Non-shift bitwise: integers, same type after inference; eagerly bind if needed
+                if matches!(goal.operator, BitAnd | BitOr | BitXor) {
+                    if is_same_int(lhs, rhs) {
+                        push_rho_eq(&mut obligations, lhs);
                         return Some(obligations);
                     }
-                    (UInt(ka), UInt(kb)) if ka == kb => {
-                        obligations.push(Obligation {
-                            location: goal.span,
-                            goal: Goal::Constraint(Constraint::TypeEquality(goal.rho, lhs)),
-                        });
+                    if unify_numeric_binop(&mut obligations, lhs, rhs).is_some() {
                         return Some(obligations);
                     }
-                    // For shifts, allow any integer width on RHS, but still exact match for LHS result
-                    (Int(_), Int(_) | UInt(_)) | (UInt(_), Int(_) | UInt(_))
-                        if matches!(goal.operator, BitShl | BitShr) =>
-                    {
-                        obligations.push(Obligation {
-                            location: goal.span,
-                            goal: Goal::Constraint(Constraint::TypeEquality(goal.rho, lhs)),
-                        });
-                        return Some(obligations);
+                    // else: not intrinsic
+                } else {
+                    // Shifts: LHS must be integer; RHS can be any integer type/var; result = LHS
+                    match (lhs.kind(), rhs.kind()) {
+                        // Concrete LHS integer; any RHS integer kind (incl. IntVar) is OK
+                        (Int(_) | UInt(_), Int(_) | UInt(_) | Infer(IntVar(_))) => {
+                            push_rho_eq(&mut obligations, lhs);
+                            return Some(obligations);
+                        }
+                        // LHS is IntVar ⇒ say “it’s an integer”; RHS must also be integer-ish
+                        (Infer(IntVar(_)), Int(_) | UInt(_) | Infer(IntVar(_))) => {
+                            push_rho_eq(&mut obligations, lhs);
+                            return Some(obligations);
+                        }
+                        _ => { /* not intrinsic */ }
                     }
-                    _ => {}
                 }
             }
+            // -------- Lazy boolean ops (not overloadable) --------
             BoolAnd | BoolOr => {
                 if matches!(lhs.kind(), Bool) && matches!(rhs.kind(), Bool) {
                     obligations.push(Obligation {
@@ -257,9 +450,11 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                     return Some(obligations);
                 }
             }
+
+            // -------- Comparisons (result is bool) --------
             Eql | Neq | Lt | Gt | Leq | Geq => {
-                // Simple numeric comparisons: require same numeric type; result is bool.
-                if numeric_same(lhs, rhs) {
+                // Simple: same numeric type
+                if is_same_int(lhs, rhs) || is_same_float(lhs, rhs) {
                     obligations.push(Obligation {
                         location: goal.span,
                         goal: Goal::Constraint(Constraint::TypeEquality(
@@ -269,8 +464,101 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                     });
                     return Some(obligations);
                 }
+                // Eagerly bind inference vars to the concrete side (or to each other)
+                match (lhs.kind(), rhs.kind()) {
+                    // Concrete bool <op> bool  → result: bool
+                    (Bool, Bool) if matches!(goal.operator, Eql | Neq) => {
+                        obligations.push(Obligation {
+                            location: goal.span,
+                            goal: Goal::Constraint(Constraint::TypeEquality(
+                                goal.rho,
+                                gcx.store.common_types.bool,
+                            )),
+                        });
+                        return Some(obligations);
+                    }
+                    (Int(_) | UInt(_), Infer(IntVar(_))) | (Infer(IntVar(_)), Int(_) | UInt(_)) => {
+                        obligations.push(Obligation {
+                            location: goal.span,
+                            goal: Goal::Constraint(Constraint::TypeEquality(lhs, rhs)),
+                        });
+                        obligations.push(Obligation {
+                            location: goal.span,
+                            goal: Goal::Constraint(Constraint::TypeEquality(
+                                goal.rho,
+                                gcx.store.common_types.bool,
+                            )),
+                        });
+                        return Some(obligations);
+                    }
+                    (Float(_), Infer(FloatVar(_))) | (Infer(FloatVar(_)), Float(_)) => {
+                        obligations.push(Obligation {
+                            location: goal.span,
+                            goal: Goal::Constraint(Constraint::TypeEquality(lhs, rhs)),
+                        });
+                        obligations.push(Obligation {
+                            location: goal.span,
+                            goal: Goal::Constraint(Constraint::TypeEquality(
+                                goal.rho,
+                                gcx.store.common_types.bool,
+                            )),
+                        });
+                        return Some(obligations);
+                    }
+                    (Infer(IntVar(_)), Infer(IntVar(_))) => {
+                        obligations.push(Obligation {
+                            location: goal.span,
+                            goal: Goal::Constraint(Constraint::TypeEquality(lhs, rhs)),
+                        });
+
+                        obligations.push(Obligation {
+                            location: goal.span,
+                            goal: Goal::Constraint(Constraint::TypeEquality(
+                                goal.rho,
+                                gcx.store.common_types.bool,
+                            )),
+                        });
+                        return Some(obligations);
+                    }
+                    (Infer(FloatVar(_)), Infer(FloatVar(_))) => {
+                        obligations.push(Obligation {
+                            location: goal.span,
+                            goal: Goal::Constraint(Constraint::TypeEquality(lhs, rhs)),
+                        });
+
+                        obligations.push(Obligation {
+                            location: goal.span,
+                            goal: Goal::Constraint(Constraint::TypeEquality(
+                                goal.rho,
+                                gcx.store.common_types.bool,
+                            )),
+                        });
+                        return Some(obligations);
+                    }
+                    _ => { /* not intrinsic */ }
+                }
             }
             PtrEq => unreachable!(),
+        }
+
+        let numeric_same = |a: Ty<'ctx>, b: Ty<'ctx>| -> bool {
+            match (a.kind(), b.kind()) {
+                (Int(ka), Int(kb)) => ka == kb,
+                (UInt(ka), UInt(kb)) => ka == kb,
+                (Float(ka), Float(kb)) => ka == kb,
+                _ => false,
+            }
+        };
+
+        if numeric_same(lhs, rhs) {
+            obligations.push(Obligation {
+                location: goal.span,
+                goal: Goal::Constraint(Constraint::TypeEquality(
+                    goal.rho,
+                    gcx.store.common_types.bool,
+                )),
+            });
+            return Some(obligations);
         }
 
         None

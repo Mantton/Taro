@@ -13,7 +13,7 @@ mod models;
 mod normalize;
 pub mod passes;
 mod recursive;
-mod ty;
+pub mod ty;
 pub mod typing;
 mod utils;
 

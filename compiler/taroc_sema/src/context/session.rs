@@ -1,5 +1,4 @@
 use std::rc::Rc;
-
 use taroc_hir::PackageIndex;
 use taroc_package::CompilerConfig;
 
