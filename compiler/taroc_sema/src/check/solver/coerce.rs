@@ -1,4 +1,4 @@
-use crate::ty::Adjustment;
+use crate::ty::{Adjustment, AdjustmentKind};
 use crate::{
     check::solver::{SolverDelegate, SolverResult},
     error::{ExpectedFound, TypeError},
@@ -155,7 +155,10 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                     .borrow_mut()
                     .entry(node)
                     .or_default()
-                    .push(Adjustment::AutoRef);
+                    .push(Adjustment {
+                        target: potential_ty,
+                        kind: AdjustmentKind::AutoRef,
+                    });
                 return SolverResult::Solved(vec![]);
             }
         }
@@ -177,7 +180,10 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                     .borrow_mut()
                     .entry(node)
                     .or_default()
-                    .push(Adjustment::AutoMutRef);
+                    .push(Adjustment {
+                        target: potential_ty,
+                        kind: AdjustmentKind::AutoMutRef,
+                    });
                 return SolverResult::Solved(vec![]);
             }
         }
@@ -207,7 +213,10 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                             .borrow_mut()
                             .entry(node)
                             .or_default()
-                            .push(Adjustment::AutoDeref);
+                            .push(Adjustment {
+                                target: autoderef.final_ty(),
+                                kind: AdjustmentKind::AutoDeref,
+                            });
                     }
                 }
                 // TODO: NoCopy Check

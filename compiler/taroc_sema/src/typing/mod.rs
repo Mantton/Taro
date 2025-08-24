@@ -1,9 +1,9 @@
 use crate::{
     GlobalContext,
-    ty::{Adjustment, Ty},
+    ty::{Adjustment, FieldIndex, Ty},
 };
 use rustc_hash::FxHashMap;
-use taroc_hir::{DefinitionID, DefinitionKind, NodeID};
+use taroc_hir::{DefinitionID, DefinitionKind, NodeID, Resolution};
 
 pub type NodeMap<T> = FxHashMap<NodeID, T>;
 
@@ -12,14 +12,15 @@ pub struct TypingResult<'ctx> {
     // Resolved Definitions of Associated Types, Method Calls and Overloaded Operators
     pub assoc_resolution: NodeMap<Result<(DefinitionID, DefinitionKind), ()>>,
     // expression adjustments
-    pub adjustments: NodeMap<Vec<Adjustment>>,
+    pub adjustments: NodeMap<Vec<Adjustment<'ctx>>>,
     // expression node types
     pub node_types: NodeMap<Ty<'ctx>>,
+    pub filed_indices: NodeMap<FieldIndex>,
 }
 
 impl<'ctx> TypingResult<'ctx> {
     pub fn type_of(&self, node: NodeID) -> Ty<'ctx> {
-        self.node_types[&node]
+        *self.node_types.get(&node).expect("type_of node")
     }
 
     pub fn path_resolution(
@@ -33,7 +34,11 @@ impl<'ctx> TypingResult<'ctx> {
         if let Some(resolution) = partial.full_resolution() {
             resolution
         } else {
-            todo!()
+            self.assoc_resolution
+                .get(&id)
+                .cloned()
+                .and_then(|r| r.ok())
+                .map_or(Resolution::Error, |v| Resolution::Definition(v.0, v.1))
         }
     }
 
@@ -49,5 +54,9 @@ impl<'ctx> TypingResult<'ctx> {
                 DefinitionKind::AssociatedFunction | DefinitionKind::AssociatedOperator
             )))
         )
+    }
+
+    pub fn field_index(&self, id: NodeID) -> FieldIndex {
+        *self.filed_indices.get(&id).expect("field index")
     }
 }

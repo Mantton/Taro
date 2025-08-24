@@ -542,7 +542,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
 
                 self.next_fn_var(path.span, data)
             }
-            _ => self.instantiate_value_path(path, resolution),
+            _ => self.instantiate_value_path(expression.id, path, resolution),
         };
 
         ty
@@ -598,6 +598,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
 
     pub fn instantiate_value_path(
         &self,
+        id: taroc_hir::NodeID,
         path: &taroc_hir::Path,
         resolution: taroc_hir::Resolution,
     ) -> Ty<'ctx> {
@@ -612,6 +613,11 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         };
 
         let def_id = resolution.def_id().unwrap();
+        self.rcx
+            .results
+            .borrow_mut()
+            .assoc_resolution
+            .insert(id, Ok((def_id, self.gcx.def_kind(def_id))));
 
         let ty = self.gcx.type_of(def_id);
 
@@ -785,6 +791,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             field: segment.identifier,
             result_var,
             field_span: segment.span,
+            expr_id: expression.id,
         };
 
         self.add_obligation(Obligation {

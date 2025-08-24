@@ -149,6 +149,13 @@ fn solve<'rcx, 'gcx>(fcx: &mut FnCtx<'rcx, 'gcx>) {
                 results.assoc_resolution.insert(node, res);
             }
         }
+        let fields = solver.take_field_indices();
+        if !fields.is_empty() {
+            let mut results = fcx.results.borrow_mut();
+            for (node, idx) in fields.into_iter() {
+                results.filed_indices.insert(node, idx);
+            }
+        }
     }
 
     // Defualt IntVars, FloatVars and NilVars
@@ -176,6 +183,13 @@ fn solve<'rcx, 'gcx>(fcx: &mut FnCtx<'rcx, 'gcx>) {
             let mut results = fcx.results.borrow_mut();
             for (node, res) in assoc.into_iter() {
                 results.assoc_resolution.insert(node, res);
+            }
+        }
+        let fields = solver.take_field_indices();
+        if !fields.is_empty() {
+            let mut results = fcx.results.borrow_mut();
+            for (node, idx) in fields.into_iter() {
+                results.filed_indices.insert(node, idx);
             }
         }
     }

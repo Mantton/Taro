@@ -3,7 +3,7 @@ use crate::{
         FieldAccessGoal, Goal, Obligation, SolverDelegate, SolverResult, TupleAccessGoal,
     },
     error::TypeError,
-    ty::{Adjustment, AdtKind, Constraint, TyKind},
+    ty::{Adjustment, AdjustmentKind, AdtKind, Constraint, TyKind},
     utils::instantiate_ty_with_args,
 };
 
@@ -23,11 +23,11 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                     let def = self
                         .gcx()
                         .with_session_type_database(|db| db.structs[&def.id]);
-                    let result = if let Some(field) = def
+                    let result = if let Some((index, field)) = def
                         .variant
                         .fields
-                        .iter()
-                        .find(|f| f.name == goal.field.symbol)
+                        .iter_enumerated()
+                        .find(|(_, f)| f.name == goal.field.symbol)
                     {
                         let field_ty = instantiate_ty_with_args(self.gcx(), field.ty, args);
                         let obligation = Obligation {
@@ -44,10 +44,14 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                                     .borrow_mut()
                                     .entry(goal.base_id)
                                     .or_default()
-                                    .push(Adjustment::AutoDeref);
+                                    .push(Adjustment {
+                                        target: dereferenced_ty,
+                                        kind: AdjustmentKind::AutoDeref,
+                                    });
                             }
                         }
-                        // Field Index
+                        // Record Field Index on this field access expression
+                        self.record_field_index(goal.expr_id, index);
                         SolverResult::Solved(vec![obligation])
                     } else {
                         SolverResult::Error(TypeError::UnknownField(

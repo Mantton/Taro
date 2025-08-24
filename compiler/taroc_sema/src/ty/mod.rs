@@ -428,7 +428,13 @@ index_vec::define_index_type! {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum Adjustment {
+pub struct Adjustment<'ctx> {
+    pub target: Ty<'ctx>,
+    pub kind: AdjustmentKind,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum AdjustmentKind {
     BoxExistential,         // S -> any P
     OpaqueErase,            // some P -> any P
     WrapOptional,           // T -> T?

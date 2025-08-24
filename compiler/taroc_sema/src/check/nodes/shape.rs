@@ -168,7 +168,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             }
         }
 
-        let ty = self.instantiate_value_path(path, res.clone());
+        let ty = self.instantiate_value_path(id, path, res.clone());
         Some(ResolvedPattern {
             ty,
             kind: ResolvedPatternKind::Path,
@@ -185,7 +185,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             return None;
         };
 
-        let ty = self.instantiate_value_path(path, res.clone());
+        let ty = self.instantiate_value_path(id, path, res.clone());
 
         if !ty.is_fn() {
             todo!()
