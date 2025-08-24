@@ -1,15 +1,53 @@
-use crate::ty::{Adjustment, Ty};
+use crate::{
+    GlobalContext,
+    ty::{Adjustment, Ty},
+};
 use rustc_hash::FxHashMap;
-use taroc_hir::{DefinitionID, NodeID};
+use taroc_hir::{DefinitionID, DefinitionKind, NodeID};
 
 pub type NodeMap<T> = FxHashMap<NodeID, T>;
 
 #[derive(Debug, Default)]
 pub struct TypingResult<'ctx> {
     // Resolved Definitions of Associated Types, Method Calls and Overloaded Operators
-    pub assoc_resolution: NodeMap<Result<DefinitionID, ()>>,
+    pub assoc_resolution: NodeMap<Result<(DefinitionID, DefinitionKind), ()>>,
     // expression adjustments
     pub adjustments: NodeMap<Vec<Adjustment>>,
     // expression node types
     pub node_types: NodeMap<Ty<'ctx>>,
+}
+
+impl<'ctx> TypingResult<'ctx> {
+    pub fn type_of(&self, node: NodeID) -> Ty<'ctx> {
+        self.node_types[&node]
+    }
+
+    pub fn path_resolution(
+        &self,
+        id: NodeID,
+        _: &taroc_hir::Path,
+        gcx: GlobalContext<'ctx>,
+    ) -> taroc_hir::Resolution {
+        let partial = gcx.resolution(id);
+
+        if let Some(resolution) = partial.full_resolution() {
+            resolution
+        } else {
+            todo!()
+        }
+    }
+
+    pub fn is_method_call(&self, expr: &taroc_hir::Expression) -> bool {
+        if let taroc_hir::ExpressionKind::Path(_) = expr.kind {
+            return false;
+        }
+
+        matches!(
+            self.assoc_resolution.get(&expr.id),
+            Some(Ok((
+                _,
+                DefinitionKind::AssociatedFunction | DefinitionKind::AssociatedOperator
+            )))
+        )
+    }
 }

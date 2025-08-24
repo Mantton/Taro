@@ -17,6 +17,6 @@ pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResul
     super::collect::interface::conformance::run(context)?; // validate interface conformance
     super::recursive::types::run(package, context)?; // recursive types
     super::check::wf::run(package, context)?; // well-formed checks for item types
-    super::check::run(package, context)?;
+    super::check::run(package, context)?; // function body checks
     Ok(())
 }

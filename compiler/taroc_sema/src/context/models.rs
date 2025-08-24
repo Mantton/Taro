@@ -5,6 +5,7 @@ use crate::{
         InterfaceDefinition, InterfaceRequirements, LabeledFunctionSignature, PackageAliasTable,
         SimpleType, SpannedConstraints, StructDefinition, Ty, TyKind, UIntTy, VariantDefinition,
     },
+    typing::TypingResult,
 };
 use bumpalo::Bump;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -162,11 +163,11 @@ pub struct TypeDatabase<'ctx> {
     pub def_to_fn_signature: FxHashMap<DefinitionID, &'ctx LabeledFunctionSignature<'ctx>>,
     pub extension_tys: FxHashMap<DefinitionID, Ty<'ctx>>,
     pub alias_table: PackageAliasTable,
-    pub node_to_ty: FxHashMap<NodeID, Ty<'ctx>>,
     pub superinterfaces: FxHashMap<DefinitionID, FxHashSet<DefinitionID>>,
     pub conformances: FxHashMap<SimpleType, Vec<ConformanceRecord<'ctx>>>,
     pub interface_requirements: FxHashMap<DefinitionID, &'ctx InterfaceRequirements<'ctx>>,
     pub function_table: PackageFunctionTable,
+    pub typing_results: FxHashMap<DefinitionID, &'ctx TypingResult<'ctx>>,
 }
 
 pub struct CommonTypes<'ctx> {

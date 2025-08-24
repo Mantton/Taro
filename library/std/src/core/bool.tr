@@ -8,4 +8,8 @@ extend bool {
     public operator &(self, rhs: Self) -> Self { self & rhs }
     public operator |(self, rhs: Self) -> Self { self | rhs }
     public operator ^(self, rhs: Self) -> Self { self ^ rhs }
+
+
+    public operator ==(self, rhs: Self) -> Self { self == rhs }
+    public operator !=(self, rhs: Self) -> Self { self != rhs }
 }

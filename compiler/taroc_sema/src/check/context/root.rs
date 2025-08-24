@@ -10,7 +10,7 @@ use std::{cell::RefCell, ops::Deref};
 use taroc_hir::{DefinitionID, NodeID};
 
 pub struct TyCheckRootCtx<'ctx> {
-    pub _fn_id: DefinitionID,
+    pub fn_id: DefinitionID,
     pub icx: InferCtx<'ctx>,
     pub locals: RefCell<FxHashMap<NodeID, Ty<'ctx>>>,
     pub solver: RefCell<ObligationSolver<'ctx>>,
@@ -21,7 +21,7 @@ impl<'ctx> TyCheckRootCtx<'ctx> {
     pub fn new(gcx: GlobalContext<'ctx>, def_id: DefinitionID) -> TyCheckRootCtx<'ctx> {
         let icx = InferCtx::new(gcx);
         TyCheckRootCtx {
-            _fn_id: def_id,
+            fn_id: def_id,
             icx,
             locals: Default::default(),
             solver: RefCell::new(ObligationSolver::new()),

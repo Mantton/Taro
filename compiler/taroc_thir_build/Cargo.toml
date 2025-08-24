@@ -1,0 +1,11 @@
+[package]
+name = "taroc_thir_build"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+taroc_sema = { path = "../taroc_sema" }
+taroc_hir = { path = "../taroc_hir" }
+taroc_thir = { path = "../taroc_thir" }
+taroc_error = { path = "../taroc_error" }
+taroc_span = { path = "../taroc_span" }

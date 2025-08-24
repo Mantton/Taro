@@ -25,7 +25,7 @@ extend<Value> Option<Value>: Hashable where Value: Hashable {
 
 extend<Value> Option<Value>: Default {
     func default() -> Self {
-        Option::None
+        // Option::None
     }
 }
 

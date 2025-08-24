@@ -2,6 +2,7 @@ use super::context::func::FnCtx;
 use crate::{
     GlobalContext,
     check::context::root::TyCheckRootCtx,
+    normalize::assoc::normalize_ty,
     ty::{Constraint, GenericArgument, GenericParameter, ParamEnv, Ty, TyKind},
     utils::{GenericsBuilder, instantiate_ty_with_args, labeled_signature_to_ty},
 };
@@ -41,6 +42,7 @@ impl HirVisitor for Actor<'_> {
         // do not check interface functions
         if let FunctionContext::Assoc(AssocContext::Interface(..))
         | FunctionContext::AssocOperand(AssocContext::Interface(..), _) = c
+            && f.block.is_none()
         {
             return;
         }
@@ -124,6 +126,7 @@ fn collect<'rcx, 'gcx>(fcx: &mut FnCtx<'rcx, 'gcx>, node: &taroc_hir::Block) {
 }
 
 fn solve<'rcx, 'gcx>(fcx: &mut FnCtx<'rcx, 'gcx>) {
+    let gcx = fcx.gcx;
     let mut solver = fcx.solver.borrow_mut();
     let mut errors = solver.solve(&fcx, fcx.param_env());
     // Commit adjustments from this solve pass into TypingResult
@@ -178,13 +181,25 @@ fn solve<'rcx, 'gcx>(fcx: &mut FnCtx<'rcx, 'gcx>) {
     }
 
     // println!("{:?}", fcx.results.borrow().adjustments);
+    // Before persisting, replace all inference variables with concrete types
+    // and normalize any associated types in the recorded node types.
+    let fn_id = fcx.fn_id;
+    let mut results = fcx.results.take();
+    if !results.node_types.is_empty() {
+        let icx = &fcx.icx;
+        let gcx = fcx.gcx;
+        for ty in results.node_types.values_mut() {
+            let resolved = icx.resolve_vars_if_possible(*ty);
+            *ty = normalize_ty(resolved, gcx);
+        }
+    }
 
     // Report Errors
     for err in errors.into_iter() {
-        fcx.gcx
-            .diagnostics
-            .error(err.value.format(fcx.gcx), err.span);
+        gcx.diagnostics.error(err.value.format(gcx), err.span);
     }
+
+    gcx.with_session_type_database(|db| db.typing_results.insert(fn_id, gcx.alloc(results)));
 }
 
 fn is_expression_bodied(block: &taroc_hir::Block) -> Option<&taroc_hir::Expression> {

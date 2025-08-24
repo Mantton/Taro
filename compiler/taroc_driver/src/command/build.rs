@@ -118,7 +118,7 @@ impl Builder {
         let package = tokenize_package(context)?;
         let package = parse_package(package, context)?;
         let package = taroc_ast_passes::run(package, context)?;
-        taroc_hir_passes::run(package, context)?;
+        let _ = taroc_hir_passes::run(&package, context)?;
         Ok(())
     }
 }

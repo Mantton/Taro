@@ -8,7 +8,7 @@ use crate::{
     utils::autoderef::Autoderef,
 };
 use std::{cell::RefCell, collections::VecDeque, vec};
-use taroc_hir::{BinaryOperator, DefinitionID, Mutability, NodeID, UnaryOperator};
+use taroc_hir::{BinaryOperator, DefinitionID, DefinitionKind, Mutability, NodeID, UnaryOperator};
 use taroc_span::{Identifier, Span, Spanned};
 
 mod apply;
@@ -177,7 +177,7 @@ impl<'ctx> ObligationStore<'ctx> {
 pub struct ObligationSolver<'ctx> {
     obligations: ObligationStore<'ctx>,
     adjustments: NodeMap<Vec<Adjustment>>, // collected from delegates when goals are solved
-    assoc_resolution: NodeMap<Result<DefinitionID, ()>>, // collected resolved methods/operators
+    assoc_resolution: NodeMap<Result<(DefinitionID, DefinitionKind), ()>>, // collected resolved methods/operators
 }
 
 impl<'ctx> ObligationSolver<'ctx> {
@@ -199,7 +199,7 @@ impl<'ctx> ObligationSolver<'ctx> {
     }
 
     /// Consume and return all collected associated resolutions.
-    pub fn take_assoc_resolution(&mut self) -> NodeMap<Result<DefinitionID, ()>> {
+    pub fn take_assoc_resolution(&mut self) -> NodeMap<Result<(DefinitionID, DefinitionKind), ()>> {
         std::mem::take(&mut self.assoc_resolution)
     }
 }
@@ -269,7 +269,7 @@ pub struct SolverDelegate<'icx, 'ctx> {
     param_env: ParamEnv<'ctx>,
     nested_obligations: Vec<Obligation<'ctx>>,
     adjustments: RefCell<NodeMap<Vec<Adjustment>>>,
-    assoc_resolution: RefCell<NodeMap<Result<DefinitionID, ()>>>,
+    assoc_resolution: RefCell<NodeMap<Result<(DefinitionID, DefinitionKind), ()>>>,
 }
 
 impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
@@ -304,7 +304,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     }
 
     /// Drain and return assoc resolutions recorded in this delegate.
-    pub fn take_assoc_resolution(&mut self) -> NodeMap<Result<DefinitionID, ()>> {
+    pub fn take_assoc_resolution(&mut self) -> NodeMap<Result<(DefinitionID, DefinitionKind), ()>> {
         std::mem::take(&mut self.assoc_resolution.borrow_mut())
     }
 }
@@ -322,7 +322,9 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
 
     #[inline]
     pub fn record_assoc_resolution(&mut self, node: NodeID, def: DefinitionID) {
-        self.assoc_resolution.borrow_mut().insert(node, Ok(def));
+        self.assoc_resolution
+            .borrow_mut()
+            .insert(node, Ok((def, self.gcx().def_kind(def))));
     }
 }
 
