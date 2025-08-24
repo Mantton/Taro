@@ -1,7 +1,11 @@
 use taroc_error::CompileResult;
-use taroc_hir::visitor::HirVisitor;
-use taroc_sema::{GlobalContext, typing::TypingResult};
-use taroc_span::Spanned;
+use taroc_hir::{CtorKind, DefinitionKind, visitor::HirVisitor};
+use taroc_sema::{
+    GlobalContext,
+    ty::{Adjustment, AdjustmentKind, Ty, VariantIndex},
+    typing::TypingResult,
+};
+use taroc_span::{Span, Spanned};
 use taroc_thir::{BlockID, ExpressionID, StatementID, ThirBody};
 
 pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
@@ -60,7 +64,7 @@ struct BuildContext<'ctx> {
 }
 
 impl<'ctx> BuildContext<'ctx> {
-    fn build(mut self, block: &taroc_hir::Block) -> (ThirBody<'ctx>) {
+    fn build(mut self, block: &taroc_hir::Block) -> ThirBody<'ctx> {
         let block = self.build_block(block);
         self.thir
     }
@@ -99,7 +103,10 @@ impl<'ctx> BuildContext<'ctx> {
             taroc_hir::StatementKind::Return(expression) => taroc_thir::StatementKind::Return(
                 expression.as_ref().map(|e| self.build_expression(&e)),
             ),
-            taroc_hir::StatementKind::Loop(label, block) => todo!(),
+            taroc_hir::StatementKind::Loop(_, block) => {
+                let block = self.build_block(block);
+                taroc_thir::StatementKind::Loop(block)
+            }
             taroc_hir::StatementKind::Defer(block) => todo!(),
         };
 
@@ -109,12 +116,16 @@ impl<'ctx> BuildContext<'ctx> {
 }
 
 impl<'ctx> BuildContext<'ctx> {
-    fn build_expressions(&mut self, nodes: &[taroc_hir::Expression]) -> Vec<ExpressionID> {
-        nodes.iter().map(|e| self.build_expression(e)).collect()
-    }
     fn build_expression(&mut self, node: &taroc_hir::Expression) -> ExpressionID {
         let mut expression = self.build_expression_node(node);
-        // TODO: Apply Adjustments
+
+        let adjustments = self.result.adjustments.get(&node.id);
+        if let Some(adjustments) = adjustments {
+            for adjustment in adjustments {
+                let span = expression.span;
+                expression = self.apply_adjustment(node, expression, adjustment, span)
+            }
+        }
 
         self.thir.expressions.push(expression)
     }
@@ -221,30 +232,87 @@ impl<'ctx> BuildContext<'ctx> {
                     fn_span: expression.span,
                 }
             }
-            taroc_hir::ExpressionKind::StructLiteral(struct_literal) => todo!(),
-            taroc_hir::ExpressionKind::ArrayLiteral(expressions) => todo!(),
-            taroc_hir::ExpressionKind::Tuple(expressions) => todo!(),
-            taroc_hir::ExpressionKind::If(if_expression) => todo!(),
+            taroc_hir::ExpressionKind::FieldAccess(expression, ..) => {
+                taroc_thir::ExpressionKind::FieldAccess(
+                    self.build_expression(expression),
+                    VariantIndex::new(0),
+                    self.result.field_index(node.id),
+                )
+            }
+            taroc_hir::ExpressionKind::TupleAccess(expression, ..) => {
+                taroc_thir::ExpressionKind::FieldAccess(
+                    self.build_expression(expression),
+                    VariantIndex::new(0),
+                    self.result.field_index(node.id),
+                )
+            }
+
+            taroc_hir::ExpressionKind::MethodCall(method_call) => {
+                let func = self.method_callee(node, method_call.method.span, None);
+                let arguments = std::iter::once(&method_call.receiver)
+                    .chain(method_call.arguments.iter().map(|e| &e.expression))
+                    .map(|e| self.build_expression(&e))
+                    .collect();
+                taroc_thir::ExpressionKind::Call {
+                    fn_ty: func.ty,
+                    func: self.thir.expressions.push(func),
+                    arguments,
+                    from_overload: false,
+                    fn_span: method_call.span,
+                }
+            }
+            taroc_hir::ExpressionKind::Reference(expression, mutability) => {
+                taroc_thir::ExpressionKind::Reference(
+                    *mutability,
+                    self.build_expression(expression),
+                )
+            }
+            taroc_hir::ExpressionKind::Dereference(expression) => {
+                taroc_thir::ExpressionKind::Dereference(self.build_expression(expression))
+            }
+            taroc_hir::ExpressionKind::ArrayLiteral(expressions) => {
+                taroc_thir::ExpressionKind::Array(
+                    expressions
+                        .iter()
+                        .map(|e| self.build_expression(e))
+                        .collect(),
+                )
+            }
+            taroc_hir::ExpressionKind::Tuple(expressions) => taroc_thir::ExpressionKind::Tuple(
+                expressions
+                    .iter()
+                    .map(|e| self.build_expression(e))
+                    .collect(),
+            ),
+            taroc_hir::ExpressionKind::If(if_expression) => taroc_thir::ExpressionKind::If {
+                condition: self.build_expression(&if_expression.condition),
+                then_block: self.build_expression(&if_expression.then_block),
+                else_block: if_expression
+                    .else_block
+                    .as_ref()
+                    .map(|e| self.build_expression(e)),
+            },
             taroc_hir::ExpressionKind::Match(match_expression) => todo!(),
-            taroc_hir::ExpressionKind::MethodCall(method_call) => todo!(),
-            taroc_hir::ExpressionKind::Reference(expression, mutability) => todo!(),
-            taroc_hir::ExpressionKind::Dereference(expression) => todo!(),
-            taroc_hir::ExpressionKind::FieldAccess(expression, path_segment) => todo!(),
-            taroc_hir::ExpressionKind::TupleAccess(expression, anon_const) => todo!(),
-            taroc_hir::ExpressionKind::Subscript(expression, expression_arguments) => todo!(),
+            taroc_hir::ExpressionKind::StructLiteral(struct_literal) => todo!(),
+            taroc_hir::ExpressionKind::Subscript(expression, expression_arguments) => {
+                let lhs = self.build_expression(expression);
+                todo!()
+            }
             taroc_hir::ExpressionKind::AssignOp(binary_operator, expression, expression1) => {
                 todo!()
             }
+            taroc_hir::ExpressionKind::CastAs(expression, _) => todo!(),
+
             taroc_hir::ExpressionKind::Assign(lhs, rhs) => taroc_thir::ExpressionKind::Assign(
                 self.build_expression(lhs),
                 self.build_expression(rhs),
             ),
-            taroc_hir::ExpressionKind::CastAs(expression, _) => todo!(),
 
             taroc_hir::ExpressionKind::Block(block) => {
                 let id = self.build_block(block);
                 taroc_thir::ExpressionKind::Block(id)
             }
+
             taroc_hir::ExpressionKind::Closure(..)
             | taroc_hir::ExpressionKind::PatternBinding(..)
             | taroc_hir::ExpressionKind::Await(..) => todo!(),
@@ -269,7 +337,60 @@ impl<'ctx> BuildContext<'ctx> {
             taroc_hir::Resolution::Local(node_id) => {
                 taroc_thir::ExpressionKind::VariableReference(node_id)
             }
-            _ => taroc_thir::ExpressionKind::Placeholder, // TODO
+            taroc_hir::Resolution::Definition(
+                _,
+                DefinitionKind::AssociatedFunction
+                | DefinitionKind::Function
+                | DefinitionKind::Ctor(_, CtorKind::Fn),
+            ) => taroc_thir::ExpressionKind::Placeholder,
+            taroc_hir::Resolution::Error => unreachable!(),
+            _ => todo!(),
+        }
+    }
+
+    fn method_callee(
+        &self,
+        expression: &taroc_hir::Expression,
+        span: Span,
+        x: Option<Ty<'ctx>>,
+    ) -> taroc_thir::Expression<'ctx> {
+        // TODO: Functions
+
+        taroc_thir::Expression {
+            kind: taroc_thir::ExpressionKind::Placeholder,
+            ty: self.gcx.store.common_types.error,
+            span,
+        }
+    }
+}
+
+impl<'ctx> BuildContext<'ctx> {
+    fn apply_adjustment(
+        &mut self,
+        _: &taroc_hir::Expression,
+        expression: taroc_thir::Expression<'ctx>,
+        adjustment: &Adjustment<'ctx>,
+        span: Span,
+    ) -> taroc_thir::Expression<'ctx> {
+        let kind = match adjustment.kind {
+            AdjustmentKind::AutoRef => taroc_thir::ExpressionKind::Reference(
+                taroc_hir::Mutability::Immutable,
+                self.thir.expressions.push(expression),
+            ),
+            AdjustmentKind::AutoMutRef => taroc_thir::ExpressionKind::Reference(
+                taroc_hir::Mutability::Mutable,
+                self.thir.expressions.push(expression),
+            ),
+            AdjustmentKind::AutoDeref => {
+                taroc_thir::ExpressionKind::Dereference(self.thir.expressions.push(expression))
+            }
+            _ => todo!(),
+        };
+
+        taroc_thir::Expression {
+            ty: adjustment.target,
+            span,
+            kind: kind,
         }
     }
 }

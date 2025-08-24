@@ -3,7 +3,7 @@ use crate::{
     check::solver::{cast::CastGoal, shape::Shape},
     error::TypeError,
     infer::InferCtx,
-    ty::{Adjustment, Constraint, ParamEnv, Ty},
+    ty::{Adjustment, Constraint, FieldIndex, ParamEnv, Ty},
     typing::NodeMap,
     utils::autoderef::Autoderef,
 };
@@ -78,6 +78,7 @@ pub struct FieldAccessGoal<'ctx> {
     pub field: Identifier,
     pub result_var: Ty<'ctx>,
     pub field_span: Span,
+    pub expr_id: NodeID,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -176,8 +177,9 @@ impl<'ctx> ObligationStore<'ctx> {
 
 pub struct ObligationSolver<'ctx> {
     obligations: ObligationStore<'ctx>,
-    adjustments: NodeMap<Vec<Adjustment>>, // collected from delegates when goals are solved
+    adjustments: NodeMap<Vec<Adjustment<'ctx>>>, // collected from delegates when goals are solved
     assoc_resolution: NodeMap<Result<(DefinitionID, DefinitionKind), ()>>, // collected resolved methods/operators
+    field_indices: NodeMap<FieldIndex>, // collected field indices for field accesses
 }
 
 impl<'ctx> ObligationSolver<'ctx> {
@@ -186,6 +188,7 @@ impl<'ctx> ObligationSolver<'ctx> {
             obligations: Default::default(),
             adjustments: Default::default(),
             assoc_resolution: Default::default(),
+            field_indices: Default::default(),
         }
     }
 
@@ -194,13 +197,18 @@ impl<'ctx> ObligationSolver<'ctx> {
     }
 
     /// Consume and return all collected adjustments.
-    pub fn take_adjustments(&mut self) -> NodeMap<Vec<Adjustment>> {
+    pub fn take_adjustments(&mut self) -> NodeMap<Vec<Adjustment<'ctx>>> {
         std::mem::take(&mut self.adjustments)
     }
 
     /// Consume and return all collected associated resolutions.
     pub fn take_assoc_resolution(&mut self) -> NodeMap<Result<(DefinitionID, DefinitionKind), ()>> {
         std::mem::take(&mut self.assoc_resolution)
+    }
+
+    /// Consume and return all collected field indices.
+    pub fn take_field_indices(&mut self) -> NodeMap<FieldIndex> {
+        std::mem::take(&mut self.field_indices)
     }
 }
 
@@ -247,6 +255,11 @@ impl<'ctx> ObligationSolver<'ctx> {
                         for (node, res) in child_assoc.into_iter() {
                             self.assoc_resolution.insert(node, res);
                         }
+                        // Merge field indices from this delegate
+                        let child_fields = delegate.take_field_indices();
+                        for (node, idx) in child_fields.into_iter() {
+                            self.field_indices.insert(node, idx);
+                        }
                     }
                     Certainty::Maybe => {
                         // deferred
@@ -268,8 +281,9 @@ pub struct SolverDelegate<'icx, 'ctx> {
     _icx: &'icx InferCtx<'ctx>,
     param_env: ParamEnv<'ctx>,
     nested_obligations: Vec<Obligation<'ctx>>,
-    adjustments: RefCell<NodeMap<Vec<Adjustment>>>,
+    adjustments: RefCell<NodeMap<Vec<Adjustment<'ctx>>>>,
     assoc_resolution: RefCell<NodeMap<Result<(DefinitionID, DefinitionKind), ()>>>,
+    field_indices: RefCell<NodeMap<FieldIndex>>,
 }
 
 impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
@@ -280,6 +294,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
             nested_obligations: vec![],
             adjustments: Default::default(),
             assoc_resolution: Default::default(),
+            field_indices: Default::default(),
         }
     }
 
@@ -299,13 +314,18 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     }
 
     /// Drain and return adjustments recorded in this delegate.
-    pub fn take_adjustments(&mut self) -> NodeMap<Vec<Adjustment>> {
+    pub fn take_adjustments(&mut self) -> NodeMap<Vec<Adjustment<'ctx>>> {
         std::mem::take(&mut self.adjustments.borrow_mut())
     }
 
     /// Drain and return assoc resolutions recorded in this delegate.
     pub fn take_assoc_resolution(&mut self) -> NodeMap<Result<(DefinitionID, DefinitionKind), ()>> {
         std::mem::take(&mut self.assoc_resolution.borrow_mut())
+    }
+
+    /// Drain and return field indices recorded in this delegate.
+    pub fn take_field_indices(&mut self) -> NodeMap<FieldIndex> {
+        std::mem::take(&mut self.field_indices.borrow_mut())
     }
 }
 
@@ -325,6 +345,11 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         self.assoc_resolution
             .borrow_mut()
             .insert(node, Ok((def, self.gcx().def_kind(def))));
+    }
+
+    #[inline]
+    pub fn record_field_index(&mut self, node: NodeID, index: FieldIndex) {
+        self.field_indices.borrow_mut().insert(node, index);
     }
 }
 
@@ -387,6 +412,12 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
             let child_assoc = delegate.take_assoc_resolution();
             for (node, res) in child_assoc.into_iter() {
                 self.assoc_resolution.borrow_mut().insert(node, res);
+            }
+
+            // Merge field indices from child into this delegate
+            let child_fields = delegate.take_field_indices();
+            for (node, idx) in child_fields.into_iter() {
+                self.field_indices.borrow_mut().insert(node, idx);
             }
         }
 

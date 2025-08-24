@@ -41,6 +41,7 @@ pub enum StatementKind {
     },
     Break,
     Return(Option<ExpressionID>),
+    Loop(BlockID),
     Continue,
 }
 
