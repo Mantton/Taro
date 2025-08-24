@@ -4,7 +4,7 @@ use crate::{
     error::{ExpectedFound, TypeError},
     ty::{Ty, TyKind},
 };
-use taroc_hir::Mutability;
+use taroc_hir::{Mutability, NodeID};
 use taroc_span::Span;
 
 impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
@@ -112,6 +112,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         &self,
         from: Ty<'ctx>,
         to: Ty<'ctx>,
+        node: NodeID,
         location: Span,
     ) -> SolverResult<'ctx> {
         let from = self.structurally_resolve(from);
@@ -148,12 +149,15 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                 result.is_ok()
             });
 
-            // if ok {
-            //     // record auto-ref adjustment
-            //     self.icx()
-            //         .record_adjustments(location, vec![Adjustment::AutoRef]);
-            //     return SolverResult::Solved(vec![]);
-            // }
+            if ok {
+                // record auto-ref adjustment
+                self.adjustments
+                    .borrow_mut()
+                    .entry(node)
+                    .or_default()
+                    .push(Adjustment::AutoRef);
+                return SolverResult::Solved(vec![]);
+            }
         }
 
         // By Mut Reference
@@ -167,12 +171,15 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                 result.is_ok()
             });
 
-            // if ok {
-            //     // record auto-mut-ref adjustment
-            //     self.icx()
-            //         .record_adjustments(location, vec![Adjustment::AutoMutRef]);
-            //     return SolverResult::Solved(vec![]);
-            // }
+            if ok {
+                // record auto-mut-ref adjustment
+                self.adjustments
+                    .borrow_mut()
+                    .entry(node)
+                    .or_default()
+                    .push(Adjustment::AutoMutRef);
+                return SolverResult::Solved(vec![]);
+            }
         }
 
         // By Dereferencing
@@ -195,11 +202,13 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
             if success {
                 // record auto-deref adjustments (one per deref step performed)
                 if steps > 0 {
-                    let mut v = Vec::with_capacity(steps);
                     for _ in 0..steps {
-                        v.push(Adjustment::AutoDeref);
+                        self.adjustments
+                            .borrow_mut()
+                            .entry(node)
+                            .or_default()
+                            .push(Adjustment::AutoDeref);
                     }
-                    // self.icx().record_adjustments(location, v);
                 }
                 // TODO: NoCopy Check
                 return SolverResult::Solved(vec![]);

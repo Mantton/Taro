@@ -52,11 +52,17 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         _: Option<&taroc_hir::Expression>,
     ) -> Ty<'ctx> {
         let ty = self.check_expression_with_hint(expression, expectation);
-        self.add_coercion_constraint(ty, expectation, expression.span);
+        self.add_coercion_constraint(ty, expectation, expression.id, expression.span);
         expectation
     }
 
-    pub fn add_coercion_constraint(&self, from: Ty<'ctx>, to: Ty<'ctx>, location: Span) {
+    pub fn add_coercion_constraint(
+        &self,
+        from: Ty<'ctx>,
+        to: Ty<'ctx>,
+        node: NodeID,
+        location: Span,
+    ) {
         // break early
         if from == to {
             return;
@@ -64,7 +70,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
 
         let obligation = Obligation {
             location: location,
-            goal: Goal::Coerce { from, to },
+            goal: Goal::Coerce { from, to, node },
         };
         self.add_obligation(obligation);
     }
@@ -397,6 +403,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
                     ty,
                     span: node.span,
                     label: node.label.as_ref().map(|n| n.identifier),
+                    id: node.expression.id,
                 }
             })
             .collect();
@@ -426,7 +433,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             if let Some(arg_idx) = arg_idx {
                 let argument = provided_arguments[*arg_idx];
                 let arg_ty = argument.ty;
-                self.add_coercion_constraint(arg_ty, param_ty, argument.span);
+                self.add_coercion_constraint(arg_ty, param_ty, argument.id, argument.span);
             } else if !param_defaults {
                 let err = ValidationError::MissingRequiredParameter {
                     param_index: param_idx,
@@ -454,6 +461,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
                     ty: self.next_ty_var(arg.span),
                     span: arg.span,
                     label: arg.label.as_ref().map(|l| l.identifier),
+                    id: arg.expression.id,
                 };
 
                 argument
@@ -478,12 +486,15 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
                 goal: Goal::Coerce {
                     from: rho,
                     to: e_ty,
+                    node: call_expr.id,
                 },
             });
         }
 
         let goal = OverloadGoal {
             expr_span: call_expr.span,
+            expr_id: call_expr.id,
+            callee_id: call_expr.id,
             callee_var: callee_ty,
             result_var: rho,
             expected_result_ty: expectation.only_has_type(),
@@ -743,7 +754,12 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             };
 
             let expr_ty = self.check_expression_with_hint(&expression.expression, field_ty);
-            self.add_coercion_constraint(expr_ty, field_ty, expression.span);
+            self.add_coercion_constraint(
+                expr_ty,
+                field_ty,
+                expression.expression.id,
+                expression.span,
+            );
         }
     }
 }
@@ -760,6 +776,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
 
         let goal = FieldAccessGoal {
             base_ty,
+            base_id: base.id,
             field: segment.identifier,
             result_var,
             field_span: segment.span,
@@ -825,6 +842,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
                 ty: self.next_ty_var(arg.span),
                 span: arg.span,
                 label: arg.label.as_ref().map(|l| l.identifier),
+                id: arg.expression.id,
             })
             .collect();
         let beta = self.gcx.store.interners.intern_slice(&beta);
@@ -844,12 +862,15 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
                 goal: Goal::Coerce {
                     from: rho,
                     to: e_ty,
+                    node: expr.id,
                 },
             });
         }
 
         let goal = MethodCallGoal {
             call_span: expr.span,
+            call_expr_id: expr.id,
+            reciever_id: node.receiver.id,
             method: node.method.identifier,
             receiver_ty: recv_ty,
             result_var: rho,
@@ -884,6 +905,8 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             operator: op,
             span: expr.span,
             expectation: expectation.only_has_type(),
+            node_id: expr.id,
+            rhs_id: rhs.id,
         };
 
         self.add_obligation(Obligation {
@@ -905,11 +928,14 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         let goal = BinaryOperatorGoal {
             operator: op,
             span: expr.span,
+            node_id: expr.id,
             expectation: expectation.only_has_type(),
             lhs: self.check_expression(lhs),
             rhs: self.check_expression(rhs),
             rho: self.next_ty_var(expr.span),
             assigning: false,
+            lhs_id: lhs.id,
+            rhs_id: rhs.id,
         };
 
         self.add_obligation(Obligation {
@@ -927,15 +953,17 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         rhs: &taroc_hir::Expression,
         expr: &taroc_hir::Expression,
     ) -> Ty<'ctx> {
-        let lhs = self.check_expression(lhs);
         let goal = BinaryOperatorGoal {
             operator: op,
             span: expr.span,
+            node_id: expr.id,
             expectation: None,
-            lhs,
+            lhs: self.check_expression(lhs),
             rhs: self.check_expression(rhs),
             rho: self.common_types().void,
             assigning: true,
+            lhs_id: lhs.id,
+            rhs_id: rhs.id,
         };
 
         self.add_obligation(Obligation {
@@ -960,11 +988,14 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
                 ty: self.next_ty_var(arg.span),
                 span: arg.span,
                 label: arg.label.as_ref().map(|l| l.identifier),
+                id: arg.expression.id,
             })
             .collect();
         let rho = self.next_ty_var(expression.span);
         let goal = OverloadGoal {
             expr_span: expression.span,
+            expr_id: expression.id,
+            callee_id: target.id,
             callee_span: target.span,
             callee_var: lhs,
             result_var: rho,
@@ -1024,11 +1055,16 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         for arm in node.arms.iter() {
             if let Some(guard) = &arm.guard {
                 let guard_ty = self.check_expression(&guard);
-                self.add_coercion_constraint(guard_ty, self.common_types().bool, guard.span);
+                self.add_coercion_constraint(
+                    guard_ty,
+                    self.common_types().bool,
+                    guard.id,
+                    guard.span,
+                );
             }
 
             let arm_ty = self.check_expression(&arm.body);
-            self.add_coercion_constraint(arm_ty, rho, arm.body.span);
+            self.add_coercion_constraint(arm_ty, rho, arm.body.id, arm.body.span);
         }
 
         rho

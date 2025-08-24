@@ -66,6 +66,8 @@ fn unary_goal_to_method_goal<'ctx>(goal: UnaryOperatorGoal<'ctx>) -> MethodCallG
         expected_result_ty: goal.expectation,
         arguments: &[],
         label_agnostic: true,
+        call_expr_id: goal.node_id,
+        reciever_id: goal.rhs_id,
     }
 }
 
@@ -199,6 +201,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                             goal: Goal::Coerce {
                                 from: goal.rho,
                                 to: exp,
+                                node: goal.node_id,
                             },
                         });
                     }
@@ -297,6 +300,7 @@ fn binary_goal_to_method_goal<'ctx>(
         },
         span: goal.span,
         label: None,
+        id: goal.rhs_id,
     }]);
     MethodCallGoal {
         call_span: goal.span,
@@ -306,6 +310,8 @@ fn binary_goal_to_method_goal<'ctx>(
         expected_result_ty: goal.expectation,
         arguments,
         label_agnostic: true,
+        reciever_id: goal.lhs_id,
+        call_expr_id: goal.node_id,
     }
 }
 
@@ -371,5 +377,7 @@ fn overload_goal_to_method_goal<'ctx>(
         expected_result_ty: goal.expected_result_ty,
         arguments: goal.arguments,
         label_agnostic: false,
+        reciever_id: goal.callee_id,
+        call_expr_id: goal.expr_id,
     }
 }

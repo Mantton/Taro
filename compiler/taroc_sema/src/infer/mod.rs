@@ -329,31 +329,3 @@ impl<'ctx> InferCtxInner<'ctx> {
         self.event_logs.open_snapshots -= 1;
     }
 }
-
-impl<'ctx> InferCtx<'ctx> {
-    // pub fn record_overload_call(
-    //     &self,
-    //     span: Span,
-    //     kind: OverloadCallKind,
-    //     resolution: OverloadResolution,
-    // ) {
-    //     self.inner
-    //         .borrow_mut()
-    //         .overload_calls
-    //         .push(OverloadCallRecord {
-    //             span,
-    //             kind,
-    //             resolution,
-    //         });
-    // }
-
-    // pub fn record_adjustments(&self, span: Span, adjustments: Vec<crate::ty::Adjustment>) {
-    //     if adjustments.is_empty() {
-    //         return;
-    //     }
-    //     self.inner
-    //         .borrow_mut()
-    //         .adjustments
-    //         .push(AdjustmentRecord { span, adjustments });
-    // }
-}

@@ -48,6 +48,7 @@ impl<'rcx, 'gcx> FnCtx<'rcx, 'gcx> {
                     return Shape {
                         span,
                         kind: ShapeKind::Malformed,
+                        id: NodeID::new(0),
                     };
                 };
 
@@ -72,6 +73,7 @@ impl<'rcx, 'gcx> FnCtx<'rcx, 'gcx> {
                     return Shape {
                         span,
                         kind: ShapeKind::Malformed,
+                        id: NodeID::new(0),
                     };
                 };
 
@@ -102,6 +104,7 @@ impl<'rcx, 'gcx> FnCtx<'rcx, 'gcx> {
                     return Shape {
                         span,
                         kind: ShapeKind::Malformed,
+                        id: NodeID::new(0),
                     };
                 };
 
@@ -112,7 +115,11 @@ impl<'rcx, 'gcx> FnCtx<'rcx, 'gcx> {
             }
         };
 
-        let shape = Shape { span, kind };
+        let shape = Shape {
+            span,
+            kind,
+            id: pattern.id,
+        };
         shape
     }
 

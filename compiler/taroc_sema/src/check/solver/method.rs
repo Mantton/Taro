@@ -96,6 +96,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                 goal: Goal::RecieverCoerce {
                     from: recv_ty,
                     to: inputs[0],
+                    node: goal.reciever_id,
                 },
             });
         }
@@ -106,6 +107,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                 goal: Goal::Coerce {
                     from: arg.ty,
                     to: *param,
+                    node: arg.id,
                 },
             });
         }
@@ -115,6 +117,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
             goal: Goal::Coerce {
                 from: goal.result_var,
                 to: output,
+                node: goal.call_expr_id,
             },
         });
 
@@ -124,6 +127,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                 goal: Goal::Coerce {
                     from: goal.result_var,
                     to: expected,
+                    node: goal.call_expr_id,
                 },
             });
         }

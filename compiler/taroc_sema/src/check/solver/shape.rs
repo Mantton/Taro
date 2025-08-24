@@ -7,11 +7,12 @@ use crate::{
     utils::instantiate_ty_with_args,
 };
 use rustc_hash::FxHashMap;
-use taroc_hir::DefinitionID;
+use taroc_hir::{DefinitionID, NodeID};
 use taroc_span::{Identifier, Span};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Shape<'ctx> {
+    pub id: NodeID,
     pub span: Span,
     pub kind: ShapeKind<'ctx>,
 }
@@ -55,18 +56,19 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
             return SolverResult::Deferred;
         }
 
-        self.check_shape_kind(shape.kind, ty, location)
+        self.check_shape_kind(shape.kind, ty, shape.id, location)
     }
 
     fn check_shape_kind(
         &self,
         shape: ShapeKind<'ctx>,
         scrutinee_ty: Ty<'ctx>,
+        id: NodeID,
         location: Span,
     ) -> SolverResult<'ctx> {
         match shape {
             ShapeKind::Wildcard | ShapeKind::Malformed => SolverResult::Solved(vec![]),
-            ShapeKind::Tuple(shapes) => self.check_tuple_shape(shapes, scrutinee_ty, location),
+            ShapeKind::Tuple(shapes) => self.check_tuple_shape(shapes, scrutinee_ty, id, location),
             ShapeKind::Or(shapes) => self.check_or_shape(shapes, scrutinee_ty),
             ShapeKind::Typed(ty) => self.check_typed_shape(ty, scrutinee_ty, location),
             ShapeKind::PathTuple {
@@ -107,6 +109,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         &self,
         elements: &'ctx [Shape<'ctx>],
         expectation: Ty<'ctx>,
+        id: NodeID,
         location: Span,
     ) -> SolverResult<'ctx> {
         let len = elements.len();
@@ -122,6 +125,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
             goal: Goal::Coerce {
                 from: pat_ty,
                 to: expectation,
+                node: id,
             },
         }];
 
