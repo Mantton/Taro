@@ -105,6 +105,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                 goal: Goal::Coerce {
                     from: arg.ty,
                     to: *param,
+                    node: arg.id,
                 },
             };
             pending.push(obligation);
@@ -116,6 +117,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
             goal: Goal::Coerce {
                 from: goal.result_var,
                 to: fn_output,
+                node: goal.expr_id,
             },
         };
 

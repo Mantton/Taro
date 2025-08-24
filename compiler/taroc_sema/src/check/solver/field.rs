@@ -3,7 +3,7 @@ use crate::{
         FieldAccessGoal, Goal, Obligation, SolverDelegate, SolverResult, TupleAccessGoal,
     },
     error::TypeError,
-    ty::{AdtKind, Constraint, TyKind},
+    ty::{Adjustment, AdtKind, Constraint, TyKind},
     utils::instantiate_ty_with_args,
 };
 
@@ -16,7 +16,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         }
 
         let mut autoderef = self.autoderef(goal.field_span, base_ty);
-
+        let mut steps = 0;
         while let Some(dereferenced_ty) = autoderef.next() {
             match dereferenced_ty.kind() {
                 TyKind::Adt(def, args) if def.kind == AdtKind::Struct => {
@@ -38,7 +38,16 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                             )),
                         };
 
-                        // TODO: Adjustments, Field Index
+                        if steps > 0 {
+                            for _ in 0..steps {
+                                self.adjustments
+                                    .borrow_mut()
+                                    .entry(goal.base_id)
+                                    .or_default()
+                                    .push(Adjustment::AutoDeref);
+                            }
+                        }
+                        // Field Index
                         SolverResult::Solved(vec![obligation])
                     } else {
                         SolverResult::Error(TypeError::UnknownField(
@@ -49,7 +58,9 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
 
                     return result;
                 }
-                _ => {}
+                _ => {
+                    steps += 1;
+                }
             }
         }
 

@@ -3,11 +3,12 @@ use crate::{
     check::solver::{cast::CastGoal, shape::Shape},
     error::TypeError,
     infer::InferCtx,
-    ty::{Constraint, ParamEnv, Ty},
+    ty::{Adjustment, Constraint, ParamEnv, Ty},
+    typing::NodeMap,
     utils::autoderef::Autoderef,
 };
-use std::{collections::VecDeque, vec};
-use taroc_hir::{BinaryOperator, Mutability, UnaryOperator};
+use std::{cell::RefCell, collections::VecDeque, vec};
+use taroc_hir::{BinaryOperator, Mutability, NodeID, UnaryOperator};
 use taroc_span::{Identifier, Span, Spanned};
 
 mod apply;
@@ -27,6 +28,7 @@ pub enum Goal<'ctx> {
     Coerce {
         from: Ty<'ctx>,
         to: Ty<'ctx>,
+        node: NodeID,
     },
     Apply(OverloadGoal<'ctx>),
     FieldAccess(FieldAccessGoal<'ctx>),
@@ -39,6 +41,7 @@ pub enum Goal<'ctx> {
     RecieverCoerce {
         from: Ty<'ctx>,
         to: Ty<'ctx>,
+        node: NodeID,
     },
     Shape {
         scrutinee_ty: Ty<'ctx>,
@@ -51,7 +54,9 @@ pub enum Goal<'ctx> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct OverloadGoal<'ctx> {
     pub callee_span: Span,
+    pub callee_id: NodeID,
     pub expr_span: Span,
+    pub expr_id: NodeID,
     pub callee_var: Ty<'ctx>,                      // α
     pub result_var: Ty<'ctx>,                      // ρ
     pub expected_result_ty: Option<Ty<'ctx>>,      // ⟂ or τctx
@@ -63,11 +68,13 @@ pub struct OverloadArgument<'ctx> {
     pub ty: Ty<'ctx>,
     pub span: Span,
     pub label: Option<Identifier>,
+    pub id: NodeID,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FieldAccessGoal<'ctx> {
     pub base_ty: Ty<'ctx>,
+    pub base_id: NodeID,
     pub field: Identifier,
     pub result_var: Ty<'ctx>,
     pub field_span: Span,
@@ -84,6 +91,8 @@ pub struct TupleAccessGoal<'ctx> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MethodCallGoal<'ctx> {
     pub call_span: Span,
+    pub reciever_id: NodeID,
+    pub call_expr_id: NodeID,
     pub method: Identifier,
     pub receiver_ty: Ty<'ctx>,
     pub result_var: Ty<'ctx>,
@@ -99,6 +108,8 @@ pub struct UnaryOperatorGoal<'ctx> {
     pub expectation: Option<Ty<'ctx>>,
     pub operator: UnaryOperator,
     pub span: Span,
+    pub node_id: NodeID,
+    pub rhs_id: NodeID,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -109,6 +120,9 @@ pub struct BinaryOperatorGoal<'ctx> {
     pub expectation: Option<Ty<'ctx>>,
     pub operator: BinaryOperator,
     pub span: Span,
+    pub node_id: NodeID,
+    pub lhs_id: NodeID,
+    pub rhs_id: NodeID,
     pub assigning: bool,
 }
 
@@ -229,6 +243,7 @@ pub struct SolverDelegate<'icx, 'ctx> {
     _icx: &'icx InferCtx<'ctx>,
     param_env: ParamEnv<'ctx>,
     nested_obligations: Vec<Obligation<'ctx>>,
+    adjustments: RefCell<NodeMap<Vec<Adjustment>>>,
 }
 
 impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
@@ -237,6 +252,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
             _icx: icx,
             param_env,
             nested_obligations: vec![],
+            adjustments: Default::default(),
         }
     }
 
@@ -360,7 +376,9 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
                 scrutinee_ty,
                 shape,
             } => self.solve_shape(shape, scrutinee_ty, location),
-            Goal::RecieverCoerce { from, to } => self.solve_reciever_coerce(from, to, location),
+            Goal::RecieverCoerce { from, to, node } => {
+                self.solve_reciever_coerce(from, to, node, location)
+            }
             Goal::Ref(goal) => self.solve_ref(goal, location),
             Goal::Deref(goal) => self.solve_deref(goal, location),
         }
