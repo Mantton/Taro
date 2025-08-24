@@ -34,6 +34,8 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         }
 
         if let [candidate] = candidates.as_slice() {
+            // Record resolved method association for this call expression
+            self.record_assoc_resolution(goal.call_expr_id, *candidate);
             let obligations = self.select_fn_for_method(*candidate, recv_ty, &goal);
             return SolverResult::Solved(obligations);
         }
@@ -46,6 +48,8 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         }
 
         if let [candidate] = valid.as_slice() {
+            // Record resolved method association for this call expression
+            self.record_assoc_resolution(goal.call_expr_id, *candidate);
             let obligations = self.select_fn_for_method(*candidate, recv_ty, &goal);
             return SolverResult::Solved(obligations);
         }

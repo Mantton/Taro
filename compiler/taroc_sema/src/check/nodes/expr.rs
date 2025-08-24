@@ -89,6 +89,11 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         expectation: Expectation<'ctx>,
     ) -> Ty<'ctx> {
         let ty = self.check_expression_kind(expression, expectation);
+        // Record the (possibly inferred) type for this expression node
+        self.results
+            .borrow_mut()
+            .node_types
+            .insert(expression.id, ty);
         ty
     }
 }

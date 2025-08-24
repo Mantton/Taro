@@ -3,6 +3,7 @@ use crate::{
     check::solver::{Obligation, ObligationSolver},
     infer::InferCtx,
     ty::Ty,
+    typing::TypingResult,
 };
 use rustc_hash::FxHashMap;
 use std::{cell::RefCell, ops::Deref};
@@ -13,6 +14,7 @@ pub struct TyCheckRootCtx<'ctx> {
     pub icx: InferCtx<'ctx>,
     pub locals: RefCell<FxHashMap<NodeID, Ty<'ctx>>>,
     pub solver: RefCell<ObligationSolver<'ctx>>,
+    pub results: RefCell<TypingResult<'ctx>>,
 }
 
 impl<'ctx> TyCheckRootCtx<'ctx> {
@@ -23,6 +25,7 @@ impl<'ctx> TyCheckRootCtx<'ctx> {
             icx,
             locals: Default::default(),
             solver: RefCell::new(ObligationSolver::new()),
+            results: Default::default(),
         }
     }
 }
