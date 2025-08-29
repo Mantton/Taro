@@ -116,6 +116,7 @@ pub struct ClosureExpression {
 
 #[derive(Debug, Clone)]
 pub struct ExpressionField {
+    pub id: NodeID,
     pub label: Identifier,
     pub expression: Box<Expression>,
     pub span: Span,

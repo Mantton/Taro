@@ -15,7 +15,7 @@ pub struct TypingResult<'ctx> {
     pub adjustments: NodeMap<Vec<Adjustment<'ctx>>>,
     // expression node types
     pub node_types: NodeMap<Ty<'ctx>>,
-    pub filed_indices: NodeMap<FieldIndex>,
+    pub field_indices: NodeMap<FieldIndex>,
 }
 
 impl<'ctx> TypingResult<'ctx> {
@@ -58,7 +58,7 @@ impl<'ctx> TypingResult<'ctx> {
     }
 
     pub fn field_index(&self, id: NodeID) -> FieldIndex {
-        *self.filed_indices.get(&id).expect("field index")
+        *self.field_indices.get(&id).expect("field index")
     }
 
     pub fn assoc_res(&self, id: NodeID) -> Option<(DefinitionID, DefinitionKind)> {

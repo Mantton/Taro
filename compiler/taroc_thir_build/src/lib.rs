@@ -1,15 +1,19 @@
 use rustc_hash::FxHashMap;
 use std::vec;
 use taroc_error::CompileResult;
+use taroc_hir::Resolution;
 use taroc_hir::{CtorKind, DefinitionID, DefinitionKind, visitor::HirVisitor};
-use taroc_sema::ty::TyKind;
+use taroc_sema::ty::{AdtKind, TyKind};
 use taroc_sema::{
     GlobalContext,
     ty::{Adjustment, AdjustmentKind, VariantIndex},
     typing::TypingResult,
 };
 use taroc_span::{Span, Spanned};
-use taroc_thir::{BlockID, Callee, ExpressionID, ExpressionKind, StatementID, ThirBody};
+use taroc_thir::{
+    AdtData, AdtFieldExpression, BlockID, Callee, ExpressionID, ExpressionKind, StatementID,
+    ThirBody,
+};
 
 pub fn run<'ctx>(
     package: &taroc_hir::Package,
@@ -338,7 +342,39 @@ impl<'ctx> BuildContext<'ctx> {
 
             taroc_hir::ExpressionKind::CastAs(..) => todo!(),
             taroc_hir::ExpressionKind::Match(..) => todo!(),
-            taroc_hir::ExpressionKind::StructLiteral(..) => todo!(),
+            taroc_hir::ExpressionKind::StructLiteral(lit) => match ty.kind() {
+                TyKind::Adt(def, args) => match def.kind {
+                    AdtKind::Struct => {
+                        let data = AdtData {
+                            def_id: def.id,
+                            variant: VariantIndex::new(0),
+                            arguments: args,
+                            fields: self.build_fields(&lit.fields),
+                        };
+
+                        taroc_thir::ExpressionKind::Adt(data)
+                    }
+                    AdtKind::Enum => {
+                        let res = self.result.path_resolution(node.id, &lit.path, gcx);
+                        match res {
+                            Resolution::Definition(variant_id, DefinitionKind::Variant) => {
+                                let index = gcx.with_type_database(variant_id.package(), |db| {
+                                    db.variants[&variant_id].index
+                                });
+                                let data = AdtData {
+                                    def_id: def.id,
+                                    variant: index,
+                                    arguments: args,
+                                    fields: self.build_fields(&lit.fields),
+                                };
+                                taroc_thir::ExpressionKind::Adt(data)
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                },
+                _ => unreachable!(),
+            },
             taroc_hir::ExpressionKind::Assign(lhs, rhs) => taroc_thir::ExpressionKind::Assign(
                 self.build_expression(lhs),
                 self.build_expression(rhs),
@@ -379,8 +415,37 @@ impl<'ctx> BuildContext<'ctx> {
                 | DefinitionKind::Function
                 | DefinitionKind::Ctor(_, CtorKind::Fn),
             ) => taroc_thir::ExpressionKind::ZST(self.result.type_of(node.id)),
+            taroc_hir::Resolution::Definition(
+                ctor_id,
+                DefinitionKind::Ctor(_, CtorKind::Const),
+            ) => {
+                let ty = self.result.type_of(node.id);
+                match ty.kind() {
+                    TyKind::Adt(def, args) => {
+                        let index = self.gcx.with_type_database(def.id.package(), |db| {
+                            db.enums[&def.id]
+                                .variants
+                                .iter()
+                                .find(|v| v.ctor == Some((CtorKind::Const, ctor_id)))
+                                .map(|v| v.index)
+                                .expect("variant index")
+                        });
+                        let data = AdtData {
+                            def_id: def.id,
+                            variant: index,
+                            arguments: args,
+                            fields: vec![],
+                        };
+                        return taroc_thir::ExpressionKind::Adt(data);
+                    }
+                    _ => unreachable!("expected adt type for unit variant"),
+                }
+            }
             taroc_hir::Resolution::Error => unreachable!(),
-            _ => todo!(),
+            _ => {
+                println!("unimplemented path: {:?}", resolution);
+                todo!()
+            }
         }
     }
 
@@ -405,6 +470,16 @@ impl<'ctx> BuildContext<'ctx> {
             from_overload: true,
             fn_span: expression.span,
         }
+    }
+
+    fn build_fields(&mut self, fields: &[taroc_hir::ExpressionField]) -> Vec<AdtFieldExpression> {
+        fields
+            .iter()
+            .map(|f| AdtFieldExpression {
+                index: self.result.field_index(f.id),
+                expression: self.build_expression(&f.expression),
+            })
+            .collect()
     }
 }
 

@@ -745,7 +745,10 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             let name = expression.label.symbol;
 
             let field_ty = if let Some((_, field_def)) = remaining.remove(&name) {
-                // TODO: add field index note
+                self.results
+                    .borrow_mut()
+                    .field_indices
+                    .insert(expression.id, field_def.index);
                 seen.insert(name, expression.label.span);
                 let field_ty = instantiate_ty_with_args(self.gcx, field_def.ty, args);
                 field_ty
