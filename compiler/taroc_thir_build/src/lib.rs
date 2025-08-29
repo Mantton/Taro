@@ -1,30 +1,44 @@
+use rustc_hash::FxHashMap;
+use std::vec;
 use taroc_error::CompileResult;
-use taroc_hir::{CtorKind, DefinitionKind, visitor::HirVisitor};
+use taroc_hir::{CtorKind, DefinitionID, DefinitionKind, visitor::HirVisitor};
+use taroc_sema::ty::TyKind;
 use taroc_sema::{
     GlobalContext,
-    ty::{Adjustment, AdjustmentKind, Ty, VariantIndex},
+    ty::{Adjustment, AdjustmentKind, VariantIndex},
     typing::TypingResult,
 };
 use taroc_span::{Span, Spanned};
-use taroc_thir::{BlockID, ExpressionID, StatementID, ThirBody};
+use taroc_thir::{BlockID, Callee, ExpressionID, ExpressionKind, StatementID, ThirBody};
 
-pub fn run(package: &taroc_hir::Package, context: GlobalContext) -> CompileResult<()> {
+pub fn run<'ctx>(
+    package: &taroc_hir::Package,
+    context: GlobalContext<'ctx>,
+) -> CompileResult<taroc_thir::Package<'ctx>> {
     Actor::run(package, context)
 }
 
 struct Actor<'ctx> {
     context: GlobalContext<'ctx>,
+    table: FxHashMap<DefinitionID, ThirBody<'ctx>>,
 }
 
 impl<'ctx> Actor<'ctx> {
     fn new(context: GlobalContext<'ctx>) -> Actor<'ctx> {
-        Actor { context }
+        Actor {
+            context,
+            table: Default::default(),
+        }
     }
 
-    fn run(package: &taroc_hir::Package, context: GlobalContext<'ctx>) -> CompileResult<()> {
+    fn run(
+        package: &taroc_hir::Package,
+        context: GlobalContext<'ctx>,
+    ) -> CompileResult<taroc_thir::Package<'ctx>> {
         let mut actor = Actor::new(context);
-        taroc_hir::visitor::walk_package(&mut actor, package); // Collect Top Level
-        context.diagnostics.report()
+        taroc_hir::visitor::walk_package(&mut actor, package);
+        context.diagnostics.report()?;
+        Ok(actor.table)
     }
 }
 
@@ -53,7 +67,8 @@ impl HirVisitor for Actor<'_> {
             result,
         };
 
-        let _ = build_context.build(block);
+        let body = build_context.build(block);
+        self.table.insert(def, body);
     }
 }
 
@@ -65,7 +80,7 @@ struct BuildContext<'ctx> {
 
 impl<'ctx> BuildContext<'ctx> {
     fn build(mut self, block: &taroc_hir::Block) -> ThirBody<'ctx> {
-        let block = self.build_block(block);
+        let _ = self.build_block(block);
         self.thir
     }
 
@@ -73,7 +88,7 @@ impl<'ctx> BuildContext<'ctx> {
         let statments = self.build_statements(&node.statements);
         let block = taroc_thir::Block {
             span: node.span,
-            statments,
+            statements: statments,
         };
         self.thir.blocks.push(block)
     }
@@ -107,7 +122,10 @@ impl<'ctx> BuildContext<'ctx> {
                 let block = self.build_block(block);
                 taroc_thir::StatementKind::Loop(block)
             }
-            taroc_hir::StatementKind::Defer(block) => todo!(),
+            taroc_hir::StatementKind::Defer(block) => {
+                let block = self.build_block(block);
+                taroc_thir::StatementKind::Defer(block)
+            }
         };
 
         let statement = taroc_thir::Statement { kind };
@@ -135,17 +153,15 @@ impl<'ctx> BuildContext<'ctx> {
         node: &taroc_hir::Expression,
     ) -> taroc_thir::Expression<'ctx> {
         let gcx = self.gcx;
+        gcx.diagnostics
+            .warn(format!("Building ExprNode"), node.span);
         let ty = self.result.type_of(node.id);
-        gcx.diagnostics.warn(
-            format!("Building ExprNode, type is {}", ty.format(gcx)),
-            node.span,
-        );
         let kind = match &node.kind {
             taroc_hir::ExpressionKind::Binary(op, lhs, rhs) => {
                 if self.result.is_method_call(node) {
                     let lhs = self.build_expression(lhs);
                     let rhs = self.build_expression(rhs);
-                    todo!()
+                    self.overloaded_operator(node, vec![lhs, rhs])
                 } else {
                     match op {
                         taroc_hir::BinaryOperator::BoolAnd => {
@@ -176,7 +192,7 @@ impl<'ctx> BuildContext<'ctx> {
             taroc_hir::ExpressionKind::Unary(taroc_hir::UnaryOperator::Negate, rhs) => {
                 if self.result.is_method_call(node) {
                     let rhs = self.build_expression(rhs);
-                    todo!()
+                    self.overloaded_operator(node, vec![rhs])
                 } else if let taroc_hir::ExpressionKind::Literal(lit) = &rhs.kind {
                     taroc_thir::ExpressionKind::Literal {
                         value: Spanned::new(lit.clone(), node.span),
@@ -192,7 +208,7 @@ impl<'ctx> BuildContext<'ctx> {
             taroc_hir::ExpressionKind::Unary(taroc_hir::UnaryOperator::LogicalNot, rhs) => {
                 if self.result.is_method_call(node) {
                     let rhs = self.build_expression(rhs);
-                    todo!()
+                    self.overloaded_operator(node, vec![rhs])
                 } else {
                     taroc_thir::ExpressionKind::Unary {
                         op: taroc_thir::UnaryOp::Not,
@@ -203,7 +219,7 @@ impl<'ctx> BuildContext<'ctx> {
             taroc_hir::ExpressionKind::Unary(taroc_hir::UnaryOperator::BitwiseNot, rhs) => {
                 if self.result.is_method_call(node) {
                     let rhs = self.build_expression(rhs);
-                    todo!()
+                    self.overloaded_operator(node, vec![rhs])
                 } else {
                     taroc_thir::ExpressionKind::Unary {
                         op: taroc_thir::UnaryOp::BitNot,
@@ -221,9 +237,16 @@ impl<'ctx> BuildContext<'ctx> {
                 self.build_from_path(node, resolution)
             }
             taroc_hir::ExpressionKind::FunctionCall(expression, expression_arguments) => {
+                let fn_ty = self.result.type_of(expression.id);
+                let callee = match fn_ty.kind() {
+                    TyKind::FnDef(def, _) => Callee::Direct { def, fn_ty },
+                    _ => Callee::Thin {
+                        ptr: self.build_expression(expression),
+                        fn_ty,
+                    },
+                };
                 taroc_thir::ExpressionKind::Call {
-                    fn_ty: self.result.type_of(expression.id),
-                    func: self.build_expression(expression),
+                    callee,
                     arguments: expression_arguments
                         .iter()
                         .map(|e| self.build_expression(&e.expression))
@@ -246,16 +269,14 @@ impl<'ctx> BuildContext<'ctx> {
                     self.result.field_index(node.id),
                 )
             }
-
             taroc_hir::ExpressionKind::MethodCall(method_call) => {
-                let func = self.method_callee(node, method_call.method.span, None);
+                let callee = self.method_callee(node);
                 let arguments = std::iter::once(&method_call.receiver)
                     .chain(method_call.arguments.iter().map(|e| &e.expression))
                     .map(|e| self.build_expression(&e))
                     .collect();
                 taroc_thir::ExpressionKind::Call {
-                    fn_ty: func.ty,
-                    func: self.thir.expressions.push(func),
+                    callee,
                     arguments,
                     from_overload: false,
                     fn_span: method_call.span,
@@ -292,17 +313,32 @@ impl<'ctx> BuildContext<'ctx> {
                     .as_ref()
                     .map(|e| self.build_expression(e)),
             },
-            taroc_hir::ExpressionKind::Match(match_expression) => todo!(),
-            taroc_hir::ExpressionKind::StructLiteral(struct_literal) => todo!(),
+
+            taroc_hir::ExpressionKind::AssignOp(op, lhs, rhs) => {
+                if self.result.is_method_call(node) {
+                    let lhs = self.build_expression(lhs);
+                    let rhs = self.build_expression(rhs);
+                    self.overloaded_operator(node, vec![lhs, rhs])
+                } else {
+                    taroc_thir::ExpressionKind::AssignOp {
+                        op: assign_op(*op),
+                        lhs: self.build_expression(lhs),
+                        rhs: self.build_expression(rhs),
+                    }
+                }
+            }
             taroc_hir::ExpressionKind::Subscript(expression, expression_arguments) => {
                 let lhs = self.build_expression(expression);
-                todo!()
+                let arguments: Vec<ExpressionID> = expression_arguments
+                    .iter()
+                    .map(|e| self.build_expression(&e.expression))
+                    .collect();
+                taroc_thir::ExpressionKind::Placeholder
             }
-            taroc_hir::ExpressionKind::AssignOp(binary_operator, expression, expression1) => {
-                todo!()
-            }
-            taroc_hir::ExpressionKind::CastAs(expression, _) => todo!(),
 
+            taroc_hir::ExpressionKind::CastAs(..) => todo!(),
+            taroc_hir::ExpressionKind::Match(..) => todo!(),
+            taroc_hir::ExpressionKind::StructLiteral(..) => todo!(),
             taroc_hir::ExpressionKind::Assign(lhs, rhs) => taroc_thir::ExpressionKind::Assign(
                 self.build_expression(lhs),
                 self.build_expression(rhs),
@@ -330,7 +366,7 @@ impl<'ctx> BuildContext<'ctx> {
 impl<'ctx> BuildContext<'ctx> {
     fn build_from_path(
         &self,
-        _: &taroc_hir::Expression,
+        node: &taroc_hir::Expression,
         resolution: taroc_hir::Resolution,
     ) -> taroc_thir::ExpressionKind<'ctx> {
         match resolution {
@@ -342,24 +378,32 @@ impl<'ctx> BuildContext<'ctx> {
                 DefinitionKind::AssociatedFunction
                 | DefinitionKind::Function
                 | DefinitionKind::Ctor(_, CtorKind::Fn),
-            ) => taroc_thir::ExpressionKind::Placeholder,
+            ) => taroc_thir::ExpressionKind::ZST(self.result.type_of(node.id)),
             taroc_hir::Resolution::Error => unreachable!(),
             _ => todo!(),
         }
     }
 
-    fn method_callee(
-        &self,
-        expression: &taroc_hir::Expression,
-        span: Span,
-        x: Option<Ty<'ctx>>,
-    ) -> taroc_thir::Expression<'ctx> {
-        // TODO: Functions
+    fn method_callee(&self, expression: &taroc_hir::Expression) -> Callee<'ctx> {
+        let (def, _kind) = self
+            .result
+            .assoc_res(expression.id)
+            .unwrap_or_else(|| unreachable!());
+        let fn_ty = self.gcx.type_of(def);
+        Callee::Direct { def, fn_ty }
+    }
 
-        taroc_thir::Expression {
-            kind: taroc_thir::ExpressionKind::Placeholder,
-            ty: self.gcx.store.common_types.error,
-            span,
+    fn overloaded_operator(
+        &mut self,
+        expression: &taroc_hir::Expression,
+        arguments: Vec<ExpressionID>,
+    ) -> ExpressionKind<'ctx> {
+        let callee = self.method_callee(expression);
+        ExpressionKind::Call {
+            callee,
+            arguments,
+            from_overload: true,
+            fn_span: expression.span,
         }
     }
 }
@@ -403,9 +447,9 @@ fn bin_op(op: taroc_hir::BinaryOperator) -> taroc_thir::BinaryOperator {
         taroc_hir::BinaryOperator::Mul => Op::Mul,
         taroc_hir::BinaryOperator::Div => Op::Div,
         taroc_hir::BinaryOperator::Rem => Op::Rem,
-        taroc_hir::BinaryOperator::BitAnd => Op::BitAnd,
-        taroc_hir::BinaryOperator::BitOr => Op::BitOr,
-        taroc_hir::BinaryOperator::BitXor => Op::BitXor,
+        taroc_hir::BinaryOperator::BitAnd => Op::And,
+        taroc_hir::BinaryOperator::BitOr => Op::Or,
+        taroc_hir::BinaryOperator::BitXor => Op::Xor,
         taroc_hir::BinaryOperator::BitShl => Op::Shl,
         taroc_hir::BinaryOperator::BitShr => Op::Shr,
         taroc_hir::BinaryOperator::Eql => Op::Eq,
@@ -415,6 +459,23 @@ fn bin_op(op: taroc_hir::BinaryOperator) -> taroc_thir::BinaryOperator {
         taroc_hir::BinaryOperator::Geq => Op::Geq,
         taroc_hir::BinaryOperator::Neq => Op::Neq,
         taroc_hir::BinaryOperator::PtrEq => todo!(),
+        _ => unreachable!(),
+    }
+}
+
+fn assign_op(op: taroc_hir::BinaryOperator) -> taroc_thir::AssignmentOperator {
+    type Op = taroc_thir::AssignmentOperator;
+    match op {
+        taroc_hir::BinaryOperator::Add => Op::Add,
+        taroc_hir::BinaryOperator::Sub => Op::Sub,
+        taroc_hir::BinaryOperator::Mul => Op::Mul,
+        taroc_hir::BinaryOperator::Div => Op::Div,
+        taroc_hir::BinaryOperator::Rem => Op::Rem,
+        taroc_hir::BinaryOperator::BitAnd => Op::And,
+        taroc_hir::BinaryOperator::BitOr => Op::Or,
+        taroc_hir::BinaryOperator::BitXor => Op::Xor,
+        taroc_hir::BinaryOperator::BitShl => Op::Shl,
+        taroc_hir::BinaryOperator::BitShr => Op::Shr,
         _ => unreachable!(),
     }
 }

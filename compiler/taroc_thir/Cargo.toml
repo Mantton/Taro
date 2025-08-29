@@ -8,3 +8,4 @@ taroc_sema = { path = "../taroc_sema" }
 taroc_hir = { path = "../taroc_hir" }
 taroc_span = { path = "../taroc_span" }
 index_vec = "0.1.4"
+rustc-hash = "2.1.1"

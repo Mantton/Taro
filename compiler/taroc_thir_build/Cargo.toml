@@ -9,3 +9,4 @@ taroc_hir = { path = "../taroc_hir" }
 taroc_thir = { path = "../taroc_thir" }
 taroc_error = { path = "../taroc_error" }
 taroc_span = { path = "../taroc_span" }
+rustc-hash = "2.1.1"

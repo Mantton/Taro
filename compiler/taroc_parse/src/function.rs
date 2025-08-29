@@ -271,6 +271,9 @@ impl Parser {
         if self.matches(TokenKind::LBracket) && self.next_matches(1, TokenKind::RBracket) {
             self.bump();
             self.bump();
+            if self.eat(TokenKind::Assign) {
+                return Ok(OperatorKind::IndexAssign);
+            }
             return Ok(OperatorKind::Index);
         }
 

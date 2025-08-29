@@ -997,7 +997,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         let beta: Vec<_> = arguments
             .iter()
             .map(|arg| OverloadArgument {
-                ty: self.next_ty_var(arg.span),
+                ty: self.check_expression(&arg.expression),
                 span: arg.span,
                 label: arg.label.as_ref().map(|l| l.identifier),
                 id: arg.expression.id,
