@@ -1,7 +1,7 @@
 use index_vec::{IndexVec, define_index_type};
 use rustc_hash::FxHashMap;
 use taroc_hir::{DefinitionID, Mutability, NodeID};
-use taroc_sema::ty::{FieldIndex, Ty, VariantIndex};
+use taroc_sema::ty::{FieldIndex, GenericArguments, Ty, VariantIndex};
 use taroc_span::{Span, Spanned};
 
 pub type Package<'ctx> = FxHashMap<DefinitionID, ThirBody<'ctx>>;
@@ -65,7 +65,7 @@ pub enum Callee<'ctx> {
         ptr: ExpressionID,
         fn_ty: Ty<'ctx>,
     },
-    // Thick function value (code pointer + environment) TODO!
+    // TODO: Thick function value (code pointer + environment) !
     Thick {
         code: ExpressionID,
         env: ExpressionID,
@@ -121,10 +121,22 @@ pub enum ExpressionKind<'ctx> {
     Array(Vec<ExpressionID>),
     Tuple(Vec<ExpressionID>),
     ZST(Ty<'ctx>),
+    Adt(AdtData<'ctx>),
     // TODO
-    Adt,
     Match,
     Placeholder,
+}
+
+pub struct AdtData<'ctx> {
+    pub def_id: DefinitionID,
+    pub variant: VariantIndex,
+    pub arguments: GenericArguments<'ctx>,
+    pub fields: Vec<AdtFieldExpression>,
+}
+
+pub struct AdtFieldExpression {
+    pub index: FieldIndex,
+    pub expression: ExpressionID,
 }
 
 pub enum BinaryOperator {

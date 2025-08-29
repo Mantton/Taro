@@ -153,7 +153,7 @@ fn solve<'rcx, 'gcx>(fcx: &mut FnCtx<'rcx, 'gcx>) {
         if !fields.is_empty() {
             let mut results = fcx.results.borrow_mut();
             for (node, idx) in fields.into_iter() {
-                results.filed_indices.insert(node, idx);
+                results.field_indices.insert(node, idx);
             }
         }
     }
@@ -189,7 +189,7 @@ fn solve<'rcx, 'gcx>(fcx: &mut FnCtx<'rcx, 'gcx>) {
         if !fields.is_empty() {
             let mut results = fcx.results.borrow_mut();
             for (node, idx) in fields.into_iter() {
-                results.filed_indices.insert(node, idx);
+                results.field_indices.insert(node, idx);
             }
         }
     }

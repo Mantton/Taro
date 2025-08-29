@@ -250,7 +250,7 @@ impl GenericParameterDefinitionKind {
 pub struct AdtFieldDefinition<'ctx> {
     pub id: DefinitionID,
     pub name: Symbol,
-    pub index: usize,
+    pub index: FieldIndex,
     pub ty: Ty<'ctx>,
 }
 
@@ -259,7 +259,7 @@ pub struct VariantDefinition<'ctx> {
     pub id: DefinitionID,
     pub ctor: Option<(CtorKind, DefinitionID)>,
     pub name: Symbol,
-    pub discriminant: usize,
+    pub index: VariantIndex,
     pub fields: IndexVec<FieldIndex, AdtFieldDefinition<'ctx>>,
 }
 

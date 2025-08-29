@@ -232,6 +232,7 @@ impl Actor<'_> {
         node: taroc_ast::ExpressionField,
     ) -> taroc_hir::ExpressionField {
         taroc_hir::ExpressionField {
+            id: self.next(),
             span: node.span,
             label: if node.is_shorthand {
                 if let Some(ident) = self.ident_from_expr(&node.expression) {

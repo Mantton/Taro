@@ -1,5 +1,5 @@
 use crate::lower::{ItemCtx, LoweringRequest, TypeLowerer};
-use crate::ty::{EnumDefinition, StructDefinition};
+use crate::ty::{EnumDefinition, FieldIndex, StructDefinition, VariantIndex};
 use crate::{GlobalContext, ty::VariantDefinition};
 use taroc_error::CompileResult;
 use taroc_hir::{
@@ -92,7 +92,7 @@ impl<'ctx> Actor<'ctx> {
                     id: gcx.def_id(f.id),
                     name: f.identifier.symbol,
                     ty: icx.lowerer().lower_type(&f.ty, &LoweringRequest::default()),
-                    index: i,
+                    index: FieldIndex::new(i),
                 };
             })
             .collect();
@@ -102,7 +102,9 @@ impl<'ctx> Actor<'ctx> {
             name: ident.symbol,
             fields,
             ctor: variant.ctor().map(|(k, id)| (k, gcx.def_id(id))),
-            discriminant: discrimimant.unwrap_or(0),
+            index: discrimimant
+                .map(VariantIndex::new)
+                .unwrap_or(VariantIndex::new(0)),
         };
         let definition = gcx.alloc(s_def);
 
