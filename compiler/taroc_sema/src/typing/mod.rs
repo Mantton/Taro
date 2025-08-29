@@ -19,6 +19,7 @@ pub struct TypingResult<'ctx> {
 }
 
 impl<'ctx> TypingResult<'ctx> {
+    #[track_caller]
     pub fn type_of(&self, node: NodeID) -> Ty<'ctx> {
         *self.node_types.get(&node).expect("type_of node")
     }
@@ -58,5 +59,9 @@ impl<'ctx> TypingResult<'ctx> {
 
     pub fn field_index(&self, id: NodeID) -> FieldIndex {
         *self.filed_indices.get(&id).expect("field index")
+    }
+
+    pub fn assoc_res(&self, id: NodeID) -> Option<(DefinitionID, DefinitionKind)> {
+        self.assoc_resolution.get(&id).cloned().and_then(|r| r.ok())
     }
 }

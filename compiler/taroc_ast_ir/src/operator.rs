@@ -92,6 +92,7 @@ pub enum OperatorKind {
     Neq,
 
     Index,
+    IndexAssign,
 }
 
 impl OperatorKind {

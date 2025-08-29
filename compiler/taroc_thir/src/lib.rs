@@ -1,8 +1,10 @@
 use index_vec::{IndexVec, define_index_type};
-use taroc_hir::{Mutability, NodeID};
+use rustc_hash::FxHashMap;
+use taroc_hir::{DefinitionID, Mutability, NodeID};
 use taroc_sema::ty::{FieldIndex, Ty, VariantIndex};
 use taroc_span::{Span, Spanned};
 
+pub type Package<'ctx> = FxHashMap<DefinitionID, ThirBody<'ctx>>;
 define_index_type! {
     pub struct ParameterID = u32;
 }
@@ -42,6 +44,7 @@ pub enum StatementKind {
     Break,
     Return(Option<ExpressionID>),
     Loop(BlockID),
+    Defer(BlockID),
     Continue,
 }
 
@@ -49,6 +52,25 @@ pub struct Expression<'ctx> {
     pub ty: Ty<'ctx>,
     pub span: Span,
     pub kind: ExpressionKind<'ctx>,
+}
+
+pub enum Callee<'ctx> {
+    // Statically known function definition; no callee value materialized
+    Direct {
+        def: DefinitionID,
+        fn_ty: Ty<'ctx>,
+    },
+    // Thin function value (code pointer only)
+    Thin {
+        ptr: ExpressionID,
+        fn_ty: Ty<'ctx>,
+    },
+    // Thick function value (code pointer + environment) TODO!
+    Thick {
+        code: ExpressionID,
+        env: ExpressionID,
+        fn_ty: Ty<'ctx>,
+    },
 }
 
 pub enum ExpressionKind<'ctx> {
@@ -64,8 +86,7 @@ pub enum ExpressionKind<'ctx> {
     },
 
     Call {
-        fn_ty: Ty<'ctx>,
-        func: ExpressionID,
+        callee: Callee<'ctx>,
         arguments: Vec<ExpressionID>,
         from_overload: bool,
         fn_span: Span,
@@ -90,11 +111,16 @@ pub enum ExpressionKind<'ctx> {
     Loop(ExpressionID),
     Block(BlockID),
     Assign(ExpressionID, ExpressionID),
-    AssignOp(usize, ExpressionID, ExpressionID),
+    AssignOp {
+        op: AssignmentOperator,
+        lhs: ExpressionID,
+        rhs: ExpressionID,
+    },
     FieldAccess(ExpressionID, VariantIndex, FieldIndex),
     Reference(Mutability, ExpressionID),
     Array(Vec<ExpressionID>),
     Tuple(Vec<ExpressionID>),
+    ZST(Ty<'ctx>),
     // TODO
     Adt,
     Match,
@@ -107,9 +133,9 @@ pub enum BinaryOperator {
     Mul,
     Div,
     Rem,
-    BitAnd,
-    BitOr,
-    BitXor,
+    And,
+    Or,
+    Xor,
     Shl,
     Shr,
     Eq,
@@ -118,6 +144,19 @@ pub enum BinaryOperator {
     Neq,
     Geq,
     Gt,
+}
+
+pub enum AssignmentOperator {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    Xor,
+    And,
+    Or,
+    Shl,
+    Shr,
 }
 
 pub enum LogicalOperator {
@@ -133,5 +172,5 @@ pub enum UnaryOp {
 
 pub struct Block {
     pub span: Span,
-    pub statments: Vec<StatementID>,
+    pub statements: Vec<StatementID>,
 }

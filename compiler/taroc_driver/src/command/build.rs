@@ -117,8 +117,9 @@ impl Builder {
         context.set_session(session);
         let package = tokenize_package(context)?;
         let package = parse_package(package, context)?;
-        let package = taroc_ast_passes::run(package, context)?;
-        let _ = taroc_hir_passes::run(&package, context)?;
+        let package = taroc_ast_passes::run(package, context)?; // Produces HIR
+        let package = taroc_hir_passes::run(&package, context)?; // Produces THIR
+        // let package = taroc_thir_passes::run(&package, context)?; // Produces MIR
         Ok(())
     }
 }
