@@ -105,9 +105,9 @@ impl<'ctx> BuildContext<'ctx> {
     }
 
     fn build_statement(&mut self, node: &taroc_hir::Statement) -> Option<StatementID> {
-        self.gcx
-            .diagnostics
-            .warn(format!("Building StmtNode"), node.span);
+        // self.gcx
+        //     .diagnostics
+        //     .warn(format!("Building StmtNode"), node.span);
         let kind = match &node.kind {
             taroc_hir::StatementKind::Declaration(_) => return None,
             taroc_hir::StatementKind::Expression(expression) => {
@@ -157,8 +157,8 @@ impl<'ctx> BuildContext<'ctx> {
         node: &taroc_hir::Expression,
     ) -> taroc_thir::Expression<'ctx> {
         let gcx = self.gcx;
-        gcx.diagnostics
-            .warn(format!("Building ExprNode"), node.span);
+        // gcx.diagnostics
+        //     .warn(format!("Building ExprNode"), node.span);
         let ty = self.result.type_of(node.id);
         let kind = match &node.kind {
             taroc_hir::ExpressionKind::Binary(op, lhs, rhs) => {
