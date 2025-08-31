@@ -5,8 +5,8 @@ import std::hash::{Hashable, Hasher}
 
 @foundation
 public enum Option<Value> {
-    case Some(Value)
-    case None
+    Some(Value),
+    None
 }
 
 extend<Value> Option<Value> {

@@ -2,7 +2,7 @@ use index_vec::{IndexVec, define_index_type};
 use rustc_hash::FxHashMap;
 use taroc_hir::{DefinitionID, Mutability, NodeID};
 use taroc_sema::ty::{FieldIndex, GenericArguments, Ty, VariantIndex};
-use taroc_span::{Span, Spanned};
+use taroc_span::{Span, Spanned, Symbol};
 
 pub type Package<'ctx> = FxHashMap<DefinitionID, ThirBody<'ctx>>;
 define_index_type! {
@@ -21,12 +21,17 @@ define_index_type! {
     pub struct BlockID = u32;
 }
 
+define_index_type! {
+    pub struct ArmID = u32;
+}
+
 #[derive(Default)]
 pub struct ThirBody<'ctx> {
     pub blocks: IndexVec<BlockID, Block>,
     pub expressions: IndexVec<ExpressionID, Expression<'ctx>>,
     pub statements: IndexVec<StatementID, Statement>,
     pub parameters: IndexVec<ParameterID, Parameter<'ctx>>,
+    pub arms: IndexVec<ArmID, MatchArm<'ctx>>,
 }
 
 pub struct Parameter<'ctx> {
@@ -122,8 +127,10 @@ pub enum ExpressionKind<'ctx> {
     Tuple(Vec<ExpressionID>),
     ZST(Ty<'ctx>),
     Adt(AdtData<'ctx>),
-    // TODO
-    Match,
+    Match {
+        scrutinee: ExpressionID,
+        arms: Vec<ArmID>,
+    },
     Placeholder,
 }
 
@@ -139,6 +146,12 @@ pub struct AdtFieldExpression {
     pub expression: ExpressionID,
 }
 
+pub struct MatchArm<'ctx> {
+    pub pat: Pattern<'ctx>,
+    pub guard: Option<ExpressionID>,
+    pub body: ExpressionID,
+    pub span: Span,
+}
 pub enum BinaryOperator {
     Add,
     Sub,
@@ -185,4 +198,35 @@ pub enum UnaryOp {
 pub struct Block {
     pub span: Span,
     pub statements: Vec<StatementID>,
+}
+
+pub struct Pattern<'ctx> {
+    pub ty: Ty<'ctx>,
+    pub span: Span,
+    pub kind: PatternKind<'ctx>,
+}
+
+pub enum PatternKind<'ctx> {
+    Wildcard,
+    Binding {
+        name: Symbol,
+        ty: Ty<'ctx>,
+    },
+    Variant {
+        id: DefinitionID,
+        arguments: GenericArguments<'ctx>,
+        index: VariantIndex,
+        fields: Vec<FieldPattern<'ctx>>,
+    },
+    Leaf {
+        fields: Vec<FieldPattern<'ctx>>,
+    },
+    Constant,
+    Or(Vec<Pattern<'ctx>>),
+    Placeholder,
+}
+
+pub struct FieldPattern<'tcx> {
+    pub field: FieldIndex,
+    pub pattern: Pattern<'tcx>,
 }

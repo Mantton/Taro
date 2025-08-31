@@ -44,7 +44,6 @@ pub enum TokenKind {
     If,
     Else,
     Match,
-    Case,
 
     Defer,
     Guard,
@@ -237,7 +236,6 @@ impl Display for TokenKind {
             TokenKind::Operator => "operator",
             TokenKind::Private => "private",
             TokenKind::Readonly => "readonly",
-            TokenKind::Case => "case",
         };
         write!(f, "{}", text)
     }
@@ -286,7 +284,6 @@ impl TokenKind {
             "operator" => TokenKind::Operator,
             "private" => TokenKind::Private,
             "readonly" => TokenKind::Readonly,
-            "case" => TokenKind::Case,
             _ => return None,
         };
 

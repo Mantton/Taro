@@ -917,7 +917,6 @@ impl Parser {
 
     fn parse_match_arm(&mut self) -> R<MatchArm> {
         let lo = self.lo_span();
-        self.expect(TokenKind::Case)?;
         let pattern = self.parse_match_arm_pattern()?;
         let guard = if self.eat(TokenKind::If) {
             Some(self.parse_expression()?)

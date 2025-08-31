@@ -339,9 +339,12 @@ impl<'ctx> BuildContext<'ctx> {
                     .collect();
                 taroc_thir::ExpressionKind::Placeholder
             }
-
             taroc_hir::ExpressionKind::CastAs(..) => todo!(),
-            taroc_hir::ExpressionKind::Match(..) => todo!(),
+            taroc_hir::ExpressionKind::Match(match_node) => {
+                let scrutinee = self.build_expression(&match_node.value);
+                let arms = match_node.arms.iter().map(|a| self.build_arm(a)).collect();
+                taroc_thir::ExpressionKind::Match { scrutinee, arms }
+            }
             taroc_hir::ExpressionKind::StructLiteral(lit) => match ty.kind() {
                 TyKind::Adt(def, args) => match def.kind {
                     AdtKind::Struct => {
@@ -480,6 +483,25 @@ impl<'ctx> BuildContext<'ctx> {
                 expression: self.build_expression(&f.expression),
             })
             .collect()
+    }
+
+    fn build_arm(&mut self, arm: &taroc_hir::MatchArm) -> taroc_thir::ArmID {
+        let arm = taroc_thir::MatchArm {
+            pat: self.build_pattern(&arm.pattern),
+            guard: arm.guard.as_ref().map(|a| self.build_expression(&a)),
+            body: self.build_expression(&arm.body),
+            span: arm.span,
+        };
+
+        self.thir.arms.push(arm)
+    }
+
+    fn build_pattern(&mut self, pat: &taroc_hir::Pattern) -> taroc_thir::Pattern<'ctx> {
+        taroc_thir::Pattern {
+            ty: self.gcx.store.common_types.error, // self.result.type_of(pat.id),
+            span: pat.span,
+            kind: taroc_thir::PatternKind::Placeholder,
+        }
     }
 }
 
