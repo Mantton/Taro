@@ -3,8 +3,8 @@ import std::option::Option
 
 @foundation
 public enum Result<Value, Error> {
-    case Success(Value)
-    case Failure(Error)
+    Success(Value),
+    Failure(Error)
 }
 
 extend<Value, Error> Result<Value, Error> {

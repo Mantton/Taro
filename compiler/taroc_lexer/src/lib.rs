@@ -1012,7 +1012,6 @@ mod test {
         assert_token!("namespace", TokenKind::Namespace, "namespace");
         assert_token!("public", TokenKind::Public, "public");
         assert_token!("match", TokenKind::Match, "match");
-        assert_token!("case", TokenKind::Case, "case");
     }
 
     #[test]

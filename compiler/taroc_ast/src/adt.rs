@@ -37,10 +37,5 @@ pub struct StructDefinition {
 #[derive(Debug)]
 pub struct EnumDefinition {
     pub generics: Generics,
-    pub cases: Vec<EnumCase>,
-}
-
-#[derive(Debug)]
-pub struct EnumCase {
     pub variants: Vec<Variant>,
 }

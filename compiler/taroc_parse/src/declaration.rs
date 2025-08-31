@@ -1,10 +1,9 @@
 use super::package::{Parser, R};
 use taroc_ast::{
     AssociatedDeclaration, AssociatedDeclarationKind, ConstantDeclaration, Declaration,
-    DeclarationKind, EnumCase, EnumDefinition, Extend, Extern, ForeignDeclaration,
-    ForeignDeclarationKind, FunctionDeclaration, FunctionDeclarationKind, Generics,
-    InterfaceDefinition, Local, Mutability, Namespace, PathTree, PathTreeNode, PatternKind,
-    StructDefinition, TypeAlias, VariantKind,
+    DeclarationKind, EnumDefinition, Extend, Extern, ForeignDeclaration, ForeignDeclarationKind,
+    FunctionDeclaration, FunctionDeclarationKind, Generics, InterfaceDefinition, Local, Mutability,
+    Namespace, PathTree, PathTreeNode, PatternKind, StructDefinition, TypeAlias, VariantKind,
 };
 use taroc_span::{Identifier, SpannedMessage};
 use taroc_token::{Delimiter, TokenKind};
@@ -524,15 +523,12 @@ impl Parser {
             conformances: None,
         };
 
-        let cases = self.parse_block_sequence(|this| this.parse_enum_case())?;
-        let e = EnumDefinition { generics, cases };
+        let variants =
+            self.parse_delimiter_sequence(Delimiter::Brace, TokenKind::Comma, true, |this| {
+                this.parse_enum_variant()
+            })?;
+        let e = EnumDefinition { generics, variants };
         Ok((identifier, DeclarationKind::Enum(e)))
-    }
-
-    fn parse_enum_case(&mut self) -> R<EnumCase> {
-        self.expect(TokenKind::Case)?;
-        let variants = self.parse_sequence(TokenKind::Comma, |this| this.parse_enum_variant())?;
-        Ok(EnumCase { variants })
     }
 }
 
