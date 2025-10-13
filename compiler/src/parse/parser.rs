@@ -75,7 +75,6 @@ struct Parser {
     cursor: usize,
     restrictions: Restrictions,
     anchors: VecDeque<usize>,
-    angle_depth: usize, //  how many '<' are currently open?
 
     errors: Vec<Spanned<ParserError>>,
 }
@@ -87,7 +86,6 @@ impl Parser {
             cursor: 0,
             restrictions: Restrictions::empty(),
             anchors: VecDeque::new(),
-            angle_depth: 0,
             errors: vec![],
         }
     }
@@ -1675,11 +1673,7 @@ impl Parser {
         F: FnMut(&mut Parser) -> R<T>,
     {
         // eat open
-        self.expect_unshifted(delim.open())?;
-
-        if matches!(delim, Delimiter::Chevron) {
-            self.angle_depth += 1;
-        }
+        self.expect(delim.open())?;
 
         // if immediately closed return empty vec
         if self.eat(delim.close()) {
@@ -1704,12 +1698,7 @@ impl Parser {
             }
         }
 
-        self.expect_unshifted(delim.close())?;
-
-        if matches!(delim, Delimiter::Chevron) {
-            self.angle_depth -= 1;
-        }
-
+        self.expect(delim.close())?;
         Ok(items)
     }
 
@@ -1808,84 +1797,6 @@ impl Parser {
         self.raise_anchor();
 
         result
-    }
-}
-
-impl Parser {
-    /* ------------------------------------------------------------------ */
-    /* 1. Conditional splitter helpers                                    */
-    /* ------------------------------------------------------------------ */
-
-    /// Returns `true` IFF the *next* token *can* satisfy `expected`,
-    /// performing "unshifting" on the fly if we are inside `< ... >`
-    /// and the compound token needs to be split.
-    fn test_then_unshift(&mut self, expected: Token) -> bool {
-        use Token::*;
-        let k0 = self.current_token(); // raw token from the lexer
-        match (expected.clone(), k0.clone(), self.angle_depth) {
-            /* Looking for '<' but lexer gave us '<<' */
-            (LChevron, Shl, depth) if depth > 0 => {
-                self.split_shl(); // inject "<" "<"
-                true
-            }
-            /* Looking for '>' but lexer gave us '>>' or '>>=' */
-            (RChevron, Shr, depth) | (RChevron, ShrEq, depth) if depth > 0 => {
-                self.split_shr_like(k0); // inject ">" (">" ["="])
-                true
-            }
-            /* Looking for '=' after we've already split '>>='  */
-            (Eql, token, _) if token == Eql => true,
-
-            /* Normal single-token match */
-            _ => k0 == expected,
-        }
-    }
-
-    fn expect_unshifted(&mut self, kind: Token) -> R<()> {
-        if self.eat_unshifted(kind.clone()) {
-            Ok(())
-        } else {
-            return Err(self.err_at_current(ParserError::Expected(kind, self.current_token())));
-        }
-    }
-
-    /// Consuming version (`eat_*` style).
-    fn eat_unshifted(&mut self, expected: Token) -> bool {
-        if self.test_then_unshift(expected) {
-            self.bump(); // now safe: correct token is first
-            true
-        } else {
-            false
-        }
-    }
-
-    /*  low-level split helpers  --------------------------------------- */
-
-    fn split_shl(&mut self) {
-        // "<<": replace current with "<" then insert "<" after it.
-        self.replace_current(Token::LChevron);
-        self.insert_future_token(Token::LChevron);
-    }
-    fn split_shr_like(&mut self, k0: Token) {
-        // ">>" or ">>="
-        self.replace_current(Token::RChevron);
-        self.insert_future_token(Token::RChevron);
-        if k0 == Token::ShrEq {
-            self.insert_future_token(Token::Eql); // '=' from '>>='
-        }
-    }
-
-    fn replace_current(&mut self, token: Token) {
-        self.file.tokens[self.cursor].value = token;
-    }
-    fn insert_future_token(&mut self, token: Token) {
-        let span = self
-            .previous()
-            .map(|f| f.span)
-            .unwrap_or(Span::empty(self.file.id));
-        self.file
-            .tokens
-            .insert(self.cursor + 1, Spanned::new(token, span));
     }
 }
 
@@ -3155,9 +3066,6 @@ enum Delimiter {
     Brace,
     /// `[ ... ]`
     Bracket,
-    #[allow(unused)]
-    /// `< ... >`
-    Chevron,
 }
 
 impl Delimiter {
@@ -3166,7 +3074,6 @@ impl Delimiter {
             Delimiter::Parenthesis => Token::LParen,
             Delimiter::Brace => Token::LBrace,
             Delimiter::Bracket => Token::LBracket,
-            Delimiter::Chevron => Token::LChevron,
         }
     }
 
@@ -3175,7 +3082,6 @@ impl Delimiter {
             Delimiter::Parenthesis => Token::RParen,
             Delimiter::Brace => Token::RBrace,
             Delimiter::Bracket => Token::RBracket,
-            Delimiter::Chevron => Token::RChevron,
         }
     }
 }

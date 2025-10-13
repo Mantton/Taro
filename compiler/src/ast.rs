@@ -3,6 +3,11 @@ use crate::{
     span::{FileID, Span},
 };
 use ecow::EcoString;
+use index_vec::define_index_type;
+
+define_index_type! {
+    pub struct NodeID = u32;
+}
 
 #[derive(Debug)]
 pub struct Package {
@@ -77,6 +82,7 @@ pub type AttributeList = Vec<Attribute>;
 
 #[derive(Debug)]
 pub struct Declaration<K = DeclarationKind> {
+    // pub id: NodeID,
     pub kind: K,
     pub span: Span,
     pub visibility: Visibility,
