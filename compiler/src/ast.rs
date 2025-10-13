@@ -5,8 +5,13 @@ use crate::{
 use ecow::EcoString;
 use index_vec::define_index_type;
 
-define_index_type! {
-    pub struct NodeID = u32;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NodeID(FileID, u32);
+
+impl NodeID {
+    pub fn new(file: FileID, index: u32) -> Self {
+        NodeID(file, index)
+    }
 }
 
 #[derive(Debug)]
@@ -82,7 +87,7 @@ pub type AttributeList = Vec<Attribute>;
 
 #[derive(Debug)]
 pub struct Declaration<K = DeclarationKind> {
-    // pub id: NodeID,
+    pub id: NodeID,
     pub kind: K,
     pub span: Span,
     pub visibility: Visibility,
@@ -223,15 +228,23 @@ pub enum UseTreeKind {
         alias: Option<Identifier>,
     },
     Nested {
-        nodes: Vec<(Identifier, Option<Identifier>)>,
+        nodes: Vec<UseTreeNestedItem>,
         span: Span,
     },
+}
+
+#[derive(Debug)]
+pub struct UseTreeNestedItem {
+    pub id: NodeID,
+    pub name: Identifier,
+    pub alias: Option<Identifier>,
 }
 
 // Statements
 
 #[derive(Debug)]
 pub struct Statement {
+    pub id: NodeID,
     pub kind: StatementKind,
     pub span: Span,
 }
@@ -272,6 +285,7 @@ pub struct ForStatement {
 
 #[derive(Debug)]
 pub struct Block {
+    pub id: NodeID,
     pub statements: Vec<Statement>,
     pub has_declarations: bool,
     pub span: Span,
@@ -280,6 +294,7 @@ pub struct Block {
 // Expressions
 #[derive(Debug)]
 pub struct Expression {
+    pub id: NodeID,
     pub kind: ExpressionKind,
     pub span: Span,
 }
@@ -434,6 +449,7 @@ pub struct ClosureExpression {
 // Type
 #[derive(Debug)]
 pub struct Type {
+    pub id: NodeID,
     pub span: Span,
     pub kind: TypeKind,
 }
@@ -507,6 +523,7 @@ pub enum TypeKind {
 // Patterns
 #[derive(Debug)]
 pub struct Pattern {
+    pub id: NodeID,
     pub span: Span,
     pub kind: PatternKind,
 }
@@ -550,6 +567,7 @@ pub enum PatternPathHead {
 
 #[derive(Debug)]
 pub struct PatternField {
+    pub id: NodeID,
     pub identifier: Identifier,
     pub pattern: Pattern,
     pub span: Span,
@@ -560,6 +578,7 @@ pub struct PatternField {
 /// Represents the 'T: Foo' in Option<T: Foo>
 #[derive(Debug)]
 pub struct TypeParameter {
+    pub id: NodeID,
     pub span: Span,
     pub identifier: Identifier,
     pub bounds: Option<GenericBounds>,
@@ -657,6 +676,7 @@ pub struct EnumCase {
 
 #[derive(Debug)]
 pub struct Variant {
+    pub id: NodeID,
     pub identifier: Identifier,
     pub kind: VariantKind,
     pub discriminant: Option<AnonConst>,
@@ -672,6 +692,7 @@ pub enum VariantKind {
 
 #[derive(Debug)]
 pub struct FieldDefinition {
+    pub id: NodeID,
     pub visibility: Visibility,
     pub mutability: Mutability,
     pub label: Option<Label>,
@@ -691,6 +712,7 @@ pub struct FieldDefinition {
 /// ```
 #[derive(Debug)]
 pub struct FunctionParameter {
+    pub id: NodeID,
     pub attributes: AttributeList,
     pub label: Option<Label>,
     pub name: Identifier,

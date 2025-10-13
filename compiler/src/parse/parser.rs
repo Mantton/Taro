@@ -8,19 +8,19 @@ use crate::{
         FunctionSignature, GenericBound, GenericBounds, GenericRequirement, GenericRequirementList,
         GenericWhereClause, Generics, Identifier, IfExpression, Initializer, Interface, Label,
         Literal, Local, MapPair, MatchArm, MatchExpression, Mutability, Namespace,
-        NamespaceDeclaration, NamespaceDeclarationKind, OperatorKind, Pattern,
+        NamespaceDeclaration, NamespaceDeclarationKind, NodeID, OperatorKind, Pattern,
         PatternBindingCondition, PatternField, PatternKind, PatternPathHead, PatternPathHeadKind,
         RequiredTypeConstraint, SelfKind, Statement, StatementKind, Struct, Type, TypeAlias,
         TypeArgument, TypeArguments, TypeKind, TypeParameter, TypeParameterKind, TypeParameters,
-        UnaryOperator, UseTree, UseTreeKind, UseTreePath, Variant, VariantKind, Visibility,
-        VisibilityLevel,
+        UnaryOperator, UseTree, UseTreeKind, UseTreeNestedItem, UseTreePath, Variant, VariantKind,
+        Visibility, VisibilityLevel,
     },
     diagnostics::DiagCtx,
     error::ReportedError,
     parse::{Base, lexer, token::Token},
     span::{Span, Spanned},
 };
-use std::collections::VecDeque;
+use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 
 pub fn parse_package(
     package: lexer::Pacakge,
@@ -75,7 +75,7 @@ struct Parser {
     cursor: usize,
     restrictions: Restrictions,
     anchors: VecDeque<usize>,
-
+    next_index: u32,
     errors: Vec<Spanned<ParserError>>,
 }
 
@@ -87,6 +87,7 @@ impl Parser {
             restrictions: Restrictions::empty(),
             anchors: VecDeque::new(),
             errors: vec![],
+            next_index: 0,
         }
     }
 }
@@ -199,6 +200,14 @@ impl Parser {
 }
 
 impl Parser {
+    fn next_id(&mut self) -> NodeID {
+        let id = NodeID::new(self.file.id, self.next_index);
+        self.next_index += 1;
+        id
+    }
+}
+
+impl Parser {
     fn emit_warning(&mut self, _err: ParserError, _span: Span) {}
     fn emit_error(&mut self, err: ParserError, span: Span) {
         self.errors.push(Spanned::new(err, span));
@@ -261,6 +270,7 @@ impl Parser {
         };
 
         let declaration = Declaration {
+            id: self.next_id(),
             span: start_span.to(self.hi_span()),
             identifier,
             kind,
@@ -320,6 +330,7 @@ impl Parser {
         };
 
         let declaration = Declaration {
+            id: result.id,
             span: result.span,
             identifier: result.identifier,
             kind,
@@ -348,6 +359,7 @@ impl Parser {
         };
 
         let declaration = FunctionDeclaration {
+            id: result.id,
             span: result.span,
             identifier: result.identifier,
             kind,
@@ -376,6 +388,7 @@ impl Parser {
         };
 
         let declaration = NamespaceDeclaration {
+            id: result.id,
             span: result.span,
             identifier: result.identifier,
             kind,
@@ -488,9 +501,7 @@ impl Parser {
         let lo = self.lo_span();
         let nodes =
             self.parse_delimiter_sequence(Delimiter::Brace, Token::Comma, true, |this| {
-                let identifier = this.parse_identifier()?;
-                let alias = this.parse_use_tree_alias()?;
-                Ok((identifier, alias))
+                this.parse_use_tree_nested_item()
             })?;
 
         let node = UseTreeKind::Nested {
@@ -498,6 +509,17 @@ impl Parser {
             span: lo.to(self.hi_span()),
         };
         Ok(node)
+    }
+
+    fn parse_use_tree_nested_item(&mut self) -> R<UseTreeNestedItem> {
+        let name = self.parse_identifier()?;
+        let alias = self.parse_use_tree_alias()?;
+
+        return Ok(UseTreeNestedItem {
+            id: self.next_id(),
+            name,
+            alias,
+        });
     }
 
     fn parse_use_tree_alias(&mut self) -> R<Option<Identifier>> {
@@ -809,6 +831,7 @@ impl Parser {
 
         let ty = self.parse_type()?;
         let fd = FieldDefinition {
+            id: self.next_id(),
             visibility,
             label: None,
             identifier,
@@ -849,6 +872,7 @@ impl Parser {
         };
 
         let v = Variant {
+            id: self.next_id(),
             identifier,
             kind,
             discriminant,
@@ -888,6 +912,7 @@ impl Parser {
         let ty = self.parse_type()?;
 
         let def = FieldDefinition {
+            id: self.next_id(),
             visibility: vis,
             label,
             mutability: Mutability::Mutable,
@@ -907,6 +932,7 @@ impl Parser {
         let k = self.parse_type_kind()?;
         let hi = self.hi_span();
         let mut ty = Type {
+            id: self.next_id(),
             span: lo.to(hi),
             kind: k,
         };
@@ -916,6 +942,7 @@ impl Parser {
             let k = self.parse_optional_type(ty)?;
             let hi = self.hi_span();
             ty = Type {
+                id: self.next_id(),
                 span: lo.to(hi),
                 kind: k,
             };
@@ -954,6 +981,7 @@ impl Parser {
         let type_arguments = self.parse_optional_type_arguments()?;
 
         let mut current = Type {
+            id: self.next_id(),
             kind: TypeKind::Nominal {
                 name: identifier,
                 type_arguments,
@@ -965,6 +993,7 @@ impl Parser {
             let name = self.parse_identifier()?;
             let type_arguments = self.parse_optional_type_arguments()?;
             current = Type {
+                id: self.next_id(),
                 span: lo.to(self.hi_span()),
                 kind: TypeKind::Member {
                     target: Box::new(current),
@@ -1136,6 +1165,7 @@ impl Parser {
         let kind = TypeParameterKind::Constant { ty, default };
 
         let tp = TypeParameter {
+            id: self.next_id(),
             identifier,
             span,
             bounds: None,
@@ -1166,6 +1196,7 @@ impl Parser {
         let span = lo.to(self.hi_span());
 
         let tp = TypeParameter {
+            id: self.next_id(),
             identifier,
             span,
             bounds,
@@ -1280,7 +1311,11 @@ impl Parser {
         let span = lo.to(self.hi_span());
         let kind = PatternKind::Or(cases, span);
 
-        let pat = Pattern { span, kind };
+        let pat = Pattern {
+            id: self.next_id(),
+            span,
+            kind,
+        };
 
         Ok(pat)
     }
@@ -1290,6 +1325,7 @@ impl Parser {
         let k = self.parse_pattern_kind()?;
 
         let o = Pattern {
+            id: self.next_id(),
             span: lo.to(self.hi_span()),
             kind: k,
         };
@@ -1420,12 +1456,14 @@ impl Parser {
             self.parse_pattern()?
         } else {
             Pattern {
+                id: self.next_id(),
                 span: identifier.span,
                 kind: PatternKind::Identifier(identifier.clone()),
             }
         };
 
         let field = PatternField {
+            id: self.next_id(),
             identifier,
             pattern,
             span: lo.to(self.hi_span()),
@@ -1447,6 +1485,7 @@ impl Parser {
         })?;
 
         Ok(Block {
+            id: self.next_id(),
             statements,
             span: lo.to(self.hi_span()),
             has_declarations,
@@ -1462,6 +1501,7 @@ impl Parser {
         let k = self.parse_statement_kind(label)?;
 
         let stmt = Statement {
+            id: self.next_id(),
             kind: k,
             span: lo.to(self.hi_span()),
         };
@@ -1837,7 +1877,11 @@ impl Parser {
 
 impl Parser {
     fn build_expr(&mut self, kind: ExpressionKind, span: Span) -> Box<Expression> {
-        Box::new(Expression { kind, span })
+        Box::new(Expression {
+            id: self.next_id(),
+            kind,
+            span,
+        })
     }
 }
 
@@ -2387,12 +2431,14 @@ impl Parser {
             t
         } else {
             Box::new(Type {
+                id: self.next_id(),
                 span: ident.span.clone(),
                 kind: TypeKind::InferedClosureParameter,
             })
         };
 
         let param = FunctionParameter {
+            id: self.next_id(),
             attributes,
             label: None,
             name: ident,
@@ -2842,6 +2888,7 @@ impl Parser {
         };
 
         let param = FunctionParameter {
+            id: self.next_id(),
             attributes,
             label,
             name,
@@ -2879,6 +2926,7 @@ impl Parser {
         };
 
         let self_ty = Type {
+            id: self.next_id(),
             span: ident.span,
             kind: TypeKind::ImplicitSelf,
         };
@@ -2886,12 +2934,14 @@ impl Parser {
         let ty = match kind {
             SelfKind::Copy => self_ty,
             SelfKind::Reference => Type {
+                id: self.next_id(),
                 span: ident.span,
                 kind: TypeKind::Reference(Box::new(self_ty), mutability),
             },
         };
 
         Ok(Some(FunctionParameter {
+            id: self.next_id(),
             attributes,
             label: None,
             name: ident,
