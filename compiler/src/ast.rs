@@ -1,3 +1,5 @@
+use std::ops::ControlFlow;
+
 use crate::{
     parse::Base,
     span::{FileID, Span},
@@ -120,6 +122,7 @@ pub enum FunctionDeclarationKind {
     Function(Function),
     Constant(Constant),
     TypeAlias(TypeAlias),
+    Import(UseTree),
 }
 
 // Namespace Declarations
@@ -133,6 +136,8 @@ pub enum NamespaceDeclarationKind {
     TypeAlias(TypeAlias),
     Namespace(Namespace),
     Interface(Interface),
+    Import(UseTree),
+    Export(UseTree),
 }
 
 // Extensions & Interface Declarations
@@ -198,7 +203,7 @@ pub struct TypeAlias {
 
 #[derive(Debug)]
 pub struct Namespace {
-    pub declarations: Option<Vec<NamespaceDeclaration>>,
+    pub declarations: Vec<NamespaceDeclaration>,
 }
 
 #[derive(Debug)]
@@ -378,8 +383,6 @@ pub enum ExpressionKind {
     Closure(ClosureExpression),
     /// { }
     Block(Block),
-    /// `a!`
-    ForceUnwrap(Box<Expression>),
     /// `a?`
     OptionalUnwrap(Box<Expression>),
     ///
@@ -539,11 +542,20 @@ pub enum PatternKind {
     // (a, b)
     Tuple(Vec<Pattern>, Span),
     // Foo.Bar
-    Member(PatternPathHead),
+    Member(PatternPath),
     // Foo.Bar(a, b)
-    PathTuple(PatternPathHead, Vec<Pattern>, Span),
+    PathTuple {
+        path: PatternPath,
+        fields: Vec<Pattern>,
+        field_span: Span,
+    },
     // Foo.Bar { a, b, .. }
-    PathStruct(PatternPathHead, Vec<PatternField>, Span, bool),
+    PathStruct {
+        path: PatternPath,
+        fields: Vec<PatternField>,
+        field_span: Span,
+        ignore_rest: bool,
+    },
     // Foo | Bar
     Or(Vec<Pattern>, Span),
     // Bool, Rune, String, Integer & Float Literals
@@ -551,18 +563,15 @@ pub enum PatternKind {
 }
 
 #[derive(Debug)]
-pub enum PatternPathHeadKind {
-    Ident(Identifier), // A
-    Member {
-        target: Box<PatternPathHeadKind>,
+pub enum PatternPath {
+    Qualified {
+        path: Vec<(Identifier, NodeID)>,
+        span: Span,
+    }, // A.B.C
+    Inferred {
         name: Identifier,
-    }, // A.B
-}
-
-#[derive(Debug)]
-pub enum PatternPathHead {
-    Full(PatternPathHeadKind),                  // A.Bar
-    Shorthand { case: Identifier, span: Span }, // `.Case`
+        span: Span,
+    }, // .B
 }
 
 #[derive(Debug)]
@@ -677,6 +686,7 @@ pub struct EnumCase {
 #[derive(Debug)]
 pub struct Variant {
     pub id: NodeID,
+    pub ctor_id: NodeID,
     pub identifier: Identifier,
     pub kind: VariantKind,
     pub discriminant: Option<AnonConst>,
@@ -861,6 +871,7 @@ impl TryFrom<DeclarationKind> for FunctionDeclarationKind {
             DeclarationKind::Enum(node) => FunctionDeclarationKind::Enum(node),
             DeclarationKind::Constant(node) => FunctionDeclarationKind::Constant(node),
             DeclarationKind::TypeAlias(node) => FunctionDeclarationKind::TypeAlias(node),
+            DeclarationKind::Import(node) => FunctionDeclarationKind::Import(node),
             _ => return Err(kind),
         })
     }
@@ -878,7 +889,868 @@ impl TryFrom<DeclarationKind> for NamespaceDeclarationKind {
             DeclarationKind::TypeAlias(node) => NamespaceDeclarationKind::TypeAlias(node),
             DeclarationKind::Namespace(node) => NamespaceDeclarationKind::Namespace(node),
             DeclarationKind::Interface(node) => NamespaceDeclarationKind::Interface(node),
+            DeclarationKind::Import(node) => NamespaceDeclarationKind::Import(node),
+            DeclarationKind::Export(node) => NamespaceDeclarationKind::Export(node),
             _ => return Err(kind),
         })
     }
+}
+
+// MARK - Visitor
+pub trait VisitorResult {
+    type Residual;
+    fn output() -> Self;
+    fn from_residual(residual: Self::Residual) -> Self;
+    fn from_branch(b: ControlFlow<Self::Residual>) -> Self;
+    fn branch(self) -> ControlFlow<Self::Residual>;
+}
+
+impl VisitorResult for () {
+    #[cfg(feature = "nightly")]
+    type Residual = !;
+
+    #[cfg(not(feature = "nightly"))]
+    type Residual = core::convert::Infallible;
+
+    fn output() -> Self {}
+    fn from_residual(_: Self::Residual) -> Self {}
+    fn from_branch(_: ControlFlow<Self::Residual>) -> Self {}
+    fn branch(self) -> ControlFlow<Self::Residual> {
+        ControlFlow::Continue(())
+    }
+}
+
+#[macro_export]
+macro_rules! try_visit {
+    ($e:expr) => {
+        match VisitorResult::branch($e) {
+            core::ops::ControlFlow::Continue(()) => (),
+            #[allow(unreachable_code)]
+            core::ops::ControlFlow::Break(r) => {
+                return VisitorResult::from_residual(r);
+            }
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! visit_optional {
+    ($visitor: expr, $method: ident, $opt: expr $(, $($extra_args: expr),* )?) => {
+        if let Some(x) = $opt {
+            try_visit!($visitor.$method(x $(, $($extra_args,)* )?));
+        }
+    }
+}
+
+#[macro_export]
+macro_rules! walk_list {
+    ($visitor: expr, $method: ident, $list: expr $(, $($extra_args: expr),* )?) => {
+        for elem in $list {
+            try_visit!($visitor.$method(elem $(, $($extra_args,)* )?));
+        }
+    }
+}
+
+#[macro_export]
+macro_rules! walk_visitable_list {
+    ($visitor: expr, $list: expr $(, $($extra_args: expr),* )?) => {
+        for elem in $list {
+            try_visit!(elem.visit_with($visitor $(, $($extra_args,)* )?));
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AssocContext {
+    Interface(NodeID),
+    Extend(NodeID),
+}
+
+impl AssocContext {
+    pub fn node_id(self) -> NodeID {
+        match self {
+            AssocContext::Interface(id) => id,
+            AssocContext::Extend(id) => id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UseTreeContext {
+    Import(NodeID),
+    Export(NodeID),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FunctionContext {
+    Free,
+    Foreign,
+    Assoc(AssocContext),
+    Initializer,
+    Nested,
+}
+
+impl<T> VisitorResult for ControlFlow<T> {
+    type Residual = T;
+
+    fn output() -> Self {
+        ControlFlow::Continue(())
+    }
+    fn from_residual(residual: Self::Residual) -> Self {
+        ControlFlow::Break(residual)
+    }
+    fn from_branch(b: Self) -> Self {
+        b
+    }
+    fn branch(self) -> Self {
+        self
+    }
+}
+
+pub trait AstVisitor: Sized {
+    type Result: VisitorResult = ();
+
+    fn visit_package(&mut self, node: &Package) -> Self::Result {
+        walk_package(self, node)
+    }
+
+    fn visit_module(&mut self, node: &Module) -> Self::Result {
+        walk_module(self, node)
+    }
+
+    fn visit_file(&mut self, node: &File) -> Self::Result {
+        walk_file(self, node)
+    }
+
+    fn visit_declaration(&mut self, node: &Declaration) -> Self::Result {
+        walk_declaration(self, node)
+    }
+
+    fn visit_assoc_declaration(
+        &mut self,
+        node: &AssociatedDeclaration,
+        context: AssocContext,
+    ) -> Self::Result {
+        walk_assoc_declaration(self, node, context)
+    }
+
+    fn visit_function_declaration(&mut self, node: &FunctionDeclaration) -> Self::Result {
+        walk_function_declaration(self, node)
+    }
+
+    fn visit_namespace_declaration(&mut self, node: &NamespaceDeclaration) -> Self::Result {
+        walk_namespace_declaration(self, node)
+    }
+
+    fn visit_statement(&mut self, node: &Statement) -> Self::Result {
+        walk_statement(self, node)
+    }
+    fn visit_expression(&mut self, node: &Expression) -> Self::Result {
+        walk_expression(self, node)
+    }
+    fn visit_type(&mut self, node: &Type) -> Self::Result {
+        walk_type(self, node)
+    }
+
+    fn visit_pattern(&mut self, node: &Pattern) -> Self::Result {
+        walk_pattern(self, node)
+    }
+
+    fn visit_generics(&mut self, node: &Generics) -> Self::Result {
+        walk_generics(self, node)
+    }
+
+    fn visit_type_parameters(&mut self, node: &TypeParameters) -> Self::Result {
+        walk_type_parameters(self, node)
+    }
+
+    fn visit_type_parameter(&mut self, node: &TypeParameter) -> Self::Result {
+        walk_type_parameter(self, node)
+    }
+
+    fn visit_generic_where_clause(&mut self, node: &GenericWhereClause) -> Self::Result {
+        walk_generic_where_clause(self, node)
+    }
+
+    fn visit_generic_requirement_list(&mut self, node: &GenericRequirementList) -> Self::Result {
+        walk_generic_requirement_list(self, node)
+    }
+
+    fn visit_generic_requirement(&mut self, node: &GenericRequirement) -> Self::Result {
+        walk_generic_requirement(self, node)
+    }
+
+    fn visit_generic_bounds(&mut self, node: &GenericBounds) -> Self::Result {
+        walk_generic_bounds(self, node)
+    }
+
+    fn visit_generic_bound(&mut self, node: &GenericBound) -> Self::Result {
+        walk_generic_bound(self, node)
+    }
+
+    fn visit_conformances(&mut self, node: &Conformances) -> Self::Result {
+        walk_conformances(self, node)
+    }
+
+    fn visit_use_tree(&mut self, node: &UseTree, context: UseTreeContext) -> Self::Result {
+        walk_use_tree(self, node, context)
+    }
+
+    fn visit_local(&mut self, node: &Local) -> Self::Result {
+        walk_local(self, node)
+    }
+
+    fn visit_function(&mut self, id: NodeID, node: &Function, c: FunctionContext) -> Self::Result {
+        walk_function(self, id, node, c)
+    }
+
+    fn visit_function_signature(&mut self, node: &FunctionSignature) -> Self::Result {
+        walk_function_signature(self, node)
+    }
+
+    fn visit_function_prototype(&mut self, node: &FunctionPrototype) -> Self::Result {
+        walk_function_prototype(self, node)
+    }
+
+    fn visit_function_parameter(&mut self, node: &FunctionParameter) -> Self::Result {
+        walk_function_parameter(self, node)
+    }
+
+    fn visit_block(&mut self, node: &Block) -> Self::Result {
+        walk_block(self, node)
+    }
+    fn visit_label(&mut self, node: &Label) -> Self::Result {
+        walk_label(self, node)
+    }
+
+    fn visit_struct_definition(&mut self, node: &Struct) -> Self::Result {
+        walk_struct_definition(self, node)
+    }
+
+    fn visit_enum_definition(&mut self, node: &Enum) -> Self::Result {
+        walk_enum_definition(self, node)
+    }
+    fn visit_field_definition(&mut self, node: &FieldDefinition) -> Self::Result {
+        walk_field_definition(self, node)
+    }
+
+    fn visit_enum_variant(&mut self, node: &Variant) -> Self::Result {
+        walk_enum_variant(self, node)
+    }
+
+    fn visit_constant(&mut self, node: &Constant) -> Self::Result {
+        walk_constant(self, node)
+    }
+
+    fn visit_initializer(&mut self, node: &Initializer, id: NodeID) -> Self::Result {
+        walk_initializer(self, node, id)
+    }
+
+    fn visit_alias(&mut self, node: &TypeAlias) -> Self::Result {
+        walk_alias(self, node)
+    }
+
+    fn visit_type_arguments(&mut self, node: &TypeArguments) -> Self::Result {
+        walk_type_arguments(self, node)
+    }
+
+    fn visit_type_argument(&mut self, node: &TypeArgument) -> Self::Result {
+        walk_type_argument(self, node)
+    }
+
+    fn visit_pattern_field(&mut self, node: &PatternField) -> Self::Result {
+        walk_pattern_field(self, node)
+    }
+
+    fn visit_pattern_path(&mut self, node: &PatternPath) -> Self::Result {
+        walk_pattern_path(self, node)
+    }
+
+    fn visit_identifier(&mut self, node: &Identifier) -> Self::Result {
+        Self::Result::output()
+    }
+
+    fn visit_anon_constant(&mut self, node: &AnonConst) -> Self::Result {
+        walk_anon_const(self, node)
+    }
+
+    fn visit_attribute(&mut self, node: &Attribute) -> Self::Result {
+        walk_attribute(self, node)
+    }
+}
+
+pub fn walk_package<V: AstVisitor>(visitor: &mut V, package: &Package) -> V::Result {
+    visitor.visit_module(&package.root)
+}
+
+pub fn walk_module<V: AstVisitor>(visitor: &mut V, module: &Module) -> V::Result {
+    let Module {
+        files, submodules, ..
+    } = module;
+    walk_list!(visitor, visit_module, submodules);
+    walk_list!(visitor, visit_file, files);
+    V::Result::output()
+}
+
+pub fn walk_file<V: AstVisitor>(visitor: &mut V, file: &File) -> V::Result {
+    let File { declarations, .. } = file;
+    walk_list!(visitor, visit_declaration, declarations);
+    V::Result::output()
+}
+
+pub fn walk_attribute<V: AstVisitor>(_visitor: &mut V, _attribute: &Attribute) -> V::Result {
+    V::Result::output()
+}
+
+pub fn walk_declaration<V: AstVisitor>(visitor: &mut V, declaration: &Declaration) -> V::Result {
+    walk_list!(visitor, visit_attribute, &declaration.attributes);
+    visitor.visit_identifier(&declaration.identifier);
+
+    match &declaration.kind {
+        DeclarationKind::Interface(node) => {
+            try_visit!(visitor.visit_generics(&node.generics));
+            walk_list!(
+                visitor,
+                visit_assoc_declaration,
+                &node.declarations,
+                AssocContext::Interface(declaration.id)
+            );
+        }
+        DeclarationKind::Struct(node) => {
+            try_visit!(visitor.visit_struct_definition(&node));
+        }
+        DeclarationKind::Enum(node) => {
+            try_visit!(visitor.visit_enum_definition(&node));
+        }
+        DeclarationKind::Function(node) => {
+            try_visit!(visitor.visit_function(declaration.id, node, FunctionContext::Free));
+        }
+        DeclarationKind::Variable(node) => {
+            try_visit!(visitor.visit_local(&node));
+        }
+        DeclarationKind::Constant(node) => {
+            try_visit!(visitor.visit_constant(&node));
+        }
+        DeclarationKind::Import(node) => {
+            try_visit!(visitor.visit_use_tree(node, UseTreeContext::Import(declaration.id)))
+        }
+        DeclarationKind::Export(node) => {
+            try_visit!(visitor.visit_use_tree(node, UseTreeContext::Export(declaration.id)))
+        }
+        DeclarationKind::Extend(node) => {
+            try_visit!(visitor.visit_generics(&node.generics));
+            try_visit!(visitor.visit_type(&node.ty));
+            walk_list!(
+                visitor,
+                visit_assoc_declaration,
+                &node.declarations,
+                AssocContext::Extend(declaration.id)
+            );
+        }
+        DeclarationKind::TypeAlias(node) => {
+            try_visit!(visitor.visit_alias(&node));
+        }
+        DeclarationKind::Namespace(node) => {
+            walk_list!(visitor, visit_namespace_declaration, &node.declarations);
+        }
+        DeclarationKind::Initializer(node) => {
+            try_visit!(visitor.visit_initializer(&node, declaration.id));
+        }
+    }
+
+    V::Result::output()
+}
+
+pub fn walk_assoc_declaration<V: AstVisitor>(
+    visitor: &mut V,
+    declaration: &AssociatedDeclaration,
+    context: AssocContext,
+) -> V::Result {
+    walk_list!(visitor, visit_attribute, &declaration.attributes);
+    visitor.visit_identifier(&declaration.identifier);
+
+    match &declaration.kind {
+        AssociatedDeclarationKind::Constant(node) => {
+            try_visit!(visitor.visit_constant(&node));
+        }
+        AssociatedDeclarationKind::Function(node) => {
+            try_visit!(visitor.visit_function(
+                declaration.id,
+                node,
+                FunctionContext::Assoc(context)
+            ));
+        }
+        AssociatedDeclarationKind::Initializer(node) => {
+            try_visit!(visitor.visit_initializer(&node, declaration.id));
+        }
+    }
+
+    V::Result::output()
+}
+
+pub fn walk_function_declaration<V: AstVisitor>(
+    visitor: &mut V,
+    declaration: &FunctionDeclaration,
+) -> V::Result {
+    walk_list!(visitor, visit_attribute, &declaration.attributes);
+    visitor.visit_identifier(&declaration.identifier);
+
+    match &declaration.kind {
+        FunctionDeclarationKind::Struct(node) => {
+            try_visit!(visitor.visit_struct_definition(node))
+        }
+        FunctionDeclarationKind::Enum(node) => {
+            try_visit!(visitor.visit_enum_definition(node))
+        }
+        FunctionDeclarationKind::Function(node) => {
+            try_visit!(visitor.visit_function(declaration.id, node, FunctionContext::Nested))
+        }
+        FunctionDeclarationKind::Constant(node) => {
+            try_visit!(visitor.visit_constant(node))
+        }
+        FunctionDeclarationKind::TypeAlias(node) => {
+            try_visit!(visitor.visit_alias(node))
+        }
+        FunctionDeclarationKind::Import(node) => {
+            try_visit!(visitor.visit_use_tree(node, UseTreeContext::Import(declaration.id)))
+        }
+    }
+
+    V::Result::output()
+}
+
+pub fn walk_namespace_declaration<V: AstVisitor>(
+    visitor: &mut V,
+    declaration: &NamespaceDeclaration,
+) -> V::Result {
+    walk_list!(visitor, visit_attribute, &declaration.attributes);
+    visitor.visit_identifier(&declaration.identifier);
+    match &declaration.kind {
+        NamespaceDeclarationKind::Struct(node) => {
+            try_visit!(visitor.visit_struct_definition(node))
+        }
+        NamespaceDeclarationKind::Enum(node) => {
+            try_visit!(visitor.visit_enum_definition(node))
+        }
+        NamespaceDeclarationKind::Function(node) => {
+            try_visit!(visitor.visit_function(declaration.id, node, FunctionContext::Free))
+        }
+        NamespaceDeclarationKind::Constant(node) => {
+            try_visit!(visitor.visit_constant(node))
+        }
+        NamespaceDeclarationKind::TypeAlias(node) => {
+            try_visit!(visitor.visit_alias(node))
+        }
+        NamespaceDeclarationKind::Namespace(node) => {
+            walk_list!(visitor, visit_namespace_declaration, &node.declarations);
+        }
+        NamespaceDeclarationKind::Interface(node) => {
+            try_visit!(visitor.visit_generics(&node.generics));
+            walk_list!(
+                visitor,
+                visit_assoc_declaration,
+                &node.declarations,
+                AssocContext::Interface(declaration.id)
+            );
+        }
+        NamespaceDeclarationKind::Import(node) => {
+            try_visit!(visitor.visit_use_tree(node, UseTreeContext::Import(declaration.id)))
+        }
+        NamespaceDeclarationKind::Export(node) => {
+            try_visit!(visitor.visit_use_tree(node, UseTreeContext::Export(declaration.id)))
+        }
+    }
+    V::Result::output()
+}
+
+pub fn walk_statement<V: AstVisitor>(visitor: &mut V, s: &Statement) -> V::Result {
+    match &s.kind {
+        StatementKind::Declaration(decl) => {
+            try_visit!(visitor.visit_function_declaration(decl));
+        }
+        StatementKind::Expression(expr) => {
+            try_visit!(visitor.visit_expression(expr))
+        }
+        StatementKind::Variable(local) => {
+            try_visit!(visitor.visit_local(local))
+        }
+        StatementKind::Break(label) => {
+            visit_optional!(visitor, visit_identifier, label);
+        }
+        StatementKind::Continue(label) => {
+            visit_optional!(visitor, visit_identifier, label);
+        }
+        StatementKind::Return(expr) => {
+            visit_optional!(visitor, visit_expression, expr);
+        }
+        StatementKind::Loop { label, block } => {
+            visit_optional!(visitor, visit_label, label);
+            try_visit!(visitor.visit_block(block));
+        }
+        StatementKind::Defer(block) => {
+            try_visit!(visitor.visit_block(block));
+        }
+        StatementKind::While {
+            label,
+            condition,
+            block,
+        } => {
+            visit_optional!(visitor, visit_label, label);
+            try_visit!(visitor.visit_expression(condition));
+            try_visit!(visitor.visit_block(block));
+        }
+        StatementKind::For(node) => {
+            visit_optional!(visitor, visit_label, &node.label);
+            try_visit!(visitor.visit_pattern(&node.pattern));
+            try_visit!(visitor.visit_expression(&node.iterator));
+            visit_optional!(visitor, visit_expression, &node.clause);
+            try_visit!(visitor.visit_block(&node.block));
+        }
+        StatementKind::Guard { condition, block } => {
+            try_visit!(visitor.visit_expression(condition));
+            try_visit!(visitor.visit_block(block));
+        }
+    }
+    V::Result::output()
+}
+
+pub fn walk_expression<V: AstVisitor>(visitor: &mut V, expr: &Expression) -> V::Result {
+    V::Result::output()
+}
+
+pub fn walk_type<V: AstVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
+    let Type { kind, .. } = ty;
+    match kind {
+        TypeKind::Nominal {
+            name,
+            type_arguments,
+        } => {
+            visit_optional!(visitor, visit_type_arguments, &type_arguments);
+        }
+        TypeKind::Member {
+            target,
+            name,
+            type_arguments,
+        } => {
+            try_visit!(visitor.visit_type(target));
+            visit_optional!(visitor, visit_type_arguments, &type_arguments);
+        }
+        TypeKind::Pointer(internal, _) => {
+            try_visit!(visitor.visit_type(internal))
+        }
+        TypeKind::Reference(internal, _) => {
+            try_visit!(visitor.visit_type(internal))
+        }
+        TypeKind::Parenthesis(internal) => {
+            try_visit!(visitor.visit_type(internal))
+        }
+        TypeKind::Tuple(elems) => {
+            walk_list!(visitor, visit_type, elems);
+        }
+        TypeKind::Optional(internal) => {
+            try_visit!(visitor.visit_type(internal));
+        }
+        TypeKind::OptionalReference(internal, _) => {
+            try_visit!(visitor.visit_type(internal));
+        }
+        TypeKind::Array { size, element } => {
+            try_visit!(visitor.visit_anon_constant(size));
+            try_visit!(visitor.visit_type(element));
+        }
+        TypeKind::List(element) => {
+            try_visit!(visitor.visit_type(element));
+        }
+        TypeKind::Dictionary { key, value } => {
+            try_visit!(visitor.visit_type(key));
+            try_visit!(visitor.visit_type(value));
+        }
+        TypeKind::Function { inputs, output } => {
+            walk_list!(visitor, visit_type, inputs);
+            try_visit!(visitor.visit_type(output));
+        }
+        TypeKind::ImplicitSelf => {}
+        TypeKind::InferedClosureParameter => {}
+        TypeKind::Infer => {}
+    }
+    V::Result::output()
+}
+
+pub fn walk_pattern<V: AstVisitor>(visitor: &mut V, pattern: &Pattern) -> V::Result {
+    match &pattern.kind {
+        PatternKind::Rest | PatternKind::Wildcard => {}
+        PatternKind::Identifier(identifier) => {
+            try_visit!(visitor.visit_identifier(identifier))
+        }
+        PatternKind::Member(pattern_path_head) => {}
+        PatternKind::PathTuple { fields, .. } => {
+            walk_list!(visitor, visit_pattern, fields);
+        }
+        PatternKind::PathStruct { fields, .. } => {
+            walk_list!(visitor, visit_pattern_field, fields);
+        }
+        PatternKind::Tuple(patterns, _) => {
+            walk_list!(visitor, visit_pattern, patterns);
+        }
+        PatternKind::Or(patterns, _) => {
+            walk_list!(visitor, visit_pattern, patterns);
+        }
+        PatternKind::Literal(anon_const) => {
+            try_visit!(visitor.visit_anon_constant(anon_const))
+        }
+    }
+
+    V::Result::output()
+}
+
+pub fn walk_generics<V: AstVisitor>(visitor: &mut V, node: &Generics) -> V::Result {
+    visit_optional!(visitor, visit_type_parameters, &node.type_parameters);
+    visit_optional!(visitor, visit_generic_where_clause, &node.where_clause);
+    visit_optional!(visitor, visit_conformances, &node.conformances);
+    V::Result::output()
+}
+
+pub fn walk_type_parameter<V: AstVisitor>(visitor: &mut V, parameter: &TypeParameter) -> V::Result {
+    try_visit!(visitor.visit_identifier(&parameter.identifier));
+    match &parameter.kind {
+        TypeParameterKind::Constant { default, ty } => {
+            try_visit!(visitor.visit_type(ty));
+            visit_optional!(visitor, visit_anon_constant, default);
+        }
+        TypeParameterKind::Type { default } => {
+            visit_optional!(visitor, visit_type, default);
+        }
+    }
+
+    visit_optional!(visitor, visit_generic_bounds, &parameter.bounds);
+    V::Result::output()
+}
+
+pub fn walk_type_parameters<V: AstVisitor>(
+    visitor: &mut V,
+    parameters: &TypeParameters,
+) -> V::Result {
+    walk_list!(visitor, visit_type_parameter, &parameters.parameters);
+    V::Result::output()
+}
+
+pub fn walk_use_tree<V: AstVisitor>(
+    visitor: &mut V,
+    tree: &UseTree,
+    context: UseTreeContext,
+) -> V::Result {
+    V::Result::output()
+}
+
+pub fn walk_local<V: AstVisitor>(visitor: &mut V, node: &Local) -> V::Result {
+    try_visit!(visitor.visit_pattern(&node.pattern));
+    visit_optional!(visitor, visit_type, &node.ty);
+    visit_optional!(visitor, visit_expression, &node.initializer);
+    V::Result::output()
+}
+
+pub fn walk_function<V: AstVisitor>(
+    visitor: &mut V,
+    _: NodeID,
+    function: &Function,
+    _: FunctionContext,
+) -> V::Result {
+    try_visit!(visitor.visit_generics(&function.generics));
+    try_visit!(visitor.visit_function_signature(&function.signature));
+    visit_optional!(visitor, visit_block, &function.block);
+    V::Result::output()
+}
+
+pub fn walk_function_signature<V: AstVisitor>(
+    visitor: &mut V,
+    signature: &FunctionSignature,
+) -> V::Result {
+    try_visit!(visitor.visit_function_prototype(&signature.prototype));
+    V::Result::output()
+}
+
+pub fn walk_function_prototype<V: AstVisitor>(
+    visitor: &mut V,
+    func: &FunctionPrototype,
+) -> V::Result {
+    walk_list!(visitor, visit_function_parameter, &func.inputs);
+    visit_optional!(visitor, visit_type, &func.output);
+    V::Result::output()
+}
+
+pub fn walk_function_parameter<V: AstVisitor>(
+    visitor: &mut V,
+    parameter: &FunctionParameter,
+) -> V::Result {
+    let FunctionParameter {
+        name,
+        annotated_type,
+        default_value,
+        ..
+    } = parameter;
+
+    try_visit!(visitor.visit_identifier(name));
+    try_visit!(visitor.visit_type(annotated_type));
+    visit_optional!(visitor, visit_expression, default_value);
+    V::Result::output()
+}
+
+#[inline]
+pub fn walk_block<V: AstVisitor>(visitor: &mut V, block: &Block) -> V::Result {
+    walk_list!(visitor, visit_statement, &block.statements);
+    V::Result::output()
+}
+
+#[inline]
+pub fn walk_struct_definition<V: AstVisitor>(visitor: &mut V, node: &Struct) -> V::Result {
+    try_visit!(visitor.visit_generics(&node.generics));
+    V::Result::output()
+}
+#[inline]
+pub fn walk_enum_definition<V: AstVisitor>(visitor: &mut V, node: &Enum) -> V::Result {
+    try_visit!(visitor.visit_generics(&node.generics));
+    let variants: Vec<&Variant> = node.cases.iter().flat_map(|v| &v.variants).collect();
+    walk_list!(visitor, visit_enum_variant, variants);
+    V::Result::output()
+}
+
+#[inline]
+pub fn walk_enum_variant<V: AstVisitor>(visitor: &mut V, node: &Variant) -> V::Result {
+    try_visit!(visitor.visit_identifier(&node.identifier));
+    match &node.kind {
+        VariantKind::Tuple(fields) => {
+            walk_list!(visitor, visit_field_definition, fields);
+        }
+        VariantKind::Struct(fields) => {
+            walk_list!(visitor, visit_field_definition, fields);
+        }
+        _ => {}
+    }
+    visit_optional!(visitor, visit_anon_constant, &node.discriminant);
+    V::Result::output()
+}
+
+#[inline]
+pub fn walk_field_definition<V: AstVisitor>(
+    visitor: &mut V,
+    field_definition: &FieldDefinition,
+) -> V::Result {
+    try_visit!(visitor.visit_identifier(&field_definition.identifier));
+    try_visit!(visitor.visit_type(&field_definition.ty));
+    V::Result::output()
+}
+
+#[inline]
+pub fn walk_anon_const<V: AstVisitor>(visitor: &mut V, anon_const: &AnonConst) -> V::Result {
+    try_visit!(visitor.visit_expression(&anon_const.value));
+    V::Result::output()
+}
+
+#[inline]
+pub fn walk_constant<V: AstVisitor>(visitor: &mut V, node: &Constant) -> V::Result {
+    try_visit!(visitor.visit_type(&node.ty));
+    visit_optional!(visitor, visit_expression, &node.expr);
+    V::Result::output()
+}
+
+#[inline]
+pub fn walk_initializer<V: AstVisitor>(
+    visitor: &mut V,
+    node: &Initializer,
+    id: NodeID,
+) -> V::Result {
+    try_visit!(visitor.visit_function(id, &node.function, FunctionContext::Initializer));
+    V::Result::output()
+}
+
+#[inline]
+pub fn walk_alias<V: AstVisitor>(visitor: &mut V, node: &TypeAlias) -> V::Result {
+    try_visit!(visitor.visit_generics(&node.generics));
+    visit_optional!(visitor, visit_type, &node.ty);
+    V::Result::output()
+}
+
+pub fn walk_label<V: AstVisitor>(visitor: &mut V, label: &Label) -> V::Result {
+    try_visit!(visitor.visit_identifier(&label.identifier));
+    V::Result::output()
+}
+
+pub fn walk_type_arguments<V: AstVisitor>(visitor: &mut V, arguments: &TypeArguments) -> V::Result {
+    let tys = &arguments.arguments;
+    walk_list!(visitor, visit_type_argument, tys);
+    V::Result::output()
+}
+
+pub fn walk_type_argument<V: AstVisitor>(visitor: &mut V, argument: &TypeArgument) -> V::Result {
+    match argument {
+        TypeArgument::Type(ty) => try_visit!(visitor.visit_type(ty)),
+        TypeArgument::Const(anon_const) => try_visit!(visitor.visit_anon_constant(anon_const)),
+    }
+    V::Result::output()
+}
+
+pub fn walk_generic_where_clause<V: AstVisitor>(
+    visitor: &mut V,
+    node: &GenericWhereClause,
+) -> V::Result {
+    try_visit!(visitor.visit_generic_requirement_list(&node.requirements));
+    V::Result::output()
+}
+
+pub fn walk_generic_requirement_list<V: AstVisitor>(
+    visitor: &mut V,
+    node: &GenericRequirementList,
+) -> V::Result {
+    walk_list!(visitor, visit_generic_requirement, node);
+    V::Result::output()
+}
+
+pub fn walk_generic_requirement<V: AstVisitor>(
+    visitor: &mut V,
+    node: &GenericRequirement,
+) -> V::Result {
+    match &node {
+        GenericRequirement::SameTypeRequirement(c) => {
+            try_visit!(visitor.visit_type(&c.bounded_type));
+            try_visit!(visitor.visit_type(&c.bound));
+        }
+        GenericRequirement::ConformanceRequirement(c) => {
+            try_visit!(visitor.visit_type(&c.bounded_type));
+            try_visit!(visitor.visit_generic_bounds(&c.bounds));
+        }
+    }
+    V::Result::output()
+}
+
+pub fn walk_generic_bounds<V: AstVisitor>(visitor: &mut V, node: &GenericBounds) -> V::Result {
+    walk_list!(visitor, visit_generic_bound, node);
+    V::Result::output()
+}
+
+pub fn walk_generic_bound<V: AstVisitor>(visitor: &mut V, node: &GenericBound) -> V::Result {
+    try_visit!(visitor.visit_type(&node.path));
+    V::Result::output()
+}
+
+pub fn walk_conformances<V: AstVisitor>(visitor: &mut V, node: &Conformances) -> V::Result {
+    walk_list!(visitor, visit_type, &node.interfaces);
+    V::Result::output()
+}
+
+pub fn walk_pattern_field<V: AstVisitor>(visitor: &mut V, node: &PatternField) -> V::Result {
+    try_visit!(visitor.visit_identifier(&node.identifier));
+    try_visit!(visitor.visit_pattern(&node.pattern));
+    V::Result::output()
+}
+
+pub fn walk_pattern_path<V: AstVisitor>(visitor: &mut V, node: &PatternPath) -> V::Result {
+    match node {
+        PatternPath::Qualified { path, .. } => {
+            let identifiers: Vec<&Identifier> = path.iter().map(|p| &p.0).collect();
+            walk_list!(visitor, visit_identifier, &identifiers);
+        }
+        PatternPath::Inferred { name, .. } => {
+            try_visit!(visitor.visit_identifier(&name));
+        }
+    }
+    V::Result::output()
 }

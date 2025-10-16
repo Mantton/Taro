@@ -2,8 +2,9 @@
 #![allow(unused)]
 mod ast;
 pub mod compile;
-mod constants;
+pub mod constants;
 mod diagnostics;
 pub mod error;
 mod parse;
+mod sema;
 mod span;

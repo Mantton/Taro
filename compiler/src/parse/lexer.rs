@@ -30,7 +30,7 @@ pub struct File {
 pub fn tokenize_package(path: PathBuf, dcx: &DiagCtx) -> Result<Pacakge, ReportedError> {
     let source = path.join(SOURCE_DIRECTORY);
     let mut root = tokenize_module(source, dcx)?;
-    root.name = "main".into();
+    root.name = ROOT_MODULE_NAME.into();
 
     Ok(Pacakge { root })
 }

@@ -3,6 +3,9 @@ name = "compiler"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+nightly = []
+
 [dependencies]
 bitflags = "2.9.4"
 ecow = "0.2.6"

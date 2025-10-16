@@ -1,7 +1,8 @@
 use clap::Parser;
-use std::path::PathBuf;
+use std::{path::PathBuf, process::exit};
 
 mod command;
+mod package;
 
 #[derive(Parser, Clone, Debug)]
 pub struct CommandLineArguments {
@@ -11,5 +12,16 @@ pub struct CommandLineArguments {
 
 pub fn run() {
     let arguments = CommandLineArguments::parse();
-    command::handle(arguments);
+    let result = command::handle(arguments);
+
+    match result {
+        Ok(_) => {
+            println!("compilation successful");
+            exit(0)
+        }
+        Err(_) => {
+            println!("compilation failed");
+            exit(1)
+        }
+    }
 }

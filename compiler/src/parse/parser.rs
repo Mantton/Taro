@@ -9,11 +9,11 @@ use crate::{
         GenericWhereClause, Generics, Identifier, IfExpression, Initializer, Interface, Label,
         Literal, Local, MapPair, MatchArm, MatchExpression, Mutability, Namespace,
         NamespaceDeclaration, NamespaceDeclarationKind, NodeID, OperatorKind, Pattern,
-        PatternBindingCondition, PatternField, PatternKind, PatternPathHead, PatternPathHeadKind,
-        RequiredTypeConstraint, SelfKind, Statement, StatementKind, Struct, Type, TypeAlias,
-        TypeArgument, TypeArguments, TypeKind, TypeParameter, TypeParameterKind, TypeParameters,
-        UnaryOperator, UseTree, UseTreeKind, UseTreeNestedItem, UseTreePath, Variant, VariantKind,
-        Visibility, VisibilityLevel,
+        PatternBindingCondition, PatternField, PatternKind, PatternPath, RequiredTypeConstraint,
+        SelfKind, Statement, StatementKind, Struct, Type, TypeAlias, TypeArgument, TypeArguments,
+        TypeKind, TypeParameter, TypeParameterKind, TypeParameters, UnaryOperator, UseTree,
+        UseTreeKind, UseTreeNestedItem, UseTreePath, Variant, VariantKind, Visibility,
+        VisibilityLevel,
     },
     diagnostics::DiagCtx,
     error::ReportedError,
@@ -535,11 +535,11 @@ impl Parser {
     fn parse_namespace(&mut self) -> R<(Identifier, DeclarationKind)> {
         self.expect(Token::Namespace)?;
         let ident = self.parse_identifier()?;
-        let declarations: Option<Vec<Declaration<NamespaceDeclarationKind>>> =
+        let declarations: Vec<Declaration<NamespaceDeclarationKind>> =
             if self.matches(Token::LBrace) {
-                Some(self.parse_declaration_list(|p| p.parse_namespace_declaration())?)
+                self.parse_declaration_list(|p| p.parse_namespace_declaration())?
             } else {
-                None
+                vec![]
             };
         let namespace = Namespace { declarations };
         Ok((ident, DeclarationKind::Namespace(namespace)))
@@ -873,6 +873,7 @@ impl Parser {
 
         let v = Variant {
             id: self.next_id(),
+            ctor_id: self.next_id(),
             identifier,
             kind,
             discriminant,
@@ -1373,7 +1374,7 @@ impl Parser {
             return Ok(PatternKind::Identifier(ident));
         }
 
-        let head = self.parse_pattern_path_head()?;
+        let path = self.parse_pattern_path()?;
 
         match self.current_token() {
             Token::LParen => {
@@ -1381,55 +1382,51 @@ impl Parser {
 
                 let mut res = Restrictions::empty();
                 res.insert(Restrictions::ALLOW_REST_PATTERN);
-                let items = self.with_restrictions(res, |p| {
+                let fields = self.with_restrictions(res, |p| {
                     p.parse_delimiter_sequence(Delimiter::Parenthesis, Token::Comma, false, |p| {
                         p.parse_pattern()
                     })
                 })?;
 
-                Ok(PatternKind::PathTuple(head, items, lo.to(self.hi_span())))
+                Ok(PatternKind::PathTuple {
+                    path,
+                    fields,
+                    field_span: lo.to(self.hi_span()),
+                })
             }
             Token::LBrace => {
                 let lo = self.lo_span();
-                let (items, ignore_rest) = self.parse_pattern_fields()?;
-                let span = lo.to(self.hi_span());
-                let k = PatternKind::PathStruct(head, items, span, ignore_rest);
+                let (fields, ignore_rest) = self.parse_pattern_fields()?;
+                let field_span = lo.to(self.hi_span());
+                let k = PatternKind::PathStruct {
+                    path,
+                    fields,
+                    field_span,
+                    ignore_rest,
+                };
                 Ok(k)
             }
-            _ => Ok(PatternKind::Member(head)),
+            _ => Ok(PatternKind::Member(path)),
         }
     }
     // Parse:
-    //   .Case         => PatternPathHead::Shorthand { case, span }
-    //   A(.B)*        => PatternPathHead::Full(PatternPathHeadKind)
-    pub fn parse_pattern_path_head(&mut self) -> R<PatternPathHead> {
+    //   .Case         => PatternPathHead::Inferred
+    //   A(.B)*        => PatternPathHead::Qualifed
+    pub fn parse_pattern_path(&mut self) -> R<PatternPath> {
         // Shorthand: `.Case`
         let lo = self.lo_span();
         if self.eat(Token::Dot) {
-            let case = self.parse_identifier()?;
+            let name = self.parse_identifier()?;
             let span = lo.to(self.hi_span());
-            return Ok(PatternPathHead::Shorthand { case, span });
+            return Ok(PatternPath::Inferred { name, span });
         }
 
         // Full: A(.B)*
-        let full = self.parse_pattern_path_head_full()?;
-        Ok(PatternPathHead::Full(full))
-    }
-
-    fn parse_pattern_path_head_full(&mut self) -> R<PatternPathHeadKind> {
-        // Head identifier: A
-        let mut node = PatternPathHeadKind::Ident(self.parse_identifier()?);
-
-        // Zero or more .Member segments: .B .C ...
-        while self.eat(Token::Dot) {
-            let name = self.parse_identifier()?;
-            node = PatternPathHeadKind::Member {
-                target: Box::new(node),
-                name,
-            };
-        }
-
-        Ok(node)
+        let path = self.parse_sequence(Token::Dot, |p| Ok((p.parse_identifier()?, p.next_id())))?;
+        Ok(PatternPath::Qualified {
+            path,
+            span: lo.to(self.hi_span()),
+        })
     }
 }
 
@@ -1522,7 +1519,6 @@ impl Parser {
 
         match self.current_token() {
             Token::Let | Token::Var => self.parse_local_statement(),
-            Token::Const => todo!("parse const statement"),
             Token::Loop => self.parse_loop_stmt(label),
             Token::While => self.parse_while_stmt(label),
             Token::For => self.parse_for_stmt(label),
@@ -2288,15 +2284,6 @@ impl Parser {
                         }
                 );
 
-                seen_type_arguments = false;
-                continue;
-            }
-
-            // parsing force unwrap: `foo!`
-            if self.eat(Token::Bang) {
-                let span = expr.span.to(self.hi_span());
-                let kind = ExpressionKind::ForceUnwrap(expr);
-                expr = self.build_expr(kind, span);
                 seen_type_arguments = false;
                 continue;
             }
