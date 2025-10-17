@@ -1425,6 +1425,7 @@ pub fn walk_type<V: AstVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
             name,
             type_arguments,
         } => {
+            try_visit!(visitor.visit_identifier(name));
             visit_optional!(visitor, visit_type_arguments, &type_arguments);
         }
         TypeKind::Member {
@@ -1603,6 +1604,7 @@ pub fn walk_block<V: AstVisitor>(visitor: &mut V, block: &Block) -> V::Result {
 #[inline]
 pub fn walk_struct_definition<V: AstVisitor>(visitor: &mut V, node: &Struct) -> V::Result {
     try_visit!(visitor.visit_generics(&node.generics));
+    walk_list!(visitor, visit_field_definition, &node.fields);
     V::Result::output()
 }
 #[inline]
