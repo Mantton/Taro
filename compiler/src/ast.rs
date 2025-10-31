@@ -674,6 +674,7 @@ pub type GenericBounds = Vec<GenericBound>;
 #[derive(Debug)]
 pub struct Conformances {
     pub interfaces: Vec<Box<Type>>,
+    pub span: Span,
 }
 
 // ADT

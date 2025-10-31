@@ -96,6 +96,7 @@ impl Parser {
     fn parse(mut self) -> Result<Vec<Declaration>, Vec<Spanned<ParserError>>> {
         let result = self.parse_module_declarations();
         match result {
+            Ok(_) if !self.errors.is_empty() => return Err(self.errors),
             Ok(declarations) => return Ok(declarations),
             Err(error) => {
                 self.errors.push(error);
@@ -648,6 +649,13 @@ impl Parser {
 
         let ty = self.parse_type()?;
         let conformances = self.parse_conformances()?;
+
+        if let Some(conformances) = &conformances
+            && conformances.interfaces.len() > 1
+        {
+            self.emit_error(ParserError::MultipleConformances, conformances.span);
+        };
+
         let where_clause = self.parse_generic_where_clause()?;
 
         let declarations = self.parse_declaration_list(|p| {
@@ -1283,8 +1291,12 @@ impl Parser {
 impl Parser {
     fn parse_conformances(&mut self) -> R<Option<Conformances>> {
         if self.eat(Token::Colon) {
+            let lo = self.lo_span();
             let interfaces = self.parse_sequence(Token::Comma, |this| this.parse_type())?;
-            let node = Conformances { interfaces };
+            let node = Conformances {
+                interfaces,
+                span: lo.to(self.hi_span()),
+            };
             Ok(Some(node))
         } else {
             Ok(None)
@@ -3090,6 +3102,7 @@ enum ParserError {
     ExpectedParameterNameOrLabel,
     ExpectedParameterName,
     ExpectedSelf,
+    MultipleConformances,
 }
 
 struct FnParseMode {
