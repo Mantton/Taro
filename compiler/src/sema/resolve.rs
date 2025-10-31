@@ -34,6 +34,7 @@ pub enum DefinitionKind {
     AssociatedFunction,
     AssociatedConstant,
     AssociatedInitializer,
+    AssociatedType,
     EnumVariant,
     Ctor(CtorOf, CtorKind),
 }
