@@ -4,7 +4,7 @@ define_index_type! {
     pub struct FileID = u32;
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Span {
     pub start: Position,
     pub end: Position,
@@ -32,7 +32,7 @@ impl Span {
     }
 }
 
-#[derive(Debug, Default, Copy, Clone)]
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Position {
     pub line: usize,
     #[allow(unused)]

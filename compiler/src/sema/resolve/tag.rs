@@ -8,7 +8,7 @@ use crate::{
 };
 use ecow::EcoString;
 
-pub fn tag_package_symbols(package: &ast::Package, resolver: &Resolver) -> CompileResult<()> {
+pub fn tag_package_symbols(package: &ast::Package, resolver: &mut Resolver) -> CompileResult<()> {
     let mut actor = Actor {
         parent: None,
         resolver,
@@ -19,7 +19,7 @@ pub fn tag_package_symbols(package: &ast::Package, resolver: &Resolver) -> Compi
 
 struct Actor<'resolver> {
     parent: Option<DefinitionID>,
-    resolver: &'resolver Resolver,
+    resolver: &'resolver mut Resolver,
 }
 
 impl<'r> AstVisitor for Actor<'r> {
@@ -126,7 +126,14 @@ impl<'r> AstVisitor for Actor<'r> {
 
     fn visit_struct_definition(&mut self, node: &ast::Struct) -> Self::Result {
         let parent = self.parent.expect("struct definition node to be tagged");
-        // TODO: Struct Initializer Placeholder?
+        let kind = DefinitionKind::Ctor(CtorOf::Struct, CtorKind::Function);
+        let identifier = self
+            .resolver
+            .def_to_ident
+            .get(&parent)
+            .expect("struct declaration to be tagged")
+            .clone();
+        self.tag(&identifier, node.ctor_node_id, kind);
     }
 
     fn visit_use_tree(

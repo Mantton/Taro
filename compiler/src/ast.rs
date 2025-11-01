@@ -160,6 +160,7 @@ pub struct Interface {
 pub struct Struct {
     pub generics: Generics,
     pub fields: Vec<FieldDefinition>,
+    pub ctor_node_id: NodeID,
 }
 
 #[derive(Debug)]
@@ -1017,7 +1018,7 @@ pub trait AstVisitor: Sized {
         walk_package(self, node)
     }
 
-    fn visit_module(&mut self, node: &Module) -> Self::Result {
+    fn visit_module(&mut self, node: &Module, is_root: bool) -> Self::Result {
         walk_module(self, node)
     }
 
@@ -1183,14 +1184,14 @@ pub trait AstVisitor: Sized {
 }
 
 pub fn walk_package<V: AstVisitor>(visitor: &mut V, package: &Package) -> V::Result {
-    visitor.visit_module(&package.root)
+    visitor.visit_module(&package.root, true)
 }
 
 pub fn walk_module<V: AstVisitor>(visitor: &mut V, module: &Module) -> V::Result {
     let Module {
         files, submodules, ..
     } = module;
-    walk_list!(visitor, visit_module, submodules);
+    walk_list!(visitor, visit_module, submodules, false);
     walk_list!(visitor, visit_file, files);
     V::Result::output()
 }

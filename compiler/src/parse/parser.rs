@@ -692,7 +692,11 @@ impl Parser {
 
         let fields = self.parse_field_definitions(Delimiter::Brace)?;
 
-        let s = Struct { generics, fields };
+        let s = Struct {
+            generics,
+            fields,
+            ctor_node_id: self.next_id(),
+        };
         let s = DeclarationKind::Struct(s);
         Ok((identifier, s))
     }
@@ -1516,7 +1520,7 @@ impl Parser {
         };
 
         // Closing, we might not need the semi
-        if !self.matches(Token::RBrace) {
+        if !self.matches(Token::RBrace) && !matches!(&stmt.kind, StatementKind::Declaration(..)) {
             self.expect_semi()?;
         }
 
