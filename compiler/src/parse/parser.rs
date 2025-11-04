@@ -979,6 +979,11 @@ impl Parser {
                 self.bump();
                 Ok(TypeKind::Infer)
             }
+            Token::Any => {
+                self.bump();
+                let interfaces = self.parse_sequence(Token::Amp, |this| this.parse_type())?;
+                Ok(TypeKind::BoxedExistential { interfaces })
+            }
             _ => {
                 return Err(self.err_at_current(ParserError::ExpectedType));
             }
@@ -1009,7 +1014,7 @@ impl Parser {
                 id: self.next_id(),
                 span: lo.to(self.hi_span()),
                 kind: TypeKind::Member {
-                    target: Box::new(current),
+                    parent: Box::new(current),
                     name,
                     type_arguments,
                 },

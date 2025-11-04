@@ -60,6 +60,18 @@ impl Identifier {
 }
 
 #[derive(Debug, Clone)]
+pub struct IdentifierPath {
+    pub id: NodeID,
+    pub identifier: Identifier,
+}
+
+impl IdentifierPath {
+    pub fn new(id: NodeID, identifier: Identifier) -> Self {
+        Self { id, identifier }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Label {
     pub identifier: Identifier,
     pub span: Span,
@@ -468,7 +480,7 @@ pub enum TypeKind {
     },
     /// Foo.Bar | `Foo.Bar[T]`
     Member {
-        target: Box<Type>,
+        parent: Box<Type>,
         name: Identifier,
         type_arguments: Option<TypeArguments>,
     },
@@ -496,10 +508,7 @@ pub enum TypeKind {
     /// An Array with a fixed size `N`
     ///
     /// `[T;N]`
-    Array {
-        size: AnonConst,
-        element: Box<Type>,
-    },
+    Array { size: AnonConst, element: Box<Type> },
     /// A Dynamic, growable array
     ///
     /// `[T]`
@@ -507,10 +516,7 @@ pub enum TypeKind {
     /// A hash-map
     ///
     /// `[T:V]`
-    Dictionary {
-        key: Box<Type>,
-        value: Box<Type>,
-    },
+    Dictionary { key: Box<Type>, value: Box<Type> },
 
     /// (T, V) -> X
     Function {
@@ -519,8 +525,10 @@ pub enum TypeKind {
     },
     /// Ty of, self, &self, &const self
     ImplicitSelf,
-    // |a, b| a + b
+    /// |a, b| a + b
     InferedClosureParameter,
+    /// any T
+    BoxedExistential { interfaces: Vec<Box<Type>> },
     /// _
     Infer,
 }
@@ -1436,7 +1444,7 @@ pub fn walk_type<V: AstVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
             visit_optional!(visitor, visit_type_arguments, &type_arguments);
         }
         TypeKind::Member {
-            target,
+            parent: target,
             name,
             type_arguments,
         } => {
@@ -1475,6 +1483,9 @@ pub fn walk_type<V: AstVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
         TypeKind::Function { inputs, output } => {
             walk_list!(visitor, visit_type, inputs);
             try_visit!(visitor.visit_type(output));
+        }
+        TypeKind::BoxedExistential { interfaces } => {
+            walk_list!(visitor, visit_type, interfaces);
         }
         TypeKind::ImplicitSelf => {}
         TypeKind::InferedClosureParameter => {}

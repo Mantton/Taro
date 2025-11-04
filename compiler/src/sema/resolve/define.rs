@@ -55,6 +55,7 @@ impl<'r> AstVisitor for Actor<'r> {
         let kind = ScopeKind::File(node.id);
         let scope = Scope::new(kind, None);
         let scope_id = self.create_scope(scope);
+        self.resolver.file_scope_mapping.insert(node.id, scope_id);
 
         self.scopes.file = Some(scope_id);
         ast::walk_file(self, node);
@@ -102,11 +103,33 @@ impl<'r> AstVisitor for Actor<'r> {
             ast::walk_assoc_declaration(self, node, context)
         }
     }
+
+    fn visit_block(&mut self, node: &ast::Block) -> Self::Result {
+        if node.has_declarations {
+            let scope =
+                self.create_scope(Scope::new(ScopeKind::Block(node.id), self.scopes.current));
+
+            self.resolver.block_scope_mapping.insert(node.id, scope);
+            self.with_scope(scope, |this| ast::walk_block(this, node));
+        } else {
+            ast::walk_block(self, node);
+        }
+    }
 }
 
 impl<'r> Actor<'r> {
     fn create_scope(&mut self, scope: Scope) -> ScopeID {
-        self.resolver.create_scope(scope)
+        let def_id = if let ScopeKind::Definition(id) = &scope.kind {
+            Some(*id)
+        } else {
+            None
+        };
+        let id = self.resolver.create_scope(scope);
+
+        if let Some(def_id) = def_id {
+            self.resolver.definition_scope_mapping.insert(def_id, id);
+        }
+        id
     }
 
     fn with_scope<F: FnOnce(&mut Self)>(&mut self, scope: ScopeID, action: F) {
@@ -171,8 +194,8 @@ impl<'r> Actor<'r> {
             ast::DeclarationKind::Export(node) => {
                 self.define_use_tree(declaration.id, node, false);
             }
-            ast::DeclarationKind::Initializer(node) => {
-                // do nothing
+            ast::DeclarationKind::Initializer(..) => {
+                unreachable!("top level initializer")
             }
         }
 

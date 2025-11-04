@@ -75,6 +75,7 @@ pub enum Token {
     DotStar,  // .*
 
     // Keywords
+    Any,
     As,
     Break,
     Case,

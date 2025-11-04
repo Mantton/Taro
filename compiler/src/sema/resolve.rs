@@ -11,13 +11,17 @@ use crate::span::{FileID, Span};
 use crate::{ast, error::CompileResult};
 
 mod define;
+mod full;
 mod resolver;
 mod tag;
+mod usage;
 
 pub fn resolve_package(package: &ast::Package) -> CompileResult<()> {
     let mut resolver = Resolver::new();
     tag::tag_package_symbols(package, &mut resolver)?;
     define::define_package_symbols(package, &mut resolver)?;
+    usage::resolve_usages(&mut resolver)?;
+    full::resolve_package(package, &mut resolver)?;
     Ok(())
 }
 
@@ -143,7 +147,7 @@ pub enum ScopeNamespace {
     Module,
 }
 
-pub type ScopeEntrySet = FxHashSet<ScopeEntryID>;
+pub type ScopeEntrySet = Vec<ScopeEntryID>;
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct ScopeEntry {
@@ -169,6 +173,9 @@ pub struct ActiveScope {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Resolution {
     Definition(DefinitionID, DefinitionKind),
+    SelfTypeAlias(DefinitionID),
+    InterfaceSelfTypeParameter(DefinitionID),
+    FunctionSet(Vec<DefinitionID>),
     Error,
 }
 
@@ -194,4 +201,28 @@ pub struct UsageBinding {
     pub node_id: NodeID,
     pub source: Identifier,
     pub target: Identifier,
+}
+
+pub struct LexicalScope {
+    pub source: LexicalScopeSource,
+    pub table: FxHashMap<EcoString, Resolution>,
+}
+
+impl LexicalScope {
+    pub fn new(source: LexicalScopeSource) -> LexicalScope {
+        LexicalScope {
+            source,
+            table: Default::default(),
+        }
+    }
+
+    pub fn define(&mut self, name: EcoString, resolution: Resolution) {
+        self.table.insert(name, resolution);
+    }
+}
+
+pub enum LexicalScopeSource {
+    Plain,
+    Definition(DefinitionID),
+    Scoped(ScopeID),
 }

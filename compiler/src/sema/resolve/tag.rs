@@ -36,7 +36,7 @@ impl<'r> AstVisitor for Actor<'r> {
             ast::DeclarationKind::Extend(..) => DefinitionKind::Extension,
             ast::DeclarationKind::TypeAlias(..) => DefinitionKind::TypeAlias,
             ast::DeclarationKind::Namespace(..) => DefinitionKind::Namespace,
-            _ => unreachable!("unpermitted top-level declaration"),
+            ast::DeclarationKind::Initializer(..) => unreachable!("top level initializer"),
         };
 
         let parent = self.tag(&node.identifier, node.id, kind);
@@ -134,6 +134,7 @@ impl<'r> AstVisitor for Actor<'r> {
             .expect("struct declaration to be tagged")
             .clone();
         self.tag(&identifier, node.ctor_node_id, kind);
+        ast::walk_struct_definition(self, node);
     }
 
     fn visit_use_tree(

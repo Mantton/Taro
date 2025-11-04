@@ -798,6 +798,7 @@ impl Lexer {
 
 fn str_to_keyword(word: &str) -> Option<Token> {
     let token = match word {
+        "any" => Token::Any,
         "as" => Token::As,
         "break" => Token::Break,
         "case" => Token::Case,

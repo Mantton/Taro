@@ -1,11 +1,13 @@
 use crate::{
     ast::{Identifier, NodeID},
     sema::resolve::{
-        DefinitionID, DefinitionIndex, DefinitionKind, PackageIndex, Resolution, Scope, ScopeEntry,
-        ScopeEntryID, ScopeEntryKind, ScopeID, ScopeKey, ScopeNamespace, ScopeTable, UsageEntry,
-        UsageID,
+        DefinitionID, DefinitionIndex, DefinitionKind, LexicalScope, PackageIndex, Resolution,
+        Scope, ScopeEntry, ScopeEntryID, ScopeEntryKind, ScopeEntrySet, ScopeID, ScopeKey,
+        ScopeNamespace, ScopeTable, UsageEntry, UsageID, full::ResolutionResult,
     },
+    span::FileID,
 };
+use ecow::EcoString;
 use index_vec::IndexVec;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cell::RefCell;
@@ -22,6 +24,10 @@ pub struct Resolver {
     pub unresolved_imports: Vec<UsageID>,
     pub unresolved_exports: Vec<UsageID>,
     pub root_module_scope: Option<ScopeID>,
+    pub file_scope_mapping: FxHashMap<FileID, ScopeID>,
+    pub module_scope_mapping: FxHashMap<usize, ScopeID>,
+    pub definition_scope_mapping: FxHashMap<DefinitionID, ScopeID>,
+    pub block_scope_mapping: FxHashMap<NodeID, ScopeID>,
 }
 
 impl Resolver {
@@ -40,6 +46,11 @@ impl Resolver {
             unresolved_exports: Default::default(),
             unresolved_imports: Default::default(),
             root_module_scope: None,
+
+            file_scope_mapping: Default::default(),
+            module_scope_mapping: Default::default(),
+            definition_scope_mapping: Default::default(),
+            block_scope_mapping: Default::default(),
         }
     }
 }
@@ -92,6 +103,13 @@ impl Resolver {
 
     pub fn get_scope(&self, id: ScopeID) -> &Scope {
         self.scopes.get(id).expect("no scope matching provided id")
+    }
+
+    pub fn get_def_scope(&self, id: DefinitionID) -> ScopeID {
+        *self
+            .definition_scope_mapping
+            .get(&id)
+            .expect("definition tagged scope")
     }
 
     pub fn get_scope_entry(&self, id: ScopeEntryID) -> &ScopeEntry {
@@ -171,16 +189,132 @@ impl Resolver {
                     return Err(nearest_entry);
                 }
 
-                current_set.insert(entry);
+                current_set.push(entry);
                 return Ok(());
             } else {
                 unreachable!()
             }
         } else {
-            let mut set = FxHashSet::default();
-            set.insert(entry);
+            let set = vec![entry];
             table.insert(key, set);
             return Ok(());
         }
+    }
+}
+impl Resolver {
+    fn convert_to_resolution(&self, set: &[ScopeEntryID]) -> Resolution {
+        let get = |id: &ScopeEntryID| {
+            let entry = self.scope_entries.get(*id).unwrap();
+            match &entry.kind {
+                ScopeEntryKind::Resolution(resolution) => resolution.clone(),
+                ScopeEntryKind::Usage => todo!(),
+            }
+        };
+        let res = if set.len() == 1
+            && let Some(value) = set.iter().next()
+        {
+            get(value)
+        } else {
+            let res: Vec<_> = set
+                .iter()
+                .filter_map(|v| match get(v) {
+                    Resolution::Definition(id, kind)
+                        if matches!(
+                            kind,
+                            DefinitionKind::Function | DefinitionKind::AssociatedFunction
+                        ) =>
+                    {
+                        Some(id)
+                    }
+                    _ => None,
+                })
+                .collect();
+            Resolution::FunctionSet(res)
+        };
+
+        Resolution::Error
+    }
+}
+
+impl Resolver {
+    pub fn resolve_module_path(&self, path: &Vec<Identifier>) {
+        for (index, ident) in path.iter().enumerate() {
+            if index == 0 {
+                let package_root = self.resolve_package(ident);
+            } else {
+            }
+        }
+    }
+
+    fn resolve_package(&self, identifier: &Identifier) -> Option<ScopeID> {
+        println!("find package {}", identifier.symbol);
+        None
+    }
+}
+impl Resolver {
+    pub fn resolve_in_scope(
+        &mut self,
+        name: &Identifier,
+        scope_id: ScopeID,
+        namespace: ScopeNamespace,
+    ) -> ResolutionResult {
+        let scope = self.scopes.get(scope_id).expect("Scope For ID");
+
+        {
+            let table = scope.table.borrow();
+            println!("searching for {} in scope", name.symbol);
+            let key = ScopeKey {
+                name: name.symbol.clone(),
+                namespace,
+                disambiguator: 0,
+            };
+            let result = table.get(&key);
+            if let Some(result) = result {
+                let res = self.convert_to_resolution(result);
+                return ResolutionResult::Res(res);
+            }
+        }
+
+        ResolutionResult::Error
+    }
+    pub fn resolve_in_scopes(
+        &mut self,
+        name: &Identifier,
+        namespace: ScopeNamespace,
+        scopes: &[LexicalScope],
+    ) -> ResolutionResult {
+        for scope in scopes.iter().rev() {
+            // Check in Local Table
+            println!("searching for {} in lexical scope", name.symbol);
+            let resolution = scope.table.get(&name.symbol);
+            if let Some(resolution) = resolution {
+                println!("found {}", name.symbol);
+                return ResolutionResult::Res(resolution.clone());
+            }
+
+            let scope_id = match scope.source {
+                super::LexicalScopeSource::Scoped(scope_id) => scope_id,
+                _ => continue,
+            };
+
+            {
+                let scope = self.scopes.get(scope_id).expect("Scope For ID");
+
+                match &scope.kind {
+                    super::ScopeKind::Block(..) | super::ScopeKind::File(..) => {
+                        // see through
+                    }
+                    _ => break,
+                }
+            }
+            let result = self.resolve_in_scope(name, scope_id, namespace);
+
+            match result {
+                ResolutionResult::Error => continue,
+                _ => return result,
+            }
+        }
+
+        ResolutionResult::Error
     }
 }
