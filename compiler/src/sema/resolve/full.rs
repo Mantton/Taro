@@ -207,7 +207,9 @@ impl<'r> Actor<'r> {
                 let scope_id = self.resolver.get_def_scope(def_id);
                 self.with_scope_id(scope_id, |this| ast::walk_declaration(this, declaration))
             }
-            ast::DeclarationKind::Extend(node) => self.resolve_extension(declaration.id, node),
+            ast::DeclarationKind::Implementation(node) => {
+                self.resolve_extension(declaration.id, node)
+            }
             ast::DeclarationKind::Initializer(..) => {
                 unreachable!("top level initializer")
             }
@@ -216,7 +218,7 @@ impl<'r> Actor<'r> {
 }
 
 impl<'r> Actor<'r> {
-    fn resolve_extension(&mut self, id: ast::NodeID, node: &ast::Extension) {
+    fn resolve_extension(&mut self, id: ast::NodeID, node: &ast::Implementation) {
         let def_id = self.resolver.def_id(id);
         self.with_scope(
             LexicalScope::new(LexicalScopeSource::Definition(def_id)),

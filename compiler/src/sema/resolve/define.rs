@@ -170,7 +170,7 @@ impl<'r> Actor<'r> {
             | ast::DeclarationKind::Constant(..) => {
                 self.define(identifier, ScopeNamespace::Value, resolution, visibility);
             }
-            ast::DeclarationKind::Extend(node) => {
+            ast::DeclarationKind::Implementation(node) => {
                 let scope = Scope::new(ScopeKind::Definition(def_id), self.scopes.current);
                 let scope = self.create_scope(scope);
                 return Some(scope);

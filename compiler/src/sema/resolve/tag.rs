@@ -33,7 +33,7 @@ impl<'r> AstVisitor for Actor<'r> {
             ast::DeclarationKind::Constant(..) => DefinitionKind::Constant,
             ast::DeclarationKind::Import(..) => DefinitionKind::Import,
             ast::DeclarationKind::Export(..) => DefinitionKind::Export,
-            ast::DeclarationKind::Extend(..) => DefinitionKind::Extension,
+            ast::DeclarationKind::Implementation(..) => DefinitionKind::Extension,
             ast::DeclarationKind::TypeAlias(..) => DefinitionKind::TypeAlias,
             ast::DeclarationKind::Namespace(..) => DefinitionKind::Namespace,
             ast::DeclarationKind::Initializer(..) => unreachable!("top level initializer"),

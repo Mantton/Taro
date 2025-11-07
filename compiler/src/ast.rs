@@ -119,7 +119,7 @@ pub enum DeclarationKind {
     Constant(Constant),
     Import(UseTree),
     Export(UseTree),
-    Extend(Extension),
+    Implementation(Implementation),
     TypeAlias(TypeAlias),
     Namespace(Namespace),
     Initializer(Initializer),
@@ -166,6 +166,7 @@ pub enum AssociatedDeclarationKind {
 pub struct Interface {
     pub generics: Generics,
     pub declarations: Vec<AssociatedDeclaration>,
+    pub conformances: Option<Conformances>,
 }
 
 #[derive(Debug)]
@@ -221,9 +222,10 @@ pub struct Namespace {
 }
 
 #[derive(Debug)]
-pub struct Extension {
+pub struct Implementation {
     pub ty: Box<Type>,
     pub generics: Generics,
+    pub interface: Option<Box<Type>>,
     pub declarations: Vec<AssociatedDeclaration>,
 }
 
@@ -637,7 +639,6 @@ pub enum TypeArgument {
 pub struct Generics {
     pub type_parameters: Option<TypeParameters>,
     pub where_clause: Option<GenericWhereClause>,
-    pub conformances: Option<Conformances>,
 }
 
 /// `where T: X & Y`
@@ -683,7 +684,7 @@ pub type GenericBounds = Vec<GenericBound>;
 
 #[derive(Debug)]
 pub struct Conformances {
-    pub interfaces: Vec<Box<Type>>,
+    pub bounds: Vec<Box<Type>>,
     pub span: Span,
 }
 
@@ -1100,10 +1101,6 @@ pub trait AstVisitor: Sized {
         walk_generic_bound(self, node)
     }
 
-    fn visit_conformances(&mut self, node: &Conformances) -> Self::Result {
-        walk_conformances(self, node)
-    }
-
     fn visit_use_tree(&mut self, node: &UseTree, context: UseTreeContext) -> Self::Result {
         walk_use_tree(self, node, context)
     }
@@ -1249,7 +1246,7 @@ pub fn walk_declaration<V: AstVisitor>(visitor: &mut V, declaration: &Declaratio
         DeclarationKind::Export(node) => {
             try_visit!(visitor.visit_use_tree(node, UseTreeContext::Export(declaration.id)))
         }
-        DeclarationKind::Extend(node) => {
+        DeclarationKind::Implementation(node) => {
             try_visit!(visitor.visit_generics(&node.generics));
             try_visit!(visitor.visit_type(&node.ty));
             walk_list!(
@@ -1524,7 +1521,6 @@ pub fn walk_pattern<V: AstVisitor>(visitor: &mut V, pattern: &Pattern) -> V::Res
 pub fn walk_generics<V: AstVisitor>(visitor: &mut V, node: &Generics) -> V::Result {
     visit_optional!(visitor, visit_type_parameters, &node.type_parameters);
     visit_optional!(visitor, visit_generic_where_clause, &node.where_clause);
-    visit_optional!(visitor, visit_conformances, &node.conformances);
     V::Result::output()
 }
 
@@ -1748,11 +1744,6 @@ pub fn walk_generic_bounds<V: AstVisitor>(visitor: &mut V, node: &GenericBounds)
 
 pub fn walk_generic_bound<V: AstVisitor>(visitor: &mut V, node: &GenericBound) -> V::Result {
     try_visit!(visitor.visit_type(&node.path));
-    V::Result::output()
-}
-
-pub fn walk_conformances<V: AstVisitor>(visitor: &mut V, node: &Conformances) -> V::Result {
-    walk_list!(visitor, visit_type, &node.interfaces);
     V::Result::output()
 }
 

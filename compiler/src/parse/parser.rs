@@ -3,12 +3,12 @@ use crate::{
         self, AnonConst, AssociatedDeclaration, AssociatedDeclarationKind, Attribute,
         AttributeList, BinaryOperator, Block, ClosureExpression, ConformanceConstraint,
         Conformances, Constant, Declaration, DeclarationKind, Enum, EnumCase, Expression,
-        ExpressionArgument, ExpressionKind, Extension, FieldDefinition, ForStatement, Function,
+        ExpressionArgument, ExpressionKind, FieldDefinition, ForStatement, Function,
         FunctionDeclaration, FunctionDeclarationKind, FunctionParameter, FunctionPrototype,
         FunctionSignature, GenericBound, GenericBounds, GenericRequirement, GenericRequirementList,
-        GenericWhereClause, Generics, Identifier, IfExpression, Initializer, Interface, Label,
-        Literal, Local, MapPair, MatchArm, MatchExpression, Mutability, Namespace,
-        NamespaceDeclaration, NamespaceDeclarationKind, NodeID, OperatorKind, Pattern,
+        GenericWhereClause, Generics, Identifier, IfExpression, Implementation, Initializer,
+        Interface, Label, Literal, Local, MapPair, MatchArm, MatchExpression, Mutability,
+        Namespace, NamespaceDeclaration, NamespaceDeclarationKind, NodeID, OperatorKind, Pattern,
         PatternBindingCondition, PatternField, PatternKind, PatternPath, RequiredTypeConstraint,
         SelfKind, Statement, StatementKind, Struct, Type, TypeAlias, TypeArgument, TypeArguments,
         TypeKind, TypeParameter, TypeParameterKind, TypeParameters, UnaryOperator, UseTree,
@@ -423,7 +423,7 @@ impl Parser {
             ),
             Token::Type => self.parse_type_declaration()?,
             Token::Function => self.parse_function(mode)?,
-            Token::Extend => (Identifier::emtpy(self.file.id), self.parse_extend()?),
+            Token::Impl => (Identifier::emtpy(self.file.id), self.parse_impl()?),
             Token::Namespace => self.parse_namespace()?,
             Token::Init => self.parse_initializer(mode)?,
             _ => return Ok(None),
@@ -620,7 +620,6 @@ impl Parser {
         let identifier = self.parse_identifier()?;
 
         let type_parameters = self.parse_type_parameters()?;
-        let conformances = self.parse_conformances()?;
         let ty = if self.eat(Token::Assign) {
             Some(self.parse_type()?)
         } else {
@@ -632,7 +631,6 @@ impl Parser {
         let generics = Generics {
             type_parameters,
             where_clause,
-            conformances,
         };
 
         let decl = TypeAlias { ty, generics };
@@ -643,17 +641,16 @@ impl Parser {
 }
 
 impl Parser {
-    fn parse_extend(&mut self) -> R<DeclarationKind> {
-        self.expect(Token::Extend)?;
+    fn parse_impl(&mut self) -> R<DeclarationKind> {
+        self.expect(Token::Impl)?;
         let type_parameters = self.parse_type_parameters()?;
 
-        let ty = self.parse_type()?;
-        let conformances = self.parse_conformances()?;
+        let n1 = self.parse_type()?;
 
-        if let Some(conformances) = &conformances
-            && conformances.interfaces.len() > 1
-        {
-            self.emit_error(ParserError::MultipleConformances, conformances.span);
+        let n2 = if self.eat(Token::For) {
+            Some(self.parse_type()?)
+        } else {
+            None
         };
 
         let where_clause = self.parse_generic_where_clause()?;
@@ -665,16 +662,21 @@ impl Parser {
         let generics = Generics {
             type_parameters,
             where_clause,
-            conformances,
         };
 
-        let extend = Extension {
+        let (ty, interface) = match n2 {
+            Some(ty) => (ty, Some(n1)),
+            None => (n1, None),
+        };
+
+        let extend = Implementation {
             ty,
             declarations,
             generics,
+            interface,
         };
 
-        Ok(DeclarationKind::Extend(extend))
+        Ok(DeclarationKind::Implementation(extend))
     }
 }
 
@@ -687,7 +689,6 @@ impl Parser {
         let generics = Generics {
             type_parameters,
             where_clause,
-            conformances: None,
         };
 
         let fields = self.parse_field_definitions(Delimiter::Brace)?;
@@ -709,7 +710,6 @@ impl Parser {
         let generics = Generics {
             type_parameters,
             where_clause,
-            conformances: None,
         };
 
         let cases =
@@ -730,14 +730,14 @@ impl Parser {
         let generics = {
             let type_parameters = self.parse_type_parameters()?;
             let where_clause = self.parse_generic_where_clause()?;
-            let conformances = self.parse_conformances()?;
 
             Generics {
                 type_parameters,
                 where_clause,
-                conformances,
             }
         };
+
+        let conformances = self.parse_conformances()?;
 
         let declarations = self.parse_declaration_list(|p| {
             p.parse_associated_declaration(FnParseMode { req_body: false })
@@ -746,6 +746,7 @@ impl Parser {
         let interface = Interface {
             declarations,
             generics,
+            conformances,
         };
 
         Ok((ident, DeclarationKind::Interface(interface)))
@@ -1301,9 +1302,9 @@ impl Parser {
     fn parse_conformances(&mut self) -> R<Option<Conformances>> {
         if self.eat(Token::Colon) {
             let lo = self.lo_span();
-            let interfaces = self.parse_sequence(Token::Comma, |this| this.parse_type())?;
+            let bounds = self.parse_sequence(Token::Comma, |this| this.parse_type())?;
             let node = Conformances {
-                interfaces,
+                bounds,
                 span: lo.to(self.hi_span()),
             };
             Ok(Some(node))
@@ -2825,7 +2826,6 @@ impl Parser {
         let generics = Generics {
             type_parameters,
             where_clause,
-            conformances: None,
         };
 
         let func = Function {
@@ -3111,7 +3111,6 @@ enum ParserError {
     ExpectedParameterNameOrLabel,
     ExpectedParameterName,
     ExpectedSelf,
-    MultipleConformances,
 }
 
 struct FnParseMode {
