@@ -20,41 +20,63 @@ use crate::{
     parse::{Base, lexer, token::Token},
     span::{Span, Spanned},
 };
-use std::{cell::RefCell, collections::VecDeque, rc::Rc};
+use std::{cell::RefCell, collections::VecDeque, ops::Add, rc::Rc};
 
+type NextNode = Rc<RefCell<NodeTagger>>;
+#[derive(Debug, Default)]
+struct NodeTagger {
+    next_index: u32,
+}
+impl NodeTagger {
+    fn next(&mut self) -> NodeID {
+        let id = NodeID::from_raw(self.next_index);
+        self.next_index += 1;
+        id
+    }
+}
 pub fn parse_package(
     package: lexer::Pacakge,
     dcx: &DiagCtx,
 ) -> Result<ast::Package, ReportedError> {
-    let root = parse_module(package.root, dcx)?;
+    let next: NextNode = Default::default();
+    let root = parse_module(package.root, next, dcx)?;
     Ok(ast::Package { root })
 }
 
-fn parse_module(module: lexer::Module, dcx: &DiagCtx) -> Result<ast::Module, ReportedError> {
+fn parse_module(
+    module: lexer::Module,
+    next: NextNode,
+    dcx: &DiagCtx,
+) -> Result<ast::Module, ReportedError> {
     let name = module.name;
     let mut files = vec![];
     let mut submodules = vec![];
 
     for file in module.files {
-        let file = parse_file(file, dcx)?;
+        let file = parse_file(file, next.clone(), dcx)?;
         files.push(file);
     }
 
     for module in module.submodules {
-        let module = parse_module(module, dcx)?;
+        let module = parse_module(module, next.clone(), dcx)?;
         submodules.push(module);
     }
 
     Ok(ast::Module {
+        id: next.borrow_mut().next(),
         name,
         files,
         submodules,
     })
 }
 
-fn parse_file(file: lexer::File, dcx: &DiagCtx) -> Result<ast::File, ReportedError> {
+fn parse_file(
+    file: lexer::File,
+    next: NextNode,
+    dcx: &DiagCtx,
+) -> Result<ast::File, ReportedError> {
     let id = file.id;
-    let parser = Parser::new(file);
+    let parser = Parser::new(file, next.clone());
     let declarations = match parser.parse() {
         Ok(declarations) => declarations,
         Err(errors) => {
@@ -75,19 +97,19 @@ struct Parser {
     cursor: usize,
     restrictions: Restrictions,
     anchors: VecDeque<usize>,
-    next_index: u32,
+    next_index: NextNode,
     errors: Vec<Spanned<ParserError>>,
 }
 
 impl Parser {
-    fn new(file: lexer::File) -> Parser {
+    fn new(file: lexer::File, next: NextNode) -> Parser {
         Parser {
             file,
             cursor: 0,
             restrictions: Restrictions::empty(),
             anchors: VecDeque::new(),
             errors: vec![],
-            next_index: 0,
+            next_index: next,
         }
     }
 }
@@ -202,9 +224,7 @@ impl Parser {
 
 impl Parser {
     fn next_id(&mut self) -> NodeID {
-        let id = NodeID::new(self.file.id, self.next_index);
-        self.next_index += 1;
-        id
+        self.next_index.borrow_mut().next()
     }
 }
 
@@ -2860,7 +2880,6 @@ impl Parser {
             self.bump();
             None
         } else {
-            println!("{:?}", self.current_token());
             return Err(self.err_at_current(ParserError::ExpectedParameterNameOrLabel));
         };
 

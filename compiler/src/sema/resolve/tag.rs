@@ -5,6 +5,7 @@ use crate::{
         CtorKind, CtorOf, DefinitionID, DefinitionIndex, DefinitionKind, PackageIndex,
         resolver::Resolver,
     },
+    span::{FileID, Span},
 };
 use ecow::EcoString;
 
@@ -23,6 +24,14 @@ struct Actor<'resolver> {
 }
 
 impl<'r> AstVisitor for Actor<'r> {
+    fn visit_module(&mut self, node: &ast::Module, is_root: bool) -> Self::Result {
+        let name = Identifier {
+            span: Span::empty(FileID::new(0)),
+            symbol: node.name.clone(),
+        };
+        let parent = self.tag(&name, node.id, DefinitionKind::Module);
+        self.with_parent(parent, |this| ast::walk_module(this, node));
+    }
     fn visit_declaration(&mut self, node: &ast::Declaration) -> Self::Result {
         let kind = match &node.kind {
             ast::DeclarationKind::Interface(..) => DefinitionKind::Interface,

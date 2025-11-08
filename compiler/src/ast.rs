@@ -7,13 +7,8 @@ use crate::{
 use ecow::EcoString;
 use index_vec::define_index_type;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NodeID(FileID, u32);
-
-impl NodeID {
-    pub fn new(file: FileID, index: u32) -> Self {
-        NodeID(file, index)
-    }
+define_index_type! {
+    pub struct NodeID = u32;
 }
 
 #[derive(Debug)]
@@ -23,6 +18,7 @@ pub struct Package {
 
 #[derive(Debug)]
 pub struct Module {
+    pub id: NodeID,
     pub name: EcoString,
     pub files: Vec<File>,
     pub submodules: Vec<Module>,

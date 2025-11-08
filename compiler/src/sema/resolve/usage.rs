@@ -65,7 +65,6 @@ impl<'r> Actor<'r> {
     fn resolve_usage(&mut self, usage_id: UsageID, finalize: bool) -> bool {
         let usage = self.resolver.usages.get(usage_id).unwrap();
         let module_result = self.resolver.resolve_module_path(&usage.module_path);
-        println!("Resolve usage!");
         false
     }
 }

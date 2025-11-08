@@ -230,7 +230,7 @@ impl<'r> Actor<'r> {
                         this.visit_generics(&node.generics);
 
                         for declaration in &node.declarations {
-                            this.resolve_extension_declaration(declaration);
+                            this.resolve_impl_declaration(declaration);
                         }
                     });
                 });
@@ -238,7 +238,7 @@ impl<'r> Actor<'r> {
         )
     }
 
-    fn resolve_extension_declaration(&mut self, declaration: &ast::AssociatedDeclaration) {
+    fn resolve_impl_declaration(&mut self, declaration: &ast::AssociatedDeclaration) {
         println!("Extension decl")
     }
 }

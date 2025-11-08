@@ -65,7 +65,7 @@ impl Resolver {
     ) -> DefinitionID {
         let index = {
             let def_index = DefinitionIndex::new(self.next_index);
-            DefinitionID::new(PackageIndex::new(0), def_index)
+            DefinitionID::new(PackageIndex::LOCAL, def_index)
         };
 
         {
@@ -238,10 +238,13 @@ impl Resolver {
 
 impl Resolver {
     pub fn resolve_module_path(&self, path: &Vec<Identifier>) {
-        for (index, ident) in path.iter().enumerate() {
-            if index == 0 {
-                let package_root = self.resolve_package(ident);
+        debug_assert!(!path.is_empty(), "non empty module path");
+        let scope: Option<ScopeID> = None;
+        for (index, identifier) in path.iter().enumerate() {
+            if let Some(scope) = scope {
+                todo!("resolve in scope")
             } else {
+                let root = self.resolve_package(identifier);
             }
         }
     }
@@ -262,7 +265,6 @@ impl Resolver {
 
         {
             let table = scope.table.borrow();
-            println!("searching for {} in scope", name.symbol);
             let key = ScopeKey {
                 name: name.symbol.clone(),
                 namespace,
@@ -285,10 +287,8 @@ impl Resolver {
     ) -> ResolutionResult {
         for scope in scopes.iter().rev() {
             // Check in Local Table
-            println!("searching for {} in lexical scope", name.symbol);
             let resolution = scope.table.get(&name.symbol);
             if let Some(resolution) = resolution {
-                println!("found {}", name.symbol);
                 return ResolutionResult::Res(resolution.clone());
             }
 
