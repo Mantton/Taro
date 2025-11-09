@@ -1,3 +1,5 @@
+use std::cell::Cell;
+
 use crate::{
     ast::{
         self, AstVisitor, DeclarationKind, Identifier, NodeID, UseTree, UseTreeKind,
@@ -5,10 +7,13 @@ use crate::{
     },
     error::CompileResult,
     sema::resolve::{
-        ActiveScope, DefinitionKind, Resolution, Scope, ScopeID, ScopeKind, ScopeNamespace,
-        UsageBinding, UsageEntry, UsageKind, resolver::Resolver,
+        models::{
+            ActiveScope, DefinitionKind, Resolution, Scope, ScopeData, ScopeKind, ScopeNamespace,
+            UsageBinding, UsageEntryData, UsageKind,
+        },
+        resolver::Resolver,
     },
-    span::Span,
+    span::{FileID, Span},
 };
 
 pub fn define_package_symbols(
@@ -20,13 +25,13 @@ pub fn define_package_symbols(
     Ok(())
 }
 
-pub struct Actor<'resolver> {
-    resolver: &'resolver mut Resolver,
-    scopes: ActiveScope,
+pub struct Actor<'r, 'a, 'c> {
+    resolver: &'r mut Resolver<'a, 'c>,
+    scopes: ActiveScope<'a>,
 }
 
-impl<'r> Actor<'r> {
-    fn new(resolver: &'r mut Resolver) -> Actor<'r> {
+impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
+    fn new(resolver: &'r mut Resolver<'a, 'c>) -> Actor<'r, 'a, 'c> {
         Actor {
             resolver,
             scopes: ActiveScope {
@@ -37,15 +42,26 @@ impl<'r> Actor<'r> {
     }
 }
 
-impl<'r> AstVisitor for Actor<'r> {
+impl<'r, 'a, 'c> AstVisitor for Actor<'r, 'a, 'c> {
     fn visit_module(&mut self, node: &ast::Module, is_root: bool) -> Self::Result {
-        let kind = ScopeKind::Module(0);
+        let id = self.resolver.definition_id(node.id);
+        let kind = ScopeKind::Definition(id, DefinitionKind::Module);
         let parent = self.scopes.current;
-        let scope = Scope::new(kind, parent);
+        let scope = ScopeData::new(kind, parent);
         let scope_id = self.create_scope(scope);
 
         if is_root {
             self.resolver.root_module_scope = Some(scope_id)
+        } else {
+            self.define(
+                &Identifier {
+                    span: Span::empty(FileID::new(0)),
+                    symbol: node.name.clone(),
+                },
+                ScopeNamespace::Module,
+                Resolution::Definition(id, DefinitionKind::Module),
+                0,
+            );
         }
 
         self.with_scope(scope_id, |this| ast::walk_module(this, node));
@@ -53,7 +69,7 @@ impl<'r> AstVisitor for Actor<'r> {
 
     fn visit_file(&mut self, node: &ast::File) -> Self::Result {
         let kind = ScopeKind::File(node.id);
-        let scope = Scope::new(kind, None);
+        let scope = ScopeData::new(kind, None);
         let scope_id = self.create_scope(scope);
         self.resolver.file_scope_mapping.insert(node.id, scope_id);
 
@@ -106,8 +122,10 @@ impl<'r> AstVisitor for Actor<'r> {
 
     fn visit_block(&mut self, node: &ast::Block) -> Self::Result {
         if node.has_declarations {
-            let scope =
-                self.create_scope(Scope::new(ScopeKind::Block(node.id), self.scopes.current));
+            let scope = self.create_scope(ScopeData::new(
+                ScopeKind::Block(node.id),
+                self.scopes.current,
+            ));
 
             self.resolver.block_scope_mapping.insert(node.id, scope);
             self.with_scope(scope, |this| ast::walk_block(this, node));
@@ -117,9 +135,9 @@ impl<'r> AstVisitor for Actor<'r> {
     }
 }
 
-impl<'r> Actor<'r> {
-    fn create_scope(&mut self, scope: Scope) -> ScopeID {
-        let def_id = if let ScopeKind::Definition(id) = &scope.kind {
+impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
+    fn create_scope(&mut self, scope: ScopeData<'a>) -> Scope<'a> {
+        let def_id = if let ScopeKind::Definition(id, _) = &scope.kind {
             Some(*id)
         } else {
             None
@@ -132,7 +150,7 @@ impl<'r> Actor<'r> {
         id
     }
 
-    fn with_scope<F: FnOnce(&mut Self)>(&mut self, scope: ScopeID, action: F) {
+    fn with_scope<F: FnOnce(&mut Self)>(&mut self, scope: Scope<'a>, action: F) {
         let previous = self.scopes.current;
         self.scopes.current = Some(scope);
         action(self);
@@ -140,10 +158,10 @@ impl<'r> Actor<'r> {
     }
 }
 
-impl<'r> Actor<'r> {
-    fn define_module_declaration(&mut self, declaration: &ast::Declaration) -> Option<ScopeID> {
-        let def_id = self.resolver.def_id(declaration.id);
-        let def_kind = self.resolver.def_kind(def_id);
+impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
+    fn define_module_declaration(&mut self, declaration: &ast::Declaration) -> Option<Scope<'a>> {
+        let def_id = self.resolver.definition_id(declaration.id);
+        let def_kind = self.resolver.definition_kind(def_id);
         let resolution = Resolution::Definition(def_id, def_kind);
         let identifier = &declaration.identifier;
         let visibility = 0;
@@ -151,16 +169,6 @@ impl<'r> Actor<'r> {
         match &declaration.kind {
             ast::DeclarationKind::Struct(node) => {
                 self.define(identifier, ScopeNamespace::Type, resolution, visibility);
-
-                // Constructor
-                let ctor_def_id = self.resolver.def_id(node.ctor_node_id);
-                let ctor_def_kind = self.resolver.def_kind(ctor_def_id);
-                self.define(
-                    identifier,
-                    ScopeNamespace::Value,
-                    Resolution::Definition(ctor_def_id, ctor_def_kind),
-                    visibility,
-                );
             }
             ast::DeclarationKind::Enum(..) | ast::DeclarationKind::TypeAlias(..) => {
                 self.define(identifier, ScopeNamespace::Type, resolution, visibility);
@@ -170,19 +178,21 @@ impl<'r> Actor<'r> {
             | ast::DeclarationKind::Constant(..) => {
                 self.define(identifier, ScopeNamespace::Value, resolution, visibility);
             }
-            ast::DeclarationKind::Implementation(node) => {
-                let scope = Scope::new(ScopeKind::Definition(def_id), self.scopes.current);
-                let scope = self.create_scope(scope);
-                return Some(scope);
-            }
+            ast::DeclarationKind::Implementation(node) => return None,
             ast::DeclarationKind::Interface(..) => {
-                let scope = Scope::new(ScopeKind::Definition(def_id), self.scopes.current);
+                let scope = ScopeData::new(
+                    ScopeKind::Definition(def_id, DefinitionKind::Interface),
+                    self.scopes.current,
+                );
                 let scope = self.create_scope(scope);
                 self.define(identifier, ScopeNamespace::Type, resolution, visibility);
                 return Some(scope);
             }
             ast::DeclarationKind::Namespace(..) => {
-                let scope = Scope::new(ScopeKind::Definition(def_id), self.scopes.current);
+                let scope = ScopeData::new(
+                    ScopeKind::Definition(def_id, DefinitionKind::Namespace),
+                    self.scopes.current,
+                );
                 let scope = self.create_scope(scope);
                 self.define(identifier, ScopeNamespace::Module, resolution, visibility);
                 return Some(scope);
@@ -205,9 +215,9 @@ impl<'r> Actor<'r> {
     fn define_namespace_declaration(
         &mut self,
         declaration: &ast::NamespaceDeclaration,
-    ) -> Option<ScopeID> {
-        let def_id = self.resolver.def_id(declaration.id);
-        let def_kind = self.resolver.def_kind(def_id);
+    ) -> Option<Scope<'a>> {
+        let def_id = self.resolver.definition_id(declaration.id);
+        let def_kind = self.resolver.definition_kind(def_id);
         let resolution = Resolution::Definition(def_id, def_kind);
         let identifier = &declaration.identifier;
         let visibility = 0;
@@ -225,13 +235,19 @@ impl<'r> Actor<'r> {
             }
 
             ast::NamespaceDeclarationKind::Namespace(..) => {
-                let scope = Scope::new(ScopeKind::Definition(def_id), self.scopes.current);
+                let scope = ScopeData::new(
+                    ScopeKind::Definition(def_id, DefinitionKind::Namespace),
+                    self.scopes.current,
+                );
                 let scope = self.create_scope(scope);
                 self.define(identifier, ScopeNamespace::Module, resolution, visibility);
                 return Some(scope);
             }
             ast::NamespaceDeclarationKind::Interface(..) => {
-                let scope = Scope::new(ScopeKind::Definition(def_id), self.scopes.current);
+                let scope = ScopeData::new(
+                    ScopeKind::Definition(def_id, DefinitionKind::Interface),
+                    self.scopes.current,
+                );
                 let scope = self.create_scope(scope);
                 self.define(identifier, ScopeNamespace::Type, resolution, visibility);
                 return Some(scope);
@@ -250,9 +266,9 @@ impl<'r> Actor<'r> {
     fn define_function_declaration(
         &mut self,
         declaration: &ast::FunctionDeclaration,
-    ) -> Option<ScopeID> {
-        let def_id = self.resolver.def_id(declaration.id);
-        let def_kind = self.resolver.def_kind(def_id);
+    ) -> Option<Scope<'a>> {
+        let def_id = self.resolver.definition_id(declaration.id);
+        let def_kind = self.resolver.definition_kind(def_id);
         let resolution = Resolution::Definition(def_id, def_kind);
         let identifier = &declaration.identifier;
         let visibility = 0;
@@ -278,9 +294,9 @@ impl<'r> Actor<'r> {
     fn define_assoc_declaration(
         &mut self,
         declaration: &ast::AssociatedDeclaration,
-    ) -> Option<ScopeID> {
-        let def_id = self.resolver.def_id(declaration.id);
-        let def_kind = self.resolver.def_kind(def_id);
+    ) -> Option<Scope<'a>> {
+        let def_id = self.resolver.definition_id(declaration.id);
+        let def_kind = self.resolver.definition_kind(def_id);
         let resolution = Resolution::Definition(def_id, def_kind);
         let identifier = &declaration.identifier;
         let visibility = 0;
@@ -301,7 +317,7 @@ impl<'r> Actor<'r> {
         return None;
     }
 }
-impl<'r> Actor<'r> {
+impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
     fn define(
         &mut self,
         identifier: &Identifier,
@@ -309,14 +325,16 @@ impl<'r> Actor<'r> {
         resolution: Resolution,
         visibility: usize,
     ) {
-        let Some(current_scope_id) = self.scopes.current else {
+        let Some(current_scope) = self.scopes.current else {
             return;
         };
 
-        let current_scope_kind = &self.resolver.get_scope(current_scope_id).kind;
+        let current_scope_kind = &current_scope.kind;
         // If defining in module, define in file
-        let file_result = if matches!(current_scope_kind, ScopeKind::Module(..))
-            && let Some(file_scope) = self.scopes.file
+        let file_result = if matches!(
+            current_scope_kind,
+            ScopeKind::Definition(_, DefinitionKind::Module)
+        ) && let Some(file_scope) = self.scopes.file
         {
             self.resolver
                 .define_in_scope(file_scope, identifier, namespace, resolution.clone())
@@ -327,7 +345,7 @@ impl<'r> Actor<'r> {
         // Define in current scope
         let module_result =
             self.resolver
-                .define_in_scope(current_scope_id, identifier, namespace, resolution);
+                .define_in_scope(current_scope, identifier, namespace, resolution);
 
         let result = file_result.and(module_result);
         if let Err(err) = result {
@@ -337,31 +355,32 @@ impl<'r> Actor<'r> {
     }
 }
 
-impl<'r> Actor<'r> {
+impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
     fn define_use_tree(&mut self, id: NodeID, tree: &UseTree, is_import: bool) {
-        let scope_id = if let Some(scope_id) = self.scopes.current {
-            let scope = self.resolver.get_scope(scope_id);
-            match scope.kind {
-                ScopeKind::Block(_) if is_import => Some(scope_id),
-                ScopeKind::Definition(def_id)
-                    if matches!(self.resolver.def_kind(def_id), DefinitionKind::Namespace) =>
-                {
-                    Some(scope_id)
+        let scope = if let Some(scope) = self.scopes.current {
+            match &scope.kind {
+                ScopeKind::Block(_) if is_import => Some(scope),
+                ScopeKind::Definition(_, kind) if matches!(kind, DefinitionKind::Namespace) => {
+                    Some(scope)
                 }
-                ScopeKind::Module(_) if !is_import => Some(scope_id),
+                ScopeKind::Definition(_, kind)
+                    if matches!(kind, DefinitionKind::Module) && !is_import =>
+                {
+                    Some(scope)
+                }
                 _ => self.scopes.file,
             }
         } else {
             None
         };
 
-        let scope_id = scope_id.expect("non-nil scope id");
+        let scope = scope.expect("non-nil scope id");
         match &tree.kind {
             UseTreeKind::Glob => {
                 let kind = UsageKind::Glob { id };
                 self.define_usage(
                     id,
-                    scope_id,
+                    scope,
                     tree.path.nodes.clone(),
                     kind,
                     is_import,
@@ -383,7 +402,7 @@ impl<'r> Actor<'r> {
                     target,
                 };
                 let kind = UsageKind::Single(binding);
-                self.define_usage(id, scope_id, module_path, kind, is_import, tree.span);
+                self.define_usage(id, scope, module_path, kind, is_import, tree.span);
             }
             UseTreeKind::Nested { nodes, span } => {
                 if nodes.is_empty() {
@@ -403,7 +422,7 @@ impl<'r> Actor<'r> {
                         target,
                     };
                     let kind = UsageKind::Single(binding);
-                    self.define_usage(id, scope_id, module_path, kind, is_import, *span);
+                    self.define_usage(id, scope, module_path, kind, is_import, *span);
                 }
             }
         }
@@ -412,40 +431,35 @@ impl<'r> Actor<'r> {
     fn define_usage(
         &mut self,
         node_id: NodeID,
-        scope_id: ScopeID,
+        scope: Scope<'a>,
         module_path: Vec<Identifier>,
         kind: UsageKind,
         is_import: bool,
         span: Span,
     ) {
-        let usage = UsageEntry {
+        let usage = UsageEntryData {
             span,
             module_path,
             kind,
             is_import,
-            scope_id,
-            is_resolved: false,
+            scope,
+            is_resolved: Cell::new(false),
+            module_scope: Cell::new(None),
         };
 
         let is_glob = matches!(&usage.kind, UsageKind::Glob { .. });
-        let usage_id = self.resolver.create_usage(usage);
-
-        let target_scope = self
-            .resolver
-            .scopes
-            .get_mut(scope_id)
-            .expect("no scope matching id");
+        let usage = self.resolver.create_usage(usage);
 
         // for later passes
         if is_import {
-            self.resolver.unresolved_imports.push(usage_id);
+            self.resolver.unresolved_imports.push(usage);
             if is_glob {
-                target_scope.glob_imports.borrow_mut().push(usage_id);
+                scope.glob_imports.borrow_mut().push(usage);
             }
         } else {
-            self.resolver.unresolved_exports.push(usage_id);
+            self.resolver.unresolved_exports.push(usage);
             if is_glob {
-                target_scope.glob_exports.borrow_mut().push(usage_id);
+                scope.glob_exports.borrow_mut().push(usage);
             }
         }
     }

@@ -2,7 +2,7 @@ use crate::{
     ast::{self, AstVisitor, Identifier, NodeID, walk_package},
     error::CompileResult,
     sema::resolve::{
-        CtorKind, CtorOf, DefinitionID, DefinitionIndex, DefinitionKind, PackageIndex,
+        models::{CtorKind, CtorOf, DefinitionID, DefinitionIndex, DefinitionKind},
         resolver::Resolver,
     },
     span::{FileID, Span},
@@ -18,12 +18,12 @@ pub fn tag_package_symbols(package: &ast::Package, resolver: &mut Resolver) -> C
     Ok(())
 }
 
-struct Actor<'resolver> {
+struct Actor<'resolver, 'arena, 'compiler> {
     parent: Option<DefinitionID>,
-    resolver: &'resolver mut Resolver,
+    resolver: &'resolver mut Resolver<'arena, 'compiler>,
 }
 
-impl<'r> AstVisitor for Actor<'r> {
+impl<'r, 'a, 'c> AstVisitor for Actor<'r, 'a, 'c> {
     fn visit_module(&mut self, node: &ast::Module, is_root: bool) -> Self::Result {
         let name = Identifier {
             span: Span::empty(FileID::new(0)),
@@ -184,7 +184,7 @@ impl<'r> AstVisitor for Actor<'r> {
     }
 }
 
-impl<'r> Actor<'r> {
+impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
     fn tag(&mut self, name: &Identifier, node_id: NodeID, kind: DefinitionKind) -> DefinitionID {
         let id = self
             .resolver

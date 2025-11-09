@@ -482,6 +482,13 @@ pub enum TypeKind {
         name: Identifier,
         type_arguments: Option<TypeArguments>,
     },
+    /// [T as Interface].Member[Args]
+    QualifiedMember {
+        self_ty: Box<Type>,                    // T
+        interface: Box<Type>,                  // Interface[...]
+        name: Identifier,                      // Member
+        type_arguments: Option<TypeArguments>, // Args for the member (GATs)
+    },
     /// Pointer Type
     ///
     /// `*T` | `*const T`
@@ -1483,6 +1490,17 @@ pub fn walk_type<V: AstVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
         TypeKind::ImplicitSelf => {}
         TypeKind::InferedClosureParameter => {}
         TypeKind::Infer => {}
+        TypeKind::QualifiedMember {
+            self_ty,
+            interface,
+            name,
+            type_arguments,
+        } => {
+            try_visit!(visitor.visit_type(self_ty));
+            try_visit!(visitor.visit_type(interface));
+            try_visit!(visitor.visit_identifier(name));
+            visit_optional!(visitor, visit_type_arguments, &type_arguments);
+        }
     }
     V::Result::output()
 }

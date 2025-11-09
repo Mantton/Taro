@@ -1,47 +1,50 @@
 use crate::{
     ast::{Identifier, NodeID},
+    compile::state::CompilerState,
     sema::resolve::{
-        DefinitionID, DefinitionIndex, DefinitionKind, LexicalScope, PackageIndex, Resolution,
-        Scope, ScopeEntry, ScopeEntryID, ScopeEntryKind, ScopeEntrySet, ScopeID, ScopeKey,
-        ScopeNamespace, ScopeTable, UsageEntry, UsageID, full::ResolutionResult,
+        arena::ResolverArenas,
+        models::{
+            DefinitionID, DefinitionIndex, DefinitionKind, Holder, LexicalScope,
+            LexicalScopeBinding, LexicalScopeSource, NameEntry, PackageIndex, Resolution,
+            ResolutionError, ResolvedValue, Scope, ScopeData, ScopeEntry, ScopeEntryData,
+            ScopeEntryKind, ScopeKind, ScopeNamespace, ScopeTable, UsageEntry, UsageEntryData,
+        },
     },
     span::FileID,
+    utils::intern::Interned,
 };
 use ecow::EcoString;
 use index_vec::IndexVec;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cell::RefCell;
 
-pub struct Resolver {
+pub struct Resolver<'arena, 'compiler> {
+    pub arenas: &'arena ResolverArenas,
+    pub compiler: &'compiler CompilerState,
     node_to_def: FxHashMap<NodeID, DefinitionID>,
     def_to_kind: FxHashMap<DefinitionID, DefinitionKind>,
     pub def_to_ident: FxHashMap<DefinitionID, Identifier>,
     def_to_parent: FxHashMap<DefinitionID, DefinitionID>,
     next_index: usize,
-    pub scopes: IndexVec<ScopeID, Scope>,
-    pub scope_entries: IndexVec<ScopeEntryID, ScopeEntry>,
-    pub usages: IndexVec<UsageID, UsageEntry>,
-    pub unresolved_imports: Vec<UsageID>,
-    pub unresolved_exports: Vec<UsageID>,
-    pub root_module_scope: Option<ScopeID>,
-    pub file_scope_mapping: FxHashMap<FileID, ScopeID>,
-    pub module_scope_mapping: FxHashMap<usize, ScopeID>,
-    pub definition_scope_mapping: FxHashMap<DefinitionID, ScopeID>,
-    pub block_scope_mapping: FxHashMap<NodeID, ScopeID>,
+    pub unresolved_imports: Vec<UsageEntry<'arena>>,
+    pub unresolved_exports: Vec<UsageEntry<'arena>>,
+    pub root_module_scope: Option<Scope<'arena>>,
+    pub file_scope_mapping: FxHashMap<FileID, Scope<'arena>>,
+    pub module_scope_mapping: FxHashMap<usize, Scope<'arena>>,
+    pub definition_scope_mapping: FxHashMap<DefinitionID, Scope<'arena>>,
+    pub block_scope_mapping: FxHashMap<NodeID, Scope<'arena>>,
 }
 
-impl Resolver {
-    pub fn new() -> Resolver {
+impl<'a, 'c> Resolver<'a, 'c> {
+    pub fn new(arenas: &'a ResolverArenas, compiler: &'c CompilerState) -> Resolver<'a, 'c> {
         Resolver {
+            arenas,
+            compiler,
             node_to_def: Default::default(),
             def_to_kind: Default::default(),
             def_to_ident: Default::default(),
             def_to_parent: Default::default(),
             next_index: 0,
-
-            scopes: Default::default(),
-            scope_entries: Default::default(),
-            usages: Default::default(),
 
             unresolved_exports: Default::default(),
             unresolved_imports: Default::default(),
@@ -55,7 +58,7 @@ impl Resolver {
     }
 }
 
-impl Resolver {
+impl<'a, 'c> Resolver<'a, 'c> {
     pub fn create_definition(
         &mut self,
         identifier: &Identifier,
@@ -81,11 +84,11 @@ impl Resolver {
         index
     }
 
-    pub fn def_id(&self, id: NodeID) -> DefinitionID {
+    pub fn definition_id(&self, id: NodeID) -> DefinitionID {
         *self.node_to_def.get(&id).expect("bug! node not tagged")
     }
 
-    pub fn def_kind(&self, id: DefinitionID) -> DefinitionKind {
+    pub fn definition_kind(&self, id: DefinitionID) -> DefinitionKind {
         return *self.def_to_kind.get(&id).expect("bug! node not tagged");
 
         // if id.is_local(self.session().package_index) {
@@ -97,224 +100,310 @@ impl Resolver {
         // kind
     }
 
-    pub fn create_scope(&mut self, scope: Scope) -> ScopeID {
-        self.scopes.push(scope)
-    }
-
-    pub fn get_scope(&self, id: ScopeID) -> &Scope {
-        self.scopes.get(id).expect("no scope matching provided id")
-    }
-
-    pub fn get_def_scope(&self, id: DefinitionID) -> ScopeID {
+    pub fn get_definition_scope(&self, id: DefinitionID) -> Scope<'a> {
         *self
             .definition_scope_mapping
             .get(&id)
             .expect("definition tagged scope")
     }
+}
 
-    pub fn get_scope_entry(&self, id: ScopeEntryID) -> &ScopeEntry {
-        self.scope_entries
-            .get(id)
-            .expect("no entry matching provided id")
+impl<'a, 'c> Resolver<'a, 'c> {
+    pub fn create_scope(&self, scope: ScopeData<'a>) -> Scope<'a> {
+        Interned::new_unchecked(self.arenas.bump.alloc(scope))
     }
 
-    pub fn create_usage(&mut self, scope: UsageEntry) -> UsageID {
-        self.usages.push(scope)
+    pub fn create_scope_entry(&self, entry: ScopeEntryData<'a>) -> ScopeEntry<'a> {
+        Interned::new_unchecked(self.arenas.bump.alloc(entry))
     }
 
-    pub fn get_usage(&self, id: UsageID) -> &UsageEntry {
-        self.usages.get(id).expect("no usage matching provided id")
+    pub fn create_usage(&self, usage: UsageEntryData<'a>) -> UsageEntry<'a> {
+        Interned::new_unchecked(self.arenas.bump.alloc(usage))
+    }
+
+    pub fn create_scope_entry_from_usage(
+        &self,
+        used_entry: ScopeEntry<'a>,
+        used_scope: Scope<'a>,
+        user: UsageEntry<'a>,
+    ) -> ScopeEntry<'a> {
+        user.module_scope.set(Some(used_scope));
+        Interned::new_unchecked(self.arenas.bump.alloc(ScopeEntryData {
+            kind: ScopeEntryKind::Usage {
+                used_entry,
+                used_scope,
+                user,
+            },
+            span: user.span,
+        }))
+    }
+
+    pub fn per_ns<F: FnMut(&mut Self, ScopeNamespace)>(&mut self, mut f: F) {
+        f(self, ScopeNamespace::Type);
+        f(self, ScopeNamespace::Value);
+        f(self, ScopeNamespace::Module);
     }
 }
 
-impl Resolver {
+impl<'a, 'c> Resolver<'a, 'c> {
     pub fn define_in_scope(
         &mut self,
-        scope: ScopeID,
+        scope: Scope<'a>,
         identifier: &Identifier,
         namespace: ScopeNamespace,
         resolution: Resolution,
-    ) -> Result<(), ScopeEntryID> {
-        let key = ScopeKey {
-            name: identifier.symbol.clone(),
-            namespace,
-            disambiguator: 0,
-        };
-
-        let entry = ScopeEntry {
+    ) -> Result<(), ScopeEntry<'a>> {
+        let entry = self.create_scope_entry(ScopeEntryData {
             kind: ScopeEntryKind::Resolution(resolution),
             span: identifier.span,
-        };
-        let entry_id = self.scope_entries.push(entry);
-        self.define_in_scope_internal(scope, key, entry_id)
+        });
+
+        self.define_in_scope_internal(scope, &identifier.symbol, entry, namespace)
     }
 
     fn define_in_scope_internal(
         &mut self,
-        scope: ScopeID,
-        key: ScopeKey,
-        entry: ScopeEntryID,
-    ) -> Result<(), ScopeEntryID> {
-        let scope = self.get_scope(scope);
+        scope: Scope<'a>,
+        name: &EcoString,
+        entry: ScopeEntry<'a>,
+        namespace: ScopeNamespace,
+    ) -> Result<(), ScopeEntry<'a>> {
         let mut table = scope.table.borrow_mut();
-        self.define_in_scope_table(key, entry, &mut table)
+        self.define_in_scope_table(&mut table, name, entry, namespace)
     }
 
     fn define_in_scope_table(
         &self,
-        key: ScopeKey,
-        entry: ScopeEntryID,
-        table: &mut ScopeTable,
-    ) -> Result<(), ScopeEntryID> {
-        if table.contains_key(&key) {
-            if let Some(current_set) = table.get_mut(&key)
-                && let Some(&nearest_entry) = current_set.iter().next()
-            {
-                let scope_entry = self.get_scope_entry(nearest_entry);
+        table: &mut ScopeTable<'a>,
+        name: &EcoString,
+        entry: ScopeEntry<'a>,
+        namespace: ScopeNamespace,
+    ) -> Result<(), ScopeEntry<'a>> {
+        use ScopeNamespace::*;
+        let slot = table.entry(name.clone()).or_default();
 
-                let resolution = match &scope_entry.kind {
-                    ScopeEntryKind::Resolution(resolution) => resolution,
-                    ScopeEntryKind::Usage => todo!(),
-                };
-
-                let is_function = matches!(
-                    resolution,
-                    Resolution::Definition(
-                        _,
-                        DefinitionKind::Function | DefinitionKind::AssociatedFunction,
-                    )
-                );
-
-                if !is_function {
-                    return Err(nearest_entry);
+        match namespace {
+            Type => {
+                // Forbid spelling if value/module already present or type already set
+                if slot.ty.is_some() || !slot.values.is_empty() || slot.module.is_some() {
+                    return Err(entry);
                 }
-
-                current_set.push(entry);
-                return Ok(());
-            } else {
-                unreachable!()
+                slot.ty = Some(entry);
+                Ok(())
             }
-        } else {
-            let set = vec![entry];
-            table.insert(key, set);
-            return Ok(());
+            Value => {
+                // Forbid if a type or module already uses this spelling
+                if slot.ty.is_some() || slot.module.is_some() {
+                    return Err(entry);
+                }
+                slot.values.push(entry);
+                Ok(())
+            }
+            Module => {
+                // Must be the only occupant
+                if slot.ty.is_some() || !slot.values.is_empty() || slot.module.is_some() {
+                    return Err(entry);
+                }
+                slot.module = Some(entry);
+                Ok(())
+            }
         }
     }
 }
-impl Resolver {
-    fn convert_to_resolution(&self, set: &[ScopeEntryID]) -> Resolution {
-        let get = |id: &ScopeEntryID| {
-            let entry = self.scope_entries.get(*id).unwrap();
-            match &entry.kind {
-                ScopeEntryKind::Resolution(resolution) => resolution.clone(),
-                ScopeEntryKind::Usage => todo!(),
-            }
-        };
-        let res = if set.len() == 1
-            && let Some(value) = set.iter().next()
-        {
-            get(value)
-        } else {
-            let res: Vec<_> = set
-                .iter()
-                .filter_map(|v| match get(v) {
-                    Resolution::Definition(id, kind)
-                        if matches!(
-                            kind,
-                            DefinitionKind::Function | DefinitionKind::AssociatedFunction
-                        ) =>
-                    {
-                        Some(id)
-                    }
-                    _ => None,
-                })
-                .collect();
-            Resolution::FunctionSet(res)
-        };
 
-        Resolution::Error
-    }
-}
-
-impl Resolver {
-    pub fn resolve_module_path(&self, path: &Vec<Identifier>) {
+impl<'a, 'c> Resolver<'a, 'c> {
+    pub fn resolve_module_path(
+        &self,
+        path: &Vec<Identifier>,
+    ) -> Result<Scope<'a>, ResolutionError> {
         debug_assert!(!path.is_empty(), "non empty module path");
-        let scope: Option<ScopeID> = None;
+        let mut scope: Option<Scope<'a>> = None;
         for (index, identifier) in path.iter().enumerate() {
-            if let Some(scope) = scope {
-                todo!("resolve in scope")
+            let next_scope = if let Some(scope) = scope {
+                let result = self.resolve_in_scope(identifier, scope, ScopeNamespace::Module);
+                match result {
+                    Ok(value) => match value {
+                        ResolvedValue::Scope(scope) => Some(scope),
+                        ResolvedValue::Resolution(_) => {
+                            return Err(ResolutionError::NotAModule(identifier.clone()));
+                        }
+                    },
+                    Err(e) => return Err(e),
+                }
+            } else if index == 0 {
+                self.resolve_package(identifier)
             } else {
-                let root = self.resolve_package(identifier);
-            }
+                None
+            };
+
+            let Some(next_scope) = next_scope else {
+                return Err(ResolutionError::UnknownSymbol(identifier.clone()));
+            };
+            scope = Some(next_scope);
         }
+
+        if let Some(scope) = scope {
+            return Ok(scope);
+        }
+        unreachable!("we must always have a scope at this point")
     }
 
-    fn resolve_package(&self, identifier: &Identifier) -> Option<ScopeID> {
-        println!("find package {}", identifier.symbol);
+    fn resolve_package(&self, identifier: &Identifier) -> Option<Scope<'a>> {
+        if identifier.symbol == self.compiler.config.name {
+            return self.root_module_scope;
+        }
+
+        todo!("resolve external package");
         None
     }
 }
-impl Resolver {
-    pub fn resolve_in_scope(
-        &mut self,
-        name: &Identifier,
-        scope_id: ScopeID,
-        namespace: ScopeNamespace,
-    ) -> ResolutionResult {
-        let scope = self.scopes.get(scope_id).expect("Scope For ID");
 
+impl<'a, 'c> Resolver<'a, 'c> {
+    pub fn resolve_in_scope(
+        &self,
+        name: &Identifier,
+        scope: Scope<'a>,
+        namespace: ScopeNamespace,
+    ) -> Result<ResolvedValue<'a>, ResolutionError> {
+        let holder = self.find_holder_in_scope(name, scope, namespace)?;
+        let resolution = holder.resolution();
+
+        let scope = match resolution {
+            Resolution::Definition(id, kind)
+                if matches!(kind, DefinitionKind::Module | DefinitionKind::Namespace) =>
+            {
+                Some(self.get_definition_scope(id))
+            }
+            _ => None,
+        };
+
+        if let Some(scope) = scope {
+            return Ok(ResolvedValue::Scope(scope));
+        }
+
+        return Ok(ResolvedValue::Resolution(resolution));
+    }
+    pub fn find_holder_in_scope(
+        &self,
+        name: &Identifier,
+        scope: Scope<'a>,
+        namespace: ScopeNamespace,
+    ) -> Result<Holder<'a>, ResolutionError> {
         {
             let table = scope.table.borrow();
-            let key = ScopeKey {
-                name: name.symbol.clone(),
-                namespace,
-                disambiguator: 0,
-            };
-            let result = table.get(&key);
-            if let Some(result) = result {
-                let res = self.convert_to_resolution(result);
-                return ResolutionResult::Res(res);
+            let entry = table.get(&name.symbol);
+            if let Some(entry) = entry {
+                let x = match namespace {
+                    ScopeNamespace::Type => {
+                        if let Some(value) = entry.ty {
+                            return Ok(Holder::Single(value));
+                        } else {
+                            return Err(ResolutionError::NotAType(name.clone()));
+                        };
+                    }
+                    ScopeNamespace::Value => {
+                        if !entry.values.is_empty() {
+                            if entry.values.len() == 1
+                                && let Some(&first) = entry.values.iter().next()
+                            {
+                                return Ok(Holder::Single(first));
+                            } else {
+                                return Ok(Holder::Overloaded(entry.values.clone()));
+                            }
+                        }
+                    }
+                    ScopeNamespace::Module => {
+                        if let Some(entry) = entry.module {
+                            return Ok(Holder::Single(entry));
+                        } else {
+                            return Err(ResolutionError::NotAModule(name.clone()));
+                        };
+                    }
+                };
+
+                // let res = self.convert_to_resolution(result);
+                // return ResolutionResult::Res(res);
             }
         }
 
-        ResolutionResult::Error
+        Err(ResolutionError::UnknownSymbol(name.clone()))
     }
     pub fn resolve_in_scopes(
         &mut self,
         name: &Identifier,
         namespace: ScopeNamespace,
-        scopes: &[LexicalScope],
-    ) -> ResolutionResult {
+        scopes: &[LexicalScope<'a>],
+    ) -> Option<ResolvedValue<'a>> {
         for scope in scopes.iter().rev() {
             // Check in Local Table
             let resolution = scope.table.get(&name.symbol);
             if let Some(resolution) = resolution {
-                return ResolutionResult::Res(resolution.clone());
+                return Some(ResolvedValue::Resolution(resolution.clone()));
             }
 
-            let scope_id = match scope.source {
-                super::LexicalScopeSource::Scoped(scope_id) => scope_id,
+            let scope = match scope.source {
+                LexicalScopeSource::Scoped(scope) => scope,
                 _ => continue,
             };
 
             {
-                let scope = self.scopes.get(scope_id).expect("Scope For ID");
-
                 match &scope.kind {
-                    super::ScopeKind::Block(..) | super::ScopeKind::File(..) => {
+                    ScopeKind::Block(..) | ScopeKind::File(..) => {
                         // see through
                     }
                     _ => break,
                 }
             }
-            let result = self.resolve_in_scope(name, scope_id, namespace);
+            let result = self.resolve_in_scope(name, scope, namespace);
 
             match result {
-                ResolutionResult::Error => continue,
-                _ => return result,
+                Err(_) => continue,
+                Ok(value) => return Some(value),
             }
         }
 
-        ResolutionResult::Error
+        None
+    }
+}
+
+impl<'a, 'c> Resolver<'a, 'c> {
+    pub fn import(
+        &mut self,
+        scope: Scope<'a>,
+        name: Identifier,
+        entry: ScopeEntry<'a>,
+        ns: ScopeNamespace,
+    ) -> Result<(), ResolutionError> {
+        assert!(matches!(
+            scope.kind,
+            ScopeKind::File(..)
+                | ScopeKind::Block(..)
+                | ScopeKind::Definition(_, DefinitionKind::Namespace)
+        ));
+
+        let result = self.define_in_scope_internal(scope, &name.symbol, entry, ns);
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) => Err(ResolutionError::AlreadyInScope(name, e.span)),
+        }
+    }
+
+    pub fn export(
+        &mut self,
+        scope: Scope<'a>,
+        name: Identifier,
+        entry: ScopeEntry<'a>,
+        ns: ScopeNamespace,
+    ) -> Result<(), ResolutionError> {
+        assert!(matches!(
+            scope.kind,
+            ScopeKind::Definition(_, DefinitionKind::Namespace | DefinitionKind::Module)
+        ));
+
+        let result = self.define_in_scope_internal(scope, &name.symbol, entry, ns);
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) => Err(ResolutionError::AlreadyInScope(name, e.span)),
+        }
     }
 }

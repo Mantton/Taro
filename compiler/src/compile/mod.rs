@@ -28,10 +28,10 @@ impl Compiler {
 
 impl Compiler {
     pub fn build(&mut self) -> CompileResult<()> {
-        let dcx = DiagCtx::new();
-        let package = parse::lexer::tokenize_package(self.state.config.src.clone(), &dcx)?;
-        let package = parse::parser::parse_package(package, &dcx)?;
-        sema::resolve::resolve_package(&package)?;
+        let package =
+            parse::lexer::tokenize_package(self.state.config.src.clone(), &self.state.dcx)?;
+        let package = parse::parser::parse_package(package, &self.state.dcx)?;
+        sema::resolve::resolve_package(&package, &self.state)?;
 
         Ok(())
     }

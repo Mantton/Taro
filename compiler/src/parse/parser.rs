@@ -1088,7 +1088,7 @@ impl Parser {
     }
 
     fn parse_collection_type(&mut self) -> R<TypeKind> {
-        // Parses [T], [T;N], [T:V]
+        // Parses [T], [T;N], [T:V], [T as V].Member[X]
         // eat opening bracket
         self.expect(Token::LBracket)?;
         let ty = self.parse_type()?;
@@ -1104,6 +1104,20 @@ impl Parser {
                 size: len,
                 element: ty,
             }
+        } else if self.eat(Token::As) {
+            // Qualified
+            let interface = self.parse_type()?;
+            self.expect(Token::RBracket)?;
+            self.expect(Token::Dot)?;
+
+            let name = self.parse_identifier()?;
+            let type_arguments = self.parse_optional_type_arguments()?;
+            return Ok(TypeKind::QualifiedMember {
+                self_ty: ty,
+                interface,
+                name,
+                type_arguments,
+            });
         } else {
             return Err(self.err_at_current(ParserError::InvalidCollectionType));
         };

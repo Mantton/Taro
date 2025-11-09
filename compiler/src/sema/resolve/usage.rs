@@ -1,7 +1,10 @@
 use crate::{
     ast,
     error::CompileResult,
-    sema::resolve::{UsageID, resolver::Resolver},
+    sema::resolve::{
+        models::{ScopeNamespace, UsageEntry, UsageKind},
+        resolver::Resolver,
+    },
 };
 
 pub fn resolve_usages(resolver: &mut Resolver) -> CompileResult<()> {
@@ -9,11 +12,11 @@ pub fn resolve_usages(resolver: &mut Resolver) -> CompileResult<()> {
     actor.run()
 }
 
-struct Actor<'resolver> {
-    resolver: &'resolver mut Resolver,
+struct Actor<'r, 'a, 'c> {
+    resolver: &'r mut Resolver<'a, 'c>,
 }
 
-impl<'r> Actor<'r> {
+impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
     fn run(mut self) -> CompileResult<()> {
         let mut changed = false;
         let mut finalize = false;
@@ -37,7 +40,7 @@ impl<'r> Actor<'r> {
     }
 }
 
-impl<'r> Actor<'r> {
+impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
     fn resolve(&mut self, finalize: bool) {
         self.resolve_exports(finalize);
         self.resolve_imports(finalize);
@@ -61,10 +64,79 @@ impl<'r> Actor<'r> {
     }
 }
 
-impl<'r> Actor<'r> {
-    fn resolve_usage(&mut self, usage_id: UsageID, finalize: bool) -> bool {
-        let usage = self.resolver.usages.get(usage_id).unwrap();
+impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
+    fn resolve_usage(&mut self, usage: UsageEntry<'a>, finalize: bool) -> bool {
         let module_result = self.resolver.resolve_module_path(&usage.module_path);
-        false
+
+        let module = match module_result {
+            Ok(scope) => scope,
+            Err(e) => {
+                if finalize {
+                    todo!("report error")
+                }
+                return false;
+            }
+        };
+
+        let binding = match &usage.kind {
+            UsageKind::Single(binding) => binding,
+            UsageKind::Glob { id } => {
+                todo!("glob imports")
+            }
+        };
+        let ns = [
+            ScopeNamespace::Module,
+            ScopeNamespace::Type,
+            ScopeNamespace::Value,
+        ];
+
+        let mut resolved_holder = None;
+        for ns in ns {
+            let Some(holder) = self
+                .resolver
+                .find_holder_in_scope(&binding.source, module, ns)
+                .ok()
+            else {
+                continue;
+            };
+
+            resolved_holder = Some((holder, ns));
+            break;
+        }
+
+        let Some((holder, ns)) = resolved_holder else {
+            if finalize {
+                todo!("report unknown symbol")
+            }
+            return false;
+        };
+
+        let entries = holder.all_entries();
+        for (entry) in entries.into_iter() {
+            // TODO: Check if we can actually import this entry
+            let entry = self
+                .resolver
+                .create_scope_entry_from_usage(entry, module, usage);
+
+            let result = if usage.is_import {
+                self.resolver
+                    .import(usage.scope, binding.target.clone(), entry, ns)
+            } else {
+                self.resolver
+                    .export(usage.scope, binding.target.clone(), entry, ns)
+            };
+
+            match result {
+                Ok(_) => continue,
+                Err(e) => {
+                    if finalize {
+                        // TODO: Report Error
+                        todo!("report already bound symbol")
+                    }
+                }
+            }
+        }
+
+        true
     }
 }

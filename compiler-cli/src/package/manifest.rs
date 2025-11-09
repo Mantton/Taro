@@ -1,7 +1,7 @@
 use crate::package::utils::{
     canonicalize_rel, derive_git_url, get_package_name, language_home, normalize_module_path,
 };
-use compiler::constants::{PACKAGE_SOURCE, PACKAGE_STORE};
+use compiler::constants::PACKAGE_SOURCE;
 use ecow::EcoString;
 use rustc_hash::FxHashMap;
 use serde::Deserialize;
