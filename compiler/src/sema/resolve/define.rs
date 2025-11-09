@@ -22,7 +22,7 @@ pub fn define_package_symbols(
 ) -> CompileResult<()> {
     let mut actor = Actor::new(resolver);
     walk_package(&mut actor, package);
-    Ok(())
+    resolver.compiler.dcx.ok()
 }
 
 pub struct Actor<'r, 'a, 'c> {
@@ -349,8 +349,11 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
 
         let result = file_result.and(module_result);
         if let Err(err) = result {
-            println!("todo - Duplicate Symbol {}", identifier.symbol)
-            // TODO: Report Error
+            let message = format!("Duplicate Symbol {}", identifier.symbol);
+            self.resolver.dcx().emit_error(message, identifier.span);
+
+            let message = format!("'{}' is defined here.", identifier.symbol);
+            self.resolver.dcx().emit_info(message, err.span);
         }
     }
 }
@@ -406,7 +409,9 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
             }
             UseTreeKind::Nested { nodes, span } => {
                 if nodes.is_empty() {
-                    todo!("report error – empty nested import")
+                    self.resolver
+                        .dcx()
+                        .emit_error("empty nested import".into(), *span);
                 }
                 for node in nodes {
                     let module_path = tree.path.nodes.clone();

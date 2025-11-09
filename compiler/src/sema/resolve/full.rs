@@ -1,5 +1,6 @@
 use crate::{
     ast::{self, AstVisitor, Identifier, IdentifierPath, NodeID},
+    diagnostics::{Diagnostic, DiagnosticLevel},
     error::CompileResult,
     sema::resolve::{
         models::{
@@ -20,7 +21,7 @@ pub fn resolve_package(package: &ast::Package, resolver: &mut Resolver) -> Compi
         scopes: vec![],
     };
     ast::walk_package(&mut actor, package);
-    Ok(())
+    resolver.compiler.dcx.ok()
 }
 
 struct Actor<'r, 'a, 'c> {
@@ -77,7 +78,13 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
             match entry {
                 std::collections::hash_map::Entry::Occupied(_) => {
                     // param has already been defined
-                    todo!("report error – param has already been defined");
+                    self.resolver.dcx().emit_error(
+                        format!(
+                            "type parameter – {} – has already been defined",
+                            param.identifier.symbol
+                        ),
+                        param.identifier.span,
+                    );
                     continue;
                 }
                 std::collections::hash_map::Entry::Vacant(entry) => {
@@ -279,10 +286,16 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                         let resolution = value.resolution();
                         let Resolution::Definition(_, DefinitionKind::Interface) = resolution
                         else {
-                            todo!("report – not an interface")
+                            self.resolver
+                                .dcx()
+                                .emit(self.diag(name, ResolutionError::NotAnInterface));
+                            return;
                         };
                     }
-                    Err(_) => todo!(),
+                    Err(e) => {
+                        self.resolver.dcx().emit(self.diag(name, e));
+                        return;
+                    }
                 }
                 if let Some(arguments) = type_arguments {
                     ast::walk_type_arguments(self, arguments)
@@ -306,7 +319,9 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                 return self.resolve_interface(node);
             }
             _ => {
-                todo!("report invalid interface")
+                self.resolver
+                    .dcx()
+                    .emit_error("not a valid interface".into(), node.span);
             }
         }
     }
@@ -321,7 +336,9 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                 let resolution = value.resolution();
                 println!("{} – Definition", name.symbol)
             }
-            Err(_) => todo!(),
+            Err(e) => {
+                self.resolver.dcx().emit(self.diag(name, e));
+            }
         }
     }
 
@@ -336,7 +353,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
 
         match result {
             Some(value) => Ok(value),
-            None => todo!(),
+            None => Err(ResolutionError::UnknownSymbol),
         }
     }
 
@@ -368,6 +385,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                 let carrier = self.apply_member(lhs, name, Want::Qualifier);
                 return carrier;
             }
+            ast::TypeKind::Parenthesis(node) => self.resolve_type_qualifier(node),
             _ => {
                 todo!()
             }
@@ -444,5 +462,24 @@ impl ResolutionSource {
         match self {
             ResolutionSource::Type | ResolutionSource::Interface => ScopeNamespace::Type,
         }
+    }
+}
+
+impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
+    fn diag(&self, identifier: &Identifier, err: ResolutionError) -> Diagnostic {
+        let name = &identifier.symbol;
+        let span = identifier.span;
+        let msg = match err {
+            ResolutionError::NotAModule => format!("'{}' is not a module", name),
+            ResolutionError::NotAType => format!("'{}' is not a module", name),
+            ResolutionError::NotAnInterface => format!("'{}' is not an interface", name),
+            ResolutionError::UnknownSymbol => format!("cannot resolve symbol '{}' in scope", name),
+
+            ResolutionError::AlreadyInScope(span) => {
+                format!("'{}' is already defined in scope", name)
+            }
+        };
+
+        Diagnostic::new(msg, span, DiagnosticLevel::Error)
     }
 }

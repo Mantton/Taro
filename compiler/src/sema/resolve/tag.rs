@@ -15,7 +15,7 @@ pub fn tag_package_symbols(package: &ast::Package, resolver: &mut Resolver) -> C
         resolver,
     };
     walk_package(&mut actor, package);
-    Ok(())
+    resolver.compiler.dcx.ok()
 }
 
 struct Actor<'resolver, 'arena, 'compiler> {

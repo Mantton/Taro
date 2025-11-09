@@ -1,6 +1,7 @@
 use crate::{
     ast::{Identifier, NodeID},
     compile::state::CompilerState,
+    diagnostics::DiagCtx,
     sema::resolve::{
         arena::ResolverArenas,
         models::{
@@ -55,6 +56,10 @@ impl<'a, 'c> Resolver<'a, 'c> {
             definition_scope_mapping: Default::default(),
             block_scope_mapping: Default::default(),
         }
+    }
+
+    pub fn dcx(&self) -> &DiagCtx {
+        &self.compiler.dcx
     }
 }
 
@@ -215,7 +220,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
     pub fn resolve_module_path(
         &self,
         path: &Vec<Identifier>,
-    ) -> Result<Scope<'a>, ResolutionError> {
+    ) -> Result<Scope<'a>, (ResolutionError, Identifier)> {
         debug_assert!(!path.is_empty(), "non empty module path");
         let mut scope: Option<Scope<'a>> = None;
         for (index, identifier) in path.iter().enumerate() {
@@ -225,10 +230,10 @@ impl<'a, 'c> Resolver<'a, 'c> {
                     Ok(value) => match value {
                         ResolvedValue::Scope(scope) => Some(scope),
                         ResolvedValue::Resolution(_) => {
-                            return Err(ResolutionError::NotAModule(identifier.clone()));
+                            return Err((ResolutionError::NotAModule, identifier.clone()));
                         }
                     },
-                    Err(e) => return Err(e),
+                    Err(e) => return Err((e, identifier.clone())),
                 }
             } else if index == 0 {
                 self.resolve_package(identifier)
@@ -237,7 +242,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
             };
 
             let Some(next_scope) = next_scope else {
-                return Err(ResolutionError::UnknownSymbol(identifier.clone()));
+                return Err((ResolutionError::UnknownSymbol, identifier.clone()));
             };
             scope = Some(next_scope);
         }
@@ -298,7 +303,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
                         if let Some(value) = entry.ty {
                             return Ok(Holder::Single(value));
                         } else {
-                            return Err(ResolutionError::NotAType(name.clone()));
+                            return Err(ResolutionError::NotAType);
                         };
                     }
                     ScopeNamespace::Value => {
@@ -316,7 +321,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
                         if let Some(entry) = entry.module {
                             return Ok(Holder::Single(entry));
                         } else {
-                            return Err(ResolutionError::NotAModule(name.clone()));
+                            return Err(ResolutionError::NotAModule);
                         };
                     }
                 };
@@ -326,7 +331,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
             }
         }
 
-        Err(ResolutionError::UnknownSymbol(name.clone()))
+        Err(ResolutionError::UnknownSymbol)
     }
     pub fn resolve_in_scopes(
         &mut self,
@@ -384,7 +389,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
         let result = self.define_in_scope_internal(scope, &name.symbol, entry, ns);
         match result {
             Ok(_) => Ok(()),
-            Err(e) => Err(ResolutionError::AlreadyInScope(name, e.span)),
+            Err(e) => Err(ResolutionError::AlreadyInScope(e.span)),
         }
     }
 
@@ -403,7 +408,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
         let result = self.define_in_scope_internal(scope, &name.symbol, entry, ns);
         match result {
             Ok(_) => Ok(()),
-            Err(e) => Err(ResolutionError::AlreadyInScope(name, e.span)),
+            Err(e) => Err(ResolutionError::AlreadyInScope(e.span)),
         }
     }
 }

@@ -289,8 +289,9 @@ impl<'a> Holder<'a> {
 
 #[derive(Debug)]
 pub enum ResolutionError {
-    NotAModule(Identifier),
-    NotAType(Identifier),
-    UnknownSymbol(Identifier),
-    AlreadyInScope(Identifier, Span),
+    NotAModule,
+    NotAType,
+    NotAnInterface,
+    UnknownSymbol,
+    AlreadyInScope(Span),
 }

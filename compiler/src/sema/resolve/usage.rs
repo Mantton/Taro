@@ -9,7 +9,8 @@ use crate::{
 
 pub fn resolve_usages(resolver: &mut Resolver) -> CompileResult<()> {
     let mut actor = Actor { resolver };
-    actor.run()
+    actor.run();
+    resolver.compiler.dcx.ok()
 }
 
 struct Actor<'r, 'a, 'c> {
@@ -17,7 +18,7 @@ struct Actor<'r, 'a, 'c> {
 }
 
 impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
-    fn run(mut self) -> CompileResult<()> {
+    fn run(mut self) {
         let mut changed = false;
         let mut finalize = false;
 
@@ -31,8 +32,6 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
         if self.unresolved_count() != 0 {
             self.resolve(true);
         }
-
-        Ok(())
     }
 
     fn unresolved_count(&self) -> usize {
@@ -70,9 +69,10 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
 
         let module = match module_result {
             Ok(scope) => scope,
-            Err(e) => {
+            Err((e, ident)) => {
                 if finalize {
-                    todo!("report error")
+                    let message = format!("failed to resolve module '{}'", ident.symbol);
+                    self.resolver.dcx().emit_error(message, ident.span);
                 }
                 return false;
             }
@@ -106,14 +106,14 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
 
         let Some((holder, ns)) = resolved_holder else {
             if finalize {
-                todo!("report unknown symbol")
+                let message = format!("unknown symbol – '{}' in module", binding.source.symbol);
+                self.resolver.dcx().emit_error(message, binding.source.span);
             }
             return false;
         };
 
         let entries = holder.all_entries();
         for (entry) in entries.into_iter() {
-            // TODO: Check if we can actually import this entry
             let entry = self
                 .resolver
                 .create_scope_entry_from_usage(entry, module, usage);
@@ -130,8 +130,10 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                 Ok(_) => continue,
                 Err(e) => {
                     if finalize {
-                        // TODO: Report Error
-                        todo!("report already bound symbol")
+                        self.resolver.dcx().emit_error(
+                            "imported symbol is already bound in scope".into(),
+                            binding.target.span,
+                        );
                     }
                 }
             }

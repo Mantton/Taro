@@ -12,7 +12,7 @@ pub struct CompilerState {
 impl CompilerState {
     pub fn new(config: Config) -> CompilerState {
         CompilerState {
-            dcx: DiagCtx::new(),
+            dcx: DiagCtx::new(config.cwd.clone()),
             gcx: GlobalContext::new(),
             config,
         }

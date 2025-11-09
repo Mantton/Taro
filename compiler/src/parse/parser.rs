@@ -15,12 +15,12 @@ use crate::{
         UseTreeKind, UseTreeNestedItem, UseTreePath, Variant, VariantKind, Visibility,
         VisibilityLevel,
     },
-    diagnostics::DiagCtx,
+    diagnostics::{DiagCtx, Diagnostic, DiagnosticLevel},
     error::ReportedError,
     parse::{Base, lexer, token::Token},
     span::{Span, Spanned},
 };
-use std::{cell::RefCell, collections::VecDeque, ops::Add, rc::Rc};
+use std::{cell::RefCell, collections::VecDeque, fmt::Display, ops::Add, rc::Rc};
 
 type NextNode = Rc<RefCell<NodeTagger>>;
 #[derive(Debug, Default)]
@@ -81,8 +81,7 @@ fn parse_file(
         Ok(declarations) => declarations,
         Err(errors) => {
             for err in errors {
-                println!("{:?}", err.value);
-                dcx.report();
+                dcx.emit_error(err.value.to_string(), err.span);
             }
             return Err(ReportedError);
         }
@@ -3146,6 +3145,46 @@ enum ParserError {
     ExpectedSelf,
 }
 
+impl Display for ParserError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use ParserError::*;
+        match self {
+            Expected(expected, found) => {
+                // Using debug here so we don't require Token: Display
+                write!(f, "expected token {:?}, found {:?}", expected, found)
+            }
+            ExpectedIdentifier => f.write_str("expected identifier"),
+            ExpectedSemiColon => f.write_str("expected ';'"),
+            ExpectedDeclaration => f.write_str("expected declaration"),
+            ExpectedTopLevelDeclaration => f.write_str("expected top-level declaration"),
+            ExpectedType => f.write_str("expected type"),
+            ExpectedGenericRequirement => f.write_str("expected generic requirement"),
+            ExpectedMatchingPattern => f.write_str("expected a matching pattern"),
+            ExpectedElseBlock => f.write_str("expected 'else' block"),
+            ExpectedExpression => f.write_str("expected expression"),
+            InvalidCollectionType => f.write_str("invalid collection type"),
+            TopLevelInitializerNotAllowed => f.write_str("top-level initializer not allowed"),
+            RequiredIdentifierPattern => f.write_str("identifier pattern required"),
+            DissallowedAssociatedDeclaration => f.write_str("disallowed associated declaration"),
+            DissallowedFunctionDeclaration => f.write_str("disallowed function declaration"),
+            DissallowedNamespaceDeclaration => f.write_str("disallowed namespace declaration"),
+            DisallowedRestPatterns => f.write_str("disallowed rest patterns"),
+            DisallowedLocalBindingPattern => f.write_str("disallowed local binding pattern"),
+            DisallowedWildcardExpression => f.write_str("disallowed wildcard expression"),
+            DisallowedBindingCondition => f.write_str("disallowed binding condition"),
+            DisallowedLabel => f.write_str("disallowed label"),
+            UnableToDeduceArrayOrDictionarySequence => {
+                f.write_str("unable to deduce whether sequence is an array or a dictionary")
+            }
+            FunctionBodyRequired => f.write_str("function body required"),
+            UnknownBinaryOperator => f.write_str("unknown binary operator"),
+            UnknownOperator => f.write_str("unknown operator"),
+            ExpectedParameterNameOrLabel => f.write_str("expected parameter name or label"),
+            ExpectedParameterName => f.write_str("expected parameter name"),
+            ExpectedSelf => f.write_str("expected 'self'"),
+        }
+    }
+}
 struct FnParseMode {
     req_body: bool,
 }
