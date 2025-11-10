@@ -102,6 +102,16 @@ pub struct ScopeData<'arena> {
     pub glob_exports: RefCell<Vec<UsageEntry<'arena>>>,
 }
 
+impl<'a> ScopeData<'a> {
+    pub fn resolution(&self) -> Option<Resolution> {
+        match self.kind {
+            ScopeKind::Block(..) => None,
+            ScopeKind::File(..) => None,
+            ScopeKind::Definition(id, kind) => Some(Resolution::Definition(id, kind)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScopeKind {
     Block(NodeID),
@@ -115,7 +125,6 @@ pub type ScopeTable<'arena> = FxHashMap<EcoString, NameEntry<'arena>>;
 pub struct NameEntry<'arena> {
     pub ty: Option<ScopeEntry<'arena>>,
     pub values: Vec<ScopeEntry<'arena>>, // overload set
-    pub module: Option<ScopeEntry<'arena>>,
 }
 
 impl<'a> ScopeData<'a> {
@@ -134,7 +143,6 @@ impl<'a> ScopeData<'a> {
 pub enum ScopeNamespace {
     Type,
     Value,
-    Module,
 }
 
 pub type ScopeEntry<'arena> = Interned<'arena, ScopeEntryData<'arena>>;
@@ -181,11 +189,13 @@ pub struct ActiveScope<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Resolution {
+    PrimaryType(usize),
     Definition(DefinitionID, DefinitionKind),
     SelfTypeAlias(DefinitionID),
     InterfaceSelfTypeParameter(DefinitionID),
     FunctionSet(Vec<DefinitionID>),
-    Error,
+    LocalVariable(NodeID),
+    SelfConstructor(DefinitionID),
 }
 
 pub type UsageEntry<'arena> = Interned<'arena, UsageEntryData<'arena>>;
@@ -197,7 +207,6 @@ pub struct UsageEntryData<'a> {
     pub kind: UsageKind,
     pub is_import: bool,
     pub scope: Scope<'a>,
-    pub is_resolved: Cell<bool>,
     pub module_scope: Cell<Option<Scope<'a>>>,
 }
 
@@ -250,6 +259,13 @@ pub enum ResolvedValue<'a> {
 }
 
 impl<'a> ResolvedValue<'a> {
+    pub fn scope(&self) -> Option<Scope<'a>> {
+        match self {
+            ResolvedValue::Scope(scope) => Some(*scope),
+            ResolvedValue::Resolution(_) => None,
+        }
+    }
+
     pub fn resolution(&self) -> Resolution {
         match self {
             ResolvedValue::Scope(scope) => match scope.kind {
@@ -287,11 +303,126 @@ impl<'a> Holder<'a> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum ResolutionError {
     NotAModule,
     NotAType,
     NotAnInterface,
     UnknownSymbol,
     AlreadyInScope(Span),
+    AmbiguousUsage,
+}
+
+#[derive(Debug)]
+pub enum ResolutionSource {
+    Type,
+    Interface,
+    Expression,
+    MatchPatternUnit,
+    MatchPatternTupleStruct,
+}
+
+impl ResolutionSource {
+    pub fn namespace(&self) -> ScopeNamespace {
+        match self {
+            ResolutionSource::Type | ResolutionSource::Interface => ScopeNamespace::Type,
+            ResolutionSource::Expression => ScopeNamespace::Value,
+            ResolutionSource::MatchPatternUnit => ScopeNamespace::Value,
+            ResolutionSource::MatchPatternTupleStruct => ScopeNamespace::Value,
+        }
+    }
+
+    pub fn is_allowed(&self, res: &Resolution) -> bool {
+        match self {
+            ResolutionSource::Type => {
+                matches!(
+                    res,
+                    Resolution::Definition(
+                        _,
+                        DefinitionKind::Struct
+                            | DefinitionKind::Enum
+                            | DefinitionKind::Interface
+                            | DefinitionKind::TypeParameter
+                            | DefinitionKind::TypeAlias
+                            | DefinitionKind::AssociatedType
+                    ) | Resolution::SelfTypeAlias(..)
+                        | Resolution::InterfaceSelfTypeParameter(..)
+                        | Resolution::PrimaryType(..)
+                )
+            }
+            ResolutionSource::Interface => {
+                matches!(res, Resolution::Definition(_, DefinitionKind::Interface))
+            }
+            ResolutionSource::Expression => matches!(
+                res,
+                Resolution::Definition(
+                    _,
+                    DefinitionKind::Function
+                        | DefinitionKind::Struct
+                        | DefinitionKind::Variant
+                        | DefinitionKind::ConstParameter
+                        | DefinitionKind::Ctor(..)
+                ) | Resolution::LocalVariable(..)
+                    | Resolution::FunctionSet(..)
+                    | Resolution::SelfConstructor(..)
+            ),
+
+            ResolutionSource::MatchPatternUnit => matches!(
+                res,
+                Resolution::Definition(_, DefinitionKind::Ctor(_, CtorKind::Constant))
+            ),
+            ResolutionSource::MatchPatternTupleStruct => matches!(
+                res,
+                Resolution::Definition(_, DefinitionKind::Ctor(_, CtorKind::Function))
+            ),
+        }
+    }
+
+    pub fn expected(&self) -> String {
+        match self {
+            ResolutionSource::Type => "type".into(),
+            ResolutionSource::Interface => "interface".into(),
+            ResolutionSource::Expression => "value".into(),
+            ResolutionSource::MatchPatternUnit => "unit enum variant".into(),
+            ResolutionSource::MatchPatternTupleStruct => "tuple enum variant".into(),
+        }
+    }
+
+    pub fn defer_to_type_checker(&self) -> bool {
+        match self {
+            ResolutionSource::Type => true,
+            ResolutionSource::Interface => false,
+            ResolutionSource::Expression => true,
+            ResolutionSource::MatchPatternUnit => true,
+            ResolutionSource::MatchPatternTupleStruct => true,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum PathResult<'arena> {
+    Scope(Scope<'arena>),
+    Resolution(ResolutionState),
+    Failed {
+        segment: Identifier,
+        is_last_segment: bool,
+        error: ResolutionError,
+    },
+}
+
+#[derive(Debug)]
+pub enum ResolutionState {
+    Complete(Resolution),
+    Partial {
+        resolution: Resolution,
+        unresolved_count: usize,
+    },
+}
+
+#[derive(Clone, Copy)]
+pub enum ImplicitScope {
+    Packages,                // dependencies + self
+    StdPrelude,              // std prelude
+    BuiltinFunctionsPrelude, // builtin prelude (functions)
+    BuiltinTypesPrelude,     // builtin prelude (types)
 }

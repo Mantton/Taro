@@ -2,7 +2,7 @@ use std::cell::Cell;
 
 use crate::{
     ast::{
-        self, AstVisitor, DeclarationKind, Identifier, NodeID, UseTree, UseTreeKind,
+        self, AssocContext, AstVisitor, DeclarationKind, Identifier, NodeID, UseTree, UseTreeKind,
         VisibilityLevel, walk_package,
     },
     error::CompileResult,
@@ -58,7 +58,7 @@ impl<'r, 'a, 'c> AstVisitor for Actor<'r, 'a, 'c> {
                     span: Span::empty(FileID::new(0)),
                     symbol: node.name.clone(),
                 },
-                ScopeNamespace::Module,
+                ScopeNamespace::Type,
                 Resolution::Definition(id, DefinitionKind::Module),
                 0,
             );
@@ -110,6 +110,10 @@ impl<'r, 'a, 'c> AstVisitor for Actor<'r, 'a, 'c> {
         node: &ast::AssociatedDeclaration,
         context: ast::AssocContext,
     ) -> Self::Result {
+        if !matches!(context, AssocContext::Interface(..)) {
+            return;
+        }
+
         let scope_id = self.define_assoc_declaration(node);
         if let Some(scope_id) = scope_id {
             self.with_scope(scope_id, |this| {
@@ -194,7 +198,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                     self.scopes.current,
                 );
                 let scope = self.create_scope(scope);
-                self.define(identifier, ScopeNamespace::Module, resolution, visibility);
+                self.define(identifier, ScopeNamespace::Type, resolution, visibility);
                 return Some(scope);
             }
 
@@ -240,7 +244,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                     self.scopes.current,
                 );
                 let scope = self.create_scope(scope);
-                self.define(identifier, ScopeNamespace::Module, resolution, visibility);
+                self.define(identifier, ScopeNamespace::Type, resolution, visibility);
                 return Some(scope);
             }
             ast::NamespaceDeclarationKind::Interface(..) => {
@@ -448,7 +452,6 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
             kind,
             is_import,
             scope,
-            is_resolved: Cell::new(false),
             module_scope: Cell::new(None),
         };
 

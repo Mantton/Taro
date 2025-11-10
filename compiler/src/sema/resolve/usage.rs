@@ -78,24 +78,21 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
             }
         };
 
+        usage.module_scope.set(Some(module));
+
         let binding = match &usage.kind {
             UsageKind::Single(binding) => binding,
             UsageKind::Glob { id } => {
-                todo!("glob imports")
+                return true;
             }
         };
-        let ns = [
-            ScopeNamespace::Module,
-            ScopeNamespace::Type,
-            ScopeNamespace::Value,
-        ];
+        let ns = [ScopeNamespace::Type, ScopeNamespace::Value];
 
         let mut resolved_holder = None;
         for ns in ns {
             let Some(holder) = self
                 .resolver
                 .find_holder_in_scope(&binding.source, module, ns)
-                .ok()
             else {
                 continue;
             };

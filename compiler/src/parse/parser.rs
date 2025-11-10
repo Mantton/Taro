@@ -8,12 +8,12 @@ use crate::{
         FunctionSignature, GenericBound, GenericBounds, GenericRequirement, GenericRequirementList,
         GenericWhereClause, Generics, Identifier, IfExpression, Implementation, Initializer,
         Interface, Label, Literal, Local, MapPair, MatchArm, MatchExpression, Mutability,
-        Namespace, NamespaceDeclaration, NamespaceDeclarationKind, NodeID, OperatorKind, Pattern,
-        PatternBindingCondition, PatternField, PatternKind, PatternPath, RequiredTypeConstraint,
-        SelfKind, Statement, StatementKind, Struct, Type, TypeAlias, TypeArgument, TypeArguments,
-        TypeKind, TypeParameter, TypeParameterKind, TypeParameters, UnaryOperator, UseTree,
-        UseTreeKind, UseTreeNestedItem, UseTreePath, Variant, VariantKind, Visibility,
-        VisibilityLevel,
+        Namespace, NamespaceDeclaration, NamespaceDeclarationKind, NodeID, OperatorKind, Path,
+        PathSegment, Pattern, PatternBindingCondition, PatternField, PatternKind, PatternPath,
+        RequiredTypeConstraint, SelfKind, Statement, StatementKind, Struct, Type, TypeAlias,
+        TypeArgument, TypeArguments, TypeKind, TypeParameter, TypeParameterKind, TypeParameters,
+        UnaryOperator, UseTree, UseTreeKind, UseTreeNestedItem, UseTreePath, Variant, VariantKind,
+        Visibility, VisibilityLevel,
     },
     diagnostics::{DiagCtx, Diagnostic, DiagnosticLevel},
     error::ReportedError,
@@ -1001,7 +1001,7 @@ impl Parser {
             }
             Token::Any => {
                 self.bump();
-                let interfaces = self.parse_sequence(Token::Amp, |this| this.parse_type())?;
+                let interfaces = self.parse_sequence(Token::Amp, |this| this.parse_path())?;
                 Ok(TypeKind::BoxedExistential { interfaces })
             }
             _ => {
@@ -1014,34 +1014,9 @@ impl Parser {
 
     fn parse_identifier_type(&mut self) -> R<TypeKind> {
         let lo = self.lo_span();
-        let identifier = self.parse_identifier()?;
-        let span = identifier.span;
-        let type_arguments = self.parse_optional_type_arguments()?;
-
-        let mut current = Type {
-            id: self.next_id(),
-            kind: TypeKind::Nominal {
-                name: identifier,
-                type_arguments,
-            },
-            span: span.to(self.hi_span()),
-        };
-
-        while self.eat(Token::Dot) {
-            let name = self.parse_identifier()?;
-            let type_arguments = self.parse_optional_type_arguments()?;
-            current = Type {
-                id: self.next_id(),
-                span: lo.to(self.hi_span()),
-                kind: TypeKind::Member {
-                    parent: Box::new(current),
-                    name,
-                    type_arguments,
-                },
-            };
-        }
-
-        Ok(current.kind)
+        let path = self.parse_path()?;
+        let kind = TypeKind::Nominal(path);
+        Ok(kind)
     }
 
     fn parse_pointer_type(&mut self, k: Token) -> R<TypeKind> {
@@ -1105,17 +1080,14 @@ impl Parser {
             }
         } else if self.eat(Token::As) {
             // Qualified
-            let interface = self.parse_type()?;
+            let interface = self.parse_path()?;
             self.expect(Token::RBracket)?;
             self.expect(Token::Dot)?;
-
-            let name = self.parse_identifier()?;
-            let type_arguments = self.parse_optional_type_arguments()?;
+            let member = self.parse_path_segment(true)?;
             return Ok(TypeKind::QualifiedMember {
                 self_ty: ty,
                 interface,
-                name,
-                type_arguments,
+                member,
             });
         } else {
             return Err(self.err_at_current(ParserError::InvalidCollectionType));
@@ -1266,7 +1238,7 @@ impl Parser {
     }
 
     fn parse_generic_bound(&mut self) -> R<GenericBound> {
-        let path = self.parse_type()?;
+        let path = self.parse_path()?;
         Ok(GenericBound { path })
     }
 }
@@ -1477,11 +1449,8 @@ impl Parser {
         }
 
         // Full: A(.B)*
-        let path = self.parse_sequence(Token::Dot, |p| Ok((p.parse_identifier()?, p.next_id())))?;
-        Ok(PatternPath::Qualified {
-            path,
-            span: lo.to(self.hi_span()),
-        })
+        let path = self.parse_path()?;
+        Ok(PatternPath::Qualified { path })
     }
 }
 
@@ -3000,6 +2969,50 @@ impl Parser {
         }
 
         return Ok(ident);
+    }
+}
+
+impl Parser {
+    pub fn parse_path(&mut self) -> R<Path> {
+        let start_span = self.lo_span();
+
+        let mut segments = Vec::new();
+        loop {
+            let segment = self.parse_path_segment(true)?;
+            segments.push(segment);
+            if self.eat(Token::Dot) {
+                continue;
+            } else {
+                break;
+            }
+        }
+
+        let p = Path {
+            segments,
+            span: start_span.to(self.hi_span()),
+        };
+
+        Ok(p)
+    }
+
+    pub fn parse_path_segment(&mut self, allow_generics: bool) -> R<PathSegment> {
+        let lo = self.lo_span();
+        let identifier = self.parse_identifier()?;
+        let arguments =
+            if allow_generics && self.matches(Token::LBracket) && self.can_parse_type_arguments() {
+                Some(self.parse_type_arguments()?)
+            } else {
+                None
+            };
+
+        let segment = PathSegment {
+            id: self.next_id(),
+            identifier,
+            arguments,
+            span: lo.to(self.hi_span()),
+        };
+
+        Ok(segment)
     }
 }
 

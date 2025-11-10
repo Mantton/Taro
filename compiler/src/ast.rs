@@ -461,6 +461,20 @@ pub struct ClosureExpression {
     pub span: Span,
 }
 
+#[derive(Debug)]
+pub struct Path {
+    pub span: Span,
+    pub segments: Vec<PathSegment>,
+}
+
+#[derive(Debug)]
+pub struct PathSegment {
+    pub id: NodeID,
+    pub identifier: Identifier,
+    pub arguments: Option<TypeArguments>,
+    pub span: Span,
+}
+
 // Type
 #[derive(Debug)]
 pub struct Type {
@@ -471,23 +485,13 @@ pub struct Type {
 
 #[derive(Debug)]
 pub enum TypeKind {
-    /// `Foo` | `Foo[T]`
-    Nominal {
-        name: Identifier,
-        type_arguments: Option<TypeArguments>,
-    },
-    /// Foo.Bar | `Foo.Bar[T]`
-    Member {
-        parent: Box<Type>,
-        name: Identifier,
-        type_arguments: Option<TypeArguments>,
-    },
+    /// `Foo` | `Foo[T]` | Foo.Bar | `Foo.Bar[T]`
+    Nominal(Path),
     /// [T as Interface].Member[Args]
     QualifiedMember {
-        self_ty: Box<Type>,                    // T
-        interface: Box<Type>,                  // Interface[...]
-        name: Identifier,                      // Member
-        type_arguments: Option<TypeArguments>, // Args for the member (GATs)
+        self_ty: Box<Type>, // T
+        interface: Path,    // Interface[...]
+        member: PathSegment,
     },
     /// Pointer Type
     ///
@@ -533,7 +537,7 @@ pub enum TypeKind {
     /// |a, b| a + b
     InferedClosureParameter,
     /// any T
-    BoxedExistential { interfaces: Vec<Box<Type>> },
+    BoxedExistential { interfaces: Vec<Path> },
     /// _
     Infer,
 }
@@ -579,14 +583,8 @@ pub enum PatternKind {
 
 #[derive(Debug)]
 pub enum PatternPath {
-    Qualified {
-        path: Vec<(Identifier, NodeID)>,
-        span: Span,
-    }, // A.B.C
-    Inferred {
-        name: Identifier,
-        span: Span,
-    }, // .B
+    Qualified { path: Path },                  // A.B.C
+    Inferred { name: Identifier, span: Span }, // .B
 }
 
 #[derive(Debug)]
@@ -680,7 +678,7 @@ pub struct ConformanceConstraint {
 
 #[derive(Debug)]
 pub struct GenericBound {
-    pub path: Box<Type>,
+    pub path: Path,
 }
 
 pub type GenericBounds = Vec<GenericBound>;
@@ -979,14 +977,14 @@ macro_rules! walk_visitable_list {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AssocContext {
     Interface(NodeID),
-    Extend(NodeID),
+    Implementation(NodeID),
 }
 
 impl AssocContext {
     pub fn node_id(self) -> NodeID {
         match self {
             AssocContext::Interface(id) => id,
-            AssocContext::Extend(id) => id,
+            AssocContext::Implementation(id) => id,
         }
     }
 }
@@ -1162,6 +1160,13 @@ pub trait AstVisitor: Sized {
         walk_alias(self, node)
     }
 
+    fn visit_path(&mut self, p: &Path) -> Self::Result {
+        walk_path(self, p)
+    }
+    fn visit_path_segment(&mut self, p: &PathSegment) -> Self::Result {
+        walk_path_segment(self, p)
+    }
+
     fn visit_type_arguments(&mut self, node: &TypeArguments) -> Self::Result {
         walk_type_arguments(self, node)
     }
@@ -1256,7 +1261,7 @@ pub fn walk_declaration<V: AstVisitor>(visitor: &mut V, declaration: &Declaratio
                 visitor,
                 visit_assoc_declaration,
                 &node.declarations,
-                AssocContext::Extend(declaration.id)
+                AssocContext::Implementation(declaration.id)
             );
         }
         DeclarationKind::TypeAlias(node) => {
@@ -1436,20 +1441,17 @@ pub fn walk_expression<V: AstVisitor>(visitor: &mut V, expr: &Expression) -> V::
 pub fn walk_type<V: AstVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
     let Type { kind, .. } = ty;
     match kind {
-        TypeKind::Nominal {
-            name,
-            type_arguments,
-        } => {
-            try_visit!(visitor.visit_identifier(name));
-            visit_optional!(visitor, visit_type_arguments, &type_arguments);
+        TypeKind::Nominal(path) => {
+            try_visit!(visitor.visit_path(path));
         }
-        TypeKind::Member {
-            parent: target,
-            name,
-            type_arguments,
+        TypeKind::QualifiedMember {
+            self_ty,
+            interface,
+            member,
         } => {
-            try_visit!(visitor.visit_type(target));
-            visit_optional!(visitor, visit_type_arguments, &type_arguments);
+            try_visit!(visitor.visit_type(self_ty));
+            try_visit!(visitor.visit_path(interface));
+            try_visit!(visitor.visit_path_segment(member));
         }
         TypeKind::Pointer(internal, _) => {
             try_visit!(visitor.visit_type(internal))
@@ -1485,22 +1487,11 @@ pub fn walk_type<V: AstVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
             try_visit!(visitor.visit_type(output));
         }
         TypeKind::BoxedExistential { interfaces } => {
-            walk_list!(visitor, visit_type, interfaces);
+            walk_list!(visitor, visit_path, interfaces);
         }
         TypeKind::ImplicitSelf => {}
         TypeKind::InferedClosureParameter => {}
         TypeKind::Infer => {}
-        TypeKind::QualifiedMember {
-            self_ty,
-            interface,
-            name,
-            type_arguments,
-        } => {
-            try_visit!(visitor.visit_type(self_ty));
-            try_visit!(visitor.visit_type(interface));
-            try_visit!(visitor.visit_identifier(name));
-            visit_optional!(visitor, visit_type_arguments, &type_arguments);
-        }
     }
     V::Result::output()
 }
@@ -1757,7 +1748,7 @@ pub fn walk_generic_bounds<V: AstVisitor>(visitor: &mut V, node: &GenericBounds)
 }
 
 pub fn walk_generic_bound<V: AstVisitor>(visitor: &mut V, node: &GenericBound) -> V::Result {
-    try_visit!(visitor.visit_type(&node.path));
+    try_visit!(visitor.visit_path(&node.path));
     V::Result::output()
 }
 
@@ -1770,12 +1761,22 @@ pub fn walk_pattern_field<V: AstVisitor>(visitor: &mut V, node: &PatternField) -
 pub fn walk_pattern_path<V: AstVisitor>(visitor: &mut V, node: &PatternPath) -> V::Result {
     match node {
         PatternPath::Qualified { path, .. } => {
-            let identifiers: Vec<&Identifier> = path.iter().map(|p| &p.0).collect();
-            walk_list!(visitor, visit_identifier, &identifiers);
+            todo!()
         }
         PatternPath::Inferred { name, .. } => {
             try_visit!(visitor.visit_identifier(&name));
         }
     }
+    V::Result::output()
+}
+
+pub fn walk_path<V: AstVisitor>(visitor: &mut V, path: &Path) -> V::Result {
+    walk_list!(visitor, visit_path_segment, &path.segments);
+    V::Result::output()
+}
+
+pub fn walk_path_segment<V: AstVisitor>(visitor: &mut V, path_segment: &PathSegment) -> V::Result {
+    try_visit!(visitor.visit_identifier(&path_segment.identifier));
+    visit_optional!(visitor, visit_type_arguments, &path_segment.arguments);
     V::Result::output()
 }

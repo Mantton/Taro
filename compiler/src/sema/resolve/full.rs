@@ -1,11 +1,12 @@
 use crate::{
-    ast::{self, AstVisitor, Identifier, IdentifierPath, NodeID},
+    ast::{self, AstVisitor, Identifier, IdentifierPath, NodeID, Path},
     diagnostics::{Diagnostic, DiagnosticLevel},
     error::CompileResult,
     sema::resolve::{
         models::{
             DefinitionID, DefinitionKind, LexicalScope, LexicalScopeBinding, LexicalScopeSource,
-            Resolution, ResolutionError, ResolvedValue, Scope, ScopeNamespace,
+            PathResult, Resolution, ResolutionError, ResolutionSource, ResolutionState,
+            ResolvedValue, Scope, ScopeNamespace,
         },
         resolver::Resolver,
     },
@@ -150,49 +151,24 @@ impl<'r, 'a, 'c> ast::AstVisitor for Actor<'r, 'a, 'c> {
 
     fn visit_type(&mut self, node: &ast::Type) -> Self::Result {
         match &node.kind {
-            ast::TypeKind::Nominal {
-                name,
-                type_arguments,
-            } => {
-                self.resolve_identifier(node.id, name, ResolutionSource::Type);
-                ast::walk_type(self, node)
-            }
-            ast::TypeKind::Member {
-                parent,
-                name,
-                type_arguments,
-            } => {
-                let parent = self.resolve_type_qualifier(parent);
-                let carrier = self.apply_member(parent, name, Want::Final(ResolutionSource::Type));
-                if let Some(arguments) = type_arguments {
-                    ast::walk_type_arguments(self, arguments)
-                }
-                match carrier {
-                    Carrier::Module(interned) => println!("{} – Module", name.symbol),
-                    Carrier::NominalType(definition_id) => println!("{} – Definition", name.symbol),
-                    Carrier::Error => println!("{} – Error", name.symbol),
-                }
+            ast::TypeKind::Nominal(path) => {
+                self.resolve_path_with_source(node.id, path, ResolutionSource::Type);
             }
             ast::TypeKind::QualifiedMember {
                 self_ty,
                 interface,
-                name,
-                type_arguments,
+                member,
             } => {
-                self.visit_type(self_ty);
-                self.resolve_interface(interface);
-                // TODO: This might need a "Do-Later" Tag
-                if let Some(arguments) = type_arguments {
-                    ast::walk_type_arguments(self, arguments)
-                }
+                // TODO
             }
             ast::TypeKind::BoxedExistential { interfaces } => {
-                for interface in interfaces {
-                    self.resolve_interface(interface);
+                for path in interfaces {
+                    self.resolve_path_with_source(node.id, path, ResolutionSource::Interface);
                 }
             }
-            _ => ast::walk_type(self, node),
+            _ => {}
         }
+        ast::walk_type(self, node)
     }
 }
 
@@ -274,193 +250,43 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
 }
 
 impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
-    fn resolve_interface(&mut self, node: &ast::Type) {
-        match &node.kind {
-            ast::TypeKind::Nominal {
-                name,
-                type_arguments,
-            } => {
-                let result = self.resolve_identifier_internal(name, ScopeNamespace::Type);
-                match result {
-                    Ok(value) => {
-                        let resolution = value.resolution();
-                        let Resolution::Definition(_, DefinitionKind::Interface) = resolution
-                        else {
-                            self.resolver
-                                .dcx()
-                                .emit(self.diag(name, ResolutionError::NotAnInterface));
-                            return;
-                        };
-                    }
-                    Err(e) => {
-                        self.resolver.dcx().emit(self.diag(name, e));
-                        return;
-                    }
-                }
-                if let Some(arguments) = type_arguments {
-                    ast::walk_type_arguments(self, arguments)
-                }
-            }
-            ast::TypeKind::Member {
-                parent,
-                name,
-                type_arguments,
-            } => {
-                let parent = self.resolve_type_qualifier(parent);
-                let carrier =
-                    self.apply_member(parent, name, Want::Final(ResolutionSource::Interface));
-
-                debug_assert!(!matches!(carrier, Carrier::Error));
-                if let Some(arguments) = type_arguments {
-                    ast::walk_type_arguments(self, arguments)
-                }
-            }
-            ast::TypeKind::Parenthesis(node) => {
-                return self.resolve_interface(node);
-            }
-            _ => {
-                self.resolver
-                    .dcx()
-                    .emit_error("not a valid interface".into(), node.span);
-            }
-        }
-    }
-}
-
-impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
-    fn resolve_identifier(&mut self, id: NodeID, name: &Identifier, source: ResolutionSource) {
-        let result = self.resolve_identifier_internal(name, source.namespace());
-
-        match result {
-            Ok(value) => {
-                let resolution = value.resolution();
-                println!("{} – Definition", name.symbol)
-            }
-            Err(e) => {
-                self.resolver.dcx().emit(self.diag(name, e));
-            }
-        }
-    }
-
-    fn resolve_identifier_internal(
+    fn resolve_identifier_with_source(
         &mut self,
+        id: NodeID,
         name: &Identifier,
-        namespace: ScopeNamespace,
-    ) -> Result<ResolvedValue<'a>, ResolutionError> {
-        let result = self
-            .resolver
-            .resolve_in_scopes(name, namespace, &self.scopes);
-
-        match result {
-            Some(value) => Ok(value),
-            None => Err(ResolutionError::UnknownSymbol),
-        }
+        source: ResolutionSource,
+    ) {
     }
 
-    fn resolve_type_qualifier(&mut self, node: &ast::Type) -> Carrier<'a> {
-        match &node.kind {
-            ast::TypeKind::Nominal { name, .. } => {
-                {
-                    let module_result =
-                        self.resolve_identifier_internal(name, ScopeNamespace::Module);
-                    if let Ok(ResolvedValue::Scope(module)) = module_result {
-                        return Carrier::Module(module);
-                    }
-                }
+    fn resolve_path_with_source(&mut self, id: NodeID, path: &Path, source: ResolutionSource) {
+        let result =
+            self.resolver
+                .resolve_path_in_scopes(&path.segments, source.namespace(), &self.scopes);
 
-                {
-                    let type_result = self.resolve_identifier_internal(name, ScopeNamespace::Type);
-                    if let Ok(ResolvedValue::Resolution(Resolution::Definition(id, _))) =
-                        type_result
-                    {
-                        return Carrier::NominalType(id);
-                    }
-                }
-
-                println!("Cannot Find Top Level {}", name.symbol);
-                return Carrier::Error;
+        println!("Success {}", !matches!(result, PathResult::Failed { .. }));
+        let result = match result {
+            PathResult::Scope(scope) => Some(scope.resolution().unwrap()),
+            PathResult::Resolution(value) => match value {
+                ResolutionState::Complete(resolution) => Some(resolution),
+                ResolutionState::Partial { .. } => None,
+            },
+            PathResult::Failed {
+                segment,
+                is_last_segment,
+                error,
+            } => {
+                let diag = self.diag(&segment, error);
+                self.resolver.dcx().emit(diag);
+                return;
             }
-            ast::TypeKind::Member { parent, name, .. } => {
-                let lhs = self.resolve_type_qualifier(parent);
-                let carrier = self.apply_member(lhs, name, Want::Qualifier);
-                return carrier;
+        };
+
+        if let Some(result) = result {
+            if !source.is_allowed(&result) {
+                println!("Unallowed resolution in position")
             }
-            ast::TypeKind::Parenthesis(node) => self.resolve_type_qualifier(node),
-            _ => {
-                todo!()
-            }
-        }
-    }
-
-    fn apply_member(&mut self, lhs: Carrier<'a>, name: &Identifier, want: Want) -> Carrier<'a> {
-        match lhs {
-            Carrier::Module(scope) => {
-                for &ns in &[ScopeNamespace::Module, ScopeNamespace::Type] {
-                    let member = self.resolver.resolve_in_scope(name, scope, ns);
-                    if let Ok(member) = member {
-                        let carrier: Carrier<'_> = match &want {
-                            Want::Qualifier => match member {
-                                ResolvedValue::Scope(scope) => Carrier::Module(scope),
-                                ResolvedValue::Resolution(Resolution::Definition(id, _)) => {
-                                    Carrier::NominalType(id)
-                                }
-                                _ => todo!(),
-                            },
-                            Want::Final(source) => {
-                                let resolution = member.resolution();
-                                match (source, resolution) {
-                                    (
-                                        ResolutionSource::Type,
-                                        Resolution::Definition(
-                                            id,
-                                            DefinitionKind::TypeAlias
-                                            | DefinitionKind::Enum
-                                            | DefinitionKind::Struct,
-                                        ),
-                                    ) => Carrier::NominalType(id),
-                                    (
-                                        ResolutionSource::Interface,
-                                        Resolution::Definition(id, DefinitionKind::Interface),
-                                    ) => Carrier::NominalType(id),
-                                    _ => todo!(),
-                                }
-                            }
-                        };
-                        return carrier;
-                    }
-                }
-
-                // No Resolution
-                Carrier::Error
-            }
-            Carrier::NominalType(definition_id) => todo!(),
-            Carrier::Error => Carrier::Error,
-        }
-    }
-}
-
-#[derive(Debug)]
-enum Carrier<'a> {
-    Module(Scope<'a>),
-    NominalType(DefinitionID),
-    Error,
-}
-
-enum Want {
-    Qualifier,
-    Final(ResolutionSource),
-}
-
-#[derive(Debug)]
-pub enum ResolutionSource {
-    Type,
-    Interface,
-}
-
-impl ResolutionSource {
-    pub fn namespace(&self) -> ScopeNamespace {
-        match self {
-            ResolutionSource::Type | ResolutionSource::Interface => ScopeNamespace::Type,
+        } else if !source.defer_to_type_checker() {
+            println!("Unallowd reoslution in position")
         }
     }
 }
@@ -474,9 +300,11 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
             ResolutionError::NotAType => format!("'{}' is not a module", name),
             ResolutionError::NotAnInterface => format!("'{}' is not an interface", name),
             ResolutionError::UnknownSymbol => format!("cannot resolve symbol '{}' in scope", name),
-
             ResolutionError::AlreadyInScope(span) => {
                 format!("'{}' is already defined in scope", name)
+            }
+            ResolutionError::AmbiguousUsage => {
+                format!("ambiguous use of '{}'", name)
             }
         };
 
