@@ -42,7 +42,7 @@ impl<'r, 'a, 'c> AstVisitor for Actor<'r, 'a, 'c> {
             ast::DeclarationKind::Constant(..) => DefinitionKind::Constant,
             ast::DeclarationKind::Import(..) => DefinitionKind::Import,
             ast::DeclarationKind::Export(..) => DefinitionKind::Export,
-            ast::DeclarationKind::Implementation(..) => DefinitionKind::Extension,
+            ast::DeclarationKind::Implementation(..) => DefinitionKind::Implementation,
             ast::DeclarationKind::TypeAlias(..) => DefinitionKind::TypeAlias,
             ast::DeclarationKind::Namespace(..) => DefinitionKind::Namespace,
             ast::DeclarationKind::Initializer(..) => unreachable!("top level initializer"),

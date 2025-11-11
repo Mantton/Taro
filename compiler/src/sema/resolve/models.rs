@@ -5,6 +5,7 @@ use crate::{
 };
 use ecow::EcoString;
 use index_vec::define_index_type;
+use indexmap::IndexSet;
 use rustc_hash::FxHashMap;
 use std::cell::{Cell, RefCell};
 
@@ -19,7 +20,7 @@ pub enum DefinitionKind {
     Interface,
     TypeAlias,
     Namespace,
-    Extension,
+    Implementation,
     Import,
     Export,
     TypeParameter,
@@ -32,6 +33,35 @@ pub enum DefinitionKind {
     AssociatedType,
     EnumVariant,
     Ctor(CtorOf, CtorKind),
+}
+
+impl DefinitionKind {
+    pub fn description(&self) -> &'static str {
+        match self {
+            DefinitionKind::Module => "module",
+            DefinitionKind::Struct => "struct",
+            DefinitionKind::Enum => "enum",
+            DefinitionKind::Function => "function",
+            DefinitionKind::Interface => "interface",
+            DefinitionKind::TypeAlias => "type alias",
+            DefinitionKind::Namespace => "namespace",
+            DefinitionKind::Import => "import",
+            DefinitionKind::Implementation => "implementation",
+            DefinitionKind::TypeParameter => "type parameter",
+            DefinitionKind::Field => "field",
+            DefinitionKind::Variant => "variant",
+            DefinitionKind::Export => "export",
+            DefinitionKind::Constant => "constant",
+            DefinitionKind::Ctor(..) => "constructor",
+            DefinitionKind::AssociatedType => "associated type",
+            DefinitionKind::AssociatedFunction => "associated function",
+            DefinitionKind::AssociatedConstant => "associated constant",
+            DefinitionKind::ConstParameter => "const parameter",
+            DefinitionKind::ModuleVariable => "variable",
+            DefinitionKind::AssociatedInitializer => "associated init",
+            DefinitionKind::EnumVariant => "enum variant",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -189,13 +219,27 @@ pub struct ActiveScope<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Resolution {
-    PrimaryType(usize),
+    PrimaryType(PrimaryType),
     Definition(DefinitionID, DefinitionKind),
     SelfTypeAlias(DefinitionID),
     InterfaceSelfTypeParameter(DefinitionID),
     FunctionSet(Vec<DefinitionID>),
     LocalVariable(NodeID),
     SelfConstructor(DefinitionID),
+}
+
+impl Resolution {
+    pub fn description(&self) -> &'static str {
+        match self {
+            Resolution::Definition(_, k) => k.description(),
+            Resolution::InterfaceSelfTypeParameter(_) => "self type",
+            Resolution::SelfTypeAlias(_) => "self type",
+            Resolution::LocalVariable(_) => "local variable",
+            Resolution::FunctionSet(..) => "function set",
+            Resolution::PrimaryType(_) => "primary type",
+            Resolution::SelfConstructor(_) => "self constructor",
+        }
+    }
 }
 
 pub type UsageEntry<'arena> = Interned<'arena, UsageEntryData<'arena>>;
@@ -303,7 +347,7 @@ impl<'a> Holder<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum ResolutionError {
     NotAModule,
     NotAType,
@@ -311,6 +355,18 @@ pub enum ResolutionError {
     UnknownSymbol,
     AlreadyInScope(Span),
     AmbiguousUsage,
+    InconsistentBindingMode(EcoString, Span),
+    VariableNotBoundInPattern(BindingError),
+    IdentifierBoundMoreThanOnceInParameterList,
+    IdentifierBoundMoreThanOnceInSamePattern,
+    UnknownMember,
+}
+
+#[derive(Debug, Clone)]
+pub struct BindingError {
+    pub name: EcoString,
+    pub origin: IndexSet<Span>,
+    pub target: IndexSet<Span>,
 }
 
 #[derive(Debug)]
@@ -320,12 +376,15 @@ pub enum ResolutionSource {
     Expression,
     MatchPatternUnit,
     MatchPatternTupleStruct,
+    MatchPatternStruct,
 }
 
 impl ResolutionSource {
     pub fn namespace(&self) -> ScopeNamespace {
         match self {
-            ResolutionSource::Type | ResolutionSource::Interface => ScopeNamespace::Type,
+            ResolutionSource::Type
+            | ResolutionSource::Interface
+            | ResolutionSource::MatchPatternStruct => ScopeNamespace::Type,
             ResolutionSource::Expression => ScopeNamespace::Value,
             ResolutionSource::MatchPatternUnit => ScopeNamespace::Value,
             ResolutionSource::MatchPatternTupleStruct => ScopeNamespace::Value,
@@ -375,6 +434,9 @@ impl ResolutionSource {
                 res,
                 Resolution::Definition(_, DefinitionKind::Ctor(_, CtorKind::Function))
             ),
+            ResolutionSource::MatchPatternStruct => {
+                matches!(res, Resolution::Definition(_, DefinitionKind::EnumVariant))
+            }
         }
     }
 
@@ -385,6 +447,7 @@ impl ResolutionSource {
             ResolutionSource::Expression => "value".into(),
             ResolutionSource::MatchPatternUnit => "unit enum variant".into(),
             ResolutionSource::MatchPatternTupleStruct => "tuple enum variant".into(),
+            ResolutionSource::MatchPatternStruct => "strict enum variant".into(),
         }
     }
 
@@ -394,6 +457,7 @@ impl ResolutionSource {
             ResolutionSource::Interface => false,
             ResolutionSource::Expression => true,
             ResolutionSource::MatchPatternUnit => true,
+            ResolutionSource::MatchPatternStruct => true,
             ResolutionSource::MatchPatternTupleStruct => true,
         }
     }
@@ -410,7 +474,7 @@ pub enum PathResult<'arena> {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ResolutionState {
     Complete(Resolution),
     Partial {
@@ -425,4 +489,101 @@ pub enum ImplicitScope {
     StdPrelude,              // std prelude
     BuiltinFunctionsPrelude, // builtin prelude (functions)
     BuiltinTypesPrelude,     // builtin prelude (types)
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub enum PrimaryType {
+    Int(IntTy),
+    UInt(UIntTy),
+    Float(FloatTy),
+    String,
+    Bool,
+    Rune,
+}
+
+impl PrimaryType {
+    pub const ALL: [Self; 15] = [
+        Self::Int(IntTy::I8),
+        Self::Int(IntTy::I16),
+        Self::Int(IntTy::I32),
+        Self::Int(IntTy::I64),
+        Self::Int(IntTy::ISize),
+        Self::UInt(UIntTy::U8),
+        Self::UInt(UIntTy::U16),
+        Self::UInt(UIntTy::U32),
+        Self::UInt(UIntTy::U64),
+        Self::UInt(UIntTy::USize),
+        Self::Float(FloatTy::F32),
+        Self::Float(FloatTy::F64),
+        Self::Bool,
+        Self::Rune,
+        Self::String,
+    ];
+
+    pub fn name_str(self) -> &'static str {
+        match self {
+            PrimaryType::Int(i) => i.name_str(),
+            PrimaryType::UInt(u) => u.name_str(),
+            PrimaryType::Float(f) => f.name_str(),
+            PrimaryType::String => "string",
+            PrimaryType::Bool => "bool",
+            PrimaryType::Rune => "rune",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IntTy {
+    ISize,
+    I8,
+    I16,
+    I32,
+    I64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UIntTy {
+    USize,
+    U8,
+    U16,
+    U32,
+    U64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FloatTy {
+    F32,
+    F64,
+}
+impl IntTy {
+    pub fn name_str(&self) -> &'static str {
+        match *self {
+            IntTy::ISize => "isize",
+            IntTy::I8 => "int8",
+            IntTy::I16 => "int16",
+            IntTy::I32 => "int32",
+            IntTy::I64 => "int64",
+        }
+    }
+}
+
+impl UIntTy {
+    pub fn name_str(&self) -> &'static str {
+        match *self {
+            UIntTy::USize => "usize",
+            UIntTy::U8 => "uint8",
+            UIntTy::U16 => "uint16",
+            UIntTy::U32 => "uint32",
+            UIntTy::U64 => "uint64",
+        }
+    }
+}
+
+impl FloatTy {
+    pub fn name_str(self) -> &'static str {
+        match self {
+            FloatTy::F32 => "float",
+            FloatTy::F64 => "double",
+        }
+    }
 }

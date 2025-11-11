@@ -1,12 +1,12 @@
 use crate::{
-    ast::{self, AstVisitor, Identifier, IdentifierPath, NodeID, Path},
+    ast::{self, AstVisitor, Identifier, IdentifierPath, NodeID, Path, PathSegment},
     diagnostics::{Diagnostic, DiagnosticLevel},
     error::CompileResult,
     sema::resolve::{
         models::{
-            DefinitionID, DefinitionKind, LexicalScope, LexicalScopeBinding, LexicalScopeSource,
-            PathResult, Resolution, ResolutionError, ResolutionSource, ResolutionState,
-            ResolvedValue, Scope, ScopeNamespace,
+            BindingError, DefinitionID, DefinitionKind, LexicalScope, LexicalScopeBinding,
+            LexicalScopeSource, PathResult, Resolution, ResolutionError, ResolutionSource,
+            ResolutionState, ResolvedValue, Scope, ScopeNamespace,
         },
         resolver::Resolver,
     },
@@ -149,6 +149,24 @@ impl<'r, 'a, 'c> ast::AstVisitor for Actor<'r, 'a, 'c> {
         self.with_scope_source(scope, |this| ast::walk_block(this, node))
     }
 
+    fn visit_function(
+        &mut self,
+        _: NodeID,
+        f: &ast::Function,
+        _: ast::FunctionContext,
+    ) -> Self::Result {
+        if let Some(body) = &f.block {
+            self.with_scope_source(LexicalScopeSource::Plain, |this| {
+                this.visit_generics(&f.generics);
+                this.resolve_function_signature(&f.signature);
+                this.with_scope_source(LexicalScopeSource::Plain, |this| this.visit_block(body));
+            })
+        } else {
+            self.visit_generics(&f.generics);
+            self.resolve_function_signature(&f.signature);
+        }
+    }
+
     fn visit_type(&mut self, node: &ast::Type) -> Self::Result {
         match &node.kind {
             ast::TypeKind::Nominal(path) => {
@@ -159,7 +177,41 @@ impl<'r, 'a, 'c> ast::AstVisitor for Actor<'r, 'a, 'c> {
                 interface,
                 member,
             } => {
-                // TODO
+                self.resolve_path_with_source(
+                    interface.id,
+                    &interface.path,
+                    ResolutionSource::Interface,
+                );
+                if let Some(ResolutionState::Complete(Resolution::Definition(
+                    id,
+                    DefinitionKind::Interface,
+                ))) = self.resolver.get_resolution(interface.id)
+                {
+                    let scope = self.resolver.get_definition_scope(id);
+                    let result = self.resolver.resolve_in_scope(
+                        &member.identifier,
+                        scope,
+                        ScopeNamespace::Type,
+                    );
+
+                    let resolution = match result {
+                        Ok(v) => Some(v.resolution()),
+                        Err(e) => {
+                            let diag = self.diag(&member.identifier, e);
+                            self.resolver.dcx().emit(diag);
+                            None
+                        }
+                    };
+
+                    if let Some(resolution) = resolution {
+                        self.resolver.record_resolution(
+                            node.id,
+                            ResolutionState::Complete(resolution.clone()),
+                        );
+                        self.resolver
+                            .record_resolution(member.id, ResolutionState::Complete(resolution));
+                    }
+                }
             }
             ast::TypeKind::BoxedExistential { interfaces } => {
                 for path in interfaces {
@@ -169,6 +221,22 @@ impl<'r, 'a, 'c> ast::AstVisitor for Actor<'r, 'a, 'c> {
             _ => {}
         }
         ast::walk_type(self, node)
+    }
+
+    fn visit_local(&mut self, node: &ast::Local) -> Self::Result {
+        self.resolve_local(node);
+    }
+
+    fn visit_match_arm(&mut self, node: &ast::MatchArm) -> Self::Result {
+        self.resolve_match_arm(node)
+    }
+
+    fn visit_generic_bound(&mut self, node: &ast::GenericBound) -> Self::Result {
+        self.resolve_path_with_source(node.path.id, &node.path.path, ResolutionSource::Interface);
+    }
+
+    fn visit_expression(&mut self, node: &ast::Expression) -> Self::Result {
+        self.resolve_expression(node);
     }
 }
 
@@ -217,7 +285,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                 self.with_scope(scope, |this| ast::walk_declaration(this, declaration))
             }
             ast::DeclarationKind::Implementation(node) => {
-                self.resolve_extension(declaration.id, node)
+                self.resolve_implementation(declaration.id, node)
             }
             ast::DeclarationKind::Initializer(..) => {
                 unreachable!("top level initializer")
@@ -226,8 +294,468 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
     }
 }
 
+#[derive(Debug)]
+enum ResolvedEntity<'a> {
+    Scoped(Scope<'a>),
+    Resolved(Resolution),
+    Value,
+    DeferredAssociated,
+}
+
 impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
-    fn resolve_extension(&mut self, id: ast::NodeID, node: &ast::Implementation) {
+    fn resolve_expression(&mut self, node: &ast::Expression) {
+        match &node.kind {
+            ast::ExpressionKind::Identifier(id, name) => {
+                let result = self.lookup_unqualified(*id, name);
+                println!("done! {:?}", result);
+            }
+            ast::ExpressionKind::Member { target, name } => {
+                let result = self.resolve_expression_entity(node);
+                println!("done! {:?}", result);
+            }
+            _ => ast::walk_expression(self, node),
+        }
+    }
+
+    fn resolve_expression_entity(
+        &mut self,
+        node: &ast::Expression,
+    ) -> Result<ResolvedEntity<'a>, ResolutionError> {
+        match &node.kind {
+            ast::ExpressionKind::Identifier(id, name) => self.lookup_unqualified(*id, name),
+            ast::ExpressionKind::Member { target, name } => {
+                let entity = self.resolve_expression_entity(target)?;
+                self.resolver
+                    .dcx()
+                    .emit_info("resolving member".into(), name.span);
+                self.resolve_member_access(entity, name)
+            }
+            ast::ExpressionKind::Specialize {
+                target,
+                type_arguments,
+            } => {
+                todo!()
+            }
+            // Anything else produces a value expression
+            _ => return Ok(ResolvedEntity::Value),
+        }
+    }
+
+    fn lookup_unqualified(
+        &mut self,
+        id: NodeID,
+        name: &Identifier,
+    ) -> Result<ResolvedEntity<'a>, ResolutionError> {
+        let path = vec![PathSegment {
+            id,
+            identifier: name.clone(),
+            arguments: None,
+            span: name.span,
+        }];
+
+        let mut entity = None;
+        for &ns in &[ScopeNamespace::Type, ScopeNamespace::Value] {
+            let result = self
+                .resolver
+                .resolve_path_in_scopes(&path, ns, &self.scopes);
+
+            match result {
+                PathResult::Scope(scope) => {
+                    entity = Some(ResolvedEntity::Scoped(scope));
+                    break;
+                }
+                PathResult::Resolution(state) => match state {
+                    ResolutionState::Complete(resolution) => {
+                        entity = Some(ResolvedEntity::Resolved(resolution.clone()));
+                        break;
+                    }
+                    ResolutionState::Partial { .. } => unreachable!(),
+                },
+                PathResult::Failed { error, .. }
+                    if matches!(error, ResolutionError::AmbiguousUsage) =>
+                {
+                    return Err(ResolutionError::AmbiguousUsage);
+                }
+                _ => {
+                    continue;
+                }
+            }
+        }
+
+        let Some(entity) = entity else {
+            return Err(ResolutionError::UnknownSymbol);
+        };
+
+        return Ok(entity);
+    }
+
+    fn resolve_member_access(
+        &self,
+        base: ResolvedEntity<'a>,
+        name: &Identifier,
+    ) -> Result<ResolvedEntity<'a>, ResolutionError> {
+        match base {
+            ResolvedEntity::Scoped(scope) => {
+                for &ns in &[ScopeNamespace::Type, ScopeNamespace::Value] {
+                    let result = self.resolver.resolve_in_scope(name, scope, ns);
+                    match result {
+                        Ok(value) => match value {
+                            ResolvedValue::Scope(scope) => {
+                                return Ok(ResolvedEntity::Scoped(scope));
+                            }
+                            ResolvedValue::Resolution(resolution) => {
+                                return Ok(ResolvedEntity::Resolved(resolution.clone()));
+                            }
+                        },
+                        Err(ResolutionError::AmbiguousUsage) => {
+                            return Err(ResolutionError::AmbiguousUsage);
+                        }
+                        _ => continue,
+                    }
+                }
+            }
+            ResolvedEntity::Resolved(resolution) => match resolution {
+                Resolution::PrimaryType(..) => {
+                    return Ok(ResolvedEntity::DeferredAssociated);
+                }
+                Resolution::Definition(_, kind) => match kind {
+                    DefinitionKind::Module | DefinitionKind::Namespace => unreachable!(),
+                    DefinitionKind::Enum
+                    | DefinitionKind::Struct
+                    | DefinitionKind::TypeAlias
+                    | DefinitionKind::Interface
+                    | DefinitionKind::TypeParameter
+                    | DefinitionKind::AssociatedType => {
+                        return Ok(ResolvedEntity::DeferredAssociated);
+                    }
+                    DefinitionKind::Constant | DefinitionKind::ModuleVariable => {
+                        return Ok(ResolvedEntity::Value);
+                    }
+                    DefinitionKind::ConstParameter => {
+                        return Err(ResolutionError::UnknownMember);
+                    }
+                    DefinitionKind::Function | DefinitionKind::Ctor(..) => {
+                        return Err(ResolutionError::UnknownMember);
+                    }
+                    _ => unreachable!(),
+                },
+                Resolution::SelfTypeAlias(definition_id) => {
+                    todo!("possible associated member!")
+                }
+                Resolution::InterfaceSelfTypeParameter(definition_id) => {
+                    todo!("interface member")
+                }
+                Resolution::LocalVariable(_) => return Ok(ResolvedEntity::Value),
+                Resolution::FunctionSet(..) | Resolution::SelfConstructor(..) => {
+                    return Err(ResolutionError::UnknownMember);
+                }
+            },
+            ResolvedEntity::Value => return Ok(ResolvedEntity::Value),
+            ResolvedEntity::DeferredAssociated => {
+                return Ok(ResolvedEntity::DeferredAssociated);
+            }
+        }
+
+        return Err(ResolutionError::UnknownSymbol);
+    }
+}
+
+impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
+    fn resolve_local(&mut self, local: &ast::Local) {
+        if let Some(ty) = &local.ty {
+            self.visit_type(ty);
+        }
+
+        if let Some(expr) = &local.initializer {
+            self.visit_expression(expr)
+        }
+
+        self.resolve_top_level_pattern(&local.pattern, PatternSource::Variable);
+    }
+
+    fn resolve_function_signature(&mut self, sg: &ast::FunctionSignature) {
+        if let Some(ty) = &sg.prototype.output {
+            self.visit_type(ty);
+        }
+
+        self.resolve_function_parameters(&sg.prototype.inputs);
+    }
+    fn resolve_function_parameters(&mut self, params: &Vec<ast::FunctionParameter>) {
+        let mut bindings = vec![(PatBoundCtx::Product, Default::default())];
+        for param in params.iter() {
+            self.visit_type(&param.annotated_type);
+
+            if let Some(e) = &param.default_value {
+                self.visit_expression(e)
+            }
+
+            let pat = ast::Pattern {
+                id: param.id,
+                span: param.span,
+                kind: ast::PatternKind::Identifier(param.name.clone()),
+            };
+
+            self.resolve_pattern_inner(&pat, PatternSource::FunctionParameter, &mut bindings);
+        }
+
+        self.apply_pattern_bindings(bindings);
+    }
+}
+
+type PatternBindings = Vec<(PatBoundCtx, FxHashMap<EcoString, Resolution>)>;
+
+impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
+    fn resolve_match_arm(&mut self, node: &ast::MatchArm) {
+        self.with_scope_source(LexicalScopeSource::Plain, |this| {
+            this.resolve_top_level_pattern(&node.pattern, PatternSource::MatchArm);
+            if let Some(guard) = &node.guard {
+                this.visit_expression(guard)
+            }
+            this.visit_expression(&node.body)
+        })
+    }
+
+    fn resolve_top_level_pattern(&mut self, pat: &ast::Pattern, source: PatternSource) {
+        let mut bindings = vec![(PatBoundCtx::Product, Default::default())];
+        self.resolve_pattern(pat, source, &mut bindings);
+        self.apply_pattern_bindings(bindings);
+    }
+
+    fn apply_pattern_bindings(&mut self, mut bindings: PatternBindings) {
+        let scope = self.scopes.last_mut().unwrap();
+
+        let Some((_, pat_bindings)) = bindings.pop() else {
+            unreachable!("ICE: expected at least one pat binding set")
+        };
+
+        if scope.table.is_empty() {
+            scope.table = pat_bindings
+        } else {
+            scope.table.extend(pat_bindings);
+        }
+    }
+
+    fn resolve_pattern(
+        &mut self,
+        pat: &ast::Pattern,
+        source: PatternSource,
+        bindings: &mut PatternBindings,
+    ) {
+        self.resolve_pattern_inner(pat, source, bindings);
+        self.check_match_pattern_consistency(pat);
+    }
+
+    fn resolve_pattern_inner(
+        &mut self,
+        pat: &ast::Pattern,
+        source: PatternSource,
+        bindings: &mut PatternBindings,
+    ) {
+        pat.walk(&mut |pat| {
+            match &pat.kind {
+                ast::PatternKind::Literal(..)
+                | ast::PatternKind::Wildcard
+                | ast::PatternKind::Tuple(..) => {}
+                ast::PatternKind::Identifier(ident) => {
+                    let res = self.fresh_var_binding(ident.clone(), pat.id, bindings, source);
+                    self.resolver
+                        .record_resolution(pat.id, ResolutionState::Complete(res));
+                }
+                ast::PatternKind::PathTuple { path, .. } => match path {
+                    ast::PatternPath::Qualified { path } => {
+                        self.resolve_path_with_source(
+                            pat.id,
+                            path,
+                            ResolutionSource::MatchPatternTupleStruct,
+                        );
+                    }
+                    _ => {}
+                },
+                ast::PatternKind::PathStruct { path, .. } => match path {
+                    ast::PatternPath::Qualified { path } => {
+                        self.resolve_path_with_source(
+                            pat.id,
+                            path,
+                            ResolutionSource::MatchPatternStruct,
+                        );
+                    }
+                    _ => {}
+                },
+                ast::PatternKind::Or(pats, _) => {
+                    // Add new set of bindings
+                    bindings.push((PatBoundCtx::Or, Default::default()));
+                    for pat in pats {
+                        // add another binding set to stack so each subpattern can reject duplicates
+                        bindings.push((PatBoundCtx::Product, Default::default()));
+                        self.resolve_pattern_inner(pat, source, bindings);
+                        // Move up the non-overlapping bindings to the or-pattern.
+                        // Existing bindings just get "merged".
+                        let collected = bindings.pop().unwrap().1;
+                        bindings.last_mut().unwrap().1.extend(collected);
+                    }
+
+                    // This or-pattern itself can itself be part of a product,
+                    // e.g. `(V1(a) | V2(a), a)` or `(a, V1(a) | V2(a))`.
+                    // Both cases bind `a` again in a product pattern and must be rejected.
+                    let collected = bindings.pop().unwrap().1;
+                    bindings.last_mut().unwrap().1.extend(collected);
+
+                    return false;
+                }
+                _ => {}
+            };
+
+            return true;
+        });
+    }
+
+    fn fresh_var_binding(
+        &mut self,
+        ident: Identifier,
+        id: NodeID,
+        bindings: &mut PatternBindings,
+        source: PatternSource,
+    ) -> Resolution {
+        // Already bound in produce pattern: (a, a)
+        let already_bound_and = bindings
+            .iter()
+            .any(|(ctx, map)| *ctx == PatBoundCtx::Product && map.contains_key(&ident.symbol));
+
+        if already_bound_and {
+            let err = match source {
+                PatternSource::FunctionParameter => {
+                    ResolutionError::IdentifierBoundMoreThanOnceInParameterList
+                }
+                _ => ResolutionError::IdentifierBoundMoreThanOnceInSamePattern,
+            };
+
+            self.report_error(err, ident.span);
+        }
+
+        let already_bound_or = bindings.iter().find_map(|(ctx, map)| {
+            if *ctx == PatBoundCtx::Or {
+                map.get(&ident.symbol).cloned()
+            } else {
+                None
+            }
+        });
+
+        let res = if let Some(res) = already_bound_or {
+            // reuse variant def
+            res
+        } else {
+            Resolution::LocalVariable(id)
+        };
+
+        // Record as bound.
+        bindings
+            .last_mut()
+            .unwrap()
+            .1
+            .insert(ident.symbol, res.clone());
+
+        res
+    }
+}
+
+impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
+    fn check_match_pattern_consistency(&mut self, pattern: &ast::Pattern) {
+        let mut is_or_pattern = false;
+        pattern.walk(&mut |pat| match pat.kind {
+            ast::PatternKind::Or(..) => {
+                is_or_pattern = true;
+                false
+            }
+            _ => true,
+        });
+        if is_or_pattern {
+            let _ = self.compute_and_check_match_pattern_binding_map(pattern);
+        }
+    }
+
+    fn is_base_res_local(&self, id: NodeID) -> bool {
+        matches!(
+            self.resolver.get_resolution(id),
+            Some(ResolutionState::Complete(Resolution::LocalVariable(..)))
+        )
+    }
+    fn compute_and_check_match_pattern_binding_map(
+        &mut self,
+        pat: &ast::Pattern,
+    ) -> FxHashMap<EcoString, Span> {
+        let mut map = FxHashMap::default();
+
+        pat.walk(&mut |pat| {
+            match &pat.kind {
+                ast::PatternKind::Identifier(ident) if self.is_base_res_local(pat.id) => {
+                    map.insert(ident.symbol.clone(), ident.span);
+                }
+                ast::PatternKind::Or(sub_patterns, _) => {
+                    let res = self.compute_and_check_or_match_pattern_binding_map(sub_patterns);
+                    map.extend(res);
+                }
+                _ => {}
+            }
+
+            return true;
+        });
+
+        map
+    }
+
+    fn compute_and_check_or_match_pattern_binding_map(
+        &mut self,
+        pats: &[ast::Pattern],
+    ) -> FxHashMap<EcoString, Span> {
+        let mut missing_vars = FxHashMap::default();
+
+        let binding_maps = pats
+            .iter()
+            .map(|pat| {
+                let binding = self.compute_and_check_match_pattern_binding_map(pat);
+                (binding, pat)
+            })
+            .collect::<Vec<_>>();
+
+        // For Each SubPattern, Compare to other arms
+        for (map_outer, pat_outer) in binding_maps.iter() {
+            let others = binding_maps
+                .iter()
+                .filter(|(_, p)| p.id != pat_outer.id)
+                .flat_map(|(m, _)| m);
+
+            for (name, &span) in others {
+                match map_outer.get(name) {
+                    None => {
+                        let err = missing_vars.entry(name).or_insert_with(|| BindingError {
+                            name: name.clone(),
+                            origin: Default::default(),
+                            target: Default::default(),
+                        });
+
+                        err.origin.insert(span);
+                        err.target.insert(pat_outer.span);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        for (_, v) in missing_vars {
+            let span = *v.origin.iter().next().unwrap();
+            self.report_error(ResolutionError::VariableNotBoundInPattern(v), span);
+        }
+
+        let mut binding_map = FxHashMap::default();
+        for (bm, _) in binding_maps {
+            binding_map.extend(bm);
+        }
+        binding_map
+    }
+}
+
+impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
+    fn resolve_implementation(&mut self, id: ast::NodeID, node: &ast::Implementation) {
         let def_id = self.resolver.definition_id(id);
         self.with_scope_source(LexicalScopeSource::DefBoundary(def_id), |this| {
             this.with_generics_scope(&node.generics, |this| {
@@ -253,9 +781,21 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
     fn resolve_identifier_with_source(
         &mut self,
         id: NodeID,
+        node: NodeID,
         name: &Identifier,
         source: ResolutionSource,
     ) {
+        let path = ast::Path {
+            span: name.span,
+            segments: vec![PathSegment {
+                id: node,
+                identifier: name.clone(),
+                arguments: None,
+                span: name.span,
+            }],
+        };
+
+        self.resolve_path_with_source(id, &path, source);
     }
 
     fn resolve_path_with_source(&mut self, id: NodeID, path: &Path, source: ResolutionSource) {
@@ -263,13 +803,20 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
             self.resolver
                 .resolve_path_in_scopes(&path.segments, source.namespace(), &self.scopes);
 
-        println!("Success {}", !matches!(result, PathResult::Failed { .. }));
-        let result = match result {
-            PathResult::Scope(scope) => Some(scope.resolution().unwrap()),
-            PathResult::Resolution(value) => match value {
-                ResolutionState::Complete(resolution) => Some(resolution),
-                ResolutionState::Partial { .. } => None,
-            },
+        let resolution = match result {
+            PathResult::Scope(scope) => {
+                let resolution = scope.resolution().unwrap();
+                self.resolver
+                    .record_resolution(id, ResolutionState::Complete(resolution.clone()));
+                Some(resolution)
+            }
+            PathResult::Resolution(value) => {
+                self.resolver.record_resolution(id, value.clone());
+                match value {
+                    ResolutionState::Complete(resolution) => Some(resolution),
+                    ResolutionState::Partial { .. } => None,
+                }
+            }
             PathResult::Failed {
                 segment,
                 is_last_segment,
@@ -281,12 +828,19 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
             }
         };
 
-        if let Some(result) = result {
-            if !source.is_allowed(&result) {
-                println!("Unallowed resolution in position")
+        let expected = source.expected();
+
+        if let Some(resolution) = resolution {
+            if !source.is_allowed(&resolution) {
+                let provided = resolution.description();
+                let symbol = &path.segments.last().unwrap().identifier.symbol;
+                let message = format!("expected {expected}, got {provided} '{symbol}'");
+                self.resolver.dcx().emit_error(message, path.span);
             }
         } else if !source.defer_to_type_checker() {
-            println!("Unallowd reoslution in position")
+            let symbol = &path.segments.last().unwrap().identifier.symbol;
+            let message = format!("cannot resolve {expected} '{symbol}'");
+            self.resolver.dcx().emit_error(message, path.span);
         }
     }
 }
@@ -306,8 +860,32 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
             ResolutionError::AmbiguousUsage => {
                 format!("ambiguous use of '{}'", name)
             }
+            ResolutionError::InconsistentBindingMode(eco_string, span) => todo!(),
+            ResolutionError::VariableNotBoundInPattern(binding_error) => todo!(),
+            ResolutionError::IdentifierBoundMoreThanOnceInParameterList => todo!(),
+            ResolutionError::IdentifierBoundMoreThanOnceInSamePattern => todo!(),
+            ResolutionError::UnknownMember => {
+                format!("unknown member '{}'", name)
+            }
         };
 
         Diagnostic::new(msg, span, DiagnosticLevel::Error)
     }
+
+    fn report_error(&self, e: ResolutionError, span: Span) {}
+}
+
+#[derive(PartialEq)]
+pub enum PatBoundCtx {
+    /// A product pattern context, e.g., `Variant(a, b)`.
+    Product,
+    /// An or-pattern context, e.g., `p_0 | ... | p_n`.
+    Or,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum PatternSource {
+    Variable,
+    FunctionParameter,
+    MatchArm,
 }

@@ -148,7 +148,7 @@ pub enum NamespaceDeclarationKind {
     Export(UseTree),
 }
 
-// Extensions & Interface Declarations
+// Impls & Interface Declarations
 pub type AssociatedDeclaration = Declaration<AssociatedDeclarationKind>;
 #[derive(Debug)]
 pub enum AssociatedDeclarationKind {
@@ -323,12 +323,11 @@ pub struct AnonConst {
 
 #[derive(Debug)]
 pub enum ExpressionKind {
-    Malformed,
     /// Runes, Bools, Integers, Floats, Strings
     Literal(Literal),
 
     /// `foo`
-    Identifier(Identifier),
+    Identifier(NodeID, Identifier),
 
     /// `foo.bar`
     Member {
@@ -353,7 +352,7 @@ pub enum ExpressionKind {
     /// }`
     Match(MatchExpression),
     /// `main()`
-    FunctionCall(Box<Expression>, Vec<ExpressionArgument>),
+    Call(Box<Expression>, Vec<ExpressionArgument>),
     /// &a | &const T
     Reference(Box<Expression>, Mutability),
     /// *a
@@ -419,7 +418,7 @@ pub struct MapPair {
 
 #[derive(Debug)]
 pub struct MatchExpression {
-    pub value: Option<Box<Expression>>,
+    pub value: Box<Expression>,
     pub arms: Vec<MatchArm>,
     pub kw_span: Span,
 }
@@ -442,7 +441,7 @@ pub struct ExpressionArgument {
 #[derive(Debug)]
 pub struct IfExpression {
     pub condition: Box<Expression>,
-    pub body: Block,
+    pub then_block: Box<Expression>,
     pub else_block: Option<Box<Expression>>,
 }
 
@@ -457,7 +456,7 @@ pub struct PatternBindingCondition {
 #[derive(Debug)]
 pub struct ClosureExpression {
     pub signature: FunctionSignature,
-    pub body: Block,
+    pub body: Box<Expression>,
     pub span: Span,
 }
 
@@ -475,6 +474,12 @@ pub struct PathSegment {
     pub span: Span,
 }
 
+#[derive(Debug)]
+pub struct PathNode {
+    pub id: NodeID,
+    pub path: Path,
+}
+
 // Type
 #[derive(Debug)]
 pub struct Type {
@@ -489,8 +494,8 @@ pub enum TypeKind {
     Nominal(Path),
     /// [T as Interface].Member[Args]
     QualifiedMember {
-        self_ty: Box<Type>, // T
-        interface: Path,    // Interface[...]
+        self_ty: Box<Type>,  // T
+        interface: PathNode, // Interface[...]
         member: PathSegment,
     },
     /// Pointer Type
@@ -678,7 +683,7 @@ pub struct ConformanceConstraint {
 
 #[derive(Debug)]
 pub struct GenericBound {
-    pub path: Path,
+    pub path: PathNode,
 }
 
 pub type GenericBounds = Vec<GenericBound>;
@@ -1194,6 +1199,18 @@ pub trait AstVisitor: Sized {
     fn visit_attribute(&mut self, node: &Attribute) -> Self::Result {
         walk_attribute(self, node)
     }
+
+    fn visit_expression_argument(&mut self, node: &ExpressionArgument) -> Self::Result {
+        walk_expression_argument(self, node)
+    }
+
+    fn visit_map_pair(&mut self, node: &MapPair) -> Self::Result {
+        walk_map_pair(self, node)
+    }
+
+    fn visit_match_arm(&mut self, node: &MatchArm) -> Self::Result {
+        walk_match_arm(self, node)
+    }
 }
 
 pub fn walk_package<V: AstVisitor>(visitor: &mut V, package: &Package) -> V::Result {
@@ -1434,7 +1451,106 @@ pub fn walk_statement<V: AstVisitor>(visitor: &mut V, s: &Statement) -> V::Resul
     V::Result::output()
 }
 
-pub fn walk_expression<V: AstVisitor>(visitor: &mut V, expr: &Expression) -> V::Result {
+pub fn walk_expression<V: AstVisitor>(visitor: &mut V, node: &Expression) -> V::Result {
+    match &node.kind {
+        ExpressionKind::Wildcard | ExpressionKind::Literal(_) => {}
+        ExpressionKind::Identifier(_, node) => {
+            try_visit!(visitor.visit_identifier(node))
+        }
+        ExpressionKind::Member { target, name } => {
+            try_visit!(visitor.visit_expression(target));
+            try_visit!(visitor.visit_identifier(name));
+        }
+        ExpressionKind::Specialize {
+            target,
+            type_arguments,
+        } => todo!(),
+        ExpressionKind::Array(expressions) => {
+            walk_list!(visitor, visit_expression, expressions)
+        }
+        ExpressionKind::Tuple(expressions) => {
+            walk_list!(visitor, visit_expression, expressions)
+        }
+        ExpressionKind::DictionaryLiteral(pairs) => {
+            walk_list!(visitor, visit_map_pair, pairs)
+        }
+        ExpressionKind::If(node) => {
+            try_visit!(visitor.visit_expression(&node.condition));
+            try_visit!(visitor.visit_expression(&node.then_block));
+            visit_optional!(visitor, visit_expression, &node.else_block);
+        }
+        ExpressionKind::Match(node) => {
+            try_visit!(visitor.visit_expression(&node.value));
+            walk_list!(visitor, visit_match_arm, &node.arms);
+        }
+        ExpressionKind::Call(expression, arguments) => {
+            try_visit!(visitor.visit_expression(expression));
+            walk_list!(visitor, visit_expression_argument, arguments);
+        }
+        ExpressionKind::Reference(expression, _) => {
+            try_visit!(visitor.visit_expression(expression));
+        }
+        ExpressionKind::Dereference(expression) => {
+            try_visit!(visitor.visit_expression(expression));
+        }
+        ExpressionKind::Binary(_, lhs, rhs) => {
+            try_visit!(visitor.visit_expression(lhs));
+            try_visit!(visitor.visit_expression(rhs));
+        }
+        ExpressionKind::Unary(_, expression) => {
+            try_visit!(visitor.visit_expression(expression));
+        }
+        ExpressionKind::TupleAccess(expression, _) => {
+            try_visit!(visitor.visit_expression(expression));
+        }
+        ExpressionKind::AssignOp(_, lhs, rhs) => {
+            try_visit!(visitor.visit_expression(lhs));
+            try_visit!(visitor.visit_expression(rhs));
+        }
+        ExpressionKind::Assign(lhs, rhs) => {
+            try_visit!(visitor.visit_expression(lhs));
+            try_visit!(visitor.visit_expression(rhs));
+        }
+        ExpressionKind::Parenthesis(expression) => {
+            try_visit!(visitor.visit_expression(expression));
+        }
+        ExpressionKind::CastAs(expression, ty) => {
+            try_visit!(visitor.visit_expression(expression));
+            try_visit!(visitor.visit_type(ty));
+        }
+        ExpressionKind::Ternary(lhs, mid, rhs) => {
+            try_visit!(visitor.visit_expression(lhs));
+            try_visit!(visitor.visit_expression(mid));
+            try_visit!(visitor.visit_expression(rhs));
+        }
+        ExpressionKind::Pipe(lhs, rhs) => {
+            try_visit!(visitor.visit_expression(lhs));
+            try_visit!(visitor.visit_expression(rhs));
+        }
+        ExpressionKind::PatternBinding(pattern_binding_condition) => todo!(),
+        ExpressionKind::OptionalDefault(lhs, rhs) => {
+            try_visit!(visitor.visit_expression(lhs));
+            try_visit!(visitor.visit_expression(rhs));
+        }
+        ExpressionKind::Range(lhs, rhs, _) => {
+            try_visit!(visitor.visit_expression(lhs));
+            try_visit!(visitor.visit_expression(rhs));
+        }
+        ExpressionKind::Closure(expression) => {
+            try_visit!(visitor.visit_function_signature(&expression.signature));
+            try_visit!(visitor.visit_expression(&expression.body))
+        }
+        ExpressionKind::Block(block) => {
+            try_visit!(visitor.visit_block(block));
+        }
+        ExpressionKind::OptionalUnwrap(expression) => {
+            try_visit!(visitor.visit_expression(expression));
+        }
+        ExpressionKind::OptionalEvaluation(expression) => {
+            try_visit!(visitor.visit_expression(expression));
+        }
+    };
+
     V::Result::output()
 }
 
@@ -1450,7 +1566,7 @@ pub fn walk_type<V: AstVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
             member,
         } => {
             try_visit!(visitor.visit_type(self_ty));
-            try_visit!(visitor.visit_path(interface));
+            try_visit!(visitor.visit_path(&interface.path));
             try_visit!(visitor.visit_path_segment(member));
         }
         TypeKind::Pointer(internal, _) => {
@@ -1748,7 +1864,7 @@ pub fn walk_generic_bounds<V: AstVisitor>(visitor: &mut V, node: &GenericBounds)
 }
 
 pub fn walk_generic_bound<V: AstVisitor>(visitor: &mut V, node: &GenericBound) -> V::Result {
-    try_visit!(visitor.visit_path(&node.path));
+    try_visit!(visitor.visit_path(&node.path.path));
     V::Result::output()
 }
 
@@ -1779,4 +1895,53 @@ pub fn walk_path_segment<V: AstVisitor>(visitor: &mut V, path_segment: &PathSegm
     try_visit!(visitor.visit_identifier(&path_segment.identifier));
     visit_optional!(visitor, visit_type_arguments, &path_segment.arguments);
     V::Result::output()
+}
+
+pub fn walk_expression_argument<V: AstVisitor>(
+    visitor: &mut V,
+    arg: &ExpressionArgument,
+) -> V::Result {
+    visit_optional!(visitor, visit_label, &arg.label);
+    try_visit!(visitor.visit_expression(&arg.expression));
+    V::Result::output()
+}
+
+pub fn walk_map_pair<V: AstVisitor>(visitor: &mut V, node: &MapPair) -> V::Result {
+    try_visit!(visitor.visit_expression(&node.key));
+    try_visit!(visitor.visit_expression(&node.value));
+    V::Result::output()
+}
+
+pub fn walk_match_arm<V: AstVisitor>(visitor: &mut V, node: &MatchArm) -> V::Result {
+    try_visit!(visitor.visit_pattern(&node.pattern));
+    visit_optional!(visitor, visit_expression, &node.guard);
+    try_visit!(visitor.visit_expression(&node.body));
+
+    V::Result::output()
+}
+
+impl Pattern {
+    pub fn walk(&self, action: &mut impl FnMut(&Pattern) -> bool) {
+        if !action(self) {
+            return;
+        }
+
+        match &self.kind {
+            PatternKind::Wildcard
+            | PatternKind::Rest
+            | PatternKind::Literal(..)
+            | PatternKind::Identifier(..)
+            | PatternKind::Member(..) => {}
+            PatternKind::PathStruct { fields, .. } => {
+                fields.iter().for_each(|f| f.pattern.walk(action))
+            }
+            PatternKind::Tuple(sub_pats, ..)
+            | PatternKind::PathTuple {
+                fields: sub_pats, ..
+            }
+            | PatternKind::Or(sub_pats, _) => {
+                sub_pats.iter().for_each(|p| p.walk(action));
+            }
+        }
+    }
 }

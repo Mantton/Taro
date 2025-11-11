@@ -9,11 +9,11 @@ use crate::{
         GenericWhereClause, Generics, Identifier, IfExpression, Implementation, Initializer,
         Interface, Label, Literal, Local, MapPair, MatchArm, MatchExpression, Mutability,
         Namespace, NamespaceDeclaration, NamespaceDeclarationKind, NodeID, OperatorKind, Path,
-        PathSegment, Pattern, PatternBindingCondition, PatternField, PatternKind, PatternPath,
-        RequiredTypeConstraint, SelfKind, Statement, StatementKind, Struct, Type, TypeAlias,
-        TypeArgument, TypeArguments, TypeKind, TypeParameter, TypeParameterKind, TypeParameters,
-        UnaryOperator, UseTree, UseTreeKind, UseTreeNestedItem, UseTreePath, Variant, VariantKind,
-        Visibility, VisibilityLevel,
+        PathNode, PathSegment, Pattern, PatternBindingCondition, PatternField, PatternKind,
+        PatternPath, RequiredTypeConstraint, SelfKind, Statement, StatementKind, Struct, Type,
+        TypeAlias, TypeArgument, TypeArguments, TypeKind, TypeParameter, TypeParameterKind,
+        TypeParameters, UnaryOperator, UseTree, UseTreeKind, UseTreeNestedItem, UseTreePath,
+        Variant, VariantKind, Visibility, VisibilityLevel,
     },
     diagnostics::{DiagCtx, Diagnostic, DiagnosticLevel},
     error::ReportedError,
@@ -1080,7 +1080,10 @@ impl Parser {
             }
         } else if self.eat(Token::As) {
             // Qualified
-            let interface = self.parse_path()?;
+            let interface = PathNode {
+                id: self.next_id(),
+                path: self.parse_path()?,
+            };
             self.expect(Token::RBracket)?;
             self.expect(Token::Dot)?;
             let member = self.parse_path_segment(true)?;
@@ -1238,7 +1241,10 @@ impl Parser {
     }
 
     fn parse_generic_bound(&mut self) -> R<GenericBound> {
-        let path = self.parse_path()?;
+        let path = PathNode {
+            id: self.next_id(),
+            path: self.parse_path()?,
+        };
         Ok(GenericBound { path })
     }
 }
@@ -2359,7 +2365,8 @@ impl Parser {
 
             let ident_span = ident.span;
 
-            self.build_expr(ExpressionKind::Identifier(ident), ident_span)
+            let id = self.next_id();
+            self.build_expr(ExpressionKind::Identifier(id, ident), ident_span)
         } else {
             self.expect(Token::Assign)?;
             let expression = self.parse_expression()?;
@@ -2385,7 +2392,7 @@ impl Parser {
     fn parse_call_expr(&mut self, expr: Box<Expression>) -> R<Box<Expression>> {
         let args = self.parse_expression_argument_list(Delimiter::Parenthesis)?;
         let s = expr.span.clone();
-        let k = ExpressionKind::FunctionCall(expr, args);
+        let k = ExpressionKind::Call(expr, args);
         return Ok(self.build_expr(k, s.to(self.hi_span())));
     }
 }
@@ -2400,7 +2407,7 @@ impl Parser {
             span: lo.to(self.hi_span()),
         };
 
-        let body = self.parse_block()?;
+        let body = self.parse_expression()?;
 
         let closure = ClosureExpression {
             signature,
@@ -2417,7 +2424,7 @@ impl Parser {
         let inputs = if self.eat(Token::BarBar) {
             Vec::new()
         } else {
-            self.parse_delimiter_sequence(Delimiter::Parenthesis, Token::Comma, true, |p| {
+            self.parse_delimiter_sequence(Delimiter::Bar, Token::Comma, true, |p| {
                 p.parse_closure_parameter()
             })?
         };
@@ -2604,7 +2611,8 @@ impl Parser {
     fn parse_identifier_expression(&mut self) -> R<Box<Expression>> {
         let identifier = self.parse_identifier()?;
         let span = identifier.span;
-        Ok(self.build_expr(ExpressionKind::Identifier(identifier), span))
+        let id = self.next_id();
+        Ok(self.build_expr(ExpressionKind::Identifier(id, identifier), span))
     }
 }
 impl Parser {
@@ -2656,7 +2664,9 @@ impl Parser {
         let condition = self.with_restrictions(if_restrictions, |p| p.parse_expression())?;
 
         // Then - Block
-        let body = self.parse_block()?;
+        let then_block = self.parse_block()?;
+        let then_block_span = then_block.span;
+        let then_block = self.build_expr(ExpressionKind::Block(then_block), then_block_span);
 
         // Else - Block
         let else_block = if self.eat(Token::Else) {
@@ -2675,7 +2685,7 @@ impl Parser {
 
         let node = IfExpression {
             condition,
-            body,
+            then_block,
             else_block,
         };
 
@@ -2691,19 +2701,7 @@ impl Parser {
         self.expect(Token::Match)?;
 
         let kw_span = self.previous().unwrap().span;
-
-        let value = if !self.matches(Token::LBrace) {
-            let res = Restrictions::empty();
-            let value = self.with_restrictions(res, |p| p.parse_expression())?;
-            Some(value)
-        } else {
-            None
-        };
-
-        // let arms =
-        //     self.parse_delimiter_sequence(Delimiter::Brace, Token::Semicolon, false, |p| {
-        //         p.parse_match_arm()
-        //     })?;
+        let value = self.parse_expression()?;
 
         let mut arms = vec![];
         self.expect(Token::LBrace)?;
@@ -3209,6 +3207,8 @@ enum Delimiter {
     Brace,
     /// `[ ... ]`
     Bracket,
+    /// `| ... |`
+    Bar,
 }
 
 impl Delimiter {
@@ -3217,6 +3217,7 @@ impl Delimiter {
             Delimiter::Parenthesis => Token::LParen,
             Delimiter::Brace => Token::LBrace,
             Delimiter::Bracket => Token::LBracket,
+            Delimiter::Bar => Token::Bar,
         }
     }
 
@@ -3225,6 +3226,7 @@ impl Delimiter {
             Delimiter::Parenthesis => Token::RParen,
             Delimiter::Brace => Token::RBrace,
             Delimiter::Bracket => Token::RBracket,
+            Delimiter::Bar => Token::Bar,
         }
     }
 }

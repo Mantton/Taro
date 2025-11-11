@@ -2,17 +2,18 @@ use crate::{
     ast::{Identifier, NodeID, PathSegment},
     compile::state::CompilerState,
     diagnostics::DiagCtx,
+    parse::lexer::File,
     sema::resolve::{
         arena::ResolverArenas,
         models::{
             DefinitionID, DefinitionIndex, DefinitionKind, Holder, ImplicitScope, LexicalScope,
             LexicalScopeBinding, LexicalScopeSource, NameEntry, PackageIndex, PathResult,
-            Resolution, ResolutionError, ResolutionSource, ResolutionState, ResolvedValue, Scope,
-            ScopeData, ScopeEntry, ScopeEntryData, ScopeEntryKind, ScopeKind, ScopeNamespace,
-            ScopeTable, UsageEntry, UsageEntryData,
+            PrimaryType, Resolution, ResolutionError, ResolutionSource, ResolutionState,
+            ResolvedValue, Scope, ScopeData, ScopeEntry, ScopeEntryData, ScopeEntryKind, ScopeKind,
+            ScopeNamespace, ScopeTable, UsageEntry, UsageEntryData,
         },
     },
-    span::FileID,
+    span::{FileID, Span},
     utils::intern::Interned,
 };
 use ecow::EcoString;
@@ -35,6 +36,8 @@ pub struct Resolver<'arena, 'compiler> {
     pub module_scope_mapping: FxHashMap<usize, Scope<'arena>>,
     pub definition_scope_mapping: FxHashMap<DefinitionID, Scope<'arena>>,
     pub block_scope_mapping: FxHashMap<NodeID, Scope<'arena>>,
+    pub builin_types_bindings: FxHashMap<EcoString, Resolution>,
+    pub resolutions: FxHashMap<NodeID, ResolutionState>,
 }
 
 impl<'a, 'c> Resolver<'a, 'c> {
@@ -56,6 +59,13 @@ impl<'a, 'c> Resolver<'a, 'c> {
             module_scope_mapping: Default::default(),
             definition_scope_mapping: Default::default(),
             block_scope_mapping: Default::default(),
+
+            resolutions: Default::default(),
+
+            builin_types_bindings: PrimaryType::ALL
+                .iter()
+                .map(|&ty| (ty.name_str().into(), Resolution::PrimaryType(ty)))
+                .collect(),
         }
     }
 
@@ -142,6 +152,18 @@ impl<'a, 'c> Resolver<'a, 'c> {
             },
             span: user.span,
         }))
+    }
+}
+
+impl<'a, 'c> Resolver<'a, 'c> {
+    pub fn record_resolution(&mut self, id: NodeID, state: ResolutionState) {
+        if self.resolutions.insert(id, state).is_some() {
+            panic!("bug – multiple resolutions recorded for node")
+        }
+    }
+
+    pub fn get_resolution(&self, id: NodeID) -> Option<ResolutionState> {
+        self.resolutions.get(&id).cloned()
     }
 }
 
@@ -289,10 +311,13 @@ impl<'a, 'c> Resolver<'a, 'c> {
             let possibly_associated_type = ResolutionSource::Type.is_allowed(&resolution);
 
             if let Some(scope) = result.scope() {
+                self.record_resolution(segment.id, ResolutionState::Complete(resolution));
                 resulting_scope = Some(scope)
             } else if (is_last) {
+                self.record_resolution(segment.id, ResolutionState::Complete(resolution.clone()));
                 return PathResult::Resolution(ResolutionState::Complete(resolution));
             } else if (possibly_associated_type) {
+                self.record_resolution(segment.id, ResolutionState::Complete(resolution.clone()));
                 let unresolved_count = path.len() - 1 - index;
                 return PathResult::Resolution(ResolutionState::Partial {
                     resolution,
@@ -501,7 +526,12 @@ impl<'a, 'c> Resolver<'a, 'c> {
                 }
                 ImplicitScope::StdPrelude => {}
                 ImplicitScope::BuiltinFunctionsPrelude => {}
-                ImplicitScope::BuiltinTypesPrelude => {}
+                ImplicitScope::BuiltinTypesPrelude => {
+                    let value = self.builin_types_bindings.get(&name.symbol);
+                    if let Some(value) = value {
+                        return Some(ResolvedValue::Resolution(value.clone()));
+                    }
+                }
             }
         }
 
