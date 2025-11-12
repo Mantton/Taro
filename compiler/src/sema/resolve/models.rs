@@ -360,6 +360,7 @@ pub enum ResolutionError {
     IdentifierBoundMoreThanOnceInParameterList,
     IdentifierBoundMoreThanOnceInSamePattern,
     UnknownMember,
+    SpecializationDisallowed(Resolution),
 }
 
 #[derive(Debug, Clone)]

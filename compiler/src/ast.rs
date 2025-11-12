@@ -1464,7 +1464,10 @@ pub fn walk_expression<V: AstVisitor>(visitor: &mut V, node: &Expression) -> V::
         ExpressionKind::Specialize {
             target,
             type_arguments,
-        } => todo!(),
+        } => {
+            try_visit!(visitor.visit_expression(target));
+            try_visit!(visitor.visit_type_arguments(type_arguments));
+        }
         ExpressionKind::Array(expressions) => {
             walk_list!(visitor, visit_expression, expressions)
         }

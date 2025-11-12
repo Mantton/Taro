@@ -313,6 +313,16 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                 let result = self.resolve_expression_entity(node);
                 println!("done! {:?}", result);
             }
+            ast::ExpressionKind::Specialize {
+                target,
+                type_arguments,
+            } => {
+                let result = self.resolve_expression_entity(target);
+
+                if let Ok(result) = result {
+                    let result = self.apply_specialization(result, type_arguments.span);
+                }
+            }
             _ => ast::walk_expression(self, node),
         }
     }
@@ -429,7 +439,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                         return Ok(ResolvedEntity::DeferredAssociated);
                     }
                     DefinitionKind::Constant | DefinitionKind::ModuleVariable => {
-                        return Ok(ResolvedEntity::Value);
+                        return Ok(ResolvedEntity::DeferredAssociated);
                     }
                     DefinitionKind::ConstParameter => {
                         return Err(ResolutionError::UnknownMember);
@@ -457,6 +467,37 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
         }
 
         return Err(ResolutionError::UnknownSymbol);
+    }
+
+    fn apply_specialization(
+        &self,
+        base: ResolvedEntity<'a>,
+        span: Span,
+    ) -> Result<(), ResolutionError> {
+        let resolution = match base {
+            ResolvedEntity::Scoped(scope) => scope.resolution().expect("resolution"),
+            ResolvedEntity::Resolved(resolution) => resolution.clone(),
+            ResolvedEntity::Value => todo!("reoirt error"),
+            ResolvedEntity::DeferredAssociated => return Ok(()),
+        };
+
+        match resolution {
+            res @ (Resolution::PrimaryType(..)
+            | Resolution::LocalVariable(..)
+            | Resolution::Definition(
+                _,
+                DefinitionKind::Module | DefinitionKind::Namespace,
+            )) => {
+                self.report_error(ResolutionError::SpecializationDisallowed(res), span);
+            }
+            Resolution::Definition(..)
+            | Resolution::SelfTypeAlias(..)
+            | Resolution::InterfaceSelfTypeParameter(..)
+            | Resolution::FunctionSet(..)
+            | Resolution::SelfConstructor(..) => todo!("allowed!"),
+        }
+
+        return Ok(());
     }
 }
 
@@ -866,6 +907,9 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
             ResolutionError::IdentifierBoundMoreThanOnceInSamePattern => todo!(),
             ResolutionError::UnknownMember => {
                 format!("unknown member '{}'", name)
+            }
+            ResolutionError::SpecializationDisallowed(kind) => {
+                format!("cannot apply specialization on '{}'", kind.description())
             }
         };
 
