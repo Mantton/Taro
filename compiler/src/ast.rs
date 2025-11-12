@@ -2,7 +2,7 @@ use std::ops::ControlFlow;
 
 use crate::{
     parse::Base,
-    span::{FileID, Span},
+    span::{FileID, Span, Symbol},
 };
 use ecow::EcoString;
 use index_vec::define_index_type;
@@ -19,7 +19,7 @@ pub struct Package {
 #[derive(Debug)]
 pub struct Module {
     pub id: NodeID,
-    pub name: EcoString,
+    pub name: Symbol,
     pub files: Vec<File>,
     pub submodules: Vec<Module>,
 }
@@ -36,38 +36,26 @@ pub enum Mutability {
     Immutable,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Identifier {
+    pub symbol: Symbol,
     pub span: Span,
-    pub symbol: EcoString,
 }
 
 impl Identifier {
     pub fn emtpy(file: FileID) -> Self {
         Identifier {
             span: Span::empty(file),
-            symbol: "".into(),
+            symbol: Symbol::new(""),
         }
     }
 
-    pub fn new(symbol: EcoString, span: Span) -> Self {
+    pub fn new(symbol: Symbol, span: Span) -> Self {
         Identifier { span, symbol }
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct IdentifierPath {
-    pub id: NodeID,
-    pub identifier: Identifier,
-}
-
-impl IdentifierPath {
-    pub fn new(id: NodeID, identifier: Identifier) -> Self {
-        Self { id, identifier }
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Label {
     pub identifier: Identifier,
     pub span: Span,

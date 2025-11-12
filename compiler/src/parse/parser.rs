@@ -18,7 +18,7 @@ use crate::{
     diagnostics::{DiagCtx, Diagnostic, DiagnosticLevel},
     error::ReportedError,
     parse::{Base, lexer, token::Token},
-    span::{Span, Spanned},
+    span::{Span, Spanned, Symbol},
 };
 use std::{cell::RefCell, collections::VecDeque, fmt::Display, ops::Add, rc::Rc};
 
@@ -48,7 +48,7 @@ fn parse_module(
     next: NextNode,
     dcx: &DiagCtx,
 ) -> Result<ast::Module, ReportedError> {
-    let name = module.name;
+    let name = Symbol::new(&module.name);
     let mut files = vec![];
     let mut submodules = vec![];
 
@@ -623,7 +623,7 @@ impl Parser {
         };
 
         let decl = Constant {
-            identifier: identifier.clone(),
+            identifier: identifier,
             ty,
             expr,
         };
@@ -781,7 +781,10 @@ impl Parser {
         let span = current.span;
         match current.value {
             Token::Identifier { value: symbol } => {
-                let v = Identifier { span, symbol };
+                let v = Identifier {
+                    span,
+                    symbol: Symbol::new(&symbol),
+                };
                 self.bump();
                 return Ok(v);
             }
@@ -1485,7 +1488,7 @@ impl Parser {
             Pattern {
                 id: self.next_id(),
                 span: identifier.span,
-                kind: PatternKind::Identifier(identifier.clone()),
+                kind: PatternKind::Identifier(identifier),
             }
         };
 
@@ -2359,7 +2362,7 @@ impl Parser {
         {
             shorthand = true;
             let ident = match &pattern.kind {
-                PatternKind::Identifier(ident) => ident.clone(),
+                PatternKind::Identifier(ident) => *ident,
                 _ => unreachable!(),
             };
 
@@ -2783,7 +2786,7 @@ impl Parser {
         let span = lo.to(self.hi_span());
         let function = self.parse_fn(mode)?;
         Ok((
-            Identifier::new("".into(), span),
+            Identifier::new(Symbol::new(""), span),
             DeclarationKind::Initializer(Initializer { function }),
         ))
     }
@@ -2865,7 +2868,7 @@ impl Parser {
 
         let name = if matches!(self.current_token(), Token::Identifier { .. }) {
             self.parse_identifier()?
-        } else if let Some(label) = label.clone() {
+        } else if let Some(label) = label {
             label
         } else if underscore_label {
             Identifier::emtpy(self.file.id)
@@ -2917,7 +2920,7 @@ impl Parser {
                 let anchor = self.cursor;
                 let ident = self.parse_identifier()?;
 
-                if ident.symbol == "self" {
+                if ident.symbol.as_str() == "self" {
                     (SelfKind::Copy, Mutability::Immutable, ident)
                 } else {
                     self.cursor = anchor;
@@ -2962,7 +2965,7 @@ impl Parser {
     fn parse_self(&mut self) -> R<Identifier> {
         let ident = self.parse_identifier()?;
 
-        if ident.symbol != "self" {
+        if ident.symbol.as_str() != "self" {
             return Err(self.err_at_current(ParserError::ExpectedSelf));
         }
 

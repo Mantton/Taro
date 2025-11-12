@@ -1,6 +1,6 @@
 use crate::{
     ast::{self, Identifier, NodeID},
-    span::{FileID, Span},
+    span::{FileID, Span, Symbol},
     utils::intern::Interned,
 };
 use ecow::EcoString;
@@ -149,7 +149,7 @@ pub enum ScopeKind {
     Definition(DefinitionID, DefinitionKind),
 }
 
-pub type ScopeTable<'arena> = FxHashMap<EcoString, NameEntry<'arena>>;
+pub type ScopeTable<'arena> = FxHashMap<Symbol, NameEntry<'arena>>;
 
 #[derive(Debug, Default, Clone)]
 pub struct NameEntry<'arena> {
@@ -260,7 +260,7 @@ pub enum UsageKind {
     Single(UsageBinding),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct UsageBinding {
     pub node_id: NodeID,
     pub source: Identifier,
@@ -269,7 +269,7 @@ pub struct UsageBinding {
 
 pub struct LexicalScope<'a> {
     pub source: LexicalScopeSource<'a>,
-    pub table: FxHashMap<EcoString, Resolution>,
+    pub table: FxHashMap<Symbol, Resolution>,
 }
 
 impl<'a> LexicalScope<'a> {
@@ -280,7 +280,7 @@ impl<'a> LexicalScope<'a> {
         }
     }
 
-    pub fn define(&mut self, name: EcoString, resolution: Resolution) {
+    pub fn define(&mut self, name: Symbol, resolution: Resolution) {
         self.table.insert(name, resolution);
     }
 }
@@ -355,7 +355,7 @@ pub enum ResolutionError {
     UnknownSymbol,
     AlreadyInScope(Span),
     AmbiguousUsage,
-    InconsistentBindingMode(EcoString, Span),
+    InconsistentBindingMode(Symbol, Span),
     VariableNotBoundInPattern(BindingError),
     IdentifierBoundMoreThanOnceInParameterList,
     IdentifierBoundMoreThanOnceInSamePattern,
@@ -365,7 +365,7 @@ pub enum ResolutionError {
 
 #[derive(Debug, Clone)]
 pub struct BindingError {
-    pub name: EcoString,
+    pub name: Symbol,
     pub origin: IndexSet<Span>,
     pub target: IndexSet<Span>,
 }

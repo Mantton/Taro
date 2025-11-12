@@ -13,7 +13,7 @@ use crate::{
             ScopeNamespace, ScopeTable, UsageEntry, UsageEntryData,
         },
     },
-    span::{FileID, Span},
+    span::{FileID, Span, Symbol},
     utils::intern::Interned,
 };
 use ecow::EcoString;
@@ -36,7 +36,7 @@ pub struct Resolver<'arena, 'compiler> {
     pub module_scope_mapping: FxHashMap<usize, Scope<'arena>>,
     pub definition_scope_mapping: FxHashMap<DefinitionID, Scope<'arena>>,
     pub block_scope_mapping: FxHashMap<NodeID, Scope<'arena>>,
-    pub builin_types_bindings: FxHashMap<EcoString, Resolution>,
+    pub builin_types_bindings: FxHashMap<Symbol, Resolution>,
     pub resolutions: FxHashMap<NodeID, ResolutionState>,
 }
 
@@ -64,7 +64,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
 
             builin_types_bindings: PrimaryType::ALL
                 .iter()
-                .map(|&ty| (ty.name_str().into(), Resolution::PrimaryType(ty)))
+                .map(|&ty| (Symbol::new(ty.name_str()), Resolution::PrimaryType(ty)))
                 .collect(),
         }
     }
@@ -77,7 +77,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
 impl<'a, 'c> Resolver<'a, 'c> {
     pub fn create_definition(
         &mut self,
-        identifier: &Identifier,
+        identifier: Identifier,
         node_id: NodeID,
         kind: DefinitionKind,
         parent: Option<DefinitionID>,
@@ -90,7 +90,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
         {
             self.node_to_def.insert(node_id, index);
             self.def_to_kind.insert(index, kind);
-            self.def_to_ident.insert(index, identifier.clone());
+            self.def_to_ident.insert(index, identifier);
             if let Some(parent) = parent {
                 self.def_to_parent.insert(index, parent);
             }
@@ -180,13 +180,13 @@ impl<'a, 'c> Resolver<'a, 'c> {
             span: identifier.span,
         });
 
-        self.define_in_scope_internal(scope, &identifier.symbol, entry, namespace)
+        self.define_in_scope_internal(scope, identifier.symbol, entry, namespace)
     }
 
     fn define_in_scope_internal(
         &mut self,
         scope: Scope<'a>,
-        name: &EcoString,
+        name: Symbol,
         entry: ScopeEntry<'a>,
         namespace: ScopeNamespace,
     ) -> Result<(), ScopeEntry<'a>> {
@@ -197,12 +197,12 @@ impl<'a, 'c> Resolver<'a, 'c> {
     fn define_in_scope_table(
         &self,
         table: &mut ScopeTable<'a>,
-        name: &EcoString,
+        name: Symbol,
         entry: ScopeEntry<'a>,
         namespace: ScopeNamespace,
     ) -> Result<(), ScopeEntry<'a>> {
         use ScopeNamespace::*;
-        let slot = table.entry(name.clone()).or_default();
+        let slot = table.entry(name).or_default();
 
         match namespace {
             Type => {
@@ -263,7 +263,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
     }
 
     fn resolve_package(&self, identifier: &Identifier) -> Option<Scope<'a>> {
-        if identifier.symbol == self.compiler.config.name {
+        if identifier.symbol.as_str() == self.compiler.config.name {
             return self.root_module_scope;
         }
 
@@ -554,7 +554,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
                 | ScopeKind::Definition(_, DefinitionKind::Namespace)
         ));
 
-        let result = self.define_in_scope_internal(scope, &name.symbol, entry, ns);
+        let result = self.define_in_scope_internal(scope, name.symbol, entry, ns);
         match result {
             Ok(_) => Ok(()),
             Err(e) => Err(ResolutionError::AlreadyInScope(e.span)),
@@ -573,7 +573,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
             ScopeKind::Definition(_, DefinitionKind::Namespace | DefinitionKind::Module)
         ));
 
-        let result = self.define_in_scope_internal(scope, &name.symbol, entry, ns);
+        let result = self.define_in_scope_internal(scope, name.symbol, entry, ns);
         match result {
             Ok(_) => Ok(()),
             Err(e) => Err(ResolutionError::AlreadyInScope(e.span)),

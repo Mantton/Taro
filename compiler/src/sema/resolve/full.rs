@@ -1,5 +1,5 @@
 use crate::{
-    ast::{self, AstVisitor, Identifier, IdentifierPath, NodeID, Path, PathSegment},
+    ast::{self, AstVisitor, Identifier, NodeID, Path, PathSegment},
     diagnostics::{Diagnostic, DiagnosticLevel},
     error::CompileResult,
     sema::resolve::{
@@ -10,9 +10,8 @@ use crate::{
         },
         resolver::Resolver,
     },
-    span::Span,
+    span::{Span, Symbol},
 };
-use ecow::EcoString;
 use rustc_hash::FxHashMap;
 use std::{mem, ops::Add};
 
@@ -68,13 +67,13 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
             return;
         };
 
-        let mut seen_bindings: FxHashMap<EcoString, Span> = Default::default();
+        let mut seen_bindings: FxHashMap<Symbol, Span> = Default::default();
 
         let mut scope = LexicalScope::new(LexicalScopeSource::Plain);
         for param in &type_parameters.parameters {
             let def_id = self.resolver.definition_id(param.id);
-            let name = param.identifier.symbol.clone();
-            let entry = seen_bindings.entry(name.clone());
+            let name = param.identifier.symbol;
+            let entry = seen_bindings.entry(name);
 
             match entry {
                 std::collections::hash_map::Entry::Occupied(_) => {
@@ -112,7 +111,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
 
     fn with_self_alias_scope(&mut self, self_res: Resolution, work: impl FnOnce(&mut Self)) {
         let mut scope = LexicalScope::new(LexicalScopeSource::Plain);
-        scope.define("Self".into(), self_res);
+        scope.define(Symbol::new("Self"), self_res);
         self.with_built_scope(scope, work);
     }
 }
@@ -358,7 +357,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
     ) -> Result<ResolvedEntity<'a>, ResolutionError> {
         let path = vec![PathSegment {
             id,
-            identifier: name.clone(),
+            identifier: *name,
             arguments: None,
             span: name.span,
         }];
@@ -533,7 +532,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
             let pat = ast::Pattern {
                 id: param.id,
                 span: param.span,
-                kind: ast::PatternKind::Identifier(param.name.clone()),
+                kind: ast::PatternKind::Identifier(param.name),
             };
 
             self.resolve_pattern_inner(&pat, PatternSource::FunctionParameter, &mut bindings);
@@ -543,7 +542,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
     }
 }
 
-type PatternBindings = Vec<(PatBoundCtx, FxHashMap<EcoString, Resolution>)>;
+type PatternBindings = Vec<(PatBoundCtx, FxHashMap<Symbol, Resolution>)>;
 
 impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
     fn resolve_match_arm(&mut self, node: &ast::MatchArm) {
@@ -598,7 +597,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                 | ast::PatternKind::Wildcard
                 | ast::PatternKind::Tuple(..) => {}
                 ast::PatternKind::Identifier(ident) => {
-                    let res = self.fresh_var_binding(ident.clone(), pat.id, bindings, source);
+                    let res = self.fresh_var_binding(ident, pat.id, bindings, source);
                     self.resolver
                         .record_resolution(pat.id, ResolutionState::Complete(res));
                 }
@@ -652,7 +651,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
 
     fn fresh_var_binding(
         &mut self,
-        ident: Identifier,
+        ident: &Identifier,
         id: NodeID,
         bindings: &mut PatternBindings,
         source: PatternSource,
@@ -723,7 +722,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
     fn compute_and_check_match_pattern_binding_map(
         &mut self,
         pat: &ast::Pattern,
-    ) -> FxHashMap<EcoString, Span> {
+    ) -> FxHashMap<Symbol, Span> {
         let mut map = FxHashMap::default();
 
         pat.walk(&mut |pat| {
@@ -747,7 +746,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
     fn compute_and_check_or_match_pattern_binding_map(
         &mut self,
         pats: &[ast::Pattern],
-    ) -> FxHashMap<EcoString, Span> {
+    ) -> FxHashMap<Symbol, Span> {
         let mut missing_vars = FxHashMap::default();
 
         let binding_maps = pats
@@ -765,11 +764,11 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                 .filter(|(_, p)| p.id != pat_outer.id)
                 .flat_map(|(m, _)| m);
 
-            for (name, &span) in others {
-                match map_outer.get(name) {
+            for (&name, &span) in others {
+                match map_outer.get(&name) {
                     None => {
                         let err = missing_vars.entry(name).or_insert_with(|| BindingError {
-                            name: name.clone(),
+                            name,
                             origin: Default::default(),
                             target: Default::default(),
                         });
@@ -819,26 +818,6 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
 }
 
 impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
-    fn resolve_identifier_with_source(
-        &mut self,
-        id: NodeID,
-        node: NodeID,
-        name: &Identifier,
-        source: ResolutionSource,
-    ) {
-        let path = ast::Path {
-            span: name.span,
-            segments: vec![PathSegment {
-                id: node,
-                identifier: name.clone(),
-                arguments: None,
-                span: name.span,
-            }],
-        };
-
-        self.resolve_path_with_source(id, &path, source);
-    }
-
     fn resolve_path_with_source(&mut self, id: NodeID, path: &Path, source: ResolutionSource) {
         let result =
             self.resolver

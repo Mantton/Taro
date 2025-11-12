@@ -1,4 +1,7 @@
+use std::fmt;
+
 use index_vec::define_index_type;
+use internment::Intern;
 
 define_index_type! {
     pub struct FileID = u32;
@@ -48,5 +51,30 @@ pub struct Spanned<T> {
 impl<T> Spanned<T> {
     pub fn new(value: T, span: Span) -> Spanned<T> {
         Spanned { value, span }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Symbol(internment::Intern<String>);
+
+impl Symbol {
+    pub fn new(string: &str) -> Symbol {
+        Symbol(Intern::new(String::from(string)))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0.as_str()
+    }
+}
+
+impl fmt::Debug for Symbol {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self.as_str(), f)
+    }
+}
+
+impl fmt::Display for Symbol {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self.as_str(), f)
     }
 }

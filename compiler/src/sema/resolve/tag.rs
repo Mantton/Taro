@@ -27,7 +27,7 @@ impl<'r, 'a, 'c> AstVisitor for Actor<'r, 'a, 'c> {
     fn visit_module(&mut self, node: &ast::Module, is_root: bool) -> Self::Result {
         let name = Identifier {
             span: Span::empty(FileID::new(0)),
-            symbol: node.name.clone(),
+            symbol: node.name,
         };
         let parent = self.tag(&name, node.id, DefinitionKind::Module);
         self.with_parent(parent, |this| ast::walk_module(this, node));
@@ -188,7 +188,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
     fn tag(&mut self, name: &Identifier, node_id: NodeID, kind: DefinitionKind) -> DefinitionID {
         let id = self
             .resolver
-            .create_definition(name, node_id, kind, self.parent);
+            .create_definition(*name, node_id, kind, self.parent);
         id
     }
 
