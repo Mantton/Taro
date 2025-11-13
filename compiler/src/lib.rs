@@ -1,4 +1,5 @@
 #![feature(associated_type_defaults)]
+#![feature(if_let_guard)]
 #![allow(unused)]
 mod ast;
 pub mod compile;

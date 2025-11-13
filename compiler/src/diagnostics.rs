@@ -151,6 +151,10 @@ impl Diagnostic {
             children: vec![],
         }
     }
+
+    pub fn error(message: String, span: Span) -> Diagnostic {
+        Diagnostic::new(message, span, DiagnosticLevel::Error)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

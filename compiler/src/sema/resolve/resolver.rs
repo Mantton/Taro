@@ -6,11 +6,11 @@ use crate::{
     sema::resolve::{
         arena::ResolverArenas,
         models::{
-            DefinitionID, DefinitionIndex, DefinitionKind, Holder, ImplicitScope, LexicalScope,
-            LexicalScopeBinding, LexicalScopeSource, NameEntry, PackageIndex, PathResult,
-            PrimaryType, Resolution, ResolutionError, ResolutionSource, ResolutionState,
-            ResolvedValue, Scope, ScopeData, ScopeEntry, ScopeEntryData, ScopeEntryKind, ScopeKind,
-            ScopeNamespace, ScopeTable, UsageEntry, UsageEntryData,
+            DefinitionID, DefinitionIndex, DefinitionKind, ExpressionResolutionState, Holder,
+            ImplicitScope, LexicalScope, LexicalScopeBinding, LexicalScopeSource, NameEntry,
+            PackageIndex, PathResult, PrimaryType, Resolution, ResolutionError, ResolutionSource,
+            ResolutionState, ResolvedValue, Scope, ScopeData, ScopeEntry, ScopeEntryData,
+            ScopeEntryKind, ScopeKind, ScopeNamespace, ScopeTable, UsageEntry, UsageEntryData,
         },
     },
     span::{FileID, Span, Symbol},
@@ -38,6 +38,7 @@ pub struct Resolver<'arena, 'compiler> {
     pub block_scope_mapping: FxHashMap<NodeID, Scope<'arena>>,
     pub builin_types_bindings: FxHashMap<Symbol, Resolution>,
     pub resolutions: FxHashMap<NodeID, ResolutionState>,
+    pub expression_resolutions: FxHashMap<NodeID, ExpressionResolutionState>,
 }
 
 impl<'a, 'c> Resolver<'a, 'c> {
@@ -61,6 +62,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
             block_scope_mapping: Default::default(),
 
             resolutions: Default::default(),
+            expression_resolutions: Default::default(),
 
             builin_types_bindings: PrimaryType::ALL
                 .iter()
@@ -229,7 +231,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
     pub fn resolve_module_path(
         &self,
         path: &Vec<Identifier>,
-    ) -> Result<Scope<'a>, (ResolutionError, Identifier)> {
+    ) -> Result<Scope<'a>, ResolutionError> {
         debug_assert!(!path.is_empty(), "non empty module path");
         let mut scope: Option<Scope<'a>> = None;
         for (index, identifier) in path.iter().enumerate() {
@@ -237,12 +239,35 @@ impl<'a, 'c> Resolver<'a, 'c> {
                 let result = self.resolve_in_scope(identifier, scope, ScopeNamespace::Type);
                 match result {
                     Ok(value) => match value {
-                        ResolvedValue::Scope(scope) => Some(scope), // TODO: We need to check that this is actually an importable module
-                        _ => {
-                            return Err((ResolutionError::NotAModule, identifier.clone()));
+                        ResolvedValue::Scope(scope) => {
+                            if let Some(resolution) = scope.resolution() {
+                                let is_module = matches!(
+                                    resolution,
+                                    Resolution::Definition(_, DefinitionKind::Module)
+                                );
+
+                                if !is_module {
+                                    return Err(ResolutionError::Expectation {
+                                        expectation: ResolutionSource::Module,
+                                        provided: resolution,
+                                        span: identifier.span,
+                                    });
+                                }
+
+                                Some(scope)
+                            } else {
+                                todo!("")
+                            }
+                        } // TODO: We need to check that this is actually an importable module
+                        ResolvedValue::Resolution(provided) => {
+                            return Err(ResolutionError::Expectation {
+                                expectation: ResolutionSource::Module,
+                                provided,
+                                span: identifier.span,
+                            });
                         }
                     },
-                    Err(e) => return Err((e, identifier.clone())),
+                    Err(e) => return Err(e),
                 }
             } else if index == 0 {
                 self.resolve_package(identifier)
@@ -251,7 +276,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
             };
 
             let Some(next_scope) = next_scope else {
-                return Err((ResolutionError::UnknownSymbol, identifier.clone()));
+                return Err((ResolutionError::UnknownSymbol(*identifier)));
             };
             scope = Some(next_scope);
         }
@@ -325,9 +350,9 @@ impl<'a, 'c> Resolver<'a, 'c> {
                 });
             } else {
                 return PathResult::Failed {
-                    segment: segment.identifier.clone(),
+                    segment: segment.identifier,
                     is_last_segment: is_last,
-                    error: ResolutionError::NotAModule,
+                    error: ResolutionError::UnknownSymbol(segment.identifier),
                 };
             }
         }
@@ -365,7 +390,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
             ScopeKind::Definition(_, DefinitionKind::Module | DefinitionKind::Namespace) => {
                 &scope.glob_exports
             }
-            _ => return Err(ResolutionError::UnknownSymbol),
+            _ => return Err(ResolutionError::UnknownSymbol(*name)),
         };
 
         let mut candidates = vec![];
@@ -385,12 +410,12 @@ impl<'a, 'c> Resolver<'a, 'c> {
         }
 
         match candidates.len() {
-            0 => Err(ResolutionError::UnknownSymbol),
+            0 => Err(ResolutionError::UnknownSymbol(*name)),
             1 => Ok(candidates.into_iter().next().unwrap()),
             _ => {
                 match namespace {
                     ScopeNamespace::Type => {
-                        return Err(ResolutionError::AmbiguousUsage);
+                        return Err(ResolutionError::UnknownSymbol(*name));
                     }
                     ScopeNamespace::Value => {
                         // We can create a candidate set
@@ -410,7 +435,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
                             let ids = ids.into_iter().map(|(id, _)| id).collect();
                             return Ok(ResolvedValue::Resolution(Resolution::FunctionSet(ids)));
                         } else {
-                            return Err(ResolutionError::AmbiguousUsage);
+                            return Err(ResolutionError::AmbiguousUsage(*name));
                         }
                     }
                 }
@@ -482,8 +507,8 @@ impl<'a, 'c> Resolver<'a, 'c> {
             let result = self.resolve_in_scope(name, scope, namespace);
 
             match result {
-                Err(ResolutionError::AmbiguousUsage) => {
-                    return Err(ResolutionError::AmbiguousUsage);
+                Err(ResolutionError::AmbiguousUsage(name)) => {
+                    return Err(ResolutionError::AmbiguousUsage(name));
                 }
                 Err(_) => continue,
                 Ok(value) => return Ok(value),
@@ -494,7 +519,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
         if let Some(value) = implicit_value {
             return Ok(value);
         }
-        Err(ResolutionError::UnknownSymbol)
+        Err(ResolutionError::UnknownSymbol(*name))
     }
 }
 
@@ -557,7 +582,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
         let result = self.define_in_scope_internal(scope, name.symbol, entry, ns);
         match result {
             Ok(_) => Ok(()),
-            Err(e) => Err(ResolutionError::AlreadyInScope(e.span)),
+            Err(e) => Err(ResolutionError::AlreadyInScope(name)),
         }
     }
 
@@ -576,7 +601,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
         let result = self.define_in_scope_internal(scope, name.symbol, entry, ns);
         match result {
             Ok(_) => Ok(()),
-            Err(e) => Err(ResolutionError::AlreadyInScope(e.span)),
+            Err(e) => Err(ResolutionError::AlreadyInScope(name)),
         }
     }
 }

@@ -69,10 +69,9 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
 
         let module = match module_result {
             Ok(scope) => scope,
-            Err((e, ident)) => {
+            Err(e) => {
                 if finalize {
-                    let message = format!("failed to resolve module '{}'", ident.symbol);
-                    self.resolver.dcx().emit_error(message, ident.span);
+                    self.resolver.dcx().emit(e.diag());
                 }
                 return false;
             }

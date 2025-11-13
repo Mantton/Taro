@@ -1,5 +1,6 @@
 use crate::{
     ast::{self, Identifier, NodeID},
+    diagnostics::{Diagnostic, DiagnosticLevel},
     span::{FileID, Span, Symbol},
     utils::intern::Interned,
 };
@@ -349,18 +350,101 @@ impl<'a> Holder<'a> {
 
 #[derive(Debug, Clone)]
 pub enum ResolutionError {
-    NotAModule,
-    NotAType,
-    NotAnInterface,
-    UnknownSymbol,
-    AlreadyInScope(Span),
-    AmbiguousUsage,
+    Expectation {
+        expectation: ResolutionSource,
+        provided: Resolution,
+        span: Span,
+    },
+    UnknownSymbol(Identifier),
+    AlreadyInScope(Identifier),
+    AmbiguousUsage(Identifier),
     InconsistentBindingMode(Symbol, Span),
-    VariableNotBoundInPattern(BindingError),
-    IdentifierBoundMoreThanOnceInParameterList,
-    IdentifierBoundMoreThanOnceInSamePattern,
-    UnknownMember,
-    SpecializationDisallowed(Resolution),
+    VariableNotBoundInPattern(BindingError, Span),
+    IdentifierBoundMoreThanOnceInParameterList(Identifier),
+    IdentifierBoundMoreThanOnceInSamePattern(Identifier),
+    UnknownMember(Identifier),
+    SpecializationDisallowed(Resolution, Span),
+}
+
+impl ResolutionError {
+    pub fn diag(&self) -> Diagnostic {
+        match self {
+            ResolutionError::Expectation {
+                expectation,
+                provided,
+                span,
+            } => Diagnostic::error(
+                format!(
+                    "expected {}, but found {}",
+                    expectation.expected(),
+                    provided.description(),
+                ),
+                *span,
+            ),
+
+            ResolutionError::UnknownSymbol(ident) => {
+                Diagnostic::error(format!("unknown symbol `{}`", ident.symbol), ident.span)
+            }
+
+            ResolutionError::AlreadyInScope(ident) => Diagnostic::error(
+                format!("`{}` is already in scope", ident.symbol),
+                ident.span,
+            ),
+
+            ResolutionError::AmbiguousUsage(ident) => {
+                Diagnostic::error(format!("ambiguous usage of `{}`", ident.symbol), ident.span)
+            }
+
+            ResolutionError::InconsistentBindingMode(symbol, span) => {
+                Diagnostic::error(format!("inconsistent binding mode for `{}`", symbol), *span)
+            }
+
+            ResolutionError::VariableNotBoundInPattern(binding_err, span) => {
+                let mut base = Diagnostic::error(
+                    format!("variable not bound in pattern: {}", binding_err.name),
+                    *span,
+                );
+
+                for &sp in binding_err.target.iter() {
+                    let msg = format!("pattern does not bind variable '{}'", binding_err.name);
+                    base.children
+                        .push(Diagnostic::new(msg, sp, DiagnosticLevel::Warn));
+                }
+
+                base
+            }
+
+            ResolutionError::IdentifierBoundMoreThanOnceInParameterList(ident) => {
+                Diagnostic::error(
+                    format!(
+                        "identifier `{}` bound more than once in parameter list",
+                        ident.symbol
+                    ),
+                    ident.span,
+                )
+            }
+
+            ResolutionError::IdentifierBoundMoreThanOnceInSamePattern(ident) => Diagnostic::error(
+                format!(
+                    "identifier `{}` bound more than once in the same pattern",
+                    ident.symbol
+                ),
+                ident.span,
+            ),
+
+            ResolutionError::UnknownMember(ident) => {
+                Diagnostic::error(format!("unknown member `{}`", ident.symbol), ident.span)
+            }
+
+            ResolutionError::SpecializationDisallowed(resolution, span) => Diagnostic::error(
+                format!(
+                    "specialization is disallowed for {}",
+                    resolution.description(),
+                ),
+                *span,
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -370,10 +454,11 @@ pub struct BindingError {
     pub target: IndexSet<Span>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum ResolutionSource {
     Type,
     Interface,
+    Module,
     Expression,
     MatchPatternUnit,
     MatchPatternTupleStruct,
@@ -389,6 +474,7 @@ impl ResolutionSource {
             ResolutionSource::Expression => ScopeNamespace::Value,
             ResolutionSource::MatchPatternUnit => ScopeNamespace::Value,
             ResolutionSource::MatchPatternTupleStruct => ScopeNamespace::Value,
+            ResolutionSource::Module => ScopeNamespace::Type,
         }
     }
 
@@ -426,7 +512,6 @@ impl ResolutionSource {
                     | Resolution::FunctionSet(..)
                     | Resolution::SelfConstructor(..)
             ),
-
             ResolutionSource::MatchPatternUnit => matches!(
                 res,
                 Resolution::Definition(_, DefinitionKind::Ctor(_, CtorKind::Constant))
@@ -438,6 +523,10 @@ impl ResolutionSource {
             ResolutionSource::MatchPatternStruct => {
                 matches!(res, Resolution::Definition(_, DefinitionKind::EnumVariant))
             }
+            ResolutionSource::Module => matches!(
+                res,
+                Resolution::Definition(_, DefinitionKind::Module | DefinitionKind::Namespace)
+            ),
         }
     }
 
@@ -449,6 +538,7 @@ impl ResolutionSource {
             ResolutionSource::MatchPatternUnit => "unit enum variant".into(),
             ResolutionSource::MatchPatternTupleStruct => "tuple enum variant".into(),
             ResolutionSource::MatchPatternStruct => "strict enum variant".into(),
+            ResolutionSource::Module => "module or namespace".into(),
         }
     }
 
@@ -460,6 +550,7 @@ impl ResolutionSource {
             ResolutionSource::MatchPatternUnit => true,
             ResolutionSource::MatchPatternStruct => true,
             ResolutionSource::MatchPatternTupleStruct => true,
+            ResolutionSource::Module => false,
         }
     }
 }
@@ -482,6 +573,12 @@ pub enum ResolutionState {
         resolution: Resolution,
         unresolved_count: usize,
     },
+}
+
+#[derive(Debug, Clone)]
+pub enum ExpressionResolutionState {
+    Resolved(Resolution),
+    DeferredAssociated,
 }
 
 #[derive(Clone, Copy)]

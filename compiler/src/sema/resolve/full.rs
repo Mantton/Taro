@@ -4,9 +4,9 @@ use crate::{
     error::CompileResult,
     sema::resolve::{
         models::{
-            BindingError, DefinitionID, DefinitionKind, LexicalScope, LexicalScopeBinding,
-            LexicalScopeSource, PathResult, Resolution, ResolutionError, ResolutionSource,
-            ResolutionState, ResolvedValue, Scope, ScopeNamespace,
+            BindingError, DefinitionID, DefinitionKind, ExpressionResolutionState, LexicalScope,
+            LexicalScopeBinding, LexicalScopeSource, PathResult, Resolution, ResolutionError,
+            ResolutionSource, ResolutionState, ResolvedValue, Scope, ScopeNamespace,
         },
         resolver::Resolver,
     },
@@ -196,8 +196,7 @@ impl<'r, 'a, 'c> ast::AstVisitor for Actor<'r, 'a, 'c> {
                     let resolution = match result {
                         Ok(v) => Some(v.resolution()),
                         Err(e) => {
-                            let diag = self.diag(&member.identifier, e);
-                            self.resolver.dcx().emit(diag);
+                            self.resolver.dcx().emit(e.diag());
                             None
                         }
                     };
@@ -306,11 +305,63 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
         match &node.kind {
             ast::ExpressionKind::Identifier(id, name) => {
                 let result = self.lookup_unqualified(*id, name);
-                println!("done! {:?}", result);
+
+                match result {
+                    Ok(v) => match v {
+                        ResolvedEntity::Scoped(scope) => {
+                            if let Some(resolution) = scope.resolution() {
+                                self.resolver.expression_resolutions.insert(
+                                    node.id,
+                                    ExpressionResolutionState::Resolved(resolution),
+                                );
+                            }
+                        }
+                        ResolvedEntity::Resolved(resolution) => {
+                            self.resolver
+                                .expression_resolutions
+                                .insert(node.id, ExpressionResolutionState::Resolved(resolution));
+                        }
+                        ResolvedEntity::DeferredAssociated => {
+                            self.resolver
+                                .expression_resolutions
+                                .insert(node.id, ExpressionResolutionState::DeferredAssociated);
+                        }
+                        _ => {}
+                    },
+                    Err(e) => {
+                        self.report_error(e);
+                    }
+                }
             }
             ast::ExpressionKind::Member { target, name } => {
                 let result = self.resolve_expression_entity(node);
-                println!("done! {:?}", result);
+
+                match result {
+                    Ok(v) => match v {
+                        ResolvedEntity::Scoped(scope) => {
+                            if let Some(resolution) = scope.resolution() {
+                                self.resolver.expression_resolutions.insert(
+                                    node.id,
+                                    ExpressionResolutionState::Resolved(resolution),
+                                );
+                            }
+                        }
+                        ResolvedEntity::Resolved(resolution) => {
+                            self.resolver
+                                .expression_resolutions
+                                .insert(node.id, ExpressionResolutionState::Resolved(resolution));
+                        }
+                        ResolvedEntity::DeferredAssociated => {
+                            self.resolver
+                                .expression_resolutions
+                                .insert(node.id, ExpressionResolutionState::DeferredAssociated);
+                        }
+                        _ => {}
+                    },
+                    Err(e) => {
+                        self.report_error(e);
+                    }
+                }
             }
             ast::ExpressionKind::Specialize {
                 target,
@@ -381,9 +432,9 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                     ResolutionState::Partial { .. } => unreachable!(),
                 },
                 PathResult::Failed { error, .. }
-                    if matches!(error, ResolutionError::AmbiguousUsage) =>
+                    if matches!(error, ResolutionError::AmbiguousUsage(..)) =>
                 {
-                    return Err(ResolutionError::AmbiguousUsage);
+                    return Err(error);
                 }
                 _ => {
                     continue;
@@ -392,7 +443,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
         }
 
         let Some(entity) = entity else {
-            return Err(ResolutionError::UnknownSymbol);
+            return Err(ResolutionError::UnknownSymbol(*name));
         };
 
         return Ok(entity);
@@ -416,8 +467,8 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                                 return Ok(ResolvedEntity::Resolved(resolution.clone()));
                             }
                         },
-                        Err(ResolutionError::AmbiguousUsage) => {
-                            return Err(ResolutionError::AmbiguousUsage);
+                        Err(ResolutionError::AmbiguousUsage(name)) => {
+                            return Err(ResolutionError::AmbiguousUsage(name));
                         }
                         _ => continue,
                     }
@@ -441,10 +492,10 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                         return Ok(ResolvedEntity::DeferredAssociated);
                     }
                     DefinitionKind::ConstParameter => {
-                        return Err(ResolutionError::UnknownMember);
+                        return Err(ResolutionError::UnknownMember(*name));
                     }
                     DefinitionKind::Function | DefinitionKind::Ctor(..) => {
-                        return Err(ResolutionError::UnknownMember);
+                        return Err(ResolutionError::UnknownMember(*name));
                     }
                     _ => unreachable!(),
                 },
@@ -456,7 +507,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                 }
                 Resolution::LocalVariable(_) => return Ok(ResolvedEntity::Value),
                 Resolution::FunctionSet(..) | Resolution::SelfConstructor(..) => {
-                    return Err(ResolutionError::UnknownMember);
+                    return Err(ResolutionError::UnknownMember(*name));
                 }
             },
             ResolvedEntity::Value => return Ok(ResolvedEntity::Value),
@@ -465,7 +516,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
             }
         }
 
-        return Err(ResolutionError::UnknownSymbol);
+        return Err(ResolutionError::UnknownSymbol(*name));
     }
 
     fn apply_specialization(
@@ -487,7 +538,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                 _,
                 DefinitionKind::Module | DefinitionKind::Namespace,
             )) => {
-                self.report_error(ResolutionError::SpecializationDisallowed(res), span);
+                self.report_error(ResolutionError::SpecializationDisallowed(res, span));
             }
             Resolution::Definition(..)
             | Resolution::SelfTypeAlias(..)
@@ -664,12 +715,12 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
         if already_bound_and {
             let err = match source {
                 PatternSource::FunctionParameter => {
-                    ResolutionError::IdentifierBoundMoreThanOnceInParameterList
+                    ResolutionError::IdentifierBoundMoreThanOnceInParameterList(*ident)
                 }
-                _ => ResolutionError::IdentifierBoundMoreThanOnceInSamePattern,
+                _ => ResolutionError::IdentifierBoundMoreThanOnceInSamePattern(*ident),
             };
 
-            self.report_error(err, ident.span);
+            self.report_error(err);
         }
 
         let already_bound_or = bindings.iter().find_map(|(ctx, map)| {
@@ -783,7 +834,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
 
         for (_, v) in missing_vars {
             let span = *v.origin.iter().next().unwrap();
-            self.report_error(ResolutionError::VariableNotBoundInPattern(v), span);
+            self.report_error(ResolutionError::VariableNotBoundInPattern(v, span));
         }
 
         let mut binding_map = FxHashMap::default();
@@ -842,8 +893,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                 is_last_segment,
                 error,
             } => {
-                let diag = self.diag(&segment, error);
-                self.resolver.dcx().emit(diag);
+                self.resolver.dcx().emit(error.diag());
                 return;
             }
         };
@@ -866,36 +916,9 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
 }
 
 impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
-    fn diag(&self, identifier: &Identifier, err: ResolutionError) -> Diagnostic {
-        let name = &identifier.symbol;
-        let span = identifier.span;
-        let msg = match err {
-            ResolutionError::NotAModule => format!("'{}' is not a module", name),
-            ResolutionError::NotAType => format!("'{}' is not a module", name),
-            ResolutionError::NotAnInterface => format!("'{}' is not an interface", name),
-            ResolutionError::UnknownSymbol => format!("cannot resolve symbol '{}' in scope", name),
-            ResolutionError::AlreadyInScope(span) => {
-                format!("'{}' is already defined in scope", name)
-            }
-            ResolutionError::AmbiguousUsage => {
-                format!("ambiguous use of '{}'", name)
-            }
-            ResolutionError::InconsistentBindingMode(eco_string, span) => todo!(),
-            ResolutionError::VariableNotBoundInPattern(binding_error) => todo!(),
-            ResolutionError::IdentifierBoundMoreThanOnceInParameterList => todo!(),
-            ResolutionError::IdentifierBoundMoreThanOnceInSamePattern => todo!(),
-            ResolutionError::UnknownMember => {
-                format!("unknown member '{}'", name)
-            }
-            ResolutionError::SpecializationDisallowed(kind) => {
-                format!("cannot apply specialization on '{}'", kind.description())
-            }
-        };
-
-        Diagnostic::new(msg, span, DiagnosticLevel::Error)
+    fn report_error(&self, e: ResolutionError) {
+        self.resolver.dcx().emit(e.diag());
     }
-
-    fn report_error(&self, e: ResolutionError, span: Span) {}
 }
 
 #[derive(PartialEq)]
