@@ -368,7 +368,6 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                 type_arguments,
             } => {
                 let result = self.resolve_expression_entity(target);
-
                 if let Ok(result) = result {
                     let result = self.apply_specialization(result, type_arguments.span);
                 }
@@ -385,9 +384,6 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
             ast::ExpressionKind::Identifier(id, name) => self.lookup_unqualified(*id, name),
             ast::ExpressionKind::Member { target, name } => {
                 let entity = self.resolve_expression_entity(target)?;
-                self.resolver
-                    .dcx()
-                    .emit_info("resolving member".into(), name.span);
                 self.resolve_member_access(entity, name)
             }
             ast::ExpressionKind::Specialize {
@@ -500,10 +496,10 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                     _ => unreachable!(),
                 },
                 Resolution::SelfTypeAlias(definition_id) => {
-                    todo!("possible associated member!")
+                    return Ok(ResolvedEntity::DeferredAssociated);
                 }
                 Resolution::InterfaceSelfTypeParameter(definition_id) => {
-                    todo!("interface member")
+                    return Ok(ResolvedEntity::DeferredAssociated);
                 }
                 Resolution::LocalVariable(_) => return Ok(ResolvedEntity::Value),
                 Resolution::FunctionSet(..) | Resolution::SelfConstructor(..) => {
@@ -527,7 +523,9 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
         let resolution = match base {
             ResolvedEntity::Scoped(scope) => scope.resolution().expect("resolution"),
             ResolvedEntity::Resolved(resolution) => resolution.clone(),
-            ResolvedEntity::Value => todo!("reoirt error"),
+            ResolvedEntity::Value => {
+                return Err(ResolutionError::SpecializationDisallowed(None, span));
+            }
             ResolvedEntity::DeferredAssociated => return Ok(()),
         };
 
@@ -538,13 +536,13 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                 _,
                 DefinitionKind::Module | DefinitionKind::Namespace,
             )) => {
-                self.report_error(ResolutionError::SpecializationDisallowed(res, span));
+                self.report_error(ResolutionError::SpecializationDisallowed(Some(res), span));
             }
             Resolution::Definition(..)
             | Resolution::SelfTypeAlias(..)
             | Resolution::InterfaceSelfTypeParameter(..)
             | Resolution::FunctionSet(..)
-            | Resolution::SelfConstructor(..) => todo!("allowed!"),
+            | Resolution::SelfConstructor(..) => {}
         }
 
         return Ok(());

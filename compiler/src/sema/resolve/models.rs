@@ -363,7 +363,7 @@ pub enum ResolutionError {
     IdentifierBoundMoreThanOnceInParameterList(Identifier),
     IdentifierBoundMoreThanOnceInSamePattern(Identifier),
     UnknownMember(Identifier),
-    SpecializationDisallowed(Resolution, Span),
+    SpecializationDisallowed(Option<Resolution>, Span),
 }
 
 impl ResolutionError {
@@ -439,7 +439,10 @@ impl ResolutionError {
             ResolutionError::SpecializationDisallowed(resolution, span) => Diagnostic::error(
                 format!(
                     "specialization is disallowed for {}",
-                    resolution.description(),
+                    resolution
+                        .as_ref()
+                        .map(|r| r.description())
+                        .unwrap_or_default(),
                 ),
                 *span,
             ),

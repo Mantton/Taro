@@ -306,7 +306,6 @@ impl<'a, 'c> Resolver<'a, 'c> {
     ) -> PathResult<'a> {
         let mut resulting_scope: Option<Scope<'a>> = None;
         for (index, segment) in path.iter().enumerate() {
-            self.dcx().emit_info("resolving".into(), segment.span);
             let is_last = index == path.len() - 1;
 
             let namespace = if is_last {
