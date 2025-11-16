@@ -81,7 +81,7 @@ fn parse_file(
         Ok(declarations) => declarations,
         Err(errors) => {
             for err in errors {
-                dcx.emit_error(err.value.to_string(), err.span);
+                dcx.emit_error(err.value.to_string(), Some(err.span));
             }
             return Err(ReportedError);
         }
@@ -639,6 +639,14 @@ impl Parser {
         let identifier = self.parse_identifier()?;
 
         let type_parameters = self.parse_type_parameters()?;
+
+        let bounds = if self.eat(Token::Colon) {
+            let conformances = self.parse_generic_bounds()?;
+            Some(conformances)
+        } else {
+            None
+        };
+
         let ty = if self.eat(Token::Assign) {
             Some(self.parse_type()?)
         } else {
@@ -652,7 +660,11 @@ impl Parser {
             where_clause,
         };
 
-        let decl = TypeAlias { ty, generics };
+        let decl = TypeAlias {
+            ty,
+            generics,
+            bounds,
+        };
 
         let k = DeclarationKind::TypeAlias(decl);
         Ok((identifier, k))
@@ -822,6 +834,7 @@ impl Parser {
             attrs.push(attr);
         }
 
+        self.eat(Token::Semicolon);
         Ok(attrs)
     }
 

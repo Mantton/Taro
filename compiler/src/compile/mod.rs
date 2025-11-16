@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use crate::{
     compile::{config::Config, state::CompilerState},
     diagnostics::DiagCtx,
@@ -19,9 +21,9 @@ pub enum CompilationKind {
 }
 
 impl Compiler {
-    pub fn new(config: Config) -> Compiler {
+    pub fn new(config: Config, dcx: Rc<DiagCtx>) -> Compiler {
         Compiler {
-            state: CompilerState::new(config),
+            state: CompilerState::new(config, dcx),
         }
     }
 }

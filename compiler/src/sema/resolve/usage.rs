@@ -103,7 +103,9 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
         let Some((holder, ns)) = resolved_holder else {
             if finalize {
                 let message = format!("unknown symbol – '{}' in module", binding.source.symbol);
-                self.resolver.dcx().emit_error(message, binding.source.span);
+                self.resolver
+                    .dcx()
+                    .emit_error(message, Some(binding.source.span));
             }
             return false;
         };
@@ -126,7 +128,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                     if finalize {
                         self.resolver.dcx().emit_error(
                             "imported symbol is already bound in scope".into(),
-                            binding.target.span,
+                            Some(binding.target.span),
                         );
                     }
                 }

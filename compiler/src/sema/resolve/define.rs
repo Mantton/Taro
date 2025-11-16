@@ -354,10 +354,12 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
         let result = file_result.and(module_result);
         if let Err(err) = result {
             let message = format!("Duplicate Symbol {}", identifier.symbol);
-            self.resolver.dcx().emit_error(message, identifier.span);
+            self.resolver
+                .dcx()
+                .emit_error(message, Some(identifier.span));
 
             let message = format!("'{}' is defined here.", identifier.symbol);
-            self.resolver.dcx().emit_info(message, err.span);
+            self.resolver.dcx().emit_info(message, Some(err.span));
         }
     }
 }
@@ -415,7 +417,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                 if nodes.is_empty() {
                     self.resolver
                         .dcx()
-                        .emit_error("empty nested import".into(), *span);
+                        .emit_error("empty nested import".into(), Some(*span));
                 }
                 for node in nodes {
                     let module_path = tree.path.nodes.clone();

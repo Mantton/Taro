@@ -81,48 +81,62 @@ impl DiagCtx {
             println!("no msg?")
         }
     }
-    pub fn emit_error(&self, message: String, span: Span) {
+    pub fn emit_error(&self, message: String, span: Option<Span>) {
         self.emit(Diagnostic::new(message, span, DiagnosticLevel::Error));
     }
 
-    pub fn emit_info(&self, message: String, span: Span) {
+    pub fn emit_info(&self, message: String, span: Option<Span>) {
         self.emit(Diagnostic::new(message, span, DiagnosticLevel::Info));
     }
 }
 
 impl DiagCtx {
     pub fn format(&self, diag: &Diagnostic, is_note: bool) -> Option<String> {
-        let file_id = diag.span.file;
-        let file = { self.inner.borrow().file_mappings.get(file_id).cloned() };
-        let Some(file) = file else {
-            println!("Unable to locate file with id – '{}'", file_id.raw());
-            return None;
-        };
+        if let Some(span) = diag.span {
+            let file_id = span.file;
+            let file = { self.inner.borrow().file_mappings.get(file_id).cloned() };
+            let Some(file) = file else {
+                println!("Unable to locate file with id – '{}'", file_id.raw());
+                return None;
+            };
 
-        let aboslute_path = file.as_path();
-        let relative_path = aboslute_path
-            .strip_prefix(self.cwd.as_path())
-            .unwrap_or(aboslute_path)
-            .to_string_lossy();
+            let aboslute_path = file.as_path();
+            let relative_path = aboslute_path
+                .strip_prefix(self.cwd.as_path())
+                .unwrap_or(aboslute_path)
+                .to_string_lossy();
 
-        let mut message = format!(
-            "\n{}: {}\n -> {}:{}:{}\n",
-            if is_note {
-                "note".into()
-            } else {
-                diag.level.to_string()
-            },
-            diag.message.as_str().bold(),
-            relative_path,
-            diag.span.start.line + 1,
-            diag.span.start.offset,
-        );
+            let mut message = format!(
+                "\n{}: {}\n -> {}:{}:{}\n",
+                if is_note {
+                    "note".into()
+                } else {
+                    diag.level.to_string()
+                },
+                diag.message.as_str().bold(),
+                relative_path,
+                span.start.line + 1,
+                span.start.offset,
+            );
 
-        if let Some(content) = self.get_file_content(diag.span.file) {
-            message.push_str(&print_span_error(&content, diag.span, diag.level));
+            if let Some(content) = self.get_file_content(span.file) {
+                message.push_str(&print_span_error(&content, span, diag.level));
+            }
+
+            Some(message)
+        } else {
+            let message = format!(
+                "\n{}: {}\n",
+                if is_note {
+                    "note".into()
+                } else {
+                    diag.level.to_string()
+                },
+                diag.message.as_str().bold(),
+            );
+
+            Some(message)
         }
-
-        Some(message)
     }
 }
 
@@ -137,12 +151,12 @@ pub struct Diagnostic {
     pub message: String,
     pub code: Option<usize>,
     pub level: DiagnosticLevel,
-    pub span: Span,
+    pub span: Option<Span>,
     pub children: Vec<Diagnostic>,
 }
 
 impl Diagnostic {
-    pub fn new(message: String, span: Span, level: DiagnosticLevel) -> Diagnostic {
+    pub fn new(message: String, span: Option<Span>, level: DiagnosticLevel) -> Diagnostic {
         Diagnostic {
             message,
             code: None,
@@ -152,7 +166,7 @@ impl Diagnostic {
         }
     }
 
-    pub fn error(message: String, span: Span) -> Diagnostic {
+    pub fn error(message: String, span: Option<Span>) -> Diagnostic {
         Diagnostic::new(message, span, DiagnosticLevel::Error)
     }
 }

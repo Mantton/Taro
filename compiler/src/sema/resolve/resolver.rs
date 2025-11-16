@@ -1,4 +1,5 @@
 use crate::{
+    PackageIndex,
     ast::{Identifier, NodeID, PathSegment},
     compile::state::CompilerState,
     diagnostics::DiagCtx,
@@ -8,7 +9,7 @@ use crate::{
         models::{
             DefinitionID, DefinitionIndex, DefinitionKind, ExpressionResolutionState, Holder,
             ImplicitScope, LexicalScope, LexicalScopeBinding, LexicalScopeSource, NameEntry,
-            PackageIndex, PathResult, PrimaryType, Resolution, ResolutionError, ResolutionSource,
+            PathResult, PrimaryType, Resolution, ResolutionError, ResolutionSource,
             ResolutionState, ResolvedValue, Scope, ScopeData, ScopeEntry, ScopeEntryData,
             ScopeEntryKind, ScopeKind, ScopeNamespace, ScopeTable, UsageEntry, UsageEntryData,
         },
@@ -85,8 +86,9 @@ impl<'a, 'c> Resolver<'a, 'c> {
         parent: Option<DefinitionID>,
     ) -> DefinitionID {
         let index = {
+            let parent_index = self.compiler.config.index;
             let def_index = DefinitionIndex::new(self.next_index);
-            DefinitionID::new(PackageIndex::LOCAL, def_index)
+            DefinitionID::new(parent_index, def_index)
         };
 
         {
@@ -107,15 +109,15 @@ impl<'a, 'c> Resolver<'a, 'c> {
     }
 
     pub fn definition_kind(&self, id: DefinitionID) -> DefinitionKind {
-        return *self.def_to_kind.get(&id).expect("bug! node not tagged");
-
-        // if id.is_local(self.session().package_index) {
-        // }
-
-        // let resolutions = self.gcx.store.resolutions.borrow();
-        // let data = resolutions.get(&id.package()).expect("resolution data");
-        // let kind = *data.def_to_kind.get(&id).expect("def to kind");
-        // kind
+        if id.is_local_to_index(self.package_index()) {
+            return *self.def_to_kind.get(&id).expect("bug! node not tagged");
+        } else {
+            // let resolutions = self.gcx.store.resolutions.borrow();
+            // let data = resolutions.get(&id.package()).expect("resolution data");
+            // let kind = *data.def_to_kind.get(&id).expect("def to kind");
+            // kind
+            todo!()
+        }
     }
 
     pub fn get_definition_scope(&self, id: DefinitionID) -> Scope<'a> {
@@ -123,6 +125,10 @@ impl<'a, 'c> Resolver<'a, 'c> {
             .definition_scope_mapping
             .get(&id)
             .expect("definition tagged scope")
+    }
+
+    pub fn package_index(&self) -> PackageIndex {
+        self.compiler.config.index
     }
 }
 

@@ -1,18 +1,20 @@
+use std::rc::Rc;
+
 use crate::{
     compile::{config::Config, context::GlobalContext},
     diagnostics::DiagCtx,
 };
 
 pub struct CompilerState {
-    pub dcx: DiagCtx,
+    pub dcx: Rc<DiagCtx>,
     pub gcx: GlobalContext,
     pub config: Config,
 }
 
 impl CompilerState {
-    pub fn new(config: Config) -> CompilerState {
+    pub fn new(config: Config, dcx: Rc<DiagCtx>) -> CompilerState {
         CompilerState {
-            dcx: DiagCtx::new(config.cwd.clone()),
+            dcx,
             gcx: GlobalContext::new(),
             config,
         }

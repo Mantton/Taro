@@ -38,8 +38,10 @@ pub fn tokenize_package(path: PathBuf, dcx: &DiagCtx) -> Result<Pacakge, Reporte
 pub fn tokenize_module(path: PathBuf, dcx: &DiagCtx) -> Result<Module, ReportedError> {
     let directory = match path.canonicalize() {
         Ok(path) => path,
-        Err(_) => {
-            todo!("Report Directory Error");
+        Err(e) => {
+            let message = format!("failed to resolve project source directory – {e}");
+            dcx.emit_error(message, None);
+            return Err(ReportedError);
         }
     };
 

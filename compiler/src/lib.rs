@@ -4,9 +4,11 @@
 mod ast;
 pub mod compile;
 pub mod constants;
-mod diagnostics;
+pub mod diagnostics;
 pub mod error;
 mod parse;
 mod sema;
 mod span;
 mod utils;
+
+pub use span::PackageIndex;

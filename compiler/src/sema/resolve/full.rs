@@ -83,7 +83,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                             "type parameter – {} – has already been defined",
                             param.identifier.symbol
                         ),
-                        param.identifier.span,
+                        Some(param.identifier.span),
                     );
                     continue;
                 }
@@ -903,12 +903,12 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                 let provided = resolution.description();
                 let symbol = &path.segments.last().unwrap().identifier.symbol;
                 let message = format!("expected {expected}, got {provided} '{symbol}'");
-                self.resolver.dcx().emit_error(message, path.span);
+                self.resolver.dcx().emit_error(message, Some(path.span));
             }
         } else if !source.defer_to_type_checker() {
             let symbol = &path.segments.last().unwrap().identifier.symbol;
             let message = format!("cannot resolve {expected} '{symbol}'");
-            self.resolver.dcx().emit_error(message, path.span);
+            self.resolver.dcx().emit_error(message, Some(path.span));
         }
     }
 }

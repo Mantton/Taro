@@ -1,7 +1,10 @@
-use std::fmt;
-
 use index_vec::define_index_type;
 use internment::Intern;
+use std::fmt;
+
+index_vec::define_index_type! {
+    pub struct PackageIndex = u32;
+}
 
 define_index_type! {
     pub struct FileID = u32;

@@ -10,6 +10,7 @@ use indexmap::IndexSet;
 use rustc_hash::FxHashMap;
 use std::cell::{Cell, RefCell};
 
+pub use crate::span::PackageIndex;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DefinitionKind {
     Module,
@@ -87,14 +88,6 @@ impl CtorKind {
 }
 
 index_vec::define_index_type! {
-    pub struct PackageIndex = u32;
-}
-
-impl PackageIndex {
-    pub const LOCAL: PackageIndex = PackageIndex { _raw: 0 };
-}
-
-index_vec::define_index_type! {
     pub struct DefinitionIndex = u32;
 }
 
@@ -112,8 +105,8 @@ impl DefinitionID {
         }
     }
 
-    pub fn is_local(&self, index: usize) -> bool {
-        self.package_index == PackageIndex::from_usize(index)
+    pub fn is_local_to_index(&self, local_index: PackageIndex) -> bool {
+        self.package_index == local_index
     }
 
     pub fn package(&self) -> PackageIndex {
@@ -379,36 +372,39 @@ impl ResolutionError {
                     expectation.expected(),
                     provided.description(),
                 ),
-                *span,
+                Some(*span),
             ),
 
-            ResolutionError::UnknownSymbol(ident) => {
-                Diagnostic::error(format!("unknown symbol `{}`", ident.symbol), ident.span)
-            }
+            ResolutionError::UnknownSymbol(ident) => Diagnostic::error(
+                format!("unknown symbol `{}`", ident.symbol),
+                Some(ident.span),
+            ),
 
             ResolutionError::AlreadyInScope(ident) => Diagnostic::error(
                 format!("`{}` is already in scope", ident.symbol),
-                ident.span,
+                Some(ident.span),
             ),
 
-            ResolutionError::AmbiguousUsage(ident) => {
-                Diagnostic::error(format!("ambiguous usage of `{}`", ident.symbol), ident.span)
-            }
+            ResolutionError::AmbiguousUsage(ident) => Diagnostic::error(
+                format!("ambiguous usage of `{}`", ident.symbol),
+                Some(ident.span),
+            ),
 
-            ResolutionError::InconsistentBindingMode(symbol, span) => {
-                Diagnostic::error(format!("inconsistent binding mode for `{}`", symbol), *span)
-            }
+            ResolutionError::InconsistentBindingMode(symbol, span) => Diagnostic::error(
+                format!("inconsistent binding mode for `{}`", symbol),
+                Some(*span),
+            ),
 
             ResolutionError::VariableNotBoundInPattern(binding_err, span) => {
                 let mut base = Diagnostic::error(
                     format!("variable not bound in pattern: {}", binding_err.name),
-                    *span,
+                    Some(*span),
                 );
 
                 for &sp in binding_err.target.iter() {
                     let msg = format!("pattern does not bind variable '{}'", binding_err.name);
                     base.children
-                        .push(Diagnostic::new(msg, sp, DiagnosticLevel::Warn));
+                        .push(Diagnostic::new(msg, Some(sp), DiagnosticLevel::Warn));
                 }
 
                 base
@@ -420,7 +416,7 @@ impl ResolutionError {
                         "identifier `{}` bound more than once in parameter list",
                         ident.symbol
                     ),
-                    ident.span,
+                    Some(ident.span),
                 )
             }
 
@@ -429,12 +425,13 @@ impl ResolutionError {
                     "identifier `{}` bound more than once in the same pattern",
                     ident.symbol
                 ),
-                ident.span,
+                Some(ident.span),
             ),
 
-            ResolutionError::UnknownMember(ident) => {
-                Diagnostic::error(format!("unknown member `{}`", ident.symbol), ident.span)
-            }
+            ResolutionError::UnknownMember(ident) => Diagnostic::error(
+                format!("unknown member `{}`", ident.symbol),
+                Some(ident.span),
+            ),
 
             ResolutionError::SpecializationDisallowed(resolution, span) => Diagnostic::error(
                 format!(
@@ -444,7 +441,7 @@ impl ResolutionError {
                         .map(|r| r.description())
                         .unwrap_or_default(),
                 ),
-                *span,
+                Some(*span),
             ),
         }
     }

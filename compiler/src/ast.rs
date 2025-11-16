@@ -198,6 +198,7 @@ pub struct Constant {
 pub struct TypeAlias {
     pub generics: Generics,
     pub ty: Option<Box<Type>>,
+    pub bounds: Option<GenericBounds>,
 }
 
 #[derive(Debug)]
@@ -1794,6 +1795,7 @@ pub fn walk_initializer<V: AstVisitor>(
 pub fn walk_alias<V: AstVisitor>(visitor: &mut V, node: &TypeAlias) -> V::Result {
     try_visit!(visitor.visit_generics(&node.generics));
     visit_optional!(visitor, visit_type, &node.ty);
+    visit_optional!(visitor, visit_generic_bounds, &node.bounds);
     V::Result::output()
 }
 
