@@ -80,7 +80,9 @@ impl<'r, 'a, 'c> AstVisitor for Actor<'r, 'a, 'c> {
             ast::AssociatedDeclarationKind::Initializer(..) => {
                 DefinitionKind::AssociatedInitializer
             }
-            ast::AssociatedDeclarationKind::Type(type_alias) => DefinitionKind::AssociatedType,
+            ast::AssociatedDeclarationKind::AssociatedType(type_alias) => {
+                DefinitionKind::AssociatedType
+            }
         };
         let parent = self.tag(&node.identifier, node.id, kind);
         self.with_parent(parent, |this| {

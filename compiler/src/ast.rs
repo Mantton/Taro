@@ -142,7 +142,7 @@ pub type AssociatedDeclaration = Declaration<AssociatedDeclarationKind>;
 pub enum AssociatedDeclarationKind {
     Constant(Constant),
     Function(Function),
-    Type(TypeAlias),
+    AssociatedType(TypeAlias),
     Initializer(Initializer),
 }
 
@@ -863,7 +863,7 @@ impl TryFrom<DeclarationKind> for AssociatedDeclarationKind {
             DeclarationKind::Constant(node) => AssociatedDeclarationKind::Constant(node),
             DeclarationKind::Function(node) => AssociatedDeclarationKind::Function(node),
             DeclarationKind::Initializer(node) => AssociatedDeclarationKind::Initializer(node),
-            DeclarationKind::TypeAlias(node) => AssociatedDeclarationKind::Type(node),
+            DeclarationKind::TypeAlias(node) => AssociatedDeclarationKind::AssociatedType(node),
             _ => return Err(kind),
         })
     }
@@ -1306,7 +1306,7 @@ pub fn walk_assoc_declaration<V: AstVisitor>(
         AssociatedDeclarationKind::Initializer(node) => {
             try_visit!(visitor.visit_initializer(&node, declaration.id));
         }
-        AssociatedDeclarationKind::Type(node) => {
+        AssociatedDeclarationKind::AssociatedType(node) => {
             try_visit!(visitor.visit_alias(&node));
         }
     }

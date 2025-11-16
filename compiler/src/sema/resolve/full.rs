@@ -1,5 +1,5 @@
 use crate::{
-    ast::{self, AstVisitor, Identifier, NodeID, Path, PathSegment},
+    ast::{self, AssocContext, AstVisitor, Identifier, NodeID, Path, PathSegment},
     diagnostics::{Diagnostic, DiagnosticLevel},
     error::CompileResult,
     sema::resolve::{
@@ -13,7 +13,6 @@ use crate::{
     span::{Span, Symbol},
 };
 use rustc_hash::FxHashMap;
-use std::{mem, ops::Add};
 
 pub fn resolve_package(package: &ast::Package, resolver: &mut Resolver) -> CompileResult<()> {
     let mut actor = Actor {
@@ -93,13 +92,13 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                 }
             }
 
-            //     self.resolver.record_resolution(
-            //         param.id,
-            //         PartialResolution::new(Resolution::Definition(
-            //             def_id,
-            //             DefinitionKind::TypeParameter,
-            //         )),
-            //     );
+            self.resolver.record_resolution(
+                param.id,
+                ResolutionState::Complete(Resolution::Definition(
+                    def_id,
+                    self.resolver.definition_kind(def_id),
+                )),
+            );
             scope.define(
                 name,
                 Resolution::Definition(def_id, DefinitionKind::TypeParameter),
@@ -138,6 +137,20 @@ impl<'r, 'a, 'c> ast::AstVisitor for Actor<'r, 'a, 'c> {
     fn visit_declaration(&mut self, node: &ast::Declaration) -> Self::Result {
         self.resolve_declaration(node);
     }
+
+    fn visit_assoc_declaration(
+        &mut self,
+        node: &ast::AssociatedDeclaration,
+        context: ast::AssocContext,
+    ) -> Self::Result {
+        self.resolve_associated_declaration(node, context);
+    }
+
+    fn visit_function_declaration(&mut self, node: &ast::FunctionDeclaration) -> Self::Result {
+        self.resolve_function_declaration(node);
+    }
+
+    fn visit_namespace_declaration(&mut self, node: &ast::NamespaceDeclaration) -> Self::Result {}
 
     fn visit_block(&mut self, node: &ast::Block) -> Self::Result {
         let scope = if let Some(&scope) = self.resolver.block_scope_mapping.get(&node.id) {
@@ -288,6 +301,107 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
             ast::DeclarationKind::Initializer(..) => {
                 unreachable!("top level initializer")
             }
+        }
+    }
+
+    fn resolve_function_declaration(&mut self, declaration: &ast::FunctionDeclaration) {
+        match &declaration.kind {
+            ast::FunctionDeclarationKind::Enum(ast::Enum { generics, .. })
+            | ast::FunctionDeclarationKind::Struct(ast::Struct { generics, .. }) => {
+                let def_id = self.resolver.definition_id(declaration.id);
+                let self_res = Resolution::SelfTypeAlias(def_id);
+                self.with_scope_source(LexicalScopeSource::DefBoundary(def_id), |this| {
+                    this.with_generics_scope(generics, |this| {
+                        this.with_self_alias_scope(self_res, |this| {
+                            ast::walk_function_declaration(this, declaration)
+                        });
+                    });
+                })
+            }
+            ast::FunctionDeclarationKind::TypeAlias(ast::TypeAlias { generics, .. })
+            | ast::FunctionDeclarationKind::Function(ast::Function { generics, .. }) => {
+                let def_id = self.resolver.definition_id(declaration.id);
+                self.with_scope_source(LexicalScopeSource::DefBoundary(def_id), |this| {
+                    this.with_generics_scope(generics, |this| {
+                        ast::walk_function_declaration(this, declaration)
+                    });
+                })
+            }
+            ast::FunctionDeclarationKind::Constant(..)
+            | ast::FunctionDeclarationKind::Import(..) => {
+                ast::walk_function_declaration(self, declaration)
+            }
+        }
+    }
+
+    fn resolve_namespace_declaration(&mut self, declaration: &ast::NamespaceDeclaration) {
+        match &declaration.kind {
+            ast::NamespaceDeclarationKind::Enum(ast::Enum { generics, .. })
+            | ast::NamespaceDeclarationKind::Struct(ast::Struct { generics, .. }) => {
+                let def_id = self.resolver.definition_id(declaration.id);
+                let self_res = Resolution::SelfTypeAlias(def_id);
+                self.with_scope_source(LexicalScopeSource::DefBoundary(def_id), |this| {
+                    this.with_generics_scope(generics, |this| {
+                        this.with_self_alias_scope(self_res, |this| {
+                            ast::walk_namespace_declaration(this, declaration)
+                        });
+                    });
+                })
+            }
+            ast::NamespaceDeclarationKind::TypeAlias(ast::TypeAlias { generics, .. })
+            | ast::NamespaceDeclarationKind::Function(ast::Function { generics, .. }) => {
+                let def_id = self.resolver.definition_id(declaration.id);
+                self.with_scope_source(LexicalScopeSource::DefBoundary(def_id), |this| {
+                    this.with_generics_scope(generics, |this| {
+                        ast::walk_namespace_declaration(this, declaration)
+                    });
+                })
+            }
+            ast::NamespaceDeclarationKind::Interface(node) => {
+                let def_id = self.resolver.definition_id(declaration.id);
+                let self_res = Resolution::InterfaceSelfTypeParameter(def_id);
+                self.with_scope_source(LexicalScopeSource::DefBoundary(def_id), |this| {
+                    this.with_generics_scope(&node.generics, |this| {
+                        this.with_self_alias_scope(self_res, |this| {
+                            ast::walk_namespace_declaration(this, declaration)
+                        });
+                    });
+                })
+            }
+            ast::NamespaceDeclarationKind::Namespace(namespace) => {
+                let def_id = self.resolver.definition_id(declaration.id);
+                let scope = self.resolver.get_definition_scope(def_id);
+                self.with_scope(scope, |this| {
+                    ast::walk_namespace_declaration(this, declaration)
+                })
+            }
+            ast::NamespaceDeclarationKind::Constant(..)
+            | ast::NamespaceDeclarationKind::Import(..)
+            | ast::NamespaceDeclarationKind::Export(..) => {
+                ast::walk_namespace_declaration(self, declaration)
+            }
+        }
+    }
+
+    fn resolve_associated_declaration(
+        &mut self,
+        declaration: &ast::AssociatedDeclaration,
+        ctx: AssocContext,
+    ) {
+        match &declaration.kind {
+            ast::AssociatedDeclarationKind::Constant(node) => {
+                ast::walk_assoc_declaration(self, declaration, ctx);
+            }
+            ast::AssociatedDeclarationKind::AssociatedType(ast::TypeAlias { generics, .. })
+            | ast::AssociatedDeclarationKind::Function(ast::Function { generics, .. }) => {
+                let def_id = self.resolver.definition_id(declaration.id);
+                self.with_scope_source(LexicalScopeSource::DefBoundary(def_id), |this| {
+                    this.with_generics_scope(generics, |this| {
+                        ast::walk_assoc_declaration(this, declaration, ctx);
+                    });
+                })
+            }
+            ast::AssociatedDeclarationKind::Initializer(node) => todo!(),
         }
     }
 }
@@ -854,15 +968,19 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                     this.visit_generics(&node.generics);
 
                     for declaration in &node.declarations {
-                        this.resolve_impl_declaration(declaration);
+                        this.resolve_impl_declaration(declaration, id);
                     }
                 });
             });
         })
     }
 
-    fn resolve_impl_declaration(&mut self, declaration: &ast::AssociatedDeclaration) {
-        println!("Extension decl")
+    fn resolve_impl_declaration(
+        &mut self,
+        declaration: &ast::AssociatedDeclaration,
+        impl_id: NodeID,
+    ) {
+        self.visit_assoc_declaration(declaration, AssocContext::Implementation(impl_id));
     }
 }
 

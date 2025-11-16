@@ -310,7 +310,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
             | ast::AssociatedDeclarationKind::Function(..) => {
                 self.define(identifier, ScopeNamespace::Value, resolution, visibility);
             }
-            ast::AssociatedDeclarationKind::Type(..) => {
+            ast::AssociatedDeclarationKind::AssociatedType(..) => {
                 self.define(identifier, ScopeNamespace::Type, resolution, visibility);
             }
             ast::AssociatedDeclarationKind::Initializer(..) => {
