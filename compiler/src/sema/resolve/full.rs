@@ -110,7 +110,14 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
 
     fn with_self_alias_scope(&mut self, self_res: Resolution, work: impl FnOnce(&mut Self)) {
         let mut scope = LexicalScope::new(LexicalScopeSource::Plain);
-        scope.define(Symbol::new("Self"), self_res);
+        match self_res {
+            Resolution::ImplicitSelfParameter => {
+                scope.define(Symbol::new("self"), self_res);
+            }
+            _ => {
+                scope.define(Symbol::new("Self"), self_res);
+            }
+        }
         self.with_built_scope(scope, work);
     }
 }
@@ -401,12 +408,21 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                     });
                 })
             }
-            ast::AssociatedDeclarationKind::Initializer(node) => todo!(),
+            ast::AssociatedDeclarationKind::Initializer(node) => {
+                let def_id = self.resolver.definition_id(declaration.id);
+                self.with_scope_source(LexicalScopeSource::DefBoundary(def_id), |this| {
+                    this.with_generics_scope(&node.function.generics, |this| {
+                        this.with_self_alias_scope(Resolution::ImplicitSelfParameter, |this| {
+                            ast::walk_assoc_declaration(this, declaration, ctx);
+                        });
+                    });
+                })
+            }
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum ResolvedEntity<'a> {
     Scoped(Scope<'a>),
     Resolved(Resolution),
@@ -504,7 +520,9 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                 target,
                 type_arguments,
             } => {
-                todo!()
+                let entity = self.resolve_expression_entity(target)?;
+                self.apply_specialization(entity.clone(), node.span)?;
+                return Ok(entity);
             }
             // Anything else produces a value expression
             _ => return Ok(ResolvedEntity::Value),
@@ -619,6 +637,9 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                 Resolution::FunctionSet(..) | Resolution::SelfConstructor(..) => {
                     return Err(ResolutionError::UnknownMember(*name));
                 }
+                Resolution::ImplicitSelfParameter => {
+                    return Ok(ResolvedEntity::DeferredAssociated);
+                }
             },
             ResolvedEntity::Value => return Ok(ResolvedEntity::Value),
             ResolvedEntity::DeferredAssociated => {
@@ -656,7 +677,8 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
             | Resolution::SelfTypeAlias(..)
             | Resolution::InterfaceSelfTypeParameter(..)
             | Resolution::FunctionSet(..)
-            | Resolution::SelfConstructor(..) => {}
+            | Resolution::SelfConstructor(..)
+            | Resolution::ImplicitSelfParameter => {}
         }
 
         return Ok(());

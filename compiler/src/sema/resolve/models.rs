@@ -220,6 +220,7 @@ pub enum Resolution {
     FunctionSet(Vec<DefinitionID>),
     LocalVariable(NodeID),
     SelfConstructor(DefinitionID),
+    ImplicitSelfParameter,
 }
 
 impl Resolution {
@@ -232,6 +233,7 @@ impl Resolution {
             Resolution::FunctionSet(..) => "function set",
             Resolution::PrimaryType(_) => "primary type",
             Resolution::SelfConstructor(_) => "self constructor",
+            Resolution::ImplicitSelfParameter => todo!(),
         }
     }
 }
