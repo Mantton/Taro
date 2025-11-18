@@ -256,6 +256,12 @@ impl<'r, 'a, 'c> ast::AstVisitor for Actor<'r, 'a, 'c> {
     fn visit_expression(&mut self, node: &ast::Expression) -> Self::Result {
         self.resolve_expression(node);
     }
+
+    fn visit_conformance(&mut self, node: &ast::Conformances) -> Self::Result {
+        for bound in node.bounds.iter() {
+            self.resolve_path_with_source(bound.id, &bound.path, ResolutionSource::Interface);
+        }
+    }
 }
 
 impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
@@ -302,11 +308,12 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                 let scope = self.resolver.get_definition_scope(def_id);
                 self.with_scope(scope, |this| ast::walk_declaration(this, declaration))
             }
-            ast::DeclarationKind::Implementation(node) => {
-                self.resolve_implementation(declaration.id, node)
-            }
+            ast::DeclarationKind::Extension(node) => self.resolve_extension(declaration.id, node),
             ast::DeclarationKind::Initializer(..) => {
                 unreachable!("top level initializer")
+            }
+            ast::DeclarationKind::Operator(..) => {
+                unreachable!("top level operator")
             }
         }
     }
@@ -415,6 +422,14 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                         this.with_self_alias_scope(Resolution::ImplicitSelfParameter, |this| {
                             ast::walk_assoc_declaration(this, declaration, ctx);
                         });
+                    });
+                })
+            }
+            ast::AssociatedDeclarationKind::Operator(node) => {
+                let def_id = self.resolver.definition_id(declaration.id);
+                self.with_scope_source(LexicalScopeSource::DefBoundary(def_id), |this| {
+                    this.with_generics_scope(&node.function.generics, |this| {
+                        ast::walk_assoc_declaration(this, declaration, ctx);
                     });
                 })
             }
@@ -980,7 +995,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
 }
 
 impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
-    fn resolve_implementation(&mut self, id: ast::NodeID, node: &ast::Implementation) {
+    fn resolve_extension(&mut self, id: ast::NodeID, node: &ast::Extension) {
         let def_id = self.resolver.definition_id(id);
         self.with_scope_source(LexicalScopeSource::DefBoundary(def_id), |this| {
             this.with_generics_scope(&node.generics, |this| {
@@ -988,21 +1003,15 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                 this.with_self_alias_scope(self_res, |this| {
                     this.visit_type(&node.ty);
                     this.visit_generics(&node.generics);
-
+                    if let Some(conformances) = &node.conformances {
+                        this.visit_conformance(conformances)
+                    }
                     for declaration in &node.declarations {
-                        this.resolve_impl_declaration(declaration, id);
+                        this.visit_assoc_declaration(declaration, AssocContext::Extension(id));
                     }
                 });
             });
         })
-    }
-
-    fn resolve_impl_declaration(
-        &mut self,
-        declaration: &ast::AssociatedDeclaration,
-        impl_id: NodeID,
-    ) {
-        self.visit_assoc_declaration(declaration, AssocContext::Implementation(impl_id));
     }
 }
 

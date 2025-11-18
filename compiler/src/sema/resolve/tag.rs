@@ -42,10 +42,12 @@ impl<'r, 'a, 'c> AstVisitor for Actor<'r, 'a, 'c> {
             ast::DeclarationKind::Constant(..) => DefinitionKind::Constant,
             ast::DeclarationKind::Import(..) => DefinitionKind::Import,
             ast::DeclarationKind::Export(..) => DefinitionKind::Export,
-            ast::DeclarationKind::Implementation(..) => DefinitionKind::Implementation,
+            ast::DeclarationKind::Extension(..) => DefinitionKind::Extension,
             ast::DeclarationKind::TypeAlias(..) => DefinitionKind::TypeAlias,
             ast::DeclarationKind::Namespace(..) => DefinitionKind::Namespace,
-            ast::DeclarationKind::Initializer(..) => unreachable!("top level initializer"),
+            ast::DeclarationKind::Initializer(..) | &ast::DeclarationKind::Operator(..) => {
+                unreachable!("top level associated method")
+            }
         };
 
         let parent = self.tag(&node.identifier, node.id, kind);
@@ -83,6 +85,7 @@ impl<'r, 'a, 'c> AstVisitor for Actor<'r, 'a, 'c> {
             ast::AssociatedDeclarationKind::AssociatedType(type_alias) => {
                 DefinitionKind::AssociatedType
             }
+            ast::AssociatedDeclarationKind::Operator(..) => DefinitionKind::AssociatedOperator,
         };
         let parent = self.tag(&node.identifier, node.id, kind);
         self.with_parent(parent, |this| {

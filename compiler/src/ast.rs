@@ -103,10 +103,11 @@ pub enum DeclarationKind {
     Constant(Constant),
     Import(UseTree),
     Export(UseTree),
-    Implementation(Implementation),
+    Extension(Extension),
     TypeAlias(TypeAlias),
     Namespace(Namespace),
     Initializer(Initializer),
+    Operator(Operator),
 }
 
 // Function Declarations
@@ -144,6 +145,7 @@ pub enum AssociatedDeclarationKind {
     Function(Function),
     AssociatedType(TypeAlias),
     Initializer(Initializer),
+    Operator(Operator),
 }
 
 #[derive(Debug)]
@@ -179,6 +181,12 @@ pub struct Initializer {
 }
 
 #[derive(Debug)]
+pub struct Operator {
+    pub kind: OperatorKind,
+    pub function: Function,
+}
+
+#[derive(Debug)]
 pub struct Local {
     pub mutability: Mutability,
     pub pattern: Pattern,
@@ -207,10 +215,10 @@ pub struct Namespace {
 }
 
 #[derive(Debug)]
-pub struct Implementation {
+pub struct Extension {
     pub ty: Box<Type>,
     pub generics: Generics,
-    pub interface: Option<Box<Type>>,
+    pub conformances: Option<Conformances>,
     pub declarations: Vec<AssociatedDeclaration>,
 }
 
@@ -679,7 +687,7 @@ pub type GenericBounds = Vec<GenericBound>;
 
 #[derive(Debug)]
 pub struct Conformances {
-    pub bounds: Vec<Box<Type>>,
+    pub bounds: Vec<PathNode>,
     pub span: Span,
 }
 
@@ -853,6 +861,9 @@ pub enum OperatorKind {
     Geq,
     Eq,
     Neq,
+
+    Index,
+    IndexAssign,
 }
 
 impl TryFrom<DeclarationKind> for AssociatedDeclarationKind {
@@ -863,6 +874,7 @@ impl TryFrom<DeclarationKind> for AssociatedDeclarationKind {
             DeclarationKind::Constant(node) => AssociatedDeclarationKind::Constant(node),
             DeclarationKind::Function(node) => AssociatedDeclarationKind::Function(node),
             DeclarationKind::Initializer(node) => AssociatedDeclarationKind::Initializer(node),
+            DeclarationKind::Operator(node) => AssociatedDeclarationKind::Operator(node),
             DeclarationKind::TypeAlias(node) => AssociatedDeclarationKind::AssociatedType(node),
             _ => return Err(kind),
         })
@@ -971,14 +983,14 @@ macro_rules! walk_visitable_list {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AssocContext {
     Interface(NodeID),
-    Implementation(NodeID),
+    Extension(NodeID),
 }
 
 impl AssocContext {
     pub fn node_id(self) -> NodeID {
         match self {
             AssocContext::Interface(id) => id,
-            AssocContext::Implementation(id) => id,
+            AssocContext::Extension(id) => id,
         }
     }
 }
@@ -995,6 +1007,7 @@ pub enum FunctionContext {
     Foreign,
     Assoc(AssocContext),
     Initializer,
+    Operator,
     Nested,
 }
 
@@ -1150,6 +1163,10 @@ pub trait AstVisitor: Sized {
         walk_initializer(self, node, id)
     }
 
+    fn visit_operator(&mut self, node: &Operator, id: NodeID) -> Self::Result {
+        walk_operator(self, node, id)
+    }
+
     fn visit_alias(&mut self, node: &TypeAlias) -> Self::Result {
         walk_alias(self, node)
     }
@@ -1199,6 +1216,14 @@ pub trait AstVisitor: Sized {
 
     fn visit_match_arm(&mut self, node: &MatchArm) -> Self::Result {
         walk_match_arm(self, node)
+    }
+
+    fn visit_conformance(&mut self, node: &Conformances) -> Self::Result {
+        walk_conformance(self, node)
+    }
+
+    fn visit_path_node(&mut self, node: &PathNode) -> Self::Result {
+        walk_path_node(self, node)
     }
 }
 
@@ -1260,14 +1285,15 @@ pub fn walk_declaration<V: AstVisitor>(visitor: &mut V, declaration: &Declaratio
         DeclarationKind::Export(node) => {
             try_visit!(visitor.visit_use_tree(node, UseTreeContext::Export(declaration.id)))
         }
-        DeclarationKind::Implementation(node) => {
+        DeclarationKind::Extension(node) => {
             try_visit!(visitor.visit_generics(&node.generics));
             try_visit!(visitor.visit_type(&node.ty));
+
             walk_list!(
                 visitor,
                 visit_assoc_declaration,
                 &node.declarations,
-                AssocContext::Implementation(declaration.id)
+                AssocContext::Extension(declaration.id)
             );
         }
         DeclarationKind::TypeAlias(node) => {
@@ -1276,8 +1302,8 @@ pub fn walk_declaration<V: AstVisitor>(visitor: &mut V, declaration: &Declaratio
         DeclarationKind::Namespace(node) => {
             walk_list!(visitor, visit_namespace_declaration, &node.declarations);
         }
-        DeclarationKind::Initializer(node) => {
-            try_visit!(visitor.visit_initializer(&node, declaration.id));
+        DeclarationKind::Initializer(..) | DeclarationKind::Operator(..) => {
+            unreachable!()
         }
     }
 
@@ -1308,6 +1334,9 @@ pub fn walk_assoc_declaration<V: AstVisitor>(
         }
         AssociatedDeclarationKind::AssociatedType(node) => {
             try_visit!(visitor.visit_alias(&node));
+        }
+        AssociatedDeclarationKind::Operator(node) => {
+            try_visit!(visitor.visit_operator(&node, declaration.id));
         }
     }
 
@@ -1792,6 +1821,12 @@ pub fn walk_initializer<V: AstVisitor>(
 }
 
 #[inline]
+pub fn walk_operator<V: AstVisitor>(visitor: &mut V, node: &Operator, id: NodeID) -> V::Result {
+    try_visit!(visitor.visit_function(id, &node.function, FunctionContext::Operator));
+    V::Result::output()
+}
+
+#[inline]
 pub fn walk_alias<V: AstVisitor>(visitor: &mut V, node: &TypeAlias) -> V::Result {
     try_visit!(visitor.visit_generics(&node.generics));
     visit_optional!(visitor, visit_type, &node.ty);
@@ -1910,6 +1945,16 @@ pub fn walk_match_arm<V: AstVisitor>(visitor: &mut V, node: &MatchArm) -> V::Res
     visit_optional!(visitor, visit_expression, &node.guard);
     try_visit!(visitor.visit_expression(&node.body));
 
+    V::Result::output()
+}
+
+pub fn walk_conformance<V: AstVisitor>(visitor: &mut V, node: &Conformances) -> V::Result {
+    walk_list!(visitor, visit_path_node, &node.bounds);
+    V::Result::output()
+}
+
+pub fn walk_path_node<V: AstVisitor>(visitor: &mut V, node: &PathNode) -> V::Result {
+    try_visit!(visitor.visit_path(&node.path));
     V::Result::output()
 }
 

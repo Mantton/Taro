@@ -22,7 +22,7 @@ pub enum DefinitionKind {
     Interface,
     TypeAlias,
     Namespace,
-    Implementation,
+    Extension,
     Import,
     Export,
     TypeParameter,
@@ -32,6 +32,7 @@ pub enum DefinitionKind {
     AssociatedFunction,
     AssociatedConstant,
     AssociatedInitializer,
+    AssociatedOperator,
     AssociatedType,
     EnumVariant,
     Ctor(CtorOf, CtorKind),
@@ -48,7 +49,7 @@ impl DefinitionKind {
             DefinitionKind::TypeAlias => "type alias",
             DefinitionKind::Namespace => "namespace",
             DefinitionKind::Import => "import",
-            DefinitionKind::Implementation => "implementation",
+            DefinitionKind::Extension => "extension",
             DefinitionKind::TypeParameter => "type parameter",
             DefinitionKind::Field => "field",
             DefinitionKind::Variant => "variant",
@@ -60,8 +61,9 @@ impl DefinitionKind {
             DefinitionKind::AssociatedConstant => "associated constant",
             DefinitionKind::ConstParameter => "const parameter",
             DefinitionKind::ModuleVariable => "variable",
-            DefinitionKind::AssociatedInitializer => "associated init",
+            DefinitionKind::AssociatedInitializer => "associated initializer",
             DefinitionKind::EnumVariant => "enum variant",
+            DefinitionKind::AssociatedOperator => "associated operator",
         }
     }
 }

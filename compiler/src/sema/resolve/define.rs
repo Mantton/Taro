@@ -48,10 +48,10 @@ impl<'r, 'a, 'c> AstVisitor for Actor<'r, 'a, 'c> {
         let kind = ScopeKind::Definition(id, DefinitionKind::Module);
         let parent = self.scopes.current;
         let scope = ScopeData::new(kind, parent);
-        let scope_id = self.create_scope(scope);
+        let scope = self.create_scope(scope);
 
         if is_root {
-            self.resolver.root_module_scope = Some(scope_id)
+            self.resolver.root_module_scope = Some(scope)
         } else {
             self.define(
                 &Identifier {
@@ -64,42 +64,42 @@ impl<'r, 'a, 'c> AstVisitor for Actor<'r, 'a, 'c> {
             );
         }
 
-        self.with_scope(scope_id, |this| ast::walk_module(this, node));
+        self.with_scope(scope, |this| ast::walk_module(this, node));
     }
 
     fn visit_file(&mut self, node: &ast::File) -> Self::Result {
         let kind = ScopeKind::File(node.id);
         let scope = ScopeData::new(kind, None);
-        let scope_id = self.create_scope(scope);
-        self.resolver.file_scope_mapping.insert(node.id, scope_id);
+        let scope = self.create_scope(scope);
+        self.resolver.file_scope_mapping.insert(node.id, scope);
 
-        self.scopes.file = Some(scope_id);
+        self.scopes.file = Some(scope);
         ast::walk_file(self, node);
         self.scopes.file = None
     }
 
     fn visit_declaration(&mut self, node: &ast::Declaration) -> Self::Result {
-        let scope_id = self.define_module_declaration(node);
-        if let Some(scope_id) = scope_id {
-            self.with_scope(scope_id, |this| ast::walk_declaration(this, node));
+        let scope = self.define_module_declaration(node);
+        if let Some(scope) = scope {
+            self.with_scope(scope, |this| ast::walk_declaration(this, node));
         } else {
             ast::walk_declaration(self, node)
         }
     }
 
     fn visit_namespace_declaration(&mut self, node: &ast::NamespaceDeclaration) -> Self::Result {
-        let scope_id = self.define_namespace_declaration(node);
-        if let Some(scope_id) = scope_id {
-            self.with_scope(scope_id, |this| ast::walk_namespace_declaration(this, node));
+        let scope = self.define_namespace_declaration(node);
+        if let Some(scope) = scope {
+            self.with_scope(scope, |this| ast::walk_namespace_declaration(this, node));
         } else {
             ast::walk_namespace_declaration(self, node)
         }
     }
 
     fn visit_function_declaration(&mut self, node: &ast::FunctionDeclaration) -> Self::Result {
-        let scope_id = self.define_function_declaration(node);
-        if let Some(scope_id) = scope_id {
-            self.with_scope(scope_id, |this| ast::walk_function_declaration(this, node));
+        let scope = self.define_function_declaration(node);
+        if let Some(scope) = scope {
+            self.with_scope(scope, |this| ast::walk_function_declaration(this, node));
         } else {
             ast::walk_function_declaration(self, node)
         }
@@ -114,9 +114,9 @@ impl<'r, 'a, 'c> AstVisitor for Actor<'r, 'a, 'c> {
             return;
         }
 
-        let scope_id = self.define_assoc_declaration(node);
-        if let Some(scope_id) = scope_id {
-            self.with_scope(scope_id, |this| {
+        let scope = self.define_assoc_declaration(node);
+        if let Some(scope) = scope {
+            self.with_scope(scope, |this| {
                 ast::walk_assoc_declaration(this, node, context)
             });
         } else {
@@ -182,7 +182,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
             | ast::DeclarationKind::Constant(..) => {
                 self.define(identifier, ScopeNamespace::Value, resolution, visibility);
             }
-            ast::DeclarationKind::Implementation(node) => return None,
+            ast::DeclarationKind::Extension(node) => return None,
             ast::DeclarationKind::Interface(..) => {
                 let scope = ScopeData::new(
                     ScopeKind::Definition(def_id, DefinitionKind::Interface),
@@ -210,6 +210,9 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
             }
             ast::DeclarationKind::Initializer(..) => {
                 unreachable!("top level initializer")
+            }
+            ast::DeclarationKind::Operator(..) => {
+                unreachable!("top level operator")
             }
         }
 
@@ -313,7 +316,8 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
             ast::AssociatedDeclarationKind::AssociatedType(..) => {
                 self.define(identifier, ScopeNamespace::Type, resolution, visibility);
             }
-            ast::AssociatedDeclarationKind::Initializer(..) => {
+            ast::AssociatedDeclarationKind::Initializer(..)
+            | ast::AssociatedDeclarationKind::Operator(..) => {
                 // do nothing
             }
         }

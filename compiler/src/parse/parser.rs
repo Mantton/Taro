@@ -3,12 +3,12 @@ use crate::{
         self, AnonConst, AssociatedDeclaration, AssociatedDeclarationKind, Attribute,
         AttributeList, BinaryOperator, Block, ClosureExpression, ConformanceConstraint,
         Conformances, Constant, Declaration, DeclarationKind, Enum, EnumCase, Expression,
-        ExpressionArgument, ExpressionKind, FieldDefinition, ForStatement, Function,
+        ExpressionArgument, ExpressionKind, Extension, FieldDefinition, ForStatement, Function,
         FunctionDeclaration, FunctionDeclarationKind, FunctionParameter, FunctionPrototype,
         FunctionSignature, GenericBound, GenericBounds, GenericRequirement, GenericRequirementList,
-        GenericWhereClause, Generics, Identifier, IfExpression, Implementation, Initializer,
-        Interface, Label, Literal, Local, MapPair, MatchArm, MatchExpression, Mutability,
-        Namespace, NamespaceDeclaration, NamespaceDeclarationKind, NodeID, OperatorKind, Path,
+        GenericWhereClause, Generics, Identifier, IfExpression, Initializer, Interface, Label,
+        Literal, Local, MapPair, MatchArm, MatchExpression, Mutability, Namespace,
+        NamespaceDeclaration, NamespaceDeclarationKind, NodeID, Operator, OperatorKind, Path,
         PathNode, PathSegment, Pattern, PatternBindingCondition, PatternField, PatternKind,
         PatternPath, RequiredTypeConstraint, SelfKind, Statement, StatementKind, Struct, Type,
         TypeAlias, TypeArgument, TypeArguments, TypeKind, TypeParameter, TypeParameterKind,
@@ -276,6 +276,9 @@ impl Parser {
             DeclarationKind::Initializer(..) => {
                 return Err(self.err_at_current(ParserError::TopLevelInitializerNotAllowed));
             }
+            DeclarationKind::Operator(..) => {
+                return Err(self.err_at_current(ParserError::TopLevelOperatorNotAllowed));
+            }
 
             _ => return Ok(Some(declaration)),
         }
@@ -442,9 +445,10 @@ impl Parser {
             ),
             Token::Type => self.parse_type_declaration()?,
             Token::Function => self.parse_function(mode)?,
-            Token::Impl => (Identifier::emtpy(self.file.id), self.parse_impl()?),
+            Token::Extend => (Identifier::emtpy(self.file.id), self.parse_impl()?),
             Token::Namespace => self.parse_namespace()?,
             Token::Init => self.parse_initializer(mode)?,
+            Token::Operator => self.parse_operator(mode)?,
             _ => return Ok(None),
         };
 
@@ -673,16 +677,11 @@ impl Parser {
 
 impl Parser {
     fn parse_impl(&mut self) -> R<DeclarationKind> {
-        self.expect(Token::Impl)?;
+        self.expect(Token::Extend)?;
         let type_parameters = self.parse_type_parameters()?;
 
-        let n1 = self.parse_type()?;
-
-        let n2 = if self.eat(Token::For) {
-            Some(self.parse_type()?)
-        } else {
-            None
-        };
+        let ty = self.parse_type()?;
+        let conformances = self.parse_conformances()?;
 
         let where_clause = self.parse_generic_where_clause()?;
 
@@ -695,19 +694,14 @@ impl Parser {
             where_clause,
         };
 
-        let (ty, interface) = match n2 {
-            Some(ty) => (ty, Some(n1)),
-            None => (n1, None),
-        };
-
-        let extend = Implementation {
+        let extend = Extension {
             ty,
             declarations,
             generics,
-            interface,
+            conformances,
         };
 
-        Ok(DeclarationKind::Implementation(extend))
+        Ok(DeclarationKind::Extension(extend))
     }
 }
 
@@ -1329,7 +1323,12 @@ impl Parser {
     fn parse_conformances(&mut self) -> R<Option<Conformances>> {
         if self.eat(Token::Colon) {
             let lo = self.lo_span();
-            let bounds = self.parse_sequence(Token::Comma, |this| this.parse_type())?;
+            let bounds = self.parse_sequence(Token::Comma, |this| {
+                Ok(PathNode {
+                    id: this.next_id(),
+                    path: this.parse_path()?,
+                })
+            })?;
             let node = Conformances {
                 bounds,
                 span: lo.to(self.hi_span()),
@@ -2804,6 +2803,18 @@ impl Parser {
         ))
     }
 
+    pub fn parse_operator(&mut self, mode: FnParseMode) -> R<(Identifier, DeclarationKind)> {
+        self.expect(Token::Operator)?;
+        let lo = self.lo_span();
+        let kind = self.parse_operator_from_token()?;
+        let span = lo.to(self.hi_span());
+        let function = self.parse_fn(mode)?;
+        Ok((
+            Identifier::new(Symbol::new(""), span),
+            DeclarationKind::Operator(Operator { kind, function }),
+        ))
+    }
+
     fn parse_fn(&mut self, mode: FnParseMode) -> R<Function> {
         let lo = self.lo_span();
         let type_parameters = self.parse_type_parameters()?;
@@ -3079,6 +3090,15 @@ impl Parser {
             return Ok(kind);
         }
 
+        if self.matches(Token::LBracket) && self.next_matches(1, Token::RBracket) {
+            self.bump();
+            self.bump();
+            if self.eat(Token::Assign) {
+                return Ok(OperatorKind::IndexAssign);
+            }
+            return Ok(OperatorKind::Index);
+        }
+
         if self.matches(Token::Underscore) && self.next_matches(1, Token::Minus) {
             self.bump();
             self.bump();
@@ -3154,6 +3174,7 @@ enum ParserError {
     ExpectedExpression,
     InvalidCollectionType,
     TopLevelInitializerNotAllowed,
+    TopLevelOperatorNotAllowed,
     RequiredIdentifierPattern,
     DissallowedAssociatedDeclaration,
     DissallowedFunctionDeclaration,
@@ -3191,6 +3212,7 @@ impl Display for ParserError {
             ExpectedExpression => f.write_str("expected expression"),
             InvalidCollectionType => f.write_str("invalid collection type"),
             TopLevelInitializerNotAllowed => f.write_str("top-level initializer not allowed"),
+            TopLevelOperatorNotAllowed => f.write_str("top-level operator not allowed"),
             RequiredIdentifierPattern => f.write_str("identifier pattern required"),
             DissallowedAssociatedDeclaration => f.write_str("disallowed associated declaration"),
             DissallowedFunctionDeclaration => f.write_str("disallowed function declaration"),
