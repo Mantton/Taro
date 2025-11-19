@@ -36,24 +36,7 @@ pub enum Mutability {
     Immutable,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct Identifier {
-    pub symbol: Symbol,
-    pub span: Span,
-}
-
-impl Identifier {
-    pub fn emtpy(file: FileID) -> Self {
-        Identifier {
-            span: Span::empty(file),
-            symbol: Symbol::new(""),
-        }
-    }
-
-    pub fn new(symbol: Symbol, span: Span) -> Self {
-        Identifier { span, symbol }
-    }
-}
+pub use crate::span::Identifier;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Label {
@@ -324,7 +307,7 @@ pub enum ExpressionKind {
     Literal(Literal),
 
     /// `foo`
-    Identifier(NodeID, Identifier),
+    Identifier(Identifier),
 
     /// `foo.bar`
     Member {
@@ -489,12 +472,6 @@ pub struct Type {
 pub enum TypeKind {
     /// `Foo` | `Foo[T]` | Foo.Bar | `Foo.Bar[T]`
     Nominal(Path),
-    /// [T as Interface].Member[Args]
-    QualifiedMember {
-        self_ty: Box<Type>,  // T
-        interface: PathNode, // Interface[...]
-        member: PathSegment,
-    },
     /// Pointer Type
     ///
     /// `*T` | `*const T`
@@ -1472,7 +1449,7 @@ pub fn walk_statement<V: AstVisitor>(visitor: &mut V, s: &Statement) -> V::Resul
 pub fn walk_expression<V: AstVisitor>(visitor: &mut V, node: &Expression) -> V::Result {
     match &node.kind {
         ExpressionKind::Wildcard | ExpressionKind::Literal(_) => {}
-        ExpressionKind::Identifier(_, node) => {
+        ExpressionKind::Identifier(node) => {
             try_visit!(visitor.visit_identifier(node))
         }
         ExpressionKind::Member { target, name } => {
@@ -1580,15 +1557,6 @@ pub fn walk_type<V: AstVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
     match kind {
         TypeKind::Nominal(path) => {
             try_visit!(visitor.visit_path(path));
-        }
-        TypeKind::QualifiedMember {
-            self_ty,
-            interface,
-            member,
-        } => {
-            try_visit!(visitor.visit_type(self_ty));
-            try_visit!(visitor.visit_path(&interface.path));
-            try_visit!(visitor.visit_path_segment(member));
         }
         TypeKind::Pointer(internal, _) => {
             try_visit!(visitor.visit_type(internal))

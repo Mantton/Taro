@@ -1,18 +1,22 @@
 use std::rc::Rc;
 
 use crate::{
-    compile::{config::Config, state::CompilerState},
+    ast_lowering,
+    compile::{
+        config::Config,
+        state::{CompilerContext, CompilerState},
+    },
     diagnostics::DiagCtx,
     error::CompileResult,
     parse, sema,
 };
 
 pub mod config;
-pub mod context;
+pub mod global;
 pub mod state;
 
-pub struct Compiler {
-    pub state: CompilerState,
+pub struct Compiler<'state> {
+    pub state: CompilerState<'state>,
 }
 
 pub enum CompilationKind {
@@ -20,23 +24,21 @@ pub enum CompilationKind {
     Executable,
 }
 
-impl Compiler {
-    pub fn new(config: Config, dcx: Rc<DiagCtx>) -> Compiler {
+impl<'state> Compiler<'state> {
+    pub fn new(context: &'state CompilerContext) -> Compiler<'state> {
         Compiler {
-            state: CompilerState::new(config, dcx),
+            state: CompilerState::new(context),
         }
     }
 }
 
-impl Compiler {
+impl<'state> Compiler<'state> {
     pub fn build(&mut self) -> CompileResult<()> {
         let package =
             parse::lexer::tokenize_package(self.state.config.src.clone(), &self.state.dcx)?;
         let package = parse::parser::parse_package(package, &self.state.dcx)?;
-        sema::resolve::resolve_package(&package, &self.state)?;
-
+        sema::resolve::resolve_package(&package, self.state)?;
+        let package = ast_lowering::lower_package(package, self.state)?;
         Ok(())
     }
 }
-
-impl Compiler {}

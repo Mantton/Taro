@@ -1088,20 +1088,6 @@ impl Parser {
                 size: len,
                 element: ty,
             }
-        } else if self.eat(Token::As) {
-            // Qualified
-            let interface = PathNode {
-                id: self.next_id(),
-                path: self.parse_path()?,
-            };
-            self.expect(Token::RBracket)?;
-            self.expect(Token::Dot)?;
-            let member = self.parse_path_segment(true)?;
-            return Ok(TypeKind::QualifiedMember {
-                self_ty: ty,
-                interface,
-                member,
-            });
         } else {
             return Err(self.err_at_current(ParserError::InvalidCollectionType));
         };
@@ -2379,9 +2365,7 @@ impl Parser {
             };
 
             let ident_span = ident.span;
-
-            let id = self.next_id();
-            self.build_expr(ExpressionKind::Identifier(id, ident), ident_span)
+            self.build_expr(ExpressionKind::Identifier(ident), ident_span)
         } else {
             self.expect(Token::Assign)?;
             let expression = self.parse_expression()?;
@@ -2626,8 +2610,7 @@ impl Parser {
     fn parse_identifier_expression(&mut self) -> R<Box<Expression>> {
         let identifier = self.parse_identifier()?;
         let span = identifier.span;
-        let id = self.next_id();
-        Ok(self.build_expr(ExpressionKind::Identifier(id, identifier), span))
+        Ok(self.build_expr(ExpressionKind::Identifier(identifier), span))
     }
 }
 impl Parser {

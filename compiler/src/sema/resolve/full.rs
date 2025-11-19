@@ -191,46 +191,6 @@ impl<'r, 'a, 'c> ast::AstVisitor for Actor<'r, 'a, 'c> {
             ast::TypeKind::Nominal(path) => {
                 self.resolve_path_with_source(node.id, path, ResolutionSource::Type);
             }
-            ast::TypeKind::QualifiedMember {
-                self_ty,
-                interface,
-                member,
-            } => {
-                self.resolve_path_with_source(
-                    interface.id,
-                    &interface.path,
-                    ResolutionSource::Interface,
-                );
-                if let Some(ResolutionState::Complete(Resolution::Definition(
-                    id,
-                    DefinitionKind::Interface,
-                ))) = self.resolver.get_resolution(interface.id)
-                {
-                    let scope = self.resolver.get_definition_scope(id);
-                    let result = self.resolver.resolve_in_scope(
-                        &member.identifier,
-                        scope,
-                        ScopeNamespace::Type,
-                    );
-
-                    let resolution = match result {
-                        Ok(v) => Some(v.resolution()),
-                        Err(e) => {
-                            self.resolver.dcx().emit(e.diag());
-                            None
-                        }
-                    };
-
-                    if let Some(resolution) = resolution {
-                        self.resolver.record_resolution(
-                            node.id,
-                            ResolutionState::Complete(resolution.clone()),
-                        );
-                        self.resolver
-                            .record_resolution(member.id, ResolutionState::Complete(resolution));
-                    }
-                }
-            }
             ast::TypeKind::BoxedExistential { interfaces } => {
                 for path in interfaces {
                     self.resolve_path_with_source(node.id, path, ResolutionSource::Interface);
@@ -448,8 +408,8 @@ enum ResolvedEntity<'a> {
 impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
     fn resolve_expression(&mut self, node: &ast::Expression) {
         match &node.kind {
-            ast::ExpressionKind::Identifier(id, name) => {
-                let result = self.lookup_unqualified(*id, name);
+            ast::ExpressionKind::Identifier(name) => {
+                let result = self.lookup_unqualified(node.id, name);
 
                 match result {
                     Ok(v) => match v {
@@ -526,7 +486,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
         node: &ast::Expression,
     ) -> Result<ResolvedEntity<'a>, ResolutionError> {
         match &node.kind {
-            ast::ExpressionKind::Identifier(id, name) => self.lookup_unqualified(*id, name),
+            ast::ExpressionKind::Identifier(name) => self.lookup_unqualified(node.id, name),
             ast::ExpressionKind::Member { target, name } => {
                 let entity = self.resolve_expression_entity(target)?;
                 self.resolve_member_access(entity, name)

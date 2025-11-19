@@ -17,7 +17,7 @@ mod resolver;
 mod tag;
 mod usage;
 
-pub fn resolve_package(package: &ast::Package, state: &CompilerState) -> CompileResult<()> {
+pub fn resolve_package(package: &ast::Package, state: CompilerState) -> CompileResult<()> {
     let arenas = ResolverArenas::default();
     let mut resolver = Resolver::new(&arenas, state);
     tag::tag_package_symbols(package, &mut resolver)?;

@@ -9,7 +9,12 @@ use crate::{
 };
 use compiler::{
     PackageIndex,
-    compile::{Compiler, config::Config},
+    compile::{
+        Compiler,
+        config::Config,
+        global::{Gcx, GlobalArenas, GlobalContext},
+        state::CompilerContext,
+    },
     constants::STD_PREFIX,
     diagnostics::DiagCtx,
     error::ReportedError,
@@ -18,9 +23,12 @@ use compiler::{
 pub fn run(arguments: CommandLineArguments) -> Result<(), ReportedError> {
     let cwd = std::env::current_dir().map_err(|_| ReportedError)?;
     let dcx = Rc::new(DiagCtx::new(cwd));
+    let arenas = GlobalArenas::new();
+    let gcx = &GlobalContext::new(&arenas);
+
     let graph = sync_dependencies(arguments.path)?;
 
-    let _ = compile_std(dcx.clone())?;
+    let _ = compile_std(dcx.clone(), &gcx)?;
 
     for (index, package) in graph.ordered.iter().enumerate() {
         let package_index = PackageIndex::new(index + 1);
@@ -42,13 +50,19 @@ pub fn run(arguments: CommandLineArguments) -> Result<(), ReportedError> {
             dependencies,
             index: package_index,
         };
-        let mut compiler = Compiler::new(config, dcx.clone());
+
+        let ctx = CompilerContext {
+            dcx: dcx.clone(),
+            gcx,
+            config,
+        };
+        let mut compiler = Compiler::new(&ctx);
         let _ = compiler.build()?;
     }
     Ok(())
 }
 
-fn compile_std(dcx: Rc<DiagCtx>) -> Result<(), ReportedError> {
+fn compile_std(dcx: Rc<DiagCtx>, gcx: &Gcx) -> Result<(), ReportedError> {
     println!("Compiling – std");
 
     let src = language_home()
@@ -70,7 +84,8 @@ fn compile_std(dcx: Rc<DiagCtx>) -> Result<(), ReportedError> {
         dependencies: Default::default(),
         index: PackageIndex::new(0),
     };
-    let mut compiler = Compiler::new(config, dcx);
+    let context = CompilerContext { dcx, gcx, config };
+    let mut compiler = Compiler::new(&context);
     let _ = compiler.build()?;
     Ok(())
 }

@@ -81,3 +81,22 @@ impl fmt::Display for Symbol {
         fmt::Display::fmt(self.as_str(), f)
     }
 }
+
+#[derive(Debug, Clone, Copy)]
+pub struct Identifier {
+    pub symbol: Symbol,
+    pub span: Span,
+}
+
+impl Identifier {
+    pub fn emtpy(file: FileID) -> Self {
+        Identifier {
+            span: Span::empty(file),
+            symbol: Symbol::new(""),
+        }
+    }
+
+    pub fn new(symbol: Symbol, span: Span) -> Self {
+        Identifier { span, symbol }
+    }
+}

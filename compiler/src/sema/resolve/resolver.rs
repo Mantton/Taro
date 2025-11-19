@@ -24,7 +24,7 @@ use std::cell::RefCell;
 
 pub struct Resolver<'arena, 'compiler> {
     pub arenas: &'arena ResolverArenas,
-    pub compiler: &'compiler CompilerState,
+    pub compiler: CompilerState<'compiler>,
     node_to_def: FxHashMap<NodeID, DefinitionID>,
     def_to_kind: FxHashMap<DefinitionID, DefinitionKind>,
     pub def_to_ident: FxHashMap<DefinitionID, Identifier>,
@@ -43,7 +43,7 @@ pub struct Resolver<'arena, 'compiler> {
 }
 
 impl<'a, 'c> Resolver<'a, 'c> {
-    pub fn new(arenas: &'a ResolverArenas, compiler: &'c CompilerState) -> Resolver<'a, 'c> {
+    pub fn new(arenas: &'a ResolverArenas, compiler: CompilerState<'c>) -> Resolver<'a, 'c> {
         Resolver {
             arenas,
             compiler,

@@ -1,22 +1,31 @@
-use std::rc::Rc;
+use std::{ops::Deref, rc::Rc};
 
 use crate::{
-    compile::{config::Config, context::GlobalContext},
+    compile::{config::Config, global::GlobalContext},
     diagnostics::DiagCtx,
 };
 
-pub struct CompilerState {
+#[derive(Clone, Copy)]
+pub struct CompilerState<'state> {
+    context: &'state CompilerContext<'state>,
+}
+
+impl<'state> Deref for CompilerState<'state> {
+    type Target = &'state CompilerContext<'state>;
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        &self.context
+    }
+}
+
+pub struct CompilerContext<'gcx> {
     pub dcx: Rc<DiagCtx>,
-    pub gcx: GlobalContext,
+    pub gcx: &'gcx GlobalContext<'gcx>,
     pub config: Config,
 }
 
-impl CompilerState {
-    pub fn new(config: Config, dcx: Rc<DiagCtx>) -> CompilerState {
-        CompilerState {
-            dcx,
-            gcx: GlobalContext::new(),
-            config,
-        }
+impl<'state> CompilerState<'state> {
+    pub fn new(context: &'state CompilerContext<'state>) -> CompilerState<'state> {
+        CompilerState { context }
     }
 }
