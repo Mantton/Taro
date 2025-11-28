@@ -5,6 +5,7 @@ pub use crate::ast::OperatorKind;
 pub use crate::ast::UnaryOperator;
 use crate::span::{Identifier, Span, Symbol};
 
+pub type Resolution = crate::sema::resolve::models::Resolution<NodeID>;
 index_vec::define_index_type! {
     pub struct NodeID = u32;
 }
@@ -99,6 +100,7 @@ pub struct Function {
     pub generics: Generics,
     pub signature: FunctionSignature,
     pub block: Option<Block>,
+    pub is_static: bool,
 }
 
 /// AST Representation of a function parameter
@@ -135,7 +137,6 @@ pub struct FunctionPrototype {
 pub struct FunctionSignature {
     pub span: Span,
     pub prototype: FunctionPrototype,
-    pub is_async: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -176,12 +177,31 @@ pub struct Extension {
 
 //
 #[derive(Debug, Clone)]
-pub struct Path {}
+pub struct Path {
+    pub span: Span,
+    pub resolution: Resolution,
+    pub segments: Vec<PathSegment>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PathSegment {
+    pub id: NodeID,
+    pub identifier: Identifier,
+    pub arguments: Option<TypeArguments>,
+    pub span: Span,
+    pub resolution: Resolution,
+}
 
 #[derive(Debug, Clone)]
 pub struct PathNode {
     pub id: NodeID,
-    pub path: Path,
+    pub path: ResolvedPath,
+}
+
+#[derive(Debug, Clone)]
+pub enum ResolvedPath {
+    Resolved(Path),
+    Relative(Box<Type>, PathSegment),
 }
 
 #[derive(Debug, Clone)]
@@ -199,7 +219,7 @@ pub struct Type {
 #[derive(Debug, Clone)]
 pub enum TypeKind {
     /// `Foo` | `Foo[T]` | Foo.Bar | `Foo.Bar[T]`
-    Path(Path),
+    Nominal(ResolvedPath),
     /// Pointer Type
     ///
     /// `*T` | `*const T`
@@ -222,7 +242,7 @@ pub enum TypeKind {
         output: Box<Type>,
     },
     /// any T
-    BoxedExistential { interfaces: Vec<Path> },
+    BoxedExistential { interfaces: Vec<PathNode> },
     /// _
     Infer,
 }
@@ -333,7 +353,6 @@ pub struct Variant {
 pub enum VariantKind {
     Unit,
     Tuple(Vec<FieldDefinition>),
-    Struct(Vec<FieldDefinition>),
 }
 
 #[derive(Debug, Clone)]
@@ -451,6 +470,7 @@ pub enum ExpressionKind {
     PatternBinding(PatternBindingCondition),
     /// { }
     Block(Block),
+    Malformed,
 }
 
 #[derive(Debug, Clone)]
@@ -549,7 +569,7 @@ pub enum PatternKind {
 
 #[derive(Debug, Clone)]
 pub enum PatternPath {
-    Qualified { path: Path },                  // A.B.C
+    Qualified { path: ResolvedPath },          // A.B.C
     Inferred { name: Identifier, span: Span }, // .B
 }
 
@@ -559,4 +579,18 @@ pub struct PatternField {
     pub identifier: Identifier,
     pub pattern: Pattern,
     pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FoundationDecl {
+    /// Option Type
+    Option,
+    /// List Type
+    List,
+    /// Dictionary Type
+    Dictionary,
+    /// Range Type
+    Range,
+    /// Closed Range Type (Inclusive Range)
+    ClosedRange,
 }

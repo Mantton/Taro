@@ -9,9 +9,10 @@ use crate::{
         models::{
             DefinitionID, DefinitionIndex, DefinitionKind, ExpressionResolutionState, Holder,
             ImplicitScope, LexicalScope, LexicalScopeBinding, LexicalScopeSource, NameEntry,
-            PathResult, PrimaryType, Resolution, ResolutionError, ResolutionSource,
-            ResolutionState, ResolvedValue, Scope, ScopeData, ScopeEntry, ScopeEntryData,
-            ScopeEntryKind, ScopeKind, ScopeNamespace, ScopeTable, UsageEntry, UsageEntryData,
+            PathResult, PrimaryType, Resolution, ResolutionError, ResolutionOutput,
+            ResolutionSource, ResolutionState, ResolvedValue, Scope, ScopeData, ScopeEntry,
+            ScopeEntryData, ScopeEntryKind, ScopeKind, ScopeNamespace, ScopeTable, UsageEntry,
+            UsageEntryData,
         },
     },
     span::{FileID, Span, Symbol},
@@ -607,6 +608,14 @@ impl<'a, 'c> Resolver<'a, 'c> {
         match result {
             Ok(_) => Ok(()),
             Err(e) => Err(ResolutionError::AlreadyInScope(name)),
+        }
+    }
+}
+
+impl<'a, 'c> Resolver<'a, 'c> {
+    pub fn build_output(self) -> ResolutionOutput {
+        ResolutionOutput {
+            resolutions: self.resolutions,
         }
     }
 }

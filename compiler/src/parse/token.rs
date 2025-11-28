@@ -1,17 +1,15 @@
-use ecow::EcoString;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Token {
     EOF,
     Semicolon,
 
-    CommentDoc { value: EcoString },
+    CommentDoc { value: String },
 
-    Identifier { value: EcoString },
-    String { value: EcoString },
-    Rune { value: EcoString },
-    Integer { value: EcoString, base: Base },
-    Float { value: EcoString, base: Base },
+    Identifier { value: String },
+    String { value: String },
+    Rune { value: String },
+    Integer { value: String, base: Base },
+    Float { value: String, base: Base },
 
     Assign,   // =, Variable Assignment
     Plus,     // +, Arithmetic Add

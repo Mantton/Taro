@@ -1,6 +1,7 @@
 use crate::{
     ast::{self, Identifier, NodeID},
     diagnostics::{Diagnostic, DiagnosticLevel},
+    hir::FoundationDecl,
     span::{FileID, Span, Symbol},
     utils::intern::Interned,
 };
@@ -83,7 +84,7 @@ pub enum CtorKind {
 impl CtorKind {
     pub fn from_variant(vdata: &ast::VariantKind) -> CtorKind {
         match *vdata {
-            ast::VariantKind::Tuple(..) | ast::VariantKind::Struct(..) => CtorKind::Function,
+            ast::VariantKind::Tuple(..) => CtorKind::Function,
             ast::VariantKind::Unit => CtorKind::Constant,
         }
     }
@@ -214,15 +215,17 @@ pub struct ActiveScope<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Resolution {
+pub enum Resolution<LocalNode = ast::NodeID> {
     PrimaryType(PrimaryType),
     Definition(DefinitionID, DefinitionKind),
     SelfTypeAlias(DefinitionID),
     InterfaceSelfTypeParameter(DefinitionID),
     FunctionSet(Vec<DefinitionID>),
-    LocalVariable(NodeID),
+    LocalVariable(LocalNode),
     SelfConstructor(DefinitionID),
     ImplicitSelfParameter,
+    Foundation(FoundationDecl),
+    Error,
 }
 
 impl Resolution {
@@ -235,7 +238,9 @@ impl Resolution {
             Resolution::FunctionSet(..) => "function set",
             Resolution::PrimaryType(_) => "primary type",
             Resolution::SelfConstructor(_) => "self constructor",
-            Resolution::ImplicitSelfParameter => todo!(),
+            Resolution::ImplicitSelfParameter => "self",
+            Resolution::Error => "error",
+            Resolution::Foundation(_) => "foundation declaration",
         }
     }
 }
@@ -688,4 +693,8 @@ impl FloatTy {
             FloatTy::F64 => "double",
         }
     }
+}
+
+pub struct ResolutionOutput {
+    pub resolutions: FxHashMap<NodeID, ResolutionState>,
 }

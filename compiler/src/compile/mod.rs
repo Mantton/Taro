@@ -37,8 +37,8 @@ impl<'state> Compiler<'state> {
         let package =
             parse::lexer::tokenize_package(self.state.config.src.clone(), &self.state.dcx)?;
         let package = parse::parser::parse_package(package, &self.state.dcx)?;
-        sema::resolve::resolve_package(&package, self.state)?;
-        let package = ast_lowering::lower_package(package, self.state)?;
+        let resolution_output = sema::resolve::resolve_package(&package, self.state)?;
+        let package = ast_lowering::lower_package(package, self.state, resolution_output)?;
         Ok(())
     }
 }

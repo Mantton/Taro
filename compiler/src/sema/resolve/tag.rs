@@ -147,7 +147,6 @@ impl<'r, 'a, 'c> AstVisitor for Actor<'r, 'a, 'c> {
             .get(&parent)
             .expect("struct declaration to be tagged")
             .clone();
-        self.tag(&identifier, node.ctor_node_id, kind);
         ast::walk_struct_definition(self, node);
     }
 

@@ -1,12 +1,18 @@
 use crate::{
-    ast::{self, AssocContext},
+    ast::{self, Identifier, Label},
     compile::state::CompilerState,
     error::{CompileResult, ReportedError},
     hir,
+    sema::resolve::models::{Resolution, ResolutionError, ResolutionOutput, ResolutionState},
+    span::{Span, Symbol},
 };
 
-pub fn lower_package(package: ast::Package, state: CompilerState) -> CompileResult<hir::Package> {
-    let mut actor = Actor::new(state);
+pub fn lower_package(
+    package: ast::Package,
+    state: CompilerState,
+    resolutions: ResolutionOutput,
+) -> CompileResult<hir::Package> {
+    let mut actor = Actor::new(state, resolutions);
     let root = actor.lower_module(package.root);
     state.dcx.ok()?;
     Ok(hir::Package { root })
@@ -14,13 +20,15 @@ pub fn lower_package(package: ast::Package, state: CompilerState) -> CompileResu
 
 pub struct Actor<'ctx> {
     pub context: CompilerState<'ctx>,
+    pub resolutions: ResolutionOutput,
     pub next_index: u32,
 }
 
 impl Actor<'_> {
-    fn new<'a>(context: CompilerState<'a>) -> Actor<'a> {
+    fn new<'a>(context: CompilerState<'a>, resolutions: ResolutionOutput) -> Actor<'a> {
         Actor {
             context,
+            resolutions,
             next_index: 0,
         }
     }
@@ -179,7 +187,6 @@ impl Actor<'_> {
     fn lower_assoc_declaration(
         &mut self,
         node: ast::AssociatedDeclaration,
-        ctx: AssocContext,
     ) -> hir::AssociatedDeclaration {
         let kind = match node.kind {
             ast::AssociatedDeclarationKind::Constant(node) => {
@@ -210,49 +217,1188 @@ impl Actor<'_> {
 
 impl Actor<'_> {
     fn lower_interface(&mut self, node: ast::Interface) -> hir::Interface {
-        todo!()
+        hir::Interface {
+            generics: self.lower_generics(node.generics),
+            declarations: node
+                .declarations
+                .into_iter()
+                .map(|n| self.lower_assoc_declaration(n))
+                .collect(),
+            conformances: node.conformances.map(|n| self.lower_conformances(n)),
+        }
     }
 
     fn lower_struct(&mut self, node: ast::Struct) -> hir::Struct {
-        todo!()
+        hir::Struct {
+            generics: self.lower_generics(node.generics),
+            fields: node
+                .fields
+                .into_iter()
+                .map(|n| self.lower_field_definition(n))
+                .collect(),
+        }
     }
 
     fn lower_enum(&mut self, node: ast::Enum) -> hir::Enum {
-        todo!()
+        hir::Enum {
+            generics: self.lower_generics(node.generics),
+            variants: node
+                .cases
+                .into_iter()
+                .flat_map(|c| c.variants)
+                .map(|v| self.lower_variant(v))
+                .collect(),
+        }
     }
 
     fn lower_alias(&mut self, node: ast::TypeAlias) -> hir::TypeAlias {
-        todo!()
+        hir::TypeAlias {
+            generics: self.lower_generics(node.generics),
+            ty: node.ty.map(|n| self.lower_type(n)),
+            bounds: node.bounds.map(|n| self.lower_generic_bounds(n)),
+        }
     }
 
     fn lower_constant(&mut self, node: ast::Constant) -> hir::Constant {
-        todo!()
+        hir::Constant {
+            identifier: node.identifier,
+            ty: self.lower_type(node.ty),
+            expr: node.expr.map(|e| self.lower_expression(e)),
+        }
     }
 
     fn lower_use_tree(&mut self, node: ast::UseTree) -> hir::UseTree {
-        todo!()
+        hir::UseTree {}
     }
 }
 
 impl Actor<'_> {
     fn lower_operator(&mut self, node: ast::Operator) -> hir::Operator {
-        todo!()
+        hir::Operator {
+            function: self.lower_function(node.function),
+            kind: node.kind,
+        }
     }
 
     fn lower_initializer(&mut self, node: ast::Initializer) -> hir::Initializer {
-        todo!()
+        hir::Initializer {
+            function: self.lower_function(node.function),
+        }
     }
 
     fn lower_function(&mut self, node: ast::Function) -> hir::Function {
-        todo!()
+        hir::Function {
+            generics: self.lower_generics(node.generics),
+            signature: self.lower_function_signature(node.signature),
+            block: node.block.map(|n| self.lower_block(n)),
+            is_static: node.is_static,
+        }
+    }
+
+    fn lower_function_signature(&mut self, node: ast::FunctionSignature) -> hir::FunctionSignature {
+        hir::FunctionSignature {
+            span: node.span,
+            prototype: self.lower_function_prototype(node.prototype),
+        }
+    }
+
+    fn lower_function_prototype(&mut self, node: ast::FunctionPrototype) -> hir::FunctionPrototype {
+        hir::FunctionPrototype {
+            inputs: node
+                .inputs
+                .into_iter()
+                .map(|n| self.lower_function_parameter(n))
+                .collect(),
+            output: node.output.map(|n| self.lower_type(n)),
+        }
+    }
+
+    fn lower_function_parameter(&mut self, node: ast::FunctionParameter) -> hir::FunctionParameter {
+        hir::FunctionParameter {
+            id: self.next_index(),
+            attributes: vec![],
+            label: node.label,
+            name: node.name,
+            annotated_type: self.lower_type(node.annotated_type),
+            default_value: node.default_value.map(|n| self.lower_expression(n)),
+            is_variadic: node.is_variadic,
+            span: node.span,
+        }
     }
 }
 
 impl Actor<'_> {
     fn lower_extension(&mut self, node: ast::Extension) -> hir::Extension {
-        todo!()
+        hir::Extension {
+            ty: self.lower_type(node.ty),
+            generics: self.lower_generics(node.generics),
+            conformances: node.conformances.map(|n| self.lower_conformances(n)),
+            declarations: node
+                .declarations
+                .into_iter()
+                .map(|n| self.lower_assoc_declaration(n))
+                .collect(),
+        }
     }
     fn lower_namespace(&mut self, node: ast::Namespace) -> hir::Namespace {
-        todo!()
+        hir::Namespace {
+            declarations: node
+                .declarations
+                .into_iter()
+                .map(|n| self.lower_namespace_declaration(n))
+                .collect(),
+        }
+    }
+}
+
+impl Actor<'_> {
+    fn lower_generics(&mut self, node: ast::Generics) -> hir::Generics {
+        hir::Generics {
+            type_parameters: node.type_parameters.map(|n| self.lower_type_parameters(n)),
+            where_clause: node
+                .where_clause
+                .map(|n| self.lower_generic_where_clause(n)),
+        }
+    }
+
+    fn lower_type_parameters(&mut self, node: ast::TypeParameters) -> hir::TypeParameters {
+        hir::TypeParameters {
+            span: node.span,
+            parameters: node
+                .parameters
+                .into_iter()
+                .map(|n| self.lower_type_parameter(n))
+                .collect(),
+        }
+    }
+
+    fn lower_type_parameter(&mut self, node: ast::TypeParameter) -> hir::TypeParameter {
+        hir::TypeParameter {
+            id: self.next_index(),
+            span: node.span,
+            identifier: node.identifier,
+            bounds: node.bounds.map(|n| self.lower_generic_bounds(n)),
+            kind: match node.kind {
+                ast::TypeParameterKind::Type { default } => hir::TypeParameterKind::Type {
+                    default: default.map(|n| self.lower_type(n)),
+                },
+                ast::TypeParameterKind::Constant { ty, default } => {
+                    hir::TypeParameterKind::Constant {
+                        ty: self.lower_type(ty),
+                        default: default.map(|n| self.lower_anon_const(n)),
+                    }
+                }
+            },
+        }
+    }
+
+    fn lower_type_arguments(&mut self, node: ast::TypeArguments) -> hir::TypeArguments {
+        hir::TypeArguments {
+            span: node.span,
+            arguments: node
+                .arguments
+                .into_iter()
+                .map(|n| self.lower_type_argument(n))
+                .collect(),
+        }
+    }
+
+    fn lower_type_argument(&mut self, node: ast::TypeArgument) -> hir::TypeArgument {
+        match node {
+            ast::TypeArgument::Type(n) => hir::TypeArgument::Type(self.lower_type(n)),
+            ast::TypeArgument::Const(n) => hir::TypeArgument::Const(self.lower_anon_const(n)),
+        }
+    }
+
+    fn lower_conformances(&mut self, node: ast::Conformances) -> hir::Conformances {
+        hir::Conformances {
+            bounds: node
+                .bounds
+                .into_iter()
+                .map(|node| self.lower_path_node(node))
+                .collect(),
+            span: node.span,
+        }
+    }
+
+    fn lower_generic_bounds(&mut self, node: ast::GenericBounds) -> hir::GenericBounds {
+        node.into_iter()
+            .map(|n| self.lower_generic_bound(n))
+            .collect()
+    }
+
+    fn lower_generic_bound(&mut self, node: ast::GenericBound) -> hir::GenericBound {
+        hir::GenericBound {
+            path: self.lower_path_node(node.path),
+        }
+    }
+
+    fn lower_generic_where_clause(
+        &mut self,
+        node: ast::GenericWhereClause,
+    ) -> hir::GenericWhereClause {
+        hir::GenericWhereClause {
+            requirements: node
+                .requirements
+                .into_iter()
+                .map(|node| self.lower_generic_requirement(node))
+                .collect(),
+            span: node.span,
+        }
+    }
+
+    fn lower_generic_requirement(
+        &mut self,
+        node: ast::GenericRequirement,
+    ) -> hir::GenericRequirement {
+        match node {
+            ast::GenericRequirement::SameTypeRequirement(constraint) => {
+                hir::GenericRequirement::SameTypeRequirement(hir::RequiredTypeConstraint {
+                    bounded_type: self.lower_type(constraint.bounded_type),
+                    bound: self.lower_type(constraint.bound),
+                    span: constraint.span,
+                })
+            }
+            ast::GenericRequirement::ConformanceRequirement(constraint) => {
+                hir::GenericRequirement::ConformanceRequirement(hir::ConformanceConstraint {
+                    bounded_type: self.lower_type(constraint.bounded_type),
+                    bounds: self.lower_generic_bounds(constraint.bounds),
+                    span: constraint.span,
+                })
+            }
+        }
+    }
+}
+
+impl Actor<'_> {
+    fn lower_type(&mut self, node: Box<ast::Type>) -> Box<hir::Type> {
+        let kind = match node.kind {
+            ast::TypeKind::Nominal(path) => hir::TypeKind::Nominal(self.lower_path(node.id, path)),
+            ast::TypeKind::Pointer(ty, mt) => hir::TypeKind::Pointer(self.lower_type(ty), mt),
+            ast::TypeKind::Reference(ty, mt) => hir::TypeKind::Reference(self.lower_type(ty), mt),
+            ast::TypeKind::Parenthesis(ty) => return self.lower_type(ty),
+            ast::TypeKind::Tuple(items) => {
+                let items = items.into_iter().map(|n| self.lower_type(n)).collect();
+                hir::TypeKind::Tuple(items)
+            }
+            ast::TypeKind::Array { size, element } => hir::TypeKind::Array {
+                size: self.lower_anon_const(size),
+                element: self.lower_type(element),
+            },
+            ast::TypeKind::Optional(element) => {
+                let path = hir::Path {
+                    span: node.span,
+                    resolution: Resolution::Foundation(hir::FoundationDecl::Option),
+                    segments: vec![hir::PathSegment {
+                        id: self.next_index(),
+                        identifier: Identifier::new(Symbol::new("Option"), node.span),
+                        arguments: Some(hir::TypeArguments {
+                            span: node.span,
+                            arguments: vec![hir::TypeArgument::Type(self.lower_type(element))],
+                        }),
+                        span: node.span,
+                        resolution: Resolution::Foundation(hir::FoundationDecl::Option),
+                    }],
+                };
+
+                let path = hir::ResolvedPath::Resolved(path);
+                hir::TypeKind::Nominal(path)
+            }
+            ast::TypeKind::List(element) => {
+                let path = hir::Path {
+                    span: node.span,
+                    resolution: Resolution::Foundation(hir::FoundationDecl::List),
+                    segments: vec![hir::PathSegment {
+                        id: self.next_index(),
+                        identifier: Identifier::new(Symbol::new("List"), node.span),
+                        arguments: Some(hir::TypeArguments {
+                            span: node.span,
+                            arguments: vec![hir::TypeArgument::Type(self.lower_type(element))],
+                        }),
+                        span: node.span,
+                        resolution: Resolution::Foundation(hir::FoundationDecl::List),
+                    }],
+                };
+
+                let path = hir::ResolvedPath::Resolved(path);
+                hir::TypeKind::Nominal(path)
+            }
+            ast::TypeKind::Dictionary { key, value } => {
+                let path = hir::Path {
+                    span: node.span,
+                    resolution: Resolution::Foundation(hir::FoundationDecl::Dictionary),
+                    segments: vec![hir::PathSegment {
+                        id: self.next_index(),
+                        identifier: Identifier::new(Symbol::new("Dictionary"), node.span),
+                        arguments: Some(hir::TypeArguments {
+                            span: node.span,
+                            arguments: vec![
+                                hir::TypeArgument::Type(self.lower_type(key)),
+                                hir::TypeArgument::Type(self.lower_type(value)),
+                            ],
+                        }),
+                        span: node.span,
+                        resolution: Resolution::Foundation(hir::FoundationDecl::Dictionary),
+                    }],
+                };
+
+                let path = hir::ResolvedPath::Resolved(path);
+                hir::TypeKind::Nominal(path)
+            }
+            ast::TypeKind::Function { inputs, output } => hir::TypeKind::Function {
+                inputs: inputs
+                    .into_iter()
+                    .map(|node| self.lower_type(node))
+                    .collect(),
+                output: self.lower_type(output),
+            },
+            ast::TypeKind::ImplicitSelf => {
+                let resolution = self.get_resolution(node.id);
+                let path = hir::Path {
+                    span: node.span,
+                    resolution: resolution.clone(),
+                    segments: vec![hir::PathSegment {
+                        id: self.next_index(),
+                        identifier: Identifier {
+                            symbol: Symbol::new("Self"),
+                            span: node.span,
+                        },
+                        arguments: None,
+                        span: node.span,
+                        resolution,
+                    }],
+                };
+                let path = hir::ResolvedPath::Resolved(path);
+                hir::TypeKind::Nominal(path)
+            }
+            ast::TypeKind::BoxedExistential { interfaces } => hir::TypeKind::BoxedExistential {
+                interfaces: interfaces
+                    .into_iter()
+                    .map(|n| self.lower_path_node(n))
+                    .collect(),
+            },
+            ast::TypeKind::Infer | ast::TypeKind::InferedClosureParameter => hir::TypeKind::Infer,
+        };
+
+        Box::new(hir::Type {
+            id: self.next_index(),
+            span: node.span,
+            kind,
+        })
+    }
+}
+
+impl Actor<'_> {
+    fn lower_pattern(&mut self, node: ast::Pattern) -> hir::Pattern {
+        let kind = match node.kind {
+            ast::PatternKind::Wildcard => hir::PatternKind::Wildcard,
+            ast::PatternKind::Rest => hir::PatternKind::Rest,
+            ast::PatternKind::Identifier(node) => hir::PatternKind::Identifier(node),
+            ast::PatternKind::Tuple(items, span) => hir::PatternKind::Tuple(
+                items
+                    .into_iter()
+                    .map(|node| self.lower_pattern(node))
+                    .collect(),
+                span,
+            ),
+            ast::PatternKind::Member(pattern_path) => todo!(),
+            ast::PatternKind::PathTuple {
+                path,
+                fields,
+                field_span,
+            } => todo!(),
+            ast::PatternKind::PathStruct {
+                path,
+                fields,
+                field_span,
+                ignore_rest,
+            } => todo!(),
+            ast::PatternKind::Or(items, span) => hir::PatternKind::Or(
+                items
+                    .into_iter()
+                    .map(|node| self.lower_pattern(node))
+                    .collect(),
+                span,
+            ),
+            ast::PatternKind::Literal(node) => {
+                hir::PatternKind::Literal(self.lower_anon_const(node))
+            }
+        };
+
+        hir::Pattern {
+            id: self.next_index(),
+            span: node.span,
+            kind,
+        }
+    }
+}
+
+impl Actor<'_> {
+    fn lower_block(&mut self, node: ast::Block) -> hir::Block {
+        hir::Block {
+            id: self.next_index(),
+            statements: node
+                .statements
+                .into_iter()
+                .map(|n| self.lower_statement(n))
+                .collect(),
+            span: node.span,
+        }
+    }
+
+    fn lower_statement(&mut self, node: ast::Statement) -> hir::Statement {
+        let kind = match node.kind {
+            ast::StatementKind::Declaration(node) => {
+                hir::StatementKind::Declaration(self.lower_function_declaration(node))
+            }
+            ast::StatementKind::Expression(node) => {
+                hir::StatementKind::Expression(self.lower_expression(node))
+            }
+            ast::StatementKind::Variable(local) => {
+                hir::StatementKind::Variable(self.lower_local(local))
+            }
+            ast::StatementKind::Break(..) => hir::StatementKind::Break,
+            ast::StatementKind::Continue(..) => hir::StatementKind::Continue,
+            ast::StatementKind::Return(node) => {
+                hir::StatementKind::Return(node.map(|n| self.lower_expression(n)))
+            }
+            ast::StatementKind::Loop { label, block } => hir::StatementKind::Loop {
+                label,
+                block: self.lower_block(block),
+            },
+            ast::StatementKind::While {
+                label,
+                condition,
+                block,
+            } => {
+                /*
+                    --- ast ---
+                    while <condition> { ... }
+
+                    --- hir ---
+                    loop {
+                        if <condition> {...} else { break }
+                    }
+                */
+                let condition = self.lower_expression(condition);
+                let then_block = self.lower_block(block);
+                let break_statement = self.mk_statement(hir::StatementKind::Break, node.span);
+                let else_block = self.mk_block(vec![break_statement], node.span);
+                let if_node = hir::IfExpression {
+                    condition,
+                    then_block: self
+                        .mk_expression(hir::ExpressionKind::Block(then_block), node.span),
+                    else_block: Some(
+                        self.mk_expression(hir::ExpressionKind::Block(else_block), node.span),
+                    ),
+                };
+                let core_expression =
+                    self.mk_expression(hir::ExpressionKind::If(if_node), node.span);
+                let core_statement =
+                    self.mk_statement(hir::StatementKind::Expression(core_expression), node.span);
+                let block = self.mk_block(vec![core_statement], node.span);
+                hir::StatementKind::Loop { label, block }
+            }
+            ast::StatementKind::For(node) => todo!(),
+            ast::StatementKind::Defer(node) => hir::StatementKind::Defer(self.lower_block(node)),
+            ast::StatementKind::Guard {
+                condition,
+                else_block,
+            } => hir::StatementKind::Guard {
+                condition: self.lower_expression(condition),
+                else_block: self.lower_block(else_block),
+            },
+        };
+        hir::Statement {
+            id: self.next_index(),
+            kind,
+            span: node.span,
+        }
+    }
+}
+
+impl Actor<'_> {
+    fn lower_expression(&mut self, node: Box<ast::Expression>) -> Box<hir::Expression> {
+        self.context
+            .dcx
+            .emit_info("Lowering".into(), Some(node.span));
+        let kind = match node.kind {
+            ast::ExpressionKind::Literal(lit) => self.lower_literal(lit, node.span),
+            ast::ExpressionKind::Identifier(node) => hir::ExpressionKind::Identifier(node),
+            ast::ExpressionKind::Member { target, name } => hir::ExpressionKind::Member {
+                target: self.lower_expression(target),
+                name,
+            },
+            ast::ExpressionKind::Specialize {
+                target,
+                type_arguments,
+            } => hir::ExpressionKind::Specialize {
+                target: self.lower_expression(target),
+                type_arguments: self.lower_type_arguments(type_arguments),
+            },
+            ast::ExpressionKind::Array(nodes) => hir::ExpressionKind::Array(
+                nodes
+                    .into_iter()
+                    .map(|expr| self.lower_expression(expr))
+                    .collect(),
+            ),
+            ast::ExpressionKind::Tuple(nodes) => hir::ExpressionKind::Tuple(
+                nodes
+                    .into_iter()
+                    .map(|expr| self.lower_expression(expr))
+                    .collect(),
+            ),
+            ast::ExpressionKind::DictionaryLiteral(map_pairs) => todo!(),
+            ast::ExpressionKind::If(node) => {
+                hir::ExpressionKind::If(self.lower_if_expression(node))
+            }
+            ast::ExpressionKind::Match(node) => {
+                hir::ExpressionKind::Match(self.lower_match_expression(node))
+            }
+            ast::ExpressionKind::Call(node, args) => hir::ExpressionKind::Call(
+                self.lower_expression(node),
+                self.lower_expression_arguments(args),
+            ),
+            ast::ExpressionKind::Reference(node, mutability) => {
+                hir::ExpressionKind::Reference(self.lower_expression(node), mutability)
+            }
+            ast::ExpressionKind::Dereference(node) => {
+                hir::ExpressionKind::Dereference(self.lower_expression(node))
+            }
+            ast::ExpressionKind::Binary(op, lhs, rhs) => hir::ExpressionKind::Binary(
+                op,
+                self.lower_expression(lhs),
+                self.lower_expression(rhs),
+            ),
+            ast::ExpressionKind::Unary(op, rhs) => {
+                hir::ExpressionKind::Unary(op, self.lower_expression(rhs))
+            }
+            ast::ExpressionKind::TupleAccess(lhs, index) => hir::ExpressionKind::TupleAccess(
+                self.lower_expression(lhs),
+                self.lower_anon_const(index),
+            ),
+            ast::ExpressionKind::AssignOp(op, lhs, rhs) => hir::ExpressionKind::AssignOp(
+                op,
+                self.lower_expression(lhs),
+                self.lower_expression(rhs),
+            ),
+            ast::ExpressionKind::Assign(lhs, rhs) => {
+                hir::ExpressionKind::Assign(self.lower_expression(lhs), self.lower_expression(rhs))
+            }
+            ast::ExpressionKind::Parenthesis(node) => {
+                return self.lower_expression(node);
+            }
+            ast::ExpressionKind::CastAs(node, ty) => {
+                hir::ExpressionKind::CastAs(self.lower_expression(node), self.lower_type(ty))
+            }
+            ast::ExpressionKind::Ternary(condition, lhs, rhs) => todo!(),
+            ast::ExpressionKind::Pipe(lhs, rhs) => {
+                return self.lower_pipe_expression(lhs, rhs, node.span);
+            }
+            ast::ExpressionKind::PatternBinding(node) => {
+                hir::ExpressionKind::PatternBinding(self.lower_pattern_binding_condition(node))
+            }
+            ast::ExpressionKind::OptionalDefault(lhs, rhs) => todo!(),
+            ast::ExpressionKind::Range(start, end, _) => todo!(),
+            ast::ExpressionKind::Wildcard => {
+                self.context.dcx.emit_error(
+                    "wildcard expressions are only valid as top-level pipe arguments".into(),
+                    Some(node.span),
+                );
+                hir::ExpressionKind::Malformed
+            }
+            ast::ExpressionKind::Closure(node) => todo!("closures!"),
+            ast::ExpressionKind::Block(block) => {
+                hir::ExpressionKind::Block(self.lower_block(block))
+            }
+            ast::ExpressionKind::OptionalUnwrap(node) => todo!(),
+            ast::ExpressionKind::OptionalEvaluation(node) => todo!(),
+        };
+
+        Box::new(hir::Expression {
+            id: self.next_index(),
+            kind,
+            span: node.span,
+        })
+    }
+
+    fn lower_anon_const(&mut self, node: ast::AnonConst) -> hir::AnonConst {
+        hir::AnonConst {
+            value: self.lower_expression(node.value),
+        }
+    }
+
+    fn lower_literal(&mut self, node: ast::Literal, span: Span) -> hir::ExpressionKind {
+        let result = convert_ast_literal(node);
+
+        match result {
+            Ok(v) => return hir::ExpressionKind::Literal(v),
+            Err(e) => {
+                self.context.dcx.emit_error(e, Some(span));
+                return hir::ExpressionKind::Malformed;
+            }
+        }
+    }
+    fn lower_if_expression(&mut self, node: ast::IfExpression) -> hir::IfExpression {
+        hir::IfExpression {
+            condition: self.lower_expression(node.condition),
+            then_block: self.lower_expression(node.then_block),
+            else_block: node.else_block.map(|expr| self.lower_expression(expr)),
+        }
+    }
+
+    fn lower_match_expression(&mut self, node: ast::MatchExpression) -> hir::MatchExpression {
+        hir::MatchExpression {
+            value: self.lower_expression(node.value),
+            arms: node
+                .arms
+                .into_iter()
+                .map(|arm| self.lower_match_arm(arm))
+                .collect(),
+            kw_span: node.kw_span,
+        }
+    }
+
+    fn lower_match_arm(&mut self, node: ast::MatchArm) -> hir::MatchArm {
+        hir::MatchArm {
+            pattern: self.lower_pattern(node.pattern),
+            body: self.lower_expression(node.body),
+            guard: node.guard.map(|expr| self.lower_expression(expr)),
+            span: node.span,
+        }
+    }
+
+    fn lower_expression_arguments(
+        &mut self,
+        args: Vec<ast::ExpressionArgument>,
+    ) -> Vec<hir::ExpressionArgument> {
+        args.into_iter()
+            .map(|arg| hir::ExpressionArgument {
+                label: arg.label,
+                expression: self.lower_expression(arg.expression),
+                span: arg.span,
+            })
+            .collect()
+    }
+
+    fn lower_pattern_binding_condition(
+        &mut self,
+        node: ast::PatternBindingCondition,
+    ) -> hir::PatternBindingCondition {
+        hir::PatternBindingCondition {
+            pattern: self.lower_pattern(node.pattern),
+            expression: self.lower_expression(node.expression),
+            shorthand: node.shorthand,
+            span: node.span,
+        }
+    }
+
+    fn lower_pipe_expression(
+        &mut self,
+        lhs: Box<ast::Expression>,
+        rhs: Box<ast::Expression>,
+        span: Span,
+    ) -> Box<hir::Expression> {
+        let lhs_span = lhs.span;
+
+        match *rhs {
+            ast::Expression {
+                kind: ast::ExpressionKind::Call(callee, mut args),
+                ..
+            } => {
+                let mut lhs_slot = Some(lhs);
+
+                for arg in args.iter_mut() {
+                    if lhs_slot.is_some()
+                        && matches!(arg.expression.kind, ast::ExpressionKind::Wildcard)
+                    {
+                        arg.expression = lhs_slot.take().unwrap();
+                        break;
+                    }
+                }
+
+                if let Some(expr) = lhs_slot {
+                    args.insert(
+                        0,
+                        ast::ExpressionArgument {
+                            label: None,
+                            expression: expr,
+                            span: lhs_span,
+                        },
+                    );
+                }
+
+                let kind = hir::ExpressionKind::Call(
+                    self.lower_expression(callee),
+                    self.lower_expression_arguments(args),
+                );
+
+                self.mk_expression(kind, span)
+            }
+            rhs_expr => {
+                let args = vec![ast::ExpressionArgument {
+                    label: None,
+                    expression: lhs,
+                    span: lhs_span,
+                }];
+
+                let kind = hir::ExpressionKind::Call(
+                    self.lower_expression(Box::new(rhs_expr)),
+                    self.lower_expression_arguments(args),
+                );
+
+                self.mk_expression(kind, span)
+            }
+        }
+    }
+}
+
+impl Actor<'_> {
+    fn lower_variant(&mut self, node: ast::Variant) -> hir::Variant {
+        hir::Variant {
+            id: self.next_index(),
+            ctor_id: self.next_index(),
+            identifier: node.identifier,
+            kind: match node.kind {
+                ast::VariantKind::Unit => hir::VariantKind::Unit,
+                ast::VariantKind::Tuple(fields) => hir::VariantKind::Tuple(
+                    fields
+                        .into_iter()
+                        .map(|node| self.lower_field_definition(node))
+                        .collect(),
+                ),
+            },
+            discriminant: node.discriminant.map(|node| self.lower_anon_const(node)),
+            span: node.span,
+        }
+    }
+
+    fn lower_field_definition(&mut self, node: ast::FieldDefinition) -> hir::FieldDefinition {
+        hir::FieldDefinition {
+            id: self.next_index(),
+            mutability: node.mutability,
+            label: node.label,
+            identifier: node.identifier,
+            ty: self.lower_type(node.ty),
+            span: node.span,
+        }
+    }
+}
+
+impl Actor<'_> {
+    fn lower_path(&mut self, id: ast::NodeID, node: ast::Path) -> hir::ResolvedPath {
+        self.context
+            .dcx
+            .emit_info("lowering".into(), Some(node.span));
+
+        let state = self.resolutions.resolutions.get(&id).cloned();
+        let is_resolved = state
+            .as_ref()
+            .map(|s| matches!(s, ResolutionState::Complete(..)))
+            .unwrap_or_default()
+            .clone();
+
+        let unresolved = {
+            let unresolved = match &state {
+                Some(ResolutionState::Partial {
+                    unresolved_count, ..
+                }) => *unresolved_count,
+                _ => 0,
+            };
+
+            let unresolved = node.segments.len() - unresolved;
+            unresolved
+        };
+
+        let resolution = self.convert_resolution_state(state);
+
+        // if is_resolved {
+        let path = hir::Path {
+            span: node.span,
+            resolution,
+            segments: node
+                .segments
+                .into_iter()
+                .map(|n| self.lower_path_segment(n))
+                .collect(),
+        };
+        return hir::ResolvedPath::Resolved(path);
+        // }
+
+        // for (index, node) in node.segments.iter().enumerate().skip(unresolved) {
+        //     println!("{:?}", node.identifier.symbol)
+        // }
+
+        // todo!()
+    }
+
+    fn lower_path_segment(&mut self, node: ast::PathSegment) -> hir::PathSegment {
+        let state = self.resolutions.resolutions.get(&node.id).cloned();
+        let resolution = self.convert_resolution_state(state);
+
+        hir::PathSegment {
+            id: self.next_index(),
+            identifier: node.identifier,
+            arguments: node.arguments.map(|n| self.lower_type_arguments(n)),
+            span: node.span,
+            resolution,
+        }
+    }
+
+    fn lower_path_node(&mut self, node: ast::PathNode) -> hir::PathNode {
+        hir::PathNode {
+            id: self.next_index(),
+            path: self.lower_path(node.id, node.path),
+        }
+    }
+
+    fn lower_local(&mut self, node: ast::Local) -> hir::Local {
+        hir::Local {
+            mutability: node.mutability,
+            pattern: self.lower_pattern(node.pattern),
+            ty: node.ty.map(|n| self.lower_type(n)),
+            initializer: node.initializer.map(|n| self.lower_expression(n)),
+        }
+    }
+}
+
+impl Actor<'_> {
+    fn convert_resolution_state(&mut self, state: Option<ResolutionState>) -> hir::Resolution {
+        hir::Resolution::Error
+    }
+
+    fn get_resolution(&mut self, id: ast::NodeID) -> hir::Resolution {
+        let state = self.resolutions.resolutions.get(&id).cloned();
+        let resolution = self.convert_resolution_state(state);
+        resolution
+    }
+}
+
+impl Actor<'_> {
+    fn mk_expression(&mut self, kind: hir::ExpressionKind, span: Span) -> Box<hir::Expression> {
+        let expr = hir::Expression {
+            id: self.next_index(),
+            kind,
+            span,
+        };
+
+        Box::new(expr)
+    }
+
+    fn mk_statement(&mut self, kind: hir::StatementKind, span: Span) -> hir::Statement {
+        hir::Statement {
+            id: self.next_index(),
+            kind,
+            span,
+        }
+    }
+
+    fn mk_block(&mut self, statements: Vec<hir::Statement>, span: Span) -> hir::Block {
+        let has_declarations = statements
+            .iter()
+            .any(|f| matches!(f.kind, hir::StatementKind::Declaration(..)));
+        hir::Block {
+            id: self.next_index(),
+            statements,
+            span,
+        }
+    }
+}
+
+fn convert_ast_literal(literal: ast::Literal) -> Result<hir::Literal, String> {
+    match literal {
+        ast::Literal::Bool(value) => Ok(hir::Literal::Bool(value)),
+        ast::Literal::Rune { value } => {
+            let c: char = escape::unescape_char(&value)
+                .map_err(|err| format!("malformed rune, {:?}", err))?;
+            Ok(hir::Literal::Rune(c))
+        }
+        ast::Literal::String { value } => Ok(hir::Literal::String(Symbol::new(&value))),
+        ast::Literal::Integer { value, base } => {
+            let content = value.replace("_", "");
+            u64::from_str_radix(&content, base.radix())
+                .map(|i| hir::Literal::Integer(i))
+                .map_err(|err| format!("malformed integer literal: {}", err))
+        }
+        ast::Literal::Float { value } => {
+            match value.parse::<f64>() {
+                Ok(v) => return Ok(hir::Literal::Float(v)),
+                Err(err) => return Err(format!("malformed floating point, {}", err)),
+            };
+        }
+        ast::Literal::Nil => Ok(hir::Literal::Nil),
+    }
+}
+
+mod escape {
+    /// Errors and warnings that can occur during string unescaping. They mostly
+    /// relate to malformed escape sequences, but there are a few that are about
+    /// other problems.
+    #[derive(Debug, PartialEq, Eq)]
+    #[allow(unused)]
+    pub enum EscapeError {
+        /// Expected 1 char, but 0 were found.
+        ZeroChars,
+        /// Expected 1 char, but more than 1 were found.
+        MoreThanOneChar,
+
+        /// Escaped '\' character without continuation.
+        LoneSlash,
+        /// Invalid escape character (e.g. '\z').
+        InvalidEscape,
+        /// Raw '\r' encountered.
+        BareCarriageReturn,
+        /// Raw '\r' encountered in raw string.
+        BareCarriageReturnInRawString,
+        /// Unescaped character that was expected to be escaped (e.g. raw '\t').
+        EscapeOnlyChar,
+
+        /// Numeric character escape is too short (e.g. '\x1').
+        TooShortHexEscape,
+        /// Invalid character in numeric escape (e.g. '\xz')
+        InvalidCharInHexEscape,
+        /// Character code in numeric escape is non-ascii (e.g. '\xFF').
+        OutOfRangeHexEscape,
+
+        /// '\u' not followed by '{'.
+        NoBraceInUnicodeEscape,
+        /// Non-hexadecimal value in '\u{..}'.
+        InvalidCharInUnicodeEscape,
+        /// '\u{}'
+        EmptyUnicodeEscape,
+        /// No closing brace in '\u{..}', e.g. '\u{12'.
+        UnclosedUnicodeEscape,
+        /// '\u{_12}'
+        LeadingUnderscoreUnicodeEscape,
+        /// More than 6 characters in '\u{..}', e.g. '\u{10FFFF_FF}'
+        OverlongUnicodeEscape,
+        /// Invalid in-bound unicode character code, e.g. '\u{DFFF}'.
+        LoneSurrogateUnicodeEscape,
+        /// Out of bounds unicode character code, e.g. '\u{FFFFFF}'.
+        OutOfRangeUnicodeEscape,
+
+        /// Unicode escape code in byte literal.
+        UnicodeEscapeInByte,
+        /// Non-ascii character in byte literal, byte string literal, or raw byte string literal.
+        NonAsciiCharInByte,
+
+        // `\0` in a C string literal.
+        NulInCStr,
+
+        /// After a line ending with '\', the next line contains whitespace
+        /// characters that are not skipped.
+        UnskippedWhitespaceWarning,
+
+        /// After a line ending with '\', multiple lines are skipped.
+        MultipleSkippedLinesWarning,
+    }
+
+    impl EscapeError {
+        /// Returns true for actual errors, as opposed to warnings.
+        pub fn _is_fatal(&self) -> bool {
+            !matches!(
+                self,
+                EscapeError::UnskippedWhitespaceWarning | EscapeError::MultipleSkippedLinesWarning
+            )
+        }
+    }
+
+    /// Takes a contents of a char literal (without quotes), and returns an
+    /// unescaped char or an error.
+    pub fn unescape_char(src: &str) -> Result<char, EscapeError> {
+        unescape_char_or_byte(&mut src.chars(), Mode::Char)
+    }
+
+    /// What kind of literal do we parse.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    #[allow(unused)]
+    pub enum Mode {
+        Char,
+
+        Byte,
+
+        Str,
+        RawStr,
+
+        ByteStr,
+        RawByteStr,
+
+        CStr,
+        RawCStr,
+    }
+
+    #[allow(unused)]
+    impl Mode {
+        pub fn in_double_quotes(self) -> bool {
+            use Mode::*;
+            match self {
+                Str | RawStr | ByteStr | RawByteStr | CStr | RawCStr => true,
+                Char | Byte => false,
+            }
+        }
+
+        /// Are `\x80`..`\xff` allowed?
+        fn allow_high_bytes(self) -> bool {
+            use Mode::*;
+            match self {
+                Char | Str => false,
+                Byte | ByteStr | CStr => true,
+                RawStr | RawByteStr | RawCStr => unreachable!(),
+            }
+        }
+
+        /// Are unicode (non-ASCII) chars allowed?
+        #[inline]
+        fn allow_unicode_chars(self) -> bool {
+            use Mode::*;
+            match self {
+                Byte | ByteStr | RawByteStr => false,
+                Char | Str | RawStr | CStr | RawCStr => true,
+            }
+        }
+
+        /// Are unicode escapes (`\u`) allowed?
+        fn allow_unicode_escapes(self) -> bool {
+            use Mode::*;
+
+            match self {
+                Byte | ByteStr => false,
+                Char | Str | CStr => true,
+                RawByteStr | RawStr | RawCStr => unreachable!(),
+            }
+        }
+
+        pub fn prefix_noraw(self) -> &'static str {
+            use Mode::*;
+            match self {
+                Char | Str | RawStr => "",
+                Byte | ByteStr | RawByteStr => "b",
+                CStr | RawCStr => "c",
+            }
+        }
+    }
+
+    fn scan_escape<T: From<char> + From<u8>>(
+        chars: &mut std::str::Chars<'_>,
+        mode: Mode,
+    ) -> Result<T, EscapeError> {
+        // Previous character was '\\', unescape what follows.
+        let res: char = match chars.next().ok_or(EscapeError::LoneSlash)? {
+            '"' => '"',
+            'n' => '\n',
+            'r' => '\r',
+            't' => '\t',
+            '\\' => '\\',
+            '\'' => '\'',
+            '0' => '\0',
+            'x' => {
+                // Parse hexadecimal character code.
+
+                let hi = chars.next().ok_or(EscapeError::TooShortHexEscape)?;
+                let hi = hi.to_digit(16).ok_or(EscapeError::InvalidCharInHexEscape)?;
+
+                let lo = chars.next().ok_or(EscapeError::TooShortHexEscape)?;
+                let lo = lo.to_digit(16).ok_or(EscapeError::InvalidCharInHexEscape)?;
+
+                let value = (hi * 16 + lo) as u8;
+
+                return if !mode.allow_high_bytes() && !value.is_ascii() {
+                    Err(EscapeError::OutOfRangeHexEscape)
+                } else {
+                    // This may be a high byte, but that will only happen if `T` is
+                    // `MixedUnit`, because of the `allow_high_bytes` check above.
+                    Ok(T::from(value))
+                };
+            }
+            'u' => return scan_unicode(chars, mode.allow_unicode_escapes()).map(T::from),
+            _ => return Err(EscapeError::InvalidEscape),
+        };
+        Ok(T::from(res))
+    }
+
+    fn scan_unicode(
+        chars: &mut std::str::Chars<'_>,
+        allow_unicode_escapes: bool,
+    ) -> Result<char, EscapeError> {
+        // We've parsed '\u', now we have to parse '{..}'.
+
+        if chars.next() != Some('{') {
+            return Err(EscapeError::NoBraceInUnicodeEscape);
+        }
+
+        // First character must be a hexadecimal digit.
+        let mut n_digits = 1;
+        let mut value: u32 = match chars.next().ok_or(EscapeError::UnclosedUnicodeEscape)? {
+            '_' => return Err(EscapeError::LeadingUnderscoreUnicodeEscape),
+            '}' => return Err(EscapeError::EmptyUnicodeEscape),
+            c => c
+                .to_digit(16)
+                .ok_or(EscapeError::InvalidCharInUnicodeEscape)?,
+        };
+
+        // First character is valid, now parse the rest of the number
+        // and closing brace.
+        loop {
+            match chars.next() {
+                None => return Err(EscapeError::UnclosedUnicodeEscape),
+                Some('_') => continue,
+                Some('}') => {
+                    if n_digits > 6 {
+                        return Err(EscapeError::OverlongUnicodeEscape);
+                    }
+
+                    // Incorrect syntax has higher priority for error reporting
+                    // than unallowed value for a literal.
+                    if !allow_unicode_escapes {
+                        return Err(EscapeError::UnicodeEscapeInByte);
+                    }
+
+                    break std::char::from_u32(value).ok_or({
+                        if value > 0x10FFFF {
+                            EscapeError::OutOfRangeUnicodeEscape
+                        } else {
+                            EscapeError::LoneSurrogateUnicodeEscape
+                        }
+                    });
+                }
+                Some(c) => {
+                    let digit: u32 = c
+                        .to_digit(16)
+                        .ok_or(EscapeError::InvalidCharInUnicodeEscape)?;
+                    n_digits += 1;
+                    if n_digits > 6 {
+                        // Stop updating value since we're sure that it's incorrect already.
+                        continue;
+                    }
+                    value = value * 16 + digit;
+                }
+            };
+        }
+    }
+
+    #[inline]
+    fn ascii_check(c: char, allow_unicode_chars: bool) -> Result<char, EscapeError> {
+        if allow_unicode_chars || c.is_ascii() {
+            Ok(c)
+        } else {
+            Err(EscapeError::NonAsciiCharInByte)
+        }
+    }
+
+    fn unescape_char_or_byte(
+        chars: &mut std::str::Chars<'_>,
+        mode: Mode,
+    ) -> Result<char, EscapeError> {
+        let c = chars.next().ok_or(EscapeError::ZeroChars)?;
+        let res = match c {
+            '\\' => scan_escape(chars, mode),
+            '\n' | '\t' | '\'' => Err(EscapeError::EscapeOnlyChar),
+            '\r' => Err(EscapeError::BareCarriageReturn),
+            _ => ascii_check(c, mode.allow_unicode_chars()),
+        }?;
+        if chars.next().is_some() {
+            return Err(EscapeError::MoreThanOneChar);
+        }
+        Ok(res)
     }
 }

@@ -5,7 +5,6 @@ use crate::{
     parse::token::{Base, Token},
     span::{FileID, Position, Span, Spanned},
 };
-use ecow::EcoString;
 use std::{
     ffi::OsStr,
     fs::{read_dir, read_to_string},
@@ -17,7 +16,7 @@ pub struct Pacakge {
 }
 
 pub struct Module {
-    pub name: EcoString,
+    pub name: String,
     pub files: Vec<File>,
     pub submodules: Vec<Module>,
 }

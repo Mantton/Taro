@@ -444,7 +444,7 @@ impl Parser {
                 self.parse_import_export_declaration(false)?,
             ),
             Token::Type => self.parse_type_declaration()?,
-            Token::Function => self.parse_function(mode)?,
+            Token::Function | Token::Static => self.parse_function(mode)?,
             Token::Extend => (Identifier::emtpy(self.file.id), self.parse_impl()?),
             Token::Namespace => self.parse_namespace()?,
             Token::Init => self.parse_initializer(mode)?,
@@ -718,11 +718,7 @@ impl Parser {
 
         let fields = self.parse_field_definitions(Delimiter::Brace)?;
 
-        let s = Struct {
-            generics,
-            fields,
-            ctor_node_id: self.next_id(),
-        };
+        let s = Struct { generics, fields };
         let s = DeclarationKind::Struct(s);
         Ok((identifier, s))
     }
@@ -928,14 +924,8 @@ impl Parser {
     fn parse_variant_kind(&mut self) -> R<VariantKind> {
         match self.current_token() {
             Token::LParen => self.parse_tuple_variant(),
-            Token::LBrace => self.parse_struct_variant(),
             _ => Ok(VariantKind::Unit),
         }
-    }
-
-    fn parse_struct_variant(&mut self) -> R<VariantKind> {
-        let fields = self.parse_field_definitions(Delimiter::Brace)?;
-        Ok(VariantKind::Struct(fields))
     }
 
     fn parse_tuple_variant(&mut self) -> R<VariantKind> {
@@ -1000,18 +990,13 @@ impl Parser {
             Token::Identifier { .. } => self.parse_identifier_type(),
             Token::LParen => self.parse_tuple_type(),
             Token::LBracket => self.parse_collection_type(),
-            Token::Tilde => {
-                self.bump();
-                let mutability = self.parse_mutability();
-                Ok(TypeKind::OptionalReference(self.parse_type()?, mutability))
-            }
             Token::Underscore => {
                 self.bump();
                 Ok(TypeKind::Infer)
             }
             Token::Any => {
                 self.bump();
-                let interfaces = self.parse_sequence(Token::Amp, |this| this.parse_path())?;
+                let interfaces = self.parse_sequence(Token::Amp, |this| this.parse_path_node())?;
                 Ok(TypeKind::BoxedExistential { interfaces })
             }
             _ => {
@@ -1237,11 +1222,9 @@ impl Parser {
     }
 
     fn parse_generic_bound(&mut self) -> R<GenericBound> {
-        let path = PathNode {
-            id: self.next_id(),
-            path: self.parse_path()?,
-        };
-        Ok(GenericBound { path })
+        Ok(GenericBound {
+            path: self.parse_path_node()?,
+        })
     }
 }
 
@@ -1309,12 +1292,7 @@ impl Parser {
     fn parse_conformances(&mut self) -> R<Option<Conformances>> {
         if self.eat(Token::Colon) {
             let lo = self.lo_span();
-            let bounds = self.parse_sequence(Token::Comma, |this| {
-                Ok(PathNode {
-                    id: this.next_id(),
-                    path: this.parse_path()?,
-                })
-            })?;
+            let bounds = self.parse_sequence(Token::Comma, |this| this.parse_path_node())?;
             let node = Conformances {
                 bounds,
                 span: lo.to(self.hi_span()),
@@ -1723,7 +1701,10 @@ impl Parser {
         self.expect(Token::Else)?;
         let block = self.parse_block()?;
 
-        Ok(StatementKind::Guard { condition, block })
+        Ok(StatementKind::Guard {
+            condition,
+            else_block: block,
+        })
     }
 }
 
@@ -1959,7 +1940,9 @@ impl Parser {
 
         while matches!(self.current_token(), Token::Pipe) {
             self.bump();
-            let right = self.parse_ternary_expr()?;
+            let right = self.with_restrictions(Restrictions::ALLOW_WILDCARD, |this| {
+                this.parse_ternary_expr()
+            })?;
 
             let span = expr.span.to(right.span);
             let kind = ExpressionKind::Pipe(expr, right);
@@ -2749,7 +2732,7 @@ impl Parser {
     fn parse_literal(&mut self) -> R<Box<Expression>> {
         let literal = match self.current_token() {
             Token::Integer { value, base } => Literal::Integer { value, base },
-            Token::Float { value, base } => Literal::Float { value, base },
+            Token::Float { value, base } => Literal::Float { value },
             Token::String { value } => Literal::String { value },
             Token::Rune { value } => Literal::Rune { value },
             Token::True => Literal::Bool(true),
@@ -2769,9 +2752,10 @@ impl Parser {
 impl Parser {
     fn parse_function(&mut self, mode: FnParseMode) -> R<(Identifier, DeclarationKind)> {
         // func <name> <type_parameters>? (<parameter list>) <async?> -> <return_type>? <where_clause>?
+        let is_static = self.eat(Token::Static);
         self.expect(Token::Function)?;
         let identifier = self.parse_identifier()?;
-        let func = self.parse_fn(mode)?;
+        let func = self.parse_fn(mode, is_static)?;
         Ok((identifier, DeclarationKind::Function(func)))
     }
 
@@ -2779,7 +2763,7 @@ impl Parser {
         self.expect(Token::Init)?;
         let lo = self.lo_span();
         let span = lo.to(self.hi_span());
-        let function = self.parse_fn(mode)?;
+        let function = self.parse_fn(mode, false)?;
         Ok((
             Identifier::new(Symbol::new(""), span),
             DeclarationKind::Initializer(Initializer { function }),
@@ -2791,14 +2775,14 @@ impl Parser {
         let lo = self.lo_span();
         let kind = self.parse_operator_from_token()?;
         let span = lo.to(self.hi_span());
-        let function = self.parse_fn(mode)?;
+        let function = self.parse_fn(mode, false)?;
         Ok((
             Identifier::new(Symbol::new(""), span),
             DeclarationKind::Operator(Operator { kind, function }),
         ))
     }
 
-    fn parse_fn(&mut self, mode: FnParseMode) -> R<Function> {
+    fn parse_fn(&mut self, mode: FnParseMode, is_static: bool) -> R<Function> {
         let lo = self.lo_span();
         let type_parameters = self.parse_type_parameters()?;
         let parameters = self.parse_function_parameters()?;
@@ -2842,6 +2826,7 @@ impl Parser {
             signature,
             block,
             generics,
+            is_static,
         };
 
         Ok(func)
@@ -3021,6 +3006,13 @@ impl Parser {
         };
 
         Ok(segment)
+    }
+
+    pub fn parse_path_node(&mut self) -> R<PathNode> {
+        Ok(PathNode {
+            id: self.next_id(),
+            path: self.parse_path()?,
+        })
     }
 }
 

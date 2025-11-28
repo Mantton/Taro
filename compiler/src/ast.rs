@@ -4,7 +4,6 @@ use crate::{
     parse::Base,
     span::{FileID, Span, Symbol},
 };
-use ecow::EcoString;
 use index_vec::define_index_type;
 
 define_index_type! {
@@ -142,7 +141,6 @@ pub struct Interface {
 pub struct Struct {
     pub generics: Generics,
     pub fields: Vec<FieldDefinition>,
-    pub ctor_node_id: NodeID,
 }
 
 #[derive(Debug)]
@@ -156,6 +154,7 @@ pub struct Function {
     pub generics: Generics,
     pub signature: FunctionSignature,
     pub block: Option<Block>,
+    pub is_static: bool,
 }
 
 #[derive(Debug)]
@@ -267,7 +266,7 @@ pub enum StatementKind {
     Defer(Block),
     Guard {
         condition: Box<Expression>,
-        block: Block,
+        else_block: Block,
     },
 }
 
@@ -383,10 +382,10 @@ pub enum ExpressionKind {
 #[derive(Debug)]
 pub enum Literal {
     Bool(bool),
-    Rune { value: EcoString },
-    String { value: EcoString },
-    Integer { value: EcoString, base: Base },
-    Float { value: EcoString, base: Base },
+    Rune { value: String },
+    String { value: String },
+    Integer { value: String, base: Base },
+    Float { value: String },
     Nil,
 }
 
@@ -491,8 +490,6 @@ pub enum TypeKind {
     ///
     /// `T?`
     Optional(Box<Type>),
-    /// `~T` -> Option<&T> | `~const T` -> Option<&const T>
-    OptionalReference(Box<Type>, Mutability),
     /// An Array with a fixed size `N`
     ///
     /// `[T;N]`
@@ -516,7 +513,7 @@ pub enum TypeKind {
     /// |a, b| a + b
     InferedClosureParameter,
     /// any T
-    BoxedExistential { interfaces: Vec<Path> },
+    BoxedExistential { interfaces: Vec<PathNode> },
     /// _
     Infer,
 }
@@ -689,7 +686,6 @@ pub struct Variant {
 pub enum VariantKind {
     Unit,
     Tuple(Vec<FieldDefinition>),
-    Struct(Vec<FieldDefinition>),
 }
 
 #[derive(Debug)]
@@ -1438,9 +1434,12 @@ pub fn walk_statement<V: AstVisitor>(visitor: &mut V, s: &Statement) -> V::Resul
             visit_optional!(visitor, visit_expression, &node.clause);
             try_visit!(visitor.visit_block(&node.block));
         }
-        StatementKind::Guard { condition, block } => {
+        StatementKind::Guard {
+            condition,
+            else_block,
+        } => {
             try_visit!(visitor.visit_expression(condition));
-            try_visit!(visitor.visit_block(block));
+            try_visit!(visitor.visit_block(else_block));
         }
     }
     V::Result::output()
@@ -1525,7 +1524,10 @@ pub fn walk_expression<V: AstVisitor>(visitor: &mut V, node: &Expression) -> V::
             try_visit!(visitor.visit_expression(lhs));
             try_visit!(visitor.visit_expression(rhs));
         }
-        ExpressionKind::PatternBinding(pattern_binding_condition) => todo!(),
+        ExpressionKind::PatternBinding(condition) => {
+            try_visit!(visitor.visit_pattern(&condition.pattern));
+            try_visit!(visitor.visit_expression(&condition.expression));
+        }
         ExpressionKind::OptionalDefault(lhs, rhs) => {
             try_visit!(visitor.visit_expression(lhs));
             try_visit!(visitor.visit_expression(rhs));
@@ -1573,9 +1575,6 @@ pub fn walk_type<V: AstVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
         TypeKind::Optional(internal) => {
             try_visit!(visitor.visit_type(internal));
         }
-        TypeKind::OptionalReference(internal, _) => {
-            try_visit!(visitor.visit_type(internal));
-        }
         TypeKind::Array { size, element } => {
             try_visit!(visitor.visit_anon_constant(size));
             try_visit!(visitor.visit_type(element));
@@ -1592,7 +1591,7 @@ pub fn walk_type<V: AstVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
             try_visit!(visitor.visit_type(output));
         }
         TypeKind::BoxedExistential { interfaces } => {
-            walk_list!(visitor, visit_path, interfaces);
+            walk_list!(visitor, visit_path_node, interfaces);
         }
         TypeKind::ImplicitSelf => {}
         TypeKind::InferedClosureParameter => {}
@@ -1744,9 +1743,6 @@ pub fn walk_enum_variant<V: AstVisitor>(visitor: &mut V, node: &Variant) -> V::R
     try_visit!(visitor.visit_identifier(&node.identifier));
     match &node.kind {
         VariantKind::Tuple(fields) => {
-            walk_list!(visitor, visit_field_definition, fields);
-        }
-        VariantKind::Struct(fields) => {
             walk_list!(visitor, visit_field_definition, fields);
         }
         _ => {}

@@ -192,8 +192,8 @@ impl<'r, 'a, 'c> ast::AstVisitor for Actor<'r, 'a, 'c> {
                 self.resolve_path_with_source(node.id, path, ResolutionSource::Type);
             }
             ast::TypeKind::BoxedExistential { interfaces } => {
-                for path in interfaces {
-                    self.resolve_path_with_source(node.id, path, ResolutionSource::Interface);
+                for node in interfaces {
+                    self.resolve_path_with_source(node.id, &node.path, ResolutionSource::Interface);
                 }
             }
             _ => {}
@@ -615,6 +615,8 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                 Resolution::ImplicitSelfParameter => {
                     return Ok(ResolvedEntity::DeferredAssociated);
                 }
+                // Variants Not Created By Resolver Step
+                Resolution::Foundation(_) | Resolution::Error => unreachable!(),
             },
             ResolvedEntity::Value => return Ok(ResolvedEntity::Value),
             ResolvedEntity::DeferredAssociated => {
@@ -654,6 +656,8 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
             | Resolution::FunctionSet(..)
             | Resolution::SelfConstructor(..)
             | Resolution::ImplicitSelfParameter => {}
+            // Variants Not Created By Resolver Step
+            Resolution::Foundation(_) | Resolution::Error => unreachable!(),
         }
 
         return Ok(());
