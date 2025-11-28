@@ -557,6 +557,8 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
         base: ResolvedEntity<'a>,
         name: &Identifier,
     ) -> Result<ResolvedEntity<'a>, ResolutionError> {
+        let is_init = name.symbol.as_str() == "init";
+
         match base {
             ResolvedEntity::Scoped(scope) => {
                 for &ns in &[ScopeNamespace::Type, ScopeNamespace::Value] {
@@ -581,7 +583,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                 Resolution::PrimaryType(..) => {
                     return Ok(ResolvedEntity::DeferredAssociated);
                 }
-                Resolution::Definition(_, kind) => match kind {
+                Resolution::Definition(def_id, kind) => match kind {
                     DefinitionKind::Module | DefinitionKind::Namespace => unreachable!(),
                     DefinitionKind::Enum
                     | DefinitionKind::Struct
@@ -589,6 +591,11 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                     | DefinitionKind::Interface
                     | DefinitionKind::TypeParameter
                     | DefinitionKind::AssociatedType => {
+                        if is_init {
+                            return Ok(ResolvedEntity::Resolved(
+                                Resolution::SelfConstructor(def_id),
+                            ));
+                        }
                         return Ok(ResolvedEntity::DeferredAssociated);
                     }
                     DefinitionKind::Constant | DefinitionKind::ModuleVariable => {
@@ -603,9 +610,19 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                     _ => unreachable!(),
                 },
                 Resolution::SelfTypeAlias(definition_id) => {
+                    if is_init {
+                        return Ok(ResolvedEntity::Resolved(Resolution::SelfConstructor(
+                            definition_id,
+                        )));
+                    }
                     return Ok(ResolvedEntity::DeferredAssociated);
                 }
                 Resolution::InterfaceSelfTypeParameter(definition_id) => {
+                    if is_init {
+                        return Ok(ResolvedEntity::Resolved(Resolution::SelfConstructor(
+                            definition_id,
+                        )));
+                    }
                     return Ok(ResolvedEntity::DeferredAssociated);
                 }
                 Resolution::LocalVariable(_) => return Ok(ResolvedEntity::Value),

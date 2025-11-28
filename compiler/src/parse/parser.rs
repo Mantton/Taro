@@ -796,6 +796,33 @@ impl Parser {
         };
     }
 
+    fn parse_member_identifier(&mut self) -> R<Identifier> {
+        let Some(current) = self.current() else {
+            return Err(self.err_at_current(ParserError::ExpectedIdentifier));
+        };
+
+        let span = current.span;
+        match current.value {
+            Token::Identifier { value: symbol } => {
+                let v = Identifier {
+                    span,
+                    symbol: Symbol::new(&symbol),
+                };
+                self.bump();
+                Ok(v)
+            }
+            Token::Init => {
+                let v = Identifier {
+                    span,
+                    symbol: Symbol::new("init"),
+                };
+                self.bump();
+                Ok(v)
+            }
+            _ => Err(self.err_at_current(ParserError::ExpectedIdentifier)),
+        }
+    }
+
     fn parse_optional_identifier(&mut self) -> R<Option<Identifier>> {
         if matches!(self.current_token(), Token::Identifier { .. }) {
             return Ok(Some(self.parse_identifier()?));
@@ -2250,7 +2277,7 @@ impl Parser {
                 // field access: `foo.<ident>`
                 let kind = ExpressionKind::Member {
                     target: expr,
-                    name: self.parse_identifier()?,
+                    name: self.parse_member_identifier()?,
                 };
                 let span = lo.to(self.hi_span());
                 expr = self.build_expr(kind, span);
