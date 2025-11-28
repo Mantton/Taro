@@ -719,9 +719,6 @@ impl Actor<'_> {
 
 impl Actor<'_> {
     fn lower_expression(&mut self, node: Box<ast::Expression>) -> Box<hir::Expression> {
-        self.context
-            .dcx
-            .emit_info("Lowering".into(), Some(node.span));
         let kind = match node.kind {
             ast::ExpressionKind::Literal(lit) => self.lower_literal(lit, node.span),
             ast::ExpressionKind::Identifier(node) => hir::ExpressionKind::Identifier(node),
@@ -987,10 +984,6 @@ impl Actor<'_> {
 
 impl Actor<'_> {
     fn lower_path(&mut self, id: ast::NodeID, node: ast::Path) -> hir::ResolvedPath {
-        self.context
-            .dcx
-            .emit_info("lowering".into(), Some(node.span));
-
         let state = self.resolutions.resolutions.get(&id).cloned();
         let is_resolved = state
             .as_ref()

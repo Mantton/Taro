@@ -1,9 +1,8 @@
-use std::{ops::Deref, rc::Rc};
-
 use crate::{
     compile::{config::Config, global::GlobalContext},
     diagnostics::DiagCtx,
 };
+use std::{ops::Deref, rc::Rc};
 
 #[derive(Clone, Copy)]
 pub struct CompilerState<'state> {

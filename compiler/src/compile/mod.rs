@@ -34,11 +34,17 @@ impl<'state> Compiler<'state> {
 
 impl<'state> Compiler<'state> {
     pub fn build(&mut self) -> CompileResult<()> {
+        // Tokenization & Parsing
         let package =
             parse::lexer::tokenize_package(self.state.config.src.clone(), &self.state.dcx)?;
         let package = parse::parser::parse_package(package, &self.state.dcx)?;
+        // AST Passes
         let resolution_output = sema::resolve::resolve_package(&package, self.state)?;
+        // HIR Construction
         let package = ast_lowering::lower_package(package, self.state, resolution_output)?;
+        // HIR Passes
+        sema::validate::validate_package(&package, self.state)?;
+        sema::tycheck::check_package(&package, self.state)?;
         Ok(())
     }
 }
