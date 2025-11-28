@@ -1,5 +1,5 @@
 use crate::ast::{Identifier, NodeID, Variant, VariantKind};
-use crate::compile::state::CompilerState;
+use crate::compile::context::GlobalContext;
 use crate::sema::resolve::arena::ResolverArenas;
 use crate::sema::resolve::models::ResolutionOutput;
 use crate::sema::resolve::resolver::Resolver;
@@ -20,10 +20,10 @@ mod usage;
 
 pub fn resolve_package(
     package: &ast::Package,
-    state: CompilerState,
+    gcx: GlobalContext,
 ) -> CompileResult<ResolutionOutput> {
     let arenas = ResolverArenas::default();
-    let mut resolver = Resolver::new(&arenas, state);
+    let mut resolver = Resolver::new(&arenas, gcx);
     tag::tag_package_symbols(package, &mut resolver)?;
     define::define_package_symbols(package, &mut resolver)?;
     usage::resolve_usages(&mut resolver)?;

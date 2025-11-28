@@ -1,6 +1,6 @@
 use crate::{
     ast::{self, Identifier, Label},
-    compile::state::CompilerState,
+    compile::context::GlobalContext,
     error::{CompileResult, ReportedError},
     hir,
     sema::resolve::models::{Resolution, ResolutionError, ResolutionOutput, ResolutionState},
@@ -9,23 +9,23 @@ use crate::{
 
 pub fn lower_package(
     package: ast::Package,
-    state: CompilerState,
+    gcx: GlobalContext,
     resolutions: ResolutionOutput,
 ) -> CompileResult<hir::Package> {
-    let mut actor = Actor::new(state, resolutions);
+    let mut actor = Actor::new(gcx, resolutions);
     let root = actor.lower_module(package.root);
-    state.dcx.ok()?;
+    gcx.dcx.ok()?;
     Ok(hir::Package { root })
 }
 
 pub struct Actor<'ctx> {
-    pub context: CompilerState<'ctx>,
+    pub context: GlobalContext<'ctx>,
     pub resolutions: ResolutionOutput,
     pub next_index: u32,
 }
 
 impl Actor<'_> {
-    fn new<'a>(context: CompilerState<'a>, resolutions: ResolutionOutput) -> Actor<'a> {
+    fn new<'a>(context: GlobalContext<'a>, resolutions: ResolutionOutput) -> Actor<'a> {
         Actor {
             context,
             resolutions,

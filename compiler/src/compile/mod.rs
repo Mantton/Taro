@@ -4,7 +4,7 @@ use crate::{
     ast_lowering,
     compile::{
         config::Config,
-        state::{CompilerContext, CompilerState},
+        context::{CompilerContext, GlobalContext},
     },
     diagnostics::DiagCtx,
     error::CompileResult,
@@ -12,11 +12,10 @@ use crate::{
 };
 
 pub mod config;
-pub mod global;
-pub mod state;
+pub mod context;
 
 pub struct Compiler<'state> {
-    pub state: CompilerState<'state>,
+    pub context: GlobalContext<'state>,
 }
 
 pub enum CompilationKind {
@@ -25,9 +24,9 @@ pub enum CompilationKind {
 }
 
 impl<'state> Compiler<'state> {
-    pub fn new(context: &'state CompilerContext) -> Compiler<'state> {
+    pub fn new(context: &'state CompilerContext, config: &'state Config) -> Compiler<'state> {
         Compiler {
-            state: CompilerState::new(context),
+            context: GlobalContext::new(context, config),
         }
     }
 }
@@ -36,15 +35,15 @@ impl<'state> Compiler<'state> {
     pub fn build(&mut self) -> CompileResult<()> {
         // Tokenization & Parsing
         let package =
-            parse::lexer::tokenize_package(self.state.config.src.clone(), &self.state.dcx)?;
-        let package = parse::parser::parse_package(package, &self.state.dcx)?;
+            parse::lexer::tokenize_package(self.context.config.src.clone(), &self.context.dcx)?;
+        let package = parse::parser::parse_package(package, &self.context.dcx)?;
         // AST Passes
-        let resolution_output = sema::resolve::resolve_package(&package, self.state)?;
+        let resolution_output = sema::resolve::resolve_package(&package, self.context)?;
         // HIR Construction
-        let package = ast_lowering::lower_package(package, self.state, resolution_output)?;
+        let package = ast_lowering::lower_package(package, self.context, resolution_output)?;
         // HIR Passes
-        sema::validate::validate_package(&package, self.state)?;
-        sema::tycheck::check_package(&package, self.state)?;
+        sema::validate::validate_package(&package, self.context)?;
+        sema::tycheck::check_package(&package, self.context)?;
         Ok(())
     }
 }

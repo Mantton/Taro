@@ -1,7 +1,7 @@
 use crate::{
     PackageIndex,
     ast::{Identifier, NodeID, PathSegment},
-    compile::state::CompilerState,
+    compile::context::GlobalContext,
     diagnostics::DiagCtx,
     parse::lexer::File,
     sema::resolve::{
@@ -25,7 +25,7 @@ use std::cell::RefCell;
 
 pub struct Resolver<'arena, 'compiler> {
     pub arenas: &'arena ResolverArenas,
-    pub compiler: CompilerState<'compiler>,
+    pub compiler: GlobalContext<'compiler>,
     node_to_def: FxHashMap<NodeID, DefinitionID>,
     def_to_kind: FxHashMap<DefinitionID, DefinitionKind>,
     pub def_to_ident: FxHashMap<DefinitionID, Identifier>,
@@ -44,7 +44,7 @@ pub struct Resolver<'arena, 'compiler> {
 }
 
 impl<'a, 'c> Resolver<'a, 'c> {
-    pub fn new(arenas: &'a ResolverArenas, compiler: CompilerState<'c>) -> Resolver<'a, 'c> {
+    pub fn new(arenas: &'a ResolverArenas, compiler: GlobalContext<'c>) -> Resolver<'a, 'c> {
         Resolver {
             arenas,
             compiler,
@@ -87,7 +87,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
         parent: Option<DefinitionID>,
     ) -> DefinitionID {
         let index = {
-            let parent_index = self.compiler.config.index;
+            let parent_index = self.package_index();
             let def_index = DefinitionIndex::new(self.next_index);
             DefinitionID::new(parent_index, def_index)
         };

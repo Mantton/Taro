@@ -1,6 +1,6 @@
-use crate::{compile::state::CompilerState, error::CompileResult, hir};
+use crate::{compile::context::GlobalContext, error::CompileResult, hir};
 
-pub fn validate_package(package: &hir::Package, state: CompilerState) -> CompileResult<()> {
+pub fn validate_package(package: &hir::Package, gcx: GlobalContext) -> CompileResult<()> {
     // TODO
     Ok(())
 }

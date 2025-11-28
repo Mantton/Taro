@@ -1,5 +1,3 @@
-use std::rc::Rc;
-
 use crate::{
     CommandLineArguments,
     package::{
@@ -12,8 +10,7 @@ use compiler::{
     compile::{
         Compiler,
         config::Config,
-        global::{Gcx, GlobalArenas, GlobalContext},
-        state::CompilerContext,
+        context::{CompilerArenas, CompilerContext, CompilerStore},
     },
     constants::STD_PREFIX,
     diagnostics::DiagCtx,
@@ -22,13 +19,14 @@ use compiler::{
 
 pub fn run(arguments: CommandLineArguments) -> Result<(), ReportedError> {
     let cwd = std::env::current_dir().map_err(|_| ReportedError)?;
-    let dcx = Rc::new(DiagCtx::new(cwd));
-    let arenas = GlobalArenas::new();
-    let gcx = &GlobalContext::new(&arenas);
+    let dcx = DiagCtx::new(cwd);
+    let arenas = CompilerArenas::new();
+    let store = CompilerStore::new(&arenas);
+    let icx = CompilerContext::new(dcx, store);
 
     let graph = sync_dependencies(arguments.path)?;
 
-    let _ = compile_std(dcx.clone(), &gcx)?;
+    let _ = compile_std(&icx)?;
 
     for (index, package) in graph.ordered.iter().enumerate() {
         let package_index = PackageIndex::new(index + 1);
@@ -51,31 +49,26 @@ pub fn run(arguments: CommandLineArguments) -> Result<(), ReportedError> {
             index: package_index,
         };
 
-        let ctx = CompilerContext {
-            dcx: dcx.clone(),
-            gcx,
-            config,
-        };
-        let mut compiler = Compiler::new(&ctx);
+        let mut compiler = Compiler::new(&icx, &config);
         let _ = compiler.build()?;
     }
     Ok(())
 }
 
-fn compile_std(dcx: Rc<DiagCtx>, gcx: &Gcx) -> Result<(), ReportedError> {
+fn compile_std(ctx: &CompilerContext) -> Result<(), ReportedError> {
     println!("Compiling – std");
 
     let src = language_home()
         .map_err(|e| {
             let message = format!("failed to resolve language home – {}", e);
-            dcx.emit_error(message, None);
+            ctx.dcx.emit_error(message, None);
             ReportedError
         })?
         .join(STD_PREFIX)
         .canonicalize()
         .map_err(|e| {
             let message = format!("failed to resolve standard library location – {}", e);
-            dcx.emit_error(message, None);
+            ctx.dcx.emit_error(message, None);
             ReportedError
         })?;
     let config = Config {
@@ -84,8 +77,7 @@ fn compile_std(dcx: Rc<DiagCtx>, gcx: &Gcx) -> Result<(), ReportedError> {
         dependencies: Default::default(),
         index: PackageIndex::new(0),
     };
-    let context = CompilerContext { dcx, gcx, config };
-    let mut compiler = Compiler::new(&context);
+    let mut compiler = Compiler::new(ctx, &config);
     let _ = compiler.build()?;
     Ok(())
 }
