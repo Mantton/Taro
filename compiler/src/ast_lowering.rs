@@ -1,9 +1,9 @@
 use crate::{
-    ast::{self, Identifier, Label},
+    ast::{self, Identifier},
     compile::context::GlobalContext,
-    error::{CompileResult, ReportedError},
+    error::CompileResult,
     hir,
-    sema::resolve::models::{Resolution, ResolutionError, ResolutionOutput, ResolutionState},
+    sema::resolve::models::{Resolution, ResolutionOutput, ResolutionState},
     span::{Span, Symbol},
 };
 

@@ -5,8 +5,6 @@ use crate::{
     span::{FileID, Span, Symbol},
     utils::intern::Interned,
 };
-use ecow::EcoString;
-use index_vec::define_index_type;
 use indexmap::IndexSet;
 use rustc_hash::FxHashMap;
 use std::cell::{Cell, RefCell};
@@ -35,8 +33,7 @@ pub enum DefinitionKind {
     AssociatedInitializer,
     AssociatedOperator,
     AssociatedType,
-    EnumVariant,
-    Ctor(CtorOf, CtorKind),
+    VariantConstructor(VariantCtorKind),
 }
 
 impl DefinitionKind {
@@ -56,36 +53,29 @@ impl DefinitionKind {
             DefinitionKind::Variant => "variant",
             DefinitionKind::Export => "export",
             DefinitionKind::Constant => "constant",
-            DefinitionKind::Ctor(..) => "constructor",
+            DefinitionKind::VariantConstructor(..) => "constructor",
             DefinitionKind::AssociatedType => "associated type",
             DefinitionKind::AssociatedFunction => "associated function",
             DefinitionKind::AssociatedConstant => "associated constant",
             DefinitionKind::ConstParameter => "const parameter",
             DefinitionKind::ModuleVariable => "variable",
             DefinitionKind::AssociatedInitializer => "associated initializer",
-            DefinitionKind::EnumVariant => "enum variant",
             DefinitionKind::AssociatedOperator => "associated operator",
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CtorOf {
-    Struct,
-    EnumVariant,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CtorKind {
+pub enum VariantCtorKind {
     Function,
     Constant,
 }
 
-impl CtorKind {
-    pub fn from_variant(vdata: &ast::VariantKind) -> CtorKind {
+impl VariantCtorKind {
+    pub fn from_variant(vdata: &ast::VariantKind) -> VariantCtorKind {
         match *vdata {
-            ast::VariantKind::Tuple(..) => CtorKind::Function,
-            ast::VariantKind::Unit => CtorKind::Constant,
+            ast::VariantKind::Tuple(..) => VariantCtorKind::Function,
+            ast::VariantKind::Unit => VariantCtorKind::Constant,
         }
     }
 }
@@ -292,11 +282,6 @@ pub enum LexicalScopeSource<'a> {
     Plain,
     DefBoundary(DefinitionID),
     Scoped(Scope<'a>),
-}
-
-pub enum LexicalScopeBinding<'arena> {
-    Declaration(Holder<'arena>),
-    Resolution(Resolution),
 }
 
 #[derive(Debug)]
@@ -516,21 +501,27 @@ impl ResolutionSource {
                         | DefinitionKind::Struct
                         | DefinitionKind::Variant
                         | DefinitionKind::ConstParameter
-                        | DefinitionKind::Ctor(..)
+                        | DefinitionKind::VariantConstructor(..)
                 ) | Resolution::LocalVariable(..)
                     | Resolution::FunctionSet(..)
                     | Resolution::SelfConstructor(..)
             ),
             ResolutionSource::MatchPatternUnit => matches!(
                 res,
-                Resolution::Definition(_, DefinitionKind::Ctor(_, CtorKind::Constant))
+                Resolution::Definition(
+                    _,
+                    DefinitionKind::VariantConstructor(VariantCtorKind::Constant)
+                )
             ),
             ResolutionSource::MatchPatternTupleStruct => matches!(
                 res,
-                Resolution::Definition(_, DefinitionKind::Ctor(_, CtorKind::Function))
+                Resolution::Definition(
+                    _,
+                    DefinitionKind::VariantConstructor(VariantCtorKind::Function)
+                )
             ),
             ResolutionSource::MatchPatternStruct => {
-                matches!(res, Resolution::Definition(_, DefinitionKind::EnumVariant))
+                matches!(res, Resolution::Definition(_, DefinitionKind::Variant))
             }
             ResolutionSource::Module => matches!(
                 res,

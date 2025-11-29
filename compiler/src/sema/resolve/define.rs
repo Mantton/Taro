@@ -1,10 +1,7 @@
 use std::cell::Cell;
 
 use crate::{
-    ast::{
-        self, AssocContext, AstVisitor, DeclarationKind, Identifier, NodeID, UseTree, UseTreeKind,
-        VisibilityLevel, walk_package,
-    },
+    ast::{self, AssocContext, AstVisitor, Identifier, NodeID, UseTree, UseTreeKind, walk_package},
     error::CompileResult,
     sema::resolve::{
         models::{
@@ -171,7 +168,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
         let visibility = 0;
 
         match &declaration.kind {
-            ast::DeclarationKind::Struct(node) => {
+            ast::DeclarationKind::Struct(_) => {
                 self.define(identifier, ScopeNamespace::Type, resolution, visibility);
             }
             ast::DeclarationKind::Enum(..) | ast::DeclarationKind::TypeAlias(..) => {
@@ -182,7 +179,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
             | ast::DeclarationKind::Constant(..) => {
                 self.define(identifier, ScopeNamespace::Value, resolution, visibility);
             }
-            ast::DeclarationKind::Extension(node) => return None,
+            ast::DeclarationKind::Extension(_) => return None,
             ast::DeclarationKind::Interface(..) => {
                 let scope = ScopeData::new(
                     ScopeKind::Definition(def_id, DefinitionKind::Interface),
@@ -331,7 +328,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
         identifier: &Identifier,
         namespace: ScopeNamespace,
         resolution: Resolution,
-        visibility: usize,
+        _visibility: usize,
     ) {
         let Some(current_scope) = self.scopes.current else {
             return;
@@ -445,7 +442,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
 
     fn define_usage(
         &mut self,
-        node_id: NodeID,
+        _node_id: NodeID,
         scope: Scope<'a>,
         module_path: Vec<Identifier>,
         kind: UsageKind,

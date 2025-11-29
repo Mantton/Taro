@@ -3,25 +3,20 @@ use crate::{
     ast::{Identifier, NodeID, PathSegment},
     compile::context::GlobalContext,
     diagnostics::DiagCtx,
-    parse::lexer::File,
     sema::resolve::{
         arena::ResolverArenas,
         models::{
             DefinitionID, DefinitionIndex, DefinitionKind, ExpressionResolutionState, Holder,
-            ImplicitScope, LexicalScope, LexicalScopeBinding, LexicalScopeSource, NameEntry,
-            PathResult, PrimaryType, Resolution, ResolutionError, ResolutionOutput,
-            ResolutionSource, ResolutionState, ResolvedValue, Scope, ScopeData, ScopeEntry,
-            ScopeEntryData, ScopeEntryKind, ScopeKind, ScopeNamespace, ScopeTable, UsageEntry,
-            UsageEntryData,
+            ImplicitScope, LexicalScope, LexicalScopeSource, PathResult, PrimaryType, Resolution,
+            ResolutionError, ResolutionOutput, ResolutionSource, ResolutionState, ResolvedValue,
+            Scope, ScopeData, ScopeEntry, ScopeEntryData, ScopeEntryKind, ScopeKind,
+            ScopeNamespace, ScopeTable, UsageEntry, UsageEntryData,
         },
     },
-    span::{FileID, Span, Symbol},
+    span::{FileID, Symbol},
     utils::intern::Interned,
 };
-use ecow::EcoString;
-use index_vec::IndexVec;
-use rustc_hash::{FxHashMap, FxHashSet};
-use std::cell::RefCell;
+use rustc_hash::FxHashMap;
 
 pub struct Resolver<'arena, 'compiler> {
     pub arenas: &'arena ResolverArenas,
@@ -35,7 +30,6 @@ pub struct Resolver<'arena, 'compiler> {
     pub unresolved_exports: Vec<UsageEntry<'arena>>,
     pub root_module_scope: Option<Scope<'arena>>,
     pub file_scope_mapping: FxHashMap<FileID, Scope<'arena>>,
-    pub module_scope_mapping: FxHashMap<usize, Scope<'arena>>,
     pub definition_scope_mapping: FxHashMap<DefinitionID, Scope<'arena>>,
     pub block_scope_mapping: FxHashMap<NodeID, Scope<'arena>>,
     pub builin_types_bindings: FxHashMap<Symbol, Resolution>,
@@ -59,7 +53,6 @@ impl<'a, 'c> Resolver<'a, 'c> {
             root_module_scope: None,
 
             file_scope_mapping: Default::default(),
-            module_scope_mapping: Default::default(),
             definition_scope_mapping: Default::default(),
             block_scope_mapping: Default::default(),
 
@@ -283,7 +276,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
             };
 
             let Some(next_scope) = next_scope else {
-                return Err((ResolutionError::UnknownSymbol(*identifier)));
+                return Err(ResolutionError::UnknownSymbol(*identifier));
             };
             scope = Some(next_scope);
         }
@@ -344,10 +337,10 @@ impl<'a, 'c> Resolver<'a, 'c> {
             if let Some(scope) = result.scope() {
                 self.record_resolution(segment.id, ResolutionState::Complete(resolution));
                 resulting_scope = Some(scope)
-            } else if (is_last) {
+            } else if is_last {
                 self.record_resolution(segment.id, ResolutionState::Complete(resolution.clone()));
                 return PathResult::Resolution(ResolutionState::Complete(resolution));
-            } else if (possibly_associated_type) {
+            } else if possibly_associated_type {
                 self.record_resolution(segment.id, ResolutionState::Complete(resolution.clone()));
                 let unresolved_count = path.len() - 1 - index;
                 return PathResult::Resolution(ResolutionState::Partial {
@@ -445,8 +438,6 @@ impl<'a, 'c> Resolver<'a, 'c> {
                         }
                     }
                 }
-                eprintln!("multiple candidates, what do we wanna do now?");
-                todo!()
             }
         }
     }
@@ -460,7 +451,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
             let table = scope.table.borrow();
             let entry = table.get(&name.symbol);
             if let Some(entry) = entry {
-                let x = match namespace {
+                match namespace {
                     ScopeNamespace::Type => {
                         if let Some(value) = entry.ty {
                             return Some(Holder::Single(value));
@@ -588,7 +579,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
         let result = self.define_in_scope_internal(scope, name.symbol, entry, ns);
         match result {
             Ok(_) => Ok(()),
-            Err(e) => Err(ResolutionError::AlreadyInScope(name)),
+            Err(_) => Err(ResolutionError::AlreadyInScope(name)),
         }
     }
 
@@ -607,7 +598,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
         let result = self.define_in_scope_internal(scope, name.symbol, entry, ns);
         match result {
             Ok(_) => Ok(()),
-            Err(e) => Err(ResolutionError::AlreadyInScope(name)),
+            Err(_) => Err(ResolutionError::AlreadyInScope(name)),
         }
     }
 }

@@ -1,12 +1,9 @@
-use std::rc::Rc;
-
 use crate::{
     ast_lowering,
     compile::{
         config::Config,
         context::{CompilerContext, GlobalContext},
     },
-    diagnostics::DiagCtx,
     error::CompileResult,
     parse, sema,
 };

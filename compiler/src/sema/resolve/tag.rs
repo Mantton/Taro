@@ -2,12 +2,11 @@ use crate::{
     ast::{self, AstVisitor, Identifier, NodeID, walk_package},
     error::CompileResult,
     sema::resolve::{
-        models::{CtorKind, CtorOf, DefinitionID, DefinitionIndex, DefinitionKind},
+        models::{DefinitionID, DefinitionKind, VariantCtorKind},
         resolver::Resolver,
     },
     span::{FileID, Span},
 };
-use ecow::EcoString;
 
 pub fn tag_package_symbols(package: &ast::Package, resolver: &mut Resolver) -> CompileResult<()> {
     let mut actor = Actor {
@@ -24,7 +23,7 @@ struct Actor<'resolver, 'arena, 'compiler> {
 }
 
 impl<'r, 'a, 'c> AstVisitor for Actor<'r, 'a, 'c> {
-    fn visit_module(&mut self, node: &ast::Module, is_root: bool) -> Self::Result {
+    fn visit_module(&mut self, node: &ast::Module, _: bool) -> Self::Result {
         let name = Identifier {
             span: Span::empty(FileID::new(0)),
             symbol: node.name,
@@ -82,9 +81,7 @@ impl<'r, 'a, 'c> AstVisitor for Actor<'r, 'a, 'c> {
             ast::AssociatedDeclarationKind::Initializer(..) => {
                 DefinitionKind::AssociatedInitializer
             }
-            ast::AssociatedDeclarationKind::AssociatedType(type_alias) => {
-                DefinitionKind::AssociatedType
-            }
+            ast::AssociatedDeclarationKind::AssociatedType(..) => DefinitionKind::AssociatedType,
             ast::AssociatedDeclarationKind::Operator(..) => DefinitionKind::AssociatedOperator,
         };
         let parent = self.tag(&node.identifier, node.id, kind);
@@ -125,13 +122,13 @@ impl<'r, 'a, 'c> AstVisitor for Actor<'r, 'a, 'c> {
     }
 
     fn visit_enum_variant(&mut self, node: &ast::Variant) -> Self::Result {
-        let variant_id = self.tag(&node.identifier, node.id, DefinitionKind::EnumVariant);
+        let variant_id = self.tag(&node.identifier, node.id, DefinitionKind::Variant);
         {
-            let ctor_kind = CtorKind::from_variant(&node.kind);
+            let ctor_kind = VariantCtorKind::from_variant(&node.kind);
             self.tag(
                 &node.identifier,
                 node.ctor_id,
-                DefinitionKind::Ctor(CtorOf::EnumVariant, ctor_kind),
+                DefinitionKind::VariantConstructor(ctor_kind),
             );
         }
 
@@ -139,14 +136,6 @@ impl<'r, 'a, 'c> AstVisitor for Actor<'r, 'a, 'c> {
     }
 
     fn visit_struct_definition(&mut self, node: &ast::Struct) -> Self::Result {
-        let parent = self.parent.expect("struct definition node to be tagged");
-        let kind = DefinitionKind::Ctor(CtorOf::Struct, CtorKind::Function);
-        let identifier = self
-            .resolver
-            .def_to_ident
-            .get(&parent)
-            .expect("struct declaration to be tagged")
-            .clone();
         ast::walk_struct_definition(self, node);
     }
 

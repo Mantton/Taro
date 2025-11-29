@@ -1,10 +1,9 @@
-use std::ops::ControlFlow;
-
 use crate::{
     parse::Base,
     span::{FileID, Span, Symbol},
 };
 use index_vec::define_index_type;
+use std::ops::ControlFlow;
 
 define_index_type! {
     pub struct NodeID = u32;

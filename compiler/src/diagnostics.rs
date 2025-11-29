@@ -73,8 +73,8 @@ impl DiagCtx {
         if let Some(message) = self.format(&diagnostic, false) {
             eprintln!("{}", message);
             for note in &diagnostic.children {
-                if let Some(m) = self.format(&diagnostic, false) {
-                    eprintln!("{}", message);
+                if let Some(m) = self.format(&note, false) {
+                    eprintln!("{}", m);
                 }
             }
         } else {

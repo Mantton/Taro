@@ -1,9 +1,5 @@
-use crate::{PackageIndex, compile::config::Config, diagnostics::DiagCtx};
-use std::{
-    cell::{Cell, RefCell},
-    ops::Deref,
-    rc::Rc,
-};
+use crate::{compile::config::Config, diagnostics::DiagCtx};
+use std::ops::Deref;
 
 pub type Gcx<'gcx> = GlobalContext<'gcx>;
 
@@ -40,20 +36,6 @@ impl<'arena> CompilerContext<'arena> {
         CompilerContext { dcx, store }
     }
 }
-
-// impl<'a> CompilerContext<'a> {
-//     pub fn current_package_index(&self) -> PackageIndex {
-//         self.config.borrow().index
-//     }
-
-//     pub fn current_package_name(&self) -> String {
-//         self.config.borrow().name.clone().into()
-//     }
-
-//     pub fn set_config(&self, config: Config) {
-//         *self.config.borrow_mut() = config
-//     }
-// }
 
 pub struct CompilerArenas<'arena> {
     _p: &'arena (),

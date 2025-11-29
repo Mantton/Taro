@@ -1,12 +1,11 @@
 use crate::{
     ast::{self, AssocContext, AstVisitor, Identifier, NodeID, Path, PathSegment},
-    diagnostics::{Diagnostic, DiagnosticLevel},
     error::CompileResult,
     sema::resolve::{
         models::{
-            BindingError, DefinitionID, DefinitionKind, ExpressionResolutionState, LexicalScope,
-            LexicalScopeBinding, LexicalScopeSource, PathResult, Resolution, ResolutionError,
-            ResolutionSource, ResolutionState, ResolvedValue, Scope, ScopeNamespace,
+            BindingError, DefinitionKind, ExpressionResolutionState, LexicalScope,
+            LexicalScopeSource, PathResult, Resolution, ResolutionError, ResolutionSource,
+            ResolutionState, ResolvedValue, Scope, ScopeNamespace,
         },
         resolver::Resolver,
     },
@@ -123,13 +122,13 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
 }
 
 impl<'r, 'a, 'c> ast::AstVisitor for Actor<'r, 'a, 'c> {
-    fn visit_module(&mut self, node: &ast::Module, is_root: bool) -> Self::Result {
+    fn visit_module(&mut self, node: &ast::Module, _: bool) -> Self::Result {
         // Soft Reset on Modular Level, So Module Root is Scope Count
         let previous = std::mem::take(&mut self.scopes);
         self.scopes = vec![];
-        let module_id = 0;
         let scope = self.resolver.root_module_scope.unwrap();
-        self.with_scope(scope, |this| ast::walk_module(this, node))
+        self.with_scope(scope, |this| ast::walk_module(this, node));
+        self.scopes = previous
     }
 
     fn visit_file(&mut self, node: &ast::File) -> Self::Result {
@@ -157,7 +156,9 @@ impl<'r, 'a, 'c> ast::AstVisitor for Actor<'r, 'a, 'c> {
         self.resolve_function_declaration(node);
     }
 
-    fn visit_namespace_declaration(&mut self, node: &ast::NamespaceDeclaration) -> Self::Result {}
+    fn visit_namespace_declaration(&mut self, node: &ast::NamespaceDeclaration) -> Self::Result {
+        self.resolve_namespace_declaration(node);
+    }
 
     fn visit_block(&mut self, node: &ast::Block) -> Self::Result {
         let scope = if let Some(&scope) = self.resolver.block_scope_mapping.get(&node.id) {
@@ -263,7 +264,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
             | ast::DeclarationKind::Constant(..)
             | ast::DeclarationKind::Import(..)
             | ast::DeclarationKind::Export(..) => ast::walk_declaration(self, declaration),
-            ast::DeclarationKind::Namespace(namespace) => {
+            ast::DeclarationKind::Namespace(..) => {
                 let def_id = self.resolver.definition_id(declaration.id);
                 let scope = self.resolver.get_definition_scope(def_id);
                 self.with_scope(scope, |this| ast::walk_declaration(this, declaration))
@@ -342,7 +343,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                     });
                 })
             }
-            ast::NamespaceDeclarationKind::Namespace(namespace) => {
+            ast::NamespaceDeclarationKind::Namespace(..) => {
                 let def_id = self.resolver.definition_id(declaration.id);
                 let scope = self.resolver.get_definition_scope(def_id);
                 self.with_scope(scope, |this| {
@@ -363,7 +364,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
         ctx: AssocContext,
     ) {
         match &declaration.kind {
-            ast::AssociatedDeclarationKind::Constant(node) => {
+            ast::AssociatedDeclarationKind::Constant(..) => {
                 ast::walk_assoc_declaration(self, declaration, ctx);
             }
             ast::AssociatedDeclarationKind::AssociatedType(ast::TypeAlias { generics, .. })
@@ -438,7 +439,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                     }
                 }
             }
-            ast::ExpressionKind::Member { target, name } => {
+            ast::ExpressionKind::Member { .. } => {
                 let result = self.resolve_expression_entity(node);
 
                 match result {
@@ -475,6 +476,12 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                 let result = self.resolve_expression_entity(target);
                 if let Ok(result) = result {
                     let result = self.apply_specialization(result, type_arguments.span);
+                    match result {
+                        Ok(_) => {}
+                        Err(e) => {
+                            self.report_error(e);
+                        }
+                    }
                 }
             }
             _ => ast::walk_expression(self, node),
@@ -491,10 +498,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                 let entity = self.resolve_expression_entity(target)?;
                 self.resolve_member_access(entity, name)
             }
-            ast::ExpressionKind::Specialize {
-                target,
-                type_arguments,
-            } => {
+            ast::ExpressionKind::Specialize { target, .. } => {
                 let entity = self.resolve_expression_entity(target)?;
                 self.apply_specialization(entity.clone(), node.span)?;
                 return Ok(entity);
@@ -592,9 +596,9 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                     | DefinitionKind::TypeParameter
                     | DefinitionKind::AssociatedType => {
                         if is_init {
-                            return Ok(ResolvedEntity::Resolved(
-                                Resolution::SelfConstructor(def_id),
-                            ));
+                            return Ok(ResolvedEntity::Resolved(Resolution::SelfConstructor(
+                                def_id,
+                            )));
                         }
                         return Ok(ResolvedEntity::DeferredAssociated);
                     }
@@ -604,7 +608,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                     DefinitionKind::ConstParameter => {
                         return Err(ResolutionError::UnknownMember(*name));
                     }
-                    DefinitionKind::Function | DefinitionKind::Ctor(..) => {
+                    DefinitionKind::Function | DefinitionKind::VariantConstructor(..) => {
                         return Err(ResolutionError::UnknownMember(*name));
                     }
                     _ => unreachable!(),
@@ -1016,11 +1020,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
                     ResolutionState::Partial { .. } => None,
                 }
             }
-            PathResult::Failed {
-                segment,
-                is_last_segment,
-                error,
-            } => {
+            PathResult::Failed { error, .. } => {
                 self.resolver.dcx().emit(error.diag());
                 return;
             }

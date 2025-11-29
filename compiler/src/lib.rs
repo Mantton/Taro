@@ -1,6 +1,6 @@
 #![feature(associated_type_defaults)]
 #![feature(if_let_guard)]
-#![allow(unused)]
+// #![allow(unused)]
 mod ast;
 mod ast_lowering;
 pub mod compile;

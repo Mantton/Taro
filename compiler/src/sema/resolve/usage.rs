@@ -1,5 +1,4 @@
 use crate::{
-    ast,
     error::CompileResult,
     sema::resolve::{
         models::{ScopeNamespace, UsageEntry, UsageKind},
@@ -8,7 +7,7 @@ use crate::{
 };
 
 pub fn resolve_usages(resolver: &mut Resolver) -> CompileResult<()> {
-    let mut actor = Actor { resolver };
+    let actor = Actor { resolver };
     actor.run();
     resolver.compiler.dcx.ok()
 }
@@ -20,7 +19,6 @@ struct Actor<'r, 'a, 'c> {
 impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
     fn run(mut self) {
         let mut changed = false;
-        let mut finalize = false;
 
         while changed {
             let start = self.unresolved_count();
@@ -81,7 +79,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
 
         let binding = match &usage.kind {
             UsageKind::Single(binding) => binding,
-            UsageKind::Glob { id } => {
+            UsageKind::Glob { .. } => {
                 return true;
             }
         };
@@ -111,7 +109,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
         };
 
         let entries = holder.all_entries();
-        for (entry) in entries.into_iter() {
+        for entry in entries.into_iter() {
             let entry = self
                 .resolver
                 .create_scope_entry_from_usage(entry, module, usage);
@@ -124,7 +122,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
 
             match result {
                 Ok(_) => continue,
-                Err(e) => {
+                Err(_) => {
                     if finalize {
                         self.resolver.dcx().emit_error(
                             "imported symbol is already bound in scope".into(),

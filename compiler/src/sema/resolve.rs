@@ -1,14 +1,8 @@
-use crate::ast::{Identifier, NodeID, Variant, VariantKind};
 use crate::compile::context::GlobalContext;
 use crate::sema::resolve::arena::ResolverArenas;
 use crate::sema::resolve::models::ResolutionOutput;
 use crate::sema::resolve::resolver::Resolver;
-use crate::span::{FileID, Span};
 use crate::{ast, error::CompileResult};
-use ecow::EcoString;
-use index_vec::define_index_type;
-use rustc_hash::{FxHashMap, FxHashSet};
-use std::cell::RefCell;
 
 mod arena;
 mod define;

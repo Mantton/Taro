@@ -15,12 +15,12 @@ use crate::{
         TypeParameters, UnaryOperator, UseTree, UseTreeKind, UseTreeNestedItem, UseTreePath,
         Variant, VariantKind, Visibility, VisibilityLevel,
     },
-    diagnostics::{DiagCtx, Diagnostic, DiagnosticLevel},
+    diagnostics::DiagCtx,
     error::ReportedError,
     parse::{Base, lexer, token::Token},
     span::{Span, Spanned, Symbol},
 };
-use std::{cell::RefCell, collections::VecDeque, fmt::Display, ops::Add, rc::Rc};
+use std::{cell::RefCell, collections::VecDeque, fmt::Display, rc::Rc};
 
 type NextNode = Rc<RefCell<NodeTagger>>;
 #[derive(Debug, Default)]
@@ -1035,7 +1035,6 @@ impl Parser {
     }
 
     fn parse_identifier_type(&mut self) -> R<TypeKind> {
-        let lo = self.lo_span();
         let path = self.parse_path()?;
         let kind = TypeKind::Nominal(path);
         Ok(kind)
@@ -2759,7 +2758,7 @@ impl Parser {
     fn parse_literal(&mut self) -> R<Box<Expression>> {
         let literal = match self.current_token() {
             Token::Integer { value, base } => Literal::Integer { value, base },
-            Token::Float { value, base } => Literal::Float { value },
+            Token::Float { value, .. } => Literal::Float { value },
             Token::String { value } => Literal::String { value },
             Token::Rune { value } => Literal::Rune { value },
             Token::True => Literal::Bool(true),
@@ -2998,7 +2997,7 @@ impl Parser {
 
         let mut segments = Vec::new();
         loop {
-            let segment = self.parse_path_segment(true)?;
+            let segment = self.parse_path_segment()?;
             segments.push(segment);
             if self.eat(Token::Dot) {
                 continue;
@@ -3015,15 +3014,10 @@ impl Parser {
         Ok(p)
     }
 
-    pub fn parse_path_segment(&mut self, allow_generics: bool) -> R<PathSegment> {
+    pub fn parse_path_segment(&mut self) -> R<PathSegment> {
         let lo = self.lo_span();
         let identifier = self.parse_identifier()?;
-        let arguments =
-            if allow_generics && self.matches(Token::LBracket) && self.can_parse_type_arguments() {
-                Some(self.parse_type_arguments()?)
-            } else {
-                None
-            };
+        let arguments = self.parse_optional_type_arguments()?;
 
         let segment = PathSegment {
             id: self.next_id(),
