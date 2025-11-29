@@ -7,10 +7,10 @@ use crate::{
     span::{Span, Symbol},
 };
 
-pub fn lower_package(
+pub fn lower_package<'a, 'c>(
     package: ast::Package,
-    gcx: GlobalContext,
-    resolutions: ResolutionOutput,
+    gcx: GlobalContext<'c>,
+    resolutions: &'a ResolutionOutput<'c>,
 ) -> CompileResult<hir::Package> {
     let mut actor = Actor::new(gcx, resolutions);
     let root = actor.lower_module(package.root);
@@ -18,14 +18,14 @@ pub fn lower_package(
     Ok(hir::Package { root })
 }
 
-pub struct Actor<'ctx> {
-    pub context: GlobalContext<'ctx>,
-    pub resolutions: ResolutionOutput,
+pub struct Actor<'a, 'c> {
+    pub context: GlobalContext<'c>,
+    pub resolutions: &'a ResolutionOutput<'c>,
     pub next_index: u32,
 }
 
-impl Actor<'_> {
-    fn new<'a>(context: GlobalContext<'a>, resolutions: ResolutionOutput) -> Actor<'a> {
+impl<'a, 'c> Actor<'a, 'c> {
+    fn new(context: GlobalContext<'c>, resolutions: &'a ResolutionOutput<'c>) -> Actor<'a, 'c> {
         Actor {
             context,
             resolutions,
@@ -40,7 +40,7 @@ impl Actor<'_> {
     }
 }
 
-impl Actor<'_> {
+impl Actor<'_, '_> {
     fn lower_module(&mut self, module: ast::Module) -> hir::Module {
         let declarations: Vec<hir::Declaration> = module
             .files
@@ -70,7 +70,7 @@ impl Actor<'_> {
     }
 }
 
-impl Actor<'_> {
+impl Actor<'_, '_> {
     fn lower_declaration(&mut self, node: ast::Declaration) -> hir::Declaration {
         let kind = match node.kind {
             ast::DeclarationKind::Interface(node) => {
@@ -215,7 +215,7 @@ impl Actor<'_> {
     }
 }
 
-impl Actor<'_> {
+impl Actor<'_, '_> {
     fn lower_interface(&mut self, node: ast::Interface) -> hir::Interface {
         hir::Interface {
             generics: self.lower_generics(node.generics),
@@ -272,7 +272,7 @@ impl Actor<'_> {
     }
 }
 
-impl Actor<'_> {
+impl Actor<'_, '_> {
     fn lower_operator(&mut self, node: ast::Operator) -> hir::Operator {
         hir::Operator {
             function: self.lower_function(node.function),
@@ -327,7 +327,7 @@ impl Actor<'_> {
     }
 }
 
-impl Actor<'_> {
+impl Actor<'_, '_> {
     fn lower_extension(&mut self, node: ast::Extension) -> hir::Extension {
         hir::Extension {
             ty: self.lower_type(node.ty),
@@ -351,7 +351,7 @@ impl Actor<'_> {
     }
 }
 
-impl Actor<'_> {
+impl Actor<'_, '_> {
     fn lower_generics(&mut self, node: ast::Generics) -> hir::Generics {
         hir::Generics {
             type_parameters: node.type_parameters.map(|n| self.lower_type_parameters(n)),
@@ -470,7 +470,7 @@ impl Actor<'_> {
     }
 }
 
-impl Actor<'_> {
+impl Actor<'_, '_> {
     fn lower_type(&mut self, node: Box<ast::Type>) -> Box<hir::Type> {
         let kind = match node.kind {
             ast::TypeKind::Nominal(path) => hir::TypeKind::Nominal(self.lower_path(node.id, path)),
@@ -588,7 +588,7 @@ impl Actor<'_> {
     }
 }
 
-impl Actor<'_> {
+impl Actor<'_, '_> {
     fn lower_pattern(&mut self, node: ast::Pattern) -> hir::Pattern {
         let kind = match node.kind {
             ast::PatternKind::Wildcard => hir::PatternKind::Wildcard,
@@ -633,7 +633,7 @@ impl Actor<'_> {
     }
 }
 
-impl Actor<'_> {
+impl Actor<'_, '_> {
     fn lower_block(&mut self, node: ast::Block) -> hir::Block {
         hir::Block {
             id: self.next_index(),
@@ -717,7 +717,7 @@ impl Actor<'_> {
     }
 }
 
-impl Actor<'_> {
+impl Actor<'_, '_> {
     fn lower_expression(&mut self, node: Box<ast::Expression>) -> Box<hir::Expression> {
         let kind = match node.kind {
             ast::ExpressionKind::Literal(lit) => self.lower_literal(lit, node.span),
@@ -950,7 +950,7 @@ impl Actor<'_> {
     }
 }
 
-impl Actor<'_> {
+impl Actor<'_, '_> {
     fn lower_variant(&mut self, node: ast::Variant) -> hir::Variant {
         hir::Variant {
             id: self.next_index(),
@@ -982,7 +982,7 @@ impl Actor<'_> {
     }
 }
 
-impl Actor<'_> {
+impl Actor<'_, '_> {
     fn lower_path(&mut self, id: ast::NodeID, node: ast::Path) -> hir::ResolvedPath {
         let state = self.resolutions.resolutions.get(&id).cloned();
         let is_resolved = state
@@ -1055,7 +1055,7 @@ impl Actor<'_> {
     }
 }
 
-impl Actor<'_> {
+impl Actor<'_, '_> {
     fn convert_resolution_state(&mut self, state: Option<ResolutionState>) -> hir::Resolution {
         hir::Resolution::Error
     }
@@ -1067,7 +1067,7 @@ impl Actor<'_> {
     }
 }
 
-impl Actor<'_> {
+impl Actor<'_, '_> {
     fn mk_expression(&mut self, kind: hir::ExpressionKind, span: Span) -> Box<hir::Expression> {
         let expr = hir::Expression {
             id: self.next_index(),

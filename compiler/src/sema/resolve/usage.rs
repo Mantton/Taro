@@ -9,14 +9,14 @@ use crate::{
 pub fn resolve_usages(resolver: &mut Resolver) -> CompileResult<()> {
     let actor = Actor { resolver };
     actor.run();
-    resolver.compiler.dcx.ok()
+    resolver.context.dcx.ok()
 }
 
-struct Actor<'r, 'a, 'c> {
-    resolver: &'r mut Resolver<'a, 'c>,
+struct Actor<'r, 'a> {
+    resolver: &'r mut Resolver<'a>,
 }
 
-impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
+impl<'r, 'a> Actor<'r, 'a> {
     fn run(mut self) {
         let mut changed = false;
 
@@ -37,7 +37,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
     }
 }
 
-impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
+impl<'r, 'a> Actor<'r, 'a> {
     fn resolve(&mut self, finalize: bool) {
         self.resolve_exports(finalize);
         self.resolve_imports(finalize);
@@ -61,7 +61,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
     }
 }
 
-impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
+impl<'r, 'a> Actor<'r, 'a> {
     fn resolve_usage(&mut self, usage: UsageEntry<'a>, finalize: bool) -> bool {
         let module_result = self.resolver.resolve_module_path(&usage.module_path);
 

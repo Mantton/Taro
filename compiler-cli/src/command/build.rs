@@ -22,7 +22,7 @@ pub fn run(arguments: CommandLineArguments) -> Result<(), ReportedError> {
     let dcx = DiagCtx::new(cwd);
     let arenas = CompilerArenas::new();
     let store = CompilerStore::new(&arenas);
-    let icx = CompilerContext::new(dcx, store);
+    let icx = &CompilerContext::new(dcx, store);
 
     let graph = sync_dependencies(arguments.path)?;
 
@@ -32,8 +32,10 @@ pub fn run(arguments: CommandLineArguments) -> Result<(), ReportedError> {
         let package_index = PackageIndex::new(index + 1);
         println!("Compiling – {}", package.package.0);
         let name = get_package_name(&package.package.0).map_err(|_| ReportedError)?;
-        let _ = package.unique_identifier().map_err(|_| ReportedError)?;
-        let dependencies = graph.dependencies_for(package).map_err(|_| ReportedError)?;
+        let identifier = package.unique_identifier().map_err(|_| ReportedError)?;
+        let mut dependencies = graph.dependencies_for(package).map_err(|_| ReportedError)?;
+        dependencies.insert("std".into(), "std".into());
+
         let src = package
             .path()
             .and_then(|p| {
@@ -42,20 +44,21 @@ pub fn run(arguments: CommandLineArguments) -> Result<(), ReportedError> {
             })
             .map_err(|e| format!("failed to resolve path – {}", e))
             .map_err(|_| ReportedError)?;
-        let config = Config {
+        let config = icx.store.arenas.allocator.alloc(Config {
             name,
+            identifier,
             src,
             dependencies,
             index: package_index,
-        };
+        });
 
-        let mut compiler = Compiler::new(&icx, &config);
+        let mut compiler = Compiler::new(icx, config);
         let _ = compiler.build()?;
     }
     Ok(())
 }
 
-fn compile_std(ctx: &CompilerContext) -> Result<(), ReportedError> {
+fn compile_std<'a>(ctx: &'a CompilerContext<'a>) -> Result<(), ReportedError> {
     println!("Compiling – std");
 
     let src = language_home()
@@ -71,13 +74,17 @@ fn compile_std(ctx: &CompilerContext) -> Result<(), ReportedError> {
             ctx.dcx.emit_error(message, None);
             ReportedError
         })?;
-    let config = Config {
+
+    let index = PackageIndex::new(0);
+
+    let config = ctx.store.arenas.allocator.alloc(Config {
+        index,
         name: "std".into(),
+        identifier: "std".into(),
         src,
         dependencies: Default::default(),
-        index: PackageIndex::new(0),
-    };
-    let mut compiler = Compiler::new(ctx, &config);
+    });
+    let mut compiler = Compiler::new(ctx, config);
     let _ = compiler.build()?;
     Ok(())
 }

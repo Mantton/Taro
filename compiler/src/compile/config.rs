@@ -7,6 +7,7 @@ use crate::PackageIndex;
 #[derive(Debug, Clone)]
 pub struct Config {
     pub name: EcoString,
+    pub identifier: EcoString,
     pub src: PathBuf,
     pub dependencies: FxHashMap<EcoString, String>,
     pub index: PackageIndex,

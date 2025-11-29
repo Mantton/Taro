@@ -14,15 +14,15 @@ pub fn tag_package_symbols(package: &ast::Package, resolver: &mut Resolver) -> C
         resolver,
     };
     walk_package(&mut actor, package);
-    resolver.compiler.dcx.ok()
+    resolver.context.dcx.ok()
 }
 
-struct Actor<'resolver, 'arena, 'compiler> {
+struct Actor<'resolver, 'arena> {
     parent: Option<DefinitionID>,
-    resolver: &'resolver mut Resolver<'arena, 'compiler>,
+    resolver: &'resolver mut Resolver<'arena>,
 }
 
-impl<'r, 'a, 'c> AstVisitor for Actor<'r, 'a, 'c> {
+impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
     fn visit_module(&mut self, node: &ast::Module, _: bool) -> Self::Result {
         let name = Identifier {
             span: Span::empty(FileID::new(0)),
@@ -177,7 +177,7 @@ impl<'r, 'a, 'c> AstVisitor for Actor<'r, 'a, 'c> {
     }
 }
 
-impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
+impl<'r, 'a> Actor<'r, 'a> {
     fn tag(&mut self, name: &Identifier, node_id: NodeID, kind: DefinitionKind) -> DefinitionID {
         let id = self
             .resolver

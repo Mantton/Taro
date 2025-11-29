@@ -246,7 +246,7 @@ impl ResolvedPackage {
         }
     }
 
-    pub fn unique_identifier(&self) -> Result<String, String> {
+    pub fn unique_identifier(&self) -> Result<EcoString, String> {
         let name = get_package_name(&self.package.0)?;
         let mut hasher = blake3::Hasher::new();
         match &self.source {
@@ -259,7 +259,7 @@ impl ResolvedPackage {
             }
         };
 
-        Ok(format!("{}-{}", name, hasher.finalize().to_string()))
+        Ok(format!("{}-{}", name, hasher.finalize().to_string()).into())
     }
 }
 
@@ -315,7 +315,7 @@ impl ValidatedDependencyGraph {
                     .dependency
                     .unique_identifier()
                     .map_err(|err| err.to_string())?; // ensure error is String
-                Ok((name, id))
+                Ok((name, id.into()))
             })
             .collect::<Result<FxHashMap<_, _>, String>>() // try-collect
     }

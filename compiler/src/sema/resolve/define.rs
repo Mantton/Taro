@@ -19,16 +19,16 @@ pub fn define_package_symbols(
 ) -> CompileResult<()> {
     let mut actor = Actor::new(resolver);
     walk_package(&mut actor, package);
-    resolver.compiler.dcx.ok()
+    resolver.context.dcx.ok()
 }
 
-pub struct Actor<'r, 'a, 'c> {
-    resolver: &'r mut Resolver<'a, 'c>,
+pub struct Actor<'r, 'a> {
+    resolver: &'r mut Resolver<'a>,
     scopes: ActiveScope<'a>,
 }
 
-impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
-    fn new(resolver: &'r mut Resolver<'a, 'c>) -> Actor<'r, 'a, 'c> {
+impl<'r, 'a> Actor<'r, 'a> {
+    fn new(resolver: &'r mut Resolver<'a>) -> Actor<'r, 'a> {
         Actor {
             resolver,
             scopes: ActiveScope {
@@ -39,7 +39,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
     }
 }
 
-impl<'r, 'a, 'c> AstVisitor for Actor<'r, 'a, 'c> {
+impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
     fn visit_module(&mut self, node: &ast::Module, is_root: bool) -> Self::Result {
         let id = self.resolver.definition_id(node.id);
         let kind = ScopeKind::Definition(id, DefinitionKind::Module);
@@ -136,7 +136,7 @@ impl<'r, 'a, 'c> AstVisitor for Actor<'r, 'a, 'c> {
     }
 }
 
-impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
+impl<'r, 'a> Actor<'r, 'a> {
     fn create_scope(&mut self, scope: ScopeData<'a>) -> Scope<'a> {
         let def_id = if let ScopeKind::Definition(id, _) = &scope.kind {
             Some(*id)
@@ -159,7 +159,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
     }
 }
 
-impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
+impl<'r, 'a> Actor<'r, 'a> {
     fn define_module_declaration(&mut self, declaration: &ast::Declaration) -> Option<Scope<'a>> {
         let def_id = self.resolver.definition_id(declaration.id);
         let def_kind = self.resolver.definition_kind(def_id);
@@ -322,7 +322,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
         return None;
     }
 }
-impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
+impl<'r, 'a> Actor<'r, 'a> {
     fn define(
         &mut self,
         identifier: &Identifier,
@@ -365,7 +365,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
     }
 }
 
-impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
+impl<'r, 'a> Actor<'r, 'a> {
     fn define_use_tree(&mut self, id: NodeID, tree: &UseTree, is_import: bool) {
         let scope = if let Some(scope) = self.scopes.current {
             match &scope.kind {

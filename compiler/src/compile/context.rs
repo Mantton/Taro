@@ -1,5 +1,12 @@
-use crate::{compile::config::Config, diagnostics::DiagCtx};
-use std::ops::Deref;
+use bumpalo::Bump;
+use ecow::EcoString;
+use rustc_hash::FxHashMap;
+
+use crate::{
+    PackageIndex, compile::config::Config, diagnostics::DiagCtx,
+    sema::resolve::models::ResolutionOutput,
+};
+use std::{cell::RefCell, ops::Deref};
 
 pub type Gcx<'gcx> = GlobalContext<'gcx>;
 
@@ -39,20 +46,30 @@ impl<'arena> CompilerContext<'arena> {
 
 pub struct CompilerArenas<'arena> {
     _p: &'arena (),
+    pub allocator: Bump,
 }
 
 impl<'ctx> CompilerArenas<'ctx> {
     pub fn new() -> CompilerArenas<'ctx> {
-        CompilerArenas { _p: &() }
+        CompilerArenas {
+            _p: &(),
+            allocator: Bump::new(),
+        }
     }
 }
 
 pub struct CompilerStore<'arena> {
-    arenas: &'arena CompilerArenas<'arena>,
+    pub arenas: &'arena CompilerArenas<'arena>,
+    pub resolution_outputs: RefCell<FxHashMap<PackageIndex, &'arena ResolutionOutput<'arena>>>,
+    pub package_mapping: RefCell<FxHashMap<EcoString, PackageIndex>>,
 }
 
 impl<'ctx> CompilerStore<'ctx> {
-    pub fn new(arenas: &'ctx CompilerArenas) -> CompilerStore<'ctx> {
-        CompilerStore { arenas }
+    pub fn new(arenas: &'ctx CompilerArenas<'ctx>) -> CompilerStore<'ctx> {
+        CompilerStore {
+            arenas,
+            package_mapping: Default::default(),
+            resolution_outputs: Default::default(),
+        }
     }
 }

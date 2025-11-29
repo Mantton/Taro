@@ -3,24 +3,21 @@ use crate::{
     ast::{Identifier, NodeID, PathSegment},
     compile::context::GlobalContext,
     diagnostics::DiagCtx,
-    sema::resolve::{
-        arena::ResolverArenas,
-        models::{
-            DefinitionID, DefinitionIndex, DefinitionKind, ExpressionResolutionState, Holder,
-            ImplicitScope, LexicalScope, LexicalScopeSource, PathResult, PrimaryType, Resolution,
-            ResolutionError, ResolutionOutput, ResolutionSource, ResolutionState, ResolvedValue,
-            Scope, ScopeData, ScopeEntry, ScopeEntryData, ScopeEntryKind, ScopeKind,
-            ScopeNamespace, ScopeTable, UsageEntry, UsageEntryData,
-        },
+    sema::resolve::models::{
+        DefinitionID, DefinitionIndex, DefinitionKind, ExpressionResolutionState, Holder,
+        ImplicitScope, LexicalScope, LexicalScopeSource, PathResult, PrimaryType, Resolution,
+        ResolutionError, ResolutionOutput, ResolutionSource, ResolutionState, ResolvedValue, Scope,
+        ScopeData, ScopeEntry, ScopeEntryData, ScopeEntryKind, ScopeKind, ScopeNamespace,
+        ScopeTable, UsageEntry, UsageEntryData,
     },
     span::{FileID, Symbol},
     utils::intern::Interned,
 };
+use bumpalo::Bump;
 use rustc_hash::FxHashMap;
 
-pub struct Resolver<'arena, 'compiler> {
-    pub arenas: &'arena ResolverArenas,
-    pub compiler: GlobalContext<'compiler>,
+pub struct Resolver<'arena> {
+    pub context: GlobalContext<'arena>,
     node_to_def: FxHashMap<NodeID, DefinitionID>,
     def_to_kind: FxHashMap<DefinitionID, DefinitionKind>,
     pub def_to_ident: FxHashMap<DefinitionID, Identifier>,
@@ -37,11 +34,10 @@ pub struct Resolver<'arena, 'compiler> {
     pub expression_resolutions: FxHashMap<NodeID, ExpressionResolutionState>,
 }
 
-impl<'a, 'c> Resolver<'a, 'c> {
-    pub fn new(arenas: &'a ResolverArenas, compiler: GlobalContext<'c>) -> Resolver<'a, 'c> {
+impl<'a> Resolver<'a> {
+    pub fn new(context: GlobalContext<'a>) -> Resolver<'a> {
         Resolver {
-            arenas,
-            compiler,
+            context,
             node_to_def: Default::default(),
             def_to_kind: Default::default(),
             def_to_ident: Default::default(),
@@ -67,11 +63,11 @@ impl<'a, 'c> Resolver<'a, 'c> {
     }
 
     pub fn dcx(&self) -> &DiagCtx {
-        &self.compiler.dcx
+        &self.context.dcx
     }
 }
 
-impl<'a, 'c> Resolver<'a, 'c> {
+impl<'a> Resolver<'a> {
     pub fn create_definition(
         &mut self,
         identifier: Identifier,
@@ -106,11 +102,10 @@ impl<'a, 'c> Resolver<'a, 'c> {
         if id.is_local_to_index(self.package_index()) {
             return *self.def_to_kind.get(&id).expect("bug! node not tagged");
         } else {
-            // let resolutions = self.gcx.store.resolutions.borrow();
-            // let data = resolutions.get(&id.package()).expect("resolution data");
-            // let kind = *data.def_to_kind.get(&id).expect("def to kind");
-            // kind
-            todo!()
+            let resolutions = self.context.store.resolution_outputs.borrow();
+            let package = resolutions.get(&id.package()).unwrap();
+            let kind = *package.definition_to_kind.get(&id).unwrap();
+            kind
         }
     }
 
@@ -122,21 +117,24 @@ impl<'a, 'c> Resolver<'a, 'c> {
     }
 
     pub fn package_index(&self) -> PackageIndex {
-        self.compiler.config.index
+        self.context.config.index
     }
 }
 
-impl<'a, 'c> Resolver<'a, 'c> {
+impl<'a> Resolver<'a> {
+    pub fn arena(&self) -> &'a Bump {
+        &self.context.store.arenas.allocator
+    }
     pub fn create_scope(&self, scope: ScopeData<'a>) -> Scope<'a> {
-        Interned::new_unchecked(self.arenas.bump.alloc(scope))
+        Interned::new_unchecked(self.arena().alloc(scope))
     }
 
     pub fn create_scope_entry(&self, entry: ScopeEntryData<'a>) -> ScopeEntry<'a> {
-        Interned::new_unchecked(self.arenas.bump.alloc(entry))
+        Interned::new_unchecked(self.arena().alloc(entry))
     }
 
     pub fn create_usage(&self, usage: UsageEntryData<'a>) -> UsageEntry<'a> {
-        Interned::new_unchecked(self.arenas.bump.alloc(usage))
+        Interned::new_unchecked(self.arena().alloc(usage))
     }
 
     pub fn create_scope_entry_from_usage(
@@ -146,7 +144,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
         user: UsageEntry<'a>,
     ) -> ScopeEntry<'a> {
         user.module_scope.set(Some(used_scope));
-        Interned::new_unchecked(self.arenas.bump.alloc(ScopeEntryData {
+        Interned::new_unchecked(self.arena().alloc(ScopeEntryData {
             kind: ScopeEntryKind::Usage {
                 used_entry,
                 used_scope,
@@ -157,7 +155,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
     }
 }
 
-impl<'a, 'c> Resolver<'a, 'c> {
+impl<'a> Resolver<'a> {
     pub fn record_resolution(&mut self, id: NodeID, state: ResolutionState) {
         if self.resolutions.insert(id, state).is_some() {
             panic!("bug – multiple resolutions recorded for node")
@@ -169,7 +167,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
     }
 }
 
-impl<'a, 'c> Resolver<'a, 'c> {
+impl<'a> Resolver<'a> {
     pub fn define_in_scope(
         &mut self,
         scope: Scope<'a>,
@@ -227,7 +225,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
     }
 }
 
-impl<'a, 'c> Resolver<'a, 'c> {
+impl<'a> Resolver<'a> {
     pub fn resolve_module_path(
         &self,
         path: &Vec<Identifier>,
@@ -288,16 +286,31 @@ impl<'a, 'c> Resolver<'a, 'c> {
     }
 
     fn resolve_package(&self, identifier: &Identifier) -> Option<Scope<'a>> {
-        if identifier.symbol.as_str() == self.compiler.config.name {
+        if identifier.symbol.as_str() == self.context.config.name {
             return self.root_module_scope;
         }
 
-        // TODO!
+        if let Some(identifier) = self
+            .context
+            .config
+            .dependencies
+            .get(identifier.symbol.as_str())
+            && let Some(index) = self
+                .context
+                .store
+                .package_mapping
+                .borrow()
+                .get(identifier.as_str())
+        {
+            let mapping = self.context.store.resolution_outputs.borrow();
+            return mapping.get(index).map(|table| table.root_scope).clone();
+        };
+
         None
     }
 }
 
-impl<'a, 'c> Resolver<'a, 'c> {
+impl<'a> Resolver<'a> {
     pub fn resolve_path_in_scopes(
         &mut self,
         path: &[PathSegment],
@@ -520,7 +533,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
     }
 }
 
-impl<'a, 'c> Resolver<'a, 'c> {
+impl<'a> Resolver<'a> {
     fn resolve_in_implicit_scopes(
         &self,
         name: &Identifier,
@@ -561,7 +574,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
     }
 }
 
-impl<'a, 'c> Resolver<'a, 'c> {
+impl<'a> Resolver<'a> {
     pub fn import(
         &mut self,
         scope: Scope<'a>,
@@ -603,10 +616,15 @@ impl<'a, 'c> Resolver<'a, 'c> {
     }
 }
 
-impl<'a, 'c> Resolver<'a, 'c> {
-    pub fn build_output(self) -> ResolutionOutput {
+impl<'a> Resolver<'a> {
+    pub fn build_output(self) -> ResolutionOutput<'a> {
         ResolutionOutput {
             resolutions: self.resolutions,
+            definition_scope_mapping: self.definition_scope_mapping,
+            definition_to_kind: self.def_to_kind,
+            definition_to_parent: self.def_to_parent,
+            expression_resolutions: self.expression_resolutions,
+            root_scope: self.root_module_scope.unwrap(),
         }
     }
 }

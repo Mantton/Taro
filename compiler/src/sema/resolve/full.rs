@@ -19,15 +19,15 @@ pub fn resolve_package(package: &ast::Package, resolver: &mut Resolver) -> Compi
         scopes: vec![],
     };
     ast::walk_package(&mut actor, package);
-    resolver.compiler.dcx.ok()
+    resolver.context.dcx.ok()
 }
 
-struct Actor<'r, 'a, 'c> {
-    resolver: &'r mut Resolver<'a, 'c>,
+struct Actor<'r, 'a> {
+    resolver: &'r mut Resolver<'a>,
     scopes: Vec<LexicalScope<'a>>,
 }
 
-impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
+impl<'r, 'a> Actor<'r, 'a> {
     fn with_scope_source<T>(
         &mut self,
         source: LexicalScopeSource<'a>,
@@ -121,7 +121,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
     }
 }
 
-impl<'r, 'a, 'c> ast::AstVisitor for Actor<'r, 'a, 'c> {
+impl<'r, 'a> ast::AstVisitor for Actor<'r, 'a> {
     fn visit_module(&mut self, node: &ast::Module, _: bool) -> Self::Result {
         // Soft Reset on Modular Level, So Module Root is Scope Count
         let previous = std::mem::take(&mut self.scopes);
@@ -225,7 +225,7 @@ impl<'r, 'a, 'c> ast::AstVisitor for Actor<'r, 'a, 'c> {
     }
 }
 
-impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
+impl<'r, 'a> Actor<'r, 'a> {
     fn resolve_declaration(&mut self, declaration: &ast::Declaration) {
         match &declaration.kind {
             ast::DeclarationKind::TypeAlias(ast::TypeAlias { generics, .. })
@@ -406,7 +406,7 @@ enum ResolvedEntity<'a> {
     DeferredAssociated,
 }
 
-impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
+impl<'r, 'a> Actor<'r, 'a> {
     fn resolve_expression(&mut self, node: &ast::Expression) {
         match &node.kind {
             ast::ExpressionKind::Identifier(name) => {
@@ -685,7 +685,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
     }
 }
 
-impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
+impl<'r, 'a> Actor<'r, 'a> {
     fn resolve_local(&mut self, local: &ast::Local) {
         if let Some(ty) = &local.ty {
             self.visit_type(ty);
@@ -729,7 +729,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
 
 type PatternBindings = Vec<(PatBoundCtx, FxHashMap<Symbol, Resolution>)>;
 
-impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
+impl<'r, 'a> Actor<'r, 'a> {
     fn resolve_match_arm(&mut self, node: &ast::MatchArm) {
         self.with_scope_source(LexicalScopeSource::Plain, |this| {
             this.resolve_top_level_pattern(&node.pattern, PatternSource::MatchArm);
@@ -883,7 +883,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
     }
 }
 
-impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
+impl<'r, 'a> Actor<'r, 'a> {
     fn check_match_pattern_consistency(&mut self, pattern: &ast::Pattern) {
         let mut is_or_pattern = false;
         pattern.walk(&mut |pat| match pat.kind {
@@ -979,7 +979,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
     }
 }
 
-impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
+impl<'r, 'a> Actor<'r, 'a> {
     fn resolve_extension(&mut self, id: ast::NodeID, node: &ast::Extension) {
         let def_id = self.resolver.definition_id(id);
         self.with_scope_source(LexicalScopeSource::DefBoundary(def_id), |this| {
@@ -1000,7 +1000,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
     }
 }
 
-impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
+impl<'r, 'a> Actor<'r, 'a> {
     fn resolve_path_with_source(&mut self, id: NodeID, path: &Path, source: ResolutionSource) {
         let result =
             self.resolver
@@ -1043,7 +1043,7 @@ impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
     }
 }
 
-impl<'r, 'a, 'c> Actor<'r, 'a, 'c> {
+impl<'r, 'a> Actor<'r, 'a> {
     fn report_error(&self, e: ResolutionError) {
         self.resolver.dcx().emit(e.diag());
     }
