@@ -214,6 +214,10 @@ impl<'r, 'a> ast::AstVisitor for Actor<'r, 'a> {
         self.resolve_path_with_source(node.path.id, &node.path.path, ResolutionSource::Interface);
     }
 
+    fn visit_statement(&mut self, node: &ast::Statement) -> Self::Result {
+        self.resolve_statement(node)
+    }
+
     fn visit_expression(&mut self, node: &ast::Expression) -> Self::Result {
         self.resolve_expression(node);
     }
@@ -231,7 +235,7 @@ impl<'r, 'a> Actor<'r, 'a> {
             ast::DeclarationKind::TypeAlias(ast::TypeAlias { generics, .. })
             | ast::DeclarationKind::Function(ast::Function { generics, .. }) => {
                 let def_id = self.resolver.definition_id(declaration.id);
-                self.with_scope_source(LexicalScopeSource::DefBoundary(def_id), |this| {
+                self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
                     this.with_generics_scope(generics, |this| {
                         ast::walk_declaration(this, declaration)
                     });
@@ -240,7 +244,7 @@ impl<'r, 'a> Actor<'r, 'a> {
             ast::DeclarationKind::Interface(node) => {
                 let def_id = self.resolver.definition_id(declaration.id);
                 let self_res = Resolution::InterfaceSelfTypeParameter(def_id);
-                self.with_scope_source(LexicalScopeSource::DefBoundary(def_id), |this| {
+                self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
                     this.with_generics_scope(&node.generics, |this| {
                         this.with_self_alias_scope(self_res, |this| {
                             ast::walk_declaration(this, declaration)
@@ -252,7 +256,7 @@ impl<'r, 'a> Actor<'r, 'a> {
             | ast::DeclarationKind::Struct(ast::Struct { generics, .. }) => {
                 let def_id = self.resolver.definition_id(declaration.id);
                 let self_res = Resolution::SelfTypeAlias(def_id);
-                self.with_scope_source(LexicalScopeSource::DefBoundary(def_id), |this| {
+                self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
                     this.with_generics_scope(generics, |this| {
                         this.with_self_alias_scope(self_res, |this| {
                             ast::walk_declaration(this, declaration)
@@ -285,7 +289,7 @@ impl<'r, 'a> Actor<'r, 'a> {
             | ast::FunctionDeclarationKind::Struct(ast::Struct { generics, .. }) => {
                 let def_id = self.resolver.definition_id(declaration.id);
                 let self_res = Resolution::SelfTypeAlias(def_id);
-                self.with_scope_source(LexicalScopeSource::DefBoundary(def_id), |this| {
+                self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
                     this.with_generics_scope(generics, |this| {
                         this.with_self_alias_scope(self_res, |this| {
                             ast::walk_function_declaration(this, declaration)
@@ -296,7 +300,7 @@ impl<'r, 'a> Actor<'r, 'a> {
             ast::FunctionDeclarationKind::TypeAlias(ast::TypeAlias { generics, .. })
             | ast::FunctionDeclarationKind::Function(ast::Function { generics, .. }) => {
                 let def_id = self.resolver.definition_id(declaration.id);
-                self.with_scope_source(LexicalScopeSource::DefBoundary(def_id), |this| {
+                self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
                     this.with_generics_scope(generics, |this| {
                         ast::walk_function_declaration(this, declaration)
                     });
@@ -315,7 +319,7 @@ impl<'r, 'a> Actor<'r, 'a> {
             | ast::NamespaceDeclarationKind::Struct(ast::Struct { generics, .. }) => {
                 let def_id = self.resolver.definition_id(declaration.id);
                 let self_res = Resolution::SelfTypeAlias(def_id);
-                self.with_scope_source(LexicalScopeSource::DefBoundary(def_id), |this| {
+                self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
                     this.with_generics_scope(generics, |this| {
                         this.with_self_alias_scope(self_res, |this| {
                             ast::walk_namespace_declaration(this, declaration)
@@ -326,7 +330,7 @@ impl<'r, 'a> Actor<'r, 'a> {
             ast::NamespaceDeclarationKind::TypeAlias(ast::TypeAlias { generics, .. })
             | ast::NamespaceDeclarationKind::Function(ast::Function { generics, .. }) => {
                 let def_id = self.resolver.definition_id(declaration.id);
-                self.with_scope_source(LexicalScopeSource::DefBoundary(def_id), |this| {
+                self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
                     this.with_generics_scope(generics, |this| {
                         ast::walk_namespace_declaration(this, declaration)
                     });
@@ -335,7 +339,7 @@ impl<'r, 'a> Actor<'r, 'a> {
             ast::NamespaceDeclarationKind::Interface(node) => {
                 let def_id = self.resolver.definition_id(declaration.id);
                 let self_res = Resolution::InterfaceSelfTypeParameter(def_id);
-                self.with_scope_source(LexicalScopeSource::DefBoundary(def_id), |this| {
+                self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
                     this.with_generics_scope(&node.generics, |this| {
                         this.with_self_alias_scope(self_res, |this| {
                             ast::walk_namespace_declaration(this, declaration)
@@ -370,7 +374,7 @@ impl<'r, 'a> Actor<'r, 'a> {
             ast::AssociatedDeclarationKind::AssociatedType(ast::TypeAlias { generics, .. })
             | ast::AssociatedDeclarationKind::Function(ast::Function { generics, .. }) => {
                 let def_id = self.resolver.definition_id(declaration.id);
-                self.with_scope_source(LexicalScopeSource::DefBoundary(def_id), |this| {
+                self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
                     this.with_generics_scope(generics, |this| {
                         ast::walk_assoc_declaration(this, declaration, ctx);
                     });
@@ -378,7 +382,7 @@ impl<'r, 'a> Actor<'r, 'a> {
             }
             ast::AssociatedDeclarationKind::Initializer(node) => {
                 let def_id = self.resolver.definition_id(declaration.id);
-                self.with_scope_source(LexicalScopeSource::DefBoundary(def_id), |this| {
+                self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
                     this.with_generics_scope(&node.function.generics, |this| {
                         this.with_self_alias_scope(Resolution::ImplicitSelfParameter, |this| {
                             ast::walk_assoc_declaration(this, declaration, ctx);
@@ -388,7 +392,7 @@ impl<'r, 'a> Actor<'r, 'a> {
             }
             ast::AssociatedDeclarationKind::Operator(node) => {
                 let def_id = self.resolver.definition_id(declaration.id);
-                self.with_scope_source(LexicalScopeSource::DefBoundary(def_id), |this| {
+                self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
                     this.with_generics_scope(&node.function.generics, |this| {
                         ast::walk_assoc_declaration(this, declaration, ctx);
                     });
@@ -404,6 +408,37 @@ enum ResolvedEntity<'a> {
     Resolved(Resolution),
     Value,
     DeferredAssociated,
+}
+impl<'r, 'a> Actor<'r, 'a> {
+    fn resolve_statement(&mut self, node: &ast::Statement) {
+        match &node.kind {
+            ast::StatementKind::For(for_node) => {
+                self.visit_expression(&for_node.iterator);
+                self.with_scope_source(LexicalScopeSource::Plain, |this| {
+                    this.resolve_top_level_pattern(&for_node.pattern, PatternSource::ForLoop);
+                    this.visit_block(&for_node.block);
+                });
+            }
+            ast::StatementKind::Guard {
+                condition,
+                else_block,
+            } => {
+                // Resolve else block first
+                self.visit_block(else_block);
+                self.visit_expression(condition);
+            }
+
+            ast::StatementKind::While {
+                condition, block, ..
+            } => {
+                self.with_scope_source(LexicalScopeSource::Plain, |this| {
+                    this.visit_expression(condition);
+                    this.visit_block(block)
+                });
+            }
+            _ => ast::walk_statement(self, node),
+        }
+    }
 }
 
 impl<'r, 'a> Actor<'r, 'a> {
@@ -483,6 +518,23 @@ impl<'r, 'a> Actor<'r, 'a> {
                         }
                     }
                 }
+            }
+            ast::ExpressionKind::If(if_node) => {
+                self.with_scope_source(LexicalScopeSource::Plain, |this| {
+                    this.visit_expression(&if_node.condition);
+                    this.visit_expression(&if_node.then_block);
+                });
+
+                if let Some(node) = &if_node.else_block {
+                    self.visit_expression(node)
+                }
+            }
+            ast::ExpressionKind::PatternBinding(binding_node) => {
+                self.visit_expression(&binding_node.expression);
+                self.resolve_top_level_pattern(
+                    &binding_node.pattern,
+                    PatternSource::BindingCondition,
+                );
             }
             _ => ast::walk_expression(self, node),
         }
@@ -786,6 +838,16 @@ impl<'r, 'a> Actor<'r, 'a> {
                     self.resolver
                         .record_resolution(pat.id, ResolutionState::Complete(res));
                 }
+                ast::PatternKind::Member(path) => match path {
+                    ast::PatternPath::Qualified { path } => {
+                        self.resolve_path_with_source(
+                            pat.id,
+                            path,
+                            ResolutionSource::MatchPatternUnit,
+                        );
+                    }
+                    _ => {}
+                },
                 ast::PatternKind::PathTuple { path, .. } => match path {
                     ast::PatternPath::Qualified { path } => {
                         self.resolve_path_with_source(
@@ -982,7 +1044,7 @@ impl<'r, 'a> Actor<'r, 'a> {
 impl<'r, 'a> Actor<'r, 'a> {
     fn resolve_extension(&mut self, id: ast::NodeID, node: &ast::Extension) {
         let def_id = self.resolver.definition_id(id);
-        self.with_scope_source(LexicalScopeSource::DefBoundary(def_id), |this| {
+        self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
             this.with_generics_scope(&node.generics, |this| {
                 let self_res = Resolution::SelfTypeAlias(def_id);
                 this.with_self_alias_scope(self_res, |this| {
@@ -1062,4 +1124,6 @@ pub enum PatternSource {
     Variable,
     FunctionParameter,
     MatchArm,
+    ForLoop,
+    BindingCondition,
 }

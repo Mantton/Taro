@@ -280,7 +280,8 @@ impl<'a> LexicalScope<'a> {
 
 pub enum LexicalScopeSource<'a> {
     Plain,
-    DefBoundary(DefinitionID),
+    #[allow(unused)]
+    Definition(DefinitionID),
     Scoped(Scope<'a>),
 }
 
@@ -345,7 +346,6 @@ pub enum ResolutionError {
     UnknownSymbol(Identifier),
     AlreadyInScope(Identifier),
     AmbiguousUsage(Identifier),
-    InconsistentBindingMode(Symbol, Span),
     VariableNotBoundInPattern(BindingError, Span),
     IdentifierBoundMoreThanOnceInParameterList(Identifier),
     IdentifierBoundMoreThanOnceInSamePattern(Identifier),
@@ -382,11 +382,6 @@ impl ResolutionError {
             ResolutionError::AmbiguousUsage(ident) => Diagnostic::error(
                 format!("ambiguous usage of `{}`", ident.symbol),
                 Some(ident.span),
-            ),
-
-            ResolutionError::InconsistentBindingMode(symbol, span) => Diagnostic::error(
-                format!("inconsistent binding mode for `{}`", symbol),
-                Some(*span),
             ),
 
             ResolutionError::VariableNotBoundInPattern(binding_err, span) => {
@@ -453,7 +448,6 @@ pub enum ResolutionSource {
     Type,
     Interface,
     Module,
-    Expression,
     MatchPatternUnit,
     MatchPatternTupleStruct,
     MatchPatternStruct,
@@ -465,7 +459,6 @@ impl ResolutionSource {
             ResolutionSource::Type
             | ResolutionSource::Interface
             | ResolutionSource::MatchPatternStruct => ScopeNamespace::Type,
-            ResolutionSource::Expression => ScopeNamespace::Value,
             ResolutionSource::MatchPatternUnit => ScopeNamespace::Value,
             ResolutionSource::MatchPatternTupleStruct => ScopeNamespace::Value,
             ResolutionSource::Module => ScopeNamespace::Type,
@@ -493,19 +486,6 @@ impl ResolutionSource {
             ResolutionSource::Interface => {
                 matches!(res, Resolution::Definition(_, DefinitionKind::Interface))
             }
-            ResolutionSource::Expression => matches!(
-                res,
-                Resolution::Definition(
-                    _,
-                    DefinitionKind::Function
-                        | DefinitionKind::Struct
-                        | DefinitionKind::Variant
-                        | DefinitionKind::ConstParameter
-                        | DefinitionKind::VariantConstructor(..)
-                ) | Resolution::LocalVariable(..)
-                    | Resolution::FunctionSet(..)
-                    | Resolution::SelfConstructor(..)
-            ),
             ResolutionSource::MatchPatternUnit => matches!(
                 res,
                 Resolution::Definition(
@@ -534,7 +514,6 @@ impl ResolutionSource {
         match self {
             ResolutionSource::Type => "type".into(),
             ResolutionSource::Interface => "interface".into(),
-            ResolutionSource::Expression => "value".into(),
             ResolutionSource::MatchPatternUnit => "unit enum variant".into(),
             ResolutionSource::MatchPatternTupleStruct => "tuple enum variant".into(),
             ResolutionSource::MatchPatternStruct => "strict enum variant".into(),
@@ -546,7 +525,6 @@ impl ResolutionSource {
         match self {
             ResolutionSource::Type => true,
             ResolutionSource::Interface => false,
-            ResolutionSource::Expression => true,
             ResolutionSource::MatchPatternUnit => true,
             ResolutionSource::MatchPatternStruct => true,
             ResolutionSource::MatchPatternTupleStruct => true,
@@ -559,11 +537,7 @@ impl ResolutionSource {
 pub enum PathResult<'arena> {
     Scope(Scope<'arena>),
     Resolution(ResolutionState),
-    Failed {
-        segment: Identifier,
-        is_last_segment: bool,
-        error: ResolutionError,
-    },
+    Failed { error: ResolutionError },
 }
 
 #[derive(Debug, Clone)]

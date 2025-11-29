@@ -961,6 +961,8 @@ fn can_end_statement(tok: &Token) -> bool {
         | Token::RParen
         | Token::RBracket
         | Token::RBrace
+        // postfix optional marker (`T?`) should allow ASI to end the line
+        | Token::Question
         // wildcard path suffix at end of import / export line
         | Token::DotStar => true,
 

@@ -254,7 +254,7 @@ impl<'a> Resolver<'a> {
 
                                 Some(scope)
                             } else {
-                                todo!("")
+                                unreachable!("scope must provide resolution")
                             }
                         } // TODO: We need to check that this is actually an importable module
                         ResolvedValue::Resolution(provided) => {
@@ -336,11 +336,7 @@ impl<'a> Resolver<'a> {
             let result = match result {
                 Ok(result) => result,
                 Err(e) => {
-                    return PathResult::Failed {
-                        segment: segment.identifier.clone(),
-                        is_last_segment: is_last,
-                        error: e,
-                    };
+                    return PathResult::Failed { error: e };
                 }
             };
 
@@ -362,8 +358,6 @@ impl<'a> Resolver<'a> {
                 });
             } else {
                 return PathResult::Failed {
-                    segment: segment.identifier,
-                    is_last_segment: is_last,
                     error: ResolutionError::UnknownSymbol(segment.identifier),
                 };
             }
