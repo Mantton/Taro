@@ -506,22 +506,21 @@ impl<'a> Resolver<'a> {
                 _ => continue,
             };
 
-            {
-                match &scope.kind {
-                    ScopeKind::Block(..) | ScopeKind::File(..) => {
-                        // see through
-                    }
-                    _ => break,
-                }
-            }
             let result = self.resolve_in_scope(name, scope, namespace);
 
             match result {
                 Err(ResolutionError::AmbiguousUsage(name)) => {
                     return Err(ResolutionError::AmbiguousUsage(name));
                 }
-                Err(_) => continue,
+                Err(_) => {}
                 Ok(value) => return Ok(value),
+            }
+
+            match &scope.kind {
+                ScopeKind::Block(..) | ScopeKind::File(..) => {
+                    // see through to outer scopes
+                }
+                _ => break,
             }
         }
 

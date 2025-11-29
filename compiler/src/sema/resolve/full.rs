@@ -124,11 +124,11 @@ impl<'r, 'a> Actor<'r, 'a> {
 impl<'r, 'a> ast::AstVisitor for Actor<'r, 'a> {
     fn visit_module(&mut self, node: &ast::Module, _: bool) -> Self::Result {
         // Soft Reset on Modular Level, So Module Root is Scope Count
-        let previous = std::mem::take(&mut self.scopes);
         self.scopes = vec![];
-        let scope = self.resolver.root_module_scope.unwrap();
+        let def_id = self.resolver.definition_id(node.id);
+        let scope = self.resolver.get_definition_scope(def_id);
         self.with_scope(scope, |this| ast::walk_module(this, node));
-        self.scopes = previous
+        self.scopes = vec![]
     }
 
     fn visit_file(&mut self, node: &ast::File) -> Self::Result {
