@@ -424,7 +424,7 @@ pub enum ExpressionKind {
     Literal(Literal),
 
     /// `foo`
-    Identifier(Identifier),
+    Identifier(Identifier, Resolution),
 
     /// `foo.bar`
     Member {
@@ -526,7 +526,6 @@ pub struct IfExpression {
 pub struct PatternBindingCondition {
     pub pattern: Pattern,
     pub expression: Box<Expression>,
-    pub shorthand: bool,
     pub span: Span,
 }
 
@@ -1291,7 +1290,7 @@ pub fn walk_local<V: HirVisitor>(visitor: &mut V, node: &Local) -> V::Result {
 pub fn walk_expression<V: HirVisitor>(visitor: &mut V, node: &Expression) -> V::Result {
     match &node.kind {
         ExpressionKind::Literal(_) => {}
-        ExpressionKind::Identifier(ident) => {
+        ExpressionKind::Identifier(ident, _) => {
             try_visit!(visitor.visit_identifier(ident));
         }
         ExpressionKind::Member { target, name } => {

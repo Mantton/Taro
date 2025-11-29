@@ -356,12 +356,20 @@ pub enum ExpressionKind {
     Pipe(Box<Expression>, Box<Expression>),
     /// A Binding Condition used for Tagged Unions
     ///
-    /// `if let .some(value) = foo {}`
+    /// `if case .some(value) = foo {}`
     ///
-    /// `guard let .some(value) = foo else { return }`
+    /// `guard case .some(value) = foo else { return }`
     ///
-    /// `while let .some(value) = foo {}`
+    /// `while case .some(value) = foo {}`
     PatternBinding(PatternBindingCondition),
+    /// A Shorthand binding condition for optionals
+    ///
+    /// `if let foo = foo {}`
+    ///
+    /// `guard let foo else { return }`
+    ///
+    /// `while let foo = bar {}`
+    OptionalPatternBinding(PatternBindingCondition),
     /// `a ?? b`
     OptionalDefault(Box<Expression>, Box<Expression>),
     /// lhs..rhs | lhs..=rhs, bool indicates inclusiveness
@@ -427,7 +435,6 @@ pub struct IfExpression {
 pub struct PatternBindingCondition {
     pub pattern: Pattern,
     pub expression: Box<Expression>,
-    pub shorthand: bool,
     pub span: Span,
 }
 
@@ -1524,6 +1531,10 @@ pub fn walk_expression<V: AstVisitor>(visitor: &mut V, node: &Expression) -> V::
             try_visit!(visitor.visit_expression(rhs));
         }
         ExpressionKind::PatternBinding(condition) => {
+            try_visit!(visitor.visit_pattern(&condition.pattern));
+            try_visit!(visitor.visit_expression(&condition.expression));
+        }
+        ExpressionKind::OptionalPatternBinding(condition) => {
             try_visit!(visitor.visit_pattern(&condition.pattern));
             try_visit!(visitor.visit_expression(&condition.expression));
         }

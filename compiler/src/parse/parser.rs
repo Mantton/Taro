@@ -2360,25 +2360,46 @@ impl Parser {
         }
 
         let lo = self.lo_span();
-        // match let <pattern> = <expr>
-        self.expect(Token::Let)?;
+        // case <pattern> = <expr>
+        self.expect(Token::Case)?;
         let pattern = self.parse_pattern()?;
-        let mut shorthand = false;
-        let expression = if !self.matches(Token::Assign)
-            && matches!(pattern.kind, PatternKind::Identifier(..))
-        {
-            shorthand = true;
-            let ident = match &pattern.kind {
-                PatternKind::Identifier(ident) => *ident,
-                _ => unreachable!(),
-            };
+        self.expect(Token::Assign)?;
+        let expression = self.parse_expression()?;
 
-            let ident_span = ident.span;
-            self.build_expr(ExpressionKind::Identifier(ident), ident_span)
+        let span = lo.to(self.hi_span());
+        let p = PatternBindingCondition {
+            expression,
+            pattern,
+            span,
+        };
+
+        let kind = ExpressionKind::PatternBinding(p);
+        let expr = self.build_expr(kind, span);
+        Ok(expr)
+    }
+
+    fn parse_optional_binding_condition(&mut self) -> R<Box<Expression>> {
+        if !self
+            .restrictions
+            .contains(Restrictions::ALLOW_BINDING_CONDITION)
+        {
+            return Err(self.err_at_current(ParserError::DisallowedBindingCondition));
+        }
+
+        let lo = self.lo_span();
+        // let <ident> = <expr>
+        self.expect(Token::Let)?;
+        let identifier = self.parse_identifier()?;
+        let pattern = Pattern {
+            id: self.next_id(),
+            span: identifier.span,
+            kind: PatternKind::Identifier(identifier),
+        };
+
+        let expression = if self.eat(Token::Assign) {
+            self.parse_expression()?
         } else {
-            self.expect(Token::Assign)?;
-            let expression = self.parse_expression()?;
-            expression
+            self.build_expr(ExpressionKind::Identifier(identifier), identifier.span)
         };
 
         let span = lo.to(self.hi_span());
@@ -2387,10 +2408,9 @@ impl Parser {
             expression,
             pattern,
             span,
-            shorthand,
         };
 
-        let kind = ExpressionKind::PatternBinding(p);
+        let kind = ExpressionKind::OptionalPatternBinding(p);
         let expr = self.build_expr(kind, span);
         Ok(expr)
     }
@@ -2598,7 +2618,8 @@ impl Parser {
             Token::Identifier { .. } => self.parse_identifier_expression(),
             Token::LParen => self.parse_tuple_expr(),
             Token::LBracket => self.parse_collection_expr(),
-            Token::Let => self.parse_pattern_binding_condition(),
+            Token::Case => self.parse_pattern_binding_condition(),
+            Token::Let => self.parse_optional_binding_condition(),
             Token::LBrace => self.parse_block_expression(),
             Token::Bar | Token::BarBar => self.parse_closure_expression(),
             Token::Underscore => {

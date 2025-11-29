@@ -529,7 +529,8 @@ impl<'r, 'a> Actor<'r, 'a> {
                     self.visit_expression(node)
                 }
             }
-            ast::ExpressionKind::PatternBinding(binding_node) => {
+            ast::ExpressionKind::PatternBinding(binding_node)
+            | ast::ExpressionKind::OptionalPatternBinding(binding_node) => {
                 self.visit_expression(&binding_node.expression);
                 self.resolve_top_level_pattern(
                     &binding_node.pattern,

@@ -2,7 +2,7 @@ use crate::{
     ast::{self, Identifier},
     compile::context::GlobalContext,
     error::CompileResult,
-    hir,
+    hir::{self, FoundationDecl},
     sema::resolve::models::{Resolution, ResolutionOutput, ResolutionState},
     span::{Span, Symbol},
 };
@@ -721,7 +721,9 @@ impl Actor<'_, '_> {
     fn lower_expression(&mut self, node: Box<ast::Expression>) -> Box<hir::Expression> {
         let kind = match node.kind {
             ast::ExpressionKind::Literal(lit) => self.lower_literal(lit, node.span),
-            ast::ExpressionKind::Identifier(node) => hir::ExpressionKind::Identifier(node),
+            ast::ExpressionKind::Identifier(node) => {
+                hir::ExpressionKind::Identifier(node, Resolution::Error)
+            }
             ast::ExpressionKind::Member { target, name } => hir::ExpressionKind::Member {
                 target: self.lower_expression(target),
                 name,
@@ -745,7 +747,6 @@ impl Actor<'_, '_> {
                     .map(|expr| self.lower_expression(expr))
                     .collect(),
             ),
-            ast::ExpressionKind::DictionaryLiteral(map_pairs) => todo!(),
             ast::ExpressionKind::If(node) => {
                 hir::ExpressionKind::If(self.lower_if_expression(node))
             }
@@ -788,15 +789,88 @@ impl Actor<'_, '_> {
             ast::ExpressionKind::CastAs(node, ty) => {
                 hir::ExpressionKind::CastAs(self.lower_expression(node), self.lower_type(ty))
             }
-            ast::ExpressionKind::Ternary(condition, lhs, rhs) => todo!(),
             ast::ExpressionKind::Pipe(lhs, rhs) => {
                 return self.lower_pipe_expression(lhs, rhs, node.span);
             }
             ast::ExpressionKind::PatternBinding(node) => {
                 hir::ExpressionKind::PatternBinding(self.lower_pattern_binding_condition(node))
             }
-            ast::ExpressionKind::OptionalDefault(lhs, rhs) => todo!(),
-            ast::ExpressionKind::Range(start, end, _) => todo!(),
+            ast::ExpressionKind::Ternary(condition, lhs, rhs) => {
+                // `a ? b : c` -> if a { b } else { c }
+                let condition = self.lower_expression(condition);
+                let lhs_span = lhs.span;
+                let rhs_span = rhs.span;
+
+                // Expressions
+                let lhs = self.lower_expression(lhs);
+                let rhs = self.lower_expression(rhs);
+
+                // Statements
+                let lhs = self.mk_statement(hir::StatementKind::Expression(lhs), lhs_span);
+                let rhs = self.mk_statement(hir::StatementKind::Expression(rhs), rhs_span);
+
+                // Block
+                let lhs = self.mk_block(vec![lhs], lhs_span);
+                let rhs = self.mk_block(vec![rhs], rhs_span);
+
+                // Block-Expressions
+                let lhs = self.mk_expression(hir::ExpressionKind::Block(lhs), lhs_span);
+                let rhs = self.mk_expression(hir::ExpressionKind::Block(rhs), rhs_span);
+
+                let if_node = hir::IfExpression {
+                    condition,
+                    then_block: lhs,
+                    else_block: Some(rhs),
+                };
+
+                hir::ExpressionKind::If(if_node)
+            }
+            ast::ExpressionKind::Block(block) => {
+                hir::ExpressionKind::Block(self.lower_block(block))
+            }
+            ast::ExpressionKind::Range(lhs, rhs, inclusive) => {
+                // `1..10`
+                let foundational = if inclusive {
+                    FoundationDecl::ClosedRange
+                } else {
+                    FoundationDecl::Range
+                };
+
+                let lhs = self.lower_expression(lhs);
+                let rhs = self.lower_expression(rhs);
+                let identiier = Identifier::new(Symbol::new("Range"), node.span);
+                let foo = self.mk_expression(
+                    hir::ExpressionKind::Identifier(
+                        identiier,
+                        Resolution::Foundation(foundational),
+                    ),
+                    node.span,
+                );
+
+                let arguments = vec![lhs, rhs]
+                    .into_iter()
+                    .map(|node| hir::ExpressionArgument {
+                        label: None,
+                        span: node.span,
+                        expression: node,
+                    })
+                    .collect();
+
+                let call = self.mk_expression(hir::ExpressionKind::Call(foo, arguments), node.span);
+                return call;
+            }
+            ast::ExpressionKind::DictionaryLiteral(map_pairs) => {
+                // ["foo": "bar"] => { let dictionary = Dictionary(); dictionary.insert("foo", "bar"); dictionary }
+                todo!()
+            }
+
+            ast::ExpressionKind::OptionalPatternBinding(..) => todo!(),
+            ast::ExpressionKind::OptionalDefault(..) => {
+                todo!()
+            }
+            ast::ExpressionKind::Closure(_) => todo!("closures!"),
+            ast::ExpressionKind::OptionalUnwrap(_) => todo!(),
+            ast::ExpressionKind::OptionalEvaluation(_) => todo!(),
             ast::ExpressionKind::Wildcard => {
                 self.context.dcx.emit_error(
                     "wildcard expressions are only valid as top-level pipe arguments".into(),
@@ -804,12 +878,6 @@ impl Actor<'_, '_> {
                 );
                 hir::ExpressionKind::Malformed
             }
-            ast::ExpressionKind::Closure(node) => todo!("closures!"),
-            ast::ExpressionKind::Block(block) => {
-                hir::ExpressionKind::Block(self.lower_block(block))
-            }
-            ast::ExpressionKind::OptionalUnwrap(node) => todo!(),
-            ast::ExpressionKind::OptionalEvaluation(node) => todo!(),
         };
 
         Box::new(hir::Expression {
@@ -885,7 +953,6 @@ impl Actor<'_, '_> {
         hir::PatternBindingCondition {
             pattern: self.lower_pattern(node.pattern),
             expression: self.lower_expression(node.expression),
-            shorthand: node.shorthand,
             span: node.span,
         }
     }
