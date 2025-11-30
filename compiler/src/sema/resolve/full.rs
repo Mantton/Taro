@@ -859,16 +859,6 @@ impl<'r, 'a> Actor<'r, 'a> {
                     }
                     _ => {}
                 },
-                ast::PatternKind::PathStruct { path, .. } => match path {
-                    ast::PatternPath::Qualified { path } => {
-                        self.resolve_path_with_source(
-                            pat.id,
-                            path,
-                            ResolutionSource::MatchPatternStruct,
-                        );
-                    }
-                    _ => {}
-                },
                 ast::PatternKind::Or(pats, _) => {
                     // Add new set of bindings
                     bindings.push((PatBoundCtx::Or, Default::default()));

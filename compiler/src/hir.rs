@@ -557,13 +557,6 @@ pub enum PatternKind {
         fields: Vec<Pattern>,
         field_span: Span,
     },
-    // Foo.Bar { a, b, .. }
-    PathStruct {
-        path: PatternPath,
-        fields: Vec<PatternField>,
-        field_span: Span,
-        ignore_rest: bool,
-    },
     // Foo | Bar
     Or(Vec<Pattern>, Span),
     // Bool, Rune, String, Integer & Float Literals
@@ -574,14 +567,6 @@ pub enum PatternKind {
 pub enum PatternPath {
     Qualified { path: ResolvedPath },          // A.B.C
     Inferred { name: Identifier, span: Span }, // .B
-}
-
-#[derive(Debug, Clone)]
-pub struct PatternField {
-    pub id: NodeID,
-    pub identifier: Identifier,
-    pub pattern: Pattern,
-    pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -838,10 +823,6 @@ pub trait HirVisitor: Sized {
 
     fn visit_pattern(&mut self, node: &Pattern) -> Self::Result {
         walk_pattern(self, node)
-    }
-
-    fn visit_pattern_field(&mut self, node: &PatternField) -> Self::Result {
-        walk_pattern_field(self, node)
     }
 
     fn visit_pattern_path(&mut self, node: &PatternPath) -> Self::Result {
@@ -1426,10 +1407,6 @@ pub fn walk_pattern<V: HirVisitor>(visitor: &mut V, pattern: &Pattern) -> V::Res
             try_visit!(visitor.visit_pattern_path(path));
             walk_list!(visitor, visit_pattern, fields);
         }
-        PatternKind::PathStruct { path, fields, .. } => {
-            try_visit!(visitor.visit_pattern_path(path));
-            walk_list!(visitor, visit_pattern_field, fields);
-        }
         PatternKind::Or(patterns, _) => {
             walk_list!(visitor, visit_pattern, patterns);
         }
@@ -1438,12 +1415,6 @@ pub fn walk_pattern<V: HirVisitor>(visitor: &mut V, pattern: &Pattern) -> V::Res
         }
     }
 
-    V::Result::output()
-}
-
-pub fn walk_pattern_field<V: HirVisitor>(visitor: &mut V, node: &PatternField) -> V::Result {
-    visitor.visit_identifier(&node.identifier);
-    try_visit!(visitor.visit_pattern(&node.pattern));
     V::Result::output()
 }
 

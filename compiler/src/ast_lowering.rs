@@ -601,18 +601,21 @@ impl Actor<'_, '_> {
                     .collect(),
                 span,
             ),
-            ast::PatternKind::Member(pattern_path) => todo!(),
+            ast::PatternKind::Member(pattern_path) => {
+                hir::PatternKind::Member(self.lower_pattern_path(node.id, pattern_path))
+            }
             ast::PatternKind::PathTuple {
                 path,
                 fields,
                 field_span,
-            } => todo!(),
-            ast::PatternKind::PathStruct {
-                path,
-                fields,
+            } => hir::PatternKind::PathTuple {
+                path: self.lower_pattern_path(node.id, path),
+                fields: fields
+                    .into_iter()
+                    .map(|field| self.lower_pattern(field))
+                    .collect(),
                 field_span,
-                ignore_rest,
-            } => todo!(),
+            },
             ast::PatternKind::Or(items, span) => hir::PatternKind::Or(
                 items
                     .into_iter()
@@ -699,7 +702,7 @@ impl Actor<'_, '_> {
                 let block = self.mk_block(vec![core_statement], node.span);
                 hir::StatementKind::Loop { label, block }
             }
-            ast::StatementKind::For(node) => todo!(),
+            ast::StatementKind::For(..) => todo!(),
             ast::StatementKind::Defer(node) => hir::StatementKind::Defer(self.lower_block(node)),
             ast::StatementKind::Guard {
                 condition,
@@ -861,7 +864,88 @@ impl Actor<'_, '_> {
             }
             ast::ExpressionKind::DictionaryLiteral(map_pairs) => {
                 // ["foo": "bar"] => { let dictionary = Dictionary(); dictionary.insert("foo", "bar"); dictionary }
-                todo!()
+                // Initialize the dictionary via a foundational call.
+                let ctor_ident = Identifier::new(Symbol::new("Dictionary"), node.span);
+                let ctor = self.mk_expression(
+                    hir::ExpressionKind::Identifier(
+                        ctor_ident,
+                        Resolution::Foundation(hir::FoundationDecl::Dictionary),
+                    ),
+                    node.span,
+                );
+                let initializer =
+                    self.mk_expression(hir::ExpressionKind::Call(ctor, vec![]), node.span);
+
+                // Bind the dictionary to a mutable local so we can perform insertions.
+                let dictionary_ident = Identifier::new(Symbol::new("__dictionary"), node.span);
+                let pattern = hir::Pattern {
+                    id: self.next_index(),
+                    span: node.span,
+                    kind: hir::PatternKind::Identifier(dictionary_ident),
+                };
+
+                let pattern_id = pattern.id;
+
+                let local = hir::Local {
+                    mutability: hir::Mutability::Mutable,
+                    pattern,
+                    ty: None,
+                    initializer: Some(initializer),
+                };
+
+                let mut statements =
+                    vec![self.mk_statement(hir::StatementKind::Variable(local), node.span)];
+
+                let insert_ident = Identifier::new(Symbol::new("insert"), node.span);
+                for pair in map_pairs {
+                    let key = self.lower_expression(pair.key);
+                    let value = self.lower_expression(pair.value);
+
+                    let target = self.mk_expression(
+                        hir::ExpressionKind::Identifier(
+                            dictionary_ident,
+                            Resolution::LocalVariable(pattern_id),
+                        ),
+                        node.span,
+                    );
+                    let member = self.mk_expression(
+                        hir::ExpressionKind::Member {
+                            target,
+                            name: insert_ident,
+                        },
+                        node.span,
+                    );
+
+                    let arguments = vec![key, value]
+                        .into_iter()
+                        .map(|expr| hir::ExpressionArgument {
+                            label: None,
+                            span: expr.span,
+                            expression: expr,
+                        })
+                        .collect();
+
+                    let call =
+                        self.mk_expression(hir::ExpressionKind::Call(member, arguments), node.span);
+                    statements
+                        .push(self.mk_statement(hir::StatementKind::Expression(call), node.span));
+                }
+
+                // The block expression evaluates to the populated dictionary.
+                let result = self.mk_expression(
+                    hir::ExpressionKind::Identifier(
+                        dictionary_ident,
+                        Resolution::LocalVariable(pattern_id),
+                    ),
+                    node.span,
+                );
+                statements
+                    .push(self.mk_statement(hir::StatementKind::Expression(result), node.span));
+
+                let block = self.mk_block(statements, node.span);
+                let block_expr = self.mk_expression(hir::ExpressionKind::Block(block), node.span);
+
+                return block_expr;
             }
 
             ast::ExpressionKind::OptionalPatternBinding(..) => todo!(),
@@ -1112,6 +1196,16 @@ impl Actor<'_, '_> {
         }
     }
 
+    fn lower_pattern_path(&mut self, id: ast::NodeID, path: ast::PatternPath) -> hir::PatternPath {
+        match path {
+            ast::PatternPath::Qualified { path } => {
+                let path = self.lower_path(id, path);
+                hir::PatternPath::Qualified { path }
+            }
+            ast::PatternPath::Inferred { name, span } => hir::PatternPath::Inferred { name, span },
+        }
+    }
+
     fn lower_local(&mut self, node: ast::Local) -> hir::Local {
         hir::Local {
             mutability: node.mutability,
@@ -1154,9 +1248,6 @@ impl Actor<'_, '_> {
     }
 
     fn mk_block(&mut self, statements: Vec<hir::Statement>, span: Span) -> hir::Block {
-        let has_declarations = statements
-            .iter()
-            .any(|f| matches!(f.kind, hir::StatementKind::Declaration(..)));
         hir::Block {
             id: self.next_index(),
             statements,

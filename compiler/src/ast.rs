@@ -169,6 +169,7 @@ pub struct Operator {
 
 #[derive(Debug)]
 pub struct Local {
+    pub id: NodeID,
     pub mutability: Mutability,
     pub pattern: Pattern,
     pub ty: Option<Box<Type>>,
@@ -550,13 +551,6 @@ pub enum PatternKind {
         fields: Vec<Pattern>,
         field_span: Span,
     },
-    // Foo.Bar { a, b, .. }
-    PathStruct {
-        path: PatternPath,
-        fields: Vec<PatternField>,
-        field_span: Span,
-        ignore_rest: bool,
-    },
     // Foo | Bar
     Or(Vec<Pattern>, Span),
     // Bool, Rune, String, Integer & Float Literals
@@ -567,14 +561,6 @@ pub enum PatternKind {
 pub enum PatternPath {
     Qualified { path: Path },                  // A.B.C
     Inferred { name: Identifier, span: Span }, // .B
-}
-
-#[derive(Debug)]
-pub struct PatternField {
-    pub id: NodeID,
-    pub identifier: Identifier,
-    pub pattern: Pattern,
-    pub span: Span,
 }
 
 // Generics
@@ -1165,15 +1151,11 @@ pub trait AstVisitor: Sized {
         walk_type_argument(self, node)
     }
 
-    fn visit_pattern_field(&mut self, node: &PatternField) -> Self::Result {
-        walk_pattern_field(self, node)
-    }
-
     fn visit_pattern_path(&mut self, node: &PatternPath) -> Self::Result {
         walk_pattern_path(self, node)
     }
 
-    fn visit_identifier(&mut self, node: &Identifier) -> Self::Result {
+    fn visit_identifier(&mut self, _: &Identifier) -> Self::Result {
         Self::Result::output()
     }
 
@@ -1616,12 +1598,12 @@ pub fn walk_pattern<V: AstVisitor>(visitor: &mut V, pattern: &Pattern) -> V::Res
         PatternKind::Identifier(identifier) => {
             try_visit!(visitor.visit_identifier(identifier))
         }
-        PatternKind::Member(pattern_path_head) => {}
+        PatternKind::Member(head) => match head {
+            PatternPath::Qualified { path } => try_visit!(visitor.visit_path(path)),
+            PatternPath::Inferred { .. } => {}
+        },
         PatternKind::PathTuple { fields, .. } => {
             walk_list!(visitor, visit_pattern, fields);
-        }
-        PatternKind::PathStruct { fields, .. } => {
-            walk_list!(visitor, visit_pattern_field, fields);
         }
         PatternKind::Tuple(patterns, _) => {
             walk_list!(visitor, visit_pattern, patterns);
@@ -1870,16 +1852,10 @@ pub fn walk_generic_bound<V: AstVisitor>(visitor: &mut V, node: &GenericBound) -
     V::Result::output()
 }
 
-pub fn walk_pattern_field<V: AstVisitor>(visitor: &mut V, node: &PatternField) -> V::Result {
-    try_visit!(visitor.visit_identifier(&node.identifier));
-    try_visit!(visitor.visit_pattern(&node.pattern));
-    V::Result::output()
-}
-
 pub fn walk_pattern_path<V: AstVisitor>(visitor: &mut V, node: &PatternPath) -> V::Result {
     match node {
         PatternPath::Qualified { path, .. } => {
-            todo!()
+            try_visit!(visitor.visit_path(path))
         }
         PatternPath::Inferred { name, .. } => {
             try_visit!(visitor.visit_identifier(&name));
@@ -1944,9 +1920,6 @@ impl Pattern {
             | PatternKind::Literal(..)
             | PatternKind::Identifier(..)
             | PatternKind::Member(..) => {}
-            PatternKind::PathStruct { fields, .. } => {
-                fields.iter().for_each(|f| f.pattern.walk(action))
-            }
             PatternKind::Tuple(sub_pats, ..)
             | PatternKind::PathTuple {
                 fields: sub_pats, ..

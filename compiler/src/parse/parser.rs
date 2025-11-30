@@ -9,11 +9,11 @@ use crate::{
         GenericWhereClause, Generics, Identifier, IfExpression, Initializer, Interface, Label,
         Literal, Local, MapPair, MatchArm, MatchExpression, Mutability, Namespace,
         NamespaceDeclaration, NamespaceDeclarationKind, NodeID, Operator, OperatorKind, Path,
-        PathNode, PathSegment, Pattern, PatternBindingCondition, PatternField, PatternKind,
-        PatternPath, RequiredTypeConstraint, SelfKind, Statement, StatementKind, Struct, Type,
-        TypeAlias, TypeArgument, TypeArguments, TypeKind, TypeParameter, TypeParameterKind,
-        TypeParameters, UnaryOperator, UseTree, UseTreeKind, UseTreeNestedItem, UseTreePath,
-        Variant, VariantKind, Visibility, VisibilityLevel,
+        PathNode, PathSegment, Pattern, PatternBindingCondition, PatternKind, PatternPath,
+        RequiredTypeConstraint, SelfKind, Statement, StatementKind, Struct, Type, TypeAlias,
+        TypeArgument, TypeArguments, TypeKind, TypeParameter, TypeParameterKind, TypeParameters,
+        UnaryOperator, UseTree, UseTreeKind, UseTreeNestedItem, UseTreePath, Variant, VariantKind,
+        Visibility, VisibilityLevel,
     },
     diagnostics::DiagCtx,
     error::ReportedError,
@@ -604,6 +604,7 @@ impl Parser {
         };
 
         let local = Local {
+            id: self.next_id(),
             mutability,
             pattern,
             ty,
@@ -1432,18 +1433,6 @@ impl Parser {
                     field_span: lo.to(self.hi_span()),
                 })
             }
-            Token::LBrace => {
-                let lo = self.lo_span();
-                let (fields, ignore_rest) = self.parse_pattern_fields()?;
-                let field_span = lo.to(self.hi_span());
-                let k = PatternKind::PathStruct {
-                    path,
-                    fields,
-                    field_span,
-                    ignore_rest,
-                };
-                Ok(k)
-            }
             _ => Ok(PatternKind::Member(path)),
         }
     }
@@ -1462,46 +1451,6 @@ impl Parser {
         // Full: A(.B)*
         let path = self.parse_path()?;
         Ok(PatternPath::Qualified { path })
-    }
-}
-
-impl Parser {
-    fn parse_pattern_fields(&mut self) -> R<(Vec<PatternField>, bool)> {
-        self.expect(Token::LBrace)?;
-
-        let fields =
-            self.parse_sequence_until(&[Token::DotDot, Token::LBrace], Token::Comma, true, |p| {
-                p.parse_pattern_field()
-            })?;
-
-        let ignore_rest = self.eat(Token::DotDot);
-        self.eat(Token::Comma); // Might Have a trailing comma after ..
-        self.expect(Token::RBrace)?;
-        return Ok((fields, ignore_rest));
-    }
-
-    fn parse_pattern_field(&mut self) -> R<PatternField> {
-        let lo = self.lo_span();
-
-        let identifier = self.parse_identifier()?;
-        let pattern = if self.eat(Token::Colon) {
-            self.parse_pattern()?
-        } else {
-            Pattern {
-                id: self.next_id(),
-                span: identifier.span,
-                kind: PatternKind::Identifier(identifier),
-            }
-        };
-
-        let field = PatternField {
-            id: self.next_id(),
-            identifier,
-            pattern,
-            span: lo.to(self.hi_span()),
-        };
-
-        Ok(field)
     }
 }
 
@@ -1624,6 +1573,7 @@ impl Parser {
         };
 
         let local = Local {
+            id: self.next_id(),
             mutability,
             pattern,
             ty,
