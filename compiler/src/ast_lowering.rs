@@ -1,3 +1,5 @@
+use rustc_hash::FxHashMap;
+
 use crate::{
     ast::{self, Identifier},
     compile::context::GlobalContext,
@@ -22,6 +24,7 @@ pub struct Actor<'a, 'c> {
     pub context: GlobalContext<'c>,
     pub resolutions: &'a ResolutionOutput<'c>,
     pub next_index: u32,
+    pub node_mapping: FxHashMap<ast::NodeID, hir::NodeID>,
 }
 
 impl<'a, 'c> Actor<'a, 'c> {
@@ -30,6 +33,7 @@ impl<'a, 'c> Actor<'a, 'c> {
             context,
             resolutions,
             next_index: 0,
+            node_mapping: Default::default(),
         }
     }
 
@@ -98,7 +102,9 @@ impl Actor<'_, '_> {
             ast::DeclarationKind::Namespace(node) => {
                 hir::DeclarationKind::Namespace(self.lower_namespace(node))
             }
-            ast::DeclarationKind::Variable(local) => todo!(),
+            ast::DeclarationKind::Variable(node) => {
+                hir::DeclarationKind::Variable(self.lower_local(node))
+            }
             ast::DeclarationKind::Extension(node) => {
                 hir::DeclarationKind::Extension(self.lower_extension(node))
             }
@@ -314,8 +320,10 @@ impl Actor<'_, '_> {
     }
 
     fn lower_function_parameter(&mut self, node: ast::FunctionParameter) -> hir::FunctionParameter {
+        let id = self.next_index();
+        self.node_mapping.insert(node.id, id);
         hir::FunctionParameter {
-            id: self.next_index(),
+            id,
             attributes: vec![],
             label: node.label,
             name: node.name,
@@ -590,10 +598,14 @@ impl Actor<'_, '_> {
 
 impl Actor<'_, '_> {
     fn lower_pattern(&mut self, node: ast::Pattern) -> hir::Pattern {
+        let id = self.next_index();
         let kind = match node.kind {
             ast::PatternKind::Wildcard => hir::PatternKind::Wildcard,
             ast::PatternKind::Rest => hir::PatternKind::Rest,
-            ast::PatternKind::Identifier(node) => hir::PatternKind::Identifier(node),
+            ast::PatternKind::Identifier(ident) => {
+                self.node_mapping.insert(node.id, id);
+                hir::PatternKind::Identifier(ident)
+            }
             ast::PatternKind::Tuple(items, span) => hir::PatternKind::Tuple(
                 items
                     .into_iter()
@@ -629,7 +641,7 @@ impl Actor<'_, '_> {
         };
 
         hir::Pattern {
-            id: self.next_index(),
+            id,
             span: node.span,
             kind,
         }
@@ -724,8 +736,9 @@ impl Actor<'_, '_> {
     fn lower_expression(&mut self, node: Box<ast::Expression>) -> Box<hir::Expression> {
         let kind = match node.kind {
             ast::ExpressionKind::Literal(lit) => self.lower_literal(lit, node.span),
-            ast::ExpressionKind::Identifier(node) => {
-                hir::ExpressionKind::Identifier(node, Resolution::Error)
+            ast::ExpressionKind::Identifier(ident) => {
+                let resolution = self.get_resolution(node.id);
+                hir::ExpressionKind::Identifier(ident, resolution)
             }
             ast::ExpressionKind::Member { target, name } => hir::ExpressionKind::Member {
                 target: self.lower_expression(target),
@@ -1136,44 +1149,50 @@ impl Actor<'_, '_> {
 impl Actor<'_, '_> {
     fn lower_path(&mut self, id: ast::NodeID, node: ast::Path) -> hir::ResolvedPath {
         let state = self.resolutions.resolutions.get(&id).cloned();
-        let is_resolved = state
-            .as_ref()
-            .map(|s| matches!(s, ResolutionState::Complete(..)))
-            .unwrap_or_default()
-            .clone();
+        let Some(state) = state else { unreachable!() };
 
-        let unresolved = {
-            let unresolved = match &state {
-                Some(ResolutionState::Partial {
-                    unresolved_count, ..
-                }) => *unresolved_count,
-                _ => 0,
-            };
-
-            let unresolved = node.segments.len() - unresolved;
-            unresolved
+        let (base_resolution, unresolved_count) = match state {
+            ResolutionState::Complete(resolution) => (resolution, 0),
+            ResolutionState::Partial {
+                resolution,
+                unresolved_count,
+            } => (resolution, unresolved_count),
         };
+        let base_resolution = self.lower_resolution(base_resolution);
+        let x = node.segments.len() - unresolved_count;
 
-        let resolution = self.convert_resolution_state(state);
-
-        // if is_resolved {
         let path = hir::Path {
-            span: node.span,
-            resolution,
-            segments: node
-                .segments
-                .into_iter()
-                .map(|n| self.lower_path_segment(n))
+            span: node.span.to(node.segments[..x].last().unwrap().span),
+            resolution: base_resolution,
+            segments: node.segments[..x]
+                .iter()
+                .map(|segment| self.lower_path_segment(segment.clone()))
                 .collect(),
         };
-        return hir::ResolvedPath::Resolved(path);
-        // }
 
-        // for (index, node) in node.segments.iter().enumerate().skip(unresolved) {
-        //     println!("{:?}", node.identifier.symbol)
-        // }
+        let path_span = path.span;
 
-        // todo!()
+        if unresolved_count == 0 {
+            return hir::ResolvedPath::Resolved(path);
+        }
+
+        let mut base_ty = {
+            let path = hir::ResolvedPath::Resolved(path);
+            self.mk_ty(hir::TypeKind::Nominal(path), path_span)
+        };
+
+        let count = node.segments.len();
+        for (index, node) in node.segments.into_iter().enumerate().skip(x) {
+            let segment = self.lower_path_segment(node);
+            let segment_span = segment.span;
+            let path = hir::ResolvedPath::Relative(base_ty, segment);
+            if index == count - 1 {
+                return path;
+            }
+            base_ty = self.mk_ty(hir::TypeKind::Nominal(path), path_span.to(segment_span));
+        }
+
+        unreachable!()
     }
 
     fn lower_path_segment(&mut self, node: ast::PathSegment) -> hir::PathSegment {
@@ -1218,7 +1237,34 @@ impl Actor<'_, '_> {
 
 impl Actor<'_, '_> {
     fn convert_resolution_state(&mut self, state: Option<ResolutionState>) -> hir::Resolution {
-        hir::Resolution::Error
+        let Some(state) = state else {
+            return hir::Resolution::Error;
+        };
+
+        match state {
+            ResolutionState::Complete(resolution) => self.lower_resolution(resolution),
+            ResolutionState::Partial { .. } => unreachable!("must provide full resolution"),
+        }
+    }
+
+    fn lower_resolution(&mut self, res: Resolution) -> hir::Resolution {
+        return match res {
+            Resolution::PrimaryType(n) => hir::Resolution::PrimaryType(n),
+            Resolution::Definition(n, m) => hir::Resolution::Definition(n, m),
+            Resolution::SelfTypeAlias(n) => hir::Resolution::SelfTypeAlias(n),
+            Resolution::InterfaceSelfTypeParameter(m) => {
+                hir::Resolution::InterfaceSelfTypeParameter(m)
+            }
+            Resolution::FunctionSet(n) => hir::Resolution::FunctionSet(n),
+            Resolution::LocalVariable(id) => {
+                let id = self.node_mapping.get(&id).expect("Local Mapping");
+                hir::Resolution::LocalVariable(*id)
+            }
+            Resolution::SelfConstructor(n) => hir::Resolution::SelfConstructor(n),
+            Resolution::ImplicitSelfParameter => hir::Resolution::ImplicitSelfParameter,
+            Resolution::Foundation(n) => hir::Resolution::Foundation(n),
+            Resolution::Error => hir::Resolution::Error,
+        };
     }
 
     fn get_resolution(&mut self, id: ast::NodeID) -> hir::Resolution {
@@ -1253,6 +1299,16 @@ impl Actor<'_, '_> {
             statements,
             span,
         }
+    }
+
+    fn mk_ty(&mut self, kind: hir::TypeKind, span: Span) -> Box<hir::Type> {
+        let ty = hir::Type {
+            id: self.next_index(),
+            kind,
+            span,
+        };
+
+        Box::new(ty)
     }
 }
 

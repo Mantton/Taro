@@ -9,12 +9,12 @@ define_index_type! {
     pub struct NodeID = u32;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Package {
     pub root: Module,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Module {
     pub id: NodeID,
     pub name: Symbol,
@@ -22,7 +22,7 @@ pub struct Module {
     pub submodules: Vec<Module>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct File {
     pub id: FileID,
     pub declarations: Vec<Declaration>,
@@ -57,14 +57,14 @@ pub enum VisibilityLevel {
     Inherent,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Attribute {
     pub identifier: Identifier,
 }
 
 pub type AttributeList = Vec<Attribute>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Declaration<K = DeclarationKind> {
     pub id: NodeID,
     pub kind: K,
@@ -74,7 +74,7 @@ pub struct Declaration<K = DeclarationKind> {
     pub attributes: AttributeList,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum DeclarationKind {
     Interface(Interface),
     Struct(Struct),
@@ -93,7 +93,7 @@ pub enum DeclarationKind {
 
 // Function Declarations
 pub type FunctionDeclaration = Declaration<FunctionDeclarationKind>;
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum FunctionDeclarationKind {
     Struct(Struct),
     Enum(Enum),
@@ -105,7 +105,7 @@ pub enum FunctionDeclarationKind {
 
 // Namespace Declarations
 pub type NamespaceDeclaration = Declaration<NamespaceDeclarationKind>;
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum NamespaceDeclarationKind {
     Struct(Struct),
     Enum(Enum),
@@ -120,7 +120,7 @@ pub enum NamespaceDeclarationKind {
 
 // Impls & Interface Declarations
 pub type AssociatedDeclaration = Declaration<AssociatedDeclarationKind>;
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum AssociatedDeclarationKind {
     Constant(Constant),
     Function(Function),
@@ -129,26 +129,26 @@ pub enum AssociatedDeclarationKind {
     Operator(Operator),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Interface {
     pub generics: Generics,
     pub declarations: Vec<AssociatedDeclaration>,
     pub conformances: Option<Conformances>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Struct {
     pub generics: Generics,
     pub fields: Vec<FieldDefinition>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Enum {
     pub generics: Generics,
     pub cases: Vec<EnumCase>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Function {
     pub generics: Generics,
     pub signature: FunctionSignature,
@@ -156,18 +156,18 @@ pub struct Function {
     pub is_static: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Initializer {
     pub function: Function,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Operator {
     pub kind: OperatorKind,
     pub function: Function,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Local {
     pub id: NodeID,
     pub mutability: Mutability,
@@ -177,26 +177,26 @@ pub struct Local {
     pub is_shorthand: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Constant {
     pub identifier: Identifier,
     pub ty: Box<Type>,
     pub expr: Option<Box<Expression>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TypeAlias {
     pub generics: Generics,
     pub ty: Option<Box<Type>>,
     pub bounds: Option<GenericBounds>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Namespace {
     pub declarations: Vec<NamespaceDeclaration>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Extension {
     pub ty: Box<Type>,
     pub generics: Generics,
@@ -204,20 +204,20 @@ pub struct Extension {
     pub declarations: Vec<AssociatedDeclaration>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct UseTree {
     pub span: Span,
     pub path: UseTreePath,
     pub kind: UseTreeKind,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct UseTreePath {
     pub span: Span,
     pub nodes: Vec<Identifier>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum UseTreeKind {
     Glob,
     Simple {
@@ -229,7 +229,7 @@ pub enum UseTreeKind {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct UseTreeNestedItem {
     pub id: NodeID,
     pub name: Identifier,
@@ -238,14 +238,14 @@ pub struct UseTreeNestedItem {
 
 // Statements
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Statement {
     pub id: NodeID,
     pub kind: StatementKind,
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum StatementKind {
     Declaration(FunctionDeclaration),
     Expression(Box<Expression>),
@@ -270,7 +270,7 @@ pub enum StatementKind {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ForStatement {
     pub label: Option<Label>,
     pub pattern: Pattern,
@@ -279,7 +279,7 @@ pub struct ForStatement {
     pub block: Block,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Block {
     pub id: NodeID,
     pub statements: Vec<Statement>,
@@ -288,19 +288,19 @@ pub struct Block {
 }
 
 // Expressions
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Expression {
     pub id: NodeID,
     pub kind: ExpressionKind,
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AnonConst {
     pub value: Box<Expression>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ExpressionKind {
     /// Runes, Bools, Integers, Floats, Strings
     Literal(Literal),
@@ -387,7 +387,7 @@ pub enum ExpressionKind {
     OptionalEvaluation(Box<Expression>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Literal {
     Bool(bool),
     Rune { value: String },
@@ -397,20 +397,20 @@ pub enum Literal {
     Nil,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MapPair {
     pub key: Box<Expression>,
     pub value: Box<Expression>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MatchExpression {
     pub value: Box<Expression>,
     pub arms: Vec<MatchArm>,
     pub kw_span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MatchArm {
     pub pattern: Pattern,
     pub body: Box<Expression>,
@@ -418,41 +418,41 @@ pub struct MatchArm {
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ExpressionArgument {
     pub label: Option<Label>,
     pub expression: Box<Expression>,
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IfExpression {
     pub condition: Box<Expression>,
     pub then_block: Box<Expression>,
     pub else_block: Option<Box<Expression>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PatternBindingCondition {
     pub pattern: Pattern,
     pub expression: Box<Expression>,
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ClosureExpression {
     pub signature: FunctionSignature,
     pub body: Box<Expression>,
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Path {
     pub span: Span,
     pub segments: Vec<PathSegment>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PathSegment {
     pub id: NodeID,
     pub identifier: Identifier,
@@ -460,21 +460,21 @@ pub struct PathSegment {
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PathNode {
     pub id: NodeID,
     pub path: Path,
 }
 
 // Type
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Type {
     pub id: NodeID,
     pub span: Span,
     pub kind: TypeKind,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TypeKind {
     /// `Foo` | `Foo[T]` | Foo.Bar | `Foo.Bar[T]`
     Nominal(Path),
@@ -526,14 +526,14 @@ pub enum TypeKind {
 }
 
 // Patterns
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Pattern {
     pub id: NodeID,
     pub span: Span,
     pub kind: PatternKind,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PatternKind {
     /// _
     Wildcard,
@@ -557,7 +557,7 @@ pub enum PatternKind {
     Literal(AnonConst),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PatternPath {
     Qualified { path: Path },                  // A.B.C
     Inferred { name: Identifier, span: Span }, // .B
@@ -566,7 +566,7 @@ pub enum PatternPath {
 // Generics
 
 /// Represents the 'T: Foo' in Option<T: Foo>
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TypeParameter {
     pub id: NodeID,
     pub span: Span,
@@ -575,7 +575,7 @@ pub struct TypeParameter {
     pub kind: TypeParameterKind,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TypeParameterKind {
     Type {
         default: Option<Box<Type>>,
@@ -586,32 +586,32 @@ pub enum TypeParameterKind {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TypeParameters {
     pub span: Span,
     pub parameters: Vec<TypeParameter>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TypeArguments {
     pub span: Span,
     pub arguments: Vec<TypeArgument>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TypeArgument {
     Type(Box<Type>),
     Const(AnonConst),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Generics {
     pub type_parameters: Option<TypeParameters>,
     pub where_clause: Option<GenericWhereClause>,
 }
 
 /// `where T: X & Y`
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct GenericWhereClause {
     pub requirements: GenericRequirementList,
     pub span: Span,
@@ -620,7 +620,7 @@ pub struct GenericWhereClause {
 /// `T: X & Y, V == T`
 pub type GenericRequirementList = Vec<GenericRequirement>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum GenericRequirement {
     /// `Foo == Bar`
     SameTypeRequirement(RequiredTypeConstraint),
@@ -629,7 +629,7 @@ pub enum GenericRequirement {
 }
 
 /// `Foo == Bar`
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RequiredTypeConstraint {
     pub bounded_type: Box<Type>,
     pub bound: Box<Type>,
@@ -637,34 +637,34 @@ pub struct RequiredTypeConstraint {
 }
 
 /// `T: Hashable`
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ConformanceConstraint {
     pub bounded_type: Box<Type>,
     pub bounds: GenericBounds,
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct GenericBound {
     pub path: PathNode,
 }
 
 pub type GenericBounds = Vec<GenericBound>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Conformances {
     pub bounds: Vec<PathNode>,
     pub span: Span,
 }
 
 // ADT
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EnumCase {
     pub span: Span,
     pub variants: Vec<Variant>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Variant {
     pub id: NodeID,
     pub ctor_id: NodeID,
@@ -674,13 +674,13 @@ pub struct Variant {
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum VariantKind {
     Unit,
     Tuple(Vec<FieldDefinition>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FieldDefinition {
     pub id: NodeID,
     pub visibility: Visibility,
@@ -700,7 +700,7 @@ pub struct FieldDefinition {
 /// name: String = "Default Value"
 /// @attribute name: String
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FunctionParameter {
     pub id: NodeID,
     pub attributes: AttributeList,
@@ -716,13 +716,13 @@ pub struct FunctionParameter {
 ///
 /// `(name: string) -> int`
 /// `(name: string) -> void` // defaults to void if not provided
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FunctionPrototype {
     pub inputs: Vec<FunctionParameter>,
     pub output: Option<Box<Type>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FunctionSignature {
     pub span: Span,
     pub prototype: FunctionPrototype,
@@ -1218,6 +1218,7 @@ pub fn walk_declaration<V: AstVisitor>(visitor: &mut V, declaration: &Declaratio
     match &declaration.kind {
         DeclarationKind::Interface(node) => {
             try_visit!(visitor.visit_generics(&node.generics));
+            visit_optional!(visitor, visit_conformance, &node.conformances);
             walk_list!(
                 visitor,
                 visit_assoc_declaration,
@@ -1598,11 +1599,11 @@ pub fn walk_pattern<V: AstVisitor>(visitor: &mut V, pattern: &Pattern) -> V::Res
         PatternKind::Identifier(identifier) => {
             try_visit!(visitor.visit_identifier(identifier))
         }
-        PatternKind::Member(head) => match head {
-            PatternPath::Qualified { path } => try_visit!(visitor.visit_path(path)),
-            PatternPath::Inferred { .. } => {}
-        },
-        PatternKind::PathTuple { fields, .. } => {
+        PatternKind::Member(head) => {
+            try_visit!(visitor.visit_pattern_path(head))
+        }
+        PatternKind::PathTuple { fields, path, .. } => {
+            try_visit!(visitor.visit_pattern_path(path));
             walk_list!(visitor, visit_pattern, fields);
         }
         PatternKind::Tuple(patterns, _) => {

@@ -50,7 +50,7 @@ pub enum DeclarationKind {
     Function(Function),
     TypeAlias(TypeAlias),
     Constant(Constant),
-    Variable(()),
+    Variable(Local),
     Import(UseTree),
     Export(UseTree),
     Namespace(Namespace),
