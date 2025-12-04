@@ -1,9 +1,14 @@
 use crate::{compile::context::GlobalContext, error::CompileResult, hir};
 
+mod check;
 mod collect;
-pub mod models;
+mod lower;
+mod wf;
 
-pub fn check_package(package: &hir::Package, gcx: GlobalContext) -> CompileResult<()> {
-    collect::generics::run(package, gcx)?;
+pub fn typecheck_package(package: &hir::Package, context: GlobalContext) -> CompileResult<()> {
+    // Collect
+    collect::run(package, context)?;
+    // WellFormed?
+    // Check Body
     Ok(())
 }

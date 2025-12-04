@@ -10,6 +10,9 @@ use crate::visit_optional;
 use crate::walk_list;
 
 pub type Resolution = crate::sema::resolve::models::Resolution<NodeID>;
+pub type DefinitionID = crate::sema::resolve::models::DefinitionID;
+pub type DefinitionKind = crate::sema::resolve::models::DefinitionKind;
+
 index_vec::define_index_type! {
     pub struct NodeID = u32;
 }
@@ -21,7 +24,7 @@ pub struct Package {
 
 #[derive(Debug, Clone)]
 pub struct Module {
-    pub id: NodeID,
+    pub id: DefinitionID,
     pub name: Symbol,
     pub declarations: Vec<Declaration>,
     pub submodules: Vec<Module>,
@@ -36,7 +39,7 @@ pub type AttributeList = Vec<Attribute>;
 
 #[derive(Debug, Clone)]
 pub struct Declaration<K = DeclarationKind> {
-    pub id: NodeID,
+    pub id: DefinitionID,
     pub span: Span,
     pub kind: K,
     pub attributes: AttributeList,
@@ -586,12 +589,12 @@ pub enum FoundationDecl {
 // MARK - Visitor
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AssocContext {
-    Interface(NodeID),
-    Extension(NodeID),
+    Interface(DefinitionID),
+    Extension(DefinitionID),
 }
 
 impl AssocContext {
-    pub fn node_id(self) -> NodeID {
+    pub fn def_id(self) -> DefinitionID {
         match self {
             AssocContext::Interface(id) => id,
             AssocContext::Extension(id) => id,
@@ -601,8 +604,8 @@ impl AssocContext {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UseTreeContext {
-    Import(NodeID),
-    Export(NodeID),
+    Import(DefinitionID),
+    Export(DefinitionID),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -641,7 +644,7 @@ pub trait HirVisitor: Sized {
         walk_assoc_declaration(self, node, context)
     }
 
-    fn visit_interface(&mut self, node: &Interface, id: NodeID) -> Self::Result {
+    fn visit_interface(&mut self, node: &Interface, id: DefinitionID) -> Self::Result {
         walk_interface(self, node, id)
     }
 
@@ -661,7 +664,12 @@ pub trait HirVisitor: Sized {
         walk_field_definition(self, node)
     }
 
-    fn visit_function(&mut self, id: NodeID, node: &Function, c: FunctionContext) -> Self::Result {
+    fn visit_function(
+        &mut self,
+        id: DefinitionID,
+        node: &Function,
+        c: FunctionContext,
+    ) -> Self::Result {
         walk_function(self, id, node, c)
     }
 
@@ -677,11 +685,11 @@ pub trait HirVisitor: Sized {
         walk_function_parameter(self, node)
     }
 
-    fn visit_initializer(&mut self, node: &Initializer, id: NodeID) -> Self::Result {
+    fn visit_initializer(&mut self, node: &Initializer, id: DefinitionID) -> Self::Result {
         walk_initializer(self, node, id)
     }
 
-    fn visit_operator(&mut self, node: &Operator, id: NodeID) -> Self::Result {
+    fn visit_operator(&mut self, node: &Operator, id: DefinitionID) -> Self::Result {
         walk_operator(self, node, id)
     }
 
@@ -697,7 +705,7 @@ pub trait HirVisitor: Sized {
         walk_namespace(self, node)
     }
 
-    fn visit_extension(&mut self, node: &Extension, id: NodeID) -> Self::Result {
+    fn visit_extension(&mut self, node: &Extension, id: DefinitionID) -> Self::Result {
         walk_extension(self, node, id)
     }
 
@@ -927,7 +935,11 @@ pub fn walk_assoc_declaration<V: HirVisitor>(
     V::Result::output()
 }
 
-pub fn walk_interface<V: HirVisitor>(visitor: &mut V, node: &Interface, id: NodeID) -> V::Result {
+pub fn walk_interface<V: HirVisitor>(
+    visitor: &mut V,
+    node: &Interface,
+    id: DefinitionID,
+) -> V::Result {
     try_visit!(visitor.visit_generics(&node.generics));
     visit_optional!(visitor, visit_conformances, &node.conformances);
     walk_list!(
@@ -970,7 +982,7 @@ pub fn walk_field_definition<V: HirVisitor>(visitor: &mut V, node: &FieldDefinit
 
 pub fn walk_function<V: HirVisitor>(
     visitor: &mut V,
-    id: NodeID,
+    id: DefinitionID,
     node: &Function,
     c: FunctionContext,
 ) -> V::Result {
@@ -1013,13 +1025,17 @@ pub fn walk_function_parameter<V: HirVisitor>(
 pub fn walk_initializer<V: HirVisitor>(
     visitor: &mut V,
     node: &Initializer,
-    id: NodeID,
+    id: DefinitionID,
 ) -> V::Result {
     try_visit!(visitor.visit_function(id, &node.function, FunctionContext::Initializer));
     V::Result::output()
 }
 
-pub fn walk_operator<V: HirVisitor>(visitor: &mut V, node: &Operator, id: NodeID) -> V::Result {
+pub fn walk_operator<V: HirVisitor>(
+    visitor: &mut V,
+    node: &Operator,
+    id: DefinitionID,
+) -> V::Result {
     try_visit!(visitor.visit_function(id, &node.function, FunctionContext::Operator));
     V::Result::output()
 }
@@ -1043,7 +1059,11 @@ pub fn walk_namespace<V: HirVisitor>(visitor: &mut V, node: &Namespace) -> V::Re
     V::Result::output()
 }
 
-pub fn walk_extension<V: HirVisitor>(visitor: &mut V, node: &Extension, id: NodeID) -> V::Result {
+pub fn walk_extension<V: HirVisitor>(
+    visitor: &mut V,
+    node: &Extension,
+    id: DefinitionID,
+) -> V::Result {
     try_visit!(visitor.visit_generics(&node.generics));
     try_visit!(visitor.visit_type(&node.ty));
     visit_optional!(visitor, visit_conformances, &node.conformances);

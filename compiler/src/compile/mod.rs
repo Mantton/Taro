@@ -49,14 +49,19 @@ impl<'state> Compiler<'state> {
         let package = ast_lowering::lower_package(package, self.context, &resolution_output)?;
         {
             let mut table = self.context.store.resolution_outputs.borrow_mut();
-            let output = self.context.store.arenas.allocator.alloc(resolution_output);
+            let output = self
+                .context
+                .store
+                .arenas
+                .resolution_outputs
+                .alloc(resolution_output);
             table.insert(self.context.config.index, output);
         }
 
         // HIR Construction
         // HIR Passes
         sema::validate::validate_package(&package, self.context)?;
-        sema::tycheck::check_package(&package, self.context)?;
+        sema::tycheck::typecheck_package(&package, self.context)?;
         Ok(())
     }
 }

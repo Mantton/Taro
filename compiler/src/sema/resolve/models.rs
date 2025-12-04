@@ -2,6 +2,7 @@ use crate::{
     ast::{self, Identifier, NodeID},
     diagnostics::{Diagnostic, DiagnosticLevel},
     hir::FoundationDecl,
+    sema::models::{FloatTy, IntTy, UIntTy},
     span::{FileID, Span, Symbol},
     utils::intern::Interned,
 };
@@ -450,15 +451,12 @@ pub enum ResolutionSource {
     Module,
     MatchPatternUnit,
     MatchPatternTupleStruct,
-    MatchPatternStruct,
 }
 
 impl ResolutionSource {
     pub fn namespace(&self) -> ScopeNamespace {
         match self {
-            ResolutionSource::Type
-            | ResolutionSource::Interface
-            | ResolutionSource::MatchPatternStruct => ScopeNamespace::Type,
+            ResolutionSource::Type | ResolutionSource::Interface => ScopeNamespace::Type,
             ResolutionSource::MatchPatternUnit => ScopeNamespace::Value,
             ResolutionSource::MatchPatternTupleStruct => ScopeNamespace::Value,
             ResolutionSource::Module => ScopeNamespace::Type,
@@ -500,9 +498,6 @@ impl ResolutionSource {
                     DefinitionKind::VariantConstructor(VariantCtorKind::Function)
                 )
             ),
-            ResolutionSource::MatchPatternStruct => {
-                matches!(res, Resolution::Definition(_, DefinitionKind::Variant))
-            }
             ResolutionSource::Module => matches!(
                 res,
                 Resolution::Definition(_, DefinitionKind::Module | DefinitionKind::Namespace)
@@ -516,7 +511,6 @@ impl ResolutionSource {
             ResolutionSource::Interface => "interface".into(),
             ResolutionSource::MatchPatternUnit => "unit enum variant".into(),
             ResolutionSource::MatchPatternTupleStruct => "tuple enum variant".into(),
-            ResolutionSource::MatchPatternStruct => "strict enum variant".into(),
             ResolutionSource::Module => "module or namespace".into(),
         }
     }
@@ -526,7 +520,6 @@ impl ResolutionSource {
             ResolutionSource::Type => true,
             ResolutionSource::Interface => false,
             ResolutionSource::MatchPatternUnit => true,
-            ResolutionSource::MatchPatternStruct => true,
             ResolutionSource::MatchPatternTupleStruct => true,
             ResolutionSource::Module => false,
         }
@@ -604,64 +597,9 @@ impl PrimaryType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum IntTy {
-    ISize,
-    I8,
-    I16,
-    I32,
-    I64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum UIntTy {
-    USize,
-    U8,
-    U16,
-    U32,
-    U64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FloatTy {
-    F32,
-    F64,
-}
-impl IntTy {
-    pub fn name_str(&self) -> &'static str {
-        match *self {
-            IntTy::ISize => "isize",
-            IntTy::I8 => "int8",
-            IntTy::I16 => "int16",
-            IntTy::I32 => "int32",
-            IntTy::I64 => "int64",
-        }
-    }
-}
-
-impl UIntTy {
-    pub fn name_str(&self) -> &'static str {
-        match *self {
-            UIntTy::USize => "usize",
-            UIntTy::U8 => "uint8",
-            UIntTy::U16 => "uint16",
-            UIntTy::U32 => "uint32",
-            UIntTy::U64 => "uint64",
-        }
-    }
-}
-
-impl FloatTy {
-    pub fn name_str(self) -> &'static str {
-        match self {
-            FloatTy::F32 => "float",
-            FloatTy::F64 => "double",
-        }
-    }
-}
-
 pub struct ResolutionOutput<'arena> {
     pub resolutions: FxHashMap<NodeID, ResolutionState>,
+    pub node_to_definition: FxHashMap<NodeID, DefinitionID>,
     pub definition_to_kind: FxHashMap<DefinitionID, DefinitionKind>,
     pub definition_to_parent: FxHashMap<DefinitionID, DefinitionID>,
     pub definition_scope_mapping: FxHashMap<DefinitionID, Scope<'arena>>,

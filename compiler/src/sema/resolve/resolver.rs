@@ -13,7 +13,6 @@ use crate::{
     span::{FileID, Symbol},
     utils::intern::Interned,
 };
-use bumpalo::Bump;
 use rustc_hash::FxHashMap;
 
 pub struct Resolver<'arena> {
@@ -122,19 +121,16 @@ impl<'a> Resolver<'a> {
 }
 
 impl<'a> Resolver<'a> {
-    pub fn arena(&self) -> &'a Bump {
-        &self.context.store.arenas.allocator
-    }
     pub fn create_scope(&self, scope: ScopeData<'a>) -> Scope<'a> {
-        Interned::new_unchecked(self.arena().alloc(scope))
+        Interned::new_unchecked(self.context.store.arenas.scopes.alloc(scope))
     }
 
     pub fn create_scope_entry(&self, entry: ScopeEntryData<'a>) -> ScopeEntry<'a> {
-        Interned::new_unchecked(self.arena().alloc(entry))
+        Interned::new_unchecked(self.context.store.arenas.scope_entries.alloc(entry))
     }
 
     pub fn create_usage(&self, usage: UsageEntryData<'a>) -> UsageEntry<'a> {
-        Interned::new_unchecked(self.arena().alloc(usage))
+        Interned::new_unchecked(self.context.store.arenas.usage_entries.alloc(usage))
     }
 
     pub fn create_scope_entry_from_usage(
@@ -144,14 +140,14 @@ impl<'a> Resolver<'a> {
         user: UsageEntry<'a>,
     ) -> ScopeEntry<'a> {
         user.module_scope.set(Some(used_scope));
-        Interned::new_unchecked(self.arena().alloc(ScopeEntryData {
+        self.create_scope_entry(ScopeEntryData {
             kind: ScopeEntryKind::Usage {
                 used_entry,
                 used_scope,
                 user,
             },
             span: user.span,
-        }))
+        })
     }
 }
 
@@ -613,6 +609,7 @@ impl<'a> Resolver<'a> {
     pub fn build_output(self) -> ResolutionOutput<'a> {
         ResolutionOutput {
             resolutions: self.resolutions,
+            node_to_definition: self.node_to_def,
             definition_scope_mapping: self.definition_scope_mapping,
             definition_to_kind: self.def_to_kind,
             definition_to_parent: self.def_to_parent,

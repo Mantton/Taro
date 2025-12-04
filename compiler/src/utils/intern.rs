@@ -1,3 +1,6 @@
+use rustc_hash::FxHashSet;
+use std::borrow::Borrow;
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
@@ -98,5 +101,92 @@ where
     fn hash<H: Hasher>(&self, s: &mut H) {
         // Pointer hashing is sufficient, due to the uniqueness constraint.
         ptr::hash(self.0, s)
+    }
+}
+
+pub struct WrappedHashSet<K> {
+    wrapped: RefCell<FxHashSet<K>>,
+}
+
+impl<K> WrappedHashSet<K> {
+    pub fn new() -> WrappedHashSet<K> {
+        WrappedHashSet {
+            wrapped: RefCell::new(FxHashSet::default()),
+        }
+    }
+}
+
+pub type InternedSet<'tcx, T> = WrappedHashSet<InternedInSet<'tcx, T>>;
+// This type holds a `T` in the interner. The `T` is stored in the arena and
+// this type just holds a pointer to it, but it still effectively owns it. It
+// impls `Borrow` so that it can be looked up using the original
+// (non-arena-memory-owning) types.
+pub struct InternedInSet<'tcx, T: ?Sized>(pub &'tcx T);
+
+impl<'tcx, T: 'tcx + ?Sized> Clone for InternedInSet<'tcx, T> {
+    fn clone(&self) -> Self {
+        InternedInSet(self.0)
+    }
+}
+
+impl<'tcx, T: 'tcx + ?Sized> Copy for InternedInSet<'tcx, T> {}
+
+impl<'a, T: ?Sized> Borrow<T> for InternedInSet<'a, T> {
+    fn borrow(&self) -> &T {
+        self.0
+    }
+}
+
+impl<'tcx, T> PartialEq for InternedInSet<'tcx, T>
+where
+    T: ?Sized + PartialEq,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl<'tcx, T> Eq for InternedInSet<'tcx, T> where T: ?Sized + Eq {}
+
+impl<'tcx, T> Hash for InternedInSet<'tcx, T>
+where
+    T: ?Sized + Hash,
+{
+    fn hash<H: Hasher>(&self, s: &mut H) {
+        self.0.hash(s)
+    }
+}
+
+impl<K: Eq + Hash + Copy> WrappedHashSet<K> {
+    #[inline]
+    pub fn intern<Q>(&self, value: Q, make: impl FnOnce(Q) -> K) -> K
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
+        let mut set = self.wrapped.borrow_mut();
+        if let Some(v) = set.get(&value) {
+            return *v;
+        } else {
+            let v = make(value);
+            set.insert(v);
+            v
+        }
+    }
+
+    #[inline]
+    pub fn intern_ref<Q: ?Sized>(&self, value: &Q, make: impl FnOnce() -> K) -> K
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
+        let mut set = self.wrapped.borrow_mut();
+        if let Some(v) = set.get(value) {
+            return *v;
+        } else {
+            let v = make();
+            set.insert(v);
+            v
+        }
     }
 }

@@ -42,10 +42,19 @@ impl<'a, 'c> Actor<'a, 'c> {
         self.next_index += 1;
         index
     }
+
+    fn definition_id(&self, id: ast::NodeID) -> hir::DefinitionID {
+        *self
+            .resolutions
+            .node_to_definition
+            .get(&id)
+            .expect("definition mapping")
+    }
 }
 
 impl Actor<'_, '_> {
     fn lower_module(&mut self, module: ast::Module) -> hir::Module {
+        let id = self.definition_id(module.id);
         let declarations: Vec<hir::Declaration> = module
             .files
             .into_iter()
@@ -59,7 +68,7 @@ impl Actor<'_, '_> {
             .collect();
 
         hir::Module {
-            id: self.next_index(),
+            id,
             name: module.name,
             declarations,
             submodules,
@@ -114,7 +123,7 @@ impl Actor<'_, '_> {
         };
 
         hir::Declaration {
-            id: self.next_index(),
+            id: self.definition_id(node.id),
             span: node.span,
             kind,
             attributes: vec![],
@@ -144,7 +153,7 @@ impl Actor<'_, '_> {
         };
 
         hir::Declaration {
-            id: self.next_index(),
+            id: self.definition_id(node.id),
             span: node.span,
             kind,
             attributes: vec![],
@@ -183,7 +192,7 @@ impl Actor<'_, '_> {
         };
 
         hir::Declaration {
-            id: self.next_index(),
+            id: self.definition_id(node.id),
             span: node.span,
             kind,
             attributes: vec![],
@@ -213,7 +222,7 @@ impl Actor<'_, '_> {
         };
 
         hir::AssociatedDeclaration {
-            id: self.next_index(),
+            id: self.definition_id(node.id),
             span: node.span,
             kind,
             attributes: vec![],

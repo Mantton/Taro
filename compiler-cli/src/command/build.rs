@@ -22,7 +22,7 @@ pub fn run(arguments: CommandLineArguments) -> Result<(), ReportedError> {
     let dcx = DiagCtx::new(cwd);
     let arenas = CompilerArenas::new();
     let store = CompilerStore::new(&arenas);
-    let icx = &CompilerContext::new(dcx, store);
+    let icx = CompilerContext::new(dcx, store);
 
     let graph = sync_dependencies(arguments.path)?;
 
@@ -44,7 +44,7 @@ pub fn run(arguments: CommandLineArguments) -> Result<(), ReportedError> {
             })
             .map_err(|e| format!("failed to resolve path – {}", e))
             .map_err(|_| ReportedError)?;
-        let config = icx.store.arenas.allocator.alloc(Config {
+        let config = icx.store.arenas.configs.alloc(Config {
             name,
             identifier,
             src,
@@ -52,7 +52,7 @@ pub fn run(arguments: CommandLineArguments) -> Result<(), ReportedError> {
             index: package_index,
         });
 
-        let mut compiler = Compiler::new(icx, config);
+        let mut compiler = Compiler::new(&icx, config);
         let _ = compiler.build()?;
     }
     Ok(())
@@ -77,7 +77,7 @@ fn compile_std<'a>(ctx: &'a CompilerContext<'a>) -> Result<(), ReportedError> {
 
     let index = PackageIndex::new(0);
 
-    let config = ctx.store.arenas.allocator.alloc(Config {
+    let config = ctx.store.arenas.configs.alloc(Config {
         index,
         name: "std".into(),
         identifier: "std".into(),

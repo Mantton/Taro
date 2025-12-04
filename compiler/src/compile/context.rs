@@ -1,75 +1,218 @@
-use bumpalo::Bump;
+use crate::{
+    PackageIndex,
+    compile::config::Config,
+    diagnostics::DiagCtx,
+    hir::DefinitionID,
+    sema::{
+        models::{FloatTy, IntTy, LabeledFunctionSignature, Ty, TyKind, UIntTy},
+        resolve::models::{ResolutionOutput, ScopeData, ScopeEntryData, UsageEntryData},
+    },
+    utils::intern::{Interned, InternedInSet, InternedSet},
+};
 use ecow::EcoString;
 use rustc_hash::FxHashMap;
-
-use crate::{
-    PackageIndex, compile::config::Config, diagnostics::DiagCtx,
-    sema::resolve::models::ResolutionOutput,
-};
 use std::{cell::RefCell, ops::Deref};
 
 pub type Gcx<'gcx> = GlobalContext<'gcx>;
 
 #[derive(Clone, Copy)]
-pub struct GlobalContext<'state> {
-    context: &'state CompilerContext<'state>,
-    pub config: &'state Config,
+pub struct GlobalContext<'arena> {
+    context: &'arena CompilerContext<'arena>,
+    pub config: &'arena Config,
 }
 
-impl<'state> GlobalContext<'state> {
-    pub fn new(
-        context: &'state CompilerContext<'state>,
-        config: &'state Config,
-    ) -> GlobalContext<'state> {
-        GlobalContext { context, config }
-    }
-}
-
-impl<'state> Deref for GlobalContext<'state> {
-    type Target = &'state CompilerContext<'state>;
+impl<'arena> Deref for GlobalContext<'arena> {
+    type Target = &'arena CompilerContext<'arena>;
     #[inline(always)]
     fn deref(&self) -> &Self::Target {
         &self.context
     }
 }
 
+impl<'arena> GlobalContext<'arena> {
+    pub fn new(
+        context: &'arena CompilerContext<'arena>,
+        config: &'arena Config,
+    ) -> GlobalContext<'arena> {
+        GlobalContext { context, config }
+    }
+}
+
+impl<'arena> GlobalContext<'arena> {
+    pub fn cache_type(self, id: DefinitionID, ty: Ty<'arena>) {
+        let mut cache = self.context.store.type_databases.borrow_mut();
+        let package_index = id.package();
+        let database = cache.entry(package_index).or_insert(Default::default());
+        database.def_to_ty.insert(id, ty);
+    }
+
+    pub fn cache_signature(self, id: DefinitionID, sig: LabeledFunctionSignature<'arena>) {
+        let mut cache = self.context.store.type_databases.borrow_mut();
+        let package_index = id.package();
+        let database = cache.entry(package_index).or_insert(Default::default());
+        let alloc = self.context.store.arenas.function_signatures.alloc(sig);
+        database.def_to_fn_sig.insert(id, alloc);
+    }
+}
+
 pub struct CompilerContext<'arena> {
     pub dcx: DiagCtx,
     pub store: CompilerStore<'arena>,
+    pub types: CommonTypes<'arena>,
 }
 
 impl<'arena> CompilerContext<'arena> {
     pub fn new(dcx: DiagCtx, store: CompilerStore<'arena>) -> CompilerContext<'arena> {
-        CompilerContext { dcx, store }
+        let types = CommonTypes::new(&store.interners);
+        CompilerContext { dcx, store, types }
     }
-}
 
-pub struct CompilerArenas<'arena> {
-    _p: &'arena (),
-    pub allocator: Bump,
-}
-
-impl<'ctx> CompilerArenas<'ctx> {
-    pub fn new() -> CompilerArenas<'ctx> {
-        CompilerArenas {
-            _p: &(),
-            allocator: Bump::new(),
-        }
+    pub fn dcx(&self) -> &DiagCtx {
+        &self.dcx
     }
 }
 
 pub struct CompilerStore<'arena> {
     pub arenas: &'arena CompilerArenas<'arena>,
+    pub interners: CompilerInterners<'arena>,
     pub resolution_outputs: RefCell<FxHashMap<PackageIndex, &'arena ResolutionOutput<'arena>>>,
     pub package_mapping: RefCell<FxHashMap<EcoString, PackageIndex>>,
+    pub type_databases: RefCell<FxHashMap<PackageIndex, TypeDatabase<'arena>>>,
 }
 
-impl<'ctx> CompilerStore<'ctx> {
-    pub fn new(arenas: &'ctx CompilerArenas<'ctx>) -> CompilerStore<'ctx> {
+impl<'arena> CompilerStore<'arena> {
+    pub fn new(arenas: &'arena CompilerArenas<'arena>) -> CompilerStore<'arena> {
         CompilerStore {
             arenas,
+            interners: CompilerInterners::new(arenas),
             package_mapping: Default::default(),
             resolution_outputs: Default::default(),
+            type_databases: Default::default(),
         }
     }
+}
+pub struct CompilerInterners<'arena> {
+    arenas: &'arena CompilerArenas<'arena>,
+    types: InternedSet<'arena, TyKind<'arena>>,
+    type_lists: InternedSet<'arena, Vec<Ty<'arena>>>,
+}
+impl<'arena> CompilerInterners<'arena> {
+    pub fn new(arenas: &'arena CompilerArenas<'arena>) -> CompilerInterners<'arena> {
+        CompilerInterners {
+            arenas,
+            types: InternedSet::new(),
+            type_lists: InternedSet::new(),
+        }
+    }
+
+    pub fn intern_ty(&self, k: TyKind<'arena>) -> Ty<'arena> {
+        let ptr = self
+            .types
+            .intern(k, |k| {
+                let k = self.arenas.types.alloc(k);
+                return InternedInSet(k);
+            })
+            .0;
+
+        Ty::with_kind(Interned::new_unchecked(ptr))
+    }
+
+    pub fn intern_ty_list(&self, items: Vec<Ty<'arena>>) -> &'arena [Ty<'arena>] {
+        let ik = self
+            .type_lists
+            .intern(items, |k| {
+                let k = self.arenas.type_lists.alloc(k);
+                return InternedInSet(k);
+            })
+            .0;
+
+        ik
+    }
+}
+
+pub struct CompilerArenas<'arena> {
+    pub configs: typed_arena::Arena<Config>,
+    pub scopes: typed_arena::Arena<ScopeData<'arena>>,
+    pub scope_entries: typed_arena::Arena<ScopeEntryData<'arena>>,
+    pub usage_entries: typed_arena::Arena<UsageEntryData<'arena>>,
+    pub resolution_outputs: typed_arena::Arena<ResolutionOutput<'arena>>,
+    pub types: typed_arena::Arena<TyKind<'arena>>,
+    pub type_lists: typed_arena::Arena<Vec<Ty<'arena>>>,
+    pub function_signatures: typed_arena::Arena<LabeledFunctionSignature<'arena>>,
+}
+
+impl<'arena> CompilerArenas<'arena> {
+    pub fn new() -> CompilerArenas<'arena> {
+        CompilerArenas {
+            configs: Default::default(),
+            scopes: Default::default(),
+            scope_entries: Default::default(),
+            usage_entries: Default::default(),
+            resolution_outputs: Default::default(),
+            types: Default::default(),
+            type_lists: Default::default(),
+            function_signatures: Default::default(),
+        }
+    }
+}
+
+pub struct CommonTypes<'ctx> {
+    pub bool: Ty<'ctx>,
+    pub rune: Ty<'ctx>,
+    pub void: Ty<'ctx>,
+
+    pub uint: Ty<'ctx>,
+    pub uint8: Ty<'ctx>,
+    pub uint16: Ty<'ctx>,
+    pub uint32: Ty<'ctx>,
+    pub uint64: Ty<'ctx>,
+
+    pub int: Ty<'ctx>,
+    pub int8: Ty<'ctx>,
+    pub int16: Ty<'ctx>,
+    pub int32: Ty<'ctx>,
+    pub int64: Ty<'ctx>,
+
+    pub float32: Ty<'ctx>,
+    pub float64: Ty<'ctx>,
+
+    pub error: Ty<'ctx>,
+}
+
+impl<'a> CommonTypes<'a> {
+    pub fn new(interner: &CompilerInterners<'a>) -> CommonTypes<'a> {
+        let mk = |ty| interner.intern_ty(ty);
+
+        CommonTypes {
+            bool: mk(TyKind::Bool),
+            rune: mk(TyKind::Rune),
+            void: {
+                let list = interner.intern_ty_list(vec![]);
+                mk(TyKind::Tuple(list))
+            },
+
+            uint: mk(TyKind::UInt(UIntTy::USize)),
+            uint8: mk(TyKind::UInt(UIntTy::U8)),
+            uint16: mk(TyKind::UInt(UIntTy::U16)),
+            uint32: mk(TyKind::UInt(UIntTy::U32)),
+            uint64: mk(TyKind::UInt(UIntTy::U64)),
+
+            int: mk(TyKind::Int(IntTy::ISize)),
+            int8: mk(TyKind::Int(IntTy::I8)),
+            int16: mk(TyKind::Int(IntTy::I16)),
+            int32: mk(TyKind::Int(IntTy::I32)),
+            int64: mk(TyKind::Int(IntTy::I64)),
+
+            float32: mk(TyKind::Float(FloatTy::F32)),
+            float64: mk(TyKind::Float(FloatTy::F64)),
+
+            error: mk(TyKind::Error),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct TypeDatabase<'arena> {
+    pub def_to_ty: FxHashMap<DefinitionID, Ty<'arena>>,
+    pub def_to_fn_sig: FxHashMap<DefinitionID, &'arena LabeledFunctionSignature<'arena>>,
 }

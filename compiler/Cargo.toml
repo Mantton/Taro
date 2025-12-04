@@ -11,7 +11,7 @@ bitflags = "2.9.4"
 ecow = "0.2.6"
 index_vec = "0.1.4"
 rustc-hash = "2.1.1"
-bumpalo = "3.17.0"
 colored = "3.0.0"
 indexmap = "2.8.0"
+typed-arena = "2.0.2"
 internment = { version = "0.8.6", features = ["arena", "serde"] }
