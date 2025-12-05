@@ -617,6 +617,20 @@ pub enum FunctionContext {
     Nested,
 }
 
+pub fn is_expression_bodied(block: &Block) -> Option<&Expression> {
+    match block.statements.as_slice() {
+        [
+            Statement {
+                kind: StatementKind::Expression(expr),
+                ..
+            },
+        ] => {
+            Some(expr) // exactly one expression stmt → expr-bodied
+        }
+        _ => None, // otherwise treat as regular block
+    }
+}
+
 pub trait HirVisitor: Sized {
     type Result: VisitorResult = ();
 

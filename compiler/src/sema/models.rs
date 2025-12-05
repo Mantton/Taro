@@ -53,6 +53,26 @@ impl<'arena> Ty<'arena> {
             F64 => gcx.types.float64,
         }
     }
+
+    pub fn from_labeled_signature(
+        gcx: Gcx<'arena>,
+        signature: &LabeledFunctionSignature<'arena>,
+    ) -> Ty<'arena> {
+        let inputs: Vec<Ty<'arena>> = signature.inputs.iter().map(|param| param.ty).collect();
+        let output = signature.output;
+
+        let kind = TyKind::FnPointer {
+            inputs: gcx.store.interners.intern_ty_list(inputs),
+            output,
+        };
+
+        Ty::new(kind, gcx)
+    }
+
+    #[inline]
+    pub fn kind(self) -> TyKind<'arena> {
+        *self.0.0
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -65,7 +85,10 @@ pub enum TyKind<'arena> {
     Pointer(Ty<'arena>, Mutability),
     Reference(Ty<'arena>, Mutability),
     Tuple(&'arena [Ty<'arena>]),
-    FnDef(DefinitionID),
+    FnPointer {
+        inputs: &'arena [Ty<'arena>],
+        output: Ty<'arena>,
+    },
     Error,
 }
 
@@ -137,4 +160,10 @@ pub struct LabeledFunctionParameter<'ctx> {
     pub label: Option<Symbol>,
     pub name: Symbol,
     pub ty: Ty<'ctx>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Constraint<'ctx> {
+    /// `T == U`
+    TypeEquality(Ty<'ctx>, Ty<'ctx>),
 }

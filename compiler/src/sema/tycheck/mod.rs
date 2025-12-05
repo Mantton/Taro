@@ -11,5 +11,6 @@ pub fn typecheck_package(package: &hir::Package, context: GlobalContext) -> Comp
     // WellFormed?
     wf::run(package, context)?;
     // Check Body
+    check::run(package, context)?;
     Ok(())
 }

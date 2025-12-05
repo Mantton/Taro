@@ -1,7 +1,7 @@
 use crate::{compile::context::GlobalContext, error::CompileResult, hir};
 
-mod functions;
+mod function;
 
 pub fn run(package: &hir::Package, context: GlobalContext) -> CompileResult<()> {
-    functions::run(package, context)
+    function::run(package, context)
 }

@@ -3,7 +3,7 @@ use crate::{
     error::CompileResult,
     hir::{self, DefinitionID, HirVisitor},
     sema::{
-        models::{LabeledFunctionParameter, LabeledFunctionSignature, Ty, TyKind},
+        models::{LabeledFunctionParameter, LabeledFunctionSignature, Ty},
         tycheck::lower::{DefTyLoweringCtx, TypeLowerer},
     },
 };
@@ -35,10 +35,11 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
         node: &hir::Function,
         fn_ctx: hir::FunctionContext,
     ) -> Self::Result {
+        let gcx = self.context;
         let signature = self.build_signature(id, node);
-        let ty = Ty::new(TyKind::FnDef(id), self.context);
-        self.context.cache_signature(id, signature);
-        self.context.cache_type(id, ty);
+        let ty = Ty::from_labeled_signature(gcx, &signature);
+        gcx.cache_signature(id, signature);
+        gcx.cache_type(id, ty);
         hir::walk_function(self, id, node, fn_ctx)
     }
 }
