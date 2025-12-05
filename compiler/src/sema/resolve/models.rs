@@ -606,3 +606,9 @@ pub struct ResolutionOutput<'arena> {
     pub expression_resolutions: FxHashMap<NodeID, ExpressionResolutionState>,
     pub root_scope: Scope<'arena>,
 }
+
+pub enum Visibility {
+    Public,
+    Private(DefinitionID),
+    FilePrivate(FileID),
+}

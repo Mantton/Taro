@@ -36,6 +36,10 @@ impl<'arena> GlobalContext<'arena> {
     ) -> GlobalContext<'arena> {
         GlobalContext { context, config }
     }
+
+    pub fn package_index(self) -> PackageIndex {
+        self.config.index
+    }
 }
 
 impl<'arena> GlobalContext<'arena> {
@@ -52,6 +56,45 @@ impl<'arena> GlobalContext<'arena> {
         let database = cache.entry(package_index).or_insert(Default::default());
         let alloc = self.context.store.arenas.function_signatures.alloc(sig);
         database.def_to_fn_sig.insert(id, alloc);
+    }
+}
+
+impl<'arena> GlobalContext<'arena> {
+    #[track_caller]
+    #[inline]
+    pub fn with_type_database<F, T>(self, index: PackageIndex, func: F) -> T
+    where
+        F: FnOnce(&mut TypeDatabase<'arena>) -> T,
+    {
+        let mut cache = self.context.store.type_databases.borrow_mut();
+        let database = cache.entry(index).or_insert(Default::default());
+        func(database)
+    }
+
+    #[track_caller]
+    #[inline]
+    pub fn with_session_type_database<F, T>(self, func: F) -> T
+    where
+        F: FnOnce(&mut TypeDatabase<'arena>) -> T,
+    {
+        self.with_type_database(self.package_index(), func)
+    }
+}
+
+impl<'arena> GlobalContext<'arena> {
+    #[inline]
+    pub fn get_type(self, id: DefinitionID) -> Ty<'arena> {
+        self.with_type_database(id.package(), |db| {
+            *db.def_to_ty.get(&id).expect("type of definition")
+        })
+    }
+
+    pub fn get_signature(self, id: DefinitionID) -> &'arena LabeledFunctionSignature<'arena> {
+        self.with_type_database(id.package(), |db| {
+            *db.def_to_fn_sig
+                .get(&id)
+                .expect("fn signature of definition")
+        })
     }
 }
 
@@ -156,27 +199,27 @@ impl<'arena> CompilerArenas<'arena> {
     }
 }
 
-pub struct CommonTypes<'ctx> {
-    pub bool: Ty<'ctx>,
-    pub rune: Ty<'ctx>,
-    pub void: Ty<'ctx>,
+pub struct CommonTypes<'arena> {
+    pub bool: Ty<'arena>,
+    pub rune: Ty<'arena>,
+    pub void: Ty<'arena>,
 
-    pub uint: Ty<'ctx>,
-    pub uint8: Ty<'ctx>,
-    pub uint16: Ty<'ctx>,
-    pub uint32: Ty<'ctx>,
-    pub uint64: Ty<'ctx>,
+    pub uint: Ty<'arena>,
+    pub uint8: Ty<'arena>,
+    pub uint16: Ty<'arena>,
+    pub uint32: Ty<'arena>,
+    pub uint64: Ty<'arena>,
 
-    pub int: Ty<'ctx>,
-    pub int8: Ty<'ctx>,
-    pub int16: Ty<'ctx>,
-    pub int32: Ty<'ctx>,
-    pub int64: Ty<'ctx>,
+    pub int: Ty<'arena>,
+    pub int8: Ty<'arena>,
+    pub int16: Ty<'arena>,
+    pub int32: Ty<'arena>,
+    pub int64: Ty<'arena>,
 
-    pub float32: Ty<'ctx>,
-    pub float64: Ty<'ctx>,
+    pub float32: Ty<'arena>,
+    pub float64: Ty<'arena>,
 
-    pub error: Ty<'ctx>,
+    pub error: Ty<'arena>,
 }
 
 impl<'a> CommonTypes<'a> {

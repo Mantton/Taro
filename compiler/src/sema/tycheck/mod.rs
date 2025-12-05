@@ -9,6 +9,7 @@ pub fn typecheck_package(package: &hir::Package, context: GlobalContext) -> Comp
     // Collect
     collect::run(package, context)?;
     // WellFormed?
+    wf::run(package, context)?;
     // Check Body
     Ok(())
 }
