@@ -1,6 +1,6 @@
 use crate::{
     compile::context::Gcx,
-    hir::{DefinitionID, NodeID},
+    hir::{self, DefinitionID, NodeID},
     sema::{models::Ty, tycheck::lower::TypeLowerer},
 };
 use rustc_hash::FxHashMap;
@@ -58,5 +58,12 @@ impl<'rcx, 'arena> Deref for FnCtx<'rcx, 'arena> {
 impl<'arena> TypeLowerer<'arena> for FnCtx<'_, 'arena> {
     fn gcx(&self) -> Gcx<'arena> {
         self.gcx
+    }
+}
+
+impl<'rcx, 'arena> FnCtx<'rcx, 'arena> {
+    pub fn lower_type(&self, node: &hir::Type) -> Ty<'arena> {
+        let ty = self.lowerer().lower_type(node);
+        ty
     }
 }

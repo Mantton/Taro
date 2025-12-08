@@ -7,13 +7,12 @@ use crate::{
 };
 
 impl<'rcx, 'gcx> FnCtx<'rcx, 'gcx> {
-    pub fn check_statement(&self, statement: &hir::Statement) -> Option<Ty<'gcx>> {
+    pub fn check_statement(&self, statement: &hir::Statement) {
         match &statement.kind {
-            hir::StatementKind::Declaration(..) => return None,
+            hir::StatementKind::Declaration(..) => return,
             hir::StatementKind::Expression(..) => todo!(),
             hir::StatementKind::Variable(node) => {
                 self.check_local(node);
-                return Some(self.gcx.types.void);
             }
             hir::StatementKind::Break => todo!(),
             hir::StatementKind::Continue => todo!(),
@@ -27,7 +26,7 @@ impl<'rcx, 'gcx> FnCtx<'rcx, 'gcx> {
             hir::StatementKind::Guard { .. } => todo!(),
         }
 
-        return None;
+        return;
     }
 
     pub fn check_return(&self, expression: &hir::Expression) {
@@ -45,7 +44,13 @@ impl<'rcx, 'gcx> FnCtx<'rcx, 'gcx> {
     }
 
     pub fn check_local(&self, local: &hir::Local) {
-        todo!()
+        let annotation = local.ty.as_ref().map(|ty| self.lower_type(ty));
+        let init_ty = local.initializer.as_ref().map(|expr| match annotation {
+            Some(annotation) => self.check_expression_has_type(expr, annotation),
+            None => self.check_expression(expr),
+        });
+        let ty = annotation.or(init_ty).unwrap_or(self.gcx.types.error);
+        self.locals.borrow_mut().insert(local.pattern.id, ty);
     }
 }
 
@@ -75,7 +80,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         expression: &hir::Expression,
         expectation: Ty<'ctx>,
     ) -> Ty<'ctx> {
-        let ty = self.check_expression_with_hint(expression, expectation);
+        let _ = self.check_expression_with_hint(expression, expectation);
         expectation
     }
 
@@ -93,11 +98,6 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         expectation: Expectation<'ctx>,
     ) -> Ty<'ctx> {
         let ty = self.check_expression_kind(expression, expectation);
-        // Record the (possibly inferred) type for this expression node
-        // self.results
-        //     .borrow_mut()
-        //     .node_types
-        //     .insert(expression.id, ty);
         ty
     }
 
@@ -108,7 +108,9 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
     ) -> Ty<'ctx> {
         match &expression.kind {
             hir::ExpressionKind::Literal(node) => self.check_literal_expression(node, expectation),
-            hir::ExpressionKind::Identifier(..) => todo!(),
+            hir::ExpressionKind::Identifier(_, resolution) => {
+                self.check_identifier_expression(resolution)
+            }
             hir::ExpressionKind::Member { .. } => todo!(),
             hir::ExpressionKind::Specialize { .. } => todo!(),
             hir::ExpressionKind::Array(..) => todo!(),
@@ -163,6 +165,27 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             hir::Literal::Nil => {
                 todo!();
             }
+        }
+    }
+
+    fn check_identifier_expression(&self, resolution: &hir::Resolution) -> Ty<'ctx> {
+        match resolution {
+            hir::Resolution::LocalVariable(id) => self
+                .locals
+                .borrow()
+                .get(id)
+                .copied()
+                .unwrap_or(self.gcx.types.error),
+            hir::Resolution::Definition(..) | hir::Resolution::SelfConstructor(..) => {
+                todo!()
+            }
+            hir::Resolution::FunctionSet(..) => todo!(),
+            hir::Resolution::PrimaryType(..)
+            | hir::Resolution::InterfaceSelfTypeParameter(..)
+            | hir::Resolution::SelfTypeAlias(..)
+            | hir::Resolution::ImplicitSelfParameter
+            | hir::Resolution::Foundation(..) => todo!(),
+            hir::Resolution::Error => unreachable!(),
         }
     }
 }
