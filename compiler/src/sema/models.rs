@@ -1,6 +1,7 @@
 use crate::{
     compile::context::Gcx,
     hir::{DefinitionID, Mutability},
+    sema::tycheck::infer::keys::{FloatVarID, IntVarID},
     span::Symbol,
     utils::intern::Interned,
 };
@@ -73,6 +74,24 @@ impl<'arena> Ty<'arena> {
     pub fn kind(self) -> TyKind<'arena> {
         *self.0.0
     }
+
+    pub fn is_error(self) -> bool {
+        matches!(self.kind(), TyKind::Error)
+    }
+
+    #[inline]
+    pub fn is_infer(self) -> bool {
+        matches!(self.kind(), TyKind::Infer(..))
+    }
+
+    #[inline]
+    pub fn is_ty_var(self) -> bool {
+        matches!(self.kind(), TyKind::Infer(InferTy::TyVar(_)))
+    }
+
+    pub fn is_fn(self) -> bool {
+        matches!(self.kind(), TyKind::FnPointer { .. })
+    }
 }
 
 impl<'arena> Ty<'arena> {
@@ -80,6 +99,7 @@ impl<'arena> Ty<'arena> {
         match self.kind() {
             TyKind::Bool => "bool".into(),
             TyKind::Rune => "rune".into(),
+            TyKind::String => "string".into(),
             TyKind::Int(i) => i.name_str().into(),
             TyKind::UInt(u) => u.name_str().into(),
             TyKind::Float(f) => f.name_str().into(),
@@ -117,6 +137,7 @@ impl<'arena> Ty<'arena> {
                 out
             }
             TyKind::Error => "<<error>>".into(),
+            TyKind::Infer(k) => format!("infer({:?})", k),
         }
     }
 }
@@ -125,6 +146,7 @@ impl<'arena> Ty<'arena> {
 pub enum TyKind<'arena> {
     Bool,
     Rune,
+    String,
     Int(IntTy),
     UInt(UIntTy),
     Float(FloatTy),
@@ -135,6 +157,7 @@ pub enum TyKind<'arena> {
         inputs: &'arena [Ty<'arena>],
         output: Ty<'arena>,
     },
+    Infer(InferTy),
     Error,
 }
 
@@ -199,6 +222,13 @@ pub struct LabeledFunctionSignature<'ctx> {
     pub inputs: Vec<LabeledFunctionParameter<'ctx>>,
     pub output: Ty<'ctx>,
     pub id: DefinitionID,
+    pub is_variadic: bool,
+}
+
+impl LabeledFunctionSignature<'_> {
+    pub fn min_parameter_count(&self) -> usize {
+        self.inputs.len() - self.inputs.iter().filter(|i| i.has_default).count()
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -206,10 +236,34 @@ pub struct LabeledFunctionParameter<'ctx> {
     pub label: Option<Symbol>,
     pub name: Symbol,
     pub ty: Ty<'ctx>,
+    pub has_default: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Constraint<'ctx> {
     /// `T == U`
     TypeEquality(Ty<'ctx>, Ty<'ctx>),
+}
+
+index_vec::define_index_type! {
+    pub struct TyVarID = u32;
+}
+
+index_vec::define_index_type! {
+    pub struct FnVarID = u32;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InferTy {
+    TyVar(TyVarID),
+    IntVar(IntVarID),
+    FloatVar(FloatVarID),
+    FnVar(FnVarID),
+    FreshTy(u32),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum CalleeOrigin<'ctx> {
+    Direct(DefinitionID),
+    Overloaded(&'ctx [DefinitionID]),
 }

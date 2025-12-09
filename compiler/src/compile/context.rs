@@ -9,6 +9,7 @@ use crate::{
     },
     utils::intern::{Interned, InternedInSet, InternedSet},
 };
+use bumpalo::Bump;
 use ecow::EcoString;
 use rustc_hash::FxHashMap;
 use std::{cell::RefCell, ops::Deref};
@@ -182,6 +183,7 @@ pub struct CompilerArenas<'arena> {
     pub types: typed_arena::Arena<TyKind<'arena>>,
     pub type_lists: typed_arena::Arena<Vec<Ty<'arena>>>,
     pub function_signatures: typed_arena::Arena<LabeledFunctionSignature<'arena>>,
+    pub global: Bump,
 }
 
 impl<'arena> CompilerArenas<'arena> {
@@ -195,6 +197,7 @@ impl<'arena> CompilerArenas<'arena> {
             types: Default::default(),
             type_lists: Default::default(),
             function_signatures: Default::default(),
+            global: Bump::new(),
         }
     }
 }
@@ -202,6 +205,7 @@ impl<'arena> CompilerArenas<'arena> {
 pub struct CommonTypes<'arena> {
     pub bool: Ty<'arena>,
     pub rune: Ty<'arena>,
+    pub string: Ty<'arena>,
     pub void: Ty<'arena>,
 
     pub uint: Ty<'arena>,
@@ -229,6 +233,7 @@ impl<'a> CommonTypes<'a> {
         CommonTypes {
             bool: mk(TyKind::Bool),
             rune: mk(TyKind::Rune),
+            string: mk(TyKind::String),
             void: {
                 let list = interner.intern_ty_list(vec![]);
                 mk(TyKind::Tuple(list))

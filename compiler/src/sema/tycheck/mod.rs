@@ -2,6 +2,8 @@ use crate::{compile::context::GlobalContext, error::CompileResult, hir};
 
 mod check;
 mod collect;
+mod fold;
+pub mod infer;
 mod lower;
 mod solve;
 mod wf;

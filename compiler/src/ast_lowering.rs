@@ -906,14 +906,15 @@ impl Actor<'_, '_> {
                     kind: hir::PatternKind::Identifier(dictionary_ident),
                 };
 
-                let pattern_id = pattern.id;
-
                 let local = hir::Local {
+                    id: self.next_index(),
                     mutability: hir::Mutability::Mutable,
                     pattern,
                     ty: None,
                     initializer: Some(initializer),
                 };
+
+                let local_id = local.id;
 
                 let mut statements =
                     vec![self.mk_statement(hir::StatementKind::Variable(local), node.span)];
@@ -926,7 +927,7 @@ impl Actor<'_, '_> {
                     let target = self.mk_expression(
                         hir::ExpressionKind::Identifier(
                             dictionary_ident,
-                            Resolution::LocalVariable(pattern_id),
+                            Resolution::LocalVariable(local_id),
                         ),
                         node.span,
                     );
@@ -957,7 +958,7 @@ impl Actor<'_, '_> {
                 let result = self.mk_expression(
                     hir::ExpressionKind::Identifier(
                         dictionary_ident,
-                        Resolution::LocalVariable(pattern_id),
+                        Resolution::LocalVariable(local_id),
                     ),
                     node.span,
                 );
@@ -1235,7 +1236,11 @@ impl Actor<'_, '_> {
     }
 
     fn lower_local(&mut self, node: ast::Local) -> hir::Local {
+        let id = self.next_index();
+        self.node_mapping.insert(node.id, id);
+
         hir::Local {
+            id,
             mutability: node.mutability,
             pattern: self.lower_pattern(node.pattern),
             ty: node.ty.map(|n| self.lower_type(n)),

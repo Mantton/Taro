@@ -2,8 +2,9 @@ use crate::{
     compile::context::Gcx,
     hir::{self, DefinitionID, NodeID},
     sema::{
-        models::{Constraint, Ty},
+        models::{CalleeOrigin, Ty},
         tycheck::{
+            infer::InferCtx,
             lower::TypeLowerer,
             solve::{Goal, Obligation, ObligationCtx},
         },
@@ -15,19 +16,28 @@ use std::{cell::RefCell, ops::Deref};
 
 pub struct TyCheckRootCtx<'arena> {
     pub fn_id: DefinitionID,
+    pub icx: InferCtx<'arena>,
     pub locals: RefCell<FxHashMap<NodeID, Ty<'arena>>>,
-    pub gcx: Gcx<'arena>,
     pub solver: RefCell<ObligationCtx<'arena>>,
 }
 
 impl<'arena> TyCheckRootCtx<'arena> {
     pub fn new(fn_id: DefinitionID, gcx: Gcx<'arena>) -> TyCheckRootCtx<'arena> {
+        let icx = InferCtx::new(gcx);
+
         TyCheckRootCtx {
             fn_id,
             locals: Default::default(),
-            gcx,
+            icx,
             solver: RefCell::new(ObligationCtx::new()),
         }
+    }
+}
+
+impl<'ctx> Deref for TyCheckRootCtx<'ctx> {
+    type Target = InferCtx<'ctx>;
+    fn deref(&self) -> &Self::Target {
+        &self.icx
     }
 }
 
@@ -49,6 +59,7 @@ pub struct FnCtx<'rcx, 'arena> {
     pub id: DefinitionID,
     pub rcx: &'rcx TyCheckRootCtx<'arena>,
     pub return_ty: Option<Ty<'arena>>,
+    pub callee_origins: RefCell<FxHashMap<NodeID, CalleeOrigin<'arena>>>,
 }
 
 impl<'rcx, 'arena> FnCtx<'rcx, 'arena> {
@@ -57,6 +68,7 @@ impl<'rcx, 'arena> FnCtx<'rcx, 'arena> {
             rcx,
             id,
             return_ty: None,
+            callee_origins: Default::default(),
         }
     }
 }

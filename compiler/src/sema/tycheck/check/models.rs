@@ -1,4 +1,4 @@
-use crate::sema::models::Ty;
+use crate::{hir::DefinitionID, sema::models::Ty};
 
 #[derive(Debug, Clone, Copy)]
 pub enum Expectation<'ctx> {

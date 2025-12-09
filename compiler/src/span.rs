@@ -82,7 +82,7 @@ impl fmt::Display for Symbol {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Identifier {
     pub symbol: Symbol,
     pub span: Span,

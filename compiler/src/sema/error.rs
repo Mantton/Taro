@@ -14,7 +14,9 @@ impl<T> ExpectedFound<T> {
 
 #[derive(Debug, Clone, Copy)]
 pub enum TypeError<'ctx> {
+    Mutability(ExpectedFound<Ty<'ctx>>),
     TyMismatch(ExpectedFound<Ty<'ctx>>),
+    TupleArity(ExpectedFound<usize>),
 }
 
 pub type SpannedError<'ctx> = Spanned<TypeError<'ctx>>;
@@ -22,13 +24,17 @@ pub type SpannedError<'ctx> = Spanned<TypeError<'ctx>>;
 impl<'ctx> TypeError<'ctx> {
     pub fn format(self, gcx: Gcx<'ctx>) -> String {
         match self {
-            TypeError::TyMismatch(ef) => {
+            TypeError::Mutability(ef) | TypeError::TyMismatch(ef) => {
                 format!(
                     "expected {}, found {}",
                     ef.expected.format(gcx),
                     ef.found.format(gcx)
                 )
             }
+            TypeError::TupleArity(ef) => format!(
+                "expected tuple of length {}, found {}",
+                ef.expected, ef.found
+            ),
         }
     }
 }

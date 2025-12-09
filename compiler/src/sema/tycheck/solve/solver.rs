@@ -1,14 +1,18 @@
-use std::collections::VecDeque;
-
 use crate::{
+    compile::context::Gcx,
     sema::{
         error::{SpannedError, TypeError},
-        tycheck::solve::{Goal, Obligation},
+        tycheck::{
+            infer::InferCtx,
+            solve::{Goal, Obligation},
+        },
     },
     span::Spanned,
 };
+use std::collections::VecDeque;
 
-pub struct SolverDelegate<'ctx> {
+pub struct SolverDelegate<'icx, 'ctx> {
+    infer_cx: &'icx InferCtx<'ctx>,
     root: Obligation<'ctx>,
     nested: VecDeque<Obligation<'ctx>>,
 }
@@ -33,12 +37,23 @@ pub enum SolverResult<'ctx> {
     Error(TypeError<'ctx>),        // Failed, With Error
 }
 
-impl<'ctx> SolverDelegate<'ctx> {
-    pub fn new(root: Obligation<'ctx>) -> SolverDelegate<'ctx> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
+    pub fn new(icx: &'icx InferCtx<'ctx>, root: Obligation<'ctx>) -> SolverDelegate<'icx, 'ctx> {
         SolverDelegate {
+            infer_cx: icx,
             root,
             nested: VecDeque::new(),
         }
+    }
+
+    #[inline]
+    pub fn icx(&self) -> &'icx InferCtx<'ctx> {
+        &self.infer_cx
+    }
+
+    #[inline]
+    pub fn gcx(&self) -> Gcx<'ctx> {
+        self.icx().gcx
     }
 
     pub fn add_obligation(&mut self, obligation: Obligation<'ctx>) {
@@ -52,7 +67,7 @@ impl<'ctx> SolverDelegate<'ctx> {
     }
 }
 
-impl<'ctx> SolverDelegate<'ctx> {
+impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     pub fn solve_root(&mut self) -> Result<RootOutcome, SpannedError<'ctx>> {
         // Solve Root
         let state = self.solve(self.root)?;
@@ -83,7 +98,7 @@ impl<'ctx> SolverDelegate<'ctx> {
         let mut any_deferred = false;
 
         for obligation in obligations {
-            let mut delegate = SolverDelegate::new(obligation);
+            let mut delegate = SolverDelegate::new(self.infer_cx, obligation);
             match delegate.solve_root()? {
                 RootOutcome::Solved => {}
                 RootOutcome::Deferred => {
@@ -119,6 +134,7 @@ impl<'ctx> SolverDelegate<'ctx> {
         let _ = obligation.location;
         match goal {
             Goal::Equal(lhs, rhs) => self.solve_equality(lhs, rhs),
+            Goal::Apply(goal) => self.solve_application(goal),
         }
     }
 }

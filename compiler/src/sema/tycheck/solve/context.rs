@@ -3,9 +3,12 @@ use std::collections::VecDeque;
 use crate::{
     sema::{
         error::TypeError,
-        tycheck::solve::{
-            Obligation,
-            solver::{RootOutcome, SolverDelegate},
+        tycheck::{
+            infer::InferCtx,
+            solve::{
+                Obligation,
+                solver::{RootOutcome, SolverDelegate},
+            },
         },
     },
     span::Spanned,
@@ -28,7 +31,7 @@ impl<'ctx> ObligationCtx<'ctx> {
 }
 
 impl<'ctx> ObligationCtx<'ctx> {
-    pub fn solve_all(&mut self) -> Vec<Spanned<TypeError<'ctx>>> {
+    pub fn solve_all(&mut self, icx: &InferCtx<'ctx>) -> Vec<Spanned<TypeError<'ctx>>> {
         let mut errors = vec![];
 
         // Fixpoint loop
@@ -41,7 +44,7 @@ impl<'ctx> ObligationCtx<'ctx> {
             let mut made_progress = false;
 
             for obligation in obligations {
-                let mut delegate = SolverDelegate::new(obligation);
+                let mut delegate = SolverDelegate::new(icx, obligation);
                 match delegate.solve_root() {
                     Ok(RootOutcome::Solved) => {
                         made_progress = true;

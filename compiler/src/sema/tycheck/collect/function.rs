@@ -60,6 +60,7 @@ impl<'ctx> Actor<'ctx> {
                 label: node.label.map(|n| n.identifier.symbol),
                 name: node.name.symbol,
                 ty: ctx.lowerer().lower_type(&node.annotated_type),
+                has_default: node.default_value.is_some(),
             })
             .collect();
 
@@ -69,6 +70,11 @@ impl<'ctx> Actor<'ctx> {
             self.context.types.void
         };
 
-        LabeledFunctionSignature { inputs, output, id }
+        LabeledFunctionSignature {
+            inputs,
+            output,
+            id,
+            is_variadic: false,
+        }
     }
 }

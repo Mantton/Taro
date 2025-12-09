@@ -401,6 +401,7 @@ pub enum StatementKind {
 
 #[derive(Debug, Clone)]
 pub struct Local {
+    pub id: NodeID,
     pub mutability: Mutability,
     pub pattern: Pattern,
     pub ty: Option<Box<Type>>,

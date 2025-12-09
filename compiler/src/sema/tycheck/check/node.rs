@@ -1,12 +1,20 @@
 use crate::{
-    hir,
+    hir::{self, DefinitionKind, NodeID},
     sema::{
-        models::{Ty, TyKind},
-        tycheck::check::{context::FnCtx, models::Expectation},
+        models::{CalleeOrigin, InferTy, Ty, TyKind},
+        tycheck::{
+            check::{context::FnCtx, gather::GatherLocalsVisitor, models::Expectation},
+            lower::TypeLowerer,
+            solve::{ApplicationArgument, ApplicationGoal, Goal, Obligation},
+        },
     },
 };
 
 impl<'rcx, 'gcx> FnCtx<'rcx, 'gcx> {
+    pub fn error_ty(&self) -> Ty<'gcx> {
+        self.gcx.types.error
+    }
+
     pub fn check_statement(&self, statement: &hir::Statement) {
         match &statement.kind {
             hir::StatementKind::Declaration(..) => return,
@@ -44,13 +52,11 @@ impl<'rcx, 'gcx> FnCtx<'rcx, 'gcx> {
     }
 
     pub fn check_local(&self, local: &hir::Local) {
-        let annotation = local.ty.as_ref().map(|ty| self.lower_type(ty));
-        let init_ty = local.initializer.as_ref().map(|expr| match annotation {
-            Some(annotation) => self.check_expression_has_type(expr, annotation),
-            None => self.check_expression(expr),
-        });
-        let ty = annotation.or(init_ty).unwrap_or(self.gcx.types.error);
-        self.locals.borrow_mut().insert(local.pattern.id, ty);
+        GatherLocalsVisitor::from_local(self, local);
+        let ty = self.local_ty(local.id);
+        if let Some(initializer) = &local.initializer {
+            self.check_expression_coercible_to_type(initializer, ty);
+        }
     }
 }
 
@@ -99,6 +105,10 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         expectation: Expectation<'ctx>,
     ) -> Ty<'ctx> {
         let ty = self.check_expression_kind(expression, expectation);
+        self.gcx.dcx().emit_info(
+            format!("Type is {}", ty.format(self.gcx)),
+            Some(expression.span),
+        );
         ty
     }
 
@@ -110,7 +120,10 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         match &expression.kind {
             hir::ExpressionKind::Literal(node) => self.check_literal_expression(node, expectation),
             hir::ExpressionKind::Identifier(_, resolution) => {
-                self.check_identifier_expression(resolution)
+                self.check_identifier_expression(expression.id, resolution)
+            }
+            hir::ExpressionKind::Call(c, a) => {
+                self.check_call_expression(expression, c, a, expectation)
             }
             hir::ExpressionKind::Member { .. } => todo!(),
             hir::ExpressionKind::Specialize { .. } => todo!(),
@@ -118,7 +131,6 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             hir::ExpressionKind::Tuple(..) => todo!(),
             hir::ExpressionKind::If(..) => todo!(),
             hir::ExpressionKind::Match(..) => todo!(),
-            hir::ExpressionKind::Call(..) => todo!(),
             hir::ExpressionKind::Reference(..) => todo!(),
             hir::ExpressionKind::Dereference(..) => todo!(),
             hir::ExpressionKind::Binary(..) => todo!(),
@@ -146,14 +158,14 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         match literal {
             hir::Literal::Bool(_) => gcx.types.bool,
             hir::Literal::Rune(_) => gcx.types.rune,
-            hir::Literal::String(_) => todo!(),
+            hir::Literal::String(_) => gcx.types.string,
             hir::Literal::Integer(_) => {
                 let opt_ty = expectation.to_option().and_then(|ty| match ty.kind() {
                     TyKind::Int(_) | TyKind::UInt(_) => Some(ty),
                     _ => None,
                 });
 
-                opt_ty.unwrap_or_else(|| gcx.types.int32)
+                opt_ty.unwrap_or_else(|| self.next_int_var())
             }
             hir::Literal::Float(_) => {
                 let opt_ty = expectation.to_option().and_then(|ty| match ty.kind() {
@@ -161,7 +173,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
                     _ => None,
                 });
 
-                opt_ty.unwrap_or_else(|| gcx.types.float32)
+                opt_ty.unwrap_or_else(|| self.next_float_var())
             }
             hir::Literal::Nil => {
                 todo!();
@@ -169,13 +181,28 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         }
     }
 
-    fn check_identifier_expression(&self, resolution: &hir::Resolution) -> Ty<'ctx> {
+    fn check_identifier_expression(
+        &self,
+        node_id: NodeID,
+        resolution: &hir::Resolution,
+    ) -> Ty<'ctx> {
         match resolution {
             hir::Resolution::LocalVariable(id) => self.local_ty(*id),
-            hir::Resolution::Definition(..) | hir::Resolution::SelfConstructor(..) => {
+            hir::Resolution::Definition(id, DefinitionKind::Function) => {
+                self.callee_origins
+                    .borrow_mut()
+                    .insert(node_id, CalleeOrigin::Direct(*id));
+                let ty = self.gcx.get_type(*id);
+                ty
+            }
+            hir::Resolution::Definition(id, _) => {
+                let ty = self.gcx.get_type(*id);
+                ty
+            }
+            hir::Resolution::SelfConstructor(..) => todo!(),
+            hir::Resolution::FunctionSet(ids) => {
                 todo!()
             }
-            hir::Resolution::FunctionSet(..) => todo!(),
             hir::Resolution::PrimaryType(..)
             | hir::Resolution::InterfaceSelfTypeParameter(..)
             | hir::Resolution::SelfTypeAlias(..)
@@ -183,5 +210,70 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             | hir::Resolution::Foundation(..) => todo!(),
             hir::Resolution::Error => unreachable!(),
         }
+    }
+}
+
+impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
+    fn check_call_expression(
+        &self,
+        expression: &hir::Expression,
+        callee: &hir::Expression,
+        arguments: &[hir::ExpressionArgument],
+        expectation: Expectation<'ctx>,
+    ) -> Ty<'ctx> {
+        let callee_ty = self.check_expression(callee);
+
+        match callee_ty.kind() {
+            TyKind::FnPointer { .. } | TyKind::Infer(InferTy::TyVar(..) | InferTy::FnVar(..)) => {
+                // continue
+            }
+            _ => {
+                if callee_ty.is_error() {
+                    return self.error_ty();
+                }
+
+                self.gcx().dcx().emit_error(
+                    format!(
+                        "cannot invoke non-function type '{}'",
+                        callee_ty.format(self.gcx)
+                    ),
+                    Some(callee.span),
+                );
+                return self.error_ty();
+            }
+        };
+
+        let result = self.next_ty_var(expression.span);
+        let arguments = self
+            .gcx
+            .store
+            .arenas
+            .global
+            .alloc_slice_fill_iter(arguments.iter().map(|n| ApplicationArgument {
+                id: n.expression.id,
+                label: n.label.map(|n| n.identifier),
+                ty: self.check_expression(&n.expression),
+                span: n.expression.span,
+            }));
+
+        let callee_origin = self.callee_origins.borrow().get(&callee.id).cloned();
+
+        let goal = ApplicationGoal {
+            callee_ty,
+            caller_span: expression.span,
+            callee_origin,
+            call_id: expression.id,
+            callee_id: callee.id,
+            arguments,
+            result,
+            expected: expectation.only_has_type(),
+        };
+
+        self.add_obligation(Obligation {
+            location: expression.span,
+            goal: Goal::Apply(goal),
+        });
+
+        result
     }
 }

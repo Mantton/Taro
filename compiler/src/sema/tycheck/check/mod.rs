@@ -9,6 +9,7 @@ use crate::{
 };
 
 mod context;
+mod gather;
 mod models;
 mod node;
 
@@ -91,7 +92,7 @@ fn check_func<'rcx, 'gcx>(
 fn solve<'rcx, 'gcx>(fcx: &mut context::FnCtx<'rcx, 'gcx>) {
     let gcx = fcx.gcx;
     let mut solver = fcx.solver.borrow_mut();
-    let errors = solver.solve_all();
+    let errors = solver.solve_all(fcx);
 
     let report_errors = |errs: &Vec<SpannedError<'gcx>>| {
         for item in errs {
@@ -100,5 +101,8 @@ fn solve<'rcx, 'gcx>(fcx: &mut context::FnCtx<'rcx, 'gcx>) {
         }
     };
 
-    report_errors(&errors)
+    if !errors.is_empty() {
+        report_errors(&errors);
+        fcx.icx.default_numeric_vars();
+    }
 }
