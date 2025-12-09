@@ -2,7 +2,10 @@ use crate::{
     compile::context::Gcx,
     error::CompileResult,
     hir::{self, DefinitionID, HirVisitor},
-    sema::models::{Ty, TyKind},
+    sema::{
+        error::SpannedError,
+        models::{Ty, TyKind},
+    },
 };
 
 mod context;
@@ -72,6 +75,7 @@ fn check_func<'rcx, 'gcx>(
         unreachable!("ICE: Checking Function without Body")
     };
 
+    // Collect
     if let Some(body) = hir::is_expression_bodied(body) {
         // --- single-expression body ---
         fcx.check_return(body);
@@ -79,4 +83,22 @@ fn check_func<'rcx, 'gcx>(
         // --- regular block body ---
         fcx.check_block(body);
     }
+
+    // Solve
+    solve(fcx);
+}
+
+fn solve<'rcx, 'gcx>(fcx: &mut context::FnCtx<'rcx, 'gcx>) {
+    let gcx = fcx.gcx;
+    let mut solver = fcx.solver.borrow_mut();
+    let errors = solver.solve_all();
+
+    let report_errors = |errs: &Vec<SpannedError<'gcx>>| {
+        for item in errs {
+            gcx.dcx()
+                .emit_error(item.value.format(gcx), Some(item.span));
+        }
+    };
+
+    report_errors(&errors)
 }

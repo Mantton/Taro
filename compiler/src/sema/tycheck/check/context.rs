@@ -1,7 +1,14 @@
 use crate::{
     compile::context::Gcx,
     hir::{self, DefinitionID, NodeID},
-    sema::{models::Ty, tycheck::lower::TypeLowerer},
+    sema::{
+        models::{Constraint, Ty},
+        tycheck::{
+            lower::TypeLowerer,
+            solve::{Goal, Obligation, ObligationCtx},
+        },
+    },
+    span::Span,
 };
 use rustc_hash::FxHashMap;
 use std::{cell::RefCell, ops::Deref};
@@ -10,6 +17,7 @@ pub struct TyCheckRootCtx<'arena> {
     pub fn_id: DefinitionID,
     pub locals: RefCell<FxHashMap<NodeID, Ty<'arena>>>,
     pub gcx: Gcx<'arena>,
+    pub solver: RefCell<ObligationCtx<'arena>>,
 }
 
 impl<'arena> TyCheckRootCtx<'arena> {
@@ -18,6 +26,7 @@ impl<'arena> TyCheckRootCtx<'arena> {
             fn_id,
             locals: Default::default(),
             gcx,
+            solver: RefCell::new(ObligationCtx::new()),
         }
     }
 }
@@ -29,6 +38,10 @@ impl<'arena> TyCheckRootCtx<'arena> {
             .borrow()
             .get(&id)
             .expect("ICE: local variable must have type mapped")
+    }
+
+    pub fn add_obligation(&self, obligation: Obligation<'arena>) {
+        self.solver.borrow_mut().add_obligation(obligation);
     }
 }
 
@@ -65,5 +78,20 @@ impl<'rcx, 'arena> FnCtx<'rcx, 'arena> {
     pub fn lower_type(&self, node: &hir::Type) -> Ty<'arena> {
         let ty = self.lowerer().lower_type(node);
         ty
+    }
+}
+
+impl<'rcx, 'arena> FnCtx<'rcx, 'arena> {
+    pub fn add_coercion_constraint(&self, from: Ty<'arena>, to: Ty<'arena>, location: Span) {
+        // break early
+        if from == to {
+            return;
+        }
+
+        let obligation = Obligation {
+            location,
+            goal: Goal::Equal(to, from),
+        };
+        self.add_obligation(obligation);
     }
 }

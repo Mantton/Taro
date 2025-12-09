@@ -75,6 +75,52 @@ impl<'arena> Ty<'arena> {
     }
 }
 
+impl<'arena> Ty<'arena> {
+    pub fn format(self, gcx: Gcx<'arena>) -> String {
+        match self.kind() {
+            TyKind::Bool => "bool".into(),
+            TyKind::Rune => "rune".into(),
+            TyKind::Int(i) => i.name_str().into(),
+            TyKind::UInt(u) => u.name_str().into(),
+            TyKind::Float(f) => f.name_str().into(),
+            TyKind::Pointer(inner, mt) => {
+                format!("*{}{}", mt.display_str(), inner.format(gcx))
+            }
+            TyKind::Reference(inner, mt) => {
+                format!("&{}{}", mt.display_str(), inner.format(gcx))
+            }
+            TyKind::Tuple(items) => {
+                let mut out = "(".to_owned();
+                for (i, t) in items.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
+                    }
+                    out.push_str(&t.format(gcx));
+                }
+                if items.len() == 1 {
+                    out.push(',');
+                } // 1‑tuple trailing comma
+                out.push(')');
+                out
+            }
+            TyKind::FnPointer { inputs, output } => {
+                let mut out = String::new();
+                out.push('(');
+                for (i, input) in inputs.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
+                    }
+                    out.push_str(&input.format(gcx));
+                }
+                out.push_str(") -> ");
+                out.push_str(&output.format(gcx));
+                out
+            }
+            TyKind::Error => "<<error>>".into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TyKind<'arena> {
     Bool,

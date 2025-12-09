@@ -3,6 +3,7 @@ use crate::{compile::context::GlobalContext, error::CompileResult, hir};
 mod check;
 mod collect;
 mod lower;
+mod solve;
 mod wf;
 
 pub fn typecheck_package(package: &hir::Package, context: GlobalContext) -> CompileResult<()> {

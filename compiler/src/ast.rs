@@ -3,7 +3,7 @@ use crate::{
     span::{FileID, Span, Symbol},
 };
 use index_vec::define_index_type;
-use std::ops::ControlFlow;
+use std::{fmt::Display, ops::ControlFlow};
 
 define_index_type! {
     pub struct NodeID = u32;
@@ -32,6 +32,15 @@ pub struct File {
 pub enum Mutability {
     Mutable,
     Immutable,
+}
+
+impl Mutability {
+    pub fn display_str(self) -> &'static str {
+        match self {
+            Mutability::Mutable => "",
+            Mutability::Immutable => "const ",
+        }
+    }
 }
 
 pub use crate::span::Identifier;

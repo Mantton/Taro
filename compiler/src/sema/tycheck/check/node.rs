@@ -80,7 +80,8 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         expression: &hir::Expression,
         expectation: Ty<'ctx>,
     ) -> Ty<'ctx> {
-        let _ = self.check_expression_with_hint(expression, expectation);
+        let ty = self.check_expression_with_hint(expression, expectation);
+        self.add_coercion_constraint(ty, expectation, expression.span);
         expectation
     }
 
@@ -152,7 +153,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
                     _ => None,
                 });
 
-                opt_ty.unwrap_or_else(|| todo!())
+                opt_ty.unwrap_or_else(|| gcx.types.int32)
             }
             hir::Literal::Float(_) => {
                 let opt_ty = expectation.to_option().and_then(|ty| match ty.kind() {
@@ -160,7 +161,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
                     _ => None,
                 });
 
-                opt_ty.unwrap_or_else(|| todo!())
+                opt_ty.unwrap_or_else(|| gcx.types.float32)
             }
             hir::Literal::Nil => {
                 todo!();
@@ -170,12 +171,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
 
     fn check_identifier_expression(&self, resolution: &hir::Resolution) -> Ty<'ctx> {
         match resolution {
-            hir::Resolution::LocalVariable(id) => self
-                .locals
-                .borrow()
-                .get(id)
-                .copied()
-                .unwrap_or(self.gcx.types.error),
+            hir::Resolution::LocalVariable(id) => self.local_ty(*id),
             hir::Resolution::Definition(..) | hir::Resolution::SelfConstructor(..) => {
                 todo!()
             }
