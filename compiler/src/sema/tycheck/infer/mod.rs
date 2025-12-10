@@ -5,10 +5,7 @@ use crate::{
         tycheck::{
             fold::TypeFoldable,
             infer::{
-                fn_var::{
-                    FnVarData, FunctionVariableOrigin, FunctionVariableStorage,
-                    FunctionVariableTable,
-                },
+                fn_var::{FunctionVariableOrigin, FunctionVariableStorage, FunctionVariableTable},
                 resolve::InferVarResolver,
             },
         },
@@ -116,16 +113,12 @@ impl<'ctx> InferCtx<'ctx> {
         Ty::new(TyKind::Infer(InferTy::TyVar(id)), self.gcx)
     }
 
-    pub fn next_fn_var(&self, location: Span, mut data: FnVarData) -> Ty<'ctx> {
-        data.update(self.gcx);
+    pub fn next_fn_var(&self, location: Span) -> Ty<'ctx> {
         let id = self
             .inner
             .borrow_mut()
             .fn_variables()
-            .new_var(FunctionVariableOrigin {
-                location,
-                data: Rc::new(RefCell::new(data)),
-            });
+            .new_var(FunctionVariableOrigin { location });
         Ty::new(TyKind::Infer(InferTy::FnVar(id)), self.gcx)
     }
 }

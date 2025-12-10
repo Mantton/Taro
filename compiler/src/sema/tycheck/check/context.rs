@@ -59,7 +59,7 @@ pub struct FnCtx<'rcx, 'arena> {
     pub id: DefinitionID,
     pub rcx: &'rcx TyCheckRootCtx<'arena>,
     pub return_ty: Option<Ty<'arena>>,
-    pub callee_origins: RefCell<FxHashMap<NodeID, CalleeOrigin<'arena>>>,
+    pub callee_origins: RefCell<FxHashMap<NodeID, CalleeOrigin>>,
 }
 
 impl<'rcx, 'arena> FnCtx<'rcx, 'arena> {
@@ -95,6 +95,19 @@ impl<'rcx, 'arena> FnCtx<'rcx, 'arena> {
 
 impl<'rcx, 'arena> FnCtx<'rcx, 'arena> {
     pub fn add_coercion_constraint(&self, from: Ty<'arena>, to: Ty<'arena>, location: Span) {
+        // break early
+        if from == to {
+            return;
+        }
+
+        let obligation = Obligation {
+            location,
+            goal: Goal::Equal(to, from),
+        };
+        self.add_obligation(obligation);
+    }
+
+    pub fn add_equality_constraint(&self, from: Ty<'arena>, to: Ty<'arena>, location: Span) {
         // break early
         if from == to {
             return;

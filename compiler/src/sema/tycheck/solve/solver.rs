@@ -13,7 +13,6 @@ use std::collections::VecDeque;
 
 pub struct SolverDelegate<'icx, 'ctx> {
     infer_cx: &'icx InferCtx<'ctx>,
-    root: Obligation<'ctx>,
     nested: VecDeque<Obligation<'ctx>>,
 }
 
@@ -38,14 +37,6 @@ pub enum SolverResult<'ctx> {
 }
 
 impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
-    pub fn new(icx: &'icx InferCtx<'ctx>, root: Obligation<'ctx>) -> SolverDelegate<'icx, 'ctx> {
-        SolverDelegate {
-            infer_cx: icx,
-            root,
-            nested: VecDeque::new(),
-        }
-    }
-
     #[inline]
     pub fn icx(&self) -> &'icx InferCtx<'ctx> {
         &self.infer_cx
@@ -53,7 +44,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
 
     #[inline]
     pub fn gcx(&self) -> Gcx<'ctx> {
-        self.icx().gcx
+        self.infer_cx.gcx
     }
 
     pub fn add_obligation(&mut self, obligation: Obligation<'ctx>) {
@@ -68,9 +59,17 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
 }
 
 impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
-    pub fn solve_root(&mut self) -> Result<RootOutcome, SpannedError<'ctx>> {
+    pub fn solve_root(
+        icx: &'icx InferCtx<'ctx>,
+        root: &Obligation<'ctx>,
+    ) -> Result<RootOutcome, SpannedError<'ctx>> {
+        let mut cx = SolverDelegate {
+            infer_cx: icx,
+            nested: VecDeque::new(),
+        };
+
         // Solve Root
-        let state = self.solve(self.root)?;
+        let state = cx.solve(root)?;
 
         match state {
             ObligationState::Deferred => {
@@ -82,7 +81,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
             ObligationState::Solved(true) => {
                 // root was solved
                 // we have pending sub-obligations
-                self.solve_children()
+                cx.solve_children()
             }
             ObligationState::Solved(false) => {
                 // root was solved
@@ -98,8 +97,8 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         let mut any_deferred = false;
 
         for obligation in obligations {
-            let mut delegate = SolverDelegate::new(self.infer_cx, obligation);
-            match delegate.solve_root()? {
+            let result = SolverDelegate::solve_root(self.infer_cx, &obligation);
+            match result? {
                 RootOutcome::Solved => {}
                 RootOutcome::Deferred => {
                     any_deferred = true;
@@ -114,7 +113,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         }
     }
 
-    fn solve(&mut self, obligation: Obligation<'ctx>) -> ObligationResult<'ctx> {
+    fn solve(&mut self, obligation: &Obligation<'ctx>) -> ObligationResult<'ctx> {
         let result = self.try_solve(obligation);
 
         match result {
@@ -129,11 +128,11 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         }
     }
 
-    fn try_solve(&mut self, obligation: Obligation<'ctx>) -> SolverResult<'ctx> {
-        let goal = obligation.goal;
+    fn try_solve(&mut self, obligation: &Obligation<'ctx>) -> SolverResult<'ctx> {
+        let goal = &obligation.goal;
         let _ = obligation.location;
         match goal {
-            Goal::Equal(lhs, rhs) => self.solve_equality(lhs, rhs),
+            Goal::Equal(lhs, rhs) => self.solve_equality(*lhs, *rhs),
             Goal::Apply(goal) => self.solve_application(goal),
         }
     }

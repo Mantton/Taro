@@ -44,8 +44,8 @@ impl<'ctx> ObligationCtx<'ctx> {
             let mut made_progress = false;
 
             for obligation in obligations {
-                let mut delegate = SolverDelegate::new(icx, obligation);
-                match delegate.solve_root() {
+                let result = SolverDelegate::solve_root(icx, &obligation);
+                match result {
                     Ok(RootOutcome::Solved) => {
                         made_progress = true;
                         // obligation fully discharged

@@ -1,14 +1,11 @@
-use std::{cell::RefCell, marker::PhantomData, rc::Rc};
-
 use super::{UnificationTable, snapshot::IcxEventLogs};
 use crate::{
-    compile::context::Gcx,
-    hir::DefinitionID,
     sema::models::{FnVarID, Ty},
     span::Span,
 };
 use ena::unify::{UnificationTableStorage, UnifyKey, UnifyValue};
 use index_vec::IndexVec;
+use std::marker::PhantomData;
 
 // Ty
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -89,16 +86,8 @@ impl<'ctx> UnifyValue for FnVarValue<'ctx> {
 }
 
 #[derive(Clone)]
-pub struct FnVarData {
-    pub candidates: Vec<DefinitionID>,
-    pub maybe_variadic: bool,
-    pub min_required: usize,
-}
-
-#[derive(Clone)]
 pub struct FunctionVariableOrigin {
     pub location: Span,
-    pub data: Rc<RefCell<FnVarData>>,
 }
 
 #[derive(Default, Clone)]
@@ -165,11 +154,6 @@ impl<'a, 'gcx> FunctionVariableTable<'a, 'gcx> {
         self.storage().find(vid)._raw
     }
 
-    pub fn var_data(&self, vid: FnVarID) -> Rc<RefCell<FnVarData>> {
-        let x = self._storage.values.get(vid).unwrap();
-        x.data.clone()
-    }
-
     pub fn equate(&mut self, a: FnVarID, b: FnVarID) {
         debug_assert!(self.probe(a).is_unknown());
         debug_assert!(self.probe(b).is_unknown());
@@ -191,20 +175,6 @@ impl<'a, 'gcx> FunctionVariableTable<'a, 'gcx> {
         );
 
         self.storage().union_value(vid, FnVarValue::Known(ty));
-    }
-}
-
-impl FnVarData {
-    pub fn update(&mut self, gcx: Gcx) {
-        todo!()
-        // let candidates = &self.candidates;
-
-        // self.maybe_variadic = candidates.iter().any(|c| gcx.fn_signature(*c).is_variadic);
-        // self.min_required = candidates
-        //     .iter()
-        //     .map(|c| gcx.fn_signature(*c).min_parameter_count())
-        //     .min()
-        //     .unwrap_or(self.min_required);
     }
 }
 

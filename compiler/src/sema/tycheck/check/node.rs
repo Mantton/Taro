@@ -1,20 +1,17 @@
 use crate::{
     hir::{self, DefinitionKind, NodeID},
     sema::{
-        models::{CalleeOrigin, InferTy, Ty, TyKind},
+        models::{CalleeOrigin, Ty, TyKind},
         tycheck::{
             check::{context::FnCtx, gather::GatherLocalsVisitor, models::Expectation},
             lower::TypeLowerer,
             solve::{ApplicationArgument, ApplicationGoal, Goal, Obligation},
         },
     },
+    span::Span,
 };
 
 impl<'rcx, 'gcx> FnCtx<'rcx, 'gcx> {
-    pub fn error_ty(&self) -> Ty<'gcx> {
-        self.gcx.types.error
-    }
-
     pub fn check_statement(&self, statement: &hir::Statement) {
         match &statement.kind {
             hir::StatementKind::Declaration(..) => return,
@@ -56,6 +53,15 @@ impl<'rcx, 'gcx> FnCtx<'rcx, 'gcx> {
         let ty = self.local_ty(local.id);
         if let Some(initializer) = &local.initializer {
             self.check_expression_coercible_to_type(initializer, ty);
+        }
+
+        // TODO: Make this a Shape Constraint Later
+        if matches!(local.pattern.kind, hir::PatternKind::Identifier(..)) {
+            self.add_equality_constraint(
+                self.local_ty(local.id),
+                self.local_ty(local.pattern.id),
+                local.pattern.span,
+            );
         }
     }
 }
@@ -120,7 +126,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         match &expression.kind {
             hir::ExpressionKind::Literal(node) => self.check_literal_expression(node, expectation),
             hir::ExpressionKind::Identifier(_, resolution) => {
-                self.check_identifier_expression(expression.id, resolution)
+                self.check_identifier_expression(expression.id, expression.span, resolution)
             }
             hir::ExpressionKind::Call(c, a) => {
                 self.check_call_expression(expression, c, a, expectation)
@@ -184,6 +190,7 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
     fn check_identifier_expression(
         &self,
         node_id: NodeID,
+        span: Span,
         resolution: &hir::Resolution,
     ) -> Ty<'ctx> {
         match resolution {
@@ -201,7 +208,10 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             }
             hir::Resolution::SelfConstructor(..) => todo!(),
             hir::Resolution::FunctionSet(ids) => {
-                todo!()
+                self.callee_origins
+                    .borrow_mut()
+                    .insert(node_id, CalleeOrigin::Overloaded(ids.clone()));
+                self.next_fn_var(span)
             }
             hir::Resolution::PrimaryType(..)
             | hir::Resolution::InterfaceSelfTypeParameter(..)
@@ -222,42 +232,18 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         expectation: Expectation<'ctx>,
     ) -> Ty<'ctx> {
         let callee_ty = self.check_expression(callee);
-
-        match callee_ty.kind() {
-            TyKind::FnPointer { .. } | TyKind::Infer(InferTy::TyVar(..) | InferTy::FnVar(..)) => {
-                // continue
-            }
-            _ => {
-                if callee_ty.is_error() {
-                    return self.error_ty();
-                }
-
-                self.gcx().dcx().emit_error(
-                    format!(
-                        "cannot invoke non-function type '{}'",
-                        callee_ty.format(self.gcx)
-                    ),
-                    Some(callee.span),
-                );
-                return self.error_ty();
-            }
-        };
-
         let result = self.next_ty_var(expression.span);
-        let arguments = self
-            .gcx
-            .store
-            .arenas
-            .global
-            .alloc_slice_fill_iter(arguments.iter().map(|n| ApplicationArgument {
+        let arguments = arguments
+            .iter()
+            .map(|n| ApplicationArgument {
                 id: n.expression.id,
                 label: n.label.map(|n| n.identifier),
                 ty: self.check_expression(&n.expression),
                 span: n.expression.span,
-            }));
+            })
+            .collect();
 
         let callee_origin = self.callee_origins.borrow().get(&callee.id).cloned();
-
         let goal = ApplicationGoal {
             callee_ty,
             caller_span: expression.span,
@@ -268,12 +254,10 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             result,
             expected: expectation.only_has_type(),
         };
-
         self.add_obligation(Obligation {
             location: expression.span,
             goal: Goal::Apply(goal),
         });
-
         result
     }
 }

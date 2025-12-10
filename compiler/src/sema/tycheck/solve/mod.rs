@@ -11,13 +11,13 @@ mod context;
 mod solver;
 mod unify;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum Goal<'ctx> {
     Equal(Ty<'ctx>, Ty<'ctx>),
     Apply(ApplicationGoal<'ctx>),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Obligation<'ctx> {
     pub location: Span,
     pub goal: Goal<'ctx>,
@@ -25,14 +25,14 @@ pub struct Obligation<'ctx> {
 
 pub use context::ObligationCtx;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ApplicationGoal<'ctx> {
     pub callee_ty: Ty<'ctx>,
     pub caller_span: Span,
-    pub callee_origin: Option<CalleeOrigin<'ctx>>,
+    pub callee_origin: Option<CalleeOrigin>,
     pub call_id: NodeID,
     pub callee_id: NodeID,
-    pub arguments: &'ctx [ApplicationArgument<'ctx>],
+    pub arguments: Vec<ApplicationArgument<'ctx>>,
     pub result: Ty<'ctx>,
     pub expected: Option<Ty<'ctx>>,
 }

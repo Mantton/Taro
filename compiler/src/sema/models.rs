@@ -262,8 +262,8 @@ pub enum InferTy {
     FreshTy(u32),
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum CalleeOrigin<'ctx> {
+#[derive(Debug, Clone)]
+pub enum CalleeOrigin {
     Direct(DefinitionID),
-    Overloaded(&'ctx [DefinitionID]),
+    Overloaded(Vec<DefinitionID>),
 }
