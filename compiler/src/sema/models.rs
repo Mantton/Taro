@@ -1,7 +1,6 @@
 use crate::{
     compile::context::Gcx,
     hir::{DefinitionID, Mutability},
-    sema::tycheck::infer::keys::{FloatVarID, IntVarID},
     span::Symbol,
     utils::intern::Interned,
 };
@@ -256,9 +255,6 @@ index_vec::define_index_type! {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InferTy {
     TyVar(TyVarID),
-    IntVar(IntVarID),
-    FloatVar(FloatVarID),
-    FnVar(FnVarID),
     FreshTy(u32),
 }
 

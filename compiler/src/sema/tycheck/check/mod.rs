@@ -2,14 +2,9 @@ use crate::{
     compile::context::Gcx,
     error::CompileResult,
     hir::{self, DefinitionID, HirVisitor},
-    sema::{
-        error::SpannedError,
-        models::{Ty, TyKind},
-    },
 };
 
-mod context;
-mod gather;
+mod checker;
 mod models;
 mod node;
 
@@ -45,64 +40,8 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
 }
 
 impl<'ctx> Actor<'ctx> {
-    fn check_function(&self, id: DefinitionID, func: &hir::Function, _: hir::FunctionContext) {
-        let rcx = context::TyCheckRootCtx::new(id, self.context);
-        let mut fcx = context::FnCtx::new(id, &rcx);
-        check_func(id, func, &mut fcx);
-    }
-}
-
-fn check_func<'rcx, 'gcx>(
-    id: DefinitionID,
-    node: &hir::Function,
-    fcx: &mut context::FnCtx<'rcx, 'gcx>,
-) {
-    let signature = fcx.gcx.get_signature(id);
-    let signature = Ty::from_labeled_signature(fcx.gcx, signature);
-
-    let (param_tys, return_ty) = match signature.kind() {
-        TyKind::FnPointer { inputs, output, .. } => (inputs, output),
-        _ => unreachable!("function signature must be of function pointer type"),
-    };
-
-    fcx.return_ty = Some(return_ty);
-
-    // Add Parameters To Locals Map
-    for (parameter, &parameter_ty) in node.signature.prototype.inputs.iter().zip(param_tys) {
-        fcx.locals.borrow_mut().insert(parameter.id, parameter_ty);
-    }
-
-    let Some(body) = &node.block else {
-        unreachable!("ICE: Checking Function without Body")
-    };
-
-    // Collect
-    if let Some(body) = hir::is_expression_bodied(body) {
-        // --- single-expression body ---
-        fcx.check_return(body);
-    } else {
-        // --- regular block body ---
-        fcx.check_block(body);
-    }
-
-    // Solve
-    solve(fcx);
-}
-
-fn solve<'rcx, 'gcx>(fcx: &mut context::FnCtx<'rcx, 'gcx>) {
-    let gcx = fcx.gcx;
-    let mut solver = fcx.solver.borrow_mut();
-    let errors = solver.solve_all(fcx);
-
-    let report_errors = |errs: &Vec<SpannedError<'gcx>>| {
-        for item in errs {
-            gcx.dcx()
-                .emit_error(item.value.format(gcx), Some(item.span));
-        }
-    };
-
-    if !errors.is_empty() {
-        report_errors(&errors);
-        fcx.icx.default_numeric_vars();
+    fn check_function(&self, id: DefinitionID, node: &hir::Function, _: hir::FunctionContext) {
+        let checker = checker::Checker::new(self.context);
+        checker.check_function(id, node);
     }
 }

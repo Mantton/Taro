@@ -1,8 +1,6 @@
-use super::{
-    InferCtxInner,
-    keys::{FloatVarID, IntVarID, TyVarEqID},
-};
-use crate::sema::tycheck::infer::fn_var::FnVarEqID;
+use crate::sema::tycheck::infer::ty_var::TyVarEqID;
+
+use super::InferCtxInner;
 use std::marker::PhantomData;
 
 // Inference Context Snapshot
@@ -14,10 +12,7 @@ pub struct Snapshot<'ctx> {
 // records a single event within the Icx, that can be undone
 #[derive(Clone)]
 pub enum IcxEvent<'ctx> {
-    IntVar(ena::snapshot_vec::UndoLog<ena::unify::Delegate<IntVarID>>),
-    FloatVar(ena::snapshot_vec::UndoLog<ena::unify::Delegate<FloatVarID>>),
     TypeVar(ena::snapshot_vec::UndoLog<ena::unify::Delegate<TyVarEqID<'ctx>>>),
-    FnVar(ena::snapshot_vec::UndoLog<ena::unify::Delegate<FnVarEqID<'ctx>>>),
 }
 
 macro_rules! impl_from {
@@ -34,10 +29,7 @@ macro_rules! impl_from {
 
 // Upcast from a single kind of "undoable action" to the general enum
 impl_from! {
-    IntVar(ena::snapshot_vec::UndoLog<ena::unify::Delegate<IntVarID>>),
-    FloatVar(ena::snapshot_vec::UndoLog<ena::unify::Delegate<FloatVarID>>),
     TypeVar(ena::snapshot_vec::UndoLog<ena::unify::Delegate<TyVarEqID<'gcx>>>),
-    FnVar(ena::snapshot_vec::UndoLog<ena::unify::Delegate<FnVarEqID<'gcx>>>),
 }
 
 // Combined Event Log for all unifcation tables within the icx
@@ -93,10 +85,7 @@ where
 impl<'tcx> ena::undo_log::Rollback<IcxEvent<'tcx>> for InferCtxInner<'tcx> {
     fn reverse(&mut self, undo: IcxEvent<'tcx>) {
         match undo {
-            IcxEvent::IntVar(undo) => self.int_storage.reverse(undo),
-            IcxEvent::FloatVar(undo) => self.float_storage.reverse(undo),
             IcxEvent::TypeVar(undo) => self.type_storage.reverse(undo),
-            IcxEvent::FnVar(undo) => self.fn_storage.reverse(undo),
         }
     }
 }

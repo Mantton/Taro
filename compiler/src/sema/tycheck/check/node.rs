@@ -1,21 +1,59 @@
 use crate::{
-    hir::{self, DefinitionKind, NodeID},
+    compile::context::Gcx,
+    hir::{self, DefinitionID, DefinitionKind, NodeID},
     sema::{
-        models::{CalleeOrigin, Ty, TyKind},
-        tycheck::{
-            check::{context::FnCtx, gather::GatherLocalsVisitor, models::Expectation},
-            lower::TypeLowerer,
-            solve::{ApplicationArgument, ApplicationGoal, Goal, Obligation},
-        },
+        models::{Ty, TyKind},
+        tycheck::{check::checker::Checker, solve::ConstraintSystem},
     },
     span::Span,
 };
 
-impl<'rcx, 'gcx> FnCtx<'rcx, 'gcx> {
-    pub fn check_statement(&self, statement: &hir::Statement) {
-        match &statement.kind {
+impl<'ctx> Checker<'ctx> {
+    pub fn gcx(&self) -> Gcx<'ctx> {
+        self.context
+    }
+
+    pub fn check_function(mut self, id: DefinitionID, node: &hir::Function) {
+        let gcx = self.gcx();
+        gcx.dcx()
+            .emit_info("Checking".into(), Some(node.signature.span));
+        let signature = gcx.get_signature(id);
+        let signature = Ty::from_labeled_signature(gcx, signature);
+
+        let (param_tys, return_ty) = match signature.kind() {
+            TyKind::FnPointer { inputs, output, .. } => (inputs, output),
+            _ => unreachable!("function signature must be of function pointer type"),
+        };
+
+        self.return_ty = Some(return_ty);
+
+        // Add Parameters To Locals Map
+        for (parameter, &parameter_ty) in node.signature.prototype.inputs.iter().zip(param_tys) {
+            self.locals.borrow_mut().insert(parameter.id, parameter_ty);
+        }
+
+        let Some(body) = &node.block else {
+            unreachable!("ICE: Checking Function without Body")
+        };
+
+        if let Some(body) = hir::is_expression_bodied(body) {
+            // --- single-expression body ---
+            // TODO: Mark As return
+            self.check_return(body);
+        } else {
+            // --- regular block body ---
+            self.check_block(body);
+        }
+    }
+}
+
+impl<'ctx> Checker<'ctx> {
+    fn check_statement(&self, node: &hir::Statement) {
+        match &node.kind {
             hir::StatementKind::Declaration(..) => return,
-            hir::StatementKind::Expression(..) => todo!(),
+            hir::StatementKind::Expression(node) => {
+                self.top_level_check(node, None);
+            }
             hir::StatementKind::Variable(node) => {
                 self.check_local(node);
             }
@@ -34,102 +72,85 @@ impl<'rcx, 'gcx> FnCtx<'rcx, 'gcx> {
         return;
     }
 
-    pub fn check_return(&self, expression: &hir::Expression) {
-        let Some(return_ty) = self.return_ty else {
+    fn check_return(&self, node: &hir::Expression) {
+        let Some(expectation) = self.return_ty else {
             unreachable!("ICE: return check called outside function body")
         };
-
-        let _ = self.check_expression_coercible_to_type(expression, return_ty);
+        self.top_level_check(node, Some(expectation));
     }
 
-    pub fn check_block(&self, block: &hir::Block) {
-        for statement in &block.statements {
+    fn check_block(&self, node: &hir::Block) {
+        for statement in &node.statements {
             self.check_statement(statement);
         }
     }
 
-    pub fn check_local(&self, local: &hir::Local) {
-        GatherLocalsVisitor::from_local(self, local);
-        let ty = self.local_ty(local.id);
-        if let Some(initializer) = &local.initializer {
-            self.check_expression_coercible_to_type(initializer, ty);
-        }
-
-        // TODO: Make this a Shape Constraint Later
-        if matches!(local.pattern.kind, hir::PatternKind::Identifier(..)) {
-            self.add_equality_constraint(
-                self.local_ty(local.id),
-                self.local_ty(local.pattern.id),
-                local.pattern.span,
-            );
+    fn check_local(&self, node: &hir::Local) {
+        let expectation = node.ty.as_ref().map(|n| self.lower_type(n));
+        match &node.pattern.kind {
+            hir::PatternKind::Wildcard => todo!(),
+            hir::PatternKind::Identifier(_) => {
+                if let Some(expression) = &node.initializer {
+                    // Hard code for now
+                    let ty = self.top_level_check(expression, expectation);
+                    self.set_local_ty(node.pattern.id, ty);
+                    self.set_local_ty(node.id, ty);
+                }
+            }
+            hir::PatternKind::Tuple(..) => todo!(),
+            _ => unreachable!("ICE – invalid let statement pattern"),
         }
     }
 }
 
-impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
-    pub fn check_expression(&self, expression: &hir::Expression) -> Ty<'ctx> {
-        self.check_expression_with_expectation(expression, Expectation::None)
-    }
-
-    pub fn check_expression_with_expectation(
+impl<'ctx> Checker<'ctx> {
+    fn top_level_check(
         &self,
         expression: &hir::Expression,
-        expectation: Expectation<'ctx>,
+        expectation: Option<Ty<'ctx>>,
     ) -> Ty<'ctx> {
-        self.check_expression_with_expectation_and_arguments(expression, expectation)
-    }
+        let mut cs = Cs::new(self.context);
+        let provided = self.synth(expression, expectation, &mut cs);
+        if let Some(expectation) = expectation {
+            cs.equal(expectation, provided, expression.span);
+        }
 
-    pub fn check_expression_has_type(
-        &self,
-        expression: &hir::Expression,
-        expectation: Ty<'ctx>,
-    ) -> Ty<'ctx> {
-        self.check_expression_with_expectation(expression, Expectation::HasType(expectation))
+        cs.solve_all();
+        // TODO: Solve & Report
+        //
+        provided
     }
+}
 
-    pub fn check_expression_coercible_to_type(
+type Cs<'c> = ConstraintSystem<'c>;
+impl<'ctx> Checker<'ctx> {
+    fn synth(
         &self,
-        expression: &hir::Expression,
-        expectation: Ty<'ctx>,
+        node: &hir::Expression,
+        expectation: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
-        let ty = self.check_expression_with_hint(expression, expectation);
-        self.add_coercion_constraint(ty, expectation, expression.span);
-        expectation
-    }
-
-    pub fn check_expression_with_hint(
-        &self,
-        expression: &hir::Expression,
-        expectation: Ty<'ctx>,
-    ) -> Ty<'ctx> {
-        self.check_expression_with_expectation(expression, Expectation::HasType(expectation))
-    }
-
-    pub fn check_expression_with_expectation_and_arguments(
-        &self,
-        expression: &hir::Expression,
-        expectation: Expectation<'ctx>,
-    ) -> Ty<'ctx> {
-        let ty = self.check_expression_kind(expression, expectation);
-        self.gcx.dcx().emit_info(
-            format!("Type is {}", ty.format(self.gcx)),
-            Some(expression.span),
-        );
+        self.gcx()
+            .dcx()
+            .emit_info("Checking".into(), Some(node.span));
+        let ty = self.synth_expression_kind(node, expectation, cs);
+        println!("Ty is `{}`", ty.format(self.gcx()));
         ty
     }
 
-    fn check_expression_kind(
+    fn synth_expression_kind(
         &self,
         expression: &hir::Expression,
-        expectation: Expectation<'ctx>,
+        expectation: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         match &expression.kind {
-            hir::ExpressionKind::Literal(node) => self.check_literal_expression(node, expectation),
+            hir::ExpressionKind::Literal(node) => self.synth_expression_literal(node, expectation),
             hir::ExpressionKind::Identifier(_, resolution) => {
-                self.check_identifier_expression(expression.id, expression.span, resolution)
+                self.synth_identifier_expression(expression.id, expression.span, resolution)
             }
             hir::ExpressionKind::Call(c, a) => {
-                self.check_call_expression(expression, c, a, expectation)
+                todo!()
             }
             hir::ExpressionKind::Member { .. } => todo!(),
             hir::ExpressionKind::Specialize { .. } => todo!(),
@@ -154,32 +175,32 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
     }
 }
 
-impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
-    fn check_literal_expression(
+impl<'ctx> Checker<'ctx> {
+    fn synth_expression_literal(
         &self,
         literal: &hir::Literal,
-        expectation: Expectation<'ctx>,
+        expectation: Option<Ty<'ctx>>,
     ) -> Ty<'ctx> {
-        let gcx = self.gcx;
+        let gcx = self.gcx();
         match literal {
             hir::Literal::Bool(_) => gcx.types.bool,
             hir::Literal::Rune(_) => gcx.types.rune,
             hir::Literal::String(_) => gcx.types.string,
             hir::Literal::Integer(_) => {
-                let opt_ty = expectation.to_option().and_then(|ty| match ty.kind() {
+                let opt_ty = expectation.and_then(|ty| match ty.kind() {
                     TyKind::Int(_) | TyKind::UInt(_) => Some(ty),
                     _ => None,
                 });
 
-                opt_ty.unwrap_or_else(|| self.next_int_var())
+                opt_ty.unwrap_or_else(|| gcx.types.int)
             }
             hir::Literal::Float(_) => {
-                let opt_ty = expectation.to_option().and_then(|ty| match ty.kind() {
+                let opt_ty = expectation.and_then(|ty| match ty.kind() {
                     TyKind::Float(_) => Some(ty),
                     _ => None,
                 });
 
-                opt_ty.unwrap_or_else(|| self.next_float_var())
+                opt_ty.unwrap_or_else(|| gcx.types.float32)
             }
             hir::Literal::Nil => {
                 todo!();
@@ -187,31 +208,23 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
         }
     }
 
-    fn check_identifier_expression(
+    fn synth_identifier_expression(
         &self,
-        node_id: NodeID,
+        id: NodeID,
         span: Span,
         resolution: &hir::Resolution,
     ) -> Ty<'ctx> {
         match resolution {
-            hir::Resolution::LocalVariable(id) => self.local_ty(*id),
+            hir::Resolution::LocalVariable(id) => self.get_local_ty(*id),
             hir::Resolution::Definition(id, DefinitionKind::Function) => {
-                self.callee_origins
-                    .borrow_mut()
-                    .insert(node_id, CalleeOrigin::Direct(*id));
-                let ty = self.gcx.get_type(*id);
-                ty
+                todo!()
             }
             hir::Resolution::Definition(id, _) => {
-                let ty = self.gcx.get_type(*id);
-                ty
+                todo!()
             }
             hir::Resolution::SelfConstructor(..) => todo!(),
             hir::Resolution::FunctionSet(ids) => {
-                self.callee_origins
-                    .borrow_mut()
-                    .insert(node_id, CalleeOrigin::Overloaded(ids.clone()));
-                self.next_fn_var(span)
+                todo!()
             }
             hir::Resolution::PrimaryType(..)
             | hir::Resolution::InterfaceSelfTypeParameter(..)
@@ -220,44 +233,5 @@ impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
             | hir::Resolution::Foundation(..) => todo!(),
             hir::Resolution::Error => unreachable!(),
         }
-    }
-}
-
-impl<'rcx, 'ctx> FnCtx<'rcx, 'ctx> {
-    fn check_call_expression(
-        &self,
-        expression: &hir::Expression,
-        callee: &hir::Expression,
-        arguments: &[hir::ExpressionArgument],
-        expectation: Expectation<'ctx>,
-    ) -> Ty<'ctx> {
-        let callee_ty = self.check_expression(callee);
-        let result = self.next_ty_var(expression.span);
-        let arguments = arguments
-            .iter()
-            .map(|n| ApplicationArgument {
-                id: n.expression.id,
-                label: n.label.map(|n| n.identifier),
-                ty: self.check_expression(&n.expression),
-                span: n.expression.span,
-            })
-            .collect();
-
-        let callee_origin = self.callee_origins.borrow().get(&callee.id).cloned();
-        let goal = ApplicationGoal {
-            callee_ty,
-            caller_span: expression.span,
-            callee_origin,
-            call_id: expression.id,
-            callee_id: callee.id,
-            arguments,
-            result,
-            expected: expectation.only_has_type(),
-        };
-        self.add_obligation(Obligation {
-            location: expression.span,
-            goal: Goal::Apply(goal),
-        });
-        result
     }
 }

@@ -1,15 +1,12 @@
 use crate::sema::{
     error::{ExpectedFound, TypeError},
     models::{InferTy, Ty, TyKind},
-    tycheck::{
-        infer::keys::{FloatVarValue, IntVarValue},
-        solve::solver::SolverDelegate,
-    },
+    tycheck::solve::ConstraintSolver,
 };
 
 type UnificationResult<'ctx> = Result<(), TypeError<'ctx>>;
 
-impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
+impl<'ctx> ConstraintSolver<'ctx> {
     pub fn unify(&self, a: Ty<'ctx>, b: Ty<'ctx>) -> UnificationResult<'ctx> {
         println!("unify {} {}", a.format(self.gcx()), b.format(self.gcx()));
         let a = self.structurally_resolve(a);
@@ -19,89 +16,42 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
         match (a.kind(), b.kind()) {
             // TyVars
             (TyKind::Infer(TyVar(a_id)), TyKind::Infer(TyVar(b_id))) => {
-                self.icx()
+                self.icx
                     .inner
                     .borrow_mut()
                     .type_variables()
                     .equate(a_id, b_id);
             }
             (TyKind::Infer(TyVar(id)), _) => {
-                self.icx()
+                self.icx
                     .inner
                     .borrow_mut()
                     .type_variables()
                     .instantiate(id, b);
             }
             (_, TyKind::Infer(TyVar(id))) => {
-                self.icx()
+                self.icx
                     .inner
                     .borrow_mut()
                     .type_variables()
                     .instantiate(id, a);
             }
 
-            // FnVars
-            (TyKind::Infer(FnVar(a_id)), TyKind::Infer(FnVar(b_id))) => {
-                self.icx()
-                    .inner
-                    .borrow_mut()
-                    .fn_variables()
-                    .equate(a_id, b_id);
-            }
-            (TyKind::Infer(FnVar(id)), _) if b.is_fn() => {
-                self.icx()
-                    .inner
-                    .borrow_mut()
-                    .fn_variables()
-                    .instantiate(id, b);
-            }
-            (_, TyKind::Infer(FnVar(id))) if a.is_fn() => {
-                self.icx()
-                    .inner
-                    .borrow_mut()
-                    .fn_variables()
-                    .instantiate(id, a);
-            }
             _ => return self.unify_inference_vars(a, b),
         }
         return Ok(());
     }
 
     fn unify_inference_vars(&self, a: Ty<'ctx>, b: Ty<'ctx>) -> UnificationResult<'ctx> {
-        use InferTy::*;
         use TyKind::*;
         match (a.kind(), b.kind()) {
             // Error
             (Error, Error) => return Ok(()),
-
-            // Integers
-            (Infer(IntVar(a_id)), Infer(IntVar(b_id))) => {
-                self.icx().equate_int_vars_raw(a_id, b_id);
-            }
-            (Infer(IntVar(id)), Int(k)) | (Int(k), Infer(IntVar(id))) => {
-                self.icx()
-                    .instantiate_int_var_raw(id, IntVarValue::Signed(k));
-            }
-            (Infer(IntVar(id)), UInt(k)) | (UInt(k), Infer(IntVar(id))) => {
-                self.icx()
-                    .instantiate_int_var_raw(id, IntVarValue::Unsigned(k));
-            }
-
-            // Floats
-            (Infer(FloatVar(a_id)), Infer(FloatVar(b_id))) => {
-                self.icx().equate_float_vars_raw(a_id, b_id);
-            }
-            (Infer(FloatVar(id)), Float(k)) | (Float(k), Infer(FloatVar(id))) => {
-                self.icx()
-                    .instantiate_float_var_raw(id, FloatVarValue::Known(k));
-            }
             (Infer(_), _) | (_, Infer(_)) => {
                 return Err(TypeError::TyMismatch(ExpectedFound::new(a, b)));
             }
             _ => return self.unify_nominal_types(a, b),
         }
-
-        return Ok(());
     }
 
     fn unify_nominal_types(&self, a: Ty<'ctx>, b: Ty<'ctx>) -> UnificationResult<'ctx> {
@@ -151,7 +101,7 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
     }
 }
 
-// impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
+// impl< 'ctx> SolverDelegate< 'ctx> {
 //     fn unify_generic_args(
 //         &self,
 //         a: GenericArguments<'ctx>,
@@ -185,9 +135,9 @@ impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
 //     }
 // }
 
-impl<'icx, 'ctx> SolverDelegate<'icx, 'ctx> {
+impl<'ctx> ConstraintSolver<'ctx> {
     pub fn structurally_resolve(&self, mut ty: Ty<'ctx>) -> Ty<'ctx> {
-        ty = self.icx().shallow_resolve(ty);
+        ty = self.icx.shallow_resolve(ty);
         // ty = normalize_ty(ty, self.gcx());
         ty
     }
