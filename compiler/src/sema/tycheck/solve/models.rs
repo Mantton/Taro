@@ -13,6 +13,7 @@ pub enum Goal<'ctx> {
     Disjunction(Vec<DisjunctionBranch<'ctx>>),
     BinaryOp(BinOpGoalData<'ctx>),
     UnaryOp(UnOpGoalData<'ctx>),
+    Coerce { from: Ty<'ctx>, to: Ty<'ctx> },
 }
 
 #[derive(Debug, Clone)]

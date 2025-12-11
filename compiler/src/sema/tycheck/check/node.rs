@@ -54,6 +54,58 @@ impl<'ctx> Checker<'ctx> {
 }
 
 impl<'ctx> Checker<'ctx> {
+    fn synth_if_expression(
+        &self,
+        expression: &hir::Expression,
+        node: &hir::IfExpression,
+        expectation: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        // Condition must be bool.
+        let cond_ty = self.synth(&node.condition, cs);
+        cs.equal(self.gcx().types.bool, cond_ty, node.condition.span);
+
+        // then/else branches are expressions; typecheck with shared expectation.
+        let then_ty = self.synth_with_expectation(&node.then_block, expectation, cs);
+        let else_ty = if let Some(else_expr) = &node.else_block {
+            let else_expectation = expectation.or(Some(then_ty));
+            Some(self.synth_with_expectation(else_expr, else_expectation, cs))
+        } else {
+            None
+        };
+
+        match else_ty {
+            Some(else_ty) => {
+                // Branches must agree.
+                cs.equal(
+                    then_ty,
+                    else_ty,
+                    node.else_block
+                        .as_ref()
+                        .map(|e| e.span)
+                        .unwrap_or(node.then_block.span),
+                );
+                then_ty
+            }
+            None => {
+                // No else: coerce the then branch into the expected type if provided,
+                // otherwise use void/unit.
+                if let Some(exp) = expectation {
+                    cs.add_goal(
+                        Goal::Coerce {
+                            from: then_ty,
+                            to: exp,
+                        },
+                        expression.span,
+                    );
+                    exp
+                } else {
+                    self.gcx().types.void
+                }
+            }
+        }
+    }
+
     fn synth_unary_expression(
         &self,
         expression: &hir::Expression,
@@ -224,7 +276,9 @@ impl<'ctx> Checker<'ctx> {
             hir::ExpressionKind::Specialize { .. } => todo!(),
             hir::ExpressionKind::Array(..) => todo!(),
             hir::ExpressionKind::Tuple(..) => todo!(),
-            hir::ExpressionKind::If(..) => todo!(),
+            hir::ExpressionKind::If(expr) => {
+                self.synth_if_expression(expression, expr, expectation, cs)
+            }
             hir::ExpressionKind::Match(..) => todo!(),
             hir::ExpressionKind::Reference(..) => todo!(),
             hir::ExpressionKind::Dereference(..) => todo!(),
@@ -239,11 +293,36 @@ impl<'ctx> Checker<'ctx> {
             hir::ExpressionKind::Assign(..) => todo!(),
             hir::ExpressionKind::CastAs(..) => todo!(),
             hir::ExpressionKind::PatternBinding(..) => todo!(),
-            hir::ExpressionKind::Block(..) => todo!(),
+            hir::ExpressionKind::Block(block) => {
+                self.synth_block_expression(block, expectation, cs)
+            }
             hir::ExpressionKind::Malformed => {
                 unreachable!("ICE: trying to typecheck a malformed expression node")
             }
         }
+    }
+}
+
+impl<'ctx> Checker<'ctx> {
+    fn synth_block_expression(
+        &self,
+        block: &hir::Block,
+        expectation: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        // Evaluate statements in order; the block's value is the last expression statement if any.
+        let mut last_expr_ty: Option<Ty<'ctx>> = None;
+        for stmt in &block.statements {
+            match &stmt.kind {
+                hir::StatementKind::Expression(expr) => {
+                    last_expr_ty = Some(self.synth_with_expectation(expr, expectation, cs));
+                }
+                _ => self.check_statement(stmt),
+            }
+        }
+
+        // If no trailing expression, use unit/void when available; for now create a fresh var.
+        last_expr_ty.unwrap_or_else(|| self.gcx().types.void)
     }
 }
 

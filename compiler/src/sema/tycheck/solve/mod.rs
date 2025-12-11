@@ -87,6 +87,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             Goal::Disjunction(branches) => self.solve_disjunction(location, branches),
             Goal::UnaryOp(data) => self.solve_unary(data),
             Goal::BinaryOp(data) => self.solve_binary(data),
+            Goal::Coerce { from, to } => self.solve_coerce(location, from, to),
         }
     }
 
@@ -111,6 +112,16 @@ impl<'ctx> ConstraintSolver<'ctx> {
             icx: self.icx.clone(),
             obligations: self.obligations.clone(),
         }
+    }
+
+    fn solve_coerce(
+        &mut self,
+        location: Span,
+        from: Ty<'ctx>,
+        to: Ty<'ctx>,
+    ) -> SolverResult<'ctx> {
+        // Minimal coercion: just equality for now.
+        self.solve_equality(location, from, to)
     }
 }
 
