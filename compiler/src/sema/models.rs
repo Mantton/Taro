@@ -1,3 +1,5 @@
+use ena::unify::UnifyKey;
+
 use crate::{
     compile::context::Gcx,
     hir::{DefinitionID, Mutability},
@@ -137,7 +139,12 @@ impl<'arena> Ty<'arena> {
                 out
             }
             TyKind::Error => "<<error>>".into(),
-            TyKind::Infer(k) => format!("infer({:?})", k),
+            TyKind::Infer(k) => match k {
+                InferTy::TyVar(id) => format!("{{var({})}}", id._raw),
+                InferTy::IntVar(id) => format!("{{integer({})}}", id.index()),
+                InferTy::FloatVar(id) => format!("{{float({})}}", id.index()),
+                InferTy::FreshTy(_) => todo!(),
+            },
         }
     }
 }

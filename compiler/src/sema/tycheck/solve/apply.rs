@@ -12,6 +12,9 @@ use crate::{
 impl<'ctx> ConstraintSolver<'ctx> {
     pub fn solve_apply(&mut self, data: ApplyGoalData<'ctx>) -> SolverResult<'ctx> {
         let callee_ty = self.icx.resolve_vars_if_possible(data.callee_ty);
+        let callee_source = data
+            .callee_source
+            .or_else(|| self.icx.overload_binding_for_ty(data.callee_ty));
 
         let (inputs, output) = match callee_ty.kind() {
             TyKind::FnPointer { inputs, output } => (inputs, output),
@@ -19,7 +22,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             _ => todo!("report – cannot inkoke"),
         };
 
-        let signature = if let Some(id) = data.callee_source {
+        let signature = if let Some(id) = callee_source {
             self.gcx().get_signature(id)
         } else {
             &LabeledFunctionSignature {

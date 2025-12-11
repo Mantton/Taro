@@ -1,4 +1,7 @@
-use crate::sema::tycheck::infer::keys::{FloatVarID, IntVarID, TyVarEqID};
+use crate::sema::{
+    resolve::models::DefinitionID,
+    tycheck::infer::keys::{FloatVarID, IntVarID, TyVarEqID},
+};
 
 use super::InferCtxInner;
 use std::marker::PhantomData;
@@ -15,6 +18,10 @@ pub enum IcxEvent<'ctx> {
     TypeVar(ena::snapshot_vec::UndoLog<ena::unify::Delegate<TyVarEqID<'ctx>>>),
     IntVar(ena::snapshot_vec::UndoLog<ena::unify::Delegate<IntVarID>>),
     FloatVar(ena::snapshot_vec::UndoLog<ena::unify::Delegate<FloatVarID>>),
+    OverloadBinding {
+        var: crate::sema::models::TyVarID,
+        prev: Option<DefinitionID>,
+    },
 }
 
 macro_rules! impl_from {
@@ -41,6 +48,18 @@ impl_from! {
 pub struct IcxEventLogs<'ctx> {
     pub logs: Vec<IcxEvent<'ctx>>,
     pub open_snapshots: usize,
+}
+
+impl<'ctx> IcxEventLogs<'ctx> {
+    pub fn in_snapshot(&self) -> bool {
+        self.open_snapshots > 0
+    }
+
+    pub fn push_event(&mut self, event: IcxEvent<'ctx>) {
+        if self.in_snapshot() {
+            self.logs.push(event);
+        }
+    }
 }
 
 impl<'ctx> IcxEventLogs<'ctx> {
@@ -92,6 +111,14 @@ impl<'tcx> ena::undo_log::Rollback<IcxEvent<'tcx>> for InferCtxInner<'tcx> {
             IcxEvent::TypeVar(undo) => self.type_storage.reverse(undo),
             IcxEvent::IntVar(undo) => self.int_storage.reverse(undo),
             IcxEvent::FloatVar(undo) => self.float_storage.reverse(undo),
+            IcxEvent::OverloadBinding { var, prev } => match prev {
+                Some(def) => {
+                    self.overload_bindings.insert(var, def);
+                }
+                None => {
+                    self.overload_bindings.remove(&var);
+                }
+            },
         }
     }
 }

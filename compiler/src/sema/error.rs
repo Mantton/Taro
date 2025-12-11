@@ -22,6 +22,8 @@ pub enum TypeError<'ctx> {
     TyMismatch(ExpectedFound<Ty<'ctx>>),
     TupleArity(ExpectedFound<usize>),
     Apply(ApplyValidationError),
+    NoOverloadMatches,
+    AmbiguousOverload,
 }
 
 pub type SpannedError<'ctx> = Spanned<TypeError<'ctx>>;
@@ -42,6 +44,8 @@ impl<'ctx> TypeError<'ctx> {
                 ef.expected, ef.found
             ),
             TypeError::Apply(e) => format!("{e}"),
+            TypeError::NoOverloadMatches => "no overload matches this call".into(),
+            TypeError::AmbiguousOverload => "ambiguous overload; unable to pick a best candidate".into(),
         }
     }
 }

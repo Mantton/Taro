@@ -6,7 +6,10 @@ use crate::{
         resolve::models::DefinitionKind,
         tycheck::{
             check::checker::Checker,
-            solve::{ApplyArgument, ApplyGoalData, ConstraintSystem, Goal},
+            solve::{
+                ApplyArgument, ApplyGoalData, BindOverloadGoalData, ConstraintSystem,
+                DisjunctionBranch, Goal,
+            },
         },
     },
     span::Span,
@@ -121,7 +124,7 @@ impl<'ctx> Checker<'ctx> {
 
         let provided = cs.infer_cx.resolve_vars_if_possible(provided);
         if provided.is_infer() {
-            todo!("report – unable to infer error")
+            return Ty::error(self.gcx());
         }
         provided
     }
@@ -135,11 +138,11 @@ impl<'ctx> Checker<'ctx> {
         expectation: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
-        self.gcx()
-            .dcx()
-            .emit_info("Checking".into(), Some(node.span));
-
         let ty = self.synth_expression_kind(node, expectation, cs);
+        self.gcx().dcx().emit_info(
+            format!("Checked {}", ty.format(self.gcx())),
+            Some(node.span),
+        );
         ty
     }
 
@@ -231,7 +234,24 @@ impl<'ctx> Checker<'ctx> {
             hir::Resolution::LocalVariable(id) => self.get_local_ty(*id),
             hir::Resolution::Definition(id, _) => self.gcx().get_type(*id),
             hir::Resolution::SelfConstructor(..) => todo!(),
-            hir::Resolution::FunctionSet(_) => cs.infer_cx.next_ty_var(span),
+            hir::Resolution::FunctionSet(candidates) => {
+                let ty = cs.infer_cx.next_ty_var(span);
+                let mut branches = vec![];
+                for &candidate in candidates {
+                    let candidate_ty = self.gcx().get_type(candidate);
+                    let goal = Goal::BindOverload(BindOverloadGoalData {
+                        var_ty: ty,
+                        candidate_ty,
+                        source: candidate,
+                    });
+                    branches.push(DisjunctionBranch {
+                        goal,
+                        source: Some(candidate),
+                    });
+                }
+                cs.add_goal(Goal::Disjunction(branches), span);
+                ty
+            }
             hir::Resolution::PrimaryType(..)
             | hir::Resolution::InterfaceSelfTypeParameter(..)
             | hir::Resolution::SelfTypeAlias(..)

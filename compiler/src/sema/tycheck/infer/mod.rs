@@ -1,7 +1,8 @@
 use crate::{
     compile::context::Gcx,
     sema::{
-        models::{FloatTy, InferTy, IntTy, Ty, TyKind},
+        models::{FloatTy, InferTy, IntTy, Ty, TyKind, TyVarID},
+        resolve::models::DefinitionID,
         tycheck::{
             fold::TypeFoldable,
             infer::{
@@ -10,6 +11,7 @@ use crate::{
                     TypeVariableStorage, TypeVariableTable,
                 },
                 resolve::InferVarResolver,
+                snapshot::IcxEvent,
             },
         },
     },
@@ -17,6 +19,7 @@ use crate::{
 };
 use ena::{undo_log::Rollback, unify::UnificationTableStorage};
 
+use rustc_hash::FxHashMap;
 use snapshot::IcxEventLogs;
 use std::cell::RefCell;
 
@@ -138,6 +141,25 @@ impl<'ctx> InferCtx<'ctx> {
         let mut resolver = InferVarResolver::new(self);
         value.fold_with(&mut resolver)
     }
+
+    pub fn bind_overload(&self, ty: Ty<'ctx>, source: DefinitionID) {
+        let TyKind::Infer(InferTy::TyVar(var_id)) = ty.kind() else {
+            return;
+        };
+        let mut inner = self.inner.borrow_mut();
+        let prev = inner.overload_bindings.insert(var_id, source);
+        inner.log_overload_binding(var_id, prev);
+    }
+
+    pub fn overload_binding_for_ty(&self, ty: Ty<'ctx>) -> Option<DefinitionID> {
+        match ty.kind() {
+            TyKind::Infer(InferTy::TyVar(var_id)) => {
+                let inner = self.inner.borrow();
+                inner.overload_bindings.get(&var_id).cloned()
+            }
+            _ => None,
+        }
+    }
 }
 
 pub(crate) type UnificationTable<'a, 'tcx, T> = ena::unify::UnificationTable<
@@ -150,6 +172,7 @@ pub struct InferCtxInner<'ctx> {
     type_storage: TypeVariableStorage<'ctx>,
     int_storage: UnificationTableStorage<IntVarID>,
     float_storage: UnificationTableStorage<FloatVarID>,
+    overload_bindings: FxHashMap<TyVarID, DefinitionID>,
 }
 
 impl<'ctx> InferCtxInner<'ctx> {
@@ -159,6 +182,7 @@ impl<'ctx> InferCtxInner<'ctx> {
             type_storage: Default::default(),
             int_storage: Default::default(),
             float_storage: Default::default(),
+            overload_bindings: Default::default(),
         }
     }
 }
@@ -177,6 +201,13 @@ impl<'ctx> InferCtxInner<'ctx> {
     #[inline]
     pub fn type_variables(&mut self) -> TypeVariableTable<'_, 'ctx> {
         self.type_storage.with_log(&mut self.event_logs)
+    }
+}
+
+impl<'ctx> InferCtxInner<'ctx> {
+    pub fn log_overload_binding(&mut self, var: TyVarID, prev: Option<DefinitionID>) {
+        self.event_logs
+            .push_event(IcxEvent::OverloadBinding { var, prev });
     }
 }
 

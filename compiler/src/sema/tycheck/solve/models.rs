@@ -9,12 +9,27 @@ use crate::{
 pub enum Goal<'ctx> {
     Equal(Ty<'ctx>, Ty<'ctx>),
     Apply(ApplyGoalData<'ctx>),
+    BindOverload(BindOverloadGoalData<'ctx>),
+    Disjunction(Vec<DisjunctionBranch<'ctx>>),
 }
 
 #[derive(Debug, Clone)]
 pub struct Obligation<'ctx> {
     pub location: Span,
     pub goal: Goal<'ctx>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DisjunctionBranch<'ctx> {
+    pub goal: Goal<'ctx>,
+    pub source: Option<DefinitionID>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BindOverloadGoalData<'ctx> {
+    pub var_ty: Ty<'ctx>,
+    pub candidate_ty: Ty<'ctx>,
+    pub source: DefinitionID,
 }
 
 pub enum SolverResult<'ctx> {
