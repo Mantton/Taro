@@ -1,9 +1,13 @@
 use crate::{
     compile::context::Gcx,
-    hir::{self, DefinitionID, DefinitionKind, NodeID},
+    hir::{self, DefinitionID, NodeID, Resolution},
     sema::{
         models::{Ty, TyKind},
-        tycheck::{check::checker::Checker, solve::ConstraintSystem},
+        resolve::models::DefinitionKind,
+        tycheck::{
+            check::checker::Checker,
+            solve::{ApplyArgument, ApplyGoalData, ConstraintSystem, Goal},
+        },
     },
     span::Span,
 };
@@ -15,8 +19,7 @@ impl<'ctx> Checker<'ctx> {
 
     pub fn check_function(mut self, id: DefinitionID, node: &hir::Function) {
         let gcx = self.gcx();
-        gcx.dcx()
-            .emit_info("Checking".into(), Some(node.signature.span));
+        println!("==============================================================");
         let signature = gcx.get_signature(id);
         let signature = Ty::from_labeled_signature(gcx, signature);
 
@@ -110,21 +113,23 @@ impl<'ctx> Checker<'ctx> {
         expectation: Option<Ty<'ctx>>,
     ) -> Ty<'ctx> {
         let mut cs = Cs::new(self.context);
-        let provided = self.synth(expression, expectation, &mut cs);
+        let provided = self.synth_with_expectation(expression, expectation, &mut cs);
         if let Some(expectation) = expectation {
             cs.equal(expectation, provided, expression.span);
         }
-
         cs.solve_all();
-        // TODO: Solve & Report
-        //
+
+        let provided = cs.infer_cx.resolve_vars_if_possible(provided);
+        if provided.is_infer() {
+            todo!("report – unable to infer error")
+        }
         provided
     }
 }
 
 type Cs<'c> = ConstraintSystem<'c>;
 impl<'ctx> Checker<'ctx> {
-    fn synth(
+    fn synth_with_expectation(
         &self,
         node: &hir::Expression,
         expectation: Option<Ty<'ctx>>,
@@ -133,9 +138,13 @@ impl<'ctx> Checker<'ctx> {
         self.gcx()
             .dcx()
             .emit_info("Checking".into(), Some(node.span));
+
         let ty = self.synth_expression_kind(node, expectation, cs);
-        println!("Ty is `{}`", ty.format(self.gcx()));
         ty
+    }
+
+    fn synth(&self, node: &hir::Expression, cs: &mut Cs<'ctx>) -> Ty<'ctx> {
+        self.synth_with_expectation(node, None, cs)
     }
 
     fn synth_expression_kind(
@@ -145,12 +154,14 @@ impl<'ctx> Checker<'ctx> {
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         match &expression.kind {
-            hir::ExpressionKind::Literal(node) => self.synth_expression_literal(node, expectation),
-            hir::ExpressionKind::Identifier(_, resolution) => {
-                self.synth_identifier_expression(expression.id, expression.span, resolution)
+            hir::ExpressionKind::Literal(node) => {
+                self.synth_expression_literal(node, expectation, cs)
             }
-            hir::ExpressionKind::Call(c, a) => {
-                todo!()
+            hir::ExpressionKind::Identifier(_, resolution) => {
+                self.synth_identifier_expression(expression.id, expression.span, resolution, cs)
+            }
+            hir::ExpressionKind::Call(callee, arguments) => {
+                self.synth_call_expression(expression, callee, arguments, expectation, cs)
             }
             hir::ExpressionKind::Member { .. } => todo!(),
             hir::ExpressionKind::Specialize { .. } => todo!(),
@@ -180,6 +191,7 @@ impl<'ctx> Checker<'ctx> {
         &self,
         literal: &hir::Literal,
         expectation: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         let gcx = self.gcx();
         match literal {
@@ -192,7 +204,7 @@ impl<'ctx> Checker<'ctx> {
                     _ => None,
                 });
 
-                opt_ty.unwrap_or_else(|| gcx.types.int)
+                opt_ty.unwrap_or_else(|| cs.infer_cx.next_int_var())
             }
             hir::Literal::Float(_) => {
                 let opt_ty = expectation.and_then(|ty| match ty.kind() {
@@ -200,7 +212,7 @@ impl<'ctx> Checker<'ctx> {
                     _ => None,
                 });
 
-                opt_ty.unwrap_or_else(|| gcx.types.float32)
+                opt_ty.unwrap_or_else(|| cs.infer_cx.next_float_var())
             }
             hir::Literal::Nil => {
                 todo!();
@@ -210,28 +222,69 @@ impl<'ctx> Checker<'ctx> {
 
     fn synth_identifier_expression(
         &self,
-        id: NodeID,
+        _: NodeID,
         span: Span,
         resolution: &hir::Resolution,
+        cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         match resolution {
             hir::Resolution::LocalVariable(id) => self.get_local_ty(*id),
-            hir::Resolution::Definition(id, DefinitionKind::Function) => {
-                todo!()
-            }
-            hir::Resolution::Definition(id, _) => {
-                todo!()
-            }
+            hir::Resolution::Definition(id, _) => self.gcx().get_type(*id),
             hir::Resolution::SelfConstructor(..) => todo!(),
-            hir::Resolution::FunctionSet(ids) => {
-                todo!()
-            }
+            hir::Resolution::FunctionSet(_) => cs.infer_cx.next_ty_var(span),
             hir::Resolution::PrimaryType(..)
             | hir::Resolution::InterfaceSelfTypeParameter(..)
             | hir::Resolution::SelfTypeAlias(..)
             | hir::Resolution::ImplicitSelfParameter
             | hir::Resolution::Foundation(..) => todo!(),
             hir::Resolution::Error => unreachable!(),
+        }
+    }
+
+    fn synth_call_expression(
+        &self,
+        expression: &hir::Expression,
+        callee: &hir::Expression,
+        arguments: &[hir::ExpressionArgument],
+        expect_ty: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        let callee_ty = self.synth(callee, cs);
+        let callee_source = self.resolve_callee(callee);
+        let arguments = arguments
+            .iter()
+            .map(|n| ApplyArgument {
+                id: n.expression.id,
+                label: n.label.map(|n| n.identifier),
+                ty: self.synth(&n.expression, cs),
+                span: n.expression.span,
+            })
+            .collect();
+
+        let result_ty = cs.infer_cx.next_ty_var(expression.span);
+
+        let data = ApplyGoalData {
+            call_span: expression.span,
+            callee_ty,
+            callee_source,
+            result_ty,
+            expect_ty,
+            arguments,
+        };
+        cs.add_goal(Goal::Apply(data), expression.span);
+
+        result_ty
+    }
+}
+
+impl<'ctx> Checker<'ctx> {
+    fn resolve_callee(&self, node: &hir::Expression) -> Option<DefinitionID> {
+        match &node.kind {
+            hir::ExpressionKind::Identifier(
+                _,
+                Resolution::Definition(id, DefinitionKind::Function),
+            ) => Some(*id),
+            _ => None,
         }
     }
 }

@@ -1,16 +1,17 @@
 use crate::{
     compile::context::Gcx,
-    sema::{error::TypeError, models::Ty, tycheck::infer::InferCtx},
+    sema::{error::SpannedErrorList, models::Ty, tycheck::infer::InferCtx},
     span::{Span, Spanned},
 };
 pub use models::*;
 use std::{collections::VecDeque, rc::Rc};
 
+mod apply;
 mod models;
 mod unify;
 
 pub struct ConstraintSystem<'ctx> {
-    infer_cx: Rc<InferCtx<'ctx>>,
+    pub infer_cx: Rc<InferCtx<'ctx>>,
     obligations: VecDeque<Obligation<'ctx>>,
 }
 
@@ -34,6 +35,10 @@ impl<'ctx> ConstraintSystem<'ctx> {
         };
         self.obligations.push_back(obligation);
     }
+
+    pub fn add_goal(&mut self, goal: Goal<'ctx>, location: Span) {
+        self.obligations.push_back(Obligation { location, goal });
+    }
 }
 
 impl<'ctx> ConstraintSystem<'ctx> {
@@ -43,14 +48,17 @@ impl<'ctx> ConstraintSystem<'ctx> {
             obligations: std::mem::take(&mut self.obligations),
         };
 
-        let result = solver.solve_all();
+        let mut driver = SolverDriver::new(solver);
+        let result = driver.solve_to_fixpoint();
+
+        let Err(errors) = result else {
+            return;
+        };
 
         let gcx = self.infer_cx.gcx;
-        match result {
-            Ok(_) => {}
-            Err(e) => {
-                gcx.dcx().emit_error(e.value.format(gcx), Some(e.span));
-            }
+        let dcx = gcx.dcx();
+        for error in errors {
+            dcx.emit_error(error.value.format(gcx), Some(error.span));
         }
     }
 }
@@ -67,33 +75,132 @@ impl<'ctx> ConstraintSolver<'ctx> {
 }
 
 impl<'ctx> ConstraintSolver<'ctx> {
-    fn solve_all(mut self) -> Result<(), Spanned<TypeError<'ctx>>> {
-        while let Some(obligation) = self.obligations.pop_front() {
-            let location = obligation.location;
-            let result = self.solve(obligation);
+    fn solve(&mut self, obligation: Obligation<'ctx>) -> SolverResult<'ctx> {
+        let goal = obligation.goal;
+        match goal {
+            Goal::Equal(lhs, rhs) => self.solve_equality(obligation.location, lhs, rhs),
+            Goal::Apply(data) => self.solve_apply(data),
+        }
+    }
 
-            match result {
-                SolverResult::Deferred => todo!("deferred obligation"),
-                SolverResult::Solved(obligations) => {
-                    for obligation in obligations {
-                        self.obligations.push_front(obligation);
-                    }
-                }
-                SolverResult::Error(e) => return Err(Spanned::new(e, location)),
+    fn solve_equality(
+        &mut self,
+        location: Span,
+        lhs: Ty<'ctx>,
+        rhs: Ty<'ctx>,
+    ) -> SolverResult<'ctx> {
+        match self.unify(lhs, rhs) {
+            Ok(_) => SolverResult::Solved(vec![]),
+            Err(e) => {
+                let error = Spanned::new(e, location);
+                let errors = vec![error];
+                SolverResult::Error(errors)
+            }
+        }
+    }
+
+    fn with_branches<I, F>(&mut self, branches: I) -> SolverResult<'ctx>
+    where
+        I: IntoIterator<Item = F>,
+        F: Fn(&mut ConstraintSolver<'ctx>) -> SolverResult<'ctx> + Clone,
+    {
+        let mut last_error = None;
+
+        for branch in branches.into_iter() {
+            let probe_branch = branch.clone();
+            let probe_result = self.icx.probe(|_| {
+                let mut fork = self.fork();
+                probe_branch(&mut fork)
+            });
+
+            match probe_result {
+                SolverResult::Solved(_) => return branch(self),
+                SolverResult::Error(errs) => last_error = Some(errs),
+                SolverResult::Deferred => {}
             }
         }
 
-        return Ok(());
+        if let Some(errs) = last_error {
+            SolverResult::Error(errs)
+        } else {
+            SolverResult::Deferred
+        }
     }
 
-    fn solve(&mut self, obligation: Obligation<'ctx>) -> SolverResult<'ctx> {
-        let goal = obligation.goal;
-
-        match goal {
-            Goal::Equal(lhs, rhs) => match self.unify(lhs, rhs) {
-                Ok(_) => SolverResult::Solved(vec![]),
-                Err(e) => SolverResult::Error(e),
-            },
+    fn fork(&self) -> ConstraintSolver<'ctx> {
+        ConstraintSolver {
+            icx: self.icx.clone(),
+            obligations: self.obligations.clone(),
         }
+    }
+}
+
+struct SolverDriver<'ctx> {
+    solver: ConstraintSolver<'ctx>,
+    deferred: VecDeque<Obligation<'ctx>>,
+    errors: SpannedErrorList<'ctx>,
+    defaulted: bool,
+}
+
+impl<'ctx> SolverDriver<'ctx> {
+    fn new(solver: ConstraintSolver<'ctx>) -> SolverDriver<'ctx> {
+        SolverDriver {
+            solver,
+            deferred: VecDeque::new(),
+            errors: vec![],
+            defaulted: false,
+        }
+    }
+
+    fn solve_to_fixpoint(&mut self) -> Result<(), SpannedErrorList<'ctx>> {
+        loop {
+            let made_progress = self.drain_queue();
+
+            if !self.errors.is_empty() {
+                return Err(std::mem::take(&mut self.errors));
+            }
+
+            if !self.solver.obligations.is_empty() {
+                continue;
+            }
+
+            if !self.defaulted {
+                self.defaulted = true;
+                self.solver.icx.default_numeric_vars();
+                if !self.deferred.is_empty() {
+                    self.solver.obligations.append(&mut self.deferred);
+                }
+                continue;
+            }
+
+            if !self.deferred.is_empty() {
+                if made_progress {
+                    self.solver.obligations.append(&mut self.deferred);
+                    continue;
+                }
+
+                todo!("deferred obligations remaining after defaulting");
+            }
+
+            return Ok(());
+        }
+    }
+
+    fn drain_queue(&mut self) -> bool {
+        let mut made_progress = false;
+        while let Some(obligation) = self.solver.obligations.pop_front() {
+            match self.solver.solve(obligation.clone()) {
+                SolverResult::Deferred => self.deferred.push_back(obligation),
+                SolverResult::Solved(mut obligations) => {
+                    made_progress = true;
+                    for obligation in obligations.drain(..) {
+                        self.solver.obligations.push_front(obligation);
+                    }
+                }
+                SolverResult::Error(errs) => self.errors.extend(errs),
+            }
+        }
+
+        made_progress
     }
 }

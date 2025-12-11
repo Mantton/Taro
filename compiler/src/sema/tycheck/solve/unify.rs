@@ -1,14 +1,16 @@
 use crate::sema::{
     error::{ExpectedFound, TypeError},
     models::{InferTy, Ty, TyKind},
-    tycheck::solve::ConstraintSolver,
+    tycheck::{
+        infer::keys::{FloatVarValue, IntVarValue},
+        solve::ConstraintSolver,
+    },
 };
 
 type UnificationResult<'ctx> = Result<(), TypeError<'ctx>>;
 
 impl<'ctx> ConstraintSolver<'ctx> {
     pub fn unify(&self, a: Ty<'ctx>, b: Ty<'ctx>) -> UnificationResult<'ctx> {
-        println!("unify {} {}", a.format(self.gcx()), b.format(self.gcx()));
         let a = self.structurally_resolve(a);
         let b = self.structurally_resolve(b);
 
@@ -43,15 +45,39 @@ impl<'ctx> ConstraintSolver<'ctx> {
     }
 
     fn unify_inference_vars(&self, a: Ty<'ctx>, b: Ty<'ctx>) -> UnificationResult<'ctx> {
+        use InferTy::*;
         use TyKind::*;
         match (a.kind(), b.kind()) {
             // Error
             (Error, Error) => return Ok(()),
+
+            // Integers
+            (Infer(IntVar(a_id)), Infer(IntVar(b_id))) => {
+                self.icx.equate_int_vars_raw(a_id, b_id);
+            }
+            (Infer(IntVar(id)), Int(k)) | (Int(k), Infer(IntVar(id))) => {
+                self.icx.instantiate_int_var_raw(id, IntVarValue::Signed(k));
+            }
+            (Infer(IntVar(id)), UInt(k)) | (UInt(k), Infer(IntVar(id))) => {
+                self.icx
+                    .instantiate_int_var_raw(id, IntVarValue::Unsigned(k));
+            }
+
+            // Floats
+            (Infer(FloatVar(a_id)), Infer(FloatVar(b_id))) => {
+                self.icx.equate_float_vars_raw(a_id, b_id);
+            }
+            (Infer(FloatVar(id)), Float(k)) | (Float(k), Infer(FloatVar(id))) => {
+                self.icx
+                    .instantiate_float_var_raw(id, FloatVarValue::Known(k));
+            }
             (Infer(_), _) | (_, Infer(_)) => {
                 return Err(TypeError::TyMismatch(ExpectedFound::new(a, b)));
             }
             _ => return self.unify_nominal_types(a, b),
         }
+
+        return Ok(());
     }
 
     fn unify_nominal_types(&self, a: Ty<'ctx>, b: Ty<'ctx>) -> UnificationResult<'ctx> {

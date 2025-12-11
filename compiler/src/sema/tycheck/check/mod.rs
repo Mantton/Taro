@@ -5,7 +5,6 @@ use crate::{
 };
 
 mod checker;
-mod models;
 mod node;
 
 pub fn run(package: &hir::Package, context: Gcx) -> CompileResult<()> {

@@ -1,6 +1,7 @@
 use crate::{
     compile::context::Gcx,
     hir::{DefinitionID, Mutability},
+    sema::tycheck::infer::keys::{FloatVarID, IntVarID},
     span::Symbol,
     utils::intern::Interned,
 };
@@ -220,7 +221,6 @@ impl FloatTy {
 pub struct LabeledFunctionSignature<'ctx> {
     pub inputs: Vec<LabeledFunctionParameter<'ctx>>,
     pub output: Ty<'ctx>,
-    pub id: DefinitionID,
     pub is_variadic: bool,
 }
 
@@ -255,6 +255,8 @@ index_vec::define_index_type! {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InferTy {
     TyVar(TyVarID),
+    IntVar(IntVarID),
+    FloatVar(FloatVarID),
     FreshTy(u32),
 }
 

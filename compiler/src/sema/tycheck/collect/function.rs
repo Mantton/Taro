@@ -73,7 +73,6 @@ impl<'ctx> Actor<'ctx> {
         LabeledFunctionSignature {
             inputs,
             output,
-            id,
             is_variadic: false,
         }
     }
