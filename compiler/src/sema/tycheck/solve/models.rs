@@ -1,6 +1,6 @@
 use crate::{
     ast::Identifier,
-    hir::NodeID,
+    hir::{BinaryOperator, NodeID, UnaryOperator},
     sema::{error::SpannedErrorList, models::Ty, resolve::models::DefinitionID},
     span::Span,
 };
@@ -11,6 +11,8 @@ pub enum Goal<'ctx> {
     Apply(ApplyGoalData<'ctx>),
     BindOverload(BindOverloadGoalData<'ctx>),
     Disjunction(Vec<DisjunctionBranch<'ctx>>),
+    BinaryOp(BinOpGoalData<'ctx>),
+    UnaryOp(UnOpGoalData<'ctx>),
 }
 
 #[derive(Debug, Clone)]
@@ -54,4 +56,26 @@ pub struct ApplyArgument<'ctx> {
     pub label: Option<Identifier>,
     pub ty: Ty<'ctx>,
     pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct UnOpGoalData<'ctx> {
+    pub lhs: Ty<'ctx>,
+    pub rho: Ty<'ctx>,
+    pub expectation: Option<Ty<'ctx>>,
+    pub operator: UnaryOperator,
+    pub span: Span,
+    pub node_id: NodeID,
+    pub rhs_id: NodeID,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BinOpGoalData<'ctx> {
+    pub lhs: Ty<'ctx>,
+    pub rhs: Ty<'ctx>,
+    pub rho: Ty<'ctx>,
+    pub expectation: Option<Ty<'ctx>>,
+    pub operator: BinaryOperator,
+    pub span: Span,
+    pub assigning: bool,
 }

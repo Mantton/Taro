@@ -7,8 +7,8 @@ use crate::{
         tycheck::{
             check::checker::Checker,
             solve::{
-                ApplyArgument, ApplyGoalData, BindOverloadGoalData, ConstraintSystem,
-                DisjunctionBranch, Goal,
+                ApplyArgument, ApplyGoalData, BinOpGoalData, BindOverloadGoalData,
+                ConstraintSystem, DisjunctionBranch, Goal, UnOpGoalData,
             },
         },
     },
@@ -50,6 +50,60 @@ impl<'ctx> Checker<'ctx> {
             // --- regular block body ---
             self.check_block(body);
         }
+    }
+}
+
+impl<'ctx> Checker<'ctx> {
+    fn synth_unary_expression(
+        &self,
+        expression: &hir::Expression,
+        operator: hir::UnaryOperator,
+        operand: &hir::Expression,
+        expectation: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        let operand_ty = self.synth(operand, cs);
+        let result_ty = cs.infer_cx.next_ty_var(expression.span);
+
+        let data = UnOpGoalData {
+            lhs: operand_ty,
+            rho: result_ty,
+            expectation,
+            operator,
+            span: expression.span,
+            node_id: expression.id,
+            rhs_id: operand.id,
+        };
+
+        cs.add_goal(Goal::UnaryOp(data), expression.span);
+        result_ty
+    }
+
+    fn synth_binary_expression(
+        &self,
+        expression: &hir::Expression,
+        operator: hir::BinaryOperator,
+        lhs: &hir::Expression,
+        rhs: &hir::Expression,
+        expectation: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        let lhs_ty = self.synth(lhs, cs);
+        let rhs_ty = self.synth(rhs, cs);
+        let result_ty = cs.infer_cx.next_ty_var(expression.span);
+
+        let data = BinOpGoalData {
+            lhs: lhs_ty,
+            rhs: rhs_ty,
+            rho: result_ty,
+            expectation,
+            operator,
+            span: expression.span,
+            assigning: false,
+        };
+
+        cs.add_goal(Goal::BinaryOp(data), expression.span);
+        result_ty
     }
 }
 
@@ -174,8 +228,12 @@ impl<'ctx> Checker<'ctx> {
             hir::ExpressionKind::Match(..) => todo!(),
             hir::ExpressionKind::Reference(..) => todo!(),
             hir::ExpressionKind::Dereference(..) => todo!(),
-            hir::ExpressionKind::Binary(..) => todo!(),
-            hir::ExpressionKind::Unary(..) => todo!(),
+            hir::ExpressionKind::Binary(op, lhs, rhs) => {
+                self.synth_binary_expression(expression, *op, lhs, rhs, expectation, cs)
+            }
+            hir::ExpressionKind::Unary(op, operand) => {
+                self.synth_unary_expression(expression, *op, operand, expectation, cs)
+            }
             hir::ExpressionKind::TupleAccess(..) => todo!(),
             hir::ExpressionKind::AssignOp(..) => todo!(),
             hir::ExpressionKind::Assign(..) => todo!(),
