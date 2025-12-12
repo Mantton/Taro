@@ -33,6 +33,13 @@ pub fn link_executable(gcx: GlobalContext) -> CompileResult<Option<PathBuf>> {
         .executable_out
         .clone()
         .unwrap_or_else(|| base.join(gcx.config.identifier.as_ref()));
+    if let Some(parent) = output.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            let msg = format!("failed to create output directory: {e}");
+            gcx.dcx().emit_error(msg.into(), None);
+            return Err(crate::error::ReportedError);
+        }
+    }
 
     let mut cmd = Command::new("clang");
     cmd.args(objects.iter().map(PathBuf::as_path));

@@ -263,6 +263,7 @@ impl<'ctx> MirBuilder<'ctx> {
                 );
                 Operand::Copy(dest)
             }
+            hir::ExpressionKind::Assign(lhs, rhs) => self.lower_assign(expr, lhs, rhs),
             hir::ExpressionKind::If(node) => self.lower_if(expr, node),
             hir::ExpressionKind::Block(block) => self.lower_block_expr(block, expr),
             _ => {
@@ -394,6 +395,49 @@ impl<'ctx> MirBuilder<'ctx> {
     fn assign_expr_to_place(&mut self, place: Place, expr: &hir::Expression) {
         let value = self.lower_expr(expr);
         self.push_statement(expr.span, StatementKind::Assign(place, Rvalue::Use(value)));
+    }
+
+    fn lower_assign(
+        &mut self,
+        expr: &hir::Expression,
+        lhs: &hir::Expression,
+        rhs: &hir::Expression,
+    ) -> Operand<'ctx> {
+        match &lhs.kind {
+            hir::ExpressionKind::Identifier(_, res) => {
+                if let hir::Resolution::LocalVariable(id) = res {
+                    let local = *self.locals.get(id).expect("assignment target local");
+                    let place = Place { local };
+                    let rhs_op = self.lower_expr(rhs);
+                    self.push_statement(expr.span, StatementKind::Assign(place, Rvalue::Use(rhs_op)));
+                    Operand::Constant(Constant {
+                        ty: self.gcx.types.void,
+                        value: ConstantKind::Unit,
+                    })
+                } else {
+                    Operand::Constant(Constant {
+                        ty: self.gcx.types.error,
+                        value: ConstantKind::Unit,
+                    })
+                }
+            }
+            hir::ExpressionKind::Dereference(ptr_expr) => {
+                let ptr = self.lower_expr(ptr_expr);
+                let value = self.lower_expr(rhs);
+                self.push_statement(
+                    expr.span,
+                    StatementKind::Store { ptr, value: value.clone() },
+                );
+                Operand::Constant(Constant {
+                    ty: self.gcx.types.void,
+                    value: ConstantKind::Unit,
+                })
+            }
+            _ => Operand::Constant(Constant {
+                ty: self.gcx.types.error,
+                value: ConstantKind::Unit,
+            }),
+        }
     }
 
     fn lower_block_expr(&mut self, block: &hir::Block, expr: &hir::Expression) -> Operand<'ctx> {

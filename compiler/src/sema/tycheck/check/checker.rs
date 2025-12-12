@@ -8,9 +8,28 @@ use std::cell::{Cell, RefCell};
 
 pub struct Checker<'arena> {
     pub context: Gcx<'arena>,
-    pub locals: RefCell<FxHashMap<NodeID, Ty<'arena>>>,
+    pub locals: RefCell<FxHashMap<NodeID, LocalBinding<'arena>>>,
     pub return_ty: Option<Ty<'arena>>,
     pub(super) loop_depth: Cell<usize>,
+}
+
+#[derive(Clone, Copy)]
+pub struct LocalBinding<'arena> {
+    pub ty: Ty<'arena>,
+    pub mutable: bool,
+}
+
+#[derive(Clone, Copy)]
+pub struct PlaceInfo<'arena> {
+    pub ty: Ty<'arena>,
+    pub mutable: bool,
+    pub kind: PlaceKind<'arena>,
+}
+
+#[derive(Clone, Copy)]
+pub enum PlaceKind<'arena> {
+    Local(NodeID),
+    Deref { ptr_ty: Ty<'arena> },
 }
 
 impl<'arena> Checker<'arena> {
@@ -31,7 +50,7 @@ impl<'arena> TypeLowerer<'arena> for Checker<'arena> {
 }
 
 impl<'arena> Checker<'arena> {
-    pub fn get_local_ty(&self, id: NodeID) -> Ty<'arena> {
+    pub fn get_local(&self, id: NodeID) -> LocalBinding<'arena> {
         *self
             .locals
             .borrow()
@@ -39,13 +58,13 @@ impl<'arena> Checker<'arena> {
             .expect("ICE: local variable must have type mapped")
     }
 
-    pub fn set_local_ty(&self, id: NodeID, ty: Ty<'arena>) {
+    pub fn set_local(&self, id: NodeID, binding: LocalBinding<'arena>) {
         let mut locals = self.locals.borrow_mut();
         if locals.get(&id).is_some() {
             unreachable!("evaluated local more than once")
         };
 
-        locals.insert(id, ty);
+        locals.insert(id, binding);
     }
 
     pub fn lower_type(&self, node: &hir::Type) -> Ty<'arena> {

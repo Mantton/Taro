@@ -128,18 +128,6 @@ impl<'arena> GlobalContext<'arena> {
             .expect("identifier for definition")
     }
 
-    pub fn cache_llvm_ir(self, ir: String) {
-        self.context
-            .store
-            .llvm_modules
-            .borrow_mut()
-            .insert(self.package_index(), ir);
-    }
-
-    pub fn get_llvm_ir(self, pkg: PackageIndex) -> Option<String> {
-        self.context.store.llvm_modules.borrow().get(&pkg).cloned()
-    }
-
     pub fn cache_object_file(self, path: PathBuf) {
         self.context
             .store
@@ -149,12 +137,7 @@ impl<'arena> GlobalContext<'arena> {
     }
 
     pub fn get_object_file(self, pkg: PackageIndex) -> Option<PathBuf> {
-        self.context
-            .store
-            .object_files
-            .borrow()
-            .get(&pkg)
-            .cloned()
+        self.context.store.object_files.borrow().get(&pkg).cloned()
     }
 
     pub fn all_object_files(self) -> Vec<PathBuf> {

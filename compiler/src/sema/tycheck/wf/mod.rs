@@ -33,7 +33,7 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
             hir::DeclarationKind::TypeAlias(..) => todo!(),
             hir::DeclarationKind::Constant(..) => todo!(),
             hir::DeclarationKind::Variable(..) => todo!(),
-            hir::DeclarationKind::Import(..) => todo!(),
+            hir::DeclarationKind::Import(..) => {}
             hir::DeclarationKind::Export(..) => todo!(),
             hir::DeclarationKind::Namespace(..) => todo!(),
             hir::DeclarationKind::Extension(..) => todo!(),

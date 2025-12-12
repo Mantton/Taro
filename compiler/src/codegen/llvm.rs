@@ -7,17 +7,14 @@ use crate::{
     span::Symbol,
 };
 use inkwell::{
-    targets::{
-        CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine,
-    },
-    AddressSpace, FloatPredicate, IntPredicate,
+    AddressSpace, FloatPredicate, IntPredicate, OptimizationLevel,
     builder::Builder,
     context::Context,
     module::Module,
     passes::PassManager,
+    targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine},
     types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType},
     values::{BasicMetadataValueEnum, BasicValue, BasicValueEnum, FunctionValue, PointerValue},
-    OptimizationLevel,
 };
 use rustc_hash::FxHashMap;
 use std::{fs, path::PathBuf};
@@ -38,7 +35,7 @@ pub fn emit_package<'gcx>(
     emitter.run_function_passes();
 
     let ir = emitter.module.print_to_string().to_string();
-    gcx.cache_llvm_ir(ir);
+    println!("{ir}");
 
     let obj = emitter.emit_object_file()?;
     gcx.cache_object_file(obj.clone());
@@ -201,7 +198,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             )
             .ok_or(crate::error::ReportedError)?;
 
-        self.module.set_data_layout(&tm.get_target_data().get_data_layout());
+        self.module
+            .set_data_layout(&tm.get_target_data().get_data_layout());
         self.module.set_triple(&triple);
 
         let out_dir = self.gcx.output_root().clone();
@@ -324,6 +322,16 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 let dest_ty = body.locals[place.local].ty;
                 if let Some(value) = self.lower_rvalue(body, locals, dest_ty, rvalue)? {
                     self.store_local(place.local, locals, value, body);
+                }
+            }
+            mir::StatementKind::Store { ptr, value } => {
+                if let (Some(ptr_val), Some(val)) = (
+                    self.eval_operand(body, locals, ptr)?,
+                    self.eval_operand(body, locals, value)?,
+                ) {
+                    if let BasicValueEnum::PointerValue(ptr) = ptr_val {
+                        let _ = self.builder.build_store(ptr, val).unwrap();
+                    }
                 }
             }
             mir::StatementKind::Nop => {}

@@ -5,7 +5,7 @@ use crate::{
         models::{Ty, TyKind},
         resolve::models::DefinitionKind,
         tycheck::{
-            check::checker::Checker,
+            check::checker::{Checker, PlaceInfo, PlaceKind},
             solve::{
                 ApplyArgument, ApplyGoalData, BinOpGoalData, BindOverloadGoalData,
                 ConstraintSystem, DisjunctionBranch, Goal, UnOpGoalData,
@@ -35,7 +35,13 @@ impl<'ctx> Checker<'ctx> {
 
         // Add Parameters To Locals Map
         for (parameter, &parameter_ty) in node.signature.prototype.inputs.iter().zip(param_tys) {
-            self.locals.borrow_mut().insert(parameter.id, parameter_ty);
+            self.locals.borrow_mut().insert(
+                parameter.id,
+                crate::sema::tycheck::check::checker::LocalBinding {
+                    ty: parameter_ty,
+                    mutable: false,
+                },
+            );
         }
 
         let Some(body) = &node.block else {
@@ -207,8 +213,12 @@ impl<'ctx> Checker<'ctx> {
                 if let Some(expression) = &node.initializer {
                     // Hard code for now
                     let ty = self.top_level_check(expression, expectation);
-                    self.set_local_ty(node.pattern.id, ty);
-                    self.set_local_ty(node.id, ty);
+                    let binding = crate::sema::tycheck::check::checker::LocalBinding {
+                        ty,
+                        mutable: node.mutability == hir::Mutability::Mutable,
+                    };
+                    self.set_local(node.pattern.id, binding);
+                    self.set_local(node.id, binding);
                     self.gcx().cache_node_type(node.pattern.id, ty);
                     self.gcx().cache_node_type(node.id, ty);
                 }
@@ -322,7 +332,9 @@ impl<'ctx> Checker<'ctx> {
             }
             hir::ExpressionKind::TupleAccess(..) => todo!(),
             hir::ExpressionKind::AssignOp(..) => todo!(),
-            hir::ExpressionKind::Assign(..) => todo!(),
+            hir::ExpressionKind::Assign(lhs, rhs) => {
+                self.synth_assign_expression(expression, lhs, rhs, cs)
+            }
             hir::ExpressionKind::CastAs(..) => todo!(),
             hir::ExpressionKind::PatternBinding(..) => todo!(),
             hir::ExpressionKind::Block(block) => {
@@ -336,6 +348,87 @@ impl<'ctx> Checker<'ctx> {
 }
 
 impl<'ctx> Checker<'ctx> {
+    /// Classify an expression that appears on the left-hand side of an assignment.
+    /// Returns its type, mutability, and a minimal place description, or emits an error.
+    fn classify_place(
+        &self,
+        expr: &hir::Expression,
+        cs: &mut Cs<'ctx>,
+    ) -> Option<PlaceInfo<'ctx>> {
+        match &expr.kind {
+            hir::ExpressionKind::Identifier(_, res) => match res {
+                hir::Resolution::LocalVariable(id) => {
+                    let binding = self.get_local(*id);
+                    Some(PlaceInfo {
+                        ty: binding.ty,
+                        mutable: binding.mutable,
+                        kind: PlaceKind::Local(*id),
+                    })
+                }
+                _ => {
+                    self.gcx().dcx().emit_error(
+                        "cannot assign to this expression".into(),
+                        Some(expr.span),
+                    );
+                    None
+                }
+            },
+            hir::ExpressionKind::Dereference(target) => {
+                let ptr_ty = self.synth(target, cs);
+                match ptr_ty.kind() {
+                    TyKind::Pointer(inner, mutbl) | TyKind::Reference(inner, mutbl) => Some(
+                        PlaceInfo {
+                            ty: inner,
+                            mutable: mutbl == hir::Mutability::Mutable,
+                            kind: PlaceKind::Deref { ptr_ty },
+                        },
+                    ),
+                    _ => {
+                        self.gcx().dcx().emit_error(
+                            "cannot assign through a non-pointer/reference value".into(),
+                            Some(expr.span),
+                        );
+                        None
+                    }
+                }
+            }
+            _ => {
+                self.gcx().dcx().emit_error(
+                    "left-hand side of assignment is not assignable".into(),
+                    Some(expr.span),
+                );
+                None
+            }
+        }
+    }
+
+    fn synth_assign_expression(
+        &self,
+        expr: &hir::Expression,
+        lhs: &hir::Expression,
+        rhs: &hir::Expression,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        // Determine the type we’re assigning into and whether it’s mutable.
+        let place = match self.classify_place(lhs, cs) {
+            Some(p) => p,
+            None => return Ty::error(self.gcx()),
+        };
+
+        if !place.mutable {
+            self.gcx().dcx().emit_error(
+                "cannot assign to an immutable binding".into(),
+                Some(lhs.span),
+            );
+        }
+
+        // Type-check the RHS against the LHS type.
+        let rhs_ty = self.synth_with_expectation(rhs, Some(place.ty), cs);
+        cs.add_goal(crate::sema::tycheck::solve::Goal::Equal(place.ty, rhs_ty), expr.span);
+        // Assignments evaluate to unit.
+        self.gcx().types.void
+    }
+
     fn synth_block_expression(
         &self,
         block: &hir::Block,
@@ -400,7 +493,7 @@ impl<'ctx> Checker<'ctx> {
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         match resolution {
-            hir::Resolution::LocalVariable(id) => self.get_local_ty(*id),
+            hir::Resolution::LocalVariable(id) => self.get_local(*id).ty,
             hir::Resolution::Definition(id, _) => self.gcx().get_type(*id),
             hir::Resolution::SelfConstructor(..) => todo!(),
             hir::Resolution::FunctionSet(candidates) => {

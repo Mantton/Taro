@@ -62,6 +62,10 @@ pub struct Statement<'ctx> {
 #[derive(Debug, Clone)]
 pub enum StatementKind<'ctx> {
     Assign(Place, Rvalue<'ctx>),
+    Store {
+        ptr: Operand<'ctx>,
+        value: Operand<'ctx>,
+    },
     Nop,
 }
 

@@ -109,10 +109,17 @@ impl<'a> Resolver<'a> {
     }
 
     pub fn get_definition_scope(&self, id: DefinitionID) -> Scope<'a> {
-        *self
-            .definition_scope_mapping
-            .get(&id)
-            .expect("definition tagged scope")
+        if id.is_local_to_index(self.package_index()) {
+            *self
+                .definition_scope_mapping
+                .get(&id)
+                .expect("definition tagged scope")
+        } else {
+            let resolutions = self.context.store.resolution_outputs.borrow();
+            let package = resolutions.get(&id.package()).unwrap();
+            let scope = *package.definition_scope_mapping.get(&id).unwrap();
+            scope
+        }
     }
 
     pub fn package_index(&self) -> PackageIndex {
