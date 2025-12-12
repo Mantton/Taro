@@ -169,14 +169,16 @@ impl<'ctx> Checker<'ctx> {
             hir::StatementKind::Variable(node) => {
                 self.check_local(node);
             }
-            hir::StatementKind::Break => todo!(),
-            hir::StatementKind::Continue => todo!(),
+            hir::StatementKind::Break => self.check_break(node.span),
+            hir::StatementKind::Continue => self.check_continue(node.span),
             hir::StatementKind::Return(expression) => {
                 if let Some(expression) = expression {
                     self.check_return(expression);
                 }
             }
-            hir::StatementKind::Loop { .. } => todo!(),
+            hir::StatementKind::Loop { block, .. } => {
+                self.check_loop(block);
+            }
             hir::StatementKind::Defer(..) => todo!(),
             hir::StatementKind::Guard { .. } => todo!(),
         }
@@ -211,6 +213,29 @@ impl<'ctx> Checker<'ctx> {
             }
             hir::PatternKind::Tuple(..) => todo!(),
             _ => unreachable!("ICE – invalid let statement pattern"),
+        }
+    }
+
+    fn check_loop(&self, block: &hir::Block) {
+        let depth = self.loop_depth.get();
+        self.loop_depth.set(depth + 1);
+        self.check_block(block);
+        self.loop_depth.set(depth);
+    }
+
+    fn check_break(&self, span: Span) {
+        if self.loop_depth.get() == 0 {
+            self.gcx()
+                .dcx()
+                .emit_error("`break` used outside of a loop".into(), Some(span));
+        }
+    }
+
+    fn check_continue(&self, span: Span) {
+        if self.loop_depth.get() == 0 {
+            self.gcx()
+                .dcx()
+                .emit_error("`continue` used outside of a loop".into(), Some(span));
         }
     }
 }

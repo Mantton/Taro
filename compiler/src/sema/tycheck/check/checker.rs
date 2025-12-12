@@ -4,12 +4,13 @@ use crate::{
     sema::{models::Ty, tycheck::lower::TypeLowerer},
 };
 use rustc_hash::FxHashMap;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 pub struct Checker<'arena> {
     pub context: Gcx<'arena>,
     pub locals: RefCell<FxHashMap<NodeID, Ty<'arena>>>,
     pub return_ty: Option<Ty<'arena>>,
+    pub(super) loop_depth: Cell<usize>,
 }
 
 impl<'arena> Checker<'arena> {
@@ -18,6 +19,7 @@ impl<'arena> Checker<'arena> {
             context,
             return_ty: None,
             locals: Default::default(),
+            loop_depth: Cell::new(0),
         }
     }
 }
