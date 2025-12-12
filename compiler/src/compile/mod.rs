@@ -10,6 +10,7 @@ use crate::{
 
 pub mod config;
 pub mod context;
+mod entry;
 
 pub struct Compiler<'state> {
     pub context: GlobalContext<'state>,
@@ -62,6 +63,7 @@ impl<'state> Compiler<'state> {
         // HIR Passes
         sema::validate::validate_package(&package, self.context)?;
         sema::tycheck::typecheck_package(&package, self.context)?;
+        entry::validate_entry_point(&package, self.context)?;
         mir::package::build_package(&package, self.context)?;
         Ok(())
     }

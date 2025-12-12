@@ -93,6 +93,7 @@ impl<'a> Actor<'a> {
             source: ResolvedSource::Path {
                 abs: root_path.clone(),
             },
+            kind: root_manifest.kind,
         });
         self.root_package = Some(root_package);
 
@@ -147,6 +148,7 @@ impl<'a> Actor<'a> {
                 let dependency = self.intern_rdep(ResolvedPackage {
                     package: dependency.package.clone(),
                     source: ResolvedSource::Path { abs: abs.clone() },
+                    kind: manifest.kind,
                 });
                 return Ok((dependency, manifest));
             }
@@ -197,6 +199,7 @@ impl<'a> Actor<'a> {
                         revision,
                         selector,
                     },
+                    kind: manifest.kind,
                 });
                 return Ok((dependency, manifest));
             }

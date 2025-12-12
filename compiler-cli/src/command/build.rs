@@ -50,6 +50,7 @@ pub fn run(arguments: CommandLineArguments) -> Result<(), ReportedError> {
             src,
             dependencies,
             index: package_index,
+            kind: package.kind,
         });
 
         let mut compiler = Compiler::new(&icx, config);
@@ -83,6 +84,7 @@ fn compile_std<'a>(ctx: &'a CompilerContext<'a>) -> Result<(), ReportedError> {
         identifier: "std".into(),
         src,
         dependencies: Default::default(),
+        kind: compiler::compile::config::PackageKind::Library,
     });
     let mut compiler = Compiler::new(ctx, config);
     let _ = compiler.build()?;

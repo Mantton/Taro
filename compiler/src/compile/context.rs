@@ -74,6 +74,11 @@ impl<'arena> GlobalContext<'arena> {
             .or_insert_with(Default::default);
         entry.functions.insert(id, alloc);
     }
+
+    pub fn cache_entry_point(self, id: DefinitionID) {
+        let mut eps = self.context.store.entry_points.borrow_mut();
+        eps.insert(id.package(), id);
+    }
 }
 
 impl<'arena> GlobalContext<'arena> {
@@ -123,6 +128,23 @@ impl<'arena> GlobalContext<'arena> {
         let package = packages.get(&id.package()).expect("mir package");
         *package.functions.get(&id).expect("mir body")
     }
+
+    pub fn get_entry_point(self, pkg: PackageIndex) -> Option<DefinitionID> {
+        self.context.store.entry_points.borrow().get(&pkg).cloned()
+    }
+
+    pub fn resolution_output(self, pkg: PackageIndex) -> &'arena ResolutionOutput<'arena> {
+        let outputs = self.context.store.resolution_outputs.borrow();
+        *outputs.get(&pkg).expect("resolution output")
+    }
+
+    pub fn definition_ident(self, id: DefinitionID) -> crate::span::Identifier {
+        let output = self.resolution_output(id.package());
+        *output
+            .definition_to_ident
+            .get(&id)
+            .expect("identifier for definition")
+    }
 }
 
 pub struct CompilerContext<'arena> {
@@ -149,6 +171,7 @@ pub struct CompilerStore<'arena> {
     pub package_mapping: RefCell<FxHashMap<EcoString, PackageIndex>>,
     pub type_databases: RefCell<FxHashMap<PackageIndex, TypeDatabase<'arena>>>,
     pub mir_packages: RefCell<FxHashMap<PackageIndex, mir::package::MirPackage<'arena>>>,
+    pub entry_points: RefCell<FxHashMap<PackageIndex, DefinitionID>>,
 }
 
 impl<'arena> CompilerStore<'arena> {
@@ -160,6 +183,7 @@ impl<'arena> CompilerStore<'arena> {
             resolution_outputs: Default::default(),
             type_databases: Default::default(),
             mir_packages: Default::default(),
+            entry_points: Default::default(),
         }
     }
 }

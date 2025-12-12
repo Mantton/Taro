@@ -602,6 +602,7 @@ pub struct ResolutionOutput<'arena> {
     pub node_to_definition: FxHashMap<NodeID, DefinitionID>,
     pub definition_to_kind: FxHashMap<DefinitionID, DefinitionKind>,
     pub definition_to_parent: FxHashMap<DefinitionID, DefinitionID>,
+    pub definition_to_ident: FxHashMap<DefinitionID, Identifier>,
     pub definition_scope_mapping: FxHashMap<DefinitionID, Scope<'arena>>,
     pub expression_resolutions: FxHashMap<NodeID, ExpressionResolutionState>,
     pub root_scope: Scope<'arena>,

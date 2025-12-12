@@ -17,3 +17,4 @@ typed-arena = "2.0.2"
 internment = { version = "0.8.6", features = ["arena", "serde"] }
 ena = "0.14.3"
 bumpalo = "3.17.0"
+serde = { version = "1.0.219", features = ["derive"] }

@@ -613,6 +613,7 @@ impl<'a> Resolver<'a> {
             definition_scope_mapping: self.definition_scope_mapping,
             definition_to_kind: self.def_to_kind,
             definition_to_parent: self.def_to_parent,
+            definition_to_ident: self.def_to_ident,
             expression_resolutions: self.expression_resolutions,
             root_scope: self.root_module_scope.unwrap(),
         }

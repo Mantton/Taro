@@ -1,7 +1,7 @@
 use crate::package::utils::{
     canonicalize_rel, derive_git_url, get_package_name, language_home, normalize_module_path,
 };
-use compiler::constants::PACKAGE_SOURCE;
+use compiler::{compile::config::PackageKind, constants::PACKAGE_SOURCE};
 use ecow::EcoString;
 use rustc_hash::FxHashMap;
 use serde::Deserialize;
@@ -39,6 +39,8 @@ impl Manifest {
 #[derive(Deserialize, Debug, Clone)]
 pub struct Metadata {
     pub name: EcoString,
+    #[serde(default)]
+    pub kind: PackageKind,
 }
 
 pub type DependencyMap = FxHashMap<String, ManifestDependency>;
@@ -177,6 +179,7 @@ impl ManifestDependency {
 pub struct NormalizedManifest {
     pub path: PackageIdentifier,
     pub dependencies: FxHashMap<EcoString, UnresolvedDependency>,
+    pub kind: PackageKind,
 }
 
 impl Manifest {
@@ -217,6 +220,7 @@ impl Manifest {
             Ok(NormalizedManifest {
                 path: PackageIdentifier(name.into()),
                 dependencies: out,
+                kind: self.package.kind,
             })
         } else {
             Err(errs.join("\n"))
@@ -228,6 +232,7 @@ impl Manifest {
 pub struct ResolvedPackage {
     pub package: PackageIdentifier,
     pub source: ResolvedSource,
+    pub kind: PackageKind,
 }
 
 impl ResolvedPackage {
