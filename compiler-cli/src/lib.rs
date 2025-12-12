@@ -8,6 +8,8 @@ mod package;
 pub struct CommandLineArguments {
     pub command: String,
     pub path: PathBuf,
+    #[arg(short = 'o', long = "output")]
+    pub output: Option<PathBuf>,
 }
 
 pub fn run() {

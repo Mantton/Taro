@@ -33,7 +33,7 @@ impl<'state> Compiler<'state> {
 }
 
 impl<'state> Compiler<'state> {
-    pub fn build(&mut self) -> CompileResult<()> {
+    pub fn build(&mut self) -> CompileResult<Option<std::path::PathBuf>> {
         {
             let mut table = self.context.store.package_mapping.borrow_mut();
             table.insert(
@@ -64,7 +64,8 @@ impl<'state> Compiler<'state> {
         sema::validate::validate_package(&package, self.context)?;
         sema::tycheck::typecheck_package(&package, self.context)?;
         let package = mir::package::build_package(&package, self.context)?;
-        codegen::llvm::emit_package(package, self.context)?;
-        Ok(())
+        let _obj = codegen::llvm::emit_package(package, self.context)?;
+        let exe = codegen::link::link_executable(self.context)?;
+        Ok(exe)
     }
 }

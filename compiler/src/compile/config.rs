@@ -26,4 +26,5 @@ pub struct Config {
     pub dependencies: FxHashMap<EcoString, String>,
     pub index: PackageIndex,
     pub kind: PackageKind,
+    pub executable_out: Option<PathBuf>,
 }

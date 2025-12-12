@@ -13,7 +13,7 @@ use crate::{
 use bumpalo::Bump;
 use ecow::EcoString;
 use rustc_hash::FxHashMap;
-use std::{cell::RefCell, ops::Deref};
+use std::{cell::RefCell, ops::Deref, path::PathBuf};
 
 pub type Gcx<'gcx> = GlobalContext<'gcx>;
 
@@ -139,6 +139,37 @@ impl<'arena> GlobalContext<'arena> {
     pub fn get_llvm_ir(self, pkg: PackageIndex) -> Option<String> {
         self.context.store.llvm_modules.borrow().get(&pkg).cloned()
     }
+
+    pub fn cache_object_file(self, path: PathBuf) {
+        self.context
+            .store
+            .object_files
+            .borrow_mut()
+            .insert(self.package_index(), path);
+    }
+
+    pub fn get_object_file(self, pkg: PackageIndex) -> Option<PathBuf> {
+        self.context
+            .store
+            .object_files
+            .borrow()
+            .get(&pkg)
+            .cloned()
+    }
+
+    pub fn all_object_files(self) -> Vec<PathBuf> {
+        self.context
+            .store
+            .object_files
+            .borrow()
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    pub fn output_root(self) -> &'arena PathBuf {
+        &self.context.store.output_root
+    }
 }
 
 pub struct CompilerContext<'arena> {
@@ -166,10 +197,15 @@ pub struct CompilerStore<'arena> {
     pub type_databases: RefCell<FxHashMap<PackageIndex, TypeDatabase<'arena>>>,
     pub mir_packages: RefCell<FxHashMap<PackageIndex, &'arena mir::MirPackage<'arena>>>,
     pub llvm_modules: RefCell<FxHashMap<PackageIndex, String>>,
+    pub object_files: RefCell<FxHashMap<PackageIndex, PathBuf>>,
+    pub output_root: PathBuf,
 }
 
 impl<'arena> CompilerStore<'arena> {
-    pub fn new(arenas: &'arena CompilerArenas<'arena>) -> CompilerStore<'arena> {
+    pub fn new(
+        arenas: &'arena CompilerArenas<'arena>,
+        output_root: PathBuf,
+    ) -> CompilerStore<'arena> {
         CompilerStore {
             arenas,
             interners: CompilerInterners::new(arenas),
@@ -178,6 +214,8 @@ impl<'arena> CompilerStore<'arena> {
             type_databases: Default::default(),
             mir_packages: Default::default(),
             llvm_modules: Default::default(),
+            object_files: Default::default(),
+            output_root,
         }
     }
 }

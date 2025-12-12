@@ -62,8 +62,6 @@ pub struct Statement<'ctx> {
 #[derive(Debug, Clone)]
 pub enum StatementKind<'ctx> {
     Assign(Place, Rvalue<'ctx>),
-    StorageLive(LocalId),
-    StorageDead(LocalId),
     Nop,
 }
 

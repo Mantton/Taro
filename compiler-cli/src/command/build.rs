@@ -17,11 +17,13 @@ use compiler::{
     error::ReportedError,
 };
 
-pub fn run(arguments: CommandLineArguments) -> Result<(), ReportedError> {
+pub fn run(arguments: CommandLineArguments) -> Result<Option<std::path::PathBuf>, ReportedError> {
     let cwd = std::env::current_dir().map_err(|_| ReportedError)?;
     let dcx = DiagCtx::new(cwd);
     let arenas = CompilerArenas::new();
-    let store = CompilerStore::new(&arenas);
+    let project_root = arguments.path.canonicalize().map_err(|_| ReportedError)?;
+    let target_root = project_root.join("target").join("objects");
+    let store = CompilerStore::new(&arenas, target_root);
     let icx = CompilerContext::new(dcx, store);
 
     let graph = sync_dependencies(arguments.path)?;
@@ -51,12 +53,16 @@ pub fn run(arguments: CommandLineArguments) -> Result<(), ReportedError> {
             dependencies,
             index: package_index,
             kind: package.kind,
+            executable_out: arguments.output.clone(),
         });
 
         let mut compiler = Compiler::new(&icx, config);
-        let _ = compiler.build()?;
+        let exe_path = compiler.build()?;
+        if exe_path.is_some() {
+            return Ok(exe_path);
+        }
     }
-    Ok(())
+    Ok(None)
 }
 
 fn compile_std<'a>(ctx: &'a CompilerContext<'a>) -> Result<(), ReportedError> {
@@ -85,6 +91,7 @@ fn compile_std<'a>(ctx: &'a CompilerContext<'a>) -> Result<(), ReportedError> {
         src,
         dependencies: Default::default(),
         kind: compiler::compile::config::PackageKind::Library,
+        executable_out: None,
     });
     let mut compiler = Compiler::new(ctx, config);
     let _ = compiler.build()?;
