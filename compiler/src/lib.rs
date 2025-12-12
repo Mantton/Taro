@@ -5,6 +5,7 @@ mod ast;
 mod ast_lowering;
 pub mod compile;
 pub mod constants;
+pub mod codegen;
 pub mod diagnostics;
 pub mod error;
 pub mod mir;

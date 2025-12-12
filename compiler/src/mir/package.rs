@@ -2,22 +2,22 @@ use crate::{
     compile::{context::GlobalContext, entry::validate_entry_point},
     error::CompileResult,
     hir::{self, DefinitionID, HirVisitor},
-    mir::builder::MirBuilder,
+    mir::{MirPackage, builder::MirBuilder},
 };
 use rustc_hash::FxHashMap;
-
-#[derive(Debug, Default)]
-pub struct MirPackage<'ctx> {
-    pub functions: FxHashMap<DefinitionID, &'ctx crate::mir::Body<'ctx>>,
-    pub entry: Option<DefinitionID>,
-}
 
 pub fn build_package<'ctx>(
     package: &hir::Package,
     gcx: GlobalContext<'ctx>,
-) -> CompileResult<MirPackage<'ctx>> {
+) -> CompileResult<&'ctx MirPackage<'ctx>> {
     let entry = validate_entry_point(&package, gcx)?;
-    Actor::run(package, gcx, entry)
+    let package = Actor::run(package, gcx, entry)?;
+    let package = gcx.store.alloc_mir_package(package);
+    gcx.store
+        .mir_packages
+        .borrow_mut()
+        .insert(gcx.package_index(), package);
+    Ok(package)
 }
 
 struct Actor<'ctx> {

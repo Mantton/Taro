@@ -1,9 +1,10 @@
 use crate::{
-    hir::{BinaryOperator, UnaryOperator},
+    hir::{BinaryOperator, DefinitionID, UnaryOperator},
     sema::models::Ty,
     span::{Span, Symbol},
 };
 use index_vec::IndexVec;
+use rustc_hash::FxHashMap;
 
 pub mod builder;
 pub mod package;
@@ -14,6 +15,12 @@ index_vec::define_index_type! {
 
 index_vec::define_index_type! {
     pub struct BasicBlockId = u32;
+}
+
+#[derive(Debug, Default)]
+pub struct MirPackage<'ctx> {
+    pub functions: FxHashMap<DefinitionID, &'ctx Body<'ctx>>,
+    pub entry: Option<DefinitionID>,
 }
 
 #[derive(Debug, Clone)]

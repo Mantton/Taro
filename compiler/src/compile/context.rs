@@ -127,6 +127,18 @@ impl<'arena> GlobalContext<'arena> {
             .get(&id)
             .expect("identifier for definition")
     }
+
+    pub fn cache_llvm_ir(self, ir: String) {
+        self.context
+            .store
+            .llvm_modules
+            .borrow_mut()
+            .insert(self.package_index(), ir);
+    }
+
+    pub fn get_llvm_ir(self, pkg: PackageIndex) -> Option<String> {
+        self.context.store.llvm_modules.borrow().get(&pkg).cloned()
+    }
 }
 
 pub struct CompilerContext<'arena> {
@@ -152,7 +164,8 @@ pub struct CompilerStore<'arena> {
     pub resolution_outputs: RefCell<FxHashMap<PackageIndex, &'arena ResolutionOutput<'arena>>>,
     pub package_mapping: RefCell<FxHashMap<EcoString, PackageIndex>>,
     pub type_databases: RefCell<FxHashMap<PackageIndex, TypeDatabase<'arena>>>,
-    pub mir_packages: RefCell<FxHashMap<PackageIndex, &'arena mir::package::MirPackage<'arena>>>,
+    pub mir_packages: RefCell<FxHashMap<PackageIndex, &'arena mir::MirPackage<'arena>>>,
+    pub llvm_modules: RefCell<FxHashMap<PackageIndex, String>>,
 }
 
 impl<'arena> CompilerStore<'arena> {
@@ -164,7 +177,17 @@ impl<'arena> CompilerStore<'arena> {
             resolution_outputs: Default::default(),
             type_databases: Default::default(),
             mir_packages: Default::default(),
+            llvm_modules: Default::default(),
         }
+    }
+}
+
+impl<'arena> CompilerStore<'arena> {
+    pub fn alloc_mir_package(
+        &self,
+        package: mir::MirPackage<'arena>,
+    ) -> &'arena mir::MirPackage<'arena> {
+        self.arenas.mir_packages.alloc(package)
     }
 }
 pub struct CompilerInterners<'arena> {
@@ -216,7 +239,7 @@ pub struct CompilerArenas<'arena> {
     pub type_lists: typed_arena::Arena<Vec<Ty<'arena>>>,
     pub function_signatures: typed_arena::Arena<LabeledFunctionSignature<'arena>>,
     pub mir_bodies: typed_arena::Arena<Body<'arena>>,
-    pub mir_packages: typed_arena::Arena<mir::package::MirPackage<'arena>>,
+    pub mir_packages: typed_arena::Arena<mir::MirPackage<'arena>>,
     pub global: Bump,
 }
 

@@ -1,5 +1,5 @@
 use crate::{
-    ast_lowering,
+    ast_lowering, codegen,
     compile::{
         config::Config,
         context::{CompilerContext, GlobalContext},
@@ -64,12 +64,7 @@ impl<'state> Compiler<'state> {
         sema::validate::validate_package(&package, self.context)?;
         sema::tycheck::typecheck_package(&package, self.context)?;
         let package = mir::package::build_package(&package, self.context)?;
-        let alloc = self.context.store.arenas.mir_packages.alloc(package);
-        self.context
-            .store
-            .mir_packages
-            .borrow_mut()
-            .insert(self.context.package_index(), alloc);
+        codegen::llvm::emit_package(package, self.context)?;
         Ok(())
     }
 }
