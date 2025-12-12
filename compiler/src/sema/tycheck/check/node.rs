@@ -209,6 +209,8 @@ impl<'ctx> Checker<'ctx> {
                     let ty = self.top_level_check(expression, expectation);
                     self.set_local_ty(node.pattern.id, ty);
                     self.set_local_ty(node.id, ty);
+                    self.gcx().cache_node_type(node.pattern.id, ty);
+                    self.gcx().cache_node_type(node.id, ty);
                 }
             }
             hir::PatternKind::Tuple(..) => todo!(),
@@ -253,6 +255,10 @@ impl<'ctx> Checker<'ctx> {
         }
         cs.solve_all();
 
+        for (id, ty) in cs.resolved_expr_types() {
+            self.gcx().cache_node_type(id, ty);
+        }
+
         let provided = cs.infer_cx.resolve_vars_if_possible(provided);
         if provided.is_infer() {
             return Ty::error(self.gcx());
@@ -270,6 +276,7 @@ impl<'ctx> Checker<'ctx> {
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         let ty = self.synth_expression_kind(node, expectation, cs);
+        cs.record_expr_ty(node.id, ty);
         self.gcx().dcx().emit_info(
             format!("Checked {}", ty.format(self.gcx())),
             Some(node.span),

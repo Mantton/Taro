@@ -7,6 +7,7 @@ pub mod compile;
 pub mod constants;
 pub mod diagnostics;
 pub mod error;
+pub mod mir;
 mod hir;
 mod parse;
 mod sema;

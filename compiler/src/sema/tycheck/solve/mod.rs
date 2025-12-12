@@ -1,9 +1,11 @@
 use crate::{
     compile::context::Gcx,
+    hir::NodeID,
     sema::{error::SpannedErrorList, models::Ty, tycheck::infer::InferCtx},
     span::{Span, Spanned},
 };
 pub use models::*;
+use rustc_hash::FxHashMap;
 use std::{cmp::Reverse, collections::VecDeque, rc::Rc};
 
 mod apply;
@@ -15,6 +17,7 @@ mod unify;
 pub struct ConstraintSystem<'ctx> {
     pub infer_cx: Rc<InferCtx<'ctx>>,
     obligations: VecDeque<Obligation<'ctx>>,
+    expr_tys: FxHashMap<NodeID, Ty<'ctx>>,
 }
 
 impl<'ctx> ConstraintSystem<'ctx> {
@@ -22,6 +25,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
         ConstraintSystem {
             infer_cx: Rc::new(InferCtx::new(context)),
             obligations: Default::default(),
+            expr_tys: Default::default(),
         }
     }
 }
@@ -40,6 +44,26 @@ impl<'ctx> ConstraintSystem<'ctx> {
 
     pub fn add_goal(&mut self, goal: Goal<'ctx>, location: Span) {
         self.obligations.push_back(Obligation { location, goal });
+    }
+
+    pub fn record_expr_ty(&mut self, id: NodeID, ty: Ty<'ctx>) {
+        self.expr_tys.insert(id, ty);
+    }
+
+    pub fn resolved_expr_types(&self) -> FxHashMap<NodeID, Ty<'ctx>> {
+        let gcx = self.infer_cx.gcx;
+        self.expr_tys
+            .iter()
+            .map(|(&id, &ty)| {
+                let resolved = self.infer_cx.resolve_vars_if_possible(ty);
+                let resolved = if resolved.is_infer() {
+                    Ty::error(gcx)
+                } else {
+                    resolved
+                };
+                (id, resolved)
+            })
+            .collect()
     }
 }
 

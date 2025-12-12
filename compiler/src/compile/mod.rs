@@ -5,7 +5,7 @@ use crate::{
         context::{CompilerContext, GlobalContext},
     },
     error::CompileResult,
-    parse, sema,
+    mir, parse, sema,
 };
 
 pub mod config;
@@ -62,6 +62,7 @@ impl<'state> Compiler<'state> {
         // HIR Passes
         sema::validate::validate_package(&package, self.context)?;
         sema::tycheck::typecheck_package(&package, self.context)?;
+        mir::package::build_package(&package, self.context)?;
         Ok(())
     }
 }

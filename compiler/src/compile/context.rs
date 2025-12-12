@@ -2,7 +2,8 @@ use crate::{
     PackageIndex,
     compile::config::Config,
     diagnostics::DiagCtx,
-    hir::DefinitionID,
+    hir::{self, DefinitionID},
+    mir::{self, Body},
     sema::{
         models::{FloatTy, IntTy, LabeledFunctionSignature, Ty, TyKind, UIntTy},
         resolve::models::{ResolutionOutput, ScopeData, ScopeEntryData, UsageEntryData},
@@ -58,6 +59,21 @@ impl<'arena> GlobalContext<'arena> {
         let alloc = self.context.store.arenas.function_signatures.alloc(sig);
         database.def_to_fn_sig.insert(id, alloc);
     }
+
+    pub fn cache_node_type(self, id: hir::NodeID, ty: Ty<'arena>) {
+        self.with_session_type_database(|db| {
+            db.node_to_ty.insert(id, ty);
+        });
+    }
+
+    pub fn cache_mir_body(self, id: DefinitionID, body: mir::Body<'arena>) {
+        let alloc = self.context.store.arenas.mir_bodies.alloc(body);
+        let mut packages = self.context.store.mir_packages.borrow_mut();
+        let entry = packages
+            .entry(id.package())
+            .or_insert_with(Default::default);
+        entry.functions.insert(id, alloc);
+    }
 }
 
 impl<'arena> GlobalContext<'arena> {
@@ -97,6 +113,16 @@ impl<'arena> GlobalContext<'arena> {
                 .expect("fn signature of definition")
         })
     }
+
+    pub fn get_node_type(self, id: hir::NodeID) -> Ty<'arena> {
+        self.with_session_type_database(|db| *db.node_to_ty.get(&id).expect("type of node"))
+    }
+
+    pub fn get_mir_body(self, id: DefinitionID) -> &'arena mir::Body<'arena> {
+        let packages = self.context.store.mir_packages.borrow();
+        let package = packages.get(&id.package()).expect("mir package");
+        *package.functions.get(&id).expect("mir body")
+    }
 }
 
 pub struct CompilerContext<'arena> {
@@ -122,6 +148,7 @@ pub struct CompilerStore<'arena> {
     pub resolution_outputs: RefCell<FxHashMap<PackageIndex, &'arena ResolutionOutput<'arena>>>,
     pub package_mapping: RefCell<FxHashMap<EcoString, PackageIndex>>,
     pub type_databases: RefCell<FxHashMap<PackageIndex, TypeDatabase<'arena>>>,
+    pub mir_packages: RefCell<FxHashMap<PackageIndex, mir::package::MirPackage<'arena>>>,
 }
 
 impl<'arena> CompilerStore<'arena> {
@@ -132,6 +159,7 @@ impl<'arena> CompilerStore<'arena> {
             package_mapping: Default::default(),
             resolution_outputs: Default::default(),
             type_databases: Default::default(),
+            mir_packages: Default::default(),
         }
     }
 }
@@ -183,6 +211,7 @@ pub struct CompilerArenas<'arena> {
     pub types: typed_arena::Arena<TyKind<'arena>>,
     pub type_lists: typed_arena::Arena<Vec<Ty<'arena>>>,
     pub function_signatures: typed_arena::Arena<LabeledFunctionSignature<'arena>>,
+    pub mir_bodies: typed_arena::Arena<Body<'arena>>,
     pub global: Bump,
 }
 
@@ -197,6 +226,7 @@ impl<'arena> CompilerArenas<'arena> {
             types: Default::default(),
             type_lists: Default::default(),
             function_signatures: Default::default(),
+            mir_bodies: Default::default(),
             global: Bump::new(),
         }
     }
@@ -263,4 +293,5 @@ impl<'a> CommonTypes<'a> {
 pub struct TypeDatabase<'arena> {
     pub def_to_ty: FxHashMap<DefinitionID, Ty<'arena>>,
     pub def_to_fn_sig: FxHashMap<DefinitionID, &'arena LabeledFunctionSignature<'arena>>,
+    pub node_to_ty: FxHashMap<hir::NodeID, Ty<'arena>>,
 }
