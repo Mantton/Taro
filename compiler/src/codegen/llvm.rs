@@ -10,7 +10,7 @@ use inkwell::{
     AddressSpace, FloatPredicate, IntPredicate, OptimizationLevel,
     builder::Builder,
     context::Context,
-    module::Module,
+    module::{Linkage, Module},
     passes::PassManager,
     targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine},
     types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType},
@@ -859,12 +859,21 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         Ok(())
     }
 
-    fn lower_callable(&self, func: &Operand<'gcx>) -> FunctionValue<'llvm> {
+    fn lower_callable(&mut self, func: &Operand<'gcx>) -> FunctionValue<'llvm> {
         if let Operand::Constant(c) = func {
             if let mir::ConstantKind::Function(def_id, _) = c.value {
                 if let Some(&f) = self.functions.get(&def_id) {
                     return f;
                 }
+
+                // Not declared yet (likely from another package); declare as external.
+                let sig = self.gcx.get_signature(def_id);
+                let fn_ty = lower_fn_sig(self.context, sig);
+                let name = mangle(self.gcx, def_id);
+                let linkage = Some(Linkage::External);
+                let f = self.module.add_function(&name, fn_ty, linkage);
+                self.functions.insert(def_id, f);
+                return f;
             }
         }
 
@@ -1068,5 +1077,8 @@ fn is_signed(ty: Ty) -> bool {
 
 fn mangle(gcx: GlobalContext, id: hir::DefinitionID) -> String {
     let ident = gcx.definition_ident(id);
-    format!("{}__{}", gcx.config.identifier, ident.symbol.as_str())
+    let pkg_ident = gcx
+        .package_ident(id.package())
+        .unwrap_or_else(|| gcx.config.identifier.clone());
+    format!("{}__{}", pkg_ident, ident.symbol.as_str())
 }

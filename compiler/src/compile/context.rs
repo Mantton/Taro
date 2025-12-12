@@ -42,6 +42,23 @@ impl<'arena> GlobalContext<'arena> {
     pub fn package_index(self) -> PackageIndex {
         self.config.index
     }
+
+    pub fn cache_package_ident(self, ident: EcoString) {
+        self.context
+            .store
+            .package_idents
+            .borrow_mut()
+            .insert(self.package_index(), ident);
+    }
+
+    pub fn package_ident(self, pkg: PackageIndex) -> Option<EcoString> {
+        self.context
+            .store
+            .package_idents
+            .borrow()
+            .get(&pkg)
+            .cloned()
+    }
 }
 
 impl<'arena> GlobalContext<'arena> {
@@ -177,6 +194,7 @@ pub struct CompilerStore<'arena> {
     pub interners: CompilerInterners<'arena>,
     pub resolution_outputs: RefCell<FxHashMap<PackageIndex, &'arena ResolutionOutput<'arena>>>,
     pub package_mapping: RefCell<FxHashMap<EcoString, PackageIndex>>,
+    pub package_idents: RefCell<FxHashMap<PackageIndex, EcoString>>,
     pub type_databases: RefCell<FxHashMap<PackageIndex, TypeDatabase<'arena>>>,
     pub mir_packages: RefCell<FxHashMap<PackageIndex, &'arena mir::MirPackage<'arena>>>,
     pub llvm_modules: RefCell<FxHashMap<PackageIndex, String>>,
@@ -193,6 +211,7 @@ impl<'arena> CompilerStore<'arena> {
             arenas,
             interners: CompilerInterners::new(arenas),
             package_mapping: Default::default(),
+            package_idents: Default::default(),
             resolution_outputs: Default::default(),
             type_databases: Default::default(),
             mir_packages: Default::default(),

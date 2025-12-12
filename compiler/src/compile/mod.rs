@@ -41,6 +41,10 @@ impl<'state> Compiler<'state> {
                 self.context.config.index,
             );
         }
+        {
+            self.context
+                .cache_package_ident(self.context.config.identifier.clone());
+        }
         // Tokenization & Parsing
         let package =
             parse::lexer::tokenize_package(self.context.config.src.clone(), &self.context.dcx)?;
