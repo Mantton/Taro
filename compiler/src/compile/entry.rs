@@ -5,12 +5,15 @@ use crate::{
     hir::{self, DeclarationKind},
 };
 
-pub fn validate_entry_point(package: &hir::Package, gcx: GlobalContext) -> CompileResult<()> {
+pub fn validate_entry_point(
+    package: &hir::Package,
+    gcx: GlobalContext,
+) -> CompileResult<Option<hir::DefinitionID>> {
     match gcx.config.kind {
-        PackageKind::Library => return Ok(()),
+        PackageKind::Library => return Ok(None),
         PackageKind::Executable => {
             let id = find_main_in_module(&package.root, gcx, false)?;
-            gcx.cache_entry_point(id);
+            return Ok(Some(id));
         }
         PackageKind::Both => {
             let main_mod = package
@@ -26,11 +29,9 @@ pub fn validate_entry_point(package: &hir::Package, gcx: GlobalContext) -> Compi
                 return Err(ReportedError);
             };
             let id = find_main_in_module(main_mod, gcx, true)?;
-            gcx.cache_entry_point(id);
+            return Ok(Some(id));
         }
     }
-
-    Ok(())
 }
 
 fn find_main_in_module(

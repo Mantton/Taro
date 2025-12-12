@@ -1,5 +1,5 @@
 use crate::{
-    compile::context::GlobalContext,
+    compile::{context::GlobalContext, entry::validate_entry_point},
     error::CompileResult,
     hir::{self, DefinitionID, HirVisitor},
     mir::builder::MirBuilder,
@@ -9,25 +9,44 @@ use rustc_hash::FxHashMap;
 #[derive(Debug, Default)]
 pub struct MirPackage<'ctx> {
     pub functions: FxHashMap<DefinitionID, &'ctx crate::mir::Body<'ctx>>,
+    pub entry: Option<DefinitionID>,
 }
 
-pub fn build_package(package: &hir::Package, gcx: GlobalContext<'_>) -> CompileResult<()> {
-    Actor::run(package, gcx)
+pub fn build_package<'ctx>(
+    package: &hir::Package,
+    gcx: GlobalContext<'ctx>,
+) -> CompileResult<MirPackage<'ctx>> {
+    let entry = validate_entry_point(&package, gcx)?;
+    Actor::run(package, gcx, entry)
 }
 
 struct Actor<'ctx> {
     gcx: GlobalContext<'ctx>,
+    functions: FxHashMap<DefinitionID, &'ctx crate::mir::Body<'ctx>>,
+    entry: Option<DefinitionID>,
 }
 
 impl<'ctx> Actor<'ctx> {
-    fn new(gcx: GlobalContext<'ctx>) -> Self {
-        Actor { gcx }
+    fn new(gcx: GlobalContext<'ctx>, entry: Option<DefinitionID>) -> Self {
+        Actor {
+            gcx,
+            functions: FxHashMap::default(),
+            entry,
+        }
     }
 
-    fn run(package: &hir::Package, gcx: GlobalContext<'ctx>) -> CompileResult<()> {
-        let mut actor = Actor::new(gcx);
+    fn run(
+        package: &hir::Package,
+        gcx: GlobalContext<'ctx>,
+        entry: Option<DefinitionID>,
+    ) -> CompileResult<MirPackage<'ctx>> {
+        let mut actor = Actor::new(gcx, entry);
         hir::walk_package(&mut actor, package);
-        gcx.dcx().ok()
+        let mut pkg = MirPackage::default();
+        pkg.functions = actor.functions;
+        pkg.entry = actor.entry;
+        gcx.dcx().ok()?;
+        Ok(pkg)
     }
 }
 
@@ -39,7 +58,8 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
         fn_ctx: hir::FunctionContext,
     ) -> Self::Result {
         let body = MirBuilder::build_function(self.gcx, id, node);
-        self.gcx.cache_mir_body(id, body);
+        let alloc = self.gcx.store.arenas.mir_bodies.alloc(body);
+        self.functions.insert(id, alloc);
         hir::walk_function(self, id, node, fn_ctx);
     }
 }

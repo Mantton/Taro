@@ -65,20 +65,6 @@ impl<'arena> GlobalContext<'arena> {
             db.node_to_ty.insert(id, ty);
         });
     }
-
-    pub fn cache_mir_body(self, id: DefinitionID, body: mir::Body<'arena>) {
-        let alloc = self.context.store.arenas.mir_bodies.alloc(body);
-        let mut packages = self.context.store.mir_packages.borrow_mut();
-        let entry = packages
-            .entry(id.package())
-            .or_insert_with(Default::default);
-        entry.functions.insert(id, alloc);
-    }
-
-    pub fn cache_entry_point(self, id: DefinitionID) {
-        let mut eps = self.context.store.entry_points.borrow_mut();
-        eps.insert(id.package(), id);
-    }
 }
 
 impl<'arena> GlobalContext<'arena> {
@@ -129,10 +115,6 @@ impl<'arena> GlobalContext<'arena> {
         *package.functions.get(&id).expect("mir body")
     }
 
-    pub fn get_entry_point(self, pkg: PackageIndex) -> Option<DefinitionID> {
-        self.context.store.entry_points.borrow().get(&pkg).cloned()
-    }
-
     pub fn resolution_output(self, pkg: PackageIndex) -> &'arena ResolutionOutput<'arena> {
         let outputs = self.context.store.resolution_outputs.borrow();
         *outputs.get(&pkg).expect("resolution output")
@@ -170,8 +152,7 @@ pub struct CompilerStore<'arena> {
     pub resolution_outputs: RefCell<FxHashMap<PackageIndex, &'arena ResolutionOutput<'arena>>>,
     pub package_mapping: RefCell<FxHashMap<EcoString, PackageIndex>>,
     pub type_databases: RefCell<FxHashMap<PackageIndex, TypeDatabase<'arena>>>,
-    pub mir_packages: RefCell<FxHashMap<PackageIndex, mir::package::MirPackage<'arena>>>,
-    pub entry_points: RefCell<FxHashMap<PackageIndex, DefinitionID>>,
+    pub mir_packages: RefCell<FxHashMap<PackageIndex, &'arena mir::package::MirPackage<'arena>>>,
 }
 
 impl<'arena> CompilerStore<'arena> {
@@ -183,7 +164,6 @@ impl<'arena> CompilerStore<'arena> {
             resolution_outputs: Default::default(),
             type_databases: Default::default(),
             mir_packages: Default::default(),
-            entry_points: Default::default(),
         }
     }
 }
@@ -236,6 +216,7 @@ pub struct CompilerArenas<'arena> {
     pub type_lists: typed_arena::Arena<Vec<Ty<'arena>>>,
     pub function_signatures: typed_arena::Arena<LabeledFunctionSignature<'arena>>,
     pub mir_bodies: typed_arena::Arena<Body<'arena>>,
+    pub mir_packages: typed_arena::Arena<mir::package::MirPackage<'arena>>,
     pub global: Bump,
 }
 
@@ -251,6 +232,7 @@ impl<'arena> CompilerArenas<'arena> {
             type_lists: Default::default(),
             function_signatures: Default::default(),
             mir_bodies: Default::default(),
+            mir_packages: Default::default(),
             global: Bump::new(),
         }
     }
