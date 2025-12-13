@@ -10,6 +10,7 @@ use crate::{
         resolve::models::{
             DefinitionKind, ResolutionOutput, ScopeData, ScopeEntryData, TypeHead, UsageEntryData,
         },
+        tycheck::solve::Adjustment,
     },
     utils::intern::{Interned, InternedInSet, InternedSet},
 };
@@ -103,6 +104,15 @@ impl<'arena> GlobalContext<'arena> {
             db.node_to_ty.insert(id, ty);
         });
     }
+
+    pub fn cache_node_adjustments(self, id: hir::NodeID, adjustments: Vec<Adjustment<'arena>>) {
+        if adjustments.is_empty() {
+            return;
+        }
+        self.with_session_type_database(|db| {
+            db.node_to_adjustments.insert(id, adjustments);
+        });
+    }
 }
 
 impl<'arena> GlobalContext<'arena> {
@@ -149,6 +159,10 @@ impl<'arena> GlobalContext<'arena> {
                 .get(&id)
                 .expect("struct definition of definition")
         })
+    }
+
+    pub fn node_adjustments(self, id: hir::NodeID) -> Option<Vec<Adjustment<'arena>>> {
+        self.with_session_type_database(|db| db.node_to_adjustments.get(&id).cloned())
     }
 
     pub fn get_extension_type_head(self, extension_id: DefinitionID) -> Option<TypeHead> {
@@ -428,6 +442,7 @@ pub struct TypeDatabase<'arena> {
     pub type_head_to_extensions: FxHashMap<TypeHead, Vec<DefinitionID>>,
     pub type_head_to_members: FxHashMap<TypeHead, TypeMemberIndex>,
     pub node_to_ty: FxHashMap<hir::NodeID, Ty<'arena>>,
+    pub node_to_adjustments: FxHashMap<hir::NodeID, Vec<Adjustment<'arena>>>,
 }
 
 #[derive(Default, Debug, Clone)]

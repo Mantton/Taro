@@ -24,6 +24,7 @@ pub enum TypeError<'ctx> {
     Apply(ApplyValidationError),
     NoOverloadMatches,
     AmbiguousOverload,
+    NoSuchMember { name: Symbol, on: Ty<'ctx> },
 }
 
 pub type SpannedError<'ctx> = Spanned<TypeError<'ctx>>;
@@ -47,6 +48,9 @@ impl<'ctx> TypeError<'ctx> {
             TypeError::NoOverloadMatches => "no overload matches this call".into(),
             TypeError::AmbiguousOverload => {
                 "ambiguous overload; unable to pick a best candidate".into()
+            }
+            TypeError::NoSuchMember { name, on } => {
+                format!("no member named '{}' found on type {}", name, on.format(gcx))
             }
         }
     }

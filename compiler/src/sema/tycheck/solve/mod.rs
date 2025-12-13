@@ -9,6 +9,7 @@ use rustc_hash::FxHashMap;
 use std::{cmp::Reverse, collections::VecDeque, rc::Rc};
 
 mod apply;
+mod member;
 mod models;
 mod op;
 mod overload;
@@ -18,6 +19,7 @@ pub struct ConstraintSystem<'ctx> {
     pub infer_cx: Rc<InferCtx<'ctx>>,
     obligations: VecDeque<Obligation<'ctx>>,
     expr_tys: FxHashMap<NodeID, Ty<'ctx>>,
+    adjustments: FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
 }
 
 impl<'ctx> ConstraintSystem<'ctx> {
@@ -26,6 +28,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
             infer_cx: Rc::new(InferCtx::new(context)),
             obligations: Default::default(),
             expr_tys: Default::default(),
+            adjustments: Default::default(),
         }
     }
 }
@@ -69,6 +72,40 @@ impl<'ctx> ConstraintSystem<'ctx> {
             })
             .collect()
     }
+
+    pub fn record_adjustments(&mut self, id: NodeID, adjustments: Vec<Adjustment<'ctx>>) {
+        self.adjustments.insert(id, adjustments);
+    }
+
+    pub fn resolved_adjustments(&self) -> FxHashMap<NodeID, Vec<Adjustment<'ctx>>> {
+        let gcx = self.infer_cx.gcx;
+        self.adjustments
+            .iter()
+            .map(|(&id, adjs)| {
+                let resolved: Vec<_> = adjs
+                    .iter()
+                    .map(|adj| match adj {
+                        Adjustment::Deref { from, to } => {
+                            let from = self.infer_cx.resolve_vars_if_possible(*from);
+                            let to = self.infer_cx.resolve_vars_if_possible(*to);
+                            let from = if from.is_infer() {
+                                Ty::error(gcx)
+                            } else {
+                                from
+                            };
+                            let to = if to.is_infer() { Ty::error(gcx) } else { to };
+                            Adjustment::Deref { from, to }
+                        }
+                    })
+                    .collect();
+                (id, resolved)
+            })
+            .collect()
+    }
+
+    pub fn take_adjustments(self) -> FxHashMap<NodeID, Vec<Adjustment<'ctx>>> {
+        self.adjustments
+    }
 }
 
 impl<'ctx> ConstraintSystem<'ctx> {
@@ -76,10 +113,13 @@ impl<'ctx> ConstraintSystem<'ctx> {
         let solver = ConstraintSolver {
             icx: self.infer_cx.clone(),
             obligations: std::mem::take(&mut self.obligations),
+            adjustments: std::mem::take(&mut self.adjustments),
         };
 
         let mut driver = SolverDriver::new(solver);
         let result = driver.solve_to_fixpoint();
+        // Pull adjustments back out of the solver/driver.
+        self.adjustments = driver.into_adjustments();
 
         let Err(errors) = result else {
             return;
@@ -96,6 +136,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
 struct ConstraintSolver<'ctx> {
     pub icx: Rc<InferCtx<'ctx>>,
     obligations: VecDeque<Obligation<'ctx>>,
+    adjustments: FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
 }
 
 impl<'ctx> ConstraintSolver<'ctx> {
@@ -116,6 +157,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             Goal::UnaryOp(data) => self.solve_unary(data),
             Goal::BinaryOp(data) => self.solve_binary(data),
             Goal::Coerce { from, to } => self.solve_coerce(location, from, to),
+            Goal::Member(data) => self.solve_member(data),
         }
     }
 
@@ -139,6 +181,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         ConstraintSolver {
             icx: self.icx.clone(),
             obligations: self.obligations.clone(),
+            adjustments: self.adjustments.clone(),
         }
     }
 
@@ -179,6 +222,10 @@ impl<'ctx> SolverDriver<'ctx> {
             errors: vec![],
             defaulted: false,
         }
+    }
+
+    fn into_adjustments(self) -> FxHashMap<NodeID, Vec<Adjustment<'ctx>>> {
+        self.solver.adjustments
     }
 
     fn solve_to_fixpoint(&mut self) -> Result<(), SpannedErrorList<'ctx>> {

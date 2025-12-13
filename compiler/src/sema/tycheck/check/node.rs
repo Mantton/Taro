@@ -8,7 +8,7 @@ use crate::{
             check::checker::Checker,
             solve::{
                 ApplyArgument, ApplyGoalData, BinOpGoalData, BindOverloadGoalData,
-                ConstraintSystem, DisjunctionBranch, Goal, UnOpGoalData,
+                ConstraintSystem, DisjunctionBranch, Goal, MemberGoalData, UnOpGoalData,
             },
         },
     },
@@ -181,6 +181,9 @@ impl<'ctx> Checker<'ctx> {
         for (id, ty) in cs.resolved_expr_types() {
             self.gcx().cache_node_type(id, ty);
         }
+        for (id, adjustments) in cs.resolved_adjustments() {
+            self.gcx().cache_node_adjustments(id, adjustments);
+        }
 
         let provided = cs.infer_cx.resolve_vars_if_possible(provided);
         if provided.is_infer() {
@@ -215,10 +218,10 @@ impl<'ctx> Checker<'ctx> {
     ) -> Ty<'ctx> {
         let ty = self.synth_expression_kind(node, expectation, cs);
         cs.record_expr_ty(node.id, ty);
-        self.gcx().dcx().emit_info(
-            format!("Checked {}", ty.format(self.gcx())),
-            Some(node.span),
-        );
+        // self.gcx().dcx().emit_info(
+        //     format!("Checked {}", ty.format(self.gcx())),
+        //     Some(node.span),
+        // );
         ty
     }
 
@@ -624,7 +627,6 @@ impl<'ctx> Checker<'ctx> {
         expect_ty: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
-        let mut _inserts_receiver = false;
         let mut receiver_arg: Option<ApplyArgument<'ctx>> = None;
 
         let (callee_ty, callee_source) = match &callee.kind {
@@ -652,7 +654,6 @@ impl<'ctx> Checker<'ctx> {
                 }
             },
             hir::ExpressionKind::Member { target, name } => {
-                _inserts_receiver = true;
                 let recv_ty = self.synth(target, cs);
                 let recv_arg_ty = match recv_ty.kind() {
                     TyKind::Reference(..) | TyKind::Pointer(..) => recv_ty,
@@ -940,18 +941,22 @@ impl<'ctx> Checker<'ctx> {
     ) -> Ty<'ctx> {
         // Instance receiver (`value.member`) uses synthesized receiver type.
         let receiver_ty = self.synth_with_expectation(target, None, cs);
+        let result_ty = cs.infer_cx.next_ty_var(expression.span);
+        cs.add_goal(
+            Goal::Member(MemberGoalData {
+                node_id: expression.id,
+                receiver: receiver_ty,
+                name: *name,
+                result: result_ty,
+                span: expression.span,
+            }),
+            expression.span,
+        );
 
-        // Fields (struct only for now)
-        if let Some(field_ty) = self.try_synth_field_access(receiver_ty, name, expression.span) {
-            return field_ty;
-        }
-
-        // Methods (extension/interface members).
-        let ty = self.synth_instance_member(receiver_ty, name, expression.span, cs);
         if let Some(expectation) = expectation {
-            cs.equal(expectation, ty, expression.span);
+            cs.equal(expectation, result_ty, expression.span);
         }
-        ty
+        result_ty
     }
 
     fn type_head_from_value_ty(&self, ty: Ty<'ctx>) -> Option<TypeHead> {
@@ -1070,35 +1075,5 @@ impl<'ctx> Checker<'ctx> {
         }
         cs.add_goal(Goal::Disjunction(branches), span);
         ty
-    }
-
-    fn try_synth_field_access(
-        &self,
-        receiver_ty: Ty<'ctx>,
-        name: &crate::span::Identifier,
-        span: Span,
-    ) -> Option<Ty<'ctx>> {
-        let gcx = self.gcx();
-        let receiver_ty = match receiver_ty.kind() {
-            TyKind::Reference(inner, _) | TyKind::Pointer(inner, _) => inner,
-            _ => receiver_ty,
-        };
-
-        let TyKind::Adt(def) = receiver_ty.kind() else {
-            return None;
-        };
-
-        if gcx.definition_kind(def.id) != DefinitionKind::Struct {
-            return None;
-        }
-
-        let struct_def = gcx.get_struct_definition(def.id);
-        for field in struct_def.fields {
-            if field.name == name.symbol {
-                return Some(field.ty);
-            }
-        }
-
-        None
     }
 }

@@ -6,7 +6,7 @@ mod extend;
 mod fold;
 pub mod infer;
 mod lower;
-mod solve;
+pub mod solve;
 mod wf;
 
 pub fn typecheck_package(package: &hir::Package, context: GlobalContext) -> CompileResult<()> {
