@@ -103,6 +103,7 @@ pub enum Token {
     Private,
     Public,
     Return,
+    Readonly,
     Static,
     Struct,
     True,

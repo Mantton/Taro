@@ -828,6 +828,7 @@ fn str_to_keyword(word: &str) -> Option<Token> {
         "operator" => Token::Operator,
         "private" => Token::Private,
         "public" => Token::Public,
+        "readonly" => Token::Readonly,
         "return" => Token::Return,
         "static" => Token::Static,
         "struct" => Token::Struct,

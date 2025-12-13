@@ -201,6 +201,29 @@ impl<'r, 'a> ast::AstVisitor for Actor<'r, 'a> {
                     self.resolve_path_with_source(node.id, &node.path, ResolutionSource::Interface);
                 }
             }
+            ast::TypeKind::ImplicitSelf => {
+                // Record the resolution for the synthetic `Self` type so lowering can build a HIR
+                // nominal path with the correct identity.
+                let ident = Identifier {
+                    symbol: Symbol::new("Self"),
+                    span: node.span,
+                };
+                match self.resolver.resolve_in_lexical_scopes(
+                    &ident,
+                    ScopeNamespace::Type,
+                    &self.scopes,
+                ) {
+                    Ok(value) => {
+                        self.resolver.record_resolution(
+                            node.id,
+                            ResolutionState::Complete(value.resolution()),
+                        );
+                    }
+                    Err(e) => {
+                        self.resolver.dcx().emit(e.diag());
+                    }
+                }
+            }
             _ => {}
         }
         ast::walk_type(self, node)
@@ -389,8 +412,7 @@ impl<'r, 'a> Actor<'r, 'a> {
             ast::AssociatedDeclarationKind::Constant(..) => {
                 ast::walk_assoc_declaration(self, declaration, ctx);
             }
-            ast::AssociatedDeclarationKind::AssociatedType(ast::TypeAlias { generics, .. })
-            | ast::AssociatedDeclarationKind::Function(ast::Function { generics, .. }) => {
+            ast::AssociatedDeclarationKind::AssociatedType(ast::TypeAlias { generics, .. }) => {
                 let def_id = self.resolver.definition_id(declaration.id);
                 self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
                     this.with_generics_scope(generics, |this| {
@@ -398,10 +420,53 @@ impl<'r, 'a> Actor<'r, 'a> {
                     });
                 })
             }
+            ast::AssociatedDeclarationKind::Function(function) => {
+                let def_id = self.resolver.definition_id(declaration.id);
+                self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
+                    this.with_generics_scope(&function.generics, |this| {
+                        // Only extension members get implicit `self` for now.
+                        if matches!(ctx, AssocContext::Extension(..)) {
+                            let explicit_self =
+                                explicit_self_param_position(&function.signature).is_some();
+
+                            if function.is_static {
+                                if explicit_self {
+                                    this.resolver.dcx().emit_error(
+                                        "static functions cannot declare a `self` parameter"
+                                            .to_string(),
+                                        Some(declaration.span),
+                                    );
+                                }
+                                ast::walk_assoc_declaration(this, declaration, ctx);
+                                return;
+                            }
+
+                            if explicit_self {
+                                ast::walk_assoc_declaration(this, declaration, ctx);
+                                return;
+                            }
+
+                            // No explicit receiver and not `static`: synthesize an implicit
+                            // `self` value for name resolution.
+                            this.with_self_alias_scope(Resolution::ImplicitSelfParameter, |this| {
+                                ast::walk_assoc_declaration(this, declaration, ctx);
+                            });
+                        } else {
+                            ast::walk_assoc_declaration(this, declaration, ctx);
+                        }
+                    });
+                })
+            }
             ast::AssociatedDeclarationKind::Initializer(node) => {
                 let def_id = self.resolver.definition_id(declaration.id);
                 self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
                     this.with_generics_scope(&node.function.generics, |this| {
+                        if explicit_self_param_position(&node.function.signature).is_some() {
+                            this.resolver.dcx().emit_error(
+                                "initializers cannot declare a `self` parameter".to_string(),
+                                Some(declaration.span),
+                            );
+                        }
                         this.with_self_alias_scope(Resolution::ImplicitSelfParameter, |this| {
                             ast::walk_assoc_declaration(this, declaration, ctx);
                         });
@@ -418,6 +483,14 @@ impl<'r, 'a> Actor<'r, 'a> {
             }
         }
     }
+}
+
+fn explicit_self_param_position(signature: &ast::FunctionSignature) -> Option<usize> {
+    signature
+        .prototype
+        .inputs
+        .iter()
+        .position(|param| param.name.symbol.as_str() == "self")
 }
 
 #[derive(Debug, Clone)]

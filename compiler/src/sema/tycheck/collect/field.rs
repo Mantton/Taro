@@ -41,6 +41,7 @@ impl<'ctx> Actor<'ctx> {
             fields.push(StructField {
                 name: field.identifier.symbol,
                 ty,
+                mutability: field.mutability,
             });
         }
 

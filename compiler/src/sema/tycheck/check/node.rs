@@ -20,7 +20,12 @@ impl<'ctx> Checker<'ctx> {
         self.context
     }
 
-    pub fn check_function(mut self, id: DefinitionID, node: &hir::Function) {
+    pub fn check_function(
+        mut self,
+        id: DefinitionID,
+        node: &hir::Function,
+        fn_ctx: hir::FunctionContext,
+    ) {
         let gcx = self.gcx();
         let signature = gcx.get_signature(id);
         let signature = Ty::from_labeled_signature(gcx, signature);
@@ -31,9 +36,23 @@ impl<'ctx> Checker<'ctx> {
         };
 
         self.return_ty = Some(return_ty);
+        let has_explicit_self = node
+            .signature
+            .prototype
+            .inputs
+            .first()
+            .is_some_and(|param| param.name.symbol.as_str() == "self");
+
+        self.implicit_self_ty =
+            self.compute_implicit_self_ty(id, fn_ctx, node.is_static, has_explicit_self);
 
         // Add Parameters To Locals Map
-        for (parameter, &parameter_ty) in node.signature.prototype.inputs.iter().zip(param_tys) {
+        let mut param_tys = param_tys.iter().copied();
+        if self.implicit_self_ty.is_some() && !has_explicit_self {
+            let _ = param_tys.next();
+        }
+
+        for (parameter, parameter_ty) in node.signature.prototype.inputs.iter().zip(param_tys) {
             self.locals.borrow_mut().insert(
                 parameter.id,
                 crate::sema::tycheck::check::checker::LocalBinding {
@@ -56,112 +75,6 @@ impl<'ctx> Checker<'ctx> {
             // --- regular block body ---
             self.check_block(body);
         }
-    }
-}
-
-impl<'ctx> Checker<'ctx> {
-    fn synth_if_expression(
-        &self,
-        expression: &hir::Expression,
-        node: &hir::IfExpression,
-        expectation: Option<Ty<'ctx>>,
-        cs: &mut Cs<'ctx>,
-    ) -> Ty<'ctx> {
-        // Condition must be bool.
-        let cond_ty = self.synth(&node.condition, cs);
-        cs.equal(self.gcx().types.bool, cond_ty, node.condition.span);
-
-        // then/else branches are expressions; typecheck with shared expectation.
-        let then_ty = self.synth_with_expectation(&node.then_block, expectation, cs);
-        let else_ty = if let Some(else_expr) = &node.else_block {
-            let else_expectation = expectation.or(Some(then_ty));
-            Some(self.synth_with_expectation(else_expr, else_expectation, cs))
-        } else {
-            None
-        };
-
-        match else_ty {
-            Some(else_ty) => {
-                // Branches must agree.
-                cs.equal(
-                    then_ty,
-                    else_ty,
-                    node.else_block
-                        .as_ref()
-                        .map(|e| e.span)
-                        .unwrap_or(node.then_block.span),
-                );
-                then_ty
-            }
-            None => {
-                // No else: coerce the then branch into the expected type if provided,
-                // otherwise use void/unit.
-                if let Some(exp) = expectation {
-                    cs.add_goal(
-                        Goal::Coerce {
-                            from: then_ty,
-                            to: exp,
-                        },
-                        expression.span,
-                    );
-                    exp
-                } else {
-                    self.gcx().types.void
-                }
-            }
-        }
-    }
-
-    fn synth_unary_expression(
-        &self,
-        expression: &hir::Expression,
-        operator: hir::UnaryOperator,
-        operand: &hir::Expression,
-        expectation: Option<Ty<'ctx>>,
-        cs: &mut Cs<'ctx>,
-    ) -> Ty<'ctx> {
-        let operand_ty = self.synth(operand, cs);
-        let result_ty = cs.infer_cx.next_ty_var(expression.span);
-
-        let data = UnOpGoalData {
-            lhs: operand_ty,
-            rho: result_ty,
-            expectation,
-            operator,
-            span: expression.span,
-            node_id: expression.id,
-            rhs_id: operand.id,
-        };
-
-        cs.add_goal(Goal::UnaryOp(data), expression.span);
-        result_ty
-    }
-
-    fn synth_binary_expression(
-        &self,
-        expression: &hir::Expression,
-        operator: hir::BinaryOperator,
-        lhs: &hir::Expression,
-        rhs: &hir::Expression,
-        expectation: Option<Ty<'ctx>>,
-        cs: &mut Cs<'ctx>,
-    ) -> Ty<'ctx> {
-        let lhs_ty = self.synth(lhs, cs);
-        let rhs_ty = self.synth(rhs, cs);
-        let result_ty = cs.infer_cx.next_ty_var(expression.span);
-
-        let data = BinOpGoalData {
-            lhs: lhs_ty,
-            rhs: rhs_ty,
-            rho: result_ty,
-            expectation,
-            operator,
-            span: expression.span,
-            assigning: false,
-        };
-
-        cs.add_goal(Goal::BinaryOp(data), expression.span);
-        result_ty
     }
 }
 
@@ -561,10 +474,12 @@ impl<'ctx> Checker<'ctx> {
                 cs.add_goal(Goal::Disjunction(branches), span);
                 ty
             }
+            hir::Resolution::ImplicitSelfParameter => self
+                .implicit_self_ty
+                .unwrap_or_else(|| cs.infer_cx.next_ty_var(span)),
             hir::Resolution::PrimaryType(..)
             | hir::Resolution::InterfaceSelfTypeParameter(..)
             | hir::Resolution::SelfTypeAlias(..)
-            | hir::Resolution::ImplicitSelfParameter
             | hir::Resolution::Foundation(..) => todo!(),
             hir::Resolution::Error => unreachable!(),
         }
@@ -607,6 +522,112 @@ impl<'ctx> Checker<'ctx> {
 }
 
 impl<'ctx> Checker<'ctx> {
+    fn synth_if_expression(
+        &self,
+        expression: &hir::Expression,
+        node: &hir::IfExpression,
+        expectation: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        // Condition must be bool.
+        let cond_ty = self.synth(&node.condition, cs);
+        cs.equal(self.gcx().types.bool, cond_ty, node.condition.span);
+
+        // then/else branches are expressions; typecheck with shared expectation.
+        let then_ty = self.synth_with_expectation(&node.then_block, expectation, cs);
+        let else_ty = if let Some(else_expr) = &node.else_block {
+            let else_expectation = expectation.or(Some(then_ty));
+            Some(self.synth_with_expectation(else_expr, else_expectation, cs))
+        } else {
+            None
+        };
+
+        match else_ty {
+            Some(else_ty) => {
+                // Branches must agree.
+                cs.equal(
+                    then_ty,
+                    else_ty,
+                    node.else_block
+                        .as_ref()
+                        .map(|e| e.span)
+                        .unwrap_or(node.then_block.span),
+                );
+                then_ty
+            }
+            None => {
+                // No else: coerce the then branch into the expected type if provided,
+                // otherwise use void/unit.
+                if let Some(exp) = expectation {
+                    cs.add_goal(
+                        Goal::Coerce {
+                            from: then_ty,
+                            to: exp,
+                        },
+                        expression.span,
+                    );
+                    exp
+                } else {
+                    self.gcx().types.void
+                }
+            }
+        }
+    }
+
+    fn synth_unary_expression(
+        &self,
+        expression: &hir::Expression,
+        operator: hir::UnaryOperator,
+        operand: &hir::Expression,
+        expectation: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        let operand_ty = self.synth(operand, cs);
+        let result_ty = cs.infer_cx.next_ty_var(expression.span);
+
+        let data = UnOpGoalData {
+            lhs: operand_ty,
+            rho: result_ty,
+            expectation,
+            operator,
+            span: expression.span,
+            node_id: expression.id,
+            rhs_id: operand.id,
+        };
+
+        cs.add_goal(Goal::UnaryOp(data), expression.span);
+        result_ty
+    }
+
+    fn synth_binary_expression(
+        &self,
+        expression: &hir::Expression,
+        operator: hir::BinaryOperator,
+        lhs: &hir::Expression,
+        rhs: &hir::Expression,
+        expectation: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        let lhs_ty = self.synth(lhs, cs);
+        let rhs_ty = self.synth(rhs, cs);
+        let result_ty = cs.infer_cx.next_ty_var(expression.span);
+
+        let data = BinOpGoalData {
+            lhs: lhs_ty,
+            rhs: rhs_ty,
+            rho: result_ty,
+            expectation,
+            operator,
+            span: expression.span,
+            assigning: false,
+        };
+
+        cs.add_goal(Goal::BinaryOp(data), expression.span);
+        result_ty
+    }
+}
+
+impl<'ctx> Checker<'ctx> {
     fn resolve_callee(&self, node: &hir::Expression) -> Option<DefinitionID> {
         match &node.kind {
             hir::ExpressionKind::Identifier(
@@ -614,6 +635,63 @@ impl<'ctx> Checker<'ctx> {
                 Resolution::Definition(id, DefinitionKind::Function),
             ) => Some(*id),
             _ => None,
+        }
+    }
+}
+
+impl<'ctx> Checker<'ctx> {
+    fn compute_implicit_self_ty(
+        &self,
+        id: DefinitionID,
+        fn_ctx: hir::FunctionContext,
+        is_static: bool,
+        has_explicit_self: bool,
+    ) -> Option<Ty<'ctx>> {
+        if is_static {
+            return None;
+        }
+        if has_explicit_self {
+            return None;
+        }
+
+        let gcx = self.gcx();
+
+        let (extension_id, by_ref_const) = match fn_ctx {
+            hir::FunctionContext::Assoc(hir::AssocContext::Extension(extension_id)) => {
+                (extension_id, true)
+            }
+            hir::FunctionContext::Initializer => {
+                let parent = gcx.definition_parent(id)?;
+                if gcx.definition_kind(parent) != crate::sema::resolve::models::DefinitionKind::Extension
+                {
+                    return None;
+                }
+                (parent, false)
+            }
+            _ => return None,
+        };
+
+        let head = gcx.get_extension_type_head(extension_id)?;
+        let target = match head {
+            crate::sema::resolve::models::TypeHead::Nominal(id) => gcx.get_type(id),
+            crate::sema::resolve::models::TypeHead::Primary(p) => match p {
+                crate::sema::resolve::models::PrimaryType::Int(k) => Ty::new_int(gcx, k),
+                crate::sema::resolve::models::PrimaryType::UInt(k) => Ty::new_uint(gcx, k),
+                crate::sema::resolve::models::PrimaryType::Float(k) => Ty::new_float(gcx, k),
+                crate::sema::resolve::models::PrimaryType::String => todo!(),
+                crate::sema::resolve::models::PrimaryType::Bool => gcx.types.bool,
+                crate::sema::resolve::models::PrimaryType::Rune => gcx.types.rune,
+            },
+            _ => todo!("implicit self type for extension target {head:?}"),
+        };
+
+        if by_ref_const {
+            Some(Ty::new(
+                TyKind::Reference(target, hir::Mutability::Immutable),
+                gcx,
+            ))
+        } else {
+            Some(target)
         }
     }
 }

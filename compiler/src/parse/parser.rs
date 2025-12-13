@@ -954,6 +954,12 @@ impl Parser {
         let lo = self.lo_span();
         let visibility = self.parse_visibility()?;
 
+        let mutability = if self.eat(Token::Readonly) {
+            Mutability::Immutable
+        } else {
+            Mutability::Mutable
+        };
+
         let identifier = self.parse_identifier()?;
         self.expect(Token::Colon)?;
 
@@ -964,7 +970,7 @@ impl Parser {
             label: None,
             identifier,
             ty,
-            mutability: Mutability::Mutable,
+            mutability,
             span: lo.to(self.hi_span()),
         };
 
@@ -1031,6 +1037,13 @@ impl Parser {
     fn parse_tuple_variant_field(&mut self) -> R<FieldDefinition> {
         let lo = self.lo_span();
         let vis = self.parse_visibility()?;
+
+        let mutability = if self.eat(Token::Readonly) {
+            Mutability::Immutable
+        } else {
+            Mutability::Mutable
+        };
+
         let label = self.parse_label()?;
         let ty = self.parse_type()?;
 
@@ -1038,7 +1051,7 @@ impl Parser {
             id: self.next_id(),
             visibility: vis,
             label,
-            mutability: Mutability::Mutable,
+            mutability,
             identifier: Identifier::emtpy(self.file.id),
             ty,
             span: lo.to(self.hi_span()),

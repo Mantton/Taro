@@ -39,8 +39,8 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
 }
 
 impl<'ctx> Actor<'ctx> {
-    fn check_function(&self, id: DefinitionID, node: &hir::Function, _: hir::FunctionContext) {
+    fn check_function(&self, id: DefinitionID, node: &hir::Function, fn_ctx: hir::FunctionContext) {
         let checker = checker::Checker::new(self.context);
-        checker.check_function(id, node);
+        checker.check_function(id, node, fn_ctx);
     }
 }

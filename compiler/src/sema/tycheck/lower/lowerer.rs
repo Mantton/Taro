@@ -3,7 +3,7 @@ use crate::{
     hir::{self, Resolution},
     sema::{
         models::{AdtDef, AdtKind, Ty, TyKind},
-        resolve::models::PrimaryType,
+        resolve::models::{PrimaryType, TypeHead},
     },
 };
 
@@ -69,7 +69,27 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 }
                 _ => todo!("nominal type lowering for {kind:?}"),
             },
-            Resolution::SelfTypeAlias(..) => todo!(),
+            Resolution::SelfTypeAlias(id) => match gcx.definition_kind(id) {
+                crate::sema::resolve::models::DefinitionKind::Struct => gcx.get_type(id),
+                crate::sema::resolve::models::DefinitionKind::Extension => {
+                    let Some(head) = gcx.get_extension_type_head(id) else {
+                        return gcx.types.error;
+                    };
+                    match head {
+                        TypeHead::Nominal(target_id) => gcx.get_type(target_id),
+                        TypeHead::Primary(p) => match p {
+                            PrimaryType::Int(k) => Ty::new_int(gcx, k),
+                            PrimaryType::UInt(k) => Ty::new_uint(gcx, k),
+                            PrimaryType::Float(k) => Ty::new_float(gcx, k),
+                            PrimaryType::String => todo!(),
+                            PrimaryType::Bool => gcx.types.bool,
+                            PrimaryType::Rune => gcx.types.rune,
+                        },
+                        _ => todo!("Self type alias lowering for {head:?}"),
+                    }
+                }
+                other => todo!("Self type alias lowering for {other:?}"),
+            },
             Resolution::InterfaceSelfTypeParameter(..) => todo!(),
 
             Resolution::SelfConstructor(..) => todo!(),

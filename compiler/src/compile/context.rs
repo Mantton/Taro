@@ -6,7 +6,9 @@ use crate::{
     mir::{self, Body},
     sema::{
         models::{FloatTy, IntTy, LabeledFunctionSignature, StructDefinition, Ty, TyKind, UIntTy},
-        resolve::models::{ResolutionOutput, ScopeData, ScopeEntryData, TypeHead, UsageEntryData},
+        resolve::models::{
+            DefinitionKind, ResolutionOutput, ScopeData, ScopeEntryData, TypeHead, UsageEntryData,
+        },
     },
     utils::intern::{Interned, InternedInSet, InternedSet},
 };
@@ -14,6 +16,7 @@ use bumpalo::Bump;
 use ecow::EcoString;
 use rustc_hash::FxHashMap;
 use std::{cell::RefCell, ops::Deref, path::PathBuf};
+use crate::span::Symbol;
 
 pub type Gcx<'gcx> = GlobalContext<'gcx>;
 
@@ -148,6 +151,12 @@ impl<'arena> GlobalContext<'arena> {
         })
     }
 
+    pub fn get_extension_type_head(self, extension_id: DefinitionID) -> Option<TypeHead> {
+        self.with_type_database(extension_id.package(), |db| {
+            db.extension_to_type_head.get(&extension_id).cloned()
+        })
+    }
+
     #[track_caller]
     pub fn get_node_type(self, id: hir::NodeID) -> Ty<'arena> {
         self.with_session_type_database(|db| *db.node_to_ty.get(&id).expect("type of node"))
@@ -170,6 +179,19 @@ impl<'arena> GlobalContext<'arena> {
             .definition_to_ident
             .get(&id)
             .expect("identifier for definition")
+    }
+
+    pub fn definition_kind(self, id: DefinitionID) -> DefinitionKind {
+        let output = self.resolution_output(id.package());
+        *output
+            .definition_to_kind
+            .get(&id)
+            .expect("definition kind")
+    }
+
+    pub fn definition_parent(self, id: DefinitionID) -> Option<DefinitionID> {
+        let output = self.resolution_output(id.package());
+        output.definition_to_parent.get(&id).copied()
     }
 
     pub fn cache_object_file(self, path: PathBuf) {
@@ -407,5 +429,20 @@ pub struct TypeDatabase<'arena> {
     pub def_to_struct_def: FxHashMap<DefinitionID, &'arena StructDefinition<'arena>>,
     pub extension_to_type_head: FxHashMap<DefinitionID, TypeHead>,
     pub type_head_to_extensions: FxHashMap<TypeHead, Vec<DefinitionID>>,
+    pub type_head_to_members: FxHashMap<TypeHead, TypeMemberIndex>,
     pub node_to_ty: FxHashMap<hir::NodeID, Ty<'arena>>,
+}
+
+#[derive(Default, Debug, Clone)]
+pub struct MemberSet {
+    pub members: Vec<DefinitionID>,
+    pub fingerprints: FxHashMap<u64, DefinitionID>,
+}
+
+#[derive(Default, Debug, Clone)]
+pub struct TypeMemberIndex {
+    pub static_functions: FxHashMap<Symbol, MemberSet>,
+    pub instance_functions: FxHashMap<Symbol, MemberSet>,
+    pub operators: FxHashMap<hir::OperatorKind, MemberSet>,
+    pub constructors: MemberSet,
 }

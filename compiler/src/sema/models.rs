@@ -187,6 +187,7 @@ pub struct AdtDef {
 pub struct StructField<'arena> {
     pub name: Symbol,
     pub ty: Ty<'arena>,
+    pub mutability: Mutability,
 }
 
 #[derive(Debug, Clone)]

@@ -17,18 +17,14 @@ struct Actor<'ctx> {
 
 impl<'ctx> Actor<'ctx> {
     fn resolve_extension_identity(&mut self, extension_id: DefinitionID, node: &hir::Extension) {
-        let Some(head) = self.type_head_for_extension_target(extension_id, &node.ty) else {
+        let Some(head) = self.type_head_for_node(&node.ty) else {
             return;
         };
 
         self.context.cache_extension_type_head(extension_id, head);
     }
 
-    fn type_head_for_extension_target(
-        &mut self,
-        extension_id: DefinitionID,
-        ty: &hir::Type,
-    ) -> Option<TypeHead> {
+    fn type_head_for_node(&mut self, ty: &hir::Type) -> Option<TypeHead> {
         match &ty.kind {
             hir::TypeKind::Nominal(path) => self.type_head_for_nominal(ty, path),
             hir::TypeKind::Pointer(.., m) => Some(TypeHead::Pointer(*m)),
