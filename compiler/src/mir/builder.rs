@@ -17,20 +17,17 @@ struct LoopScope {
     continue_bb: BasicBlockId,
 }
 
-pub struct MirBuilder<'ctx> {
+pub struct MirBuilder<'ctx, 'thir> {
     gcx: Gcx<'ctx>,
-    thir: &'ctx thir::ThirFunction<'ctx>,
+    thir: &'thir thir::ThirFunction<'ctx>,
     body: Body<'ctx>,
     current: Option<BasicBlockId>,
     locals: FxHashMap<hir::NodeID, LocalId>,
     loop_stack: Vec<LoopScope>,
 }
 
-impl<'ctx> MirBuilder<'ctx> {
-    pub fn build_function(
-        gcx: Gcx<'ctx>,
-        function: &'ctx thir::ThirFunction<'ctx>,
-    ) -> Body<'ctx> {
+impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
+    pub fn build_function(gcx: Gcx<'ctx>, function: &'thir thir::ThirFunction<'ctx>) -> Body<'ctx> {
         let signature = gcx.get_signature(function.id);
         let output_ty = signature.output;
         let entry_span = function.span;
@@ -79,10 +76,16 @@ impl<'ctx> MirBuilder<'ctx> {
         &mut self,
         signature: &crate::sema::models::LabeledFunctionSignature<'ctx>,
     ) {
-        for (param, lowered) in self.thir.params.iter().zip(signature.inputs.iter()) {
-            let local =
-                self.push_local(lowered.ty, LocalKind::Param, Some(param.name), param.span);
-            self.locals.insert(param.id, local);
+        let params: Vec<_> = self
+            .thir
+            .params
+            .iter()
+            .zip(signature.inputs.iter())
+            .map(|(param, lowered)| (param.id, param.name, param.span, lowered.ty))
+            .collect();
+        for (id, name, span, ty) in params {
+            let local = self.push_local(ty, LocalKind::Param, Some(name), span);
+            self.locals.insert(id, local);
         }
     }
 
@@ -102,12 +105,13 @@ impl<'ctx> MirBuilder<'ctx> {
     }
 
     fn lower_block(&mut self, block: thir::BlockId) {
-        let block = &self.thir.blocks[block];
-        for stmt in &block.stmts {
+        let stmts = self.thir.blocks[block].stmts.clone();
+        for stmt in stmts {
             if self.current.is_none() {
                 break;
             }
-            self.lower_statement(&self.thir.stmts[*stmt]);
+            let stmt_node = &self.thir.stmts[stmt];
+            self.lower_statement(stmt_node);
         }
     }
 
@@ -248,7 +252,7 @@ impl<'ctx> MirBuilder<'ctx> {
 
     fn lower_expr(&mut self, expr: &thir::Expr<'ctx>) -> Operand<'ctx> {
         match &expr.kind {
-            thir::ExprKind::Literal(lit) => Operand::Constant(self.lower_constant(lit)),
+            thir::ExprKind::Literal(lit) => Operand::Constant(self.lower_constant(&lit)),
             thir::ExprKind::Place(place) => match place {
                 thir::PlaceKind::Local(id) => {
                     let local = *self.locals.get(id).expect("MIR local for identifier");
@@ -445,12 +449,16 @@ impl<'ctx> MirBuilder<'ctx> {
         block_id: thir::BlockId,
         expr: &thir::Expr<'ctx>,
     ) -> Operand<'ctx> {
-        let block = &self.thir.blocks[block_id];
-        for stmt in &block.stmts {
+        let (block_expr, stmts) = {
+            let block = &self.thir.blocks[block_id];
+            (block.expr, block.stmts.clone())
+        };
+        for stmt in stmts {
             if self.current.is_none() {
                 break;
             }
-            self.lower_statement(&self.thir.stmts[*stmt]);
+            let stmt_node = &self.thir.stmts[stmt];
+            self.lower_statement(stmt_node);
         }
 
         if self.current.is_none() {
@@ -460,7 +468,7 @@ impl<'ctx> MirBuilder<'ctx> {
             });
         }
 
-        if let Some(expr_id) = block.expr {
+        if let Some(expr_id) = block_expr {
             return self.lower_expr_id(expr_id);
         }
 

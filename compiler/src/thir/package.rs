@@ -14,20 +14,15 @@ use rustc_hash::FxHashMap;
 pub fn build_package<'ctx>(
     package: &hir::Package,
     gcx: GlobalContext<'ctx>,
-) -> CompileResult<&'ctx ThirPackage<'ctx>> {
+) -> CompileResult<ThirPackage<'ctx>> {
     let entry = validate_entry_point(&package, gcx)?;
     let package = Actor::run(package, gcx, entry)?;
-    let package = gcx.store.alloc_thir_package(package);
-    gcx.store
-        .thir_packages
-        .borrow_mut()
-        .insert(gcx.package_index(), package);
     Ok(package)
 }
 
 struct Actor<'ctx> {
     gcx: GlobalContext<'ctx>,
-    functions: FxHashMap<DefinitionID, &'ctx ThirFunction<'ctx>>,
+    functions: FxHashMap<DefinitionID, ThirFunction<'ctx>>,
     entry: Option<DefinitionID>,
 }
 
@@ -64,8 +59,7 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
         fn_ctx: hir::FunctionContext,
     ) -> Self::Result {
         let func = FunctionLower::lower(self.gcx, id, node);
-        let alloc = self.gcx.store.alloc_thir_function(func);
-        self.functions.insert(id, alloc);
+        self.functions.insert(id, func);
         hir::walk_function(self, id, node, fn_ctx);
     }
 }

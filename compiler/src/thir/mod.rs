@@ -22,7 +22,7 @@ index_vec::define_index_type! {
 
 #[derive(Debug)]
 pub struct ThirPackage<'a> {
-    pub functions: FxHashMap<DefinitionID, &'a ThirFunction<'a>>,
+    pub functions: FxHashMap<DefinitionID, ThirFunction<'a>>,
     pub entry: Option<DefinitionID>,
 }
 
@@ -37,14 +37,14 @@ pub struct ThirFunction<'a> {
     pub exprs: IndexVec<ExprId, Expr<'a>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Block {
     pub id: BlockId,
     pub stmts: Vec<StmtId>,
     pub expr: Option<ExprId>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Expr<'a> {
     pub id: ExprId,
     pub kind: ExprKind<'a>,
@@ -58,7 +58,7 @@ pub enum PlaceKind {
     Deref(ExprId),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ExprKind<'a> {
     /// Use of a place (path, deref, etc.)
     Place(PlaceKind),
@@ -94,13 +94,13 @@ pub enum ExprKind<'a> {
     Block(BlockId),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Constant<'a> {
     pub ty: Ty<'a>,
     pub value: ConstantKind,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ConstantKind {
     Bool(bool),
     Rune(char),
@@ -110,7 +110,7 @@ pub enum ConstantKind {
     Unit,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum StmtKind<'a> {
     Let {
         id: NodeID,
@@ -135,7 +135,7 @@ pub enum StmtKind<'a> {
     Expr(ExprId),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Stmt<'a> {
     pub kind: StmtKind<'a>,
     pub span: Span,

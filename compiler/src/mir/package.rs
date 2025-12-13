@@ -2,19 +2,19 @@ use crate::{
     compile::context::GlobalContext,
     error::CompileResult,
     hir::DefinitionID,
-    mir::{builder::MirBuilder, MirPackage},
+    mir::{MirPackage, builder::MirBuilder},
     thir,
 };
 use rustc_hash::FxHashMap;
 
 pub fn build_package<'ctx>(
-    package: &thir::ThirPackage<'ctx>,
+    package: thir::ThirPackage<'ctx>,
     gcx: GlobalContext<'ctx>,
 ) -> CompileResult<&'ctx MirPackage<'ctx>> {
     let mut functions: FxHashMap<DefinitionID, &'ctx crate::mir::Body<'ctx>> = FxHashMap::default();
 
-    for (&id, func) in &package.functions {
-        let body = MirBuilder::build_function(gcx, func);
+    for (id, func) in package.functions {
+        let body = MirBuilder::build_function(gcx, &func);
         let alloc = gcx.store.arenas.mir_bodies.alloc(body);
         functions.insert(id, alloc);
     }
