@@ -164,20 +164,16 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         }
     }
 
-    fn lower_assign_stmt(&mut self, target: thir::PlaceKind, value: thir::ExprId, span: Span) {
-        match target {
-            thir::PlaceKind::Local(id) => {
-                if let Some(local) = self.locals.get(&id).copied() {
-                    let place = Place { local };
-                    let rhs = self.lower_expr_id(value);
-                    self.push_statement(span, StatementKind::Assign(place, Rvalue::Use(rhs)));
-                }
-            }
-            thir::PlaceKind::Deref(ptr_expr) => {
-                let ptr = self.lower_expr_id(ptr_expr);
-                let value = self.lower_expr_id(value);
-                self.push_statement(span, StatementKind::Store { ptr, value });
-            }
+    fn lower_assign_stmt(&mut self, target: thir::ExprId, value: thir::ExprId, span: Span) {
+        if let Some(local) = self.place_local(target) {
+            let rhs = self.lower_expr_id(value);
+            self.push_statement(span, StatementKind::Assign(Place { local }, Rvalue::Use(rhs)));
+            return;
+        }
+
+        if let Some(ptr) = self.place_deref_ptr(target) {
+            let value = self.lower_expr_id(value);
+            self.push_statement(span, StatementKind::Store { ptr, value });
         }
     }
 
@@ -253,16 +249,18 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
     fn lower_expr(&mut self, expr: &thir::Expr<'ctx>) -> Operand<'ctx> {
         match &expr.kind {
             thir::ExprKind::Literal(lit) => Operand::Constant(self.lower_constant(&lit)),
-            thir::ExprKind::Place(place) => match place {
-                thir::PlaceKind::Local(id) => {
-                    let local = *self.locals.get(id).expect("MIR local for identifier");
-                    Operand::Copy(Place { local })
-                }
-                thir::PlaceKind::Deref(_) => Operand::Constant(Constant {
-                    ty: self.gcx.types.error,
-                    value: ConstantKind::Unit,
-                }),
-            },
+            thir::ExprKind::Local(id) => {
+                let local = *self.locals.get(&id).expect("MIR local for identifier");
+                Operand::Copy(Place { local })
+            }
+            thir::ExprKind::Reference { .. } => Operand::Constant(Constant {
+                ty: self.gcx.types.error,
+                value: ConstantKind::Unit,
+            }),
+            thir::ExprKind::Deref(_) => Operand::Constant(Constant {
+                ty: self.gcx.types.error,
+                value: ConstantKind::Unit,
+            }),
             thir::ExprKind::Call { callee, args } => self.lower_call(expr, *callee, args),
             thir::ExprKind::Binary { op, lhs, rhs } => {
                 let lhs_op = self.lower_expr_id(*lhs);
@@ -412,35 +410,50 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
     fn lower_assign_expr(
         &mut self,
         expr: &thir::Expr<'ctx>,
-        target: thir::PlaceKind,
+        target: thir::ExprId,
         rhs: thir::ExprId,
     ) -> Operand<'ctx> {
-        match target {
-            thir::PlaceKind::Local(id) => {
-                let local = *self.locals.get(&id).expect("assignment target local");
-                let place = Place { local };
-                let rhs_op = self.lower_expr_id(rhs);
-                self.push_statement(expr.span, StatementKind::Assign(place, Rvalue::Use(rhs_op)));
-                Operand::Constant(Constant {
-                    ty: self.gcx.types.void,
-                    value: ConstantKind::Unit,
-                })
-            }
-            thir::PlaceKind::Deref(ptr_expr) => {
-                let ptr = self.lower_expr_id(ptr_expr);
-                let value = self.lower_expr_id(rhs);
-                self.push_statement(
-                    expr.span,
-                    StatementKind::Store {
-                        ptr,
-                        value: value.clone(),
-                    },
-                );
-                Operand::Constant(Constant {
-                    ty: self.gcx.types.void,
-                    value: ConstantKind::Unit,
-                })
-            }
+        if let Some(local) = self.place_local(target) {
+            let rhs_op = self.lower_expr_id(rhs);
+            self.push_statement(expr.span, StatementKind::Assign(Place { local }, Rvalue::Use(rhs_op)));
+            return Operand::Constant(Constant {
+                ty: self.gcx.types.void,
+                value: ConstantKind::Unit,
+            });
+        }
+
+        if let Some(ptr) = self.place_deref_ptr(target) {
+            let value = self.lower_expr_id(rhs);
+            self.push_statement(
+                expr.span,
+                StatementKind::Store {
+                    ptr,
+                    value: value.clone(),
+                },
+            );
+            return Operand::Constant(Constant {
+                ty: self.gcx.types.void,
+                value: ConstantKind::Unit,
+            });
+        }
+
+        Operand::Constant(Constant {
+            ty: self.gcx.types.error,
+            value: ConstantKind::Unit,
+        })
+    }
+
+    fn place_local(&self, expr: thir::ExprId) -> Option<LocalId> {
+        match self.thir.exprs[expr].kind {
+            thir::ExprKind::Local(id) => self.locals.get(&id).copied(),
+            _ => None,
+        }
+    }
+
+    fn place_deref_ptr(&mut self, expr: thir::ExprId) -> Option<Operand<'ctx>> {
+        match self.thir.exprs[expr].kind {
+            thir::ExprKind::Deref(ptr_expr) => Some(self.lower_expr_id(ptr_expr)),
+            _ => None,
         }
     }
 

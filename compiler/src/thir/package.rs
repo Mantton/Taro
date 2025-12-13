@@ -3,10 +3,7 @@ use crate::{
     error::CompileResult,
     hir::{self, DefinitionID, DefinitionKind, HirVisitor, Mutability, Resolution},
     sema::models::Ty,
-    thir::{
-        Block, BlockId, Constant, ConstantKind, Expr, ExprId, ExprKind, Param, PlaceKind, Stmt,
-        StmtId, StmtKind, ThirFunction, ThirPackage,
-    },
+    thir::{Block, BlockId, Constant, ConstantKind, Expr, ExprId, ExprKind, Param, Stmt, StmtId, StmtKind, ThirFunction, ThirPackage},
 };
 use index_vec::IndexVec;
 use rustc_hash::FxHashMap;
@@ -154,16 +151,12 @@ impl<'ctx> FunctionLower<'ctx> {
             hir::StatementKind::Declaration(_) => None,
             hir::StatementKind::Expression(expr) => {
                 if let hir::ExpressionKind::Assign(lhs, rhs) = &expr.kind {
-                    if let Some(place) = self.lower_place(lhs) {
-                        let value = self.lower_expr(rhs);
-                        return Some(Stmt {
-                            kind: StmtKind::Assign {
-                                target: place,
-                                value,
-                            },
-                            span: stmt.span,
-                        });
-                    }
+                    let target = self.lower_expr(lhs);
+                    let value = self.lower_expr(rhs);
+                    return Some(Stmt {
+                        kind: StmtKind::Assign { target, value },
+                        span: stmt.span,
+                    });
                 }
 
                 let expr_id = self.lower_expr(expr);
@@ -233,7 +226,7 @@ impl<'ctx> FunctionLower<'ctx> {
                 self.push_expr(ExprKind::Literal(Constant { ty, value }), ty, span)
             }
             hir::ExpressionKind::Identifier(_, Resolution::LocalVariable(id)) => {
-                self.push_expr(ExprKind::Place(PlaceKind::Local(*id)), ty, span)
+                self.push_expr(ExprKind::Local(*id), ty, span)
             }
             hir::ExpressionKind::Call(callee, args) => {
                 if let hir::ExpressionKind::Identifier(
@@ -268,26 +261,16 @@ impl<'ctx> FunctionLower<'ctx> {
                 self.push_expr(ExprKind::Unary { op: *op, operand }, ty, span)
             }
             hir::ExpressionKind::Assign(lhs, rhs) => {
-                if let Some(place) = self.lower_place(lhs) {
-                    let value = self.lower_expr(rhs);
-                    self.push_expr(
-                        ExprKind::Assign {
-                            target: place,
-                            value,
-                        },
-                        ty,
-                        span,
-                    )
-                } else {
-                    self.push_expr(
-                        ExprKind::Literal(Constant {
-                            ty: self.gcx.types.error,
-                            value: ConstantKind::Unit,
-                        }),
-                        self.gcx.types.error,
-                        span,
-                    )
-                }
+                let target = self.lower_expr(lhs);
+                let value = self.lower_expr(rhs);
+                self.push_expr(
+                    ExprKind::Assign {
+                        target,
+                        value,
+                    },
+                    ty,
+                    span,
+                )
             }
             hir::ExpressionKind::If(node) => {
                 let cond = self.lower_expr(&node.condition);
@@ -309,7 +292,18 @@ impl<'ctx> FunctionLower<'ctx> {
             }
             hir::ExpressionKind::Dereference(inner) => {
                 let operand = self.lower_expr(inner);
-                self.push_expr(ExprKind::Place(PlaceKind::Deref(operand)), ty, span)
+                self.push_expr(ExprKind::Deref(operand), ty, span)
+            }
+            hir::ExpressionKind::Reference(inner, mutbl) => {
+                let operand = self.lower_expr(inner);
+                self.push_expr(
+                    ExprKind::Reference {
+                        mutable: *mutbl == hir::Mutability::Mutable,
+                        expr: operand,
+                    },
+                    ty,
+                    span,
+                )
             }
             _ => self.push_expr(
                 ExprKind::Literal(Constant {
@@ -319,19 +313,6 @@ impl<'ctx> FunctionLower<'ctx> {
                 self.gcx.types.error,
                 span,
             ),
-        }
-    }
-
-    fn lower_place(&mut self, expr: &hir::Expression) -> Option<PlaceKind> {
-        match &expr.kind {
-            hir::ExpressionKind::Identifier(_, Resolution::LocalVariable(id)) => {
-                Some(PlaceKind::Local(*id))
-            }
-            hir::ExpressionKind::Dereference(inner) => {
-                let operand = self.lower_expr(inner);
-                Some(PlaceKind::Deref(operand))
-            }
-            _ => None,
         }
     }
 

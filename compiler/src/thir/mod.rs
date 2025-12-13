@@ -13,11 +13,10 @@ index_vec::define_index_type! {
 }
 
 index_vec::define_index_type! {
-    pub struct ExprId = u32;
-}
-
-index_vec::define_index_type! {
     pub struct StmtId = u32;
+}
+index_vec::define_index_type! {
+    pub struct ExprId = u32;
 }
 
 #[derive(Debug)]
@@ -52,16 +51,17 @@ pub struct Expr<'a> {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum PlaceKind {
-    Local(NodeID),
-    Deref(ExprId),
-}
-
 #[derive(Debug, Clone)]
 pub enum ExprKind<'a> {
-    /// Use of a place (path, deref, etc.)
-    Place(PlaceKind),
+    /// Use of a local variable
+    Local(NodeID),
+    /// Address-of / reference expression
+    Reference {
+        mutable: bool,
+        expr: ExprId,
+    },
+    /// Dereference `*expr`
+    Deref(ExprId),
     /// If expression
     If {
         cond: ExprId,
@@ -69,7 +69,7 @@ pub enum ExprKind<'a> {
         else_expr: Option<ExprId>,
     },
     Assign {
-        target: PlaceKind,
+        target: ExprId,
         value: ExprId,
     },
     /// Literal constant
@@ -121,7 +121,7 @@ pub enum StmtKind<'a> {
         ty: Ty<'a>,
     },
     Assign {
-        target: PlaceKind,
+        target: ExprId,
         value: ExprId,
     },
     Return {
