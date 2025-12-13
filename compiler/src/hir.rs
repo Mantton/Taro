@@ -41,6 +41,7 @@ pub type AttributeList = Vec<Attribute>;
 pub struct Declaration<K = DeclarationKind> {
     pub id: DefinitionID,
     pub span: Span,
+    pub identifier: Identifier,
     pub kind: K,
     pub attributes: AttributeList,
 }

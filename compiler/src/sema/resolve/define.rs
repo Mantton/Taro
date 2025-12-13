@@ -133,7 +133,12 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
 
         match &node.kind {
             ast::ExternDeclarationKind::Function(..) => {
-                self.define(&node.identifier, ScopeNamespace::Value, resolution, visibility);
+                self.define(
+                    &node.identifier,
+                    ScopeNamespace::Value,
+                    resolution,
+                    visibility,
+                );
             }
         }
 

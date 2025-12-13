@@ -111,7 +111,10 @@ fn build_runtime(ctx: &CompilerContext<'_>, project_root: &PathBuf) -> Result<()
         .arg(&target_dir)
         .status()
         .map_err(|e| {
-            ctx.dcx.emit_error(format!("failed to invoke cargo to build runtime: {e}"), None);
+            ctx.dcx.emit_error(
+                format!("failed to invoke cargo to build runtime: {e}"),
+                None,
+            );
             ReportedError
         })?;
 

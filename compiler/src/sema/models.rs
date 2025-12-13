@@ -105,7 +105,7 @@ impl<'arena> Ty<'arena> {
             TyKind::Int(i) => i.name_str().into(),
             TyKind::UInt(u) => u.name_str().into(),
             TyKind::Float(f) => f.name_str().into(),
-            TyKind::Adt(id) => gcx.definition_ident(id).symbol.as_str().into(),
+            TyKind::Adt(adt) => adt.name.as_str().into(),
             TyKind::Pointer(inner, mt) => {
                 format!("*{}{}", mt.display_str(), inner.format(gcx))
             }
@@ -158,7 +158,7 @@ pub enum TyKind<'arena> {
     Int(IntTy),
     UInt(UIntTy),
     Float(FloatTy),
-    Adt(DefinitionID),
+    Adt(AdtDef),
     Pointer(Ty<'arena>, Mutability),
     Reference(Ty<'arena>, Mutability),
     Tuple(&'arena [Ty<'arena>]),
@@ -168,6 +168,31 @@ pub enum TyKind<'arena> {
     },
     Infer(InferTy),
     Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AdtKind {
+    Struct,
+    Enum,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AdtDef {
+    pub name: Symbol,
+    pub kind: AdtKind,
+    pub id: DefinitionID,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StructField<'arena> {
+    pub name: Symbol,
+    pub ty: Ty<'arena>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StructDefinition<'arena> {
+    pub adt_def: AdtDef,
+    pub fields: &'arena [StructField<'arena>],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

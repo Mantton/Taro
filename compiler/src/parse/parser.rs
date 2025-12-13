@@ -443,10 +443,7 @@ impl Parser {
                 Identifier::emtpy(self.file.id),
                 self.parse_import_export_declaration(false)?,
             ),
-            Token::Extern => (
-                Identifier::emtpy(self.file.id),
-                self.parse_extern_block()?,
-            ),
+            Token::Extern => (Identifier::emtpy(self.file.id), self.parse_extern_block()?),
             Token::Type => self.parse_type_declaration()?,
             Token::Function | Token::Static => self.parse_function(mode)?,
             Token::Extend => (Identifier::emtpy(self.file.id), self.parse_impl()?),
@@ -478,7 +475,10 @@ impl Parser {
                 vec![]
             };
 
-        Ok(DeclarationKind::ExternBlock(ast::ExternBlock { abi, declarations }))
+        Ok(DeclarationKind::ExternBlock(ast::ExternBlock {
+            abi,
+            declarations,
+        }))
     }
 
     fn parse_extern_declaration(

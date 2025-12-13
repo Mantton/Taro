@@ -5,7 +5,7 @@ use crate::{
     hir::{self, DefinitionID},
     mir::{self, Body},
     sema::{
-        models::{FloatTy, IntTy, LabeledFunctionSignature, Ty, TyKind, UIntTy},
+        models::{FloatTy, IntTy, LabeledFunctionSignature, StructDefinition, Ty, TyKind, UIntTy},
         resolve::models::{ResolutionOutput, ScopeData, ScopeEntryData, UsageEntryData},
     },
     utils::intern::{Interned, InternedInSet, InternedSet},
@@ -77,6 +77,14 @@ impl<'arena> GlobalContext<'arena> {
         database.def_to_fn_sig.insert(id, alloc);
     }
 
+    pub fn cache_struct_definition(self, id: DefinitionID, def: StructDefinition<'arena>) {
+        let mut cache = self.context.store.type_databases.borrow_mut();
+        let package_index = id.package();
+        let database = cache.entry(package_index).or_insert(Default::default());
+        let alloc = self.context.store.arenas.struct_definitions.alloc(def);
+        database.def_to_struct_def.insert(id, alloc);
+    }
+
     pub fn cache_node_type(self, id: hir::NodeID, ty: Ty<'arena>) {
         self.with_session_type_database(|db| {
             db.node_to_ty.insert(id, ty);
@@ -119,6 +127,14 @@ impl<'arena> GlobalContext<'arena> {
             *db.def_to_fn_sig
                 .get(&id)
                 .expect("fn signature of definition")
+        })
+    }
+
+    pub fn get_struct_definition(self, id: DefinitionID) -> &'arena StructDefinition<'arena> {
+        self.with_type_database(id.package(), |db| {
+            *db.def_to_struct_def
+                .get(&id)
+                .expect("struct definition of definition")
         })
     }
 
@@ -292,6 +308,7 @@ pub struct CompilerArenas<'arena> {
     pub types: typed_arena::Arena<TyKind<'arena>>,
     pub type_lists: typed_arena::Arena<Vec<Ty<'arena>>>,
     pub function_signatures: typed_arena::Arena<LabeledFunctionSignature<'arena>>,
+    pub struct_definitions: typed_arena::Arena<StructDefinition<'arena>>,
     pub mir_bodies: typed_arena::Arena<Body<'arena>>,
     pub mir_packages: typed_arena::Arena<mir::MirPackage<'arena>>,
     pub global: Bump,
@@ -308,6 +325,7 @@ impl<'arena> CompilerArenas<'arena> {
             types: Default::default(),
             type_lists: Default::default(),
             function_signatures: Default::default(),
+            struct_definitions: Default::default(),
             mir_bodies: Default::default(),
             mir_packages: Default::default(),
             global: Bump::new(),
@@ -376,5 +394,6 @@ impl<'a> CommonTypes<'a> {
 pub struct TypeDatabase<'arena> {
     pub def_to_ty: FxHashMap<DefinitionID, Ty<'arena>>,
     pub def_to_fn_sig: FxHashMap<DefinitionID, &'arena LabeledFunctionSignature<'arena>>,
+    pub def_to_struct_def: FxHashMap<DefinitionID, &'arena StructDefinition<'arena>>,
     pub node_to_ty: FxHashMap<hir::NodeID, Ty<'arena>>,
 }

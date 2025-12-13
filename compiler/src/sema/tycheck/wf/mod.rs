@@ -2,8 +2,9 @@ use crate::{
     compile::context::GlobalContext,
     error::CompileResult,
     hir::{self, DefinitionID, HirVisitor},
-    sema::tycheck::lower::{DefTyLoweringCtx, TypeLowerer},
+    sema::models::{AdtKind, Ty, TyKind},
 };
+use rustc_hash::FxHashSet;
 
 pub fn run(package: &hir::Package, context: GlobalContext) -> CompileResult<()> {
     Actor::run(package, context)
@@ -28,7 +29,7 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
     fn visit_declaration(&mut self, node: &hir::Declaration) -> Self::Result {
         match &node.kind {
             hir::DeclarationKind::Interface(..) => todo!(),
-            hir::DeclarationKind::Struct(s) => self.check_struct(node.id, s),
+            hir::DeclarationKind::Struct(_) => self.check_struct(node.id),
             hir::DeclarationKind::Enum(_) => todo!(),
             hir::DeclarationKind::Function(function) => self.check_function(node.id, function),
             hir::DeclarationKind::TypeAlias(..) => todo!(),
@@ -48,10 +49,95 @@ impl<'ctx> Actor<'ctx> {
         let _ = self.context.get_signature(id);
     }
 
-    fn check_struct(&self, id: DefinitionID, node: &hir::Struct) {
-        let ctx = DefTyLoweringCtx::new(id, self.context);
-        for field in &node.fields {
-            let _ = ctx.lowerer().lower_type(&field.ty);
+    fn check_struct(&self, id: DefinitionID) {
+        let ident = self.context.definition_ident(id);
+
+        if self.has_infinite_size(id) {
+            self.context.dcx().emit_error(
+                format!(
+                    "recursive struct `{}` has infinite size",
+                    ident.symbol.as_str()
+                ),
+                Some(ident.span),
+            );
+            return;
         }
+
+        let def = self.context.get_struct_definition(id);
+        for field in def.fields {
+            if !is_sized(field.ty) {
+                self.context.dcx().emit_error(
+                    format!(
+                        "field `{}` of struct `{}` does not have a sized type",
+                        field.name.as_str(),
+                        ident.symbol.as_str()
+                    ),
+                    Some(ident.span),
+                );
+            }
+        }
+    }
+
+    fn has_infinite_size(&self, id: DefinitionID) -> bool {
+        let mut visiting: FxHashSet<DefinitionID> = FxHashSet::default();
+        let mut visited: FxHashSet<DefinitionID> = FxHashSet::default();
+        self.dfs_struct_cycle(id, &mut visiting, &mut visited)
+    }
+
+    fn dfs_struct_cycle(
+        &self,
+        current: DefinitionID,
+        visiting: &mut FxHashSet<DefinitionID>,
+        visited: &mut FxHashSet<DefinitionID>,
+    ) -> bool {
+        if visiting.contains(&current) {
+            return true;
+        }
+        if visited.contains(&current) {
+            return false;
+        }
+        visited.insert(current);
+        visiting.insert(current);
+
+        let def = self.context.get_struct_definition(current);
+        for field in def.fields {
+            let mut deps: Vec<DefinitionID> = vec![];
+            collect_by_value_struct_deps(field.ty, &mut deps);
+            for dep in deps {
+                if dep.package() != current.package() {
+                    continue;
+                }
+                if self.dfs_struct_cycle(dep, visiting, visited) {
+                    return true;
+                }
+            }
+        }
+
+        visiting.remove(&current);
+        false
+    }
+}
+
+fn is_sized(ty: Ty) -> bool {
+    !matches!(ty.kind(), TyKind::Infer(_) | TyKind::Error)
+}
+
+fn collect_by_value_struct_deps(ty: Ty, out: &mut Vec<DefinitionID>) {
+    match ty.kind() {
+        TyKind::Adt(adt) => {
+            if matches!(adt.kind, AdtKind::Struct) {
+                out.push(adt.id);
+            } else {
+                todo!("enum sizedness not implemented yet");
+            }
+        }
+        TyKind::Pointer(..) | TyKind::Reference(..) => {}
+        TyKind::Tuple(items) => {
+            for item in items {
+                collect_by_value_struct_deps(*item, out);
+            }
+        }
+        TyKind::FnPointer { .. } => {}
+        _ => {}
     }
 }

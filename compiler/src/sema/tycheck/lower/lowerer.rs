@@ -2,7 +2,7 @@ use crate::{
     compile::context::GlobalContext,
     hir::{self, Resolution},
     sema::{
-        models::{Ty, TyKind},
+        models::{AdtDef, AdtKind, Ty, TyKind},
         resolve::models::PrimaryType,
     },
 };
@@ -59,7 +59,13 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             },
             Resolution::Definition(id, kind) => match kind {
                 crate::sema::resolve::models::DefinitionKind::Struct => {
-                    Ty::new(TyKind::Adt(id), gcx)
+                    let ident = gcx.definition_ident(id);
+                    let def = AdtDef {
+                        name: ident.symbol,
+                        kind: AdtKind::Struct,
+                        id,
+                    };
+                    Ty::new(TyKind::Adt(def), gcx)
                 }
                 _ => todo!("nominal type lowering for {kind:?}"),
             },

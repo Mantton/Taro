@@ -133,6 +133,7 @@ impl Actor<'_, '_> {
         vec![hir::Declaration {
             id: self.definition_id(node.id),
             span: node.span,
+            identifier: node.identifier,
             kind,
             attributes: vec![],
         }]
@@ -149,6 +150,7 @@ impl Actor<'_, '_> {
         hir::Declaration {
             id: self.definition_id(node.id),
             span: node.span,
+            identifier: node.identifier,
             kind,
             attributes: vec![],
         }
@@ -180,6 +182,7 @@ impl Actor<'_, '_> {
         hir::Declaration {
             id: self.definition_id(node.id),
             span: node.span,
+            identifier: node.identifier,
             kind,
             attributes: vec![],
         }
@@ -220,6 +223,7 @@ impl Actor<'_, '_> {
         hir::Declaration {
             id: self.definition_id(node.id),
             span: node.span,
+            identifier: node.identifier,
             kind,
             attributes: vec![],
         }
@@ -251,6 +255,7 @@ impl Actor<'_, '_> {
         hir::AssociatedDeclaration {
             id: self.definition_id(node.id),
             span: node.span,
+            identifier: node.identifier,
             kind,
             attributes: vec![],
         }
