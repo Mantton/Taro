@@ -2,6 +2,7 @@ use crate::{
     compile::context::GlobalContext,
     error::CompileResult,
     hir::{self, DefinitionID, HirVisitor},
+    sema::tycheck::lower::{DefTyLoweringCtx, TypeLowerer},
 };
 
 pub fn run(package: &hir::Package, context: GlobalContext) -> CompileResult<()> {
@@ -27,7 +28,7 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
     fn visit_declaration(&mut self, node: &hir::Declaration) -> Self::Result {
         match &node.kind {
             hir::DeclarationKind::Interface(..) => todo!(),
-            hir::DeclarationKind::Struct(_) => todo!(),
+            hir::DeclarationKind::Struct(s) => self.check_struct(node.id, s),
             hir::DeclarationKind::Enum(_) => todo!(),
             hir::DeclarationKind::Function(function) => self.check_function(node.id, function),
             hir::DeclarationKind::TypeAlias(..) => todo!(),
@@ -45,5 +46,12 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
 impl<'ctx> Actor<'ctx> {
     fn check_function(&self, id: DefinitionID, _: &hir::Function) {
         let _ = self.context.get_signature(id);
+    }
+
+    fn check_struct(&self, id: DefinitionID, node: &hir::Struct) {
+        let ctx = DefTyLoweringCtx::new(id, self.context);
+        for field in &node.fields {
+            let _ = ctx.lowerer().lower_type(&field.ty);
+        }
     }
 }

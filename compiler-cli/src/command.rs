@@ -3,6 +3,7 @@ use compiler::error::CompileResult;
 use crate::CommandLineArguments;
 
 mod build;
+mod check;
 mod run;
 
 pub fn handle(arguments: CommandLineArguments) -> CompileResult<()> {
@@ -11,6 +12,7 @@ pub fn handle(arguments: CommandLineArguments) -> CompileResult<()> {
             build::run(arguments, false)?;
             ()
         }
+        "check" => check::run(arguments)?,
         "run" => run::run(arguments)?,
         _ => panic!("unknown command"),
     };

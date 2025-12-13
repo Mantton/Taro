@@ -105,6 +105,7 @@ impl<'arena> Ty<'arena> {
             TyKind::Int(i) => i.name_str().into(),
             TyKind::UInt(u) => u.name_str().into(),
             TyKind::Float(f) => f.name_str().into(),
+            TyKind::Adt(id) => gcx.definition_ident(id).symbol.as_str().into(),
             TyKind::Pointer(inner, mt) => {
                 format!("*{}{}", mt.display_str(), inner.format(gcx))
             }
@@ -157,6 +158,7 @@ pub enum TyKind<'arena> {
     Int(IntTy),
     UInt(UIntTy),
     Float(FloatTy),
+    Adt(DefinitionID),
     Pointer(Ty<'arena>, Mutability),
     Reference(Ty<'arena>, Mutability),
     Tuple(&'arena [Ty<'arena>]),

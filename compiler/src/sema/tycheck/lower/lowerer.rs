@@ -57,7 +57,12 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 PrimaryType::Bool => gcx.types.bool,
                 PrimaryType::Rune => gcx.types.rune,
             },
-            Resolution::Definition(..) => todo!(),
+            Resolution::Definition(id, kind) => match kind {
+                crate::sema::resolve::models::DefinitionKind::Struct => {
+                    Ty::new(TyKind::Adt(id), gcx)
+                }
+                _ => todo!("nominal type lowering for {kind:?}"),
+            },
             Resolution::SelfTypeAlias(..) => todo!(),
             Resolution::InterfaceSelfTypeParameter(..) => todo!(),
 

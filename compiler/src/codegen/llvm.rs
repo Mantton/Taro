@@ -1145,6 +1145,7 @@ fn lower_type<'llvm>(context: &'llvm Context, ty: Ty) -> Option<BasicTypeEnum<'l
             FloatTy::F32 => context.f32_type().into(),
             FloatTy::F64 => context.f64_type().into(),
         }),
+        TyKind::Adt(_) => todo!("adt lowering not implemented yet"),
         TyKind::Pointer(..) | TyKind::Reference(..) => Some(
             context
                 .ptr_type(AddressSpace::default())

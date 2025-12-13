@@ -5,7 +5,7 @@ use crate::{
         context::{CompilerContext, GlobalContext},
     },
     error::CompileResult,
-    mir, parse, sema, thir,
+    hir, mir, parse, sema, thir,
 };
 
 pub mod config;
@@ -34,6 +34,19 @@ impl<'state> Compiler<'state> {
 
 impl<'state> Compiler<'state> {
     pub fn build(&mut self) -> CompileResult<Option<std::path::PathBuf>> {
+        let package = self.analyze()?;
+        let thir = thir::package::build_package(&package, self.context)?;
+        let package = mir::package::build_package(thir, self.context)?;
+        let _obj = codegen::llvm::emit_package(package, self.context)?;
+        let exe = codegen::link::link_executable(self.context)?;
+        Ok(exe)
+    }
+
+    pub fn check(&mut self) -> CompileResult<hir::Package> {
+        self.analyze()
+    }
+
+    pub fn analyze(&mut self) -> CompileResult<hir::Package> {
         {
             let mut table = self.context.store.package_mapping.borrow_mut();
             table.insert(
@@ -63,14 +76,9 @@ impl<'state> Compiler<'state> {
             table.insert(self.context.config.index, output);
         }
 
-        // HIR Construction
-        // HIR Passes
         sema::validate::validate_package(&package, self.context)?;
         sema::tycheck::typecheck_package(&package, self.context)?;
-        let thir = thir::package::build_package(&package, self.context)?;
-        let package = mir::package::build_package(thir, self.context)?;
-        let _obj = codegen::llvm::emit_package(package, self.context)?;
-        let exe = codegen::link::link_executable(self.context)?;
-        Ok(exe)
+        let _ = entry::validate_entry_point(&package, self.context)?;
+        Ok(package)
     }
 }
