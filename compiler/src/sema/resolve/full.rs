@@ -536,7 +536,7 @@ impl<'r, 'a> Actor<'r, 'a> {
     fn resolve_expression(&mut self, node: &ast::Expression) {
         match &node.kind {
             ast::ExpressionKind::Identifier(name) => {
-                let result = self.lookup_unqualified(node.id, name);
+                let result = self.lookup_unqualified(node.id, name, ScopeNamespace::Value);
 
                 match result {
                     Ok(v) => match v {
@@ -637,10 +637,12 @@ impl<'r, 'a> Actor<'r, 'a> {
         node: &ast::Expression,
     ) -> Result<ResolvedEntity<'a>, ResolutionError> {
         match &node.kind {
-            ast::ExpressionKind::Identifier(name) => self.lookup_unqualified(node.id, name),
+            ast::ExpressionKind::Identifier(name) => {
+                self.lookup_unqualified(node.id, name, ScopeNamespace::Value)
+            }
             ast::ExpressionKind::Member { target, name } => {
                 let entity = self.resolve_expression_entity(target)?;
-                self.resolve_member_access(entity, name)
+                self.resolve_member_access(entity, name, ScopeNamespace::Value)
             }
             ast::ExpressionKind::Specialize { target, .. } => {
                 let entity = self.resolve_expression_entity(target)?;
@@ -656,6 +658,7 @@ impl<'r, 'a> Actor<'r, 'a> {
         &mut self,
         id: NodeID,
         name: &Identifier,
+        preferred: ScopeNamespace,
     ) -> Result<ResolvedEntity<'a>, ResolutionError> {
         let path = vec![PathSegment {
             id,
@@ -665,7 +668,11 @@ impl<'r, 'a> Actor<'r, 'a> {
         }];
 
         let mut entity = None;
-        for &ns in &[ScopeNamespace::Type, ScopeNamespace::Value] {
+        let fallback = match preferred {
+            ScopeNamespace::Type => ScopeNamespace::Value,
+            ScopeNamespace::Value => ScopeNamespace::Type,
+        };
+        for &ns in &[preferred, fallback] {
             let result = self
                 .resolver
                 .resolve_path_in_scopes(&path, ns, &self.scopes);
@@ -704,12 +711,17 @@ impl<'r, 'a> Actor<'r, 'a> {
         &self,
         base: ResolvedEntity<'a>,
         name: &Identifier,
+        preferred: ScopeNamespace,
     ) -> Result<ResolvedEntity<'a>, ResolutionError> {
         let is_init = name.symbol.as_str() == "init";
 
         match base {
             ResolvedEntity::Scoped(scope) => {
-                for &ns in &[ScopeNamespace::Type, ScopeNamespace::Value] {
+                let fallback = match preferred {
+                    ScopeNamespace::Type => ScopeNamespace::Value,
+                    ScopeNamespace::Value => ScopeNamespace::Type,
+                };
+                for &ns in &[preferred, fallback] {
                     let result = self.resolver.resolve_in_scope(name, scope, ns);
                     match result {
                         Ok(value) => match value {

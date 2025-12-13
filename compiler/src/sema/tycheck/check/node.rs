@@ -3,7 +3,7 @@ use crate::{
     hir::{self, DefinitionID, NodeID, Resolution},
     sema::{
         models::{Ty, TyKind},
-        resolve::models::DefinitionKind,
+        resolve::models::{DefinitionKind, TypeHead},
         tycheck::{
             check::checker::Checker,
             solve::{
@@ -245,7 +245,13 @@ impl<'ctx> Checker<'ctx> {
                 self.synth_expression_literal(node, expectation, cs)
             }
             hir::ExpressionKind::Identifier(_, resolution) => {
-                self.synth_identifier_expression(expression.id, expression.span, resolution, cs)
+                self.synth_identifier_expression(
+                    expression.id,
+                    expression.span,
+                    resolution,
+                    expectation,
+                    cs,
+                )
             }
             hir::ExpressionKind::Call(callee, arguments) => {
                 self.synth_call_expression(expression, callee, arguments, expectation, cs)
@@ -450,12 +456,26 @@ impl<'ctx> Checker<'ctx> {
         _: NodeID,
         span: Span,
         resolution: &hir::Resolution,
+        expectation: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         match resolution {
             hir::Resolution::LocalVariable(id) => self.get_local(*id).ty,
-            hir::Resolution::Definition(id, _) => self.gcx().get_type(*id),
-            hir::Resolution::SelfConstructor(..) => todo!(),
+            hir::Resolution::Definition(id, kind) => match kind {
+                DefinitionKind::Struct => {
+                    let Some(nominal) = self.constructor_nominal_from_resolution(resolution) else {
+                        return Ty::error(self.gcx());
+                    };
+                    self.synth_constructor_value_expression(nominal, span, expectation, cs)
+                }
+                _ => self.gcx().get_type(*id),
+            },
+            hir::Resolution::SelfConstructor(..) => {
+                let Some(nominal) = self.constructor_nominal_from_resolution(resolution) else {
+                    return Ty::error(self.gcx());
+                };
+                self.synth_constructor_value_expression(nominal, span, expectation, cs)
+            }
             hir::Resolution::FunctionSet(candidates) => {
                 let ty = cs.infer_cx.next_ty_var(span);
                 let mut branches = vec![];
@@ -477,12 +497,38 @@ impl<'ctx> Checker<'ctx> {
             hir::Resolution::ImplicitSelfParameter => self
                 .implicit_self_ty
                 .unwrap_or_else(|| cs.infer_cx.next_ty_var(span)),
+            hir::Resolution::SelfTypeAlias(..) => {
+                let Some(nominal) = self.constructor_nominal_from_resolution(resolution) else {
+                    self.gcx().dcx().emit_error(
+                        "cannot use `Self` as a value in this context".into(),
+                        Some(span),
+                    );
+                    return Ty::error(self.gcx());
+                };
+                self.synth_constructor_value_expression(nominal, span, expectation, cs)
+            }
             hir::Resolution::PrimaryType(..)
             | hir::Resolution::InterfaceSelfTypeParameter(..)
-            | hir::Resolution::SelfTypeAlias(..)
             | hir::Resolution::Foundation(..) => todo!(),
             hir::Resolution::Error => unreachable!(),
         }
+    }
+
+    fn synth_constructor_value_expression(
+        &self,
+        nominal: DefinitionID,
+        span: Span,
+        expectation: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        let ty = cs.infer_cx.next_ty_var(span);
+        if !self.bind_constructor_overload_set(nominal, span, ty, cs) {
+            return Ty::error(self.gcx());
+        }
+        if let Some(expectation) = expectation {
+            cs.equal(expectation, ty, span);
+        }
+        ty
     }
 
     fn synth_call_expression(
@@ -493,8 +539,27 @@ impl<'ctx> Checker<'ctx> {
         expect_ty: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
-        let callee_ty = self.synth(callee, cs);
-        let callee_source = self.resolve_callee(callee);
+        let (callee_ty, callee_source) = if let hir::ExpressionKind::Identifier(_, resolution) =
+            &callee.kind
+        {
+            if let Some(nominal) = self.constructor_nominal_from_resolution(resolution) {
+                let ty = cs.infer_cx.next_ty_var(callee.span);
+                if !self.bind_constructor_overload_set(nominal, callee.span, ty, cs) {
+                    return Ty::error(self.gcx());
+                }
+                cs.record_expr_ty(callee.id, ty);
+                (ty, None)
+            } else {
+                let callee_ty = self.synth(callee, cs);
+                let callee_source = self.resolve_callee(callee);
+                (callee_ty, callee_source)
+            }
+        } else {
+            let callee_ty = self.synth(callee, cs);
+            let callee_source = self.resolve_callee(callee);
+            (callee_ty, callee_source)
+        };
+
         let arguments = arguments
             .iter()
             .map(|n| ApplyArgument {
@@ -518,6 +583,68 @@ impl<'ctx> Checker<'ctx> {
         cs.add_goal(Goal::Apply(data), expression.span);
 
         result_ty
+    }
+}
+
+impl<'ctx> Checker<'ctx> {
+    fn constructor_nominal_from_resolution(&self, resolution: &hir::Resolution) -> Option<DefinitionID> {
+        let gcx = self.gcx();
+        match resolution {
+            hir::Resolution::Definition(id, DefinitionKind::Struct) => Some(*id),
+            hir::Resolution::SelfConstructor(id) | hir::Resolution::SelfTypeAlias(id) => {
+                match gcx.definition_kind(*id) {
+                    DefinitionKind::Struct => Some(*id),
+                    DefinitionKind::Extension => match gcx.get_extension_type_head(*id)? {
+                        TypeHead::Nominal(nominal) => Some(nominal),
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn bind_constructor_overload_set(
+        &self,
+        nominal: DefinitionID,
+        span: Span,
+        var_ty: Ty<'ctx>,
+        cs: &mut Cs<'ctx>,
+    ) -> bool {
+        let gcx = self.gcx();
+        let head = TypeHead::Nominal(nominal);
+        let constructors = gcx.with_type_database(nominal.package(), |db| {
+            db.type_head_to_members
+                .get(&head)
+                .map(|idx| idx.constructors.members.clone())
+                .unwrap_or_default()
+        });
+
+        if constructors.is_empty() {
+            let name = gcx.definition_ident(nominal).symbol;
+            gcx.dcx().emit_error(
+                format!("type '{name}' defines no constructors").into(),
+                Some(span),
+            );
+            return false;
+        }
+
+        let mut branches = Vec::with_capacity(constructors.len());
+        for ctor in constructors {
+            let candidate_ty = gcx.get_type(ctor);
+            branches.push(DisjunctionBranch {
+                goal: Goal::BindOverload(BindOverloadGoalData {
+                    var_ty,
+                    candidate_ty,
+                    source: ctor,
+                }),
+                source: Some(ctor),
+            });
+        }
+
+        cs.add_goal(Goal::Disjunction(branches), span);
+        true
     }
 }
 
