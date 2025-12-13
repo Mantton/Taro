@@ -50,8 +50,10 @@ pub fn run(
 
         if is_root && require_executable {
             if package.kind == compiler::compile::config::PackageKind::Library {
-                icx.dcx
-                    .emit_error("`run` requires the root package to be executable".into(), None);
+                icx.dcx.emit_error(
+                    "`run` requires the root package to be executable".into(),
+                    None,
+                );
                 return Err(ReportedError);
             }
         }

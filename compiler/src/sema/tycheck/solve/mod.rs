@@ -142,12 +142,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         }
     }
 
-    fn solve_coerce(
-        &mut self,
-        location: Span,
-        from: Ty<'ctx>,
-        to: Ty<'ctx>,
-    ) -> SolverResult<'ctx> {
+    fn solve_coerce(&mut self, location: Span, from: Ty<'ctx>, to: Ty<'ctx>) -> SolverResult<'ctx> {
         // Minimal coercion: just equality for now.
         self.solve_equality(location, from, to)
     }

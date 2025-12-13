@@ -45,7 +45,9 @@ impl<'ctx> TypeError<'ctx> {
             ),
             TypeError::Apply(e) => format!("{e}"),
             TypeError::NoOverloadMatches => "no overload matches this call".into(),
-            TypeError::AmbiguousOverload => "ambiguous overload; unable to pick a best candidate".into(),
+            TypeError::AmbiguousOverload => {
+                "ambiguous overload; unable to pick a best candidate".into()
+            }
         }
     }
 }

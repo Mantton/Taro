@@ -3,17 +3,17 @@
 // #![allow(unused)]
 mod ast;
 mod ast_lowering;
+pub mod codegen;
 pub mod compile;
 pub mod constants;
-pub mod codegen;
 pub mod diagnostics;
 pub mod error;
-pub mod mir;
-mod thir;
 mod hir;
+pub mod mir;
 mod parse;
 mod sema;
 mod span;
+mod thir;
 mod utils;
 
 pub use span::PackageIndex;
