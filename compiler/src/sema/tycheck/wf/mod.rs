@@ -38,7 +38,7 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
             hir::DeclarationKind::Import(..) => {}
             hir::DeclarationKind::Export(..) => todo!(),
             hir::DeclarationKind::Namespace(..) => todo!(),
-            hir::DeclarationKind::Extension(..) => todo!(),
+            hir::DeclarationKind::Extension(..) => {}
             hir::DeclarationKind::Malformed => unreachable!(),
         }
     }

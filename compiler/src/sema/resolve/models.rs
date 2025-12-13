@@ -597,6 +597,21 @@ impl PrimaryType {
     }
 }
 
+/// A stable "type constructor" key used for extension blocks.
+///
+/// This is computed directly from HIR types (not full semantic `Ty` lowering), so it can stay
+/// resilient as the surface type syntax grows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TypeHead {
+    Primary(PrimaryType),
+    /// A nominal type identity (struct/interface/enum/etc).
+    Nominal(DefinitionID),
+    Reference(ast::Mutability),
+    Pointer(ast::Mutability),
+    Tuple(u16),
+    Array,
+}
+
 pub struct ResolutionOutput<'arena> {
     pub resolutions: FxHashMap<NodeID, ResolutionState>,
     pub node_to_definition: FxHashMap<NodeID, DefinitionID>,

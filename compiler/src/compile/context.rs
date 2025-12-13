@@ -6,7 +6,7 @@ use crate::{
     mir::{self, Body},
     sema::{
         models::{FloatTy, IntTy, LabeledFunctionSignature, StructDefinition, Ty, TyKind, UIntTy},
-        resolve::models::{ResolutionOutput, ScopeData, ScopeEntryData, UsageEntryData},
+        resolve::models::{ResolutionOutput, ScopeData, ScopeEntryData, TypeHead, UsageEntryData},
     },
     utils::intern::{Interned, InternedInSet, InternedSet},
 };
@@ -83,6 +83,16 @@ impl<'arena> GlobalContext<'arena> {
         let database = cache.entry(package_index).or_insert(Default::default());
         let alloc = self.context.store.arenas.struct_definitions.alloc(def);
         database.def_to_struct_def.insert(id, alloc);
+    }
+
+    pub fn cache_extension_type_head(self, extension_id: DefinitionID, head: TypeHead) {
+        self.with_type_database(extension_id.package(), |db| {
+            db.extension_to_type_head.insert(extension_id, head.clone());
+            db.type_head_to_extensions
+                .entry(head)
+                .or_default()
+                .push(extension_id);
+        });
     }
 
     pub fn cache_node_type(self, id: hir::NodeID, ty: Ty<'arena>) {
@@ -395,5 +405,7 @@ pub struct TypeDatabase<'arena> {
     pub def_to_ty: FxHashMap<DefinitionID, Ty<'arena>>,
     pub def_to_fn_sig: FxHashMap<DefinitionID, &'arena LabeledFunctionSignature<'arena>>,
     pub def_to_struct_def: FxHashMap<DefinitionID, &'arena StructDefinition<'arena>>,
+    pub extension_to_type_head: FxHashMap<DefinitionID, TypeHead>,
+    pub type_head_to_extensions: FxHashMap<TypeHead, Vec<DefinitionID>>,
     pub node_to_ty: FxHashMap<hir::NodeID, Ty<'arena>>,
 }
