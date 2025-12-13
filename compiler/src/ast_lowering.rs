@@ -78,13 +78,13 @@ impl Actor<'_, '_> {
     fn lower_file(&mut self, file: ast::File) -> Vec<hir::Declaration> {
         file.declarations
             .into_iter()
-            .map(|node| self.lower_declaration(node))
+            .flat_map(|node| self.lower_declaration(node))
             .collect()
     }
 }
 
 impl Actor<'_, '_> {
-    fn lower_declaration(&mut self, node: ast::Declaration) -> hir::Declaration {
+    fn lower_declaration(&mut self, node: ast::Declaration) -> Vec<hir::Declaration> {
         let kind = match node.kind {
             ast::DeclarationKind::Interface(node) => {
                 hir::DeclarationKind::Interface(self.lower_interface(node))
@@ -97,7 +97,15 @@ impl Actor<'_, '_> {
                 hir::DeclarationKind::TypeAlias(self.lower_alias(node))
             }
             ast::DeclarationKind::Function(node) => {
-                hir::DeclarationKind::Function(self.lower_function(node))
+                let span = node.signature.span;
+                hir::DeclarationKind::Function(self.lower_function(node, span))
+            }
+            ast::DeclarationKind::ExternBlock(node) => {
+                return node
+                    .declarations
+                    .into_iter()
+                    .map(|decl| self.lower_extern_declaration(decl))
+                    .collect();
             }
             ast::DeclarationKind::Constant(node) => {
                 hir::DeclarationKind::Constant(self.lower_constant(node))
@@ -119,6 +127,22 @@ impl Actor<'_, '_> {
             }
             ast::DeclarationKind::Initializer(..) | ast::DeclarationKind::Operator(..) => {
                 unreachable!()
+            }
+        };
+
+        vec![hir::Declaration {
+            id: self.definition_id(node.id),
+            span: node.span,
+            kind,
+            attributes: vec![],
+        }]
+    }
+
+    fn lower_extern_declaration(&mut self, node: ast::ExternDeclaration) -> hir::Declaration {
+        let kind = match node.kind {
+            ast::ExternDeclarationKind::Function(node) => {
+                let span = node.signature.span;
+                hir::DeclarationKind::Function(self.lower_function(node, span))
             }
         };
 
@@ -145,7 +169,8 @@ impl Actor<'_, '_> {
                 hir::DeclarationKind::Import(self.lower_use_tree(node))
             }
             ast::FunctionDeclarationKind::Function(node) => {
-                hir::DeclarationKind::Function(self.lower_function(node))
+                let span = node.signature.span;
+                hir::DeclarationKind::Function(self.lower_function(node, span))
             }
             ast::FunctionDeclarationKind::Constant(node) => {
                 hir::DeclarationKind::Constant(self.lower_constant(node))
@@ -181,7 +206,8 @@ impl Actor<'_, '_> {
                 hir::DeclarationKind::Export(self.lower_use_tree(node))
             }
             ast::NamespaceDeclarationKind::Function(node) => {
-                hir::DeclarationKind::Function(self.lower_function(node))
+                let span = node.signature.span;
+                hir::DeclarationKind::Function(self.lower_function(node, span))
             }
             ast::NamespaceDeclarationKind::Constant(node) => {
                 hir::DeclarationKind::Constant(self.lower_constant(node))
@@ -208,7 +234,8 @@ impl Actor<'_, '_> {
                 hir::AssociatedDeclarationKind::Constant(self.lower_constant(node))
             }
             ast::AssociatedDeclarationKind::Function(node) => {
-                hir::AssociatedDeclarationKind::Function(self.lower_function(node))
+                let span = node.signature.span;
+                hir::AssociatedDeclarationKind::Function(self.lower_function(node, span))
             }
             ast::AssociatedDeclarationKind::AssociatedType(node) => {
                 hir::AssociatedDeclarationKind::Type(self.lower_alias(node))
@@ -289,24 +316,46 @@ impl Actor<'_, '_> {
 
 impl Actor<'_, '_> {
     fn lower_operator(&mut self, node: ast::Operator) -> hir::Operator {
+        let span = node.function.signature.span;
         hir::Operator {
-            function: self.lower_function(node.function),
+            function: self.lower_function(node.function, span),
             kind: node.kind,
         }
     }
 
     fn lower_initializer(&mut self, node: ast::Initializer) -> hir::Initializer {
+        let span = node.function.signature.span;
         hir::Initializer {
-            function: self.lower_function(node.function),
+            function: self.lower_function(node.function, span),
         }
     }
 
-    fn lower_function(&mut self, node: ast::Function) -> hir::Function {
+    fn lower_function(&mut self, node: ast::Function, span: Span) -> hir::Function {
+        let abi = self.lower_abi(node.abi, span);
         hir::Function {
             generics: self.lower_generics(node.generics),
             signature: self.lower_function_signature(node.signature),
             block: node.block.map(|n| self.lower_block(n)),
             is_static: node.is_static,
+            abi,
+        }
+    }
+
+    fn lower_abi(&mut self, abi: Option<Symbol>, span: Span) -> Option<hir::Abi> {
+        let Some(abi) = abi else { return None };
+        match abi.as_str() {
+            "C" | "c" => Some(hir::Abi::C),
+            "taro_intrinsic" | "intrinsic" => Some(hir::Abi::Intrinsic),
+            other => {
+                self.context.dcx.emit_error(
+                    format!(
+                        "unknown ABI \"{}\" (supported: \"C\", \"taro_intrinsic\")",
+                        other
+                    ),
+                    Some(span),
+                );
+                None
+            }
         }
     }
 

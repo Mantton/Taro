@@ -159,13 +159,16 @@ impl<'arena> GlobalContext<'arena> {
     }
 
     pub fn all_object_files(self) -> Vec<PathBuf> {
-        self.context
+        let mut inputs: Vec<PathBuf> = self
+            .context
             .store
             .object_files
             .borrow()
             .values()
             .cloned()
-            .collect()
+            .collect();
+        inputs.extend(self.context.store.all_link_inputs());
+        inputs
     }
 
     pub fn output_root(self) -> &'arena PathBuf {
@@ -200,6 +203,7 @@ pub struct CompilerStore<'arena> {
     pub mir_packages: RefCell<FxHashMap<PackageIndex, &'arena mir::MirPackage<'arena>>>,
     pub llvm_modules: RefCell<FxHashMap<PackageIndex, String>>,
     pub object_files: RefCell<FxHashMap<PackageIndex, PathBuf>>,
+    pub link_inputs: RefCell<Vec<PathBuf>>,
     pub output_root: PathBuf,
 }
 
@@ -218,8 +222,17 @@ impl<'arena> CompilerStore<'arena> {
             mir_packages: Default::default(),
             llvm_modules: Default::default(),
             object_files: Default::default(),
+            link_inputs: Default::default(),
             output_root,
         }
+    }
+
+    pub fn add_link_input(&self, path: PathBuf) {
+        self.link_inputs.borrow_mut().push(path);
+    }
+
+    pub fn all_link_inputs(&self) -> Vec<PathBuf> {
+        self.link_inputs.borrow().clone()
     }
 }
 

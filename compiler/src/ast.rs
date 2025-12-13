@@ -89,6 +89,7 @@ pub enum DeclarationKind {
     Struct(Struct),
     Enum(Enum),
     Function(Function),
+    ExternBlock(ExternBlock),
     Variable(Local),
     Constant(Constant),
     Import(UseTree),
@@ -163,6 +164,7 @@ pub struct Function {
     pub signature: FunctionSignature,
     pub block: Option<Block>,
     pub is_static: bool,
+    pub abi: Option<Symbol>,
 }
 
 #[derive(Debug, Clone)]
@@ -203,6 +205,20 @@ pub struct TypeAlias {
 #[derive(Debug, Clone)]
 pub struct Namespace {
     pub declarations: Vec<NamespaceDeclaration>,
+}
+
+// Extern Declarations
+#[derive(Debug, Clone)]
+pub struct ExternBlock {
+    pub abi: Symbol,
+    pub declarations: Vec<ExternDeclaration>,
+}
+
+pub type ExternDeclaration = Declaration<ExternDeclarationKind>;
+
+#[derive(Debug, Clone)]
+pub enum ExternDeclarationKind {
+    Function(Function),
 }
 
 #[derive(Debug, Clone)]
@@ -890,6 +906,17 @@ impl TryFrom<DeclarationKind> for NamespaceDeclarationKind {
     }
 }
 
+impl TryFrom<DeclarationKind> for ExternDeclarationKind {
+    type Error = DeclarationKind;
+
+    fn try_from(kind: DeclarationKind) -> Result<ExternDeclarationKind, DeclarationKind> {
+        Ok(match kind {
+            DeclarationKind::Function(node) => ExternDeclarationKind::Function(node),
+            _ => return Err(kind),
+        })
+    }
+}
+
 // MARK - Visitor
 pub trait VisitorResult {
     type Residual;
@@ -1035,6 +1062,10 @@ pub trait AstVisitor: Sized {
 
     fn visit_namespace_declaration(&mut self, node: &NamespaceDeclaration) -> Self::Result {
         walk_namespace_declaration(self, node)
+    }
+
+    fn visit_extern_declaration(&mut self, node: &ExternDeclaration) -> Self::Result {
+        walk_extern_declaration(self, node)
     }
 
     fn visit_statement(&mut self, node: &Statement) -> Self::Result {
@@ -1244,6 +1275,9 @@ pub fn walk_declaration<V: AstVisitor>(visitor: &mut V, declaration: &Declaratio
         DeclarationKind::Function(node) => {
             try_visit!(visitor.visit_function(declaration.id, node, FunctionContext::Free));
         }
+        DeclarationKind::ExternBlock(node) => {
+            walk_list!(visitor, visit_extern_declaration, &node.declarations);
+        }
         DeclarationKind::Variable(node) => {
             try_visit!(visitor.visit_local(&node));
         }
@@ -1275,6 +1309,22 @@ pub fn walk_declaration<V: AstVisitor>(visitor: &mut V, declaration: &Declaratio
         }
         DeclarationKind::Initializer(..) | DeclarationKind::Operator(..) => {
             unreachable!()
+        }
+    }
+
+    V::Result::output()
+}
+
+pub fn walk_extern_declaration<V: AstVisitor>(
+    visitor: &mut V,
+    declaration: &ExternDeclaration,
+) -> V::Result {
+    walk_list!(visitor, visit_attribute, &declaration.attributes);
+    visitor.visit_identifier(&declaration.identifier);
+
+    match &declaration.kind {
+        ExternDeclarationKind::Function(node) => {
+            try_visit!(visitor.visit_function(declaration.id, node, FunctionContext::Foreign));
         }
     }
 

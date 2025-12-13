@@ -74,6 +74,7 @@ impl<'ctx> Actor<'ctx> {
             inputs,
             output,
             is_variadic: false,
+            abi: node.abi,
         }
     }
 }

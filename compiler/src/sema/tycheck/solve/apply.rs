@@ -37,6 +37,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     .collect(),
                 output,
                 is_variadic: false,
+                abi: None,
             }
         };
 

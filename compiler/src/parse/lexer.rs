@@ -809,6 +809,7 @@ fn str_to_keyword(word: &str) -> Option<Token> {
         "else" => Token::Else,
         "enum" => Token::Enum,
         "export" => Token::Export,
+        "extern" => Token::Extern,
         "false" => Token::False,
         "for" => Token::For,
         "func" => Token::Function,

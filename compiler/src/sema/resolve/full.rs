@@ -160,6 +160,10 @@ impl<'r, 'a> ast::AstVisitor for Actor<'r, 'a> {
         self.resolve_namespace_declaration(node);
     }
 
+    fn visit_extern_declaration(&mut self, node: &ast::ExternDeclaration) -> Self::Result {
+        self.resolve_extern_declaration(node);
+    }
+
     fn visit_block(&mut self, node: &ast::Block) -> Self::Result {
         let scope = if let Some(&scope) = self.resolver.block_scope_mapping.get(&node.id) {
             LexicalScopeSource::Scoped(scope)
@@ -273,12 +277,26 @@ impl<'r, 'a> Actor<'r, 'a> {
                 let scope = self.resolver.get_definition_scope(def_id);
                 self.with_scope(scope, |this| ast::walk_declaration(this, declaration))
             }
+            ast::DeclarationKind::ExternBlock(..) => ast::walk_declaration(self, declaration),
             ast::DeclarationKind::Extension(node) => self.resolve_extension(declaration.id, node),
             ast::DeclarationKind::Initializer(..) => {
                 unreachable!("top level initializer")
             }
             ast::DeclarationKind::Operator(..) => {
                 unreachable!("top level operator")
+            }
+        }
+    }
+
+    fn resolve_extern_declaration(&mut self, declaration: &ast::ExternDeclaration) {
+        match &declaration.kind {
+            ast::ExternDeclarationKind::Function(ast::Function { generics, .. }) => {
+                let def_id = self.resolver.definition_id(declaration.id);
+                self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
+                    this.with_generics_scope(generics, |this| {
+                        ast::walk_extern_declaration(this, declaration)
+                    });
+                })
             }
         }
     }

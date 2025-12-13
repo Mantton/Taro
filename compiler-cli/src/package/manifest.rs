@@ -264,7 +264,9 @@ impl ResolvedPackage {
             }
         };
 
-        Ok(format!("{}-{}", name, hasher.finalize().to_string()).into())
+        let hash = hasher.finalize().to_string();
+        let short = hash.get(0..8).unwrap_or(hash.as_str());
+        Ok(format!("{}-{}", name, short).into())
     }
 }
 

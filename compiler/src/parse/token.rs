@@ -83,6 +83,7 @@ pub enum Token {
     Else,
     Enum,
     Export,
+    Extern,
     False,
     For,
     Function,

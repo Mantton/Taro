@@ -32,6 +32,11 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
         self.with_parent(parent, |this| ast::walk_module(this, node));
     }
     fn visit_declaration(&mut self, node: &ast::Declaration) -> Self::Result {
+        if matches!(node.kind, ast::DeclarationKind::ExternBlock(..)) {
+            ast::walk_declaration(self, node);
+            return;
+        }
+
         let kind = match &node.kind {
             ast::DeclarationKind::Interface(..) => DefinitionKind::Interface,
             ast::DeclarationKind::Struct(..) => DefinitionKind::Struct,
@@ -47,6 +52,7 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
             ast::DeclarationKind::Initializer(..) | &ast::DeclarationKind::Operator(..) => {
                 unreachable!("top level associated method")
             }
+            ast::DeclarationKind::ExternBlock(..) => unreachable!(),
         };
 
         let parent = self.tag(&node.identifier, node.id, kind);
@@ -105,6 +111,16 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
         let parent = self.tag(&node.identifier, node.id, kind);
         self.with_parent(parent, |this| {
             ast::walk_namespace_declaration(this, node);
+        });
+    }
+
+    fn visit_extern_declaration(&mut self, node: &ast::ExternDeclaration) -> Self::Result {
+        let kind = match &node.kind {
+            ast::ExternDeclarationKind::Function(..) => DefinitionKind::Function,
+        };
+        let parent = self.tag(&node.identifier, node.id, kind);
+        self.with_parent(parent, |this| {
+            ast::walk_extern_declaration(this, node);
         });
     }
 

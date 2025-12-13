@@ -443,6 +443,10 @@ impl Parser {
                 Identifier::emtpy(self.file.id),
                 self.parse_import_export_declaration(false)?,
             ),
+            Token::Extern => (
+                Identifier::emtpy(self.file.id),
+                self.parse_extern_block()?,
+            ),
             Token::Type => self.parse_type_declaration()?,
             Token::Function | Token::Static => self.parse_function(mode)?,
             Token::Extend => (Identifier::emtpy(self.file.id), self.parse_impl()?),
@@ -453,6 +457,64 @@ impl Parser {
         };
 
         Ok(Some((identifier, kind)))
+    }
+}
+
+impl Parser {
+    fn parse_extern_block(&mut self) -> R<DeclarationKind> {
+        self.expect(Token::Extern)?;
+        let abi = match self.current_token() {
+            Token::String { value } => {
+                self.bump();
+                Symbol::new(&value)
+            }
+            _ => return Err(self.err_at_current(ParserError::ExpectedExternAbiString)),
+        };
+
+        let declarations: Vec<Declaration<ast::ExternDeclarationKind>> =
+            if self.matches(Token::LBrace) {
+                self.parse_declaration_list(|p| p.parse_extern_declaration(abi))?
+            } else {
+                vec![]
+            };
+
+        Ok(DeclarationKind::ExternBlock(ast::ExternBlock { abi, declarations }))
+    }
+
+    fn parse_extern_declaration(
+        &mut self,
+        abi: Symbol,
+    ) -> R<Option<Declaration<ast::ExternDeclarationKind>>> {
+        let mode = FnParseMode { req_body: false };
+        let result = self.parse_declaration_internal(mode)?;
+        let Some(result) = result else {
+            return Ok(None);
+        };
+
+        let kind = match ast::ExternDeclarationKind::try_from(result.kind) {
+            Ok(mut kind) => {
+                let ast::ExternDeclarationKind::Function(func) = &mut kind;
+                if func.block.is_some() {
+                    self.emit_error(ParserError::ExternFunctionBodyNotAllowed, result.span);
+                    func.block = None;
+                }
+                func.abi = Some(abi);
+                kind
+            }
+            Err(_) => {
+                self.emit_error(ParserError::DissallowedExternDeclaration, result.span);
+                return Ok(None);
+            }
+        };
+
+        Ok(Some(Declaration {
+            id: result.id,
+            span: result.span,
+            identifier: result.identifier,
+            kind,
+            visibility: result.visibility,
+            attributes: result.attributes,
+        }))
     }
 }
 
@@ -2824,6 +2886,7 @@ impl Parser {
             block,
             generics,
             is_static,
+            abi: None,
         };
 
         Ok(func)
@@ -3158,6 +3221,9 @@ enum ParserError {
     ExpectedParameterNameOrLabel,
     ExpectedParameterName,
     ExpectedSelf,
+    ExpectedExternAbiString,
+    DissallowedExternDeclaration,
+    ExternFunctionBodyNotAllowed,
 }
 
 impl Display for ParserError {
@@ -3198,6 +3264,9 @@ impl Display for ParserError {
             ExpectedParameterNameOrLabel => f.write_str("expected parameter name or label"),
             ExpectedParameterName => f.write_str("expected parameter name"),
             ExpectedSelf => f.write_str("expected 'self'"),
+            ExpectedExternAbiString => f.write_str("expected extern ABI string"),
+            DissallowedExternDeclaration => f.write_str("disallowed extern declaration"),
+            ExternFunctionBodyNotAllowed => f.write_str("extern functions cannot have a body"),
         }
     }
 }

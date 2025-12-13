@@ -16,6 +16,7 @@ use compiler::{
     diagnostics::DiagCtx,
     error::ReportedError,
 };
+use std::{path::PathBuf, process::Command};
 
 pub fn run(
     arguments: CommandLineArguments,
@@ -32,6 +33,7 @@ pub fn run(
     let graph = sync_dependencies(arguments.path)?;
 
     let _ = compile_std(&icx)?;
+    build_runtime(&icx, &project_root)?;
 
     let total = graph.ordered.len();
 
@@ -90,6 +92,48 @@ pub fn run(
         }
     }
     Ok(None)
+}
+
+fn build_runtime(ctx: &CompilerContext<'_>, project_root: &PathBuf) -> Result<(), ReportedError> {
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or(ReportedError)?
+        .to_path_buf();
+    let target_dir = project_root.join("target").join("runtime");
+
+    let status = Command::new("cargo")
+        .arg("build")
+        .arg("-p")
+        .arg("taro-runtime")
+        .arg("--manifest-path")
+        .arg(workspace_root.join("Cargo.toml"))
+        .arg("--target-dir")
+        .arg(&target_dir)
+        .status()
+        .map_err(|e| {
+            ctx.dcx.emit_error(format!("failed to invoke cargo to build runtime: {e}"), None);
+            ReportedError
+        })?;
+
+    if !status.success() {
+        ctx.dcx
+            .emit_error("failed to build runtime crate".into(), None);
+        return Err(ReportedError);
+    }
+
+    let lib_path = target_dir.join("debug").join("libtaro_runtime.a");
+    if !lib_path.exists() {
+        ctx.dcx.emit_error(
+            format!("runtime archive not found at {}", lib_path.display()),
+            None,
+        );
+        return Err(ReportedError);
+    }
+
+    // Make the runtime archive available to the existing link step by treating it like another
+    // "object file" input.
+    ctx.store.add_link_input(lib_path);
+    Ok(())
 }
 
 fn compile_std<'a>(ctx: &'a CompilerContext<'a>) -> Result<(), ReportedError> {

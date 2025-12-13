@@ -44,7 +44,8 @@ impl<'ctx> Checker<'ctx> {
         }
 
         let Some(body) = &node.block else {
-            unreachable!("ICE: Checking Function without Body")
+            // Extern function declaration.
+            return;
         };
 
         if let Some(body) = hir::is_expression_bodied(body) {

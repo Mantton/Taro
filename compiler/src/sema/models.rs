@@ -229,6 +229,7 @@ pub struct LabeledFunctionSignature<'ctx> {
     pub inputs: Vec<LabeledFunctionParameter<'ctx>>,
     pub output: Ty<'ctx>,
     pub is_variadic: bool,
+    pub abi: Option<crate::hir::Abi>,
 }
 
 impl LabeledFunctionSignature<'_> {

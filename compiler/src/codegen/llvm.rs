@@ -16,7 +16,7 @@ use inkwell::{
     types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType},
     values::{BasicMetadataValueEnum, BasicValue, BasicValueEnum, FunctionValue, PointerValue},
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::{fs, path::PathBuf};
 
 /// Lower MIR for a package into a single LLVM module and cache its IR.
@@ -34,8 +34,8 @@ pub fn emit_package<'gcx>(
     emitter.emit_start_shim(package);
     emitter.run_function_passes();
 
-    // let ir = emitter.module.print_to_string().to_string();
-    // println!("{ir}");
+    let ir = emitter.module.print_to_string().to_string();
+    println!("{ir}");
 
     let obj = emitter.emit_object_file()?;
     gcx.cache_object_file(obj.clone());
@@ -284,16 +284,15 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 .name
                 .map(|s| s.as_str().to_string())
                 .unwrap_or_else(|| format!("tmp{idx}"));
-            let storage = match decl.kind {
-                mir::LocalKind::Param => LocalStorage::Value(None),
-                mir::LocalKind::Temp | mir::LocalKind::Return => LocalStorage::Value(None),
-                mir::LocalKind::User => match lower_type(self.context, decl.ty) {
-                    Some(ty) => {
-                        let slot = alloc_builder.build_alloca(ty, &name).unwrap();
-                        LocalStorage::Stack(slot)
-                    }
-                    None => LocalStorage::Value(None),
-                },
+            // Use stack slots for all locals with a representable LLVM type.
+            // This avoids incorrect behavior at control-flow joins when "locals"
+            // are tracked purely in the emitter (would require PHI construction).
+            let storage = match lower_type(self.context, decl.ty) {
+                Some(ty) => {
+                    let slot = alloc_builder.build_alloca(ty, &name).unwrap();
+                    LocalStorage::Stack(slot)
+                }
+                None => LocalStorage::Value(None),
             };
             locals.push(storage);
         }
@@ -303,7 +302,14 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         for (idx, decl) in body.locals.iter().enumerate() {
             if let mir::LocalKind::Param = decl.kind {
                 if let Some(arg) = params.next() {
-                    locals[idx] = LocalStorage::Value(Some(arg));
+                    match locals[idx] {
+                        LocalStorage::Value(_) => {
+                            locals[idx] = LocalStorage::Value(Some(arg));
+                        }
+                        LocalStorage::Stack(slot) => {
+                            let _ = alloc_builder.build_store(slot, arg).unwrap();
+                        }
+                    }
                 }
             }
         }
@@ -862,6 +868,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     return f;
                 }
 
+                if self.is_foreign_function(def_id) {
+                    let f = self.declare_foreign_function(def_id);
+                    self.functions.insert(def_id, f);
+                    return f;
+                }
+
                 // Not declared yet (likely from another package); declare as external.
                 let sig = self.gcx.get_signature(def_id);
                 let fn_ty = lower_fn_sig(self.context, sig);
@@ -878,6 +890,21 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .copied()
             .next()
             .expect("at least one function")
+    }
+
+    fn is_foreign_function(&self, id: hir::DefinitionID) -> bool {
+        self.gcx.get_signature(id).abi.is_some()
+    }
+
+    fn declare_foreign_function(&self, id: hir::DefinitionID) -> FunctionValue<'llvm> {
+        let sig = self.gcx.get_signature(id);
+        let fn_ty = lower_fn_sig(self.context, sig);
+        let ident = self.gcx.definition_ident(id);
+        let name = ident.symbol.as_str();
+        self.module.get_function(name).unwrap_or_else(|| {
+            self.module
+                .add_function(name, fn_ty, Some(Linkage::External))
+        })
     }
 
     fn eval_operand(
@@ -1166,9 +1193,58 @@ fn is_signed(ty: Ty) -> bool {
 }
 
 fn mangle(gcx: GlobalContext, id: hir::DefinitionID) -> String {
-    let ident = gcx.definition_ident(id);
+    fn sanitize(s: &str) -> String {
+        s.chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+            .collect()
+    }
+
     let pkg_ident = gcx
         .package_ident(id.package())
         .unwrap_or_else(|| gcx.config.identifier.clone());
-    format!("{}__{}", pkg_ident, ident.symbol.as_str())
+    let pkg_ident = sanitize(pkg_ident.as_ref());
+
+    let output = gcx.resolution_output(id.package());
+    let leaf_ident = output
+        .definition_to_ident
+        .get(&id)
+        .map(|i| sanitize(i.symbol.as_str()))
+        .unwrap_or_else(|| sanitize(gcx.definition_ident(id).symbol.as_str()));
+
+    // Include module path segments to avoid collisions between same-named items in different
+    // modules (e.g. `foo::util::f` vs `foo::math::f`).
+    let mut modules: Vec<String> = vec![];
+    let mut current = id;
+    let mut seen: FxHashSet<hir::DefinitionID> = FxHashSet::default();
+
+    while let Some(&parent) = output.definition_to_parent.get(&current) {
+        if parent == current || !seen.insert(parent) {
+            break;
+        }
+        current = parent;
+
+        if matches!(
+            output.definition_to_kind.get(&current),
+            Some(crate::sema::resolve::models::DefinitionKind::Module)
+        ) {
+            if let Some(ident) = output.definition_to_ident.get(&current) {
+                let name = ident.symbol.as_str();
+                if !name.is_empty() {
+                    modules.push(sanitize(name));
+                }
+            }
+        }
+    }
+    modules.reverse();
+    // The root module is effectively already encoded by the package prefix, so drop it to avoid
+    // mangling like `pkg__main__foo` and prefer `pkg__foo`.
+    if !modules.is_empty() {
+        modules.remove(0);
+    }
+
+    if modules.is_empty() {
+        format!("{pkg_ident}__{leaf_ident}")
+    } else {
+        format!("{pkg_ident}__{}__{leaf_ident}", modules.join("__"))
+    }
 }

@@ -76,6 +76,10 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
     }
 
     fn visit_declaration(&mut self, node: &ast::Declaration) -> Self::Result {
+        if matches!(node.kind, ast::DeclarationKind::ExternBlock(..)) {
+            ast::walk_declaration(self, node);
+            return;
+        }
         let scope = self.define_module_declaration(node);
         if let Some(scope) = scope {
             self.with_scope(scope, |this| ast::walk_declaration(this, node));
@@ -119,6 +123,21 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
         } else {
             ast::walk_assoc_declaration(self, node, context)
         }
+    }
+
+    fn visit_extern_declaration(&mut self, node: &ast::ExternDeclaration) -> Self::Result {
+        let def_id = self.resolver.definition_id(node.id);
+        let def_kind = self.resolver.definition_kind(def_id);
+        let resolution = Resolution::Definition(def_id, def_kind);
+        let visibility = 0;
+
+        match &node.kind {
+            ast::ExternDeclarationKind::Function(..) => {
+                self.define(&node.identifier, ScopeNamespace::Value, resolution, visibility);
+            }
+        }
+
+        ast::walk_extern_declaration(self, node)
     }
 
     fn visit_block(&mut self, node: &ast::Block) -> Self::Result {
@@ -179,6 +198,7 @@ impl<'r, 'a> Actor<'r, 'a> {
             | ast::DeclarationKind::Constant(..) => {
                 self.define(identifier, ScopeNamespace::Value, resolution, visibility);
             }
+            ast::DeclarationKind::ExternBlock(..) => return None,
             ast::DeclarationKind::Extension(_) => return None,
             ast::DeclarationKind::Interface(..) => {
                 let scope = ScopeData::new(

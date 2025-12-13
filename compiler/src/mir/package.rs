@@ -14,6 +14,9 @@ pub fn build_package<'ctx>(
     let mut functions: FxHashMap<DefinitionID, &'ctx crate::mir::Body<'ctx>> = FxHashMap::default();
 
     for (id, func) in package.functions {
+        if func.body.is_none() {
+            continue;
+        }
         let body = MirBuilder::build_function(gcx, &func);
         let alloc = gcx.store.arenas.mir_bodies.alloc(body);
         functions.insert(id, alloc);

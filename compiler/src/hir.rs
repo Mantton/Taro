@@ -102,12 +102,19 @@ pub struct Namespace {
     pub declarations: Vec<Declaration>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Abi {
+    C,
+    Intrinsic,
+}
+
 #[derive(Debug, Clone)]
 pub struct Function {
     pub generics: Generics,
     pub signature: FunctionSignature,
     pub block: Option<Block>,
     pub is_static: bool,
+    pub abi: Option<Abi>,
 }
 
 /// AST Representation of a function parameter
@@ -492,12 +499,6 @@ pub enum Literal {
 }
 
 #[derive(Debug, Clone)]
-pub struct MapPair {
-    pub key: Box<Expression>,
-    pub value: Box<Expression>,
-}
-
-#[derive(Debug, Clone)]
 pub struct MatchExpression {
     pub value: Box<Expression>,
     pub arms: Vec<MatchArm>,
@@ -830,10 +831,6 @@ pub trait HirVisitor: Sized {
 
     fn visit_match_arm(&mut self, node: &MatchArm) -> Self::Result {
         walk_match_arm(self, node)
-    }
-
-    fn visit_map_pair(&mut self, node: &MapPair) -> Self::Result {
-        walk_map_pair(self, node)
     }
 
     fn visit_anon_const(&mut self, node: &AnonConst) -> Self::Result {
@@ -1403,12 +1400,6 @@ pub fn walk_match_arm<V: HirVisitor>(visitor: &mut V, node: &MatchArm) -> V::Res
     try_visit!(visitor.visit_pattern(&node.pattern));
     try_visit!(visitor.visit_expression(&node.body));
     visit_optional!(visitor, visit_expression, &node.guard);
-    V::Result::output()
-}
-
-pub fn walk_map_pair<V: HirVisitor>(visitor: &mut V, node: &MapPair) -> V::Result {
-    try_visit!(visitor.visit_expression(&node.key));
-    try_visit!(visitor.visit_expression(&node.value));
     V::Result::output()
 }
 
