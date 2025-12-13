@@ -1,13 +1,14 @@
-use rustc_hash::FxHashMap;
-
 use crate::{
     ast::{self, Identifier},
     compile::context::GlobalContext,
     error::CompileResult,
     hir::{self, FoundationDecl},
-    sema::resolve::models::{Resolution, ResolutionOutput, ResolutionState},
+    sema::resolve::models::{
+        ExpressionResolutionState, Resolution, ResolutionOutput, ResolutionState,
+    },
     span::{Span, Symbol},
 };
+use rustc_hash::FxHashMap;
 
 pub fn lower_package<'a, 'c>(
     package: ast::Package,
@@ -341,7 +342,6 @@ impl Actor<'_, '_> {
             generics: self.lower_generics(node.generics),
             signature: self.lower_function_signature(node.signature),
             block: node.block.map(|n| self.lower_block(n)),
-            is_static: node.is_static,
             abi,
         }
     }
@@ -800,13 +800,36 @@ impl Actor<'_, '_> {
         let kind = match node.kind {
             ast::ExpressionKind::Literal(lit) => self.lower_literal(lit, node.span),
             ast::ExpressionKind::Identifier(ident) => {
-                let resolution = self.get_resolution(node.id);
-                hir::ExpressionKind::Identifier(ident, resolution)
+                let resolved_path = self.lower_identifier_expression_path(node.id, ident);
+                hir::ExpressionKind::Path(resolved_path)
             }
-            ast::ExpressionKind::Member { target, name } => hir::ExpressionKind::Member {
-                target: self.lower_expression(target),
-                name,
-            },
+            ast::ExpressionKind::Member { target, name } => {
+                match self
+                    .resolutions
+                    .expression_resolutions
+                    .get(&node.id)
+                    .cloned()
+                {
+                    Some(ExpressionResolutionState::Resolved(_)) => {
+                        let Some(path) = self.try_lower_resolved_member_chain_as_path(
+                            node.id, &target, name, node.span,
+                        ) else {
+                            unreachable!("resolved member access must be a compactable path");
+                        };
+                        hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path))
+                    }
+                    Some(ExpressionResolutionState::DeferredAssociatedType) => {
+                        let path = self.lower_deferred_associated_type_member_chain(target, name);
+                        hir::ExpressionKind::Path(path)
+                    }
+                    Some(ExpressionResolutionState::DeferredAssociatedValue) | None => {
+                        hir::ExpressionKind::Member {
+                            target: self.lower_expression(target),
+                            name,
+                        }
+                    }
+                }
+            }
             ast::ExpressionKind::Specialize {
                 target,
                 type_arguments,
@@ -918,13 +941,11 @@ impl Actor<'_, '_> {
                 let lhs = self.lower_expression(lhs);
                 let rhs = self.lower_expression(rhs);
                 let identiier = Identifier::new(Symbol::new("Range"), node.span);
-                let foo = self.mk_expression(
-                    hir::ExpressionKind::Identifier(
-                        identiier,
-                        Resolution::Foundation(foundational),
-                    ),
-                    node.span,
+                let range_path = self.mk_single_segment_resolved_path(
+                    identiier,
+                    Resolution::Foundation(foundational),
                 );
+                let foo = self.mk_expression(hir::ExpressionKind::Path(range_path), node.span);
 
                 let arguments = vec![lhs, rhs]
                     .into_iter()
@@ -942,13 +963,11 @@ impl Actor<'_, '_> {
                 // ["foo": "bar"] => { let dictionary = Dictionary(); dictionary.insert("foo", "bar"); dictionary }
                 // Initialize the dictionary via a foundational call.
                 let ctor_ident = Identifier::new(Symbol::new("Dictionary"), node.span);
-                let ctor = self.mk_expression(
-                    hir::ExpressionKind::Identifier(
-                        ctor_ident,
-                        Resolution::Foundation(hir::FoundationDecl::Dictionary),
-                    ),
-                    node.span,
+                let ctor_path = self.mk_single_segment_resolved_path(
+                    ctor_ident,
+                    Resolution::Foundation(hir::FoundationDecl::Dictionary),
                 );
+                let ctor = self.mk_expression(hir::ExpressionKind::Path(ctor_path), node.span);
                 let initializer =
                     self.mk_expression(hir::ExpressionKind::Call(ctor, vec![]), node.span);
 
@@ -978,13 +997,12 @@ impl Actor<'_, '_> {
                     let key = self.lower_expression(pair.key);
                     let value = self.lower_expression(pair.value);
 
-                    let target = self.mk_expression(
-                        hir::ExpressionKind::Identifier(
-                            dictionary_ident,
-                            Resolution::LocalVariable(local_id),
-                        ),
-                        node.span,
+                    let dictionary_path = self.mk_single_segment_resolved_path(
+                        dictionary_ident,
+                        Resolution::LocalVariable(local_id),
                     );
+                    let target =
+                        self.mk_expression(hir::ExpressionKind::Path(dictionary_path), node.span);
                     let member = self.mk_expression(
                         hir::ExpressionKind::Member {
                             target,
@@ -1009,13 +1027,12 @@ impl Actor<'_, '_> {
                 }
 
                 // The block expression evaluates to the populated dictionary.
-                let result = self.mk_expression(
-                    hir::ExpressionKind::Identifier(
-                        dictionary_ident,
-                        Resolution::LocalVariable(local_id),
-                    ),
-                    node.span,
+                let dictionary_path = self.mk_single_segment_resolved_path(
+                    dictionary_ident,
+                    Resolution::LocalVariable(local_id),
                 );
+                let result =
+                    self.mk_expression(hir::ExpressionKind::Path(dictionary_path), node.span);
                 statements
                     .push(self.mk_statement(hir::StatementKind::Expression(result), node.span));
 
@@ -1046,6 +1063,147 @@ impl Actor<'_, '_> {
             kind,
             span: node.span,
         })
+    }
+
+    fn try_lower_resolved_member_chain_as_path(
+        &mut self,
+        member_expr_id: ast::NodeID,
+        target: &ast::Expression,
+        name: Identifier,
+        span: Span,
+    ) -> Option<hir::Path> {
+        // Only compact purely qualified dotted chains that are fully resolved by the resolver.
+        // If any segment is deferred, keep it in expression form so typeck can resolve associated
+        // items/types.
+        let mut parts: Vec<(ast::NodeID, Identifier)> = Vec::new();
+        self.collect_member_chain_parts(target, &mut parts)?;
+        parts.push((member_expr_id, name));
+
+        let (base_id, base_ident) = *parts.first()?;
+
+        let mut last_resolution = self.get_resolution(base_id);
+        let mut segments = Vec::with_capacity(parts.len());
+        segments.push(hir::PathSegment {
+            id: self.next_index(),
+            identifier: base_ident,
+            arguments: None,
+            span: base_ident.span,
+            resolution: last_resolution.clone(),
+        });
+
+        for (part_id, ident) in parts.into_iter().skip(1) {
+            match self
+                .resolutions
+                .expression_resolutions
+                .get(&part_id)
+                .cloned()
+            {
+                Some(ExpressionResolutionState::Resolved(res)) => {
+                    last_resolution = self.lower_resolution(res);
+                    segments.push(hir::PathSegment {
+                        id: self.next_index(),
+                        identifier: ident,
+                        arguments: None,
+                        span: ident.span,
+                        resolution: last_resolution.clone(),
+                    });
+                }
+                Some(ExpressionResolutionState::DeferredAssociatedType)
+                | Some(ExpressionResolutionState::DeferredAssociatedValue) => return None,
+                None => unreachable!(
+                    "ICE: missing expression resolution for member chain segment {part_id:?}"
+                ),
+            }
+        }
+
+        Some(hir::Path {
+            span,
+            resolution: last_resolution,
+            segments,
+        })
+    }
+
+    fn lower_deferred_associated_type_member_chain(
+        &mut self,
+        target: Box<ast::Expression>,
+        name: Identifier,
+    ) -> hir::ResolvedPath {
+        // Build a `ResolvedPath::Relative` chain for type-relative member access. These segments
+        // are intentionally left unresolved; typechecking resolves them using the type head.
+        let mut segs: Vec<Identifier> = vec![name];
+        let mut base_expr = target;
+
+        loop {
+            let ast::ExpressionKind::Member {
+                target: inner,
+                name: seg_name,
+            } = &base_expr.kind
+            else {
+                break;
+            };
+
+            let Some(ExpressionResolutionState::DeferredAssociatedType) = self
+                .resolutions
+                .expression_resolutions
+                .get(&base_expr.id)
+                .cloned()
+            else {
+                break;
+            };
+
+            segs.push(*seg_name);
+            base_expr = inner.clone();
+        }
+
+        let base_hir = self.lower_expression(base_expr);
+        let hir::ExpressionKind::Path(base_path) = &base_hir.kind else {
+            unreachable!("deferred associated type access must have a path base");
+        };
+
+        let mut base_ty = self.mk_ty(hir::TypeKind::Nominal(base_path.clone()), base_hir.span);
+        let mut span = base_hir.span;
+
+        segs.reverse();
+        let seg_count = segs.len();
+
+        for (idx, ident) in segs.into_iter().enumerate() {
+            let seg = hir::PathSegment {
+                id: self.next_index(),
+                identifier: ident,
+                arguments: None,
+                span: ident.span,
+                resolution: Resolution::Error,
+            };
+
+            let path = hir::ResolvedPath::Relative(base_ty, seg);
+            if idx == seg_count - 1 {
+                return path;
+            }
+
+            span = span.to(ident.span);
+            base_ty = self.mk_ty(hir::TypeKind::Nominal(path), span);
+        }
+
+        unreachable!()
+    }
+
+    fn collect_member_chain_parts(
+        &self,
+        expr: &ast::Expression,
+        out: &mut Vec<(ast::NodeID, Identifier)>,
+    ) -> Option<()> {
+        match &expr.kind {
+            ast::ExpressionKind::Identifier(ident) => {
+                out.push((expr.id, *ident));
+                Some(())
+            }
+            ast::ExpressionKind::Member { target, name } => {
+                self.collect_member_chain_parts(target, out)?;
+                out.push((expr.id, *name));
+                Some(())
+            }
+            _ => None,
+        }
     }
 
     fn lower_anon_const(&mut self, node: ast::AnonConst) -> hir::AnonConst {
@@ -1329,7 +1487,6 @@ impl Actor<'_, '_> {
                 hir::Resolution::LocalVariable(*id)
             }
             Resolution::SelfConstructor(n) => hir::Resolution::SelfConstructor(n),
-            Resolution::ImplicitSelfParameter => hir::Resolution::ImplicitSelfParameter,
             Resolution::Foundation(n) => hir::Resolution::Foundation(n),
             Resolution::Error => hir::Resolution::Error,
         };
@@ -1339,6 +1496,45 @@ impl Actor<'_, '_> {
         let state = self.resolutions.resolutions.get(&id).cloned();
         let resolution = self.convert_resolution_state(state);
         resolution
+    }
+
+    fn mk_single_segment_resolved_path(
+        &mut self,
+        identifier: Identifier,
+        resolution: hir::Resolution,
+    ) -> hir::ResolvedPath {
+        let segment = hir::PathSegment {
+            id: self.next_index(),
+            identifier,
+            arguments: None,
+            span: identifier.span,
+            resolution: resolution.clone(),
+        };
+        hir::ResolvedPath::Resolved(hir::Path {
+            span: identifier.span,
+            resolution,
+            segments: vec![segment],
+        })
+    }
+
+    fn lower_identifier_expression_path(
+        &mut self,
+        id: ast::NodeID,
+        identifier: Identifier,
+    ) -> hir::ResolvedPath {
+        let resolution = self.get_resolution(id);
+        let segment = hir::PathSegment {
+            id: self.next_index(),
+            identifier,
+            arguments: None,
+            span: identifier.span,
+            resolution: resolution.clone(),
+        };
+        hir::ResolvedPath::Resolved(hir::Path {
+            span: identifier.span,
+            resolution,
+            segments: vec![segment],
+        })
     }
 }
 

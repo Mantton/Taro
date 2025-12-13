@@ -1,3 +1,4 @@
+use crate::span::Symbol;
 use crate::{
     PackageIndex,
     compile::config::Config,
@@ -16,7 +17,6 @@ use bumpalo::Bump;
 use ecow::EcoString;
 use rustc_hash::FxHashMap;
 use std::{cell::RefCell, ops::Deref, path::PathBuf};
-use crate::span::Symbol;
 
 pub type Gcx<'gcx> = GlobalContext<'gcx>;
 
@@ -183,10 +183,7 @@ impl<'arena> GlobalContext<'arena> {
 
     pub fn definition_kind(self, id: DefinitionID) -> DefinitionKind {
         let output = self.resolution_output(id.package());
-        *output
-            .definition_to_kind
-            .get(&id)
-            .expect("definition kind")
+        *output.definition_to_kind.get(&id).expect("definition kind")
     }
 
     pub fn definition_parent(self, id: DefinitionID) -> Option<DefinitionID> {

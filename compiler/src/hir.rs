@@ -114,7 +114,6 @@ pub struct Function {
     pub generics: Generics,
     pub signature: FunctionSignature,
     pub block: Option<Block>,
-    pub is_static: bool,
     pub abi: Option<Abi>,
 }
 
@@ -152,13 +151,6 @@ pub struct FunctionPrototype {
 pub struct FunctionSignature {
     pub span: Span,
     pub prototype: FunctionPrototype,
-}
-
-#[derive(Debug, Clone)]
-pub enum FunctionReceiverKind {
-    Use, // Copy or Move
-    Reference(Mutability),
-    Pointer(Mutability),
 }
 
 #[derive(Debug, Clone)]
@@ -435,10 +427,14 @@ pub enum ExpressionKind {
     /// Runes, Bools, Integers, Floats, Strings
     Literal(Literal),
 
-    /// `foo`
-    Identifier(Identifier, Resolution),
+    /// A qualified path in expression position.
+    ///
+    /// This is used for both fully-resolved names (e.g. module paths, functions, constructors,
+    /// locals) and type-relative unresolved accesses that need typechecking (via
+    /// [`ResolvedPath::Relative`]).
+    Path(ResolvedPath),
 
-    /// `foo.bar`
+    /// `foo.bar` (instance member access only; type-relative access uses `ExpressionKind::Path`)
     Member {
         target: Box<Expression>,
         name: Identifier,
@@ -1304,8 +1300,8 @@ pub fn walk_local<V: HirVisitor>(visitor: &mut V, node: &Local) -> V::Result {
 pub fn walk_expression<V: HirVisitor>(visitor: &mut V, node: &Expression) -> V::Result {
     match &node.kind {
         ExpressionKind::Literal(_) => {}
-        ExpressionKind::Identifier(ident, _) => {
-            try_visit!(visitor.visit_identifier(ident));
+        ExpressionKind::Path(path) => {
+            try_visit!(visitor.visit_resolved_path(path));
         }
         ExpressionKind::Member { target, name } => {
             try_visit!(visitor.visit_expression(target));

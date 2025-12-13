@@ -24,12 +24,10 @@ impl<'a, 'gcx> TypeFolder<'gcx> for InferVarResolver<'a, 'gcx> {
 
     #[inline]
     fn fold_ty(&mut self, ty: Ty<'gcx>) -> Ty<'gcx> {
-        if !ty.is_infer() {
-            return ty;
-        }
-
+        // Always shallow-resolve at this node, then structurally recurse. This ensures we resolve
+        // inference variables nested inside non-infer shells like `&T`, `*T`, tuples, and
+        // function pointers.
         let shallow = self.icx.shallow_resolve(ty);
-        let res = shallow.super_fold_with(self);
-        res
+        shallow.super_fold_with(self)
     }
 }

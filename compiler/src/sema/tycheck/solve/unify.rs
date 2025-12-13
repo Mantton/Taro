@@ -14,6 +14,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let a = self.structurally_resolve(a);
         let b = self.structurally_resolve(b);
 
+        println!("unify: {} - {}", a.format(self.gcx()), b.format(self.gcx()));
+
         use InferTy::*;
         match (a.kind(), b.kind()) {
             // TyVars
@@ -163,8 +165,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
 impl<'ctx> ConstraintSolver<'ctx> {
     pub fn structurally_resolve(&self, mut ty: Ty<'ctx>) -> Ty<'ctx> {
-        ty = self.icx.shallow_resolve(ty);
-        // ty = normalize_ty(ty, self.gcx());
+        ty = self.icx.resolve_vars_if_possible(ty);
         ty
     }
 }

@@ -445,7 +445,7 @@ impl Parser {
             ),
             Token::Extern => (Identifier::emtpy(self.file.id), self.parse_extern_block()?),
             Token::Type => self.parse_type_declaration()?,
-            Token::Function | Token::Static => self.parse_function(mode)?,
+            Token::Function => self.parse_function(mode)?,
             Token::Extend => (Identifier::emtpy(self.file.id), self.parse_impl()?),
             Token::Namespace => self.parse_namespace()?,
             Token::Init => self.parse_initializer(mode)?,
@@ -2824,10 +2824,9 @@ impl Parser {
 impl Parser {
     fn parse_function(&mut self, mode: FnParseMode) -> R<(Identifier, DeclarationKind)> {
         // func <name> <type_parameters>? (<parameter list>) <async?> -> <return_type>? <where_clause>?
-        let is_static = self.eat(Token::Static);
         self.expect(Token::Function)?;
         let identifier = self.parse_identifier()?;
-        let func = self.parse_fn(mode, is_static)?;
+        let func = self.parse_fn(mode)?;
         Ok((identifier, DeclarationKind::Function(func)))
     }
 
@@ -2835,7 +2834,7 @@ impl Parser {
         self.expect(Token::Init)?;
         let lo = self.lo_span();
         let span = lo.to(self.hi_span());
-        let function = self.parse_fn(mode, false)?;
+        let function = self.parse_fn(mode)?;
         Ok((
             Identifier::new(Symbol::new(""), span),
             DeclarationKind::Initializer(Initializer { function }),
@@ -2847,14 +2846,14 @@ impl Parser {
         let lo = self.lo_span();
         let kind = self.parse_operator_from_token()?;
         let span = lo.to(self.hi_span());
-        let function = self.parse_fn(mode, false)?;
+        let function = self.parse_fn(mode)?;
         Ok((
             Identifier::new(Symbol::new(""), span),
             DeclarationKind::Operator(Operator { kind, function }),
         ))
     }
 
-    fn parse_fn(&mut self, mode: FnParseMode, is_static: bool) -> R<Function> {
+    fn parse_fn(&mut self, mode: FnParseMode) -> R<Function> {
         let lo = self.lo_span();
         let type_parameters = self.parse_type_parameters()?;
         let parameters = self.parse_function_parameters()?;
@@ -2898,7 +2897,6 @@ impl Parser {
             signature,
             block,
             generics,
-            is_static,
             abi: None,
         };
 

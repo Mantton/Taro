@@ -3,7 +3,7 @@ use crate::{
     span::{FileID, Span, Symbol},
 };
 use index_vec::define_index_type;
-use std::{fmt::Display, ops::ControlFlow};
+use std::ops::ControlFlow;
 
 define_index_type! {
     pub struct NodeID = u32;
@@ -163,7 +163,6 @@ pub struct Function {
     pub generics: Generics,
     pub signature: FunctionSignature,
     pub block: Option<Block>,
-    pub is_static: bool,
     pub abi: Option<Symbol>,
 }
 

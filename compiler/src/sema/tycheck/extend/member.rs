@@ -28,13 +28,19 @@ impl<'ctx> Actor<'ctx> {
 
         match &decl.kind {
             hir::AssociatedDeclarationKind::Function(function) => {
-                self.collect_function(head, decl.id, decl.identifier, function.is_static);
+                let has_self = function
+                    .signature
+                    .prototype
+                    .inputs
+                    .first()
+                    .is_some_and(|param| param.name.symbol.as_str() == "self");
+                self.collect_function(head, decl.id, decl.identifier, has_self);
             }
             hir::AssociatedDeclarationKind::Operator(op) => {
                 self.collect_operator(head, decl.id, decl.identifier, op.kind);
             }
             hir::AssociatedDeclarationKind::Initializer(init) => {
-                self.collect_initializer(head, decl.id, decl.identifier, init.function.is_static);
+                self.collect_initializer(head, decl.id, decl.identifier);
             }
             _ => todo!("associated declaration kind in extension member collection"),
         }
@@ -45,15 +51,15 @@ impl<'ctx> Actor<'ctx> {
         head: crate::sema::resolve::models::TypeHead,
         def_id: DefinitionID,
         ident: crate::span::Identifier,
-        is_static: bool,
+        has_self: bool,
     ) {
-        let fingerprint = self.fingerprint_for(def_id, is_static);
+        let fingerprint = self.fingerprint_for(def_id);
         self.context.with_session_type_database(|db| {
             let index: &mut TypeMemberIndex = db.type_head_to_members.entry(head).or_default();
-            let set: &mut MemberSet = if is_static {
-                index.static_functions.entry(ident.symbol).or_default()
-            } else {
+            let set: &mut MemberSet = if has_self {
                 index.instance_functions.entry(ident.symbol).or_default()
+            } else {
+                index.static_functions.entry(ident.symbol).or_default()
             };
 
             if let Some(previous) = set.fingerprints.insert(fingerprint, def_id) {
@@ -77,7 +83,7 @@ impl<'ctx> Actor<'ctx> {
         ident: crate::span::Identifier,
         kind: hir::OperatorKind,
     ) {
-        let fingerprint = self.fingerprint_for(def_id, true);
+        let fingerprint = self.fingerprint_for(def_id);
         self.context.with_session_type_database(|db| {
             let index: &mut TypeMemberIndex = db.type_head_to_members.entry(head).or_default();
             let set: &mut MemberSet = index.operators.entry(kind).or_default();
@@ -101,9 +107,8 @@ impl<'ctx> Actor<'ctx> {
         head: crate::sema::resolve::models::TypeHead,
         def_id: DefinitionID,
         ident: crate::span::Identifier,
-        is_static: bool,
     ) {
-        let fingerprint = self.fingerprint_for(def_id, is_static);
+        let fingerprint = self.fingerprint_for(def_id);
         self.context.with_session_type_database(|db| {
             let index: &mut TypeMemberIndex = db.type_head_to_members.entry(head).or_default();
             let set: &mut MemberSet = &mut index.constructors;
@@ -122,11 +127,10 @@ impl<'ctx> Actor<'ctx> {
         });
     }
 
-    fn fingerprint_for(&self, id: DefinitionID, is_static: bool) -> u64 {
+    fn fingerprint_for(&self, id: DefinitionID) -> u64 {
         let sig = self.context.get_signature(id);
 
         let mut hasher = FxHasher::default();
-        is_static.hash(&mut hasher);
         sig.abi.hash(&mut hasher);
         sig.is_variadic.hash(&mut hasher);
         sig.inputs.len().hash(&mut hasher);

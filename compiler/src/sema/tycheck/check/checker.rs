@@ -11,7 +11,6 @@ pub struct Checker<'arena> {
     pub locals: RefCell<FxHashMap<NodeID, LocalBinding<'arena>>>,
     pub return_ty: Option<Ty<'arena>>,
     pub(super) loop_depth: Cell<usize>,
-    pub(super) implicit_self_ty: Option<Ty<'arena>>,
 }
 
 #[derive(Clone, Copy)]
@@ -27,7 +26,6 @@ impl<'arena> Checker<'arena> {
             return_ty: None,
             locals: Default::default(),
             loop_depth: Cell::new(0),
-            implicit_self_ty: None,
         }
     }
 }

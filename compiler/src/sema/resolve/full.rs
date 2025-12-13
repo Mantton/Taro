@@ -109,14 +109,7 @@ impl<'r, 'a> Actor<'r, 'a> {
 
     fn with_self_alias_scope(&mut self, self_res: Resolution, work: impl FnOnce(&mut Self)) {
         let mut scope = LexicalScope::new(LexicalScopeSource::Plain);
-        match self_res {
-            Resolution::ImplicitSelfParameter => {
-                scope.define(Symbol::new("self"), self_res);
-            }
-            _ => {
-                scope.define(Symbol::new("Self"), self_res);
-            }
-        }
+        scope.define(Symbol::new("Self"), self_res);
         self.with_built_scope(scope, work);
     }
 }
@@ -424,36 +417,19 @@ impl<'r, 'a> Actor<'r, 'a> {
                 let def_id = self.resolver.definition_id(declaration.id);
                 self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
                     this.with_generics_scope(&function.generics, |this| {
-                        // Only extension members get implicit `self` for now.
                         if matches!(ctx, AssocContext::Extension(..)) {
-                            let explicit_self =
-                                explicit_self_param_position(&function.signature).is_some();
-
-                            if function.is_static {
-                                if explicit_self {
+                            if let Some(pos) = explicit_self_param_position(&function.signature) {
+                                if pos != 0 {
                                     this.resolver.dcx().emit_error(
-                                        "static functions cannot declare a `self` parameter"
+                                        "`self` must be the first parameter of a method"
                                             .to_string(),
                                         Some(declaration.span),
                                     );
                                 }
-                                ast::walk_assoc_declaration(this, declaration, ctx);
-                                return;
                             }
-
-                            if explicit_self {
-                                ast::walk_assoc_declaration(this, declaration, ctx);
-                                return;
-                            }
-
-                            // No explicit receiver and not `static`: synthesize an implicit
-                            // `self` value for name resolution.
-                            this.with_self_alias_scope(Resolution::ImplicitSelfParameter, |this| {
-                                ast::walk_assoc_declaration(this, declaration, ctx);
-                            });
-                        } else {
-                            ast::walk_assoc_declaration(this, declaration, ctx);
                         }
+
+                        ast::walk_assoc_declaration(this, declaration, ctx);
                     });
                 })
             }
@@ -461,15 +437,15 @@ impl<'r, 'a> Actor<'r, 'a> {
                 let def_id = self.resolver.definition_id(declaration.id);
                 self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
                     this.with_generics_scope(&node.function.generics, |this| {
-                        if explicit_self_param_position(&node.function.signature).is_some() {
-                            this.resolver.dcx().emit_error(
-                                "initializers cannot declare a `self` parameter".to_string(),
-                                Some(declaration.span),
-                            );
+                        if let Some(pos) = explicit_self_param_position(&node.function.signature) {
+                            if pos != 0 {
+                                this.resolver.dcx().emit_error(
+                                    "`self` must be the first parameter of a method".to_string(),
+                                    Some(declaration.span),
+                                );
+                            }
                         }
-                        this.with_self_alias_scope(Resolution::ImplicitSelfParameter, |this| {
-                            ast::walk_assoc_declaration(this, declaration, ctx);
-                        });
+                        ast::walk_assoc_declaration(this, declaration, ctx);
                     });
                 })
             }
@@ -497,9 +473,10 @@ fn explicit_self_param_position(signature: &ast::FunctionSignature) -> Option<us
 enum ResolvedEntity<'a> {
     Scoped(Scope<'a>),
     Resolved(Resolution),
-    Value,
-    DeferredAssociated,
+    DeferredAssociatedType,
+    DeferredAssociatedValue,
 }
+
 impl<'r, 'a> Actor<'r, 'a> {
     fn resolve_statement(&mut self, node: &ast::Statement) {
         match &node.kind {
@@ -553,12 +530,17 @@ impl<'r, 'a> Actor<'r, 'a> {
                                 .expression_resolutions
                                 .insert(node.id, ExpressionResolutionState::Resolved(resolution));
                         }
-                        ResolvedEntity::DeferredAssociated => {
+                        ResolvedEntity::DeferredAssociatedType => {
                             self.resolver
                                 .expression_resolutions
-                                .insert(node.id, ExpressionResolutionState::DeferredAssociated);
+                                .insert(node.id, ExpressionResolutionState::DeferredAssociatedType);
                         }
-                        _ => {}
+                        ResolvedEntity::DeferredAssociatedValue => {
+                            self.resolver.expression_resolutions.insert(
+                                node.id,
+                                ExpressionResolutionState::DeferredAssociatedValue,
+                            );
+                        }
                     },
                     Err(e) => {
                         self.report_error(e);
@@ -567,6 +549,7 @@ impl<'r, 'a> Actor<'r, 'a> {
             }
             ast::ExpressionKind::Member { .. } => {
                 let result = self.resolve_expression_entity(node);
+                let walk_children = result.is_ok();
 
                 match result {
                     Ok(v) => match v {
@@ -583,16 +566,27 @@ impl<'r, 'a> Actor<'r, 'a> {
                                 .expression_resolutions
                                 .insert(node.id, ExpressionResolutionState::Resolved(resolution));
                         }
-                        ResolvedEntity::DeferredAssociated => {
+                        ResolvedEntity::DeferredAssociatedType => {
                             self.resolver
                                 .expression_resolutions
-                                .insert(node.id, ExpressionResolutionState::DeferredAssociated);
+                                .insert(node.id, ExpressionResolutionState::DeferredAssociatedType);
                         }
-                        _ => {}
+                        ResolvedEntity::DeferredAssociatedValue => {
+                            self.resolver.expression_resolutions.insert(
+                                node.id,
+                                ExpressionResolutionState::DeferredAssociatedValue,
+                            );
+                        }
                     },
                     Err(e) => {
                         self.report_error(e);
                     }
+                }
+
+                if walk_children {
+                    // Ensure nested member chains like `a.b.c` have resolution entries for each
+                    // intermediate member node (`a.b`), so lowering can compact fully-resolved paths.
+                    ast::walk_expression(self, node);
                 }
             }
             ast::ExpressionKind::Specialize {
@@ -609,6 +603,10 @@ impl<'r, 'a> Actor<'r, 'a> {
                         }
                     }
                 }
+
+                // Walk into the target and type arguments so nested expressions/types get
+                // resolved and recorded.
+                ast::walk_expression(self, node);
             }
             ast::ExpressionKind::If(if_node) => {
                 self.with_scope_source(LexicalScopeSource::Plain, |this| {
@@ -650,7 +648,7 @@ impl<'r, 'a> Actor<'r, 'a> {
                 return Ok(entity);
             }
             // Anything else produces a value expression
-            _ => return Ok(ResolvedEntity::Value),
+            _ => return Ok(ResolvedEntity::DeferredAssociatedValue),
         }
     }
 
@@ -660,6 +658,29 @@ impl<'r, 'a> Actor<'r, 'a> {
         name: &Identifier,
         preferred: ScopeNamespace,
     ) -> Result<ResolvedEntity<'a>, ResolutionError> {
+        // `resolve_path_in_scopes` records into `resolver.resolutions` keyed by `segment.id` and
+        // panics on duplicates. Identifier expressions can be reached multiple times (e.g. once
+        // via `resolve_expression_entity` and again during a later AST walk), so if we've already
+        // recorded a resolution for this node, reuse it.
+        if let Some(state) = self.resolver.get_resolution(id) {
+            match state {
+                ResolutionState::Complete(resolution) => {
+                    if let Resolution::Definition(def_id, kind) = resolution {
+                        if matches!(kind, DefinitionKind::Module | DefinitionKind::Namespace) {
+                            return Ok(ResolvedEntity::Scoped(
+                                self.resolver.get_definition_scope(def_id),
+                            ));
+                        }
+                    }
+
+                    return Ok(ResolvedEntity::Resolved(resolution));
+                }
+                ResolutionState::Partial { resolution, .. } => {
+                    return Ok(ResolvedEntity::Resolved(resolution));
+                }
+            }
+        }
+
         let path = vec![PathSegment {
             id,
             identifier: *name,
@@ -741,7 +762,7 @@ impl<'r, 'a> Actor<'r, 'a> {
             }
             ResolvedEntity::Resolved(resolution) => match resolution {
                 Resolution::PrimaryType(..) => {
-                    return Ok(ResolvedEntity::DeferredAssociated);
+                    return Ok(ResolvedEntity::DeferredAssociatedType);
                 }
                 Resolution::Definition(def_id, kind) => match kind {
                     DefinitionKind::Module | DefinitionKind::Namespace => unreachable!(),
@@ -756,10 +777,10 @@ impl<'r, 'a> Actor<'r, 'a> {
                                 def_id,
                             )));
                         }
-                        return Ok(ResolvedEntity::DeferredAssociated);
+                        return Ok(ResolvedEntity::DeferredAssociatedType);
                     }
                     DefinitionKind::Constant | DefinitionKind::ModuleVariable => {
-                        return Ok(ResolvedEntity::DeferredAssociated);
+                        return Ok(ResolvedEntity::DeferredAssociatedValue);
                     }
                     DefinitionKind::ConstParameter => {
                         return Err(ResolutionError::UnknownMember(*name));
@@ -775,7 +796,7 @@ impl<'r, 'a> Actor<'r, 'a> {
                             definition_id,
                         )));
                     }
-                    return Ok(ResolvedEntity::DeferredAssociated);
+                    return Ok(ResolvedEntity::DeferredAssociatedType);
                 }
                 Resolution::InterfaceSelfTypeParameter(definition_id) => {
                     if is_init {
@@ -783,21 +804,20 @@ impl<'r, 'a> Actor<'r, 'a> {
                             definition_id,
                         )));
                     }
-                    return Ok(ResolvedEntity::DeferredAssociated);
+                    return Ok(ResolvedEntity::DeferredAssociatedType);
                 }
-                Resolution::LocalVariable(_) => return Ok(ResolvedEntity::Value),
+                Resolution::LocalVariable(_) => return Ok(ResolvedEntity::DeferredAssociatedValue),
                 Resolution::FunctionSet(..) | Resolution::SelfConstructor(..) => {
                     return Err(ResolutionError::UnknownMember(*name));
-                }
-                Resolution::ImplicitSelfParameter => {
-                    return Ok(ResolvedEntity::DeferredAssociated);
                 }
                 // Variants Not Created By Resolver Step
                 Resolution::Foundation(_) | Resolution::Error => unreachable!(),
             },
-            ResolvedEntity::Value => return Ok(ResolvedEntity::Value),
-            ResolvedEntity::DeferredAssociated => {
-                return Ok(ResolvedEntity::DeferredAssociated);
+            ResolvedEntity::DeferredAssociatedValue => {
+                return Ok(ResolvedEntity::DeferredAssociatedValue);
+            }
+            ResolvedEntity::DeferredAssociatedType => {
+                return Ok(ResolvedEntity::DeferredAssociatedType);
             }
         }
 
@@ -812,10 +832,10 @@ impl<'r, 'a> Actor<'r, 'a> {
         let resolution = match base {
             ResolvedEntity::Scoped(scope) => scope.resolution().expect("resolution"),
             ResolvedEntity::Resolved(resolution) => resolution.clone(),
-            ResolvedEntity::Value => {
+            ResolvedEntity::DeferredAssociatedType => return Ok(()),
+            ResolvedEntity::DeferredAssociatedValue => {
                 return Err(ResolutionError::SpecializationDisallowed(None, span));
             }
-            ResolvedEntity::DeferredAssociated => return Ok(()),
         };
 
         match resolution {
@@ -831,8 +851,7 @@ impl<'r, 'a> Actor<'r, 'a> {
             | Resolution::SelfTypeAlias(..)
             | Resolution::InterfaceSelfTypeParameter(..)
             | Resolution::FunctionSet(..)
-            | Resolution::SelfConstructor(..)
-            | Resolution::ImplicitSelfParameter => {}
+            | Resolution::SelfConstructor(..) => {}
             // Variants Not Created By Resolver Step
             Resolution::Foundation(_) | Resolution::Error => unreachable!(),
         }

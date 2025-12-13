@@ -228,20 +228,34 @@ impl<'ctx> FunctionLower<'ctx> {
                 let value = self.lower_literal(lit);
                 self.push_expr(ExprKind::Literal(Constant { ty, value }), ty, span)
             }
-            hir::ExpressionKind::Identifier(_, Resolution::LocalVariable(id)) => {
+            hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path))
+                if matches!(&path.resolution, Resolution::LocalVariable(_)) =>
+            {
+                let Resolution::LocalVariable(id) = &path.resolution else {
+                    unreachable!()
+                };
                 self.push_expr(ExprKind::Local(*id), ty, span)
             }
             hir::ExpressionKind::Call(callee, args) => {
-                if let hir::ExpressionKind::Identifier(
-                    _,
-                    Resolution::Definition(id, DefinitionKind::Function),
-                ) = &callee.kind
-                {
+                let callee_id: Option<DefinitionID> = match &callee.kind {
+                    hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => {
+                        match &path.resolution {
+                            Resolution::Definition(id, DefinitionKind::Function)
+                            | Resolution::Definition(id, DefinitionKind::AssociatedFunction) => {
+                                Some(*id)
+                            }
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
+
+                if let Some(id) = callee_id {
                     let args: Vec<ExprId> = args
                         .iter()
                         .map(|arg| self.lower_expr(&arg.expression))
                         .collect();
-                    self.push_expr(ExprKind::Call { callee: *id, args }, ty, span)
+                    self.push_expr(ExprKind::Call { callee: id, args }, ty, span)
                 } else {
                     // Unsupported callee shape for now.
                     self.push_expr(

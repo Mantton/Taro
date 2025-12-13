@@ -91,12 +91,9 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 other => todo!("Self type alias lowering for {other:?}"),
             },
             Resolution::InterfaceSelfTypeParameter(..) => todo!(),
-
             Resolution::SelfConstructor(..) => todo!(),
-            Resolution::ImplicitSelfParameter => todo!(),
             Resolution::Foundation(..) => todo!(),
             Resolution::Error => gcx.types.error,
-
             Resolution::FunctionSet(..) | Resolution::LocalVariable(_) => {
                 unreachable!("value resolution")
             }

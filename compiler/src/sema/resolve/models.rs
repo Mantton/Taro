@@ -214,7 +214,6 @@ pub enum Resolution<LocalNode = ast::NodeID> {
     FunctionSet(Vec<DefinitionID>),
     LocalVariable(LocalNode),
     SelfConstructor(DefinitionID),
-    ImplicitSelfParameter,
     Foundation(FoundationDecl),
     Error,
 }
@@ -229,7 +228,6 @@ impl Resolution {
             Resolution::FunctionSet(..) => "function set",
             Resolution::PrimaryType(_) => "primary type",
             Resolution::SelfConstructor(_) => "self constructor",
-            Resolution::ImplicitSelfParameter => "self",
             Resolution::Error => "error",
             Resolution::Foundation(_) => "foundation declaration",
         }
@@ -545,7 +543,8 @@ pub enum ResolutionState {
 #[derive(Debug, Clone)]
 pub enum ExpressionResolutionState {
     Resolved(Resolution),
-    DeferredAssociated,
+    DeferredAssociatedType,
+    DeferredAssociatedValue,
 }
 
 #[derive(Clone, Copy)]
