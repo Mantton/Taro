@@ -9,6 +9,7 @@ pub mod codegen;
 pub mod diagnostics;
 pub mod error;
 pub mod mir;
+mod thir;
 mod hir;
 mod parse;
 mod sema;

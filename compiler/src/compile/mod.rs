@@ -5,7 +5,7 @@ use crate::{
         context::{CompilerContext, GlobalContext},
     },
     error::CompileResult,
-    mir, parse, sema,
+    mir, parse, sema, thir,
 };
 
 pub mod config;
@@ -67,7 +67,8 @@ impl<'state> Compiler<'state> {
         // HIR Passes
         sema::validate::validate_package(&package, self.context)?;
         sema::tycheck::typecheck_package(&package, self.context)?;
-        let package = mir::package::build_package(&package, self.context)?;
+        let thir = thir::package::build_package(&package, self.context)?;
+        let package = mir::package::build_package(thir, self.context)?;
         let _obj = codegen::llvm::emit_package(package, self.context)?;
         let exe = codegen::link::link_executable(self.context)?;
         Ok(exe)

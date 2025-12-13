@@ -8,7 +8,7 @@ mod run;
 pub fn handle(arguments: CommandLineArguments) -> CompileResult<()> {
     let _ = match arguments.command.as_str() {
         "build" => {
-            build::run(arguments)?;
+            build::run(arguments, false)?;
             ()
         }
         "run" => run::run(arguments)?,

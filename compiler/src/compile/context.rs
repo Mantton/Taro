@@ -4,6 +4,7 @@ use crate::{
     diagnostics::DiagCtx,
     hir::{self, DefinitionID},
     mir::{self, Body},
+    thir,
     sema::{
         models::{FloatTy, IntTy, LabeledFunctionSignature, Ty, TyKind, UIntTy},
         resolve::models::{ResolutionOutput, ScopeData, ScopeEntryData, UsageEntryData},
@@ -196,6 +197,7 @@ pub struct CompilerStore<'arena> {
     pub package_mapping: RefCell<FxHashMap<EcoString, PackageIndex>>,
     pub package_idents: RefCell<FxHashMap<PackageIndex, EcoString>>,
     pub type_databases: RefCell<FxHashMap<PackageIndex, TypeDatabase<'arena>>>,
+    pub thir_packages: RefCell<FxHashMap<PackageIndex, &'arena thir::ThirPackage<'arena>>>,
     pub mir_packages: RefCell<FxHashMap<PackageIndex, &'arena mir::MirPackage<'arena>>>,
     pub llvm_modules: RefCell<FxHashMap<PackageIndex, String>>,
     pub object_files: RefCell<FxHashMap<PackageIndex, PathBuf>>,
@@ -214,6 +216,7 @@ impl<'arena> CompilerStore<'arena> {
             package_idents: Default::default(),
             resolution_outputs: Default::default(),
             type_databases: Default::default(),
+            thir_packages: Default::default(),
             mir_packages: Default::default(),
             llvm_modules: Default::default(),
             object_files: Default::default(),
@@ -223,6 +226,20 @@ impl<'arena> CompilerStore<'arena> {
 }
 
 impl<'arena> CompilerStore<'arena> {
+    pub fn alloc_thir_function(
+        &self,
+        func: thir::ThirFunction<'arena>,
+    ) -> &'arena thir::ThirFunction<'arena> {
+        self.arenas.thir_functions.alloc(func)
+    }
+
+    pub fn alloc_thir_package(
+        &self,
+        package: thir::ThirPackage<'arena>,
+    ) -> &'arena thir::ThirPackage<'arena> {
+        self.arenas.thir_packages.alloc(package)
+    }
+
     pub fn alloc_mir_package(
         &self,
         package: mir::MirPackage<'arena>,
@@ -278,6 +295,8 @@ pub struct CompilerArenas<'arena> {
     pub types: typed_arena::Arena<TyKind<'arena>>,
     pub type_lists: typed_arena::Arena<Vec<Ty<'arena>>>,
     pub function_signatures: typed_arena::Arena<LabeledFunctionSignature<'arena>>,
+    pub thir_functions: typed_arena::Arena<thir::ThirFunction<'arena>>,
+    pub thir_packages: typed_arena::Arena<thir::ThirPackage<'arena>>,
     pub mir_bodies: typed_arena::Arena<Body<'arena>>,
     pub mir_packages: typed_arena::Arena<mir::MirPackage<'arena>>,
     pub global: Bump,
@@ -294,6 +313,8 @@ impl<'arena> CompilerArenas<'arena> {
             types: Default::default(),
             type_lists: Default::default(),
             function_signatures: Default::default(),
+            thir_functions: Default::default(),
+            thir_packages: Default::default(),
             mir_bodies: Default::default(),
             mir_packages: Default::default(),
             global: Bump::new(),

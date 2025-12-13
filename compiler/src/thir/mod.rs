@@ -1,0 +1,150 @@
+use crate::{
+    hir::{BinaryOperator, DefinitionID, NodeID, UnaryOperator},
+    sema::models::Ty,
+    span::{Span, Symbol},
+};
+use index_vec::IndexVec;
+use rustc_hash::FxHashMap;
+
+pub mod package;
+
+index_vec::define_index_type! {
+    pub struct BlockId = u32;
+}
+
+index_vec::define_index_type! {
+    pub struct ExprId = u32;
+}
+
+index_vec::define_index_type! {
+    pub struct StmtId = u32;
+}
+
+#[derive(Debug)]
+pub struct ThirPackage<'a> {
+    pub functions: FxHashMap<DefinitionID, &'a ThirFunction<'a>>,
+    pub entry: Option<DefinitionID>,
+}
+
+#[derive(Debug)]
+pub struct ThirFunction<'a> {
+    pub id: DefinitionID,
+    pub body: Option<BlockId>,
+    pub span: Span,
+    pub params: Vec<Param<'a>>,
+    pub stmts: IndexVec<StmtId, Stmt<'a>>,
+    pub blocks: IndexVec<BlockId, Block>,
+    pub exprs: IndexVec<ExprId, Expr<'a>>,
+}
+
+#[derive(Debug)]
+pub struct Block {
+    pub id: BlockId,
+    pub stmts: Vec<StmtId>,
+    pub expr: Option<ExprId>,
+}
+
+#[derive(Debug)]
+pub struct Expr<'a> {
+    pub id: ExprId,
+    pub kind: ExprKind<'a>,
+    pub ty: Ty<'a>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum PlaceKind {
+    Local(NodeID),
+    Deref(ExprId),
+}
+
+#[derive(Debug)]
+pub enum ExprKind<'a> {
+    /// Use of a place (path, deref, etc.)
+    Place(PlaceKind),
+    /// If expression
+    If {
+        cond: ExprId,
+        then_expr: ExprId,
+        else_expr: Option<ExprId>,
+    },
+    Assign {
+        target: PlaceKind,
+        value: ExprId,
+    },
+    /// Literal constant
+    Literal(Constant<'a>),
+    /// Unary op
+    Unary {
+        op: UnaryOperator,
+        operand: ExprId,
+    },
+    /// Binary op
+    Binary {
+        op: BinaryOperator,
+        lhs: ExprId,
+        rhs: ExprId,
+    },
+    /// Call to a resolved definition
+    Call {
+        callee: DefinitionID,
+        args: Vec<ExprId>,
+    },
+    /// Block expression
+    Block(BlockId),
+}
+
+#[derive(Debug)]
+pub struct Constant<'a> {
+    pub ty: Ty<'a>,
+    pub value: ConstantKind,
+}
+
+#[derive(Debug)]
+pub enum ConstantKind {
+    Bool(bool),
+    Rune(char),
+    String(crate::span::Symbol),
+    Integer(u64),
+    Float(f64),
+    Unit,
+}
+
+#[derive(Debug)]
+pub enum StmtKind<'a> {
+    Let {
+        id: NodeID,
+        pattern: NodeID,
+        name: Option<Symbol>,
+        mutable: bool,
+        expr: Option<ExprId>,
+        ty: Ty<'a>,
+    },
+    Assign {
+        target: PlaceKind,
+        value: ExprId,
+    },
+    Return {
+        value: Option<ExprId>,
+    },
+    Break,
+    Continue,
+    Loop {
+        block: BlockId,
+    },
+    Expr(ExprId),
+}
+
+#[derive(Debug)]
+pub struct Stmt<'a> {
+    pub kind: StmtKind<'a>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct Param<'a> {
+    pub id: NodeID,
+    pub name: Symbol,
+    pub ty: Ty<'a>,
+    pub span: Span,
+}

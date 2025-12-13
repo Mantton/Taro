@@ -17,7 +17,10 @@ use compiler::{
     error::ReportedError,
 };
 
-pub fn run(arguments: CommandLineArguments) -> Result<Option<std::path::PathBuf>, ReportedError> {
+pub fn run(
+    arguments: CommandLineArguments,
+    require_executable: bool,
+) -> Result<Option<std::path::PathBuf>, ReportedError> {
     let cwd = std::env::current_dir().map_err(|_| ReportedError)?;
     let dcx = DiagCtx::new(cwd);
     let arenas = CompilerArenas::new();
@@ -30,7 +33,29 @@ pub fn run(arguments: CommandLineArguments) -> Result<Option<std::path::PathBuf>
 
     let _ = compile_std(&icx)?;
 
+    let total = graph.ordered.len();
+
     for (index, package) in graph.ordered.iter().enumerate() {
+        let is_root = index + 1 == total;
+        if !is_root && package.kind != compiler::compile::config::PackageKind::Library {
+            icx.dcx.emit_error(
+                format!(
+                    "dependency `{}` must be a library (found {:?})",
+                    package.package.0, package.kind
+                ),
+                None,
+            );
+            return Err(ReportedError);
+        }
+
+        if is_root && require_executable {
+            if package.kind == compiler::compile::config::PackageKind::Library {
+                icx.dcx
+                    .emit_error("`run` requires the root package to be executable".into(), None);
+                return Err(ReportedError);
+            }
+        }
+
         let package_index = PackageIndex::new(index + 1);
         println!("Compiling – {}", package.package.0);
         let name = get_package_name(&package.package.0).map_err(|_| ReportedError)?;
