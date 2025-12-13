@@ -3,7 +3,10 @@ use crate::{
     error::CompileResult,
     hir::{self, DefinitionID, DefinitionKind, HirVisitor, Mutability, Resolution},
     sema::models::Ty,
-    thir::{Block, BlockId, Constant, ConstantKind, Expr, ExprId, ExprKind, Param, Stmt, StmtId, StmtKind, ThirFunction, ThirPackage},
+    thir::{
+        Block, BlockId, Constant, ConstantKind, Expr, ExprId, ExprKind, Param, Stmt, StmtId,
+        StmtKind, ThirFunction, ThirPackage,
+    },
 };
 use index_vec::IndexVec;
 use rustc_hash::FxHashMap;
@@ -263,14 +266,7 @@ impl<'ctx> FunctionLower<'ctx> {
             hir::ExpressionKind::Assign(lhs, rhs) => {
                 let target = self.lower_expr(lhs);
                 let value = self.lower_expr(rhs);
-                self.push_expr(
-                    ExprKind::Assign {
-                        target,
-                        value,
-                    },
-                    ty,
-                    span,
-                )
+                self.push_expr(ExprKind::Assign { target, value }, ty, span)
             }
             hir::ExpressionKind::If(node) => {
                 let cond = self.lower_expr(&node.condition);

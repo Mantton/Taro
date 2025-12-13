@@ -50,6 +50,10 @@ impl<'ctx> ConstraintSystem<'ctx> {
         self.expr_tys.insert(id, ty);
     }
 
+    pub fn expr_ty(&self, id: NodeID) -> Option<Ty<'ctx>> {
+        self.expr_tys.get(&id).copied()
+    }
+
     pub fn resolved_expr_types(&self) -> FxHashMap<NodeID, Ty<'ctx>> {
         let gcx = self.infer_cx.gcx;
         self.expr_tys

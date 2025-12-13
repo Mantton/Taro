@@ -122,6 +122,7 @@ impl<'arena> GlobalContext<'arena> {
         })
     }
 
+    #[track_caller]
     pub fn get_node_type(self, id: hir::NodeID) -> Ty<'arena> {
         self.with_session_type_database(|db| *db.node_to_ty.get(&id).expect("type of node"))
     }

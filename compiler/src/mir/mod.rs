@@ -62,10 +62,6 @@ pub struct Statement<'ctx> {
 #[derive(Debug, Clone)]
 pub enum StatementKind<'ctx> {
     Assign(Place, Rvalue<'ctx>),
-    Store {
-        ptr: Operand<'ctx>,
-        value: Operand<'ctx>,
-    },
     Nop,
 }
 
@@ -95,9 +91,15 @@ pub enum TerminatorKind<'ctx> {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Place {
     pub local: LocalId,
+    pub projection: Vec<PlaceElem>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaceElem {
+    Deref,
 }
 
 #[derive(Debug, Clone)]

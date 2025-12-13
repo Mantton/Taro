@@ -5,7 +5,7 @@ use crate::{
         models::{Ty, TyKind},
         resolve::models::DefinitionKind,
         tycheck::{
-            check::checker::{Checker, PlaceInfo, PlaceKind},
+            check::checker::Checker,
             solve::{
                 ApplyArgument, ApplyGoalData, BinOpGoalData, BindOverloadGoalData,
                 ConstraintSystem, DisjunctionBranch, Goal, UnOpGoalData,
@@ -22,7 +22,6 @@ impl<'ctx> Checker<'ctx> {
 
     pub fn check_function(mut self, id: DefinitionID, node: &hir::Function) {
         let gcx = self.gcx();
-        println!("==============================================================");
         let signature = gcx.get_signature(id);
         let signature = Ty::from_labeled_signature(gcx, signature);
 
@@ -210,18 +209,26 @@ impl<'ctx> Checker<'ctx> {
         match &node.pattern.kind {
             hir::PatternKind::Wildcard => todo!(),
             hir::PatternKind::Identifier(_) => {
-                if let Some(expression) = &node.initializer {
-                    // Hard code for now
-                    let ty = self.top_level_check(expression, expectation);
-                    let binding = crate::sema::tycheck::check::checker::LocalBinding {
-                        ty,
-                        mutable: node.mutability == hir::Mutability::Mutable,
-                    };
-                    self.set_local(node.pattern.id, binding);
-                    self.set_local(node.id, binding);
-                    self.gcx().cache_node_type(node.pattern.id, ty);
-                    self.gcx().cache_node_type(node.id, ty);
-                }
+                let ty = if let Some(expression) = &node.initializer {
+                    self.top_level_check(expression, expectation)
+                } else if let Some(exp) = expectation {
+                    exp
+                } else {
+                    self.gcx().dcx().emit_error(
+                        "cannot infer type for binding without an initializer".into(),
+                        Some(node.pattern.span),
+                    );
+                    Ty::error(self.gcx())
+                };
+
+                let binding = crate::sema::tycheck::check::checker::LocalBinding {
+                    ty,
+                    mutable: node.mutability == hir::Mutability::Mutable,
+                };
+                self.set_local(node.pattern.id, binding);
+                self.set_local(node.id, binding);
+                self.gcx().cache_node_type(node.pattern.id, ty);
+                self.gcx().cache_node_type(node.id, ty);
             }
             hir::PatternKind::Tuple(..) => todo!(),
             _ => unreachable!("ICE – invalid let statement pattern"),
@@ -279,6 +286,21 @@ impl<'ctx> Checker<'ctx> {
 
 type Cs<'c> = ConstraintSystem<'c>;
 impl<'ctx> Checker<'ctx> {
+    fn synth_with_needs(
+        &self,
+        node: &hir::Expression,
+        expectation: Option<Ty<'ctx>>,
+        needs: Needs,
+        cs: &mut Cs<'ctx>,
+    ) -> (Ty<'ctx>, bool) {
+        let ty = self.synth_with_expectation(node, expectation, cs);
+        let ok = match needs {
+            Needs::None => true,
+            Needs::MutPlace => self.require_mut_place(node, cs),
+        };
+        (ty, ok)
+    }
+
     fn synth_with_expectation(
         &self,
         node: &hir::Expression,
@@ -287,10 +309,10 @@ impl<'ctx> Checker<'ctx> {
     ) -> Ty<'ctx> {
         let ty = self.synth_expression_kind(node, expectation, cs);
         cs.record_expr_ty(node.id, ty);
-        self.gcx().dcx().emit_info(
-            format!("Checked {}", ty.format(self.gcx())),
-            Some(node.span),
-        );
+        // self.gcx().dcx().emit_info(
+        //     format!("Checked {}", ty.format(self.gcx())),
+        //     Some(node.span),
+        // );
         ty
     }
 
@@ -322,8 +344,23 @@ impl<'ctx> Checker<'ctx> {
                 self.synth_if_expression(expression, expr, expectation, cs)
             }
             hir::ExpressionKind::Match(..) => todo!(),
-            hir::ExpressionKind::Reference(..) => todo!(),
-            hir::ExpressionKind::Dereference(..) => todo!(),
+            hir::ExpressionKind::Reference(inner, mutability) => {
+                let inner_ty = self.synth_with_expectation(inner, None, cs);
+                Ty::new(TyKind::Reference(inner_ty, *mutability), self.gcx())
+            }
+            hir::ExpressionKind::Dereference(inner) => {
+                let ptr_ty = self.synth_with_expectation(inner, None, cs);
+                match ptr_ty.kind() {
+                    TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => inner,
+                    _ => {
+                        self.gcx().dcx().emit_error(
+                            "cannot dereference a non-pointer/reference value".into(),
+                            Some(expression.span),
+                        );
+                        Ty::error(self.gcx())
+                    }
+                }
+            }
             hir::ExpressionKind::Binary(op, lhs, rhs) => {
                 self.synth_binary_expression(expression, *op, lhs, rhs, expectation, cs)
             }
@@ -347,57 +384,70 @@ impl<'ctx> Checker<'ctx> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum Needs {
+    #[allow(unused)]
+    None,
+    MutPlace,
+}
+
 impl<'ctx> Checker<'ctx> {
-    /// Classify an expression that appears on the left-hand side of an assignment.
-    /// Returns its type, mutability, and a minimal place description, or emits an error.
-    fn classify_place(
-        &self,
-        expr: &hir::Expression,
-        cs: &mut Cs<'ctx>,
-    ) -> Option<PlaceInfo<'ctx>> {
+    fn require_mut_place(&self, expr: &hir::Expression, cs: &Cs<'ctx>) -> bool {
         match &expr.kind {
             hir::ExpressionKind::Identifier(_, res) => match res {
                 hir::Resolution::LocalVariable(id) => {
                     let binding = self.get_local(*id);
-                    Some(PlaceInfo {
-                        ty: binding.ty,
-                        mutable: binding.mutable,
-                        kind: PlaceKind::Local(*id),
-                    })
+                    if !binding.mutable {
+                        self.gcx().dcx().emit_error(
+                            "cannot assign to an immutable binding".into(),
+                            Some(expr.span),
+                        );
+                    }
+                    true
                 }
                 _ => {
                     self.gcx().dcx().emit_error(
-                        "cannot assign to this expression".into(),
+                        "left-hand side of assignment is not assignable".into(),
                         Some(expr.span),
                     );
-                    None
+                    false
                 }
             },
-            hir::ExpressionKind::Dereference(target) => {
-                let ptr_ty = self.synth(target, cs);
+            hir::ExpressionKind::Dereference(inner) => {
+                let Some(ptr_ty) = cs.expr_ty(inner.id) else {
+                    self.gcx()
+                        .dcx()
+                        .emit_error("missing type for deref operand".into(), Some(expr.span));
+                    return false;
+                };
+
                 match ptr_ty.kind() {
-                    TyKind::Pointer(inner, mutbl) | TyKind::Reference(inner, mutbl) => Some(
-                        PlaceInfo {
-                            ty: inner,
-                            mutable: mutbl == hir::Mutability::Mutable,
-                            kind: PlaceKind::Deref { ptr_ty },
-                        },
-                    ),
+                    TyKind::Pointer(_, mutbl) | TyKind::Reference(_, mutbl) => {
+                        if mutbl != hir::Mutability::Mutable {
+                            self.gcx().dcx().emit_error(
+                                "cannot assign through an immutable pointer/reference".into(),
+                                Some(expr.span),
+                            );
+                        }
+                        true
+                    }
                     _ => {
                         self.gcx().dcx().emit_error(
                             "cannot assign through a non-pointer/reference value".into(),
                             Some(expr.span),
                         );
-                        None
+                        false
                     }
                 }
             }
+            hir::ExpressionKind::Member { .. } => todo!(),
+            hir::ExpressionKind::TupleAccess(..) => todo!(),
             _ => {
                 self.gcx().dcx().emit_error(
                     "left-hand side of assignment is not assignable".into(),
                     Some(expr.span),
                 );
-                None
+                false
             }
         }
     }
@@ -409,22 +459,18 @@ impl<'ctx> Checker<'ctx> {
         rhs: &hir::Expression,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
-        // Determine the type we’re assigning into and whether it’s mutable.
-        let place = match self.classify_place(lhs, cs) {
-            Some(p) => p,
-            None => return Ty::error(self.gcx()),
-        };
-
-        if !place.mutable {
-            self.gcx().dcx().emit_error(
-                "cannot assign to an immutable binding".into(),
-                Some(lhs.span),
-            );
+        // Type-check the LHS as an expression, then require it be a mutable place.
+        let (lhs_ty, ok) = self.synth_with_needs(lhs, None, Needs::MutPlace, cs);
+        if !ok {
+            return Ty::error(self.gcx());
         }
 
         // Type-check the RHS against the LHS type.
-        let rhs_ty = self.synth_with_expectation(rhs, Some(place.ty), cs);
-        cs.add_goal(crate::sema::tycheck::solve::Goal::Equal(place.ty, rhs_ty), expr.span);
+        let rhs_ty = self.synth_with_expectation(rhs, Some(lhs_ty), cs);
+        cs.add_goal(
+            crate::sema::tycheck::solve::Goal::Equal(lhs_ty, rhs_ty),
+            expr.span,
+        );
         // Assignments evaluate to unit.
         self.gcx().types.void
     }

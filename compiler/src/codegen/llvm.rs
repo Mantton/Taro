@@ -34,8 +34,8 @@ pub fn emit_package<'gcx>(
     emitter.emit_start_shim(package);
     emitter.run_function_passes();
 
-    let ir = emitter.module.print_to_string().to_string();
-    println!("{ir}");
+    // let ir = emitter.module.print_to_string().to_string();
+    // println!("{ir}");
 
     let obj = emitter.emit_object_file()?;
     gcx.cache_object_file(obj.clone());
@@ -321,17 +321,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             mir::StatementKind::Assign(place, rvalue) => {
                 let dest_ty = body.locals[place.local].ty;
                 if let Some(value) = self.lower_rvalue(body, locals, dest_ty, rvalue)? {
-                    self.store_local(place.local, locals, value, body);
-                }
-            }
-            mir::StatementKind::Store { ptr, value } => {
-                if let (Some(ptr_val), Some(val)) = (
-                    self.eval_operand(body, locals, ptr)?,
-                    self.eval_operand(body, locals, value)?,
-                ) {
-                    if let BasicValueEnum::PointerValue(ptr) = ptr_val {
-                        let _ = self.builder.build_store(ptr, val).unwrap();
-                    }
+                    self.store_place(place, body, locals, value)?;
                 }
             }
             mir::StatementKind::Nop => {}
@@ -816,14 +806,20 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     .build_switch(discr_val, default_bb, &cases)
                     .unwrap();
             }
-            mir::TerminatorKind::Return => match self.load_local(body, locals, body.return_local) {
-                Some(val) => {
-                    let _ = self.builder.build_return(Some(&val)).unwrap();
+            mir::TerminatorKind::Return => {
+                let ret_place = mir::Place {
+                    local: body.return_local,
+                    projection: vec![],
+                };
+                match self.load_place(body, locals, &ret_place) {
+                    Some(val) => {
+                        let _ = self.builder.build_return(Some(&val)).unwrap();
+                    }
+                    None => {
+                        let _ = self.builder.build_return(None).unwrap();
+                    }
                 }
-                None => {
-                    let _ = self.builder.build_return(None).unwrap();
-                }
-            },
+            }
             mir::TerminatorKind::Unreachable => {
                 let _ = self.builder.build_unreachable().unwrap();
             }
@@ -892,26 +888,38 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     ) -> CompileResult<Option<BasicValueEnum<'llvm>>> {
         let value = match op {
             mir::Operand::Copy(place) | mir::Operand::Move(place) => {
-                self.load_local(body, locals, place.local)
+                self.load_place(body, locals, place)
             }
             mir::Operand::Constant(c) => self.lower_constant(c),
         };
         Ok(value)
     }
 
-    fn load_local(
+    fn load_place(
         &self,
         body: &mir::Body<'gcx>,
         locals: &[LocalStorage<'llvm>],
-        local: mir::LocalId,
+        place: &mir::Place,
     ) -> Option<BasicValueEnum<'llvm>> {
-        match locals[local.index()] {
-            LocalStorage::Value(Some(v)) => Some(v),
-            LocalStorage::Value(None) => None,
-            LocalStorage::Stack(ptr) => {
-                let ty = lower_type(self.context, body.locals[local].ty)?;
-                Some(self.builder.build_load(ty, ptr, "load").unwrap())
+        let place_ty = self.place_ty(body, place);
+        if place.projection.is_empty() {
+            return match locals[place.local.index()] {
+                LocalStorage::Value(Some(v)) => Some(v),
+                LocalStorage::Value(None) => None,
+                LocalStorage::Stack(ptr) => {
+                    let ty = lower_type(self.context, place_ty)?;
+                    Some(self.builder.build_load(ty, ptr, "load").unwrap())
+                }
+            };
+        }
+
+        let ptr = self.project_place(place, body, locals);
+        match ptr {
+            Ok(ptr) => {
+                let elem_ty = lower_type(self.context, place_ty)?;
+                Some(self.builder.build_load(elem_ty, ptr, "load").unwrap())
             }
+            Err(_) => None,
         }
     }
 
@@ -932,6 +940,88 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 }
             }
         }
+    }
+
+    fn store_place(
+        &self,
+        place: &mir::Place,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        value: BasicValueEnum<'llvm>,
+    ) -> CompileResult<()> {
+        if place.projection.is_empty() {
+            self.store_local(place.local, locals, value, body);
+            return Ok(());
+        }
+
+        let ptr = self.project_place(place, body, locals)?;
+        self.builder.build_store(ptr, value).unwrap();
+        Ok(())
+    }
+
+    fn project_place(
+        &self,
+        place: &mir::Place,
+        body: &mir::Body<'gcx>,
+        locals: &[LocalStorage<'llvm>],
+    ) -> CompileResult<PointerValue<'llvm>> {
+        let mut ptr = match locals[place.local.index()] {
+            LocalStorage::Stack(p) => p,
+            LocalStorage::Value(Some(val)) => match val {
+                BasicValueEnum::PointerValue(p) => p,
+                _ => {
+                    let msg = "projection on non-pointer local";
+                    self.gcx.dcx().emit_error(msg.into(), None);
+                    return Err(crate::error::ReportedError);
+                }
+            },
+            LocalStorage::Value(None) => {
+                let msg = "use of uninitialized local";
+                self.gcx.dcx().emit_error(msg.into(), None);
+                return Err(crate::error::ReportedError);
+            }
+        };
+
+        // If the pointer comes from a stack slot, we need to load it to follow
+        // the deref. Once we have a pointer value, further derefs load from
+        // that address if needed.
+        let mut ptr_is_storage = matches!(locals[place.local.index()], LocalStorage::Stack(_));
+        let mut ty = body.locals[place.local].ty;
+
+        for elem in &place.projection {
+            match elem {
+                mir::PlaceElem::Deref => {
+                    if ptr_is_storage {
+                        let ptr_ty = self
+                            .context
+                            .ptr_type(AddressSpace::default())
+                            .as_basic_type_enum();
+                        let loaded = self.builder.build_load(ptr_ty, ptr, "deref").unwrap();
+                        ptr = loaded.into_pointer_value();
+                    }
+                    ptr_is_storage = true;
+                    if let TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) = ty.kind() {
+                        ty = inner;
+                    }
+                }
+            }
+        }
+
+        Ok(ptr)
+    }
+
+    fn place_ty<'a>(&self, body: &'a mir::Body<'gcx>, place: &mir::Place) -> Ty<'gcx> {
+        let mut ty = body.locals[place.local].ty;
+        for elem in &place.projection {
+            match elem {
+                mir::PlaceElem::Deref => {
+                    if let TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) = ty.kind() {
+                        ty = inner;
+                    }
+                }
+            }
+        }
+        ty
     }
 
     fn lower_constant(&mut self, constant: &mir::Constant<'gcx>) -> Option<BasicValueEnum<'llvm>> {

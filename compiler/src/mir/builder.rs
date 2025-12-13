@@ -159,22 +159,21 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             let value = self.lower_expr_id(*init);
             self.push_statement(
                 span,
-                StatementKind::Assign(Place { local: lid }, Rvalue::Use(value)),
+                StatementKind::Assign(
+                    Place {
+                        local: lid,
+                        projection: vec![],
+                    },
+                    Rvalue::Use(value),
+                ),
             );
         }
     }
 
     fn lower_assign_stmt(&mut self, target: thir::ExprId, value: thir::ExprId, span: Span) {
-        if let Some(local) = self.place_local(target) {
-            let rhs = self.lower_expr_id(value);
-            self.push_statement(span, StatementKind::Assign(Place { local }, Rvalue::Use(rhs)));
-            return;
-        }
-
-        if let Some(ptr) = self.place_deref_ptr(target) {
-            let value = self.lower_expr_id(value);
-            self.push_statement(span, StatementKind::Store { ptr, value });
-        }
+        let dest = self.place_from_expr(target, span);
+        let rhs = self.lower_expr_id(value);
+        self.push_statement(span, StatementKind::Assign(dest, Rvalue::Use(rhs)));
     }
 
     fn lower_break(&mut self, span: Span) {
@@ -233,6 +232,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             let operand = self.lower_expr_id(value);
             let dest = Place {
                 local: self.body.return_local,
+                projection: vec![],
             };
             self.push_statement(span, StatementKind::Assign(dest, Rvalue::Use(operand)));
         }
@@ -251,7 +251,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             thir::ExprKind::Literal(lit) => Operand::Constant(self.lower_constant(&lit)),
             thir::ExprKind::Local(id) => {
                 let local = *self.locals.get(&id).expect("MIR local for identifier");
-                Operand::Copy(Place { local })
+                Operand::Copy(Place {
+                    local,
+                    projection: vec![],
+                })
             }
             thir::ExprKind::Reference { .. } => Operand::Constant(Constant {
                 ty: self.gcx.types.error,
@@ -269,7 +272,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 self.push_statement(
                     expr.span,
                     StatementKind::Assign(
-                        dest,
+                        dest.clone(),
                         Rvalue::BinaryOp {
                             op: *op,
                             lhs: lhs_op,
@@ -284,7 +287,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 let dest = self.new_temp(expr.ty, expr.span);
                 self.push_statement(
                     expr.span,
-                    StatementKind::Assign(dest, Rvalue::UnaryOp { op: *op, operand }),
+                    StatementKind::Assign(dest.clone(), Rvalue::UnaryOp { op: *op, operand }),
                 );
                 Operand::Copy(dest)
             }
@@ -332,7 +335,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 kind: TerminatorKind::Call {
                     func: func_op,
                     args: arg_ops,
-                    destination: dest_place,
+                    destination: dest_place.clone(),
                     target,
                 },
                 span: expr.span,
@@ -370,7 +373,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
         // then branch
         self.current = Some(then_bb);
-        self.assign_expr_to_place(dest_place, then_expr);
+        self.assign_expr_to_place(dest_place.clone(), then_expr);
         if let Some(bb) = self.current {
             if !self.is_terminated(bb) {
                 self.set_terminator(expr.span, TerminatorKind::Goto { target: join_bb });
@@ -380,7 +383,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         // else branch
         self.current = Some(else_bb);
         if let Some(else_expr) = else_expr {
-            self.assign_expr_to_place(dest_place, else_expr);
+            self.assign_expr_to_place(dest_place.clone(), else_expr);
         } else {
             let unit = Operand::Constant(Constant {
                 ty: self.gcx.types.void,
@@ -388,7 +391,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             });
             self.push_statement(
                 expr.span,
-                StatementKind::Assign(dest_place, Rvalue::Use(unit)),
+                StatementKind::Assign(dest_place.clone(), Rvalue::Use(unit)),
             );
         }
         if let Some(bb) = self.current {
@@ -413,48 +416,13 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         target: thir::ExprId,
         rhs: thir::ExprId,
     ) -> Operand<'ctx> {
-        if let Some(local) = self.place_local(target) {
-            let rhs_op = self.lower_expr_id(rhs);
-            self.push_statement(expr.span, StatementKind::Assign(Place { local }, Rvalue::Use(rhs_op)));
-            return Operand::Constant(Constant {
-                ty: self.gcx.types.void,
-                value: ConstantKind::Unit,
-            });
-        }
-
-        if let Some(ptr) = self.place_deref_ptr(target) {
-            let value = self.lower_expr_id(rhs);
-            self.push_statement(
-                expr.span,
-                StatementKind::Store {
-                    ptr,
-                    value: value.clone(),
-                },
-            );
-            return Operand::Constant(Constant {
-                ty: self.gcx.types.void,
-                value: ConstantKind::Unit,
-            });
-        }
-
+        let dest = self.place_from_expr(target, expr.span);
+        let rhs_op = self.lower_expr_id(rhs);
+        self.push_statement(expr.span, StatementKind::Assign(dest, Rvalue::Use(rhs_op)));
         Operand::Constant(Constant {
-            ty: self.gcx.types.error,
+            ty: self.gcx.types.void,
             value: ConstantKind::Unit,
         })
-    }
-
-    fn place_local(&self, expr: thir::ExprId) -> Option<LocalId> {
-        match self.thir.exprs[expr].kind {
-            thir::ExprKind::Local(id) => self.locals.get(&id).copied(),
-            _ => None,
-        }
-    }
-
-    fn place_deref_ptr(&mut self, expr: thir::ExprId) -> Option<Operand<'ctx>> {
-        match self.thir.exprs[expr].kind {
-            thir::ExprKind::Deref(ptr_expr) => Some(self.lower_expr_id(ptr_expr)),
-            _ => None,
-        }
     }
 
     fn lower_block_expr(
@@ -491,6 +459,48 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         })
     }
 
+    fn place_from_expr(&mut self, expr: thir::ExprId, span: Span) -> Place {
+        match &self.thir.exprs[expr].kind {
+            thir::ExprKind::Local(id) => {
+                let local = *self.locals.get(id).expect("lhs local");
+                Place {
+                    local,
+                    projection: vec![],
+                }
+            }
+            thir::ExprKind::Deref(inner) => {
+                let ptr_place = self.place_from_expr(*inner, span);
+                let base_local = ptr_place.local;
+                // If there are existing projections, keep them and add Deref at end.
+                let mut projection = ptr_place.projection;
+                projection.push(crate::mir::PlaceElem::Deref);
+                Place {
+                    local: base_local,
+                    projection,
+                }
+            }
+            _ => {
+                // Fallback: create a temp to hold the value, then deref it.
+                let operand = self.lower_expr_id(expr);
+                let tmp = self.push_local(self.thir.exprs[expr].ty, LocalKind::Temp, None, span);
+                self.push_statement(
+                    span,
+                    StatementKind::Assign(
+                        Place {
+                            local: tmp,
+                            projection: vec![],
+                        },
+                        Rvalue::Use(operand),
+                    ),
+                );
+                Place {
+                    local: tmp,
+                    projection: vec![crate::mir::PlaceElem::Deref],
+                }
+            }
+        }
+    }
+
     fn push_local(
         &mut self,
         ty: Ty<'ctx>,
@@ -508,7 +518,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
     fn new_temp(&mut self, ty: Ty<'ctx>, span: Span) -> Place {
         let local = self.push_local(ty, LocalKind::Temp, None, span);
-        Place { local }
+        Place {
+            local,
+            projection: vec![],
+        }
     }
 
     fn new_block(&mut self) -> BasicBlockId {
