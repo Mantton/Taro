@@ -705,7 +705,13 @@ impl<'r, 'a> Actor<'r, 'a> {
                 }
                 PathResult::Resolution(state) => match state {
                     ResolutionState::Complete(resolution) => {
-                        entity = Some(ResolvedEntity::Resolved(resolution.clone()));
+                        let adjusted =
+                            if ns == ScopeNamespace::Type && preferred == ScopeNamespace::Value {
+                                self.adjust_nominal_value_resolution(resolution.clone())
+                            } else {
+                                resolution.clone()
+                            };
+                        entity = Some(ResolvedEntity::Resolved(adjusted));
                         break;
                     }
                     ResolutionState::Partial { .. } => unreachable!(),
@@ -857,6 +863,27 @@ impl<'r, 'a> Actor<'r, 'a> {
         }
 
         return Ok(());
+    }
+
+    fn adjust_nominal_value_resolution(&self, resolution: Resolution) -> Resolution {
+        match resolution {
+            Resolution::Definition(def_id, kind)
+                if matches!(kind, DefinitionKind::Struct | DefinitionKind::Enum) =>
+            {
+                Resolution::SelfConstructor(def_id)
+            }
+            Resolution::SelfTypeAlias(def_id) => {
+                if matches!(
+                    self.resolver.definition_kind(def_id),
+                    DefinitionKind::Struct | DefinitionKind::Enum
+                ) {
+                    Resolution::SelfConstructor(def_id)
+                } else {
+                    resolution
+                }
+            }
+            _ => resolution,
+        }
     }
 }
 

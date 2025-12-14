@@ -37,7 +37,6 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 return self.solve_equality(span, result, field_ty);
             }
 
-            self.gcx().dcx().emit_info("Pointing".into(), Some(span));
             // Instance methods.
             let candidates = self.lookup_instance_candidates(ty, name.symbol);
             if !candidates.is_empty() {
@@ -111,8 +110,6 @@ impl<'ctx> ConstraintSolver<'ctx> {
             println!("no head");
             return vec![];
         };
-
-        println!("Head is {:?}", head);
 
         self.gcx().with_session_type_database(|db| {
             db.type_head_to_members

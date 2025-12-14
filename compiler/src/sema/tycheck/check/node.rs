@@ -627,82 +627,28 @@ impl<'ctx> Checker<'ctx> {
         expect_ty: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
-        let mut receiver_arg: Option<ApplyArgument<'ctx>> = None;
+        // Synthesize callee first; constructor binding and callee source will be refined later.
+        let callee_ty = self.synth(callee, cs);
 
-        let (callee_ty, callee_source) = match &callee.kind {
-            hir::ExpressionKind::Path(path) => match path {
-                hir::ResolvedPath::Resolved(path) => {
-                    if let Some(nominal) =
-                        self.constructor_nominal_from_resolution(&path.resolution)
-                    {
-                        let ty = cs.infer_cx.next_ty_var(callee.span);
-                        if !self.bind_constructor_overload_set(nominal, callee.span, ty, cs) {
-                            return Ty::error(self.gcx());
-                        }
-                        cs.record_expr_ty(callee.id, ty);
-                        (ty, None)
-                    } else {
-                        let callee_ty = self.synth(callee, cs);
-                        let callee_source = self.resolve_callee(callee);
-                        (callee_ty, callee_source)
-                    }
-                }
-                hir::ResolvedPath::Relative(..) => {
-                    let callee_ty = self.synth(callee, cs);
-                    let callee_source = self.resolve_callee(callee);
-                    (callee_ty, callee_source)
-                }
-            },
-            hir::ExpressionKind::Member { target, name } => {
-                let recv_ty = self.synth(target, cs);
-                let recv_arg_ty = match recv_ty.kind() {
-                    TyKind::Reference(..) | TyKind::Pointer(..) => recv_ty,
-                    _ => Ty::new(
-                        TyKind::Reference(recv_ty, hir::Mutability::Immutable),
-                        self.gcx(),
-                    ),
-                };
-
-                receiver_arg = Some(ApplyArgument {
-                    id: target.id,
-                    label: None,
-                    ty: recv_arg_ty,
-                    span: target.span,
-                });
-
-                let ty = self.synth_instance_member(recv_ty, name, callee.span, cs);
-                (ty, None)
-            }
-            _ => {
-                let callee_ty = self.synth(callee, cs);
-                let callee_source = self.resolve_callee(callee);
-                (callee_ty, callee_source)
-            }
-        };
-
-        let mut apply_arguments: Vec<ApplyArgument<'ctx>> =
-            Vec::with_capacity(arguments.len() + if receiver_arg.is_some() { 1 } else { 0 });
-        if let Some(arg) = receiver_arg {
-            apply_arguments.push(arg);
-        }
-        apply_arguments.extend(arguments.iter().map(|n| ApplyArgument {
-            id: n.expression.id,
-            label: n.label.map(|n| n.identifier),
-            ty: self.synth(&n.expression, cs),
-            span: n.expression.span,
-        }));
-
-        let arguments = apply_arguments;
+        let apply_arguments: Vec<ApplyArgument<'ctx>> = arguments
+            .iter()
+            .map(|n| ApplyArgument {
+                id: n.expression.id,
+                label: n.label.map(|n| n.identifier),
+                ty: self.synth(&n.expression, cs),
+                span: n.expression.span,
+            })
+            .collect();
 
         let result_ty = cs.infer_cx.next_ty_var(expression.span);
 
         let data = ApplyGoalData {
             call_span: expression.span,
             callee_ty,
-            callee_source,
+            callee_source: None,
             result_ty,
             expect_ty,
-            arguments,
+            arguments: apply_arguments,
         };
         cs.add_goal(Goal::Apply(data), expression.span);
 

@@ -12,6 +12,14 @@ impl<'ctx> ConstraintSolver<'ctx> {
         location: Span,
         branches: Vec<DisjunctionBranch<'ctx>>,
     ) -> SolverResult<'ctx> {
+        if branches.len() == 1 {
+            let branch = branches.into_iter().next().unwrap();
+            return self.solve(Obligation {
+                location,
+                goal: branch.goal,
+            });
+        }
+
         let mut successful = vec![];
         let mut failed = false;
 
