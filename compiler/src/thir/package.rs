@@ -236,7 +236,7 @@ impl<'ctx> FunctionLower<'ctx> {
                 };
                 self.push_expr(ExprKind::Local(*id), ty, span)
             }
-            hir::ExpressionKind::Call(callee, args) => {
+            hir::ExpressionKind::Call { callee, arguments } => {
                 let callee_id: Option<DefinitionID> = match &callee.kind {
                     hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => {
                         match &path.resolution {
@@ -251,7 +251,7 @@ impl<'ctx> FunctionLower<'ctx> {
                 };
 
                 if let Some(id) = callee_id {
-                    let args: Vec<ExprId> = args
+                    let args: Vec<ExprId> = arguments
                         .iter()
                         .map(|arg| self.lower_expr(&arg.expression))
                         .collect();
@@ -312,6 +312,32 @@ impl<'ctx> FunctionLower<'ctx> {
                         expr: operand,
                     },
                     ty,
+                    span,
+                )
+            }
+            hir::ExpressionKind::MethodCall {
+                receiver,
+                name: _,
+                arguments,
+            } => {
+                // For now, lower method calls like regular calls with the receiver as first arg
+                // when the callee resolved to a function id.
+                // TODO: carry the resolved method id on HIR to avoid re-resolving here.
+                let args: Vec<ExprId> = arguments
+                    .iter()
+                    .map(|arg| self.lower_expr(&arg.expression))
+                    .collect();
+                let recv = self.lower_expr(receiver);
+                let mut all_args = Vec::with_capacity(args.len() + 1);
+                all_args.push(recv);
+                all_args.extend(args);
+                // Without a resolved callee, emit an error literal for now.
+                self.push_expr(
+                    ExprKind::Literal(Constant {
+                        ty: self.gcx.types.error,
+                        value: ConstantKind::Unit,
+                    }),
+                    self.gcx.types.error,
                     span,
                 )
             }

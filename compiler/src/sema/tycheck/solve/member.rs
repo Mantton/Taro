@@ -8,6 +8,7 @@ use crate::{
         error::TypeError,
         models::{Ty, TyKind},
         resolve::models::{DefinitionID, DefinitionKind, PrimaryType, TypeHead},
+        tycheck::utils::autoderef::Autoderef,
     },
     span::{Spanned, Symbol},
 };
@@ -24,10 +25,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         let mut adjustments = Vec::new();
         let mut prev: Option<Ty<'ctx>> = None;
-        for ty in self.autoderef_iter(receiver) {
+        for ty in self.autoderef(receiver) {
             let ty = self.structurally_resolve(ty);
-            if let Some(p) = prev {
-                adjustments.push(Adjustment::Deref { from: p, to: ty });
+            if let Some(_) = prev {
+                adjustments.push(Adjustment::Dereference);
             }
             prev = Some(ty);
 
@@ -72,15 +73,11 @@ impl<'ctx> ConstraintSolver<'ctx> {
         SolverResult::Error(vec![error])
     }
 
-    fn autoderef_iter(&self, base: Ty<'ctx>) -> AutoderefIter<'_, 'ctx> {
-        AutoderefIter {
-            solver: self,
-            cur: Some(self.structurally_resolve(base)),
-            at_start: true,
-        }
+    pub fn autoderef(&self, base: Ty<'ctx>) -> Autoderef<'ctx> {
+        Autoderef::new(&self.icx, base)
     }
 
-    fn record_adjustments(&mut self, node_id: NodeID, adjustments: Vec<Adjustment<'ctx>>) {
+    pub fn record_adjustments(&mut self, node_id: NodeID, adjustments: Vec<Adjustment<'ctx>>) {
         if adjustments.is_empty() {
             return;
         }
@@ -106,8 +103,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
     }
 
     fn lookup_instance_candidates(&self, ty: Ty<'ctx>, name: Symbol) -> Vec<DefinitionID> {
-        let Some(head) = self.type_head_from_value_ty(ty) else {
-            println!("no head");
+        let Some(head) = self.type_head_from_type(ty) else {
             return vec![];
         };
 
@@ -120,7 +116,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         })
     }
 
-    fn type_head_from_value_ty(&self, ty: Ty<'ctx>) -> Option<TypeHead> {
+    pub fn type_head_from_type(&self, ty: Ty<'ctx>) -> Option<TypeHead> {
         match ty.kind() {
             TyKind::Bool => Some(TypeHead::Primary(PrimaryType::Bool)),
             TyKind::Rune => Some(TypeHead::Primary(PrimaryType::Rune)),
@@ -134,34 +130,5 @@ impl<'ctx> ConstraintSolver<'ctx> {
             TyKind::Tuple(items) => Some(TypeHead::Tuple(items.len() as u16)),
             TyKind::Infer(_) | TyKind::FnPointer { .. } | TyKind::Error => None,
         }
-    }
-}
-
-struct AutoderefIter<'s, 'ctx> {
-    solver: &'s ConstraintSolver<'ctx>,
-    cur: Option<Ty<'ctx>>,
-    at_start: bool,
-}
-
-impl<'s, 'ctx> Iterator for AutoderefIter<'s, 'ctx> {
-    type Item = Ty<'ctx>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let ty = self.cur?;
-
-        if self.at_start {
-            self.at_start = false;
-            return Some(ty);
-        }
-
-        let next = match ty.kind() {
-            TyKind::Reference(inner, _) | TyKind::Pointer(inner, _) => {
-                Some(self.solver.structurally_resolve(inner))
-            }
-            _ => None,
-        };
-
-        self.cur = next;
-        next
     }
 }

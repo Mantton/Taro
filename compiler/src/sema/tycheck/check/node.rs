@@ -8,7 +8,8 @@ use crate::{
             check::checker::Checker,
             solve::{
                 ApplyArgument, ApplyGoalData, BinOpGoalData, BindOverloadGoalData,
-                ConstraintSystem, DisjunctionBranch, Goal, MemberGoalData, UnOpGoalData,
+                ConstraintSystem, DisjunctionBranch, Goal, MemberGoalData, MethodCallData,
+                UnOpGoalData,
             },
         },
     },
@@ -218,10 +219,10 @@ impl<'ctx> Checker<'ctx> {
     ) -> Ty<'ctx> {
         let ty = self.synth_expression_kind(node, expectation, cs);
         cs.record_expr_ty(node.id, ty);
-        // self.gcx().dcx().emit_info(
-        //     format!("Checked {}", ty.format(self.gcx())),
-        //     Some(node.span),
-        // );
+        self.gcx().dcx().emit_info(
+            format!("Checked {}", ty.format(self.gcx())),
+            Some(node.span),
+        );
         ty
     }
 
@@ -242,9 +243,21 @@ impl<'ctx> Checker<'ctx> {
             hir::ExpressionKind::Path(path) => {
                 self.synth_path_expression(expression, path, expectation, cs)
             }
-            hir::ExpressionKind::Call(callee, arguments) => {
+            hir::ExpressionKind::Call { callee, arguments } => {
                 self.synth_call_expression(expression, callee, arguments, expectation, cs)
             }
+            hir::ExpressionKind::MethodCall {
+                receiver,
+                name,
+                arguments,
+            } => self.synth_method_call_expression(
+                expression,
+                receiver,
+                name,
+                arguments,
+                expectation,
+                cs,
+            ),
             hir::ExpressionKind::Member { target, name } => {
                 self.synth_member_expression(expression, target, name, expectation, cs)
             }
@@ -627,7 +640,6 @@ impl<'ctx> Checker<'ctx> {
         expect_ty: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
-        // Synthesize callee first; constructor binding and callee source will be refined later.
         let callee_ty = self.synth(callee, cs);
 
         let apply_arguments: Vec<ApplyArgument<'ctx>> = arguments
@@ -645,12 +657,54 @@ impl<'ctx> Checker<'ctx> {
         let data = ApplyGoalData {
             call_span: expression.span,
             callee_ty,
-            callee_source: None,
+            callee_source: self.resolve_callee(callee),
             result_ty,
             expect_ty,
             arguments: apply_arguments,
         };
         cs.add_goal(Goal::Apply(data), expression.span);
+
+        result_ty
+    }
+
+    fn synth_method_call_expression(
+        &self,
+        expression: &hir::Expression,
+        receiver: &hir::Expression,
+        name: &crate::span::Identifier,
+        arguments: &[hir::ExpressionArgument],
+        expect_ty: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        let recv_ty = self.synth(receiver, cs);
+        let args: Vec<ApplyArgument<'ctx>> = arguments
+            .iter()
+            .map(|n| ApplyArgument {
+                id: n.expression.id,
+                label: n.label.map(|n| n.identifier),
+                ty: self.synth(&n.expression, cs),
+                span: n.expression.span,
+            })
+            .collect();
+
+        let method_ty = cs.infer_cx.next_ty_var(name.span);
+        let result_ty = cs.infer_cx.next_ty_var(expression.span);
+
+        cs.add_goal(
+            Goal::MethodCall(MethodCallData {
+                node_id: expression.id,
+                receiver: recv_ty,
+                reciever_node: receiver.id,
+                reciever_span: receiver.span,
+                method_ty: method_ty,
+                expect_ty,
+                name: *name,
+                arguments: args,
+                result: result_ty,
+                span: expression.span,
+            }),
+            expression.span,
+        );
 
         result_ty
     }
@@ -952,55 +1006,6 @@ impl<'ctx> Checker<'ctx> {
         if candidates.is_empty() {
             gcx.dcx().emit_error(
                 format!("unknown static member '{}'", name.symbol.as_str()),
-                Some(span),
-            );
-            return Ty::error(gcx);
-        }
-
-        let ty = cs.infer_cx.next_ty_var(span);
-        let mut branches = Vec::with_capacity(candidates.len());
-        for candidate in candidates {
-            let candidate_ty = gcx.get_type(candidate);
-            branches.push(DisjunctionBranch {
-                goal: Goal::BindOverload(BindOverloadGoalData {
-                    var_ty: ty,
-                    candidate_ty,
-                    source: candidate,
-                }),
-                source: Some(candidate),
-            });
-        }
-        cs.add_goal(Goal::Disjunction(branches), span);
-        ty
-    }
-
-    fn synth_instance_member(
-        &self,
-        receiver_ty: Ty<'ctx>,
-        name: &crate::span::Identifier,
-        span: Span,
-        cs: &mut Cs<'ctx>,
-    ) -> Ty<'ctx> {
-        let gcx = self.gcx();
-        let Some(head) = self.type_head_from_value_ty(receiver_ty) else {
-            gcx.dcx().emit_error(
-                "cannot resolve member on this receiver type".into(),
-                Some(span),
-            );
-            return Ty::error(gcx);
-        };
-
-        let candidates = gcx.with_session_type_database(|db| {
-            db.type_head_to_members
-                .get(&head)
-                .and_then(|idx| idx.instance_functions.get(&name.symbol))
-                .map(|set| set.members.clone())
-                .unwrap_or_default()
-        });
-
-        if candidates.is_empty() {
-            gcx.dcx().emit_error(
-                format!("unknown member '{}'", name.symbol.as_str()),
                 Some(span),
             );
             return Ty::error(gcx);

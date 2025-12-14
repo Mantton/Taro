@@ -25,6 +25,7 @@ pub enum TypeError<'ctx> {
     NoOverloadMatches,
     AmbiguousOverload,
     NoSuchMember { name: Symbol, on: Ty<'ctx> },
+    NotCallable { found: Ty<'ctx> },
 }
 
 pub type SpannedError<'ctx> = Spanned<TypeError<'ctx>>;
@@ -51,6 +52,9 @@ impl<'ctx> TypeError<'ctx> {
             }
             TypeError::NoSuchMember { name, on } => {
                 format!("no member named '{}' found on type {}", name, on.format(gcx))
+            }
+            TypeError::NotCallable { found } => {
+                format!("cannot call value of type {}", found.format(gcx))
             }
         }
     }

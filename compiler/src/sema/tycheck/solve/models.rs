@@ -8,7 +8,10 @@ use crate::{
 #[derive(Debug, Clone)]
 pub enum Adjustment<'ctx> {
     /// Apply a single autoderef step (e.g. from `&T` to `T`).
-    Deref { from: Ty<'ctx>, to: Ty<'ctx> },
+    Dereference,
+    BorrowMutable,
+    BorrowImmutable,
+    Ignore(&'ctx ()),
 }
 
 #[derive(Debug, Clone)]
@@ -21,6 +24,7 @@ pub enum Goal<'ctx> {
     UnaryOp(UnOpGoalData<'ctx>),
     Coerce { from: Ty<'ctx>, to: Ty<'ctx> },
     Member(MemberGoalData<'ctx>),
+    MethodCall(MethodCallData<'ctx>),
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +68,20 @@ pub struct MemberGoalData<'ctx> {
     pub receiver: Ty<'ctx>,
     pub name: Identifier,
     pub result: Ty<'ctx>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct MethodCallData<'ctx> {
+    pub node_id: NodeID,
+    pub receiver: Ty<'ctx>,
+    pub reciever_span: Span,
+    pub reciever_node: NodeID,
+    pub name: Identifier,
+    pub arguments: Vec<ApplyArgument<'ctx>>,
+    pub result: Ty<'ctx>,
+    pub method_ty: Ty<'ctx>,
+    pub expect_ty: Option<Ty<'ctx>>,
     pub span: Span,
 }
 

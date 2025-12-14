@@ -10,6 +10,7 @@ use std::{cmp::Reverse, collections::VecDeque, rc::Rc};
 
 mod apply;
 mod member;
+mod method;
 mod models;
 mod op;
 mod overload;
@@ -78,33 +79,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
     }
 
     pub fn resolved_adjustments(&self) -> FxHashMap<NodeID, Vec<Adjustment<'ctx>>> {
-        let gcx = self.infer_cx.gcx;
-        self.adjustments
-            .iter()
-            .map(|(&id, adjs)| {
-                let resolved: Vec<_> = adjs
-                    .iter()
-                    .map(|adj| match adj {
-                        Adjustment::Deref { from, to } => {
-                            let from = self.infer_cx.resolve_vars_if_possible(*from);
-                            let to = self.infer_cx.resolve_vars_if_possible(*to);
-                            let from = if from.is_infer() {
-                                Ty::error(gcx)
-                            } else {
-                                from
-                            };
-                            let to = if to.is_infer() { Ty::error(gcx) } else { to };
-                            Adjustment::Deref { from, to }
-                        }
-                    })
-                    .collect();
-                (id, resolved)
-            })
-            .collect()
-    }
-
-    pub fn take_adjustments(self) -> FxHashMap<NodeID, Vec<Adjustment<'ctx>>> {
-        self.adjustments
+        self.adjustments.clone()
     }
 }
 
@@ -158,6 +133,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             Goal::BinaryOp(data) => self.solve_binary(data),
             Goal::Coerce { from, to } => self.solve_coerce(location, from, to),
             Goal::Member(data) => self.solve_member(data),
+            Goal::MethodCall(data) => self.solve_method_call(data),
         }
     }
 
@@ -269,7 +245,7 @@ impl<'ctx> SolverDriver<'ctx> {
                 SolverResult::Deferred => self.deferred.push_back(obligation),
                 SolverResult::Solved(mut obligations) => {
                     made_progress = true;
-                    for obligation in obligations.drain(..) {
+                    for obligation in obligations.drain(..).rev() {
                         self.solver.obligations.push_front(obligation);
                     }
                 }

@@ -89,10 +89,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
             (Error, Error) => return Ok(()),
             (Rune | Bool | Int(_) | UInt(_) | Float(_) | String, _) if a == b => return Ok(()),
             // (Parameter(a_p), Parameter(b_p)) if a_p.index == b_p.index => return Ok(()),
-            // (Adt(a_def, a_args), Adt(b_def, b_args)) if a_def.id == b_def.id => {
-            //     self.unify_generic_args(a_args, b_args)?;
-            //     return Ok(());
-            // }
+            (Adt(a_def), Adt(b_def)) if a_def.id == b_def.id => {
+                return Ok(());
+            }
             (Pointer(a_ty, a_mut), Pointer(b_ty, b_mut)) => {
                 if a_mut != b_mut {
                     return Err(TypeError::Mutability(ExpectedFound::new(a_ty, b_ty)));

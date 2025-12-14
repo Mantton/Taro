@@ -855,10 +855,38 @@ impl Actor<'_, '_> {
             ast::ExpressionKind::Match(node) => {
                 hir::ExpressionKind::Match(self.lower_match_expression(node))
             }
-            ast::ExpressionKind::Call(node, args) => hir::ExpressionKind::Call(
-                self.lower_expression(node),
-                self.lower_expression_arguments(args),
-            ),
+            ast::ExpressionKind::Call(node, args) => {
+                let callee_state = self
+                    .resolutions
+                    .expression_resolutions
+                    .get(&node.id)
+                    .cloned();
+                let callee = self.lower_expression(node);
+                let args = self.lower_expression_arguments(args);
+
+                let treat_as_method =
+                    matches!(
+                        callee_state,
+                        None | Some(ExpressionResolutionState::DeferredAssociatedValue)
+                    ) && matches!(callee.kind, hir::ExpressionKind::Member { .. });
+
+                if treat_as_method {
+                    let hir::ExpressionKind::Member { target, name } = callee.kind else {
+                        unreachable!()
+                    };
+
+                    hir::ExpressionKind::MethodCall {
+                        receiver: target,
+                        name,
+                        arguments: args,
+                    }
+                } else {
+                    hir::ExpressionKind::Call {
+                        callee,
+                        arguments: args,
+                    }
+                }
+            }
             ast::ExpressionKind::Reference(node, mutability) => {
                 hir::ExpressionKind::Reference(self.lower_expression(node), mutability)
             }
@@ -956,7 +984,13 @@ impl Actor<'_, '_> {
                     })
                     .collect();
 
-                let call = self.mk_expression(hir::ExpressionKind::Call(foo, arguments), node.span);
+                let call = self.mk_expression(
+                    hir::ExpressionKind::Call {
+                        callee: foo,
+                        arguments,
+                    },
+                    node.span,
+                );
                 return call;
             }
             ast::ExpressionKind::DictionaryLiteral(map_pairs) => {
@@ -968,8 +1002,13 @@ impl Actor<'_, '_> {
                     Resolution::Foundation(hir::FoundationDecl::Dictionary),
                 );
                 let ctor = self.mk_expression(hir::ExpressionKind::Path(ctor_path), node.span);
-                let initializer =
-                    self.mk_expression(hir::ExpressionKind::Call(ctor, vec![]), node.span);
+                let initializer = self.mk_expression(
+                    hir::ExpressionKind::Call {
+                        callee: ctor,
+                        arguments: vec![],
+                    },
+                    node.span,
+                );
 
                 // Bind the dictionary to a mutable local so we can perform insertions.
                 let dictionary_ident = Identifier::new(Symbol::new("__dictionary"), node.span);
@@ -1020,8 +1059,14 @@ impl Actor<'_, '_> {
                         })
                         .collect();
 
-                    let call =
-                        self.mk_expression(hir::ExpressionKind::Call(member, arguments), node.span);
+                    let call = self.mk_expression(
+                        hir::ExpressionKind::MethodCall {
+                            receiver: member,
+                            name: insert_ident,
+                            arguments,
+                        },
+                        node.span,
+                    );
                     statements
                         .push(self.mk_statement(hir::StatementKind::Expression(call), node.span));
                 }
@@ -1311,10 +1356,29 @@ impl Actor<'_, '_> {
                     );
                 }
 
-                let kind = hir::ExpressionKind::Call(
-                    self.lower_expression(callee),
-                    self.lower_expression_arguments(args),
-                );
+                let callee_state = self
+                    .resolutions
+                    .expression_resolutions
+                    .get(&callee.id)
+                    .cloned();
+                let kind = match callee.kind {
+                    ast::ExpressionKind::Member { target, name }
+                        if matches!(
+                            callee_state,
+                            None | Some(ExpressionResolutionState::DeferredAssociatedValue)
+                        ) =>
+                    {
+                        hir::ExpressionKind::MethodCall {
+                            receiver: self.lower_expression(target),
+                            name,
+                            arguments: self.lower_expression_arguments(args),
+                        }
+                    }
+                    _ => hir::ExpressionKind::Call {
+                        callee: self.lower_expression(callee),
+                        arguments: self.lower_expression_arguments(args),
+                    },
+                };
 
                 self.mk_expression(kind, span)
             }
@@ -1325,10 +1389,10 @@ impl Actor<'_, '_> {
                     span: lhs_span,
                 }];
 
-                let kind = hir::ExpressionKind::Call(
-                    self.lower_expression(Box::new(rhs_expr)),
-                    self.lower_expression_arguments(args),
-                );
+                let kind = hir::ExpressionKind::Call {
+                    callee: self.lower_expression(Box::new(rhs_expr)),
+                    arguments: self.lower_expression_arguments(args),
+                };
 
                 self.mk_expression(kind, span)
             }

@@ -12,6 +12,10 @@ use crate::{
 impl<'ctx> ConstraintSolver<'ctx> {
     pub fn solve_apply(&mut self, data: ApplyGoalData<'ctx>) -> SolverResult<'ctx> {
         let callee_ty = self.icx.resolve_vars_if_possible(data.callee_ty);
+        if callee_ty.is_error() {
+            // Avoid cascading errors when the callee already failed to type-check.
+            return SolverResult::Solved(vec![]);
+        }
         let callee_source = data
             .callee_source
             .or_else(|| self.icx.overload_binding_for_ty(data.callee_ty));
@@ -19,7 +23,12 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let (inputs, output) = match callee_ty.kind() {
             TyKind::FnPointer { inputs, output } => (inputs, output),
             TyKind::Infer(_) => return SolverResult::Deferred,
-            _ => todo!("report – cannot inkoke"),
+            _ => {
+                return SolverResult::Error(vec![Spanned::new(
+                    TypeError::NotCallable { found: callee_ty },
+                    data.call_span,
+                )]);
+            }
         };
 
         let signature = if let Some(id) = callee_source {
@@ -76,7 +85,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         obligations.push(Obligation {
             location: data.call_span,
-            goal: Goal::Equal(output, data.result_ty),
+            goal: Goal::Equal(data.result_ty, output),
         });
 
         return SolverResult::Solved(obligations);

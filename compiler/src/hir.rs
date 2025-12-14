@@ -455,7 +455,16 @@ pub enum ExpressionKind {
     /// }`
     Match(MatchExpression),
     /// `main()`
-    Call(Box<Expression>, Vec<ExpressionArgument>),
+    Call {
+        callee: Box<Expression>,
+        arguments: Vec<ExpressionArgument>,
+    },
+    /// `receiver.method(...)`
+    MethodCall {
+        receiver: Box<Expression>,
+        name: Identifier,
+        arguments: Vec<ExpressionArgument>,
+    },
     /// &a | &const T
     Reference(Box<Expression>, Mutability),
     /// *a
@@ -1326,8 +1335,16 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, node: &Expression) -> V::
         ExpressionKind::Match(expr) => {
             try_visit!(visitor.visit_match_expression(expr));
         }
-        ExpressionKind::Call(expression, arguments) => {
-            try_visit!(visitor.visit_expression(expression));
+        ExpressionKind::Call { callee, arguments } => {
+            try_visit!(visitor.visit_expression(callee));
+            walk_list!(visitor, visit_expression_argument, arguments);
+        }
+        ExpressionKind::MethodCall {
+            receiver,
+            arguments,
+            ..
+        } => {
+            try_visit!(visitor.visit_expression(receiver));
             walk_list!(visitor, visit_expression_argument, arguments);
         }
         ExpressionKind::Reference(expression, _) => {

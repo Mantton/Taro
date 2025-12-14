@@ -94,6 +94,13 @@ impl<'arena> Ty<'arena> {
     pub fn is_fn(self) -> bool {
         matches!(self.kind(), TyKind::FnPointer { .. })
     }
+
+    pub fn dereference(self) -> Option<Ty<'arena>> {
+        match self.kind() {
+            TyKind::Reference(ty, _) | TyKind::Pointer(ty, _) => Some(ty),
+            _ => None,
+        }
+    }
 }
 
 impl<'arena> Ty<'arena> {
