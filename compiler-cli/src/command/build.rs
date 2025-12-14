@@ -16,14 +16,14 @@ use compiler::{
     diagnostics::DiagCtx,
     error::ReportedError,
 };
-use std::{path::PathBuf, process::Command};
+use std::{path::PathBuf, process::Command, rc::Rc};
 
 pub fn run(
     arguments: CommandLineArguments,
     require_executable: bool,
 ) -> Result<Option<std::path::PathBuf>, ReportedError> {
     let cwd = std::env::current_dir().map_err(|_| ReportedError)?;
-    let dcx = DiagCtx::new(cwd);
+    let dcx = Rc::new(DiagCtx::new(cwd));
     let arenas = CompilerArenas::new();
     let project_root = arguments.path.canonicalize().map_err(|_| ReportedError)?;
     let target_root = project_root.join("target").join("objects");

@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use crate::{
     CommandLineArguments,
     package::{
@@ -19,7 +21,7 @@ use compiler::{
 
 pub fn run(arguments: CommandLineArguments) -> Result<(), ReportedError> {
     let cwd = std::env::current_dir().map_err(|_| ReportedError)?;
-    let dcx = DiagCtx::new(cwd);
+    let dcx = Rc::new(DiagCtx::new(cwd));
     let arenas = CompilerArenas::new();
     let project_root = arguments.path.canonicalize().map_err(|_| ReportedError)?;
     let target_root = project_root.join("target").join("objects");

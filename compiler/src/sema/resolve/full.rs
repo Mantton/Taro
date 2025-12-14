@@ -607,6 +607,11 @@ impl<'r, 'a> Actor<'r, 'a> {
                     PatternSource::BindingCondition,
                 );
             }
+            ast::ExpressionKind::StructLiteral(literal) => {
+                // Resolve the path as a type
+                self.resolve_path_with_source(node.id, &literal.path, ResolutionSource::Type);
+                ast::walk_expression(self, node);
+            }
             _ => ast::walk_expression(self, node),
         }
     }

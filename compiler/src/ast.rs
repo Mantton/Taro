@@ -335,6 +335,9 @@ pub enum ExpressionKind {
         target: Box<Expression>,
         type_arguments: TypeArguments,
     },
+    /// Foo { a: 10, b: 20 }
+    StructLiteral(StructLiteral),
+
     /// `[a, b, c]`
     Array(Vec<Box<Expression>>),
     /// `(a, b, c)`
@@ -461,6 +464,20 @@ pub struct ClosureExpression {
     pub signature: FunctionSignature,
     pub body: Box<Expression>,
     pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExpressionField {
+    pub is_shorthand: bool,
+    pub label: Option<Label>,
+    pub expression: Box<Expression>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct StructLiteral {
+    pub path: Path,
+    pub fields: Vec<ExpressionField>,
 }
 
 #[derive(Debug, Clone)]
@@ -1212,6 +1229,10 @@ pub trait AstVisitor: Sized {
     fn visit_path_node(&mut self, node: &PathNode) -> Self::Result {
         walk_path_node(self, node)
     }
+
+    fn visit_expression_field(&mut self, node: &ExpressionField) -> Self::Result {
+        walk_expression_field(self, node)
+    }
 }
 
 pub fn walk_package<V: AstVisitor>(visitor: &mut V, package: &Package) -> V::Result {
@@ -1582,6 +1603,10 @@ pub fn walk_expression<V: AstVisitor>(visitor: &mut V, node: &Expression) -> V::
         ExpressionKind::OptionalEvaluation(expression) => {
             try_visit!(visitor.visit_expression(expression));
         }
+        ExpressionKind::StructLiteral(node) => {
+            try_visit!(visitor.visit_path(&node.path));
+            walk_list!(visitor, visit_expression_field, &node.fields);
+        }
     };
 
     V::Result::output()
@@ -1936,6 +1961,11 @@ pub fn walk_conformance<V: AstVisitor>(visitor: &mut V, node: &Conformances) -> 
 
 pub fn walk_path_node<V: AstVisitor>(visitor: &mut V, node: &PathNode) -> V::Result {
     try_visit!(visitor.visit_path(&node.path));
+    V::Result::output()
+}
+
+pub fn walk_expression_field<V: AstVisitor>(visitor: &mut V, field: &ExpressionField) -> V::Result {
+    try_visit!(visitor.visit_expression(&field.expression));
     V::Result::output()
 }
 

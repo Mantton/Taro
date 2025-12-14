@@ -485,6 +485,8 @@ pub enum ExpressionKind {
     PatternBinding(PatternBindingCondition),
     /// { }
     Block(Block),
+    /// `Foo { a: 1, b: 2 }`
+    StructLiteral(StructLiteral),
     Malformed,
 }
 
@@ -531,6 +533,20 @@ pub struct IfExpression {
 pub struct PatternBindingCondition {
     pub pattern: Pattern,
     pub expression: Box<Expression>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct StructLiteral {
+    pub path: ResolvedPath,
+    pub fields: Vec<ExpressionField>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExpressionField {
+    pub label: Option<Label>,
+    pub expression: Box<Expression>,
+    pub is_shorthand: bool,
     pub span: Span,
 }
 
@@ -1358,6 +1374,12 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, node: &Expression) -> V::
         }
         ExpressionKind::Block(block) => {
             try_visit!(visitor.visit_block(block));
+        }
+        ExpressionKind::StructLiteral(struct_literal) => {
+            try_visit!(visitor.visit_resolved_path(&struct_literal.path));
+            for field in &struct_literal.fields {
+                try_visit!(visitor.visit_expression(&field.expression));
+            }
         }
         ExpressionKind::Malformed => {}
     };

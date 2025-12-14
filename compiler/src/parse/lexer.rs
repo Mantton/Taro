@@ -274,6 +274,7 @@ impl Lexer {
             ';' => Token::Semicolon,
             ',' => Token::Comma,
             '@' => Token::At,
+            '$' => Token::Dollar,
             '~' => Token::Tilde,
             ':' => Token::Colon,
             '.' => {

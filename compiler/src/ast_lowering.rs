@@ -1074,7 +1074,6 @@ impl Actor<'_, '_> {
 
                 return block_expr;
             }
-
             ast::ExpressionKind::OptionalPatternBinding(..) => todo!(),
             ast::ExpressionKind::OptionalDefault(..) => {
                 todo!()
@@ -1088,6 +1087,23 @@ impl Actor<'_, '_> {
                     Some(node.span),
                 );
                 hir::ExpressionKind::Malformed
+            }
+            ast::ExpressionKind::StructLiteral(struct_literal) => {
+                let path = self.lower_path(
+                    struct_literal.path.segments[0].id,
+                    struct_literal.path.clone(),
+                );
+                let fields = struct_literal
+                    .fields
+                    .iter()
+                    .map(|f| hir::ExpressionField {
+                        label: f.label.clone(),
+                        expression: self.lower_expression(f.expression.clone()),
+                        is_shorthand: f.is_shorthand,
+                        span: f.span,
+                    })
+                    .collect();
+                hir::ExpressionKind::StructLiteral(hir::StructLiteral { path, fields })
             }
         };
 

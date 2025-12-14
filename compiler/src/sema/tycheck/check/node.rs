@@ -301,6 +301,9 @@ impl<'ctx> Checker<'ctx> {
             hir::ExpressionKind::Block(block) => {
                 self.synth_block_expression(block, expectation, cs)
             }
+            hir::ExpressionKind::StructLiteral(..) => {
+                todo!("struct literal type checking")
+            }
             hir::ExpressionKind::Malformed => {
                 unreachable!("ICE: trying to typecheck a malformed expression node")
             }

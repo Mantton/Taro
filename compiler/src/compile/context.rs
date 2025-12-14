@@ -17,6 +17,7 @@ use crate::{
 use bumpalo::Bump;
 use ecow::EcoString;
 use rustc_hash::FxHashMap;
+use std::rc::Rc;
 use std::{cell::RefCell, ops::Deref, path::PathBuf};
 
 pub type Gcx<'gcx> = GlobalContext<'gcx>;
@@ -236,13 +237,13 @@ impl<'arena> GlobalContext<'arena> {
 }
 
 pub struct CompilerContext<'arena> {
-    pub dcx: DiagCtx,
+    pub dcx: Rc<DiagCtx>,
     pub store: CompilerStore<'arena>,
     pub types: CommonTypes<'arena>,
 }
 
 impl<'arena> CompilerContext<'arena> {
-    pub fn new(dcx: DiagCtx, store: CompilerStore<'arena>) -> CompilerContext<'arena> {
+    pub fn new(dcx: Rc<DiagCtx>, store: CompilerStore<'arena>) -> CompilerContext<'arena> {
         let types = CommonTypes::new(&store.interners);
         CompilerContext { dcx, store, types }
     }

@@ -3,17 +3,17 @@ use crate::{
         self, AnonConst, AssociatedDeclaration, AssociatedDeclarationKind, Attribute,
         AttributeList, BinaryOperator, Block, ClosureExpression, ConformanceConstraint,
         Conformances, Constant, Declaration, DeclarationKind, Enum, EnumCase, Expression,
-        ExpressionArgument, ExpressionKind, Extension, FieldDefinition, ForStatement, Function,
-        FunctionDeclaration, FunctionDeclarationKind, FunctionParameter, FunctionPrototype,
-        FunctionSignature, GenericBound, GenericBounds, GenericRequirement, GenericRequirementList,
-        GenericWhereClause, Generics, Identifier, IfExpression, Interface, Label,
-        Literal, Local, MapPair, MatchArm, MatchExpression, Mutability, Namespace,
+        ExpressionArgument, ExpressionField, ExpressionKind, Extension, FieldDefinition,
+        ForStatement, Function, FunctionDeclaration, FunctionDeclarationKind, FunctionParameter,
+        FunctionPrototype, FunctionSignature, GenericBound, GenericBounds, GenericRequirement,
+        GenericRequirementList, GenericWhereClause, Generics, Identifier, IfExpression, Interface,
+        Label, Literal, Local, MapPair, MatchArm, MatchExpression, Mutability, Namespace,
         NamespaceDeclaration, NamespaceDeclarationKind, NodeID, Operator, OperatorKind, Path,
         PathNode, PathSegment, Pattern, PatternBindingCondition, PatternKind, PatternPath,
-        RequiredTypeConstraint, SelfKind, Statement, StatementKind, Struct, Type, TypeAlias,
-        TypeArgument, TypeArguments, TypeKind, TypeParameter, TypeParameterKind, TypeParameters,
-        UnaryOperator, UseTree, UseTreeKind, UseTreeNestedItem, UseTreePath, Variant, VariantKind,
-        Visibility, VisibilityLevel,
+        RequiredTypeConstraint, SelfKind, Statement, StatementKind, Struct, StructLiteral, Type,
+        TypeAlias, TypeArgument, TypeArguments, TypeKind, TypeParameter, TypeParameterKind,
+        TypeParameters, UnaryOperator, UseTree, UseTreeKind, UseTreeNestedItem, UseTreePath,
+        Variant, VariantKind, Visibility, VisibilityLevel,
     },
     diagnostics::DiagCtx,
     error::ReportedError,
@@ -1669,7 +1669,8 @@ impl Parser {
 
     fn parse_while_stmt(&mut self, label: Option<Label>) -> R<StatementKind> {
         self.expect(Token::While)?;
-        let while_restrictions = Restrictions::ALLOW_BINDING_CONDITION;
+        let while_restrictions =
+            Restrictions::ALLOW_BINDING_CONDITION | Restrictions::NO_STRUCT_LITERALS;
         let condition = self.with_restrictions(while_restrictions, |p| p.parse_expression())?;
         let block = self.parse_block()?;
 
@@ -1742,7 +1743,8 @@ impl Parser {
     fn parse_guard_stmt(&mut self) -> R<StatementKind> {
         self.expect(Token::Guard)?;
 
-        let if_restrictions = Restrictions::ALLOW_BINDING_CONDITION;
+        let if_restrictions =
+            Restrictions::ALLOW_BINDING_CONDITION | Restrictions::NO_STRUCT_LITERALS;
         let condition = self.with_restrictions(if_restrictions, |p| p.parse_expression())?;
 
         self.expect(Token::Else)?;
@@ -2350,6 +2352,7 @@ impl Parser {
                 continue;
             }
 
+            expr = self.try_parse_struct_literal(expr)?;
             break;
         }
         Ok(expr)
@@ -2386,7 +2389,8 @@ impl Parser {
         self.expect(Token::Case)?;
         let pattern = self.parse_pattern()?;
         self.expect(Token::Assign)?;
-        let expression = self.parse_expression()?;
+        let expression =
+            self.with_restrictions(Restrictions::NO_STRUCT_LITERALS, |p| p.parse_expression())?;
 
         let span = lo.to(self.hi_span());
         let p = PatternBindingCondition {
@@ -2654,6 +2658,17 @@ impl Parser {
                 self.bump();
                 Ok(self.build_expr(kind, lo.to(self.hi_span())))
             }
+            Token::Dollar => {
+                let lo = self.lo_span();
+                self.bump(); // eat `$`
+
+                // Explicit struct literals require struct literals to be allowed
+                if self.restrictions.contains(Restrictions::NO_STRUCT_LITERALS) {
+                    self.emit_error(ParserError::DisallowedStructLiteral, lo);
+                }
+
+                self.parse_explicit_struct_literal(lo)
+            }
             _ => return Err(self.err_at_current(ParserError::ExpectedExpression)),
         }
     }
@@ -2710,7 +2725,8 @@ impl Parser {
         self.expect(Token::If)?;
 
         // Conditions
-        let if_restrictions = Restrictions::ALLOW_BINDING_CONDITION;
+        let if_restrictions =
+            Restrictions::ALLOW_BINDING_CONDITION | Restrictions::NO_STRUCT_LITERALS;
         let condition = self.with_restrictions(if_restrictions, |p| p.parse_expression())?;
 
         // Then - Block
@@ -2751,7 +2767,8 @@ impl Parser {
         self.expect(Token::Match)?;
 
         let kw_span = self.previous().unwrap().span;
-        let value = self.parse_expression()?;
+        let value =
+            self.with_restrictions(Restrictions::NO_STRUCT_LITERALS, |p| p.parse_expression())?;
 
         let mut arms = vec![];
         self.expect(Token::LBrace)?;
@@ -3069,6 +3086,112 @@ impl Parser {
 }
 
 impl Parser {
+    /// Tries to convert a path-like expression into a Path.
+    /// Returns Some(Path) if the expression can be converted, None otherwise.
+    ///
+    /// Path-like expressions are:
+    /// - `ExpressionKind::Identifier` → single-segment path
+    /// - `ExpressionKind::Member { target, name }` → recurse, append segment
+    /// - `ExpressionKind::Specialize { target, type_arguments }` → recurse, add type args to last segment
+    fn expr_to_path(&self, expr: &Expression) -> Option<Path> {
+        match &expr.kind {
+            ExpressionKind::Identifier(identifier) => {
+                let segment = PathSegment {
+                    id: expr.id,
+                    identifier: identifier.clone(),
+                    arguments: None,
+                    span: expr.span,
+                };
+                Some(Path {
+                    span: expr.span,
+                    segments: vec![segment],
+                })
+            }
+            ExpressionKind::Member { target, name } => {
+                let mut path = self.expr_to_path(target)?;
+                let segment = PathSegment {
+                    id: self.next_index.borrow_mut().next(),
+                    identifier: name.clone(),
+                    arguments: None,
+                    span: name.span,
+                };
+                path.segments.push(segment);
+                path.span = path.span.to(name.span);
+                Some(path)
+            }
+            ExpressionKind::Specialize {
+                target,
+                type_arguments,
+            } => {
+                let mut path = self.expr_to_path(target)?;
+                // Add type arguments to the last segment
+                if let Some(last) = path.segments.last_mut() {
+                    last.arguments = Some(type_arguments.clone());
+                    last.span = last.span.to(type_arguments.span);
+                    path.span = path.span.to(type_arguments.span);
+                }
+                Some(path)
+            }
+            _ => None,
+        }
+    }
+
+    fn try_parse_struct_literal(&mut self, expr: Box<Expression>) -> R<Box<Expression>> {
+        // Check if we're at a `{` and struct literals are allowed
+        let struct_literals_allowed = !self.restrictions.contains(Restrictions::NO_STRUCT_LITERALS);
+        if !self.matches(Token::LBrace) || !struct_literals_allowed {
+            // Not a struct literal context, return the expression as-is
+            return Ok(expr);
+        }
+
+        // Try to convert the expression to a path
+        let Some(path) = self.expr_to_path(&expr) else {
+            return Err(Spanned::new(ParserError::ExpectedPathExpression, expr.span));
+            // Not a path-like expression, return as-is
+            // return Ok(expr);
+        };
+
+        // Parse the struct literal with the converted path
+        let span = expr.span;
+        self.parse_struct_literal(path, span)
+    }
+
+    fn parse_struct_literal(&mut self, path: Path, span: Span) -> R<Box<Expression>> {
+        let fields = self.parse_expression_field_list()?;
+        let literal = StructLiteral { path, fields };
+        let kind = ExpressionKind::StructLiteral(literal);
+        let span = span.to(self.hi_span());
+        Ok(self.build_expr(kind, span))
+    }
+
+    fn parse_explicit_struct_literal(&mut self, span: Span) -> R<Box<Expression>> {
+        let path = self.parse_path()?;
+        return self.parse_struct_literal(path, span);
+    }
+
+    fn parse_expression_field_list(&mut self) -> R<Vec<ExpressionField>> {
+        self.parse_delimiter_sequence(Delimiter::Brace, Token::Comma, true, |p| {
+            p.parse_expression_field()
+        })
+    }
+
+    fn parse_expression_field(&mut self) -> R<ExpressionField> {
+        let lo = self.lo_span();
+        let label = self.parse_label()?;
+
+        let expr = self.parse_expression()?;
+        let field = ExpressionField {
+            is_shorthand: label.is_none(),
+            label,
+            expression: expr,
+            span: lo.to(self.hi_span()),
+        };
+
+        Ok(field)
+    }
+}
+
+impl Parser {
     #[allow(unused)]
     fn parse_operator_from_token(&mut self) -> R<OperatorKind> {
         let kind = match self.current_token() {
@@ -3220,6 +3343,8 @@ enum ParserError {
     ExpectedExternAbiString,
     DissallowedExternDeclaration,
     ExternFunctionBodyNotAllowed,
+    DisallowedStructLiteral,
+    ExpectedPathExpression,
 }
 
 impl Display for ParserError {
@@ -3262,6 +3387,12 @@ impl Display for ParserError {
             ExpectedExternAbiString => f.write_str("expected extern ABI string"),
             DissallowedExternDeclaration => f.write_str("disallowed extern declaration"),
             ExternFunctionBodyNotAllowed => f.write_str("extern functions cannot have a body"),
+            DisallowedStructLiteral => {
+                f.write_str("struct literals are not allowed in this context")
+            }
+            ExpectedPathExpression => f.write_str(
+                "expected a path expression (identifier, member access, or type specialization)",
+            ),
         }
     }
 }
@@ -3337,6 +3468,7 @@ bitflags::bitflags! {
         const ALLOW_BINDING_CONDITION = 1 << 0;
         const ALLOW_WILDCARD = 1 << 1;
         const ALLOW_REST_PATTERN = 1 << 2;
+        const NO_STRUCT_LITERALS = 1 << 3;
     }
 }
 
