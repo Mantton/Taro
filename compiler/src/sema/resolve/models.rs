@@ -31,7 +31,6 @@ pub enum DefinitionKind {
     Variant,
     AssociatedFunction,
     AssociatedConstant,
-    AssociatedInitializer,
     AssociatedOperator,
     AssociatedType,
     VariantConstructor(VariantCtorKind),
@@ -60,7 +59,6 @@ impl DefinitionKind {
             DefinitionKind::AssociatedConstant => "associated constant",
             DefinitionKind::ConstParameter => "const parameter",
             DefinitionKind::ModuleVariable => "variable",
-            DefinitionKind::AssociatedInitializer => "associated initializer",
             DefinitionKind::AssociatedOperator => "associated operator",
         }
     }

@@ -49,9 +49,7 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
             ast::DeclarationKind::Extension(..) => DefinitionKind::Extension,
             ast::DeclarationKind::TypeAlias(..) => DefinitionKind::TypeAlias,
             ast::DeclarationKind::Namespace(..) => DefinitionKind::Namespace,
-            ast::DeclarationKind::Initializer(..) | &ast::DeclarationKind::Operator(..) => {
-                unreachable!("top level associated method")
-            }
+            &ast::DeclarationKind::Operator(..) => unreachable!("top level associated method"),
             ast::DeclarationKind::ExternBlock(..) => unreachable!(),
         };
 
@@ -84,9 +82,6 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
         let kind = match &node.kind {
             ast::AssociatedDeclarationKind::Constant(..) => DefinitionKind::AssociatedConstant,
             ast::AssociatedDeclarationKind::Function(..) => DefinitionKind::AssociatedFunction,
-            ast::AssociatedDeclarationKind::Initializer(..) => {
-                DefinitionKind::AssociatedInitializer
-            }
             ast::AssociatedDeclarationKind::AssociatedType(..) => DefinitionKind::AssociatedType,
             ast::AssociatedDeclarationKind::Operator(..) => DefinitionKind::AssociatedOperator,
         };

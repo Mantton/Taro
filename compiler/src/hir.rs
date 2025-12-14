@@ -69,7 +69,6 @@ pub enum AssociatedDeclarationKind {
     Function(Function),
     Type(TypeAlias),
     Operator(Operator),
-    Initializer(Initializer),
 }
 
 #[derive(Debug, Clone)]
@@ -157,11 +156,6 @@ pub struct FunctionSignature {
 pub struct Operator {
     pub function: Function,
     pub kind: OperatorKind,
-}
-
-#[derive(Debug, Clone)]
-pub struct Initializer {
-    pub function: Function,
 }
 
 #[derive(Debug, Clone)]
@@ -620,7 +614,6 @@ pub enum UseTreeContext {
 pub enum FunctionContext {
     Free,
     Assoc(AssocContext),
-    Initializer,
     Operator,
     Nested,
 }
@@ -705,10 +698,6 @@ pub trait HirVisitor: Sized {
 
     fn visit_function_parameter(&mut self, node: &FunctionParameter) -> Self::Result {
         walk_function_parameter(self, node)
-    }
-
-    fn visit_initializer(&mut self, node: &Initializer, id: DefinitionID) -> Self::Result {
-        walk_initializer(self, node, id)
     }
 
     fn visit_operator(&mut self, node: &Operator, id: DefinitionID) -> Self::Result {
@@ -945,9 +934,6 @@ pub fn walk_assoc_declaration<V: HirVisitor>(
         AssociatedDeclarationKind::Operator(node) => {
             try_visit!(visitor.visit_operator(node, declaration.id));
         }
-        AssociatedDeclarationKind::Initializer(node) => {
-            try_visit!(visitor.visit_initializer(node, declaration.id));
-        }
     }
 
     V::Result::output()
@@ -1037,15 +1023,6 @@ pub fn walk_function_parameter<V: HirVisitor>(
     visitor.visit_identifier(&node.name);
     try_visit!(visitor.visit_type(&node.annotated_type));
     visit_optional!(visitor, visit_expression, &node.default_value);
-    V::Result::output()
-}
-
-pub fn walk_initializer<V: HirVisitor>(
-    visitor: &mut V,
-    node: &Initializer,
-    id: DefinitionID,
-) -> V::Result {
-    try_visit!(visitor.visit_function(id, &node.function, FunctionContext::Initializer));
     V::Result::output()
 }
 

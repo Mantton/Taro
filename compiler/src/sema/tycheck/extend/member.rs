@@ -39,9 +39,6 @@ impl<'ctx> Actor<'ctx> {
             hir::AssociatedDeclarationKind::Operator(op) => {
                 self.collect_operator(head, decl.id, decl.identifier, op.kind);
             }
-            hir::AssociatedDeclarationKind::Initializer(init) => {
-                self.collect_initializer(head, decl.id, decl.identifier);
-            }
             _ => todo!("associated declaration kind in extension member collection"),
         }
     }
@@ -94,31 +91,6 @@ impl<'ctx> Actor<'ctx> {
 
                 let prev_ident = self.context.definition_ident(previous);
                 let msg = format!("'{:?}' operator signature is initially defined here", kind);
-                self.context.dcx().emit_info(msg, Some(prev_ident.span));
-                return;
-            }
-
-            set.members.push(def_id);
-        });
-    }
-
-    fn collect_initializer(
-        &mut self,
-        head: crate::sema::resolve::models::TypeHead,
-        def_id: DefinitionID,
-        ident: crate::span::Identifier,
-    ) {
-        let fingerprint = self.fingerprint_for(def_id);
-        self.context.with_session_type_database(|db| {
-            let index: &mut TypeMemberIndex = db.type_head_to_members.entry(head).or_default();
-            let set: &mut MemberSet = &mut index.constructors;
-
-            if let Some(previous) = set.fingerprints.insert(fingerprint, def_id) {
-                let msg = "invalid redeclaration of initializer".to_string();
-                self.context.dcx().emit_error(msg, Some(ident.span));
-
-                let prev_ident = self.context.definition_ident(previous);
-                let msg = "initializer signature is initially defined here".to_string();
                 self.context.dcx().emit_info(msg, Some(prev_ident.span));
                 return;
             }

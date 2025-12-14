@@ -126,9 +126,7 @@ impl Actor<'_, '_> {
             ast::DeclarationKind::Extension(node) => {
                 hir::DeclarationKind::Extension(self.lower_extension(node))
             }
-            ast::DeclarationKind::Initializer(..) | ast::DeclarationKind::Operator(..) => {
-                unreachable!()
-            }
+            ast::DeclarationKind::Operator(..) => unreachable!(),
         };
 
         vec![hir::Declaration {
@@ -245,9 +243,6 @@ impl Actor<'_, '_> {
             ast::AssociatedDeclarationKind::AssociatedType(node) => {
                 hir::AssociatedDeclarationKind::Type(self.lower_alias(node))
             }
-            ast::AssociatedDeclarationKind::Initializer(node) => {
-                hir::AssociatedDeclarationKind::Initializer(self.lower_initializer(node))
-            }
             ast::AssociatedDeclarationKind::Operator(node) => {
                 hir::AssociatedDeclarationKind::Operator(self.lower_operator(node))
             }
@@ -315,7 +310,7 @@ impl Actor<'_, '_> {
         }
     }
 
-    fn lower_use_tree(&mut self, node: ast::UseTree) -> hir::UseTree {
+    fn lower_use_tree(&mut self, _: ast::UseTree) -> hir::UseTree {
         hir::UseTree {}
     }
 }
@@ -326,13 +321,6 @@ impl Actor<'_, '_> {
         hir::Operator {
             function: self.lower_function(node.function, span),
             kind: node.kind,
-        }
-    }
-
-    fn lower_initializer(&mut self, node: ast::Initializer) -> hir::Initializer {
-        let span = node.function.signature.span;
-        hir::Initializer {
-            function: self.lower_function(node.function, span),
         }
     }
 

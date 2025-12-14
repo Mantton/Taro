@@ -63,24 +63,10 @@ impl<'ctx> Actor<'ctx> {
             }
         }));
 
-        let output = match fn_ctx {
-            hir::FunctionContext::Initializer => {
-                if node.signature.prototype.output.is_some() {
-                    self.context.dcx().emit_error(
-                        "initializers implicitly return `Self` and cannot declare a return type"
-                            .to_string(),
-                        Some(node.signature.span),
-                    );
-                }
-                self.initializer_return_ty(id)
-            }
-            _ => {
-                if let Some(node) = &node.signature.prototype.output {
-                    ctx.lowerer().lower_type(&node)
-                } else {
-                    self.context.types.void
-                }
-            }
+        let output = if let Some(node) = &node.signature.prototype.output {
+            ctx.lowerer().lower_type(node)
+        } else {
+            self.context.types.void
         };
 
         LabeledFunctionSignature {
@@ -91,44 +77,4 @@ impl<'ctx> Actor<'ctx> {
         }
     }
 
-    fn initializer_return_ty(&self, initializer_id: DefinitionID) -> Ty<'ctx> {
-        let gcx = self.context;
-        let Some(parent) = gcx.definition_parent(initializer_id) else {
-            let ident = gcx.definition_ident(initializer_id);
-            gcx.dcx().emit_error(
-                "internal error: initializer is missing a parent definition".to_string(),
-                Some(ident.span),
-            );
-            return gcx.types.error;
-        };
-
-        match gcx.definition_kind(parent) {
-            crate::sema::resolve::models::DefinitionKind::Struct => gcx.get_type(parent),
-            crate::sema::resolve::models::DefinitionKind::Extension => {
-                let Some(head) = gcx.get_extension_type_head(parent) else {
-                    let ident = gcx.definition_ident(parent);
-                    gcx.dcx().emit_error(
-                        "internal error: missing extension identity for initializer".to_string(),
-                        Some(ident.span),
-                    );
-                    return gcx.types.error;
-                };
-                match head {
-                    crate::sema::resolve::models::TypeHead::Nominal(id) => gcx.get_type(id),
-                    crate::sema::resolve::models::TypeHead::Primary(p) => match p {
-                        crate::sema::resolve::models::PrimaryType::Int(k) => Ty::new_int(gcx, k),
-                        crate::sema::resolve::models::PrimaryType::UInt(k) => Ty::new_uint(gcx, k),
-                        crate::sema::resolve::models::PrimaryType::Float(k) => {
-                            Ty::new_float(gcx, k)
-                        }
-                        crate::sema::resolve::models::PrimaryType::String => todo!(),
-                        crate::sema::resolve::models::PrimaryType::Bool => gcx.types.bool,
-                        crate::sema::resolve::models::PrimaryType::Rune => gcx.types.rune,
-                    },
-                    other => todo!("initializer return type for extension target {other:?}"),
-                }
-            }
-            other => todo!("initializer parent kind {other:?}"),
-        }
-    }
 }

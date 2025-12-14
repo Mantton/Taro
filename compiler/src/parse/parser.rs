@@ -6,7 +6,7 @@ use crate::{
         ExpressionArgument, ExpressionKind, Extension, FieldDefinition, ForStatement, Function,
         FunctionDeclaration, FunctionDeclarationKind, FunctionParameter, FunctionPrototype,
         FunctionSignature, GenericBound, GenericBounds, GenericRequirement, GenericRequirementList,
-        GenericWhereClause, Generics, Identifier, IfExpression, Initializer, Interface, Label,
+        GenericWhereClause, Generics, Identifier, IfExpression, Interface, Label,
         Literal, Local, MapPair, MatchArm, MatchExpression, Mutability, Namespace,
         NamespaceDeclaration, NamespaceDeclarationKind, NodeID, Operator, OperatorKind, Path,
         PathNode, PathSegment, Pattern, PatternBindingCondition, PatternKind, PatternPath,
@@ -273,9 +273,6 @@ impl Parser {
         };
 
         match &declaration.kind {
-            DeclarationKind::Initializer(..) => {
-                return Err(self.err_at_current(ParserError::TopLevelInitializerNotAllowed));
-            }
             DeclarationKind::Operator(..) => {
                 return Err(self.err_at_current(ParserError::TopLevelOperatorNotAllowed));
             }
@@ -448,7 +445,6 @@ impl Parser {
             Token::Function => self.parse_function(mode)?,
             Token::Extend => (Identifier::emtpy(self.file.id), self.parse_impl()?),
             Token::Namespace => self.parse_namespace()?,
-            Token::Init => self.parse_initializer(mode)?,
             Token::Operator => self.parse_operator(mode)?,
             _ => return Ok(None),
         };
@@ -2299,6 +2295,7 @@ impl Parser {
                 }
 
                 // field access: `foo.<ident>`
+                let lo = expr.span;
                 let kind = ExpressionKind::Member {
                     target: expr,
                     name: self.parse_member_identifier()?,
@@ -2830,17 +2827,6 @@ impl Parser {
         Ok((identifier, DeclarationKind::Function(func)))
     }
 
-    fn parse_initializer(&mut self, mode: FnParseMode) -> R<(Identifier, DeclarationKind)> {
-        self.expect(Token::Init)?;
-        let lo = self.lo_span();
-        let span = lo.to(self.hi_span());
-        let function = self.parse_fn(mode)?;
-        Ok((
-            Identifier::new(Symbol::new(""), span),
-            DeclarationKind::Initializer(Initializer { function }),
-        ))
-    }
-
     pub fn parse_operator(&mut self, mode: FnParseMode) -> R<(Identifier, DeclarationKind)> {
         self.expect(Token::Operator)?;
         let lo = self.lo_span();
@@ -3214,7 +3200,6 @@ enum ParserError {
     ExpectedElseBlock,
     ExpectedExpression,
     InvalidCollectionType,
-    TopLevelInitializerNotAllowed,
     TopLevelOperatorNotAllowed,
     RequiredIdentifierPattern,
     DissallowedAssociatedDeclaration,
@@ -3255,7 +3240,6 @@ impl Display for ParserError {
             ExpectedElseBlock => f.write_str("expected 'else' block"),
             ExpectedExpression => f.write_str("expected expression"),
             InvalidCollectionType => f.write_str("invalid collection type"),
-            TopLevelInitializerNotAllowed => f.write_str("top-level initializer not allowed"),
             TopLevelOperatorNotAllowed => f.write_str("top-level operator not allowed"),
             RequiredIdentifierPattern => f.write_str("identifier pattern required"),
             DissallowedAssociatedDeclaration => f.write_str("disallowed associated declaration"),

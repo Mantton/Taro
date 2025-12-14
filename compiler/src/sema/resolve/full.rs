@@ -295,9 +295,6 @@ impl<'r, 'a> Actor<'r, 'a> {
             }
             ast::DeclarationKind::ExternBlock(..) => ast::walk_declaration(self, declaration),
             ast::DeclarationKind::Extension(node) => self.resolve_extension(declaration.id, node),
-            ast::DeclarationKind::Initializer(..) => {
-                unreachable!("top level initializer")
-            }
             ast::DeclarationKind::Operator(..) => {
                 unreachable!("top level operator")
             }
@@ -429,22 +426,6 @@ impl<'r, 'a> Actor<'r, 'a> {
                             }
                         }
 
-                        ast::walk_assoc_declaration(this, declaration, ctx);
-                    });
-                })
-            }
-            ast::AssociatedDeclarationKind::Initializer(node) => {
-                let def_id = self.resolver.definition_id(declaration.id);
-                self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
-                    this.with_generics_scope(&node.function.generics, |this| {
-                        if let Some(pos) = explicit_self_param_position(&node.function.signature) {
-                            if pos != 0 {
-                                this.resolver.dcx().emit_error(
-                                    "`self` must be the first parameter of a method".to_string(),
-                                    Some(declaration.span),
-                                );
-                            }
-                        }
                         ast::walk_assoc_declaration(this, declaration, ctx);
                     });
                 })

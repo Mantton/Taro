@@ -97,7 +97,6 @@ pub enum DeclarationKind {
     Extension(Extension),
     TypeAlias(TypeAlias),
     Namespace(Namespace),
-    Initializer(Initializer),
     Operator(Operator),
 }
 
@@ -135,7 +134,6 @@ pub enum AssociatedDeclarationKind {
     Constant(Constant),
     Function(Function),
     AssociatedType(TypeAlias),
-    Initializer(Initializer),
     Operator(Operator),
 }
 
@@ -164,11 +162,6 @@ pub struct Function {
     pub signature: FunctionSignature,
     pub block: Option<Block>,
     pub abi: Option<Symbol>,
-}
-
-#[derive(Debug, Clone)]
-pub struct Initializer {
-    pub function: Function,
 }
 
 #[derive(Debug, Clone)]
@@ -862,7 +855,6 @@ impl TryFrom<DeclarationKind> for AssociatedDeclarationKind {
         Ok(match kind {
             DeclarationKind::Constant(node) => AssociatedDeclarationKind::Constant(node),
             DeclarationKind::Function(node) => AssociatedDeclarationKind::Function(node),
-            DeclarationKind::Initializer(node) => AssociatedDeclarationKind::Initializer(node),
             DeclarationKind::Operator(node) => AssociatedDeclarationKind::Operator(node),
             DeclarationKind::TypeAlias(node) => AssociatedDeclarationKind::AssociatedType(node),
             _ => return Err(kind),
@@ -1006,7 +998,6 @@ pub enum FunctionContext {
     Free,
     Foreign,
     Assoc(AssocContext),
-    Initializer,
     Operator,
     Nested,
 }
@@ -1035,7 +1026,7 @@ pub trait AstVisitor: Sized {
         walk_package(self, node)
     }
 
-    fn visit_module(&mut self, node: &Module, is_root: bool) -> Self::Result {
+    fn visit_module(&mut self, node: &Module, _: bool) -> Self::Result {
         walk_module(self, node)
     }
 
@@ -1161,10 +1152,6 @@ pub trait AstVisitor: Sized {
 
     fn visit_constant(&mut self, node: &Constant) -> Self::Result {
         walk_constant(self, node)
-    }
-
-    fn visit_initializer(&mut self, node: &Initializer, id: NodeID) -> Self::Result {
-        walk_initializer(self, node, id)
     }
 
     fn visit_operator(&mut self, node: &Operator, id: NodeID) -> Self::Result {
@@ -1306,9 +1293,7 @@ pub fn walk_declaration<V: AstVisitor>(visitor: &mut V, declaration: &Declaratio
         DeclarationKind::Namespace(node) => {
             walk_list!(visitor, visit_namespace_declaration, &node.declarations);
         }
-        DeclarationKind::Initializer(..) | DeclarationKind::Operator(..) => {
-            unreachable!()
-        }
+        DeclarationKind::Operator(..) => unreachable!(),
     }
 
     V::Result::output()
@@ -1348,9 +1333,6 @@ pub fn walk_assoc_declaration<V: AstVisitor>(
                 node,
                 FunctionContext::Assoc(context)
             ));
-        }
-        AssociatedDeclarationKind::Initializer(node) => {
-            try_visit!(visitor.visit_initializer(&node, declaration.id));
         }
         AssociatedDeclarationKind::AssociatedType(node) => {
             try_visit!(visitor.visit_alias(&node));
@@ -1822,16 +1804,6 @@ pub fn walk_anon_const<V: AstVisitor>(visitor: &mut V, anon_const: &AnonConst) -
 pub fn walk_constant<V: AstVisitor>(visitor: &mut V, node: &Constant) -> V::Result {
     try_visit!(visitor.visit_type(&node.ty));
     visit_optional!(visitor, visit_expression, &node.expr);
-    V::Result::output()
-}
-
-#[inline]
-pub fn walk_initializer<V: AstVisitor>(
-    visitor: &mut V,
-    node: &Initializer,
-    id: NodeID,
-) -> V::Result {
-    try_visit!(visitor.visit_function(id, &node.function, FunctionContext::Initializer));
     V::Result::output()
 }
 

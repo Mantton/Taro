@@ -92,7 +92,6 @@ pub enum Token {
     Extend,
     Import,
     In,
-    Init,
     Interface,
     Let,
     Loop,
@@ -123,6 +122,7 @@ pub enum Token {
     Async,
     Await,
     Mut,
+    Init,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

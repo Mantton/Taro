@@ -230,9 +230,6 @@ impl<'r, 'a> Actor<'r, 'a> {
             ast::DeclarationKind::Export(node) => {
                 self.define_use_tree(declaration.id, node, false);
             }
-            ast::DeclarationKind::Initializer(..) => {
-                unreachable!("top level initializer")
-            }
             ast::DeclarationKind::Operator(..) => {
                 unreachable!("top level operator")
             }
@@ -338,8 +335,7 @@ impl<'r, 'a> Actor<'r, 'a> {
             ast::AssociatedDeclarationKind::AssociatedType(..) => {
                 self.define(identifier, ScopeNamespace::Type, resolution, visibility);
             }
-            ast::AssociatedDeclarationKind::Initializer(..)
-            | ast::AssociatedDeclarationKind::Operator(..) => {
+            ast::AssociatedDeclarationKind::Operator(..) => {
                 // do nothing
             }
         }
