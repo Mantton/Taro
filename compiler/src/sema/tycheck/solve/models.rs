@@ -22,11 +22,18 @@ pub enum Goal<'ctx> {
     Disjunction(Vec<DisjunctionBranch<'ctx>>),
     BinaryOp(BinOpGoalData<'ctx>),
     UnaryOp(UnOpGoalData<'ctx>),
-    Coerce { from: Ty<'ctx>, to: Ty<'ctx> },
+    Coerce {
+        from: Ty<'ctx>,
+        to: Ty<'ctx>,
+    },
     Member(MemberGoalData<'ctx>),
     MethodCall(MethodCallData<'ctx>),
     StructLiteral(StructLiteralGoalData<'ctx>),
     TupleAccess(TupleAccessGoalData<'ctx>),
+    Shape {
+        scrutinee: Ty<'ctx>,
+        shape: Shape<'ctx>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -140,4 +147,25 @@ pub struct TupleAccessGoalData<'ctx> {
     pub index: usize,
     pub result: Ty<'ctx>,
     pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Shape<'ctx> {
+    pub id: NodeID,
+    pub span: Span,
+    pub kind: ShapeKind<'ctx>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ShapeKind<'ctx> {
+    Wildcard,
+    Typed(Ty<'ctx>),
+    Tuple(&'ctx [Shape<'ctx>]),
+    PathTuple {
+        path_ty: Ty<'ctx>,
+        variant: DefinitionID,
+        elements: &'ctx [Shape<'ctx>],
+    },
+    Or(&'ctx [Shape<'ctx>]),
+    Malformed,
 }

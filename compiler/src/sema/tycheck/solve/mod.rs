@@ -15,6 +15,7 @@ mod method;
 mod models;
 mod op;
 mod overload;
+mod shape;
 mod tuple;
 mod unify;
 
@@ -138,6 +139,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             Goal::MethodCall(data) => self.solve_method_call(data),
             Goal::StructLiteral(data) => self.solve_struct_literal(data),
             Goal::TupleAccess(data) => self.solve_tuple_access(data),
+            Goal::Shape { scrutinee, shape } => self.solve_shape(scrutinee, shape, location),
         }
     }
 

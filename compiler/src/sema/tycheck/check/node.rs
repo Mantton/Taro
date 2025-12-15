@@ -5,11 +5,12 @@ use crate::{
         models::{Ty, TyKind},
         resolve::models::{DefinitionKind, TypeHead},
         tycheck::{
-            check::checker::Checker,
+            check::{checker::Checker, gather::GatherLocalsVisitor},
             solve::{
                 ApplyArgument, ApplyGoalData, BinOpGoalData, BindOverloadGoalData,
-                ConstraintSystem, DisjunctionBranch, Goal, MemberGoalData, MethodCallData,
-                StructLiteralField, StructLiteralGoalData, TupleAccessGoalData, UnOpGoalData,
+                ConstraintSystem, DisjunctionBranch, Goal, MemberGoalData, MethodCallData, Shape,
+                ShapeKind, StructLiteralField, StructLiteralGoalData, TupleAccessGoalData,
+                UnOpGoalData,
             },
         },
     },
@@ -110,36 +111,27 @@ impl<'ctx> Checker<'ctx> {
             self.check_statement(statement);
         }
     }
-
     fn check_local(&self, node: &hir::Local) {
-        let expectation = node.ty.as_ref().map(|n| self.lower_type(n));
-        match &node.pattern.kind {
-            hir::PatternKind::Wildcard => todo!(),
-            hir::PatternKind::Identifier(_) => {
-                let ty = if let Some(expression) = &node.initializer {
-                    self.top_level_check(expression, expectation)
-                } else if let Some(exp) = expectation {
-                    exp
-                } else {
-                    self.gcx().dcx().emit_error(
-                        "cannot infer type for binding without an initializer".into(),
-                        Some(node.pattern.span),
-                    );
-                    Ty::error(self.gcx())
-                };
+        let mut cs = Cs::new(self.context);
+        GatherLocalsVisitor::from_local(&cs, &self, node);
+        let local = self.get_local(node.id);
 
-                let binding = crate::sema::tycheck::check::checker::LocalBinding {
-                    ty,
-                    mutable: node.mutability == hir::Mutability::Mutable,
-                };
-                self.set_local(node.pattern.id, binding);
-                self.set_local(node.id, binding);
-                self.gcx().cache_node_type(node.pattern.id, ty);
-                self.gcx().cache_node_type(node.id, ty);
-            }
-            hir::PatternKind::Tuple(..) => todo!(),
-            _ => unreachable!("ICE – invalid let statement pattern"),
+        if let Some(expression) = node.initializer.as_ref() {
+            let init_ty = self.synth_with_expectation(expression, Some(local.ty), &mut cs);
+            cs.equal(local.ty, init_ty, expression.span);
         }
+
+        self.add_shape_obligation(&mut cs, &node.pattern, local.ty);
+        cs.solve_all();
+
+        for (id, ty) in cs.resolved_expr_types() {
+            self.gcx().cache_node_type(id, ty);
+        }
+        for (id, adjustments) in cs.resolved_adjustments() {
+            self.gcx().cache_node_adjustments(id, adjustments);
+        }
+
+        todo!("Update Inference Values For Locals Collected Here or Default to Errors")
     }
 
     fn check_loop(&self, block: &hir::Block) {
@@ -1171,5 +1163,31 @@ impl<'ctx> Checker<'ctx> {
         }
 
         result_ty
+    }
+}
+
+impl<'ctx> Checker<'ctx> {
+    fn add_shape_obligation(&self, cs: &mut Cs<'ctx>, pattern: &hir::Pattern, scrutinee: Ty<'ctx>) {
+        let shape = self.lower_pattern_to_shape(pattern);
+        cs.add_goal(Goal::Shape { scrutinee, shape }, pattern.span);
+    }
+
+    fn lower_pattern_to_shape(&self, pattern: &hir::Pattern) -> Shape<'ctx> {
+        let kind = match &pattern.kind {
+            hir::PatternKind::Wildcard => ShapeKind::Wildcard,
+            hir::PatternKind::Rest => todo!(),
+            hir::PatternKind::Identifier(_) => ShapeKind::Typed(self.get_local(pattern.id).ty),
+            hir::PatternKind::Tuple(..) => todo!(),
+            hir::PatternKind::Member(..) => todo!(),
+            hir::PatternKind::PathTuple { .. } => todo!(),
+            hir::PatternKind::Or(..) => todo!(),
+            hir::PatternKind::Literal(..) => todo!(),
+        };
+
+        Shape {
+            kind,
+            span: pattern.span,
+            id: pattern.id,
+        }
     }
 }
