@@ -412,7 +412,8 @@ impl Lexer {
                     self.single_line_comment();
                     return Ok(TokenCase::Skip);
                 } else if self.eat('*') {
-                    self.multi_line_comment()?
+                    self.multi_line_comment()?;
+                    return Ok(TokenCase::Skip);
                 } else if self.eat('=') {
                     Token::DivEq
                 } else {
