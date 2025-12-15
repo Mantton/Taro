@@ -45,7 +45,6 @@ pub struct Block {
 
 #[derive(Debug, Clone)]
 pub struct Expr<'a> {
-    pub id: ExprId,
     pub kind: ExprKind<'a>,
     pub ty: Ty<'a>,
     pub span: Span,

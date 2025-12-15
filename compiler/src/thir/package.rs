@@ -3,6 +3,7 @@ use crate::{
     error::CompileResult,
     hir::{self, DefinitionID, DefinitionKind, HirVisitor, Mutability, Resolution},
     sema::models::{AdtKind, Ty, TyKind},
+    sema::tycheck::solve::Adjustment,
     thir::{
         self, Block, BlockId, Constant, ConstantKind, Expr, ExprId, ExprKind, Param, Stmt, StmtId,
         StmtKind, ThirFunction, ThirPackage,
@@ -200,7 +201,7 @@ impl<'ctx> FunctionLower<'ctx> {
         let ty = self.gcx.get_node_type(local.id);
         let name = match &local.pattern.kind {
             hir::PatternKind::Identifier(id) => Some(id.symbol),
-            _ => todo!(),
+            _ => None,
         };
         let expr = local
             .initializer
@@ -220,13 +221,90 @@ impl<'ctx> FunctionLower<'ctx> {
         }
     }
 
-    fn lower_expr(&mut self, expr: &hir::Expression) -> ExprId {
+    pub fn lower_expr(&mut self, expr: &hir::Expression) -> ExprId {
+        self.lower_expr_inner(expr)
+    }
+
+    fn lower_expr_inner(&mut self, expr: &hir::Expression) -> ExprId {
+        let mut thir_expr = self.lower_expr_unadjusted(expr);
+        // Apply adjustments if any
+        if let Some(adjustments) = self.gcx.node_adjustments(expr.id) {
+            for adjustment in adjustments {
+                thir_expr = self.apply_adjustment(expr.id, thir_expr, adjustment, expr.span);
+            }
+        }
+        self.push_expr(thir_expr.kind, thir_expr.ty, thir_expr.span)
+    }
+
+    fn apply_adjustment(
+        &mut self,
+        _hir_id: hir::NodeID,
+        expr: Expr<'ctx>,
+        adjustment: Adjustment<'ctx>,
+        span: crate::span::Span,
+    ) -> Expr<'ctx> {
+        let ty = expr.ty;
+        match adjustment {
+            Adjustment::Dereference => {
+                let TyKind::Reference(inner, _) = ty.kind() else {
+                    // Logic error if we try to deref non-ref type
+                    return expr;
+                };
+
+                let inner_id = self.push_expr(expr.kind, expr.ty, expr.span);
+
+                Expr {
+                    kind: ExprKind::Deref(inner_id),
+                    ty: inner,
+                    span,
+                }
+            }
+            Adjustment::BorrowMutable => {
+                let ty = self
+                    .gcx
+                    .store
+                    .interners
+                    .intern_ty(TyKind::Reference(ty, Mutability::Mutable));
+
+                let inner_id = self.push_expr(expr.kind, expr.ty, expr.span);
+
+                Expr {
+                    kind: ExprKind::Reference {
+                        mutable: true,
+                        expr: inner_id,
+                    },
+                    ty,
+                    span,
+                }
+            }
+            Adjustment::BorrowImmutable => {
+                let ty = self
+                    .gcx
+                    .store
+                    .interners
+                    .intern_ty(TyKind::Reference(ty, Mutability::Immutable));
+                let inner_id = self.push_expr(expr.kind, expr.ty, expr.span);
+
+                Expr {
+                    kind: ExprKind::Reference {
+                        mutable: false,
+                        expr: inner_id,
+                    },
+                    ty,
+                    span,
+                }
+            }
+            Adjustment::Ignore(_) => expr,
+        }
+    }
+
+    fn lower_expr_unadjusted(&mut self, expr: &hir::Expression) -> Expr<'ctx> {
         let ty = self.gcx.get_node_type(expr.id);
         let span = expr.span;
-        match &expr.kind {
+        let kind = match &expr.kind {
             hir::ExpressionKind::Literal(lit) => {
                 let value = self.lower_literal(lit);
-                self.push_expr(ExprKind::Literal(Constant { ty, value }), ty, span)
+                ExprKind::Literal(Constant { ty, value })
             }
             hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path))
                 if matches!(&path.resolution, Resolution::LocalVariable(_)) =>
@@ -234,7 +312,7 @@ impl<'ctx> FunctionLower<'ctx> {
                 let Resolution::LocalVariable(id) = &path.resolution else {
                     unreachable!()
                 };
-                self.push_expr(ExprKind::Local(*id), ty, span)
+                ExprKind::Local(*id)
             }
             hir::ExpressionKind::Call { callee, arguments } => {
                 let callee_id: Option<DefinitionID> = match &callee.kind {
@@ -255,65 +333,53 @@ impl<'ctx> FunctionLower<'ctx> {
                         .iter()
                         .map(|arg| self.lower_expr(&arg.expression))
                         .collect();
-                    self.push_expr(ExprKind::Call { callee: id, args }, ty, span)
+                    ExprKind::Call { callee: id, args }
                 } else {
                     // Unsupported callee shape for now.
-                    self.push_expr(
-                        ExprKind::Literal(Constant {
-                            ty: self.gcx.types.error,
-                            value: ConstantKind::Unit,
-                        }),
-                        self.gcx.types.error,
-                        span,
-                    )
+                    ExprKind::Literal(Constant {
+                        ty: self.gcx.types.error,
+                        value: ConstantKind::Unit,
+                    })
                 }
             }
             hir::ExpressionKind::Binary(op, lhs, rhs) => {
                 let lhs = self.lower_expr(lhs);
                 let rhs = self.lower_expr(rhs);
-                self.push_expr(ExprKind::Binary { op: *op, lhs, rhs }, ty, span)
+                ExprKind::Binary { op: *op, lhs, rhs }
             }
             hir::ExpressionKind::Unary(op, operand) => {
                 let operand = self.lower_expr(operand);
-                self.push_expr(ExprKind::Unary { op: *op, operand }, ty, span)
+                ExprKind::Unary { op: *op, operand }
             }
             hir::ExpressionKind::Assign(lhs, rhs) => {
                 let target = self.lower_expr(lhs);
                 let value = self.lower_expr(rhs);
-                self.push_expr(ExprKind::Assign { target, value }, ty, span)
+                ExprKind::Assign { target, value }
             }
             hir::ExpressionKind::If(node) => {
                 let cond = self.lower_expr(&node.condition);
                 let then_expr = self.lower_expr(&node.then_block);
                 let else_expr = node.else_block.as_deref().map(|expr| self.lower_expr(expr));
-                self.push_expr(
-                    ExprKind::If {
-                        cond,
-                        then_expr,
-                        else_expr,
-                    },
-                    ty,
-                    span,
-                )
+                ExprKind::If {
+                    cond,
+                    then_expr,
+                    else_expr,
+                }
             }
             hir::ExpressionKind::Block(block) => {
                 let block_id = self.lower_block(block, true);
-                self.push_expr(ExprKind::Block(block_id), ty, span)
+                ExprKind::Block(block_id)
             }
             hir::ExpressionKind::Dereference(inner) => {
                 let operand = self.lower_expr(inner);
-                self.push_expr(ExprKind::Deref(operand), ty, span)
+                ExprKind::Deref(operand)
             }
             hir::ExpressionKind::Reference(inner, mutbl) => {
                 let operand = self.lower_expr(inner);
-                self.push_expr(
-                    ExprKind::Reference {
-                        mutable: *mutbl == hir::Mutability::Mutable,
-                        expr: operand,
-                    },
-                    ty,
-                    span,
-                )
+                ExprKind::Reference {
+                    mutable: *mutbl == hir::Mutability::Mutable,
+                    expr: operand,
+                }
             }
             hir::ExpressionKind::MethodCall {
                 receiver,
@@ -332,14 +398,10 @@ impl<'ctx> FunctionLower<'ctx> {
                 all_args.push(recv);
                 all_args.extend(args);
                 // Without a resolved callee, emit an error literal for now.
-                self.push_expr(
-                    ExprKind::Literal(Constant {
-                        ty: self.gcx.types.error,
-                        value: ConstantKind::Unit,
-                    }),
-                    self.gcx.types.error,
-                    span,
-                )
+                ExprKind::Literal(Constant {
+                    ty: self.gcx.types.error,
+                    value: ConstantKind::Unit,
+                })
             }
 
             hir::ExpressionKind::StructLiteral(literal) => {
@@ -366,38 +428,32 @@ impl<'ctx> FunctionLower<'ctx> {
                         .collect(),
                 };
 
-                self.push_expr(thir::ExprKind::Adt(node), ty, span)
+                ExprKind::Adt(node)
             }
             hir::ExpressionKind::Member { target, .. } => {
                 let lhs = self.lower_expr(target);
-                self.push_expr(
-                    thir::ExprKind::Field {
-                        lhs,
-                        index: self.gcx.get_field_index(expr.id).expect("Field Index"),
-                    },
-                    ty,
-                    span,
-                )
+                ExprKind::Field {
+                    lhs,
+                    index: self.gcx.get_field_index(expr.id).expect("Field Index"),
+                }
             }
             hir::ExpressionKind::Tuple(elems) => {
                 let fields = elems.iter().map(|e| self.lower_expr(&e)).collect();
-                self.push_expr(thir::ExprKind::Tuple { fields }, ty, span)
+                ExprKind::Tuple { fields }
             }
             hir::ExpressionKind::TupleAccess(target, ..) => {
                 let lhs = self.lower_expr(target);
-                self.push_expr(
-                    thir::ExprKind::Field {
-                        lhs,
-                        index: self.gcx.get_field_index(expr.id).expect("Field Index"),
-                    },
-                    ty,
-                    span,
-                )
+                ExprKind::Field {
+                    lhs,
+                    index: self.gcx.get_field_index(expr.id).expect("Field Index"),
+                }
             }
             _ => {
                 unimplemented!("hir node lowering pass");
             }
-        }
+        };
+
+        Expr { kind, ty, span }
     }
 
     fn lower_literal(&self, lit: &hir::Literal) -> ConstantKind {
@@ -413,7 +469,7 @@ impl<'ctx> FunctionLower<'ctx> {
 
     fn push_expr(&mut self, kind: ExprKind<'ctx>, ty: Ty<'ctx>, span: crate::span::Span) -> ExprId {
         let id = ExprId::from_raw(self.func.exprs.len() as u32);
-        self.func.exprs.push(Expr { id, kind, ty, span });
+        self.func.exprs.push(Expr { kind, ty, span });
         id
     }
 
