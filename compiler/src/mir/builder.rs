@@ -120,13 +120,21 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             thir::StmtKind::Let {
                 id,
                 pattern,
-                mutable: _,
                 expr,
                 ty,
-                name,
-            } => {
-                self.lower_local(*id, *pattern, *ty, *name, expr.as_ref(), stmt.span);
-            }
+            } => match &pattern.kind {
+                thir::PatternKind::Binding {
+                    local,
+                    name,
+                    ty: _,
+                    mutable: _,
+                } => {
+                    self.lower_local(*id, *local, *ty, Some(*name), expr.as_ref(), stmt.span);
+                }
+                _ => {
+                    unimplemented!()
+                }
+            },
             thir::StmtKind::Assign { target, value } => {
                 self.lower_assign_stmt(*target, *value, stmt.span);
             }

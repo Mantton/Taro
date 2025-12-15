@@ -1207,6 +1207,7 @@ impl<'ctx> Checker<'ctx> {
                     TyKind::Tuple(self.gcx().store.interners.intern_ty_list(elem_tys.clone())),
                     self.gcx(),
                 );
+                cs.record_expr_ty(pattern.id, tuple_ty);
                 cs.equal(scrutinee, tuple_ty, pattern.span);
 
                 for (i, pat) in pats.iter().enumerate() {

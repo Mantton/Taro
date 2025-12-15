@@ -7,6 +7,7 @@ use index_vec::IndexVec;
 use rustc_hash::FxHashMap;
 
 pub mod package;
+pub mod pattern;
 
 index_vec::define_index_type! {
     pub struct BlockId = u32;
@@ -121,9 +122,7 @@ pub enum ConstantKind {
 pub enum StmtKind<'a> {
     Let {
         id: NodeID,
-        pattern: NodeID,
-        name: Option<Symbol>,
-        mutable: bool,
+        pattern: Pattern<'a>,
         expr: Option<ExprId>,
         ty: Ty<'a>,
     },
@@ -168,4 +167,31 @@ pub type FieldIndex = usize;
 pub struct AdtExpression {
     pub definition: AdtDef,
     pub fields: Vec<FieldExpression>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Pattern<'ctx> {
+    pub ty: Ty<'ctx>,
+    pub span: Span,
+    pub kind: PatternKind<'ctx>,
+}
+
+#[derive(Debug, Clone)]
+pub enum PatternKind<'ctx> {
+    Wild,
+    Binding {
+        name: Symbol,
+        local: NodeID,
+        ty: Ty<'ctx>,
+        mutable: bool,
+    },
+    Leaf {
+        subpatterns: Vec<FieldPattern<'ctx>>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct FieldPattern<'ctx> {
+    pub index: FieldIndex,
+    pub pattern: Pattern<'ctx>,
 }

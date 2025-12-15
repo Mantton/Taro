@@ -2,11 +2,13 @@ use crate::{
     compile::{context::GlobalContext, entry::validate_entry_point},
     error::CompileResult,
     hir::{self, DefinitionID, DefinitionKind, HirVisitor, Mutability, Resolution},
-    sema::models::{AdtKind, Ty, TyKind},
-    sema::tycheck::solve::Adjustment,
+    sema::{
+        models::{AdtKind, Ty, TyKind},
+        tycheck::solve::Adjustment,
+    },
     thir::{
         self, Block, BlockId, Constant, ConstantKind, Expr, ExprId, ExprKind, Param, Stmt, StmtId,
-        StmtKind, ThirFunction, ThirPackage,
+        StmtKind, ThirFunction, ThirPackage, pattern::pattern_from_hir,
     },
 };
 use index_vec::IndexVec;
@@ -199,10 +201,6 @@ impl<'ctx> FunctionLower<'ctx> {
 
     fn lower_local(&mut self, local: &hir::Local) -> Stmt<'ctx> {
         let ty = self.gcx.get_node_type(local.id);
-        let name = match &local.pattern.kind {
-            hir::PatternKind::Identifier(id) => Some(id.symbol),
-            _ => None,
-        };
         let expr = local
             .initializer
             .as_deref()
@@ -211,9 +209,7 @@ impl<'ctx> FunctionLower<'ctx> {
         Stmt {
             kind: StmtKind::Let {
                 id: local.id,
-                pattern: local.pattern.id,
-                name,
-                mutable: local.mutability == Mutability::Mutable,
+                pattern: pattern_from_hir(self.gcx, &local.pattern),
                 expr,
                 ty,
             },
