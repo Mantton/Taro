@@ -30,7 +30,16 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 let internal = self.lower_type(node);
                 Ty::new(TyKind::Reference(internal, *mutability), gcx)
             }
-            hir::TypeKind::Tuple(..) => todo!(),
+            hir::TypeKind::Tuple(elements) => {
+                let mut lowered = Vec::with_capacity(elements.len());
+                for elem in elements {
+                    lowered.push(self.lower_type(elem));
+                }
+                Ty::new(
+                    TyKind::Tuple(gcx.store.interners.intern_ty_list(lowered)),
+                    gcx,
+                )
+            }
             hir::TypeKind::Array { .. } => todo!(),
             hir::TypeKind::Function { .. } => todo!(),
             hir::TypeKind::BoxedExistential { .. } => todo!(),

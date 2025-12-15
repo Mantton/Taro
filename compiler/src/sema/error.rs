@@ -21,6 +21,7 @@ pub enum TypeError<'ctx> {
     Mutability(ExpectedFound<Ty<'ctx>>),
     TyMismatch(ExpectedFound<Ty<'ctx>>),
     TupleArity(ExpectedFound<usize>),
+    TupleIndexOutOfBounds(ExpectedFound<usize>),
     Apply(ApplyValidationError),
     NoOverloadMatches,
     AmbiguousOverload,
@@ -29,6 +30,7 @@ pub enum TypeError<'ctx> {
     NotAStruct { ty: Ty<'ctx> },
     UnknownStructField { name: Symbol, struct_ty: Ty<'ctx> },
     MissingStructField { name: Symbol, struct_ty: Ty<'ctx> },
+    NotATuple { ty: Ty<'ctx> },
 }
 
 pub type SpannedError<'ctx> = Spanned<TypeError<'ctx>>;
@@ -46,6 +48,10 @@ impl<'ctx> TypeError<'ctx> {
             }
             TypeError::TupleArity(ef) => format!(
                 "expected tuple of length {}, found {}",
+                ef.expected, ef.found
+            ),
+            TypeError::TupleIndexOutOfBounds(ef) => format!(
+                "expected tuple with at least {} elements, found {}",
                 ef.expected, ef.found
             ),
             TypeError::Apply(e) => format!("{e}"),
@@ -67,6 +73,9 @@ impl<'ctx> TypeError<'ctx> {
             }
             TypeError::MissingStructField { name, struct_ty } => {
                 format!("missing field '{}' in {} literal", name, struct_ty.format(gcx))
+            }
+            TypeError::NotATuple { ty } => {
+                format!("type {} is not a tuple", ty.format(gcx))
             }
         }
     }

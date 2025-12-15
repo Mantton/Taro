@@ -26,6 +26,7 @@ pub enum Goal<'ctx> {
     Member(MemberGoalData<'ctx>),
     MethodCall(MethodCallData<'ctx>),
     StructLiteral(StructLiteralGoalData<'ctx>),
+    TupleAccess(TupleAccessGoalData<'ctx>),
 }
 
 #[derive(Debug, Clone)]
@@ -130,4 +131,13 @@ pub struct StructLiteralField<'ctx> {
     pub ty: Ty<'ctx>,
     pub value_span: Span,
     pub label_span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct TupleAccessGoalData<'ctx> {
+    pub node_id: NodeID,
+    pub receiver: Ty<'ctx>,
+    pub index: usize,
+    pub result: Ty<'ctx>,
+    pub span: Span,
 }

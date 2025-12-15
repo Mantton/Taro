@@ -9,7 +9,7 @@ use crate::{
             solve::{
                 ApplyArgument, ApplyGoalData, BinOpGoalData, BindOverloadGoalData,
                 ConstraintSystem, DisjunctionBranch, Goal, MemberGoalData, MethodCallData,
-                StructLiteralField, StructLiteralGoalData, UnOpGoalData,
+                StructLiteralField, StructLiteralGoalData, TupleAccessGoalData, UnOpGoalData,
             },
         },
     },
@@ -263,7 +263,9 @@ impl<'ctx> Checker<'ctx> {
             }
             hir::ExpressionKind::Specialize { .. } => todo!(),
             hir::ExpressionKind::Array(..) => todo!(),
-            hir::ExpressionKind::Tuple(..) => todo!(),
+            hir::ExpressionKind::Tuple(elements) => {
+                self.synth_tuple_expression(expression, elements, expectation, cs)
+            }
             hir::ExpressionKind::If(expr) => {
                 self.synth_if_expression(expression, expr, expectation, cs)
             }
@@ -291,7 +293,9 @@ impl<'ctx> Checker<'ctx> {
             hir::ExpressionKind::Unary(op, operand) => {
                 self.synth_unary_expression(expression, *op, operand, expectation, cs)
             }
-            hir::ExpressionKind::TupleAccess(..) => todo!(),
+            hir::ExpressionKind::TupleAccess(receiver, index) => {
+                self.synth_tuple_access_expression(expression, receiver, index, expectation, cs)
+            }
             hir::ExpressionKind::AssignOp(..) => todo!(),
             hir::ExpressionKind::Assign(lhs, rhs) => {
                 self.synth_assign_expression(expression, lhs, rhs, cs)
@@ -468,7 +472,18 @@ impl<'ctx> Checker<'ctx> {
 
                 true
             }
-            hir::ExpressionKind::TupleAccess(..) => todo!(),
+            hir::ExpressionKind::TupleAccess(target, _) => {
+                let Some(receiver_ty) = cs.expr_ty(target.id) else {
+                    return false;
+                };
+
+                match receiver_ty.kind() {
+                    TyKind::Pointer(_, mutbl) | TyKind::Reference(_, mutbl) => {
+                        mutbl == hir::Mutability::Mutable
+                    }
+                    _ => self.require_mut_place(target, cs),
+                }
+            }
             _ => {
                 self.gcx().dcx().emit_error(
                     "left-hand side of assignment is not assignable".into(),
@@ -1091,5 +1106,70 @@ impl<'ctx> Checker<'ctx> {
         );
 
         struct_ty
+    }
+    fn synth_tuple_expression(
+        &self,
+        _: &hir::Expression,
+        elements: &[Box<hir::Expression>],
+        expectation: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        let expected_elements = if let Some(expectation) = expectation {
+            if let TyKind::Tuple(tys) = expectation.kind() {
+                Some(tys)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let mut element_types = Vec::with_capacity(elements.len());
+        for (i, element) in elements.iter().enumerate() {
+            let elem_expectation = expected_elements.and_then(|tys| tys.get(i).copied());
+            let ty = self.synth_with_expectation(element, elem_expectation, cs);
+            element_types.push(ty);
+        }
+
+        Ty::new(
+            TyKind::Tuple(self.gcx().store.interners.intern_ty_list(element_types)),
+            self.gcx(),
+        )
+    }
+
+    fn synth_tuple_access_expression(
+        &self,
+        expression: &hir::Expression,
+        receiver: &hir::Expression,
+        index: &hir::AnonConst,
+        expectation: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        let idx_val =
+            if let hir::ExpressionKind::Literal(hir::Literal::Integer(val)) = &index.value.kind {
+                *val as usize
+            } else {
+                unreachable!()
+            };
+
+        let receiver_ty = self.synth(receiver, cs);
+        let result_ty = cs.infer_cx.next_ty_var(expression.span);
+
+        cs.add_goal(
+            Goal::TupleAccess(TupleAccessGoalData {
+                node_id: expression.id,
+                receiver: receiver_ty,
+                index: idx_val,
+                result: result_ty,
+                span: expression.span,
+            }),
+            expression.span,
+        );
+
+        if let Some(expectation) = expectation {
+            cs.equal(expectation, result_ty, expression.span);
+        }
+
+        result_ty
     }
 }

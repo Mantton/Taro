@@ -15,6 +15,7 @@ mod method;
 mod models;
 mod op;
 mod overload;
+mod tuple;
 mod unify;
 
 pub struct ConstraintSystem<'ctx> {
@@ -136,6 +137,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             Goal::Member(data) => self.solve_member(data),
             Goal::MethodCall(data) => self.solve_method_call(data),
             Goal::StructLiteral(data) => self.solve_struct_literal(data),
+            Goal::TupleAccess(data) => self.solve_tuple_access(data),
         }
     }
 
