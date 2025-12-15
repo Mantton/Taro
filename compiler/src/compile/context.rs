@@ -1,4 +1,5 @@
 use crate::span::Symbol;
+use crate::thir::FieldIndex;
 use crate::{
     PackageIndex,
     compile::config::Config,
@@ -444,6 +445,7 @@ pub struct TypeDatabase<'arena> {
     pub type_head_to_members: FxHashMap<TypeHead, TypeMemberIndex>,
     pub node_to_ty: FxHashMap<hir::NodeID, Ty<'arena>>,
     pub node_to_adjustments: FxHashMap<hir::NodeID, Vec<Adjustment<'arena>>>,
+    pub node_to_field_index: FxHashMap<hir::NodeID, usize>,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -457,4 +459,16 @@ pub struct TypeMemberIndex {
     pub static_functions: FxHashMap<Symbol, MemberSet>,
     pub instance_functions: FxHashMap<Symbol, MemberSet>,
     pub operators: FxHashMap<hir::OperatorKind, MemberSet>,
+}
+
+impl<'arena> GlobalContext<'arena> {
+    pub fn cache_field_index(self, id: hir::NodeID, index: usize) {
+        self.with_session_type_database(|db| {
+            db.node_to_field_index.insert(id, index);
+        });
+    }
+
+    pub fn get_field_index(self, id: hir::NodeID) -> Option<FieldIndex> {
+        self.with_session_type_database(|db| db.node_to_field_index.get(&id).copied())
+    }
 }

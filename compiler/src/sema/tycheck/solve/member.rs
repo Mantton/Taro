@@ -33,8 +33,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
             prev = Some(ty);
 
             // Field lookup (structs only for now).
-            if let Some(field_ty) = self.lookup_field_ty(ty, name.symbol) {
+            if let Some((field_ty, index)) = self.lookup_field_ty(ty, name.symbol) {
                 self.record_adjustments(node_id, adjustments);
+                self.record_field_index(node_id, index);
                 return self.solve_equality(span, result, field_ty);
             }
 
@@ -84,7 +85,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         self.adjustments.insert(node_id, adjustments);
     }
 
-    fn lookup_field_ty(&self, ty: Ty<'ctx>, name: Symbol) -> Option<Ty<'ctx>> {
+    fn lookup_field_ty(&self, ty: Ty<'ctx>, name: Symbol) -> Option<(Ty<'ctx>, usize)> {
         let TyKind::Adt(def) = ty.kind() else {
             return None;
         };
@@ -94,9 +95,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
         }
 
         let struct_def = self.gcx().get_struct_definition(def.id);
-        for field in struct_def.fields {
+        for (idx, field) in struct_def.fields.iter().enumerate() {
             if field.name == name {
-                return Some(field.ty);
+                return Some((field.ty, idx));
             }
         }
         None

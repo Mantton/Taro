@@ -46,6 +46,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     found = true;
                     used_fields[idx] = true;
 
+                    self.record_field_index(provided_field.node_id, idx);
+
                     // Create coercion constraint: provided type -> expected type
                     obligations.push(Obligation {
                         location: provided_field.value_span,

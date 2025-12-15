@@ -1,6 +1,6 @@
 use crate::{
     hir::{BinaryOperator, DefinitionID, NodeID, UnaryOperator},
-    sema::models::Ty,
+    sema::models::{AdtDef, Ty},
     span::{Span, Symbol},
 };
 use index_vec::IndexVec;
@@ -92,6 +92,14 @@ pub enum ExprKind<'a> {
     },
     /// Block expression
     Block(BlockId),
+    Adt(AdtExpression),
+    Field {
+        lhs: ExprId,
+        index: FieldIndex,
+    },
+    Tuple {
+        fields: Vec<ExprId>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -147,4 +155,18 @@ pub struct Param<'a> {
     pub name: Symbol,
     pub ty: Ty<'a>,
     pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct FieldExpression {
+    pub index: FieldIndex,
+    pub expression: ExprId,
+}
+
+pub type FieldIndex = usize;
+
+#[derive(Debug, Clone)]
+pub struct AdtExpression {
+    pub definition: AdtDef,
+    pub fields: Vec<FieldExpression>,
 }

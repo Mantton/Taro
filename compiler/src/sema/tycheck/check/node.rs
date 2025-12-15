@@ -130,6 +130,10 @@ impl<'ctx> Checker<'ctx> {
             self.gcx().cache_node_adjustments(id, adjustments);
         }
 
+        for (id, index) in cs.resolved_field_indices() {
+            self.gcx().cache_field_index(id, index);
+        }
+
         for (id, ty) in cs.resolved_local_types() {
             self.finalize_local(id, ty);
             self.gcx().cache_node_type(id, ty);
@@ -180,6 +184,10 @@ impl<'ctx> Checker<'ctx> {
             self.gcx().cache_node_adjustments(id, adjustments);
         }
 
+        for (id, index) in cs.resolved_field_indices() {
+            self.gcx().cache_field_index(id, index);
+        }
+
         for (id, ty) in cs.resolved_local_types() {
             self.finalize_local(id, ty);
             self.gcx().cache_node_type(id, ty);
@@ -218,10 +226,10 @@ impl<'ctx> Checker<'ctx> {
     ) -> Ty<'ctx> {
         let ty = self.synth_expression_kind(node, expectation, cs);
         cs.record_expr_ty(node.id, ty);
-        self.gcx().dcx().emit_info(
-            format!("Checked {}", ty.format(self.gcx())),
-            Some(node.span),
-        );
+        // self.gcx().dcx().emit_info(
+        //     format!("Checked {}", ty.format(self.gcx())),
+        //     Some(node.span),
+        // );
         ty
     }
 
@@ -1090,6 +1098,7 @@ impl<'ctx> Checker<'ctx> {
 
             fields.push(StructLiteralField {
                 name,
+                node_id: field.expression.id,
                 ty,
                 value_span: field.expression.span,
                 label_span,

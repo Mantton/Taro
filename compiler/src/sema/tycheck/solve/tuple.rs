@@ -33,6 +33,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 TyKind::Tuple(elements) => {
                     if index < elements.len() {
                         self.record_adjustments(node_id, adjustment);
+                        self.record_field_index(node_id, index);
                         return self.solve_equality(span, result, elements[index]);
                     } else {
                         // Index out of bounds for this tuple

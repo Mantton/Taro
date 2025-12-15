@@ -2,9 +2,9 @@ use crate::{
     compile::{context::GlobalContext, entry::validate_entry_point},
     error::CompileResult,
     hir::{self, DefinitionID, DefinitionKind, HirVisitor, Mutability, Resolution},
-    sema::models::Ty,
+    sema::models::{AdtKind, Ty, TyKind},
     thir::{
-        Block, BlockId, Constant, ConstantKind, Expr, ExprId, ExprKind, Param, Stmt, StmtId,
+        self, Block, BlockId, Constant, ConstantKind, Expr, ExprId, ExprKind, Param, Stmt, StmtId,
         StmtKind, ThirFunction, ThirPackage,
     },
 };
@@ -200,7 +200,7 @@ impl<'ctx> FunctionLower<'ctx> {
         let ty = self.gcx.get_node_type(local.id);
         let name = match &local.pattern.kind {
             hir::PatternKind::Identifier(id) => Some(id.symbol),
-            _ => None,
+            _ => todo!(),
         };
         let expr = local
             .initializer
@@ -341,14 +341,62 @@ impl<'ctx> FunctionLower<'ctx> {
                     span,
                 )
             }
-            _ => self.push_expr(
-                ExprKind::Literal(Constant {
-                    ty: self.gcx.types.error,
-                    value: ConstantKind::Unit,
-                }),
-                self.gcx.types.error,
-                span,
-            ),
+
+            hir::ExpressionKind::StructLiteral(literal) => {
+                let TyKind::Adt(definition) = ty.kind() else {
+                    unreachable!()
+                };
+
+                if !matches!(definition.kind, AdtKind::Struct) {
+                    unreachable!()
+                }
+
+                let node = thir::AdtExpression {
+                    definition,
+                    fields: literal
+                        .fields
+                        .iter()
+                        .map(|f| thir::FieldExpression {
+                            expression: self.lower_expr(&f.expression),
+                            index: self
+                                .gcx
+                                .get_field_index(f.expression.id)
+                                .expect("Field Index"),
+                        })
+                        .collect(),
+                };
+
+                self.push_expr(thir::ExprKind::Adt(node), ty, span)
+            }
+            hir::ExpressionKind::Member { target, .. } => {
+                let lhs = self.lower_expr(target);
+                self.push_expr(
+                    thir::ExprKind::Field {
+                        lhs,
+                        index: self.gcx.get_field_index(expr.id).expect("Field Index"),
+                    },
+                    ty,
+                    span,
+                )
+            }
+            hir::ExpressionKind::Tuple(elems) => {
+                let fields = elems.iter().map(|e| self.lower_expr(&e)).collect();
+                self.push_expr(thir::ExprKind::Tuple { fields }, ty, span)
+            }
+            hir::ExpressionKind::TupleAccess(target, ..) => {
+                let lhs = self.lower_expr(target);
+                self.push_expr(
+                    thir::ExprKind::Field {
+                        lhs,
+                        index: self.gcx.get_field_index(expr.id).expect("Field Index"),
+                    },
+                    ty,
+                    span,
+                )
+            }
+            _ => {
+                unimplemented!("hir node lowering pass");
+            }
         }
     }
 

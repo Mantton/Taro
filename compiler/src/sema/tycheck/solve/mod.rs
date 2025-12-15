@@ -24,6 +24,7 @@ pub struct ConstraintSystem<'ctx> {
     expr_tys: FxHashMap<NodeID, Ty<'ctx>>,
     adjustments: FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
     pub locals: RefCell<FxHashMap<NodeID, Ty<'ctx>>>,
+    pub field_indices: FxHashMap<NodeID, usize>,
 }
 
 impl<'ctx> ConstraintSystem<'ctx> {
@@ -34,6 +35,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
             expr_tys: Default::default(),
             locals: Default::default(),
             adjustments: Default::default(),
+            field_indices: Default::default(),
         }
     }
 }
@@ -78,10 +80,6 @@ impl<'ctx> ConstraintSystem<'ctx> {
             .collect()
     }
 
-    pub fn record_adjustments(&mut self, id: NodeID, adjustments: Vec<Adjustment<'ctx>>) {
-        self.adjustments.insert(id, adjustments);
-    }
-
     pub fn resolved_local_types(&self) -> FxHashMap<NodeID, Ty<'ctx>> {
         let gcx = self.infer_cx.gcx;
         self.locals
@@ -102,6 +100,10 @@ impl<'ctx> ConstraintSystem<'ctx> {
     pub fn resolved_adjustments(&self) -> FxHashMap<NodeID, Vec<Adjustment<'ctx>>> {
         self.adjustments.clone()
     }
+
+    pub fn resolved_field_indices(&self) -> FxHashMap<NodeID, usize> {
+        self.field_indices.clone()
+    }
 }
 
 impl<'ctx> ConstraintSystem<'ctx> {
@@ -110,18 +112,25 @@ impl<'ctx> ConstraintSystem<'ctx> {
             icx: self.infer_cx.clone(),
             obligations: std::mem::take(&mut self.obligations),
             adjustments: std::mem::take(&mut self.adjustments),
+            field_indices: std::mem::take(&mut self.field_indices),
         };
 
         let mut driver = SolverDriver::new(solver);
         let result = driver.solve_to_fixpoint();
         // Pull adjustments back out of the solver/driver.
-        self.adjustments = driver.into_adjustments();
+        let (adjustments, field_indices) = driver.into_parts();
+        self.adjustments = adjustments;
+        self.field_indices = field_indices;
+        for (id, index) in self.field_indices.iter() {
+            self.infer_cx.gcx.cache_field_index(*id, *index);
+        }
 
         let Err(errors) = result else {
             return;
         };
 
         let gcx = self.infer_cx.gcx;
+
         let dcx = gcx.dcx();
         for error in errors {
             dcx.emit_error(error.value.format(gcx), Some(error.span));
@@ -133,11 +142,16 @@ struct ConstraintSolver<'ctx> {
     pub icx: Rc<InferCtx<'ctx>>,
     obligations: VecDeque<Obligation<'ctx>>,
     adjustments: FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
+    pub field_indices: FxHashMap<NodeID, usize>,
 }
 
 impl<'ctx> ConstraintSolver<'ctx> {
     pub fn gcx(&self) -> Gcx<'ctx> {
         self.icx.gcx
+    }
+
+    pub fn record_field_index(&mut self, id: NodeID, index: usize) {
+        self.field_indices.insert(id, index);
     }
 }
 
@@ -181,6 +195,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             icx: self.icx.clone(),
             obligations: self.obligations.clone(),
             adjustments: self.adjustments.clone(),
+            field_indices: self.field_indices.clone(),
         }
     }
 
@@ -223,8 +238,13 @@ impl<'ctx> SolverDriver<'ctx> {
         }
     }
 
-    fn into_adjustments(self) -> FxHashMap<NodeID, Vec<Adjustment<'ctx>>> {
-        self.solver.adjustments
+    fn into_parts(
+        self,
+    ) -> (
+        FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
+        FxHashMap<NodeID, usize>,
+    ) {
+        (self.solver.adjustments, self.solver.field_indices)
     }
 
     fn solve_to_fixpoint(&mut self) -> Result<(), SpannedErrorList<'ctx>> {

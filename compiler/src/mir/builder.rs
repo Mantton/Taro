@@ -300,6 +300,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 else_expr,
             } => self.lower_if(expr, *cond, *then_expr, *else_expr),
             thir::ExprKind::Block(block) => self.lower_block_expr(*block, expr),
+            thir::ExprKind::Adt(_) => unimplemented!(),
+            thir::ExprKind::Field { .. } => unimplemented!(),
+            thir::ExprKind::Tuple { .. } => unimplemented!(),
         }
     }
 

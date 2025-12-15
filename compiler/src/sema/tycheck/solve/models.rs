@@ -128,6 +128,7 @@ pub struct StructLiteralGoalData<'ctx> {
 #[derive(Debug, Clone, Copy)]
 pub struct StructLiteralField<'ctx> {
     pub name: crate::span::Symbol,
+    pub node_id: NodeID,
     pub ty: Ty<'ctx>,
     pub value_span: Span,
     pub label_span: Span,
