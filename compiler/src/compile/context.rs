@@ -457,5 +457,4 @@ pub struct TypeMemberIndex {
     pub static_functions: FxHashMap<Symbol, MemberSet>,
     pub instance_functions: FxHashMap<Symbol, MemberSet>,
     pub operators: FxHashMap<hir::OperatorKind, MemberSet>,
-    pub constructors: MemberSet,
 }

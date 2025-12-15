@@ -13,7 +13,7 @@ use crate::{
             },
         },
     },
-    span::Span,
+    span::{Span, Symbol},
 };
 
 impl<'ctx> Checker<'ctx> {
@@ -758,17 +758,19 @@ impl<'ctx> Checker<'ctx> {
     ) -> bool {
         let gcx = self.gcx();
         let head = TypeHead::Nominal(nominal);
+        let name = Symbol::new("new");
         let constructors = gcx.with_type_database(nominal.package(), |db| {
             db.type_head_to_members
                 .get(&head)
-                .map(|idx| idx.constructors.members.clone())
+                .map(|idx| idx.static_functions.get(&name).map(|v| v.members.clone()))
+                .flatten()
                 .unwrap_or_default()
         });
 
         if constructors.is_empty() {
             let name = gcx.definition_ident(nominal).symbol;
             gcx.dcx().emit_error(
-                format!("type '{name}' defines no constructors").into(),
+                format!("type '{name}' defines no methods named 'new'").into(),
                 Some(span),
             );
             return false;

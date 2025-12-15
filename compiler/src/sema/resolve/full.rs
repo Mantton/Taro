@@ -500,16 +500,17 @@ impl<'r, 'a> Actor<'r, 'a> {
                     Ok(v) => match v {
                         ResolvedEntity::Scoped(scope) => {
                             if let Some(resolution) = scope.resolution() {
-                                self.resolver.expression_resolutions.insert(
-                                    node.id,
-                                    ExpressionResolutionState::Resolved(resolution),
-                                );
+                                let adjusted = self.adjust_nominal_value_resolution(resolution);
+                                self.resolver
+                                    .expression_resolutions
+                                    .insert(node.id, ExpressionResolutionState::Resolved(adjusted));
                             }
                         }
                         ResolvedEntity::Resolved(resolution) => {
+                            let adjusted = self.adjust_nominal_value_resolution(resolution);
                             self.resolver
                                 .expression_resolutions
-                                .insert(node.id, ExpressionResolutionState::Resolved(resolution));
+                                .insert(node.id, ExpressionResolutionState::Resolved(adjusted));
                         }
                         ResolvedEntity::DeferredAssociatedType => {
                             self.resolver
@@ -691,13 +692,7 @@ impl<'r, 'a> Actor<'r, 'a> {
                 }
                 PathResult::Resolution(state) => match state {
                     ResolutionState::Complete(resolution) => {
-                        let adjusted =
-                            if ns == ScopeNamespace::Type && preferred == ScopeNamespace::Value {
-                                self.adjust_nominal_value_resolution(resolution.clone())
-                            } else {
-                                resolution.clone()
-                            };
-                        entity = Some(ResolvedEntity::Resolved(adjusted));
+                        entity = Some(ResolvedEntity::Resolved(resolution.clone()));
                         break;
                     }
                     ResolutionState::Partial { .. } => unreachable!(),
@@ -726,8 +721,6 @@ impl<'r, 'a> Actor<'r, 'a> {
         name: &Identifier,
         preferred: ScopeNamespace,
     ) -> Result<ResolvedEntity<'a>, ResolutionError> {
-        let is_init = name.symbol.as_str() == "init";
-
         match base {
             ResolvedEntity::Scoped(scope) => {
                 let fallback = match preferred {
@@ -756,7 +749,7 @@ impl<'r, 'a> Actor<'r, 'a> {
                 Resolution::PrimaryType(..) => {
                     return Ok(ResolvedEntity::DeferredAssociatedType);
                 }
-                Resolution::Definition(def_id, kind) => match kind {
+                Resolution::Definition(_, kind) => match kind {
                     DefinitionKind::Module | DefinitionKind::Namespace => unreachable!(),
                     DefinitionKind::Enum
                     | DefinitionKind::Struct
@@ -764,11 +757,6 @@ impl<'r, 'a> Actor<'r, 'a> {
                     | DefinitionKind::Interface
                     | DefinitionKind::TypeParameter
                     | DefinitionKind::AssociatedType => {
-                        if is_init {
-                            return Ok(ResolvedEntity::Resolved(Resolution::SelfConstructor(
-                                def_id,
-                            )));
-                        }
                         return Ok(ResolvedEntity::DeferredAssociatedType);
                     }
                     DefinitionKind::Constant | DefinitionKind::ModuleVariable => {
@@ -782,20 +770,10 @@ impl<'r, 'a> Actor<'r, 'a> {
                     }
                     _ => unreachable!(),
                 },
-                Resolution::SelfTypeAlias(definition_id) => {
-                    if is_init {
-                        return Ok(ResolvedEntity::Resolved(Resolution::SelfConstructor(
-                            definition_id,
-                        )));
-                    }
+                Resolution::SelfTypeAlias(_) => {
                     return Ok(ResolvedEntity::DeferredAssociatedType);
                 }
-                Resolution::InterfaceSelfTypeParameter(definition_id) => {
-                    if is_init {
-                        return Ok(ResolvedEntity::Resolved(Resolution::SelfConstructor(
-                            definition_id,
-                        )));
-                    }
+                Resolution::InterfaceSelfTypeParameter(_) => {
                     return Ok(ResolvedEntity::DeferredAssociatedType);
                 }
                 Resolution::LocalVariable(_) => return Ok(ResolvedEntity::DeferredAssociatedValue),
