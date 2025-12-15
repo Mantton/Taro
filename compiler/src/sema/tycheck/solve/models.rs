@@ -25,6 +25,7 @@ pub enum Goal<'ctx> {
     Coerce { from: Ty<'ctx>, to: Ty<'ctx> },
     Member(MemberGoalData<'ctx>),
     MethodCall(MethodCallData<'ctx>),
+    StructLiteral(StructLiteralGoalData<'ctx>),
 }
 
 #[derive(Debug, Clone)]
@@ -113,4 +114,20 @@ pub struct BinOpGoalData<'ctx> {
     pub operator: BinaryOperator,
     pub span: Span,
     pub assigning: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct StructLiteralGoalData<'ctx> {
+    pub ty_span: Span,
+    pub span: Span,
+    pub struct_ty: Ty<'ctx>,
+    pub fields: Vec<StructLiteralField<'ctx>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct StructLiteralField<'ctx> {
+    pub name: crate::span::Symbol,
+    pub ty: Ty<'ctx>,
+    pub value_span: Span,
+    pub label_span: Span,
 }

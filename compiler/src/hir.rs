@@ -546,7 +546,6 @@ pub struct StructLiteral {
 pub struct ExpressionField {
     pub label: Option<Label>,
     pub expression: Box<Expression>,
-    pub is_shorthand: bool,
     pub span: Span,
 }
 

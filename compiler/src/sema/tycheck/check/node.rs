@@ -9,7 +9,7 @@ use crate::{
             solve::{
                 ApplyArgument, ApplyGoalData, BinOpGoalData, BindOverloadGoalData,
                 ConstraintSystem, DisjunctionBranch, Goal, MemberGoalData, MethodCallData,
-                UnOpGoalData,
+                StructLiteralField, StructLiteralGoalData, UnOpGoalData,
             },
         },
     },
@@ -301,8 +301,8 @@ impl<'ctx> Checker<'ctx> {
             hir::ExpressionKind::Block(block) => {
                 self.synth_block_expression(block, expectation, cs)
             }
-            hir::ExpressionKind::StructLiteral(..) => {
-                todo!("struct literal type checking")
+            hir::ExpressionKind::StructLiteral(lit) => {
+                self.synth_struct_literal(expression, lit, cs)
             }
             hir::ExpressionKind::Malformed => {
                 unreachable!("ICE: trying to typecheck a malformed expression node")
@@ -1029,5 +1029,67 @@ impl<'ctx> Checker<'ctx> {
         }
         cs.add_goal(Goal::Disjunction(branches), span);
         ty
+    }
+
+    fn synth_struct_literal(
+        &self,
+        expression: &hir::Expression,
+        lit: &hir::StructLiteral,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        let span = expression.span;
+
+        // Lower path to type to hook up WF goals
+        let type_span = match &lit.path {
+            hir::ResolvedPath::Resolved(p) => p.span,
+            hir::ResolvedPath::Relative(_, s) => s.span,
+        };
+
+        // We construct a temporary Type node to reuse the lower_type logic.
+        let type_node = hir::Type {
+            id: expression.id,
+            kind: hir::TypeKind::Nominal(lit.path.clone()),
+            span: type_span,
+        };
+
+        let struct_ty = self.lower_type(&type_node);
+
+        // Synthesize fields
+        let mut fields = Vec::with_capacity(lit.fields.len());
+        for field in &lit.fields {
+            let ty = self.synth(&field.expression, cs);
+
+            let (name, label_span) = if let Some(label) = &field.label {
+                (label.identifier.symbol, label.span)
+            } else {
+                // Shorthand: extract name from expression
+                match &field.expression.kind {
+                    hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => {
+                        let seg = path.segments.last().expect("path must have segments");
+                        (seg.identifier.symbol, seg.identifier.span)
+                    }
+                    _ => unreachable!(),
+                }
+            };
+
+            fields.push(StructLiteralField {
+                name,
+                ty,
+                value_span: field.expression.span,
+                label_span,
+            });
+        }
+
+        cs.add_goal(
+            Goal::StructLiteral(StructLiteralGoalData {
+                ty_span: type_span,
+                span,
+                struct_ty,
+                fields,
+            }),
+            span,
+        );
+
+        struct_ty
     }
 }

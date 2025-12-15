@@ -26,6 +26,9 @@ pub enum TypeError<'ctx> {
     AmbiguousOverload,
     NoSuchMember { name: Symbol, on: Ty<'ctx> },
     NotCallable { found: Ty<'ctx> },
+    NotAStruct { ty: Ty<'ctx> },
+    UnknownStructField { name: Symbol, struct_ty: Ty<'ctx> },
+    MissingStructField { name: Symbol, struct_ty: Ty<'ctx> },
 }
 
 pub type SpannedError<'ctx> = Spanned<TypeError<'ctx>>;
@@ -55,6 +58,15 @@ impl<'ctx> TypeError<'ctx> {
             }
             TypeError::NotCallable { found } => {
                 format!("cannot call value of type {}", found.format(gcx))
+            }
+            TypeError::NotAStruct { ty } => {
+                format!("type {} is not a struct", ty.format(gcx))
+            }
+            TypeError::UnknownStructField { name, struct_ty } => {
+                format!("no field '{}' on struct {}", name, struct_ty.format(gcx))
+            }
+            TypeError::MissingStructField { name, struct_ty } => {
+                format!("missing field '{}' in {} literal", name, struct_ty.format(gcx))
             }
         }
     }

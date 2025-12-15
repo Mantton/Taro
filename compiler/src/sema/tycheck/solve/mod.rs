@@ -8,6 +8,7 @@ pub use models::*;
 use rustc_hash::FxHashMap;
 use std::{cmp::Reverse, collections::VecDeque, rc::Rc};
 
+mod adt;
 mod apply;
 mod member;
 mod method;
@@ -134,6 +135,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             Goal::Coerce { from, to } => self.solve_coerce(location, from, to),
             Goal::Member(data) => self.solve_member(data),
             Goal::MethodCall(data) => self.solve_method_call(data),
+            Goal::StructLiteral(data) => self.solve_struct_literal(data),
         }
     }
 

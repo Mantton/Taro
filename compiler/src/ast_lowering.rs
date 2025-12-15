@@ -1099,7 +1099,6 @@ impl Actor<'_, '_> {
                     .map(|f| hir::ExpressionField {
                         label: f.label.clone(),
                         expression: self.lower_expression(f.expression.clone()),
-                        is_shorthand: f.is_shorthand,
                         span: f.span,
                     })
                     .collect();

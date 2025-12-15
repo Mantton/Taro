@@ -2658,17 +2658,6 @@ impl Parser {
                 self.bump();
                 Ok(self.build_expr(kind, lo.to(self.hi_span())))
             }
-            Token::Dollar => {
-                let lo = self.lo_span();
-                self.bump(); // eat `$`
-
-                // Explicit struct literals require struct literals to be allowed
-                if self.restrictions.contains(Restrictions::NO_STRUCT_LITERALS) {
-                    self.emit_error(ParserError::DisallowedStructLiteral, lo);
-                }
-
-                self.parse_explicit_struct_literal(lo)
-            }
             _ => return Err(self.err_at_current(ParserError::ExpectedExpression)),
         }
     }
@@ -3162,11 +3151,6 @@ impl Parser {
         let kind = ExpressionKind::StructLiteral(literal);
         let span = span.to(self.hi_span());
         Ok(self.build_expr(kind, span))
-    }
-
-    fn parse_explicit_struct_literal(&mut self, span: Span) -> R<Box<Expression>> {
-        let path = self.parse_path()?;
-        return self.parse_struct_literal(path, span);
     }
 
     fn parse_expression_field_list(&mut self) -> R<Vec<ExpressionField>> {

@@ -66,7 +66,6 @@ pub enum Token {
     QuestionDot,      // ?.
     QuestionQuestion, // ??
     At,               // @
-    Dollar,           // $
 
     Ellipsis, // ...
     DotDot,   // ..
