@@ -58,4 +58,14 @@ impl<'arena> Checker<'arena> {
         let ty = self.lowerer().lower_type(node);
         ty
     }
+
+    pub fn finalize_local(&self, id: NodeID, ty: Ty<'arena>) {
+        let mut locals = self.locals.borrow_mut();
+
+        let existing = locals.get(&id);
+        let mutable = existing.map(|b| b.mutable).unwrap_or(false);
+
+        locals.insert(id, LocalBinding { ty, mutable });
+        self.context.cache_node_type(id, ty);
+    }
 }

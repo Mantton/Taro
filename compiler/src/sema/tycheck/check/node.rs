@@ -8,9 +8,8 @@ use crate::{
             check::{checker::Checker, gather::GatherLocalsVisitor},
             solve::{
                 ApplyArgument, ApplyGoalData, BinOpGoalData, BindOverloadGoalData,
-                ConstraintSystem, DisjunctionBranch, Goal, MemberGoalData, MethodCallData, Shape,
-                ShapeKind, StructLiteralField, StructLiteralGoalData, TupleAccessGoalData,
-                UnOpGoalData,
+                ConstraintSystem, DisjunctionBranch, Goal, MemberGoalData, MethodCallData,
+                StructLiteralField, StructLiteralGoalData, TupleAccessGoalData, UnOpGoalData,
             },
         },
     },
@@ -114,14 +113,14 @@ impl<'ctx> Checker<'ctx> {
     fn check_local(&self, node: &hir::Local) {
         let mut cs = Cs::new(self.context);
         GatherLocalsVisitor::from_local(&cs, &self, node);
-        let local = self.get_local(node.id);
+        let local_ty = self.get_local(node.id).ty;
 
         if let Some(expression) = node.initializer.as_ref() {
-            let init_ty = self.synth_with_expectation(expression, Some(local.ty), &mut cs);
-            cs.equal(local.ty, init_ty, expression.span);
+            let init_ty = self.synth_with_expectation(expression, Some(local_ty), &mut cs);
+            cs.equal(local_ty, init_ty, expression.span);
         }
 
-        self.add_shape_obligation(&mut cs, &node.pattern, local.ty);
+        self.check_pattern_structure(&node.pattern, local_ty, &mut cs);
         cs.solve_all();
 
         for (id, ty) in cs.resolved_expr_types() {
@@ -131,7 +130,10 @@ impl<'ctx> Checker<'ctx> {
             self.gcx().cache_node_adjustments(id, adjustments);
         }
 
-        todo!("Update Inference Values For Locals Collected Here or Default to Errors")
+        for (id, ty) in cs.resolved_local_types() {
+            self.finalize_local(id, ty);
+            self.gcx().cache_node_type(id, ty);
+        }
     }
 
     fn check_loop(&self, block: &hir::Block) {
@@ -176,6 +178,11 @@ impl<'ctx> Checker<'ctx> {
         }
         for (id, adjustments) in cs.resolved_adjustments() {
             self.gcx().cache_node_adjustments(id, adjustments);
+        }
+
+        for (id, ty) in cs.resolved_local_types() {
+            self.finalize_local(id, ty);
+            self.gcx().cache_node_type(id, ty);
         }
 
         let provided = cs.infer_cx.resolve_vars_if_possible(provided);
@@ -1167,27 +1174,35 @@ impl<'ctx> Checker<'ctx> {
 }
 
 impl<'ctx> Checker<'ctx> {
-    fn add_shape_obligation(&self, cs: &mut Cs<'ctx>, pattern: &hir::Pattern, scrutinee: Ty<'ctx>) {
-        let shape = self.lower_pattern_to_shape(pattern);
-        cs.add_goal(Goal::Shape { scrutinee, shape }, pattern.span);
-    }
+    fn check_pattern_structure(
+        &self,
+        pattern: &hir::Pattern,
+        scrutinee: Ty<'ctx>,
+        cs: &mut Cs<'ctx>,
+    ) {
+        match &pattern.kind {
+            hir::PatternKind::Wildcard => {}
+            hir::PatternKind::Identifier(_) => {
+                let binding = self.get_local(pattern.id);
+                cs.equal(scrutinee, binding.ty, pattern.span);
+            }
+            hir::PatternKind::Tuple(pats, _) => {
+                let mut elem_tys = Vec::with_capacity(pats.len());
+                for _ in pats {
+                    elem_tys.push(cs.infer_cx.next_ty_var(pattern.span));
+                }
 
-    fn lower_pattern_to_shape(&self, pattern: &hir::Pattern) -> Shape<'ctx> {
-        let kind = match &pattern.kind {
-            hir::PatternKind::Wildcard => ShapeKind::Wildcard,
-            hir::PatternKind::Rest => todo!(),
-            hir::PatternKind::Identifier(_) => ShapeKind::Typed(self.get_local(pattern.id).ty),
-            hir::PatternKind::Tuple(..) => todo!(),
-            hir::PatternKind::Member(..) => todo!(),
-            hir::PatternKind::PathTuple { .. } => todo!(),
-            hir::PatternKind::Or(..) => todo!(),
-            hir::PatternKind::Literal(..) => todo!(),
-        };
+                let tuple_ty = Ty::new(
+                    TyKind::Tuple(self.gcx().store.interners.intern_ty_list(elem_tys.clone())),
+                    self.gcx(),
+                );
+                cs.equal(scrutinee, tuple_ty, pattern.span);
 
-        Shape {
-            kind,
-            span: pattern.span,
-            id: pattern.id,
+                for (i, pat) in pats.iter().enumerate() {
+                    self.check_pattern_structure(pat, elem_tys[i], cs);
+                }
+            }
+            _ => todo!("pattern kind not supported in check_pattern_structure"),
         }
     }
 }

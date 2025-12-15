@@ -56,19 +56,18 @@ impl<'cs, 'arena> GatherLocalsVisitor<'cs, 'arena> {
         ty: Option<Ty<'arena>>,
         mutable: bool,
     ) -> Ty<'arena> {
-        let mut locals = self.checker.locals.borrow_mut();
-        if locals.get(&id).is_some() {
-            unreachable!("evaluated local more than once")
-        };
+        let mut locals = self.cs.locals.borrow_mut();
 
         let ty = match ty {
             Some(ty) => {
-                locals.insert(id, LocalBinding { ty, mutable });
+                locals.insert(id, ty);
+                self.checker.set_local(id, LocalBinding { ty, mutable });
                 ty
             }
             None => {
                 let ty = self.cs.infer_cx.next_ty_var(span);
-                locals.insert(id, LocalBinding { ty, mutable });
+                locals.insert(id, ty);
+                self.checker.set_local(id, LocalBinding { ty, mutable });
                 ty
             }
         };

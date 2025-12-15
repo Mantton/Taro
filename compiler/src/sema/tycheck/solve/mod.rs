@@ -6,7 +6,7 @@ use crate::{
 };
 pub use models::*;
 use rustc_hash::FxHashMap;
-use std::{cmp::Reverse, collections::VecDeque, rc::Rc};
+use std::{cell::RefCell, cmp::Reverse, collections::VecDeque, rc::Rc};
 
 mod adt;
 mod apply;
@@ -15,7 +15,6 @@ mod method;
 mod models;
 mod op;
 mod overload;
-mod shape;
 mod tuple;
 mod unify;
 
@@ -24,6 +23,7 @@ pub struct ConstraintSystem<'ctx> {
     obligations: VecDeque<Obligation<'ctx>>,
     expr_tys: FxHashMap<NodeID, Ty<'ctx>>,
     adjustments: FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
+    pub locals: RefCell<FxHashMap<NodeID, Ty<'ctx>>>,
 }
 
 impl<'ctx> ConstraintSystem<'ctx> {
@@ -32,6 +32,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
             infer_cx: Rc::new(InferCtx::new(context)),
             obligations: Default::default(),
             expr_tys: Default::default(),
+            locals: Default::default(),
             adjustments: Default::default(),
         }
     }
@@ -79,6 +80,23 @@ impl<'ctx> ConstraintSystem<'ctx> {
 
     pub fn record_adjustments(&mut self, id: NodeID, adjustments: Vec<Adjustment<'ctx>>) {
         self.adjustments.insert(id, adjustments);
+    }
+
+    pub fn resolved_local_types(&self) -> FxHashMap<NodeID, Ty<'ctx>> {
+        let gcx = self.infer_cx.gcx;
+        self.locals
+            .borrow()
+            .iter()
+            .map(|(&id, &ty)| {
+                let resolved = self.infer_cx.resolve_vars_if_possible(ty);
+                let resolved = if resolved.is_infer() {
+                    Ty::error(gcx)
+                } else {
+                    resolved
+                };
+                (id, resolved)
+            })
+            .collect()
     }
 
     pub fn resolved_adjustments(&self) -> FxHashMap<NodeID, Vec<Adjustment<'ctx>>> {
@@ -139,7 +157,6 @@ impl<'ctx> ConstraintSolver<'ctx> {
             Goal::MethodCall(data) => self.solve_method_call(data),
             Goal::StructLiteral(data) => self.solve_struct_literal(data),
             Goal::TupleAccess(data) => self.solve_tuple_access(data),
-            Goal::Shape { scrutinee, shape } => self.solve_shape(scrutinee, shape, location),
         }
     }
 
