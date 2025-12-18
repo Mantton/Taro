@@ -1,4 +1,5 @@
 use crate::{
+    codegen::mangle::mangle,
     compile::context::{Gcx, GlobalContext},
     error::CompileResult,
     hir,
@@ -16,7 +17,7 @@ use inkwell::{
     types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType},
     values::{BasicMetadataValueEnum, BasicValue, BasicValueEnum, FunctionValue, PointerValue},
 };
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use std::{fs, path::PathBuf};
 
 /// Lower MIR for a package into a single LLVM module and cache its IR.
@@ -1236,67 +1237,4 @@ fn uint_from_kind<'llvm>(context: &'llvm Context, ty: UIntTy) -> IntType<'llvm> 
 
 fn is_signed(ty: Ty) -> bool {
     matches!(ty.kind(), TyKind::Int(_) | TyKind::Rune)
-}
-
-fn mangle(gcx: GlobalContext, id: hir::DefinitionID) -> String {
-    fn sanitize(s: &str) -> String {
-        s.chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '_' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect()
-    }
-
-    let pkg_ident = gcx
-        .package_ident(id.package())
-        .unwrap_or_else(|| gcx.config.identifier.clone());
-    let pkg_ident = sanitize(pkg_ident.as_ref());
-
-    let output = gcx.resolution_output(id.package());
-    let leaf_ident = output
-        .definition_to_ident
-        .get(&id)
-        .map(|i| sanitize(i.symbol.as_str()))
-        .unwrap_or_else(|| sanitize(gcx.definition_ident(id).symbol.as_str()));
-
-    // Include module path segments to avoid collisions between same-named items in different
-    // modules (e.g. `foo::util::f` vs `foo::math::f`).
-    let mut modules: Vec<String> = vec![];
-    let mut current = id;
-    let mut seen: FxHashSet<hir::DefinitionID> = FxHashSet::default();
-
-    while let Some(&parent) = output.definition_to_parent.get(&current) {
-        if parent == current || !seen.insert(parent) {
-            break;
-        }
-        current = parent;
-
-        if matches!(
-            output.definition_to_kind.get(&current),
-            Some(crate::sema::resolve::models::DefinitionKind::Module)
-        ) {
-            if let Some(ident) = output.definition_to_ident.get(&current) {
-                let name = ident.symbol.as_str();
-                if !name.is_empty() {
-                    modules.push(sanitize(name));
-                }
-            }
-        }
-    }
-    modules.reverse();
-    // The root module is effectively already encoded by the package prefix, so drop it to avoid
-    // mangling like `pkg__main__foo` and prefer `pkg__foo`.
-    if !modules.is_empty() {
-        modules.remove(0);
-    }
-
-    if modules.is_empty() {
-        format!("{pkg_ident}__{leaf_ident}")
-    } else {
-        format!("{pkg_ident}__{}__{leaf_ident}", modules.join("__"))
-    }
 }
