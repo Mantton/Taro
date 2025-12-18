@@ -2,9 +2,8 @@ use crate::mir::{BasicBlockId, Body, TerminatorKind};
 use index_vec::IndexVec;
 use rustc_hash::FxHashMap;
 
-/// Very small CFG cleanup: collapse chains of empty blocks that only `goto`,
-/// then prune unreachable blocks.
-pub fn simplify_cfg(body: &mut Body<'_>) {
+/// Collapse chains of empty blocks that only `goto`.
+pub fn collapse_trivial_gotos(body: &mut Body<'_>) {
     fn collapse_target(
         body: &Body<'_>,
         bb: BasicBlockId,
@@ -54,11 +53,10 @@ pub fn simplify_cfg(body: &mut Body<'_>) {
             }
         }
     }
-
-    prune_unreachable(body);
 }
 
-fn prune_unreachable(body: &mut Body<'_>) {
+/// Remove unreachable blocks from the body.
+pub fn prune_unreachable_blocks(body: &mut Body<'_>) {
     let mut reachable = vec![false; body.basic_blocks.len()];
     let mut stack = vec![body.start_block];
 
@@ -70,9 +68,7 @@ fn prune_unreachable(body: &mut Body<'_>) {
         if let Some(term) = &body.basic_blocks[bb].terminator {
             match &term.kind {
                 TerminatorKind::Goto { target } => stack.push(*target),
-                TerminatorKind::SwitchInt {
-                    targets, otherwise, ..
-                } => {
+                TerminatorKind::SwitchInt { targets, otherwise, .. } => {
                     stack.push(*otherwise);
                     for (_, t) in targets {
                         stack.push(*t);
@@ -107,9 +103,7 @@ fn prune_unreachable(body: &mut Body<'_>) {
         if let Some(term) = block.terminator.as_mut() {
             match &mut term.kind {
                 TerminatorKind::Goto { target } => *target = remap_bb(*target),
-                TerminatorKind::SwitchInt {
-                    targets, otherwise, ..
-                } => {
+                TerminatorKind::SwitchInt { targets, otherwise, .. } => {
                     *otherwise = remap_bb(*otherwise);
                     for (_, t) in targets {
                         *t = remap_bb(*t);

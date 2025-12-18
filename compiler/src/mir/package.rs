@@ -18,7 +18,7 @@ pub fn build_package<'ctx>(
             continue;
         }
         let mut body = MirBuilder::build_function(gcx, &func);
-        optimize::simplify_cfg(&mut body);
+        optimize::run_default_passes(gcx, &mut body);
         println!("{}", PrettyPrintMir { body: &body, gcx });
         let alloc = gcx.store.arenas.mir_bodies.alloc(body);
         functions.insert(id, alloc);

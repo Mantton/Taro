@@ -93,6 +93,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             basic_blocks: Default::default(),
             start_block: BasicBlockId::from_raw(0),
             return_local: LocalId::from_raw(0),
+            phase: mir::MirPhase::Built,
         };
 
         // Create return place first.
@@ -155,6 +156,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             })
             .into_block();
         self.terminate(return_block, span, TerminatorKind::Return);
+        self.finalize_unterminated_blocks();
     }
 
     fn push_local(

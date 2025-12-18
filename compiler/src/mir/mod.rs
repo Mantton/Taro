@@ -26,12 +26,23 @@ pub struct MirPackage<'ctx> {
     pub entry: Option<DefinitionID>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MirPhase {
+    /// Freshly built by the MIR builder. High-level rvalues and structural debris may exist.
+    Built,
+    /// After basic CFG cleanup (unreachable pruning, trivial gotos removed).
+    CfgClean,
+    /// After lowering high-level rvalues like aggregates.
+    Lowered,
+}
+
 #[derive(Debug, Clone)]
 pub struct Body<'ctx> {
     pub locals: IndexVec<LocalId, LocalDecl<'ctx>>,
     pub basic_blocks: IndexVec<BasicBlockId, BasicBlockData<'ctx>>,
     pub start_block: BasicBlockId,
     pub return_local: LocalId,
+    pub phase: MirPhase,
 }
 
 #[derive(Debug, Clone)]
