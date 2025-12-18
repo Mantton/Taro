@@ -132,6 +132,9 @@ impl<'ctx> Checker<'ctx> {
         for (id, adjustments) in cs.resolved_adjustments() {
             self.gcx().cache_node_adjustments(id, adjustments);
         }
+        for (id, def_id) in cs.resolved_overload_sources() {
+            self.gcx().cache_overload_source(id, def_id);
+        }
 
         for (id, index) in cs.resolved_field_indices() {
             self.gcx().cache_field_index(id, index);
@@ -185,6 +188,9 @@ impl<'ctx> Checker<'ctx> {
         }
         for (id, adjustments) in cs.resolved_adjustments() {
             self.gcx().cache_node_adjustments(id, adjustments);
+        }
+        for (id, def_id) in cs.resolved_overload_sources() {
+            self.gcx().cache_overload_source(id, def_id);
         }
 
         for (id, index) in cs.resolved_field_indices() {
@@ -586,7 +592,7 @@ impl<'ctx> Checker<'ctx> {
 
     fn synth_identifier_expression(
         &self,
-        _: NodeID,
+        node_id: NodeID,
         span: Span,
         resolution: &hir::Resolution,
         expectation: Option<Ty<'ctx>>,
@@ -599,7 +605,7 @@ impl<'ctx> Checker<'ctx> {
                     let Some(nominal) = self.constructor_nominal_from_resolution(resolution) else {
                         return Ty::error(self.gcx());
                     };
-                    self.synth_constructor_value_expression(nominal, span, expectation, cs)
+                    self.synth_constructor_value_expression(node_id, nominal, span, expectation, cs)
                 }
                 _ => self.gcx().get_type(*id),
             },
@@ -607,7 +613,7 @@ impl<'ctx> Checker<'ctx> {
                 let Some(nominal) = self.constructor_nominal_from_resolution(resolution) else {
                     return Ty::error(self.gcx());
                 };
-                self.synth_constructor_value_expression(nominal, span, expectation, cs)
+                self.synth_constructor_value_expression(node_id, nominal, span, expectation, cs)
             }
             hir::Resolution::FunctionSet(candidates) => {
                 let ty = cs.infer_cx.next_ty_var(span);
@@ -615,6 +621,7 @@ impl<'ctx> Checker<'ctx> {
                 for &candidate in candidates {
                     let candidate_ty = self.gcx().get_type(candidate);
                     let goal = Goal::BindOverload(BindOverloadGoalData {
+                        node_id,
                         var_ty: ty,
                         candidate_ty,
                         source: candidate,
@@ -635,7 +642,7 @@ impl<'ctx> Checker<'ctx> {
                     );
                     return Ty::error(self.gcx());
                 };
-                self.synth_constructor_value_expression(nominal, span, expectation, cs)
+                self.synth_constructor_value_expression(node_id, nominal, span, expectation, cs)
             }
             hir::Resolution::PrimaryType(..)
             | hir::Resolution::InterfaceSelfTypeParameter(..)
@@ -646,13 +653,14 @@ impl<'ctx> Checker<'ctx> {
 
     fn synth_constructor_value_expression(
         &self,
+        node_id: NodeID,
         nominal: DefinitionID,
         span: Span,
         expectation: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         let ty = cs.infer_cx.next_ty_var(span);
-        if !self.bind_constructor_overload_set(nominal, span, ty, cs) {
+        if !self.bind_constructor_overload_set(node_id, nominal, span, ty, cs) {
             return Ty::error(self.gcx());
         }
         if let Some(expectation) = expectation {
@@ -763,6 +771,7 @@ impl<'ctx> Checker<'ctx> {
 
     fn bind_constructor_overload_set(
         &self,
+        node_id: NodeID,
         nominal: DefinitionID,
         span: Span,
         var_ty: Ty<'ctx>,
@@ -793,6 +802,7 @@ impl<'ctx> Checker<'ctx> {
             let candidate_ty = gcx.get_type(ctor);
             branches.push(DisjunctionBranch {
                 goal: Goal::BindOverload(BindOverloadGoalData {
+                    node_id,
                     var_ty,
                     candidate_ty,
                     source: ctor,
@@ -957,7 +967,7 @@ impl<'ctx> Checker<'ctx> {
                     );
                     return Ty::error(self.gcx());
                 };
-                self.synth_static_member(head, &segment.identifier, expression.span, cs)
+                self.synth_static_member(expression.id, head, &segment.identifier, expression.span, cs)
             }
         }
     }
@@ -1020,6 +1030,7 @@ impl<'ctx> Checker<'ctx> {
 
     fn synth_static_member(
         &self,
+        node_id: NodeID,
         head: TypeHead,
         name: &crate::span::Identifier,
         span: Span,
@@ -1048,6 +1059,7 @@ impl<'ctx> Checker<'ctx> {
             let candidate_ty = gcx.get_type(candidate);
             branches.push(DisjunctionBranch {
                 goal: Goal::BindOverload(BindOverloadGoalData {
+                    node_id,
                     var_ty: ty,
                     candidate_ty,
                     source: candidate,

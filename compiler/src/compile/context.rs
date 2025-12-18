@@ -447,6 +447,7 @@ pub struct TypeDatabase<'arena> {
     pub node_to_ty: FxHashMap<hir::NodeID, Ty<'arena>>,
     pub node_to_adjustments: FxHashMap<hir::NodeID, Vec<Adjustment<'arena>>>,
     pub node_to_field_index: FxHashMap<hir::NodeID, usize>,
+    pub node_to_overload_source: FxHashMap<hir::NodeID, DefinitionID>,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -472,5 +473,15 @@ impl<'arena> GlobalContext<'arena> {
     pub fn get_field_index(self, id: hir::NodeID) -> Option<FieldIndex> {
         self.with_session_type_database(|db| db.node_to_field_index.get(&id).cloned())
             .map(|f| FieldIndex::from_usize(f))
+    }
+
+    pub fn cache_overload_source(self, node_id: hir::NodeID, def_id: DefinitionID) {
+        self.with_session_type_database(|db| {
+            db.node_to_overload_source.insert(node_id, def_id);
+        });
+    }
+
+    pub fn overload_source(self, node_id: hir::NodeID) -> Option<DefinitionID> {
+        self.with_session_type_database(|db| db.node_to_overload_source.get(&node_id).copied())
     }
 }

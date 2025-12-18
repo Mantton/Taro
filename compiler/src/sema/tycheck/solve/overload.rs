@@ -86,6 +86,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         data: BindOverloadGoalData<'ctx>,
     ) -> SolverResult<'ctx> {
         let BindOverloadGoalData {
+            node_id,
             var_ty,
             candidate_ty,
             source,
@@ -93,6 +94,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         match self.unify(var_ty, candidate_ty) {
             Ok(_) => {
+                self.record_overload_source(node_id, source);
                 self.icx.bind_overload(var_ty, source);
                 SolverResult::Solved(vec![])
             }

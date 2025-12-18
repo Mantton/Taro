@@ -1,9 +1,8 @@
 use crate::{
     mir::{
-        self, BasicBlockId, BlockAnd, BlockAndExtension, Category, Operand, Place,
-        builder::MirBuilder,
+        BasicBlockId, BlockAnd, BlockAndExtension, Category, Operand, Place, builder::MirBuilder,
     },
-    thir::{self, ExprId, ExprKind},
+    thir::ExprId,
     unpack,
 };
 

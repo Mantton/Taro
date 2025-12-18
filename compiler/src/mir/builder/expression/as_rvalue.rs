@@ -1,9 +1,9 @@
 use crate::{
     mir::{
-        self, BasicBlockId, BinaryOperator, BlockAnd, BlockAndExtension, Category, Operand, Rvalue,
-        RvalueFunc, builder::MirBuilder,
+        AggregateKind, BasicBlockId, BinaryOperator, BlockAnd, BlockAndExtension, Category,
+        Constant, ConstantKind, Operand, Rvalue, RvalueFunc, builder::MirBuilder,
     },
-    thir::{self, ExprId, ExprKind},
+    thir::{ExprId, ExprKind, FieldIndex},
     unpack,
 };
 
@@ -20,19 +20,40 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let expr = &self.thir.exprs[expr_id];
 
         match &expr.kind {
-            ExprKind::Assign { target, value } => todo!(),
-            ExprKind::Unary { op, operand } => todo!(),
+            ExprKind::Assign { .. } => {
+                block = self.lower_statement_expression(block, expr_id).into_block();
+                block.and(Rvalue::Use(Operand::Constant(Constant {
+                    ty: self.gcx.types.void,
+                    value: ConstantKind::Unit,
+                })))
+            }
+            ExprKind::Unary { op, operand } => {
+                let operand = unpack!(block = self.as_operand(block, *operand));
+                block.and(Rvalue::UnaryOp { op: *op, operand })
+            }
             ExprKind::Binary { op, lhs, rhs } => {
                 let lhs = unpack!(block = self.as_operand(block, *lhs));
                 let rhs = unpack!(block = self.as_operand(block, *rhs));
                 self.build_binary_op(block, *op, lhs, rhs)
             }
-            ExprKind::Tuple { fields } => todo!(),
-
+            ExprKind::Tuple { fields } => {
+                let mut ops = Vec::with_capacity(fields.len());
+                for field in fields.iter() {
+                    let op = unpack!(block = self.as_operand(block, *field));
+                    ops.push(op);
+                }
+                let fields: index_vec::IndexVec<FieldIndex, Operand<'ctx>> =
+                    index_vec::IndexVec::from_vec(ops);
+                block.and(Rvalue::Aggregate {
+                    kind: AggregateKind::Tuple,
+                    fields,
+                })
+            }
             ExprKind::If { .. }
             | ExprKind::Deref(..)
             | ExprKind::Reference { .. }
             | ExprKind::Local(..)
+            | ExprKind::Logical { .. }
             | ExprKind::Call { .. }
             | ExprKind::Block(..)
             | ExprKind::Adt(..)

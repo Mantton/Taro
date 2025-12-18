@@ -2,7 +2,7 @@ use crate::{
     compile::{context::GlobalContext, entry::validate_entry_point},
     error::CompileResult,
     hir::{self, DefinitionID, DefinitionKind, HirVisitor, Mutability, Resolution},
-    mir,
+    mir::{self, LogicalOperator},
     sema::{
         models::{AdtKind, Ty, TyKind},
         tycheck::solve::Adjustment,
@@ -281,7 +281,6 @@ impl<'ctx> FunctionLower<'ctx> {
     }
 
     fn lower_expr_unadjusted(&mut self, expr: &hir::Expression) -> Expr<'ctx> {
-        self.gcx.dcx().emit_info("Looking".into(), Some(expr.span));
         let ty = self.gcx.get_node_type(expr.id);
         let span = expr.span;
         let kind = match &expr.kind {
@@ -290,9 +289,20 @@ impl<'ctx> FunctionLower<'ctx> {
                 ExprKind::Literal(Constant { ty, value })
             }
             hir::ExpressionKind::Path(path) => {
-                let res = match path {
-                    hir::ResolvedPath::Resolved(path) => path.resolution.clone(),
-                    hir::ResolvedPath::Relative(..) => todo!(),
+                let res = if let Some(def_id) = self.gcx.overload_source(expr.id) {
+                    Resolution::Definition(def_id, self.gcx.definition_kind(def_id))
+                } else {
+                    match path {
+                        hir::ResolvedPath::Resolved(path) => path.resolution.clone(),
+                        hir::ResolvedPath::Relative(..) => {
+                            self.gcx.dcx().emit_error(
+                                "unresolved relative path (typecheck should have resolved this)"
+                                    .into(),
+                                Some(expr.span),
+                            );
+                            Resolution::Error
+                        }
+                    }
                 };
                 self.lower_path_expression(expr, res)
             }
@@ -305,9 +315,16 @@ impl<'ctx> FunctionLower<'ctx> {
                 ExprKind::Call { callee, args }
             }
             hir::ExpressionKind::Binary(op, lhs, rhs) => match op {
-                hir::BinaryOperator::BoolAnd => todo!(),
-                hir::BinaryOperator::BoolOr => todo!(),
-                hir::BinaryOperator::BitAnd => todo!(),
+                hir::BinaryOperator::BoolAnd => ExprKind::Logical {
+                    op: LogicalOperator::And,
+                    lhs: self.lower_expr(lhs),
+                    rhs: self.lower_expr(rhs),
+                },
+                hir::BinaryOperator::BoolOr => ExprKind::Logical {
+                    op: LogicalOperator::Or,
+                    lhs: self.lower_expr(lhs),
+                    rhs: self.lower_expr(rhs),
+                },
                 hir::BinaryOperator::PtrEq => todo!(),
                 _ => {
                     let lhs = self.lower_expr(lhs);
@@ -372,9 +389,21 @@ impl<'ctx> FunctionLower<'ctx> {
                 name: _,
                 arguments,
             } => {
-                // For now, lower method calls like regular calls with the receiver as first arg
-                // when the callee resolved to a function id.
-                // TODO: carry the resolved method id on HIR to avoid re-resolving here.
+                let Some(def_id) = self.gcx.overload_source(expr.id) else {
+                    self.gcx.dcx().emit_error(
+                        "failed to lower method call (no resolved target)".into(),
+                        Some(expr.span),
+                    );
+                    return Expr {
+                        kind: ExprKind::Literal(Constant {
+                            ty: self.gcx.types.error,
+                            value: ConstantKind::Unit,
+                        }),
+                        ty: self.gcx.types.error,
+                        span: expr.span,
+                    };
+                };
+
                 let args: Vec<ExprId> = arguments
                     .iter()
                     .map(|arg| self.lower_expr(&arg.expression))
@@ -383,11 +412,13 @@ impl<'ctx> FunctionLower<'ctx> {
                 let mut all_args = Vec::with_capacity(args.len() + 1);
                 all_args.push(recv);
                 all_args.extend(args);
-                // Without a resolved callee, emit an error literal for now.
-                ExprKind::Literal(Constant {
-                    ty: self.gcx.types.error,
-                    value: ConstantKind::Unit,
-                })
+
+                let callee_ty = self.gcx.get_type(def_id);
+                let callee = self.push_expr(ExprKind::Zst { id: def_id }, callee_ty, expr.span);
+                ExprKind::Call {
+                    callee,
+                    args: all_args,
+                }
             }
 
             hir::ExpressionKind::StructLiteral(literal) => {

@@ -48,6 +48,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     let candidate_ty = self.gcx().get_type(candidate);
                     branches.push(DisjunctionBranch {
                         goal: Goal::BindOverload(BindOverloadGoalData {
+                            node_id,
                             var_ty: result,
                             candidate_ty,
                             source: candidate,

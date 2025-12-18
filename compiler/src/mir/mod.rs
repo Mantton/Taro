@@ -161,6 +161,10 @@ pub enum Rvalue<'ctx> {
         operand: Operand<'ctx>,
         ty: Ty<'ctx>,
     },
+    Ref {
+        mutable: bool,
+        place: Place<'ctx>,
+    },
     Aggregate {
         kind: AggregateKind,
         fields: IndexVec<FieldIndex, Operand<'ctx>>,
@@ -214,6 +218,14 @@ pub enum BinaryOperator {
     Geq,
     /// `!=`
     Neq,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum LogicalOperator {
+    /// &&
+    And,
+    /// ||
+    Or,
 }
 
 /// The `BlockAnd` "monad" packages up the new basic block along with a
@@ -317,6 +329,7 @@ impl Category {
 
             thir::ExprKind::Assign { .. }
             | thir::ExprKind::Binary { .. }
+            | thir::ExprKind::Logical { .. }
             | thir::ExprKind::Unary { .. }
             | thir::ExprKind::Tuple { .. } => Category::Rvalue(RvalueFunc::AsRvalue),
 

@@ -1,10 +1,9 @@
 use crate::{
     hir::Mutability,
     mir::{
-        self, BasicBlockId, BlockAnd, BlockAndExtension, LocalId, Place, PlaceElem,
-        builder::MirBuilder,
+        BasicBlockId, BlockAnd, BlockAndExtension, LocalId, Place, PlaceElem, builder::MirBuilder,
     },
-    thir::{self, ExprId, ExprKind},
+    thir::{ExprId, ExprKind},
     unpack,
 };
 
@@ -35,18 +34,27 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 let local = *self.locals.get(id).expect("lhs local");
                 block.and(PlaceBuilder::from_local(local))
             }
-            ExprKind::Deref(expr_id) => todo!(),
-            ExprKind::Adt(adt_expression) => todo!(),
-            ExprKind::Field { lhs, index } => todo!(),
+            ExprKind::Deref(expr_id) => {
+                let mut base = unpack!(block = self.expr_as_place(block, *expr_id, mutability));
+                base.projection.push(PlaceElem::Deref);
+                block.and(base)
+            }
+            ExprKind::Field { lhs, index } => {
+                let mut builder = unpack!(block = self.expr_as_place(block, *lhs, mutability));
+                builder.projection.push(PlaceElem::Field(*index, expr.ty));
+                block.and(builder)
+            }
             ExprKind::Reference { .. } => todo!(),
             ExprKind::If { .. }
             | ExprKind::Assign { .. }
             | ExprKind::Literal(..)
             | ExprKind::Unary { .. }
             | ExprKind::Binary { .. }
+            | ExprKind::Logical { .. }
             | ExprKind::Call { .. }
             | ExprKind::Block { .. }
             | ExprKind::Tuple { .. }
+            | ExprKind::Adt { .. }
             | ExprKind::Zst { .. } => {
                 let temp = unpack!(block = self.as_temp(block, expr_id));
                 block.and(PlaceBuilder::from_local(temp))
@@ -73,7 +81,7 @@ impl<'a> PlaceBuilder<'a> {
         self.try_to_place(builder).unwrap()
     }
 
-    pub fn try_to_place(&self, builder: &MirBuilder<'a, '_>) -> Option<Place<'a>> {
+    pub fn try_to_place(&self, _: &MirBuilder<'a, '_>) -> Option<Place<'a>> {
         Some(Place {
             local: self.base,
             projection: self.projection.clone(),

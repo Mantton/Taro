@@ -1,10 +1,6 @@
 use crate::{
-    mir::{
-        self, BasicBlockId, BlockAnd, BlockAndExtension, Constant, ConstantKind,
-        builder::MirBuilder,
-    },
+    mir::{self, Constant, ConstantKind, builder::MirBuilder},
     thir::{self, ExprId, ExprKind},
-    unpack,
 };
 
 impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {

@@ -373,6 +373,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 };
                 self.lower_cast(from_ty, *ty, val)
             }
+            mir::Rvalue::Ref { place, .. } => {
+                // Produce the address of the place.
+                let ptr = self.project_place(place, body, locals)?;
+                Some(ptr.as_basic_value_enum())
+            }
             mir::Rvalue::Aggregate { .. } => unimplemented!(),
         };
         Ok(value)

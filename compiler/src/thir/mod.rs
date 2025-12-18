@@ -1,6 +1,6 @@
 use crate::{
     hir::{DefinitionID, NodeID},
-    mir::{BinaryOperator, UnaryOperator},
+    mir::{BinaryOperator, LogicalOperator, UnaryOperator},
     sema::models::{AdtDef, Ty},
     span::{Span, Symbol},
 };
@@ -87,6 +87,11 @@ pub enum ExprKind<'a> {
     /// Binary op
     Binary {
         op: BinaryOperator,
+        lhs: ExprId,
+        rhs: ExprId,
+    },
+    Logical {
+        op: LogicalOperator,
         lhs: ExprId,
         rhs: ExprId,
     },

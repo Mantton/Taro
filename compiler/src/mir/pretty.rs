@@ -170,6 +170,10 @@ fn write_rvalue(rvalue: &Rvalue, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             write!(f, " {:?} ", op)?; // Simple debug print for op enum
             write_operand(rhs, f)
         }
+        Rvalue::Ref { mutable, place } => {
+            let kw = if *mutable { "&mut " } else { "&" };
+            write!(f, "{}{:?}", kw, place)
+        }
         Rvalue::Cast { operand, ty } => {
             write_operand(operand, f)?;
             write!(f, " as {:?}", ty)

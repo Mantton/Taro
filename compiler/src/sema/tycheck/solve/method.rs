@@ -18,6 +18,7 @@ use crate::{
 impl<'ctx> ConstraintSolver<'ctx> {
     pub fn solve_method_call(&mut self, data: MethodCallData<'ctx>) -> SolverResult<'ctx> {
         let MethodCallData {
+            node_id,
             receiver,
             reciever_node,
             reciever_span,
@@ -72,6 +73,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 for candidate in candidates {
                     let branch = DisjunctionBranch {
                         goal: Goal::BindOverload(BindOverloadGoalData {
+                            node_id,
                             var_ty: method_ty,
                             candidate_ty: self.gcx().get_type(candidate),
                             source: candidate,

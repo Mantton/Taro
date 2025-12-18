@@ -1,13 +1,14 @@
 use crate::{
     compile::context::Gcx,
     mir::{
-        self, BasicBlockId, BlockAnd, BlockAndExtension, Category, Constant, Operand, Place,
-        Rvalue, RvalueFunc, TerminatorKind, builder::MirBuilder,
+        self, AggregateKind, BasicBlockId, BlockAnd, BlockAndExtension, Category, Constant,
+        Operand, Place, Rvalue, RvalueFunc, TerminatorKind, builder::MirBuilder,
     },
     span::Span,
-    thir::{ExprId, ExprKind},
+    thir::{ExprId, ExprKind, FieldIndex},
     unpack,
 };
+use index_vec::IndexVec;
 
 impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
     pub fn expr_into_dest(
@@ -24,8 +25,61 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 self.push_assign(block, destination, rvalue, expr.span);
                 block.unit()
             }
-            ExprKind::Reference { mutable, expr } => todo!(),
-            ExprKind::Deref(expr_id) => todo!(),
+            ExprKind::Reference {
+                mutable,
+                expr: ref_expr,
+            } => {
+                // Take the address of the place, preserving mutability.
+                let place = unpack!(block = self.as_place(block, *ref_expr));
+                let rvalue = Rvalue::Ref {
+                    mutable: *mutable,
+                    place,
+                };
+                self.push_assign(block, destination, rvalue, expr.span);
+                block.unit()
+            }
+            ExprKind::Logical { op, lhs, rhs } => {
+                // Short-circuiting logical ops.
+                let lhs_op = unpack!(block = self.as_operand(block, *lhs));
+
+                let then_block = self.new_block_with_note("logical-then".into());
+                let else_block = self.new_block_with_note("logical-else".into());
+                self.terminate(
+                    block,
+                    expr.span,
+                    TerminatorKind::if_(lhs_op, then_block, else_block),
+                );
+
+                // For `&&`: false short-circuits; true continues to RHS.
+                // For `||`: true short-circuits; false continues to RHS.
+                let (short_block, cont_block, short_val) = match op {
+                    mir::LogicalOperator::And => (else_block, then_block, false),
+                    mir::LogicalOperator::Or => (then_block, else_block, true),
+                };
+
+                // Short-circuit path writes the known value.
+                let short_const = Constant {
+                    ty: expr.ty,
+                    value: mir::ConstantKind::Bool(short_val),
+                };
+                self.push_assign(
+                    short_block,
+                    destination.clone(),
+                    Rvalue::Use(Operand::Constant(short_const)),
+                    expr.span,
+                );
+
+                // Continue with RHS evaluation.
+                let rhs_block = self
+                    .expr_into_dest(destination.clone(), cont_block, *rhs)
+                    .into_block();
+
+                // Join both paths.
+                let join = self.new_block_with_note("logical-join".into());
+                self.goto(rhs_block, join, expr.span);
+                self.goto(short_block, join, expr.span);
+                join.unit()
+            }
             ExprKind::If {
                 cond,
                 then_expr,
@@ -50,8 +104,11 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 self.goto(else_blk, join_block, expr.span);
                 join_block.unit()
             }
-            ExprKind::Assign { target, value } => todo!(),
-            ExprKind::Unary { op, operand } => todo!(),
+            ExprKind::Assign { .. } => {
+                block = self.lower_statement_expression(block, expr_id).into_block();
+                self.push_assign_unit(block, expr.span, destination, self.gcx);
+                block.unit()
+            }
             ExprKind::Call { callee, args } => {
                 let function = unpack!(block = self.as_local_operand(block, *callee));
                 let args: Vec<Operand<'ctx>> = args
@@ -69,10 +126,50 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 next.unit()
             }
             ExprKind::Block(block_id) => self.lower_block(destination, block, *block_id),
-            ExprKind::Adt(adt_expression) => todo!(),
-            ExprKind::Field { lhs, index } => todo!(),
+            ExprKind::Adt(adt_expression) => {
+                // Evaluate each field into an operand in declaration order.
+                let field_count = match adt_expression.definition.kind {
+                    crate::sema::models::AdtKind::Struct => {
+                        let def = self.gcx.get_struct_definition(adt_expression.definition.id);
+                        def.fields.len()
+                    }
+                    crate::sema::models::AdtKind::Enum => {
+                        self.gcx.dcx().emit_error(
+                            "enum literals are not yet supported".into(),
+                            Some(expr.span),
+                        );
+                        0
+                    }
+                };
+
+                let mut tmp: Vec<Option<Operand<'ctx>>> = vec![None; field_count];
+                for field in &adt_expression.fields {
+                    let operand = unpack!(block = self.as_operand(block, field.expression));
+                    tmp[field.index.index()] = Some(operand);
+                }
+                let fields: IndexVec<FieldIndex, Operand<'ctx>> = IndexVec::from_vec(
+                    tmp.into_iter()
+                        .map(|o| o.expect("missing struct field operand"))
+                        .collect(),
+                );
+
+                let rvalue = Rvalue::Aggregate {
+                    kind: AggregateKind::Adt(adt_expression.definition.id),
+                    fields,
+                };
+                self.push_assign(block, destination, rvalue, expr.span);
+                block.unit()
+            }
+            ExprKind::Deref(..) | ExprKind::Field { .. } => {
+                debug_assert!(matches!(Category::of(&expr.kind), Category::Place));
+                let place = unpack!(block = self.as_place(block, expr_id));
+                let rvalue = Rvalue::Use(Operand::Copy(place));
+                self.push_assign(block, destination, rvalue, expr.span);
+                block.unit()
+            }
             ExprKind::Tuple { .. }
             | ExprKind::Literal(..)
+            | ExprKind::Unary { .. }
             | ExprKind::Binary { .. }
             | ExprKind::Zst { .. } => {
                 debug_assert!(match Category::of(&expr.kind) {

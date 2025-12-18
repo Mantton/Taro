@@ -43,6 +43,7 @@ pub struct DisjunctionBranch<'ctx> {
 
 #[derive(Debug, Clone)]
 pub struct BindOverloadGoalData<'ctx> {
+    pub node_id: NodeID,
     pub var_ty: Ty<'ctx>,
     pub candidate_ty: Ty<'ctx>,
     pub source: DefinitionID,

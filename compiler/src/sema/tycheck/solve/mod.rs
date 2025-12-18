@@ -25,6 +25,7 @@ pub struct ConstraintSystem<'ctx> {
     adjustments: FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
     pub locals: RefCell<FxHashMap<NodeID, Ty<'ctx>>>,
     pub field_indices: FxHashMap<NodeID, usize>,
+    overload_sources: FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
 }
 
 impl<'ctx> ConstraintSystem<'ctx> {
@@ -36,6 +37,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
             locals: Default::default(),
             adjustments: Default::default(),
             field_indices: Default::default(),
+            overload_sources: Default::default(),
         }
     }
 }
@@ -104,6 +106,10 @@ impl<'ctx> ConstraintSystem<'ctx> {
     pub fn resolved_field_indices(&self) -> FxHashMap<NodeID, usize> {
         self.field_indices.clone()
     }
+
+    pub fn resolved_overload_sources(&self) -> FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID> {
+        self.overload_sources.clone()
+    }
 }
 
 impl<'ctx> ConstraintSystem<'ctx> {
@@ -113,14 +119,16 @@ impl<'ctx> ConstraintSystem<'ctx> {
             obligations: std::mem::take(&mut self.obligations),
             adjustments: std::mem::take(&mut self.adjustments),
             field_indices: std::mem::take(&mut self.field_indices),
+            overload_sources: std::mem::take(&mut self.overload_sources),
         };
 
         let mut driver = SolverDriver::new(solver);
         let result = driver.solve_to_fixpoint();
         // Pull adjustments back out of the solver/driver.
-        let (adjustments, field_indices) = driver.into_parts();
+        let (adjustments, field_indices, overload_sources) = driver.into_parts();
         self.adjustments = adjustments;
         self.field_indices = field_indices;
+        self.overload_sources = overload_sources;
         for (id, index) in self.field_indices.iter() {
             self.infer_cx.gcx.cache_field_index(*id, *index);
         }
@@ -143,6 +151,7 @@ struct ConstraintSolver<'ctx> {
     obligations: VecDeque<Obligation<'ctx>>,
     adjustments: FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
     pub field_indices: FxHashMap<NodeID, usize>,
+    overload_sources: FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
 }
 
 impl<'ctx> ConstraintSolver<'ctx> {
@@ -152,6 +161,14 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
     pub fn record_field_index(&mut self, id: NodeID, index: usize) {
         self.field_indices.insert(id, index);
+    }
+
+    pub fn record_overload_source(
+        &mut self,
+        node_id: NodeID,
+        source: crate::sema::resolve::models::DefinitionID,
+    ) {
+        self.overload_sources.insert(node_id, source);
     }
 }
 
@@ -196,6 +213,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             obligations: self.obligations.clone(),
             adjustments: self.adjustments.clone(),
             field_indices: self.field_indices.clone(),
+            overload_sources: self.overload_sources.clone(),
         }
     }
 
@@ -243,8 +261,13 @@ impl<'ctx> SolverDriver<'ctx> {
     ) -> (
         FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
         FxHashMap<NodeID, usize>,
+        FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
     ) {
-        (self.solver.adjustments, self.solver.field_indices)
+        (
+            self.solver.adjustments,
+            self.solver.field_indices,
+            self.solver.overload_sources,
+        )
     }
 
     fn solve_to_fixpoint(&mut self) -> Result<(), SpannedErrorList<'ctx>> {
