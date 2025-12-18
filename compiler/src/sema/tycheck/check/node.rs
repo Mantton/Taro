@@ -967,7 +967,13 @@ impl<'ctx> Checker<'ctx> {
                     );
                     return Ty::error(self.gcx());
                 };
-                self.synth_static_member(expression.id, head, &segment.identifier, expression.span, cs)
+                self.synth_static_member(
+                    expression.id,
+                    head,
+                    &segment.identifier,
+                    expression.span,
+                    cs,
+                )
             }
         }
     }

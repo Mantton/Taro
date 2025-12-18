@@ -76,5 +76,4 @@ impl<'ctx> Actor<'ctx> {
             abi: node.abi,
         }
     }
-
 }

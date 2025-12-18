@@ -176,16 +176,17 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
 impl<'body, 'ctx> fmt::Display for PrettyPrintMir<'body, 'ctx> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (local, decl) in self.body.locals.iter_enumerated() {
-            writeln!(
+            write!(
                 f,
-                "    let {}{:?}: {};",
+                "    let %{}{:?}: {};",
                 Self::mutability(decl),
                 local,
                 decl.ty.format(self.gcx)
             )?;
             if let Some(name) = decl.name {
-                writeln!(f, "        // debug: {}", name)?;
+                write!(f, "        // debug: {}", name)?;
             }
+            writeln!(f)?;
         }
 
         writeln!(f)?;

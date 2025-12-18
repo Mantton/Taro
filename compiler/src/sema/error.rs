@@ -60,7 +60,11 @@ impl<'ctx> TypeError<'ctx> {
                 "ambiguous overload; unable to pick a best candidate".into()
             }
             TypeError::NoSuchMember { name, on } => {
-                format!("no member named '{}' found on type {}", name, on.format(gcx))
+                format!(
+                    "no member named '{}' found on type {}",
+                    name,
+                    on.format(gcx)
+                )
             }
             TypeError::NotCallable { found } => {
                 format!("cannot call value of type {}", found.format(gcx))
@@ -72,7 +76,11 @@ impl<'ctx> TypeError<'ctx> {
                 format!("no field '{}' on struct {}", name, struct_ty.format(gcx))
             }
             TypeError::MissingStructField { name, struct_ty } => {
-                format!("missing field '{}' in {} literal", name, struct_ty.format(gcx))
+                format!(
+                    "missing field '{}' in {} literal",
+                    name,
+                    struct_ty.format(gcx)
+                )
             }
             TypeError::NotATuple { ty } => {
                 format!("type {} is not a tuple", ty.format(gcx))

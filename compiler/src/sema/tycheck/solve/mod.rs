@@ -107,7 +107,9 @@ impl<'ctx> ConstraintSystem<'ctx> {
         self.field_indices.clone()
     }
 
-    pub fn resolved_overload_sources(&self) -> FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID> {
+    pub fn resolved_overload_sources(
+        &self,
+    ) -> FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID> {
         self.overload_sources.clone()
     }
 }

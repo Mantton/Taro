@@ -41,7 +41,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             ExprKind::Logical { op, lhs, rhs } => {
                 // Short-circuiting logical ops.
                 let lhs_op = unpack!(block = self.as_operand(block, *lhs));
-
                 let then_block = self.new_block_with_note("logical-then".into());
                 let else_block = self.new_block_with_note("logical-else".into());
                 self.terminate(
