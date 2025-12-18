@@ -701,13 +701,26 @@ impl Actor<'_, '_> {
 
 impl Actor<'_, '_> {
     fn lower_block(&mut self, node: ast::Block) -> hir::Block {
+        let mut statements = node.statements;
+        let tail = match statements.pop() {
+            Some(ast::Statement {
+                kind: ast::StatementKind::Expression(expr),
+                ..
+            }) => Some(self.lower_expression(expr)),
+            Some(stmt) => {
+                statements.push(stmt);
+                None
+            }
+            None => None,
+        };
+
         hir::Block {
             id: self.next_index(),
-            statements: node
-                .statements
+            statements: statements
                 .into_iter()
                 .map(|n| self.lower_statement(n))
                 .collect(),
+            tail,
             span: node.span,
         }
     }
@@ -1625,9 +1638,22 @@ impl Actor<'_, '_> {
     }
 
     fn mk_block(&mut self, statements: Vec<hir::Statement>, span: Span) -> hir::Block {
+        let mut statements = statements;
+        let tail = match statements.pop() {
+            Some(hir::Statement {
+                kind: hir::StatementKind::Expression(expr),
+                ..
+            }) => Some(expr),
+            Some(stmt) => {
+                statements.push(stmt);
+                None
+            }
+            None => None,
+        };
         hir::Block {
             id: self.next_index(),
             statements,
+            tail,
             span,
         }
     }

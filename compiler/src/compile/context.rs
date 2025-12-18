@@ -470,6 +470,7 @@ impl<'arena> GlobalContext<'arena> {
     }
 
     pub fn get_field_index(self, id: hir::NodeID) -> Option<FieldIndex> {
-        self.with_session_type_database(|db| db.node_to_field_index.get(&id).copied())
+        self.with_session_type_database(|db| db.node_to_field_index.get(&id).cloned())
+            .map(|f| FieldIndex::from_usize(f))
     }
 }

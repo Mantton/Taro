@@ -109,6 +109,9 @@ impl<'ctx> Checker<'ctx> {
         for statement in &node.statements {
             self.check_statement(statement);
         }
+        if let Some(tail) = node.tail.as_deref() {
+            self.top_level_check(tail, None);
+        }
     }
     fn check_local(&self, node: &hir::Local) {
         let mut cs = Cs::new(self.context);
@@ -530,19 +533,20 @@ impl<'ctx> Checker<'ctx> {
         expectation: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
-        // Evaluate statements in order; the block's value is the last expression statement if any.
-        let mut last_expr_ty: Option<Ty<'ctx>> = None;
         for stmt in &block.statements {
             match &stmt.kind {
                 hir::StatementKind::Expression(expr) => {
-                    last_expr_ty = Some(self.synth_with_expectation(expr, expectation, cs));
+                    let _ = self.synth_with_expectation(expr, None, cs);
                 }
                 _ => self.check_statement(stmt),
             }
         }
 
-        // If no trailing expression, use unit/void when available; for now create a fresh var.
-        last_expr_ty.unwrap_or_else(|| self.gcx().types.void)
+        if let Some(tail) = block.tail.as_deref() {
+            self.synth_with_expectation(tail, expectation, cs)
+        } else {
+            self.gcx().types.void
+        }
     }
 }
 

@@ -1,7 +1,7 @@
 use crate::{
     compile::context::GlobalContext,
     hir,
-    thir::{FieldPattern, Pattern, PatternKind},
+    thir::{FieldIndex, FieldPattern, Pattern, PatternKind},
 };
 
 pub fn pattern_from_hir<'ctx>(gcx: GlobalContext<'ctx>, pattern: &hir::Pattern) -> Pattern<'ctx> {
@@ -35,7 +35,7 @@ impl<'ctx> PatternLoweringContext<'ctx> {
                     .iter()
                     .enumerate()
                     .map(|(index, p)| FieldPattern {
-                        index,
+                        index: FieldIndex::from_usize(index),
                         pattern: self.lower_pattern(p),
                     })
                     .collect();

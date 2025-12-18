@@ -2,6 +2,7 @@ use crate::{
     compile::{context::GlobalContext, entry::validate_entry_point},
     error::CompileResult,
     hir::{self, DefinitionID, DefinitionKind, HirVisitor, Mutability, Resolution},
+    mir,
     sema::{
         models::{AdtKind, Ty, TyKind},
         tycheck::solve::Adjustment,
@@ -115,12 +116,12 @@ impl<'ctx> FunctionLower<'ctx> {
 
     fn lower_body(&mut self, node: &hir::Function) {
         if let Some(block) = &node.block {
-            let block_id = self.lower_block(block, false);
+            let block_id = self.lower_block(block);
             self.func.body = Some(block_id);
         }
     }
 
-    fn lower_block(&mut self, block: &hir::Block, capture_tail_expr: bool) -> BlockId {
+    fn lower_block(&mut self, block: &hir::Block) -> BlockId {
         let id = BlockId::from_raw(self.func.blocks.len() as u32);
         self.func.blocks.push(Block {
             id,
@@ -128,24 +129,12 @@ impl<'ctx> FunctionLower<'ctx> {
             expr: None,
         });
 
-        let mut stmts = Vec::new();
-        let mut expr = None;
-
-        for (idx, stmt) in block.statements.iter().enumerate() {
-            let is_last = idx + 1 == block.statements.len();
-            if capture_tail_expr && is_last {
-                if let hir::StatementKind::Expression(expr_stmt) = &stmt.kind {
-                    let expr_id = self.lower_expr(expr_stmt);
-                    expr = Some(expr_id);
-                    continue;
-                }
-            }
-
-            if let Some(stmt) = self.lower_statement(stmt) {
-                let id = self.push_stmt(stmt);
-                stmts.push(id);
-            }
-        }
+        let stmts: Vec<_> = block
+            .statements
+            .iter()
+            .filter_map(|stmt| self.lower_statement(stmt).map(|s| self.push_stmt(s)))
+            .collect();
+        let expr = block.tail.as_deref().map(|expr| self.lower_expr(expr));
 
         self.func.blocks[id].stmts = stmts;
         self.func.blocks[id].expr = expr;
@@ -156,15 +145,6 @@ impl<'ctx> FunctionLower<'ctx> {
         match &stmt.kind {
             hir::StatementKind::Declaration(_) => None,
             hir::StatementKind::Expression(expr) => {
-                if let hir::ExpressionKind::Assign(lhs, rhs) = &expr.kind {
-                    let target = self.lower_expr(lhs);
-                    let value = self.lower_expr(rhs);
-                    return Some(Stmt {
-                        kind: StmtKind::Assign { target, value },
-                        span: stmt.span,
-                    });
-                }
-
                 let expr_id = self.lower_expr(expr);
                 Some(Stmt {
                     kind: StmtKind::Expr(expr_id),
@@ -188,13 +168,19 @@ impl<'ctx> FunctionLower<'ctx> {
                 })
             }
             hir::StatementKind::Loop { block, .. } => {
-                let block_id = self.lower_block(block, false);
+                let block_id = self.lower_block(block);
                 Some(Stmt {
                     kind: StmtKind::Loop { block: block_id },
                     span: stmt.span,
                 })
             }
-            hir::StatementKind::Defer(_) => None,
+            hir::StatementKind::Defer(block) => {
+                let block_id = self.lower_block(block);
+                Some(Stmt {
+                    kind: StmtKind::Defer(block_id),
+                    span: stmt.span,
+                })
+            }
             hir::StatementKind::Guard { .. } => None,
         }
     }
@@ -295,6 +281,7 @@ impl<'ctx> FunctionLower<'ctx> {
     }
 
     fn lower_expr_unadjusted(&mut self, expr: &hir::Expression) -> Expr<'ctx> {
+        self.gcx.dcx().emit_info("Looking".into(), Some(expr.span));
         let ty = self.gcx.get_node_type(expr.id);
         let span = expr.span;
         let kind = match &expr.kind {
@@ -302,50 +289,53 @@ impl<'ctx> FunctionLower<'ctx> {
                 let value = self.lower_literal(lit);
                 ExprKind::Literal(Constant { ty, value })
             }
-            hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path))
-                if matches!(&path.resolution, Resolution::LocalVariable(_)) =>
-            {
-                let Resolution::LocalVariable(id) = &path.resolution else {
-                    unreachable!()
+            hir::ExpressionKind::Path(path) => {
+                let res = match path {
+                    hir::ResolvedPath::Resolved(path) => path.resolution.clone(),
+                    hir::ResolvedPath::Relative(..) => todo!(),
                 };
-                ExprKind::Local(*id)
+                self.lower_path_expression(expr, res)
             }
             hir::ExpressionKind::Call { callee, arguments } => {
-                let callee_id: Option<DefinitionID> = match &callee.kind {
-                    hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => {
-                        match &path.resolution {
-                            Resolution::Definition(id, DefinitionKind::Function)
-                            | Resolution::Definition(id, DefinitionKind::AssociatedFunction) => {
-                                Some(*id)
-                            }
-                            _ => None,
-                        }
-                    }
-                    _ => None,
-                };
-
-                if let Some(id) = callee_id {
-                    let args: Vec<ExprId> = arguments
-                        .iter()
-                        .map(|arg| self.lower_expr(&arg.expression))
-                        .collect();
-                    ExprKind::Call { callee: id, args }
-                } else {
-                    // Unsupported callee shape for now.
-                    ExprKind::Literal(Constant {
-                        ty: self.gcx.types.error,
-                        value: ConstantKind::Unit,
-                    })
+                let callee = self.lower_expr(callee);
+                let args: Vec<ExprId> = arguments
+                    .iter()
+                    .map(|arg| self.lower_expr(&arg.expression))
+                    .collect();
+                ExprKind::Call { callee, args }
+            }
+            hir::ExpressionKind::Binary(op, lhs, rhs) => match op {
+                hir::BinaryOperator::BoolAnd => todo!(),
+                hir::BinaryOperator::BoolOr => todo!(),
+                hir::BinaryOperator::BitAnd => todo!(),
+                hir::BinaryOperator::PtrEq => todo!(),
+                _ => {
+                    let lhs = self.lower_expr(lhs);
+                    let rhs = self.lower_expr(rhs);
+                    let op = bin_op(*op);
+                    ExprKind::Binary { op, lhs, rhs }
+                }
+            },
+            hir::ExpressionKind::Unary(hir::UnaryOperator::LogicalNot, operand) => {
+                let operand = self.lower_expr(operand);
+                ExprKind::Unary {
+                    op: mir::UnaryOperator::LogicalNot,
+                    operand,
                 }
             }
-            hir::ExpressionKind::Binary(op, lhs, rhs) => {
-                let lhs = self.lower_expr(lhs);
-                let rhs = self.lower_expr(rhs);
-                ExprKind::Binary { op: *op, lhs, rhs }
-            }
-            hir::ExpressionKind::Unary(op, operand) => {
+            hir::ExpressionKind::Unary(hir::UnaryOperator::Negate, operand) => {
                 let operand = self.lower_expr(operand);
-                ExprKind::Unary { op: *op, operand }
+                ExprKind::Unary {
+                    op: mir::UnaryOperator::Negate,
+                    operand,
+                }
+            }
+            hir::ExpressionKind::Unary(hir::UnaryOperator::BitwiseNot, operand) => {
+                let operand = self.lower_expr(operand);
+                ExprKind::Unary {
+                    op: mir::UnaryOperator::BitwiseNot,
+                    operand,
+                }
             }
             hir::ExpressionKind::Assign(lhs, rhs) => {
                 let target = self.lower_expr(lhs);
@@ -363,7 +353,7 @@ impl<'ctx> FunctionLower<'ctx> {
                 }
             }
             hir::ExpressionKind::Block(block) => {
-                let block_id = self.lower_block(block, true);
+                let block_id = self.lower_block(block);
                 ExprKind::Block(block_id)
             }
             hir::ExpressionKind::Dereference(inner) => {
@@ -463,6 +453,21 @@ impl<'ctx> FunctionLower<'ctx> {
         }
     }
 
+    fn lower_path_expression(
+        &mut self,
+        _: &hir::Expression,
+        resolution: Resolution,
+    ) -> thir::ExprKind<'ctx> {
+        match resolution {
+            Resolution::Definition(
+                id,
+                DefinitionKind::Function | DefinitionKind::AssociatedFunction,
+            ) => ExprKind::Zst { id },
+            Resolution::LocalVariable(id) => ExprKind::Local(id),
+            _ => unreachable!(),
+        }
+    }
+
     fn push_expr(&mut self, kind: ExprKind<'ctx>, ty: Ty<'ctx>, span: crate::span::Span) -> ExprId {
         let id = ExprId::from_raw(self.func.exprs.len() as u32);
         self.func.exprs.push(Expr { kind, ty, span });
@@ -473,5 +478,28 @@ impl<'ctx> FunctionLower<'ctx> {
         let id = StmtId::from_raw(self.func.stmts.len() as u32);
         self.func.stmts.push(stmt);
         id
+    }
+}
+
+fn bin_op(op: hir::BinaryOperator) -> mir::BinaryOperator {
+    match op {
+        hir::BinaryOperator::Add => mir::BinaryOperator::Add,
+        hir::BinaryOperator::Sub => mir::BinaryOperator::Sub,
+        hir::BinaryOperator::Mul => mir::BinaryOperator::Mul,
+        hir::BinaryOperator::Div => mir::BinaryOperator::Div,
+        hir::BinaryOperator::Rem => mir::BinaryOperator::Rem,
+        hir::BinaryOperator::BitOr => mir::BinaryOperator::BitOr,
+        hir::BinaryOperator::BitXor => mir::BinaryOperator::BitXor,
+        hir::BinaryOperator::BitShl => mir::BinaryOperator::BitShl,
+        hir::BinaryOperator::BitShr => mir::BinaryOperator::BitShr,
+        hir::BinaryOperator::Eql => mir::BinaryOperator::Eql,
+        hir::BinaryOperator::Lt => mir::BinaryOperator::Lt,
+        hir::BinaryOperator::Gt => mir::BinaryOperator::Gt,
+        hir::BinaryOperator::Leq => mir::BinaryOperator::Leq,
+        hir::BinaryOperator::Geq => mir::BinaryOperator::Geq,
+        hir::BinaryOperator::Neq => mir::BinaryOperator::Neq,
+        _ => {
+            unreachable!()
+        }
     }
 }

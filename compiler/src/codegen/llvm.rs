@@ -344,14 +344,15 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     ) -> CompileResult<Option<BasicValueEnum<'llvm>>> {
         let value = match rvalue {
             mir::Rvalue::Use(op) => self.eval_operand(body, locals, op)?,
-            mir::Rvalue::UnaryOp { op, operand } => {
+            mir::Rvalue::UnaryOp { operand, .. } => {
                 let operand = match self.eval_operand(body, locals, operand)? {
                     Some(val) => val,
                     None => return Ok(None),
                 };
-                Some(self.lower_unary(dest_ty, *op, operand))
+                todo!()
+                // Some(self.lower_unary(dest_ty, *op, operand))
             }
-            mir::Rvalue::BinaryOp { op, lhs, rhs } => {
+            mir::Rvalue::BinaryOp { lhs, rhs, .. } => {
                 let lhs_ty = self.operand_ty(body, lhs);
                 let lhs = match self.eval_operand(body, locals, lhs)? {
                     Some(val) => val,
@@ -361,7 +362,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     Some(val) => val,
                     None => return Ok(None),
                 };
-                self.lower_binary(lhs_ty, *op, lhs, rhs)
+                todo!()
+                // self.lower_binary(lhs_ty, *op, lhs, rhs)
             }
             mir::Rvalue::Cast { operand, ty } => {
                 let from_ty = self.operand_ty(body, operand);
@@ -371,6 +373,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 };
                 self.lower_cast(from_ty, *ty, val)
             }
+            mir::Rvalue::Aggregate { .. } => unimplemented!(),
         };
         Ok(value)
     }
@@ -786,6 +789,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     .build_unconditional_branch(blocks[target.index()])
                     .unwrap();
             }
+            mir::TerminatorKind::UnresolvedGoto => {
+                unreachable!("unresolved terminator should be patched before codegen");
+            }
             mir::TerminatorKind::SwitchInt {
                 discr,
                 targets,
@@ -926,7 +932,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         &self,
         body: &mir::Body<'gcx>,
         locals: &[LocalStorage<'llvm>],
-        place: &mir::Place,
+        place: &mir::Place<'gcx>,
     ) -> Option<BasicValueEnum<'llvm>> {
         let place_ty = self.place_ty(body, place);
         if place.projection.is_empty() {
@@ -971,7 +977,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
     fn store_place(
         &self,
-        place: &mir::Place,
+        place: &mir::Place<'gcx>,
         body: &mir::Body<'gcx>,
         locals: &mut [LocalStorage<'llvm>],
         value: BasicValueEnum<'llvm>,
@@ -988,7 +994,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
     fn project_place(
         &self,
-        place: &mir::Place,
+        place: &mir::Place<'gcx>,
         body: &mir::Body<'gcx>,
         locals: &[LocalStorage<'llvm>],
     ) -> CompileResult<PointerValue<'llvm>> {
@@ -1031,13 +1037,14 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         ty = inner;
                     }
                 }
+                mir::PlaceElem::Field(..) => unimplemented!(),
             }
         }
 
         Ok(ptr)
     }
 
-    fn place_ty<'a>(&self, body: &'a mir::Body<'gcx>, place: &mir::Place) -> Ty<'gcx> {
+    fn place_ty<'a>(&self, body: &'a mir::Body<'gcx>, place: &mir::Place<'gcx>) -> Ty<'gcx> {
         let mut ty = body.locals[place.local].ty;
         for elem in &place.projection {
             match elem {
@@ -1046,6 +1053,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         ty = inner;
                     }
                 }
+                mir::PlaceElem::Field(..) => unimplemented!(),
             }
         }
         ty

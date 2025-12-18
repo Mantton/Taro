@@ -1,5 +1,6 @@
 use crate::{
-    hir::{BinaryOperator, DefinitionID, NodeID, UnaryOperator},
+    hir::{DefinitionID, NodeID},
+    mir::{BinaryOperator, UnaryOperator},
     sema::models::{AdtDef, Ty},
     span::{Span, Symbol},
 };
@@ -18,6 +19,10 @@ index_vec::define_index_type! {
 }
 index_vec::define_index_type! {
     pub struct ExprId = u32;
+}
+
+index_vec::define_index_type! {
+    pub struct FieldIndex = u32;
 }
 
 #[derive(Debug)]
@@ -87,7 +92,7 @@ pub enum ExprKind<'a> {
     },
     /// Call to a resolved definition
     Call {
-        callee: DefinitionID,
+        callee: ExprId,
         args: Vec<ExprId>,
     },
     /// Block expression
@@ -99,6 +104,9 @@ pub enum ExprKind<'a> {
     },
     Tuple {
         fields: Vec<ExprId>,
+    },
+    Zst {
+        id: DefinitionID,
     },
 }
 
@@ -126,15 +134,12 @@ pub enum StmtKind<'a> {
         expr: Option<ExprId>,
         ty: Ty<'a>,
     },
-    Assign {
-        target: ExprId,
-        value: ExprId,
-    },
     Return {
         value: Option<ExprId>,
     },
     Break,
     Continue,
+    Defer(BlockId),
     Loop {
         block: BlockId,
     },
@@ -160,8 +165,6 @@ pub struct FieldExpression {
     pub index: FieldIndex,
     pub expression: ExprId,
 }
-
-pub type FieldIndex = usize;
 
 #[derive(Debug, Clone)]
 pub struct AdtExpression {

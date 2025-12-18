@@ -406,6 +406,7 @@ pub struct Local {
 pub struct Block {
     pub id: NodeID,
     pub statements: Vec<Statement>,
+    pub tail: Option<Box<Expression>>,
     pub span: Span,
 }
 
@@ -634,16 +635,9 @@ pub enum FunctionContext {
 }
 
 pub fn is_expression_bodied(block: &Block) -> Option<&Expression> {
-    match block.statements.as_slice() {
-        [
-            Statement {
-                kind: StatementKind::Expression(expr),
-                ..
-            },
-        ] => {
-            Some(expr) // exactly one expression stmt → expr-bodied
-        }
-        _ => None, // otherwise treat as regular block
+    match (block.statements.as_slice(), block.tail.as_deref()) {
+        ([], Some(expr)) => Some(expr),
+        _ => None,
     }
 }
 
@@ -1288,6 +1282,7 @@ pub fn walk_statement<V: HirVisitor>(visitor: &mut V, s: &Statement) -> V::Resul
 
 pub fn walk_block<V: HirVisitor>(visitor: &mut V, block: &Block) -> V::Result {
     walk_list!(visitor, visit_statement, &block.statements);
+    visit_optional!(visitor, visit_expression, &block.tail);
     V::Result::output()
 }
 
