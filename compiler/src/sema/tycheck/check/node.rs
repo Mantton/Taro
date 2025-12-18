@@ -992,6 +992,7 @@ impl<'ctx> Checker<'ctx> {
         cs.add_goal(
             Goal::Member(MemberGoalData {
                 node_id: expression.id,
+                receiver_node: target.id,
                 receiver: receiver_ty,
                 name: *name,
                 result: result_ty,

@@ -37,7 +37,6 @@ impl<'state> Compiler<'state> {
         let package = self.analyze()?;
         let thir = thir::package::build_package(&package, self.context)?;
         let package = mir::package::build_package(thir, self.context)?;
-        return Ok(None);
         let _obj = codegen::llvm::emit_package(package, self.context)?;
         let exe = codegen::link::link_executable(self.context)?;
         Ok(exe)

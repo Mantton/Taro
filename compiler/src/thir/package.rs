@@ -228,9 +228,10 @@ impl<'ctx> FunctionLower<'ctx> {
         let ty = expr.ty;
         match adjustment {
             Adjustment::Dereference => {
-                let TyKind::Reference(inner, _) = ty.kind() else {
-                    // Logic error if we try to deref non-ref type
-                    return expr;
+                let inner = match ty.kind() {
+                    TyKind::Reference(inner, _) | TyKind::Pointer(inner, _) => inner,
+                    // Logic error if we try to deref non-derefable type.
+                    _ => return expr,
                 };
 
                 let inner_id = self.push_expr(expr.kind, expr.ty, expr.span);

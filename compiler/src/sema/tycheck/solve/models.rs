@@ -68,6 +68,7 @@ pub struct ApplyGoalData<'ctx> {
 #[derive(Debug, Clone)]
 pub struct MemberGoalData<'ctx> {
     pub node_id: NodeID,
+    pub receiver_node: NodeID,
     pub receiver: Ty<'ctx>,
     pub name: Identifier,
     pub result: Ty<'ctx>,

@@ -17,6 +17,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
     pub fn solve_member(&mut self, data: MemberGoalData<'ctx>) -> SolverResult<'ctx> {
         let MemberGoalData {
             node_id,
+            receiver_node,
             receiver,
             name,
             result,
@@ -34,7 +35,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
             // Field lookup (structs only for now).
             if let Some((field_ty, index)) = self.lookup_field_ty(ty, name.symbol) {
-                self.record_adjustments(node_id, adjustments);
+                self.record_adjustments(receiver_node, adjustments);
                 self.record_field_index(node_id, index);
                 return self.solve_equality(span, result, field_ty);
             }
@@ -42,7 +43,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             // Instance methods.
             let candidates = self.lookup_instance_candidates(ty, name.symbol);
             if !candidates.is_empty() {
-                self.record_adjustments(node_id, adjustments);
+                self.record_adjustments(receiver_node, adjustments);
                 let mut branches = Vec::with_capacity(candidates.len());
                 for candidate in candidates {
                     let candidate_ty = self.gcx().get_type(candidate);

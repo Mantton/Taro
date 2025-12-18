@@ -1,5 +1,5 @@
 use crate::{
-    compile::context::GlobalContext,
+    compile::context::{Gcx, GlobalContext},
     error::CompileResult,
     hir,
     mir::{self, Operand},
@@ -77,7 +77,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     fn declare_functions(&mut self, package: &mir::MirPackage<'gcx>) {
         for (&def_id, _) in &package.functions {
             let sig = self.gcx.get_signature(def_id);
-            let fn_ty = lower_fn_sig(self.context, sig);
+            let fn_ty = lower_fn_sig(self.context, self.gcx, sig);
             let name = mangle(self.gcx, def_id);
             let f = self.module.add_function(&name, fn_ty, None);
             self.functions.insert(def_id, f);
@@ -86,6 +86,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
     fn lower_functions(&mut self, package: &mir::MirPackage<'gcx>) -> CompileResult<()> {
         for (&def_id, body) in &package.functions {
+            let ident = self.gcx.definition_ident(def_id);
+            println!("{} IR Lowering", ident.symbol);
             self.lower_body(def_id, body)?;
         }
         Ok(())
@@ -287,7 +289,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             // Use stack slots for all locals with a representable LLVM type.
             // This avoids incorrect behavior at control-flow joins when "locals"
             // are tracked purely in the emitter (would require PHI construction).
-            let storage = match lower_type(self.context, decl.ty) {
+            let storage = match lower_type(self.context, self.gcx, decl.ty) {
                 Some(ty) => {
                     let slot = alloc_builder.build_alloca(ty, &name).unwrap();
                     LocalStorage::Stack(slot)
@@ -344,15 +346,14 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     ) -> CompileResult<Option<BasicValueEnum<'llvm>>> {
         let value = match rvalue {
             mir::Rvalue::Use(op) => self.eval_operand(body, locals, op)?,
-            mir::Rvalue::UnaryOp { operand, .. } => {
+            mir::Rvalue::UnaryOp { operand, op } => {
                 let operand = match self.eval_operand(body, locals, operand)? {
                     Some(val) => val,
                     None => return Ok(None),
                 };
-                todo!()
-                // Some(self.lower_unary(dest_ty, *op, operand))
+                Some(self.lower_unary(dest_ty, *op, operand))
             }
-            mir::Rvalue::BinaryOp { lhs, rhs, .. } => {
+            mir::Rvalue::BinaryOp { lhs, rhs, op } => {
                 let lhs_ty = self.operand_ty(body, lhs);
                 let lhs = match self.eval_operand(body, locals, lhs)? {
                     Some(val) => val,
@@ -362,8 +363,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     Some(val) => val,
                     None => return Ok(None),
                 };
-                todo!()
-                // self.lower_binary(lhs_ty, *op, lhs, rhs)
+                self.lower_binary(lhs_ty, *op, lhs, rhs)
             }
             mir::Rvalue::Cast { operand, ty } => {
                 let from_ty = self.operand_ty(body, operand);
@@ -378,7 +378,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 let ptr = self.project_place(place, body, locals)?;
                 Some(ptr.as_basic_value_enum())
             }
-            mir::Rvalue::Aggregate { .. } => unimplemented!(),
+            mir::Rvalue::Aggregate { .. } => unreachable!("aggregates should be lowered in MIR"),
         };
         Ok(value)
     }
@@ -386,18 +386,18 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     fn lower_unary(
         &mut self,
         dest_ty: Ty<'gcx>,
-        op: hir::UnaryOperator,
+        op: mir::UnaryOperator,
         operand: BasicValueEnum<'llvm>,
     ) -> BasicValueEnum<'llvm> {
         match op {
-            hir::UnaryOperator::LogicalNot => {
+            mir::UnaryOperator::LogicalNot => {
                 let val = operand.into_int_value();
                 self.builder
                     .build_not(val, "bool_not")
                     .unwrap()
                     .as_basic_value_enum()
             }
-            hir::UnaryOperator::Negate => match dest_ty.kind() {
+            mir::UnaryOperator::Negate => match dest_ty.kind() {
                 TyKind::Float(_) => {
                     let val = operand.into_float_value();
                     self.builder
@@ -413,7 +413,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         .as_basic_value_enum()
                 }
             },
-            hir::UnaryOperator::BitwiseNot => {
+            mir::UnaryOperator::BitwiseNot => {
                 let val = operand.into_int_value();
                 self.builder
                     .build_not(val, "not")
@@ -426,7 +426,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     fn lower_binary(
         &mut self,
         operand_ty: Ty<'gcx>,
-        op: hir::BinaryOperator,
+        op: mir::BinaryOperator,
         lhs: BasicValueEnum<'llvm>,
         rhs: BasicValueEnum<'llvm>,
     ) -> Option<BasicValueEnum<'llvm>> {
@@ -435,57 +435,57 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 let lhs = lhs.into_float_value();
                 let rhs = rhs.into_float_value();
                 match op {
-                    hir::BinaryOperator::Add => self
+                    mir::BinaryOperator::Add => self
                         .builder
                         .build_float_add(lhs, rhs, "add")
                         .unwrap()
                         .as_basic_value_enum(),
-                    hir::BinaryOperator::Sub => self
+                    mir::BinaryOperator::Sub => self
                         .builder
                         .build_float_sub(lhs, rhs, "sub")
                         .unwrap()
                         .as_basic_value_enum(),
-                    hir::BinaryOperator::Mul => self
+                    mir::BinaryOperator::Mul => self
                         .builder
                         .build_float_mul(lhs, rhs, "mul")
                         .unwrap()
                         .as_basic_value_enum(),
-                    hir::BinaryOperator::Div => self
+                    mir::BinaryOperator::Div => self
                         .builder
                         .build_float_div(lhs, rhs, "div")
                         .unwrap()
                         .as_basic_value_enum(),
-                    hir::BinaryOperator::Rem => self
+                    mir::BinaryOperator::Rem => self
                         .builder
                         .build_float_rem(lhs, rhs, "rem")
                         .unwrap()
                         .as_basic_value_enum(),
-                    hir::BinaryOperator::Eql => self
+                    mir::BinaryOperator::Eql => self
                         .builder
                         .build_float_compare(FloatPredicate::OEQ, lhs, rhs, "eq")
                         .unwrap()
                         .as_basic_value_enum(),
-                    hir::BinaryOperator::Neq => self
+                    mir::BinaryOperator::Neq => self
                         .builder
                         .build_float_compare(FloatPredicate::UNE, lhs, rhs, "neq")
                         .unwrap()
                         .as_basic_value_enum(),
-                    hir::BinaryOperator::Gt => self
+                    mir::BinaryOperator::Gt => self
                         .builder
                         .build_float_compare(FloatPredicate::OGT, lhs, rhs, "gt")
                         .unwrap()
                         .as_basic_value_enum(),
-                    hir::BinaryOperator::Lt => self
+                    mir::BinaryOperator::Lt => self
                         .builder
                         .build_float_compare(FloatPredicate::OLT, lhs, rhs, "lt")
                         .unwrap()
                         .as_basic_value_enum(),
-                    hir::BinaryOperator::Geq => self
+                    mir::BinaryOperator::Geq => self
                         .builder
                         .build_float_compare(FloatPredicate::OGE, lhs, rhs, "ge")
                         .unwrap()
                         .as_basic_value_enum(),
-                    hir::BinaryOperator::Leq => self
+                    mir::BinaryOperator::Leq => self
                         .builder
                         .build_float_compare(FloatPredicate::OLE, lhs, rhs, "le")
                         .unwrap()
@@ -497,22 +497,27 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 let lhs = lhs.into_int_value();
                 let rhs = rhs.into_int_value();
                 match op {
-                    hir::BinaryOperator::BoolAnd => self
+                    mir::BinaryOperator::BitAnd => self
                         .builder
                         .build_and(lhs, rhs, "and")
                         .unwrap()
                         .as_basic_value_enum(),
-                    hir::BinaryOperator::BoolOr => self
+                    mir::BinaryOperator::BitOr => self
                         .builder
                         .build_or(lhs, rhs, "or")
                         .unwrap()
                         .as_basic_value_enum(),
-                    hir::BinaryOperator::Eql => self
+                    mir::BinaryOperator::BitXor => self
+                        .builder
+                        .build_xor(lhs, rhs, "xor")
+                        .unwrap()
+                        .as_basic_value_enum(),
+                    mir::BinaryOperator::Eql => self
                         .builder
                         .build_int_compare(IntPredicate::EQ, lhs, rhs, "eq")
                         .unwrap()
                         .as_basic_value_enum(),
-                    hir::BinaryOperator::Neq => self
+                    mir::BinaryOperator::Neq => self
                         .builder
                         .build_int_compare(IntPredicate::NE, lhs, rhs, "neq")
                         .unwrap()
@@ -533,12 +538,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     .build_ptr_to_int(rhs_ptr, ptr_int_ty, "ptr_r")
                     .unwrap();
                 match op {
-                    hir::BinaryOperator::PtrEq | hir::BinaryOperator::Eql => self
+                    mir::BinaryOperator::Eql => self
                         .builder
                         .build_int_compare(IntPredicate::EQ, lhs, rhs, "ptr_eq")
                         .unwrap()
                         .as_basic_value_enum(),
-                    hir::BinaryOperator::Neq => self
+                    mir::BinaryOperator::Neq => self
                         .builder
                         .build_int_compare(IntPredicate::NE, lhs, rhs, "ptr_neq")
                         .unwrap()
@@ -551,22 +556,22 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 let rhs = rhs.into_int_value();
                 let signed = is_signed(operand_ty);
                 match op {
-                    hir::BinaryOperator::Add => self
+                    mir::BinaryOperator::Add => self
                         .builder
                         .build_int_add(lhs, rhs, "add")
                         .unwrap()
                         .as_basic_value_enum(),
-                    hir::BinaryOperator::Sub => self
+                    mir::BinaryOperator::Sub => self
                         .builder
                         .build_int_sub(lhs, rhs, "sub")
                         .unwrap()
                         .as_basic_value_enum(),
-                    hir::BinaryOperator::Mul => self
+                    mir::BinaryOperator::Mul => self
                         .builder
                         .build_int_mul(lhs, rhs, "mul")
                         .unwrap()
                         .as_basic_value_enum(),
-                    hir::BinaryOperator::Div => {
+                    mir::BinaryOperator::Div => {
                         if signed {
                             self.builder
                                 .build_int_signed_div(lhs, rhs, "div")
@@ -579,7 +584,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                                 .as_basic_value_enum()
                         }
                     }
-                    hir::BinaryOperator::Rem => {
+                    mir::BinaryOperator::Rem => {
                         if signed {
                             self.builder
                                 .build_int_signed_rem(lhs, rhs, "rem")
@@ -592,42 +597,42 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                                 .as_basic_value_enum()
                         }
                     }
-                    hir::BinaryOperator::BitAnd | hir::BinaryOperator::BoolAnd => self
+                    mir::BinaryOperator::BitAnd => self
                         .builder
                         .build_and(lhs, rhs, "and")
                         .unwrap()
                         .as_basic_value_enum(),
-                    hir::BinaryOperator::BitOr | hir::BinaryOperator::BoolOr => self
+                    mir::BinaryOperator::BitOr => self
                         .builder
                         .build_or(lhs, rhs, "or")
                         .unwrap()
                         .as_basic_value_enum(),
-                    hir::BinaryOperator::BitXor => self
+                    mir::BinaryOperator::BitXor => self
                         .builder
                         .build_xor(lhs, rhs, "xor")
                         .unwrap()
                         .as_basic_value_enum(),
-                    hir::BinaryOperator::BitShl => self
+                    mir::BinaryOperator::BitShl => self
                         .builder
                         .build_left_shift(lhs, rhs, "shl")
                         .unwrap()
                         .as_basic_value_enum(),
-                    hir::BinaryOperator::BitShr => self
+                    mir::BinaryOperator::BitShr => self
                         .builder
                         .build_right_shift(lhs, rhs, signed, "shr")
                         .unwrap()
                         .as_basic_value_enum(),
-                    hir::BinaryOperator::Eql => self
+                    mir::BinaryOperator::Eql => self
                         .builder
                         .build_int_compare(IntPredicate::EQ, lhs, rhs, "eq")
                         .unwrap()
                         .as_basic_value_enum(),
-                    hir::BinaryOperator::Neq => self
+                    mir::BinaryOperator::Neq => self
                         .builder
                         .build_int_compare(IntPredicate::NE, lhs, rhs, "neq")
                         .unwrap()
                         .as_basic_value_enum(),
-                    hir::BinaryOperator::Gt => self
+                    mir::BinaryOperator::Gt => self
                         .builder
                         .build_int_compare(
                             if signed {
@@ -641,7 +646,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         )
                         .unwrap()
                         .as_basic_value_enum(),
-                    hir::BinaryOperator::Lt => self
+                    mir::BinaryOperator::Lt => self
                         .builder
                         .build_int_compare(
                             if signed {
@@ -655,7 +660,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         )
                         .unwrap()
                         .as_basic_value_enum(),
-                    hir::BinaryOperator::Geq => self
+                    mir::BinaryOperator::Geq => self
                         .builder
                         .build_int_compare(
                             if signed {
@@ -669,7 +674,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         )
                         .unwrap()
                         .as_basic_value_enum(),
-                    hir::BinaryOperator::Leq => self
+                    mir::BinaryOperator::Leq => self
                         .builder
                         .build_int_compare(
                             if signed {
@@ -681,11 +686,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                             rhs,
                             "le",
                         )
-                        .unwrap()
-                        .as_basic_value_enum(),
-                    hir::BinaryOperator::PtrEq => self
-                        .builder
-                        .build_int_compare(IntPredicate::EQ, lhs, rhs, "eq")
                         .unwrap()
                         .as_basic_value_enum(),
                 }
@@ -887,7 +887,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
                 // Not declared yet (likely from another package); declare as external.
                 let sig = self.gcx.get_signature(def_id);
-                let fn_ty = lower_fn_sig(self.context, sig);
+                let fn_ty = lower_fn_sig(self.context, self.gcx, sig);
                 let name = mangle(self.gcx, def_id);
                 let linkage = Some(Linkage::External);
                 let f = self.module.add_function(&name, fn_ty, linkage);
@@ -909,7 +909,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
     fn declare_foreign_function(&self, id: hir::DefinitionID) -> FunctionValue<'llvm> {
         let sig = self.gcx.get_signature(id);
-        let fn_ty = lower_fn_sig(self.context, sig);
+        let fn_ty = lower_fn_sig(self.context, self.gcx, sig);
         let ident = self.gcx.definition_ident(id);
         let name = ident.symbol.as_str();
         self.module.get_function(name).unwrap_or_else(|| {
@@ -945,7 +945,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 LocalStorage::Value(Some(v)) => Some(v),
                 LocalStorage::Value(None) => None,
                 LocalStorage::Stack(ptr) => {
-                    let ty = lower_type(self.context, place_ty)?;
+                    let ty = lower_type(self.context, self.gcx, place_ty)?;
                     Some(self.builder.build_load(ty, ptr, "load").unwrap())
                 }
             };
@@ -954,7 +954,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let ptr = self.project_place(place, body, locals);
         match ptr {
             Ok(ptr) => {
-                let elem_ty = lower_type(self.context, place_ty)?;
+                let elem_ty = lower_type(self.context, self.gcx, place_ty)?;
                 Some(self.builder.build_load(elem_ty, ptr, "load").unwrap())
             }
             Err(_) => None,
@@ -973,7 +973,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 locals[local.index()] = LocalStorage::Value(Some(value));
             }
             LocalStorage::Stack(ptr) => {
-                if lower_type(self.context, body.locals[local].ty).is_some() {
+                if lower_type(self.context, self.gcx, body.locals[local].ty).is_some() {
                     let _ = self.builder.build_store(ptr, value).unwrap();
                 }
             }
@@ -1007,16 +1007,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             LocalStorage::Stack(p) => p,
             LocalStorage::Value(Some(val)) => match val {
                 BasicValueEnum::PointerValue(p) => p,
-                _ => {
-                    let msg = "projection on non-pointer local";
-                    self.gcx.dcx().emit_error(msg.into(), None);
-                    return Err(crate::error::ReportedError);
-                }
+                _ => panic!("projection on non-pointer local"),
             },
             LocalStorage::Value(None) => {
-                let msg = "use of uninitialized local";
-                self.gcx.dcx().emit_error(msg.into(), None);
-                return Err(crate::error::ReportedError);
+                panic!("use of uninitialized local");
             }
         };
 
@@ -1042,7 +1036,26 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         ty = inner;
                     }
                 }
-                mir::PlaceElem::Field(..) => unimplemented!(),
+                mir::PlaceElem::Field(idx, field_ty) => {
+                    // Compute pointer to the requested field.
+                    let agg_ty =
+                        lower_type(self.context, self.gcx, ty).expect("aggregate type lowered");
+                    let struct_ty = match agg_ty {
+                        BasicTypeEnum::StructType(st) => st,
+                        _ => panic!(
+                            "field projection on non-struct type {}",
+                            ty.format(self.gcx)
+                        ),
+                    };
+
+                    let gep = self
+                        .builder
+                        .build_struct_gep(struct_ty, ptr, idx.index() as u32, "field_ptr")
+                        .unwrap();
+                    ptr = gep;
+                    ptr_is_storage = true;
+                    ty = *field_ty;
+                }
             }
         }
 
@@ -1058,7 +1071,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         ty = inner;
                     }
                 }
-                mir::PlaceElem::Field(..) => unimplemented!(),
+                mir::PlaceElem::Field(_, field_ty) => {
+                    ty = *field_ty;
+                }
             }
         }
         ty
@@ -1134,31 +1149,48 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
 fn lower_fn_sig<'llvm>(
     context: &'llvm Context,
+    gcx: Gcx<'_>,
     sig: &crate::sema::models::LabeledFunctionSignature,
 ) -> FunctionType<'llvm> {
     let params: Vec<BasicMetadataTypeEnum<'llvm>> = sig
         .inputs
         .iter()
-        .filter_map(|p| lower_type(context, p.ty).map(|t| t.into()))
+        .filter_map(|p| lower_type(context, gcx, p.ty).map(|t| t.into()))
         .collect();
-    match lower_type(context, sig.output) {
+    match lower_type(context, gcx, sig.output) {
         Some(ret) => ret.fn_type(&params, sig.is_variadic),
         None => context.void_type().fn_type(&params, sig.is_variadic),
     }
 }
 
-fn lower_type<'llvm>(context: &'llvm Context, ty: Ty) -> Option<BasicTypeEnum<'llvm>> {
+fn lower_type<'llvm>(
+    context: &'llvm Context,
+    gcx: Gcx<'_>,
+    ty: Ty,
+) -> Option<BasicTypeEnum<'llvm>> {
     match ty.kind() {
         TyKind::Bool => Some(context.bool_type().into()),
         TyKind::Rune => Some(context.i32_type().into()),
-        TyKind::String => todo!(),
+        TyKind::String => Some(
+            context
+                .ptr_type(AddressSpace::default())
+                .as_basic_type_enum(),
+        ),
         TyKind::Int(i) => Some(int_from_kind(context, i).into()),
         TyKind::UInt(u) => Some(uint_from_kind(context, u).into()),
         TyKind::Float(f) => Some(match f {
             FloatTy::F32 => context.f32_type().into(),
             FloatTy::F64 => context.f64_type().into(),
         }),
-        TyKind::Adt(_) => todo!("adt lowering not implemented yet"),
+        TyKind::Adt(def) => {
+            let defn = gcx.get_struct_definition(def.id);
+            let field_tys: Vec<BasicTypeEnum<'llvm>> = defn
+                .fields
+                .iter()
+                .filter_map(|f| lower_type(context, gcx, f.ty))
+                .collect();
+            Some(context.struct_type(&field_tys, false).into())
+        }
         TyKind::Pointer(..) | TyKind::Reference(..) => Some(
             context
                 .ptr_type(AddressSpace::default())
@@ -1170,7 +1202,7 @@ fn lower_type<'llvm>(context: &'llvm Context, ty: Ty) -> Option<BasicTypeEnum<'l
             } else {
                 let fields: Vec<BasicTypeEnum<'llvm>> = items
                     .iter()
-                    .filter_map(|t| lower_type(context, *t))
+                    .filter_map(|t| lower_type(context, gcx, *t))
                     .collect();
                 Some(context.struct_type(&fields, false).into())
             }
