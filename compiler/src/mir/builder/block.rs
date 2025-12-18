@@ -1,6 +1,7 @@
 use crate::{
     mir::{
-        self, BasicBlockId, BlockAnd, BlockAndExtension, Place, TerminatorKind, builder::MirBuilder,
+        self, BasicBlockId, BlockAnd, BlockAndExtension, LocalKind, Operand, Place, PlaceElem,
+        Rvalue, TerminatorKind, builder::MirBuilder,
     },
     span::Span,
     thir::{self},
@@ -57,31 +58,25 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
         match &stmt.kind {
             thir::StmtKind::Let {
-                id,
-                pattern,
-                expr,
-                ty,
-            } => match &pattern.kind {
-                thir::PatternKind::Binding {
-                    local: pat_id,
-                    name,
-                    ty,
-                    mutable: _,
-                } => {
-                    let local =
-                        self.push_local(*ty, mir::LocalKind::User, Some(*name), pattern.span);
-                    self.locals.insert(*pat_id, local);
-                    if let Some(initializer) = expr.as_ref() {
-                        block = self
-                            .expr_into_dest(Place::from_local(local), block, *initializer)
-                            .into_block();
-                        return block.unit();
-                    }
-                }
-                _ => {
-                    unimplemented!()
-                }
-            },
+                pattern, expr, ty, ..
+            } => {
+                // Evaluate initializer (if any) into a temp so we can destructure.
+                let init_place = if let Some(init) = expr {
+                    let temp = self.push_local(*ty, LocalKind::Temp, None, stmt.span);
+                    let place = Place::from_local(temp);
+                    block = self
+                        .expr_into_dest(place.clone(), block, *init)
+                        .into_block();
+                    Some(place)
+                } else {
+                    None
+                };
+
+                block = self
+                    .bind_pattern_to_place(block, pattern, init_place.as_ref())
+                    .into_block();
+                return block.unit();
+            }
             thir::StmtKind::Break => {
                 return self.record_break_edge(block, stmt.span);
             }
@@ -129,5 +124,49 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         }
 
         block.unit()
+    }
+}
+
+impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
+    fn bind_pattern_to_place(
+        &mut self,
+        mut block: BasicBlockId,
+        pattern: &thir::Pattern<'ctx>,
+        place: Option<&Place<'ctx>>,
+    ) -> BlockAnd<()> {
+        match &pattern.kind {
+            thir::PatternKind::Wild => block.unit(),
+            thir::PatternKind::Binding {
+                local: pat_id,
+                name,
+                ty,
+                mutable: _,
+            } => {
+                let local = self.push_local(*ty, mir::LocalKind::User, Some(*name), pattern.span);
+                self.locals.insert(*pat_id, local);
+                if let Some(src) = place {
+                    let rvalue = Rvalue::Use(Operand::Copy(src.clone()));
+                    self.push_assign(block, Place::from_local(local), rvalue, pattern.span);
+                }
+                block.unit()
+            }
+            thir::PatternKind::Leaf { subpatterns } => {
+                let Some(base_place) = place else {
+                    return block.unit();
+                };
+                for field in subpatterns {
+                    let mut proj = base_place.projection.clone();
+                    proj.push(PlaceElem::Field(field.index, field.pattern.ty));
+                    let field_place = Place {
+                        local: base_place.local,
+                        projection: proj,
+                    };
+                    block = self
+                        .bind_pattern_to_place(block, &field.pattern, Some(&field_place))
+                        .into_block();
+                }
+                block.unit()
+            }
+        }
     }
 }

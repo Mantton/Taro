@@ -84,8 +84,6 @@ pub struct MirBuilder<'ctx, 'thir> {
 
 impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
     pub fn build_function(gcx: Gcx<'ctx>, function: &'thir thir::ThirFunction<'ctx>) -> Body<'ctx> {
-        gcx.dcx()
-            .emit_info("Building MIR".into(), Some(function.span));
         let signature = gcx.get_signature(function.id);
         let output_ty = signature.output;
         let entry_span = function.span;
@@ -148,7 +146,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let Some(thir_block) = self.thir.body else {
             self.terminate(start_block, span, TerminatorKind::Unreachable);
             self.finalize_unterminated_blocks();
-            self.print_mir_body();
             return;
         };
 
@@ -158,7 +155,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             })
             .into_block();
         self.terminate(return_block, span, TerminatorKind::Return);
-        self.print_mir_body();
     }
 
     fn push_local(
@@ -267,7 +263,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
     }
 
     pub fn print_mir_body(&self) {
-        let pretty = PrettyPrintMir { body: &self.body };
+        let pretty = PrettyPrintMir {
+            body: &self.body,
+            gcx: self.gcx,
+        };
         println!("{}", pretty);
     }
 
@@ -335,7 +334,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         self.current_cleanup = cleanup_at_entry;
     }
 
-    fn ensure_break_exit_block(&mut self, exit: BreakExit, span: Span) -> BasicBlockId {
+    fn ensure_break_exit_block(&mut self, exit: BreakExit, _: Span) -> BasicBlockId {
         match exit {
             BreakExit::Return => self.new_block_with_note("return".into()),
             BreakExit::FreshBlock => self.new_block_with_note("Break Exit".into()),
@@ -461,7 +460,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let scope = mem::replace(&mut self.if_then_scope, previous_scope)
             .expect("if-then scope should exist");
 
-        let else_block = self.new_block_with_note("ELSE BLOCK".into());
+        let else_block = self.new_block_with_note("else block".into());
         self.apply_cleanup_edges(scope.else_edges, scope.cleanup_at_entry, else_block);
         self.current_cleanup = scope.cleanup_at_entry;
         (then_block, else_block)

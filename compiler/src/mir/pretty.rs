@@ -1,24 +1,194 @@
 use std::fmt;
 
+use crate::compile::context::Gcx;
+
 use super::{
     BasicBlockData, Body, Constant, ConstantKind, LocalDecl, LocalKind, Operand, Place, PlaceElem,
     Rvalue, Statement, StatementKind, Terminator, TerminatorKind,
 };
 
-pub struct PrettyPrintMir<'ctx> {
-    pub body: &'ctx Body<'ctx>,
+pub struct PrettyPrintMir<'body, 'ctx> {
+    pub body: &'body Body<'ctx>,
+    pub gcx: Gcx<'ctx>,
 }
 
-impl<'ctx> fmt::Display for PrettyPrintMir<'ctx> {
+impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
+    fn mutability(decl: &LocalDecl) -> &'static str {
+        match decl.kind {
+            LocalKind::User => "mut ",
+            _ => "",
+        }
+    }
+
+    fn write_block(&self, block: &BasicBlockData<'ctx>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for stmt in &block.statements {
+            write!(f, "        ")?;
+            self.write_statement(stmt, f)?;
+            writeln!(f, ";")?;
+        }
+
+        if let Some(term) = &block.terminator {
+            write!(f, "        ")?;
+            self.write_terminator(term, f)?;
+            writeln!(f, ";")?;
+        }
+
+        Ok(())
+    }
+
+    fn write_statement(&self, stmt: &Statement<'ctx>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &stmt.kind {
+            StatementKind::Assign(place, rvalue) => {
+                self.write_place(place, f)?;
+                write!(f, " = ")?;
+                self.write_rvalue(rvalue, f)
+            }
+            StatementKind::Nop => write!(f, "nop"),
+        }
+    }
+
+    fn write_terminator(&self, term: &Terminator<'ctx>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &term.kind {
+            TerminatorKind::Goto { target } => write!(f, "goto -> bb{:?}", target),
+            TerminatorKind::UnresolvedGoto => write!(f, "unresolved_goto"),
+            TerminatorKind::SwitchInt {
+                discr,
+                targets,
+                otherwise,
+            } => {
+                write!(f, "switchInt(")?;
+                self.write_operand(discr, f)?;
+                write!(f, ") -> [")?;
+                for (val, target) in targets {
+                    write!(f, "{}: bb{:?}, ", val, target)?;
+                }
+                write!(f, "otherwise: bb{:?}]", otherwise)
+            }
+            TerminatorKind::Return => write!(f, "return"),
+            TerminatorKind::Unreachable => write!(f, "unreachable"),
+            TerminatorKind::Call {
+                func,
+                args,
+                destination,
+                target,
+            } => {
+                self.write_place(destination, f)?;
+                write!(f, " = ")?;
+                self.write_operand(func, f)?;
+                write!(f, "(")?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    self.write_operand(arg, f)?;
+                }
+                write!(f, ") -> bb{:?}", target)
+            }
+        }
+    }
+
+    fn write_place(&self, place: &Place<'ctx>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for elem in place.projection.iter().rev() {
+            if let PlaceElem::Deref = elem {
+                write!(f, "*")?;
+            }
+        }
+
+        write!(f, "%{:?}", place.local)?;
+
+        for elem in &place.projection {
+            match elem {
+                PlaceElem::Deref => {} // already printed as prefix
+                PlaceElem::Field(idx, _) => write!(f, ".{:?}", idx)?,
+            }
+        }
+        Ok(())
+    }
+
+    fn write_operand(&self, op: &Operand<'ctx>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match op {
+            Operand::Copy(place) => self.write_place(place, f),
+            Operand::Move(place) => {
+                write!(f, "move ")?;
+                self.write_place(place, f)
+            }
+            Operand::Constant(c) => self.write_constant(c, f),
+        }
+    }
+
+    fn write_constant(&self, c: &Constant<'ctx>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &c.value {
+            ConstantKind::Bool(b) => write!(f, "{}", b),
+            ConstantKind::Rune(c) => write!(f, "{:?}", c),
+            ConstantKind::String(s) => write!(f, "{:?}", s),
+            ConstantKind::Integer(i) => write!(f, "const {}", i),
+            ConstantKind::Float(fl) => write!(f, "const {}", fl),
+            ConstantKind::Unit => write!(f, "()"),
+            ConstantKind::Function(def_id, _) => {
+                let ident = self.gcx.definition_ident(*def_id);
+                write!(f, "fn {}", ident.symbol)
+            }
+        }
+    }
+
+    fn write_rvalue(&self, rvalue: &Rvalue<'ctx>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match rvalue {
+            Rvalue::Use(op) => self.write_operand(op, f),
+            Rvalue::UnaryOp { op, operand } => {
+                write!(f, "{:?}", op)?; // Simple debug print for op enum
+                self.write_operand(operand, f)
+            }
+            Rvalue::BinaryOp { op, lhs, rhs } => {
+                self.write_operand(lhs, f)?;
+                write!(f, " {:?} ", op)?; // Simple debug print for op enum
+                self.write_operand(rhs, f)
+            }
+            Rvalue::Ref { mutable, place } => {
+                let kw = if *mutable { "&mut " } else { "&" };
+                write!(f, "{}", kw)?;
+                self.write_place(place, f)
+            }
+            Rvalue::Cast { operand, ty } => {
+                self.write_operand(operand, f)?;
+                write!(f, " as {}", ty.format(self.gcx))
+            }
+            Rvalue::Aggregate { kind, fields } => {
+                match kind {
+                    super::AggregateKind::Tuple => write!(f, "tuple")?,
+                    super::AggregateKind::Adt(def_id) => {
+                        let ident = self.gcx.definition_ident(*def_id);
+                        write!(f, "{}", ident.symbol)?;
+                    }
+                }
+                write!(f, " {{ ")?;
+                for (i, field) in fields.iter_enumerated() {
+                    if i.index() > 0 {
+                        write!(f, ", ")?;
+                    }
+                    self.write_operand(field, f)?;
+                }
+                write!(f, " }}")
+            }
+        }
+    }
+}
+
+impl<'body, 'ctx> fmt::Display for PrettyPrintMir<'body, 'ctx> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (local, decl) in self.body.locals.iter_enumerated() {
-            writeln!(f, "    let {}{:?}: {:?};", mutability(decl), local, decl.ty)?;
+            writeln!(
+                f,
+                "    let {}{:?}: {};",
+                Self::mutability(decl),
+                local,
+                decl.ty.format(self.gcx)
+            )?;
             if let Some(name) = decl.name {
                 writeln!(f, "        // debug: {}", name)?;
             }
         }
 
-        writeln!(f, "")?;
+        writeln!(f)?;
 
         for (id, block) in self.body.basic_blocks.iter_enumerated() {
             write!(f, "    bb{:?}: {{ ", id)?;
@@ -28,165 +198,11 @@ impl<'ctx> fmt::Display for PrettyPrintMir<'ctx> {
             }
 
             writeln!(f)?; // end the line
-            write_block(block, f)?;
+            self.write_block(block, f)?;
             writeln!(f, "    }}")?;
-            writeln!(f, "")?;
+            writeln!(f)?;
         }
 
         Ok(())
-    }
-}
-
-fn mutability(decl: &LocalDecl) -> &'static str {
-    match decl.kind {
-        LocalKind::User => "mut ",
-        _ => "",
-    }
-}
-
-fn write_block(block: &BasicBlockData, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    for stmt in &block.statements {
-        write!(f, "        ")?;
-        write_statement(stmt, f)?;
-        writeln!(f, ";")?;
-    }
-
-    if let Some(term) = &block.terminator {
-        write!(f, "        ")?;
-        write_terminator(term, f)?;
-        writeln!(f, ";")?;
-    }
-
-    Ok(())
-}
-
-fn write_statement(stmt: &Statement, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    match &stmt.kind {
-        StatementKind::Assign(place, rvalue) => {
-            write_place(place, f)?;
-            write!(f, " = ")?;
-            write_rvalue(rvalue, f)
-        }
-        StatementKind::Nop => write!(f, "nop"),
-    }
-}
-
-fn write_terminator(term: &Terminator, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    match &term.kind {
-        TerminatorKind::Goto { target } => write!(f, "goto -> bb{:?}", target),
-        TerminatorKind::UnresolvedGoto => write!(f, "unresolved_goto"),
-        TerminatorKind::SwitchInt {
-            discr,
-            targets,
-            otherwise,
-        } => {
-            write!(f, "switchInt(")?;
-            write_operand(discr, f)?;
-            write!(f, ") -> [")?;
-            for (val, target) in targets {
-                write!(f, "{}: bb{:?}, ", val, target)?;
-            }
-            write!(f, "otherwise: bb{:?}]", otherwise)
-        }
-        TerminatorKind::Return => write!(f, "return"),
-        TerminatorKind::Unreachable => write!(f, "unreachable"),
-        TerminatorKind::Call {
-            func,
-            args,
-            destination,
-            target,
-        } => {
-            write_place(destination, f)?;
-            write!(f, " = ")?;
-            write_operand(func, f)?;
-            write!(f, "(")?;
-            for (i, arg) in args.iter().enumerate() {
-                if i > 0 {
-                    write!(f, ", ")?;
-                }
-                write_operand(arg, f)?;
-            }
-            write!(f, ") -> bb{:?}", target)
-        }
-    }
-}
-
-fn write_place(place: &Place, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    for elem in place.projection.iter().rev() {
-        match elem {
-            PlaceElem::Deref => write!(f, "*")?,
-            PlaceElem::Field(_, _) => {
-                // Handled in the inner loop, but typically projections are written
-                // as `local.proj1.proj2` or `(*local).proj1`.
-                // For simplicity assuming no complex deref chains for now
-                // or just printing struct.field.
-            }
-        }
-    }
-
-    write!(f, "%{:?}", place.local)?;
-
-    for elem in &place.projection {
-        match elem {
-            PlaceElem::Deref => {} // handled by prefix *
-            PlaceElem::Field(idx, _) => write!(f, ".{:?}", idx)?,
-        }
-    }
-    Ok(())
-}
-
-fn write_operand(op: &Operand, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    match op {
-        Operand::Copy(place) => write_place(place, f),
-        Operand::Move(place) => {
-            write!(f, "move ")?;
-            write_place(place, f)
-        }
-        Operand::Constant(c) => write_constant(c, f),
-    }
-}
-
-fn write_constant(c: &Constant, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    match &c.value {
-        ConstantKind::Bool(b) => write!(f, "{}", b),
-        ConstantKind::Rune(c) => write!(f, "{:?}", c),
-        ConstantKind::String(s) => write!(f, "{:?}", s),
-        ConstantKind::Integer(i) => write!(f, "const {}", i),
-        ConstantKind::Float(fl) => write!(f, "const {}", fl),
-        ConstantKind::Unit => write!(f, "()"),
-        ConstantKind::Function(def_id, _) => write!(f, "fn({:?})", def_id),
-    }
-}
-
-fn write_rvalue(rvalue: &Rvalue, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    match rvalue {
-        Rvalue::Use(op) => write_operand(op, f),
-        Rvalue::UnaryOp { op, operand } => {
-            write!(f, "{:?}", op)?; // Simple debug print for op enum
-            write_operand(operand, f)
-        }
-        Rvalue::BinaryOp { op, lhs, rhs } => {
-            write_operand(lhs, f)?;
-            write!(f, " {:?} ", op)?; // Simple debug print for op enum
-            write_operand(rhs, f)
-        }
-        Rvalue::Ref { mutable, place } => {
-            let kw = if *mutable { "&mut " } else { "&" };
-            write!(f, "{}{:?}", kw, place)
-        }
-        Rvalue::Cast { operand, ty } => {
-            write_operand(operand, f)?;
-            write!(f, " as {:?}", ty)
-        }
-        Rvalue::Aggregate { kind, fields } => {
-            write!(f, "{:?} {{ ", kind)?;
-            for (i, field) in fields.iter_enumerated() {
-                if i.index() > 0 {
-                    write!(f, ", ")?;
-                }
-                write_operand(field, f)?;
-            }
-            write!(f, " }}")
-        }
     }
 }

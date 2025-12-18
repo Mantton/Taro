@@ -2,7 +2,7 @@ use crate::{
     compile::context::GlobalContext,
     error::CompileResult,
     hir::DefinitionID,
-    mir::{MirPackage, builder::MirBuilder},
+    mir::{MirPackage, builder::MirBuilder, optimize, pretty::PrettyPrintMir},
     thir,
 };
 use rustc_hash::FxHashMap;
@@ -17,7 +17,9 @@ pub fn build_package<'ctx>(
         if func.body.is_none() {
             continue;
         }
-        let body = MirBuilder::build_function(gcx, &func);
+        let mut body = MirBuilder::build_function(gcx, &func);
+        optimize::simplify_cfg(&mut body);
+        println!("{}", PrettyPrintMir { body: &body, gcx });
         let alloc = gcx.store.arenas.mir_bodies.alloc(body);
         functions.insert(id, alloc);
     }
