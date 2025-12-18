@@ -263,6 +263,13 @@ impl<'ctx> Place<'ctx> {
             projection: Vec::new(),
         }
     }
+
+    pub fn return_place() -> Place<'ctx> {
+        Place {
+            local: LocalId { _raw: 0 },
+            projection: vec![],
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]

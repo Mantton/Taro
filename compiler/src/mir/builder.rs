@@ -12,6 +12,7 @@ use crate::{
 };
 use index_vec::IndexVec;
 use rustc_hash::FxHashMap;
+use std::mem;
 
 mod block;
 mod expression;
@@ -37,6 +38,12 @@ struct PendingEdge {
     block: BasicBlockId,
     cleanup: Option<CleanupId>,
     span: Span,
+}
+
+#[derive(Debug)]
+struct IfThenScope {
+    cleanup_at_entry: Option<CleanupId>,
+    else_edges: Vec<PendingEdge>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -71,6 +78,7 @@ pub struct MirBuilder<'ctx, 'thir> {
     locals: FxHashMap<hir::NodeID, LocalId>,
     cleanup_nodes: IndexVec<CleanupId, CleanupNode>,
     current_cleanup: Option<CleanupId>,
+    if_then_scope: Option<IfThenScope>,
     breakable_scopes: Vec<BreakableScope>,
 }
 
@@ -105,6 +113,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             locals: FxHashMap::default(),
             cleanup_nodes: IndexVec::new(),
             current_cleanup: None,
+            if_then_scope: None,
             breakable_scopes: vec![],
         };
 
@@ -143,18 +152,12 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             return;
         };
 
-        let _ = self.in_breakable_scope(None, BreakExit::Return, span, |this| {
-            let return_place = Place::from_local(this.body.return_local);
-            let destination = return_place;
-            let fin = this
-                .lower_block(destination, start_block, thir_block)
-                .into_block();
-            if this.body.basic_blocks[fin].terminator.is_none() {
-                let _ = this.record_return_edge(fin, span);
-            }
-            None
-        });
-        self.finalize_unterminated_blocks();
+        let return_block = self
+            .in_breakable_scope(None, BreakExit::Return, span, |this| {
+                Some(this.lower_block(Place::return_place(), start_block, thir_block))
+            })
+            .into_block();
+        self.terminate(return_block, span, TerminatorKind::Return);
         self.print_mir_body();
     }
 
@@ -312,7 +315,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             cleanup,
             span,
         });
-        mir::BlockAnd(block, ())
+        let next = self.new_block_with_note("after break_scope (unreachable)".into());
+        mir::BlockAnd(next, ())
     }
 
     fn apply_breakable_scope(&mut self, scope: BreakableScope, break_target: Option<BasicBlockId>) {
@@ -333,11 +337,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
     fn ensure_break_exit_block(&mut self, exit: BreakExit, span: Span) -> BasicBlockId {
         match exit {
-            BreakExit::Return => {
-                let block = self.new_block_with_note("return".into());
-                self.terminate(block, span, TerminatorKind::Return);
-                block
-            }
+            BreakExit::Return => self.new_block_with_note("return".into()),
             BreakExit::FreshBlock => self.new_block_with_note("Break Exit".into()),
             BreakExit::Target(block) => block,
         }
@@ -444,6 +444,40 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         };
         let idx = self.cleanup_nodes.push(node);
         self.current_cleanup = Some(idx);
+    }
+
+    pub(crate) fn in_if_then_scope<F>(&mut self, span: Span, f: F) -> (BasicBlockId, BasicBlockId)
+    where
+        F: FnOnce(&mut Self) -> BlockAnd<()>,
+    {
+        let scope = IfThenScope {
+            cleanup_at_entry: self.current_cleanup,
+            else_edges: vec![],
+        };
+        let previous_scope = mem::replace(&mut self.if_then_scope, Some(scope));
+
+        let then_block = f(self).into_block();
+
+        let scope = mem::replace(&mut self.if_then_scope, previous_scope)
+            .expect("if-then scope should exist");
+
+        let else_block = self.new_block_with_note("ELSE BLOCK".into());
+        self.apply_cleanup_edges(scope.else_edges, scope.cleanup_at_entry, else_block);
+        self.current_cleanup = scope.cleanup_at_entry;
+        (then_block, else_block)
+    }
+
+    pub(crate) fn break_for_else(&mut self, block: BasicBlockId, span: Span) {
+        let cleanup = self.current_cleanup;
+        let Some(scope) = self.if_then_scope.as_mut() else {
+            panic!("no if-then scope found")
+        };
+        scope.else_edges.push(PendingEdge {
+            block,
+            cleanup,
+            span,
+        });
+        self.terminate(block, span, TerminatorKind::UnresolvedGoto);
     }
 
     pub fn in_breakable_scope(

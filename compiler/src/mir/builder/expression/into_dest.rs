@@ -31,13 +31,11 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 then_expr,
                 else_expr,
             } => {
-                let then_and_else = self.then_else_break(block, *cond);
-                let (then_blk, mut else_blk);
-                else_blk = unpack!(then_blk = then_and_else);
-
-                let then_end = self
-                    .expr_into_dest(destination.clone(), then_blk, *then_expr)
-                    .into_block();
+                let destination_then = destination.clone();
+                let (then_end, mut else_blk) = self.in_if_then_scope(expr.span, |this| {
+                    let then_blk = this.then_else_break(block, *cond).into_block();
+                    this.expr_into_dest(destination_then, then_blk, *then_expr)
+                });
 
                 if let Some(&expr) = else_expr.as_ref() {
                     else_blk = self
@@ -48,13 +46,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 }
 
                 let join_block = self.new_block_with_note("Join Block".into());
-
-                if self.body.basic_blocks[then_end].terminator.is_none() {
-                    self.goto(then_end, join_block, expr.span);
-                }
-                if self.body.basic_blocks[else_blk].terminator.is_none() {
-                    self.goto(else_blk, join_block, expr.span);
-                }
+                self.goto(then_end, join_block, expr.span);
+                self.goto(else_blk, join_block, expr.span);
                 join_block.unit()
             }
             ExprKind::Assign { target, value } => todo!(),
@@ -105,15 +98,11 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 }
 
 impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
-    fn then_else_break(
-        &mut self,
-        mut block: BasicBlockId,
-        condition: ExprId,
-    ) -> BlockAnd<BasicBlockId> {
+    fn then_else_break(&mut self, mut block: BasicBlockId, condition: ExprId) -> BlockAnd<()> {
         let place = unpack!(block = self.as_temp(block, condition));
         let operand = Operand::Move(Place::from_local(place));
 
-        let then_block = self.new_block_with_note("Then Block".into());
+        let then_block = self.new_block_with_note("then block".into());
         let else_block = self.new_block_with_note("else block".into());
 
         let expr = &self.thir.exprs[condition];
@@ -122,7 +111,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             expr.span,
             TerminatorKind::if_(operand, then_block, else_block),
         );
-        then_block.and(else_block)
+        self.break_for_else(else_block, expr.span);
+        then_block.unit()
     }
 
     pub fn push_assign_unit(

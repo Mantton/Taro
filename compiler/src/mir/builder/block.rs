@@ -48,10 +48,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
     ) -> BlockAnd<()> {
         for &stmt in statements {
             block = self.lower_statement(stmt, block).into_block();
-            // TODO: do we wanna break otu when the terminator is set?
-            // if self.body.basic_blocks[block].terminator.is_some() {
-            //     break;
-            // }
         }
         block.unit()
     }
