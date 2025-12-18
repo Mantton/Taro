@@ -702,11 +702,11 @@ impl Actor<'_, '_> {
 impl Actor<'_, '_> {
     fn lower_block(&mut self, node: ast::Block) -> hir::Block {
         let mut statements = node.statements;
-        let tail = match statements.pop() {
+        let tail_expr = match statements.pop() {
             Some(ast::Statement {
                 kind: ast::StatementKind::Expression(expr),
                 ..
-            }) => Some(self.lower_expression(expr)),
+            }) => Some(expr),
             Some(stmt) => {
                 statements.push(stmt);
                 None
@@ -720,7 +720,7 @@ impl Actor<'_, '_> {
                 .into_iter()
                 .map(|n| self.lower_statement(n))
                 .collect(),
-            tail,
+            tail: tail_expr.map(|expr| self.lower_expression(expr)),
             span: node.span,
         }
     }
@@ -1542,6 +1542,7 @@ impl Actor<'_, '_> {
 }
 
 impl Actor<'_, '_> {
+    #[track_caller]
     fn convert_resolution_state(&mut self, state: Option<ResolutionState>) -> hir::Resolution {
         let Some(state) = state else {
             return hir::Resolution::Error;
@@ -1553,6 +1554,7 @@ impl Actor<'_, '_> {
         }
     }
 
+    #[track_caller]
     fn lower_resolution(&mut self, res: Resolution) -> hir::Resolution {
         return match res {
             Resolution::PrimaryType(n) => hir::Resolution::PrimaryType(n),
@@ -1572,6 +1574,7 @@ impl Actor<'_, '_> {
         };
     }
 
+    #[track_caller]
     fn get_resolution(&mut self, id: ast::NodeID) -> hir::Resolution {
         let state = self.resolutions.resolutions.get(&id).cloned();
         let resolution = self.convert_resolution_state(state);

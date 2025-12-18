@@ -101,8 +101,10 @@ impl<'a> TerminatorKind<'a> {
     pub fn if_(cond: Operand<'a>, t: BasicBlockId, e: BasicBlockId) -> TerminatorKind<'a> {
         TerminatorKind::SwitchInt {
             discr: cond,
-            targets: vec![(0, t)],
-            otherwise: e,
+            // `SwitchInt` branches on integer values. For booleans, `0` is `false`
+            // and any non-zero value is `true` (LLVM `i1` uses `0/1`).
+            targets: vec![(0, e)],
+            otherwise: t,
         }
     }
 }
