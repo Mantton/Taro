@@ -174,6 +174,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         })
     }
 
+    fn new_temp_with_ty(&mut self, ty: Ty<'ctx>, span: Span) -> LocalId {
+        self.push_local(ty, LocalKind::Temp, None, span)
+    }
+
     fn new_block(&mut self) -> BasicBlockId {
         self.body.basic_blocks.push(BasicBlockData {
             note: None,

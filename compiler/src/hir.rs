@@ -602,6 +602,8 @@ pub enum FoundationDecl {
     Range,
     /// Closed Range Type (Inclusive Range)
     ClosedRange,
+    /// Builtin `make` heap allocation
+    Make,
 }
 
 // MARK - Visitor

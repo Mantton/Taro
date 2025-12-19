@@ -110,6 +110,9 @@ pub enum ExprKind<'a> {
     Tuple {
         fields: Vec<ExprId>,
     },
+    Make {
+        value: ExprId,
+    },
     Zst {
         id: DefinitionID,
     },

@@ -422,7 +422,7 @@ impl<'ctx> Checker<'ctx> {
                             unreachable!()
                         };
                         let binding = self.get_local(*id);
-                        if !binding.mutable {
+                        if !binding.mutable && !via_ptr_mut {
                             self.gcx().dcx().emit_error(
                                 "cannot assign through an immutable binding".into(),
                                 Some(target.span),
@@ -677,6 +677,32 @@ impl<'ctx> Checker<'ctx> {
         expect_ty: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
+        // Builtin `make`: returns a pointer to the argument type.
+        if let hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) = &callee.kind
+            && matches!(
+                path.resolution,
+                hir::Resolution::Foundation(hir::FoundationDecl::Make)
+            )
+        {
+            if arguments.len() != 1 {
+                self.gcx().dcx().emit_error(
+                    "`make` expects exactly one argument".into(),
+                    Some(expression.span),
+                );
+                return Ty::error(self.gcx());
+            }
+            let arg_ty = self.synth(&arguments[0].expression, cs);
+            let ptr_ty = self
+                .gcx()
+                .store
+                .interners
+                .intern_ty(TyKind::Reference(arg_ty, hir::Mutability::Mutable));
+            if let Some(expect_ty) = expect_ty {
+                cs.equal(expect_ty, ptr_ty, expression.span);
+            }
+            return ptr_ty;
+        }
+
         let callee_ty = self.synth(callee, cs);
 
         let apply_arguments: Vec<ApplyArgument<'ctx>> = arguments

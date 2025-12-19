@@ -124,6 +124,40 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 self.terminate(block, expr.span, terminator);
                 next.unit()
             }
+            ExprKind::Make { value } => {
+                let value_ty = self.thir.exprs[*value].ty;
+                let ptr_local = self.new_temp_with_ty(
+                    self.gcx
+                        .store
+                        .interners
+                        .intern_ty(crate::sema::models::TyKind::Pointer(
+                            value_ty,
+                            crate::hir::Mutability::Immutable,
+                        )),
+                    expr.span,
+                );
+                let alloc_rvalue = Rvalue::Alloc { ty: value_ty };
+                self.push_assign(
+                    block,
+                    Place::from_local(ptr_local),
+                    alloc_rvalue,
+                    expr.span,
+                );
+
+                // Store initializer into *ptr_local.
+                let dest_place = Place {
+                    local: ptr_local,
+                    projection: vec![mir::PlaceElem::Deref],
+                };
+                block = self
+                    .expr_into_dest(dest_place, block, *value)
+                    .into_block();
+
+                // Return the pointer.
+                let rvalue = Rvalue::Use(Operand::Copy(Place::from_local(ptr_local)));
+                self.push_assign(block, destination, rvalue, expr.span);
+                block.unit()
+            }
             ExprKind::Block(block_id) => self.lower_block(destination, block, *block_id),
             ExprKind::Adt(adt_expression) => {
                 // Evaluate each field into an operand in declaration order.

@@ -308,6 +308,28 @@ impl<'ctx> FunctionLower<'ctx> {
                 self.lower_path_expression(expr, res)
             }
             hir::ExpressionKind::Call { callee, arguments } => {
+                // Builtin make: lower to ExprKind::Make.
+                if let hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) = &callee.kind
+                    && matches!(path.resolution, hir::Resolution::Foundation(hir::FoundationDecl::Make))
+                {
+                    if arguments.len() != 1 {
+                        self.gcx.dcx().emit_error(
+                            "`make` expects exactly one argument".into(),
+                            Some(expr.span),
+                        );
+                        return Expr {
+                            kind: ExprKind::Literal(Constant { ty: self.gcx.types.error, value: ConstantKind::Unit }),
+                            ty: self.gcx.types.error,
+                            span: expr.span,
+                        };
+                    }
+                    let value = self.lower_expr(&arguments[0].expression);
+                    return Expr {
+                        kind: ExprKind::Make { value },
+                        ty,
+                        span,
+                    };
+                }
                 let callee = self.lower_expr(callee);
                 let args: Vec<ExprId> = arguments
                     .iter()

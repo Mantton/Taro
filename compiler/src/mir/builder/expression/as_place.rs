@@ -45,6 +45,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 block.and(builder)
             }
             ExprKind::Reference { .. } => todo!(),
+            ExprKind::Make { .. } => {
+                unreachable!("make expression cannot be used as place")
+            }
             ExprKind::If { .. }
             | ExprKind::Assign { .. }
             | ExprKind::Literal(..)

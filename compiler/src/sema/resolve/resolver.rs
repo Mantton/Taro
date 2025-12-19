@@ -14,6 +14,7 @@ use crate::{
     utils::intern::Interned,
 };
 use rustc_hash::FxHashMap;
+use crate::hir::FoundationDecl;
 
 pub struct Resolver<'arena> {
     pub context: GlobalContext<'arena>,
@@ -29,6 +30,7 @@ pub struct Resolver<'arena> {
     pub definition_scope_mapping: FxHashMap<DefinitionID, Scope<'arena>>,
     pub block_scope_mapping: FxHashMap<NodeID, Scope<'arena>>,
     pub builin_types_bindings: FxHashMap<Symbol, Resolution>,
+    pub builin_fn_bindings: FxHashMap<Symbol, Resolution>,
     pub resolutions: FxHashMap<NodeID, ResolutionState>,
     pub expression_resolutions: FxHashMap<NodeID, ExpressionResolutionState>,
 }
@@ -58,6 +60,11 @@ impl<'a> Resolver<'a> {
                 .iter()
                 .map(|&ty| (Symbol::new(ty.name_str()), Resolution::PrimaryType(ty)))
                 .collect(),
+            builin_fn_bindings: {
+                let mut map = FxHashMap::default();
+                map.insert(Symbol::new("make"), Resolution::Foundation(FoundationDecl::Make));
+                map
+            },
         }
     }
 
@@ -556,7 +563,12 @@ impl<'a> Resolver<'a> {
                     };
                 }
                 ImplicitScope::StdPrelude => {}
-                ImplicitScope::BuiltinFunctionsPrelude => {}
+                ImplicitScope::BuiltinFunctionsPrelude => {
+                    let value = self.builin_fn_bindings.get(&name.symbol);
+                    if let Some(value) = value {
+                        return Some(ResolvedValue::Resolution(value.clone()));
+                    }
+                }
                 ImplicitScope::BuiltinTypesPrelude => {
                     let value = self.builin_types_bindings.get(&name.symbol);
                     if let Some(value) = value {

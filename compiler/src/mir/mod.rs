@@ -177,6 +177,9 @@ pub enum Rvalue<'ctx> {
         mutable: bool,
         place: Place<'ctx>,
     },
+    Alloc {
+        ty: Ty<'ctx>,
+    },
     Aggregate {
         kind: AggregateKind,
         fields: IndexVec<FieldIndex, Operand<'ctx>>,
@@ -343,7 +346,8 @@ impl Category {
             | thir::ExprKind::Binary { .. }
             | thir::ExprKind::Logical { .. }
             | thir::ExprKind::Unary { .. }
-            | thir::ExprKind::Tuple { .. } => Category::Rvalue(RvalueFunc::AsRvalue),
+            | thir::ExprKind::Tuple { .. }
+            | thir::ExprKind::Make { .. } => Category::Rvalue(RvalueFunc::AsRvalue),
 
             thir::ExprKind::Literal(..) | thir::ExprKind::Zst { .. } => Category::Constant,
         }

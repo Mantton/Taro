@@ -29,7 +29,28 @@ pub fn emit_package<'gcx>(
     let module = context.create_module(&gcx.config.identifier);
     let builder = context.create_builder();
 
-    let mut emitter = Emitter::new(&context, module, builder, gcx);
+    // Initialize target for host and set data layout early.
+    Target::initialize_native(&InitializationConfig::default())
+        .map_err(|_| crate::error::ReportedError)?;
+    let triple = TargetMachine::get_default_triple();
+    let target = Target::from_triple(&triple).map_err(|_| crate::error::ReportedError)?;
+    let cpu = TargetMachine::get_host_cpu_name();
+    let features = TargetMachine::get_host_cpu_features();
+    let target_machine = target
+        .create_target_machine(
+            &triple,
+            cpu.to_str().unwrap_or(""),
+            features.to_str().unwrap_or(""),
+            OptimizationLevel::Default,
+            RelocMode::Default,
+            CodeModel::Default,
+        )
+        .ok_or(crate::error::ReportedError)?;
+
+    module.set_data_layout(&target_machine.get_target_data().get_data_layout());
+    module.set_triple(&triple);
+
+    let mut emitter = Emitter::new(&context, module, builder, gcx, target_machine);
     emitter.declare_functions(package);
     emitter.lower_functions(package)?;
     emitter.emit_start_shim(package);
@@ -50,6 +71,11 @@ struct Emitter<'llvm, 'gcx> {
     gcx: GlobalContext<'gcx>,
     functions: FxHashMap<hir::DefinitionID, FunctionValue<'llvm>>,
     strings: FxHashMap<Symbol, PointerValue<'llvm>>,
+    target_machine: TargetMachine,
+    target_data: inkwell::targets::TargetData,
+    gc_descs: FxHashMap<Ty<'gcx>, PointerValue<'llvm>>,
+    gc_desc_ty: inkwell::types::StructType<'llvm>,
+    usize_ty: inkwell::types::IntType<'llvm>,
 }
 
 #[derive(Clone, Copy)]
@@ -64,7 +90,19 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         module: Module<'llvm>,
         builder: Builder<'llvm>,
         gcx: GlobalContext<'gcx>,
+        target_machine: TargetMachine,
     ) -> Self {
+        let target_data = target_machine.get_target_data();
+        let usize_ty = context.ptr_sized_int_type(&target_data, None);
+        let opaque_ptr = context.ptr_type(AddressSpace::default());
+        let gc_desc_ty = context.struct_type(
+            &[
+                usize_ty.into(),   // size
+                opaque_ptr.into(), // ptr_offsets
+                usize_ty.into(),   // ptr_count
+            ],
+            false,
+        );
         Emitter {
             context,
             module,
@@ -72,6 +110,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             gcx,
             functions: FxHashMap::default(),
             strings: FxHashMap::default(),
+            target_machine,
+            target_data,
+            gc_descs: FxHashMap::default(),
+            gc_desc_ty,
+            usize_ty,
         }
     }
 
@@ -183,28 +226,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     }
 
     fn emit_object_file(&mut self) -> CompileResult<PathBuf> {
-        // Configure target machine for host.
-        Target::initialize_native(&InitializationConfig::default())
-            .map_err(|_| crate::error::ReportedError)?;
-        let triple = TargetMachine::get_default_triple();
-        let target = Target::from_triple(&triple).map_err(|_| crate::error::ReportedError)?;
-        let cpu = TargetMachine::get_host_cpu_name();
-        let features = TargetMachine::get_host_cpu_features();
-        let tm = target
-            .create_target_machine(
-                &triple,
-                cpu.to_str().unwrap_or(""),
-                features.to_str().unwrap_or(""),
-                OptimizationLevel::Default,
-                RelocMode::Default,
-                CodeModel::Default,
-            )
-            .ok_or(crate::error::ReportedError)?;
-
-        self.module
-            .set_data_layout(&tm.get_target_data().get_data_layout());
-        self.module.set_triple(&triple);
-
+        let tm = &self.target_machine;
         let out_dir = self.gcx.output_root().clone();
         if let Err(e) = fs::create_dir_all(&out_dir) {
             let msg = format!("failed to create output directory: {e}");
@@ -380,6 +402,41 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 Some(ptr.as_basic_value_enum())
             }
             mir::Rvalue::Aggregate { .. } => unreachable!("aggregates should be lowered in MIR"),
+            mir::Rvalue::Alloc { ty: alloc_ty } => {
+                let llvm_payload_ty =
+                    lower_type(self.context, self.gcx, *alloc_ty).expect("alloc type");
+                let size = self.target_data.get_store_size(&llvm_payload_ty);
+                let size_const = self.usize_ty.const_int(size, false);
+                let desc_ptr = self.gc_desc_for(*alloc_ty);
+                let callee = self.get_gc_alloc();
+                let call = self
+                    .builder
+                    .build_call(
+                        callee,
+                        &[
+                            BasicMetadataValueEnum::from(size_const),
+                            BasicMetadataValueEnum::from(desc_ptr),
+                        ],
+                        "gc_alloc",
+                    )
+                    .unwrap();
+                let ptr_val = call
+                    .try_as_basic_value()
+                    .basic()
+                    .expect("gc_alloc returned void")
+                    .into_pointer_value();
+                let cast = self
+                    .builder
+                    .build_bit_cast(
+                        ptr_val,
+                        self.context
+                            .ptr_type(AddressSpace::default())
+                            .as_basic_type_enum(),
+                        "alloc_cast",
+                    )
+                    .unwrap();
+                Some(cast)
+            }
         };
         Ok(value)
     }
@@ -1146,6 +1203,108 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             _ => None,
         }
     }
+
+    fn get_gc_alloc(&self) -> FunctionValue<'llvm> {
+        if let Some(f) = self.module.get_function("gc_alloc") {
+            return f;
+        }
+        let opaque_ptr = self.context.ptr_type(AddressSpace::default());
+        let gc_desc_ptr = opaque_ptr;
+        let fn_ty = self
+            .context
+            .ptr_type(AddressSpace::default())
+            .fn_type(&[self.usize_ty.into(), gc_desc_ptr.into()], false);
+        self.module
+            .add_function("gc_alloc", fn_ty, Some(Linkage::External))
+    }
+
+    fn gc_desc_for(&mut self, ty: Ty<'gcx>) -> PointerValue<'llvm> {
+        if let Some(&gv) = self.gc_descs.get(&ty) {
+            return gv;
+        }
+
+        let llvm_ty = lower_type(self.context, self.gcx, ty).expect("lower type");
+        let size = self.target_data.get_store_size(&llvm_ty);
+
+        // Collect pointer field offsets (only direct pointer/reference/string fields).
+        let mut offsets: Vec<u64> = vec![];
+        match ty.kind() {
+            TyKind::Adt(def) => {
+                let defn = self.gcx.get_struct_definition(def.id);
+                for (idx, field) in defn.fields.iter().enumerate() {
+                    if is_pointer_ty(field.ty) {
+                        let struct_ty = llvm_ty.into_struct_type();
+                        if let Some(off) =
+                            self.target_data.offset_of_element(&struct_ty, idx as u32)
+                        {
+                            offsets.push(off);
+                        }
+                    }
+                }
+            }
+            TyKind::Tuple(items) => {
+                let struct_ty = llvm_ty.into_struct_type();
+                for (idx, item) in items.iter().enumerate() {
+                    if is_pointer_ty(*item) {
+                        if let Some(off) =
+                            self.target_data.offset_of_element(&struct_ty, idx as u32)
+                        {
+                            offsets.push(off);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        let ptr_offsets_ptr = if offsets.is_empty() {
+            self.context
+                .ptr_type(AddressSpace::default())
+                .const_null()
+                .as_basic_value_enum()
+        } else {
+            let arr_ty = self.usize_ty.array_type(offsets.len() as u32);
+            let consts: Vec<_> = offsets
+                .iter()
+                .map(|o| self.usize_ty.const_int(*o, false))
+                .collect();
+            let arr_const = self.usize_ty.const_array(&consts);
+            let global = self.module.add_global(
+                arr_ty,
+                None,
+                &format!("__gc_offsets_{}", self.gc_descs.len()),
+            );
+            global.set_initializer(&arr_const);
+            let ptr = global
+                .as_pointer_value()
+                .const_cast(self.context.ptr_type(AddressSpace::default()));
+            ptr.as_basic_value_enum()
+        };
+
+        let desc_const = self.gc_desc_ty.const_named_struct(&[
+            self.usize_ty.const_int(size, false).into(),
+            ptr_offsets_ptr,
+            self.usize_ty.const_int(offsets.len() as u64, false).into(),
+        ]);
+        let gv = self.module.add_global(
+            self.gc_desc_ty,
+            None,
+            &format!("__gc_desc_{}", self.gc_descs.len()),
+        );
+        gv.set_initializer(&desc_const);
+        gv.set_constant(true);
+        gv.set_linkage(Linkage::Internal);
+        let ptr = gv.as_pointer_value();
+        self.gc_descs.insert(ty, ptr);
+        ptr
+    }
+}
+
+fn is_pointer_ty(ty: Ty) -> bool {
+    matches!(
+        ty.kind(),
+        TyKind::Pointer(..) | TyKind::Reference(..) | TyKind::String
+    )
 }
 
 fn lower_fn_sig<'llvm>(
