@@ -31,7 +31,9 @@ pub fn mangle(gcx: GlobalContext, id: hir::DefinitionID) -> String {
             TyKind::Int(i) => i.name_str().into(),
             TyKind::UInt(u) => u.name_str().into(),
             TyKind::Float(f) => f.name_str().into(),
-            TyKind::Pointer(inner, mt) => format!("ptr{}{}", mt.display_str(), ty_symbol(gcx, inner)),
+            TyKind::Pointer(inner, mt) => {
+                format!("ptr{}{}", mt.display_str(), ty_symbol(gcx, inner))
+            }
             TyKind::Reference(inner, mt) => {
                 format!("ref{}{}", mt.display_str(), ty_symbol(gcx, inner))
             }

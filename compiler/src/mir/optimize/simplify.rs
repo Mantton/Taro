@@ -68,7 +68,9 @@ pub fn prune_unreachable_blocks(body: &mut Body<'_>) {
         if let Some(term) = &body.basic_blocks[bb].terminator {
             match &term.kind {
                 TerminatorKind::Goto { target } => stack.push(*target),
-                TerminatorKind::SwitchInt { targets, otherwise, .. } => {
+                TerminatorKind::SwitchInt {
+                    targets, otherwise, ..
+                } => {
                     stack.push(*otherwise);
                     for (_, t) in targets {
                         stack.push(*t);
@@ -103,7 +105,9 @@ pub fn prune_unreachable_blocks(body: &mut Body<'_>) {
         if let Some(term) = block.terminator.as_mut() {
             match &mut term.kind {
                 TerminatorKind::Goto { target } => *target = remap_bb(*target),
-                TerminatorKind::SwitchInt { targets, otherwise, .. } => {
+                TerminatorKind::SwitchInt {
+                    targets, otherwise, ..
+                } => {
                     *otherwise = remap_bb(*otherwise);
                     for (_, t) in targets {
                         *t = remap_bb(*t);
