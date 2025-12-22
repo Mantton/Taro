@@ -197,6 +197,8 @@ pub struct StructField<'arena> {
     pub name: Symbol,
     pub ty: Ty<'arena>,
     pub mutability: Mutability,
+    pub def_id: DefinitionID,
+    pub visibility: crate::sema::resolve::models::Visibility,
 }
 
 #[derive(Debug, Clone)]

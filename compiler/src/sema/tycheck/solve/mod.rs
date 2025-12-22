@@ -26,10 +26,11 @@ pub struct ConstraintSystem<'ctx> {
     pub locals: RefCell<FxHashMap<NodeID, Ty<'ctx>>>,
     pub field_indices: FxHashMap<NodeID, usize>,
     overload_sources: FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
+    current_def: crate::sema::resolve::models::DefinitionID,
 }
 
 impl<'ctx> ConstraintSystem<'ctx> {
-    pub fn new(context: Gcx<'ctx>) -> ConstraintSystem<'ctx> {
+    pub fn new(context: Gcx<'ctx>, current_def: crate::sema::resolve::models::DefinitionID) -> ConstraintSystem<'ctx> {
         ConstraintSystem {
             infer_cx: Rc::new(InferCtx::new(context)),
             obligations: Default::default(),
@@ -38,6 +39,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
             adjustments: Default::default(),
             field_indices: Default::default(),
             overload_sources: Default::default(),
+            current_def,
         }
     }
 }
@@ -122,6 +124,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
             adjustments: std::mem::take(&mut self.adjustments),
             field_indices: std::mem::take(&mut self.field_indices),
             overload_sources: std::mem::take(&mut self.overload_sources),
+            current_def: self.current_def,
         };
 
         let mut driver = SolverDriver::new(solver);
@@ -154,6 +157,7 @@ struct ConstraintSolver<'ctx> {
     adjustments: FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
     pub field_indices: FxHashMap<NodeID, usize>,
     overload_sources: FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
+    current_def: crate::sema::resolve::models::DefinitionID,
 }
 
 impl<'ctx> ConstraintSolver<'ctx> {
@@ -216,6 +220,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             adjustments: self.adjustments.clone(),
             field_indices: self.field_indices.clone(),
             overload_sources: self.overload_sources.clone(),
+            current_def: self.current_def,
         }
     }
 

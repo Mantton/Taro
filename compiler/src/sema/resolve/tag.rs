@@ -2,7 +2,7 @@ use crate::{
     ast::{self, AstVisitor, Identifier, NodeID, walk_package},
     error::CompileResult,
     sema::resolve::{
-        models::{DefinitionID, DefinitionKind, VariantCtorKind},
+        models::{DefinitionID, DefinitionKind, VariantCtorKind, Visibility},
         resolver::Resolver,
     },
     span::{FileID, Span},
@@ -29,6 +29,7 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
             symbol: node.name,
         };
         let parent = self.tag(&name, node.id, DefinitionKind::Module);
+        self.resolver.record_visibility(parent, Visibility::Public);
         self.with_parent(parent, |this| ast::walk_module(this, node));
     }
     fn visit_declaration(&mut self, node: &ast::Declaration) -> Self::Result {
@@ -54,6 +55,7 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
         };
 
         let parent = self.tag(&node.identifier, node.id, kind);
+        self.record_visibility(parent, node.visibility);
         self.with_parent(parent, |this| {
             ast::walk_declaration(this, node);
         });
@@ -69,6 +71,7 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
             ast::FunctionDeclarationKind::Import(..) => DefinitionKind::Import,
         };
         let parent = self.tag(&node.identifier, node.id, kind);
+        self.record_visibility(parent, node.visibility);
         self.with_parent(parent, |this| {
             ast::walk_function_declaration(this, node);
         });
@@ -86,6 +89,7 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
             ast::AssociatedDeclarationKind::Operator(..) => DefinitionKind::AssociatedOperator,
         };
         let parent = self.tag(&node.identifier, node.id, kind);
+        self.record_visibility(parent, node.visibility);
         self.with_parent(parent, |this| {
             ast::walk_assoc_declaration(this, node, context);
         });
@@ -104,6 +108,7 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
             ast::NamespaceDeclarationKind::Export(..) => DefinitionKind::Export,
         };
         let parent = self.tag(&node.identifier, node.id, kind);
+        self.record_visibility(parent, node.visibility);
         self.with_parent(parent, |this| {
             ast::walk_namespace_declaration(this, node);
         });
@@ -114,6 +119,7 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
             ast::ExternDeclarationKind::Function(..) => DefinitionKind::Function,
         };
         let parent = self.tag(&node.identifier, node.id, kind);
+        self.record_visibility(parent, node.visibility);
         self.with_parent(parent, |this| {
             ast::walk_extern_declaration(this, node);
         });
@@ -129,11 +135,14 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
 
     fn visit_field_definition(&mut self, node: &ast::FieldDefinition) -> Self::Result {
         let kind = DefinitionKind::Field;
-        self.tag(&node.identifier, node.id, kind);
+        let id = self.tag(&node.identifier, node.id, kind);
+        self.record_visibility(id, node.visibility);
     }
 
     fn visit_enum_variant(&mut self, node: &ast::Variant) -> Self::Result {
         let variant_id = self.tag(&node.identifier, node.id, DefinitionKind::Variant);
+        self.resolver
+            .record_visibility(variant_id, Visibility::Public);
         {
             let ctor_kind = VariantCtorKind::from_variant(&node.kind);
             self.tag(
@@ -200,5 +209,23 @@ impl<'r, 'a> Actor<'r, 'a> {
         let original = std::mem::replace(&mut self.parent, Some(parent));
         action(self);
         self.parent = original;
+    }
+
+    fn record_visibility(&mut self, id: DefinitionID, vis: ast::Visibility) {
+        let visibility = self.lower_visibility(vis);
+        self.resolver.record_visibility(id, visibility);
+    }
+
+    fn lower_visibility(&self, vis: ast::Visibility) -> Visibility {
+        let file = vis.span.file;
+        match vis.level {
+            ast::VisibilityLevel::Public | ast::VisibilityLevel::Inherent => Visibility::Public,
+            ast::VisibilityLevel::FilePrivate => Visibility::FilePrivate(file),
+            ast::VisibilityLevel::Private => self
+                .parent
+                .map(Visibility::Private)
+                .unwrap_or(Visibility::Public),
+            ast::VisibilityLevel::Protected => Visibility::Public,
+        }
     }
 }

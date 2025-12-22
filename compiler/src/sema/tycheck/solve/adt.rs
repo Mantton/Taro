@@ -43,6 +43,19 @@ impl<'ctx> ConstraintSolver<'ctx> {
             let mut found = false;
             for (idx, def_field) in struct_def.fields.iter().enumerate() {
                 if def_field.name == provided_field.name {
+                    if !self
+                        .gcx()
+                        .is_visibility_allowed(def_field.visibility, self.current_def)
+                    {
+                        let error = Spanned::new(
+                            TypeError::FieldNotVisible {
+                                name: def_field.name,
+                                struct_ty,
+                            },
+                            provided_field.label_span,
+                        );
+                        return SolverResult::Error(vec![error]);
+                    }
                     found = true;
                     used_fields[idx] = true;
 
@@ -76,6 +89,19 @@ impl<'ctx> ConstraintSolver<'ctx> {
         for (idx, field_used) in used_fields.iter().enumerate() {
             if !field_used {
                 let missing_field = &struct_def.fields[idx];
+                if !self
+                    .gcx()
+                    .is_visibility_allowed(missing_field.visibility, self.current_def)
+                {
+                    let error = Spanned::new(
+                        TypeError::FieldNotVisible {
+                            name: missing_field.name,
+                            struct_ty,
+                        },
+                        data.span,
+                    );
+                    return SolverResult::Error(vec![error]);
+                }
                 let error = Spanned::new(
                     TypeError::MissingStructField {
                         name: missing_field.name,

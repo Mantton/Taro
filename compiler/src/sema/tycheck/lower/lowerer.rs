@@ -9,6 +9,9 @@ use crate::{
 
 pub trait TypeLowerer<'ctx> {
     fn gcx(&self) -> GlobalContext<'ctx>;
+    fn current_definition(&self) -> Option<hir::DefinitionID> {
+        None
+    }
     fn lowerer(&self) -> &dyn TypeLowerer<'ctx>
     where
         Self: Sized,
@@ -67,6 +70,16 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 PrimaryType::Rune => gcx.types.rune,
             },
             Resolution::Definition(id, kind) => {
+                if let Some(from) = self.current_definition() {
+                    if !gcx.is_definition_visible(id, from) {
+                        let name = gcx.definition_ident(id).symbol;
+                        gcx.dcx().emit_error(
+                            format!("type '{}' is not visible here", name).into(),
+                            Some(path.span),
+                        );
+                        return gcx.types.error;
+                    }
+                }
                 if gcx.is_std_gc_ptr(id) {
                     return Ty::new(TyKind::GcPtr, gcx);
                 }

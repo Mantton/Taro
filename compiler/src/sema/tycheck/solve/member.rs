@@ -6,7 +6,7 @@ use crate::{
     hir::NodeID,
     sema::{
         error::TypeError,
-        models::{Ty, TyKind},
+        models::{StructField, Ty, TyKind},
         resolve::models::{DefinitionID, DefinitionKind, PrimaryType, TypeHead},
         tycheck::utils::autoderef::Autoderef,
     },
@@ -35,10 +35,24 @@ impl<'ctx> ConstraintSolver<'ctx> {
             prev = Some(ty);
 
             // Field lookup (structs only for now).
-            if let Some((field_ty, index)) = self.lookup_field_ty(ty, name.symbol) {
+            if let Some((field, index)) = self.lookup_field(ty, name.symbol) {
+                if !self
+                    .gcx()
+                    .is_visibility_allowed(field.visibility, self.current_def)
+                {
+                    let error = Spanned::new(
+                        TypeError::FieldNotVisible {
+                            name: field.name,
+                            struct_ty: ty,
+                        },
+                        span,
+                    );
+                    return SolverResult::Error(vec![error]);
+                }
+
                 self.record_adjustments(receiver_node, adjustments);
                 self.record_field_index(node_id, index);
-                return self.solve_equality(span, result, field_ty);
+                return self.solve_equality(span, result, field.ty);
             }
 
             // Instance methods.
@@ -88,7 +102,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         self.adjustments.insert(node_id, adjustments);
     }
 
-    fn lookup_field_ty(&self, ty: Ty<'ctx>, name: Symbol) -> Option<(Ty<'ctx>, usize)> {
+    fn lookup_field(&self, ty: Ty<'ctx>, name: Symbol) -> Option<(StructField<'ctx>, usize)> {
         let TyKind::Adt(def) = ty.kind() else {
             return None;
         };
@@ -100,7 +114,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let struct_def = self.gcx().get_struct_definition(def.id);
         for (idx, field) in struct_def.fields.iter().enumerate() {
             if field.name == name {
-                return Some((field.ty, idx));
+                return Some((*field, idx));
             }
         }
         None
@@ -151,6 +165,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
         }
 
         members
+            .into_iter()
+            .filter(|id| self.gcx().is_definition_visible(*id, self.current_def))
+            .collect()
     }
 
     pub fn type_head_from_type(&self, ty: Ty<'ctx>) -> Option<TypeHead> {

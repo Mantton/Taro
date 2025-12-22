@@ -114,7 +114,7 @@ impl<'ctx> Checker<'ctx> {
         }
     }
     fn check_local(&self, node: &hir::Local) {
-        let mut cs = Cs::new(self.context);
+        let mut cs = Cs::new(self.context, self.current_def);
         GatherLocalsVisitor::from_local(&cs, &self, node);
         let local_ty = self.get_local(node.id).ty;
 
@@ -176,7 +176,7 @@ impl<'ctx> Checker<'ctx> {
         expression: &hir::Expression,
         expectation: Option<Ty<'ctx>>,
     ) -> Ty<'ctx> {
-        let mut cs = Cs::new(self.context);
+        let mut cs = Cs::new(self.context, self.current_def);
         let provided = self.synth_with_expectation(expression, expectation, &mut cs);
         if let Some(expectation) = expectation {
             cs.equal(expectation, provided, expression.span);
@@ -288,6 +288,11 @@ impl<'ctx> Checker<'ctx> {
             hir::ExpressionKind::Match(..) => todo!(),
             hir::ExpressionKind::Reference(inner, mutability) => {
                 let inner_ty = self.synth_with_expectation(inner, None, cs);
+                if *mutability == hir::Mutability::Mutable {
+                    if !self.require_mut_borrow(inner, cs) {
+                        return Ty::error(self.gcx());
+                    }
+                }
                 Ty::new(TyKind::Reference(inner_ty, *mutability), self.gcx())
             }
             hir::ExpressionKind::Dereference(inner) => {
@@ -510,6 +515,170 @@ impl<'ctx> Checker<'ctx> {
         }
     }
 
+    fn require_mut_borrow(&self, expr: &hir::Expression, cs: &Cs<'ctx>) -> bool {
+        match &expr.kind {
+            hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => {
+                if let hir::Resolution::LocalVariable(id) = &path.resolution {
+                    let binding = self.get_local(*id);
+                    if !binding.mutable {
+                        self.gcx().dcx().emit_error(
+                            "cannot take a mutable reference to an immutable binding".into(),
+                            Some(expr.span),
+                        );
+                        return false;
+                    }
+                }
+                true
+            }
+            hir::ExpressionKind::Dereference(inner) => {
+                let Some(ptr_ty) = cs.expr_ty(inner.id) else {
+                    self.gcx()
+                        .dcx()
+                        .emit_error("missing type for deref operand".into(), Some(expr.span));
+                    return false;
+                };
+
+                match ptr_ty.kind() {
+                    TyKind::Pointer(_, mutbl) | TyKind::Reference(_, mutbl) => {
+                        if mutbl != hir::Mutability::Mutable {
+                            self.gcx().dcx().emit_error(
+                                "cannot borrow through an immutable pointer/reference".into(),
+                                Some(expr.span),
+                            );
+                        }
+                        true
+                    }
+                    _ => {
+                        self.gcx().dcx().emit_error(
+                            "cannot borrow through a non-pointer/reference value".into(),
+                            Some(expr.span),
+                        );
+                        false
+                    }
+                }
+            }
+            hir::ExpressionKind::Member { target, name } => {
+                let Some(receiver_ty) = cs.expr_ty(target.id) else {
+                    self.gcx()
+                        .dcx()
+                        .emit_error("missing type for member receiver".into(), Some(expr.span));
+                    return false;
+                };
+
+                let (base_ty, via_ptr_mut, via_ptr) = match receiver_ty.kind() {
+                    TyKind::Pointer(inner, mutbl) | TyKind::Reference(inner, mutbl) => {
+                        (inner, mutbl == hir::Mutability::Mutable, true)
+                    }
+                    _ => (receiver_ty, true, false),
+                };
+
+                if !via_ptr_mut {
+                    self.gcx().dcx().emit_error(
+                        "cannot borrow through an immutable pointer/reference".into(),
+                        Some(expr.span),
+                    );
+                    return false;
+                }
+
+                if !via_ptr {
+                    if let hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) =
+                        &target.kind
+                    {
+                        if let hir::Resolution::LocalVariable(id) = &path.resolution {
+                            let binding = self.get_local(*id);
+                            if !binding.mutable {
+                                self.gcx().dcx().emit_error(
+                                    "cannot take a mutable reference to an immutable binding"
+                                        .into(),
+                                    Some(target.span),
+                                );
+                                return false;
+                            }
+                        }
+                    }
+                }
+
+                let TyKind::Adt(def) = base_ty.kind() else {
+                    self.gcx().dcx().emit_error(
+                        "cannot borrow a member of a non-struct value".into(),
+                        Some(expr.span),
+                    );
+                    return false;
+                };
+                if self.gcx().definition_kind(def.id) != DefinitionKind::Struct {
+                    self.gcx().dcx().emit_error(
+                        "cannot borrow a member of a non-struct value".into(),
+                        Some(expr.span),
+                    );
+                    return false;
+                }
+
+                let struct_def = self.gcx().get_struct_definition(def.id);
+                let mut field = None;
+                for f in struct_def.fields {
+                    if f.name == name.symbol {
+                        field = Some(*f);
+                        break;
+                    }
+                }
+
+                let Some(field) = field else {
+                    self.gcx().dcx().emit_error(
+                        format!("unknown field '{}'", name.symbol.as_str()),
+                        Some(expr.span),
+                    );
+                    return false;
+                };
+
+                if field.mutability != hir::Mutability::Mutable {
+                    self.gcx().dcx().emit_error(
+                        "cannot take a mutable reference to an immutable field".into(),
+                        Some(expr.span),
+                    );
+                    return false;
+                }
+
+                true
+            }
+            hir::ExpressionKind::TupleAccess(target, _) => {
+                let Some(receiver_ty) = cs.expr_ty(target.id) else {
+                    return false;
+                };
+
+                match receiver_ty.kind() {
+                    TyKind::Pointer(_, mutbl) | TyKind::Reference(_, mutbl) => {
+                        if mutbl != hir::Mutability::Mutable {
+                            self.gcx().dcx().emit_error(
+                                "cannot borrow through an immutable pointer/reference".into(),
+                                Some(expr.span),
+                            );
+                        }
+                        true
+                    }
+                    _ => {
+                        if let hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) =
+                            &target.kind
+                        {
+                            if let hir::Resolution::LocalVariable(id) = &path.resolution {
+                                let binding = self.get_local(*id);
+                                if !binding.mutable {
+                                    self.gcx().dcx().emit_error(
+                                        "cannot take a mutable reference to an immutable binding"
+                                            .into(),
+                                        Some(target.span),
+                                    );
+                                    return false;
+                                }
+                            }
+                        }
+                        true
+                    }
+                }
+            }
+            _ => true,
+        }
+    }
+
     fn synth_assign_expression(
         &self,
         expr: &hir::Expression,
@@ -600,15 +769,32 @@ impl<'ctx> Checker<'ctx> {
     ) -> Ty<'ctx> {
         match resolution {
             hir::Resolution::LocalVariable(id) => self.get_local(*id).ty,
-            hir::Resolution::Definition(id, kind) => match kind {
-                DefinitionKind::Struct => {
-                    let Some(nominal) = self.constructor_nominal_from_resolution(resolution) else {
-                        return Ty::error(self.gcx());
-                    };
-                    self.synth_constructor_value_expression(node_id, nominal, span, expectation, cs)
+            hir::Resolution::Definition(id, kind) => {
+                if !self.gcx().is_definition_visible(*id, self.current_def) {
+                    let name = self.gcx().definition_ident(*id).symbol;
+                    self.gcx().dcx().emit_error(
+                        format!("'{}' is not visible here", name).into(),
+                        Some(span),
+                    );
+                    return Ty::error(self.gcx());
                 }
-                _ => self.gcx().get_type(*id),
-            },
+                match kind {
+                    DefinitionKind::Struct => {
+                        let Some(nominal) = self.constructor_nominal_from_resolution(resolution)
+                        else {
+                            return Ty::error(self.gcx());
+                        };
+                        self.synth_constructor_value_expression(
+                            node_id,
+                            nominal,
+                            span,
+                            expectation,
+                            cs,
+                        )
+                    }
+                    _ => self.gcx().get_type(*id),
+                }
+            }
             hir::Resolution::SelfConstructor(..) => {
                 let Some(nominal) = self.constructor_nominal_from_resolution(resolution) else {
                     return Ty::error(self.gcx());
@@ -616,9 +802,22 @@ impl<'ctx> Checker<'ctx> {
                 self.synth_constructor_value_expression(node_id, nominal, span, expectation, cs)
             }
             hir::Resolution::FunctionSet(candidates) => {
+                let visible: Vec<_> = candidates
+                    .iter()
+                    .copied()
+                    .filter(|id| self.gcx().is_definition_visible(*id, self.current_def))
+                    .collect();
+
+                if visible.is_empty() {
+                    self.gcx()
+                        .dcx()
+                        .emit_error("function is not visible here".into(), Some(span));
+                    return Ty::error(self.gcx());
+                }
+
                 let ty = cs.infer_cx.next_ty_var(span);
                 let mut branches = vec![];
-                for &candidate in candidates {
+                for candidate in visible {
                     let candidate_ty = self.gcx().get_type(candidate);
                     let goal = Goal::BindOverload(BindOverloadGoalData {
                         node_id,
@@ -1087,9 +1286,27 @@ impl<'ctx> Checker<'ctx> {
             return Ty::error(gcx);
         }
 
+        let visible: Vec<_> = candidates
+            .iter()
+            .copied()
+            .filter(|id| gcx.is_definition_visible(*id, self.current_def))
+            .collect();
+
+        if visible.is_empty() {
+            gcx.dcx().emit_error(
+                format!(
+                    "static member '{}' is not visible here",
+                    name.symbol.as_str()
+                )
+                .into(),
+                Some(span),
+            );
+            return Ty::error(gcx);
+        }
+
         let ty = cs.infer_cx.next_ty_var(span);
-        let mut branches = Vec::with_capacity(candidates.len());
-        for candidate in candidates {
+        let mut branches = Vec::with_capacity(visible.len());
+        for candidate in visible {
             let candidate_ty = gcx.get_type(candidate);
             branches.push(DisjunctionBranch {
                 goal: Goal::BindOverload(BindOverloadGoalData {

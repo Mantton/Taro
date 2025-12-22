@@ -19,4 +19,8 @@ impl<'ctx> TypeLowerer<'ctx> for Ctx<'ctx> {
     fn gcx(&self) -> GlobalContext<'ctx> {
         self.gcx
     }
+
+    fn current_definition(&self) -> Option<DefinitionID> {
+        Some(self.id)
+    }
 }

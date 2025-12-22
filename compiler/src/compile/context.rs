@@ -10,6 +10,7 @@ use crate::{
         models::{FloatTy, IntTy, LabeledFunctionSignature, StructDefinition, Ty, TyKind, UIntTy},
         resolve::models::{
             DefinitionKind, ResolutionOutput, ScopeData, ScopeEntryData, TypeHead, UsageEntryData,
+            Visibility,
         },
         tycheck::solve::Adjustment,
     },
@@ -216,9 +217,44 @@ impl<'arena> GlobalContext<'arena> {
         *output.definition_to_kind.get(&id).expect("definition kind")
     }
 
+    pub fn definition_visibility(self, id: DefinitionID) -> Visibility {
+        let output = self.resolution_output(id.package());
+        output
+            .definition_to_visibility
+            .get(&id)
+            .copied()
+            .unwrap_or(Visibility::Public)
+    }
+
     pub fn definition_parent(self, id: DefinitionID) -> Option<DefinitionID> {
         let output = self.resolution_output(id.package());
         output.definition_to_parent.get(&id).copied()
+    }
+
+    pub fn is_visibility_allowed(self, visibility: Visibility, from: DefinitionID) -> bool {
+        match visibility {
+            Visibility::Public => true,
+            Visibility::FilePrivate(file) => self.definition_ident(from).span.file == file,
+            Visibility::Private(owner) => self.is_within_definition(from, owner),
+        }
+    }
+
+    pub fn is_definition_visible(self, target: DefinitionID, from: DefinitionID) -> bool {
+        let visibility = self.definition_visibility(target);
+        self.is_visibility_allowed(visibility, from)
+    }
+
+    fn is_within_definition(self, mut current: DefinitionID, owner: DefinitionID) -> bool {
+        if current == owner {
+            return true;
+        }
+        while let Some(parent) = self.definition_parent(current) {
+            if parent == owner {
+                return true;
+            }
+            current = parent;
+        }
+        false
     }
 
     pub fn cache_object_file(self, path: PathBuf) {

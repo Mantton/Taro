@@ -26,6 +26,7 @@ pub enum TypeError<'ctx> {
     NoOverloadMatches,
     AmbiguousOverload,
     NoSuchMember { name: Symbol, on: Ty<'ctx> },
+    FieldNotVisible { name: Symbol, struct_ty: Ty<'ctx> },
     NotCallable { found: Ty<'ctx> },
     NotAStruct { ty: Ty<'ctx> },
     UnknownStructField { name: Symbol, struct_ty: Ty<'ctx> },
@@ -64,6 +65,13 @@ impl<'ctx> TypeError<'ctx> {
                     "no member named '{}' found on type {}",
                     name,
                     on.format(gcx)
+                )
+            }
+            TypeError::FieldNotVisible { name, struct_ty } => {
+                format!(
+                    "field '{}' of {} is not visible here",
+                    name,
+                    struct_ty.format(gcx)
                 )
             }
             TypeError::NotCallable { found } => {

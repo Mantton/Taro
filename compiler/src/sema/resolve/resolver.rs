@@ -22,6 +22,7 @@ pub struct Resolver<'arena> {
     def_to_kind: FxHashMap<DefinitionID, DefinitionKind>,
     pub def_to_ident: FxHashMap<DefinitionID, Identifier>,
     def_to_parent: FxHashMap<DefinitionID, DefinitionID>,
+    def_to_visibility: FxHashMap<DefinitionID, crate::sema::resolve::models::Visibility>,
     next_index: usize,
     pub unresolved_imports: Vec<UsageEntry<'arena>>,
     pub unresolved_exports: Vec<UsageEntry<'arena>>,
@@ -43,6 +44,7 @@ impl<'a> Resolver<'a> {
             def_to_kind: Default::default(),
             def_to_ident: Default::default(),
             def_to_parent: Default::default(),
+            def_to_visibility: Default::default(),
             next_index: 0,
 
             unresolved_exports: Default::default(),
@@ -91,6 +93,9 @@ impl<'a> Resolver<'a> {
             self.node_to_def.insert(node_id, index);
             self.def_to_kind.insert(index, kind);
             self.def_to_ident.insert(index, identifier);
+            self.def_to_visibility
+                .entry(index)
+                .or_insert(crate::sema::resolve::models::Visibility::Public);
             if let Some(parent) = parent {
                 self.def_to_parent.insert(index, parent);
             }
@@ -174,6 +179,16 @@ impl<'a> Resolver<'a> {
 
     pub fn get_resolution(&self, id: NodeID) -> Option<ResolutionState> {
         self.resolutions.get(&id).cloned()
+    }
+}
+
+impl<'a> Resolver<'a> {
+    pub fn record_visibility(
+        &mut self,
+        id: DefinitionID,
+        visibility: crate::sema::resolve::models::Visibility,
+    ) {
+        self.def_to_visibility.insert(id, visibility);
     }
 }
 
@@ -633,6 +648,7 @@ impl<'a> Resolver<'a> {
             definition_to_kind: self.def_to_kind,
             definition_to_parent: self.def_to_parent,
             definition_to_ident: self.def_to_ident,
+            definition_to_visibility: self.def_to_visibility,
             expression_resolutions: self.expression_resolutions,
             root_scope: self.root_module_scope.unwrap(),
         }

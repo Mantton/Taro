@@ -38,10 +38,13 @@ impl<'ctx> Actor<'ctx> {
         let mut fields: Vec<StructField<'ctx>> = Vec::with_capacity(node.fields.len());
         for field in &node.fields {
             let ty = ctx.lowerer().lower_type(&field.ty);
+            let visibility = self.context.definition_visibility(field.def_id);
             fields.push(StructField {
                 name: field.identifier.symbol,
                 ty,
                 mutability: field.mutability,
+                def_id: field.def_id,
+                visibility,
             });
         }
 

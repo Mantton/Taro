@@ -1,6 +1,6 @@
 use crate::{
     compile::context::Gcx,
-    hir::{self, NodeID},
+    hir::{self, DefinitionID, NodeID},
     sema::{models::Ty, tycheck::lower::TypeLowerer},
 };
 use rustc_hash::FxHashMap;
@@ -11,6 +11,7 @@ pub struct Checker<'arena> {
     pub locals: RefCell<FxHashMap<NodeID, LocalBinding<'arena>>>,
     pub return_ty: Option<Ty<'arena>>,
     pub(super) loop_depth: Cell<usize>,
+    pub current_def: DefinitionID,
 }
 
 #[derive(Clone, Copy)]
@@ -20,12 +21,13 @@ pub struct LocalBinding<'arena> {
 }
 
 impl<'arena> Checker<'arena> {
-    pub fn new(context: Gcx<'arena>) -> Checker<'arena> {
+    pub fn new(context: Gcx<'arena>, current_def: DefinitionID) -> Checker<'arena> {
         Checker {
             context,
             return_ty: None,
             locals: Default::default(),
             loop_depth: Cell::new(0),
+            current_def,
         }
     }
 }
@@ -33,6 +35,10 @@ impl<'arena> Checker<'arena> {
 impl<'arena> TypeLowerer<'arena> for Checker<'arena> {
     fn gcx(&self) -> Gcx<'arena> {
         self.context
+    }
+
+    fn current_definition(&self) -> Option<DefinitionID> {
+        Some(self.current_def)
     }
 }
 

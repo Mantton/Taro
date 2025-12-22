@@ -358,7 +358,7 @@ pub enum VariantKind {
 
 #[derive(Debug, Clone)]
 pub struct FieldDefinition {
-    pub id: NodeID,
+    pub def_id: DefinitionID,
     pub mutability: Mutability,
     pub label: Option<Label>,
     pub identifier: Identifier,

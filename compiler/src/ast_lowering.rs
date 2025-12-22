@@ -1438,7 +1438,7 @@ impl Actor<'_, '_> {
 
     fn lower_field_definition(&mut self, node: ast::FieldDefinition) -> hir::FieldDefinition {
         hir::FieldDefinition {
-            id: self.next_index(),
+            def_id: self.definition_id(node.id),
             mutability: node.mutability,
             label: node.label,
             identifier: node.identifier,
