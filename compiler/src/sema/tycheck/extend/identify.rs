@@ -82,21 +82,26 @@ impl<'ctx> Actor<'ctx> {
 
         match &resolved.resolution {
             Resolution::PrimaryType(p) => Some(TypeHead::Primary(*p)),
-            Resolution::Definition(id, kind) => match kind {
-                DefinitionKind::Struct | DefinitionKind::Interface | DefinitionKind::Enum => {
-                    Some(TypeHead::Nominal(*id))
+            Resolution::Definition(id, kind) => {
+                if self.context.is_std_gc_ptr(*id) {
+                    return Some(TypeHead::GcPtr);
                 }
-                _ => {
-                    self.context.dcx().emit_error(
-                        format!(
-                            "cannot extend `{}` because it does not name a type",
-                            kind.description()
-                        ),
-                        Some(ty.span),
-                    );
-                    None
+                match kind {
+                    DefinitionKind::Struct | DefinitionKind::Interface | DefinitionKind::Enum => {
+                        Some(TypeHead::Nominal(*id))
+                    }
+                    _ => {
+                        self.context.dcx().emit_error(
+                            format!(
+                                "cannot extend `{}` because it does not name a type",
+                                kind.description()
+                            ),
+                            Some(ty.span),
+                        );
+                        None
+                    }
                 }
-            },
+            }
             Resolution::Error => None,
             _ => {
                 self.context

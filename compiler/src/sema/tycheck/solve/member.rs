@@ -12,6 +12,7 @@ use crate::{
     },
     span::{Spanned, Symbol},
 };
+use rustc_hash::FxHashSet;
 
 impl<'ctx> ConstraintSolver<'ctx> {
     pub fn solve_member(&mut self, data: MemberGoalData<'ctx>) -> SolverResult<'ctx> {
@@ -110,13 +111,46 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return vec![];
         };
 
-        self.gcx().with_session_type_database(|db| {
-            db.type_head_to_members
-                .get(&head)
-                .and_then(|idx| idx.instance_functions.get(&name))
-                .map(|set| set.members.clone())
-                .unwrap_or_default()
-        })
+        self.lookup_instance_candidates_visible(head, name)
+    }
+
+    pub(crate) fn lookup_instance_candidates_visible(
+        &self,
+        head: TypeHead,
+        name: Symbol,
+    ) -> Vec<DefinitionID> {
+        let gcx = self.gcx();
+        let mut members = Vec::new();
+        let mut seen: FxHashSet<DefinitionID> = FxHashSet::default();
+
+        let mut collect = |db: &crate::compile::context::TypeDatabase<'ctx>| {
+            if let Some(idx) = db.type_head_to_members.get(&head) {
+                if let Some(set) = idx.instance_functions.get(&name) {
+                    for &id in &set.members {
+                        if seen.insert(id) {
+                            members.push(id);
+                        }
+                    }
+                }
+            }
+        };
+
+        gcx.with_session_type_database(|db| collect(db));
+
+        let mapping = gcx.store.package_mapping.borrow();
+        let deps: Vec<_> = gcx
+            .config
+            .dependencies
+            .values()
+            .filter_map(|ident| mapping.get(ident.as_str()).copied())
+            .collect();
+        drop(mapping);
+
+        for index in deps {
+            gcx.with_type_database(index, |db| collect(db));
+        }
+
+        members
     }
 
     pub fn type_head_from_type(&self, ty: Ty<'ctx>) -> Option<TypeHead> {
@@ -130,6 +164,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             TyKind::Adt(def) => Some(TypeHead::Nominal(def.id)),
             TyKind::Reference(_, mutbl) => Some(TypeHead::Reference(mutbl)),
             TyKind::Pointer(_, mutbl) => Some(TypeHead::Pointer(mutbl)),
+            TyKind::GcPtr => Some(TypeHead::GcPtr),
             TyKind::Tuple(items) => Some(TypeHead::Tuple(items.len() as u16)),
             TyKind::Infer(_) | TyKind::FnPointer { .. } | TyKind::Error => None,
         }

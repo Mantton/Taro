@@ -1680,7 +1680,11 @@ fn convert_ast_literal(literal: ast::Literal) -> Result<hir::Literal, String> {
                 .map_err(|err| format!("malformed rune, {:?}", err))?;
             Ok(hir::Literal::Rune(c))
         }
-        ast::Literal::String { value } => Ok(hir::Literal::String(Symbol::new(&value))),
+        ast::Literal::String { value } => {
+            let value =
+                escape::unescape_str(&value).map_err(|err| format!("malformed string, {:?}", err))?;
+            Ok(hir::Literal::String(Symbol::new(&value)))
+        }
         ast::Literal::Integer { value, base } => {
             let content = value.replace("_", "");
             u64::from_str_radix(&content, base.radix())
@@ -1774,6 +1778,22 @@ mod escape {
     /// unescaped char or an error.
     pub fn unescape_char(src: &str) -> Result<char, EscapeError> {
         unescape_char_or_byte(&mut src.chars(), Mode::Char)
+    }
+
+    /// Takes a contents of a string literal (without quotes), and returns the
+    /// unescaped string or an error.
+    pub fn unescape_str(src: &str) -> Result<String, EscapeError> {
+        let mut out = String::with_capacity(src.len());
+        let mut chars = src.chars();
+        while let Some(c) = chars.next() {
+            let c = match c {
+                '\\' => scan_escape(&mut chars, Mode::Str)?,
+                '\r' => return Err(EscapeError::BareCarriageReturn),
+                _ => ascii_check(c, Mode::Str.allow_unicode_chars())?,
+            };
+            out.push(c);
+        }
+        Ok(out)
     }
 
     /// What kind of literal do we parse.

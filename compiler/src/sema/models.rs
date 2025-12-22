@@ -146,6 +146,7 @@ impl<'arena> Ty<'arena> {
                 out.push_str(&output.format(gcx));
                 out
             }
+            TyKind::GcPtr => "GcPtr".into(),
             TyKind::Error => "<<error>>".into(),
             TyKind::Infer(k) => match k {
                 InferTy::TyVar(id) => format!("{{var({})}}", id._raw),
@@ -168,6 +169,7 @@ pub enum TyKind<'arena> {
     Adt(AdtDef),
     Pointer(Ty<'arena>, Mutability),
     Reference(Ty<'arena>, Mutability),
+    GcPtr,
     Tuple(&'arena [Ty<'arena>]),
     FnPointer {
         inputs: &'arena [Ty<'arena>],

@@ -37,6 +37,7 @@ pub fn mangle(gcx: GlobalContext, id: hir::DefinitionID) -> String {
             TyKind::Reference(inner, mt) => {
                 format!("ref{}{}", mt.display_str(), ty_symbol(gcx, inner))
             }
+            TyKind::GcPtr => "gcptr".into(),
             TyKind::Adt(def) => gcx.definition_ident(def.id).symbol.as_str().into(),
             TyKind::Tuple(items) => {
                 let parts: Vec<_> = items.iter().map(|t| ty_symbol(gcx, *t)).collect();
@@ -58,6 +59,7 @@ pub fn mangle(gcx: GlobalContext, id: hir::DefinitionID) -> String {
             TypeHead::Nominal(def_id) => gcx.definition_ident(def_id).symbol.as_str().into(),
             TypeHead::Reference(mt) => format!("ref{}", mt.display_str()),
             TypeHead::Pointer(mt) => format!("ptr{}", mt.display_str()),
+            TypeHead::GcPtr => "gcptr".into(),
             TypeHead::Tuple(len) => format!("tuple{len}"),
             TypeHead::Array => "array".into(),
         }

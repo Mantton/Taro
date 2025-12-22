@@ -144,12 +144,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
         name: Symbol,
     ) -> Option<Vec<DefinitionID>> {
         let head = self.type_head_from_type(candidate)?;
-        let all_candidates = self.gcx().with_session_type_database(|db| {
-            db.type_head_to_members
-                .get(&head)
-                .and_then(|idx| idx.instance_functions.get(&name))
-                .map(|set| set.members.clone())
-        })?;
+        let all_candidates = self.lookup_instance_candidates_visible(head, name);
+        if all_candidates.is_empty() {
+            return None;
+        }
 
         let mut matching = vec![];
         for candidate in all_candidates.into_iter() {

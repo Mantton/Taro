@@ -87,7 +87,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 unreachable!("ICE: inference variables encountered in `unify_nominal_tys`")
             }
             (Error, Error) => return Ok(()),
-            (Rune | Bool | Int(_) | UInt(_) | Float(_) | String, _) if a == b => return Ok(()),
+            (Rune | Bool | Int(_) | UInt(_) | Float(_) | String | GcPtr, _) if a == b => {
+                return Ok(());
+            }
             // (Parameter(a_p), Parameter(b_p)) if a_p.index == b_p.index => return Ok(()),
             (Adt(a_def), Adt(b_def)) if a_def.id == b_def.id => {
                 return Ok(());

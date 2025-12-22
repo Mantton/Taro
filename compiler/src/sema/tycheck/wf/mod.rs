@@ -131,7 +131,7 @@ fn collect_by_value_struct_deps(ty: Ty, out: &mut Vec<DefinitionID>) {
                 todo!("enum sizedness not implemented yet");
             }
         }
-        TyKind::Pointer(..) | TyKind::Reference(..) => {}
+        TyKind::Pointer(..) | TyKind::Reference(..) | TyKind::GcPtr => {}
         TyKind::Tuple(items) => {
             for item in items {
                 collect_by_value_struct_deps(*item, out);

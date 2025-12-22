@@ -1,4 +1,4 @@
-use crate::span::Symbol;
+use crate::{constants::STD_PREFIX, span::Symbol};
 use crate::thir::FieldIndex;
 use crate::{
     PackageIndex,
@@ -196,6 +196,19 @@ impl<'arena> GlobalContext<'arena> {
             .definition_to_ident
             .get(&id)
             .expect("identifier for definition")
+    }
+
+    pub fn is_std_gc_ptr(self, id: DefinitionID) -> bool {
+        let ident = self.definition_ident(id);
+        if ident.symbol.as_str() != "GcPtr" {
+            return false;
+        }
+        matches!(
+            self.package_ident(id.package())
+                .as_ref()
+                .map(|s| s.as_str()),
+            Some(STD_PREFIX)
+        )
     }
 
     pub fn definition_kind(self, id: DefinitionID) -> DefinitionKind {

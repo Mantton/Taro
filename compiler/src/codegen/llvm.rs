@@ -13,8 +13,13 @@ use inkwell::{
     context::Context,
     module::{Linkage, Module},
     passes::PassManager,
-    targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine},
-    types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType},
+    targets::{
+        CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetData, TargetMachine,
+    },
+    types::{
+        BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType,
+        StructType,
+    },
     values::{BasicMetadataValueEnum, BasicValue, BasicValueEnum, FunctionValue, PointerValue},
 };
 use rustc_hash::FxHashMap;
@@ -56,8 +61,8 @@ pub fn emit_package<'gcx>(
     emitter.emit_start_shim(package);
     emitter.run_function_passes();
 
-    let ir = emitter.module.print_to_string().to_string();
-    println!("{ir}");
+    // let ir = emitter.module.print_to_string().to_string();
+    // println!("{ir}");
 
     let obj = emitter.emit_object_file()?;
     gcx.cache_object_file(obj.clone());
@@ -76,12 +81,32 @@ struct Emitter<'llvm, 'gcx> {
     gc_descs: FxHashMap<Ty<'gcx>, PointerValue<'llvm>>,
     gc_desc_ty: inkwell::types::StructType<'llvm>,
     usize_ty: inkwell::types::IntType<'llvm>,
+    shadow: Option<ShadowStackInfo<'llvm, 'gcx>>,
 }
 
 #[derive(Clone, Copy)]
 enum LocalStorage<'llvm> {
     Value(Option<BasicValueEnum<'llvm>>),
     Stack(PointerValue<'llvm>),
+}
+
+struct ShadowStackInfo<'llvm, 'gcx> {
+    frame_ptr: PointerValue<'llvm>,
+    slots_ptr: PointerValue<'llvm>,
+    slot_defs: Vec<ShadowSlotDef<'gcx>>,
+    slot_map: Vec<Vec<usize>>,
+}
+
+#[derive(Clone)]
+struct ShadowSlotDef<'gcx> {
+    local: mir::LocalId,
+    kind: ShadowSlotKind<'gcx>,
+}
+
+#[derive(Clone)]
+enum ShadowSlotKind<'gcx> {
+    Local(Ty<'gcx>),
+    Field(crate::thir::FieldIndex, Ty<'gcx>),
 }
 
 impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
@@ -98,6 +123,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let gc_desc_ty = context.struct_type(
             &[
                 usize_ty.into(),   // size
+                usize_ty.into(),   // align
                 opaque_ptr.into(), // ptr_offsets
                 usize_ty.into(),   // ptr_count
             ],
@@ -115,13 +141,14 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             gc_descs: FxHashMap::default(),
             gc_desc_ty,
             usize_ty,
+            shadow: None,
         }
     }
 
     fn declare_functions(&mut self, package: &mir::MirPackage<'gcx>) {
         for (&def_id, _) in &package.functions {
             let sig = self.gcx.get_signature(def_id);
-            let fn_ty = lower_fn_sig(self.context, self.gcx, sig);
+            let fn_ty = lower_fn_sig(self.context, self.gcx, &self.target_data, sig);
             let name = mangle(self.gcx, def_id);
             let f = self.module.add_function(&name, fn_ty, None);
             self.functions.insert(def_id, f);
@@ -130,8 +157,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
     fn lower_functions(&mut self, package: &mir::MirPackage<'gcx>) -> CompileResult<()> {
         for (&def_id, body) in &package.functions {
-            let ident = self.gcx.definition_ident(def_id);
-            println!("{} IR Lowering", ident.symbol);
+            // let ident = self.gcx.definition_ident(def_id);
+            // println!("{} IR Lowering", ident.symbol);
             self.lower_body(def_id, body)?;
         }
         Ok(())
@@ -179,7 +206,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 .build_float_to_signed_int(val.into_float_value(), i32_ty, "float_to_i32")
                 .unwrap()
                 .as_basic_value_enum(),
-            (TyKind::Pointer(..) | TyKind::Reference(..) | TyKind::String, Some(val)) => {
+            (TyKind::Pointer(..) | TyKind::Reference(..) | TyKind::GcPtr, Some(val)) => {
                 let ptr = val.into_pointer_value();
                 let int64 = builder
                     .build_ptr_to_int(ptr, self.context.i64_type(), "ptr_to_int")
@@ -258,8 +285,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let llvm_blocks = self.create_blocks(function, body);
         let entry_block = llvm_blocks[body.start_block.index()];
         let mut locals = self.allocate_locals(body, entry_block, function);
-
         self.builder.position_at_end(entry_block);
+        self.setup_shadow_stack(body, entry_block, &locals)?;
 
         for (bb_id, bb) in body.basic_blocks.iter_enumerated() {
             let llvm_bb = llvm_blocks[bb_id.index()];
@@ -276,6 +303,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             }
         }
 
+        self.shadow = None;
         Ok(())
     }
 
@@ -312,7 +340,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             // Use stack slots for all locals with a representable LLVM type.
             // This avoids incorrect behavior at control-flow joins when "locals"
             // are tracked purely in the emitter (would require PHI construction).
-            let storage = match lower_type(self.context, self.gcx, decl.ty) {
+            let storage = match lower_type(self.context, self.gcx, &self.target_data, decl.ty) {
                 Some(ty) => {
                     let slot = alloc_builder.build_alloca(ty, &name).unwrap();
                     LocalStorage::Stack(slot)
@@ -340,6 +368,265 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         }
 
         locals
+    }
+
+    fn setup_shadow_stack(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        entry_block: inkwell::basic_block::BasicBlock<'llvm>,
+        locals: &[LocalStorage<'llvm>],
+    ) -> CompileResult<()> {
+        let (slot_defs, slot_map) = self.collect_shadow_slots(body);
+        if slot_defs.is_empty() {
+            self.shadow = None;
+            return Ok(());
+        }
+
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let slot_count = slot_defs.len() as u64;
+        let slots_ptr = self
+            .builder
+            .build_array_alloca(
+                ptr_ty,
+                self.usize_ty.const_int(slot_count, false),
+                "gc_slots",
+            )
+            .unwrap();
+
+        let frame_ty = self.shadow_frame_ty();
+        let frame_ptr = self
+            .builder
+            .build_alloca(frame_ty, "gc_shadow_frame")
+            .unwrap();
+
+        let prev_ptr = self
+            .builder
+            .build_struct_gep(frame_ty, frame_ptr, 0, "gc_frame_prev")
+            .unwrap();
+        let slots_ptr_gep = self
+            .builder
+            .build_struct_gep(frame_ty, frame_ptr, 1, "gc_frame_slots")
+            .unwrap();
+        let count_ptr = self
+            .builder
+            .build_struct_gep(frame_ty, frame_ptr, 2, "gc_frame_count")
+            .unwrap();
+        let _ = self
+            .builder
+            .build_store(prev_ptr, ptr_ty.const_null())
+            .unwrap();
+        let _ = self.builder.build_store(slots_ptr_gep, slots_ptr).unwrap();
+        let _ = self
+            .builder
+            .build_store(count_ptr, self.usize_ty.const_int(slot_count, false))
+            .unwrap();
+
+        let push_ty = self.context.void_type().fn_type(&[ptr_ty.into()], false);
+        let push_fn = self
+            .module
+            .get_function("__rt__gc_push_frame")
+            .unwrap_or_else(|| {
+                self.module
+                    .add_function("__rt__gc_push_frame", push_ty, Some(Linkage::External))
+            });
+        let _ = self
+            .builder
+            .build_call(push_fn, &[frame_ptr.into()], "gc_push")
+            .unwrap();
+
+        let shadow = ShadowStackInfo {
+            frame_ptr,
+            slots_ptr,
+            slot_defs,
+            slot_map,
+        };
+        self.shadow = Some(shadow);
+
+        // Initialize slots to null before any user code runs.
+        for idx in 0..slot_count as usize {
+            self.store_shadow_slot(idx, ptr_ty.const_null());
+        }
+
+        // Seed parameter locals into the shadow stack.
+        for (idx, decl) in body.locals.iter().enumerate() {
+            if matches!(decl.kind, mir::LocalKind::Param) {
+                self.update_shadow_for_local(body, locals, mir::LocalId::from_raw(idx as u32))?;
+            }
+        }
+
+        // Ensure setup happens before any user instructions in the entry block.
+        self.builder.position_at_end(entry_block);
+        Ok(())
+    }
+
+    fn collect_shadow_slots(
+        &self,
+        body: &mir::Body<'gcx>,
+    ) -> (Vec<ShadowSlotDef<'gcx>>, Vec<Vec<usize>>) {
+        let mut slot_defs = Vec::new();
+        let mut slot_map = vec![Vec::new(); body.locals.len()];
+
+        for (local, decl) in body.locals.iter_enumerated() {
+            let ty = decl.ty;
+            let mut local_slots = Vec::new();
+            match ty.kind() {
+                TyKind::Reference(..) | TyKind::GcPtr | TyKind::String => {
+                    local_slots.push(ShadowSlotKind::Local(ty));
+                }
+                TyKind::Adt(def) => {
+                    let defn = self.gcx.get_struct_definition(def.id);
+                    for (idx, field) in defn.fields.iter().enumerate() {
+                        if is_pointer_ty(field.ty) {
+                            let field_idx = crate::thir::FieldIndex::new(idx);
+                            local_slots.push(ShadowSlotKind::Field(field_idx, field.ty));
+                        }
+                    }
+                }
+                TyKind::Tuple(items) => {
+                    for (idx, item_ty) in items.iter().enumerate() {
+                        if is_pointer_ty(*item_ty) {
+                            let field_idx = crate::thir::FieldIndex::new(idx);
+                            local_slots.push(ShadowSlotKind::Field(field_idx, *item_ty));
+                        }
+                    }
+                }
+                _ => {}
+            }
+
+            for kind in local_slots {
+                let slot_index = slot_defs.len();
+                slot_defs.push(ShadowSlotDef { local, kind });
+                slot_map[local.index()].push(slot_index);
+            }
+        }
+
+        (slot_defs, slot_map)
+    }
+
+    fn shadow_frame_ty(&self) -> StructType<'llvm> {
+        if let Some(ty) = self.context.get_struct_type("_gcShadowFrame") {
+            if ty.is_opaque() {
+                let ptr_ty = self.context.ptr_type(AddressSpace::default());
+                ty.set_body(&[ptr_ty.into(), ptr_ty.into(), self.usize_ty.into()], false);
+            }
+            return ty;
+        }
+
+        let ty = self.context.opaque_struct_type("_gcShadowFrame");
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        ty.set_body(&[ptr_ty.into(), ptr_ty.into(), self.usize_ty.into()], false);
+        ty
+    }
+
+    fn store_shadow_slot(&mut self, slot_idx: usize, value: PointerValue<'llvm>) {
+        let Some(shadow) = &self.shadow else {
+            return;
+        };
+        let idx = self.usize_ty.const_int(slot_idx as u64, false);
+        let slot_ptr = unsafe {
+            self.builder
+                .build_gep(
+                    self.context.ptr_type(AddressSpace::default()),
+                    shadow.slots_ptr,
+                    &[idx],
+                    "gc_slot_ptr",
+                )
+                .unwrap()
+        };
+        let _ = self.builder.build_store(slot_ptr, value).unwrap();
+    }
+
+    fn update_shadow_for_local(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &[LocalStorage<'llvm>],
+        local: mir::LocalId,
+    ) -> CompileResult<()> {
+        let Some(shadow) = self.shadow.as_ref() else {
+            return Ok(());
+        };
+        let slot_indices = shadow
+            .slot_map
+            .get(local.index())
+            .cloned()
+            .unwrap_or_default();
+        if slot_indices.is_empty() {
+            return Ok(());
+        }
+        let slot_defs = shadow.slot_defs.clone();
+
+        for slot_idx in slot_indices {
+            let def = slot_defs.get(slot_idx).cloned().expect("shadow slot def");
+            let place = match def.kind.clone() {
+                ShadowSlotKind::Local(_) => mir::Place::from_local(def.local),
+                ShadowSlotKind::Field(field_idx, field_ty) => mir::Place {
+                    local: def.local,
+                    projection: vec![mir::PlaceElem::Field(field_idx, field_ty)],
+                },
+            };
+
+            let value = match self.load_place(body, locals, &place) {
+                Some(v) => v,
+                None => {
+                    self.store_shadow_slot(
+                        slot_idx,
+                        self.context.ptr_type(AddressSpace::default()).const_null(),
+                    );
+                    continue;
+                }
+            };
+
+            let slot_ty = match def.kind {
+                ShadowSlotKind::Local(ty) => ty,
+                ShadowSlotKind::Field(_, ty) => ty,
+            };
+
+            let ptr_val = match self.shadow_ptr_from_value(slot_ty, value) {
+                Some(p) => p,
+                None => self.context.ptr_type(AddressSpace::default()).const_null(),
+            };
+            self.store_shadow_slot(slot_idx, ptr_val);
+        }
+
+        Ok(())
+    }
+
+    fn shadow_ptr_from_value(
+        &mut self,
+        ty: Ty<'gcx>,
+        value: BasicValueEnum<'llvm>,
+    ) -> Option<PointerValue<'llvm>> {
+        match ty.kind() {
+            TyKind::Reference(..) | TyKind::GcPtr => Some(value.into_pointer_value()),
+            TyKind::String => {
+                let struct_val = value.into_struct_value();
+                let ptr_val = self
+                    .builder
+                    .build_extract_value(struct_val, 0, "gc_str_ptr")
+                    .unwrap();
+                Some(ptr_val.into_pointer_value())
+            }
+            _ => None,
+        }
+    }
+
+    fn emit_shadow_pop(&mut self) {
+        let Some(shadow) = &self.shadow else {
+            return;
+        };
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let pop_ty = self.context.void_type().fn_type(&[ptr_ty.into()], false);
+        let pop_fn = self
+            .module
+            .get_function("__rt__gc_pop_frame")
+            .unwrap_or_else(|| {
+                self.module
+                    .add_function("__rt__gc_pop_frame", pop_ty, Some(Linkage::External))
+            });
+        let _ = self
+            .builder
+            .build_call(pop_fn, &[shadow.frame_ptr.into()], "gc_pop")
+            .unwrap();
     }
 
     fn lower_statement(
@@ -404,7 +691,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             mir::Rvalue::Aggregate { .. } => unreachable!("aggregates should be lowered in MIR"),
             mir::Rvalue::Alloc { ty: alloc_ty } => {
                 let llvm_payload_ty =
-                    lower_type(self.context, self.gcx, *alloc_ty).expect("alloc type");
+                    lower_type(self.context, self.gcx, &self.target_data, *alloc_ty)
+                        .expect("alloc type");
                 let size = self.target_data.get_store_size(&llvm_payload_ty);
                 let size_const = self.usize_ty.const_int(size, false);
                 let desc_ptr = self.gc_desc_for(*alloc_ty);
@@ -583,7 +871,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     _ => return None,
                 }
             }
-            TyKind::Pointer(..) | TyKind::Reference(..) | TyKind::String => {
+            TyKind::Pointer(..) | TyKind::Reference(..) | TyKind::GcPtr => {
                 let lhs_ptr = lhs.into_pointer_value();
                 let rhs_ptr = rhs.into_pointer_value();
                 let ptr_int_ty = self.context.i64_type();
@@ -819,7 +1107,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         if matches!(
             to_ty.kind(),
-            TyKind::Pointer(..) | TyKind::Reference(..) | TyKind::String
+            TyKind::Pointer(..) | TyKind::Reference(..) | TyKind::GcPtr
         ) {
             return Some(
                 self.builder
@@ -882,6 +1170,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     .unwrap();
             }
             mir::TerminatorKind::Return => {
+                self.emit_shadow_pop();
                 let ret_place = mir::Place {
                     local: body.return_local,
                     projection: vec![],
@@ -945,7 +1234,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
                 // Not declared yet (likely from another package); declare as external.
                 let sig = self.gcx.get_signature(def_id);
-                let fn_ty = lower_fn_sig(self.context, self.gcx, sig);
+                let fn_ty = lower_fn_sig(self.context, self.gcx, &self.target_data, sig);
                 let name = mangle(self.gcx, def_id);
                 let linkage = Some(Linkage::External);
                 let f = self.module.add_function(&name, fn_ty, linkage);
@@ -967,7 +1256,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
     fn declare_foreign_function(&self, id: hir::DefinitionID) -> FunctionValue<'llvm> {
         let sig = self.gcx.get_signature(id);
-        let fn_ty = lower_fn_sig(self.context, self.gcx, sig);
+        let fn_ty = lower_fn_sig(self.context, self.gcx, &self.target_data, sig);
         let ident = self.gcx.definition_ident(id);
         let name = ident.symbol.as_str();
         self.module.get_function(name).unwrap_or_else(|| {
@@ -1003,7 +1292,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 LocalStorage::Value(Some(v)) => Some(v),
                 LocalStorage::Value(None) => None,
                 LocalStorage::Stack(ptr) => {
-                    let ty = lower_type(self.context, self.gcx, place_ty)?;
+                    let ty = lower_type(self.context, self.gcx, &self.target_data, place_ty)?;
                     Some(self.builder.build_load(ty, ptr, "load").unwrap())
                 }
             };
@@ -1012,7 +1301,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let ptr = self.project_place(place, body, locals);
         match ptr {
             Ok(ptr) => {
-                let elem_ty = lower_type(self.context, self.gcx, place_ty)?;
+                let elem_ty = lower_type(self.context, self.gcx, &self.target_data, place_ty)?;
                 Some(self.builder.build_load(elem_ty, ptr, "load").unwrap())
             }
             Err(_) => None,
@@ -1020,7 +1309,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     }
 
     fn store_local(
-        &self,
+        &mut self,
         local: mir::LocalId,
         locals: &mut [LocalStorage<'llvm>],
         value: BasicValueEnum<'llvm>,
@@ -1031,15 +1320,24 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 locals[local.index()] = LocalStorage::Value(Some(value));
             }
             LocalStorage::Stack(ptr) => {
-                if lower_type(self.context, self.gcx, body.locals[local].ty).is_some() {
+                if lower_type(
+                    self.context,
+                    self.gcx,
+                    &self.target_data,
+                    body.locals[local].ty,
+                )
+                .is_some()
+                {
                     let _ = self.builder.build_store(ptr, value).unwrap();
                 }
             }
         }
+
+        let _ = self.update_shadow_for_local(body, locals, local);
     }
 
     fn store_place(
-        &self,
+        &mut self,
         place: &mir::Place<'gcx>,
         body: &mir::Body<'gcx>,
         locals: &mut [LocalStorage<'llvm>],
@@ -1052,6 +1350,13 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         let ptr = self.project_place(place, body, locals)?;
         self.builder.build_store(ptr, value).unwrap();
+        if !place
+            .projection
+            .iter()
+            .any(|p| matches!(p, mir::PlaceElem::Deref))
+        {
+            let _ = self.update_shadow_for_local(body, locals, place.local);
+        }
         Ok(())
     }
 
@@ -1096,8 +1401,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 }
                 mir::PlaceElem::Field(idx, field_ty) => {
                     // Compute pointer to the requested field.
-                    let agg_ty =
-                        lower_type(self.context, self.gcx, ty).expect("aggregate type lowered");
+                    let agg_ty = lower_type(self.context, self.gcx, &self.target_data, ty)
+                        .expect("aggregate type lowered");
                     let struct_ty = match agg_ty {
                         BasicTypeEnum::StructType(st) => st,
                         _ => panic!(
@@ -1151,7 +1456,18 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     .const_int(r as u64, false)
                     .as_basic_value_enum(),
             ),
-            mir::ConstantKind::String(sym) => Some(self.lower_string(sym).as_basic_value_enum()),
+            mir::ConstantKind::String(sym) => {
+                let ptr = self.lower_string(sym);
+                let len = self.usize_ty.const_int(sym.as_str().len() as u64, false);
+                let Some(ty) = lower_type(self.context, self.gcx, &self.target_data, constant.ty)
+                else {
+                    return None;
+                };
+                let string_ty = ty.into_struct_type();
+                let value = string_ty
+                    .const_named_struct(&[ptr.as_basic_value_enum(), len.as_basic_value_enum()]);
+                Some(value.as_basic_value_enum())
+            }
             mir::ConstantKind::Integer(i) => self
                 .int_type(constant.ty)
                 .map(|(ty, _)| ty.const_int(i, false).as_basic_value_enum()),
@@ -1190,8 +1506,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         match ty.kind() {
             TyKind::Bool => Some((self.context.bool_type(), false)),
             TyKind::Rune => Some((self.context.i32_type(), true)),
-            TyKind::Int(i) => Some((int_from_kind(self.context, i), true)),
-            TyKind::UInt(u) => Some((uint_from_kind(self.context, u), false)),
+            TyKind::Int(i) => Some((int_from_kind(self.context, &self.target_data, i), true)),
+            TyKind::UInt(u) => Some((uint_from_kind(self.context, &self.target_data, u), false)),
             _ => None,
         }
     }
@@ -1223,10 +1539,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             return gv;
         }
 
-        let llvm_ty = lower_type(self.context, self.gcx, ty).expect("lower type");
+        let llvm_ty =
+            lower_type(self.context, self.gcx, &self.target_data, ty).expect("lower type");
         let size = self.target_data.get_store_size(&llvm_ty);
+        let align = self.target_data.get_abi_alignment(&llvm_ty) as u64;
 
-        // Collect pointer field offsets (only direct pointer/reference/string fields).
+        // Collect pointer field offsets (only direct reference/string/GcPtr fields).
         let mut offsets: Vec<u64> = vec![];
         match ty.kind() {
             TyKind::Adt(def) => {
@@ -1253,6 +1571,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         }
                     }
                 }
+            }
+            TyKind::String | TyKind::GcPtr | TyKind::Reference(..) => {
+                offsets.push(0);
             }
             _ => {}
         }
@@ -1283,6 +1604,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         let desc_const = self.gc_desc_ty.const_named_struct(&[
             self.usize_ty.const_int(size, false).into(),
+            self.usize_ty.const_int(align, false).into(),
             ptr_offsets_ptr,
             self.usize_ty.const_int(offsets.len() as u64, false).into(),
         ]);
@@ -1303,21 +1625,22 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 fn is_pointer_ty(ty: Ty) -> bool {
     matches!(
         ty.kind(),
-        TyKind::Pointer(..) | TyKind::Reference(..) | TyKind::String
+        TyKind::Reference(..) | TyKind::String | TyKind::GcPtr
     )
 }
 
 fn lower_fn_sig<'llvm>(
     context: &'llvm Context,
     gcx: Gcx<'_>,
+    target_data: &TargetData,
     sig: &crate::sema::models::LabeledFunctionSignature,
 ) -> FunctionType<'llvm> {
     let params: Vec<BasicMetadataTypeEnum<'llvm>> = sig
         .inputs
         .iter()
-        .filter_map(|p| lower_type(context, gcx, p.ty).map(|t| t.into()))
+        .filter_map(|p| lower_type(context, gcx, target_data, p.ty).map(|t| t.into()))
         .collect();
-    match lower_type(context, gcx, sig.output) {
+    match lower_type(context, gcx, target_data, sig.output) {
         Some(ret) => ret.fn_type(&params, sig.is_variadic),
         None => context.void_type().fn_type(&params, sig.is_variadic),
     }
@@ -1326,18 +1649,20 @@ fn lower_fn_sig<'llvm>(
 fn lower_type<'llvm>(
     context: &'llvm Context,
     gcx: Gcx<'_>,
+    target_data: &TargetData,
     ty: Ty,
 ) -> Option<BasicTypeEnum<'llvm>> {
     match ty.kind() {
         TyKind::Bool => Some(context.bool_type().into()),
         TyKind::Rune => Some(context.i32_type().into()),
-        TyKind::String => Some(
+        TyKind::String => Some(string_header_ty(context, target_data).into()),
+        TyKind::GcPtr => Some(
             context
                 .ptr_type(AddressSpace::default())
                 .as_basic_type_enum(),
         ),
-        TyKind::Int(i) => Some(int_from_kind(context, i).into()),
-        TyKind::UInt(u) => Some(uint_from_kind(context, u).into()),
+        TyKind::Int(i) => Some(int_from_kind(context, target_data, i).into()),
+        TyKind::UInt(u) => Some(uint_from_kind(context, target_data, u).into()),
         TyKind::Float(f) => Some(match f {
             FloatTy::F32 => context.f32_type().into(),
             FloatTy::F64 => context.f64_type().into(),
@@ -1347,7 +1672,7 @@ fn lower_type<'llvm>(
             let field_tys: Vec<BasicTypeEnum<'llvm>> = defn
                 .fields
                 .iter()
-                .filter_map(|f| lower_type(context, gcx, f.ty))
+                .filter_map(|f| lower_type(context, gcx, target_data, f.ty))
                 .collect();
             Some(context.struct_type(&field_tys, false).into())
         }
@@ -1362,7 +1687,7 @@ fn lower_type<'llvm>(
             } else {
                 let fields: Vec<BasicTypeEnum<'llvm>> = items
                     .iter()
-                    .filter_map(|t| lower_type(context, gcx, *t))
+                    .filter_map(|t| lower_type(context, gcx, target_data, *t))
                     .collect();
                 Some(context.struct_type(&fields, false).into())
             }
@@ -1376,21 +1701,48 @@ fn lower_type<'llvm>(
     }
 }
 
-fn int_from_kind<'llvm>(context: &'llvm Context, ty: IntTy) -> IntType<'llvm> {
+fn string_header_ty<'llvm>(context: &'llvm Context, target_data: &TargetData) -> StructType<'llvm> {
+    if let Some(ty) = context.get_struct_type("_stringHeader") {
+        if ty.is_opaque() {
+            let ptr_ty = context.ptr_type(AddressSpace::default());
+            let len_ty = uint_from_kind(context, target_data, UIntTy::USize);
+            ty.set_body(&[ptr_ty.into(), len_ty.into()], false);
+        }
+        return ty;
+    }
+
+    let ty = context.opaque_struct_type("_stringHeader");
+    let ptr_ty = context.ptr_type(AddressSpace::default());
+    let len_ty = uint_from_kind(context, target_data, UIntTy::USize);
+    ty.set_body(&[ptr_ty.into(), len_ty.into()], false);
+    ty
+}
+
+fn int_from_kind<'llvm>(
+    context: &'llvm Context,
+    target_data: &TargetData,
+    ty: IntTy,
+) -> IntType<'llvm> {
     match ty {
         IntTy::I8 => context.i8_type(),
         IntTy::I16 => context.i16_type(),
         IntTy::I32 => context.i32_type(),
-        IntTy::I64 | IntTy::ISize => context.i64_type(),
+        IntTy::I64 => context.i64_type(),
+        IntTy::ISize => context.ptr_sized_int_type(target_data, None),
     }
 }
 
-fn uint_from_kind<'llvm>(context: &'llvm Context, ty: UIntTy) -> IntType<'llvm> {
+fn uint_from_kind<'llvm>(
+    context: &'llvm Context,
+    target_data: &TargetData,
+    ty: UIntTy,
+) -> IntType<'llvm> {
     match ty {
         UIntTy::U8 => context.i8_type(),
         UIntTy::U16 => context.i16_type(),
         UIntTy::U32 => context.i32_type(),
-        UIntTy::U64 | UIntTy::USize => context.i64_type(),
+        UIntTy::U64 => context.i64_type(),
+        UIntTy::USize => context.ptr_sized_int_type(target_data, None),
     }
 }
 

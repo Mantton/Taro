@@ -605,6 +605,7 @@ pub enum TypeHead {
     Nominal(DefinitionID),
     Reference(ast::Mutability),
     Pointer(ast::Mutability),
+    GcPtr,
     Tuple(u16),
     Array,
 }

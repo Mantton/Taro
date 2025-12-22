@@ -62,22 +62,27 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 PrimaryType::Int(k) => Ty::new_int(gcx, k),
                 PrimaryType::UInt(k) => Ty::new_uint(gcx, k),
                 PrimaryType::Float(k) => Ty::new_float(gcx, k),
-                PrimaryType::String => todo!(),
+                PrimaryType::String => gcx.types.string,
                 PrimaryType::Bool => gcx.types.bool,
                 PrimaryType::Rune => gcx.types.rune,
             },
-            Resolution::Definition(id, kind) => match kind {
-                crate::sema::resolve::models::DefinitionKind::Struct => {
-                    let ident = gcx.definition_ident(id);
-                    let def = AdtDef {
-                        name: ident.symbol,
-                        kind: AdtKind::Struct,
-                        id,
-                    };
-                    Ty::new(TyKind::Adt(def), gcx)
+            Resolution::Definition(id, kind) => {
+                if gcx.is_std_gc_ptr(id) {
+                    return Ty::new(TyKind::GcPtr, gcx);
                 }
-                _ => todo!("nominal type lowering for {kind:?}"),
-            },
+                match kind {
+                    crate::sema::resolve::models::DefinitionKind::Struct => {
+                        let ident = gcx.definition_ident(id);
+                        let def = AdtDef {
+                            name: ident.symbol,
+                            kind: AdtKind::Struct,
+                            id,
+                        };
+                        Ty::new(TyKind::Adt(def), gcx)
+                    }
+                    _ => todo!("nominal type lowering for {kind:?}"),
+                }
+            }
             Resolution::SelfTypeAlias(id) => match gcx.definition_kind(id) {
                 crate::sema::resolve::models::DefinitionKind::Struct => gcx.get_type(id),
                 crate::sema::resolve::models::DefinitionKind::Extension => {
@@ -86,11 +91,12 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                     };
                     match head {
                         TypeHead::Nominal(target_id) => gcx.get_type(target_id),
+                        TypeHead::GcPtr => Ty::new(TyKind::GcPtr, gcx),
                         TypeHead::Primary(p) => match p {
                             PrimaryType::Int(k) => Ty::new_int(gcx, k),
                             PrimaryType::UInt(k) => Ty::new_uint(gcx, k),
                             PrimaryType::Float(k) => Ty::new_float(gcx, k),
-                            PrimaryType::String => todo!(),
+                            PrimaryType::String => gcx.types.string,
                             PrimaryType::Bool => gcx.types.bool,
                             PrimaryType::Rune => gcx.types.rune,
                         },
