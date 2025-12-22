@@ -32,6 +32,9 @@ pub fn run_default_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) {
         Box::new(passes::SimplifyCfg),
         Box::new(passes::LowerAggregates),
         Box::new(passes::SimplifyCfg),
+        Box::new(passes::EscapeAnalysis),
+        Box::new(passes::ApplyEscapeAnalysis),
+        Box::new(passes::InsertSafepoints),
     ];
     let (first, rest) = passes.split_at_mut(2);
     run_passes(gcx, body, first);

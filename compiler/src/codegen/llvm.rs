@@ -642,6 +642,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     self.store_place(place, body, locals, value)?;
                 }
             }
+            mir::StatementKind::GcSafepoint => {
+                let callee = self.get_gc_poll();
+                let _ = self.builder.build_call(callee, &[], "gc_poll").unwrap();
+            }
             mir::StatementKind::Nop => {}
         }
         Ok(())
@@ -1532,6 +1536,15 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .fn_type(&[self.usize_ty.into(), gc_desc_ptr.into()], false);
         self.module
             .add_function("gc_alloc", fn_ty, Some(Linkage::External))
+    }
+
+    fn get_gc_poll(&self) -> FunctionValue<'llvm> {
+        if let Some(f) = self.module.get_function("gc_poll") {
+            return f;
+        }
+        let fn_ty = self.context.void_type().fn_type(&[], false);
+        self.module
+            .add_function("gc_poll", fn_ty, Some(Linkage::External))
     }
 
     fn gc_desc_for(&mut self, ty: Ty<'gcx>) -> PointerValue<'llvm> {

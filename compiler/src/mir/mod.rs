@@ -42,6 +42,7 @@ pub struct Body<'ctx> {
     pub basic_blocks: IndexVec<BasicBlockId, BasicBlockData<'ctx>>,
     pub start_block: BasicBlockId,
     pub return_local: LocalId,
+    pub escape_locals: Vec<bool>,
     pub phase: MirPhase,
 }
 
@@ -77,6 +78,7 @@ pub struct Statement<'ctx> {
 #[derive(Debug, Clone)]
 pub enum StatementKind<'ctx> {
     Assign(Place<'ctx>, Rvalue<'ctx>),
+    GcSafepoint,
     Nop,
 }
 

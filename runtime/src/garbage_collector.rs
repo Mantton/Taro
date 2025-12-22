@@ -138,6 +138,16 @@ pub extern "C" fn gc_collect() {
     with_gc(|gc| gc.collect());
 }
 
+/// Poll for a pending collection at a compiler-inserted safepoint.
+#[unsafe(no_mangle)]
+pub extern "C" fn gc_poll() {
+    with_gc(|gc| {
+        if gc.alloc_since_gc >= gc.gc_threshold_bytes {
+            gc.collect();
+        }
+    });
+}
+
 /// Register a static/global range as a root.
 #[unsafe(no_mangle)]
 pub extern "C" fn gc_register_static(begin: *const u8, end: *const u8) {
@@ -701,15 +711,10 @@ impl Gc {
     // Update stats and optionally trigger a collection.
     // The freshly allocated pointer is pushed as a temporary root if GC runs.
     fn after_alloc(&mut self, ptr: *mut u8, alloc_bytes: usize) {
-        // Update stats and trigger GC if needed; push the new pointer as a temp root.
+        // Update stats and allow safepoints to decide when to collect.
         self.stats.record_alloc(alloc_bytes);
         self.alloc_since_gc = self.alloc_since_gc.saturating_add(alloc_bytes);
-        if self.alloc_since_gc >= self.gc_threshold_bytes {
-            if !ptr.is_null() {
-                self.manual_roots.push(ptr as *const u8);
-            }
-            self.collect();
-        }
+        let _ = ptr;
     }
 
     fn alloc_span_id(&mut self) -> usize {

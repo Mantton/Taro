@@ -43,6 +43,7 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                 write!(f, " = ")?;
                 self.write_rvalue(rvalue, f)
             }
+            StatementKind::GcSafepoint => write!(f, "gc_safepoint"),
             StatementKind::Nop => write!(f, "nop"),
         }
     }

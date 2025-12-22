@@ -93,6 +93,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             basic_blocks: Default::default(),
             start_block: BasicBlockId::from_raw(0),
             return_local: LocalId::from_raw(0),
+            escape_locals: Vec::new(),
             phase: mir::MirPhase::Built,
         };
 
@@ -103,6 +104,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             name: Some(Symbol::new("$ret")),
             span: entry_span,
         });
+        body.escape_locals.push(false);
         body.return_local = ret_local;
 
         let mut builder = MirBuilder {
@@ -166,12 +168,14 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         name: Option<Symbol>,
         span: Span,
     ) -> LocalId {
-        self.body.locals.push(LocalDecl {
+        let local = self.body.locals.push(LocalDecl {
             ty,
             kind,
             name,
             span,
-        })
+        });
+        self.body.escape_locals.push(false);
+        local
     }
 
     fn new_temp_with_ty(&mut self, ty: Ty<'ctx>, span: Span) -> LocalId {
