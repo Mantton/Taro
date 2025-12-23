@@ -1,4 +1,3 @@
-use crate::{constants::STD_PREFIX, span::Symbol};
 use crate::thir::FieldIndex;
 use crate::{
     PackageIndex,
@@ -7,7 +6,10 @@ use crate::{
     hir::{self, DefinitionID},
     mir::{self, Body},
     sema::{
-        models::{FloatTy, IntTy, LabeledFunctionSignature, StructDefinition, Ty, TyKind, UIntTy},
+        models::{
+            EnumDefinition, FloatTy, IntTy, LabeledFunctionSignature, StructDefinition, Ty, TyKind,
+            UIntTy,
+        },
         resolve::models::{
             DefinitionKind, ResolutionOutput, ScopeData, ScopeEntryData, TypeHead, UsageEntryData,
             Visibility,
@@ -16,6 +18,7 @@ use crate::{
     },
     utils::intern::{Interned, InternedInSet, InternedSet},
 };
+use crate::{constants::STD_PREFIX, span::Symbol};
 use bumpalo::Bump;
 use ecow::EcoString;
 use rustc_hash::FxHashMap;
@@ -92,6 +95,14 @@ impl<'arena> GlobalContext<'arena> {
         database.def_to_struct_def.insert(id, alloc);
     }
 
+    pub fn cache_enum_definition(self, id: DefinitionID, def: EnumDefinition<'arena>) {
+        let mut cache = self.context.store.type_databases.borrow_mut();
+        let package_index = id.package();
+        let database = cache.entry(package_index).or_insert(Default::default());
+        let alloc = self.context.store.arenas.enum_definitions.alloc(def);
+        database.def_to_enum_def.insert(id, alloc);
+    }
+
     pub fn cache_extension_type_head(self, extension_id: DefinitionID, head: TypeHead) {
         self.with_type_database(extension_id.package(), |db| {
             db.extension_to_type_head.insert(extension_id, head.clone());
@@ -161,6 +172,14 @@ impl<'arena> GlobalContext<'arena> {
             *db.def_to_struct_def
                 .get(&id)
                 .expect("struct definition of definition")
+        })
+    }
+
+    pub fn get_enum_definition(self, id: DefinitionID) -> &'arena EnumDefinition<'arena> {
+        self.with_type_database(id.package(), |db| {
+            *db.def_to_enum_def
+                .get(&id)
+                .expect("enum definition of definition")
         })
     }
 
@@ -404,6 +423,7 @@ pub struct CompilerArenas<'arena> {
     pub type_lists: typed_arena::Arena<Vec<Ty<'arena>>>,
     pub function_signatures: typed_arena::Arena<LabeledFunctionSignature<'arena>>,
     pub struct_definitions: typed_arena::Arena<StructDefinition<'arena>>,
+    pub enum_definitions: typed_arena::Arena<EnumDefinition<'arena>>,
     pub mir_bodies: typed_arena::Arena<Body<'arena>>,
     pub mir_packages: typed_arena::Arena<mir::MirPackage<'arena>>,
     pub global: Bump,
@@ -421,6 +441,7 @@ impl<'arena> CompilerArenas<'arena> {
             type_lists: Default::default(),
             function_signatures: Default::default(),
             struct_definitions: Default::default(),
+            enum_definitions: Default::default(),
             mir_bodies: Default::default(),
             mir_packages: Default::default(),
             global: Bump::new(),
@@ -490,6 +511,7 @@ pub struct TypeDatabase<'arena> {
     pub def_to_ty: FxHashMap<DefinitionID, Ty<'arena>>,
     pub def_to_fn_sig: FxHashMap<DefinitionID, &'arena LabeledFunctionSignature<'arena>>,
     pub def_to_struct_def: FxHashMap<DefinitionID, &'arena StructDefinition<'arena>>,
+    pub def_to_enum_def: FxHashMap<DefinitionID, &'arena EnumDefinition<'arena>>,
     pub extension_to_type_head: FxHashMap<DefinitionID, TypeHead>,
     pub type_head_to_extensions: FxHashMap<TypeHead, Vec<DefinitionID>>,
     pub type_head_to_members: FxHashMap<TypeHead, TypeMemberIndex>,

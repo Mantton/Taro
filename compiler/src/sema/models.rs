@@ -208,6 +208,33 @@ pub struct StructDefinition<'arena> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EnumVariantField<'arena> {
+    pub label: Option<Symbol>,
+    pub ty: Ty<'arena>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EnumVariantKind<'arena> {
+    Unit,
+    Tuple(&'arena [EnumVariantField<'arena>]),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EnumVariant<'arena> {
+    pub name: Symbol,
+    pub def_id: DefinitionID,
+    pub ctor_def_id: DefinitionID,
+    pub kind: EnumVariantKind<'arena>,
+    pub discriminant: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnumDefinition<'arena> {
+    pub adt_def: AdtDef,
+    pub variants: &'arena [EnumVariant<'arena>],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IntTy {
     ISize,
     I8,
@@ -305,10 +332,4 @@ pub enum InferTy {
     IntVar(IntVarID),
     FloatVar(FloatVarID),
     FreshTy(u32),
-}
-
-#[derive(Debug, Clone)]
-pub enum CalleeOrigin {
-    Direct(DefinitionID),
-    Overloaded(Vec<DefinitionID>),
 }

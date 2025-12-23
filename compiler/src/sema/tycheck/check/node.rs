@@ -285,7 +285,9 @@ impl<'ctx> Checker<'ctx> {
             hir::ExpressionKind::If(expr) => {
                 self.synth_if_expression(expression, expr, expectation, cs)
             }
-            hir::ExpressionKind::Match(..) => todo!(),
+            hir::ExpressionKind::Match(expr) => {
+                self.synth_match_expression(expression, expr, expectation, cs)
+            }
             hir::ExpressionKind::Reference(inner, mutability) => {
                 let inner_ty = self.synth_with_expectation(inner, None, cs);
                 if *mutability == hir::Mutability::Mutable {
@@ -772,10 +774,9 @@ impl<'ctx> Checker<'ctx> {
             hir::Resolution::Definition(id, kind) => {
                 if !self.gcx().is_definition_visible(*id, self.current_def) {
                     let name = self.gcx().definition_ident(*id).symbol;
-                    self.gcx().dcx().emit_error(
-                        format!("'{}' is not visible here", name).into(),
-                        Some(span),
-                    );
+                    self.gcx()
+                        .dcx()
+                        .emit_error(format!("'{}' is not visible here", name).into(), Some(span));
                     return Ty::error(self.gcx());
                 }
                 match kind {
@@ -1005,13 +1006,7 @@ impl<'ctx> Checker<'ctx> {
         let gcx = self.gcx();
         let head = TypeHead::Nominal(nominal);
         let name = Symbol::new("new");
-        let constructors = gcx.with_type_database(nominal.package(), |db| {
-            db.type_head_to_members
-                .get(&head)
-                .map(|idx| idx.static_functions.get(&name).map(|v| v.members.clone()))
-                .flatten()
-                .unwrap_or_default()
-        });
+        let constructors = self.collect_static_member_candidates(head, name);
 
         if constructors.is_empty() {
             let name = gcx.definition_ident(nominal).symbol;
@@ -1094,6 +1089,40 @@ impl<'ctx> Checker<'ctx> {
         }
     }
 
+    fn synth_match_expression(
+        &self,
+        expression: &hir::Expression,
+        node: &hir::MatchExpression,
+        expectation: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        if node.arms.is_empty() {
+            self.gcx().dcx().emit_error(
+                "match expression must have at least one arm".into(),
+                Some(node.kw_span),
+            );
+            return Ty::error(self.gcx());
+        }
+
+        let scrutinee_ty = self.synth(&node.value, cs);
+        let result_ty = expectation.unwrap_or_else(|| cs.infer_cx.next_ty_var(expression.span));
+
+        for arm in &node.arms {
+            GatherLocalsVisitor::from_match_arm(cs, self, &arm.pattern);
+            self.check_pattern_structure(&arm.pattern, scrutinee_ty, cs);
+
+            if let Some(guard) = &arm.guard {
+                let guard_ty = self.synth_with_expectation(guard, Some(self.gcx().types.bool), cs);
+                cs.equal(self.gcx().types.bool, guard_ty, guard.span);
+            }
+
+            let arm_ty = self.synth_with_expectation(&arm.body, Some(result_ty), cs);
+            cs.equal(result_ty, arm_ty, arm.body.span);
+        }
+
+        result_ty
+    }
+
     fn synth_unary_expression(
         &self,
         expression: &hir::Expression,
@@ -1150,8 +1179,9 @@ impl<'ctx> Checker<'ctx> {
 impl<'ctx> Checker<'ctx> {
     fn resolve_callee(&self, node: &hir::Expression) -> Option<DefinitionID> {
         match &node.kind {
-            hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => {
-                self.resolve_resolution_callee(&path.resolution)
+            hir::ExpressionKind::Path(path) => {
+                let resolution = self.resolve_value_path_resolution(path, node.span, false);
+                self.resolve_resolution_callee(&resolution)
             }
             _ => None,
         }
@@ -1165,6 +1195,146 @@ impl<'ctx> Checker<'ctx> {
             _ => None,
         }
     }
+
+    fn resolve_value_path_resolution(
+        &self,
+        path: &hir::ResolvedPath,
+        span: Span,
+        emit_errors: bool,
+    ) -> hir::Resolution {
+        match path {
+            hir::ResolvedPath::Resolved(path) => path.resolution.clone(),
+            hir::ResolvedPath::Relative(base_ty, segment) => {
+                if !matches!(segment.resolution, hir::Resolution::Error) {
+                    return segment.resolution.clone();
+                }
+
+                let base_ty = self.lower_type(base_ty);
+                let Some(head) = self.type_head_from_value_ty(base_ty) else {
+                    if emit_errors {
+                        self.gcx().dcx().emit_error(
+                            "cannot resolve members on this type receiver".into(),
+                            Some(span),
+                        );
+                    }
+                    return hir::Resolution::Error;
+                };
+
+                self.resolve_static_member_resolution(
+                    head,
+                    base_ty,
+                    &segment.identifier,
+                    segment.identifier.span,
+                    emit_errors,
+                )
+            }
+        }
+    }
+
+    fn resolve_static_member_resolution(
+        &self,
+        head: TypeHead,
+        base_ty: Ty<'ctx>,
+        name: &crate::span::Identifier,
+        span: Span,
+        emit_errors: bool,
+    ) -> hir::Resolution {
+        let gcx = self.gcx();
+        if let TypeHead::Nominal(def_id) = head {
+            if gcx.definition_kind(def_id) == DefinitionKind::Enum {
+                let enum_def = gcx.get_enum_definition(def_id);
+
+                if let Some(variant) = enum_def.variants.iter().find(|v| v.name == name.symbol) {
+                    if !gcx.is_definition_visible(variant.ctor_def_id, self.current_def) {
+                        if emit_errors {
+                            gcx.dcx()
+                                .emit_error("enum variant is not visible here".into(), Some(span));
+                        }
+                        return hir::Resolution::Error;
+                    }
+
+                    let kind = gcx.definition_kind(variant.ctor_def_id);
+                    return hir::Resolution::Definition(variant.ctor_def_id, kind);
+                }
+            }
+        }
+
+        let candidates = self.collect_static_member_candidates(head, name.symbol);
+
+        if candidates.is_empty() {
+            if emit_errors {
+                let msg = format!(
+                    "unknown associated symbol named '{}' on type '{}'",
+                    name.symbol.as_str(),
+                    base_ty.format(gcx)
+                );
+                gcx.dcx().emit_error(msg.into(), Some(span));
+            }
+            return hir::Resolution::Error;
+        }
+
+        let visible: Vec<_> = candidates
+            .iter()
+            .copied()
+            .filter(|id| gcx.is_definition_visible(*id, self.current_def))
+            .collect();
+
+        if visible.is_empty() {
+            if emit_errors {
+                gcx.dcx().emit_error(
+                    format!(
+                        "static member '{}' is not visible here",
+                        name.symbol.as_str()
+                    )
+                    .into(),
+                    Some(span),
+                );
+            }
+            return hir::Resolution::Error;
+        }
+
+        if visible.len() == 1 {
+            let id = visible[0];
+            let kind = gcx.definition_kind(id);
+            return hir::Resolution::Definition(id, kind);
+        }
+
+        hir::Resolution::FunctionSet(visible)
+    }
+
+    fn collect_static_member_candidates(
+        &self,
+        head: TypeHead,
+        name: Symbol,
+    ) -> Vec<DefinitionID> {
+        let gcx = self.gcx();
+        let databases = gcx.store.type_databases.borrow();
+        let mut members = Vec::new();
+
+        for db in databases.values() {
+            if let Some(index) = db.type_head_to_members.get(&head) {
+                if let Some(set) = index.static_functions.get(&name) {
+                    members.extend(set.members.iter().copied());
+                }
+            }
+        }
+
+        members
+    }
+
+    fn instantiate_value_path(
+        &self,
+        node_id: NodeID,
+        span: Span,
+        resolution: &hir::Resolution,
+        expectation: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        if matches!(resolution, hir::Resolution::Error) {
+            return Ty::error(self.gcx());
+        }
+        self.synth_identifier_expression(node_id, span, resolution, expectation, cs)
+    }
 }
 
 impl<'ctx> Checker<'ctx> {
@@ -1175,32 +1345,8 @@ impl<'ctx> Checker<'ctx> {
         expectation: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
-        match path {
-            hir::ResolvedPath::Resolved(path) => self.synth_identifier_expression(
-                expression.id,
-                expression.span,
-                &path.resolution,
-                expectation,
-                cs,
-            ),
-            hir::ResolvedPath::Relative(base_ty, segment) => {
-                let base_ty = self.lower_type(base_ty);
-                let Some(head) = self.type_head_from_value_ty(base_ty) else {
-                    self.gcx().dcx().emit_error(
-                        "cannot resolve members on this type receiver".into(),
-                        Some(expression.span),
-                    );
-                    return Ty::error(self.gcx());
-                };
-                self.synth_static_member(
-                    expression.id,
-                    head,
-                    &segment.identifier,
-                    expression.span,
-                    cs,
-                )
-            }
-        }
+        let resolution = self.resolve_value_path_resolution(path, expression.span, true);
+        self.instantiate_value_path(expression.id, expression.span, &resolution, expectation, cs)
     }
 
     fn synth_member_expression(
@@ -1259,67 +1405,6 @@ impl<'ctx> Checker<'ctx> {
             TyKind::Tuple(items) => Some(TypeHead::Tuple(items.len() as u16)),
             TyKind::Infer(_) | TyKind::FnPointer { .. } | TyKind::Error => None,
         }
-    }
-
-    fn synth_static_member(
-        &self,
-        node_id: NodeID,
-        head: TypeHead,
-        name: &crate::span::Identifier,
-        span: Span,
-        cs: &mut Cs<'ctx>,
-    ) -> Ty<'ctx> {
-        let gcx = self.gcx();
-        let candidates = gcx.with_session_type_database(|db| {
-            db.type_head_to_members
-                .get(&head)
-                .and_then(|idx| idx.static_functions.get(&name.symbol))
-                .map(|set| set.members.clone())
-                .unwrap_or_default()
-        });
-
-        if candidates.is_empty() {
-            gcx.dcx().emit_error(
-                format!("unknown static member '{}'", name.symbol.as_str()),
-                Some(span),
-            );
-            return Ty::error(gcx);
-        }
-
-        let visible: Vec<_> = candidates
-            .iter()
-            .copied()
-            .filter(|id| gcx.is_definition_visible(*id, self.current_def))
-            .collect();
-
-        if visible.is_empty() {
-            gcx.dcx().emit_error(
-                format!(
-                    "static member '{}' is not visible here",
-                    name.symbol.as_str()
-                )
-                .into(),
-                Some(span),
-            );
-            return Ty::error(gcx);
-        }
-
-        let ty = cs.infer_cx.next_ty_var(span);
-        let mut branches = Vec::with_capacity(visible.len());
-        for candidate in visible {
-            let candidate_ty = gcx.get_type(candidate);
-            branches.push(DisjunctionBranch {
-                goal: Goal::BindOverload(BindOverloadGoalData {
-                    node_id,
-                    var_ty: ty,
-                    candidate_ty,
-                    source: candidate,
-                }),
-                source: Some(candidate),
-            });
-        }
-        cs.add_goal(Goal::Disjunction(branches), span);
-        ty
     }
 
     fn synth_struct_literal(
@@ -1460,6 +1545,7 @@ impl<'ctx> Checker<'ctx> {
     ) {
         match &pattern.kind {
             hir::PatternKind::Wildcard => {}
+            hir::PatternKind::Rest => {}
             hir::PatternKind::Identifier(_) => {
                 let binding = self.get_local(pattern.id);
                 cs.equal(scrutinee, binding.ty, pattern.span);
@@ -1481,7 +1567,224 @@ impl<'ctx> Checker<'ctx> {
                     self.check_pattern_structure(pat, elem_tys[i], cs);
                 }
             }
-            _ => todo!("pattern kind not supported in check_pattern_structure"),
+            hir::PatternKind::Member(path) => {
+                let Some((variant, enum_ty)) =
+                    self.resolve_enum_variant_pattern(scrutinee, path, pattern.span, cs)
+                else {
+                    return;
+                };
+
+                if !matches!(variant.kind, crate::sema::models::EnumVariantKind::Unit) {
+                    self.gcx().dcx().emit_error(
+                        format!(
+                            "enum variant '{}' requires tuple fields",
+                            variant.name.as_str()
+                        )
+                        .into(),
+                        Some(pattern.span),
+                    );
+                    return;
+                }
+
+                cs.equal(scrutinee, enum_ty, pattern.span);
+            }
+            hir::PatternKind::PathTuple { path, fields, .. } => {
+                let Some((variant, enum_ty, variant_fields)) =
+                    self.resolve_enum_tuple_variant_pattern(scrutinee, path, pattern.span, cs)
+                else {
+                    return;
+                };
+
+                if fields.len() != variant_fields.len() {
+                    self.gcx().dcx().emit_error(
+                        format!(
+                            "expected {} field(s) for enum variant '{}', got {}",
+                            variant_fields.len(),
+                            variant.name.as_str(),
+                            fields.len()
+                        )
+                        .into(),
+                        Some(pattern.span),
+                    );
+                    return;
+                }
+
+                cs.equal(scrutinee, enum_ty, pattern.span);
+
+                for (pat, field) in fields.iter().zip(variant_fields.iter()) {
+                    self.check_pattern_structure(pat, field.ty, cs);
+                }
+            }
+            hir::PatternKind::Or(patterns, _) => {
+                for pat in patterns {
+                    self.check_pattern_structure(pat, scrutinee, cs);
+                }
+            }
+            hir::PatternKind::Literal(anon) => {
+                let lit_ty = self.synth(&anon.value, cs);
+                cs.equal(scrutinee, lit_ty, pattern.span);
+            }
         }
+    }
+
+    fn resolve_enum_variant_pattern(
+        &self,
+        scrutinee: Ty<'ctx>,
+        path: &hir::PatternPath,
+        span: Span,
+        cs: &mut Cs<'ctx>,
+    ) -> Option<(crate::sema::models::EnumVariant<'ctx>, Ty<'ctx>)> {
+        let gcx = self.gcx();
+        match path {
+            hir::PatternPath::Qualified { path } => {
+                let resolution = self.resolve_value_path_resolution(path, span, true);
+                self.resolve_enum_variant_from_resolution(scrutinee, resolution, span, cs)
+            }
+            hir::PatternPath::Inferred { .. } => {
+                todo!("inferred enum patterns")
+            }
+        }
+    }
+
+    fn resolve_enum_tuple_variant_pattern(
+        &self,
+        scrutinee: Ty<'ctx>,
+        path: &hir::PatternPath,
+        span: Span,
+        cs: &mut Cs<'ctx>,
+    ) -> Option<(
+        crate::sema::models::EnumVariant<'ctx>,
+        Ty<'ctx>,
+        &'ctx [crate::sema::models::EnumVariantField<'ctx>],
+    )> {
+        let (variant, enum_ty) = self.resolve_enum_variant_pattern(scrutinee, path, span, cs)?;
+        let crate::sema::models::EnumVariantKind::Tuple(fields) = variant.kind else {
+            self.gcx().dcx().emit_error(
+                format!(
+                    "enum variant '{}' does not take tuple fields",
+                    variant.name.as_str()
+                )
+                .into(),
+                Some(span),
+            );
+            return None;
+        };
+
+        Some((variant, enum_ty, fields))
+    }
+
+    fn resolve_enum_variant_from_resolution(
+        &self,
+        scrutinee: Ty<'ctx>,
+        resolution: hir::Resolution,
+        span: Span,
+        cs: &mut Cs<'ctx>,
+    ) -> Option<(crate::sema::models::EnumVariant<'ctx>, Ty<'ctx>)> {
+        let gcx = self.gcx();
+        let hir::Resolution::Definition(ctor_id, kind) = resolution else {
+            if !matches!(resolution, hir::Resolution::Error) {
+                gcx.dcx()
+                    .emit_error("expected enum variant pattern".into(), Some(span));
+            }
+            return None;
+        };
+
+        if !matches!(kind, DefinitionKind::VariantConstructor(..)) {
+            gcx.dcx()
+                .emit_error("expected enum variant pattern".into(), Some(span));
+            return None;
+        }
+
+        let Some(parent_id) = gcx.definition_parent(ctor_id) else {
+            gcx.dcx()
+                .emit_error("enum variant is missing a parent".into(), Some(span));
+            return None;
+        };
+
+        let enum_id = match gcx.definition_kind(parent_id) {
+            DefinitionKind::Enum => parent_id,
+            DefinitionKind::Variant => {
+                let Some(enum_id) = gcx.definition_parent(parent_id) else {
+                    gcx.dcx()
+                        .emit_error("enum variant is missing a parent".into(), Some(span));
+                    return None;
+                };
+                enum_id
+            }
+            _ => {
+                gcx.dcx()
+                    .emit_error("enum variant is missing a parent".into(), Some(span));
+                return None;
+            }
+        };
+
+        let def = gcx.with_type_database(enum_id.package(), |db| {
+            db.def_to_enum_def.get(&enum_id).copied()
+        });
+        let Some(def) = def else {
+            gcx.dcx()
+                .emit_error("missing enum definition for variant".into(), Some(span));
+            return None;
+        };
+        let variant = def
+            .variants
+            .iter()
+            .find(|v| v.ctor_def_id == ctor_id)
+            .copied();
+
+        let Some(variant) = variant else {
+            gcx.dcx().emit_error(
+                "enum variant constructor does not belong to this enum".into(),
+                Some(span),
+            );
+            return None;
+        };
+
+        if !gcx.is_definition_visible(variant.ctor_def_id, self.current_def) {
+            gcx.dcx()
+                .emit_error("enum variant is not visible here".into(), Some(span));
+            return None;
+        }
+
+        let enum_ty = gcx.get_type(enum_id);
+        cs.equal(scrutinee, enum_ty, span);
+        Some((variant, enum_ty))
+    }
+
+    fn resolve_enum_variant_by_name(
+        &self,
+        enum_id: DefinitionID,
+        name: &crate::span::Identifier,
+        span: Span,
+        scrutinee: Ty<'ctx>,
+        cs: &mut Cs<'ctx>,
+    ) -> Option<(crate::sema::models::EnumVariant<'ctx>, Ty<'ctx>)> {
+        let gcx = self.gcx();
+        if gcx.definition_kind(enum_id) != DefinitionKind::Enum {
+            gcx.dcx()
+                .emit_error("expected enum variant pattern".into(), Some(span));
+            return None;
+        }
+
+        let enum_ty = gcx.get_type(enum_id);
+        let def = gcx.get_enum_definition(enum_id);
+        let variant = def.variants.iter().find(|v| v.name == name.symbol).copied();
+
+        let Some(variant) = variant else {
+            gcx.dcx().emit_error(
+                format!("unknown enum variant '{}'", name.symbol.as_str()).into(),
+                Some(span),
+            );
+            return None;
+        };
+
+        if !gcx.is_definition_visible(variant.ctor_def_id, self.current_def) {
+            gcx.dcx()
+                .emit_error("enum variant is not visible here".into(), Some(span));
+            return None;
+        }
+
+        cs.equal(scrutinee, enum_ty, span);
+        Some((variant, enum_ty))
     }
 }

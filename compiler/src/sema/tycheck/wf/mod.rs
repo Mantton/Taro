@@ -30,7 +30,7 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
         match &node.kind {
             hir::DeclarationKind::Interface(..) => todo!(),
             hir::DeclarationKind::Struct(_) => self.check_struct(node.id),
-            hir::DeclarationKind::Enum(_) => todo!(),
+            hir::DeclarationKind::Enum(_) => self.check_enum(node.id),
             hir::DeclarationKind::Function(function) => self.check_function(node.id, function),
             hir::DeclarationKind::TypeAlias(..) => todo!(),
             hir::DeclarationKind::Constant(..) => todo!(),
@@ -78,13 +78,48 @@ impl<'ctx> Actor<'ctx> {
         }
     }
 
+    fn check_enum(&self, id: DefinitionID) {
+        let ident = self.context.definition_ident(id);
+
+        if self.has_infinite_size(id) {
+            self.context.dcx().emit_error(
+                format!(
+                    "recursive enum `{}` has infinite size",
+                    ident.symbol.as_str()
+                ),
+                Some(ident.span),
+            );
+            return;
+        }
+
+        let def = self.context.get_enum_definition(id);
+        for variant in def.variants {
+            let crate::sema::models::EnumVariantKind::Tuple(fields) = variant.kind else {
+                continue;
+            };
+            for (idx, field) in fields.iter().enumerate() {
+                if !is_sized(field.ty) {
+                    self.context.dcx().emit_error(
+                        format!(
+                            "field {} of enum variant '{}' in '{}' does not have a sized type",
+                            idx,
+                            variant.name.as_str(),
+                            ident.symbol.as_str()
+                        ),
+                        Some(ident.span),
+                    );
+                }
+            }
+        }
+    }
+
     fn has_infinite_size(&self, id: DefinitionID) -> bool {
         let mut visiting: FxHashSet<DefinitionID> = FxHashSet::default();
         let mut visited: FxHashSet<DefinitionID> = FxHashSet::default();
-        self.dfs_struct_cycle(id, &mut visiting, &mut visited)
+        self.dfs_adt_cycle(id, &mut visiting, &mut visited)
     }
 
-    fn dfs_struct_cycle(
+    fn dfs_adt_cycle(
         &self,
         current: DefinitionID,
         visiting: &mut FxHashSet<DefinitionID>,
@@ -99,18 +134,43 @@ impl<'ctx> Actor<'ctx> {
         visited.insert(current);
         visiting.insert(current);
 
-        let def = self.context.get_struct_definition(current);
-        for field in def.fields {
-            let mut deps: Vec<DefinitionID> = vec![];
-            collect_by_value_struct_deps(field.ty, &mut deps);
-            for dep in deps {
-                if dep.package() != current.package() {
-                    continue;
-                }
-                if self.dfs_struct_cycle(dep, visiting, visited) {
-                    return true;
+        match self.context.definition_kind(current) {
+            crate::sema::resolve::models::DefinitionKind::Struct => {
+                let def = self.context.get_struct_definition(current);
+                for field in def.fields {
+                    let mut deps: Vec<DefinitionID> = vec![];
+                    collect_by_value_adt_deps(field.ty, &mut deps);
+                    for dep in deps {
+                        if dep.package() != current.package() {
+                            continue;
+                        }
+                        if self.dfs_adt_cycle(dep, visiting, visited) {
+                            return true;
+                        }
+                    }
                 }
             }
+            crate::sema::resolve::models::DefinitionKind::Enum => {
+                let def = self.context.get_enum_definition(current);
+                for variant in def.variants {
+                    let crate::sema::models::EnumVariantKind::Tuple(fields) = variant.kind else {
+                        continue;
+                    };
+                    for field in fields.iter() {
+                        let mut deps: Vec<DefinitionID> = vec![];
+                        collect_by_value_adt_deps(field.ty, &mut deps);
+                        for dep in deps {
+                            if dep.package() != current.package() {
+                                continue;
+                            }
+                            if self.dfs_adt_cycle(dep, visiting, visited) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
 
         visiting.remove(&current);
@@ -122,19 +182,17 @@ fn is_sized(ty: Ty) -> bool {
     !matches!(ty.kind(), TyKind::Infer(_) | TyKind::Error)
 }
 
-fn collect_by_value_struct_deps(ty: Ty, out: &mut Vec<DefinitionID>) {
+fn collect_by_value_adt_deps(ty: Ty, out: &mut Vec<DefinitionID>) {
     match ty.kind() {
         TyKind::Adt(adt) => {
-            if matches!(adt.kind, AdtKind::Struct) {
+            if matches!(adt.kind, AdtKind::Struct | AdtKind::Enum) {
                 out.push(adt.id);
-            } else {
-                todo!("enum sizedness not implemented yet");
             }
         }
         TyKind::Pointer(..) | TyKind::Reference(..) | TyKind::GcPtr => {}
         TyKind::Tuple(items) => {
             for item in items {
-                collect_by_value_struct_deps(*item, out);
+                collect_by_value_adt_deps(*item, out);
             }
         }
         TyKind::FnPointer { .. } => {}

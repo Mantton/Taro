@@ -342,8 +342,8 @@ pub struct Generics {
 // Variants
 #[derive(Debug, Clone)]
 pub struct Variant {
-    pub id: NodeID,
-    pub ctor_id: NodeID,
+    pub def_id: DefinitionID,
+    pub ctor_def_id: DefinitionID,
     pub identifier: Identifier,
     pub kind: VariantKind,
     pub discriminant: Option<AnonConst>,

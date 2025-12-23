@@ -84,11 +84,17 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                     return Ty::new(TyKind::GcPtr, gcx);
                 }
                 match kind {
-                    crate::sema::resolve::models::DefinitionKind::Struct => {
+                    crate::sema::resolve::models::DefinitionKind::Struct
+                    | crate::sema::resolve::models::DefinitionKind::Enum => {
                         let ident = gcx.definition_ident(id);
                         let def = AdtDef {
                             name: ident.symbol,
-                            kind: AdtKind::Struct,
+                            kind: match kind {
+                                crate::sema::resolve::models::DefinitionKind::Enum => {
+                                    AdtKind::Enum
+                                }
+                                _ => AdtKind::Struct,
+                            },
                             id,
                         };
                         Ty::new(TyKind::Adt(def), gcx)
@@ -97,7 +103,8 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 }
             }
             Resolution::SelfTypeAlias(id) => match gcx.definition_kind(id) {
-                crate::sema::resolve::models::DefinitionKind::Struct => gcx.get_type(id),
+                crate::sema::resolve::models::DefinitionKind::Struct
+                | crate::sema::resolve::models::DefinitionKind::Enum => gcx.get_type(id),
                 crate::sema::resolve::models::DefinitionKind::Extension => {
                     let Some(head) = gcx.get_extension_type_head(id) else {
                         return gcx.types.error;

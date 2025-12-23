@@ -49,7 +49,7 @@ impl<'ctx> Actor<'ctx> {
         &self,
         id: DefinitionID,
         node: &hir::Function,
-        fn_ctx: hir::FunctionContext,
+        _: hir::FunctionContext,
     ) -> LabeledFunctionSignature<'ctx> {
         let ctx = DefTyLoweringCtx::new(id, self.context);
         let mut inputs: Vec<LabeledFunctionParameter> = Vec::new();

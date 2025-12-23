@@ -1419,8 +1419,8 @@ impl Actor<'_, '_> {
 impl Actor<'_, '_> {
     fn lower_variant(&mut self, node: ast::Variant) -> hir::Variant {
         hir::Variant {
-            id: self.next_index(),
-            ctor_id: self.next_index(),
+            def_id: self.definition_id(node.id),
+            ctor_def_id: self.definition_id(node.ctor_id),
             identifier: node.identifier,
             kind: match node.kind {
                 ast::VariantKind::Unit => hir::VariantKind::Unit,
