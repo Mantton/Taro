@@ -189,6 +189,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             Goal::Disjunction(branches) => self.solve_disjunction(location, branches),
             Goal::UnaryOp(data) => self.solve_unary(data),
             Goal::BinaryOp(data) => self.solve_binary(data),
+            Goal::AssignOp(data) => self.solve_assign_op(data),
             Goal::Coerce { from, to } => self.solve_coerce(location, from, to),
             Goal::Member(data) => self.solve_member(data),
             Goal::MethodCall(data) => self.solve_method_call(data),

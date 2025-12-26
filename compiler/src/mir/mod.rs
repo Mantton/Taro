@@ -357,6 +357,7 @@ impl Category {
             | thir::ExprKind::Adt(..) => Category::Rvalue(RvalueFunc::Into),
 
             thir::ExprKind::Assign { .. }
+            | thir::ExprKind::AssignOp { .. }
             | thir::ExprKind::Binary { .. }
             | thir::ExprKind::Logical { .. }
             | thir::ExprKind::Unary { .. }

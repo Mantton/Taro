@@ -1000,8 +1000,10 @@ fn is_line_continuation_starter(tok: &Token) -> bool {
     matches!(
         tok,
         // arithmetic / bitwise / logical operators
-        Plus | Minus | Star | Quotient | Modulus
-        | Caret | Amp | Bar
+        // Note: Star (*) and Amp (&) are excluded because they have common
+        // unary uses (dereference and reference) that should start new statements
+        Plus | Minus | Quotient | Modulus
+        | Caret | Bar
         | AmpAmp | BarBar
         // relational / equality
         | LChevron | RChevron | Leq | Geq | Eql | Neq | PtrEq

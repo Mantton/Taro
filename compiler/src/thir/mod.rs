@@ -89,6 +89,12 @@ pub enum ExprKind<'a> {
         target: ExprId,
         value: ExprId,
     },
+    /// Compound assignment operator (+=, -=, etc.) for intrinsics
+    AssignOp {
+        op: BinaryOperator,
+        target: ExprId,
+        value: ExprId,
+    },
     /// Literal constant
     Literal(Constant<'a>),
     /// Unary op

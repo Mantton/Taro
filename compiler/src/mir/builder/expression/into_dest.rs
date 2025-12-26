@@ -108,7 +108,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             ExprKind::Match { scrutinee, arms } => {
                 self.lower_match_expr(destination, block, expr_id, *scrutinee, arms)
             }
-            ExprKind::Assign { .. } => {
+            ExprKind::Assign { .. } | ExprKind::AssignOp { .. } => {
                 block = self.lower_statement_expression(block, expr_id).into_block();
                 self.push_assign_unit(block, expr.span, destination, self.gcx);
                 block.unit()

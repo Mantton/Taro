@@ -35,6 +35,7 @@ pub enum TypeError<'ctx> {
     NotATuple { ty: Ty<'ctx> },
     InvalidUnaryOp { op: UnaryOperator, ty: Ty<'ctx> },
     InvalidBinaryOp { op: BinaryOperator, lhs: Ty<'ctx>, rhs: Ty<'ctx> },
+    InvalidAssignOp { op: BinaryOperator, lhs: Ty<'ctx>, rhs: Ty<'ctx> },
 }
 
 pub type SpannedError<'ctx> = Spanned<TypeError<'ctx>>;
@@ -102,6 +103,14 @@ impl<'ctx> TypeError<'ctx> {
             TypeError::InvalidBinaryOp { op, lhs, rhs } => {
                 format!(
                     "cannot apply binary operator '{:?}' to types {} and {}",
+                    op,
+                    lhs.format(gcx),
+                    rhs.format(gcx)
+                )
+            }
+            TypeError::InvalidAssignOp { op, lhs, rhs } => {
+                format!(
+                    "cannot apply compound assignment operator '{:?}=' to types {} and {}",
                     op,
                     lhs.format(gcx),
                     rhs.format(gcx)

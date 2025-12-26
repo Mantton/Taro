@@ -1,11 +1,12 @@
 use crate::{
-    hir::{BinaryOperator, OperatorKind, UnaryOperator},
+    hir::{BinaryOperator, Mutability, OperatorKind, UnaryOperator},
     sema::{
         error::TypeError,
         models::{InferTy, Ty, TyKind},
         tycheck::solve::{
-            ApplyArgument, ApplyGoalData, BinOpGoalData, BindOverloadGoalData, ConstraintSolver,
-            DisjunctionBranch, Goal, Obligation, SolverResult, UnOpGoalData,
+            Adjustment, ApplyArgument, ApplyGoalData, AssignOpGoalData, BinOpGoalData,
+            BindOverloadGoalData, ConstraintSolver, DisjunctionBranch, Goal, Obligation,
+            SolverResult, UnOpGoalData,
         },
     },
     span::Spanned,
@@ -41,6 +42,32 @@ fn unary_op_to_operator_kind(op: UnaryOperator) -> Option<OperatorKind> {
         UnaryOperator::Negate => Some(OperatorKind::Neg),
         UnaryOperator::BitwiseNot => Some(OperatorKind::BitwiseNot),
         UnaryOperator::LogicalNot => Some(OperatorKind::Not),
+    }
+}
+
+/// Convert a BinaryOperator to an OperatorKind for compound assignment operator method lookup.
+fn binary_op_to_assign_operator_kind(op: BinaryOperator) -> Option<OperatorKind> {
+    match op {
+        BinaryOperator::Add => Some(OperatorKind::AddAssign),
+        BinaryOperator::Sub => Some(OperatorKind::SubAssign),
+        BinaryOperator::Mul => Some(OperatorKind::MulAssign),
+        BinaryOperator::Div => Some(OperatorKind::DivAssign),
+        BinaryOperator::Rem => Some(OperatorKind::RemAssign),
+        BinaryOperator::BitAnd => Some(OperatorKind::BitAndAssign),
+        BinaryOperator::BitOr => Some(OperatorKind::BitOrAssign),
+        BinaryOperator::BitXor => Some(OperatorKind::BitXorAssign),
+        BinaryOperator::BitShl => Some(OperatorKind::BitShlAssign),
+        BinaryOperator::BitShr => Some(OperatorKind::BitShrAssign),
+        // Comparison and boolean operators don't have assign variants
+        BinaryOperator::Eql
+        | BinaryOperator::Neq
+        | BinaryOperator::Lt
+        | BinaryOperator::Gt
+        | BinaryOperator::Leq
+        | BinaryOperator::Geq
+        | BinaryOperator::BoolAnd
+        | BinaryOperator::BoolOr
+        | BinaryOperator::PtrEq => None,
     }
 }
 
@@ -577,6 +604,260 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 goal: Goal::Equal(data.rho, gcx.types.bool),
             });
             return Some(obligations);
+        }
+
+        None
+    }
+}
+
+impl<'ctx> ConstraintSolver<'ctx> {
+    pub fn solve_assign_op(&mut self, data: AssignOpGoalData<'ctx>) -> SolverResult<'ctx> {
+        let lhs = self.structurally_resolve(data.lhs);
+        let rhs = self.structurally_resolve(data.rhs);
+
+        // If LHS type is not yet resolved, defer
+        if lhs.is_infer() {
+            return SolverResult::Deferred;
+        }
+
+        // Try intrinsic resolution first (primitives: a += b becomes a = a + b)
+        if let Some(obligations) = self.solve_assign_op_intrinsic(&data, lhs, rhs) {
+            return SolverResult::Solved(obligations);
+        }
+
+        // Try operator method resolution (e.g., AddAssign)
+        if let Some(result) = self.solve_assign_op_method(&data, lhs, rhs) {
+            return result;
+        }
+
+        // No intrinsic or method found
+        SolverResult::Error(vec![Spanned::new(
+            TypeError::InvalidAssignOp {
+                op: data.operator,
+                lhs,
+                rhs,
+            },
+            data.span,
+        )])
+    }
+
+    fn solve_assign_op_method(
+        &mut self,
+        data: &AssignOpGoalData<'ctx>,
+        lhs: Ty<'ctx>,
+        rhs: Ty<'ctx>,
+    ) -> Option<SolverResult<'ctx>> {
+        let op_kind = binary_op_to_assign_operator_kind(data.operator)?;
+
+        // Look up assign operator candidates on the LHS type
+        let candidates = self.lookup_operator_candidates(lhs, op_kind);
+        if candidates.is_empty() {
+            return None;
+        }
+
+        // Compound assignment operators take &self (mutable reference)
+        // Create the reference type for matching
+        let lhs_ref_ty = Ty::new(TyKind::Reference(lhs, Mutability::Mutable), self.gcx());
+
+        // Filter candidates to those whose first parameter is &mut T and RHS matches
+        let mut matching_candidates = Vec::new();
+        for candidate in candidates {
+            let sig = self.gcx().get_signature(candidate);
+            // Assign operator methods have signature: (&self, rhs: Rhs) -> void
+            if sig.inputs.len() >= 2 {
+                let self_param_ty = sig.inputs[0].ty;
+                let rhs_param_ty = sig.inputs[1].ty;
+
+                // Check if self parameter is &mut T
+                let self_matches = self_param_ty == lhs_ref_ty;
+                // Check if RHS parameter matches
+                let rhs_matches = rhs == rhs_param_ty || rhs.is_infer();
+
+                if self_matches && rhs_matches {
+                    matching_candidates.push(candidate);
+                }
+            }
+        }
+
+        if matching_candidates.is_empty() {
+            return None;
+        }
+
+        // Record that we need to take a mutable reference of the LHS
+        self.record_adjustments(data.lhs_id, vec![Adjustment::BorrowMutable]);
+
+        // Create a type variable for the method type
+        let method_ty = self.icx.next_ty_var(data.span);
+
+        // Build disjunction branches for each candidate
+        let mut branches = Vec::with_capacity(matching_candidates.len());
+        for candidate in matching_candidates {
+            let candidate_ty = self.gcx().get_type(candidate);
+            branches.push(DisjunctionBranch {
+                goal: Goal::BindOverload(BindOverloadGoalData {
+                    node_id: data.node_id,
+                    var_ty: method_ty,
+                    candidate_ty,
+                    source: candidate,
+                }),
+                source: Some(candidate),
+            });
+        }
+
+        let disjunction_goal = Obligation {
+            location: data.span,
+            goal: Goal::Disjunction(branches),
+        };
+
+        // Build the Apply goal: call the assign operator method with `&self` and `rhs`
+        // Assign ops return void
+        let apply_goal = Obligation {
+            location: data.span,
+            goal: Goal::Apply(ApplyGoalData {
+                call_span: data.span,
+                callee_ty: method_ty,
+                callee_source: None,
+                result_ty: self.gcx().types.void,
+                expect_ty: None,
+                arguments: vec![
+                    ApplyArgument {
+                        id: data.lhs_id,
+                        label: None,
+                        ty: lhs_ref_ty, // Pass &mut T instead of T
+                        span: data.span,
+                    },
+                    ApplyArgument {
+                        id: data.rhs_id,
+                        label: None,
+                        ty: rhs,
+                        span: data.span,
+                    },
+                ],
+                skip_labels: true,
+            }),
+        };
+
+        Some(SolverResult::Solved(vec![disjunction_goal, apply_goal]))
+    }
+
+    /// Try to resolve intrinsic compound assignment operations on primitives.
+    /// For primitives, `a += b` is equivalent to `a = a + b`.
+    fn solve_assign_op_intrinsic(
+        &self,
+        data: &AssignOpGoalData<'ctx>,
+        lhs: Ty<'ctx>,
+        rhs: Ty<'ctx>,
+    ) -> Option<Vec<Obligation<'ctx>>> {
+        use BinaryOperator::*;
+        use InferTy::*;
+        use TyKind::*;
+
+        let is_same_int = |a: Ty<'ctx>, b: Ty<'ctx>| -> bool {
+            match (a.kind(), b.kind()) {
+                (Int(ka), Int(kb)) => ka == kb,
+                (UInt(ka), UInt(kb)) => ka == kb,
+                _ => false,
+            }
+        };
+        let is_same_float = |a: Ty<'ctx>, b: Ty<'ctx>| -> bool {
+            matches!((a.kind(), b.kind()), (Float(ka), Float(kb)) if ka == kb)
+        };
+
+        let mut obligations = vec![];
+
+        match data.operator {
+            // Arithmetic compound assignment: +=, -=, *=, /=, %=
+            Add | Sub | Mul | Div | Rem => {
+                // Same concrete numeric types
+                if is_same_int(lhs, rhs) || is_same_float(lhs, rhs) {
+                    return Some(obligations);
+                }
+
+                // Handle inference variables
+                match (lhs.kind(), rhs.kind()) {
+                    // Concrete LHS with inference RHS
+                    (Int(_) | UInt(_), Infer(IntVar(_))) | (Float(_), Infer(FloatVar(_))) => {
+                        obligations.push(Obligation {
+                            location: data.span,
+                            goal: Goal::Equal(rhs, lhs),
+                        });
+                        return Some(obligations);
+                    }
+                    // LHS inference var with concrete RHS - bind LHS to RHS type
+                    (Infer(IntVar(_)), Int(_) | UInt(_)) | (Infer(FloatVar(_)), Float(_)) => {
+                        obligations.push(Obligation {
+                            location: data.span,
+                            goal: Goal::Equal(lhs, rhs),
+                        });
+                        return Some(obligations);
+                    }
+                    // Both inference vars of same kind
+                    (Infer(IntVar(_)), Infer(IntVar(_)))
+                    | (Infer(FloatVar(_)), Infer(FloatVar(_))) => {
+                        obligations.push(Obligation {
+                            location: data.span,
+                            goal: Goal::Equal(lhs, rhs),
+                        });
+                        return Some(obligations);
+                    }
+                    _ => {}
+                }
+            }
+
+            // Bitwise compound assignment: &=, |=, ^=, <<=, >>=
+            BitAnd | BitOr | BitXor => {
+                // Boolean bitwise
+                if matches!((lhs.kind(), rhs.kind()), (Bool, Bool)) {
+                    return Some(obligations);
+                }
+
+                // Integer bitwise
+                if is_same_int(lhs, rhs) {
+                    return Some(obligations);
+                }
+
+                match (lhs.kind(), rhs.kind()) {
+                    (Int(_) | UInt(_), Infer(IntVar(_))) => {
+                        obligations.push(Obligation {
+                            location: data.span,
+                            goal: Goal::Equal(rhs, lhs),
+                        });
+                        return Some(obligations);
+                    }
+                    (Infer(IntVar(_)), Int(_) | UInt(_)) => {
+                        obligations.push(Obligation {
+                            location: data.span,
+                            goal: Goal::Equal(lhs, rhs),
+                        });
+                        return Some(obligations);
+                    }
+                    (Infer(IntVar(_)), Infer(IntVar(_))) => {
+                        obligations.push(Obligation {
+                            location: data.span,
+                            goal: Goal::Equal(lhs, rhs),
+                        });
+                        return Some(obligations);
+                    }
+                    _ => {}
+                }
+            }
+
+            // Shift compound assignment: <<=, >>=
+            BitShl | BitShr => {
+                match (lhs.kind(), rhs.kind()) {
+                    // LHS must be integer; RHS can be any integer
+                    (Int(_) | UInt(_), Int(_) | UInt(_) | Infer(IntVar(_))) => {
+                        return Some(obligations);
+                    }
+                    (Infer(IntVar(_)), Int(_) | UInt(_) | Infer(IntVar(_))) => {
+                        return Some(obligations);
+                    }
+                    _ => {}
+                }
+            }
+
+            // These operators don't have compound assignment forms
+            Eql | Neq | Lt | Gt | Leq | Geq | BoolAnd | BoolOr | PtrEq => {}
         }
 
         None

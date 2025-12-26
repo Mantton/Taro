@@ -51,6 +51,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             ExprKind::If { .. }
             | ExprKind::Match { .. }
             | ExprKind::Assign { .. }
+            | ExprKind::AssignOp { .. }
             | ExprKind::Literal(..)
             | ExprKind::Unary { .. }
             | ExprKind::Binary { .. }

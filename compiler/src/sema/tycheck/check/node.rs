@@ -7,7 +7,7 @@ use crate::{
         tycheck::{
             check::{checker::Checker, gather::GatherLocalsVisitor},
             solve::{
-                ApplyArgument, ApplyGoalData, BinOpGoalData, BindOverloadGoalData,
+                ApplyArgument, ApplyGoalData, AssignOpGoalData, BinOpGoalData, BindOverloadGoalData,
                 ConstraintSystem, DisjunctionBranch, Goal, MemberGoalData, MethodCallData,
                 StructLiteralField, StructLiteralGoalData, TupleAccessGoalData, UnOpGoalData,
             },
@@ -323,7 +323,9 @@ impl<'ctx> Checker<'ctx> {
             hir::ExpressionKind::TupleAccess(receiver, index) => {
                 self.synth_tuple_access_expression(expression, receiver, index, expectation, cs)
             }
-            hir::ExpressionKind::AssignOp(..) => todo!(),
+            hir::ExpressionKind::AssignOp(op, lhs, rhs) => {
+                self.synth_assign_op_expression(expression, *op, lhs, rhs, cs)
+            }
             hir::ExpressionKind::Assign(lhs, rhs) => {
                 self.synth_assign_expression(expression, lhs, rhs, cs)
             }
@@ -1173,7 +1175,6 @@ impl<'ctx> Checker<'ctx> {
             expectation,
             operator,
             span: expression.span,
-            assigning: false,
             node_id: expression.id,
             lhs_id: lhs.id,
             rhs_id: rhs.id,
@@ -1181,6 +1182,38 @@ impl<'ctx> Checker<'ctx> {
 
         cs.add_goal(Goal::BinaryOp(data), expression.span);
         result_ty
+    }
+
+    fn synth_assign_op_expression(
+        &self,
+        expression: &hir::Expression,
+        operator: hir::BinaryOperator,
+        lhs: &hir::Expression,
+        rhs: &hir::Expression,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        // Type-check the LHS and require it be a mutable place
+        let (lhs_ty, ok) = self.synth_with_needs(lhs, None, Needs::MutPlace, cs);
+        if !ok {
+            return Ty::error(self.gcx());
+        }
+
+        let rhs_ty = self.synth(rhs, cs);
+
+        let data = AssignOpGoalData {
+            lhs: lhs_ty,
+            rhs: rhs_ty,
+            operator,
+            span: expression.span,
+            node_id: expression.id,
+            lhs_id: lhs.id,
+            rhs_id: rhs.id,
+        };
+
+        cs.add_goal(Goal::AssignOp(data), expression.span);
+
+        // Assign ops return void/unit
+        self.gcx().types.void
     }
 }
 

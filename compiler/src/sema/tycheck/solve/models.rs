@@ -22,6 +22,7 @@ pub enum Goal<'ctx> {
     Disjunction(Vec<DisjunctionBranch<'ctx>>),
     BinaryOp(BinOpGoalData<'ctx>),
     UnaryOp(UnOpGoalData<'ctx>),
+    AssignOp(AssignOpGoalData<'ctx>),
     Coerce { from: Ty<'ctx>, to: Ty<'ctx> },
     Member(MemberGoalData<'ctx>),
     MethodCall(MethodCallData<'ctx>),
@@ -118,7 +119,21 @@ pub struct BinOpGoalData<'ctx> {
     pub expectation: Option<Ty<'ctx>>,
     pub operator: BinaryOperator,
     pub span: Span,
-    pub assigning: bool,
+    pub node_id: NodeID,
+    pub lhs_id: NodeID,
+    pub rhs_id: NodeID,
+}
+
+/// Goal data for compound assignment operations (+=, -=, etc.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AssignOpGoalData<'ctx> {
+    /// Type of the LHS (must be a mutable place)
+    pub lhs: Ty<'ctx>,
+    /// Type of the RHS value
+    pub rhs: Ty<'ctx>,
+    /// The base binary operator (Add for +=, Sub for -=, etc.)
+    pub operator: BinaryOperator,
+    pub span: Span,
     pub node_id: NodeID,
     pub lhs_id: NodeID,
     pub rhs_id: NodeID,

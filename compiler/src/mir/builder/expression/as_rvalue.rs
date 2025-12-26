@@ -20,7 +20,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let expr = &self.thir.exprs[expr_id];
 
         match &expr.kind {
-            ExprKind::Assign { .. } => {
+            ExprKind::Assign { .. } | ExprKind::AssignOp { .. } => {
                 block = self.lower_statement_expression(block, expr_id).into_block();
                 block.and(Rvalue::Use(Operand::Constant(Constant {
                     ty: self.gcx.types.void,

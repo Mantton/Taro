@@ -445,6 +445,26 @@ impl<'ctx> FunctionLower<'ctx> {
                 let value = self.lower_expr(rhs);
                 ExprKind::Assign { target, value }
             }
+            hir::ExpressionKind::AssignOp(op, lhs, rhs) => {
+                // Check if this is an operator method call (e.g., AddAssign)
+                if let Some(def_id) = self.results.overload_source(expr.id) {
+                    // Lower as a method call
+                    let lhs_expr = self.lower_expr(lhs);
+                    let rhs_expr = self.lower_expr(rhs);
+                    let callee_ty = self.gcx.get_type(def_id);
+                    let callee = self.push_expr(ExprKind::Zst { id: def_id }, callee_ty, expr.span);
+                    ExprKind::Call {
+                        callee,
+                        args: vec![lhs_expr, rhs_expr],
+                    }
+                } else {
+                    // Intrinsic compound assignment
+                    let target = self.lower_expr(lhs);
+                    let value = self.lower_expr(rhs);
+                    let op = bin_op(*op);
+                    ExprKind::AssignOp { op, target, value }
+                }
+            }
             hir::ExpressionKind::If(node) => {
                 let cond = self.lower_expr(&node.condition);
                 let then_expr = self.lower_expr(&node.then_block);
