@@ -4,7 +4,7 @@ use crate::{
         Rvalue, TerminatorKind, builder::MirBuilder,
     },
     span::Span,
-    thir::{self},
+    thir::{self, VariantIndex},
 };
 
 impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
@@ -128,7 +128,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 }
 
 impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
-    fn bind_pattern_to_place(
+    pub(super) fn bind_pattern_to_place(
         &mut self,
         mut block: BasicBlockId,
         pattern: &thir::Pattern<'ctx>,
@@ -150,7 +150,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 }
                 block.unit()
             }
-            thir::PatternKind::Constant { .. } => todo!(),
+            thir::PatternKind::Constant { .. } => block.unit(),
             thir::PatternKind::Leaf { subpatterns } => {
                 let Some(base_place) = place else {
                     return block.unit();
@@ -168,12 +168,27 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 }
                 block.unit()
             }
-            thir::PatternKind::Variant { subpatterns, .. } => {
+            thir::PatternKind::Variant {
+                definition,
+                variant,
+                subpatterns,
+            } => {
                 let Some(base_place) = place else {
                     return block.unit();
                 };
+                let enum_def = self.gcx.get_enum_definition(definition.id);
+                let variant_index = enum_def
+                    .variants
+                    .iter()
+                    .position(|item| item.def_id == variant.def_id)
+                    .map(VariantIndex::from_usize)
+                    .expect("variant in enum definition");
                 for field in subpatterns {
                     let mut proj = base_place.projection.clone();
+                    proj.push(PlaceElem::VariantDowncast {
+                        name: variant.name,
+                        index: variant_index,
+                    });
                     proj.push(PlaceElem::Field(field.index, field.pattern.ty));
                     let field_place = Place {
                         local: base_place.local,

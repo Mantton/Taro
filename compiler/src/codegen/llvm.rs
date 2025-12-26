@@ -474,30 +474,24 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 TyKind::Reference(..) | TyKind::GcPtr | TyKind::String => {
                     local_slots.push(ShadowSlotKind::Local(ty));
                 }
-                TyKind::Adt(def) => {
-                    match def.kind {
-                        crate::sema::models::AdtKind::Struct => {
-                            let defn = self.gcx.get_struct_definition(def.id);
-                            for (idx, field) in defn.fields.iter().enumerate() {
-                                if is_pointer_ty(field.ty) {
-                                    let field_idx = crate::thir::FieldIndex::new(idx);
-                                    local_slots.push(ShadowSlotKind::Field(field_idx, field.ty));
-                                }
-                            }
-                        }
-                        crate::sema::models::AdtKind::Enum => {
-                            let offsets = enum_pointer_offsets(
-                                self.context,
-                                self.gcx,
-                                &self.target_data,
-                                def.id,
-                            );
-                            for offset in offsets {
-                                local_slots.push(ShadowSlotKind::EnumFieldOffset(offset));
+                TyKind::Adt(def) => match def.kind {
+                    crate::sema::models::AdtKind::Struct => {
+                        let defn = self.gcx.get_struct_definition(def.id);
+                        for (idx, field) in defn.fields.iter().enumerate() {
+                            if is_pointer_ty(field.ty) {
+                                let field_idx = crate::thir::FieldIndex::new(idx);
+                                local_slots.push(ShadowSlotKind::Field(field_idx, field.ty));
                             }
                         }
                     }
-                }
+                    crate::sema::models::AdtKind::Enum => {
+                        let offsets =
+                            enum_pointer_offsets(self.context, self.gcx, &self.target_data, def.id);
+                        for offset in offsets {
+                            local_slots.push(ShadowSlotKind::EnumFieldOffset(offset));
+                        }
+                    }
+                },
                 TyKind::Tuple(items) => {
                     for (idx, item_ty) in items.iter().enumerate() {
                         if is_pointer_ty(*item_ty) {
@@ -724,9 +718,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     .builder
                     .build_struct_gep(enum_struct, ptr, 0, "enum_discr_ptr")
                     .unwrap();
-                let discr_val = self
-                    .usize_ty
-                    .const_int(variant_index.index() as u64, false);
+                let discr_val = self.usize_ty.const_int(variant_index.index() as u64, false);
                 let _ = self.builder.build_store(discr_ptr, discr_val).unwrap();
             }
             mir::StatementKind::Nop => {}
@@ -774,6 +766,29 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 // Produce the address of the place.
                 let ptr = self.project_place(place, body, locals)?;
                 Some(ptr.as_basic_value_enum())
+            }
+            mir::Rvalue::Discriminant { place } => {
+                let ptr = self.project_place(place, body, locals)?;
+                let place_ty = self.place_ty(body, place);
+                let _def = match place_ty.kind() {
+                    TyKind::Adt(def) if def.kind == crate::sema::models::AdtKind::Enum => def,
+                    _ => panic!(
+                        "discriminant on non-enum type {}",
+                        place_ty.format(self.gcx)
+                    ),
+                };
+                let enum_ty =
+                    lower_type(self.context, self.gcx, &self.target_data, place_ty).expect("enum");
+                let enum_struct = enum_ty.into_struct_type();
+                let discr_ptr = self
+                    .builder
+                    .build_struct_gep(enum_struct, ptr, 0, "enum_discr_ptr")
+                    .unwrap();
+                let discr_val = self
+                    .builder
+                    .build_load(self.usize_ty, discr_ptr, "enum_discr")
+                    .unwrap();
+                Some(discr_val.as_basic_value_enum())
             }
             mir::Rvalue::Aggregate { .. } => unreachable!("aggregates should be lowered in MIR"),
             mir::Rvalue::Alloc { ty: alloc_ty } => {
@@ -1525,18 +1540,14 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         .unwrap();
 
                     let variant_ty = enum_variant_tuple_ty(self.gcx, def.id, *index);
-                    let _variant_struct = match lower_type(
-                        self.context,
-                        self.gcx,
-                        &self.target_data,
-                        variant_ty,
-                    ) {
-                        Some(BasicTypeEnum::StructType(st)) => st,
-                        None => self.context.struct_type(&[], false),
-                        Some(other) => {
-                            panic!("variant tuple lowered to non-struct {:?}", other);
-                        }
-                    };
+                    let _variant_struct =
+                        match lower_type(self.context, self.gcx, &self.target_data, variant_ty) {
+                            Some(BasicTypeEnum::StructType(st)) => st,
+                            None => self.context.struct_type(&[], false),
+                            Some(other) => {
+                                panic!("variant tuple lowered to non-struct {:?}", other);
+                            }
+                        };
                     let variant_ptr = self
                         .builder
                         .build_bit_cast(
@@ -1695,31 +1706,25 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         // Collect pointer field offsets (only direct reference/string/GcPtr fields).
         let mut offsets: Vec<u64> = vec![];
         match ty.kind() {
-            TyKind::Adt(def) => {
-                match def.kind {
-                    crate::sema::models::AdtKind::Struct => {
-                        let defn = self.gcx.get_struct_definition(def.id);
-                        for (idx, field) in defn.fields.iter().enumerate() {
-                            if is_pointer_ty(field.ty) {
-                                let struct_ty = llvm_ty.into_struct_type();
-                                if let Some(off) =
-                                    self.target_data.offset_of_element(&struct_ty, idx as u32)
-                                {
-                                    offsets.push(off);
-                                }
+            TyKind::Adt(def) => match def.kind {
+                crate::sema::models::AdtKind::Struct => {
+                    let defn = self.gcx.get_struct_definition(def.id);
+                    for (idx, field) in defn.fields.iter().enumerate() {
+                        if is_pointer_ty(field.ty) {
+                            let struct_ty = llvm_ty.into_struct_type();
+                            if let Some(off) =
+                                self.target_data.offset_of_element(&struct_ty, idx as u32)
+                            {
+                                offsets.push(off);
                             }
                         }
                     }
-                    crate::sema::models::AdtKind::Enum => {
-                        offsets = enum_pointer_offsets(
-                            self.context,
-                            self.gcx,
-                            &self.target_data,
-                            def.id,
-                        );
-                    }
                 }
-            }
+                crate::sema::models::AdtKind::Enum => {
+                    offsets =
+                        enum_pointer_offsets(self.context, self.gcx, &self.target_data, def.id);
+                }
+            },
             TyKind::Tuple(items) => {
                 let struct_ty = llvm_ty.into_struct_type();
                 for (idx, item) in items.iter().enumerate() {

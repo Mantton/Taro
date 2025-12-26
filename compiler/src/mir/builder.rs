@@ -6,7 +6,7 @@ use crate::{
         LocalKind, Place, Rvalue, Statement, StatementKind, Terminator, TerminatorKind,
         pretty::PrettyPrintMir,
     },
-    sema::models::{LabeledFunctionSignature, Ty},
+    sema::models::{AdtKind, EnumVariantKind, LabeledFunctionSignature, Ty, TyKind},
     span::{Span, Symbol},
     thir,
 };
@@ -76,6 +76,9 @@ pub struct MirBuilder<'ctx, 'thir> {
     thir: &'thir thir::ThirFunction<'ctx>,
     body: Body<'ctx>,
     locals: FxHashMap<hir::NodeID, LocalId>,
+    /// Tracks MIR locals by (arm_id, binding_name) for or-patterns.
+    /// Ensures all alternatives in an or-pattern share the same local.
+    arm_binding_locals: FxHashMap<(thir::ArmId, Symbol), LocalId>,
     cleanup_nodes: IndexVec<CleanupId, CleanupNode>,
     current_cleanup: Option<CleanupId>,
     if_then_scope: Option<IfThenScope>,
@@ -112,6 +115,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             thir: function,
             body,
             locals: FxHashMap::default(),
+            arm_binding_locals: FxHashMap::default(),
             cleanup_nodes: IndexVec::new(),
             current_cleanup: None,
             if_then_scope: None,
@@ -234,10 +238,39 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     None => return Ty::error(self.gcx),
                 },
                 mir::PlaceElem::Field(_, field_ty) => ty = *field_ty,
-                mir::PlaceElem::VariantDowncast { name, index } => todo!(),
+                mir::PlaceElem::VariantDowncast { name: _, index } => {
+                    let def = match ty.kind() {
+                        TyKind::Adt(def) if def.kind == AdtKind::Enum => def,
+                        _ => return Ty::error(self.gcx),
+                    };
+                    ty = self.enum_variant_tuple_ty(def.id, *index);
+                }
             }
         }
         ty
+    }
+
+    fn enum_variant_tuple_ty(
+        &self,
+        def_id: hir::DefinitionID,
+        variant_index: thir::VariantIndex,
+    ) -> Ty<'ctx> {
+        let def = self.gcx.get_enum_definition(def_id);
+        let variant = def
+            .variants
+            .get(variant_index.index())
+            .expect("enum variant index");
+        match variant.kind {
+            EnumVariantKind::Unit => self.gcx.types.void,
+            EnumVariantKind::Tuple(fields) => {
+                let mut tys = Vec::with_capacity(fields.len());
+                for field in fields {
+                    tys.push(field.ty);
+                }
+                let list = self.gcx.store.interners.intern_ty_list(tys);
+                Ty::new(TyKind::Tuple(list), self.gcx)
+            }
+        }
     }
 
     fn push_assign(

@@ -6,7 +6,7 @@ use crate::mir::{
     BasicBlockData, BasicBlockId, Body, LocalDecl, LocalId, LocalKind, MirPhase, Operand, Place,
     PlaceElem, Rvalue, Statement, StatementKind, TerminatorKind,
 };
-use crate::sema::models::{StructDefinition, Ty, TyKind};
+use crate::sema::models::{AdtKind, EnumVariantKind, StructDefinition, Ty, TyKind};
 use crate::thir::FieldIndex;
 use rustc_hash::FxHashSet;
 
@@ -435,10 +435,39 @@ fn place_ty<'a>(body: &Body<'a>, gcx: Gcx<'a>, place: &Place<'a>) -> crate::sema
                     .unwrap_or_else(|| crate::sema::models::Ty::error(gcx));
             }
             PlaceElem::Field(_, field_ty) => ty = *field_ty,
-            PlaceElem::VariantDowncast { .. } => todo!(),
+            PlaceElem::VariantDowncast { index, .. } => {
+                let def = match ty.kind() {
+                    TyKind::Adt(def) if def.kind == AdtKind::Enum => def,
+                    _ => return Ty::error(gcx),
+                };
+                ty = enum_variant_tuple_ty(gcx, def.id, *index);
+            }
         }
     }
     ty
+}
+
+fn enum_variant_tuple_ty<'a>(
+    gcx: Gcx<'a>,
+    def_id: crate::hir::DefinitionID,
+    variant_index: crate::thir::VariantIndex,
+) -> Ty<'a> {
+    let def = gcx.get_enum_definition(def_id);
+    let variant = def
+        .variants
+        .get(variant_index.index())
+        .expect("enum variant index");
+    match variant.kind {
+        EnumVariantKind::Unit => gcx.types.void,
+        EnumVariantKind::Tuple(fields) => {
+            let mut tys = Vec::with_capacity(fields.len());
+            for field in fields {
+                tys.push(field.ty);
+            }
+            let list = gcx.store.interners.intern_ty_list(tys);
+            Ty::new(TyKind::Tuple(list), gcx)
+        }
+    }
 }
 
 fn base_local_for_ref(place: &Place<'_>) -> Option<LocalId> {
@@ -482,6 +511,7 @@ fn rewrite_rvalue<'ctx>(rvalue: &mut Rvalue<'ctx>, heapified: &[Option<Ty<'ctx>>
         }
         Rvalue::Cast { operand, .. } => rewrite_operand(operand, heapified),
         Rvalue::Ref { place, .. } => rewrite_place(place, heapified),
+        Rvalue::Discriminant { place } => rewrite_place(place, heapified),
         Rvalue::Aggregate { fields, .. } => {
             for field in fields.iter_mut() {
                 rewrite_operand(field, heapified);

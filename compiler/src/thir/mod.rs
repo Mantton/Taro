@@ -7,6 +7,7 @@ use crate::{
 use index_vec::IndexVec;
 use rustc_hash::FxHashMap;
 
+pub mod match_tree;
 pub mod package;
 pub mod passes;
 pub mod pattern;
@@ -50,6 +51,7 @@ pub struct ThirFunction<'a> {
     pub blocks: IndexVec<BlockId, Block>,
     pub exprs: IndexVec<ExprId, Expr<'a>>,
     pub arms: IndexVec<ArmId, Arm<'a>>,
+    pub match_trees: FxHashMap<ExprId, match_tree::MatchTree<'a>>,
 }
 
 #[derive(Debug, Clone)]

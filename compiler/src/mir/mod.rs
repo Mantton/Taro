@@ -184,6 +184,9 @@ pub enum Rvalue<'ctx> {
         mutable: bool,
         place: Place<'ctx>,
     },
+    Discriminant {
+        place: Place<'ctx>,
+    },
     Alloc {
         ty: Ty<'ctx>,
     },

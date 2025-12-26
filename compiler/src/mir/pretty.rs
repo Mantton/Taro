@@ -162,6 +162,11 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                 write!(f, "{}", kw)?;
                 self.write_place(place, f)
             }
+            Rvalue::Discriminant { place } => {
+                write!(f, "discriminant(")?;
+                self.write_place(place, f)?;
+                write!(f, ")")
+            }
             Rvalue::Alloc { ty } => write!(f, "alloc {}", ty.format(self.gcx)),
             Rvalue::Cast { operand, ty } => {
                 self.write_operand(operand, f)?;

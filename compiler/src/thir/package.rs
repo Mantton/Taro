@@ -11,8 +11,7 @@ use crate::{
     },
     thir::{
         self, Block, BlockId, Constant, ConstantKind, Expr, ExprId, ExprKind, FieldIndex, Param,
-        Stmt, StmtId, StmtKind, ThirFunction, ThirPackage, VariantIndex,
-        pattern::pattern_from_hir,
+        Stmt, StmtId, StmtKind, ThirFunction, ThirPackage, VariantIndex, pattern::pattern_from_hir,
     },
 };
 use index_vec::IndexVec;
@@ -24,8 +23,8 @@ pub fn build_package<'ctx>(
     results: TypeCheckResults<'ctx>,
 ) -> CompileResult<ThirPackage<'ctx>> {
     let entry = validate_entry_point(&package, gcx)?;
-    let package = Actor::run(package, gcx, results, entry)?;
-    thir::passes::exhaustiveness::run(&package, gcx)?;
+    let mut package = Actor::run(package, gcx, results, entry)?;
+    thir::passes::exhaustiveness::run(&mut package, gcx)?;
     Ok(package)
 }
 
@@ -105,6 +104,7 @@ impl<'ctx> FunctionLower<'ctx> {
                 blocks: IndexVec::new(),
                 exprs: IndexVec::new(),
                 arms: IndexVec::new(),
+                match_trees: FxHashMap::default(),
             },
         };
 
