@@ -107,6 +107,7 @@ struct ShadowSlotDef<'gcx> {
 enum ShadowSlotKind<'gcx> {
     Local(Ty<'gcx>),
     Field(crate::thir::FieldIndex, Ty<'gcx>),
+    EnumFieldOffset(u64),
 }
 
 impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
@@ -474,11 +475,26 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     local_slots.push(ShadowSlotKind::Local(ty));
                 }
                 TyKind::Adt(def) => {
-                    let defn = self.gcx.get_struct_definition(def.id);
-                    for (idx, field) in defn.fields.iter().enumerate() {
-                        if is_pointer_ty(field.ty) {
-                            let field_idx = crate::thir::FieldIndex::new(idx);
-                            local_slots.push(ShadowSlotKind::Field(field_idx, field.ty));
+                    match def.kind {
+                        crate::sema::models::AdtKind::Struct => {
+                            let defn = self.gcx.get_struct_definition(def.id);
+                            for (idx, field) in defn.fields.iter().enumerate() {
+                                if is_pointer_ty(field.ty) {
+                                    let field_idx = crate::thir::FieldIndex::new(idx);
+                                    local_slots.push(ShadowSlotKind::Field(field_idx, field.ty));
+                                }
+                            }
+                        }
+                        crate::sema::models::AdtKind::Enum => {
+                            let offsets = enum_pointer_offsets(
+                                self.context,
+                                self.gcx,
+                                &self.target_data,
+                                def.id,
+                            );
+                            for offset in offsets {
+                                local_slots.push(ShadowSlotKind::EnumFieldOffset(offset));
+                            }
                         }
                     }
                 }
@@ -557,35 +573,77 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         for slot_idx in slot_indices {
             let def = slot_defs.get(slot_idx).cloned().expect("shadow slot def");
-            let place = match def.kind.clone() {
-                ShadowSlotKind::Local(_) => mir::Place::from_local(def.local),
-                ShadowSlotKind::Field(field_idx, field_ty) => mir::Place {
-                    local: def.local,
-                    projection: vec![mir::PlaceElem::Field(field_idx, field_ty)],
-                },
-            };
+            match def.kind.clone() {
+                ShadowSlotKind::Local(_) | ShadowSlotKind::Field(_, _) => {
+                    let place = match def.kind.clone() {
+                        ShadowSlotKind::Local(_) => mir::Place::from_local(def.local),
+                        ShadowSlotKind::Field(field_idx, field_ty) => mir::Place {
+                            local: def.local,
+                            projection: vec![mir::PlaceElem::Field(field_idx, field_ty)],
+                        },
+                        ShadowSlotKind::EnumFieldOffset(_) => {
+                            unreachable!("enum offsets handled separately")
+                        }
+                    };
 
-            let value = match self.load_place(body, locals, &place) {
-                Some(v) => v,
-                None => {
-                    self.store_shadow_slot(
-                        slot_idx,
-                        self.context.ptr_type(AddressSpace::default()).const_null(),
-                    );
-                    continue;
+                    let value = match self.load_place(body, locals, &place) {
+                        Some(v) => v,
+                        None => {
+                            self.store_shadow_slot(
+                                slot_idx,
+                                self.context.ptr_type(AddressSpace::default()).const_null(),
+                            );
+                            continue;
+                        }
+                    };
+
+                    let slot_ty = match def.kind {
+                        ShadowSlotKind::Local(ty) => ty,
+                        ShadowSlotKind::Field(_, ty) => ty,
+                        ShadowSlotKind::EnumFieldOffset(_) => {
+                            unreachable!("enum offsets handled separately")
+                        }
+                    };
+
+                    let ptr_val = match self.shadow_ptr_from_value(slot_ty, value) {
+                        Some(p) => p,
+                        None => self.context.ptr_type(AddressSpace::default()).const_null(),
+                    };
+                    self.store_shadow_slot(slot_idx, ptr_val);
                 }
-            };
-
-            let slot_ty = match def.kind {
-                ShadowSlotKind::Local(ty) => ty,
-                ShadowSlotKind::Field(_, ty) => ty,
-            };
-
-            let ptr_val = match self.shadow_ptr_from_value(slot_ty, value) {
-                Some(p) => p,
-                None => self.context.ptr_type(AddressSpace::default()).const_null(),
-            };
-            self.store_shadow_slot(slot_idx, ptr_val);
+                ShadowSlotKind::EnumFieldOffset(offset) => {
+                    let ptr_val = match locals[def.local.index()] {
+                        LocalStorage::Stack(ptr) => {
+                            let i8_ptr_ty = self.context.ptr_type(AddressSpace::default());
+                            let base = self
+                                .builder
+                                .build_bit_cast(ptr, i8_ptr_ty, "enum_base_i8")
+                                .unwrap()
+                                .into_pointer_value();
+                            let offset_const = self.usize_ty.const_int(offset, false);
+                            let field_ptr = unsafe {
+                                self.builder
+                                    .build_gep(
+                                        self.context.i8_type(),
+                                        base,
+                                        &[offset_const],
+                                        "enum_field_ptr",
+                                    )
+                                    .unwrap()
+                            };
+                            let ptr_ty = self.context.ptr_type(AddressSpace::default());
+                            self.builder
+                                .build_load(ptr_ty, field_ptr, "enum_ptr_load")
+                                .unwrap()
+                                .into_pointer_value()
+                        }
+                        LocalStorage::Value(_) => {
+                            self.context.ptr_type(AddressSpace::default()).const_null()
+                        }
+                    };
+                    self.store_shadow_slot(slot_idx, ptr_val);
+                }
+            }
         }
 
         Ok(())
@@ -646,8 +704,30 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 let callee = self.get_gc_poll();
                 let _ = self.builder.build_call(callee, &[], "gc_poll").unwrap();
             }
-            mir::StatementKind::SetDiscriminant { .. } => {
-                todo!()
+            mir::StatementKind::SetDiscriminant {
+                place,
+                variant_index,
+            } => {
+                let ptr = self.project_place(place, body, locals)?;
+                let place_ty = self.place_ty(body, place);
+                let _def = match place_ty.kind() {
+                    TyKind::Adt(def) if def.kind == crate::sema::models::AdtKind::Enum => def,
+                    _ => panic!(
+                        "set_discriminant on non-enum type {}",
+                        place_ty.format(self.gcx)
+                    ),
+                };
+                let enum_ty =
+                    lower_type(self.context, self.gcx, &self.target_data, place_ty).expect("enum");
+                let enum_struct = enum_ty.into_struct_type();
+                let discr_ptr = self
+                    .builder
+                    .build_struct_gep(enum_struct, ptr, 0, "enum_discr_ptr")
+                    .unwrap();
+                let discr_val = self
+                    .usize_ty
+                    .const_int(variant_index.index() as u64, false);
+                let _ = self.builder.build_store(discr_ptr, discr_val).unwrap();
             }
             mir::StatementKind::Nop => {}
         }
@@ -1426,7 +1506,51 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     ptr_is_storage = true;
                     ty = *field_ty;
                 }
-                mir::PlaceElem::VariantDowncast { name, index } => todo!(),
+                mir::PlaceElem::VariantDowncast { name: _, index } => {
+                    let def = match ty.kind() {
+                        TyKind::Adt(def) if def.kind == crate::sema::models::AdtKind::Enum => def,
+                        _ => panic!("variant downcast on non-enum type {}", ty.format(self.gcx)),
+                    };
+                    let layout = enum_layout(self.context, self.gcx, &self.target_data, def.id);
+                    let payload_index = layout
+                        .payload_field_index
+                        .expect("enum payload field index");
+
+                    let enum_ty =
+                        lower_type(self.context, self.gcx, &self.target_data, ty).expect("enum");
+                    let enum_struct = enum_ty.into_struct_type();
+                    let payload_ptr = self
+                        .builder
+                        .build_struct_gep(enum_struct, ptr, payload_index, "enum_payload_ptr")
+                        .unwrap();
+
+                    let variant_ty = enum_variant_tuple_ty(self.gcx, def.id, *index);
+                    let _variant_struct = match lower_type(
+                        self.context,
+                        self.gcx,
+                        &self.target_data,
+                        variant_ty,
+                    ) {
+                        Some(BasicTypeEnum::StructType(st)) => st,
+                        None => self.context.struct_type(&[], false),
+                        Some(other) => {
+                            panic!("variant tuple lowered to non-struct {:?}", other);
+                        }
+                    };
+                    let variant_ptr = self
+                        .builder
+                        .build_bit_cast(
+                            payload_ptr,
+                            self.context.ptr_type(AddressSpace::default()),
+                            "enum_variant_ptr",
+                        )
+                        .unwrap()
+                        .into_pointer_value();
+
+                    ptr = variant_ptr;
+                    ptr_is_storage = true;
+                    ty = variant_ty;
+                }
             }
         }
 
@@ -1445,7 +1569,13 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 mir::PlaceElem::Field(_, field_ty) => {
                     ty = *field_ty;
                 }
-                mir::PlaceElem::VariantDowncast { name, index } => todo!(),
+                mir::PlaceElem::VariantDowncast { name: _, index } => {
+                    let def = match ty.kind() {
+                        TyKind::Adt(def) if def.kind == crate::sema::models::AdtKind::Enum => def,
+                        _ => panic!("variant downcast on non-enum type {}", ty.format(self.gcx)),
+                    };
+                    ty = enum_variant_tuple_ty(self.gcx, def.id, *index);
+                }
             }
         }
         ty
@@ -1566,15 +1696,27 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let mut offsets: Vec<u64> = vec![];
         match ty.kind() {
             TyKind::Adt(def) => {
-                let defn = self.gcx.get_struct_definition(def.id);
-                for (idx, field) in defn.fields.iter().enumerate() {
-                    if is_pointer_ty(field.ty) {
-                        let struct_ty = llvm_ty.into_struct_type();
-                        if let Some(off) =
-                            self.target_data.offset_of_element(&struct_ty, idx as u32)
-                        {
-                            offsets.push(off);
+                match def.kind {
+                    crate::sema::models::AdtKind::Struct => {
+                        let defn = self.gcx.get_struct_definition(def.id);
+                        for (idx, field) in defn.fields.iter().enumerate() {
+                            if is_pointer_ty(field.ty) {
+                                let struct_ty = llvm_ty.into_struct_type();
+                                if let Some(off) =
+                                    self.target_data.offset_of_element(&struct_ty, idx as u32)
+                                {
+                                    offsets.push(off);
+                                }
+                            }
                         }
+                    }
+                    crate::sema::models::AdtKind::Enum => {
+                        offsets = enum_pointer_offsets(
+                            self.context,
+                            self.gcx,
+                            &self.target_data,
+                            def.id,
+                        );
                     }
                 }
             }
@@ -1640,6 +1782,145 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     }
 }
 
+#[derive(Clone, Copy)]
+struct EnumLayout<'llvm> {
+    discr_ty: IntType<'llvm>,
+    discr_size: u64,
+    payload_size: u64,
+    payload_offset: u64,
+    payload_field_index: Option<u32>,
+}
+
+fn align_up(value: u64, align: u64) -> u64 {
+    if align == 0 {
+        return value;
+    }
+    let rem = value % align;
+    if rem == 0 {
+        value
+    } else {
+        value + (align - rem)
+    }
+}
+
+fn enum_layout<'llvm>(
+    context: &'llvm Context,
+    gcx: Gcx<'_>,
+    target_data: &TargetData,
+    def_id: hir::DefinitionID,
+) -> EnumLayout<'llvm> {
+    let def = gcx.get_enum_definition(def_id);
+    let discr_ty = context.ptr_sized_int_type(target_data, None);
+    let discr_size = target_data.get_store_size(&discr_ty);
+    let mut payload_size = 0u64;
+    let mut payload_align = 1u64;
+
+    for variant in def.variants.iter() {
+        let (size, align) = match variant.kind {
+            crate::sema::models::EnumVariantKind::Unit => (0u64, 1u64),
+            crate::sema::models::EnumVariantKind::Tuple(fields) => {
+                if fields.is_empty() {
+                    (0u64, 1u64)
+                } else {
+                    let struct_ty = enum_variant_struct_ty(context, gcx, target_data, fields);
+                    let size = target_data.get_store_size(&struct_ty);
+                    let align = target_data.get_abi_alignment(&struct_ty) as u64;
+                    (size, align)
+                }
+            }
+        };
+        payload_size = payload_size.max(size);
+        payload_align = payload_align.max(align);
+    }
+
+    let payload_offset = align_up(discr_size, payload_align);
+    let pad = payload_offset.saturating_sub(discr_size);
+    let payload_field_index = if payload_size == 0 {
+        None
+    } else if pad > 0 {
+        Some(2)
+    } else {
+        Some(1)
+    };
+
+    EnumLayout {
+        discr_ty,
+        discr_size,
+        payload_size,
+        payload_offset,
+        payload_field_index,
+    }
+}
+
+fn enum_variant_struct_ty<'llvm>(
+    context: &'llvm Context,
+    gcx: Gcx<'_>,
+    target_data: &TargetData,
+    fields: &[crate::sema::models::EnumVariantField<'_>],
+) -> StructType<'llvm> {
+    let field_tys: Vec<BasicTypeEnum<'llvm>> = fields
+        .iter()
+        .filter_map(|field| lower_type(context, gcx, target_data, field.ty))
+        .collect();
+    context.struct_type(&field_tys, false)
+}
+
+fn enum_variant_tuple_ty<'gcx>(
+    gcx: Gcx<'gcx>,
+    def_id: hir::DefinitionID,
+    variant_index: crate::thir::VariantIndex,
+) -> Ty<'gcx> {
+    let def = gcx.get_enum_definition(def_id);
+    let variant = def
+        .variants
+        .get(variant_index.index())
+        .expect("enum variant index");
+    match variant.kind {
+        crate::sema::models::EnumVariantKind::Unit => gcx.types.void,
+        crate::sema::models::EnumVariantKind::Tuple(fields) => {
+            let mut tys = Vec::with_capacity(fields.len());
+            for field in fields.iter() {
+                tys.push(field.ty);
+            }
+            let list = gcx.store.interners.intern_ty_list(tys);
+            Ty::new(TyKind::Tuple(list), gcx)
+        }
+    }
+}
+
+fn enum_pointer_offsets<'llvm>(
+    context: &'llvm Context,
+    gcx: Gcx<'_>,
+    target_data: &TargetData,
+    def_id: hir::DefinitionID,
+) -> Vec<u64> {
+    let def = gcx.get_enum_definition(def_id);
+    let layout = enum_layout(context, gcx, target_data, def_id);
+    let mut offsets = Vec::new();
+
+    for variant in def.variants.iter() {
+        let crate::sema::models::EnumVariantKind::Tuple(fields) = variant.kind else {
+            continue;
+        };
+        if fields.is_empty() {
+            continue;
+        }
+        let struct_ty = enum_variant_struct_ty(context, gcx, target_data, fields);
+        for (idx, field) in fields.iter().enumerate() {
+            if !is_pointer_ty(field.ty) {
+                continue;
+            }
+            if let Some(off) = target_data.offset_of_element(&struct_ty, idx as u32) {
+                offsets.push(layout.payload_offset + off);
+            }
+        }
+    }
+
+    offsets.sort_unstable();
+    offsets.dedup();
+    offsets
+}
+
 fn is_pointer_ty(ty: Ty) -> bool {
     matches!(
         ty.kind(),
@@ -1695,7 +1976,25 @@ fn lower_type<'llvm>(
                     .collect();
                 Some(context.struct_type(&field_tys, false).into())
             }
-            crate::sema::models::AdtKind::Enum => todo!(),
+            crate::sema::models::AdtKind::Enum => {
+                let layout = enum_layout(context, gcx, target_data, def.id);
+                let mut fields: Vec<BasicTypeEnum<'llvm>> = vec![layout.discr_ty.into()];
+
+                if layout.payload_size == 0 {
+                    return Some(context.struct_type(&fields, false).into());
+                }
+
+                let pad = layout.payload_offset.saturating_sub(layout.discr_size);
+                if pad > 0 {
+                    let pad_len = u32::try_from(pad).expect("enum padding fits u32");
+                    fields.push(context.i8_type().array_type(pad_len).into());
+                }
+
+                let payload_len =
+                    u32::try_from(layout.payload_size).expect("enum payload fits u32");
+                fields.push(context.i8_type().array_type(payload_len).into());
+                Some(context.struct_type(&fields, false).into())
+            }
         },
         TyKind::Pointer(..) | TyKind::Reference(..) => Some(
             context
