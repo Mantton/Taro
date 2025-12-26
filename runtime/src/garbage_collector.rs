@@ -1,5 +1,15 @@
 //! Stop-the-world, non-moving mark-and-sweep collector for Taro.
 //!
+//! # Thread Safety
+//!
+//! This collector is **single-threaded only**. All allocations, collections, and
+//! shadow stack operations must occur on the same thread. The shadow stack is
+//! thread-local, so each thread has its own root set, but the global heap is
+//! protected by a mutex and concurrent mutation during collection is undefined
+//! behavior.
+//!
+//! # Overview
+//!
 //! This file implements a small, self-contained GC that is easy to reason about.
 //! The pipeline is:
 //!
@@ -31,6 +41,7 @@
 //! - Scan/noscan lanes: separate span lists so the GC can skip scanning
 //!   pointer-free objects entirely.
 
+use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::{Mutex, OnceLock};
 
@@ -69,32 +80,52 @@ pub struct GcShadowFrame {
     pub count: usize,
 }
 
-// Global shadow stack top.
-static mut GC_SHADOW_TOP: *mut GcShadowFrame = std::ptr::null_mut();
+// Thread-local shadow stack top. Each thread maintains its own shadow stack,
+// ensuring no data races on the root set. The GC iterates all thread-local
+// stacks during collection (currently only the main thread is supported).
+std::thread_local! {
+    static GC_SHADOW_TOP: std::cell::Cell<*mut GcShadowFrame> = const { std::cell::Cell::new(std::ptr::null_mut()) };
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt__gc_push_frame(frame: *mut GcShadowFrame) {
-    unsafe {
-        (*frame).prev = GC_SHADOW_TOP;
-        GC_SHADOW_TOP = frame;
-    }
+    GC_SHADOW_TOP.with(|top| {
+        unsafe { (*frame).prev = top.get() };
+        top.set(frame);
+    });
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt__gc_pop_frame(frame: *mut GcShadowFrame) {
-    unsafe {
-        if GC_SHADOW_TOP == frame {
-            GC_SHADOW_TOP = (*frame).prev;
+    GC_SHADOW_TOP.with(|top| {
+        if top.get() == frame {
+            unsafe { top.set((*frame).prev) };
+        } else {
+            // Frame is not at top - this can happen with longjmp/exceptions.
+            // Walk the list to unlink if present (debug builds only).
+            #[cfg(debug_assertions)]
+            {
+                let mut current = top.get();
+                while !current.is_null() {
+                    let prev = unsafe { (*current).prev };
+                    if prev == frame {
+                        unsafe { (*current).prev = (*frame).prev };
+                        return;
+                    }
+                    current = prev;
+                }
+            }
         }
-    }
+    });
 }
 
 /// Allocate a GC-managed object with a payload of `size` bytes.
 ///
 /// The descriptor controls pointer tracing and determines scan/noscan lane.
+/// Returns null if size is 0 or desc is null.
 #[unsafe(no_mangle)]
 pub extern "C" fn gc_alloc(size: usize, desc: *const GcDesc) -> *mut u8 {
-    if size == 0 {
+    if size == 0 || desc.is_null() {
         return std::ptr::null_mut();
     }
     with_gc(|gc| gc.alloc(size, desc, false))
@@ -196,14 +227,6 @@ struct Segment {
     free_runs: Vec<PageRun>,
 }
 
-// Cached segment bounds used to speed up segment lookup by address.
-// This allows binary searching instead of scanning every segment.
-struct SegmentRange {
-    base: usize,
-    end: usize,
-    index: usize,
-}
-
 impl Segment {
     fn new(pages: usize) -> Self {
         // Allocate a page-aligned arena for the segment. Spans will carve pages
@@ -262,22 +285,49 @@ impl Segment {
     // Return pages to the segment and coalesce adjacent free runs.
     fn free_pages(&mut self, start: usize, pages: usize) {
         // Return a span's pages to the segment and coalesce adjacent runs.
+        // Uses binary search insertion + local merge instead of full sort.
         if pages == 0 {
             return;
         }
-        self.free_runs.push(PageRun { start, len: pages });
-        self.free_runs.sort_by_key(|r| r.start);
-        let mut merged: Vec<PageRun> = Vec::with_capacity(self.free_runs.len());
-        for run in self.free_runs.drain(..) {
-            if let Some(last) = merged.last_mut() {
-                if last.start + last.len == run.start {
-                    last.len = last.len.saturating_add(run.len);
-                    continue;
-                }
+
+        let end = start + pages;
+
+        // Binary search to find insertion point (maintaining sorted order by start).
+        let pos = self
+            .free_runs
+            .binary_search_by_key(&start, |r| r.start)
+            .unwrap_or_else(|p| p);
+
+        // Check if we can merge with the previous run.
+        let merge_prev = pos > 0 && {
+            let prev = &self.free_runs[pos - 1];
+            prev.start + prev.len == start
+        };
+
+        // Check if we can merge with the next run.
+        let merge_next = pos < self.free_runs.len() && self.free_runs[pos].start == end;
+
+        match (merge_prev, merge_next) {
+            (true, true) => {
+                // Merge with both neighbors: extend prev to cover next, remove next.
+                let next_end = self.free_runs[pos].start + self.free_runs[pos].len;
+                self.free_runs[pos - 1].len = next_end - self.free_runs[pos - 1].start;
+                self.free_runs.remove(pos);
             }
-            merged.push(run);
+            (true, false) => {
+                // Merge with previous only: extend prev.
+                self.free_runs[pos - 1].len += pages;
+            }
+            (false, true) => {
+                // Merge with next only: extend next backward.
+                self.free_runs[pos].start = start;
+                self.free_runs[pos].len += pages;
+            }
+            (false, false) => {
+                // No merge possible: insert new run.
+                self.free_runs.insert(pos, PageRun { start, len: pages });
+            }
         }
-        self.free_runs = merged;
     }
 
     // Record which span owns each page in this range.
@@ -573,9 +623,12 @@ struct SweepStats {
 // just a span id, and the class lists track spans with free slots.
 struct Gc {
     segments: Vec<Segment>,
-    // Sorted by base address for binary searching.
-    segment_ranges: Vec<SegmentRange>,
+    // Maps arena index (address / SEGMENT_SIZE) to segment index for O(1) lookup.
+    // A segment may span multiple arenas, so multiple keys can point to the same segment.
+    arena_map: HashMap<usize, usize>,
     spans: Vec<Option<Span>>,
+    // Free list of span IDs for reuse (prevents unbounded growth of spans vec).
+    free_span_ids: Vec<usize>,
     size_classes: Vec<usize>,
     // Per size class: [scan spans, noscan spans].
     class_spans: Vec<[Vec<usize>; 2]>,
@@ -602,17 +655,16 @@ impl Gc {
             class_spans.push([Vec::new(), Vec::new()]);
         }
         let segments = vec![Segment::new(SEGMENT_PAGES)];
-        let base = segments[0].base();
-        let end = base + segments[0].len;
-        let segment_ranges = vec![SegmentRange {
-            base,
-            end,
-            index: 0,
-        }];
+
+        // Register the first segment in the arena map.
+        let mut arena_map = HashMap::new();
+        register_segment_arenas(&mut arena_map, &segments[0], 0);
+
         Self {
             segments,
-            segment_ranges,
+            arena_map,
             spans: Vec::new(),
+            free_span_ids: Vec::new(),
             size_classes,
             class_spans,
             static_roots: Vec::new(),
@@ -649,7 +701,7 @@ impl Gc {
             self.alloc_small(payload_size, alloc_size, desc, has_pointers, is_array)
         };
 
-        self.after_alloc(ptr, alloc_bytes);
+        self.after_alloc(alloc_bytes);
         ptr
     }
 
@@ -707,19 +759,27 @@ impl Gc {
         (base, total_bytes)
     }
 
-    // Update stats and optionally trigger a collection.
-    // The freshly allocated pointer is pushed as a temporary root if GC runs.
-    fn after_alloc(&mut self, ptr: *mut u8, alloc_bytes: usize) {
+    // Update stats after allocation.
+    fn after_alloc(&mut self, alloc_bytes: usize) {
         // Update stats and allow safepoints to decide when to collect.
         self.stats.record_alloc(alloc_bytes);
         self.alloc_since_gc = self.alloc_since_gc.saturating_add(alloc_bytes);
-        let _ = ptr;
     }
 
     fn alloc_span_id(&mut self) -> usize {
-        // Span ids are monotonic to avoid stale ids in class lists.
+        // Reuse freed span IDs to prevent unbounded growth of the spans vector.
+        if let Some(id) = self.free_span_ids.pop() {
+            debug_assert!(self.spans[id].is_none(), "reused span ID must be empty");
+            return id;
+        }
         self.spans.push(None);
         self.spans.len() - 1
+    }
+
+    fn free_span_id(&mut self, id: usize) {
+        // Return the span ID to the free list for reuse.
+        debug_assert!(self.spans[id].is_none(), "freed span ID must be empty");
+        self.free_span_ids.push(id);
     }
 
     // Reuse a span with free slots or create a new one for this class.
@@ -771,44 +831,26 @@ impl Gc {
         let new_pages = pages.max(SEGMENT_PAGES);
         self.segments.push(Segment::new(new_pages));
         let index = self.segments.len() - 1;
-        self.insert_segment_range(index);
+        register_segment_arenas(&mut self.arena_map, &self.segments[index], index);
         let segment = &mut self.segments[index];
         let start_page = segment.alloc_pages(pages).expect("new segment has space");
         let base = unsafe { segment.data.add(start_page * PAGE_SIZE) };
         (index, start_page, base)
     }
 
-    // Insert a segment range into the sorted index used for binary search.
-    fn insert_segment_range(&mut self, index: usize) {
-        // Keep the range list sorted by base for fast binary search.
-        let base = self.segments[index].base();
-        let end = base + self.segments[index].len;
-        let range = SegmentRange { base, end, index };
-        let pos = self
-            .segment_ranges
-            .binary_search_by(|r| r.base.cmp(&base))
-            .unwrap_or_else(|p| p);
-        self.segment_ranges.insert(pos, range);
-    }
-
-    // Find the segment index for a pointer via binary search on ranges.
+    // O(1) segment lookup via arena map.
     fn segment_index_for_ptr(&self, ptr: *const u8) -> Option<usize> {
-        // Binary search the segment ranges to find the owning segment.
         let p = ptr as usize;
-        let mut lo = 0;
-        let mut hi = self.segment_ranges.len();
-        while lo < hi {
-            let mid = (lo + hi) / 2;
-            let range = &self.segment_ranges[mid];
-            if p < range.base {
-                hi = mid;
-            } else if p >= range.end {
-                lo = mid + 1;
-            } else {
-                return Some(range.index);
-            }
+        let arena = p / SEGMENT_SIZE;
+        let index = *self.arena_map.get(&arena)?;
+        // Verify the pointer is actually within this segment's bounds.
+        let segment = &self.segments[index];
+        let base = segment.base();
+        if p >= base && p < base + segment.len {
+            Some(index)
+        } else {
+            None
         }
-        None
     }
 
     fn collect(&mut self) {
@@ -837,8 +879,11 @@ impl Gc {
     where
         I: IntoIterator<Item = *const u8>,
     {
-        // Collect candidate roots into a stack for iterative marking.
-        let mut stack: Vec<*const u8> = manual_roots.into_iter().collect();
+        // Pre-allocate the mark stack to avoid reallocations during tracing.
+        // 1024 pointers handles most workloads; deep graphs will still grow.
+        const INITIAL_STACK_CAPACITY: usize = 1024;
+        let mut stack: Vec<*const u8> = Vec::with_capacity(INITIAL_STACK_CAPACITY);
+        stack.extend(manual_roots);
 
         for range in static_roots {
             // Conservative scan over the static range, word by word.
@@ -933,20 +978,22 @@ impl Gc {
 
     fn push_shadow_roots(&self, stack: &mut Vec<*const u8>) {
         // Walk the shadow stack frames produced by codegen.
-        let mut frame = unsafe { GC_SHADOW_TOP };
-        while !frame.is_null() {
-            let count = unsafe { (*frame).count };
-            let slots = unsafe { (*frame).slots };
-            if !slots.is_null() {
-                for i in 0..count {
-                    let val = unsafe { *slots.add(i) };
-                    if !val.is_null() {
-                        stack.push(val as *const u8);
+        GC_SHADOW_TOP.with(|top| {
+            let mut frame = top.get();
+            while !frame.is_null() {
+                let count = unsafe { (*frame).count };
+                let slots = unsafe { (*frame).slots };
+                if !slots.is_null() {
+                    for i in 0..count {
+                        let val = unsafe { *slots.add(i) };
+                        if !val.is_null() {
+                            stack.push(val as *const u8);
+                        }
                     }
                 }
+                frame = unsafe { (*frame).prev };
             }
-            frame = unsafe { (*frame).prev };
-        }
+        });
     }
 
     // Sweep spans: free unmarked slots, and return empty spans to the segment.
@@ -973,6 +1020,7 @@ impl Gc {
                     freed.objects += 1;
                     freed.bytes = freed.bytes.saturating_add(total_bytes);
                     self.free_span_pages(&span);
+                    self.free_span_id(span_id);
                     continue;
                 }
                 bitset_set(&mut span.mark_map, 0, false);
@@ -999,6 +1047,7 @@ impl Gc {
             // If empty, return the span to the segment.
             if span.allocated == 0 {
                 self.free_span_pages(&span);
+                self.free_span_id(span_id);
                 continue;
             }
 
@@ -1089,13 +1138,23 @@ fn build_size_classes() -> Vec<usize> {
 }
 
 fn size_class_for(size: usize, classes: &[usize]) -> usize {
-    // Find the first size class that can fit `size`.
-    for (index, class_size) in classes.iter().enumerate() {
-        if size <= *class_size {
-            return index;
-        }
+    // O(1) lookup using bit manipulation.
+    // Size classes are powers of two: 8, 16, 32, ... up to PAGE_SIZE.
+    const MIN_CLASS: usize = 8;
+    const MIN_CLASS_LOG2: u32 = 3; // 2^3 = 8
+
+    if size <= MIN_CLASS {
+        return 0;
     }
-    classes.len().saturating_sub(1)
+
+    // Round up to next power of two and compute log2.
+    // For size=9, next_power_of_two=16, trailing_zeros=4, index=4-3=1.
+    let rounded = size.next_power_of_two();
+    let log2 = rounded.trailing_zeros();
+    let index = (log2 - MIN_CLASS_LOG2) as usize;
+
+    // Clamp to valid class range (last class is PAGE_SIZE).
+    index.min(classes.len().saturating_sub(1))
 }
 
 fn pages_for_size(size: usize) -> usize {
@@ -1165,5 +1224,17 @@ fn next_gc_threshold(live_bytes: usize) -> usize {
         GC_MIN_TRIGGER
     } else {
         doubled
+    }
+}
+
+// Register all arena indices that a segment spans in the arena map.
+// A segment may span 1-2 arenas depending on its alignment.
+fn register_segment_arenas(arena_map: &mut HashMap<usize, usize>, segment: &Segment, index: usize) {
+    let base = segment.base();
+    let end = base + segment.len;
+    let first_arena = base / SEGMENT_SIZE;
+    let last_arena = (end.saturating_sub(1)) / SEGMENT_SIZE;
+    for arena in first_arena..=last_arena {
+        arena_map.insert(arena, index);
     }
 }
