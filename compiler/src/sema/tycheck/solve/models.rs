@@ -63,6 +63,8 @@ pub struct ApplyGoalData<'ctx> {
     pub result_ty: Ty<'ctx>,
     pub expect_ty: Option<Ty<'ctx>>,
     pub arguments: Vec<ApplyArgument<'ctx>>,
+    /// If true, skip label validation (used for operator calls)
+    pub skip_labels: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +119,9 @@ pub struct BinOpGoalData<'ctx> {
     pub operator: BinaryOperator,
     pub span: Span,
     pub assigning: bool,
+    pub node_id: NodeID,
+    pub lhs_id: NodeID,
+    pub rhs_id: NodeID,
 }
 
 #[derive(Debug, Clone)]

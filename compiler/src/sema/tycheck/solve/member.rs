@@ -3,7 +3,7 @@ use super::{
     Obligation, SolverResult,
 };
 use crate::{
-    hir::NodeID,
+    hir::{NodeID, OperatorKind},
     sema::{
         error::TypeError,
         models::{StructField, Ty, TyKind},
@@ -185,5 +185,60 @@ impl<'ctx> ConstraintSolver<'ctx> {
             TyKind::Tuple(items) => Some(TypeHead::Tuple(items.len() as u16)),
             TyKind::Infer(_) | TyKind::FnPointer { .. } | TyKind::Error => None,
         }
+    }
+
+    /// Look up operator candidates for the given type and operator kind.
+    pub fn lookup_operator_candidates(
+        &self,
+        ty: Ty<'ctx>,
+        kind: OperatorKind,
+    ) -> Vec<DefinitionID> {
+        let Some(head) = self.type_head_from_type(ty) else {
+            return vec![];
+        };
+
+        self.lookup_operator_candidates_visible(head, kind)
+    }
+
+    fn lookup_operator_candidates_visible(
+        &self,
+        head: TypeHead,
+        kind: OperatorKind,
+    ) -> Vec<DefinitionID> {
+        let gcx = self.gcx();
+        let mut members = Vec::new();
+        let mut seen: FxHashSet<DefinitionID> = FxHashSet::default();
+
+        let mut collect = |db: &crate::compile::context::TypeDatabase<'ctx>| {
+            if let Some(idx) = db.type_head_to_members.get(&head) {
+                if let Some(set) = idx.operators.get(&kind) {
+                    for &id in &set.members {
+                        if seen.insert(id) {
+                            members.push(id);
+                        }
+                    }
+                }
+            }
+        };
+
+        gcx.with_session_type_database(|db| collect(db));
+
+        let mapping = gcx.store.package_mapping.borrow();
+        let deps: Vec<_> = gcx
+            .config
+            .dependencies
+            .values()
+            .filter_map(|ident| mapping.get(ident.as_str()).copied())
+            .collect();
+        drop(mapping);
+
+        for index in deps {
+            gcx.with_type_database(index, |db| collect(db));
+        }
+
+        members
+            .into_iter()
+            .filter(|id| self.gcx().is_definition_visible(*id, self.current_def))
+            .collect()
     }
 }

@@ -1,5 +1,6 @@
 use crate::{
     compile::context::Gcx,
+    hir::{BinaryOperator, UnaryOperator},
     sema::models::Ty,
     span::{Spanned, Symbol},
 };
@@ -32,6 +33,8 @@ pub enum TypeError<'ctx> {
     UnknownStructField { name: Symbol, struct_ty: Ty<'ctx> },
     MissingStructField { name: Symbol, struct_ty: Ty<'ctx> },
     NotATuple { ty: Ty<'ctx> },
+    InvalidUnaryOp { op: UnaryOperator, ty: Ty<'ctx> },
+    InvalidBinaryOp { op: BinaryOperator, lhs: Ty<'ctx>, rhs: Ty<'ctx> },
 }
 
 pub type SpannedError<'ctx> = Spanned<TypeError<'ctx>>;
@@ -92,6 +95,17 @@ impl<'ctx> TypeError<'ctx> {
             }
             TypeError::NotATuple { ty } => {
                 format!("type {} is not a tuple", ty.format(gcx))
+            }
+            TypeError::InvalidUnaryOp { op, ty } => {
+                format!("cannot apply unary operator '{:?}' to type {}", op, ty.format(gcx))
+            }
+            TypeError::InvalidBinaryOp { op, lhs, rhs } => {
+                format!(
+                    "cannot apply binary operator '{:?}' to types {} and {}",
+                    op,
+                    lhs.format(gcx),
+                    rhs.format(gcx)
+                )
             }
         }
     }

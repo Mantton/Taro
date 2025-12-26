@@ -108,6 +108,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         result_ty: result,
                         expect_ty,
                         arguments: args,
+                        skip_labels: false,
                     }),
                 };
 

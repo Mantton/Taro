@@ -385,44 +385,59 @@ impl<'ctx> FunctionLower<'ctx> {
                     .collect();
                 ExprKind::Call { callee, args }
             }
-            hir::ExpressionKind::Binary(op, lhs, rhs) => match op {
-                hir::BinaryOperator::BoolAnd => ExprKind::Logical {
-                    op: LogicalOperator::And,
-                    lhs: self.lower_expr(lhs),
-                    rhs: self.lower_expr(rhs),
-                },
-                hir::BinaryOperator::BoolOr => ExprKind::Logical {
-                    op: LogicalOperator::Or,
-                    lhs: self.lower_expr(lhs),
-                    rhs: self.lower_expr(rhs),
-                },
-                hir::BinaryOperator::PtrEq => todo!(),
-                _ => {
-                    let lhs = self.lower_expr(lhs);
-                    let rhs = self.lower_expr(rhs);
-                    let op = bin_op(*op);
-                    ExprKind::Binary { op, lhs, rhs }
-                }
-            },
-            hir::ExpressionKind::Unary(hir::UnaryOperator::LogicalNot, operand) => {
-                let operand = self.lower_expr(operand);
-                ExprKind::Unary {
-                    op: mir::UnaryOperator::LogicalNot,
-                    operand,
+            hir::ExpressionKind::Binary(op, lhs, rhs) => {
+                // Check if this is an operator method call
+                if let Some(def_id) = self.results.overload_source(expr.id) {
+                    // Lower as a method call
+                    let lhs_expr = self.lower_expr(lhs);
+                    let rhs_expr = self.lower_expr(rhs);
+                    let callee_ty = self.gcx.get_type(def_id);
+                    let callee = self.push_expr(ExprKind::Zst { id: def_id }, callee_ty, expr.span);
+                    ExprKind::Call {
+                        callee,
+                        args: vec![lhs_expr, rhs_expr],
+                    }
+                } else {
+                    match op {
+                        hir::BinaryOperator::BoolAnd => ExprKind::Logical {
+                            op: LogicalOperator::And,
+                            lhs: self.lower_expr(lhs),
+                            rhs: self.lower_expr(rhs),
+                        },
+                        hir::BinaryOperator::BoolOr => ExprKind::Logical {
+                            op: LogicalOperator::Or,
+                            lhs: self.lower_expr(lhs),
+                            rhs: self.lower_expr(rhs),
+                        },
+                        hir::BinaryOperator::PtrEq => todo!(),
+                        _ => {
+                            let lhs = self.lower_expr(lhs);
+                            let rhs = self.lower_expr(rhs);
+                            let op = bin_op(*op);
+                            ExprKind::Binary { op, lhs, rhs }
+                        }
+                    }
                 }
             }
-            hir::ExpressionKind::Unary(hir::UnaryOperator::Negate, operand) => {
-                let operand = self.lower_expr(operand);
-                ExprKind::Unary {
-                    op: mir::UnaryOperator::Negate,
-                    operand,
-                }
-            }
-            hir::ExpressionKind::Unary(hir::UnaryOperator::BitwiseNot, operand) => {
-                let operand = self.lower_expr(operand);
-                ExprKind::Unary {
-                    op: mir::UnaryOperator::BitwiseNot,
-                    operand,
+            hir::ExpressionKind::Unary(unary_op, operand) => {
+                // Check if this is an operator method call
+                if let Some(def_id) = self.results.overload_source(expr.id) {
+                    // Lower as a method call
+                    let operand_expr = self.lower_expr(operand);
+                    let callee_ty = self.gcx.get_type(def_id);
+                    let callee = self.push_expr(ExprKind::Zst { id: def_id }, callee_ty, expr.span);
+                    ExprKind::Call {
+                        callee,
+                        args: vec![operand_expr],
+                    }
+                } else {
+                    let operand = self.lower_expr(operand);
+                    let op = match unary_op {
+                        hir::UnaryOperator::LogicalNot => mir::UnaryOperator::LogicalNot,
+                        hir::UnaryOperator::Negate => mir::UnaryOperator::Negate,
+                        hir::UnaryOperator::BitwiseNot => mir::UnaryOperator::BitwiseNot,
+                    };
+                    ExprKind::Unary { op, operand }
                 }
             }
             hir::ExpressionKind::Assign(lhs, rhs) => {

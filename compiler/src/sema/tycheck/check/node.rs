@@ -928,6 +928,7 @@ impl<'ctx> Checker<'ctx> {
             result_ty,
             expect_ty,
             arguments: apply_arguments,
+            skip_labels: false,
         };
         cs.add_goal(Goal::Apply(data), expression.span);
 
@@ -1173,6 +1174,9 @@ impl<'ctx> Checker<'ctx> {
             operator,
             span: expression.span,
             assigning: false,
+            node_id: expression.id,
+            lhs_id: lhs.id,
+            rhs_id: rhs.id,
         };
 
         cs.add_goal(Goal::BinaryOp(data), expression.span);

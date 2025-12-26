@@ -80,6 +80,32 @@ impl<'ctx> Actor<'ctx> {
         ident: crate::span::Identifier,
         kind: hir::OperatorKind,
     ) {
+        // Validate operator parameter count
+        let sig = self.context.get_signature(def_id);
+        let param_count = sig.inputs.len();
+
+        if kind.is_unary() {
+            // Unary operators must have exactly 1 parameter (self)
+            if param_count != 1 {
+                let msg = format!(
+                    "unary operator '{:?}' must have exactly 1 parameter (self), found {}",
+                    kind, param_count
+                );
+                self.context.dcx().emit_error(msg, Some(ident.span));
+                return;
+            }
+        } else {
+            // Binary operators must have exactly 2 parameters (self + rhs)
+            if param_count != 2 {
+                let msg = format!(
+                    "binary operator '{:?}' must have exactly 2 parameters (self, rhs), found {}",
+                    kind, param_count
+                );
+                self.context.dcx().emit_error(msg, Some(ident.span));
+                return;
+            }
+        }
+
         let fingerprint = self.fingerprint_for(def_id);
         self.context.with_session_type_database(|db| {
             let index: &mut TypeMemberIndex = db.type_head_to_members.entry(head).or_default();

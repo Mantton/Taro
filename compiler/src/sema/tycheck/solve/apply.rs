@@ -63,7 +63,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         }
 
         // 2 - Matching
-        let result = match_arguments_to_parameters(signature, &data.arguments);
+        let result = match_arguments_to_parameters(signature, &data.arguments, data.skip_labels);
         let positions = match result {
             Ok(v) => v,
             Err(e) => {
@@ -131,42 +131,45 @@ pub fn validate_arity<'ctx>(
 pub fn match_arguments_to_parameters(
     signature: &LabeledFunctionSignature,
     arguments: &[ApplyArgument],
+    skip_labels: bool,
 ) -> Result<Vec<Option<usize>>, Spanned<ApplyValidationError>> {
     let mut param_to_arg: Vec<Option<usize>> = vec![None; signature.inputs.len()];
     let mut used_args = vec![false; arguments.len()];
 
-    // First pass: match labeled arguments
-    for (arg_idx, arg) in arguments.iter().enumerate() {
-        if let Some(arg_label) = &arg.label {
-            let mut found = false;
-            for (param_idx, param) in signature.inputs.iter().enumerate() {
-                if param.label.as_ref() == Some(&arg_label.symbol) {
-                    if param_to_arg[param_idx].is_some() {
-                        // Duplicate label - this is an error
-                        return Err(Spanned::new(
-                            ApplyValidationError::LabelMismatch {
-                                param_index: param_idx,
-                                expected: param.label.clone(),
-                                provided: arg.label.map(|f| f.symbol),
-                            },
-                            arg.span,
-                        ));
+    // First pass: match labeled arguments (skip if skip_labels is true)
+    if !skip_labels {
+        for (arg_idx, arg) in arguments.iter().enumerate() {
+            if let Some(arg_label) = &arg.label {
+                let mut found = false;
+                for (param_idx, param) in signature.inputs.iter().enumerate() {
+                    if param.label.as_ref() == Some(&arg_label.symbol) {
+                        if param_to_arg[param_idx].is_some() {
+                            // Duplicate label - this is an error
+                            return Err(Spanned::new(
+                                ApplyValidationError::LabelMismatch {
+                                    param_index: param_idx,
+                                    expected: param.label.clone(),
+                                    provided: arg.label.map(|f| f.symbol),
+                                },
+                                arg.span,
+                            ));
+                        }
+                        param_to_arg[param_idx] = Some(arg_idx);
+                        used_args[arg_idx] = true;
+                        found = true;
+                        break;
                     }
-                    param_to_arg[param_idx] = Some(arg_idx);
-                    used_args[arg_idx] = true;
-                    found = true;
-                    break;
                 }
-            }
-            if !found {
-                return Err(Spanned::new(
-                    ApplyValidationError::LabelMismatch {
-                        param_index: 0, // We don't know which parameter this was meant for
-                        expected: None,
-                        provided: arg.label.map(|f| f.symbol),
-                    },
-                    arg.span,
-                ));
+                if !found {
+                    return Err(Spanned::new(
+                        ApplyValidationError::LabelMismatch {
+                            param_index: 0, // We don't know which parameter this was meant for
+                            expected: None,
+                            provided: arg.label.map(|f| f.symbol),
+                        },
+                        arg.span,
+                    ));
+                }
             }
         }
     }
@@ -178,7 +181,7 @@ pub fn match_arguments_to_parameters(
             continue; // Already matched by label
         }
 
-        if arg.label.is_some() {
+        if !skip_labels && arg.label.is_some() {
             continue; // This was a labeled argument that didn't match
         }
 
@@ -196,8 +199,8 @@ pub fn match_arguments_to_parameters(
 
         let param = &signature.inputs[param_idx];
 
-        // Check if this parameter expects a label
-        if param.label.is_some() {
+        // Check if this parameter expects a label (skip if skip_labels is true)
+        if !skip_labels && param.label.is_some() {
             return Err(Spanned::new(
                 ApplyValidationError::LabelMismatch {
                     param_index: param_idx,
