@@ -1521,6 +1521,7 @@ impl<'ctx> Checker<'ctx> {
             TyKind::Pointer(_, mutbl) => Some(TypeHead::Pointer(mutbl)),
             TyKind::GcPtr => Some(TypeHead::GcPtr),
             TyKind::Tuple(items) => Some(TypeHead::Tuple(items.len() as u16)),
+            TyKind::Parameter(_) => todo!(),
             TyKind::Infer(_) | TyKind::FnPointer { .. } | TyKind::Error => None,
         }
     }

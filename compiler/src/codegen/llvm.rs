@@ -2022,6 +2022,7 @@ fn lower_type<'llvm>(
                 .ptr_type(AddressSpace::default())
                 .as_basic_type_enum(),
         ),
+        TyKind::Parameter(_) => todo!(),
         TyKind::Infer(_) | TyKind::Error => unreachable!(),
     }
 }

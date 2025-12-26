@@ -44,6 +44,7 @@ pub fn mangle(gcx: GlobalContext, id: hir::DefinitionID) -> String {
                 format!("tuple{}", parts.join("_"))
             }
             TyKind::FnPointer { .. } => "fnptr".into(),
+            TyKind::Parameter(_) => todo!(),
             TyKind::Infer(_) | TyKind::Error => "err".into(),
         }
     }

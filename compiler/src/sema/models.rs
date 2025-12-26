@@ -2,7 +2,7 @@ use ena::unify::UnifyKey;
 
 use crate::{
     compile::context::Gcx,
-    hir::{DefinitionID, Mutability},
+    hir::{self, DefinitionID, Mutability},
     sema::tycheck::infer::keys::{FloatVarID, IntVarID},
     span::Symbol,
     utils::intern::Interned,
@@ -154,6 +154,7 @@ impl<'arena> Ty<'arena> {
                 InferTy::FloatVar(id) => format!("{{float({})}}", id.index()),
                 InferTy::FreshTy(_) => todo!(),
             },
+            TyKind::Parameter(p) => format!("{}", p.name.as_str()),
         }
     }
 }
@@ -176,6 +177,7 @@ pub enum TyKind<'arena> {
         output: Ty<'arena>,
     },
     Infer(InferTy),
+    Parameter(GenericParameter),
     Error,
 }
 
@@ -332,4 +334,87 @@ pub enum InferTy {
     IntVar(IntVarID),
     FloatVar(FloatVarID),
     FreshTy(u32),
+}
+
+// MARK: Generics
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GenericParameter {
+    pub index: usize,
+    pub name: Symbol,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GenericArgument<'arena> {
+    Type(Ty<'arena>),
+    Const(usize), // TODO: Replace this with a typesystem represenation of a constant
+}
+
+impl<'arena> GenericArgument<'arena> {
+    pub fn ty(self) -> Option<Ty<'arena>> {
+        match self {
+            GenericArgument::Type(ty) => Some(ty),
+            GenericArgument::Const(_) => None,
+        }
+    }
+}
+
+pub type GenericArguments<'arena> = &'arena [GenericArgument<'arena>];
+
+#[derive(Debug, Clone)]
+pub struct Generics {
+    pub parameters: Vec<GenericParameterDefinition>,
+    pub has_self: bool,
+    pub parent: Option<DefinitionID>,
+    pub parent_count: usize,
+}
+
+impl Generics {
+    pub fn total_count(&self) -> usize {
+        return self.parameters.len();
+    }
+    pub fn is_empty(&self) -> bool {
+        return self.parameters.len() == 0;
+    }
+    pub fn default_count(&self) -> usize {
+        let mut count = 0;
+        for param in self.parameters.iter() {
+            match &param.kind {
+                GenericParameterDefinitionKind::Type { default } => {
+                    if default.is_some() {
+                        count += 1;
+                    }
+                }
+                GenericParameterDefinitionKind::Const { default } => {
+                    if default.is_some() {
+                        count += 1;
+                    }
+                }
+            }
+        }
+
+        return count;
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GenericParameterDefinition {
+    pub name: Symbol,
+    pub id: DefinitionID,
+    pub index: usize,
+    pub kind: GenericParameterDefinitionKind,
+}
+
+#[derive(Debug, Clone)]
+pub enum GenericParameterDefinitionKind {
+    Type { default: Option<Box<hir::Type>> },
+    Const { default: Option<usize> },
+}
+
+impl GenericParameterDefinitionKind {
+    pub fn has_default(&self) -> bool {
+        match self {
+            GenericParameterDefinitionKind::Type { default } => default.is_some(),
+            GenericParameterDefinitionKind::Const { default } => default.is_some(),
+        }
+    }
 }
