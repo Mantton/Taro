@@ -51,6 +51,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 })
             }
             ExprKind::If { .. }
+            | ExprKind::Match { .. }
             | ExprKind::Deref(..)
             | ExprKind::Reference { .. }
             | ExprKind::Local(..)

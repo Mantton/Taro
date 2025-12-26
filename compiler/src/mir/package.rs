@@ -19,9 +19,9 @@ pub fn build_package<'ctx>(
         }
         let mut body = MirBuilder::build_function(gcx, &func);
         optimize::run_default_passes(gcx, &mut body);
-        // let ident = gcx.definition_ident(id);
-        // println!("{} MIR", ident.symbol);
-        // println!("{}", PrettyPrintMir { body: &body, gcx });
+        let ident = gcx.definition_ident(id);
+        println!("{} MIR", ident.symbol);
+        println!("{}", super::pretty::PrettyPrintMir { body: &body, gcx });
         let alloc = gcx.store.arenas.mir_bodies.alloc(body);
         functions.insert(id, alloc);
     }

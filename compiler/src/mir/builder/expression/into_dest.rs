@@ -103,6 +103,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 self.goto(else_blk, join_block, expr.span);
                 join_block.unit()
             }
+            ExprKind::Match { .. } => {
+                todo!("match lowering")
+            }
             ExprKind::Assign { .. } => {
                 block = self.lower_statement_expression(block, expr_id).into_block();
                 self.push_assign_unit(block, expr.span, destination, self.gcx);
@@ -137,21 +140,14 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     expr.span,
                 );
                 let alloc_rvalue = Rvalue::Alloc { ty: value_ty };
-                self.push_assign(
-                    block,
-                    Place::from_local(ptr_local),
-                    alloc_rvalue,
-                    expr.span,
-                );
+                self.push_assign(block, Place::from_local(ptr_local), alloc_rvalue, expr.span);
 
                 // Store initializer into *ptr_local.
                 let dest_place = Place {
                     local: ptr_local,
                     projection: vec![mir::PlaceElem::Deref],
                 };
-                block = self
-                    .expr_into_dest(dest_place, block, *value)
-                    .into_block();
+                block = self.expr_into_dest(dest_place, block, *value).into_block();
 
                 // Return the pointer.
                 let rvalue = Rvalue::Use(Operand::Copy(Place::from_local(ptr_local)));
@@ -167,11 +163,18 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                         def.fields.len()
                     }
                     crate::sema::models::AdtKind::Enum => {
-                        self.gcx.dcx().emit_error(
-                            "enum literals are not yet supported".into(),
-                            Some(expr.span),
-                        );
-                        0
+                        let Some(variant_index) = adt_expression.variant_index else {
+                            unreachable!()
+                        };
+                        let variant = self
+                            .gcx
+                            .enum_variant_by_index(adt_expression.definition.id, variant_index);
+                        match variant.kind {
+                            crate::sema::models::EnumVariantKind::Unit => 0,
+                            crate::sema::models::EnumVariantKind::Tuple(enum_variant_fields) => {
+                                enum_variant_fields.len()
+                            }
+                        }
                     }
                 };
 
@@ -187,7 +190,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 );
 
                 let rvalue = Rvalue::Aggregate {
-                    kind: AggregateKind::Adt(adt_expression.definition.id),
+                    kind: AggregateKind::Adt {
+                        def_id: adt_expression.definition.id,
+                        variant_index: adt_expression.variant_index,
+                    },
                     fields,
                 };
                 self.push_assign(block, destination, rvalue, expr.span);

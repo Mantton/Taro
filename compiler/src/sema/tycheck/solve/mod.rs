@@ -30,7 +30,10 @@ pub struct ConstraintSystem<'ctx> {
 }
 
 impl<'ctx> ConstraintSystem<'ctx> {
-    pub fn new(context: Gcx<'ctx>, current_def: crate::sema::resolve::models::DefinitionID) -> ConstraintSystem<'ctx> {
+    pub fn new(
+        context: Gcx<'ctx>,
+        current_def: crate::sema::resolve::models::DefinitionID,
+    ) -> ConstraintSystem<'ctx> {
         ConstraintSystem {
             infer_cx: Rc::new(InferCtx::new(context)),
             obligations: Default::default(),
@@ -134,9 +137,6 @@ impl<'ctx> ConstraintSystem<'ctx> {
         self.adjustments = adjustments;
         self.field_indices = field_indices;
         self.overload_sources = overload_sources;
-        for (id, index) in self.field_indices.iter() {
-            self.infer_cx.gcx.cache_field_index(*id, *index);
-        }
 
         let Err(errors) = result else {
             return;

@@ -1,7 +1,7 @@
 use crate::{
     compile::context::Gcx,
     hir::{self, DefinitionID, NodeID},
-    sema::{models::Ty, tycheck::lower::TypeLowerer},
+    sema::{models::Ty, tycheck::lower::TypeLowerer, tycheck::results::TypeCheckResults},
 };
 use rustc_hash::FxHashMap;
 use std::cell::{Cell, RefCell};
@@ -12,6 +12,7 @@ pub struct Checker<'arena> {
     pub return_ty: Option<Ty<'arena>>,
     pub(super) loop_depth: Cell<usize>,
     pub current_def: DefinitionID,
+    pub results: RefCell<TypeCheckResults<'arena>>,
 }
 
 #[derive(Clone, Copy)]
@@ -21,13 +22,18 @@ pub struct LocalBinding<'arena> {
 }
 
 impl<'arena> Checker<'arena> {
-    pub fn new(context: Gcx<'arena>, current_def: DefinitionID) -> Checker<'arena> {
+    pub fn new(
+        context: Gcx<'arena>,
+        current_def: DefinitionID,
+        results: RefCell<TypeCheckResults<'arena>>,
+    ) -> Checker<'arena> {
         Checker {
             context,
             return_ty: None,
             locals: Default::default(),
             loop_depth: Cell::new(0),
             current_def,
+            results,
         }
     }
 }
@@ -72,6 +78,6 @@ impl<'arena> Checker<'arena> {
         let mutable = existing.map(|b| b.mutable).unwrap_or(false);
 
         locals.insert(id, LocalBinding { ty, mutable });
-        self.context.cache_node_type(id, ty);
+        self.results.borrow_mut().record_node_type(id, ty);
     }
 }

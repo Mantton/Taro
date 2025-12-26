@@ -686,8 +686,25 @@ impl Actor<'_, '_> {
                     .collect(),
                 span,
             ),
-            ast::PatternKind::Literal(node) => {
-                hir::PatternKind::Literal(self.lower_anon_const(node))
+            ast::PatternKind::Literal(expr) => {
+                let value = *expr.value;
+                let literal = match value.kind {
+                    ast::ExpressionKind::Literal(lit) => match convert_ast_literal(lit) {
+                        Ok(lit) => lit,
+                        Err(err) => {
+                            self.context.dcx.emit_error(err.into(), Some(value.span));
+                            hir::Literal::Nil
+                        }
+                    },
+                    _ => {
+                        self.context.dcx.emit_error(
+                            "pattern literals must be a literal value".into(),
+                            Some(value.span),
+                        );
+                        hir::Literal::Nil
+                    }
+                };
+                hir::PatternKind::Literal(literal)
             }
         };
 
@@ -1681,8 +1698,8 @@ fn convert_ast_literal(literal: ast::Literal) -> Result<hir::Literal, String> {
             Ok(hir::Literal::Rune(c))
         }
         ast::Literal::String { value } => {
-            let value =
-                escape::unescape_str(&value).map_err(|err| format!("malformed string, {:?}", err))?;
+            let value = escape::unescape_str(&value)
+                .map_err(|err| format!("malformed string, {:?}", err))?;
             Ok(hir::Literal::String(Symbol::new(&value)))
         }
         ast::Literal::Integer { value, base } => {

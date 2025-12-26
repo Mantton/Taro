@@ -234,6 +234,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     None => return Ty::error(self.gcx),
                 },
                 mir::PlaceElem::Field(_, field_ty) => ty = *field_ty,
+                mir::PlaceElem::VariantDowncast { name, index } => todo!(),
             }
         }
         ty

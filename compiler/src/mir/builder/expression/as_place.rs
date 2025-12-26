@@ -49,6 +49,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 unreachable!("make expression cannot be used as place")
             }
             ExprKind::If { .. }
+            | ExprKind::Match { .. }
             | ExprKind::Assign { .. }
             | ExprKind::Literal(..)
             | ExprKind::Unary { .. }

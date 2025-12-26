@@ -1,3 +1,4 @@
+use crate::hir::FoundationDecl;
 use crate::{
     PackageIndex,
     ast::{Identifier, NodeID, PathSegment},
@@ -14,7 +15,6 @@ use crate::{
     utils::intern::Interned,
 };
 use rustc_hash::FxHashMap;
-use crate::hir::FoundationDecl;
 
 pub struct Resolver<'arena> {
     pub context: GlobalContext<'arena>,
@@ -64,7 +64,10 @@ impl<'a> Resolver<'a> {
                 .collect(),
             builin_fn_bindings: {
                 let mut map = FxHashMap::default();
-                map.insert(Symbol::new("make"), Resolution::Foundation(FoundationDecl::Make));
+                map.insert(
+                    Symbol::new("make"),
+                    Resolution::Foundation(FoundationDecl::Make),
+                );
                 map
             },
         }

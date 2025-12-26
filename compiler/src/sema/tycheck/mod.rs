@@ -6,11 +6,15 @@ mod extend;
 mod fold;
 pub mod infer;
 mod lower;
+pub mod results;
 pub mod solve;
 pub mod utils;
 mod wf;
 
-pub fn typecheck_package(package: &hir::Package, context: GlobalContext) -> CompileResult<()> {
+pub fn typecheck_package<'ctx>(
+    package: &hir::Package,
+    context: GlobalContext<'ctx>,
+) -> CompileResult<results::TypeCheckResults<'ctx>> {
     collect::adt::run(package, context)?; // Collect ADT Type Headers
     collect::field::run(package, context)?; // Collect ADT Type Definitions
     collect::variant::run(package, context)?; // Collect Enum Variant Definitions
@@ -20,6 +24,6 @@ pub fn typecheck_package(package: &hir::Package, context: GlobalContext) -> Comp
     // WellFormed?
     wf::run(package, context)?;
     // Check Body
-    check::run(package, context)?;
-    Ok(())
+    let results = check::run(package, context)?;
+    Ok(results)
 }

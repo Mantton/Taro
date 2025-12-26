@@ -2,29 +2,35 @@ use crate::{
     compile::context::Gcx,
     error::CompileResult,
     hir::{self, DefinitionID, HirVisitor},
+    sema::tycheck::results::TypeCheckResults,
 };
+use std::cell::RefCell;
 
 mod checker;
 mod gather;
 mod node;
 
-pub fn run(package: &hir::Package, context: Gcx) -> CompileResult<()> {
-    Actor::run(package, context)
+pub fn run<'ctx>(
+    package: &hir::Package,
+    context: Gcx<'ctx>,
+) -> CompileResult<TypeCheckResults<'ctx>> {
+    let mut actor = Actor::new(context);
+    hir::walk_package(&mut actor, package);
+    context.dcx().ok()?;
+    Ok(actor.results)
 }
 
 struct Actor<'ctx> {
     context: Gcx<'ctx>,
+    results: TypeCheckResults<'ctx>,
 }
 
 impl<'ctx> Actor<'ctx> {
     fn new(context: Gcx<'ctx>) -> Actor<'ctx> {
-        Actor { context }
-    }
-
-    fn run(package: &hir::Package, context: Gcx<'ctx>) -> CompileResult<()> {
-        let mut actor = Actor::new(context);
-        hir::walk_package(&mut actor, package);
-        context.dcx().ok()
+        Actor {
+            context,
+            results: TypeCheckResults::default(),
+        }
     }
 }
 
@@ -40,8 +46,15 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
 }
 
 impl<'ctx> Actor<'ctx> {
-    fn check_function(&self, id: DefinitionID, node: &hir::Function, fn_ctx: hir::FunctionContext) {
-        let checker = checker::Checker::new(self.context, id);
+    fn check_function(
+        &mut self,
+        id: DefinitionID,
+        node: &hir::Function,
+        fn_ctx: hir::FunctionContext,
+    ) {
+        let mut checker =
+            checker::Checker::new(self.context, id, RefCell::new(TypeCheckResults::default()));
         checker.check_function(id, node, fn_ctx);
+        self.results.extend_from(checker.results.into_inner());
     }
 }

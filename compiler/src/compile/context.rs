@@ -1,4 +1,3 @@
-use crate::thir::FieldIndex;
 use crate::{
     PackageIndex,
     compile::config::Config,
@@ -7,15 +6,15 @@ use crate::{
     mir::{self, Body},
     sema::{
         models::{
-            EnumDefinition, FloatTy, IntTy, LabeledFunctionSignature, StructDefinition, Ty, TyKind,
-            UIntTy,
+            EnumDefinition, EnumVariant, FloatTy, IntTy, LabeledFunctionSignature,
+            StructDefinition, Ty, TyKind, UIntTy,
         },
         resolve::models::{
             DefinitionKind, ResolutionOutput, ScopeData, ScopeEntryData, TypeHead, UsageEntryData,
             Visibility,
         },
-        tycheck::solve::Adjustment,
     },
+    thir::VariantIndex,
     utils::intern::{Interned, InternedInSet, InternedSet},
 };
 use crate::{constants::STD_PREFIX, span::Symbol};
@@ -112,21 +111,6 @@ impl<'arena> GlobalContext<'arena> {
                 .push(extension_id);
         });
     }
-
-    pub fn cache_node_type(self, id: hir::NodeID, ty: Ty<'arena>) {
-        self.with_session_type_database(|db| {
-            db.node_to_ty.insert(id, ty);
-        });
-    }
-
-    pub fn cache_node_adjustments(self, id: hir::NodeID, adjustments: Vec<Adjustment<'arena>>) {
-        if adjustments.is_empty() {
-            return;
-        }
-        self.with_session_type_database(|db| {
-            db.node_to_adjustments.insert(id, adjustments);
-        });
-    }
 }
 
 impl<'arena> GlobalContext<'arena> {
@@ -167,12 +151,10 @@ impl<'arena> GlobalContext<'arena> {
         })
     }
 
+    #[track_caller]
     pub fn get_struct_definition(self, id: DefinitionID) -> &'arena StructDefinition<'arena> {
-        self.with_type_database(id.package(), |db| {
-            *db.def_to_struct_def
-                .get(&id)
-                .expect("struct definition of definition")
-        })
+        self.with_type_database(id.package(), |db| db.def_to_struct_def.get(&id).cloned())
+            .expect("struct definition of definition")
     }
 
     pub fn get_enum_definition(self, id: DefinitionID) -> &'arena EnumDefinition<'arena> {
@@ -183,20 +165,19 @@ impl<'arena> GlobalContext<'arena> {
         })
     }
 
-    pub fn node_adjustments(self, id: hir::NodeID) -> Option<Vec<Adjustment<'arena>>> {
-        self.with_session_type_database(|db| db.node_to_adjustments.get(&id).cloned())
+    pub fn enum_variant_by_index(
+        self,
+        enum_id: DefinitionID,
+        index: VariantIndex,
+    ) -> EnumVariant<'arena> {
+        let def = self.get_enum_definition(enum_id);
+        *def.variants.get(index.index()).expect("enum variant index")
     }
 
     pub fn get_extension_type_head(self, extension_id: DefinitionID) -> Option<TypeHead> {
         self.with_type_database(extension_id.package(), |db| {
             db.extension_to_type_head.get(&extension_id).cloned()
         })
-    }
-
-    #[track_caller]
-    pub fn get_node_type(self, id: hir::NodeID) -> Ty<'arena> {
-        self.with_session_type_database(|db| db.node_to_ty.get(&id).cloned())
-            .expect("type of node")
     }
 
     pub fn get_mir_body(self, id: DefinitionID) -> &'arena mir::Body<'arena> {
@@ -515,10 +496,6 @@ pub struct TypeDatabase<'arena> {
     pub extension_to_type_head: FxHashMap<DefinitionID, TypeHead>,
     pub type_head_to_extensions: FxHashMap<TypeHead, Vec<DefinitionID>>,
     pub type_head_to_members: FxHashMap<TypeHead, TypeMemberIndex>,
-    pub node_to_ty: FxHashMap<hir::NodeID, Ty<'arena>>,
-    pub node_to_adjustments: FxHashMap<hir::NodeID, Vec<Adjustment<'arena>>>,
-    pub node_to_field_index: FxHashMap<hir::NodeID, usize>,
-    pub node_to_overload_source: FxHashMap<hir::NodeID, DefinitionID>,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -534,25 +511,4 @@ pub struct TypeMemberIndex {
     pub operators: FxHashMap<hir::OperatorKind, MemberSet>,
 }
 
-impl<'arena> GlobalContext<'arena> {
-    pub fn cache_field_index(self, id: hir::NodeID, index: usize) {
-        self.with_session_type_database(|db| {
-            db.node_to_field_index.insert(id, index);
-        });
-    }
-
-    pub fn get_field_index(self, id: hir::NodeID) -> Option<FieldIndex> {
-        self.with_session_type_database(|db| db.node_to_field_index.get(&id).cloned())
-            .map(|f| FieldIndex::from_usize(f))
-    }
-
-    pub fn cache_overload_source(self, node_id: hir::NodeID, def_id: DefinitionID) {
-        self.with_session_type_database(|db| {
-            db.node_to_overload_source.insert(node_id, def_id);
-        });
-    }
-
-    pub fn overload_source(self, node_id: hir::NodeID) -> Option<DefinitionID> {
-        self.with_session_type_database(|db| db.node_to_overload_source.get(&node_id).copied())
-    }
-}
+impl<'arena> GlobalContext<'arena> {}

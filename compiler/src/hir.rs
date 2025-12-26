@@ -581,7 +581,7 @@ pub enum PatternKind {
     // Foo | Bar
     Or(Vec<Pattern>, Span),
     // Bool, Rune, String, Integer & Float Literals
-    Literal(AnonConst),
+    Literal(Literal),
 }
 
 #[derive(Debug, Clone)]
@@ -1445,9 +1445,7 @@ pub fn walk_pattern<V: HirVisitor>(visitor: &mut V, pattern: &Pattern) -> V::Res
         PatternKind::Or(patterns, _) => {
             walk_list!(visitor, visit_pattern, patterns);
         }
-        PatternKind::Literal(anon_const) => {
-            try_visit!(visitor.visit_anon_const(anon_const));
-        }
+        PatternKind::Literal(..) => {}
     }
 
     V::Result::output()

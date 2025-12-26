@@ -1,0 +1,69 @@
+use crate::{
+    hir::{self, DefinitionID, Resolution},
+    sema::{models::Ty, tycheck::solve::Adjustment},
+};
+use rustc_hash::FxHashMap;
+
+#[derive(Debug, Default)]
+pub struct TypeCheckResults<'ctx> {
+    node_tys: FxHashMap<hir::NodeID, Ty<'ctx>>,
+    node_adjustments: FxHashMap<hir::NodeID, Vec<Adjustment<'ctx>>>,
+    field_indices: FxHashMap<hir::NodeID, usize>,
+    overload_sources: FxHashMap<hir::NodeID, DefinitionID>,
+    value_resolutions: FxHashMap<hir::NodeID, Resolution>,
+}
+
+impl<'ctx> TypeCheckResults<'ctx> {
+    pub fn extend_from(&mut self, mut other: TypeCheckResults<'ctx>) {
+        self.node_tys.extend(other.node_tys.drain());
+        self.node_adjustments.extend(other.node_adjustments.drain());
+        self.field_indices.extend(other.field_indices.drain());
+        self.overload_sources.extend(other.overload_sources.drain());
+        self.value_resolutions
+            .extend(other.value_resolutions.drain());
+    }
+
+    pub fn record_node_type(&mut self, id: hir::NodeID, ty: Ty<'ctx>) {
+        self.node_tys.insert(id, ty);
+    }
+
+    pub fn record_node_adjustments(&mut self, id: hir::NodeID, adjustments: Vec<Adjustment<'ctx>>) {
+        if adjustments.is_empty() {
+            return;
+        }
+        self.node_adjustments.insert(id, adjustments);
+    }
+
+    pub fn record_field_index(&mut self, id: hir::NodeID, index: usize) {
+        self.field_indices.insert(id, index);
+    }
+
+    pub fn record_overload_source(&mut self, id: hir::NodeID, def_id: DefinitionID) {
+        self.overload_sources.insert(id, def_id);
+    }
+
+    pub fn record_value_resolution(&mut self, id: hir::NodeID, resolution: Resolution) {
+        self.value_resolutions.insert(id, resolution);
+    }
+
+    #[track_caller]
+    pub fn node_type(&self, id: hir::NodeID) -> Ty<'ctx> {
+        *self.node_tys.get(&id).expect("type of node")
+    }
+
+    pub fn node_adjustments(&self, id: hir::NodeID) -> Option<&[Adjustment<'ctx>]> {
+        self.node_adjustments.get(&id).map(|v| v.as_slice())
+    }
+
+    pub fn field_index(&self, id: hir::NodeID) -> Option<usize> {
+        self.field_indices.get(&id).copied()
+    }
+
+    pub fn overload_source(&self, id: hir::NodeID) -> Option<DefinitionID> {
+        self.overload_sources.get(&id).copied()
+    }
+
+    pub fn value_resolution(&self, id: hir::NodeID) -> Option<Resolution> {
+        self.value_resolutions.get(&id).cloned()
+    }
+}

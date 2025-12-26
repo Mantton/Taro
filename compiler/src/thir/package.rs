@@ -5,11 +5,14 @@ use crate::{
     mir::{self, LogicalOperator},
     sema::{
         models::{AdtKind, Ty, TyKind},
+        resolve::models::VariantCtorKind,
+        tycheck::results::TypeCheckResults,
         tycheck::solve::Adjustment,
     },
     thir::{
-        self, Block, BlockId, Constant, ConstantKind, Expr, ExprId, ExprKind, Param, Stmt, StmtId,
-        StmtKind, ThirFunction, ThirPackage, pattern::pattern_from_hir,
+        self, Block, BlockId, Constant, ConstantKind, Expr, ExprId, ExprKind, FieldIndex, Param,
+        Stmt, StmtId, StmtKind, ThirFunction, ThirPackage, VariantIndex,
+        pattern::pattern_from_hir,
     },
 };
 use index_vec::IndexVec;
@@ -18,22 +21,30 @@ use rustc_hash::FxHashMap;
 pub fn build_package<'ctx>(
     package: &hir::Package,
     gcx: GlobalContext<'ctx>,
+    results: TypeCheckResults<'ctx>,
 ) -> CompileResult<ThirPackage<'ctx>> {
     let entry = validate_entry_point(&package, gcx)?;
-    let package = Actor::run(package, gcx, entry)?;
+    let package = Actor::run(package, gcx, results, entry)?;
+    thir::passes::exhaustiveness::run(&package, gcx)?;
     Ok(package)
 }
 
 struct Actor<'ctx> {
     gcx: GlobalContext<'ctx>,
+    results: std::rc::Rc<TypeCheckResults<'ctx>>,
     functions: FxHashMap<DefinitionID, ThirFunction<'ctx>>,
     entry: Option<DefinitionID>,
 }
 
 impl<'ctx> Actor<'ctx> {
-    fn new(gcx: GlobalContext<'ctx>, entry: Option<DefinitionID>) -> Self {
+    fn new(
+        gcx: GlobalContext<'ctx>,
+        results: TypeCheckResults<'ctx>,
+        entry: Option<DefinitionID>,
+    ) -> Self {
         Actor {
             gcx,
+            results: std::rc::Rc::new(results),
             functions: FxHashMap::default(),
             entry,
         }
@@ -42,9 +53,10 @@ impl<'ctx> Actor<'ctx> {
     fn run(
         package: &hir::Package,
         gcx: GlobalContext<'ctx>,
+        results: TypeCheckResults<'ctx>,
         entry: Option<DefinitionID>,
     ) -> CompileResult<ThirPackage<'ctx>> {
-        let mut actor = Actor::new(gcx, entry);
+        let mut actor = Actor::new(gcx, results, entry);
         hir::walk_package(&mut actor, package);
         let pkg = ThirPackage {
             functions: actor.functions,
@@ -62,7 +74,7 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
         node: &hir::Function,
         fn_ctx: hir::FunctionContext,
     ) -> Self::Result {
-        let func = FunctionLower::lower(self.gcx, id, node);
+        let func = FunctionLower::lower(self.gcx, self.results.clone(), id, node);
         self.functions.insert(id, func);
         hir::walk_function(self, id, node, fn_ctx);
     }
@@ -70,17 +82,20 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
 
 struct FunctionLower<'ctx> {
     gcx: GlobalContext<'ctx>,
+    results: std::rc::Rc<TypeCheckResults<'ctx>>,
     func: ThirFunction<'ctx>,
 }
 
 impl<'ctx> FunctionLower<'ctx> {
     fn lower(
         gcx: GlobalContext<'ctx>,
+        results: std::rc::Rc<TypeCheckResults<'ctx>>,
         id: DefinitionID,
         node: &hir::Function,
     ) -> ThirFunction<'ctx> {
         let mut lower = FunctionLower {
             gcx,
+            results,
             func: ThirFunction {
                 id,
                 body: None,
@@ -89,6 +104,7 @@ impl<'ctx> FunctionLower<'ctx> {
                 stmts: IndexVec::new(),
                 blocks: IndexVec::new(),
                 exprs: IndexVec::new(),
+                arms: IndexVec::new(),
             },
         };
 
@@ -186,7 +202,7 @@ impl<'ctx> FunctionLower<'ctx> {
     }
 
     fn lower_local(&mut self, local: &hir::Local) -> Stmt<'ctx> {
-        let ty = self.gcx.get_node_type(local.id);
+        let ty = self.results.node_type(local.id);
         let expr = local
             .initializer
             .as_deref()
@@ -195,7 +211,7 @@ impl<'ctx> FunctionLower<'ctx> {
         Stmt {
             kind: StmtKind::Let {
                 id: local.id,
-                pattern: pattern_from_hir(self.gcx, &local.pattern),
+                pattern: pattern_from_hir(self.gcx, self.results.as_ref(), &local.pattern),
                 expr,
                 ty,
             },
@@ -210,7 +226,11 @@ impl<'ctx> FunctionLower<'ctx> {
     fn lower_expr_inner(&mut self, expr: &hir::Expression) -> ExprId {
         let mut thir_expr = self.lower_expr_unadjusted(expr);
         // Apply adjustments if any
-        if let Some(adjustments) = self.gcx.node_adjustments(expr.id) {
+        if let Some(adjustments) = self
+            .results
+            .node_adjustments(expr.id)
+            .map(|adj| adj.to_vec())
+        {
             for adjustment in adjustments {
                 thir_expr = self.apply_adjustment(expr.id, thir_expr, adjustment, expr.span);
             }
@@ -282,7 +302,7 @@ impl<'ctx> FunctionLower<'ctx> {
     }
 
     fn lower_expr_unadjusted(&mut self, expr: &hir::Expression) -> Expr<'ctx> {
-        let ty = self.gcx.get_node_type(expr.id);
+        let ty = self.results.node_type(expr.id);
         let span = expr.span;
         let kind = match &expr.kind {
             hir::ExpressionKind::Literal(lit) => {
@@ -290,8 +310,10 @@ impl<'ctx> FunctionLower<'ctx> {
                 ExprKind::Literal(Constant { ty, value })
             }
             hir::ExpressionKind::Path(path) => {
-                let res = if let Some(def_id) = self.gcx.overload_source(expr.id) {
+                let res = if let Some(def_id) = self.results.overload_source(expr.id) {
                     Resolution::Definition(def_id, self.gcx.definition_kind(def_id))
+                } else if let Some(resolution) = self.results.value_resolution(expr.id) {
+                    resolution
                 } else {
                     match path {
                         hir::ResolvedPath::Resolved(path) => path.resolution.clone(),
@@ -310,7 +332,10 @@ impl<'ctx> FunctionLower<'ctx> {
             hir::ExpressionKind::Call { callee, arguments } => {
                 // Builtin make: lower to ExprKind::Make.
                 if let hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) = &callee.kind
-                    && matches!(path.resolution, hir::Resolution::Foundation(hir::FoundationDecl::Make))
+                    && matches!(
+                        path.resolution,
+                        hir::Resolution::Foundation(hir::FoundationDecl::Make)
+                    )
                 {
                     if arguments.len() != 1 {
                         self.gcx.dcx().emit_error(
@@ -318,7 +343,10 @@ impl<'ctx> FunctionLower<'ctx> {
                             Some(expr.span),
                         );
                         return Expr {
-                            kind: ExprKind::Literal(Constant { ty: self.gcx.types.error, value: ConstantKind::Unit }),
+                            kind: ExprKind::Literal(Constant {
+                                ty: self.gcx.types.error,
+                                value: ConstantKind::Unit,
+                            }),
                             ty: self.gcx.types.error,
                             span: expr.span,
                         };
@@ -326,6 +354,26 @@ impl<'ctx> FunctionLower<'ctx> {
                     let value = self.lower_expr(&arguments[0].expression);
                     return Expr {
                         kind: ExprKind::Make { value },
+                        ty,
+                        span,
+                    };
+                }
+                if let Some(ctor_id) = self.variant_ctor_callee(callee) {
+                    let (definition, variant_index) = self.enum_variant_from_ctor(ctor_id);
+                    let fields = arguments
+                        .iter()
+                        .enumerate()
+                        .map(|(index, arg)| thir::FieldExpression {
+                            index: FieldIndex::from_usize(index),
+                            expression: self.lower_expr(&arg.expression),
+                        })
+                        .collect();
+                    return Expr {
+                        kind: ExprKind::Adt(thir::AdtExpression {
+                            definition,
+                            variant_index: Some(variant_index),
+                            fields,
+                        }),
                         ty,
                         span,
                     };
@@ -392,6 +440,15 @@ impl<'ctx> FunctionLower<'ctx> {
                     else_expr,
                 }
             }
+            hir::ExpressionKind::Match(node) => {
+                let scrutinee = self.lower_expr(&node.value);
+                let arms = node
+                    .arms
+                    .iter()
+                    .map(|arm| self.lower_match_arm(arm))
+                    .collect();
+                ExprKind::Match { scrutinee, arms }
+            }
             hir::ExpressionKind::Block(block) => {
                 let block_id = self.lower_block(block);
                 ExprKind::Block(block_id)
@@ -412,7 +469,7 @@ impl<'ctx> FunctionLower<'ctx> {
                 name: _,
                 arguments,
             } => {
-                let Some(def_id) = self.gcx.overload_source(expr.id) else {
+                let Some(def_id) = self.results.overload_source(expr.id) else {
                     self.gcx.dcx().emit_error(
                         "failed to lower method call (no resolved target)".into(),
                         Some(expr.span),
@@ -455,15 +512,17 @@ impl<'ctx> FunctionLower<'ctx> {
 
                 let node = thir::AdtExpression {
                     definition,
+                    variant_index: None,
                     fields: literal
                         .fields
                         .iter()
                         .map(|f| thir::FieldExpression {
                             expression: self.lower_expr(&f.expression),
-                            index: self
-                                .gcx
-                                .get_field_index(f.expression.id)
-                                .expect("Field Index"),
+                            index: FieldIndex::from_usize(
+                                self.results
+                                    .field_index(f.expression.id)
+                                    .expect("Field Index"),
+                            ),
                         })
                         .collect(),
                 };
@@ -474,7 +533,9 @@ impl<'ctx> FunctionLower<'ctx> {
                 let lhs = self.lower_expr(target);
                 ExprKind::Field {
                     lhs,
-                    index: self.gcx.get_field_index(expr.id).expect("Field Index"),
+                    index: FieldIndex::from_usize(
+                        self.results.field_index(expr.id).expect("Field Index"),
+                    ),
                 }
             }
             hir::ExpressionKind::Tuple(elems) => {
@@ -485,7 +546,9 @@ impl<'ctx> FunctionLower<'ctx> {
                 let lhs = self.lower_expr(target);
                 ExprKind::Field {
                     lhs,
-                    index: self.gcx.get_field_index(expr.id).expect("Field Index"),
+                    index: FieldIndex::from_usize(
+                        self.results.field_index(expr.id).expect("Field Index"),
+                    ),
                 }
             }
             _ => {
@@ -509,7 +572,7 @@ impl<'ctx> FunctionLower<'ctx> {
 
     fn lower_path_expression(
         &mut self,
-        _: &hir::Expression,
+        expr: &hir::Expression,
         resolution: Resolution,
     ) -> thir::ExprKind<'ctx> {
         match resolution {
@@ -517,6 +580,21 @@ impl<'ctx> FunctionLower<'ctx> {
                 id,
                 DefinitionKind::Function | DefinitionKind::AssociatedFunction,
             ) => ExprKind::Zst { id },
+            Resolution::Definition(
+                id,
+                DefinitionKind::VariantConstructor(VariantCtorKind::Function),
+            ) => ExprKind::Zst { id },
+            Resolution::Definition(
+                ctor_id,
+                DefinitionKind::VariantConstructor(VariantCtorKind::Constant),
+            ) => {
+                let (definition, variant_index) = self.enum_variant_from_ctor(ctor_id);
+                ExprKind::Adt(thir::AdtExpression {
+                    definition,
+                    variant_index: Some(variant_index),
+                    fields: Vec::new(),
+                })
+            }
             Resolution::LocalVariable(id) => ExprKind::Local(id),
             _ => unreachable!(),
         }
@@ -525,6 +603,72 @@ impl<'ctx> FunctionLower<'ctx> {
     fn push_expr(&mut self, kind: ExprKind<'ctx>, ty: Ty<'ctx>, span: crate::span::Span) -> ExprId {
         let id = ExprId::from_raw(self.func.exprs.len() as u32);
         self.func.exprs.push(Expr { kind, ty, span });
+        id
+    }
+
+    fn variant_ctor_callee(&self, callee: &hir::Expression) -> Option<DefinitionID> {
+        let resolution = match &callee.kind {
+            hir::ExpressionKind::Path(path) => match path {
+                hir::ResolvedPath::Resolved(path) => Some(path.resolution.clone()),
+                hir::ResolvedPath::Relative(..) => self.results.value_resolution(callee.id),
+            },
+            _ => None,
+        }?;
+
+        match resolution {
+            Resolution::Definition(
+                id,
+                DefinitionKind::VariantConstructor(VariantCtorKind::Function),
+            ) => Some(id),
+            _ => None,
+        }
+    }
+
+    fn enum_variant_from_ctor(
+        &self,
+        ctor_id: DefinitionID,
+    ) -> (crate::sema::models::AdtDef, VariantIndex) {
+        let Some(parent_id) = self.gcx.definition_parent(ctor_id) else {
+            unreachable!()
+        };
+
+        let enum_id = match self.gcx.definition_kind(parent_id) {
+            DefinitionKind::Enum => parent_id,
+            DefinitionKind::Variant => match self.gcx.definition_parent(parent_id) {
+                Some(enum_id) => enum_id,
+                None => {
+                    unreachable!()
+                }
+            },
+            _ => {
+                unreachable!()
+            }
+        };
+
+        let def = self.gcx.get_enum_definition(enum_id);
+        let Some((index, _)) = def
+            .variants
+            .iter()
+            .enumerate()
+            .find(|(_, v)| v.ctor_def_id == ctor_id)
+        else {
+            unreachable!()
+        };
+
+        (def.adt_def, VariantIndex::from_usize(index))
+    }
+
+    fn lower_match_arm(&mut self, arm: &hir::MatchArm) -> thir::ArmId {
+        let guard = arm.guard.as_deref().map(|expr| self.lower_expr(expr));
+        let body = self.lower_expr(&arm.body);
+        let pattern = pattern_from_hir(self.gcx, self.results.as_ref(), &arm.pattern);
+        let id = thir::ArmId::from_raw(self.func.arms.len() as u32);
+        self.func.arms.push(thir::Arm {
+            pattern: Box::new(pattern),
+            guard,
+            body,
+            span: arm.span,
+        });
         id
     }
 

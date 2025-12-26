@@ -90,9 +90,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                         let def = AdtDef {
                             name: ident.symbol,
                             kind: match kind {
-                                crate::sema::resolve::models::DefinitionKind::Enum => {
-                                    AdtKind::Enum
-                                }
+                                crate::sema::resolve::models::DefinitionKind::Enum => AdtKind::Enum,
                                 _ => AdtKind::Struct,
                             },
                             id,

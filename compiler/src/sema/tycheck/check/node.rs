@@ -22,7 +22,7 @@ impl<'ctx> Checker<'ctx> {
     }
 
     pub fn check_function(
-        mut self,
+        &mut self,
         id: DefinitionID,
         node: &hir::Function,
         _: hir::FunctionContext,
@@ -127,22 +127,24 @@ impl<'ctx> Checker<'ctx> {
         cs.solve_all();
 
         for (id, ty) in cs.resolved_expr_types() {
-            self.gcx().cache_node_type(id, ty);
+            self.results.borrow_mut().record_node_type(id, ty);
         }
         for (id, adjustments) in cs.resolved_adjustments() {
-            self.gcx().cache_node_adjustments(id, adjustments);
+            self.results
+                .borrow_mut()
+                .record_node_adjustments(id, adjustments);
         }
         for (id, def_id) in cs.resolved_overload_sources() {
-            self.gcx().cache_overload_source(id, def_id);
+            self.results.borrow_mut().record_overload_source(id, def_id);
         }
 
         for (id, index) in cs.resolved_field_indices() {
-            self.gcx().cache_field_index(id, index);
+            self.results.borrow_mut().record_field_index(id, index);
         }
 
         for (id, ty) in cs.resolved_local_types() {
             self.finalize_local(id, ty);
-            self.gcx().cache_node_type(id, ty);
+            self.results.borrow_mut().record_node_type(id, ty);
         }
     }
 
@@ -184,22 +186,24 @@ impl<'ctx> Checker<'ctx> {
         cs.solve_all();
 
         for (id, ty) in cs.resolved_expr_types() {
-            self.gcx().cache_node_type(id, ty);
+            self.results.borrow_mut().record_node_type(id, ty);
         }
         for (id, adjustments) in cs.resolved_adjustments() {
-            self.gcx().cache_node_adjustments(id, adjustments);
+            self.results
+                .borrow_mut()
+                .record_node_adjustments(id, adjustments);
         }
         for (id, def_id) in cs.resolved_overload_sources() {
-            self.gcx().cache_overload_source(id, def_id);
+            self.results.borrow_mut().record_overload_source(id, def_id);
         }
 
         for (id, index) in cs.resolved_field_indices() {
-            self.gcx().cache_field_index(id, index);
+            self.results.borrow_mut().record_field_index(id, index);
         }
 
         for (id, ty) in cs.resolved_local_types() {
             self.finalize_local(id, ty);
-            self.gcx().cache_node_type(id, ty);
+            self.results.borrow_mut().record_node_type(id, ty);
         }
 
         let provided = cs.infer_cx.resolve_vars_if_possible(provided);
@@ -1231,6 +1235,19 @@ impl<'ctx> Checker<'ctx> {
         }
     }
 
+    fn record_value_path_resolution(&self, node_id: NodeID, resolution: &hir::Resolution) {
+        match resolution {
+            hir::Resolution::Definition(..)
+            | hir::Resolution::LocalVariable(..)
+            | hir::Resolution::Foundation(..) => {
+                self.results
+                    .borrow_mut()
+                    .record_value_resolution(node_id, resolution.clone());
+            }
+            _ => {}
+        }
+    }
+
     fn resolve_static_member_resolution(
         &self,
         head: TypeHead,
@@ -1302,11 +1319,7 @@ impl<'ctx> Checker<'ctx> {
         hir::Resolution::FunctionSet(visible)
     }
 
-    fn collect_static_member_candidates(
-        &self,
-        head: TypeHead,
-        name: Symbol,
-    ) -> Vec<DefinitionID> {
+    fn collect_static_member_candidates(&self, head: TypeHead, name: Symbol) -> Vec<DefinitionID> {
         let gcx = self.gcx();
         let databases = gcx.store.type_databases.borrow();
         let mut members = Vec::new();
@@ -1346,6 +1359,7 @@ impl<'ctx> Checker<'ctx> {
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         let resolution = self.resolve_value_path_resolution(path, expression.span, true);
+        self.record_value_path_resolution(expression.id, &resolution);
         self.instantiate_value_path(expression.id, expression.span, &resolution, expectation, cs)
     }
 
@@ -1543,6 +1557,7 @@ impl<'ctx> Checker<'ctx> {
         scrutinee: Ty<'ctx>,
         cs: &mut Cs<'ctx>,
     ) {
+        cs.record_expr_ty(pattern.id, scrutinee);
         match &pattern.kind {
             hir::PatternKind::Wildcard => {}
             hir::PatternKind::Rest => {}
@@ -1568,9 +1583,13 @@ impl<'ctx> Checker<'ctx> {
                 }
             }
             hir::PatternKind::Member(path) => {
-                let Some((variant, enum_ty)) =
-                    self.resolve_enum_variant_pattern(scrutinee, path, pattern.span, cs)
-                else {
+                let Some((variant, enum_ty)) = self.resolve_enum_variant_pattern(
+                    scrutinee,
+                    pattern.id,
+                    path,
+                    pattern.span,
+                    cs,
+                ) else {
                     return;
                 };
 
@@ -1589,8 +1608,14 @@ impl<'ctx> Checker<'ctx> {
                 cs.equal(scrutinee, enum_ty, pattern.span);
             }
             hir::PatternKind::PathTuple { path, fields, .. } => {
-                let Some((variant, enum_ty, variant_fields)) =
-                    self.resolve_enum_tuple_variant_pattern(scrutinee, path, pattern.span, cs)
+                let Some((variant, enum_ty, variant_fields)) = self
+                    .resolve_enum_tuple_variant_pattern(
+                        scrutinee,
+                        pattern.id,
+                        path,
+                        pattern.span,
+                        cs,
+                    )
                 else {
                     return;
                 };
@@ -1620,8 +1645,8 @@ impl<'ctx> Checker<'ctx> {
                     self.check_pattern_structure(pat, scrutinee, cs);
                 }
             }
-            hir::PatternKind::Literal(anon) => {
-                let lit_ty = self.synth(&anon.value, cs);
+            hir::PatternKind::Literal(literal) => {
+                let lit_ty = self.synth_expression_literal(literal, None, cs);
                 cs.equal(scrutinee, lit_ty, pattern.span);
             }
         }
@@ -1630,14 +1655,15 @@ impl<'ctx> Checker<'ctx> {
     fn resolve_enum_variant_pattern(
         &self,
         scrutinee: Ty<'ctx>,
+        id: NodeID,
         path: &hir::PatternPath,
         span: Span,
         cs: &mut Cs<'ctx>,
     ) -> Option<(crate::sema::models::EnumVariant<'ctx>, Ty<'ctx>)> {
-        let gcx = self.gcx();
         match path {
             hir::PatternPath::Qualified { path } => {
                 let resolution = self.resolve_value_path_resolution(path, span, true);
+                self.record_value_path_resolution(id, &resolution);
                 self.resolve_enum_variant_from_resolution(scrutinee, resolution, span, cs)
             }
             hir::PatternPath::Inferred { .. } => {
@@ -1649,6 +1675,7 @@ impl<'ctx> Checker<'ctx> {
     fn resolve_enum_tuple_variant_pattern(
         &self,
         scrutinee: Ty<'ctx>,
+        id: NodeID,
         path: &hir::PatternPath,
         span: Span,
         cs: &mut Cs<'ctx>,
@@ -1657,7 +1684,8 @@ impl<'ctx> Checker<'ctx> {
         Ty<'ctx>,
         &'ctx [crate::sema::models::EnumVariantField<'ctx>],
     )> {
-        let (variant, enum_ty) = self.resolve_enum_variant_pattern(scrutinee, path, span, cs)?;
+        let (variant, enum_ty) =
+            self.resolve_enum_variant_pattern(scrutinee, id, path, span, cs)?;
         let crate::sema::models::EnumVariantKind::Tuple(fields) = variant.kind else {
             self.gcx().dcx().emit_error(
                 format!(
@@ -1747,43 +1775,6 @@ impl<'ctx> Checker<'ctx> {
         }
 
         let enum_ty = gcx.get_type(enum_id);
-        cs.equal(scrutinee, enum_ty, span);
-        Some((variant, enum_ty))
-    }
-
-    fn resolve_enum_variant_by_name(
-        &self,
-        enum_id: DefinitionID,
-        name: &crate::span::Identifier,
-        span: Span,
-        scrutinee: Ty<'ctx>,
-        cs: &mut Cs<'ctx>,
-    ) -> Option<(crate::sema::models::EnumVariant<'ctx>, Ty<'ctx>)> {
-        let gcx = self.gcx();
-        if gcx.definition_kind(enum_id) != DefinitionKind::Enum {
-            gcx.dcx()
-                .emit_error("expected enum variant pattern".into(), Some(span));
-            return None;
-        }
-
-        let enum_ty = gcx.get_type(enum_id);
-        let def = gcx.get_enum_definition(enum_id);
-        let variant = def.variants.iter().find(|v| v.name == name.symbol).copied();
-
-        let Some(variant) = variant else {
-            gcx.dcx().emit_error(
-                format!("unknown enum variant '{}'", name.symbol.as_str()).into(),
-                Some(span),
-            );
-            return None;
-        };
-
-        if !gcx.is_definition_visible(variant.ctor_def_id, self.current_def) {
-            gcx.dcx()
-                .emit_error("enum variant is not visible here".into(), Some(span));
-            return None;
-        }
-
         cs.equal(scrutinee, enum_ty, span);
         Some((variant, enum_ty))
     }

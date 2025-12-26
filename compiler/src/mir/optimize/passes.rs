@@ -1,7 +1,7 @@
 use super::MirPass;
 use super::simplify::{collapse_trivial_gotos, prune_unreachable_blocks};
 use crate::compile::context::Gcx;
-use crate::hir::Mutability;
+use crate::hir::{DefinitionKind, Mutability};
 use crate::mir::{
     BasicBlockData, BasicBlockId, Body, LocalDecl, LocalId, LocalKind, MirPhase, Operand, Place,
     PlaceElem, Rvalue, Statement, StatementKind, TerminatorKind,
@@ -113,27 +113,76 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                     });
                                 }
                             }
-                            crate::mir::AggregateKind::Adt(def_id) => {
-                                let StructDefinition { fields, .. } =
-                                    *gcx.get_struct_definition(def_id);
-                                for ((temp_local, idx), field) in
-                                    temps.into_iter().zip(fields.iter())
-                                {
-                                    let mut proj = dest.projection.clone();
-                                    proj.push(PlaceElem::Field(idx, field.ty));
-                                    let place = Place {
-                                        local: dest.local,
-                                        projection: proj,
-                                    };
-                                    lowered.push(Statement {
-                                        kind: StatementKind::Assign(
-                                            place,
-                                            Rvalue::Use(Operand::Move(Place::from_local(
-                                                temp_local,
-                                            ))),
-                                        ),
-                                        span: stmt.span,
-                                    });
+                            crate::mir::AggregateKind::Adt {
+                                def_id,
+                                variant_index,
+                            } => {
+                                let kind = gcx.definition_kind(def_id);
+                                match kind {
+                                    DefinitionKind::Struct => {
+                                        let StructDefinition { fields, .. } =
+                                            *gcx.get_struct_definition(def_id);
+                                        for ((temp_local, idx), field) in
+                                            temps.into_iter().zip(fields.iter())
+                                        {
+                                            let mut proj = dest.projection.clone();
+                                            proj.push(PlaceElem::Field(idx, field.ty));
+                                            let place = Place {
+                                                local: dest.local,
+                                                projection: proj,
+                                            };
+                                            lowered.push(Statement {
+                                                kind: StatementKind::Assign(
+                                                    place,
+                                                    Rvalue::Use(Operand::Move(Place::from_local(
+                                                        temp_local,
+                                                    ))),
+                                                ),
+                                                span: stmt.span,
+                                            });
+                                        }
+                                    }
+                                    DefinitionKind::Enum => {
+                                        let Some(variant_index) = variant_index else {
+                                            unreachable!();
+                                        };
+                                        let variant_data =
+                                            gcx.enum_variant_by_index(def_id, variant_index);
+
+                                        // Set Discriminant
+                                        lowered.push(Statement {
+                                            kind: StatementKind::SetDiscriminant {
+                                                place: dest.clone(),
+                                                variant_index,
+                                            },
+                                            span: stmt.span,
+                                        });
+
+                                        for ((temp_local, idx), (_, _, ty)) in
+                                            temps.into_iter().zip(ops_with_tys.iter())
+                                        {
+                                            let mut proj = dest.projection.clone();
+                                            proj.push(PlaceElem::VariantDowncast {
+                                                name: variant_data.name,
+                                                index: variant_index,
+                                            });
+                                            proj.push(PlaceElem::Field(idx, *ty));
+                                            let place = Place {
+                                                local: dest.local,
+                                                projection: proj,
+                                            };
+                                            lowered.push(Statement {
+                                                kind: StatementKind::Assign(
+                                                    place,
+                                                    Rvalue::Use(Operand::Move(Place::from_local(
+                                                        temp_local,
+                                                    ))),
+                                                ),
+                                                span: stmt.span,
+                                            });
+                                        }
+                                    }
+                                    _ => unreachable!(),
                                 }
                             }
                         }
@@ -265,10 +314,10 @@ impl<'ctx> MirPass<'ctx> for ApplyEscapeAnalysis {
             }
             if body.escape_locals.get(idx).copied().unwrap_or(false) {
                 let old_ty = decl.ty;
-                let new_ty = gcx.store.interners.intern_ty(TyKind::Reference(
-                    old_ty,
-                    Mutability::Mutable,
-                ));
+                let new_ty = gcx
+                    .store
+                    .interners
+                    .intern_ty(TyKind::Reference(old_ty, Mutability::Mutable));
                 decl.ty = new_ty;
                 heapified[idx] = Some(old_ty);
             }
@@ -386,6 +435,7 @@ fn place_ty<'a>(body: &Body<'a>, gcx: Gcx<'a>, place: &Place<'a>) -> crate::sema
                     .unwrap_or_else(|| crate::sema::models::Ty::error(gcx));
             }
             PlaceElem::Field(_, field_ty) => ty = *field_ty,
+            PlaceElem::VariantDowncast { .. } => todo!(),
         }
     }
     ty
@@ -448,7 +498,10 @@ fn rewrite_operand<'ctx>(operand: &mut Operand<'ctx>, heapified: &[Option<Ty<'ct
     }
 }
 
-fn rewrite_terminator<'ctx>(term: &mut crate::mir::Terminator<'ctx>, heapified: &[Option<Ty<'ctx>>]) {
+fn rewrite_terminator<'ctx>(
+    term: &mut crate::mir::Terminator<'ctx>,
+    heapified: &[Option<Ty<'ctx>>],
+) {
     match &mut term.kind {
         TerminatorKind::SwitchInt { discr, .. } => rewrite_operand(discr, heapified),
         TerminatorKind::Call {
@@ -482,9 +535,7 @@ fn terminator_successors(term: &crate::mir::Terminator<'_>) -> Vec<BasicBlockId>
     match &term.kind {
         TerminatorKind::Goto { target } => vec![*target],
         TerminatorKind::SwitchInt {
-            targets,
-            otherwise,
-            ..
+            targets, otherwise, ..
         } => {
             let mut succs: Vec<_> = targets.iter().map(|(_, bb)| *bb).collect();
             succs.push(*otherwise);

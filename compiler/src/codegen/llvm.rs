@@ -646,6 +646,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 let callee = self.get_gc_poll();
                 let _ = self.builder.build_call(callee, &[], "gc_poll").unwrap();
             }
+            mir::StatementKind::SetDiscriminant { .. } => {
+                todo!()
+            }
             mir::StatementKind::Nop => {}
         }
         Ok(())
@@ -1423,6 +1426,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     ptr_is_storage = true;
                     ty = *field_ty;
                 }
+                mir::PlaceElem::VariantDowncast { name, index } => todo!(),
             }
         }
 
@@ -1441,6 +1445,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 mir::PlaceElem::Field(_, field_ty) => {
                     ty = *field_ty;
                 }
+                mir::PlaceElem::VariantDowncast { name, index } => todo!(),
             }
         }
         ty
@@ -1680,15 +1685,18 @@ fn lower_type<'llvm>(
             FloatTy::F32 => context.f32_type().into(),
             FloatTy::F64 => context.f64_type().into(),
         }),
-        TyKind::Adt(def) => {
-            let defn = gcx.get_struct_definition(def.id);
-            let field_tys: Vec<BasicTypeEnum<'llvm>> = defn
-                .fields
-                .iter()
-                .filter_map(|f| lower_type(context, gcx, target_data, f.ty))
-                .collect();
-            Some(context.struct_type(&field_tys, false).into())
-        }
+        TyKind::Adt(def) => match def.kind {
+            crate::sema::models::AdtKind::Struct => {
+                let defn = gcx.get_struct_definition(def.id);
+                let field_tys: Vec<BasicTypeEnum<'llvm>> = defn
+                    .fields
+                    .iter()
+                    .filter_map(|f| lower_type(context, gcx, target_data, f.ty))
+                    .collect();
+                Some(context.struct_type(&field_tys, false).into())
+            }
+            crate::sema::models::AdtKind::Enum => todo!(),
+        },
         TyKind::Pointer(..) | TyKind::Reference(..) => Some(
             context
                 .ptr_type(AddressSpace::default())

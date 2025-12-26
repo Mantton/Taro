@@ -1,13 +1,14 @@
 use crate::{
     hir::{DefinitionID, NodeID},
     mir::{BinaryOperator, LogicalOperator, UnaryOperator},
-    sema::models::{AdtDef, Ty},
+    sema::models::{AdtDef, EnumVariant, Ty},
     span::{Span, Symbol},
 };
 use index_vec::IndexVec;
 use rustc_hash::FxHashMap;
 
 pub mod package;
+pub mod passes;
 pub mod pattern;
 
 index_vec::define_index_type! {
@@ -22,7 +23,15 @@ index_vec::define_index_type! {
 }
 
 index_vec::define_index_type! {
+    pub struct VariantIndex = u32;
+}
+
+index_vec::define_index_type! {
     pub struct FieldIndex = u32;
+}
+
+index_vec::define_index_type! {
+    pub struct ArmId = u32;
 }
 
 #[derive(Debug)]
@@ -40,6 +49,7 @@ pub struct ThirFunction<'a> {
     pub stmts: IndexVec<StmtId, Stmt<'a>>,
     pub blocks: IndexVec<BlockId, Block>,
     pub exprs: IndexVec<ExprId, Expr<'a>>,
+    pub arms: IndexVec<ArmId, Arm<'a>>,
 }
 
 #[derive(Debug, Clone)]
@@ -113,6 +123,10 @@ pub enum ExprKind<'a> {
     Make {
         value: ExprId,
     },
+    Match {
+        scrutinee: ExprId,
+        arms: Vec<ArmId>,
+    },
     Zst {
         id: DefinitionID,
     },
@@ -177,6 +191,7 @@ pub struct FieldExpression {
 #[derive(Debug, Clone)]
 pub struct AdtExpression {
     pub definition: AdtDef,
+    pub variant_index: Option<VariantIndex>,
     pub fields: Vec<FieldExpression>,
 }
 
@@ -199,10 +214,29 @@ pub enum PatternKind<'ctx> {
     Leaf {
         subpatterns: Vec<FieldPattern<'ctx>>,
     },
+    Constant {
+        value: Constant<'ctx>,
+    },
+    Variant {
+        definition: AdtDef,
+        variant: EnumVariant<'ctx>,
+        subpatterns: Vec<FieldPattern<'ctx>>,
+    },
+    Or(Vec<Pattern<'ctx>>),
 }
 
 #[derive(Debug, Clone)]
 pub struct FieldPattern<'ctx> {
     pub index: FieldIndex,
     pub pattern: Pattern<'ctx>,
+}
+
+pub type Pat<'ctx> = Pattern<'ctx>;
+
+#[derive(Debug, Clone)]
+pub struct Arm<'ctx> {
+    pub pattern: Box<Pat<'ctx>>,
+    pub guard: Option<ExprId>,
+    pub body: ExprId,
+    pub span: Span,
 }

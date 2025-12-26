@@ -150,6 +150,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 }
                 block.unit()
             }
+            thir::PatternKind::Constant { .. } => todo!(),
             thir::PatternKind::Leaf { subpatterns } => {
                 let Some(base_place) = place else {
                     return block.unit();
@@ -166,6 +167,30 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                         .into_block();
                 }
                 block.unit()
+            }
+            thir::PatternKind::Variant { subpatterns, .. } => {
+                let Some(base_place) = place else {
+                    return block.unit();
+                };
+                for field in subpatterns {
+                    let mut proj = base_place.projection.clone();
+                    proj.push(PlaceElem::Field(field.index, field.pattern.ty));
+                    let field_place = Place {
+                        local: base_place.local,
+                        projection: proj,
+                    };
+                    block = self
+                        .bind_pattern_to_place(block, &field.pattern, Some(&field_place))
+                        .into_block();
+                }
+                block.unit()
+            }
+            thir::PatternKind::Or(patterns) => {
+                let Some(first) = patterns.first() else {
+                    return block.unit();
+                };
+                // Resolver enforces consistent bindings across or-patterns.
+                self.bind_pattern_to_place(block, first, place)
             }
         }
     }

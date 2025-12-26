@@ -1,6 +1,7 @@
 use std::fmt;
 
 use crate::compile::context::Gcx;
+use crate::thir::VariantIndex;
 
 use super::{
     BasicBlockData, Body, Constant, ConstantKind, LocalDecl, LocalKind, Operand, Place, PlaceElem,
@@ -45,6 +46,18 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
             }
             StatementKind::GcSafepoint => write!(f, "gc_safepoint"),
             StatementKind::Nop => write!(f, "nop"),
+            StatementKind::SetDiscriminant {
+                place,
+                variant_index,
+            } => {
+                write!(f, "set_discriminant ")?;
+                self.write_place(place, f)?;
+                if let Some(name) = self.variant_name_for_place(place, *variant_index) {
+                    write!(f, " = {}", name)
+                } else {
+                    write!(f, " = {}", variant_index.index())
+                }
+            }
         }
     }
 
@@ -89,21 +102,21 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
     }
 
     fn write_place(&self, place: &Place<'ctx>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for elem in place.projection.iter().rev() {
-            if let PlaceElem::Deref = elem {
-                write!(f, "*")?;
-            }
-        }
-
-        write!(f, "%{:?}", place.local)?;
-
+        let mut out = format!("%{:?}", place.local);
         for elem in &place.projection {
             match elem {
-                PlaceElem::Deref => {} // already printed as prefix
-                PlaceElem::Field(idx, _) => write!(f, ".{:?}", idx)?,
+                PlaceElem::Deref => {
+                    out = format!("*{out}");
+                }
+                PlaceElem::Field(idx, _) => {
+                    out.push_str(&format!(".{:?}", idx));
+                }
+                PlaceElem::VariantDowncast { name, .. } => {
+                    out = format!("({out} as {name})");
+                }
             }
         }
-        Ok(())
+        write!(f, "{out}")
     }
 
     fn write_operand(&self, op: &Operand<'ctx>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -157,9 +170,22 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
             Rvalue::Aggregate { kind, fields } => {
                 match kind {
                     super::AggregateKind::Tuple => write!(f, "tuple")?,
-                    super::AggregateKind::Adt(def_id) => {
+                    super::AggregateKind::Adt {
+                        def_id,
+                        variant_index,
+                    } => {
                         let ident = self.gcx.definition_ident(*def_id);
                         write!(f, "{}", ident.symbol)?;
+                        if let Some(variant_index) = variant_index {
+                            if matches!(
+                                self.gcx.definition_kind(*def_id),
+                                crate::sema::resolve::models::DefinitionKind::Enum
+                            ) {
+                                let variant =
+                                    self.gcx.enum_variant_by_index(*def_id, *variant_index);
+                                write!(f, "::{}", variant.name)?;
+                            }
+                        }
                     }
                 }
                 write!(f, " {{ ")?;
@@ -171,6 +197,39 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                 }
                 write!(f, " }}")
             }
+        }
+    }
+
+    fn variant_name_for_place(
+        &self,
+        place: &Place<'ctx>,
+        variant_index: VariantIndex,
+    ) -> Option<crate::span::Symbol> {
+        let mut ty = self.body.locals[place.local].ty;
+        for elem in &place.projection {
+            match elem {
+                PlaceElem::Deref => {
+                    ty = ty
+                        .dereference()
+                        .unwrap_or_else(|| crate::sema::models::Ty::error(self.gcx));
+                }
+                PlaceElem::Field(_, field_ty) => {
+                    ty = *field_ty;
+                }
+                PlaceElem::VariantDowncast { .. } => {}
+            }
+        }
+        match ty.kind() {
+            crate::sema::models::TyKind::Adt(def)
+                if matches!(def.kind, crate::sema::models::AdtKind::Enum) =>
+            {
+                let enum_def = self.gcx.get_enum_definition(def.id);
+                enum_def
+                    .variants
+                    .get(variant_index.index())
+                    .map(|variant| variant.name)
+            }
+            _ => None,
         }
     }
 }

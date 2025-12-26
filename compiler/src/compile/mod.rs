@@ -34,8 +34,8 @@ impl<'state> Compiler<'state> {
 
 impl<'state> Compiler<'state> {
     pub fn build(&mut self) -> CompileResult<Option<std::path::PathBuf>> {
-        let package = self.analyze()?;
-        let thir = thir::package::build_package(&package, self.context)?;
+        let (package, results) = self.analyze()?;
+        let thir = thir::package::build_package(&package, self.context, results)?;
         let package = mir::package::build_package(thir, self.context)?;
         let _obj = codegen::llvm::emit_package(package, self.context)?;
         let exe = codegen::link::link_executable(self.context)?;
@@ -43,10 +43,16 @@ impl<'state> Compiler<'state> {
     }
 
     pub fn check(&mut self) -> CompileResult<hir::Package> {
-        self.analyze()
+        let (package, _) = self.analyze()?;
+        Ok(package)
     }
 
-    pub fn analyze(&mut self) -> CompileResult<hir::Package> {
+    pub fn analyze(
+        &mut self,
+    ) -> CompileResult<(
+        hir::Package,
+        sema::tycheck::results::TypeCheckResults<'state>,
+    )> {
         {
             let mut table = self.context.store.package_mapping.borrow_mut();
             table.insert(
@@ -77,8 +83,8 @@ impl<'state> Compiler<'state> {
         }
 
         sema::validate::validate_package(&package, self.context)?;
-        sema::tycheck::typecheck_package(&package, self.context)?;
+        let results = sema::tycheck::typecheck_package(&package, self.context)?;
         let _ = entry::validate_entry_point(&package, self.context)?;
-        Ok(package)
+        Ok((package, results))
     }
 }

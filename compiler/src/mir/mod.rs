@@ -2,7 +2,7 @@ use crate::{
     hir::DefinitionID,
     sema::models::Ty,
     span::{Span, Symbol},
-    thir::{self, FieldIndex},
+    thir::{self, FieldIndex, VariantIndex},
 };
 use index_vec::IndexVec;
 use rustc_hash::FxHashMap;
@@ -80,6 +80,10 @@ pub enum StatementKind<'ctx> {
     Assign(Place<'ctx>, Rvalue<'ctx>),
     GcSafepoint,
     Nop,
+    SetDiscriminant {
+        place: Place<'ctx>,
+        variant_index: VariantIndex,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -133,6 +137,7 @@ pub struct Place<'ctx> {
 pub enum PlaceElem<'ctx> {
     Deref,
     Field(FieldIndex, Ty<'ctx>),
+    VariantDowncast { name: Symbol, index: VariantIndex },
 }
 
 #[derive(Debug, Clone)]
@@ -191,7 +196,10 @@ pub enum Rvalue<'ctx> {
 #[derive(Debug, Clone)]
 pub enum AggregateKind {
     Tuple,
-    Adt(DefinitionID),
+    Adt {
+        def_id: DefinitionID,
+        variant_index: Option<VariantIndex>,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -340,6 +348,7 @@ impl Category {
 
             thir::ExprKind::Reference { .. }
             | thir::ExprKind::If { .. }
+            | thir::ExprKind::Match { .. }
             | thir::ExprKind::Call { .. }
             | thir::ExprKind::Block(..)
             | thir::ExprKind::Adt(..) => Category::Rvalue(RvalueFunc::Into),

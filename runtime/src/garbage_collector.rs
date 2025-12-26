@@ -209,8 +209,7 @@ impl Segment {
         // Allocate a page-aligned arena for the segment. Spans will carve pages
         // out of this arena; the segment owns the raw memory.
         let bytes = pages.saturating_mul(PAGE_SIZE);
-        let layout =
-            std::alloc::Layout::from_size_align(bytes, PAGE_SIZE).expect("segment layout");
+        let layout = std::alloc::Layout::from_size_align(bytes, PAGE_SIZE).expect("segment layout");
         let data = unsafe { std::alloc::alloc_zeroed(layout) };
         if data.is_null() {
             std::alloc::handle_alloc_error(layout);
@@ -774,9 +773,7 @@ impl Gc {
         let index = self.segments.len() - 1;
         self.insert_segment_range(index);
         let segment = &mut self.segments[index];
-        let start_page = segment
-            .alloc_pages(pages)
-            .expect("new segment has space");
+        let start_page = segment.alloc_pages(pages).expect("new segment has space");
         let base = unsafe { segment.data.add(start_page * PAGE_SIZE) };
         (index, start_page, base)
     }
@@ -1060,8 +1057,7 @@ impl Gc {
         let mut pages: usize = 0;
         for segment in &self.segments {
             runs = runs.saturating_add(segment.free_runs.len());
-            pages = pages
-                .saturating_add(segment.free_runs.iter().map(|r| r.len).sum::<usize>());
+            pages = pages.saturating_add(segment.free_runs.iter().map(|r| r.len).sum::<usize>());
             if segment.next_page < segment.page_count() {
                 runs = runs.saturating_add(1);
                 pages = pages.saturating_add(segment.page_count() - segment.next_page);
@@ -1122,11 +1118,7 @@ fn desc_alignment(desc: *const GcDesc) -> usize {
 // Lane 0 is scan (has pointers), lane 1 is noscan.
 fn span_lane(has_pointers: bool) -> usize {
     // Map the boolean to the lane index used by class_spans.
-    if has_pointers {
-        0
-    } else {
-        1
-    }
+    if has_pointers { 0 } else { 1 }
 }
 
 // Number of u64 words needed to store `count` bits.
