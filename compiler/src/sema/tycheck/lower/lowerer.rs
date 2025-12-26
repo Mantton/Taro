@@ -1,6 +1,6 @@
 use crate::{
     compile::context::GlobalContext,
-    hir::{self, Resolution},
+    hir::{self, DefinitionKind, Resolution},
     sema::{
         models::{AdtDef, AdtKind, Ty, TyKind},
         resolve::models::{PrimaryType, TypeHead},
@@ -69,6 +69,10 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 PrimaryType::Bool => gcx.types.bool,
                 PrimaryType::Rune => gcx.types.rune,
             },
+            Resolution::Definition(id, DefinitionKind::TypeParameter) => {
+                // TODO: Prohibit Generics
+                gcx.get_type(id)
+            }
             Resolution::Definition(id, kind) => {
                 if let Some(from) = self.current_definition() {
                     if !gcx.is_definition_visible(id, from) {

@@ -15,6 +15,7 @@ pub fn typecheck_package<'ctx>(
     package: &hir::Package,
     context: GlobalContext<'ctx>,
 ) -> CompileResult<results::TypeCheckResults<'ctx>> {
+    collect::generics::run(package, context)?; // Collect Generics Headers
     collect::adt::run(package, context)?; // Collect ADT Type Headers
     collect::field::run(package, context)?; // Collect ADT Type Definitions
     collect::variant::run(package, context)?; // Collect Enum Variant Definitions

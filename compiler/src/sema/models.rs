@@ -344,9 +344,27 @@ pub struct GenericParameter {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Const<'arena> {
+    pub ty: Ty<'arena>,
+    pub kind: ConstKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ConstKind {
+    Value(ConstValue),
+    Param(GenericParameter),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ConstValue {
+    Integer(u64),
+    Bool(bool),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GenericArgument<'arena> {
     Type(Ty<'arena>),
-    Const(usize), // TODO: Replace this with a typesystem represenation of a constant
+    Const(Const<'arena>),
 }
 
 impl<'arena> GenericArgument<'arena> {
@@ -384,7 +402,7 @@ impl Generics {
                         count += 1;
                     }
                 }
-                GenericParameterDefinitionKind::Const { default } => {
+                GenericParameterDefinitionKind::Const { default, .. } => {
                     if default.is_some() {
                         count += 1;
                     }
@@ -406,15 +424,20 @@ pub struct GenericParameterDefinition {
 
 #[derive(Debug, Clone)]
 pub enum GenericParameterDefinitionKind {
-    Type { default: Option<Box<hir::Type>> },
-    Const { default: Option<usize> },
+    Type {
+        default: Option<Box<hir::Type>>,
+    },
+    Const {
+        ty: Box<hir::Type>,
+        default: Option<hir::AnonConst>,
+    },
 }
 
 impl GenericParameterDefinitionKind {
     pub fn has_default(&self) -> bool {
         match self {
             GenericParameterDefinitionKind::Type { default } => default.is_some(),
-            GenericParameterDefinitionKind::Const { default } => default.is_some(),
+            GenericParameterDefinitionKind::Const { default, .. } => default.is_some(),
         }
     }
 }

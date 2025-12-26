@@ -6,7 +6,7 @@ use crate::{
     mir::{self, Body},
     sema::{
         models::{
-            EnumDefinition, EnumVariant, FloatTy, IntTy, LabeledFunctionSignature,
+            EnumDefinition, EnumVariant, FloatTy, Generics, IntTy, LabeledFunctionSignature,
             StructDefinition, Ty, TyKind, UIntTy,
         },
         resolve::models::{
@@ -110,6 +110,15 @@ impl<'arena> GlobalContext<'arena> {
                 .or_default()
                 .push(extension_id);
         });
+    }
+
+    pub fn cache_generics(self, id: DefinitionID, generics: Generics) {
+        let mut cache = self.context.store.type_databases.borrow_mut();
+        let package_index = id.package();
+        let database = cache.entry(package_index).or_insert(Default::default());
+        let generics = self.context.store.arenas.generics.alloc(generics);
+        let ok = database.def_to_generics.insert(id, generics).is_none();
+        debug_assert!(ok, "duplicated generic information")
     }
 }
 
@@ -285,6 +294,26 @@ impl<'arena> GlobalContext<'arena> {
     pub fn output_root(self) -> &'arena PathBuf {
         &self.context.store.output_root
     }
+
+    pub fn generics_of(self, id: DefinitionID) -> &'arena Generics {
+        let mut database = self.context.store.type_databases.borrow_mut();
+        let database = database.entry(id.package()).or_default();
+
+        if let Some(x) = database.def_to_generics.get(&id) {
+            x
+        } else if let Some(empty) = database.empty_generics {
+            empty
+        } else {
+            let generics = self.context.store.arenas.generics.alloc(Generics {
+                parameters: vec![],
+                has_self: false,
+                parent: None,
+                parent_count: 0,
+            });
+            database.empty_generics = Some(generics);
+            generics
+        }
+    }
 }
 
 pub struct CompilerContext<'arena> {
@@ -407,6 +436,8 @@ pub struct CompilerArenas<'arena> {
     pub enum_definitions: typed_arena::Arena<EnumDefinition<'arena>>,
     pub mir_bodies: typed_arena::Arena<Body<'arena>>,
     pub mir_packages: typed_arena::Arena<mir::MirPackage<'arena>>,
+    pub generics: typed_arena::Arena<Generics>,
+
     pub global: Bump,
 }
 
@@ -425,6 +456,7 @@ impl<'arena> CompilerArenas<'arena> {
             enum_definitions: Default::default(),
             mir_bodies: Default::default(),
             mir_packages: Default::default(),
+            generics: Default::default(),
             global: Bump::new(),
         }
     }
@@ -496,6 +528,8 @@ pub struct TypeDatabase<'arena> {
     pub extension_to_type_head: FxHashMap<DefinitionID, TypeHead>,
     pub type_head_to_extensions: FxHashMap<TypeHead, Vec<DefinitionID>>,
     pub type_head_to_members: FxHashMap<TypeHead, TypeMemberIndex>,
+    pub def_to_generics: FxHashMap<DefinitionID, &'arena Generics>,
+    pub empty_generics: Option<&'arena Generics>,
 }
 
 #[derive(Default, Debug, Clone)]

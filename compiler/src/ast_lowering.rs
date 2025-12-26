@@ -433,7 +433,7 @@ impl Actor<'_, '_> {
 
     fn lower_type_parameter(&mut self, node: ast::TypeParameter) -> hir::TypeParameter {
         hir::TypeParameter {
-            id: self.next_index(),
+            id: self.definition_id(node.id),
             span: node.span,
             identifier: node.identifier,
             bounds: node.bounds.map(|n| self.lower_generic_bounds(n)),

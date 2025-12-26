@@ -256,7 +256,7 @@ pub struct TypeParameters {
 
 #[derive(Debug, Clone)]
 pub struct TypeParameter {
-    pub id: NodeID,
+    pub id: DefinitionID,
     pub span: Span,
     pub identifier: Identifier,
     pub bounds: Option<GenericBounds>,
