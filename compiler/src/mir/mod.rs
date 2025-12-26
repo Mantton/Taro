@@ -361,6 +361,7 @@ impl Category {
             | thir::ExprKind::Binary { .. }
             | thir::ExprKind::Logical { .. }
             | thir::ExprKind::Unary { .. }
+            | thir::ExprKind::Cast { .. }
             | thir::ExprKind::Tuple { .. }
             | thir::ExprKind::Make { .. } => Category::Rvalue(RvalueFunc::AsRvalue),
 

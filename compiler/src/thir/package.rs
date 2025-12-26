@@ -440,6 +440,10 @@ impl<'ctx> FunctionLower<'ctx> {
                     ExprKind::Unary { op, operand }
                 }
             }
+            hir::ExpressionKind::CastAs(value, _) => {
+                let value = self.lower_expr(value);
+                ExprKind::Cast { value }
+            }
             hir::ExpressionKind::Assign(lhs, rhs) => {
                 let target = self.lower_expr(lhs);
                 let value = self.lower_expr(rhs);

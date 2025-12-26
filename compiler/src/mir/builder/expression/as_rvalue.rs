@@ -31,6 +31,13 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 let operand = unpack!(block = self.as_operand(block, *operand));
                 block.and(Rvalue::UnaryOp { op: *op, operand })
             }
+            ExprKind::Cast { value } => {
+                let operand = unpack!(block = self.as_operand(block, *value));
+                block.and(Rvalue::Cast {
+                    operand,
+                    ty: expr.ty,
+                })
+            }
             ExprKind::Make { .. } => unreachable!("make should be handled in into_dest"),
             ExprKind::Binary { op, lhs, rhs } => {
                 let lhs = unpack!(block = self.as_operand(block, *lhs));

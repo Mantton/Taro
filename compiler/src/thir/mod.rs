@@ -102,6 +102,10 @@ pub enum ExprKind<'a> {
         op: UnaryOperator,
         operand: ExprId,
     },
+    /// `value as T`
+    Cast {
+        value: ExprId,
+    },
     /// Binary op
     Binary {
         op: BinaryOperator,

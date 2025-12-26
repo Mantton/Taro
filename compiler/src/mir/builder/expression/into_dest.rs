@@ -212,6 +212,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             | ExprKind::Literal(..)
             | ExprKind::Unary { .. }
             | ExprKind::Binary { .. }
+            | ExprKind::Cast { .. }
             | ExprKind::Zst { .. } => {
                 debug_assert!(match Category::of(&expr.kind) {
                     // should be handled above

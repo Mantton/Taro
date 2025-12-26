@@ -2,7 +2,7 @@ use crate::{
     compile::context::Gcx,
     hir::{self, DefinitionID, NodeID},
     sema::{
-        models::{Ty, TyKind},
+        models::{InferTy, Ty, TyKind},
         resolve::models::{DefinitionKind, TypeHead},
         tycheck::{
             check::{checker::Checker, gather::GatherLocalsVisitor},
@@ -329,7 +329,9 @@ impl<'ctx> Checker<'ctx> {
             hir::ExpressionKind::Assign(lhs, rhs) => {
                 self.synth_assign_expression(expression, lhs, rhs, cs)
             }
-            hir::ExpressionKind::CastAs(..) => todo!(),
+            hir::ExpressionKind::CastAs(value, ty) => {
+                self.synth_cast_expression(expression, value, ty, expectation, cs)
+            }
             hir::ExpressionKind::PatternBinding(..) => todo!(),
             hir::ExpressionKind::Block(block) => {
                 self.synth_block_expression(block, expectation, cs)
@@ -352,6 +354,71 @@ enum Needs {
 }
 
 impl<'ctx> Checker<'ctx> {
+    fn synth_cast_expression(
+        &self,
+        expression: &hir::Expression,
+        value: &hir::Expression,
+        target: &hir::Type,
+        expectation: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        let target_ty = self.lower_type(target);
+        let value_ty = self.synth(value, cs);
+
+        if target_ty.is_error() || value_ty.is_error() {
+            return Ty::error(self.gcx());
+        }
+
+        if !matches!(target_ty.kind(), TyKind::Int(_) | TyKind::UInt(_)) {
+            self.gcx().dcx().emit_error(
+                format!(
+                    "cast target must be an integer type, found {}",
+                    target_ty.format(self.gcx())
+                )
+                .into(),
+                Some(target.span),
+            );
+            return Ty::error(self.gcx());
+        }
+
+        if !self.ensure_integer_cast_operand(value_ty, value.span, cs) {
+            self.gcx().dcx().emit_error(
+                format!(
+                    "cannot cast {} to {}",
+                    value_ty.format(self.gcx()),
+                    target_ty.format(self.gcx())
+                )
+                .into(),
+                Some(expression.span),
+            );
+            return Ty::error(self.gcx());
+        }
+
+        if let Some(expectation) = expectation {
+            cs.equal(expectation, target_ty, expression.span);
+        }
+
+        target_ty
+    }
+
+    fn ensure_integer_cast_operand(
+        &self,
+        value_ty: Ty<'ctx>,
+        span: Span,
+        cs: &mut Cs<'ctx>,
+    ) -> bool {
+        match value_ty.kind() {
+            TyKind::Int(_) | TyKind::UInt(_) | TyKind::Infer(InferTy::IntVar(_)) => true,
+            TyKind::Infer(InferTy::TyVar(_)) => {
+                let int_var = cs.infer_cx.next_int_var();
+                cs.equal(value_ty, int_var, span);
+                true
+            }
+            TyKind::Error => true,
+            _ => false,
+        }
+    }
+
     fn require_mut_place(&self, expr: &hir::Expression, cs: &Cs<'ctx>) -> bool {
         match &expr.kind {
             hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => {
