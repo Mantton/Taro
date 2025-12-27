@@ -159,6 +159,28 @@ impl<'arena> Ty<'arena> {
     }
 }
 
+// HELPERS
+impl<'ctx> Ty<'ctx> {
+    /// Fast “syntactic” check: does this type mention any generic parameters?
+    pub fn needs_instantiation(self) -> bool {
+        fn visit<'ctx>(ty: Ty<'ctx>) -> bool {
+            match ty.kind() {
+                // A generic parameter definitely needs instantiation
+                TyKind::Parameter(_) => true,
+                // Walk composite types
+                TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => visit(inner),
+                TyKind::Tuple(elems) => elems.iter().copied().any(visit),
+                TyKind::FnPointer { inputs, output, .. } => {
+                    inputs.iter().copied().any(visit) || visit(output)
+                }
+                // Existential, associated, infer, error, primitives …
+                _ => false,
+            }
+        }
+        visit(self)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TyKind<'arena> {
     Bool,

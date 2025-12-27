@@ -1,7 +1,10 @@
 use crate::{
     compile::context::Gcx,
     sema::{
-        models::{FloatTy, InferTy, IntTy, Ty, TyKind, TyVarID},
+        models::{
+            FloatTy, GenericArgument, GenericArguments, GenericParameterDefinition,
+            GenericParameterDefinitionKind, InferTy, IntTy, Ty, TyKind, TyVarID,
+        },
         resolve::models::DefinitionID,
         tycheck::{
             fold::TypeFoldable,
@@ -13,6 +16,7 @@ use crate::{
                 resolve::InferVarResolver,
                 snapshot::IcxEvent,
             },
+            utils::generics::GenericsBuilder,
         },
     },
     span::Span,
@@ -69,6 +73,32 @@ impl<'ctx> InferCtx<'ctx> {
             .new_key(FloatVarValue::Unknown);
 
         Ty::new(TyKind::Infer(InferTy::FloatVar(id)), self.gcx)
+    }
+
+    pub fn fresh_args_for_def(&self, def_id: DefinitionID, span: Span) -> GenericArguments<'ctx> {
+        GenericsBuilder::for_item(self.gcx, def_id, |param, _| {
+            self.var_for_generic_param(param, span)
+        })
+    }
+
+    pub fn var_for_generic_param(
+        &self,
+        param: &GenericParameterDefinition,
+        span: Span,
+    ) -> GenericArgument<'ctx> {
+        match param.kind {
+            GenericParameterDefinitionKind::Type { .. } => {
+                let ty_var_id = self
+                    .inner
+                    .borrow_mut()
+                    .type_variables()
+                    .new_var(TypeVariableOrigin { location: span });
+
+                let ty = Ty::new(TyKind::Infer(InferTy::TyVar(ty_var_id)), self.gcx);
+                GenericArgument::Type(ty)
+            }
+            GenericParameterDefinitionKind::Const { .. } => todo!(),
+        }
     }
 }
 
@@ -256,6 +286,19 @@ impl<'ctx> InferCtx<'ctx> {
             .borrow_mut()
             .float_unification_table()
             .union_value(id, value);
+    }
+}
+
+impl<'ctx> InferCtx<'ctx> {
+    /// Returns all type variable IDs with their origins.
+    /// Useful for debugging to identify unresolved type variables.
+    pub fn all_type_var_origins(&self) -> Vec<(TyVarID, TypeVariableOrigin)> {
+        let inner = self.inner.borrow();
+        inner
+            .type_storage
+            .iter_origins()
+            .map(|(id, origin)| (id, *origin))
+            .collect()
     }
 }
 

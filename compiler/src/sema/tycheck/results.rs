@@ -1,6 +1,9 @@
 use crate::{
     hir::{self, DefinitionID, Resolution},
-    sema::{models::Ty, tycheck::solve::Adjustment},
+    sema::{
+        models::{GenericArguments, Ty},
+        tycheck::solve::Adjustment,
+    },
 };
 use rustc_hash::FxHashMap;
 
@@ -11,6 +14,7 @@ pub struct TypeCheckResults<'ctx> {
     field_indices: FxHashMap<hir::NodeID, usize>,
     overload_sources: FxHashMap<hir::NodeID, DefinitionID>,
     value_resolutions: FxHashMap<hir::NodeID, Resolution>,
+    instantiations: FxHashMap<hir::NodeID, GenericArguments<'ctx>>,
 }
 
 impl<'ctx> TypeCheckResults<'ctx> {
@@ -21,6 +25,7 @@ impl<'ctx> TypeCheckResults<'ctx> {
         self.overload_sources.extend(other.overload_sources.drain());
         self.value_resolutions
             .extend(other.value_resolutions.drain());
+        self.instantiations.extend(other.instantiations.drain());
     }
 
     pub fn record_node_type(&mut self, id: hir::NodeID, ty: Ty<'ctx>) {
@@ -46,6 +51,10 @@ impl<'ctx> TypeCheckResults<'ctx> {
         self.value_resolutions.insert(id, resolution);
     }
 
+    pub fn record_instantiation(&mut self, id: hir::NodeID, args: GenericArguments<'ctx>) {
+        self.instantiations.insert(id, args);
+    }
+
     #[track_caller]
     pub fn node_type(&self, id: hir::NodeID) -> Ty<'ctx> {
         *self.node_tys.get(&id).expect("type of node")
@@ -65,5 +74,9 @@ impl<'ctx> TypeCheckResults<'ctx> {
 
     pub fn value_resolution(&self, id: hir::NodeID) -> Option<Resolution> {
         self.value_resolutions.get(&id).cloned()
+    }
+
+    pub fn instantiation(&self, id: hir::NodeID) -> Option<GenericArguments<'ctx>> {
+        self.instantiations.get(&id).cloned()
     }
 }

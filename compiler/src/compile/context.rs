@@ -6,8 +6,8 @@ use crate::{
     mir::{self, Body},
     sema::{
         models::{
-            EnumDefinition, EnumVariant, FloatTy, Generics, IntTy, LabeledFunctionSignature,
-            StructDefinition, Ty, TyKind, UIntTy,
+            EnumDefinition, EnumVariant, FloatTy, GenericArgument, Generics, IntTy,
+            LabeledFunctionSignature, StructDefinition, Ty, TyKind, UIntTy,
         },
         resolve::models::{
             DefinitionKind, ResolutionOutput, ScopeData, ScopeEntryData, TypeHead, UsageEntryData,
@@ -388,6 +388,7 @@ pub struct CompilerInterners<'arena> {
     arenas: &'arena CompilerArenas<'arena>,
     types: InternedSet<'arena, TyKind<'arena>>,
     type_lists: InternedSet<'arena, Vec<Ty<'arena>>>,
+    generic_arguments: InternedSet<'arena, Vec<GenericArgument<'arena>>>,
 }
 impl<'arena> CompilerInterners<'arena> {
     pub fn new(arenas: &'arena CompilerArenas<'arena>) -> CompilerInterners<'arena> {
@@ -395,6 +396,7 @@ impl<'arena> CompilerInterners<'arena> {
             arenas,
             types: InternedSet::new(),
             type_lists: InternedSet::new(),
+            generic_arguments: InternedSet::new(),
         }
     }
 
@@ -421,6 +423,20 @@ impl<'arena> CompilerInterners<'arena> {
 
         ik
     }
+
+    pub fn intern_generic_args(
+        &self,
+        items: Vec<GenericArgument<'arena>>,
+    ) -> &'arena [GenericArgument<'arena>] {
+        let ik = self
+            .generic_arguments
+            .intern(items, |k| {
+                let k = self.arenas.generic_arguments.alloc(k);
+                return InternedInSet(k);
+            })
+            .0;
+        ik
+    }
 }
 
 pub struct CompilerArenas<'arena> {
@@ -437,6 +453,7 @@ pub struct CompilerArenas<'arena> {
     pub mir_bodies: typed_arena::Arena<Body<'arena>>,
     pub mir_packages: typed_arena::Arena<mir::MirPackage<'arena>>,
     pub generics: typed_arena::Arena<Generics>,
+    pub generic_arguments: typed_arena::Arena<Vec<GenericArgument<'arena>>>,
 
     pub global: Bump,
 }
@@ -457,6 +474,7 @@ impl<'arena> CompilerArenas<'arena> {
             mir_bodies: Default::default(),
             mir_packages: Default::default(),
             generics: Default::default(),
+            generic_arguments: Default::default(),
             global: Bump::new(),
         }
     }

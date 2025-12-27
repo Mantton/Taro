@@ -215,6 +215,11 @@ impl<'gcx> TypeVariableStorage<'gcx> {
         &self.table
     }
 
+    /// Returns an iterator over all type variable origins.
+    pub fn iter_origins(&self) -> impl Iterator<Item = (TyVarID, &TypeVariableOrigin)> {
+        self.values.iter_enumerated()
+    }
+
     pub fn finalize_rollback(&mut self) {
         debug_assert!(self.values.len() >= self.storage().len());
         self.values.truncate(self.storage().len());

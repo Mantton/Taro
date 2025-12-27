@@ -7,10 +7,12 @@ use crate::{
         tycheck::{
             check::{checker::Checker, gather::GatherLocalsVisitor},
             solve::{
-                ApplyArgument, ApplyGoalData, AssignOpGoalData, BinOpGoalData, BindOverloadGoalData,
-                ConstraintSystem, DisjunctionBranch, Goal, MemberGoalData, MethodCallData,
-                StructLiteralField, StructLiteralGoalData, TupleAccessGoalData, UnOpGoalData,
+                ApplyArgument, ApplyGoalData, AssignOpGoalData, BinOpGoalData,
+                BindOverloadGoalData, ConstraintSystem, DisjunctionBranch, Goal, MemberGoalData,
+                MethodCallData, StructLiteralField, StructLiteralGoalData, TupleAccessGoalData,
+                UnOpGoalData,
             },
+            utils::instantiate::instantiate_ty_with_args,
         },
     },
     span::{Span, Symbol},
@@ -142,6 +144,10 @@ impl<'ctx> Checker<'ctx> {
             self.results.borrow_mut().record_field_index(id, index);
         }
 
+        for (id, args) in cs.resolved_instantiations() {
+            self.results.borrow_mut().record_instantiation(id, args);
+        }
+
         for (id, ty) in cs.resolved_local_types() {
             self.finalize_local(id, ty);
             self.results.borrow_mut().record_node_type(id, ty);
@@ -199,6 +205,10 @@ impl<'ctx> Checker<'ctx> {
 
         for (id, index) in cs.resolved_field_indices() {
             self.results.borrow_mut().record_field_index(id, index);
+        }
+
+        for (id, args) in cs.resolved_instantiations() {
+            self.results.borrow_mut().record_instantiation(id, args);
         }
 
         for (id, ty) in cs.resolved_local_types() {
@@ -1450,7 +1460,20 @@ impl<'ctx> Checker<'ctx> {
         if matches!(resolution, hir::Resolution::Error) {
             return Ty::error(self.gcx());
         }
-        self.synth_identifier_expression(node_id, span, resolution, expectation, cs)
+
+        let ty = self.synth_identifier_expression(node_id, span, resolution, expectation, cs);
+
+        if let Some(def_id) = resolution.definition_id() {
+            let generics = self.gcx().generics_of(def_id);
+            if !generics.is_empty() {
+                let args = cs.infer_cx.fresh_args_for_def(def_id, span);
+                let instantiated = instantiate_ty_with_args(self.gcx(), ty, args);
+                cs.record_instantiation(node_id, args);
+                return instantiated;
+            }
+        }
+
+        ty
     }
 }
 

@@ -1,7 +1,10 @@
 use crate::{
-    sema::tycheck::solve::{
-        BindOverloadGoalData, ConstraintSolver, DisjunctionBranch, Obligation, SolverDriver,
-        SolverResult, rank_branches,
+    sema::tycheck::{
+        solve::{
+            BindOverloadGoalData, ConstraintSolver, DisjunctionBranch, Obligation, SolverDriver,
+            SolverResult, rank_branches,
+        },
+        utils::instantiate::instantiate_ty_with_args,
     },
     span::{Span, Spanned},
 };
@@ -92,7 +95,18 @@ impl<'ctx> ConstraintSolver<'ctx> {
             source,
         } = data;
 
-        match self.unify(var_ty, candidate_ty) {
+        // Instantiate the candidate type if it has generics
+        let generics = self.gcx().generics_of(source);
+        let actual_ty = if !generics.is_empty() {
+            let args = self.icx.fresh_args_for_def(source, location);
+            let instantiated = instantiate_ty_with_args(self.gcx(), candidate_ty, args);
+            self.record_instantiation(node_id, args);
+            instantiated
+        } else {
+            candidate_ty
+        };
+
+        match self.unify(var_ty, actual_ty) {
             Ok(_) => {
                 self.record_overload_source(node_id, source);
                 self.icx.bind_overload(var_ty, source);

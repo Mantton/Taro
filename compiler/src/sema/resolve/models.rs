@@ -216,7 +216,7 @@ pub enum Resolution<LocalNode = ast::NodeID> {
     Error,
 }
 
-impl Resolution {
+impl<LocalNode> Resolution<LocalNode> {
     pub fn description(&self) -> &'static str {
         match self {
             Resolution::Definition(_, k) => k.description(),
@@ -228,6 +228,16 @@ impl Resolution {
             Resolution::SelfConstructor(_) => "self constructor",
             Resolution::Error => "error",
             Resolution::Foundation(_) => "foundation declaration",
+        }
+    }
+
+    pub fn definition_id(&self) -> Option<DefinitionID> {
+        match self {
+            Resolution::Definition(id, _) => Some(*id),
+            Resolution::SelfTypeAlias(id)
+            | Resolution::InterfaceSelfTypeParameter(id)
+            | Resolution::SelfConstructor(id) => Some(*id),
+            _ => None,
         }
     }
 }

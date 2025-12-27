@@ -1,7 +1,11 @@
 use crate::{
     compile::context::Gcx,
     hir::NodeID,
-    sema::{error::SpannedErrorList, models::Ty, tycheck::infer::InferCtx},
+    sema::{
+        error::SpannedErrorList,
+        models::{GenericArguments, Ty},
+        tycheck::infer::InferCtx,
+    },
     span::{Span, Spanned},
 };
 pub use models::*;
@@ -26,6 +30,7 @@ pub struct ConstraintSystem<'ctx> {
     pub locals: RefCell<FxHashMap<NodeID, Ty<'ctx>>>,
     pub field_indices: FxHashMap<NodeID, usize>,
     overload_sources: FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
+    instantiation_args: FxHashMap<NodeID, GenericArguments<'ctx>>,
     current_def: crate::sema::resolve::models::DefinitionID,
 }
 
@@ -42,6 +47,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
             adjustments: Default::default(),
             field_indices: Default::default(),
             overload_sources: Default::default(),
+            instantiation_args: Default::default(),
             current_def,
         }
     }
@@ -117,6 +123,14 @@ impl<'ctx> ConstraintSystem<'ctx> {
     ) -> FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID> {
         self.overload_sources.clone()
     }
+
+    pub fn record_instantiation(&mut self, node_id: NodeID, args: GenericArguments<'ctx>) {
+        self.instantiation_args.insert(node_id, args);
+    }
+
+    pub fn resolved_instantiations(&self) -> FxHashMap<NodeID, GenericArguments<'ctx>> {
+        self.instantiation_args.clone()
+    }
 }
 
 impl<'ctx> ConstraintSystem<'ctx> {
@@ -127,16 +141,21 @@ impl<'ctx> ConstraintSystem<'ctx> {
             adjustments: std::mem::take(&mut self.adjustments),
             field_indices: std::mem::take(&mut self.field_indices),
             overload_sources: std::mem::take(&mut self.overload_sources),
+            instantiation_args: std::mem::take(&mut self.instantiation_args),
             current_def: self.current_def,
         };
 
         let mut driver = SolverDriver::new(solver);
         let result = driver.solve_to_fixpoint();
         // Pull adjustments back out of the solver/driver.
-        let (adjustments, field_indices, overload_sources) = driver.into_parts();
+        let (adjustments, field_indices, overload_sources, instantiation_args) = driver.into_parts();
         self.adjustments = adjustments;
         self.field_indices = field_indices;
         self.overload_sources = overload_sources;
+        self.instantiation_args = instantiation_args;
+
+        // Post-solve validation: check for unresolved type vars (debug level)
+        self.check_unresolved_vars();
 
         let Err(errors) = result else {
             return;
@@ -149,6 +168,27 @@ impl<'ctx> ConstraintSystem<'ctx> {
             dcx.emit_error(error.value.format(gcx), Some(error.span));
         }
     }
+
+    /// Debug check for unresolved type variables after solving completes.
+    /// This helps identify:
+    /// - Orphaned vars from failed overload branches (expected)
+    /// - Genuinely unresolved vars that indicate a bug (unexpected)
+    fn check_unresolved_vars(&self) {
+        use crate::sema::models::{InferTy, TyKind};
+
+        let gcx = self.infer_cx.gcx;
+        for (var_id, origin) in self.infer_cx.all_type_var_origins() {
+            let var_ty = Ty::new(TyKind::Infer(InferTy::TyVar(var_id)), gcx);
+            let resolved = self.infer_cx.resolve_vars_if_possible(var_ty);
+            if resolved.is_infer() {
+                // Emit at debug level - these can be from failed overload branches
+                gcx.dcx().emit_info(
+                    format!("unresolved type var {:?}", var_id),
+                    Some(origin.location),
+                );
+            }
+        }
+    }
 }
 
 struct ConstraintSolver<'ctx> {
@@ -157,6 +197,7 @@ struct ConstraintSolver<'ctx> {
     adjustments: FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
     pub field_indices: FxHashMap<NodeID, usize>,
     overload_sources: FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
+    instantiation_args: FxHashMap<NodeID, GenericArguments<'ctx>>,
     current_def: crate::sema::resolve::models::DefinitionID,
 }
 
@@ -175,6 +216,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
         source: crate::sema::resolve::models::DefinitionID,
     ) {
         self.overload_sources.insert(node_id, source);
+    }
+
+    pub fn record_instantiation(&mut self, node_id: NodeID, args: GenericArguments<'ctx>) {
+        self.instantiation_args.insert(node_id, args);
     }
 }
 
@@ -221,6 +266,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             adjustments: self.adjustments.clone(),
             field_indices: self.field_indices.clone(),
             overload_sources: self.overload_sources.clone(),
+            instantiation_args: self.instantiation_args.clone(),
             current_def: self.current_def,
         }
     }
@@ -270,11 +316,13 @@ impl<'ctx> SolverDriver<'ctx> {
         FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
         FxHashMap<NodeID, usize>,
         FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
+        FxHashMap<NodeID, GenericArguments<'ctx>>,
     ) {
         (
             self.solver.adjustments,
             self.solver.field_indices,
             self.solver.overload_sources,
+            self.solver.instantiation_args,
         )
     }
 
