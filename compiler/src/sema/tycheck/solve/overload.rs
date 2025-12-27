@@ -64,7 +64,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         }
 
         // Ambiguous or needs ranking.
-        let ranked = rank_branches(successful);
+        let ranked = rank_branches(self.gcx(), successful);
         let best = ranked.first().cloned();
         let second = ranked.get(1);
 

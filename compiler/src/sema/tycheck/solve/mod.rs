@@ -148,16 +148,17 @@ impl<'ctx> ConstraintSystem<'ctx> {
         let mut driver = SolverDriver::new(solver);
         let result = driver.solve_to_fixpoint();
         // Pull adjustments back out of the solver/driver.
-        let (adjustments, field_indices, overload_sources, instantiation_args) = driver.into_parts();
+        let (adjustments, field_indices, overload_sources, instantiation_args) =
+            driver.into_parts();
         self.adjustments = adjustments;
         self.field_indices = field_indices;
         self.overload_sources = overload_sources;
         self.instantiation_args = instantiation_args;
 
-        // Post-solve validation: check for unresolved type vars (debug level)
-        self.check_unresolved_vars();
-
         let Err(errors) = result else {
+            // Only check for unresolved vars when solving succeeded
+            // If there are unresolved vars with no errors, it's a bug
+            self.check_unresolved_vars();
             return;
         };
 
@@ -169,10 +170,8 @@ impl<'ctx> ConstraintSystem<'ctx> {
         }
     }
 
-    /// Debug check for unresolved type variables after solving completes.
-    /// This helps identify:
-    /// - Orphaned vars from failed overload branches (expected)
-    /// - Genuinely unresolved vars that indicate a bug (unexpected)
+    /// Check for unresolved type variables after solving completes successfully.
+    /// If there are unresolved vars when no errors occurred, it indicates a bug.
     fn check_unresolved_vars(&self) {
         use crate::sema::models::{InferTy, TyKind};
 
@@ -181,10 +180,9 @@ impl<'ctx> ConstraintSystem<'ctx> {
             let var_ty = Ty::new(TyKind::Infer(InferTy::TyVar(var_id)), gcx);
             let resolved = self.infer_cx.resolve_vars_if_possible(var_ty);
             if resolved.is_infer() {
-                // Emit at debug level - these can be from failed overload branches
-                gcx.dcx().emit_info(
-                    format!("unresolved type var {:?}", var_id),
-                    Some(origin.location),
+                panic!(
+                    "ICE: unresolved type var {:?} at {:?} with no errors",
+                    var_id, origin.location
                 );
             }
         }
@@ -283,10 +281,19 @@ struct RankedBranch<'ctx> {
     score: u32,
 }
 
-fn rank_branches<'ctx>(branches: Vec<DisjunctionBranch<'ctx>>) -> Vec<RankedBranch<'ctx>> {
+fn rank_branches<'ctx>(
+    gcx: Gcx<'ctx>,
+    branches: Vec<DisjunctionBranch<'ctx>>,
+) -> Vec<RankedBranch<'ctx>> {
     let mut ranked: Vec<RankedBranch<'ctx>> = branches
         .into_iter()
-        .map(|branch| RankedBranch { branch, score: 0 })
+        .map(|branch| {
+            let score = match branch.source {
+                Some(def_id) if gcx.generics_of(def_id).is_empty() => 1,
+                _ => 0,
+            };
+            RankedBranch { branch, score }
+        })
         .collect();
 
     ranked.sort_by_key(|b| Reverse(b.score));
