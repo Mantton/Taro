@@ -85,7 +85,8 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
             "parent of variant must be an enum definition"
         );
 
-        todo!("Get generics of parent")
+        let parent_generics = gcx.generics_of(parent);
+        gcx.cache_generics(ctor_id, parent_generics.clone());
     }
 }
 

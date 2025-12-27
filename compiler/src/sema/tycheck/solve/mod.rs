@@ -129,7 +129,26 @@ impl<'ctx> ConstraintSystem<'ctx> {
     }
 
     pub fn resolved_instantiations(&self) -> FxHashMap<NodeID, GenericArguments<'ctx>> {
-        self.instantiation_args.clone()
+        use crate::sema::models::GenericArgument;
+
+        let gcx = self.infer_cx.gcx;
+        self.instantiation_args
+            .iter()
+            .map(|(&id, &args)| {
+                let resolved: Vec<GenericArgument<'ctx>> = args
+                    .iter()
+                    .map(|arg| match arg {
+                        GenericArgument::Type(ty) => {
+                            let resolved = self.infer_cx.resolve_vars_if_possible(*ty);
+                            GenericArgument::Type(resolved)
+                        }
+                        GenericArgument::Const(c) => GenericArgument::Const(*c),
+                    })
+                    .collect();
+                let interned = gcx.store.interners.intern_generic_args(resolved);
+                (id, interned)
+            })
+            .collect()
     }
 }
 
