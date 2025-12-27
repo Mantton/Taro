@@ -4,8 +4,8 @@ use crate::{
     sema::resolve::{
         models::{
             BindingError, DefinitionKind, ExpressionResolutionState, LexicalScope,
-            LexicalScopeSource, PathResult, Resolution, ResolutionError, ResolutionSource,
-            ResolutionState, ResolvedValue, Scope, ScopeNamespace,
+            LexicalScopeBinding, LexicalScopeSource, PathResult, Resolution, ResolutionError,
+            ResolutionSource, ResolutionState, Scope, ScopeNamespace,
         },
         resolver::Resolver,
     },
@@ -207,10 +207,13 @@ impl<'r, 'a> ast::AstVisitor for Actor<'r, 'a> {
                     &self.scopes,
                 ) {
                     Ok(value) => {
-                        self.resolver.record_resolution(
-                            node.id,
-                            ResolutionState::Complete(value.resolution()),
-                        );
+                        let res = match value {
+                            LexicalScopeBinding::Declaration(holder) => holder.resolution(),
+                            LexicalScopeBinding::Resolution(resolution) => resolution,
+                        };
+
+                        self.resolver
+                            .record_resolution(node.id, ResolutionState::Complete(res));
                     }
                     Err(e) => {
                         self.resolver.dcx().emit(e.diag());
@@ -730,14 +733,14 @@ impl<'r, 'a> Actor<'r, 'a> {
                 for &ns in &[preferred, fallback] {
                     let result = self.resolver.resolve_in_scope(name, scope, ns);
                     match result {
-                        Ok(value) => match value {
-                            ResolvedValue::Scope(scope) => {
+                        Ok(value) => {
+                            if let Some(scope) = self.resolver.scope_for_holder(&value) {
                                 return Ok(ResolvedEntity::Scoped(scope));
+                            } else {
+                                let res = value.resolution();
+                                return Ok(ResolvedEntity::Resolved(res));
                             }
-                            ResolvedValue::Resolution(resolution) => {
-                                return Ok(ResolvedEntity::Resolved(resolution.clone()));
-                            }
-                        },
+                        }
                         Err(ResolutionError::AmbiguousUsage(name)) => {
                             return Err(ResolutionError::AmbiguousUsage(name));
                         }

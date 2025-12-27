@@ -1,4 +1,5 @@
 use crate::hir::FoundationDecl;
+use crate::sema::resolve::models::LexicalScopeBinding;
 use crate::{
     PackageIndex,
     ast::{Identifier, NodeID, PathSegment},
@@ -7,9 +8,9 @@ use crate::{
     sema::resolve::models::{
         DefinitionID, DefinitionIndex, DefinitionKind, ExpressionResolutionState, Holder,
         ImplicitScope, LexicalScope, LexicalScopeSource, PathResult, PrimaryType, Resolution,
-        ResolutionError, ResolutionOutput, ResolutionSource, ResolutionState, ResolvedValue, Scope,
-        ScopeData, ScopeEntry, ScopeEntryData, ScopeEntryKind, ScopeKind, ScopeNamespace,
-        ScopeTable, UsageEntry, UsageEntryData,
+        ResolutionError, ResolutionOutput, ResolutionSource, ResolutionState, Scope, ScopeData,
+        ScopeEntry, ScopeEntryData, ScopeEntryKind, ScopeKind, ScopeNamespace, ScopeTable,
+        UsageEntry, UsageEntryData,
     },
     span::{FileID, Symbol},
     utils::intern::Interned,
@@ -265,33 +266,27 @@ impl<'a> Resolver<'a> {
                 let result = self.resolve_in_scope(identifier, scope, ScopeNamespace::Type);
                 match result {
                     Ok(value) => match value {
-                        ResolvedValue::Scope(scope) => {
-                            if let Some(resolution) = scope.resolution() {
-                                let is_module = matches!(
-                                    resolution,
-                                    Resolution::Definition(_, DefinitionKind::Module)
-                                );
+                        Holder::Single(data) => {
+                            let resolution = data.resolution();
+                            let is_module = matches!(
+                                resolution,
+                                Resolution::Definition(_, DefinitionKind::Module)
+                            );
 
-                                if !is_module {
-                                    return Err(ResolutionError::Expectation {
-                                        expectation: ResolutionSource::Module,
-                                        provided: resolution,
-                                        span: identifier.span,
-                                    });
-                                }
-
-                                Some(scope)
-                            } else {
-                                unreachable!("scope must provide resolution")
+                            if !is_module {
+                                return Err(ResolutionError::Expectation {
+                                    expectation: ResolutionSource::Module,
+                                    provided: resolution,
+                                    span: identifier.span,
+                                });
                             }
-                        } // TODO: We need to check that this is actually an importable module
-                        ResolvedValue::Resolution(provided) => {
-                            return Err(ResolutionError::Expectation {
-                                expectation: ResolutionSource::Module,
-                                provided,
-                                span: identifier.span,
-                            });
+
+                            let id = resolution.definition_id().expect("ID");
+                            let scope = self.get_definition_scope(id);
+
+                            Some(scope)
                         }
+                        Holder::Overloaded(..) => todo!("report not module"),
                     },
                     Err(e) => return Err(e),
                 }
@@ -358,7 +353,32 @@ impl<'a> Resolver<'a> {
             let result = if let Some(scope) = resulting_scope {
                 self.resolve_in_scope(&segment.identifier, scope, namespace)
             } else {
-                self.resolve_in_lexical_scopes(&segment.identifier, namespace, scopes)
+                let lexical_binding =
+                    self.resolve_in_lexical_scopes(&segment.identifier, namespace, scopes);
+                match lexical_binding {
+                    Ok(binding) => match binding {
+                        LexicalScopeBinding::Declaration(holder) => Ok(holder),
+                        LexicalScopeBinding::Resolution(resolution) => {
+                            self.record_resolution(
+                                segment.id,
+                                ResolutionState::Complete(resolution.clone()),
+                            );
+
+                            if is_last {
+                                return PathResult::Resolution(ResolutionState::Complete(
+                                    resolution,
+                                ));
+                            } else {
+                                let unresolved_count = path.len() - 1 - index;
+                                return PathResult::Resolution(ResolutionState::Partial {
+                                    resolution,
+                                    unresolved_count,
+                                });
+                            }
+                        }
+                    },
+                    Err(e) => Err(e),
+                }
             };
 
             let result = match result {
@@ -371,7 +391,7 @@ impl<'a> Resolver<'a> {
             let resolution = result.resolution();
             let possibly_associated_type = ResolutionSource::Type.is_allowed(&resolution);
 
-            if let Some(scope) = result.scope() {
+            if let Some(scope) = self.scope_for_holder(&result) {
                 self.record_resolution(segment.id, ResolutionState::Complete(resolution));
                 resulting_scope = Some(scope)
             } else if is_last {
@@ -406,17 +426,9 @@ impl<'a> Resolver<'a> {
         name: &Identifier,
         scope: Scope<'a>,
         namespace: ScopeNamespace,
-    ) -> Result<ResolvedValue<'a>, ResolutionError> {
+    ) -> Result<Holder<'a>, ResolutionError> {
         if let Some(holder) = self.find_holder_in_scope(name, scope, namespace) {
-            let resolution = holder.resolution();
-            match resolution {
-                Resolution::Definition(id, kind)
-                    if matches!(kind, DefinitionKind::Module | DefinitionKind::Namespace) =>
-                {
-                    return Ok(ResolvedValue::Scope(self.get_definition_scope(id)));
-                }
-                _ => return Ok(ResolvedValue::Resolution(resolution)),
-            };
+            return Ok(holder);
         }
 
         let usages = match scope.kind {
@@ -452,22 +464,22 @@ impl<'a> Resolver<'a> {
                         return Err(ResolutionError::UnknownSymbol(*name));
                     }
                     ScopeNamespace::Value => {
-                        // We can create a candidate set
-                        let ids: Vec<_> = candidates
+                        // Collect all entries from all candidates
+                        let all_entries: Vec<_> = candidates
                             .into_iter()
-                            .flat_map(|c| match c.resolution() {
-                                Resolution::Definition(id, kind) => Some((id, kind)),
-                                _ => None,
-                            })
+                            .flat_map(|c| c.all_entries())
                             .collect();
 
-                        let all_are_functions = ids
-                            .iter()
-                            .all(|(_, k)| matches!(k, DefinitionKind::Function));
+                        // Check if all entries resolve to functions
+                        let all_are_functions = all_entries.iter().all(|entry| {
+                            matches!(
+                                entry.resolution(),
+                                Resolution::Definition(_, DefinitionKind::Function)
+                            )
+                        });
 
                         if all_are_functions {
-                            let ids = ids.into_iter().map(|(id, _)| id).collect();
-                            return Ok(ResolvedValue::Resolution(Resolution::FunctionSet(ids)));
+                            return Ok(Holder::Overloaded(all_entries));
                         } else {
                             return Err(ResolutionError::AmbiguousUsage(*name));
                         }
@@ -515,12 +527,12 @@ impl<'a> Resolver<'a> {
         name: &Identifier,
         namespace: ScopeNamespace,
         scopes: &[LexicalScope<'a>],
-    ) -> Result<ResolvedValue<'a>, ResolutionError> {
+    ) -> Result<LexicalScopeBinding<'a>, ResolutionError> {
         for scope in scopes.iter().rev() {
             // Check in Local Table
             let resolution = scope.table.get(&name.symbol);
             if let Some(resolution) = resolution {
-                return Ok(ResolvedValue::Resolution(resolution.clone()));
+                return Ok(LexicalScopeBinding::Resolution(resolution.clone()));
             }
 
             let scope = match scope.source {
@@ -535,7 +547,7 @@ impl<'a> Resolver<'a> {
                     return Err(ResolutionError::AmbiguousUsage(name));
                 }
                 Err(_) => {}
-                Ok(value) => return Ok(value),
+                Ok(value) => return Ok(LexicalScopeBinding::Declaration(value)),
             }
 
             match &scope.kind {
@@ -548,7 +560,7 @@ impl<'a> Resolver<'a> {
 
         let implicit_value = self.resolve_in_implicit_scopes(name, namespace);
         if let Some(value) = implicit_value {
-            return Ok(value);
+            return Ok(LexicalScopeBinding::Declaration(value));
         }
         Err(ResolutionError::UnknownSymbol(*name))
     }
@@ -559,7 +571,7 @@ impl<'a> Resolver<'a> {
         &self,
         name: &Identifier,
         namespace: ScopeNamespace,
-    ) -> Option<ResolvedValue<'a>> {
+    ) -> Option<Holder<'a>> {
         let scopes: &[ImplicitScope] = match namespace {
             ScopeNamespace::Type => &[
                 ImplicitScope::StdPrelude,
@@ -576,27 +588,63 @@ impl<'a> Resolver<'a> {
             match scope {
                 ImplicitScope::Packages => {
                     let package = self.resolve_package(name);
-                    if let Some(package) = package {
-                        return Some(ResolvedValue::Scope(package));
+                    if let Some(package) = package
+                        && let Some(res) = package.resolution()
+                    {
+                        let data = self.create_scope_entry(ScopeEntryData {
+                            kind: ScopeEntryKind::Resolution(res),
+                            span: name.span,
+                        });
+                        return Some(Holder::Single(data));
                     };
                 }
                 ImplicitScope::StdPrelude => {}
                 ImplicitScope::BuiltinFunctionsPrelude => {
                     let value = self.builin_fn_bindings.get(&name.symbol);
                     if let Some(value) = value {
-                        return Some(ResolvedValue::Resolution(value.clone()));
+                        let data = self.create_scope_entry(ScopeEntryData {
+                            kind: ScopeEntryKind::Resolution(value.clone()),
+                            span: name.span,
+                        });
+                        return Some(Holder::Single(data));
                     }
                 }
                 ImplicitScope::BuiltinTypesPrelude => {
                     let value = self.builin_types_bindings.get(&name.symbol);
                     if let Some(value) = value {
-                        return Some(ResolvedValue::Resolution(value.clone()));
+                        let data = self.create_scope_entry(ScopeEntryData {
+                            kind: ScopeEntryKind::Resolution(value.clone()),
+                            span: name.span,
+                        });
+                        return Some(Holder::Single(data));
                     }
                 }
             }
         }
 
         None
+    }
+
+    pub fn scope_for_holder(&self, holder: &Holder<'a>) -> Option<Scope<'a>> {
+        match holder {
+            Holder::Single(data) => {
+                let resolution = data.resolution();
+                let id = resolution.definition_id();
+                let Some(id) = id else { return None };
+                let kind = self.definition_kind(id);
+
+                if matches!(
+                    kind,
+                    DefinitionKind::Namespace | DefinitionKind::Module | DefinitionKind::Interface
+                ) {
+                    let scope = self.get_definition_scope(id);
+                    return Some(scope);
+                }
+
+                return None;
+            }
+            Holder::Overloaded(..) => None,
+        }
     }
 }
 

@@ -87,10 +87,7 @@ impl<'r, 'a> Actor<'r, 'a> {
 
         let mut resolved_holder = None;
         for ns in ns {
-            let Some(holder) = self
-                .resolver
-                .find_holder_in_scope(&binding.source, module, ns)
-            else {
+            let Ok(holder) = self.resolver.resolve_in_scope(&binding.source, module, ns) else {
                 continue;
             };
 
@@ -100,7 +97,7 @@ impl<'r, 'a> Actor<'r, 'a> {
 
         let Some((holder, ns)) = resolved_holder else {
             if finalize {
-                let message = format!("unknown symbol – '{}' in module", binding.source.symbol);
+                let message = format!("unknown symbol '{}' in module", binding.source.symbol);
                 self.resolver
                     .dcx()
                     .emit_error(message, Some(binding.source.span));

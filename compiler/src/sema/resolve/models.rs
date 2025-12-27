@@ -272,6 +272,11 @@ pub struct LexicalScope<'a> {
     pub table: FxHashMap<Symbol, Resolution>,
 }
 
+pub enum LexicalScopeBinding<'arena> {
+    Declaration(Holder<'arena>),
+    Resolution(Resolution),
+}
+
 impl<'a> LexicalScope<'a> {
     pub fn new(source: LexicalScopeSource<'a>) -> LexicalScope<'a> {
         LexicalScope {
@@ -290,33 +295,6 @@ pub enum LexicalScopeSource<'a> {
     #[allow(unused)]
     Definition(DefinitionID),
     Scoped(Scope<'a>),
-}
-
-#[derive(Debug)]
-pub enum ResolvedValue<'a> {
-    Scope(Scope<'a>),
-    Resolution(Resolution),
-}
-
-impl<'a> ResolvedValue<'a> {
-    pub fn scope(&self) -> Option<Scope<'a>> {
-        match self {
-            ResolvedValue::Scope(scope) => Some(*scope),
-            ResolvedValue::Resolution(_) => None,
-        }
-    }
-
-    pub fn resolution(&self) -> Resolution {
-        match self {
-            ResolvedValue::Scope(scope) => match scope.kind {
-                ScopeKind::Definition(id, kind) => Resolution::Definition(id, kind),
-                _ => {
-                    unreachable!("unable to fetch resolution of non definition scopes")
-                }
-            },
-            ResolvedValue::Resolution(resolution) => resolution.clone(),
-        }
-    }
 }
 
 pub enum Holder<'a> {

@@ -65,6 +65,9 @@ pub enum TypeError<'ctx> {
         lhs: Ty<'ctx>,
         rhs: Ty<'ctx>,
     },
+    GenericParameterNotInferred {
+        name: Symbol,
+    },
     ArgCountMismatch(usize, usize),
     ArgMismatch(ExpectedFound<GenericArgument<'ctx>>),
 }
@@ -150,6 +153,9 @@ impl<'ctx> TypeError<'ctx> {
                     lhs.format(gcx),
                     rhs.format(gcx)
                 )
+            }
+            TypeError::GenericParameterNotInferred { name } => {
+                format!("generic parameter '{}' could not be inferred", name.as_str())
             }
             TypeError::ArgCountMismatch(expected, found) => {
                 format!("expected {} generic arguments, found {}", expected, found)

@@ -1,7 +1,7 @@
 use crate::{
     compile::context::GlobalContext,
     error::CompileResult,
-    hir::{self, DefinitionID, HirVisitor},
+    hir::{self, DefinitionID, HirVisitor, walk_declaration},
     sema::models::{AdtKind, Ty, TyKind},
 };
 use rustc_hash::FxHashSet;
@@ -36,11 +36,13 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
             hir::DeclarationKind::Constant(..) => todo!(),
             hir::DeclarationKind::Variable(..) => todo!(),
             hir::DeclarationKind::Import(..) => {}
-            hir::DeclarationKind::Export(..) => todo!(),
+            hir::DeclarationKind::Export(..) => {}
             hir::DeclarationKind::Namespace(..) => todo!(),
             hir::DeclarationKind::Extension(..) => {}
             hir::DeclarationKind::Malformed => unreachable!(),
         }
+
+        walk_declaration(self, node)
     }
 }
 
