@@ -34,7 +34,11 @@ impl HirVisitor for Actor<'_> {
 impl<'ctx> Actor<'ctx> {
     fn cache_adt_type(&self, id: hir::DefinitionID, name: Symbol, kind: AdtKind) {
         let adt_def = AdtDef { name, kind, id };
-        let ty = Ty::new(TyKind::Adt(adt_def), self.context);
+        let args = crate::sema::tycheck::utils::generics::GenericsBuilder::identity_for_item(
+            self.context,
+            id,
+        );
+        let ty = Ty::new(TyKind::Adt(adt_def, args), self.context);
         self.context.cache_type(id, ty);
     }
 }

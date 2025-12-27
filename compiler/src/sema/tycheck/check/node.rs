@@ -121,41 +121,43 @@ impl<'ctx> Checker<'ctx> {
     }
     fn check_local(&self, node: &hir::Local) {
         let mut cs = Cs::new(self.context, self.current_def);
-        GatherLocalsVisitor::from_local(&cs, &self, node);
-        let local_ty = self.get_local(node.id).ty;
+        self.with_infer_ctx(cs.infer_cx.clone(), || {
+            GatherLocalsVisitor::from_local(&cs, &self, node);
+            let local_ty = self.get_local(node.id).ty;
 
-        if let Some(expression) = node.initializer.as_ref() {
-            let init_ty = self.synth_with_expectation(expression, Some(local_ty), &mut cs);
-            cs.equal(local_ty, init_ty, expression.span);
-        }
+            if let Some(expression) = node.initializer.as_ref() {
+                let init_ty = self.synth_with_expectation(expression, Some(local_ty), &mut cs);
+                cs.equal(local_ty, init_ty, expression.span);
+            }
 
-        self.check_pattern_structure(&node.pattern, local_ty, &mut cs);
-        cs.solve_all();
+            self.check_pattern_structure(&node.pattern, local_ty, &mut cs);
+            cs.solve_all();
 
-        for (id, ty) in cs.resolved_expr_types() {
-            self.results.borrow_mut().record_node_type(id, ty);
-        }
-        for (id, adjustments) in cs.resolved_adjustments() {
-            self.results
-                .borrow_mut()
-                .record_node_adjustments(id, adjustments);
-        }
-        for (id, def_id) in cs.resolved_overload_sources() {
-            self.results.borrow_mut().record_overload_source(id, def_id);
-        }
+            for (id, ty) in cs.resolved_expr_types() {
+                self.results.borrow_mut().record_node_type(id, ty);
+            }
+            for (id, adjustments) in cs.resolved_adjustments() {
+                self.results
+                    .borrow_mut()
+                    .record_node_adjustments(id, adjustments);
+            }
+            for (id, def_id) in cs.resolved_overload_sources() {
+                self.results.borrow_mut().record_overload_source(id, def_id);
+            }
 
-        for (id, index) in cs.resolved_field_indices() {
-            self.results.borrow_mut().record_field_index(id, index);
-        }
+            for (id, index) in cs.resolved_field_indices() {
+                self.results.borrow_mut().record_field_index(id, index);
+            }
 
-        for (id, args) in cs.resolved_instantiations() {
-            self.results.borrow_mut().record_instantiation(id, args);
-        }
+            for (id, args) in cs.resolved_instantiations() {
+                self.results.borrow_mut().record_instantiation(id, args);
+            }
 
-        for (id, ty) in cs.resolved_local_types() {
-            self.finalize_local(id, ty);
-            self.results.borrow_mut().record_node_type(id, ty);
-        }
+            for (id, ty) in cs.resolved_local_types() {
+                self.finalize_local(id, ty);
+                self.results.borrow_mut().record_node_type(id, ty);
+            }
+        });
     }
 
     fn check_loop(&self, block: &hir::Block) {
@@ -189,42 +191,44 @@ impl<'ctx> Checker<'ctx> {
         expectation: Option<Ty<'ctx>>,
     ) -> Ty<'ctx> {
         let mut cs = Cs::new(self.context, self.current_def);
-        let provided = self.synth_with_expectation(expression, expectation, &mut cs);
-        if let Some(expectation) = expectation {
-            cs.equal(expectation, provided, expression.span);
-        }
-        cs.solve_all();
+        self.with_infer_ctx(cs.infer_cx.clone(), || {
+            let provided = self.synth_with_expectation(expression, expectation, &mut cs);
+            if let Some(expectation) = expectation {
+                cs.equal(expectation, provided, expression.span);
+            }
+            cs.solve_all();
 
-        for (id, ty) in cs.resolved_expr_types() {
-            self.results.borrow_mut().record_node_type(id, ty);
-        }
-        for (id, adjustments) in cs.resolved_adjustments() {
-            self.results
-                .borrow_mut()
-                .record_node_adjustments(id, adjustments);
-        }
-        for (id, def_id) in cs.resolved_overload_sources() {
-            self.results.borrow_mut().record_overload_source(id, def_id);
-        }
+            for (id, ty) in cs.resolved_expr_types() {
+                self.results.borrow_mut().record_node_type(id, ty);
+            }
+            for (id, adjustments) in cs.resolved_adjustments() {
+                self.results
+                    .borrow_mut()
+                    .record_node_adjustments(id, adjustments);
+            }
+            for (id, def_id) in cs.resolved_overload_sources() {
+                self.results.borrow_mut().record_overload_source(id, def_id);
+            }
 
-        for (id, index) in cs.resolved_field_indices() {
-            self.results.borrow_mut().record_field_index(id, index);
-        }
+            for (id, index) in cs.resolved_field_indices() {
+                self.results.borrow_mut().record_field_index(id, index);
+            }
 
-        for (id, args) in cs.resolved_instantiations() {
-            self.results.borrow_mut().record_instantiation(id, args);
-        }
+            for (id, args) in cs.resolved_instantiations() {
+                self.results.borrow_mut().record_instantiation(id, args);
+            }
 
-        for (id, ty) in cs.resolved_local_types() {
-            self.finalize_local(id, ty);
-            self.results.borrow_mut().record_node_type(id, ty);
-        }
+            for (id, ty) in cs.resolved_local_types() {
+                self.finalize_local(id, ty);
+                self.results.borrow_mut().record_node_type(id, ty);
+            }
 
-        let provided = cs.infer_cx.resolve_vars_if_possible(provided);
-        if provided.is_infer() {
-            return Ty::error(self.gcx());
-        }
-        provided
+            let provided = cs.infer_cx.resolve_vars_if_possible(provided);
+            if provided.is_infer() {
+                return Ty::error(self.gcx());
+            }
+            provided
+        })
     }
 }
 
@@ -253,10 +257,10 @@ impl<'ctx> Checker<'ctx> {
     ) -> Ty<'ctx> {
         let ty = self.synth_expression_kind(node, expectation, cs);
         cs.record_expr_ty(node.id, ty);
-        // self.gcx().dcx().emit_info(
-        //     format!("Checked {}", ty.format(self.gcx())),
-        //     Some(node.span),
-        // );
+        self.gcx().dcx().emit_info(
+            format!("Checked {}", ty.format(self.gcx())),
+            Some(node.span),
+        );
         ty
     }
 
@@ -540,7 +544,7 @@ impl<'ctx> Checker<'ctx> {
                 }
 
                 // Field mutability (struct only for now).
-                let TyKind::Adt(def) = base_ty.kind() else {
+                let TyKind::Adt(def, args) = base_ty.kind() else {
                     self.gcx().dcx().emit_error(
                         "cannot assign to a member of a non-struct value".into(),
                         Some(expr.span),
@@ -556,6 +560,8 @@ impl<'ctx> Checker<'ctx> {
                 }
 
                 let struct_def = self.gcx().get_struct_definition(def.id);
+                let struct_def = crate::sema::tycheck::utils::instantiate::
+                    instantiate_struct_definition_with_args(self.gcx(), struct_def, args);
                 let mut field = None;
                 for f in struct_def.fields {
                     if f.name == name.symbol {
@@ -687,7 +693,7 @@ impl<'ctx> Checker<'ctx> {
                     }
                 }
 
-                let TyKind::Adt(def) = base_ty.kind() else {
+                let TyKind::Adt(def, args) = base_ty.kind() else {
                     self.gcx().dcx().emit_error(
                         "cannot borrow a member of a non-struct value".into(),
                         Some(expr.span),
@@ -703,6 +709,8 @@ impl<'ctx> Checker<'ctx> {
                 }
 
                 let struct_def = self.gcx().get_struct_definition(def.id);
+                let struct_def = crate::sema::tycheck::utils::instantiate::
+                    instantiate_struct_definition_with_args(self.gcx(), struct_def, args);
                 let mut field = None;
                 for f in struct_def.fields {
                     if f.name == name.symbol {
@@ -1469,7 +1477,7 @@ impl<'ctx> Checker<'ctx> {
 
         if let Some(def_id) = resolution.definition_id() {
             let generics = self.gcx().generics_of(def_id);
-            if !generics.is_empty() {
+            if !generics.is_empty() && ty.needs_instantiation() {
                 let args = cs.infer_cx.fresh_args_for_def(def_id, span);
                 let instantiated = instantiate_ty_with_args(self.gcx(), ty, args);
                 cs.record_instantiation(node_id, args);
@@ -1543,7 +1551,7 @@ impl<'ctx> Checker<'ctx> {
             TyKind::Float(k) => Some(TypeHead::Primary(
                 crate::sema::resolve::models::PrimaryType::Float(k),
             )),
-            TyKind::Adt(def) => Some(TypeHead::Nominal(def.id)),
+            TyKind::Adt(def, _) => Some(TypeHead::Nominal(def.id)),
             TyKind::Reference(_, mutbl) => Some(TypeHead::Reference(mutbl)),
             TyKind::Pointer(_, mutbl) => Some(TypeHead::Pointer(mutbl)),
             TyKind::GcPtr => Some(TypeHead::GcPtr),
@@ -1575,6 +1583,19 @@ impl<'ctx> Checker<'ctx> {
         };
 
         let struct_ty = self.lower_type(&type_node);
+        let gcx = self.gcx();
+        let is_struct = match struct_ty.kind() {
+            TyKind::Adt(def, _) => gcx.definition_kind(def.id) == DefinitionKind::Struct,
+            TyKind::Error => return struct_ty,
+            _ => false,
+        };
+        if !is_struct {
+            gcx.dcx().emit_error(
+                format!("expected struct type, found {}", struct_ty.format(gcx)).into(),
+                Some(type_span),
+            );
+            return Ty::error(gcx);
+        }
 
         // Synthesize fields
         let mut fields = Vec::with_capacity(lit.fields.len());
@@ -1886,6 +1907,23 @@ impl<'ctx> Checker<'ctx> {
                 .emit_error("missing enum definition for variant".into(), Some(span));
             return None;
         };
+
+        let args = match scrutinee.kind() {
+            TyKind::Adt(adt_def, args) if adt_def.id == enum_id => {
+                if !args.is_empty() || gcx.generics_of(enum_id).is_empty() {
+                    args
+                } else {
+                    cs.infer_cx.fresh_args_for_def(enum_id, span)
+                }
+            }
+            _ => cs.infer_cx.fresh_args_for_def(enum_id, span),
+        };
+
+        let enum_ty = Ty::new(TyKind::Adt(def.adt_def, args), gcx);
+        let def = crate::sema::tycheck::utils::instantiate::instantiate_enum_definition_with_args(
+            gcx, &def, args,
+        );
+
         let variant = def
             .variants
             .iter()
@@ -1906,7 +1944,6 @@ impl<'ctx> Checker<'ctx> {
             return None;
         }
 
-        let enum_ty = gcx.get_type(enum_id);
         cs.equal(scrutinee, enum_ty, span);
         Some((variant, enum_ty))
     }

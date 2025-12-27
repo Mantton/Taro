@@ -1,7 +1,7 @@
 use crate::{
     compile::context::Gcx,
     hir::{BinaryOperator, UnaryOperator},
-    sema::models::Ty,
+    sema::models::{GenericArgument, Ty},
     span::{Spanned, Symbol},
 };
 
@@ -65,6 +65,8 @@ pub enum TypeError<'ctx> {
         lhs: Ty<'ctx>,
         rhs: Ty<'ctx>,
     },
+    ArgCountMismatch(usize, usize),
+    ArgMismatch(ExpectedFound<GenericArgument<'ctx>>),
 }
 
 pub type SpannedError<'ctx> = Spanned<TypeError<'ctx>>;
@@ -148,6 +150,20 @@ impl<'ctx> TypeError<'ctx> {
                     lhs.format(gcx),
                     rhs.format(gcx)
                 )
+            }
+            TypeError::ArgCountMismatch(expected, found) => {
+                format!("expected {} generic arguments, found {}", expected, found)
+            }
+            TypeError::ArgMismatch(ef) => {
+                let expected = match ef.expected {
+                    GenericArgument::Type(t) => t.format(gcx),
+                    GenericArgument::Const(_) => format!("const param"),
+                };
+                let found = match ef.found {
+                    GenericArgument::Type(t) => t.format(gcx),
+                    GenericArgument::Const(_) => format!("const param"),
+                };
+                format!("expected argument {expected}, found {found}")
             }
         }
     }

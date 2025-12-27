@@ -30,7 +30,7 @@ impl hir::HirVisitor for Actor<'_> {
 impl<'ctx> Actor<'ctx> {
     fn collect_struct_fields(&self, id: hir::DefinitionID, node: &hir::Struct) {
         let adt_ty = self.context.get_type(id);
-        let crate::sema::models::TyKind::Adt(adt_def) = adt_ty.kind() else {
+        let crate::sema::models::TyKind::Adt(adt_def, _) = adt_ty.kind() else {
             todo!("expected cached ADT type for struct")
         };
 

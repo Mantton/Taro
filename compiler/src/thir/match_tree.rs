@@ -398,7 +398,7 @@ impl<'ctx> Compiler<'ctx> {
                     None,
                 )
             }
-            TyKind::Adt(def) if def.kind == AdtKind::Enum => {
+            TyKind::Adt(def, _) if def.kind == AdtKind::Enum => {
                 let enum_def = self.gcx.get_enum_definition(def.id);
                 let cases = enum_def
                     .variants

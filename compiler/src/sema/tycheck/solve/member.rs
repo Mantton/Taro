@@ -8,7 +8,10 @@ use crate::{
         error::TypeError,
         models::{StructField, Ty, TyKind},
         resolve::models::{DefinitionID, DefinitionKind, PrimaryType, TypeHead},
-        tycheck::utils::autoderef::Autoderef,
+        tycheck::utils::{
+            autoderef::Autoderef,
+            instantiate::instantiate_struct_definition_with_args,
+        },
     },
     span::{Spanned, Symbol},
 };
@@ -103,7 +106,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
     }
 
     fn lookup_field(&self, ty: Ty<'ctx>, name: Symbol) -> Option<(StructField<'ctx>, usize)> {
-        let TyKind::Adt(def) = ty.kind() else {
+        let TyKind::Adt(def, args) = ty.kind() else {
             return None;
         };
 
@@ -112,6 +115,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         }
 
         let struct_def = self.gcx().get_struct_definition(def.id);
+        let struct_def = instantiate_struct_definition_with_args(self.gcx(), struct_def, args);
         for (idx, field) in struct_def.fields.iter().enumerate() {
             if field.name == name {
                 return Some((*field, idx));
@@ -178,7 +182,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             TyKind::Int(k) => Some(TypeHead::Primary(PrimaryType::Int(k))),
             TyKind::UInt(k) => Some(TypeHead::Primary(PrimaryType::UInt(k))),
             TyKind::Float(k) => Some(TypeHead::Primary(PrimaryType::Float(k))),
-            TyKind::Adt(def) => Some(TypeHead::Nominal(def.id)),
+            TyKind::Adt(def, _) => Some(TypeHead::Nominal(def.id)),
             TyKind::Reference(_, mutbl) => Some(TypeHead::Reference(mutbl)),
             TyKind::Pointer(_, mutbl) => Some(TypeHead::Pointer(mutbl)),
             TyKind::GcPtr => Some(TypeHead::GcPtr),

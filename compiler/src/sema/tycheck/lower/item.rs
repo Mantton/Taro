@@ -23,4 +23,15 @@ impl<'ctx> TypeLowerer<'ctx> for Ctx<'ctx> {
     fn current_definition(&self) -> Option<DefinitionID> {
         Some(self.id)
     }
+
+    fn ty_infer(
+        &self,
+        _: Option<&crate::sema::models::GenericParameterDefinition>,
+        span: crate::span::Span,
+    ) -> crate::sema::models::Ty<'ctx> {
+        let gcx = self.gcx();
+        gcx.dcx()
+            .emit_error("missing generic argument".into(), Some(span));
+        gcx.types.error
+    }
 }

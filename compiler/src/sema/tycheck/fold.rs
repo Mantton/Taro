@@ -1,6 +1,9 @@
 use crate::{
     compile::context::GlobalContext,
-    sema::models::{Ty, TyKind},
+    sema::models::{
+        Const, ConstKind, EnumDefinition, EnumVariant, EnumVariantField, EnumVariantKind,
+        GenericArgument, StructDefinition, StructField, Ty, TyKind,
+    },
 };
 
 /// The transformer – you implement this once per pass.
@@ -59,6 +62,37 @@ impl<'ctx> TypeSuperFoldable<'ctx> for TyKind<'ctx> {
             Pointer(t, m) => Pointer(t.fold_with(folder), m),
             Reference(t, m) => Reference(t.fold_with(folder), m),
 
+            Adt(def, args) => {
+                if args.is_empty() {
+                    return Adt(def, args);
+                }
+                let mut changed = false;
+                let mut folded_args = Vec::with_capacity(args.len());
+                for arg in args.iter().copied() {
+                    let folded = match arg {
+                        GenericArgument::Type(ty) => {
+                            let folded_ty = ty.fold_with(folder);
+                            if folded_ty != ty {
+                                changed = true;
+                            }
+                            GenericArgument::Type(folded_ty)
+                        }
+                        GenericArgument::Const(c) => {
+                            let folded_const = fold_const(c, folder, &mut changed);
+                            GenericArgument::Const(folded_const)
+                        }
+                    };
+                    folded_args.push(folded);
+                }
+
+                if !changed {
+                    return Adt(def, args);
+                }
+
+                let interned = folder.gcx().store.interners.intern_generic_args(folded_args);
+                Adt(def, interned)
+            }
+
             // Tuple - fold each element
             Tuple(ts) => {
                 let folded = ts.iter().map(|t| t.fold_with(folder)).collect::<Vec<_>>();
@@ -82,6 +116,129 @@ impl<'ctx> TypeSuperFoldable<'ctx> for TyKind<'ctx> {
             }
 
             _ => self,
+        }
+    }
+}
+
+fn fold_const<'ctx, F: TypeFolder<'ctx>>(
+    c: Const<'ctx>,
+    folder: &mut F,
+    changed: &mut bool,
+) -> Const<'ctx> {
+    let ty = c.ty.fold_with(folder);
+    if ty != c.ty {
+        *changed = true;
+    }
+    let kind = match c.kind {
+        ConstKind::Value(_) => c.kind,
+        ConstKind::Param(_) => c.kind,
+    };
+    Const { ty, kind }
+}
+
+impl<'ctx> TypeFoldable<'ctx> for StructField<'ctx> {
+    fn fold_with<F: TypeFolder<'ctx>>(self, folder: &mut F) -> Self {
+        let ty = self.ty.fold_with(folder);
+        if ty == self.ty {
+            return self;
+        }
+        StructField { ty, ..self }
+    }
+}
+
+impl<'ctx> TypeFoldable<'ctx> for StructDefinition<'ctx> {
+    fn fold_with<F: TypeFolder<'ctx>>(self, folder: &mut F) -> Self {
+        let mut changed = false;
+        let mut fields = Vec::with_capacity(self.fields.len());
+        for field in self.fields.iter().copied() {
+            let folded = field.fold_with(folder);
+            if folded != field {
+                changed = true;
+            }
+            fields.push(folded);
+        }
+
+        if !changed {
+            return self;
+        }
+
+        let fields = folder.gcx().store.arenas.global.alloc_slice_copy(&fields);
+        StructDefinition {
+            adt_def: self.adt_def,
+            fields,
+        }
+    }
+}
+
+impl<'ctx> TypeFoldable<'ctx> for EnumVariantField<'ctx> {
+    fn fold_with<F: TypeFolder<'ctx>>(self, folder: &mut F) -> Self {
+        let ty = self.ty.fold_with(folder);
+        if ty == self.ty {
+            return self;
+        }
+        EnumVariantField { ty, ..self }
+    }
+}
+
+impl<'ctx> TypeFoldable<'ctx> for EnumVariantKind<'ctx> {
+    fn fold_with<F: TypeFolder<'ctx>>(self, folder: &mut F) -> Self {
+        match self {
+            EnumVariantKind::Unit => self,
+            EnumVariantKind::Tuple(fields) => {
+                let mut changed = false;
+                let mut folded_fields = Vec::with_capacity(fields.len());
+                for field in fields.iter().copied() {
+                    let folded = field.fold_with(folder);
+                    if folded != field {
+                        changed = true;
+                    }
+                    folded_fields.push(folded);
+                }
+                if !changed {
+                    return self;
+                }
+                let folded_fields = folder
+                    .gcx()
+                    .store
+                    .arenas
+                    .global
+                    .alloc_slice_copy(&folded_fields);
+                EnumVariantKind::Tuple(folded_fields)
+            }
+        }
+    }
+}
+
+impl<'ctx> TypeFoldable<'ctx> for EnumVariant<'ctx> {
+    fn fold_with<F: TypeFolder<'ctx>>(self, folder: &mut F) -> Self {
+        let kind = self.kind.fold_with(folder);
+        if kind == self.kind {
+            return self;
+        }
+        EnumVariant { kind, ..self }
+    }
+}
+
+impl<'ctx> TypeFoldable<'ctx> for EnumDefinition<'ctx> {
+    fn fold_with<F: TypeFolder<'ctx>>(self, folder: &mut F) -> Self {
+        let mut changed = false;
+        let mut variants = Vec::with_capacity(self.variants.len());
+        for variant in self.variants.iter().copied() {
+            let folded = variant.fold_with(folder);
+            if folded != variant {
+                changed = true;
+            }
+            variants.push(folded);
+        }
+
+        if !changed {
+            return self;
+        }
+
+        let variants = folder.gcx().store.arenas.global.alloc_slice_copy(&variants);
+        EnumDefinition {
+            adt_def: self.adt_def,
+            variants,
         }
     }
 }

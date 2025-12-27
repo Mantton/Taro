@@ -1,10 +1,9 @@
 use crate::{
     compile::context::GlobalContext,
-    hir::DefinitionID,
     sema::{
         models::{
-            Constraint, GenericArguments, LabeledFunctionParameter, LabeledFunctionSignature, Ty,
-            TyKind,
+            Constraint, EnumDefinition, GenericArguments, LabeledFunctionParameter,
+            LabeledFunctionSignature, StructDefinition, Ty, TyKind,
         },
         tycheck::fold::{TypeFoldable, TypeFolder, TypeSuperFoldable},
     },
@@ -68,14 +67,6 @@ pub fn instantiate_constraint_with_args<'ctx>(
     folder.fold_constraint(constraint)
 }
 
-#[derive(Debug, Clone)]
-pub struct InstantiatedFunction<'ctx> {
-    pub signature: LabeledFunctionSignature<'ctx>,
-    pub fn_ty: Ty<'ctx>,
-    pub args: GenericArguments<'ctx>,
-    pub constraints: Vec<Constraint<'ctx>>,
-}
-
 pub fn instantiate_signature_with_args<'ctx>(
     gcx: GlobalContext<'ctx>,
     signature: &LabeledFunctionSignature<'ctx>,
@@ -111,21 +102,20 @@ pub fn instantiate_signature_with_args<'ctx>(
     }
 }
 
-pub fn instantiate_function_with_args<'ctx>(
+pub fn instantiate_struct_definition_with_args<'ctx>(
     gcx: GlobalContext<'ctx>,
-    def_id: DefinitionID,
+    def: &StructDefinition<'ctx>,
     args: GenericArguments<'ctx>,
-) -> InstantiatedFunction<'ctx> {
-    let args_ref = args;
-    let signature = gcx.get_signature(def_id);
-    let signature = instantiate_signature_with_args(gcx, signature, args_ref);
+) -> StructDefinition<'ctx> {
+    let mut folder = InstantiateFolder { gcx, args };
+    def.clone().fold_with(&mut folder)
+}
 
-    let fn_ty = Ty::from_labeled_signature(gcx, &signature);
-
-    InstantiatedFunction {
-        signature,
-        fn_ty,
-        args,
-        constraints: Vec::new(), // TODO: instantiate generic constraints
-    }
+pub fn instantiate_enum_definition_with_args<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    def: &EnumDefinition<'ctx>,
+    args: GenericArguments<'ctx>,
+) -> EnumDefinition<'ctx> {
+    let mut folder = InstantiateFolder { gcx, args };
+    def.clone().fold_with(&mut folder)
 }

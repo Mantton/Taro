@@ -112,7 +112,27 @@ impl<'arena> Ty<'arena> {
             TyKind::Int(i) => i.name_str().into(),
             TyKind::UInt(u) => u.name_str().into(),
             TyKind::Float(f) => f.name_str().into(),
-            TyKind::Adt(adt) => adt.name.as_str().into(),
+            TyKind::Adt(adt, args) => {
+                if args.is_empty() {
+                    adt.name.as_str().into()
+                } else {
+                    let mut out = String::from(adt.name.as_str());
+                    out.push('[');
+                    for (i, arg) in args.iter().enumerate() {
+                        if i > 0 {
+                            out.push_str(", ");
+                        }
+                        match arg {
+                            GenericArgument::Type(ty) => out.push_str(&ty.format(gcx)),
+                            GenericArgument::Const(c) => {
+                                out.push_str(&format!("{:?}", c));
+                            }
+                        }
+                    }
+                    out.push(']');
+                    out
+                }
+            }
             TyKind::Pointer(inner, mt) => {
                 format!("*{}{}", mt.display_str(), inner.format(gcx))
             }
@@ -167,6 +187,10 @@ impl<'ctx> Ty<'ctx> {
             match ty.kind() {
                 // A generic parameter definitely needs instantiation
                 TyKind::Parameter(_) => true,
+                TyKind::Adt(_, args) => args.iter().any(|arg| match arg {
+                    GenericArgument::Type(ty) => visit(*ty),
+                    GenericArgument::Const(c) => visit(c.ty),
+                }),
                 // Walk composite types
                 TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => visit(inner),
                 TyKind::Tuple(elems) => elems.iter().copied().any(visit),
@@ -189,7 +213,7 @@ pub enum TyKind<'arena> {
     Int(IntTy),
     UInt(UIntTy),
     Float(FloatTy),
-    Adt(AdtDef),
+    Adt(AdtDef, GenericArguments<'arena>),
     Pointer(Ty<'arena>, Mutability),
     Reference(Ty<'arena>, Mutability),
     GcPtr,
@@ -413,7 +437,7 @@ impl Generics {
         return self.parameters.len();
     }
     pub fn is_empty(&self) -> bool {
-        return self.parameters.len() == 0;
+        self.parameters.is_empty() && self.parent_count == 0
     }
     pub fn default_count(&self) -> usize {
         let mut count = 0;

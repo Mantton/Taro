@@ -437,7 +437,7 @@ fn place_ty<'a>(body: &Body<'a>, gcx: Gcx<'a>, place: &Place<'a>) -> crate::sema
             PlaceElem::Field(_, field_ty) => ty = *field_ty,
             PlaceElem::VariantDowncast { index, .. } => {
                 let def = match ty.kind() {
-                    TyKind::Adt(def) if def.kind == AdtKind::Enum => def,
+                    TyKind::Adt(def, _) if def.kind == AdtKind::Enum => def,
                     _ => return Ty::error(gcx),
                 };
                 ty = enum_variant_tuple_ty(gcx, def.id, *index);

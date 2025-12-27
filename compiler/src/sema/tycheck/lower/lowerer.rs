@@ -1,10 +1,15 @@
 use crate::{
     compile::context::GlobalContext,
-    hir::{self, DefinitionKind, Resolution},
+    hir::{self, DefinitionID, DefinitionKind, Resolution},
     sema::{
-        models::{AdtDef, AdtKind, Ty, TyKind},
+        models::{
+            AdtDef, AdtKind, GenericArgument, GenericArguments, GenericParameterDefinition,
+            GenericParameterDefinitionKind, Ty, TyKind,
+        },
         resolve::models::{PrimaryType, TypeHead},
+        tycheck::utils::instantiate::instantiate_ty_with_args,
     },
+    span::Span,
 };
 
 pub trait TypeLowerer<'ctx> {
@@ -18,6 +23,7 @@ pub trait TypeLowerer<'ctx> {
     {
         self
     }
+    fn ty_infer(&self, param: Option<&GenericParameterDefinition>, span: Span) -> Ty<'ctx>;
 }
 
 impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
@@ -87,7 +93,10 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 if gcx.is_std_gc_ptr(id) {
                     return Ty::new(TyKind::GcPtr, gcx);
                 }
-                match kind {
+                let segment = path.segments.last().unwrap();
+                let _ = check_generics_prohibited(id, segment, gcx);
+                let args = self.lower_type_arguments(id, segment);
+                let ty = match kind {
                     crate::sema::resolve::models::DefinitionKind::Struct
                     | crate::sema::resolve::models::DefinitionKind::Enum => {
                         let ident = gcx.definition_ident(id);
@@ -99,10 +108,11 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                             },
                             id,
                         };
-                        Ty::new(TyKind::Adt(def), gcx)
+                        Ty::new(TyKind::Adt(def, args), gcx)
                     }
                     _ => todo!("nominal type lowering for {kind:?}"),
-                }
+                };
+                instantiate_ty_with_args(gcx, ty, args)
             }
             Resolution::SelfTypeAlias(id) => match gcx.definition_kind(id) {
                 crate::sema::resolve::models::DefinitionKind::Struct
@@ -136,4 +146,173 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             }
         }
     }
+
+    pub fn lower_type_arguments(
+        &self,
+        def_id: DefinitionID,
+        segment: &hir::PathSegment,
+    ) -> GenericArguments<'ctx> {
+        let arguments = self.lower_generic_args(def_id, segment);
+        return arguments;
+    }
+
+    fn lower_generic_args(
+        &self,
+        id: DefinitionID,
+        segment: &hir::PathSegment,
+    ) -> GenericArguments<'ctx> {
+        let gcx = self.gcx();
+        let _ = check_generic_arg_count(id, segment, gcx);
+
+        let generics = gcx.generics_of(id);
+
+        let mut output = vec![];
+
+        let arguments = segment
+            .arguments
+            .clone()
+            .map(|v| v.arguments)
+            .unwrap_or_default();
+        let span = segment
+            .arguments
+            .as_ref()
+            .map(|f| f.span)
+            .unwrap_or(segment.span);
+        let mut args_iter = arguments.iter().peekable();
+        // TODO!: Look Into
+        let mut params_iter = generics.parameters.iter().peekable();
+
+        loop {
+            match (args_iter.peek(), params_iter.peek()) {
+                (Some(&arg), Some(&_)) => {
+                    let lowered = match arg {
+                        hir::TypeArgument::Type(ty) => GenericArgument::Type(self.lower_type(ty)),
+                        hir::TypeArgument::Const(_) => todo!(), // const generics later
+                    };
+                    output.push(lowered);
+                    args_iter.next();
+                    params_iter.next();
+                }
+                (Some(_), None) => {
+                    break;
+                }
+                (None, Some(&param)) => {
+                    match &param.kind {
+                        // ---- provided default ----
+                        GenericParameterDefinitionKind::Type { default: Some(d) } => {
+                            let ty = self.lower_type(&d);
+                            output.push(GenericArgument::Type(ty));
+                        }
+
+                        // ---- no default ----
+                        GenericParameterDefinitionKind::Type { default: None } => {
+                            let ty = self.ty_infer(Some(param), span);
+                            output.push(GenericArgument::Type(ty));
+                        }
+
+                        GenericParameterDefinitionKind::Const { .. } => todo!(),
+                    }
+                    params_iter.next();
+                }
+                (None, None) => break,
+            }
+        }
+
+        return gcx.store.interners.intern_generic_args(output);
+    }
+}
+
+fn check_generics_prohibited(
+    def_id: DefinitionID,
+    segment: &hir::PathSegment,
+    context: GlobalContext<'_>,
+) -> bool {
+    let kind = context.definition_kind(def_id);
+
+    let Some(arguments) = &segment.arguments else {
+        return true;
+    };
+    // No type arguments => always OK
+    if arguments.arguments.is_empty() {
+        return true;
+    }
+
+    // Only these kinds allow generics
+    let allowed = matches!(
+        kind,
+        DefinitionKind::Struct
+            | DefinitionKind::Enum
+            | DefinitionKind::Interface
+            | DefinitionKind::TypeAlias
+            | DefinitionKind::Function
+    );
+
+    if !allowed {
+        context.dcx.emit_error(
+            format!("Generics not permitted on {:?}", kind),
+            Some(arguments.span),
+        );
+        return false;
+    }
+
+    true
+}
+
+pub fn check_generic_arg_count(
+    id: DefinitionID,
+    segment: &hir::PathSegment,
+    context: GlobalContext<'_>,
+) -> bool {
+    let generics = context.generics_of(id);
+    let should_infer = segment.arguments.is_none();
+
+    let defaults_count = generics.default_count();
+    let total_count = generics.total_count();
+
+    let min = if !should_infer {
+        total_count - defaults_count - generics.has_self as usize
+    } else {
+        0
+    };
+
+    let provided = segment
+        .arguments
+        .as_ref()
+        .map(|v| v.arguments.len())
+        .unwrap_or(0);
+
+    if matches!(context.definition_kind(id), DefinitionKind::Function) {
+        // any number ≤ total is OK – inference will fill the rest
+        if provided <= total_count {
+            return true;
+        }
+        context.dcx().emit_error(
+            format!(
+                "excess generic arguments: function takes at most {total_count}, provided {provided}"
+            ),
+            segment.arguments.as_ref().map(|v| v.span),
+        );
+        return false;
+    }
+
+    if (min..=total_count).contains(&provided) {
+        return true;
+    }
+
+    if provided > total_count {
+        let message = format!(
+            "excess generic arguments, '{}' requires {} type argument(s), provided {}",
+            segment.identifier.symbol, min, provided
+        );
+        context
+            .dcx()
+            .emit_error(message, segment.arguments.as_ref().map(|v| v.span));
+    } else {
+        context.dcx().emit_error(
+            "Missing Generic Arguments".into(),
+            Some(segment.identifier.span),
+        );
+    }
+
+    return false;
 }

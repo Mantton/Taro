@@ -35,7 +35,7 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
 impl<'ctx> Actor<'ctx> {
     fn collect_enum_definition(&self, id: hir::DefinitionID, node: &hir::Enum) {
         let adt_ty = self.context.get_type(id);
-        let TyKind::Adt(adt_def) = adt_ty.kind() else {
+        let TyKind::Adt(adt_def, _) = adt_ty.kind() else {
             self.context
                 .dcx()
                 .emit_error("expected cached ADT type for enum".into(), None);

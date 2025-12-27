@@ -573,7 +573,7 @@ impl<'ctx> FunctionLower<'ctx> {
             }
 
             hir::ExpressionKind::StructLiteral(literal) => {
-                let TyKind::Adt(definition) = ty.kind() else {
+                let TyKind::Adt(definition, _) = ty.kind() else {
                     unreachable!()
                 };
 

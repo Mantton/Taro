@@ -77,7 +77,7 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
             gcx.definition_parent(parent)
                 .expect("Variant Parent Definition")
         } else {
-            unreachable!()
+            parent
         };
 
         debug_assert!(

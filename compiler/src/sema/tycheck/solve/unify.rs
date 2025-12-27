@@ -1,6 +1,6 @@
 use crate::sema::{
     error::{ExpectedFound, TypeError},
-    models::{InferTy, Ty, TyKind},
+    models::{GenericArgument, GenericArguments, InferTy, Ty, TyKind},
     tycheck::{
         infer::keys::{FloatVarValue, IntVarValue},
         solve::ConstraintSolver,
@@ -91,7 +91,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 return Ok(());
             }
             (Parameter(a_p), Parameter(b_p)) if a_p == b_p => return Ok(()),
-            (Adt(a_def), Adt(b_def)) if a_def.id == b_def.id => {
+            (Adt(a_def, a_args), Adt(b_def, b_args)) if a_def.id == b_def.id => {
+                self.unify_generic_args(a_args, b_args)?;
                 return Ok(());
             }
             (Pointer(a_ty, a_mut), Pointer(b_ty, b_mut)) => {
@@ -128,39 +129,39 @@ impl<'ctx> ConstraintSolver<'ctx> {
     }
 }
 
-// impl< 'ctx> SolverDelegate< 'ctx> {
-//     fn unify_generic_args(
-//         &self,
-//         a: GenericArguments<'ctx>,
-//         b: GenericArguments<'ctx>,
-//     ) -> UnificationResult<'ctx> {
-//         if a.len() != b.len() {
-//             return Err(TypeError::ArgCount);
-//         }
+impl<'ctx> ConstraintSolver<'ctx> {
+    fn unify_generic_args(
+        &self,
+        a: GenericArguments<'ctx>,
+        b: GenericArguments<'ctx>,
+    ) -> UnificationResult<'ctx> {
+        if a.len() != b.len() {
+            return Err(TypeError::ArgCountMismatch(a.len(), b.len()));
+        }
 
-//         for (a, b) in a.iter().zip(b.iter()) {
-//             self.unify_generic_arg(*a, *b)?;
-//         }
+        for (a, b) in a.iter().zip(b.iter()) {
+            self.unify_generic_arg(*a, *b)?;
+        }
 
-//         return Ok(());
-//     }
+        return Ok(());
+    }
 
-//     fn unify_generic_arg(
-//         &self,
-//         a: GenericArgument<'ctx>,
-//         b: GenericArgument<'ctx>,
-//     ) -> UnificationResult<'ctx> {
-//         match (a, b) {
-//             (GenericArgument::Type(a_ty), GenericArgument::Type(b_ty)) => {
-//                 return self.unify(a_ty, b_ty);
-//             }
-//             (GenericArgument::Const(_), GenericArgument::Const(_)) => {
-//                 todo!()
-//             }
-//             _ => return Err(TypeError::ArgMismatch(ExpectedFound::new(a, b))),
-//         }
-//     }
-// }
+    fn unify_generic_arg(
+        &self,
+        a: GenericArgument<'ctx>,
+        b: GenericArgument<'ctx>,
+    ) -> UnificationResult<'ctx> {
+        match (a, b) {
+            (GenericArgument::Type(a_ty), GenericArgument::Type(b_ty)) => {
+                return self.unify(a_ty, b_ty);
+            }
+            (GenericArgument::Const(_), GenericArgument::Const(_)) => {
+                todo!()
+            }
+            _ => return Err(TypeError::ArgMismatch(ExpectedFound::new(a, b))),
+        }
+    }
+}
 
 impl<'ctx> ConstraintSolver<'ctx> {
     pub fn structurally_resolve(&self, mut ty: Ty<'ctx>) -> Ty<'ctx> {

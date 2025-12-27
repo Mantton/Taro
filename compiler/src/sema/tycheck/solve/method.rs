@@ -162,7 +162,15 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 continue;
             };
 
-            if reciever == fn_reciever {
+            let reciever_head = self.type_head_from_type(reciever);
+            let fn_reciever_head = self.type_head_from_type(fn_reciever);
+
+            let matches = match (reciever_head, fn_reciever_head) {
+                (Some(a), Some(b)) => a == b,
+                _ => reciever == fn_reciever,
+            };
+
+            if matches {
                 matching.push(candidate);
             }
         }

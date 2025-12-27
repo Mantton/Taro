@@ -225,7 +225,7 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
             }
         }
         match ty.kind() {
-            crate::sema::models::TyKind::Adt(def)
+            crate::sema::models::TyKind::Adt(def, _)
                 if matches!(def.kind, crate::sema::models::AdtKind::Enum) =>
             {
                 let enum_def = self.gcx.get_enum_definition(def.id);

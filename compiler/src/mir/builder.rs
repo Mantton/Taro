@@ -240,7 +240,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 mir::PlaceElem::Field(_, field_ty) => ty = *field_ty,
                 mir::PlaceElem::VariantDowncast { name: _, index } => {
                     let def = match ty.kind() {
-                        TyKind::Adt(def) if def.kind == AdtKind::Enum => def,
+                        TyKind::Adt(def, _) if def.kind == AdtKind::Enum => def,
                         _ => return Ty::error(self.gcx),
                     };
                     ty = self.enum_variant_tuple_ty(def.id, *index);

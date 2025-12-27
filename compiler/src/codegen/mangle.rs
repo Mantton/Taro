@@ -38,7 +38,7 @@ fn ty_symbol_with(gcx: GlobalContext, ty: Ty) -> String {
             format!("ref{}{}", mt.display_str(), ty_symbol_with(gcx, inner))
         }
         TyKind::GcPtr => "gcptr".into(),
-        TyKind::Adt(def) => {
+        TyKind::Adt(def, _) => {
             let ident = gcx.definition_ident(def.id);
             let name = ident.symbol.as_str();
             sanitize(name)

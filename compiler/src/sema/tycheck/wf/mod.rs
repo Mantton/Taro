@@ -184,7 +184,7 @@ fn is_sized(ty: Ty) -> bool {
 
 fn collect_by_value_adt_deps(ty: Ty, out: &mut Vec<DefinitionID>) {
     match ty.kind() {
-        TyKind::Adt(adt) => {
+        TyKind::Adt(adt, _) => {
             if matches!(adt.kind, AdtKind::Struct | AdtKind::Enum) {
                 out.push(adt.id);
             }

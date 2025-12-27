@@ -4,7 +4,10 @@ use crate::{
         error::TypeError,
         models::TyKind,
         resolve::models::DefinitionKind,
-        tycheck::solve::{Goal, Obligation, SolverResult, StructLiteralGoalData},
+        tycheck::{
+            solve::{Goal, Obligation, SolverResult, StructLiteralGoalData},
+            utils::instantiate::instantiate_struct_definition_with_args,
+        },
     },
     span::Spanned,
 };
@@ -22,7 +25,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         }
 
         // Extract ADT definition
-        let TyKind::Adt(adt_def) = struct_ty.kind() else {
+        let TyKind::Adt(adt_def, args) = struct_ty.kind() else {
             let error = Spanned::new(TypeError::NotAStruct { ty: struct_ty }, data.ty_span);
             return SolverResult::Error(vec![error]);
         };
@@ -35,6 +38,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         // Get struct definition and fields
         let struct_def = self.gcx().get_struct_definition(adt_def.id);
+        let struct_def = instantiate_struct_definition_with_args(self.gcx(), struct_def, args);
         let mut obligations = Vec::new();
         let mut used_fields = vec![false; struct_def.fields.len()];
 
