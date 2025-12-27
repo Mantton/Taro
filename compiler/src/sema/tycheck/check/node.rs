@@ -12,7 +12,10 @@ use crate::{
                 MethodCallData, StructLiteralField, StructLiteralGoalData, TupleAccessGoalData,
                 UnOpGoalData,
             },
-            utils::instantiate::instantiate_ty_with_args,
+            utils::{
+                generics::GenericsBuilder,
+                instantiate::{instantiate_signature_with_args, instantiate_ty_with_args},
+            },
         },
     },
     span::{Span, Symbol},
@@ -31,8 +34,9 @@ impl<'ctx> Checker<'ctx> {
     ) {
         let gcx = self.gcx();
         let signature = gcx.get_signature(id);
-        let signature = Ty::from_labeled_signature(gcx, signature);
-
+        let identity_args = GenericsBuilder::identity_for_item(gcx, id);
+        let signature = instantiate_signature_with_args(gcx, signature, identity_args);
+        let signature = Ty::from_labeled_signature(gcx, &signature);
         let (param_tys, return_ty) = match signature.kind() {
             TyKind::FnPointer { inputs, output, .. } => (inputs, output),
             _ => unreachable!("function signature must be of function pointer type"),

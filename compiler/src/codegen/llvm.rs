@@ -5,7 +5,7 @@ use crate::{
     hir,
     mir::{self, Operand},
     sema::{
-        models::{FloatTy, GenericArguments, IntTy, Ty, TyKind, UIntTy},
+        models::{FloatTy, GenericArgument, GenericArguments, IntTy, Ty, TyKind, UIntTy},
         tycheck::utils::instantiate::instantiate_ty_with_args,
     },
     span::Symbol,
@@ -131,7 +131,37 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             current_subst: &[],
         }
     }
+
+    fn resolve_generic_args(&self, args: GenericArguments<'gcx>) -> GenericArguments<'gcx> {
+        if self.current_subst.is_empty() || args.is_empty() {
+            return args;
+        }
+
+        let resolved: Vec<_> = args
+            .iter()
+            .map(|arg| match arg {
+                GenericArgument::Type(ty) => GenericArgument::Type(instantiate_ty_with_args(
+                    self.gcx,
+                    *ty,
+                    self.current_subst,
+                )),
+                GenericArgument::Const(c) => GenericArgument::Const(*c),
+            })
+            .collect();
+        self.gcx.store.interners.intern_generic_args(resolved)
+    }
+
+    fn instance_for_call(
+        &self,
+        def_id: hir::DefinitionID,
+        args: GenericArguments<'gcx>,
+    ) -> Instance<'gcx> {
+        let args = self.resolve_generic_args(args);
+        Instance::new(def_id, args)
+    }
+
     /// Lower a type with substitution context applied.
+    #[track_caller]
     fn lower_ty(&self, ty: Ty<'gcx>) -> Option<BasicTypeEnum<'llvm>> {
         lower_type(
             self.context,
@@ -1354,7 +1384,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     fn lower_callable(&mut self, func: &Operand<'gcx>) -> FunctionValue<'llvm> {
         if let Operand::Constant(c) = func {
             if let mir::ConstantKind::Function(def_id, args, _) = c.value {
-                let instance = Instance::new(def_id, args);
+                let instance = self.instance_for_call(def_id, args);
 
                 if let Some(&f) = self.functions.get(&instance) {
                     return f;
@@ -1651,7 +1681,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 .map(|ty| ty.const_float(f).as_basic_value_enum()),
             mir::ConstantKind::Unit => None,
             mir::ConstantKind::Function(def_id, args, _) => {
-                let instance = Instance::new(def_id, args);
+                let instance = self.instance_for_call(def_id, args);
                 self.functions
                     .get(&instance)
                     .map(|f| f.as_global_value().as_pointer_value().as_basic_value_enum())
