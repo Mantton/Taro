@@ -434,11 +434,6 @@ pub enum ExpressionKind {
         target: Box<Expression>,
         name: Identifier,
     },
-    /// A[T]
-    Specialize {
-        target: Box<Expression>,
-        type_arguments: TypeArguments,
-    },
     /// `[a, b, c]`
     Array(Vec<Box<Expression>>),
     /// `(a, b, c)`
@@ -1304,13 +1299,6 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, node: &Expression) -> V::
         ExpressionKind::Member { target, name } => {
             try_visit!(visitor.visit_expression(target));
             try_visit!(visitor.visit_identifier(name));
-        }
-        ExpressionKind::Specialize {
-            target,
-            type_arguments,
-        } => {
-            try_visit!(visitor.visit_expression(target));
-            try_visit!(visitor.visit_type_arguments(type_arguments));
         }
         ExpressionKind::Array(expressions) => {
             walk_list!(visitor, visit_expression, expressions);

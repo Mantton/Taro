@@ -2,7 +2,7 @@ use crate::{
     compile::context::Gcx,
     hir::{self, DefinitionID, NodeID},
     sema::{
-        models::{InferTy, Ty, TyKind},
+        models::{GenericArguments, InferTy, Ty, TyKind},
         resolve::models::{DefinitionKind, TypeHead},
         tycheck::{
             check::{checker::Checker, gather::GatherLocalsVisitor},
@@ -68,7 +68,6 @@ impl<'ctx> Checker<'ctx> {
 
         if let Some(body) = hir::is_expression_bodied(body) {
             // --- single-expression body ---
-            // TODO: Mark As return
             self.check_return(body);
         } else {
             // --- regular block body ---
@@ -158,6 +157,18 @@ impl<'ctx> Checker<'ctx> {
                 self.results.borrow_mut().record_node_type(id, ty);
             }
         });
+    }
+
+    fn check_local_in_block(&self, node: &hir::Local, cs: &mut Cs<'ctx>) {
+        GatherLocalsVisitor::from_local(cs, self, node);
+        let local_ty = self.get_local(node.id).ty;
+
+        if let Some(expression) = node.initializer.as_ref() {
+            let init_ty = self.synth_with_expectation(expression, Some(local_ty), cs);
+            cs.equal(local_ty, init_ty, expression.span);
+        }
+
+        self.check_pattern_structure(&node.pattern, local_ty, cs);
     }
 
     fn check_loop(&self, block: &hir::Block) {
@@ -299,7 +310,6 @@ impl<'ctx> Checker<'ctx> {
             hir::ExpressionKind::Member { target, name } => {
                 self.synth_member_expression(expression, target, name, expectation, cs)
             }
-            hir::ExpressionKind::Specialize { .. } => todo!(),
             hir::ExpressionKind::Array(..) => todo!(),
             hir::ExpressionKind::Tuple(elements) => {
                 self.synth_tuple_expression(expression, elements, expectation, cs)
@@ -809,6 +819,9 @@ impl<'ctx> Checker<'ctx> {
             match &stmt.kind {
                 hir::StatementKind::Expression(expr) => {
                     let _ = self.synth_with_expectation(expr, None, cs);
+                }
+                hir::StatementKind::Variable(node) => {
+                    self.check_local_in_block(node, cs);
                 }
                 _ => self.check_statement(stmt),
             }
@@ -1489,9 +1502,9 @@ impl<'ctx> Checker<'ctx> {
         node_id: NodeID,
         span: Span,
         resolution: &hir::Resolution,
+        base_args: Option<GenericArguments<'ctx>>,
         expectation: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
-        base_args: Option<crate::sema::models::GenericArguments<'ctx>>,
     ) -> Ty<'ctx> {
         if matches!(resolution, hir::Resolution::Error) {
             return Ty::error(self.gcx());
@@ -1537,9 +1550,9 @@ impl<'ctx> Checker<'ctx> {
             expression.id,
             expression.span,
             &resolution,
+            base_args,
             expectation,
             cs,
-            base_args,
         )
     }
 
@@ -1597,8 +1610,9 @@ impl<'ctx> Checker<'ctx> {
             TyKind::Pointer(_, mutbl) => Some(TypeHead::Pointer(mutbl)),
             TyKind::GcPtr => Some(TypeHead::GcPtr),
             TyKind::Tuple(items) => Some(TypeHead::Tuple(items.len() as u16)),
-            TyKind::Parameter(_) => todo!(),
-            TyKind::Infer(_) | TyKind::FnPointer { .. } | TyKind::Error => None,
+            TyKind::Parameter(_) | TyKind::Infer(_) | TyKind::FnPointer { .. } | TyKind::Error => {
+                None
+            }
         }
     }
 

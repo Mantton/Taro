@@ -915,10 +915,19 @@ impl Actor<'_, '_> {
             ast::ExpressionKind::Specialize {
                 target,
                 type_arguments,
-            } => hir::ExpressionKind::Specialize {
-                target: self.lower_expression(target),
-                type_arguments: self.lower_type_arguments(type_arguments),
-            },
+            } => {
+                // Convert Specialize into a path with type arguments on the final segment
+                match self.lower_specialize_as_path(&target, type_arguments, node.span) {
+                    Some(path) => hir::ExpressionKind::Path(path),
+                    None => {
+                        self.context.dcx.emit_error(
+                            "type arguments can only be applied to path-like expressions".into(),
+                            Some(node.span),
+                        );
+                        hir::ExpressionKind::Malformed
+                    }
+                }
+            }
             ast::ExpressionKind::Array(nodes) => hir::ExpressionKind::Array(
                 nodes
                     .into_iter()
@@ -1346,6 +1355,87 @@ impl Actor<'_, '_> {
             }
             _ => None,
         }
+    }
+
+    /// Attempts to convert an AST expression to a resolved path suitable for attaching type arguments.
+    /// Returns None if the expression cannot be converted to a path.
+    fn try_expr_as_resolved_path(
+        &mut self,
+        expr: &ast::Expression,
+    ) -> Option<hir::ResolvedPath> {
+        match &expr.kind {
+            ast::ExpressionKind::Identifier(ident) => {
+                let resolved_path = self.lower_identifier_expression_path(expr.id, *ident);
+                Some(resolved_path)
+            }
+            ast::ExpressionKind::Member { target, name } => {
+                // Check resolution state to determine how to handle
+                match self.resolutions.expression_resolutions.get(&expr.id).cloned() {
+                    Some(ExpressionResolutionState::Resolved(_)) => {
+                        let path = self.try_lower_resolved_member_chain_as_path(
+                            expr.id, target, *name, expr.span,
+                        )?;
+                        Some(hir::ResolvedPath::Resolved(path))
+                    }
+                    Some(ExpressionResolutionState::DeferredAssociatedType) => {
+                        let path = self.lower_deferred_associated_type_member_chain(
+                            target.clone(), *name
+                        );
+                        Some(path)
+                    }
+                    // DeferredAssociatedValue and None cannot be converted to paths for specialization
+                    _ => None,
+                }
+            }
+            ast::ExpressionKind::Specialize { target, type_arguments } => {
+                // Recursively handle nested Specialize - attach type arguments to the inner path
+                let mut path = self.try_expr_as_resolved_path(target)?;
+                // Attach these type arguments to the path
+                match &mut path {
+                    hir::ResolvedPath::Resolved(p) => {
+                        if let Some(last) = p.segments.last_mut() {
+                            last.arguments = Some(self.lower_type_arguments(type_arguments.clone()));
+                            last.span = last.span.to(type_arguments.span);
+                            p.span = p.span.to(type_arguments.span);
+                        }
+                    }
+                    hir::ResolvedPath::Relative(_, seg) => {
+                        seg.arguments = Some(self.lower_type_arguments(type_arguments.clone()));
+                        seg.span = seg.span.to(type_arguments.span);
+                    }
+                }
+                Some(path)
+            }
+            _ => None,
+        }
+    }
+
+    /// Converts an AST Specialize expression to a path with type arguments on the final segment.
+    fn lower_specialize_as_path(
+        &mut self,
+        target: &ast::Expression,
+        type_arguments: ast::TypeArguments,
+        _span: Span,
+    ) -> Option<hir::ResolvedPath> {
+        // Try to build a path from the target expression
+        let mut path = self.try_expr_as_resolved_path(target)?;
+        
+        // Attach type arguments to the last segment
+        match &mut path {
+            hir::ResolvedPath::Resolved(p) => {
+                if let Some(last) = p.segments.last_mut() {
+                    last.arguments = Some(self.lower_type_arguments(type_arguments.clone()));
+                    last.span = last.span.to(type_arguments.span);
+                    p.span = p.span.to(type_arguments.span);
+                }
+            }
+            hir::ResolvedPath::Relative(_, seg) => {
+                seg.arguments = Some(self.lower_type_arguments(type_arguments.clone()));
+                seg.span = seg.span.to(type_arguments.span);
+            }
+        }
+        
+        Some(path)
     }
 
     fn lower_anon_const(&mut self, node: ast::AnonConst) -> hir::AnonConst {
