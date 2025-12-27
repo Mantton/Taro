@@ -48,8 +48,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
         use InferTy::*;
         use TyKind::*;
         match (a.kind(), b.kind()) {
-            // Error
-            (Error, Error) => return Ok(()),
+            // Error - silently succeed if either side is an error type
+            // This prevents cascading errors when one node has already failed
+            (Error, _) | (_, Error) => return Ok(()),
 
             // Integers
             (Infer(IntVar(a_id)), Infer(IntVar(b_id))) => {
@@ -86,7 +87,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
             (Infer(_), _) | (_, Infer(_)) => {
                 unreachable!("ICE: inference variables encountered in `unify_nominal_tys`")
             }
-            (Error, Error) => return Ok(()),
+            // Error - silently succeed if either side is an error type
+            (Error, _) | (_, Error) => return Ok(()),
             (Rune | Bool | Int(_) | UInt(_) | Float(_) | String | GcPtr, _) if a == b => {
                 return Ok(());
             }

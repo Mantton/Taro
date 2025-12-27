@@ -51,7 +51,7 @@ impl<'ctx> InferCtx<'ctx> {
             .inner
             .borrow_mut()
             .type_variables()
-            .new_var(TypeVariableOrigin { location });
+            .new_var(TypeVariableOrigin { location, param_name: None });
         Ty::new(TyKind::Infer(InferTy::TyVar(id)), self.gcx)
     }
 
@@ -92,7 +92,7 @@ impl<'ctx> InferCtx<'ctx> {
                     .inner
                     .borrow_mut()
                     .type_variables()
-                    .new_var(TypeVariableOrigin { location: span });
+                    .new_var(TypeVariableOrigin { location: span, param_name: Some(param.name) });
 
                 let ty = Ty::new(TyKind::Infer(InferTy::TyVar(ty_var_id)), self.gcx);
                 GenericArgument::Type(ty)

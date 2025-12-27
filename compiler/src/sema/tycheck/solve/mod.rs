@@ -190,7 +190,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
     }
 
     /// Check for unresolved type variables after solving completes successfully.
-    /// If there are unresolved vars when no errors occurred, it indicates a bug.
+    /// Emit user-friendly errors for unresolved type parameters.
     fn check_unresolved_vars(&self) {
         use crate::sema::models::{InferTy, TyKind};
 
@@ -199,11 +199,12 @@ impl<'ctx> ConstraintSystem<'ctx> {
             let var_ty = Ty::new(TyKind::Infer(InferTy::TyVar(var_id)), gcx);
             let resolved = self.infer_cx.resolve_vars_if_possible(var_ty);
             if resolved.is_infer() {
-                panic!(
-                    "ICE: unresolved type var {} at {:?} with no errors",
-                    var_id.index(),
-                    origin.location
-                );
+                let msg = if let Some(name) = origin.param_name {
+                    format!("generic parameter '{}' could not be inferred", name.as_str())
+                } else {
+                    "type annotations needed: unable to infer type".into()
+                };
+                gcx.dcx().emit_error(msg.into(), Some(origin.location));
             }
         }
     }

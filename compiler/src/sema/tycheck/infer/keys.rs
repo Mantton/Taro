@@ -1,7 +1,7 @@
 use super::{UnificationTable, snapshot::IcxEventLogs};
 use crate::{
     sema::models::{FloatTy, IntTy, Ty, TyVarID, UIntTy},
-    span::Span,
+    span::{Span, Symbol},
 };
 use ena::unify::{UnificationTableStorage, UnifyKey, UnifyValue};
 use index_vec::IndexVec;
@@ -190,6 +190,8 @@ impl<'ctx> UnifyValue for TyVarValue<'ctx> {
 #[derive(Copy, Clone)]
 pub struct TypeVariableOrigin {
     pub location: Span,
+    /// When this type variable was created for a generic parameter, stores its name.
+    pub param_name: Option<Symbol>,
 }
 
 #[derive(Default, Clone)]
