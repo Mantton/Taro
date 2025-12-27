@@ -138,7 +138,7 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
             ConstantKind::Integer(i) => write!(f, "const {}", i),
             ConstantKind::Float(fl) => write!(f, "const {}", fl),
             ConstantKind::Unit => write!(f, "()"),
-            ConstantKind::Function(def_id, _) => {
+            ConstantKind::Function(def_id, _, _) => {
                 let ident = self.gcx.definition_ident(*def_id);
                 write!(f, "fn {}", ident.symbol)
             }

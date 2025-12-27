@@ -154,6 +154,8 @@ pub struct Constant<'ctx> {
     pub value: ConstantKind<'ctx>,
 }
 
+use crate::sema::models::GenericArguments;
+
 #[derive(Debug, Clone)]
 pub enum ConstantKind<'ctx> {
     Bool(bool),
@@ -162,7 +164,7 @@ pub enum ConstantKind<'ctx> {
     Integer(u64),
     Float(f64),
     Unit,
-    Function(crate::hir::DefinitionID, Ty<'ctx>),
+    Function(DefinitionID, GenericArguments<'ctx>, Ty<'ctx>),
 }
 
 #[derive(Debug, Clone)]

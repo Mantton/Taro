@@ -394,7 +394,10 @@ impl<'ctx> FunctionLower<'ctx> {
                     let callee_ty = self.gcx.get_type(def_id);
                     let generic_args = self.results.instantiation(expr.id);
                     let callee = self.push_expr(
-                        ExprKind::Zst { id: def_id, generic_args },
+                        ExprKind::Zst {
+                            id: def_id,
+                            generic_args,
+                        },
                         callee_ty,
                         expr.span,
                     );
@@ -432,7 +435,10 @@ impl<'ctx> FunctionLower<'ctx> {
                     let callee_ty = self.gcx.get_type(def_id);
                     let generic_args = self.results.instantiation(expr.id);
                     let callee = self.push_expr(
-                        ExprKind::Zst { id: def_id, generic_args },
+                        ExprKind::Zst {
+                            id: def_id,
+                            generic_args,
+                        },
                         callee_ty,
                         expr.span,
                     );
@@ -468,7 +474,10 @@ impl<'ctx> FunctionLower<'ctx> {
                     let callee_ty = self.gcx.get_type(def_id);
                     let generic_args = self.results.instantiation(expr.id);
                     let callee = self.push_expr(
-                        ExprKind::Zst { id: def_id, generic_args },
+                        ExprKind::Zst {
+                            id: def_id,
+                            generic_args,
+                        },
                         callee_ty,
                         expr.span,
                     );
@@ -550,7 +559,10 @@ impl<'ctx> FunctionLower<'ctx> {
                 let callee_ty = self.gcx.get_type(def_id);
                 let generic_args = self.results.instantiation(expr.id);
                 let callee = self.push_expr(
-                    ExprKind::Zst { id: def_id, generic_args },
+                    ExprKind::Zst {
+                        id: def_id,
+                        generic_args,
+                    },
                     callee_ty,
                     expr.span,
                 );

@@ -29,7 +29,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 let lhs_operand = Operand::Copy(lhs_place.clone());
 
                 // Compute binary op result
-                let result = unpack!(block = self.build_binary_op(block, *op, lhs_operand, rhs_operand));
+                let result =
+                    unpack!(block = self.build_binary_op(block, *op, lhs_operand, rhs_operand));
 
                 // Assign result back to LHS
                 self.push_assign(block, lhs_place, result, expression.span);

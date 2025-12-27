@@ -868,7 +868,10 @@ pub enum OperatorKind {
 impl OperatorKind {
     /// Returns true if this is a unary operator (Neg, Not, BitwiseNot).
     pub fn is_unary(self) -> bool {
-        matches!(self, OperatorKind::Neg | OperatorKind::Not | OperatorKind::BitwiseNot)
+        matches!(
+            self,
+            OperatorKind::Neg | OperatorKind::Not | OperatorKind::BitwiseNot
+        )
     }
 }
 

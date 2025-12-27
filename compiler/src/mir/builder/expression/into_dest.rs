@@ -512,14 +512,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
         let fallback_block = fallback.map(|decision| {
             let fb = self.new_block_with_note("match-fallback".into());
-            self.lower_match_decision(
-                fb,
-                decision,
-                destination,
-                join_block,
-                var_places,
-                span,
-            );
+            self.lower_match_decision(fb, decision, destination, join_block, var_places, span);
             fb
         });
 

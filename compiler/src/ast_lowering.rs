@@ -82,11 +82,29 @@ impl Actor<'_, '_> {
             .flat_map(|node| self.lower_declaration(node))
             .collect()
     }
+
+    fn lower_attributes(&mut self, attributes: ast::AttributeList) -> hir::AttributeList {
+        attributes
+            .into_iter()
+            .map(|attr| hir::Attribute {
+                identifier: attr.identifier,
+            })
+            .collect()
+    }
 }
 
 impl Actor<'_, '_> {
     fn lower_declaration(&mut self, node: ast::Declaration) -> Vec<hir::Declaration> {
-        let kind = match node.kind {
+        let ast::Declaration {
+            id,
+            kind,
+            span,
+            identifier,
+            attributes,
+            ..
+        } = node;
+
+        let kind = match kind {
             ast::DeclarationKind::Interface(node) => {
                 hir::DeclarationKind::Interface(self.lower_interface(node))
             }
@@ -130,16 +148,25 @@ impl Actor<'_, '_> {
         };
 
         vec![hir::Declaration {
-            id: self.definition_id(node.id),
-            span: node.span,
-            identifier: node.identifier,
+            id: self.definition_id(id),
+            span,
+            identifier,
             kind,
-            attributes: vec![],
+            attributes: self.lower_attributes(attributes),
         }]
     }
 
     fn lower_extern_declaration(&mut self, node: ast::ExternDeclaration) -> hir::Declaration {
-        let kind = match node.kind {
+        let ast::Declaration {
+            id,
+            kind,
+            span,
+            identifier,
+            attributes,
+            ..
+        } = node;
+
+        let kind = match kind {
             ast::ExternDeclarationKind::Function(node) => {
                 let span = node.signature.span;
                 hir::DeclarationKind::Function(self.lower_function(node, span))
@@ -147,16 +174,25 @@ impl Actor<'_, '_> {
         };
 
         hir::Declaration {
-            id: self.definition_id(node.id),
-            span: node.span,
-            identifier: node.identifier,
+            id: self.definition_id(id),
+            span,
+            identifier,
             kind,
-            attributes: vec![],
+            attributes: self.lower_attributes(attributes),
         }
     }
 
     fn lower_function_declaration(&mut self, node: ast::FunctionDeclaration) -> hir::Declaration {
-        let kind = match node.kind {
+        let ast::Declaration {
+            id,
+            kind,
+            span,
+            identifier,
+            attributes,
+            ..
+        } = node;
+
+        let kind = match kind {
             ast::FunctionDeclarationKind::Struct(node) => {
                 hir::DeclarationKind::Struct(self.lower_struct(node))
             }
@@ -179,16 +215,25 @@ impl Actor<'_, '_> {
         };
 
         hir::Declaration {
-            id: self.definition_id(node.id),
-            span: node.span,
-            identifier: node.identifier,
+            id: self.definition_id(id),
+            span,
+            identifier,
             kind,
-            attributes: vec![],
+            attributes: self.lower_attributes(attributes),
         }
     }
 
     fn lower_namespace_declaration(&mut self, node: ast::NamespaceDeclaration) -> hir::Declaration {
-        let kind = match node.kind {
+        let ast::Declaration {
+            id,
+            kind,
+            span,
+            identifier,
+            attributes,
+            ..
+        } = node;
+
+        let kind = match kind {
             ast::NamespaceDeclarationKind::Struct(node) => {
                 hir::DeclarationKind::Struct(self.lower_struct(node))
             }
@@ -220,11 +265,11 @@ impl Actor<'_, '_> {
         };
 
         hir::Declaration {
-            id: self.definition_id(node.id),
-            span: node.span,
-            identifier: node.identifier,
+            id: self.definition_id(id),
+            span,
+            identifier,
             kind,
-            attributes: vec![],
+            attributes: self.lower_attributes(attributes),
         }
     }
 
@@ -232,7 +277,16 @@ impl Actor<'_, '_> {
         &mut self,
         node: ast::AssociatedDeclaration,
     ) -> hir::AssociatedDeclaration {
-        let kind = match node.kind {
+        let ast::Declaration {
+            id,
+            kind,
+            span,
+            identifier,
+            attributes,
+            ..
+        } = node;
+
+        let kind = match kind {
             ast::AssociatedDeclarationKind::Constant(node) => {
                 hir::AssociatedDeclarationKind::Constant(self.lower_constant(node))
             }
@@ -249,11 +303,11 @@ impl Actor<'_, '_> {
         };
 
         hir::AssociatedDeclaration {
-            id: self.definition_id(node.id),
-            span: node.span,
-            identifier: node.identifier,
+            id: self.definition_id(id),
+            span,
+            identifier,
             kind,
-            attributes: vec![],
+            attributes: self.lower_attributes(attributes),
         }
     }
 }
@@ -371,17 +425,27 @@ impl Actor<'_, '_> {
     }
 
     fn lower_function_parameter(&mut self, node: ast::FunctionParameter) -> hir::FunctionParameter {
+        let ast::FunctionParameter {
+            id: node_id,
+            attributes,
+            label,
+            name,
+            annotated_type,
+            default_value,
+            is_variadic,
+            span,
+        } = node;
         let id = self.next_index();
-        self.node_mapping.insert(node.id, id);
+        self.node_mapping.insert(node_id, id);
         hir::FunctionParameter {
             id,
-            attributes: vec![],
-            label: node.label,
-            name: node.name,
-            annotated_type: self.lower_type(node.annotated_type),
-            default_value: node.default_value.map(|n| self.lower_expression(n)),
-            is_variadic: node.is_variadic,
-            span: node.span,
+            attributes: self.lower_attributes(attributes),
+            label,
+            name,
+            annotated_type: self.lower_type(annotated_type),
+            default_value: default_value.map(|n| self.lower_expression(n)),
+            is_variadic,
+            span,
         }
     }
 }

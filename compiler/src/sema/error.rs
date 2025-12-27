@@ -26,16 +26,45 @@ pub enum TypeError<'ctx> {
     Apply(ApplyValidationError),
     NoOverloadMatches,
     AmbiguousOverload,
-    NoSuchMember { name: Symbol, on: Ty<'ctx> },
-    FieldNotVisible { name: Symbol, struct_ty: Ty<'ctx> },
-    NotCallable { found: Ty<'ctx> },
-    NotAStruct { ty: Ty<'ctx> },
-    UnknownStructField { name: Symbol, struct_ty: Ty<'ctx> },
-    MissingStructField { name: Symbol, struct_ty: Ty<'ctx> },
-    NotATuple { ty: Ty<'ctx> },
-    InvalidUnaryOp { op: UnaryOperator, ty: Ty<'ctx> },
-    InvalidBinaryOp { op: BinaryOperator, lhs: Ty<'ctx>, rhs: Ty<'ctx> },
-    InvalidAssignOp { op: BinaryOperator, lhs: Ty<'ctx>, rhs: Ty<'ctx> },
+    NoSuchMember {
+        name: Symbol,
+        on: Ty<'ctx>,
+    },
+    FieldNotVisible {
+        name: Symbol,
+        struct_ty: Ty<'ctx>,
+    },
+    NotCallable {
+        found: Ty<'ctx>,
+    },
+    NotAStruct {
+        ty: Ty<'ctx>,
+    },
+    UnknownStructField {
+        name: Symbol,
+        struct_ty: Ty<'ctx>,
+    },
+    MissingStructField {
+        name: Symbol,
+        struct_ty: Ty<'ctx>,
+    },
+    NotATuple {
+        ty: Ty<'ctx>,
+    },
+    InvalidUnaryOp {
+        op: UnaryOperator,
+        ty: Ty<'ctx>,
+    },
+    InvalidBinaryOp {
+        op: BinaryOperator,
+        lhs: Ty<'ctx>,
+        rhs: Ty<'ctx>,
+    },
+    InvalidAssignOp {
+        op: BinaryOperator,
+        lhs: Ty<'ctx>,
+        rhs: Ty<'ctx>,
+    },
 }
 
 pub type SpannedError<'ctx> = Spanned<TypeError<'ctx>>;
@@ -98,7 +127,11 @@ impl<'ctx> TypeError<'ctx> {
                 format!("type {} is not a tuple", ty.format(gcx))
             }
             TypeError::InvalidUnaryOp { op, ty } => {
-                format!("cannot apply unary operator '{:?}' to type {}", op, ty.format(gcx))
+                format!(
+                    "cannot apply unary operator '{:?}' to type {}",
+                    op,
+                    ty.format(gcx)
+                )
             }
             TypeError::InvalidBinaryOp { op, lhs, rhs } => {
                 format!(

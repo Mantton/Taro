@@ -16,13 +16,14 @@ use crate::{
             Visibility,
         },
     },
+    specialize::Instance,
     thir::VariantIndex,
     utils::intern::{Interned, InternedInSet, InternedSet},
 };
 use crate::{constants::STD_PREFIX, span::Symbol};
 use bumpalo::Bump;
 use ecow::EcoString;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::rc::Rc;
 use std::{cell::RefCell, ops::Deref, path::PathBuf};
 
@@ -121,6 +122,15 @@ impl<'arena> GlobalContext<'arena> {
         let generics = self.context.store.arenas.generics.alloc(generics);
         let ok = database.def_to_generics.insert(id, generics).is_none();
         debug_assert!(ok, "duplicated generic information")
+    }
+
+    pub fn cache_attributes(self, id: DefinitionID, attributes: hir::AttributeList) {
+        let mut cache = self.context.store.type_databases.borrow_mut();
+        let package_index = id.package();
+        let database = cache.entry(package_index).or_insert(Default::default());
+        let attributes = self.context.store.arenas.global.alloc(attributes);
+        let ok = database.def_to_attributes.insert(id, attributes).is_none();
+        debug_assert!(ok, "duplicated attribute information")
     }
 }
 
@@ -280,6 +290,18 @@ impl<'arena> GlobalContext<'arena> {
         self.context.store.object_files.borrow().get(&pkg).cloned()
     }
 
+    pub fn cache_specializations(
+        self,
+        pkg: PackageIndex,
+        instances: FxHashSet<Instance<'arena>>,
+    ) {
+        self.context
+            .store
+            .specialization_instances
+            .borrow_mut()
+            .insert(pkg, instances);
+    }
+
     pub fn all_object_files(self) -> Vec<PathBuf> {
         let mut inputs: Vec<PathBuf> = self
             .context
@@ -316,6 +338,21 @@ impl<'arena> GlobalContext<'arena> {
             generics
         }
     }
+
+    pub fn attributes_of(self, id: DefinitionID) -> &'arena hir::AttributeList {
+        let mut database = self.context.store.type_databases.borrow_mut();
+        let database = database.entry(id.package()).or_default();
+
+        if let Some(attrs) = database.def_to_attributes.get(&id) {
+            *attrs
+        } else if let Some(empty) = database.empty_attributes {
+            empty
+        } else {
+            let empty = self.context.store.arenas.global.alloc(Vec::new());
+            database.empty_attributes = Some(empty);
+            empty
+        }
+    }
 }
 
 pub struct CompilerContext<'arena> {
@@ -347,6 +384,7 @@ pub struct CompilerStore<'arena> {
     pub object_files: RefCell<FxHashMap<PackageIndex, PathBuf>>,
     pub link_inputs: RefCell<Vec<PathBuf>>,
     pub output_root: PathBuf,
+    pub specialization_instances: RefCell<FxHashMap<PackageIndex, FxHashSet<Instance<'arena>>>>,
     /// Target-specific layout information (shared between MIR and codegen).
     pub target_layout: TargetLayout,
 }
@@ -369,6 +407,7 @@ impl<'arena> CompilerStore<'arena> {
             object_files: Default::default(),
             link_inputs: Default::default(),
             output_root,
+            specialization_instances: Default::default(),
             target_layout,
         })
     }
@@ -553,7 +592,9 @@ pub struct TypeDatabase<'arena> {
     pub type_head_to_extensions: FxHashMap<TypeHead, Vec<DefinitionID>>,
     pub type_head_to_members: FxHashMap<TypeHead, TypeMemberIndex>,
     pub def_to_generics: FxHashMap<DefinitionID, &'arena Generics>,
+    pub def_to_attributes: FxHashMap<DefinitionID, &'arena hir::AttributeList>,
     pub empty_generics: Option<&'arena Generics>,
+    pub empty_attributes: Option<&'arena hir::AttributeList>,
 }
 
 #[derive(Default, Debug, Clone)]

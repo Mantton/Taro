@@ -5,7 +5,7 @@ use crate::{
         context::{CompilerContext, GlobalContext},
     },
     error::CompileResult,
-    hir, mir, parse, sema, thir,
+    hir, mir, parse, sema, specialize, thir,
 };
 
 pub mod config;
@@ -37,6 +37,7 @@ impl<'state> Compiler<'state> {
         let (package, results) = self.analyze()?;
         let thir = thir::package::build_package(&package, self.context, results)?;
         let package = mir::package::build_package(thir, self.context)?;
+        specialize::collect::collect_instances(package, self.context);
         let _obj = codegen::llvm::emit_package(package, self.context)?;
         let exe = codegen::link::link_executable(self.context)?;
         Ok(exe)

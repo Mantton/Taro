@@ -9,10 +9,13 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
         match &expr.kind {
             ExprKind::Literal(constant) => self.lower_constant(constant),
-            ExprKind::Zst { id, .. } => Constant {
+            ExprKind::Zst { id, generic_args } => Constant {
                 ty: expr.ty,
-                // TODO: use generic_args for monomorphization
-                value: mir::ConstantKind::Function(*id, expr.ty),
+                value: mir::ConstantKind::Function(
+                    *id,
+                    generic_args.clone().unwrap_or(&[]),
+                    expr.ty,
+                ),
             },
             _ => unreachable!(),
         }

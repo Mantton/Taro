@@ -1302,7 +1302,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
     fn lower_callable(&mut self, func: &Operand<'gcx>) -> FunctionValue<'llvm> {
         if let Operand::Constant(c) = func {
-            if let mir::ConstantKind::Function(def_id, _) = c.value {
+            if let mir::ConstantKind::Function(def_id, _, _) = c.value {
                 if let Some(&f) = self.functions.get(&def_id) {
                     return f;
                 }
@@ -1604,7 +1604,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 .float_type(constant.ty)
                 .map(|ty| ty.const_float(f).as_basic_value_enum()),
             mir::ConstantKind::Unit => None,
-            mir::ConstantKind::Function(def_id, _) => self
+            mir::ConstantKind::Function(def_id, _, _) => self
                 .functions
                 .get(&def_id)
                 .map(|f| f.as_global_value().as_pointer_value().as_basic_value_enum()),

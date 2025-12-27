@@ -13,6 +13,7 @@ pub mod mir;
 mod parse;
 mod sema;
 mod span;
+pub mod specialize;
 mod thir;
 mod utils;
 
