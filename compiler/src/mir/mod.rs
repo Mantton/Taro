@@ -8,7 +8,6 @@ use index_vec::IndexVec;
 use rustc_hash::FxHashMap;
 
 pub mod builder;
-pub mod layout;
 pub mod optimize;
 pub mod package;
 pub mod pretty;

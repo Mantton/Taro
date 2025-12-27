@@ -1,28 +1,23 @@
 use crate::{
     compile::context::GlobalContext,
     hir::DefinitionID,
-    mir::{
-        Body, Constant, ConstantKind, Operand, Rvalue, StatementKind, TerminatorKind,
-        layout::{LayoutComputer, Shape},
-    },
-    sema::models::{GenericArgument, GenericArguments, Ty, TyKind},
+    mir::{Body, Constant, ConstantKind, Operand, Rvalue, StatementKind, TerminatorKind},
+    sema::models::{GenericArgument, GenericArguments},
     specialize::Instance,
 };
-use inkwell::context::Context;
 use rustc_hash::FxHashSet;
 use std::mem;
 
 /// Collects all function instantiations needed for a MIR package.
 ///
-/// Implements a Rust-style reachability analysis:
+/// Implements a reachability analysis:
 /// 1. Start with concrete entry points (roots)
 /// 2. Scan each instance's MIR for generic calls
-/// 3. Compute instantiation keys (mono or shape)
-/// 4. Add to worklist and repeat until fixpoint
+/// 3. Add discovered instantiations to worklist
+/// 4. Repeat until fixpoint
 pub fn collect_instances<'ctx>(package: &crate::mir::MirPackage<'ctx>, gcx: GlobalContext<'ctx>) {
     let mut collector = Collector {
         gcx,
-        layout_context: Context::create(),
         items: FxHashSet::default(),
         worklist: Vec::new(),
     };
@@ -50,7 +45,6 @@ pub fn collect_instances<'ctx>(package: &crate::mir::MirPackage<'ctx>, gcx: Glob
 
 pub struct Collector<'ctx> {
     gcx: GlobalContext<'ctx>,
-    layout_context: Context,
     /// Discovered instances
     items: FxHashSet<Instance<'ctx>>,
     /// Worklist for graph traversal
@@ -64,7 +58,7 @@ impl<'ctx> Collector<'ctx> {
         if let Some(entry_id) = package.entry {
             let generics = self.gcx.generics_of(entry_id);
             if generics.is_empty() {
-                let root = Instance::Concrete(entry_id, &[]);
+                let root = Instance::new(entry_id, &[]);
                 self.worklist.push(root);
             }
         }
@@ -73,7 +67,7 @@ impl<'ctx> Collector<'ctx> {
         for (&def_id, _) in &package.functions {
             let generics = self.gcx.generics_of(def_id);
             if generics.is_empty() {
-                let root = Instance::Concrete(def_id, &[]);
+                let root = Instance::new(def_id, &[]);
                 if !self.items.contains(&root) {
                     self.worklist.push(root);
                 }
@@ -170,22 +164,14 @@ impl<'ctx> Collector<'ctx> {
         parent: Instance<'ctx>,
         call_args: GenericArguments<'ctx>,
     ) -> GenericArguments<'ctx> {
-        match parent {
-            Instance::Concrete(_, parent_args) => {
-                // If parent is concrete, substitute its types into the call's args
-                if parent_args.is_empty() {
-                    // Parent has no substitutions, call args are already concrete
-                    call_args
-                } else {
-                    // Perform substitution
-                    self.substitute_with_args(call_args, parent_args)
-                }
-            }
-            Instance::Shape(_, _) => {
-                // Shape specialization: args should already be resolved
-                // TODO: This needs more sophisticated handling
-                call_args
-            }
+        let parent_args = parent.args();
+        
+        if parent_args.is_empty() {
+            // Parent has no substitutions, call args are already concrete
+            call_args
+        } else {
+            // Perform substitution
+            self.substitute_with_args(call_args, parent_args)
         }
     }
 
@@ -220,47 +206,7 @@ impl<'ctx> Collector<'ctx> {
         def_id: DefinitionID,
         args: GenericArguments<'ctx>,
     ) -> Instance<'ctx> {
-        let attributes = self.gcx.attributes_of(def_id);
-        let is_mono = attributes
-            .iter()
-            .any(|attr| attr.identifier.symbol.as_str() == "mono");
-
-        if is_mono || !self.can_shape_specialize(args) {
-            println!("Mono!");
-            Instance::Concrete(def_id, args)
-        } else {
-            println!("Shapes!");
-
-            let shapes = self.compute_shapes(args);
-            Instance::Shape(def_id, shapes)
-        }
-    }
-
-    fn can_shape_specialize(&self, args: GenericArguments<'ctx>) -> bool {
-        args.iter().all(|arg| match *arg {
-            GenericArgument::Type(ty) => self.is_shapeable_type(ty),
-            GenericArgument::Const(_) => false,
-        })
-    }
-
-    fn is_shapeable_type(&self, ty: Ty<'ctx>) -> bool {
-        !matches!(
-            ty.kind(),
-            TyKind::Parameter(_) | TyKind::Infer(_) | TyKind::Error
-        )
-    }
-
-    fn compute_shapes(&self, args: GenericArguments<'ctx>) -> &'ctx [Shape] {
-        let layout = LayoutComputer::new(self.gcx, &self.layout_context);
-        let mut shapes = Vec::with_capacity(args.len());
-
-        for arg in args {
-            if let GenericArgument::Type(ty) = *arg {
-                shapes.push(layout.compute_shape(ty));
-            }
-        }
-
-        let shapes = self.gcx.store.arenas.global.alloc(shapes);
-        shapes.as_slice()
+        // Always use monomorphization (concrete instantiation)
+        Instance::new(def_id, args)
     }
 }

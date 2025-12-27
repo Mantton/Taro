@@ -290,16 +290,30 @@ impl<'arena> GlobalContext<'arena> {
         self.context.store.object_files.borrow().get(&pkg).cloned()
     }
 
-    pub fn cache_specializations(
-        self,
-        pkg: PackageIndex,
-        instances: FxHashSet<Instance<'arena>>,
-    ) {
+    pub fn cache_specializations(self, pkg: PackageIndex, instances: FxHashSet<Instance<'arena>>) {
         self.context
             .store
             .specialization_instances
             .borrow_mut()
             .insert(pkg, instances);
+    }
+
+    pub fn specializations_of(self, pkg: PackageIndex) -> Vec<Instance<'arena>> {
+        let cache = self.context.store.specialization_instances.borrow();
+        match cache.get(&pkg) {
+            Some(instances) => instances.iter().copied().collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Mark an instance as compiled (to avoid duplicate compilation).
+    pub fn mark_instance_compiled(self, instance: Instance<'arena>) {
+        self.context.store.compiled_instances.borrow_mut().insert(instance);
+    }
+
+    /// Check if an instance has already been compiled.
+    pub fn is_instance_compiled(self, instance: Instance<'arena>) -> bool {
+        self.context.store.compiled_instances.borrow().contains(&instance)
     }
 
     pub fn all_object_files(self) -> Vec<PathBuf> {
@@ -385,6 +399,8 @@ pub struct CompilerStore<'arena> {
     pub link_inputs: RefCell<Vec<PathBuf>>,
     pub output_root: PathBuf,
     pub specialization_instances: RefCell<FxHashMap<PackageIndex, FxHashSet<Instance<'arena>>>>,
+    /// Global set of instances that have been compiled (to avoid duplicate work)
+    pub compiled_instances: RefCell<FxHashSet<Instance<'arena>>>,
     /// Target-specific layout information (shared between MIR and codegen).
     pub target_layout: TargetLayout,
 }
@@ -408,6 +424,7 @@ impl<'arena> CompilerStore<'arena> {
             link_inputs: Default::default(),
             output_root,
             specialization_instances: Default::default(),
+            compiled_instances: Default::default(),
             target_layout,
         })
     }

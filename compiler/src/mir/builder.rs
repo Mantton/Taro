@@ -37,7 +37,7 @@ enum CleanupAction {
 struct PendingEdge {
     block: BasicBlockId,
     cleanup: Option<CleanupId>,
-    span: Span,
+    _span: Span,
 }
 
 #[derive(Debug)]
@@ -356,7 +356,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         edges.push(PendingEdge {
             block,
             cleanup,
-            span,
+            _span: span,
         });
         let next = self.new_block_with_note("after break_scope (unreachable)".into());
         mir::BlockAnd(next, ())
@@ -489,7 +489,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         self.current_cleanup = Some(idx);
     }
 
-    pub(crate) fn in_if_then_scope<F>(&mut self, span: Span, f: F) -> (BasicBlockId, BasicBlockId)
+    pub(crate) fn in_if_then_scope<F>(&mut self, _: Span, f: F) -> (BasicBlockId, BasicBlockId)
     where
         F: FnOnce(&mut Self) -> BlockAnd<()>,
     {
@@ -518,7 +518,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         scope.else_edges.push(PendingEdge {
             block,
             cleanup,
-            span,
+            _span: span,
         });
         self.terminate(block, span, TerminatorKind::UnresolvedGoto);
     }

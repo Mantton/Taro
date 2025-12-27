@@ -1,11 +1,8 @@
 use crate::{
     compile::context::GlobalContext,
     hir::{self, NodeID, PatternPath, Resolution},
-    sema::{resolve::models::VariantCtorKind, tycheck::results::TypeCheckResults},
-    thir::{
-        AdtExpression, Constant, ConstantKind, Expr, ExprKind, FieldIndex, FieldPattern, Pattern,
-        PatternKind,
-    },
+    sema::tycheck::results::TypeCheckResults,
+    thir::{Constant, ConstantKind, FieldIndex, FieldPattern, Pattern, PatternKind},
 };
 
 pub fn pattern_from_hir<'ctx>(

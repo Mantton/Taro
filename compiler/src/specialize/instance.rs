@@ -1,39 +1,30 @@
-use crate::{hir::DefinitionID, mir::layout::Shape, sema::models::GenericArguments};
+use crate::{hir::DefinitionID, sema::models::GenericArguments};
 
 /// Represents a specialized instance of a generic function.
 ///
 /// This is the unit of code generation: each `Instance` will result in
-/// a distinct LLVM function being emitted.
+/// a distinct LLVM function being emitted via monomorphization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Instance<'ctx> {
-    /// Monomorphized instance with concrete types.
-    /// Used when function has `@mono` attribute or by default.
-    /// Example: `foo::<i32, String>`
-    Concrete(DefinitionID, GenericArguments<'ctx>),
-
-    /// Shape-specialized instance.
-    /// Multiple concrete type combinations that share the same runtime layout
-    /// will use the same compiled code.
-    /// Example: `foo::<Shape(i32), Shape(ptr)>` used for both `(i32, *T)` and `(i32, *U)`
-    Shape(DefinitionID, &'ctx [Shape]),
+pub struct Instance<'ctx> {
+    /// The definition ID of the generic function.
+    pub def_id: DefinitionID,
+    /// The concrete type arguments for this instantiation.
+    pub args: GenericArguments<'ctx>,
 }
 
 impl<'ctx> Instance<'ctx> {
+    /// Create a new instance.
+    pub fn new(def_id: DefinitionID, args: GenericArguments<'ctx>) -> Self {
+        Self { def_id, args }
+    }
+
     /// Get the definition ID of this instance.
     pub fn def_id(&self) -> DefinitionID {
-        match self {
-            Instance::Concrete(id, _) => *id,
-            Instance::Shape(id, _) => *id,
-        }
+        self.def_id
     }
 
-    /// Returns true if this is a concrete (monomorphized) instance.
-    pub fn is_concrete(&self) -> bool {
-        matches!(self, Instance::Concrete(_, _))
-    }
-
-    /// Returns true if this is a shape-specialized instance.
-    pub fn is_shape(&self) -> bool {
-        matches!(self, Instance::Shape(_, _))
+    /// Get the generic arguments of this instance.
+    pub fn args(&self) -> GenericArguments<'ctx> {
+        self.args
     }
 }

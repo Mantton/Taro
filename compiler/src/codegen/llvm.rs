@@ -1,11 +1,15 @@
 use crate::{
-    codegen::mangle::mangle,
+    codegen::mangle::mangle_instance,
     compile::context::{Gcx, GlobalContext},
     error::CompileResult,
     hir,
     mir::{self, Operand},
-    sema::models::{FloatTy, IntTy, Ty, TyKind, UIntTy},
+    sema::{
+        models::{FloatTy, GenericArguments, IntTy, Ty, TyKind, UIntTy},
+        tycheck::utils::instantiate::instantiate_ty_with_args,
+    },
     span::Symbol,
+    specialize::Instance,
 };
 use inkwell::{
     AddressSpace, FloatPredicate, IntPredicate,
@@ -38,8 +42,8 @@ pub fn emit_package<'gcx>(
     module.set_triple(&target_layout.triple());
 
     let mut emitter = Emitter::new(&context, module, builder, gcx);
-    emitter.declare_functions(package);
-    emitter.lower_functions(package)?;
+    emitter.declare_instances();
+    emitter.lower_instances(package)?;
     emitter.emit_start_shim(package);
     emitter.run_function_passes();
 
@@ -56,13 +60,15 @@ struct Emitter<'llvm, 'gcx> {
     module: Module<'llvm>,
     builder: Builder<'llvm>,
     gcx: GlobalContext<'gcx>,
-    functions: FxHashMap<hir::DefinitionID, FunctionValue<'llvm>>,
+    functions: FxHashMap<Instance<'gcx>, FunctionValue<'llvm>>,
     strings: FxHashMap<Symbol, PointerValue<'llvm>>,
     target_data: inkwell::targets::TargetData,
     gc_descs: FxHashMap<Ty<'gcx>, PointerValue<'llvm>>,
     gc_desc_ty: inkwell::types::StructType<'llvm>,
     usize_ty: inkwell::types::IntType<'llvm>,
     shadow: Option<ShadowStackInfo<'llvm, 'gcx>>,
+    /// Current substitution context for monomorphization
+    current_subst: GenericArguments<'gcx>,
 }
 
 #[derive(Clone, Copy)]
@@ -122,24 +128,68 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             gc_desc_ty,
             usize_ty,
             shadow: None,
+            current_subst: &[],
+        }
+    }
+    /// Lower a type with substitution context applied.
+    fn lower_ty(&self, ty: Ty<'gcx>) -> Option<BasicTypeEnum<'llvm>> {
+        lower_type(
+            self.context,
+            self.gcx,
+            &self.target_data,
+            ty,
+            self.current_subst,
+        )
+    }
+
+    /// Lower a function signature with substitution context applied.
+    fn lower_fn_sig(
+        &self,
+        sig: &crate::sema::models::LabeledFunctionSignature<'gcx>,
+    ) -> FunctionType<'llvm> {
+        let params: Vec<BasicMetadataTypeEnum<'llvm>> = sig
+            .inputs
+            .iter()
+            .filter_map(|p| self.lower_ty(p.ty).map(|t| t.into()))
+            .collect();
+        match self.lower_ty(sig.output) {
+            Some(ret) => ret.fn_type(&params, sig.is_variadic),
+            None => self.context.void_type().fn_type(&params, sig.is_variadic),
         }
     }
 
-    fn declare_functions(&mut self, package: &mir::MirPackage<'gcx>) {
-        for (&def_id, _) in &package.functions {
+    fn declare_instances(&mut self) {
+        let current_pkg = self.gcx.package_index();
+        let instances = self.gcx.specializations_of(current_pkg);
+        for instance in instances {
+            let def_id = instance.def_id();
+            // Set substitution context for this instance
+            self.current_subst = instance.args();
+
             let sig = self.gcx.get_signature(def_id);
-            let fn_ty = lower_fn_sig(self.context, self.gcx, &self.target_data, sig);
-            let name = mangle(self.gcx, def_id);
+            let fn_ty = self.lower_fn_sig(sig);
+            let name = mangle_instance(self.gcx, instance);
+
             let f = self.module.add_function(&name, fn_ty, None);
-            self.functions.insert(def_id, f);
+            self.functions.insert(instance, f);
         }
     }
 
-    fn lower_functions(&mut self, package: &mir::MirPackage<'gcx>) -> CompileResult<()> {
-        for (&def_id, body) in &package.functions {
-            // let ident = self.gcx.definition_ident(def_id);
-            // println!("{} IR Lowering", ident.symbol);
-            self.lower_body(def_id, body)?;
+    fn lower_instances(&mut self, _package: &mir::MirPackage<'gcx>) -> CompileResult<()> {
+        let current_pkg = self.gcx.package_index();
+        let instances = self.gcx.specializations_of(current_pkg);
+        for instance in instances {
+            // Skip if already compiled by another package
+            if self.gcx.is_instance_compiled(instance) {
+                continue;
+            }
+
+            let def_id = instance.def_id();
+            let body = self.gcx.get_mir_body(def_id);
+            self.lower_body(instance, body)?;
+
+            // Mark as compiled so other packages don't duplicate work
+            self.gcx.mark_instance_compiled(instance);
         }
         Ok(())
     }
@@ -148,7 +198,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let Some(entry) = package.entry else {
             return;
         };
-        let Some(&user_fn) = self.functions.get(&entry) else {
+        // Entry point is always a concrete instance with no generic args
+        let entry_instance = Instance::new(entry, &[]);
+        let Some(&user_fn) = self.functions.get(&entry_instance) else {
             return;
         };
         let entry_sig = self.gcx.get_signature(entry);
@@ -254,12 +306,15 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
     fn lower_body(
         &mut self,
-        def_id: hir::DefinitionID,
+        instance: Instance<'gcx>,
         body: &mir::Body<'gcx>,
     ) -> CompileResult<()> {
+        // Set substitution context for monomorphization
+        self.current_subst = instance.args();
+
         let function = *self
             .functions
-            .get(&def_id)
+            .get(&instance)
             .expect("function must be declared");
 
         let llvm_blocks = self.create_blocks(function, body);
@@ -320,7 +375,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             // Use stack slots for all locals with a representable LLVM type.
             // This avoids incorrect behavior at control-flow joins when "locals"
             // are tracked purely in the emitter (would require PHI construction).
-            let storage = match lower_type(self.context, self.gcx, &self.target_data, decl.ty) {
+            let storage = match self.lower_ty(decl.ty) {
                 Some(ty) => {
                     let slot = alloc_builder.build_alloca(ty, &name).unwrap();
                     LocalStorage::Stack(slot)
@@ -690,8 +745,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         place_ty.format(self.gcx)
                     ),
                 };
-                let enum_ty =
-                    lower_type(self.context, self.gcx, &self.target_data, place_ty).expect("enum");
+                let enum_ty = self.lower_ty(place_ty).expect("enum");
                 let enum_struct = enum_ty.into_struct_type();
                 let discr_ptr = self
                     .builder
@@ -756,8 +810,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         place_ty.format(self.gcx)
                     ),
                 };
-                let enum_ty =
-                    lower_type(self.context, self.gcx, &self.target_data, place_ty).expect("enum");
+                let enum_ty = self.lower_ty(place_ty).expect("enum");
                 let enum_struct = enum_ty.into_struct_type();
                 let discr_ptr = self
                     .builder
@@ -771,9 +824,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             }
             mir::Rvalue::Aggregate { .. } => unreachable!("aggregates should be lowered in MIR"),
             mir::Rvalue::Alloc { ty: alloc_ty } => {
-                let llvm_payload_ty =
-                    lower_type(self.context, self.gcx, &self.target_data, *alloc_ty)
-                        .expect("alloc type");
+                let llvm_payload_ty = self.lower_ty(*alloc_ty).expect("alloc type");
                 let size = self.target_data.get_store_size(&llvm_payload_ty);
                 let size_const = self.usize_ty.const_int(size, false);
                 let desc_ptr = self.gc_desc_for(*alloc_ty);
@@ -1302,24 +1353,30 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
     fn lower_callable(&mut self, func: &Operand<'gcx>) -> FunctionValue<'llvm> {
         if let Operand::Constant(c) = func {
-            if let mir::ConstantKind::Function(def_id, _, _) = c.value {
-                if let Some(&f) = self.functions.get(&def_id) {
+            if let mir::ConstantKind::Function(def_id, args, _) = c.value {
+                let instance = Instance::new(def_id, args);
+
+                if let Some(&f) = self.functions.get(&instance) {
                     return f;
                 }
 
                 if self.is_foreign_function(def_id) {
                     let f = self.declare_foreign_function(def_id);
-                    self.functions.insert(def_id, f);
+                    self.functions.insert(instance, f);
                     return f;
                 }
 
                 // Not declared yet (likely from another package); declare as external.
+                // Set substitution context for signature lowering
+                let prev_subst = self.current_subst;
+                self.current_subst = instance.args();
                 let sig = self.gcx.get_signature(def_id);
-                let fn_ty = lower_fn_sig(self.context, self.gcx, &self.target_data, sig);
-                let name = mangle(self.gcx, def_id);
+                let fn_ty = self.lower_fn_sig(sig);
+                let name = mangle_instance(self.gcx, instance);
                 let linkage = Some(Linkage::External);
                 let f = self.module.add_function(&name, fn_ty, linkage);
-                self.functions.insert(def_id, f);
+                self.functions.insert(instance, f);
+                self.current_subst = prev_subst;
                 return f;
             }
         }
@@ -1373,7 +1430,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 LocalStorage::Value(Some(v)) => Some(v),
                 LocalStorage::Value(None) => None,
                 LocalStorage::Stack(ptr) => {
-                    let ty = lower_type(self.context, self.gcx, &self.target_data, place_ty)?;
+                    let ty = self.lower_ty(place_ty)?;
                     Some(self.builder.build_load(ty, ptr, "load").unwrap())
                 }
             };
@@ -1382,7 +1439,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let ptr = self.project_place(place, body, locals);
         match ptr {
             Ok(ptr) => {
-                let elem_ty = lower_type(self.context, self.gcx, &self.target_data, place_ty)?;
+                let elem_ty = self.lower_ty(place_ty)?;
                 Some(self.builder.build_load(elem_ty, ptr, "load").unwrap())
             }
             Err(_) => None,
@@ -1401,14 +1458,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 locals[local.index()] = LocalStorage::Value(Some(value));
             }
             LocalStorage::Stack(ptr) => {
-                if lower_type(
-                    self.context,
-                    self.gcx,
-                    &self.target_data,
-                    body.locals[local].ty,
-                )
-                .is_some()
-                {
+                if self.lower_ty(body.locals[local].ty).is_some() {
                     let _ = self.builder.build_store(ptr, value).unwrap();
                 }
             }
@@ -1482,8 +1532,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 }
                 mir::PlaceElem::Field(idx, field_ty) => {
                     // Compute pointer to the requested field.
-                    let agg_ty = lower_type(self.context, self.gcx, &self.target_data, ty)
-                        .expect("aggregate type lowered");
+                    let agg_ty = self.lower_ty(ty).expect("aggregate type lowered");
                     let struct_ty = match agg_ty {
                         BasicTypeEnum::StructType(st) => st,
                         _ => panic!(
@@ -1510,8 +1559,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         .payload_field_index
                         .expect("enum payload field index");
 
-                    let enum_ty =
-                        lower_type(self.context, self.gcx, &self.target_data, ty).expect("enum");
+                    let enum_ty = self.lower_ty(ty).expect("enum");
                     let enum_struct = enum_ty.into_struct_type();
                     let payload_ptr = self
                         .builder
@@ -1519,14 +1567,13 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         .unwrap();
 
                     let variant_ty = enum_variant_tuple_ty(self.gcx, def.id, *index);
-                    let _variant_struct =
-                        match lower_type(self.context, self.gcx, &self.target_data, variant_ty) {
-                            Some(BasicTypeEnum::StructType(st)) => st,
-                            None => self.context.struct_type(&[], false),
-                            Some(other) => {
-                                panic!("variant tuple lowered to non-struct {:?}", other);
-                            }
-                        };
+                    let _variant_struct = match self.lower_ty(variant_ty) {
+                        Some(BasicTypeEnum::StructType(st)) => st,
+                        None => self.context.struct_type(&[], false),
+                        Some(other) => {
+                            panic!("variant tuple lowered to non-struct {:?}", other);
+                        }
+                    };
                     let variant_ptr = self
                         .builder
                         .build_bit_cast(
@@ -1588,8 +1635,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             mir::ConstantKind::String(sym) => {
                 let ptr = self.lower_string(sym);
                 let len = self.usize_ty.const_int(sym.as_str().len() as u64, false);
-                let Some(ty) = lower_type(self.context, self.gcx, &self.target_data, constant.ty)
-                else {
+                let Some(ty) = self.lower_ty(constant.ty) else {
                     return None;
                 };
                 let string_ty = ty.into_struct_type();
@@ -1604,10 +1650,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 .float_type(constant.ty)
                 .map(|ty| ty.const_float(f).as_basic_value_enum()),
             mir::ConstantKind::Unit => None,
-            mir::ConstantKind::Function(def_id, _, _) => self
-                .functions
-                .get(&def_id)
-                .map(|f| f.as_global_value().as_pointer_value().as_basic_value_enum()),
+            mir::ConstantKind::Function(def_id, args, _) => {
+                let instance = Instance::new(def_id, args);
+                self.functions
+                    .get(&instance)
+                    .map(|f| f.as_global_value().as_pointer_value().as_basic_value_enum())
+            }
         }
     }
 
@@ -1677,8 +1725,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             return gv;
         }
 
-        let llvm_ty =
-            lower_type(self.context, self.gcx, &self.target_data, ty).expect("lower type");
+        let llvm_ty = self.lower_ty(ty).expect("lower type");
         let size = self.target_data.get_store_size(&llvm_ty);
         let align = self.target_data.get_abi_alignment(&llvm_ty) as u64;
 
@@ -1806,7 +1853,7 @@ fn enum_layout<'llvm>(
                 if fields.is_empty() {
                     (0u64, 1u64)
                 } else {
-                    let struct_ty = enum_variant_struct_ty(context, gcx, target_data, fields);
+                    let struct_ty = enum_variant_struct_ty(context, gcx, target_data, fields, &[]);
                     let size = target_data.get_store_size(&struct_ty);
                     let align = target_data.get_abi_alignment(&struct_ty) as u64;
                     (size, align)
@@ -1836,15 +1883,16 @@ fn enum_layout<'llvm>(
     }
 }
 
-fn enum_variant_struct_ty<'llvm>(
+fn enum_variant_struct_ty<'llvm, 'gcx>(
     context: &'llvm Context,
-    gcx: Gcx<'_>,
+    gcx: GlobalContext<'gcx>,
     target_data: &TargetData,
-    fields: &[crate::sema::models::EnumVariantField<'_>],
+    fields: &[crate::sema::models::EnumVariantField<'gcx>],
+    subst: GenericArguments<'gcx>,
 ) -> StructType<'llvm> {
     let field_tys: Vec<BasicTypeEnum<'llvm>> = fields
         .iter()
-        .filter_map(|field| lower_type(context, gcx, target_data, field.ty))
+        .filter_map(|field| lower_type(context, gcx, target_data, field.ty, subst))
         .collect();
     context.struct_type(&field_tys, false)
 }
@@ -1889,7 +1937,7 @@ fn enum_pointer_offsets<'llvm>(
         if fields.is_empty() {
             continue;
         }
-        let struct_ty = enum_variant_struct_ty(context, gcx, target_data, fields);
+        let struct_ty = enum_variant_struct_ty(context, gcx, target_data, fields, &[]);
         for (idx, field) in fields.iter().enumerate() {
             if !is_pointer_ty(field.ty) {
                 continue;
@@ -1912,29 +1960,38 @@ fn is_pointer_ty(ty: Ty) -> bool {
     )
 }
 
-fn lower_fn_sig<'llvm>(
+fn lower_fn_sig<'llvm, 'gcx>(
     context: &'llvm Context,
-    gcx: Gcx<'_>,
+    gcx: GlobalContext<'gcx>,
     target_data: &TargetData,
-    sig: &crate::sema::models::LabeledFunctionSignature,
+    sig: &crate::sema::models::LabeledFunctionSignature<'gcx>,
 ) -> FunctionType<'llvm> {
     let params: Vec<BasicMetadataTypeEnum<'llvm>> = sig
         .inputs
         .iter()
-        .filter_map(|p| lower_type(context, gcx, target_data, p.ty).map(|t| t.into()))
+        .filter_map(|p| lower_type(context, gcx, target_data, p.ty, &[]).map(|t| t.into()))
         .collect();
-    match lower_type(context, gcx, target_data, sig.output) {
+    match lower_type(context, gcx, target_data, sig.output, &[]) {
         Some(ret) => ret.fn_type(&params, sig.is_variadic),
         None => context.void_type().fn_type(&params, sig.is_variadic),
     }
 }
 
-fn lower_type<'llvm>(
+#[track_caller]
+fn lower_type<'llvm, 'gcx>(
     context: &'llvm Context,
-    gcx: Gcx<'_>,
+    gcx: GlobalContext<'gcx>,
     target_data: &TargetData,
-    ty: Ty,
+    ty: Ty<'gcx>,
+    subst: GenericArguments<'gcx>,
 ) -> Option<BasicTypeEnum<'llvm>> {
+    // Resolve type parameters first
+    let ty = if subst.is_empty() {
+        ty
+    } else {
+        instantiate_ty_with_args(gcx, ty, subst)
+    };
+
     match ty.kind() {
         TyKind::Bool => Some(context.bool_type().into()),
         TyKind::Rune => Some(context.i32_type().into()),
@@ -1956,7 +2013,7 @@ fn lower_type<'llvm>(
                 let field_tys: Vec<BasicTypeEnum<'llvm>> = defn
                     .fields
                     .iter()
-                    .filter_map(|f| lower_type(context, gcx, target_data, f.ty))
+                    .filter_map(|f| lower_type(context, gcx, target_data, f.ty, subst))
                     .collect();
                 Some(context.struct_type(&field_tys, false).into())
             }
@@ -1991,7 +2048,7 @@ fn lower_type<'llvm>(
             } else {
                 let fields: Vec<BasicTypeEnum<'llvm>> = items
                     .iter()
-                    .filter_map(|t| lower_type(context, gcx, target_data, *t))
+                    .filter_map(|t| lower_type(context, gcx, target_data, *t, subst))
                     .collect();
                 Some(context.struct_type(&fields, false).into())
             }
@@ -2001,7 +2058,13 @@ fn lower_type<'llvm>(
                 .ptr_type(AddressSpace::default())
                 .as_basic_type_enum(),
         ),
-        TyKind::Parameter(_) => todo!(),
+        TyKind::Parameter(_) => {
+            // Should have been resolved by instantiate_ty_with_args above
+            unreachable!(
+                "unresolved type parameter in lower_type: {}",
+                ty.format(gcx)
+            )
+        }
         TyKind::Infer(_) | TyKind::Error => unreachable!(),
     }
 }

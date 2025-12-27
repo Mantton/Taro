@@ -2,53 +2,69 @@ use crate::{
     compile::context::GlobalContext,
     hir,
     sema::{
-        models::{Ty, TyKind},
+        models::{GenericArgument, Ty, TyKind},
         resolve::models::{DefinitionKind, PrimaryType, TypeHead},
     },
+    specialize::Instance,
 };
 use rustc_hash::FxHashSet;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-pub fn mangle(gcx: GlobalContext, id: hir::DefinitionID) -> String {
-    fn sanitize(s: &str) -> String {
-        s.chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '_' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect()
-    }
+fn sanitize(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
 
-    fn ty_symbol(gcx: GlobalContext, ty: Ty) -> String {
-        match ty.kind() {
-            TyKind::Bool => "bool".into(),
-            TyKind::Rune => "rune".into(),
-            TyKind::String => "str".into(),
-            TyKind::Int(i) => i.name_str().into(),
-            TyKind::UInt(u) => u.name_str().into(),
-            TyKind::Float(f) => f.name_str().into(),
-            TyKind::Pointer(inner, mt) => {
-                format!("ptr{}{}", mt.display_str(), ty_symbol(gcx, inner))
-            }
-            TyKind::Reference(inner, mt) => {
-                format!("ref{}{}", mt.display_str(), ty_symbol(gcx, inner))
-            }
-            TyKind::GcPtr => "gcptr".into(),
-            TyKind::Adt(def) => gcx.definition_ident(def.id).symbol.as_str().into(),
-            TyKind::Tuple(items) => {
-                let parts: Vec<_> = items.iter().map(|t| ty_symbol(gcx, *t)).collect();
-                format!("tuple{}", parts.join("_"))
-            }
-            TyKind::FnPointer { .. } => "fnptr".into(),
-            TyKind::Parameter(_) => todo!(),
-            TyKind::Infer(_) | TyKind::Error => "err".into(),
+fn ty_symbol_with(gcx: GlobalContext, ty: Ty) -> String {
+    match ty.kind() {
+        TyKind::Bool => "bool".into(),
+        TyKind::Rune => "rune".into(),
+        TyKind::String => "str".into(),
+        TyKind::Int(i) => i.name_str().into(),
+        TyKind::UInt(u) => u.name_str().into(),
+        TyKind::Float(f) => f.name_str().into(),
+        TyKind::Pointer(inner, mt) => {
+            format!("ptr{}{}", mt.display_str(), ty_symbol_with(gcx, inner))
         }
+        TyKind::Reference(inner, mt) => {
+            format!("ref{}{}", mt.display_str(), ty_symbol_with(gcx, inner))
+        }
+        TyKind::GcPtr => "gcptr".into(),
+        TyKind::Adt(def) => {
+            let ident = gcx.definition_ident(def.id);
+            let name = ident.symbol.as_str();
+            sanitize(name)
+        }
+        TyKind::Tuple(items) => {
+            let parts: Vec<_> = items
+                .iter()
+                .map(|t| ty_symbol_with(gcx, *t))
+                .collect();
+            format!("tuple{}", parts.join("_"))
+        }
+        TyKind::FnPointer { .. } => "fnptr".into(),
+        TyKind::Parameter(p) => p.name.as_str().into(),
+        TyKind::Infer(_) | TyKind::Error => "err".into(),
     }
+}
 
+fn ty_symbol_for_mangle(gcx: GlobalContext, ty: Ty) -> String {
+    ty_symbol_with(gcx, ty)
+}
+
+fn ty_symbol_for_instance(gcx: GlobalContext, ty: Ty) -> String {
+    ty_symbol_with(gcx, ty)
+}
+
+pub fn mangle(gcx: GlobalContext, id: hir::DefinitionID) -> String {
     fn type_head_symbol(gcx: GlobalContext, head: TypeHead) -> String {
         match head {
             TypeHead::Primary(PrimaryType::Bool) => "bool".into(),
@@ -131,12 +147,33 @@ pub fn mangle(gcx: GlobalContext, id: hir::DefinitionID) -> String {
         let sig = gcx.get_signature(id);
         let mut hasher = DefaultHasher::new();
         for input in &sig.inputs {
-            ty_symbol(gcx, input.ty).hash(&mut hasher);
+            ty_symbol_for_mangle(gcx, input.ty).hash(&mut hasher);
         }
-        ty_symbol(gcx, sig.output).hash(&mut hasher);
+        ty_symbol_for_mangle(gcx, sig.output).hash(&mut hasher);
         let hash = hasher.finish();
         mangled.push_str(&format!("__h{hash:016x}"));
     }
 
     mangled
+}
+
+/// Mangle an Instance (specialized function) to a unique symbol name.
+pub fn mangle_instance(gcx: GlobalContext, instance: Instance) -> String {
+    let def_id = instance.def_id();
+    let base = mangle(gcx, def_id);
+    let args = instance.args();
+
+    if args.is_empty() {
+        base
+    } else {
+        // Add type args suffix
+        let suffix: Vec<_> = args
+            .iter()
+            .map(|arg| match arg {
+                GenericArgument::Type(ty) => ty_symbol_for_instance(gcx, *ty),
+                GenericArgument::Const(c) => format!("c{:?}", c),
+            })
+            .collect();
+        format!("{}$${}", base, suffix.join("_"))
+    }
 }
