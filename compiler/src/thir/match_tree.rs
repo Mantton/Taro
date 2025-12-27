@@ -4,7 +4,10 @@
 use crate::{
     compile::context::GlobalContext,
     hir::NodeID,
-    sema::models::{AdtDef, AdtKind, EnumVariant, EnumVariantKind, Ty, TyKind},
+    sema::{
+        models::{AdtDef, AdtKind, EnumVariant, EnumVariantKind, Ty, TyKind},
+        tycheck::utils::instantiate::instantiate_enum_definition_with_args,
+    },
     span::{Span, Symbol},
     thir::{ArmId, ConstantKind, ExprId, FieldPattern, Pattern, PatternKind, ThirFunction},
 };
@@ -398,8 +401,9 @@ impl<'ctx> Compiler<'ctx> {
                     None,
                 )
             }
-            TyKind::Adt(def, _) if def.kind == AdtKind::Enum => {
+            TyKind::Adt(def, args) if def.kind == AdtKind::Enum => {
                 let enum_def = self.gcx.get_enum_definition(def.id);
+                let enum_def = instantiate_enum_definition_with_args(self.gcx, &enum_def, args);
                 let cases = enum_def
                     .variants
                     .iter()

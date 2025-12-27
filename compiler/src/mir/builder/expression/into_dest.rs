@@ -195,6 +195,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     kind: AggregateKind::Adt {
                         def_id: adt_expression.definition.id,
                         variant_index: adt_expression.variant_index,
+                        generic_args: adt_expression.generic_args,
                     },
                     fields,
                 };

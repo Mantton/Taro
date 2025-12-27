@@ -193,17 +193,18 @@ pub enum Rvalue<'ctx> {
         ty: Ty<'ctx>,
     },
     Aggregate {
-        kind: AggregateKind,
+        kind: AggregateKind<'ctx>,
         fields: IndexVec<FieldIndex, Operand<'ctx>>,
     },
 }
 
 #[derive(Debug, Clone)]
-pub enum AggregateKind {
+pub enum AggregateKind<'ctx> {
     Tuple,
     Adt {
         def_id: DefinitionID,
         variant_index: Option<VariantIndex>,
+        generic_args: GenericArguments<'ctx>,
     },
 }
 

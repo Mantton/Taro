@@ -199,10 +199,8 @@ impl<'ctx> ConstraintSystem<'ctx> {
             let var_ty = Ty::new(TyKind::Infer(InferTy::TyVar(var_id)), gcx);
             let resolved = self.infer_cx.resolve_vars_if_possible(var_ty);
             if resolved.is_infer() {
-                panic!(
-                    "ICE: unresolved type var {:?} at {:?} with no errors",
-                    var_id, origin.location
-                );
+                gcx.dcx()
+                    .emit_error("unable to infer type".into(), Some(origin.location));
             }
         }
     }

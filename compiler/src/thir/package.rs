@@ -360,6 +360,9 @@ impl<'ctx> FunctionLower<'ctx> {
                 }
                 if let Some(ctor_id) = self.variant_ctor_callee(callee) {
                     let (definition, variant_index) = self.enum_variant_from_ctor(ctor_id);
+                    let TyKind::Adt(_, generic_args) = ty.kind() else {
+                        unreachable!()
+                    };
                     let fields = arguments
                         .iter()
                         .enumerate()
@@ -372,6 +375,7 @@ impl<'ctx> FunctionLower<'ctx> {
                         kind: ExprKind::Adt(thir::AdtExpression {
                             definition,
                             variant_index: Some(variant_index),
+                            generic_args,
                             fields,
                         }),
                         ty,
@@ -573,7 +577,7 @@ impl<'ctx> FunctionLower<'ctx> {
             }
 
             hir::ExpressionKind::StructLiteral(literal) => {
-                let TyKind::Adt(definition, _) = ty.kind() else {
+                let TyKind::Adt(definition, generic_args) = ty.kind() else {
                     unreachable!()
                 };
 
@@ -584,6 +588,7 @@ impl<'ctx> FunctionLower<'ctx> {
                 let node = thir::AdtExpression {
                     definition,
                     variant_index: None,
+                    generic_args,
                     fields: literal
                         .fields
                         .iter()
@@ -666,9 +671,14 @@ impl<'ctx> FunctionLower<'ctx> {
                 DefinitionKind::VariantConstructor(VariantCtorKind::Constant),
             ) => {
                 let (definition, variant_index) = self.enum_variant_from_ctor(ctor_id);
+                let ty = self.results.node_type(expr.id);
+                let TyKind::Adt(_, generic_args) = ty.kind() else {
+                    unreachable!()
+                };
                 ExprKind::Adt(thir::AdtExpression {
                     definition,
                     variant_index: Some(variant_index),
+                    generic_args,
                     fields: Vec::new(),
                 })
             }

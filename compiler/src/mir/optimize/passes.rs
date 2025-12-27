@@ -7,6 +7,7 @@ use crate::mir::{
     PlaceElem, Rvalue, Statement, StatementKind, TerminatorKind,
 };
 use crate::sema::models::{AdtKind, EnumVariantKind, StructDefinition, Ty, TyKind};
+use crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args;
 use crate::thir::FieldIndex;
 use rustc_hash::FxHashSet;
 
@@ -116,6 +117,7 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                             crate::mir::AggregateKind::Adt {
                                 def_id,
                                 variant_index,
+                                generic_args,
                             } => {
                                 let kind = gcx.definition_kind(def_id);
                                 match kind {
@@ -126,7 +128,9 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                             temps.into_iter().zip(fields.iter())
                                         {
                                             let mut proj = dest.projection.clone();
-                                            proj.push(PlaceElem::Field(idx, field.ty));
+                                            let field_ty =
+                                                instantiate_ty_with_args(gcx, field.ty, generic_args);
+                                            proj.push(PlaceElem::Field(idx, field_ty));
                                             let place = Place {
                                                 local: dest.local,
                                                 projection: proj,

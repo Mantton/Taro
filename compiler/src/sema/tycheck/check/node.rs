@@ -257,10 +257,10 @@ impl<'ctx> Checker<'ctx> {
     ) -> Ty<'ctx> {
         let ty = self.synth_expression_kind(node, expectation, cs);
         cs.record_expr_ty(node.id, ty);
-        self.gcx().dcx().emit_info(
-            format!("Checked {}", ty.format(self.gcx())),
-            Some(node.span),
-        );
+        // self.gcx().dcx().emit_info(
+        //     format!("Checked {}", ty.format(self.gcx())),
+        //     Some(node.span),
+        // );
         ty
     }
 
@@ -1310,6 +1310,9 @@ impl<'ctx> Checker<'ctx> {
     fn resolve_callee(&self, node: &hir::Expression) -> Option<DefinitionID> {
         match &node.kind {
             hir::ExpressionKind::Path(path) => {
+                if let Some(resolution) = self.results.borrow().value_resolution(node.id) {
+                    return self.resolve_resolution_callee(&resolution);
+                }
                 let resolution = self.resolve_value_path_resolution(path, node.span, false);
                 self.resolve_resolution_callee(&resolution)
             }
@@ -1332,14 +1335,31 @@ impl<'ctx> Checker<'ctx> {
         span: Span,
         emit_errors: bool,
     ) -> hir::Resolution {
+        self.resolve_value_path_resolution_with_args(path, span, emit_errors)
+            .0
+    }
+
+    fn resolve_value_path_resolution_with_args(
+        &self,
+        path: &hir::ResolvedPath,
+        span: Span,
+        emit_errors: bool,
+    ) -> (
+        hir::Resolution,
+        Option<crate::sema::models::GenericArguments<'ctx>>,
+    ) {
         match path {
-            hir::ResolvedPath::Resolved(path) => path.resolution.clone(),
+            hir::ResolvedPath::Resolved(path) => (path.resolution.clone(), None),
             hir::ResolvedPath::Relative(base_ty, segment) => {
                 if !matches!(segment.resolution, hir::Resolution::Error) {
-                    return segment.resolution.clone();
+                    return (segment.resolution.clone(), None);
                 }
 
                 let base_ty = self.lower_type(base_ty);
+                let base_args = match base_ty.kind() {
+                    TyKind::Adt(_, args) if !args.is_empty() => Some(args),
+                    _ => None,
+                };
                 let Some(head) = self.type_head_from_value_ty(base_ty) else {
                     if emit_errors {
                         self.gcx().dcx().emit_error(
@@ -1347,15 +1367,18 @@ impl<'ctx> Checker<'ctx> {
                             Some(span),
                         );
                     }
-                    return hir::Resolution::Error;
+                    return (hir::Resolution::Error, None);
                 };
 
-                self.resolve_static_member_resolution(
-                    head,
-                    base_ty,
-                    &segment.identifier,
-                    segment.identifier.span,
-                    emit_errors,
+                (
+                    self.resolve_static_member_resolution(
+                        head,
+                        base_ty,
+                        &segment.identifier,
+                        segment.identifier.span,
+                        emit_errors,
+                    ),
+                    base_args,
                 )
             }
         }
@@ -1468,6 +1491,7 @@ impl<'ctx> Checker<'ctx> {
         resolution: &hir::Resolution,
         expectation: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
+        base_args: Option<crate::sema::models::GenericArguments<'ctx>>,
     ) -> Ty<'ctx> {
         if matches!(resolution, hir::Resolution::Error) {
             return Ty::error(self.gcx());
@@ -1478,7 +1502,16 @@ impl<'ctx> Checker<'ctx> {
         if let Some(def_id) = resolution.definition_id() {
             let generics = self.gcx().generics_of(def_id);
             if !generics.is_empty() && ty.needs_instantiation() {
-                let args = cs.infer_cx.fresh_args_for_def(def_id, span);
+                let args = if let Some(base_args) = base_args {
+                    GenericsBuilder::for_item(self.gcx(), def_id, |param, _| {
+                        base_args
+                            .get(param.index)
+                            .copied()
+                            .unwrap_or_else(|| cs.infer_cx.var_for_generic_param(param, span))
+                    })
+                } else {
+                    cs.infer_cx.fresh_args_for_def(def_id, span)
+                };
                 let instantiated = instantiate_ty_with_args(self.gcx(), ty, args);
                 cs.record_instantiation(node_id, args);
                 return instantiated;
@@ -1497,9 +1530,17 @@ impl<'ctx> Checker<'ctx> {
         expectation: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
-        let resolution = self.resolve_value_path_resolution(path, expression.span, true);
+        let (resolution, base_args) =
+            self.resolve_value_path_resolution_with_args(path, expression.span, true);
         self.record_value_path_resolution(expression.id, &resolution);
-        self.instantiate_value_path(expression.id, expression.span, &resolution, expectation, cs)
+        self.instantiate_value_path(
+            expression.id,
+            expression.span,
+            &resolution,
+            expectation,
+            cs,
+            base_args,
+        )
     }
 
     fn synth_member_expression(
@@ -1815,9 +1856,12 @@ impl<'ctx> Checker<'ctx> {
     ) -> Option<(crate::sema::models::EnumVariant<'ctx>, Ty<'ctx>)> {
         match path {
             hir::PatternPath::Qualified { path } => {
-                let resolution = self.resolve_value_path_resolution(path, span, true);
+                let (resolution, base_args) =
+                    self.resolve_value_path_resolution_with_args(path, span, true);
                 self.record_value_path_resolution(id, &resolution);
-                self.resolve_enum_variant_from_resolution(scrutinee, resolution, span, cs)
+                self.resolve_enum_variant_from_resolution(
+                    scrutinee, resolution, span, cs, base_args,
+                )
             }
             hir::PatternPath::Inferred { .. } => {
                 todo!("inferred enum patterns")
@@ -1860,6 +1904,7 @@ impl<'ctx> Checker<'ctx> {
         resolution: hir::Resolution,
         span: Span,
         cs: &mut Cs<'ctx>,
+        base_args: Option<crate::sema::models::GenericArguments<'ctx>>,
     ) -> Option<(crate::sema::models::EnumVariant<'ctx>, Ty<'ctx>)> {
         let gcx = self.gcx();
         let hir::Resolution::Definition(ctor_id, kind) = resolution else {
@@ -1908,15 +1953,19 @@ impl<'ctx> Checker<'ctx> {
             return None;
         };
 
-        let args = match scrutinee.kind() {
-            TyKind::Adt(adt_def, args) if adt_def.id == enum_id => {
-                if !args.is_empty() || gcx.generics_of(enum_id).is_empty() {
-                    args
-                } else {
-                    cs.infer_cx.fresh_args_for_def(enum_id, span)
+        let args = if let Some(base_args) = base_args {
+            base_args
+        } else {
+            match scrutinee.kind() {
+                TyKind::Adt(adt_def, args) if adt_def.id == enum_id => {
+                    if !args.is_empty() || gcx.generics_of(enum_id).is_empty() {
+                        args
+                    } else {
+                        cs.infer_cx.fresh_args_for_def(enum_id, span)
+                    }
                 }
+                _ => cs.infer_cx.fresh_args_for_def(enum_id, span),
             }
-            _ => cs.infer_cx.fresh_args_for_def(enum_id, span),
         };
 
         let enum_ty = Ty::new(TyKind::Adt(def.adt_def, args), gcx);

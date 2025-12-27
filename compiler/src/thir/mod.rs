@@ -124,7 +124,7 @@ pub enum ExprKind<'a> {
     },
     /// Block expression
     Block(BlockId),
-    Adt(AdtExpression),
+    Adt(AdtExpression<'a>),
     Field {
         lhs: ExprId,
         index: FieldIndex,
@@ -203,9 +203,10 @@ pub struct FieldExpression {
 }
 
 #[derive(Debug, Clone)]
-pub struct AdtExpression {
+pub struct AdtExpression<'a> {
     pub definition: AdtDef,
     pub variant_index: Option<VariantIndex>,
+    pub generic_args: GenericArguments<'a>,
     pub fields: Vec<FieldExpression>,
 }
 

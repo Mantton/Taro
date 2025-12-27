@@ -1596,7 +1596,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         .build_struct_gep(enum_struct, ptr, payload_index, "enum_payload_ptr")
                         .unwrap();
 
-                    let variant_ty = enum_variant_tuple_ty(self.gcx, def.id, *index);
+                    let variant_ty = enum_variant_tuple_ty(self.gcx, def.id, *index, adt_args);
                     let _variant_struct = match self.lower_ty(variant_ty) {
                         Some(BasicTypeEnum::StructType(st)) => st,
                         None => self.context.struct_type(&[], false),
@@ -1637,11 +1637,13 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     ty = *field_ty;
                 }
                 mir::PlaceElem::VariantDowncast { name: _, index } => {
-                    let def = match ty.kind() {
-                        TyKind::Adt(def, _) if def.kind == crate::sema::models::AdtKind::Enum => def,
+                    let (def, adt_args) = match ty.kind() {
+                        TyKind::Adt(def, args) if def.kind == crate::sema::models::AdtKind::Enum => {
+                            (def, args)
+                        }
                         _ => panic!("variant downcast on non-enum type {}", ty.format(self.gcx)),
                     };
-                    ty = enum_variant_tuple_ty(self.gcx, def.id, *index);
+                    ty = enum_variant_tuple_ty(self.gcx, def.id, *index, adt_args);
                 }
             }
         }
@@ -1936,6 +1938,7 @@ fn enum_variant_tuple_ty<'gcx>(
     gcx: Gcx<'gcx>,
     def_id: hir::DefinitionID,
     variant_index: crate::thir::VariantIndex,
+    adt_args: GenericArguments<'gcx>,
 ) -> Ty<'gcx> {
     let def = gcx.get_enum_definition(def_id);
     let variant = def
@@ -1947,7 +1950,8 @@ fn enum_variant_tuple_ty<'gcx>(
         crate::sema::models::EnumVariantKind::Tuple(fields) => {
             let mut tys = Vec::with_capacity(fields.len());
             for field in fields.iter() {
-                tys.push(field.ty);
+                let resolved = instantiate_ty_with_args(gcx, field.ty, adt_args);
+                tys.push(resolved);
             }
             let list = gcx.store.interners.intern_ty_list(tys);
             Ty::new(TyKind::Tuple(list), gcx)
@@ -1975,7 +1979,8 @@ fn enum_pointer_offsets<'llvm, 'gcx>(
         }
         let struct_ty = enum_variant_struct_ty(context, gcx, target_data, fields, adt_args);
         for (idx, field) in fields.iter().enumerate() {
-            if !is_pointer_ty(field.ty) {
+            let resolved = instantiate_ty_with_args(gcx, field.ty, adt_args);
+            if !is_pointer_ty(resolved) {
                 continue;
             }
             if let Some(off) = target_data.offset_of_element(&struct_ty, idx as u32) {

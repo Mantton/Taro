@@ -178,6 +178,7 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                     super::AggregateKind::Adt {
                         def_id,
                         variant_index,
+                        ..
                     } => {
                         let ident = self.gcx.definition_ident(*def_id);
                         write!(f, "{}", ident.symbol)?;
