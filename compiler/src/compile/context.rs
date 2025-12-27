@@ -1,7 +1,9 @@
 use crate::{
     PackageIndex,
+    codegen::target::TargetLayout,
     compile::config::Config,
     diagnostics::DiagCtx,
+    error::CompileResult,
     hir::{self, DefinitionID},
     mir::{self, Body},
     sema::{
@@ -345,14 +347,17 @@ pub struct CompilerStore<'arena> {
     pub object_files: RefCell<FxHashMap<PackageIndex, PathBuf>>,
     pub link_inputs: RefCell<Vec<PathBuf>>,
     pub output_root: PathBuf,
+    /// Target-specific layout information (shared between MIR and codegen).
+    pub target_layout: TargetLayout,
 }
 
 impl<'arena> CompilerStore<'arena> {
     pub fn new(
         arenas: &'arena CompilerArenas<'arena>,
         output_root: PathBuf,
-    ) -> CompilerStore<'arena> {
-        CompilerStore {
+    ) -> CompileResult<CompilerStore<'arena>> {
+        let target_layout = TargetLayout::for_host()?;
+        Ok(CompilerStore {
             arenas,
             interners: CompilerInterners::new(arenas),
             package_mapping: Default::default(),
@@ -364,7 +369,8 @@ impl<'arena> CompilerStore<'arena> {
             object_files: Default::default(),
             link_inputs: Default::default(),
             output_root,
-        }
+            target_layout,
+        })
     }
 
     pub fn add_link_input(&self, path: PathBuf) {

@@ -392,7 +392,12 @@ impl<'ctx> FunctionLower<'ctx> {
                     let lhs_expr = self.lower_expr(lhs);
                     let rhs_expr = self.lower_expr(rhs);
                     let callee_ty = self.gcx.get_type(def_id);
-                    let callee = self.push_expr(ExprKind::Zst { id: def_id }, callee_ty, expr.span);
+                    let generic_args = self.results.instantiation(expr.id);
+                    let callee = self.push_expr(
+                        ExprKind::Zst { id: def_id, generic_args },
+                        callee_ty,
+                        expr.span,
+                    );
                     ExprKind::Call {
                         callee,
                         args: vec![lhs_expr, rhs_expr],
@@ -425,7 +430,12 @@ impl<'ctx> FunctionLower<'ctx> {
                     // Lower as a method call
                     let operand_expr = self.lower_expr(operand);
                     let callee_ty = self.gcx.get_type(def_id);
-                    let callee = self.push_expr(ExprKind::Zst { id: def_id }, callee_ty, expr.span);
+                    let generic_args = self.results.instantiation(expr.id);
+                    let callee = self.push_expr(
+                        ExprKind::Zst { id: def_id, generic_args },
+                        callee_ty,
+                        expr.span,
+                    );
                     ExprKind::Call {
                         callee,
                         args: vec![operand_expr],
@@ -456,7 +466,12 @@ impl<'ctx> FunctionLower<'ctx> {
                     let lhs_expr = self.lower_expr(lhs);
                     let rhs_expr = self.lower_expr(rhs);
                     let callee_ty = self.gcx.get_type(def_id);
-                    let callee = self.push_expr(ExprKind::Zst { id: def_id }, callee_ty, expr.span);
+                    let generic_args = self.results.instantiation(expr.id);
+                    let callee = self.push_expr(
+                        ExprKind::Zst { id: def_id, generic_args },
+                        callee_ty,
+                        expr.span,
+                    );
                     ExprKind::Call {
                         callee,
                         args: vec![lhs_expr, rhs_expr],
@@ -533,7 +548,12 @@ impl<'ctx> FunctionLower<'ctx> {
                 all_args.extend(args);
 
                 let callee_ty = self.gcx.get_type(def_id);
-                let callee = self.push_expr(ExprKind::Zst { id: def_id }, callee_ty, expr.span);
+                let generic_args = self.results.instantiation(expr.id);
+                let callee = self.push_expr(
+                    ExprKind::Zst { id: def_id, generic_args },
+                    callee_ty,
+                    expr.span,
+                );
                 ExprKind::Call {
                     callee,
                     args: all_args,
@@ -618,11 +638,17 @@ impl<'ctx> FunctionLower<'ctx> {
             Resolution::Definition(
                 id,
                 DefinitionKind::Function | DefinitionKind::AssociatedFunction,
-            ) => ExprKind::Zst { id },
+            ) => ExprKind::Zst {
+                id,
+                generic_args: self.results.instantiation(expr.id),
+            },
             Resolution::Definition(
                 id,
                 DefinitionKind::VariantConstructor(VariantCtorKind::Function),
-            ) => ExprKind::Zst { id },
+            ) => ExprKind::Zst {
+                id,
+                generic_args: self.results.instantiation(expr.id),
+            },
             Resolution::Definition(
                 ctor_id,
                 DefinitionKind::VariantConstructor(VariantCtorKind::Constant),

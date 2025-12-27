@@ -27,7 +27,7 @@ pub fn run(
     let arenas = CompilerArenas::new();
     let project_root = arguments.path.canonicalize().map_err(|_| ReportedError)?;
     let target_root = project_root.join("target").join("objects");
-    let store = CompilerStore::new(&arenas, target_root);
+    let store = CompilerStore::new(&arenas, target_root)?;
     let icx = CompilerContext::new(dcx, store);
 
     let graph = sync_dependencies(arguments.path)?;

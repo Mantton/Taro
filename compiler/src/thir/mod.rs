@@ -1,7 +1,7 @@
 use crate::{
     hir::{DefinitionID, NodeID},
     mir::{BinaryOperator, LogicalOperator, UnaryOperator},
-    sema::models::{AdtDef, EnumVariant, Ty},
+    sema::models::{AdtDef, EnumVariant, GenericArguments, Ty},
     span::{Span, Symbol},
 };
 use index_vec::IndexVec;
@@ -141,6 +141,8 @@ pub enum ExprKind<'a> {
     },
     Zst {
         id: DefinitionID,
+        /// Generic arguments for this definition (if generic)
+        generic_args: Option<GenericArguments<'a>>,
     },
 }
 

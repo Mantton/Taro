@@ -8,14 +8,12 @@ use crate::{
     span::Symbol,
 };
 use inkwell::{
-    AddressSpace, FloatPredicate, IntPredicate, OptimizationLevel,
+    AddressSpace, FloatPredicate, IntPredicate,
     builder::Builder,
     context::Context,
     module::{Linkage, Module},
     passes::PassManager,
-    targets::{
-        CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetData, TargetMachine,
-    },
+    targets::{FileType, TargetData},
     types::{
         BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType,
         StructType,
@@ -34,28 +32,12 @@ pub fn emit_package<'gcx>(
     let module = context.create_module(&gcx.config.identifier);
     let builder = context.create_builder();
 
-    // Initialize target for host and set data layout early.
-    Target::initialize_native(&InitializationConfig::default())
-        .map_err(|_| crate::error::ReportedError)?;
-    let triple = TargetMachine::get_default_triple();
-    let target = Target::from_triple(&triple).map_err(|_| crate::error::ReportedError)?;
-    let cpu = TargetMachine::get_host_cpu_name();
-    let features = TargetMachine::get_host_cpu_features();
-    let target_machine = target
-        .create_target_machine(
-            &triple,
-            cpu.to_str().unwrap_or(""),
-            features.to_str().unwrap_or(""),
-            OptimizationLevel::Default,
-            RelocMode::Default,
-            CodeModel::Default,
-        )
-        .ok_or(crate::error::ReportedError)?;
+    // Use the shared target layout from CompilerStore.
+    let target_layout = &gcx.store.target_layout;
+    module.set_data_layout(&target_layout.data_layout());
+    module.set_triple(&target_layout.triple());
 
-    module.set_data_layout(&target_machine.get_target_data().get_data_layout());
-    module.set_triple(&triple);
-
-    let mut emitter = Emitter::new(&context, module, builder, gcx, target_machine);
+    let mut emitter = Emitter::new(&context, module, builder, gcx);
     emitter.declare_functions(package);
     emitter.lower_functions(package)?;
     emitter.emit_start_shim(package);
@@ -76,7 +58,6 @@ struct Emitter<'llvm, 'gcx> {
     gcx: GlobalContext<'gcx>,
     functions: FxHashMap<hir::DefinitionID, FunctionValue<'llvm>>,
     strings: FxHashMap<Symbol, PointerValue<'llvm>>,
-    target_machine: TargetMachine,
     target_data: inkwell::targets::TargetData,
     gc_descs: FxHashMap<Ty<'gcx>, PointerValue<'llvm>>,
     gc_desc_ty: inkwell::types::StructType<'llvm>,
@@ -116,9 +97,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         module: Module<'llvm>,
         builder: Builder<'llvm>,
         gcx: GlobalContext<'gcx>,
-        target_machine: TargetMachine,
     ) -> Self {
-        let target_data = target_machine.get_target_data();
+        let target_data = gcx.store.target_layout.target_data();
         let usize_ty = context.ptr_sized_int_type(&target_data, None);
         let opaque_ptr = context.ptr_type(AddressSpace::default());
         let gc_desc_ty = context.struct_type(
@@ -137,7 +117,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             gcx,
             functions: FxHashMap::default(),
             strings: FxHashMap::default(),
-            target_machine,
             target_data,
             gc_descs: FxHashMap::default(),
             gc_desc_ty,
@@ -254,7 +233,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     }
 
     fn emit_object_file(&mut self) -> CompileResult<PathBuf> {
-        let tm = &self.target_machine;
+        let tm = self.gcx.store.target_layout.target_machine();
         let out_dir = self.gcx.output_root().clone();
         if let Err(e) = fs::create_dir_all(&out_dir) {
             let msg = format!("failed to create output directory: {e}");
