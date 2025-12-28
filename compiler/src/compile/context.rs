@@ -8,8 +8,8 @@ use crate::{
     mir::{self, Body},
     sema::{
         models::{
-            ConformanceRecord, ConformanceWitness, EnumDefinition, EnumVariant, FloatTy,
-            GenericArgument, GenericParameter, Generics, IntTy, InterfaceDefinition,
+            AliasDefinition, ConformanceRecord, ConformanceWitness, EnumDefinition, EnumVariant,
+            FloatTy, GenericArgument, GenericParameter, Generics, IntTy, InterfaceDefinition,
             InterfaceRequirements, LabeledFunctionSignature, StructDefinition, Ty, TyKind, UIntTy,
         },
         resolve::models::{
@@ -80,6 +80,12 @@ impl<'arena> GlobalContext<'arena> {
         let package_index = id.package();
         let database = cache.entry(package_index).or_insert(Default::default());
         database.def_to_ty.insert(id, ty);
+    }
+
+    pub fn cache_alias_type(self, id: DefinitionID, ty: Ty<'arena>) {
+        self.with_type_database(id.package(), |db| {
+            db.resolved_aliases.insert(id, ty);
+        });
     }
 
     pub fn cache_signature(self, id: DefinitionID, sig: LabeledFunctionSignature<'arena>) {
@@ -162,6 +168,19 @@ impl<'arena> GlobalContext<'arena> {
     pub fn get_type(self, id: DefinitionID) -> Ty<'arena> {
         self.with_type_database(id.package(), |db| {
             *db.def_to_ty.get(&id).expect("type of definition")
+        })
+    }
+
+    pub fn try_get_alias_type(self, id: DefinitionID) -> Option<Ty<'arena>> {
+        self.with_type_database(id.package(), |db| db.resolved_aliases.get(&id).copied())
+    }
+
+    #[inline]
+    pub fn get_alias_type(self, id: DefinitionID) -> Ty<'arena> {
+        self.with_type_database(id.package(), |db| {
+            *db.resolved_aliases
+                .get(&id)
+                .expect("alias type of definition")
         })
     }
 
@@ -673,6 +692,10 @@ pub struct TypeDatabase<'arena> {
     pub conformances: FxHashMap<TypeHead, Vec<ConformanceRecord<'arena>>>,
     pub interface_requirements: FxHashMap<DefinitionID, &'arena InterfaceRequirements<'arena>>,
     pub conformance_witnesses: FxHashMap<(TypeHead, DefinitionID), ConformanceWitness<'arena>>,
+    /// Revised alias table
+    pub alias_table: crate::sema::models::PackageAliasTable,
+    /// Resolved alias types (cached after lowering)
+    pub resolved_aliases: FxHashMap<DefinitionID, Ty<'arena>>,
     pub empty_generics: Option<&'arena Generics>,
     pub empty_attributes: Option<&'arena hir::AttributeList>,
 }

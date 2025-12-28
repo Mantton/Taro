@@ -166,8 +166,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
 }
 
 impl<'ctx> ConstraintSolver<'ctx> {
-    pub fn structurally_resolve(&self, mut ty: Ty<'ctx>) -> Ty<'ctx> {
-        ty = self.icx.resolve_vars_if_possible(ty);
-        ty
+    pub fn structurally_resolve(&self, ty: Ty<'ctx>) -> Ty<'ctx> {
+        self.icx.resolve_vars_if_possible(ty)
     }
 }
+

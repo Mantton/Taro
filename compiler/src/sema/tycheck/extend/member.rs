@@ -39,7 +39,7 @@ impl<'ctx> Actor<'ctx> {
             hir::AssociatedDeclarationKind::Operator(op) => {
                 self.collect_operator(head, decl.id, decl.identifier, op.kind);
             }
-            _ => todo!("associated declaration kind in extension member collection"),
+            _ => {}
         }
     }
 

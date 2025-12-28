@@ -158,12 +158,23 @@ impl<'ctx> Actor<'ctx> {
 impl<'ctx> Actor<'ctx> {
     fn find_type_witness(
         &self,
-        _type_head: TypeHead,
+        type_head: TypeHead,
         assoc: &AssociatedTypeDefinition<'ctx>,
         _record: &crate::sema::models::ConformanceRecord<'ctx>,
     ) -> Result<Ty<'ctx>, ConformanceError<'ctx>> {
-        // TODO: Look up associated type implementation
-        // For now, use default if available, otherwise error
+        let gcx = self.context;
+        let alias_id = gcx.with_session_type_database(|db| {
+            db.alias_table
+                .by_type
+                .get(&type_head)
+                .and_then(|bucket| bucket.aliases.get(&assoc.name))
+                .map(|(id, _)| *id)
+        });
+
+        if let Some(alias_id) = alias_id {
+            return Ok(gcx.get_alias_type(alias_id));
+        }
+
         if let Some(default_ty) = assoc.default_type {
             return Ok(default_ty);
         }
@@ -378,7 +389,7 @@ impl<'ctx> Actor<'ctx> {
 
         gcx.dcx().emit_error(
             format!(
-                "type '{}' does not conform to interface '{}'",
+                "type '{}' does not satisfy requirements for interface '{}'",
                 type_name, interface_name
             ),
             Some(record.location),

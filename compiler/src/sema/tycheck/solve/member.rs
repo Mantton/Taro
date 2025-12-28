@@ -188,6 +188,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             TyKind::GcPtr => Some(TypeHead::GcPtr),
             TyKind::Tuple(items) => Some(TypeHead::Tuple(items.len() as u16)),
             TyKind::Parameter(_) => todo!(),
+            TyKind::Alias { .. } => None, // Alias should be normalized before lookup
             TyKind::Infer(_) | TyKind::FnPointer { .. } | TyKind::Error => None,
         }
     }

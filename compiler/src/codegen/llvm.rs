@@ -2110,6 +2110,10 @@ fn lower_type<'llvm, 'gcx>(
                 ty.format(gcx)
             )
         }
+        TyKind::Alias { .. } => {
+            // Aliases should be normalized before codegen
+            unreachable!("alias type in codegen: {}", ty.format(gcx))
+        }
         TyKind::Infer(_) | TyKind::Error => unreachable!(),
     }
 }

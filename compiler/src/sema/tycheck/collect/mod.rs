@@ -1,4 +1,5 @@
 pub mod adt;
+pub mod alias;
 pub mod attributes;
 pub mod conformances;
 pub mod field;

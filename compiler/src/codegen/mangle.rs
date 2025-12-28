@@ -51,6 +51,11 @@ fn ty_symbol_with(gcx: GlobalContext, ty: Ty) -> String {
             format!("tuple{}", parts.join("_"))
         }
         TyKind::FnPointer { .. } => "fnptr".into(),
+        TyKind::Alias { def_id, .. } => {
+            // Use alias definition name
+            let ident = gcx.definition_ident(def_id);
+            sanitize(ident.symbol.as_str())
+        }
         TyKind::Parameter(p) => p.name.as_str().into(),
         TyKind::Infer(_) | TyKind::Error => "err".into(),
     }

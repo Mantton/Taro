@@ -32,12 +32,12 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
             hir::DeclarationKind::Struct(_) => self.check_struct(node.id),
             hir::DeclarationKind::Enum(_) => self.check_enum(node.id),
             hir::DeclarationKind::Function(function) => self.check_function(node.id, function),
-            hir::DeclarationKind::TypeAlias(..) => todo!(),
-            hir::DeclarationKind::Constant(..) => todo!(),
-            hir::DeclarationKind::Variable(..) => todo!(),
+            hir::DeclarationKind::TypeAlias(..) => {}
+            hir::DeclarationKind::Constant(..) => {}
+            hir::DeclarationKind::Variable(..) => {}
             hir::DeclarationKind::Import(..) => {}
             hir::DeclarationKind::Export(..) => {}
-            hir::DeclarationKind::Namespace(..) => todo!(),
+            hir::DeclarationKind::Namespace(..) => {}
             hir::DeclarationKind::Extension(..) => {}
             hir::DeclarationKind::Malformed => unreachable!(),
         }

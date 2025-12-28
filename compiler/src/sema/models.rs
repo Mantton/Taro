@@ -163,6 +163,10 @@ impl<'arena> Ty<'arena> {
                 InferTy::FreshTy(_) => todo!(),
             },
             TyKind::Parameter(p) => format!("{}", p.name.as_str()),
+            TyKind::Alias { def_id, .. } => {
+                let ident = gcx.definition_ident(def_id);
+                ident.symbol.as_str().into()
+            }
         }
     }
 }
@@ -210,9 +214,24 @@ pub enum TyKind<'arena> {
         inputs: &'arena [Ty<'arena>],
         output: Ty<'arena>,
     },
+    /// Type alias - can be Inherent (associated type) or Weak (top-level alias)
+    Alias {
+        kind: AliasKind,
+        def_id: DefinitionID,
+        args: GenericArguments<'arena>,
+    },
     Infer(InferTy),
     Parameter(GenericParameter),
     Error,
+}
+
+/// Kind of type alias
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AliasKind {
+    /// Extension associated type: `extend Foo { type Bar = Int }`
+    Inherent,
+    /// Top-level type alias: `type Foo = [Int]`
+    Weak,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -601,11 +620,36 @@ pub struct ConformanceRecord<'ctx> {
 #[derive(Debug, Clone, Default)]
 pub struct ConformanceWitness<'ctx> {
     /// Maps interface method → implementing method
-    pub method_witnesses: rustc_hash::FxHashMap<DefinitionID, DefinitionID>,
+    pub method_witnesses: FxHashMap<DefinitionID, DefinitionID>,
     /// Maps interface operator kind → implementing operator
-    pub operator_witnesses: rustc_hash::FxHashMap<hir::OperatorKind, DefinitionID>,
+    pub operator_witnesses: FxHashMap<hir::OperatorKind, DefinitionID>,
     /// Maps interface constant → implementing constant
-    pub constant_witnesses: rustc_hash::FxHashMap<DefinitionID, DefinitionID>,
+    pub constant_witnesses: FxHashMap<DefinitionID, DefinitionID>,
     /// Maps interface associated type → concrete type
-    pub type_witnesses: rustc_hash::FxHashMap<DefinitionID, Ty<'ctx>>,
+    pub type_witnesses: FxHashMap<DefinitionID, Ty<'ctx>>,
+}
+
+/// Definition of a type alias (top-level or associated)
+#[derive(Debug, Clone, Default)]
+pub struct PackageAliasTable {
+    pub aliases: FxHashMap<DefinitionID, AliasDefinition>, // NEW – file‑scope aliases
+    pub by_type: FxHashMap<TypeHead, AliasBucket>,         // existing per‑type buckets
+}
+
+#[derive(Default, Debug, Clone)]
+pub struct AliasBucket {
+    /// All aliases visible on this nominal type, regardless of where‑clauses.
+    pub aliases: FxHashMap<Symbol, (DefinitionID, Span)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AliasDefinition {
+    pub id: DefinitionID,
+    pub name: Symbol,
+    pub kind: AliasKind,
+    pub span: Span,
+    /// The HIR type to lower
+    pub ast_ty: Box<hir::Type>,
+    /// For Inherent aliases - which extension declared it
+    pub extension_id: Option<DefinitionID>,
 }

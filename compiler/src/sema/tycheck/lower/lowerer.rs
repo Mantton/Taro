@@ -3,14 +3,22 @@ use crate::{
     hir::{self, DefinitionID, DefinitionKind, Resolution},
     sema::{
         models::{
-            AdtDef, AdtKind, GenericArgument, GenericArguments, GenericParameterDefinition,
-            GenericParameterDefinitionKind, InterfaceReference, Ty, TyKind,
+            AdtDef, AdtKind, GenericArgument, GenericArguments, GenericParameter,
+            GenericParameterDefinition, GenericParameterDefinitionKind, InterfaceReference, Ty,
+            TyKind,
         },
         resolve::models::{PrimaryType, TypeHead},
-        tycheck::utils::instantiate::instantiate_ty_with_args,
+        tycheck::{
+            lower::LoweringRequest,
+            utils::{instantiate::instantiate_ty_with_args, type_head_from_value_ty},
+        },
     },
-    span::Span,
+    span::{Span, Symbol},
 };
+
+thread_local! {
+    static LOWERING_REQUEST: LoweringRequest = LoweringRequest::new();
+}
 
 pub trait TypeLowerer<'ctx> {
     fn gcx(&self) -> GlobalContext<'ctx>;
@@ -52,14 +60,16 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             hir::TypeKind::Array { .. } => todo!(),
             hir::TypeKind::Function { .. } => todo!(),
             hir::TypeKind::BoxedExistential { .. } => todo!(),
-            hir::TypeKind::Infer => todo!(),
+            hir::TypeKind::Infer => unreachable!(),
         }
     }
 
     fn lower_nominal_type(&self, node_id: hir::NodeID, path: &hir::ResolvedPath) -> Ty<'ctx> {
         match path {
             hir::ResolvedPath::Resolved(path) => self.lower_resolved_type_path(node_id, path),
-            hir::ResolvedPath::Relative(..) => todo!(),
+            hir::ResolvedPath::Relative(base_ty, segment) => {
+                self.lower_relative_type_path(base_ty, segment)
+            }
         }
     }
 
@@ -109,6 +119,11 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                             id,
                         };
                         Ty::new(TyKind::Adt(def, args), gcx)
+                    }
+                    crate::sema::resolve::models::DefinitionKind::TypeAlias => {
+                        // Resolve alias in place with cycle detection
+                        let ty = self.resolve_alias(id);
+                        return instantiate_ty_with_args(gcx, ty, args);
                     }
                     _ => todo!("nominal type lowering for {kind:?}"),
                 };
@@ -255,6 +270,162 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             id: interface_id,
             arguments,
         }
+    }
+
+    /// Lower T.Element style associated type access
+    fn lower_relative_type_path(
+        &self,
+        base_ty: &hir::Type,
+        segment: &hir::PathSegment,
+    ) -> Ty<'ctx> {
+        let gcx = self.gcx();
+        let base_ty = self.lower_type(base_ty);
+        if let TyKind::Parameter(param) = base_ty.kind() {
+            return self.lower_projection_type_path(param, segment.identifier.symbol, segment.span);
+        }
+        let Some(head) = type_head_from_value_ty(base_ty) else {
+            gcx.dcx().emit_error(
+                "cannot resolve associated types on this type".into(),
+                Some(segment.span),
+            );
+            return gcx.types.error;
+        };
+
+        let name = segment.identifier.symbol;
+        let mut candidates: Vec<(DefinitionID, Span)> = Vec::new();
+
+        let mut collect = |db: &mut crate::compile::context::TypeDatabase<'ctx>| {
+            if let Some(bucket) = db.alias_table.by_type.get(&head) {
+                if let Some(entry) = bucket.aliases.get(&name) {
+                    candidates.push(*entry);
+                }
+            }
+        };
+
+        gcx.with_session_type_database(|db| collect(db));
+
+        let mapping = gcx.store.package_mapping.borrow();
+        let deps: Vec<_> = gcx
+            .config
+            .dependencies
+            .values()
+            .filter_map(|ident| mapping.get(ident.as_str()).copied())
+            .collect();
+        drop(mapping);
+
+        for index in deps {
+            gcx.with_type_database(index, |db| collect(db));
+        }
+
+        if candidates.is_empty() {
+            gcx.dcx().emit_error(
+                format!(
+                    "unknown associated type '{}' on type '{}'",
+                    name.as_str(),
+                    base_ty.format(gcx)
+                ),
+                Some(segment.span),
+            );
+            return gcx.types.error;
+        }
+
+        let visible: Vec<_> = if let Some(from) = self.current_definition() {
+            candidates
+                .into_iter()
+                .filter(|(id, _)| gcx.is_definition_visible(*id, from))
+                .collect()
+        } else {
+            candidates
+        };
+
+        if visible.is_empty() {
+            gcx.dcx().emit_error(
+                format!("associated type '{}' is not visible here", name.as_str()),
+                Some(segment.span),
+            );
+            return gcx.types.error;
+        }
+
+        if visible.len() > 1 {
+            gcx.dcx().emit_error(
+                format!(
+                    "ambiguous associated type '{}' on type '{}'",
+                    name.as_str(),
+                    base_ty.format(gcx)
+                ),
+                Some(segment.span),
+            );
+            return gcx.types.error;
+        }
+
+        let (alias_id, _) = visible[0];
+        let _ = check_generics_prohibited(alias_id, segment, gcx);
+        let args = self.lower_type_arguments(alias_id, segment);
+        let ty = self.resolve_alias(alias_id);
+        instantiate_ty_with_args(gcx, ty, args)
+    }
+
+    fn lower_projection_type_path(
+        &self,
+        base_param: GenericParameter,
+        name: Symbol,
+        span: Span,
+    ) -> Ty<'ctx> {
+        let gcx = self.gcx();
+        // TODO: Resolve associated types on generic parameters using bounds.
+        gcx.dcx().emit_error(
+            format!(
+                "associated type '{}' on generic parameter '{}' is not supported yet",
+                name.as_str(),
+                base_param.name.as_str()
+            ),
+            Some(span),
+        );
+        gcx.types.error
+    }
+
+    /// Resolve a type alias with cycle detection (no instantiation).
+    fn resolve_alias(&self, alias_id: DefinitionID) -> Ty<'ctx> {
+        let gcx = self.gcx();
+
+        if let Some(cached) = gcx.try_get_alias_type(alias_id) {
+            return cached;
+        }
+
+        let Some(def) = gcx.with_type_database(alias_id.package(), |db| {
+            db.alias_table.aliases.get(&alias_id).cloned()
+        }) else {
+            let name = gcx.definition_ident(alias_id).symbol;
+            gcx.dcx().emit_error(
+                format!("unknown type alias '{}'", name.as_str()).into(),
+                None,
+            );
+            return gcx.types.error;
+        };
+
+        if let Err(cycle) = LOWERING_REQUEST.with(|req| req.enter_alias(alias_id)) {
+            let mut cycle_display: Vec<_> = cycle
+                .iter()
+                .map(|id| gcx.definition_ident(*id).symbol.as_str().to_string())
+                .collect();
+            if let Some(first) = cycle_display.first().cloned() {
+                cycle_display.push(first);
+            }
+            let message = format!(
+                "circular type alias\n\tcycle: {}",
+                cycle_display.join(" -> ")
+            );
+            gcx.dcx().emit_error(message, Some(def.span));
+            gcx.cache_alias_type(alias_id, gcx.types.error);
+            return gcx.types.error;
+        }
+
+        let lowered = self.lower_type(&def.ast_ty);
+        LOWERING_REQUEST.with(|req| req.exit_alias(alias_id));
+
+        gcx.cache_alias_type(alias_id, lowered);
+
+        lowered
     }
 }
 

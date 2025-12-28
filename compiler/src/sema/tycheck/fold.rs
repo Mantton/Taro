@@ -115,6 +115,38 @@ impl<'ctx> TypeSuperFoldable<'ctx> for TyKind<'ctx> {
                 }
             }
 
+            // Alias type - fold generic args
+            Alias { kind, def_id, args } => {
+                if args.is_empty() {
+                    return Alias { kind, def_id, args };
+                }
+                let mut changed = false;
+                let mut folded_args = Vec::with_capacity(args.len());
+                for arg in args.iter().copied() {
+                    let folded = match arg {
+                        GenericArgument::Type(ty) => {
+                            let folded_ty = ty.fold_with(folder);
+                            if folded_ty != ty {
+                                changed = true;
+                            }
+                            GenericArgument::Type(folded_ty)
+                        }
+                        GenericArgument::Const(c) => {
+                            let folded_const = fold_const(c, folder, &mut changed);
+                            GenericArgument::Const(folded_const)
+                        }
+                    };
+                    folded_args.push(folded);
+                }
+
+                if !changed {
+                    return Alias { kind, def_id, args };
+                }
+
+                let interned = folder.gcx().store.interners.intern_generic_args(folded_args);
+                Alias { kind, def_id, args: interned }
+            }
+
             _ => self,
         }
     }

@@ -6,7 +6,7 @@ mod extend;
 mod fold;
 pub mod freshen;
 pub mod infer;
-mod lower;
+pub mod lower;
 pub mod results;
 pub mod solve;
 pub mod utils;
@@ -20,16 +20,19 @@ pub fn typecheck_package<'ctx>(
     collect::generics::run(package, context)?; // Collect Generics Headers
     collect::adt::run(package, context)?; // Collect ADT Definitions
     collect::interface::collect::run(package, context)?; // Collect Interface Definition
-    collect::field::run(package, context)?; // Collect ADT Type Definitions
-    collect::variant::run(package, context)?; // Collect Enum Variant Definitions
     extend::identify::run(package, context)?; // Resolve Extension Identities
+    collect::alias::run(package, context)?; // Collect Type Aliases
+
     collect::function::run(package, context)?; // Collect Function Type Signatures
+    collect::variant::run(package, context)?; // Collect Enum Variant Definitions
+    collect::field::run(package, context)?; // Collect ADT Type Definitions
     collect::interface::requirements::run(package, context)?; // Collect Interface Requirements
     extend::member::run(package, context)?; // Collect Extension Members
     collect::conformances::run(package, context)?; // Collect Conformances
+    collect::interface::conform::run(package, context)?; // Validate Conformances
+
     // WellFormed?
     wf::run(package, context)?;
-    collect::interface::conform::run(package, context)?; // Validate Conformances
     // Check Body
     let results = check::run(package, context)?;
     Ok(results)

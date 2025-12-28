@@ -38,6 +38,6 @@ pub fn type_head_from_value_ty(ty: Ty<'_>) -> Option<TypeHead> {
         TyKind::Pointer(_, mutbl) => Some(TypeHead::Pointer(mutbl)),
         TyKind::GcPtr => Some(TypeHead::GcPtr),
         TyKind::Tuple(items) => Some(TypeHead::Tuple(items.len() as u16)),
-        TyKind::Parameter(_) | TyKind::Infer(_) | TyKind::FnPointer { .. } | TyKind::Error => None,
+        TyKind::Parameter(_) | TyKind::Infer(_) | TyKind::FnPointer { .. } | TyKind::Alias { .. } | TyKind::Error => None,
     }
 }
