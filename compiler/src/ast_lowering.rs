@@ -1359,10 +1359,7 @@ impl Actor<'_, '_> {
 
     /// Attempts to convert an AST expression to a resolved path suitable for attaching type arguments.
     /// Returns None if the expression cannot be converted to a path.
-    fn try_expr_as_resolved_path(
-        &mut self,
-        expr: &ast::Expression,
-    ) -> Option<hir::ResolvedPath> {
+    fn try_expr_as_resolved_path(&mut self, expr: &ast::Expression) -> Option<hir::ResolvedPath> {
         match &expr.kind {
             ast::ExpressionKind::Identifier(ident) => {
                 let resolved_path = self.lower_identifier_expression_path(expr.id, *ident);
@@ -1370,7 +1367,12 @@ impl Actor<'_, '_> {
             }
             ast::ExpressionKind::Member { target, name } => {
                 // Check resolution state to determine how to handle
-                match self.resolutions.expression_resolutions.get(&expr.id).cloned() {
+                match self
+                    .resolutions
+                    .expression_resolutions
+                    .get(&expr.id)
+                    .cloned()
+                {
                     Some(ExpressionResolutionState::Resolved(_)) => {
                         let path = self.try_lower_resolved_member_chain_as_path(
                             expr.id, target, *name, expr.span,
@@ -1378,23 +1380,26 @@ impl Actor<'_, '_> {
                         Some(hir::ResolvedPath::Resolved(path))
                     }
                     Some(ExpressionResolutionState::DeferredAssociatedType) => {
-                        let path = self.lower_deferred_associated_type_member_chain(
-                            target.clone(), *name
-                        );
+                        let path =
+                            self.lower_deferred_associated_type_member_chain(target.clone(), *name);
                         Some(path)
                     }
                     // DeferredAssociatedValue and None cannot be converted to paths for specialization
                     _ => None,
                 }
             }
-            ast::ExpressionKind::Specialize { target, type_arguments } => {
+            ast::ExpressionKind::Specialize {
+                target,
+                type_arguments,
+            } => {
                 // Recursively handle nested Specialize - attach type arguments to the inner path
                 let mut path = self.try_expr_as_resolved_path(target)?;
                 // Attach these type arguments to the path
                 match &mut path {
                     hir::ResolvedPath::Resolved(p) => {
                         if let Some(last) = p.segments.last_mut() {
-                            last.arguments = Some(self.lower_type_arguments(type_arguments.clone()));
+                            last.arguments =
+                                Some(self.lower_type_arguments(type_arguments.clone()));
                             last.span = last.span.to(type_arguments.span);
                             p.span = p.span.to(type_arguments.span);
                         }
@@ -1419,7 +1424,7 @@ impl Actor<'_, '_> {
     ) -> Option<hir::ResolvedPath> {
         // Try to build a path from the target expression
         let mut path = self.try_expr_as_resolved_path(target)?;
-        
+
         // Attach type arguments to the last segment
         match &mut path {
             hir::ResolvedPath::Resolved(p) => {
@@ -1434,7 +1439,7 @@ impl Actor<'_, '_> {
                 seg.span = seg.span.to(type_arguments.span);
             }
         }
-        
+
         Some(path)
     }
 
@@ -1684,6 +1689,7 @@ impl Actor<'_, '_> {
     fn lower_path_node(&mut self, node: ast::PathNode) -> hir::PathNode {
         hir::PathNode {
             id: self.next_index(),
+            span: node.path.span,
             path: self.lower_path(node.id, node.path),
         }
     }

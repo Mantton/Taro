@@ -3,4 +3,5 @@ pub mod attributes;
 pub mod field;
 pub mod function;
 pub mod generics;
+pub mod interface;
 pub mod variant;

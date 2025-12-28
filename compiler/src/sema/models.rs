@@ -1,10 +1,11 @@
 use ena::unify::UnifyKey;
+use rustc_hash::FxHashMap;
 
 use crate::{
     compile::context::Gcx,
     hir::{self, DefinitionID, Mutability},
     sema::tycheck::infer::keys::{FloatVarID, IntVarID},
-    span::Symbol,
+    span::{Spanned, Symbol},
     utils::intern::Interned,
 };
 
@@ -486,4 +487,54 @@ impl GenericParameterDefinitionKind {
             GenericParameterDefinitionKind::Const { default, .. } => default.is_some(),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct InterfaceDefinition<'ctx> {
+    pub id: DefinitionID,
+    pub superfaces: Vec<Spanned<InterfaceReference<'ctx>>>,
+    pub assoc_types: FxHashMap<Symbol, DefinitionID>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct InterfaceRequirements<'ctx> {
+    pub methods: Vec<InterfaceMethodRequirement<'ctx>>,
+    pub operators: Vec<InterfaceOperatorRequirement<'ctx>>,
+    pub types: Vec<AssociatedTypeDefinition<'ctx>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InterfaceMethodRequirement<'ctx> {
+    pub id: DefinitionID,
+    pub name: Symbol,
+    pub signature: &'ctx LabeledFunctionSignature<'ctx>,
+    pub is_required: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct InterfaceOperatorRequirement<'ctx> {
+    pub kind: hir::OperatorKind,
+    pub signature: &'ctx LabeledFunctionSignature<'ctx>,
+    pub is_required: bool,
+}
+
+// For interface types (any/some Protocol)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct InterfaceReference<'ctx> {
+    pub id: DefinitionID,
+    pub arguments: GenericArguments<'ctx>, // Self is arguments[0] when has_self
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TypeErasure {
+    Existential, // any Protocol
+    Opaque,      // some Protocol
+}
+
+#[derive(Debug, Clone)]
+pub struct AssociatedTypeDefinition<'ctx> {
+    pub id: DefinitionID,
+    pub name: Symbol,
+    // Optional: A default type if the implementer doesn't provide one
+    pub default_type: Option<Ty<'ctx>>,
 }

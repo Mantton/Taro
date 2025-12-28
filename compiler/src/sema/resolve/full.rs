@@ -249,6 +249,8 @@ impl<'r, 'a> ast::AstVisitor for Actor<'r, 'a> {
         for bound in node.bounds.iter() {
             self.resolve_path_with_source(bound.id, &bound.path, ResolutionSource::Interface);
         }
+        // Walk conformance to resolve type arguments inside paths (e.g., `Foo<Bar>`)
+        ast::walk_conformance(self, node)
     }
 }
 

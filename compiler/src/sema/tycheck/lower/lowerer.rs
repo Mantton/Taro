@@ -4,7 +4,7 @@ use crate::{
     sema::{
         models::{
             AdtDef, AdtKind, GenericArgument, GenericArguments, GenericParameterDefinition,
-            GenericParameterDefinitionKind, Ty, TyKind,
+            GenericParameterDefinitionKind, InterfaceReference, Ty, TyKind,
         },
         resolve::models::{PrimaryType, TypeHead},
         tycheck::utils::instantiate::instantiate_ty_with_args,
@@ -152,14 +152,14 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         def_id: DefinitionID,
         segment: &hir::PathSegment,
     ) -> GenericArguments<'ctx> {
-        let arguments = self.lower_generic_args(def_id, segment);
-        return arguments;
+        self.lower_generic_args(def_id, segment, None)
     }
 
     fn lower_generic_args(
         &self,
         id: DefinitionID,
         segment: &hir::PathSegment,
+        self_ty: Option<Ty<'ctx>>,
     ) -> GenericArguments<'ctx> {
         let gcx = self.gcx();
         let _ = check_generic_arg_count(id, segment, gcx);
@@ -179,11 +179,17 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             .map(|f| f.span)
             .unwrap_or(segment.span);
         let mut args_iter = arguments.iter().peekable();
-        // TODO!: Look Into
         let mut params_iter = generics.parameters.iter().peekable();
 
         loop {
             match (args_iter.peek(), params_iter.peek()) {
+                (_, Some(&param)) if generics.has_self && param.index == 0 => {
+                    // Self must always be provided for interface references
+                    let ty = self_ty
+                        .expect("ICE: Self type must be provided for interface references");
+                    output.push(GenericArgument::Type(ty));
+                    params_iter.next();
+                }
                 (Some(&arg), Some(&_)) => {
                     let lowered = match arg {
                         hir::TypeArgument::Type(ty) => GenericArgument::Type(self.lower_type(ty)),
@@ -218,7 +224,34 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             }
         }
 
-        return gcx.store.interners.intern_generic_args(output);
+        gcx.store.interners.intern_generic_args(output)
+    }
+
+    pub fn lower_interface_reference(
+        &self,
+        self_ty: Ty<'ctx>,
+        node: &hir::PathNode,
+    ) -> InterfaceReference<'ctx> {
+        let gcx = self.gcx();
+        let path = match &node.path {
+            hir::ResolvedPath::Resolved(path) => path,
+            _ => {
+                unreachable!("ICE: Interface Paths must be fully resolved")
+            }
+        };
+
+        let interface_id = match &path.resolution {
+            Resolution::Definition(id, DefinitionKind::Interface) => *id,
+            _ => unreachable!("ICE: not an interface"),
+        };
+
+        let segment = path.segments.last().unwrap();
+        let arguments = self.lower_generic_args(interface_id, segment, Some(self_ty));
+
+        InterfaceReference {
+            id: interface_id,
+            arguments,
+        }
     }
 }
 

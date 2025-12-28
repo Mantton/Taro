@@ -197,6 +197,7 @@ pub struct PathSegment {
 pub struct PathNode {
     pub id: NodeID,
     pub path: ResolvedPath,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

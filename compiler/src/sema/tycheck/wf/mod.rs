@@ -28,7 +28,7 @@ struct Actor<'ctx> {
 impl<'ctx> HirVisitor for Actor<'ctx> {
     fn visit_declaration(&mut self, node: &hir::Declaration) -> Self::Result {
         match &node.kind {
-            hir::DeclarationKind::Interface(..) => todo!(),
+            hir::DeclarationKind::Interface(..) => {}
             hir::DeclarationKind::Struct(_) => self.check_struct(node.id),
             hir::DeclarationKind::Enum(_) => self.check_enum(node.id),
             hir::DeclarationKind::Function(function) => self.check_function(node.id, function),

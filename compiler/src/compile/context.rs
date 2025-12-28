@@ -8,8 +8,9 @@ use crate::{
     mir::{self, Body},
     sema::{
         models::{
-            EnumDefinition, EnumVariant, FloatTy, GenericArgument, Generics, IntTy,
-            LabeledFunctionSignature, StructDefinition, Ty, TyKind, UIntTy,
+            EnumDefinition, EnumVariant, FloatTy, GenericArgument, GenericParameter, Generics,
+            IntTy, InterfaceDefinition, LabeledFunctionSignature, StructDefinition, Ty, TyKind,
+            UIntTy,
         },
         resolve::models::{
             DefinitionKind, ResolutionOutput, ScopeData, ScopeEntryData, TypeHead, UsageEntryData,
@@ -308,12 +309,20 @@ impl<'arena> GlobalContext<'arena> {
 
     /// Mark an instance as compiled (to avoid duplicate compilation).
     pub fn mark_instance_compiled(self, instance: Instance<'arena>) {
-        self.context.store.compiled_instances.borrow_mut().insert(instance);
+        self.context
+            .store
+            .compiled_instances
+            .borrow_mut()
+            .insert(instance);
     }
 
     /// Check if an instance has already been compiled.
     pub fn is_instance_compiled(self, instance: Instance<'arena>) -> bool {
-        self.context.store.compiled_instances.borrow().contains(&instance)
+        self.context
+            .store
+            .compiled_instances
+            .borrow()
+            .contains(&instance)
     }
 
     pub fn all_object_files(self) -> Vec<PathBuf> {
@@ -516,6 +525,7 @@ pub struct CompilerArenas<'arena> {
     pub mir_packages: typed_arena::Arena<mir::MirPackage<'arena>>,
     pub generics: typed_arena::Arena<Generics>,
     pub generic_arguments: typed_arena::Arena<Vec<GenericArgument<'arena>>>,
+    pub interface_definitions: typed_arena::Arena<InterfaceDefinition<'arena>>,
 
     pub global: Bump,
 }
@@ -537,6 +547,7 @@ impl<'arena> CompilerArenas<'arena> {
             mir_packages: Default::default(),
             generics: Default::default(),
             generic_arguments: Default::default(),
+            interface_definitions: Default::default(),
             global: Bump::new(),
         }
     }
@@ -562,6 +573,8 @@ pub struct CommonTypes<'arena> {
 
     pub float32: Ty<'arena>,
     pub float64: Ty<'arena>,
+
+    pub self_type_parameter: Ty<'arena>,
 
     pub error: Ty<'arena>,
 }
@@ -594,6 +607,16 @@ impl<'a> CommonTypes<'a> {
             float32: mk(TyKind::Float(FloatTy::F32)),
             float64: mk(TyKind::Float(FloatTy::F64)),
 
+            self_type_parameter: {
+                let parameter = GenericParameter {
+                    index: 0,
+                    name: Symbol::new("Self"),
+                };
+
+                let kind = TyKind::Parameter(parameter);
+                mk(kind)
+            },
+
             error: mk(TyKind::Error),
         }
     }
@@ -610,6 +633,7 @@ pub struct TypeDatabase<'arena> {
     pub type_head_to_members: FxHashMap<TypeHead, TypeMemberIndex>,
     pub def_to_generics: FxHashMap<DefinitionID, &'arena Generics>,
     pub def_to_attributes: FxHashMap<DefinitionID, &'arena hir::AttributeList>,
+    pub def_to_iface_def: FxHashMap<DefinitionID, &'arena InterfaceDefinition<'arena>>,
     pub empty_generics: Option<&'arena Generics>,
     pub empty_attributes: Option<&'arena hir::AttributeList>,
 }

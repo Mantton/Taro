@@ -17,7 +17,8 @@ pub fn typecheck_package<'ctx>(
 ) -> CompileResult<results::TypeCheckResults<'ctx>> {
     collect::attributes::run(package, context)?; // Collect Attributes
     collect::generics::run(package, context)?; // Collect Generics Headers
-    collect::adt::run(package, context)?; // Collect ADT Type Headers
+    collect::adt::run(package, context)?; // Collect ADT Definitions
+    collect::interface::collect::run(package, context)?; // Collect Interface Definition
     collect::field::run(package, context)?; // Collect ADT Type Definitions
     collect::variant::run(package, context)?; // Collect Enum Variant Definitions
     extend::identify::run(package, context)?; // Resolve Extension Identities
