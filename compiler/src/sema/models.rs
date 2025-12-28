@@ -338,6 +338,25 @@ impl LabeledFunctionSignature<'_> {
     pub fn min_parameter_count(&self) -> usize {
         self.inputs.len() - self.inputs.iter().filter(|i| i.has_default).count()
     }
+
+    /// Compare two signatures ignoring types (`ty`, `output`).
+    ///
+    /// Returns `true` when:
+    /// * both have the same `is_variadic` flag,
+    /// * the parameter list is the same length, and
+    /// * every parameter's `label` and `has_default` match in order.
+    pub fn same_shape(&self, other: &Self) -> bool {
+        // Quick field/length checks first.
+        if self.is_variadic != other.is_variadic || self.inputs.len() != other.inputs.len() {
+            return false;
+        }
+
+        // Compare each parameter, ignoring `ty`.
+        self.inputs
+            .iter()
+            .zip(&other.inputs)
+            .all(|(a, b)| a.label == b.label && a.has_default == b.has_default)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -576,4 +595,17 @@ pub struct ConformanceRecord<'ctx> {
     pub extension: DefinitionID,
     pub location: Span,
     pub is_conditional: bool,
+}
+
+/// Witness mappings for a conformance - maps interface requirements to implementations
+#[derive(Debug, Clone, Default)]
+pub struct ConformanceWitness<'ctx> {
+    /// Maps interface method → implementing method
+    pub method_witnesses: rustc_hash::FxHashMap<DefinitionID, DefinitionID>,
+    /// Maps interface operator kind → implementing operator
+    pub operator_witnesses: rustc_hash::FxHashMap<hir::OperatorKind, DefinitionID>,
+    /// Maps interface constant → implementing constant
+    pub constant_witnesses: rustc_hash::FxHashMap<DefinitionID, DefinitionID>,
+    /// Maps interface associated type → concrete type
+    pub type_witnesses: rustc_hash::FxHashMap<DefinitionID, Ty<'ctx>>,
 }

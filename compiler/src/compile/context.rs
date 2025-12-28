@@ -8,9 +8,9 @@ use crate::{
     mir::{self, Body},
     sema::{
         models::{
-            ConformanceRecord, EnumDefinition, EnumVariant, FloatTy, GenericArgument,
-            GenericParameter, Generics, IntTy, InterfaceDefinition, InterfaceRequirements,
-            LabeledFunctionSignature, StructDefinition, Ty, TyKind, UIntTy,
+            ConformanceRecord, ConformanceWitness, EnumDefinition, EnumVariant, FloatTy,
+            GenericArgument, GenericParameter, Generics, IntTy, InterfaceDefinition,
+            InterfaceRequirements, LabeledFunctionSignature, StructDefinition, Ty, TyKind, UIntTy,
         },
         resolve::models::{
             DefinitionKind, PrimaryType, ResolutionOutput, ScopeData, ScopeEntryData, TypeHead,
@@ -672,6 +672,7 @@ pub struct TypeDatabase<'arena> {
     pub interface_to_supers: FxHashMap<DefinitionID, FxHashSet<DefinitionID>>,
     pub conformances: FxHashMap<TypeHead, Vec<ConformanceRecord<'arena>>>,
     pub interface_requirements: FxHashMap<DefinitionID, &'arena InterfaceRequirements<'arena>>,
+    pub conformance_witnesses: FxHashMap<(TypeHead, DefinitionID), ConformanceWitness<'arena>>,
     pub empty_generics: Option<&'arena Generics>,
     pub empty_attributes: Option<&'arena hir::AttributeList>,
 }

@@ -4,6 +4,7 @@ mod check;
 mod collect;
 mod extend;
 mod fold;
+pub mod freshen;
 pub mod infer;
 mod lower;
 pub mod results;
@@ -28,6 +29,7 @@ pub fn typecheck_package<'ctx>(
     collect::conformances::run(package, context)?; // Collect Conformances
     // WellFormed?
     wf::run(package, context)?;
+    collect::interface::conform::run(package, context)?; // Validate Conformances
     // Check Body
     let results = check::run(package, context)?;
     Ok(results)
