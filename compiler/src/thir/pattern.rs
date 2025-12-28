@@ -104,7 +104,11 @@ impl<'ctx, 'r> PatternLoweringContext<'ctx, 'r> {
                     resolution.expect("expected path resolution")
                 }
             },
-            PatternPath::Inferred { .. } => todo!(),
+            PatternPath::Inferred { .. } => {
+                // Inferred patterns are resolved by the typechecker and the resolution is recorded
+                let resolution = self.results.value_resolution(id);
+                resolution.expect("expected resolution for inferred pattern")
+            }
         }
     }
 

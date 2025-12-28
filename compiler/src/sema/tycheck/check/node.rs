@@ -241,6 +241,32 @@ impl<'ctx> Checker<'ctx> {
             provided
         })
     }
+
+    /// Commits all resolved results from a constraint system to the checker's results.
+    /// Used when solving sub-expressions in separate constraint systems (e.g., match scrutinee).
+    fn commit_constraint_results(&self, cs: &Cs<'ctx>) {
+        for (id, ty) in cs.resolved_expr_types() {
+            self.results.borrow_mut().record_node_type(id, ty);
+        }
+        for (id, adjustments) in cs.resolved_adjustments() {
+            self.results
+                .borrow_mut()
+                .record_node_adjustments(id, adjustments);
+        }
+        for (id, def_id) in cs.resolved_overload_sources() {
+            self.results.borrow_mut().record_overload_source(id, def_id);
+        }
+        for (id, index) in cs.resolved_field_indices() {
+            self.results.borrow_mut().record_field_index(id, index);
+        }
+        for (id, args) in cs.resolved_instantiations() {
+            self.results.borrow_mut().record_instantiation(id, args);
+        }
+        for (id, ty) in cs.resolved_local_types() {
+            self.finalize_local(id, ty);
+            self.results.borrow_mut().record_node_type(id, ty);
+        }
+    }
 }
 
 type Cs<'c> = ConstraintSystem<'c>;
@@ -1203,7 +1229,7 @@ impl<'ctx> Checker<'ctx> {
         expression: &hir::Expression,
         node: &hir::MatchExpression,
         expectation: Option<Ty<'ctx>>,
-        cs: &mut Cs<'ctx>,
+        _cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         if node.arms.is_empty() {
             self.gcx().dcx().emit_error(
@@ -1213,23 +1239,58 @@ impl<'ctx> Checker<'ctx> {
             return Ty::error(self.gcx());
         }
 
-        let scrutinee_ty = self.synth(&node.value, cs);
-        let result_ty = expectation.unwrap_or_else(|| cs.infer_cx.next_ty_var(expression.span));
+        // ══════════════════════════════════════════════════════════════════════
+        // PHASE 1: Resolve scrutinee in its own constraint system
+        // ══════════════════════════════════════════════════════════════════════
+        // This ensures the scrutinee type is fully concrete before we check arms,
+        // enabling inferred pattern resolution (e.g., `.some(value)`).
+        let scrutinee_ty = {
+            let mut scrutinee_cs = Cs::new(self.context, self.current_def);
+            self.with_infer_ctx(scrutinee_cs.infer_cx.clone(), || {
+                let ty = self.synth(&node.value, &mut scrutinee_cs);
+                scrutinee_cs.solve_all();
+                self.commit_constraint_results(&scrutinee_cs);
+                let resolved = scrutinee_cs.infer_cx.resolve_vars_if_possible(ty);
+                if resolved.is_infer() {
+                    Ty::error(self.gcx())
+                } else {
+                    resolved
+                }
+            })
+        };
 
-        for arm in &node.arms {
-            GatherLocalsVisitor::from_match_arm(cs, self, &arm.pattern);
-            self.check_pattern_structure(&arm.pattern, scrutinee_ty, cs);
+        let mut arms_cs = Cs::new(self.context, self.current_def);
+        self.with_infer_ctx(arms_cs.infer_cx.clone(), || {
+            let result_ty =
+                expectation.unwrap_or_else(|| arms_cs.infer_cx.next_ty_var(expression.span));
 
-            if let Some(guard) = &arm.guard {
-                let guard_ty = self.synth_with_expectation(guard, Some(self.gcx().types.bool), cs);
-                cs.equal(self.gcx().types.bool, guard_ty, guard.span);
+            for arm in &node.arms {
+                GatherLocalsVisitor::from_match_arm(&arms_cs, self, &arm.pattern);
+                self.check_pattern_structure(&arm.pattern, scrutinee_ty, &mut arms_cs);
+
+                if let Some(guard) = &arm.guard {
+                    let guard_ty = self.synth_with_expectation(
+                        guard,
+                        Some(self.gcx().types.bool),
+                        &mut arms_cs,
+                    );
+                    arms_cs.equal(self.gcx().types.bool, guard_ty, guard.span);
+                }
+
+                let arm_ty = self.synth_with_expectation(&arm.body, Some(result_ty), &mut arms_cs);
+                arms_cs.equal(result_ty, arm_ty, arm.body.span);
             }
 
-            let arm_ty = self.synth_with_expectation(&arm.body, Some(result_ty), cs);
-            cs.equal(result_ty, arm_ty, arm.body.span);
-        }
+            arms_cs.solve_all();
+            self.commit_constraint_results(&arms_cs);
 
-        result_ty
+            let resolved = arms_cs.infer_cx.resolve_vars_if_possible(result_ty);
+            if resolved.is_infer() {
+                Ty::error(self.gcx())
+            } else {
+                resolved
+            }
+        })
     }
 
     fn synth_unary_expression(
@@ -1877,8 +1938,11 @@ impl<'ctx> Checker<'ctx> {
                     scrutinee, resolution, span, cs, base_args,
                 )
             }
-            hir::PatternPath::Inferred { .. } => {
-                todo!("inferred enum patterns")
+            hir::PatternPath::Inferred {
+                name,
+                span: inferred_span,
+            } => {
+                self.resolve_inferred_enum_variant_pattern(scrutinee, id, name, *inferred_span, cs)
             }
         }
     }
@@ -2009,5 +2073,106 @@ impl<'ctx> Checker<'ctx> {
 
         cs.equal(scrutinee, enum_ty, span);
         Some((variant, enum_ty))
+    }
+
+    /// Resolves an inferred pattern like `.some(value)` by looking up the variant by name
+    /// from the scrutinee's concrete type. Requires the scrutinee to be a fully resolved enum type.
+    fn resolve_inferred_enum_variant_pattern(
+        &self,
+        scrutinee: Ty<'ctx>,
+        id: NodeID,
+        name: &crate::span::Identifier,
+        span: Span,
+        cs: &mut Cs<'ctx>,
+    ) -> Option<(crate::sema::models::EnumVariant<'ctx>, Ty<'ctx>)> {
+        let gcx = self.gcx();
+
+        // Scrutinee must be a concrete ADT type
+        let TyKind::Adt(adt_def, args) = scrutinee.kind() else {
+            gcx.dcx().emit_error(
+                format!(
+                    "inferred pattern '.{}' requires an enum type, found '{}'",
+                    name.symbol.as_str(),
+                    scrutinee.format(gcx)
+                )
+                .into(),
+                Some(span),
+            );
+            return None;
+        };
+
+        let enum_id = adt_def.id;
+
+        // Must be an enum, not a struct
+        if gcx.definition_kind(enum_id) != DefinitionKind::Enum {
+            gcx.dcx().emit_error(
+                format!(
+                    "inferred pattern '.{}' can only be used with enum types, found struct '{}'",
+                    name.symbol.as_str(),
+                    scrutinee.format(gcx)
+                )
+                .into(),
+                Some(span),
+            );
+            return None;
+        }
+
+        // Get the enum definition
+        let def = gcx.get_enum_definition(enum_id);
+
+        // Find variant by name
+        let variant = def.variants.iter().find(|v| v.name == name.symbol).copied();
+
+        let Some(variant) = variant else {
+            gcx.dcx().emit_error(
+                format!(
+                    "enum '{}' has no variant named '{}'",
+                    gcx.definition_ident(enum_id).symbol.as_str(),
+                    name.symbol.as_str()
+                )
+                .into(),
+                Some(span),
+            );
+            return None;
+        };
+
+        // Check visibility
+        if !gcx.is_definition_visible(variant.ctor_def_id, self.current_def) {
+            gcx.dcx()
+                .emit_error("enum variant is not visible here".into(), Some(span));
+            return None;
+        }
+
+        // Record the resolution
+        let kind = gcx.definition_kind(variant.ctor_def_id);
+        self.record_value_path_resolution(
+            id,
+            &hir::Resolution::Definition(variant.ctor_def_id, kind),
+        );
+
+        // Instantiate the variant with the scrutinee's type arguments
+        let enum_ty = Ty::new(TyKind::Adt(adt_def, args), gcx);
+        let instantiated_def =
+            crate::sema::tycheck::utils::instantiate::instantiate_enum_definition_with_args(
+                gcx, def, args,
+            );
+
+        // Find the instantiated variant
+        let instantiated_variant = instantiated_def
+            .variants
+            .iter()
+            .find(|v| v.ctor_def_id == variant.ctor_def_id)
+            .copied();
+
+        let Some(instantiated_variant) = instantiated_variant else {
+            gcx.dcx().emit_error(
+                "internal error: variant not found after instantiation".into(),
+                Some(span),
+            );
+            return None;
+        };
+
+        cs.equal(scrutinee, enum_ty, span);
+        Some((instantiated_variant, enum_ty))
     }
 }
