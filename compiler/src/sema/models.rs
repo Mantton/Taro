@@ -508,6 +508,7 @@ pub struct InterfaceRequirements<'ctx> {
     pub methods: Vec<InterfaceMethodRequirement<'ctx>>,
     pub operators: Vec<InterfaceOperatorRequirement<'ctx>>,
     pub types: Vec<AssociatedTypeDefinition<'ctx>>,
+    pub constants: Vec<InterfaceConstantRequirement<'ctx>>,
 }
 
 #[derive(Debug, Clone)]
@@ -523,6 +524,14 @@ pub struct InterfaceOperatorRequirement<'ctx> {
     pub kind: hir::OperatorKind,
     pub signature: &'ctx LabeledFunctionSignature<'ctx>,
     pub is_required: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct InterfaceConstantRequirement<'ctx> {
+    pub id: DefinitionID,
+    pub name: Symbol,
+    pub ty: Ty<'ctx>,
+    pub default: Option<Const<'ctx>>, // Evaluated default value if provided
 }
 
 // For interface types (any/some Protocol)

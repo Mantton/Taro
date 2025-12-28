@@ -23,6 +23,7 @@ pub fn typecheck_package<'ctx>(
     collect::variant::run(package, context)?; // Collect Enum Variant Definitions
     extend::identify::run(package, context)?; // Resolve Extension Identities
     collect::function::run(package, context)?; // Collect Function Type Signatures
+    collect::interface::requirements::run(package, context)?; // Collect Interface Requirements
     extend::member::run(package, context)?; // Collect Extension Members
     collect::conformances::run(package, context)?; // Collect Conformances
     // WellFormed?

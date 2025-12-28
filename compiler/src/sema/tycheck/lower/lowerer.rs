@@ -137,11 +137,15 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 }
                 other => todo!("Self type alias lowering for {other:?}"),
             },
-            Resolution::InterfaceSelfTypeParameter(..) => todo!(),
-            Resolution::SelfConstructor(..) => todo!(),
+            Resolution::InterfaceSelfTypeParameter(_interface_id) => {
+                // Inside an interface, `Self` refers to the abstract Self type parameter
+                gcx.types.self_type_parameter
+            }
             Resolution::Foundation(..) => todo!(),
             Resolution::Error => gcx.types.error,
-            Resolution::FunctionSet(..) | Resolution::LocalVariable(_) => {
+            Resolution::SelfConstructor(..)
+            | Resolution::FunctionSet(..)
+            | Resolution::LocalVariable(_) => {
                 unreachable!("value resolution")
             }
         }
@@ -185,8 +189,8 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             match (args_iter.peek(), params_iter.peek()) {
                 (_, Some(&param)) if generics.has_self && param.index == 0 => {
                     // Self must always be provided for interface references
-                    let ty = self_ty
-                        .expect("ICE: Self type must be provided for interface references");
+                    let ty =
+                        self_ty.expect("ICE: Self type must be provided for interface references");
                     output.push(GenericArgument::Type(ty));
                     params_iter.next();
                 }
@@ -232,7 +236,6 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         self_ty: Ty<'ctx>,
         node: &hir::PathNode,
     ) -> InterfaceReference<'ctx> {
-        let gcx = self.gcx();
         let path = match &node.path {
             hir::ResolvedPath::Resolved(path) => path,
             _ => {

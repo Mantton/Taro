@@ -9,8 +9,8 @@ use crate::{
     sema::{
         models::{
             ConformanceRecord, EnumDefinition, EnumVariant, FloatTy, GenericArgument,
-            GenericParameter, Generics, IntTy, InterfaceDefinition, LabeledFunctionSignature,
-            StructDefinition, Ty, TyKind, UIntTy,
+            GenericParameter, Generics, IntTy, InterfaceDefinition, InterfaceRequirements,
+            LabeledFunctionSignature, StructDefinition, Ty, TyKind, UIntTy,
         },
         resolve::models::{
             DefinitionKind, PrimaryType, ResolutionOutput, ScopeData, ScopeEntryData, TypeHead,
@@ -559,6 +559,7 @@ pub struct CompilerArenas<'arena> {
     pub generics: typed_arena::Arena<Generics>,
     pub generic_arguments: typed_arena::Arena<Vec<GenericArgument<'arena>>>,
     pub interface_definitions: typed_arena::Arena<InterfaceDefinition<'arena>>,
+    pub interface_requirements: typed_arena::Arena<InterfaceRequirements<'arena>>,
 
     pub global: Bump,
 }
@@ -581,6 +582,7 @@ impl<'arena> CompilerArenas<'arena> {
             generics: Default::default(),
             generic_arguments: Default::default(),
             interface_definitions: Default::default(),
+            interface_requirements: Default::default(),
             global: Bump::new(),
         }
     }
@@ -669,6 +671,7 @@ pub struct TypeDatabase<'arena> {
     pub def_to_iface_def: FxHashMap<DefinitionID, &'arena InterfaceDefinition<'arena>>,
     pub interface_to_supers: FxHashMap<DefinitionID, FxHashSet<DefinitionID>>,
     pub conformances: FxHashMap<TypeHead, Vec<ConformanceRecord<'arena>>>,
+    pub interface_requirements: FxHashMap<DefinitionID, &'arena InterfaceRequirements<'arena>>,
     pub empty_generics: Option<&'arena Generics>,
     pub empty_attributes: Option<&'arena hir::AttributeList>,
 }
