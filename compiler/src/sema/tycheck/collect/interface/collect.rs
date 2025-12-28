@@ -14,6 +14,7 @@ use crate::{
 pub fn run(package: &hir::Package, context: GlobalContext) -> CompileResult<()> {
     let mut actor = Actor { context };
     hir::walk_package(&mut actor, package);
+    super::hierarchy::run(package, context)?; // Check Hierarchy Validity
     context.dcx().ok()
 }
 

@@ -634,6 +634,7 @@ pub struct TypeDatabase<'arena> {
     pub def_to_generics: FxHashMap<DefinitionID, &'arena Generics>,
     pub def_to_attributes: FxHashMap<DefinitionID, &'arena hir::AttributeList>,
     pub def_to_iface_def: FxHashMap<DefinitionID, &'arena InterfaceDefinition<'arena>>,
+    pub interface_to_supers: FxHashMap<DefinitionID, FxHashSet<DefinitionID>>,
     pub empty_generics: Option<&'arena Generics>,
     pub empty_attributes: Option<&'arena hir::AttributeList>,
 }
