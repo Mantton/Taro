@@ -88,6 +88,10 @@ impl DiagCtx {
     pub fn emit_info(&self, message: String, span: Option<Span>) {
         self.emit(Diagnostic::new(message, span, DiagnosticLevel::Info));
     }
+
+    pub fn emit_warning(&self, message: String, span: Option<Span>) {
+        self.emit(Diagnostic::new(message, span, DiagnosticLevel::Info));
+    }
 }
 
 impl DiagCtx {

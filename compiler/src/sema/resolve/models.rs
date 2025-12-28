@@ -598,6 +598,20 @@ pub enum TypeHead {
     Array,
 }
 
+impl TypeHead {
+    pub fn format(self, gcx: crate::compile::context::Gcx) -> String {
+        match self {
+            TypeHead::Primary(p) => p.name_str().into(),
+            TypeHead::Nominal(id) => gcx.definition_ident(id).symbol.as_str().into(),
+            TypeHead::Reference(m) => format!("&{}_", m.display_str()),
+            TypeHead::Pointer(m) => format!("*{}_", m.display_str()),
+            TypeHead::GcPtr => "GcPtr".into(),
+            TypeHead::Tuple(n) => format!("({})", ",".repeat(n as usize)),
+            TypeHead::Array => "[_]".into(),
+        }
+    }
+}
+
 pub struct ResolutionOutput<'arena> {
     pub resolutions: FxHashMap<NodeID, ResolutionState>,
     pub node_to_definition: FxHashMap<NodeID, DefinitionID>,

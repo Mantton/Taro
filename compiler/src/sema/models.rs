@@ -4,8 +4,11 @@ use rustc_hash::FxHashMap;
 use crate::{
     compile::context::Gcx,
     hir::{self, DefinitionID, Mutability},
-    sema::tycheck::infer::keys::{FloatVarID, IntVarID},
-    span::{Spanned, Symbol},
+    sema::{
+        resolve::models::TypeHead,
+        tycheck::infer::keys::{FloatVarID, IntVarID},
+    },
+    span::{Span, Spanned, Symbol},
     utils::intern::Interned,
 };
 
@@ -114,25 +117,9 @@ impl<'arena> Ty<'arena> {
             TyKind::UInt(u) => u.name_str().into(),
             TyKind::Float(f) => f.name_str().into(),
             TyKind::Adt(adt, args) => {
-                if args.is_empty() {
-                    adt.name.as_str().into()
-                } else {
-                    let mut out = String::from(adt.name.as_str());
-                    out.push('[');
-                    for (i, arg) in args.iter().enumerate() {
-                        if i > 0 {
-                            out.push_str(", ");
-                        }
-                        match arg {
-                            GenericArgument::Type(ty) => out.push_str(&ty.format(gcx)),
-                            GenericArgument::Const(c) => {
-                                out.push_str(&format!("{:?}", c));
-                            }
-                        }
-                    }
-                    out.push(']');
-                    out
-                }
+                let mut out = String::from(adt.name.as_str());
+                out.push_str(&format_generic_args(args, gcx));
+                out
             }
             TyKind::Pointer(inner, mt) => {
                 format!("*{}{}", mt.display_str(), inner.format(gcx))
@@ -425,6 +412,26 @@ impl<'arena> GenericArgument<'arena> {
 
 pub type GenericArguments<'arena> = &'arena [GenericArgument<'arena>];
 
+/// Format generic arguments as a bracketed list, e.g., "[Int, String]"
+/// Returns empty string if args is empty.
+pub fn format_generic_args<'ctx>(args: GenericArguments<'ctx>, gcx: Gcx<'ctx>) -> String {
+    if args.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::from("[");
+    for (i, arg) in args.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        match arg {
+            GenericArgument::Type(ty) => out.push_str(&ty.format(gcx)),
+            GenericArgument::Const(c) => out.push_str(&format!("{:?}", c)),
+        }
+    }
+    out.push(']');
+    out
+}
 #[derive(Debug, Clone)]
 pub struct Generics {
     pub parameters: Vec<GenericParameterDefinition>,
@@ -525,6 +532,20 @@ pub struct InterfaceReference<'ctx> {
     pub arguments: GenericArguments<'ctx>, // Self is arguments[0] when has_self
 }
 
+impl<'ctx> InterfaceReference<'ctx> {
+    pub fn format(self, gcx: Gcx<'ctx>) -> String {
+        let name = gcx.definition_ident(self.id).symbol;
+
+        // Skip Self (index 0) when formatting - it's implicit
+        let skip = if self.arguments.len() > 0 { 1 } else { 0 };
+        let display_args = &self.arguments[skip..];
+
+        let mut out = String::from(name.as_str());
+        out.push_str(&format_generic_args(display_args, gcx));
+        out
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TypeErasure {
     Existential, // any Protocol
@@ -537,4 +558,13 @@ pub struct AssociatedTypeDefinition<'ctx> {
     pub name: Symbol,
     // Optional: A default type if the implementer doesn't provide one
     pub default_type: Option<Ty<'ctx>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ConformanceRecord<'ctx> {
+    pub target: TypeHead,
+    pub interface: InterfaceReference<'ctx>,
+    pub extension: DefinitionID,
+    pub location: Span,
+    pub is_conditional: bool,
 }

@@ -24,6 +24,7 @@ pub fn typecheck_package<'ctx>(
     extend::identify::run(package, context)?; // Resolve Extension Identities
     collect::function::run(package, context)?; // Collect Function Type Signatures
     extend::member::run(package, context)?; // Collect Extension Members
+    collect::conformances::run(package, context)?; // Collect Conformances
     // WellFormed?
     wf::run(package, context)?;
     // Check Body

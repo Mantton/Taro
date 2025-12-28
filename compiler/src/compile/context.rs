@@ -8,13 +8,13 @@ use crate::{
     mir::{self, Body},
     sema::{
         models::{
-            EnumDefinition, EnumVariant, FloatTy, GenericArgument, GenericParameter, Generics,
-            IntTy, InterfaceDefinition, LabeledFunctionSignature, StructDefinition, Ty, TyKind,
-            UIntTy,
+            ConformanceRecord, EnumDefinition, EnumVariant, FloatTy, GenericArgument,
+            GenericParameter, Generics, IntTy, InterfaceDefinition, LabeledFunctionSignature,
+            StructDefinition, Ty, TyKind, UIntTy,
         },
         resolve::models::{
-            DefinitionKind, ResolutionOutput, ScopeData, ScopeEntryData, TypeHead, UsageEntryData,
-            Visibility,
+            DefinitionKind, PrimaryType, ResolutionOutput, ScopeData, ScopeEntryData, TypeHead,
+            UsageEntryData, Visibility,
         },
     },
     specialize::Instance,
@@ -200,6 +200,39 @@ impl<'arena> GlobalContext<'arena> {
         self.with_type_database(extension_id.package(), |db| {
             db.extension_to_type_head.get(&extension_id).cloned()
         })
+    }
+
+    /// Get the Self type for an extension.
+    /// - For struct/enum extensions: returns the concrete type
+    /// - For interface extensions: returns the Self type parameter
+    pub fn get_extension_self_ty(self, extension_id: DefinitionID) -> Option<Ty<'arena>> {
+        let head = self.get_extension_type_head(extension_id)?;
+        match head {
+            TypeHead::Nominal(target_id) => match self.definition_kind(target_id) {
+                DefinitionKind::Interface => {
+                    // For interface extensions, Self is the abstract Self parameter
+                    Some(self.types.self_type_parameter)
+                }
+                DefinitionKind::Struct | DefinitionKind::Enum => {
+                    // For concrete type extensions, Self is the actual type
+                    Some(self.get_type(target_id))
+                }
+                _ => None,
+            },
+            TypeHead::Primary(p) => Some(match p {
+                PrimaryType::Int(k) => Ty::new_int(self, k),
+                PrimaryType::UInt(k) => Ty::new_uint(self, k),
+                PrimaryType::Float(k) => Ty::new_float(self, k),
+                PrimaryType::String => self.types.string,
+                PrimaryType::Bool => self.types.bool,
+                PrimaryType::Rune => self.types.rune,
+            }),
+            TypeHead::GcPtr => Some(Ty::new(TyKind::GcPtr, self)),
+            TypeHead::Tuple(_)
+            | TypeHead::Reference(_)
+            | TypeHead::Pointer(_)
+            | TypeHead::Array => None, // TODO: complex type extensions
+        }
     }
 
     pub fn get_mir_body(self, id: DefinitionID) -> &'arena mir::Body<'arena> {
@@ -635,6 +668,7 @@ pub struct TypeDatabase<'arena> {
     pub def_to_attributes: FxHashMap<DefinitionID, &'arena hir::AttributeList>,
     pub def_to_iface_def: FxHashMap<DefinitionID, &'arena InterfaceDefinition<'arena>>,
     pub interface_to_supers: FxHashMap<DefinitionID, FxHashSet<DefinitionID>>,
+    pub conformances: FxHashMap<TypeHead, Vec<ConformanceRecord<'arena>>>,
     pub empty_generics: Option<&'arena Generics>,
     pub empty_attributes: Option<&'arena hir::AttributeList>,
 }
