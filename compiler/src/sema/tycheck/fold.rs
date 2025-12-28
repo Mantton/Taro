@@ -2,7 +2,7 @@ use crate::{
     compile::context::GlobalContext,
     sema::models::{
         Const, ConstKind, EnumDefinition, EnumVariant, EnumVariantField, EnumVariantKind,
-        GenericArgument, StructDefinition, StructField, Ty, TyKind,
+        GenericArgument, InterfaceReference, StructDefinition, StructField, Ty, TyKind,
     },
 };
 
@@ -89,7 +89,11 @@ impl<'ctx> TypeSuperFoldable<'ctx> for TyKind<'ctx> {
                     return Adt(def, args);
                 }
 
-                let interned = folder.gcx().store.interners.intern_generic_args(folded_args);
+                let interned = folder
+                    .gcx()
+                    .store
+                    .interners
+                    .intern_generic_args(folded_args);
                 Adt(def, interned)
             }
 
@@ -115,36 +119,42 @@ impl<'ctx> TypeSuperFoldable<'ctx> for TyKind<'ctx> {
                 }
             }
 
-            // Alias type - fold generic args
-            Alias { kind, def_id, args } => {
-                if args.is_empty() {
-                    return Alias { kind, def_id, args };
-                }
+            BoxedExistential { interfaces } => {
                 let mut changed = false;
-                let mut folded_args = Vec::with_capacity(args.len());
-                for arg in args.iter().copied() {
-                    let folded = match arg {
-                        GenericArgument::Type(ty) => {
-                            let folded_ty = ty.fold_with(folder);
-                            if folded_ty != ty {
-                                changed = true;
-                            }
-                            GenericArgument::Type(folded_ty)
-                        }
-                        GenericArgument::Const(c) => {
-                            let folded_const = fold_const(c, folder, &mut changed);
-                            GenericArgument::Const(folded_const)
-                        }
-                    };
-                    folded_args.push(folded);
+                let mut folded_refs = Vec::with_capacity(interfaces.len());
+
+                for iface in interfaces.iter().copied() {
+                    let (arguments, args_changed) =
+                        fold_generic_args(folder.gcx(), iface.arguments, folder);
+
+                    folded_refs.push(InterfaceReference {
+                        id: iface.id,
+                        arguments,
+                    });
+
+                    changed |= args_changed;
                 }
 
                 if !changed {
-                    return Alias { kind, def_id, args };
+                    return BoxedExistential { interfaces };
                 }
 
-                let interned = folder.gcx().store.interners.intern_generic_args(folded_args);
-                Alias { kind, def_id, args: interned }
+                let list = folder
+                    .gcx()
+                    .store
+                    .arenas
+                    .global
+                    .alloc_slice_copy(&folded_refs);
+                BoxedExistential { interfaces: list }
+            }
+
+            // Alias type - fold generic args
+            Alias { kind, def_id, args } => {
+                let (args, changed) = fold_generic_args(folder.gcx(), args, folder);
+                if !changed {
+                    return Alias { kind, def_id, args };
+                }
+                Alias { kind, def_id, args }
             }
 
             _ => self,
@@ -166,6 +176,43 @@ fn fold_const<'ctx, F: TypeFolder<'ctx>>(
         ConstKind::Param(_) => c.kind,
     };
     Const { ty, kind }
+}
+
+fn fold_generic_args<'ctx, F: TypeFolder<'ctx>>(
+    gcx: GlobalContext<'ctx>,
+    args: &'ctx [GenericArgument<'ctx>],
+    folder: &mut F,
+) -> (&'ctx [GenericArgument<'ctx>], bool) {
+    if args.is_empty() {
+        return (args, false);
+    }
+
+    let mut changed = false;
+    let mut folded_args = Vec::with_capacity(args.len());
+
+    for arg in args.iter().copied() {
+        let folded = match arg {
+            GenericArgument::Type(ty) => {
+                let folded_ty = ty.fold_with(folder);
+                if folded_ty != ty {
+                    changed = true;
+                }
+                GenericArgument::Type(folded_ty)
+            }
+            GenericArgument::Const(c) => {
+                let folded_const = fold_const(c, folder, &mut changed);
+                GenericArgument::Const(folded_const)
+            }
+        };
+        folded_args.push(folded);
+    }
+
+    if !changed {
+        return (args, false);
+    }
+
+    let interned = gcx.store.interners.intern_generic_args(folded_args);
+    (interned, true)
 }
 
 impl<'ctx> TypeFoldable<'ctx> for StructField<'ctx> {

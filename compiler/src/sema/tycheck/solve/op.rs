@@ -140,6 +140,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let apply_goal = Obligation {
             location: data.span,
             goal: Goal::Apply(ApplyGoalData {
+                call_node_id: data.node_id,
                 call_span: data.span,
                 callee_ty: method_ty,
                 callee_source: None,
@@ -300,6 +301,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let apply_goal = Obligation {
             location: data.span,
             goal: Goal::Apply(ApplyGoalData {
+                call_node_id: data.node_id,
                 call_span: data.span,
                 callee_ty: method_ty,
                 callee_source: None,
@@ -446,7 +448,11 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     if let Some(exp) = data.expectation {
                         obligations.push(Obligation {
                             location: data.span,
-                            goal: Goal::Equal(data.rho, exp),
+                            goal: Goal::Coerce {
+                                node_id: data.node_id,
+                                from: data.rho,
+                                to: exp,
+                            },
                         });
                     }
                     return Some(obligations);
@@ -457,7 +463,11 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     if let Some(exp) = data.expectation {
                         obligations.push(Obligation {
                             location: data.span,
-                            goal: Goal::Equal(data.rho, exp),
+                            goal: Goal::Coerce {
+                                node_id: data.node_id,
+                                from: data.rho,
+                                to: exp,
+                            },
                         });
                     }
                     return Some(obligations);
@@ -714,6 +724,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let apply_goal = Obligation {
             location: data.span,
             goal: Goal::Apply(ApplyGoalData {
+                call_node_id: data.node_id,
                 call_span: data.span,
                 callee_ty: method_ty,
                 callee_source: None,

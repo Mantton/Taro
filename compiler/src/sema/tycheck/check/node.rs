@@ -829,7 +829,11 @@ impl<'ctx> Checker<'ctx> {
         // Type-check the RHS against the LHS type.
         let rhs_ty = self.synth_with_expectation(rhs, Some(lhs_ty), cs);
         cs.add_goal(
-            crate::sema::tycheck::solve::Goal::Equal(lhs_ty, rhs_ty),
+            crate::sema::tycheck::solve::Goal::Coerce {
+                node_id: rhs.id,
+                from: rhs_ty,
+                to: lhs_ty,
+            },
             expr.span,
         );
         // Assignments evaluate to unit.
@@ -1053,6 +1057,7 @@ impl<'ctx> Checker<'ctx> {
         let result_ty = cs.infer_cx.next_ty_var(expression.span);
 
         let data = ApplyGoalData {
+            call_node_id: expression.id,
             call_span: expression.span,
             callee_ty,
             callee_source: self.resolve_callee(callee),
@@ -1212,6 +1217,7 @@ impl<'ctx> Checker<'ctx> {
                 if let Some(exp) = expectation {
                     cs.add_goal(
                         Goal::Coerce {
+                            node_id: node.then_block.id,
                             from: then_ty,
                             to: exp,
                         },

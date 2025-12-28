@@ -69,6 +69,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     obligations.push(Obligation {
                         location: provided_field.value_span,
                         goal: Goal::Coerce {
+                            node_id: provided_field.node_id,
                             from: provided_field.ty,
                             to: def_field.ty,
                         },

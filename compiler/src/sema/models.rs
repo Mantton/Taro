@@ -155,6 +155,13 @@ impl<'arena> Ty<'arena> {
                 out
             }
             TyKind::GcPtr => "GcPtr".into(),
+            TyKind::BoxedExistential { interfaces } => {
+                if interfaces.is_empty() {
+                    return "any".into();
+                }
+                let parts: Vec<_> = interfaces.iter().map(|i| i.format(gcx)).collect();
+                format!("any {}", parts.join(" & "))
+            }
             TyKind::Error => "<<error>>".into(),
             TyKind::Infer(k) => match k {
                 InferTy::TyVar(id) => format!("{{var({})}}", id._raw),
@@ -190,6 +197,12 @@ impl<'ctx> Ty<'ctx> {
                     inputs.iter().copied().any(visit) || visit(output)
                 }
                 // Existential, associated, infer, error, primitives …
+                TyKind::BoxedExistential { interfaces } => interfaces.iter().any(|iface| {
+                    iface.arguments.iter().any(|arg| match arg {
+                        GenericArgument::Type(ty) => visit(*ty),
+                        GenericArgument::Const(c) => visit(c.ty),
+                    })
+                }),
                 _ => false,
             }
         }
@@ -214,7 +227,9 @@ pub enum TyKind<'arena> {
         inputs: &'arena [Ty<'arena>],
         output: Ty<'arena>,
     },
-    /// Type alias - can be Inherent (associated type) or Weak (top-level alias)
+    BoxedExistential {
+        interfaces: &'arena [InterfaceReference<'arena>],
+    },
     Alias {
         kind: AliasKind,
         def_id: DefinitionID,

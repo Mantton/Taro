@@ -297,6 +297,9 @@ impl<'ctx> FunctionLower<'ctx> {
                     span,
                 }
             }
+            Adjustment::BoxExistential { .. } => {
+                todo!("THIR lowering for boxed existentials")
+            }
             Adjustment::Ignore(_) => expr,
         }
     }

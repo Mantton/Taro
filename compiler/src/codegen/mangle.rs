@@ -51,6 +51,9 @@ fn ty_symbol_with(gcx: GlobalContext, ty: Ty) -> String {
             format!("tuple{}", parts.join("_"))
         }
         TyKind::FnPointer { .. } => "fnptr".into(),
+        TyKind::BoxedExistential { .. } => {
+            todo!("mangling for boxed existentials")
+        }
         TyKind::Alias { def_id, .. } => {
             // Use alias definition name
             let ident = gcx.definition_ident(def_id);

@@ -59,7 +59,15 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             }
             hir::TypeKind::Array { .. } => todo!(),
             hir::TypeKind::Function { .. } => todo!(),
-            hir::TypeKind::BoxedExistential { .. } => todo!(),
+            hir::TypeKind::BoxedExistential { interfaces } => {
+                let self_ty = gcx.types.self_type_parameter;
+                let mut lowered = Vec::with_capacity(interfaces.len());
+                for interface in interfaces {
+                    lowered.push(self.lower_interface_reference(self_ty, interface));
+                }
+                let list = gcx.store.arenas.global.alloc_slice_copy(&lowered);
+                Ty::new(TyKind::BoxedExistential { interfaces: list }, gcx)
+            }
             hir::TypeKind::Infer => unreachable!(),
         }
     }

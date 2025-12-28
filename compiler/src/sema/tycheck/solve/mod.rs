@@ -5,6 +5,7 @@ use crate::{
         error::SpannedErrorList,
         models::{GenericArguments, Ty},
         tycheck::infer::InferCtx,
+        tycheck::utils::normalize_ty,
     },
     span::{Span, Spanned},
 };
@@ -14,6 +15,7 @@ use std::{cell::RefCell, cmp::Reverse, collections::VecDeque, rc::Rc};
 
 mod adt;
 mod apply;
+mod coerce;
 mod member;
 mod method;
 mod models;
@@ -88,6 +90,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
                 } else {
                     resolved
                 };
+                let resolved = normalize_ty(gcx, resolved);
                 (id, resolved)
             })
             .collect()
@@ -105,6 +108,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
                 } else {
                     resolved
                 };
+                let resolved = normalize_ty(gcx, resolved);
                 (id, resolved)
             })
             .collect()
@@ -200,7 +204,10 @@ impl<'ctx> ConstraintSystem<'ctx> {
             let resolved = self.infer_cx.resolve_vars_if_possible(var_ty);
             if resolved.is_infer() {
                 let msg = if let Some(name) = origin.param_name {
-                    format!("generic parameter '{}' could not be inferred", name.as_str())
+                    format!(
+                        "generic parameter '{}' could not be inferred",
+                        name.as_str()
+                    )
                 } else {
                     "type annotations needed: unable to infer type".into()
                 };
@@ -254,7 +261,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             Goal::UnaryOp(data) => self.solve_unary(data),
             Goal::BinaryOp(data) => self.solve_binary(data),
             Goal::AssignOp(data) => self.solve_assign_op(data),
-            Goal::Coerce { from, to } => self.solve_coerce(location, from, to),
+            Goal::Coerce { node_id, from, to } => self.solve_coerce(location, node_id, from, to),
             Goal::Member(data) => self.solve_member(data),
             Goal::MethodCall(data) => self.solve_method_call(data),
             Goal::StructLiteral(data) => self.solve_struct_literal(data),
@@ -288,11 +295,6 @@ impl<'ctx> ConstraintSolver<'ctx> {
             instantiation_args: self.instantiation_args.clone(),
             current_def: self.current_def,
         }
-    }
-
-    fn solve_coerce(&mut self, location: Span, from: Ty<'ctx>, to: Ty<'ctx>) -> SolverResult<'ctx> {
-        // Minimal coercion: just equality for now.
-        self.solve_equality(location, from, to)
     }
 }
 

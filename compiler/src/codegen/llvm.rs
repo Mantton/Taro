@@ -2103,6 +2103,9 @@ fn lower_type<'llvm, 'gcx>(
                 .ptr_type(AddressSpace::default())
                 .as_basic_type_enum(),
         ),
+        TyKind::BoxedExistential { .. } => {
+            todo!("codegen for boxed existentials")
+        }
         TyKind::Parameter(_) => {
             // Should have been resolved by instantiate_ty_with_args above
             unreachable!(

@@ -4,6 +4,7 @@ use crate::sema::{
     tycheck::{
         infer::keys::{FloatVarValue, IntVarValue},
         solve::ConstraintSolver,
+        utils::normalize_ty,
     },
 };
 
@@ -124,6 +125,20 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 }
                 return Ok(());
             }
+            (BoxedExistential { interfaces: a_ifaces }, BoxedExistential { interfaces: b_ifaces }) => {
+                if a_ifaces.len() != b_ifaces.len() {
+                    return Err(TypeError::TyMismatch(ExpectedFound::new(a, b)));
+                }
+
+                for (a_iface, b_iface) in a_ifaces.iter().zip(b_ifaces.iter()) {
+                    if a_iface.id != b_iface.id {
+                        return Err(TypeError::TyMismatch(ExpectedFound::new(a, b)));
+                    }
+                    self.unify_generic_args(a_iface.arguments, b_iface.arguments)?;
+                }
+
+                return Ok(());
+            }
             _ => {
                 return Err(TypeError::TyMismatch(ExpectedFound::new(a, b)));
             }
@@ -167,7 +182,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
 impl<'ctx> ConstraintSolver<'ctx> {
     pub fn structurally_resolve(&self, ty: Ty<'ctx>) -> Ty<'ctx> {
-        self.icx.resolve_vars_if_possible(ty)
+        let ty = self.icx.resolve_vars_if_possible(ty);
+        normalize_ty(self.icx.gcx, ty)
     }
 }
-

@@ -102,6 +102,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 let apply_goal = Obligation {
                     location: span,
                     goal: Goal::Apply(ApplyGoalData {
+                        call_node_id: node_id,
                         call_span: span,
                         callee_ty: method_ty,
                         callee_source: None,

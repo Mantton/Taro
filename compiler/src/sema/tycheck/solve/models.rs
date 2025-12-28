@@ -1,16 +1,23 @@
 use crate::{
     ast::Identifier,
     hir::{BinaryOperator, NodeID, UnaryOperator},
-    sema::{error::SpannedErrorList, models::Ty, resolve::models::DefinitionID},
+    sema::{
+        error::SpannedErrorList,
+        models::{InterfaceReference, Ty},
+        resolve::models::DefinitionID,
+    },
     span::Span,
 };
 
 #[derive(Debug, Clone)]
 pub enum Adjustment<'ctx> {
-    /// Apply a single autoderef step (e.g. from `&T` to `T`).
     Dereference,
     BorrowMutable,
     BorrowImmutable,
+    BoxExistential {
+        from: Ty<'ctx>,
+        interfaces: &'ctx [InterfaceReference<'ctx>],
+    },
     Ignore(&'ctx ()),
 }
 
@@ -23,7 +30,11 @@ pub enum Goal<'ctx> {
     BinaryOp(BinOpGoalData<'ctx>),
     UnaryOp(UnOpGoalData<'ctx>),
     AssignOp(AssignOpGoalData<'ctx>),
-    Coerce { from: Ty<'ctx>, to: Ty<'ctx> },
+    Coerce {
+        node_id: NodeID,
+        from: Ty<'ctx>,
+        to: Ty<'ctx>,
+    },
     Member(MemberGoalData<'ctx>),
     MethodCall(MethodCallData<'ctx>),
     StructLiteral(StructLiteralGoalData<'ctx>),
@@ -58,6 +69,7 @@ pub enum SolverResult<'ctx> {
 
 #[derive(Debug, Clone)]
 pub struct ApplyGoalData<'ctx> {
+    pub call_node_id: NodeID,
     pub call_span: Span,
     pub callee_ty: Ty<'ctx>,
     pub callee_source: Option<DefinitionID>,

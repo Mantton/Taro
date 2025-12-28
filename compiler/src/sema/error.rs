@@ -1,7 +1,7 @@
 use crate::{
     compile::context::Gcx,
     hir::{BinaryOperator, UnaryOperator},
-    sema::models::{GenericArgument, Ty},
+    sema::models::{GenericArgument, InterfaceReference, Ty},
     span::{Spanned, Symbol},
 };
 
@@ -64,6 +64,10 @@ pub enum TypeError<'ctx> {
         op: BinaryOperator,
         lhs: Ty<'ctx>,
         rhs: Ty<'ctx>,
+    },
+    NonConformance {
+        ty: Ty<'ctx>,
+        interface: InterfaceReference<'ctx>,
     },
     GenericParameterNotInferred {
         name: Symbol,
@@ -152,6 +156,13 @@ impl<'ctx> TypeError<'ctx> {
                     op,
                     lhs.format(gcx),
                     rhs.format(gcx)
+                )
+            }
+            TypeError::NonConformance { ty, interface } => {
+                format!(
+                    "type '{}' does not conform to interface '{}'",
+                    ty.format(gcx),
+                    interface.format(gcx)
                 )
             }
             TypeError::GenericParameterNotInferred { name } => {

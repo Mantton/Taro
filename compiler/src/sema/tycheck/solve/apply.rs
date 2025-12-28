@@ -85,7 +85,11 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         obligations.push(Obligation {
             location: data.call_span,
-            goal: Goal::Equal(output, data.result_ty),
+            goal: Goal::Coerce {
+                node_id: data.call_node_id,
+                from: data.result_ty,
+                to: output,
+            },
         });
 
         return SolverResult::Solved(obligations);
@@ -233,7 +237,11 @@ fn produce_application_subobligations<'c>(
         if let Some(arg_idx) = arg_idx {
             let argument = arguments[*arg_idx];
             let arg_ty = argument.ty;
-            let constraint = Goal::Equal(param_ty, arg_ty);
+            let constraint = Goal::Coerce {
+                node_id: argument.id,
+                from: arg_ty,
+                to: param_ty,
+            };
             let obligatin = Obligation {
                 location: argument.span,
                 goal: constraint,

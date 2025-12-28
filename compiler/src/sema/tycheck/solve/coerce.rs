@@ -1,0 +1,180 @@
+use crate::{
+    hir::{Mutability, NodeID},
+    sema::{
+        error::{ExpectedFound, TypeError},
+        models::{InterfaceReference, Ty, TyKind},
+        resolve::models::TypeHead,
+        tycheck::utils::type_head_from_value_ty,
+    },
+    span::{Span, Spanned},
+};
+
+use super::{Adjustment, ConstraintSolver, SolverResult};
+
+impl<'ctx> ConstraintSolver<'ctx> {
+    pub fn solve_coerce(
+        &mut self,
+        location: Span,
+        node_id: NodeID,
+        from: Ty<'ctx>,
+        to: Ty<'ctx>,
+    ) -> SolverResult<'ctx> {
+        let from = self.structurally_resolve(from);
+        let to = self.structurally_resolve(to);
+
+        if let Some(result) = self.solve_boxing_coercion(location, node_id, from, to) {
+            return result;
+        }
+
+        if let Some(result) = self.solve_pointer_coercion(location, from, to) {
+            return result;
+        }
+
+        // Minimal coercion: just equality for now.
+        self.solve_equality(location, to, from)
+    }
+
+    fn solve_boxing_coercion(
+        &mut self,
+        location: Span,
+        node_id: NodeID,
+        from: Ty<'ctx>,
+        to: Ty<'ctx>,
+    ) -> Option<SolverResult<'ctx>> {
+        let TyKind::BoxedExistential { interfaces } = to.kind() else {
+            return None;
+        };
+
+        if from.is_infer() {
+            return Some(SolverResult::Deferred);
+        }
+
+        if matches!(from.kind(), TyKind::BoxedExistential { .. }) {
+            return Some(self.solve_equality(location, to, from));
+        }
+
+        let Some(head) = type_head_from_value_ty(from) else {
+            let error = Spanned::new(
+                TypeError::TyMismatch(ExpectedFound::new(to, from)),
+                location,
+            );
+            return Some(SolverResult::Error(vec![error]));
+        };
+
+        let missing = self.missing_conformances(head, interfaces);
+        if missing.is_empty() {
+            self.record_adjustments(
+                node_id,
+                vec![Adjustment::BoxExistential { from, interfaces }],
+            );
+            return Some(SolverResult::Solved(vec![]));
+        }
+
+        let errors = missing
+            .into_iter()
+            .map(|interface| {
+                Spanned::new(
+                    TypeError::NonConformance {
+                        ty: from,
+                        interface,
+                    },
+                    location,
+                )
+            })
+            .collect();
+
+        Some(SolverResult::Error(errors))
+    }
+
+    fn solve_pointer_coercion(
+        &mut self,
+        location: Span,
+        from: Ty<'ctx>,
+        to: Ty<'ctx>,
+    ) -> Option<SolverResult<'ctx>> {
+        let TyKind::Reference(from_inner, Mutability::Mutable) = from.kind() else {
+            return None;
+        };
+        let TyKind::Reference(to_inner, Mutability::Immutable) = to.kind() else {
+            return None;
+        };
+
+        Some(self.solve_equality(location, to_inner, from_inner))
+    }
+
+    fn missing_conformances(
+        &self,
+        head: TypeHead,
+        interfaces: &'ctx [InterfaceReference<'ctx>],
+    ) -> Vec<InterfaceReference<'ctx>> {
+        let gcx = self.gcx();
+        let mut records: Vec<crate::sema::models::ConformanceRecord<'ctx>> = Vec::new();
+
+        let mut collect = |db: &crate::compile::context::TypeDatabase<'ctx>| {
+            if let Some(found) = db.conformances.get(&head) {
+                records.extend(found.iter().copied());
+            }
+        };
+
+        gcx.with_session_type_database(|db| collect(db));
+
+        let mapping = gcx.store.package_mapping.borrow();
+        let deps: Vec<_> = gcx
+            .config
+            .dependencies
+            .values()
+            .filter_map(|ident| mapping.get(ident.as_str()).copied())
+            .collect();
+        drop(mapping);
+
+        for index in deps {
+            gcx.with_type_database(index, |db| collect(db));
+        }
+
+        let mut missing = Vec::new();
+        for iface in interfaces {
+            let mut satisfied = false;
+            for record in &records {
+                if record.interface.id != iface.id {
+                    continue;
+                }
+                if self.interface_args_match(*iface, record.interface) {
+                    satisfied = true;
+                    break;
+                }
+            }
+            if !satisfied {
+                missing.push(*iface);
+            }
+        }
+
+        missing
+    }
+
+    fn interface_args_match(
+        &self,
+        expected: InterfaceReference<'ctx>,
+        actual: InterfaceReference<'ctx>,
+    ) -> bool {
+        let expected_args = if expected.arguments.len() > 0 {
+            &expected.arguments[1..]
+        } else {
+            expected.arguments
+        };
+        let actual_args = if actual.arguments.len() > 0 {
+            &actual.arguments[1..]
+        } else {
+            actual.arguments
+        };
+
+        if expected_args.len() != actual_args.len() {
+            return false;
+        }
+
+        // TODO: Unify/infer interface arguments instead of strict equality.
+        expected_args
+            .iter()
+            .zip(actual_args.iter())
+            .all(|(a, b)| a == b)
+    }
+}
