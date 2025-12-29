@@ -180,7 +180,7 @@ impl<'ctx> Actor<'ctx> {
                 .get(&ty_key)
                 .into_iter()
                 .flat_map(|v| v.iter())
-                .find(|rec| rec.interface.id == interface.id)
+                .find(|rec| rec.interface == interface)
                 .cloned()
         })
     }

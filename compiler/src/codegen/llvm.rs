@@ -9,7 +9,7 @@ use crate::{
             FloatTy, GenericArgument, GenericArguments, IntTy, InterfaceDefinition,
             InterfaceReference, InterfaceRequirements, Ty, TyKind, UIntTy,
         },
-        resolve::models::{DefinitionKind, TypeHead},
+        resolve::models::TypeHead,
         tycheck::utils::{instantiate::instantiate_ty_with_args, type_head_from_value_ty},
     },
     span::Symbol,
@@ -68,10 +68,10 @@ struct Emitter<'llvm, 'gcx> {
     strings: FxHashMap<Symbol, PointerValue<'llvm>>,
     target_data: inkwell::targets::TargetData,
     gc_descs: FxHashMap<Ty<'gcx>, PointerValue<'llvm>>,
-    witness_tables: FxHashMap<(TypeHead, hir::DefinitionID), PointerValue<'llvm>>,
-    /// Cache for witness table thunks: (type_head, interface_id, impl_method_id) -> thunk_fn_ptr
+    witness_tables: FxHashMap<(TypeHead, InterfaceReference<'gcx>), PointerValue<'llvm>>,
+    /// Cache for witness table thunks: (type_head, interface, impl_method_id) -> thunk_fn_ptr
     witness_thunks:
-        FxHashMap<(TypeHead, hir::DefinitionID, hir::DefinitionID), PointerValue<'llvm>>,
+        FxHashMap<(TypeHead, InterfaceReference<'gcx>, hir::DefinitionID), PointerValue<'llvm>>,
     gc_desc_ty: inkwell::types::StructType<'llvm>,
     usize_ty: inkwell::types::IntType<'llvm>,
     shadow: Option<ShadowStackInfo<'llvm, 'gcx>>,
@@ -1502,7 +1502,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         let iface = self.interface_args_with_self(concrete_ty, iface);
 
-        if let Some(ptr) = self.witness_tables.get(&(type_head, iface.id)) {
+        if let Some(ptr) = self.witness_tables.get(&(type_head, iface)) {
             return *ptr;
         }
 
@@ -1510,7 +1510,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             Some(req) => req,
             None => return self.context.ptr_type(AddressSpace::default()).const_null(),
         };
-        let witness = self.conformance_witness(type_head, iface.id);
+        let witness = self.conformance_witness(type_head, iface);
 
         let mut entries: Vec<BasicValueEnum<'llvm>> =
             Vec::with_capacity(requirements.methods.len());
@@ -1527,7 +1527,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 &[]
             };
             // Use a thunk to bridge virtual call signature (ptr self) to concrete impl
-            let thunk_ptr = self.witness_method_thunk(type_head, iface.id, impl_def_id, args);
+            let thunk_ptr = self.witness_method_thunk(type_head, iface, impl_def_id, args);
             entries.push(thunk_ptr.as_basic_value_enum());
         }
 
@@ -1549,8 +1549,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         gv.set_linkage(Linkage::Internal);
         let ptr = gv.as_pointer_value();
         let opaque_ptr = ptr.const_cast(self.context.ptr_type(AddressSpace::default()));
-        self.witness_tables
-            .insert((type_head, iface.id), opaque_ptr);
+        self.witness_tables.insert((type_head, iface), opaque_ptr);
         opaque_ptr
     }
 
@@ -1591,12 +1590,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     fn witness_method_thunk(
         &mut self,
         type_head: TypeHead,
-        interface_id: hir::DefinitionID,
+        iface: InterfaceReference<'gcx>,
         impl_def_id: hir::DefinitionID,
         args: GenericArguments<'gcx>,
     ) -> PointerValue<'llvm> {
         // Check cache first
-        let cache_key = (type_head, interface_id, impl_def_id);
+        let cache_key = (type_head, iface, impl_def_id);
         if let Some(&ptr) = self.witness_thunks.get(&cache_key) {
             return ptr;
         }
@@ -1704,11 +1703,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     fn conformance_witness(
         &self,
         type_head: TypeHead,
-        interface_id: hir::DefinitionID,
+        interface: InterfaceReference<'gcx>,
     ) -> Option<crate::sema::models::ConformanceWitness<'gcx>> {
         self.gcx.with_session_type_database(|db| {
             db.conformance_witnesses
-                .get(&(type_head, interface_id))
+                .get(&(type_head, interface))
                 .cloned()
         })
     }
@@ -1717,18 +1716,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         self.interface_requirements(interface_id)
             .map(|req| req.methods.len())
             .unwrap_or(0)
-    }
-
-    fn interface_method_parent(&self, def_id: hir::DefinitionID) -> Option<hir::DefinitionID> {
-        if self.gcx.definition_kind(def_id) != DefinitionKind::AssociatedFunction {
-            return None;
-        }
-        let parent = self.gcx.definition_parent(def_id)?;
-        if self.gcx.definition_kind(parent) == DefinitionKind::Interface {
-            Some(parent)
-        } else {
-            None
-        }
     }
 
     fn interface_superfaces(
@@ -2084,7 +2071,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             let mut current_ptr = root_table_ptr;
             for (current_iface, super_index) in chain {
                 let table_ty = self.witness_table_struct_ty(current_iface);
-                let table_ptr_ty = table_ty.ptr_type(AddressSpace::default());
+                let table_ptr_ty = self.context.ptr_type(AddressSpace::default());
                 let typed_ptr = self
                     .builder
                     .build_bit_cast(current_ptr, table_ptr_ty, "wt_cast")
@@ -2111,7 +2098,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         };
 
         let method_table_ty = self.witness_table_struct_ty(instance.method_interface);
-        let method_table_ptr_ty = method_table_ty.ptr_type(AddressSpace::default());
+        let method_table_ptr_ty = self.context.ptr_type(AddressSpace::default());
         let typed_method_table = self
             .builder
             .build_bit_cast(method_table_ptr, method_table_ptr_ty, "wt_method_cast")
@@ -2167,7 +2154,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .builder
             .build_bit_cast(
                 fn_ptr,
-                fn_ty.ptr_type(AddressSpace::default()),
+                self.context.ptr_type(AddressSpace::default()),
                 "virt_fn_ptr",
             )
             .unwrap()

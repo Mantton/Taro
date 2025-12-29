@@ -5,8 +5,8 @@ use crate::{
     sema::{
         models::{
             AssociatedTypeDefinition, ConformanceWitness, InterfaceConstantRequirement,
-            InterfaceMethodRequirement, InterfaceOperatorRequirement, InterfaceRequirements,
-            LabeledFunctionSignature, Ty,
+            InterfaceMethodRequirement, InterfaceOperatorRequirement, InterfaceReference,
+            InterfaceRequirements, LabeledFunctionSignature, Ty,
         },
         resolve::models::TypeHead,
         tycheck::fold::{TypeFoldable, TypeFolder},
@@ -127,19 +127,19 @@ impl<'ctx> Actor<'ctx> {
             self.emit_conformance_errors(type_head, record, errors);
         } else {
             // Store witness for later use (codegen, method dispatch, etc.)
-            self.store_witness(type_head, record.interface.id, witness);
+            self.store_witness(type_head, record.interface, witness);
         }
     }
 
     fn store_witness(
         &self,
         type_head: TypeHead,
-        interface_id: DefinitionID,
+        interface: InterfaceReference<'ctx>,
         witness: ConformanceWitness<'ctx>,
     ) {
         self.context.with_session_type_database(|db| {
             db.conformance_witnesses
-                .insert((type_head, interface_id), witness);
+                .insert((type_head, interface), witness);
         });
     }
 

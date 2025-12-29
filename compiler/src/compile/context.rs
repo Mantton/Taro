@@ -8,9 +8,10 @@ use crate::{
     mir::{self, Body},
     sema::{
         models::{
-            AliasDefinition, ConformanceRecord, ConformanceWitness, EnumDefinition, EnumVariant,
-            FloatTy, GenericArgument, GenericParameter, Generics, IntTy, InterfaceDefinition,
-            InterfaceRequirements, LabeledFunctionSignature, StructDefinition, Ty, TyKind, UIntTy,
+            ConformanceRecord, ConformanceWitness, EnumDefinition, EnumVariant, FloatTy,
+            GenericArgument, GenericParameter, Generics, IntTy, InterfaceDefinition,
+            InterfaceReference, InterfaceRequirements, LabeledFunctionSignature, StructDefinition,
+            Ty, TyKind, UIntTy,
         },
         resolve::models::{
             DefinitionKind, PrimaryType, ResolutionOutput, ScopeData, ScopeEntryData, TypeHead,
@@ -691,7 +692,8 @@ pub struct TypeDatabase<'arena> {
     pub interface_to_supers: FxHashMap<DefinitionID, FxHashSet<DefinitionID>>,
     pub conformances: FxHashMap<TypeHead, Vec<ConformanceRecord<'arena>>>,
     pub interface_requirements: FxHashMap<DefinitionID, &'arena InterfaceRequirements<'arena>>,
-    pub conformance_witnesses: FxHashMap<(TypeHead, DefinitionID), ConformanceWitness<'arena>>,
+    pub conformance_witnesses:
+        FxHashMap<(TypeHead, InterfaceReference<'arena>), ConformanceWitness<'arena>>,
     /// Revised alias table
     pub alias_table: crate::sema::models::PackageAliasTable,
     /// Resolved alias types (cached after lowering)
