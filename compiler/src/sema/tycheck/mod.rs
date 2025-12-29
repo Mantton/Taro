@@ -38,6 +38,7 @@ pub fn typecheck_package<'ctx>(
     collect::interface::collect::run(package, context)?; // Collect Interface Definition
     extend::identify::run(package, context)?; // Resolve Extension Identities
     collect::alias::run(package, context)?; // Collect Type Aliases
+    collect::constant::run(package, context)?; // Collect Constant Types
 
     collect::function::run(package, context)?; // Collect Function Type Signatures
     collect::variant::run(package, context)?; // Collect Enum Variant Definitions

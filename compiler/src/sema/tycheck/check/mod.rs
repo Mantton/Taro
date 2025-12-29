@@ -35,6 +35,14 @@ impl<'ctx> Actor<'ctx> {
 }
 
 impl<'ctx> HirVisitor for Actor<'ctx> {
+    fn visit_declaration(&mut self, declaration: &hir::Declaration) -> Self::Result {
+        if let hir::DeclarationKind::Constant(node) = &declaration.kind {
+            self.check_constant(declaration.id, node);
+            return;
+        }
+        hir::walk_declaration(self, declaration);
+    }
+
     fn visit_function(
         &mut self,
         id: hir::DefinitionID,
@@ -55,6 +63,13 @@ impl<'ctx> Actor<'ctx> {
         let mut checker =
             checker::Checker::new(self.context, id, RefCell::new(TypeCheckResults::default()));
         checker.check_function(id, node, fn_ctx);
+        self.results.extend_from(checker.results.into_inner());
+    }
+
+    fn check_constant(&mut self, id: DefinitionID, node: &hir::Constant) {
+        let mut checker =
+            checker::Checker::new(self.context, id, RefCell::new(TypeCheckResults::default()));
+        checker.check_constant(id, node);
         self.results.extend_from(checker.results.into_inner());
     }
 }

@@ -4,7 +4,7 @@ use crate::{
     hir::{self, DefinitionID, DefinitionKind, HirVisitor, Mutability, Resolution},
     mir::{self, LogicalOperator},
     sema::{
-        models::{AdtKind, Ty, TyKind},
+        models::{AdtKind, ConstKind, ConstValue, Ty, TyKind},
         resolve::models::VariantCtorKind,
         tycheck::results::TypeCheckResults,
         tycheck::solve::Adjustment,
@@ -693,6 +693,32 @@ impl<'ctx> FunctionLower<'ctx> {
                 id,
                 generic_args: self.results.instantiation(expr.id),
             },
+            Resolution::Definition(id, DefinitionKind::Constant | DefinitionKind::AssociatedConstant) => {
+                let Some(constant) = self.gcx.try_get_const(id) else {
+                    self.gcx.dcx().emit_error(
+                        "constant value is not available".into(),
+                        Some(expr.span),
+                    );
+                    return ExprKind::Literal(Constant {
+                        ty: self.gcx.types.error,
+                        value: ConstantKind::Unit,
+                    });
+                };
+                let Some(value) = self.const_kind_to_thir(constant.kind) else {
+                    self.gcx.dcx().emit_error(
+                        "const parameter values are not supported here".into(),
+                        Some(expr.span),
+                    );
+                    return ExprKind::Literal(Constant {
+                        ty: self.gcx.types.error,
+                        value: ConstantKind::Unit,
+                    });
+                };
+                ExprKind::Literal(Constant {
+                    ty: constant.ty,
+                    value,
+                })
+            }
             Resolution::Definition(
                 id,
                 DefinitionKind::VariantConstructor(VariantCtorKind::Function),
@@ -718,6 +744,20 @@ impl<'ctx> FunctionLower<'ctx> {
             }
             Resolution::LocalVariable(id) => ExprKind::Local(id),
             _ => unreachable!(),
+        }
+    }
+
+    fn const_kind_to_thir(&self, kind: ConstKind) -> Option<ConstantKind> {
+        match kind {
+            ConstKind::Value(value) => Some(match value {
+                ConstValue::Bool(b) => ConstantKind::Bool(b),
+                ConstValue::Rune(r) => ConstantKind::Rune(r),
+                ConstValue::String(s) => ConstantKind::String(s),
+                ConstValue::Integer(i) => ConstantKind::Integer(i as u64),
+                ConstValue::Float(f) => ConstantKind::Float(f),
+                ConstValue::Unit => ConstantKind::Unit,
+            }),
+            ConstKind::Param(_) => None,
         }
     }
 

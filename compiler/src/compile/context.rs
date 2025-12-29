@@ -8,7 +8,7 @@ use crate::{
     mir::{self, Body},
     sema::{
         models::{
-            ConformanceRecord, ConformanceWitness, EnumDefinition, EnumVariant, FloatTy,
+            ConformanceRecord, ConformanceWitness, Const, EnumDefinition, EnumVariant, FloatTy,
             GenericArgument, GenericParameter, Generics, IntTy, InterfaceDefinition,
             InterfaceReference, InterfaceRequirements, LabeledFunctionSignature, StructDefinition,
             Ty, TyKind, UIntTy,
@@ -81,6 +81,13 @@ impl<'arena> GlobalContext<'arena> {
         let package_index = id.package();
         let database = cache.entry(package_index).or_insert(Default::default());
         database.def_to_ty.insert(id, ty);
+    }
+
+    pub fn cache_const(self, id: DefinitionID, value: Const<'arena>) {
+        let mut cache = self.context.store.type_databases.borrow_mut();
+        let package_index = id.package();
+        let database = cache.entry(package_index).or_insert(Default::default());
+        database.def_to_const.insert(id, value);
     }
 
     pub fn cache_alias_type(self, id: DefinitionID, ty: Ty<'arena>) {
@@ -169,6 +176,17 @@ impl<'arena> GlobalContext<'arena> {
     pub fn get_type(self, id: DefinitionID) -> Ty<'arena> {
         self.with_type_database(id.package(), |db| {
             *db.def_to_ty.get(&id).expect("type of definition")
+        })
+    }
+
+    pub fn try_get_const(self, id: DefinitionID) -> Option<Const<'arena>> {
+        self.with_type_database(id.package(), |db| db.def_to_const.get(&id).copied())
+    }
+
+    #[inline]
+    pub fn get_const(self, id: DefinitionID) -> Const<'arena> {
+        self.with_type_database(id.package(), |db| {
+            *db.def_to_const.get(&id).expect("const value")
         })
     }
 
@@ -680,6 +698,7 @@ impl<'a> CommonTypes<'a> {
 #[derive(Debug, Default)]
 pub struct TypeDatabase<'arena> {
     pub def_to_ty: FxHashMap<DefinitionID, Ty<'arena>>,
+    pub def_to_const: FxHashMap<DefinitionID, Const<'arena>>,
     pub def_to_fn_sig: FxHashMap<DefinitionID, &'arena LabeledFunctionSignature<'arena>>,
     pub def_to_struct_def: FxHashMap<DefinitionID, &'arena StructDefinition<'arena>>,
     pub def_to_enum_def: FxHashMap<DefinitionID, &'arena EnumDefinition<'arena>>,

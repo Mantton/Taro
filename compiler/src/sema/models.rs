@@ -1,5 +1,6 @@
 use ena::unify::UnifyKey;
 use rustc_hash::FxHashMap;
+use std::hash::{Hash, Hasher};
 
 use crate::{
     compile::context::Gcx,
@@ -442,10 +443,60 @@ pub enum ConstKind {
     Param(GenericParameter),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy)]
 pub enum ConstValue {
-    Integer(u64),
+    Integer(i128),
     Bool(bool),
+    Rune(char),
+    String(crate::span::Symbol),
+    Float(f64),
+    Unit,
+}
+
+impl PartialEq for ConstValue {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (ConstValue::Integer(a), ConstValue::Integer(b)) => a == b,
+            (ConstValue::Bool(a), ConstValue::Bool(b)) => a == b,
+            (ConstValue::Rune(a), ConstValue::Rune(b)) => a == b,
+            (ConstValue::String(a), ConstValue::String(b)) => a == b,
+            (ConstValue::Float(a), ConstValue::Float(b)) => a.to_bits() == b.to_bits(),
+            (ConstValue::Unit, ConstValue::Unit) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for ConstValue {}
+
+impl Hash for ConstValue {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            ConstValue::Integer(v) => {
+                0u8.hash(state);
+                v.hash(state);
+            }
+            ConstValue::Bool(v) => {
+                1u8.hash(state);
+                v.hash(state);
+            }
+            ConstValue::Rune(v) => {
+                2u8.hash(state);
+                v.hash(state);
+            }
+            ConstValue::String(v) => {
+                3u8.hash(state);
+                v.hash(state);
+            }
+            ConstValue::Float(v) => {
+                4u8.hash(state);
+                v.to_bits().hash(state);
+            }
+            ConstValue::Unit => {
+                5u8.hash(state);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

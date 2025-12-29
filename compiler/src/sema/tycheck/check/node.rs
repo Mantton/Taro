@@ -2,7 +2,7 @@ use crate::{
     compile::context::Gcx,
     hir::{self, DefinitionID, NodeID},
     sema::{
-        models::{GenericArguments, InferTy, Ty, TyKind},
+        models::{Const, ConstKind, ConstValue, GenericArguments, InferTy, Ty, TyKind},
         resolve::models::{DefinitionKind, TypeHead},
         tycheck::{
             check::{checker::Checker, gather::GatherLocalsVisitor},
@@ -25,6 +25,35 @@ use crate::{
 impl<'ctx> Checker<'ctx> {
     pub fn gcx(&self) -> Gcx<'ctx> {
         self.context
+    }
+
+    pub fn check_constant(&mut self, id: DefinitionID, node: &hir::Constant) {
+        let gcx = self.gcx();
+        let expected = gcx.get_type(id);
+        let Some(expr) = &node.expr else {
+            gcx.dcx().emit_error(
+                "constant declarations must have an initializer".into(),
+                Some(node.identifier.span),
+            );
+            return;
+        };
+
+        let provided = self.top_level_check(expr, Some(expected));
+        if provided.is_error() {
+            return;
+        }
+
+        let Some(value) = self.eval_const_expression(expr) else {
+            return;
+        };
+
+        gcx.cache_const(
+            id,
+            Const {
+                ty: expected,
+                kind: ConstKind::Value(value),
+            },
+        );
     }
 
     pub fn check_function(
@@ -247,6 +276,73 @@ impl<'ctx> Checker<'ctx> {
             }
             provided
         })
+    }
+
+    fn eval_const_expression(&self, expression: &hir::Expression) -> Option<ConstValue> {
+        match &expression.kind {
+            hir::ExpressionKind::Literal(lit) => self.eval_const_literal(lit, expression.span),
+            hir::ExpressionKind::Unary(op, expr)
+                if matches!(op, hir::UnaryOperator::Negate | hir::UnaryOperator::LogicalNot) =>
+            {
+                let value = self.eval_const_expression(expr)?;
+                self.eval_const_unary(*op, value, expression.span)
+            }
+            _ => {
+                self.gcx().dcx().emit_error(
+                    "constant initializer must be a literal or unary operator".into(),
+                    Some(expression.span),
+                );
+                None
+            }
+        }
+    }
+
+    fn eval_const_literal(&self, lit: &hir::Literal, span: Span) -> Option<ConstValue> {
+        Some(match lit {
+            hir::Literal::Bool(b) => ConstValue::Bool(*b),
+            hir::Literal::Rune(r) => ConstValue::Rune(*r),
+            hir::Literal::String(s) => ConstValue::String(*s),
+            hir::Literal::Integer(i) => ConstValue::Integer(*i as i128),
+            hir::Literal::Float(f) => ConstValue::Float(*f),
+            hir::Literal::Nil => {
+                self.gcx().dcx().emit_error(
+                    "nil is not allowed in constants".into(),
+                    Some(span),
+                );
+                return None;
+            }
+        })
+    }
+
+    fn eval_const_unary(
+        &self,
+        op: hir::UnaryOperator,
+        value: ConstValue,
+        span: Span,
+    ) -> Option<ConstValue> {
+        match (op, value) {
+            (hir::UnaryOperator::LogicalNot, ConstValue::Bool(b)) => {
+                Some(ConstValue::Bool(!b))
+            }
+            (hir::UnaryOperator::Negate, ConstValue::Integer(i)) => {
+                i.checked_neg().map(ConstValue::Integer).or_else(|| {
+                    self.gcx()
+                        .dcx()
+                        .emit_error("constant overflow".into(), Some(span));
+                    None
+                })
+            }
+            (hir::UnaryOperator::Negate, ConstValue::Float(f)) => {
+                Some(ConstValue::Float(-f))
+            }
+            _ => {
+                self.gcx().dcx().emit_error(
+                    "constant initializer must be a literal or unary operator".into(),
+                    Some(span),
+                );
+                None
+            }
+        }
     }
 
     /// Commits all resolved results from a constraint system to the checker's results.
