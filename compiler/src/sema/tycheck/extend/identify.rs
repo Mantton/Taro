@@ -4,6 +4,7 @@ use crate::{
     hir::{self, DefinitionID, HirVisitor, Resolution},
     sema::resolve::models::{DefinitionKind, TypeHead},
 };
+use crate::constants::STD_PREFIX;
 
 pub fn run(package: &hir::Package, context: GlobalContext) -> CompileResult<()> {
     let mut actor = Actor { context };
@@ -22,6 +23,52 @@ impl<'ctx> Actor<'ctx> {
         };
 
         self.context.cache_extension_type_head(extension_id, head);
+    }
+
+    fn is_std_package(&self, pkg: crate::PackageIndex) -> bool {
+        matches!(
+            self.context
+                .package_ident(pkg)
+                .as_ref()
+                .map(|s| s.as_str()),
+            Some(STD_PREFIX)
+        )
+    }
+
+    fn extension_owns_type(&self, head: TypeHead, extension_pkg: crate::PackageIndex) -> bool {
+        match head {
+            TypeHead::Nominal(id) => id.package() == extension_pkg,
+            TypeHead::Primary(_)
+            | TypeHead::GcPtr
+            | TypeHead::Tuple(_)
+            | TypeHead::Reference(_)
+            | TypeHead::Pointer(_)
+            | TypeHead::Array => self.is_std_package(extension_pkg),
+        }
+    }
+
+    fn validate_inherent_extension(&mut self, extension_id: DefinitionID, node: &hir::Extension) {
+        let has_conformance = node
+            .conformances
+            .as_ref()
+            .is_some_and(|c| !c.bounds.is_empty());
+        if has_conformance {
+            return;
+        }
+
+        let Some(head) = self.context.get_extension_type_head(extension_id) else {
+            return;
+        };
+
+        let extension_pkg = extension_id.package();
+        if self.extension_owns_type(head, extension_pkg) {
+            return;
+        }
+
+        self.context.dcx().emit_error(
+            "cannot extend type from another package without interface conformance".to_string(),
+            Some(node.ty.span),
+        );
     }
 
     fn type_head_for_node(&mut self, ty: &hir::Type) -> Option<TypeHead> {
@@ -121,5 +168,6 @@ impl HirVisitor for Actor<'_> {
         };
 
         self.resolve_extension_identity(declaration.id, node);
+        self.validate_inherent_extension(declaration.id, node);
     }
 }
