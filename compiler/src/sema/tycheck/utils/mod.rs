@@ -4,6 +4,7 @@ use crate::sema::{
 };
 
 pub mod autoderef;
+pub mod const_eval;
 pub mod generics;
 pub mod instantiate;
 pub mod normalize;

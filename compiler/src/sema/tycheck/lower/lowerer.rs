@@ -3,14 +3,17 @@ use crate::{
     hir::{self, DefinitionID, DefinitionKind, Resolution},
     sema::{
         models::{
-            AdtDef, AdtKind, GenericArgument, GenericArguments, GenericParameter,
-            GenericParameterDefinition, GenericParameterDefinitionKind, InterfaceReference, Ty,
-            TyKind,
+            AdtDef, AdtKind, Const, ConstKind, ConstValue, GenericArgument, GenericArguments,
+            GenericParameter, GenericParameterDefinition, GenericParameterDefinitionKind,
+            InterfaceReference, Ty, TyKind,
         },
         resolve::models::{PrimaryType, TypeHead},
         tycheck::{
             lower::LoweringRequest,
-            utils::{instantiate::instantiate_ty_with_args, type_head_from_value_ty},
+            utils::{
+                const_eval::eval_const_expression, instantiate::instantiate_ty_with_args,
+                type_head_from_value_ty,
+            },
         },
     },
     span::{Span, Symbol},
@@ -217,10 +220,25 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                     output.push(GenericArgument::Type(ty));
                     params_iter.next();
                 }
-                (Some(&arg), Some(&_)) => {
-                    let lowered = match arg {
-                        hir::TypeArgument::Type(ty) => GenericArgument::Type(self.lower_type(ty)),
-                        hir::TypeArgument::Const(_) => todo!(), // const generics later
+                (Some(&arg), Some(&param)) => {
+                    let lowered = match (&param.kind, arg) {
+                        (GenericParameterDefinitionKind::Type { .. }, hir::TypeArgument::Type(ty)) => {
+                            GenericArgument::Type(self.lower_type(ty))
+                        }
+                        (GenericParameterDefinitionKind::Const { ty, .. }, hir::TypeArgument::Const(c)) => {
+                            let expected_ty = self.lower_type(ty);
+                            GenericArgument::Const(self.lower_const_argument(expected_ty, c))
+                        }
+                        (GenericParameterDefinitionKind::Type { .. }, hir::TypeArgument::Const(c)) => {
+                            gcx.dcx()
+                                .emit_error("expected type argument".into(), Some(c.value.span));
+                            GenericArgument::Type(gcx.types.error)
+                        }
+                        (GenericParameterDefinitionKind::Const { .. }, hir::TypeArgument::Type(ty)) => {
+                            gcx.dcx()
+                                .emit_error("expected const argument".into(), Some(ty.span));
+                            GenericArgument::Const(self.error_const())
+                        }
                     };
                     output.push(lowered);
                     args_iter.next();
@@ -243,7 +261,19 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                             output.push(GenericArgument::Type(ty));
                         }
 
-                        GenericParameterDefinitionKind::Const { .. } => todo!(),
+                        GenericParameterDefinitionKind::Const { ty, default } => {
+                            let expected_ty = self.lower_type(ty);
+                            if let Some(default) = default {
+                                let konst = self.lower_const_argument(expected_ty, default);
+                                output.push(GenericArgument::Const(konst));
+                            } else {
+                                gcx.dcx().emit_error(
+                                    "missing const argument".into(),
+                                    Some(span),
+                                );
+                                output.push(GenericArgument::Const(self.error_const()));
+                            }
+                        }
                     }
                     params_iter.next();
                 }
@@ -252,6 +282,35 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         }
 
         gcx.store.interners.intern_generic_args(output)
+    }
+
+    fn lower_const_argument(&self, expected_ty: Ty<'ctx>, anon: &hir::AnonConst) -> Const<'ctx> {
+        let gcx = self.gcx();
+        let Some(value) = eval_const_expression(gcx, &anon.value) else {
+            return self.error_const();
+        };
+
+        if !const_value_matches_type(value, expected_ty) {
+            let message = format!(
+                "const argument does not match parameter type '{}'",
+                expected_ty.format(gcx)
+            );
+            gcx.dcx().emit_error(message, Some(anon.value.span));
+            return self.error_const();
+        }
+
+        Const {
+            ty: expected_ty,
+            kind: ConstKind::Value(value),
+        }
+    }
+
+    fn error_const(&self) -> Const<'ctx> {
+        let gcx = self.gcx();
+        Const {
+            ty: gcx.types.error,
+            kind: ConstKind::Value(ConstValue::Unit),
+        }
     }
 
     pub fn lower_interface_reference(
@@ -434,6 +493,19 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         gcx.cache_alias_type(alias_id, lowered);
 
         lowered
+    }
+}
+
+fn const_value_matches_type(value: ConstValue, ty: Ty<'_>) -> bool {
+    match ty.kind() {
+        TyKind::Error => true,
+        TyKind::Bool => matches!(value, ConstValue::Bool(_)),
+        TyKind::Rune => matches!(value, ConstValue::Rune(_)),
+        TyKind::String => matches!(value, ConstValue::String(_)),
+        TyKind::Int(_) | TyKind::UInt(_) => matches!(value, ConstValue::Integer(_)),
+        TyKind::Float(_) => matches!(value, ConstValue::Float(_)),
+        TyKind::Tuple(items) => items.is_empty() && matches!(value, ConstValue::Unit),
+        _ => false,
     }
 }
 

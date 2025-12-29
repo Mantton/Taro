@@ -2,9 +2,10 @@ use crate::{
     compile::context::GlobalContext,
     hir::DefinitionID,
     sema::models::{
-        GenericArgument, GenericArguments, GenericParameter, GenericParameterDefinition,
-        GenericParameterDefinitionKind, Generics, Ty, TyKind,
+        Const, ConstKind, GenericArgument, GenericArguments, GenericParameter,
+        GenericParameterDefinition, GenericParameterDefinitionKind, Generics, Ty, TyKind,
     },
+    sema::tycheck::lower::{DefTyLoweringCtx, TypeLowerer},
 };
 use std::marker::PhantomData;
 
@@ -14,7 +15,8 @@ pub struct GenericsBuilder<'ctx> {
 
 impl<'ctx> GenericsBuilder<'ctx> {
     pub fn identity_for_item(gcx: GlobalContext<'ctx>, id: DefinitionID) -> GenericArguments<'ctx> {
-        Self::for_item(gcx, id, |param, _| match param.kind {
+        let lower_ctx = DefTyLoweringCtx::new(id, gcx);
+        Self::for_item(gcx, id, |param, _| match &param.kind {
             GenericParameterDefinitionKind::Type { .. } => {
                 let p = GenericParameter {
                     index: param.index,
@@ -23,8 +25,16 @@ impl<'ctx> GenericsBuilder<'ctx> {
                 let ty = Ty::new(TyKind::Parameter(p), gcx);
                 GenericArgument::Type(ty)
             }
-            GenericParameterDefinitionKind::Const { .. } => {
-                GenericArgument::Const(todo!()) // TODO!
+            GenericParameterDefinitionKind::Const { ty, .. } => {
+                let p = GenericParameter {
+                    index: param.index,
+                    name: param.name,
+                };
+                let ty = lower_ctx.lowerer().lower_type(ty);
+                GenericArgument::Const(Const {
+                    ty,
+                    kind: ConstKind::Param(p),
+                })
             }
         })
     }

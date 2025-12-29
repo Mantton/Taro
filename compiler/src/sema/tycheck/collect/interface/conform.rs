@@ -16,7 +16,9 @@ use crate::{
 };
 use rustc_hash::FxHashSet;
 
-use crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args;
+use crate::sema::tycheck::utils::instantiate::{
+    instantiate_const_with_args, instantiate_ty_with_args,
+};
 
 pub fn run(package: &hir::Package, context: Gcx) -> CompileResult<()> {
     Actor::run(package, context)
@@ -249,7 +251,10 @@ impl<'ctx> Actor<'ctx> {
                     let substituted = instantiate_ty_with_args(self.context, *ty, args);
                     new_args.push(GenericArgument::Type(substituted));
                 }
-                GenericArgument::Const(_) => todo!(),
+                GenericArgument::Const(c) => {
+                    let substituted = instantiate_const_with_args(self.context, *c, args);
+                    new_args.push(GenericArgument::Const(substituted));
+                }
             }
         }
 

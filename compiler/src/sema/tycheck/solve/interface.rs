@@ -5,7 +5,7 @@ use crate::{
             InterfaceRequirements,
         },
         resolve::models::DefinitionID,
-        tycheck::utils::instantiate::instantiate_ty_with_args,
+        tycheck::utils::instantiate::{instantiate_const_with_args, instantiate_ty_with_args},
     },
 };
 
@@ -90,7 +90,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     let substituted = instantiate_ty_with_args(gcx, *ty, args);
                     new_args.push(GenericArgument::Type(substituted));
                 }
-                GenericArgument::Const(_) => todo!(),
+                GenericArgument::Const(c) => {
+                    let substituted = instantiate_const_with_args(gcx, *c, args);
+                    new_args.push(GenericArgument::Const(substituted));
+                }
             }
         }
 

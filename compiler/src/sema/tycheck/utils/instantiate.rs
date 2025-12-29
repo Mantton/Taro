@@ -2,8 +2,8 @@ use crate::{
     compile::context::GlobalContext,
     sema::{
         models::{
-            Constraint, EnumDefinition, GenericArguments, LabeledFunctionParameter,
-            LabeledFunctionSignature, StructDefinition, Ty, TyKind,
+            Const, ConstKind, Constraint, EnumDefinition, GenericArgument, GenericArguments,
+            LabeledFunctionParameter, LabeledFunctionSignature, StructDefinition, Ty, TyKind,
         },
         tycheck::fold::{TypeFoldable, TypeFolder, TypeSuperFoldable},
     },
@@ -56,6 +56,22 @@ pub fn instantiate_ty_with_args<'ctx>(
 
     let mut folder = InstantiateFolder { gcx, args };
     ty.fold_with(&mut folder)
+}
+
+pub fn instantiate_const_with_args<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    c: Const<'ctx>,
+    args: GenericArguments<'ctx>,
+) -> Const<'ctx> {
+    let ty = instantiate_ty_with_args(gcx, c.ty, args);
+    let kind = match c.kind {
+        ConstKind::Param(p) => match args.get(p.index) {
+            Some(GenericArgument::Const(arg)) => return *arg,
+            _ => ConstKind::Param(p),
+        },
+        ConstKind::Value(_) => c.kind,
+    };
+    Const { ty, kind }
 }
 
 pub fn instantiate_constraint_with_args<'ctx>(

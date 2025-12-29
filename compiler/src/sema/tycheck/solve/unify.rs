@@ -172,8 +172,14 @@ impl<'ctx> ConstraintSolver<'ctx> {
             (GenericArgument::Type(a_ty), GenericArgument::Type(b_ty)) => {
                 return self.unify(a_ty, b_ty);
             }
-            (GenericArgument::Const(_), GenericArgument::Const(_)) => {
-                todo!()
+            (GenericArgument::Const(a_const), GenericArgument::Const(b_const)) => {
+                if a_const.ty.is_error() || b_const.ty.is_error() {
+                    return Ok(());
+                }
+                if a_const == b_const {
+                    return Ok(());
+                }
+                return Err(TypeError::ArgMismatch(ExpectedFound::new(a, b)));
             }
             _ => return Err(TypeError::ArgMismatch(ExpectedFound::new(a, b))),
         }

@@ -2,8 +2,9 @@ use crate::{
     compile::context::Gcx,
     sema::{
         models::{
-            FloatTy, GenericArgument, GenericArguments, GenericParameterDefinition,
-            GenericParameterDefinitionKind, InferTy, IntTy, Ty, TyKind, TyVarID,
+            Const, ConstKind, ConstValue, FloatTy, GenericArgument, GenericArguments,
+            GenericParameterDefinition, GenericParameterDefinitionKind, InferTy, IntTy, Ty,
+            TyKind, TyVarID,
         },
         resolve::models::DefinitionID,
         tycheck::{
@@ -97,7 +98,17 @@ impl<'ctx> InferCtx<'ctx> {
                 let ty = Ty::new(TyKind::Infer(InferTy::TyVar(ty_var_id)), self.gcx);
                 GenericArgument::Type(ty)
             }
-            GenericParameterDefinitionKind::Const { .. } => todo!(),
+            GenericParameterDefinitionKind::Const { .. } => {
+                self.gcx.dcx().emit_error(
+                    "const generic arguments must be provided explicitly".into(),
+                    Some(span),
+                );
+                let konst = Const {
+                    ty: self.gcx.types.error,
+                    kind: ConstKind::Value(ConstValue::Unit),
+                };
+                GenericArgument::Const(konst)
+            }
         }
     }
 }
