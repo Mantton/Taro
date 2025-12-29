@@ -94,6 +94,7 @@ impl<'a> Actor<'a> {
                 abs: root_path.clone(),
             },
             kind: root_manifest.kind,
+            no_std_prelude: root_manifest.no_std_prelude,
         });
         self.root_package = Some(root_package);
 
@@ -149,6 +150,7 @@ impl<'a> Actor<'a> {
                     package: dependency.package.clone(),
                     source: ResolvedSource::Path { abs: abs.clone() },
                     kind: manifest.kind,
+                    no_std_prelude: manifest.no_std_prelude,
                 });
                 return Ok((dependency, manifest));
             }
@@ -200,6 +202,7 @@ impl<'a> Actor<'a> {
                         selector,
                     },
                     kind: manifest.kind,
+                    no_std_prelude: manifest.no_std_prelude,
                 });
                 return Ok((dependency, manifest));
             }

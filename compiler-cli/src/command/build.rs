@@ -83,6 +83,7 @@ pub fn run(
             index: package_index,
             kind: package.kind,
             executable_out: arguments.output.clone(),
+            no_std_prelude: package.no_std_prelude,
         });
 
         let mut compiler = Compiler::new(&icx, config);
@@ -161,6 +162,7 @@ fn compile_std<'a>(
         dependencies: Default::default(),
         kind: compiler::compile::config::PackageKind::Library,
         executable_out: None,
+        no_std_prelude: true,
     });
     let mut compiler = Compiler::new(ctx, config);
     let _ = compiler.build()?;

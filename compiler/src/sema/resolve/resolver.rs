@@ -1,6 +1,7 @@
 use crate::hir::FoundationDecl;
 use crate::sema::resolve::models::LexicalScopeBinding;
 use crate::{
+    constants::STD_PREFIX,
     PackageIndex,
     ast::{Identifier, NodeID, PathSegment},
     compile::context::GlobalContext,
@@ -12,10 +13,11 @@ use crate::{
         ScopeEntry, ScopeEntryData, ScopeEntryKind, ScopeKind, ScopeNamespace, ScopeTable,
         UsageEntry, UsageEntryData,
     },
-    span::{FileID, Symbol},
+    span::{FileID, Span, Symbol},
     utils::intern::Interned,
 };
 use rustc_hash::FxHashMap;
+use std::cell::RefCell;
 
 pub struct Resolver<'arena> {
     pub context: GlobalContext<'arena>,
@@ -28,6 +30,7 @@ pub struct Resolver<'arena> {
     pub unresolved_imports: Vec<UsageEntry<'arena>>,
     pub unresolved_exports: Vec<UsageEntry<'arena>>,
     pub root_module_scope: Option<Scope<'arena>>,
+    std_prelude_scope: RefCell<Option<Option<Scope<'arena>>>>,
     pub file_scope_mapping: FxHashMap<FileID, Scope<'arena>>,
     pub definition_scope_mapping: FxHashMap<DefinitionID, Scope<'arena>>,
     pub block_scope_mapping: FxHashMap<NodeID, Scope<'arena>>,
@@ -51,6 +54,7 @@ impl<'a> Resolver<'a> {
             unresolved_exports: Default::default(),
             unresolved_imports: Default::default(),
             root_module_scope: None,
+            std_prelude_scope: Default::default(),
 
             file_scope_mapping: Default::default(),
             definition_scope_mapping: Default::default(),
@@ -572,6 +576,7 @@ impl<'a> Resolver<'a> {
         name: &Identifier,
         namespace: ScopeNamespace,
     ) -> Option<Holder<'a>> {
+        let enable_std_prelude = !self.context.config.no_std_prelude;
         let scopes: &[ImplicitScope] = match namespace {
             ScopeNamespace::Type => &[
                 ImplicitScope::StdPrelude,
@@ -598,7 +603,17 @@ impl<'a> Resolver<'a> {
                         return Some(Holder::Single(data));
                     };
                 }
-                ImplicitScope::StdPrelude => {}
+                ImplicitScope::StdPrelude => {
+                    if !enable_std_prelude {
+                        continue;
+                    }
+
+                    if let Some(scope) = self.resolve_std_prelude_scope(name.span) {
+                        if let Ok(value) = self.resolve_in_scope(name, scope, namespace) {
+                            return Some(value);
+                        }
+                    }
+                }
                 ImplicitScope::BuiltinFunctionsPrelude => {
                     let value = self.builin_fn_bindings.get(&name.symbol);
                     if let Some(value) = value {
@@ -623,6 +638,38 @@ impl<'a> Resolver<'a> {
         }
 
         None
+    }
+
+    fn resolve_std_prelude_scope(&self, span: Span) -> Option<Scope<'a>> {
+        if self.context.config.no_std_prelude {
+            return None;
+        }
+
+        if let Some(cached) = *self.std_prelude_scope.borrow() {
+            return cached;
+        }
+
+        let scope = [
+            vec![
+                Identifier {
+                    symbol: Symbol::new(STD_PREFIX),
+                    span,
+                },
+                Identifier {
+                    symbol: Symbol::new("prelude"),
+                    span,
+                },
+            ],
+            vec![Identifier {
+                symbol: Symbol::new(STD_PREFIX),
+                span,
+            }],
+        ]
+        .into_iter()
+        .find_map(|path| self.resolve_module_path(&path).ok());
+
+        *self.std_prelude_scope.borrow_mut() = Some(scope);
+        scope
     }
 
     pub fn scope_for_holder(&self, holder: &Holder<'a>) -> Option<Scope<'a>> {

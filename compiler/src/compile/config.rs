@@ -27,4 +27,5 @@ pub struct Config {
     pub index: PackageIndex,
     pub kind: PackageKind,
     pub executable_out: Option<PathBuf>,
+    pub no_std_prelude: bool,
 }

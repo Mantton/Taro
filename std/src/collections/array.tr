@@ -1,0 +1,3 @@
+
+
+public type Array[Element, const Size: usize] = [Element; Size]

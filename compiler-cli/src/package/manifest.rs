@@ -41,6 +41,8 @@ pub struct Metadata {
     pub name: EcoString,
     #[serde(default)]
     pub kind: PackageKind,
+    #[serde(default)]
+    pub no_std_prelude: bool,
 }
 
 pub type DependencyMap = FxHashMap<String, ManifestDependency>;
@@ -180,6 +182,7 @@ pub struct NormalizedManifest {
     pub path: PackageIdentifier,
     pub dependencies: FxHashMap<EcoString, UnresolvedDependency>,
     pub kind: PackageKind,
+    pub no_std_prelude: bool,
 }
 
 impl Manifest {
@@ -221,6 +224,7 @@ impl Manifest {
                 path: PackageIdentifier(name.into()),
                 dependencies: out,
                 kind: self.package.kind,
+                no_std_prelude: self.package.no_std_prelude,
             })
         } else {
             Err(errs.join("\n"))
@@ -233,6 +237,7 @@ pub struct ResolvedPackage {
     pub package: PackageIdentifier,
     pub source: ResolvedSource,
     pub kind: PackageKind,
+    pub no_std_prelude: bool,
 }
 
 impl ResolvedPackage {
