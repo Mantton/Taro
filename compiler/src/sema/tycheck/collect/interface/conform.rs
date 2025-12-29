@@ -4,15 +4,19 @@ use crate::{
     hir::{self, DefinitionID, OperatorKind},
     sema::{
         models::{
-            AssociatedTypeDefinition, ConformanceWitness, InterfaceConstantRequirement,
-            InterfaceMethodRequirement, InterfaceOperatorRequirement, InterfaceReference,
-            InterfaceRequirements, LabeledFunctionSignature, Ty,
+            AssociatedTypeDefinition, ConformanceWitness, GenericArgument, GenericArguments,
+            InterfaceConstantRequirement, InterfaceDefinition, InterfaceMethodRequirement,
+            InterfaceOperatorRequirement, InterfaceReference, InterfaceRequirements,
+            LabeledFunctionSignature, Ty,
         },
         resolve::models::TypeHead,
         tycheck::fold::{TypeFoldable, TypeFolder},
     },
     span::Symbol,
 };
+use rustc_hash::FxHashSet;
+
+use crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args;
 
 pub fn run(package: &hir::Package, context: Gcx) -> CompileResult<()> {
     Actor::run(package, context)
@@ -60,9 +64,22 @@ impl<'ctx> Actor<'ctx> {
             .context
             .with_session_type_database(|db| db.conformances.clone());
 
+        let mut seen: FxHashSet<(TypeHead, InterfaceReference<'ctx>)> = FxHashSet::default();
+
         for (type_head, records) in conformances {
             for record in &records {
-                self.check_conformance(type_head, record);
+                // A conformance to a subinterface implies conformances to all of its superfaces.
+                // We materialize those derived conformances here so witness tables are built
+                // for the full superface chain (and dynamic dispatch can find them).
+                for iface in self.collect_interface_with_supers(record.interface) {
+                    if !seen.insert((type_head, iface)) {
+                        continue;
+                    }
+
+                    let mut derived = *record;
+                    derived.interface = iface;
+                    self.check_conformance(type_head, &derived);
+                }
             }
         }
     }
@@ -151,6 +168,71 @@ impl<'ctx> Actor<'ctx> {
             .with_type_database(interface_id.package(), |db| {
                 db.interface_requirements.get(&interface_id).copied()
             })
+    }
+
+    fn interface_definition(
+        &self,
+        interface_id: DefinitionID,
+    ) -> Option<&'ctx InterfaceDefinition<'ctx>> {
+        self.context.with_type_database(interface_id.package(), |db| {
+            db.def_to_iface_def.get(&interface_id).copied()
+        })
+    }
+
+    fn collect_interface_with_supers(
+        &self,
+        root: InterfaceReference<'ctx>,
+    ) -> Vec<InterfaceReference<'ctx>> {
+        let mut out = Vec::new();
+        let mut queue = std::collections::VecDeque::new();
+        let mut seen: FxHashSet<DefinitionID> = FxHashSet::default();
+
+        seen.insert(root.id);
+        out.push(root);
+        queue.push_back(root);
+
+        while let Some(current) = queue.pop_front() {
+            let Some(def) = self.interface_definition(current.id) else {
+                continue;
+            };
+
+            for superface in &def.superfaces {
+                let iface = self.substitute_interface_ref(superface.value, current.arguments);
+                if seen.insert(iface.id) {
+                    out.push(iface);
+                    queue.push_back(iface);
+                }
+            }
+        }
+
+        out
+    }
+
+    fn substitute_interface_ref(
+        &self,
+        template: InterfaceReference<'ctx>,
+        args: GenericArguments<'ctx>,
+    ) -> InterfaceReference<'ctx> {
+        if args.is_empty() {
+            return template;
+        }
+
+        let mut new_args = Vec::with_capacity(template.arguments.len());
+        for arg in template.arguments.iter() {
+            match arg {
+                GenericArgument::Type(ty) => {
+                    let substituted = instantiate_ty_with_args(self.context, *ty, args);
+                    new_args.push(GenericArgument::Type(substituted));
+                }
+                GenericArgument::Const(_) => todo!(),
+            }
+        }
+
+        let interned = self.context.store.interners.intern_generic_args(new_args);
+        InterfaceReference {
+            id: template.id,
+            arguments: interned,
+        }
     }
 }
 

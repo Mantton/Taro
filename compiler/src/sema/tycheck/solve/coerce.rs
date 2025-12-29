@@ -115,18 +115,12 @@ impl<'ctx> ConstraintSolver<'ctx> {
         }
 
         if self.interface_subset(from_ifaces, to_ifaces) {
-            self.record_adjustments(
-                node_id,
-                vec![Adjustment::ExistentialUpcast { from, to }],
-            );
+            self.record_adjustments(node_id, vec![Adjustment::ExistentialUpcast { from, to }]);
             return Some(SolverResult::Solved(vec![]));
         }
 
         if self.interface_superface_upcast(from_ifaces, to_ifaces) {
-            self.record_adjustments(
-                node_id,
-                vec![Adjustment::ExistentialUpcast { from, to }],
-            );
+            self.record_adjustments(node_id, vec![Adjustment::ExistentialUpcast { from, to }]);
             return Some(SolverResult::Solved(vec![]));
         }
 
@@ -182,10 +176,16 @@ impl<'ctx> ConstraintSolver<'ctx> {
         for iface in interfaces {
             let mut satisfied = false;
             for record in &records {
-                if record.interface.id != iface.id {
-                    continue;
+                if self.interface_ref_matches(*iface, record.interface) {
+                    satisfied = true;
+                    break;
                 }
-                if self.interface_args_match(*iface, record.interface) {
+
+                let mut supers = self.collect_interface_with_supers(record.interface);
+                if supers
+                    .drain(1..)
+                    .any(|candidate| self.interface_ref_matches(*iface, candidate))
+                {
                     satisfied = true;
                     break;
                 }
