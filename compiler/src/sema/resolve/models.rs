@@ -431,6 +431,7 @@ pub struct BindingError {
 #[derive(Debug, Clone, Copy)]
 pub enum ResolutionSource {
     Type,
+    ExtensionTarget,
     Interface,
     Module,
     MatchPatternUnit,
@@ -440,7 +441,9 @@ pub enum ResolutionSource {
 impl ResolutionSource {
     pub fn namespace(&self) -> ScopeNamespace {
         match self {
-            ResolutionSource::Type | ResolutionSource::Interface => ScopeNamespace::Type,
+            ResolutionSource::Type
+            | ResolutionSource::ExtensionTarget
+            | ResolutionSource::Interface => ScopeNamespace::Type,
             ResolutionSource::MatchPatternUnit => ScopeNamespace::Value,
             ResolutionSource::MatchPatternTupleStruct => ScopeNamespace::Value,
             ResolutionSource::Module => ScopeNamespace::Type,
@@ -456,12 +459,23 @@ impl ResolutionSource {
                         _,
                         DefinitionKind::Struct
                             | DefinitionKind::Enum
-                            | DefinitionKind::Interface
                             | DefinitionKind::TypeParameter
                             | DefinitionKind::TypeAlias
                             | DefinitionKind::AssociatedType
                     ) | Resolution::SelfTypeAlias(..)
                         | Resolution::InterfaceSelfTypeParameter(..)
+                        | Resolution::PrimaryType(..)
+                )
+            }
+            ResolutionSource::ExtensionTarget => {
+                matches!(
+                    res,
+                    Resolution::Definition(
+                        _,
+                        DefinitionKind::Struct
+                            | DefinitionKind::Enum
+                            | DefinitionKind::Interface
+                    )
                         | Resolution::PrimaryType(..)
                 )
             }
@@ -492,6 +506,7 @@ impl ResolutionSource {
     pub fn expected(&self) -> String {
         match self {
             ResolutionSource::Type => "type".into(),
+            ResolutionSource::ExtensionTarget => "type or interface".into(),
             ResolutionSource::Interface => "interface".into(),
             ResolutionSource::MatchPatternUnit => "unit enum variant".into(),
             ResolutionSource::MatchPatternTupleStruct => "tuple enum variant".into(),
@@ -502,6 +517,7 @@ impl ResolutionSource {
     pub fn defer_to_type_checker(&self) -> bool {
         match self {
             ResolutionSource::Type => true,
+            ResolutionSource::ExtensionTarget => true,
             ResolutionSource::Interface => false,
             ResolutionSource::MatchPatternUnit => true,
             ResolutionSource::MatchPatternTupleStruct => true,

@@ -17,6 +17,7 @@ pub fn resolve_package(package: &ast::Package, resolver: &mut Resolver) -> Compi
     let mut actor = Actor {
         resolver,
         scopes: vec![],
+        type_source_override: None,
     };
     ast::walk_package(&mut actor, package);
     resolver.context.dcx.ok()
@@ -25,9 +26,21 @@ pub fn resolve_package(package: &ast::Package, resolver: &mut Resolver) -> Compi
 struct Actor<'r, 'a> {
     resolver: &'r mut Resolver<'a>,
     scopes: Vec<LexicalScope<'a>>,
+    type_source_override: Option<ResolutionSource>,
 }
 
 impl<'r, 'a> Actor<'r, 'a> {
+    fn with_type_source<T>(
+        &mut self,
+        source: ResolutionSource,
+        work: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let previous = self.type_source_override.replace(source);
+        let result = work(self);
+        self.type_source_override = previous;
+        result
+    }
+
     fn with_scope_source<T>(
         &mut self,
         source: LexicalScopeSource<'a>,
@@ -187,7 +200,11 @@ impl<'r, 'a> ast::AstVisitor for Actor<'r, 'a> {
     fn visit_type(&mut self, node: &ast::Type) -> Self::Result {
         match &node.kind {
             ast::TypeKind::Nominal(path) => {
-                self.resolve_path_with_source(node.id, path, ResolutionSource::Type);
+                let source = self
+                    .type_source_override
+                    .take()
+                    .unwrap_or(ResolutionSource::Type);
+                self.resolve_path_with_source(node.id, path, source);
             }
             ast::TypeKind::BoxedExistential { interfaces } => {
                 for node in interfaces {
@@ -1157,7 +1174,9 @@ impl<'r, 'a> Actor<'r, 'a> {
             this.with_generics_scope(&node.generics, |this| {
                 let self_res = Resolution::SelfTypeAlias(def_id);
                 this.with_self_alias_scope(self_res, |this| {
-                    this.visit_type(&node.ty);
+                    this.with_type_source(ResolutionSource::ExtensionTarget, |this| {
+                        this.visit_type(&node.ty);
+                    });
                     this.visit_generics(&node.generics);
                     if let Some(conformances) = &node.conformances {
                         this.visit_conformance(conformances)
@@ -1203,8 +1222,21 @@ impl<'r, 'a> Actor<'r, 'a> {
             if !source.is_allowed(&resolution) {
                 let provided = resolution.description();
                 let symbol = &path.segments.last().unwrap().identifier.symbol;
-                let message = format!("expected {expected}, got {provided} '{symbol}'");
-                self.resolver.dcx().emit_error(message, Some(path.span));
+                if matches!(
+                    source,
+                    ResolutionSource::Type
+                ) && matches!(
+                    resolution,
+                    Resolution::Definition(_, DefinitionKind::Interface)
+                ) {
+                    let message = format!(
+                        "interface '{symbol}' cannot be used as a type; use `any {symbol}`"
+                    );
+                    self.resolver.dcx().emit_error(message, Some(path.span));
+                } else {
+                    let message = format!("expected {expected}, got {provided} '{symbol}'");
+                    self.resolver.dcx().emit_error(message, Some(path.span));
+                }
             }
         } else if !source.defer_to_type_checker() {
             let symbol = &path.segments.last().unwrap().identifier.symbol;
