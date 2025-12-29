@@ -581,10 +581,9 @@ impl Parser {
 
     fn parse_use_tree_nested(&mut self) -> R<UseTreeKind> {
         let lo = self.lo_span();
-        let nodes =
-            self.parse_delimiter_sequence(Delimiter::Brace, Token::Comma, true, |this| {
-                this.parse_use_tree_nested_item()
-            })?;
+        let nodes = self.parse_delimiter_sequence(Delimiter::Brace, Token::Comma, |this| {
+            this.parse_use_tree_nested_item()
+        })?;
 
         let node = UseTreeKind::Nested {
             nodes,
@@ -792,10 +791,9 @@ impl Parser {
             where_clause,
         };
 
-        let cases =
-            self.parse_delimiter_sequence(Delimiter::Brace, Token::Semicolon, true, |this| {
-                this.parse_enum_case()
-            })?;
+        let cases = self.parse_delimiter_sequence(Delimiter::Brace, Token::Semicolon, |this| {
+            this.parse_enum_case()
+        })?;
         let e = Enum { generics, cases };
         Ok((identifier, DeclarationKind::Enum(e)))
     }
@@ -976,9 +974,7 @@ impl Parser {
     }
 
     fn parse_field_definitions(&mut self, delim: Delimiter) -> R<Vec<FieldDefinition>> {
-        self.parse_delimiter_sequence(delim, Token::Semicolon, true, |p| {
-            p.parse_field_definition()
-        })
+        self.parse_delimiter_sequence(delim, Token::Semicolon, |p| p.parse_field_definition())
     }
 }
 
@@ -1023,10 +1019,9 @@ impl Parser {
     }
 
     fn parse_tuple_variant(&mut self) -> R<VariantKind> {
-        let fields =
-            self.parse_delimiter_sequence(Delimiter::Parenthesis, Token::Comma, false, |p| {
-                p.parse_tuple_variant_field()
-            })?;
+        let fields = self.parse_delimiter_sequence(Delimiter::Parenthesis, Token::Comma, |p| {
+            p.parse_tuple_variant_field()
+        })?;
 
         let k = VariantKind::Tuple(fields);
         Ok(k)
@@ -1132,7 +1127,7 @@ impl Parser {
 
     fn parse_tuple_type(&mut self) -> R<TypeKind> {
         let elements =
-            self.parse_delimiter_sequence(Delimiter::Parenthesis, Token::Comma, false, |p| {
+            self.parse_delimiter_sequence(Delimiter::Parenthesis, Token::Comma, |p| {
                 p.parse_type()
             })?;
 
@@ -1193,10 +1188,9 @@ impl Parser {
 impl Parser {
     fn parse_type_arguments(&mut self) -> R<TypeArguments> {
         let lo = self.lo_span();
-        let arguments =
-            self.parse_delimiter_sequence(Delimiter::Bracket, Token::Comma, false, |p| {
-                p.parse_type_argument()
-            })?;
+        let arguments = self.parse_delimiter_sequence(Delimiter::Bracket, Token::Comma, |p| {
+            p.parse_type_argument()
+        })?;
 
         let span = lo.to(self.hi_span());
         Ok(TypeArguments { span, arguments })
@@ -1236,10 +1230,9 @@ impl Parser {
             return Ok(None);
         }
 
-        let parameters =
-            self.parse_delimiter_sequence(Delimiter::Bracket, Token::Comma, false, |p| {
-                p.parse_type_parameter()
-            })?;
+        let parameters = self.parse_delimiter_sequence(Delimiter::Bracket, Token::Comma, |p| {
+            p.parse_type_parameter()
+        })?;
 
         let t = TypeParameters {
             span: lo.to(self.hi_span()),
@@ -1409,7 +1402,7 @@ impl Parser {
     fn parse_match_arm_pattern(&mut self) -> R<Pattern> {
         let lo = self.lo_span();
         let cases =
-            self.parse_sequence_until(&[Token::EqArrow], Token::Bar, false, |p| p.parse_pattern())?;
+            self.parse_sequence_until(&[Token::EqArrow], Token::Bar, |p| p.parse_pattern())?;
 
         if cases.is_empty() {
             return Err(self.err_at_current(ParserError::ExpectedMatchingPattern));
@@ -1470,10 +1463,9 @@ impl Parser {
 
     fn parse_pattern_tuple_kind(&mut self) -> R<PatternKind> {
         let lo = self.lo_span();
-        let pats =
-            self.parse_delimiter_sequence(Delimiter::Parenthesis, Token::Comma, true, |p| {
-                p.parse_pattern()
-            })?;
+        let pats = self.parse_delimiter_sequence(Delimiter::Parenthesis, Token::Comma, |p| {
+            p.parse_pattern()
+        })?;
         Ok(PatternKind::Tuple(pats, lo.to(self.hi_span())))
     }
 
@@ -1495,7 +1487,7 @@ impl Parser {
                 let mut res = Restrictions::empty();
                 res.insert(Restrictions::ALLOW_REST_PATTERN);
                 let fields = self.with_restrictions(res, |p| {
-                    p.parse_delimiter_sequence(Delimiter::Parenthesis, Token::Comma, false, |p| {
+                    p.parse_delimiter_sequence(Delimiter::Parenthesis, Token::Comma, |p| {
                         p.parse_pattern()
                     })
                 })?;
@@ -1765,7 +1757,6 @@ impl Parser {
         &mut self,
         delim: Delimiter,
         separator: Token,
-        allow_trailing_sep: bool,
         mut action: F,
     ) -> R<Vec<T>>
     where
@@ -1789,12 +1780,16 @@ impl Parser {
 
             proceed = self.eat(separator.clone());
 
-            // can proceed but cursor points to ending token and allows a trailing sep, exit loop otherwise continue and perhaps throw error
-            if proceed && self.matches(delim.close()) && allow_trailing_sep {
+            // can proceed but cursor points to ending token, exit loop
+            if proceed && self.matches(delim.close()) {
                 break;
-            } else if proceed && self.matches(delim.close()) {
-                // recoverable error, trailing not allowed
             }
+        }
+
+        if self.matches(Token::Semicolon) {
+            return Err(self.err_at_current(ParserError::UnexpectedSemicolonInList {
+                context: "multiline list - add a trailing comma before the newline",
+            }));
         }
 
         self.expect(delim.close())?;
@@ -1805,7 +1800,6 @@ impl Parser {
         &mut self,
         until: &[Token],
         separator: Token,
-        allow_trailing_sep: bool,
         mut action: F,
     ) -> R<Vec<T>>
     where
@@ -1821,8 +1815,8 @@ impl Parser {
 
             proceed = self.eat(separator.clone());
 
-            // can proceed but cursor points to ending token and allows a trailing sep, exit loop otherwise continue and perhaps throw error
-            if proceed && self.matches_any(until) && allow_trailing_sep {
+            // can proceed but cursor points to ending token, exit loop
+            if proceed && self.matches_any(until) {
                 break;
             } else if self.matches_any(until) {
                 break;
@@ -2480,9 +2474,10 @@ impl Parser {
         let inputs = if self.eat(Token::BarBar) {
             Vec::new()
         } else {
-            self.parse_delimiter_sequence(Delimiter::Bar, Token::Comma, true, |p| {
+            let params = self.parse_delimiter_sequence(Delimiter::Bar, Token::Comma, |p| {
                 p.parse_closure_parameter()
-            })?
+            })?;
+            params
         };
 
         let output = if self.eat(Token::RArrow) {
@@ -2530,10 +2525,9 @@ impl Parser {
     fn parse_tuple_expr(&mut self) -> R<Box<Expression>> {
         let lo = self.lo_span();
 
-        let items =
-            self.parse_delimiter_sequence(Delimiter::Parenthesis, Token::Comma, false, |p| {
-                p.parse_expression()
-            })?;
+        let items = self.parse_delimiter_sequence(Delimiter::Parenthesis, Token::Comma, |p| {
+            p.parse_expression()
+        })?;
 
         let span = lo.to(self.hi_span());
 
@@ -2613,8 +2607,14 @@ impl Parser {
             return Ok(());
         };
 
-        let _ =
-            self.parse_sequence_until(&[Token::RBracket], Token::Comma, false, |p| parser(p))?;
+        let _ = self.parse_sequence_until(&[Token::RBracket], Token::Comma, |p| parser(p))?;
+
+        if self.matches(Token::Semicolon) {
+            return Err(self.err_at_current(ParserError::UnexpectedSemicolonInList {
+                context: "collection literal - add a trailing comma before the newline",
+            }));
+        }
+
         self.expect(Token::RBracket)?;
 
         let kind = match state {
@@ -2673,9 +2673,7 @@ impl Parser {
 }
 impl Parser {
     fn parse_expression_argument_list(&mut self, delim: Delimiter) -> R<Vec<ExpressionArgument>> {
-        self.parse_delimiter_sequence(delim, Token::Comma, false, |p| {
-            p.parse_expression_argument()
-        })
+        self.parse_delimiter_sequence(delim, Token::Comma, |p| p.parse_expression_argument())
     }
 
     fn parse_expression_argument(&mut self) -> R<ExpressionArgument> {
@@ -2786,9 +2784,10 @@ impl Parser {
 
     fn parse_match_arm(&mut self) -> R<MatchArm> {
         let lo = self.lo_span();
-        
+
         // Allow `_ => ...` as shorthand for `case _ => ...`
-        let is_wildcard_shorthand = self.matches(Token::Underscore) && self.next_matches(1, Token::EqArrow);
+        let is_wildcard_shorthand =
+            self.matches(Token::Underscore) && self.next_matches(1, Token::EqArrow);
         if !is_wildcard_shorthand {
             self.expect(Token::Case)?;
         }
@@ -2903,7 +2902,7 @@ impl Parser {
     }
 
     fn parse_function_parameters(&mut self) -> R<Vec<FunctionParameter>> {
-        self.parse_delimiter_sequence(Delimiter::Parenthesis, Token::Comma, false, |p| {
+        self.parse_delimiter_sequence(Delimiter::Parenthesis, Token::Comma, |p| {
             p.parse_function_parameter()
         })
     }
@@ -3133,23 +3132,96 @@ impl Parser {
     }
 
     fn try_parse_struct_literal(&mut self, expr: Box<Expression>) -> R<Box<Expression>> {
+        if !self.matches(Token::LBrace) {
+            return Ok(expr);
+        }
+
         // Check if we're at a `{` and struct literals are allowed
         let struct_literals_allowed = !self.restrictions.contains(Restrictions::NO_STRUCT_LITERALS);
-        if !self.matches(Token::LBrace) || !struct_literals_allowed {
-            // Not a struct literal context, return the expression as-is
-            return Ok(expr);
+
+        if !struct_literals_allowed {
+            // If it looks like a struct literal, we should report an error but still parse it
+            // to avoid confusing "expected block" or "improper label" errors.
+            if self.looks_like_struct_literal() {
+                self.emit_error(ParserError::DisallowedStructLiteral, self.lo_span());
+                // Fallthrough to parse it as struct literal (recovery)
+            } else {
+                // Not a struct literal context, return the expression as-is
+                return Ok(expr);
+            }
         }
 
         // Try to convert the expression to a path
         let Some(path) = self.expr_to_path(&expr) else {
             return Err(Spanned::new(ParserError::ExpectedPathExpression, expr.span));
-            // Not a path-like expression, return as-is
-            // return Ok(expr);
         };
 
         // Parse the struct literal with the converted path
         let span = expr.span;
         self.parse_struct_literal(path, span)
+    }
+
+    fn looks_like_struct_literal(&mut self) -> bool {
+        // pattern: { Key ...
+        if !self.next_matches(
+            1,
+            Token::Identifier {
+                value: String::new(),
+            },
+        ) {
+            // Note: We can't easily match Identifier with content without complex logic,
+            // but matches checks strict equality.
+            // Token::Identifier usually carries data.
+            // We need to check variant.
+            if let Some(tok) = self.next(1) {
+                if !matches!(tok, Token::Identifier { .. }) {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        } else {
+            // next_matches expects exact match. Use manual check.
+            // unreachable because we check below
+        }
+
+        // pattern: { Key, ...
+        if self.next_matches(2, Token::Comma) {
+            return true;
+        }
+
+        // pattern: { Key: ...
+        if self.next_matches(2, Token::Colon) {
+            // pattern: { Key: Val, ...
+            // We can check lookahead 3 (Val) and 4 (Comma/RBrace)
+            // But simpler: if we see colon, it's either Label or Struct Field.
+            // If NO_STRUCT_LITERALS is on (e.g. if condition), Label is valid but weird (improper position).
+            // Struct Field is invalid.
+            // But detecting "Val, " strongly implies struct.
+
+            // Check if next(4) is comma (Idx 0={ 1=Key 2=: 3=Val 4=, )
+            if self.next_matches(4, Token::Comma) {
+                return true;
+            }
+
+            // Check for Literals at 3?
+            if let Some(tok) = self.next(3) {
+                match tok {
+                    Token::String { .. }
+                    | Token::Integer { .. }
+                    | Token::Float { .. }
+                    | Token::True
+                    | Token::False
+                    | Token::Nil => {
+                        // Likely struct: { x: 1 } or { x: 1, }
+                        return true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        false
     }
 
     fn parse_struct_literal(&mut self, path: Path, span: Span) -> R<Box<Expression>> {
@@ -3161,7 +3233,7 @@ impl Parser {
     }
 
     fn parse_expression_field_list(&mut self) -> R<Vec<ExpressionField>> {
-        self.parse_delimiter_sequence(Delimiter::Brace, Token::Comma, true, |p| {
+        self.parse_delimiter_sequence(Delimiter::Brace, Token::Comma, |p| {
             p.parse_expression_field()
         })
     }
@@ -3336,6 +3408,9 @@ enum ParserError {
     ExternFunctionBodyNotAllowed,
     DisallowedStructLiteral,
     ExpectedPathExpression,
+    UnexpectedSemicolonInList {
+        context: &'static str,
+    },
 }
 
 impl Display for ParserError {
@@ -3384,6 +3459,9 @@ impl Display for ParserError {
             ExpectedPathExpression => f.write_str(
                 "expected a path expression (identifier, member access, or type specialization)",
             ),
+            UnexpectedSemicolonInList { context } => {
+                write!(f, "unexpected semicolon in {}", context)
+            }
         }
     }
 }
