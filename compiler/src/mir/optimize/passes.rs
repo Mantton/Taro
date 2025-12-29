@@ -311,19 +311,35 @@ impl<'ctx> MirPass<'ctx> for ApplyEscapeAnalysis {
     fn run(&mut self, gcx: Gcx<'ctx>, body: &mut Body<'ctx>) {
         let mut heapified: Vec<Option<crate::sema::models::Ty<'ctx>>> =
             vec![None; body.locals.len()];
+        let mut param_replacements: Vec<Option<LocalId>> = vec![None; body.locals.len()];
+        let original_local_count = body.locals.len();
 
-        for (idx, decl) in body.locals.iter_mut().enumerate() {
-            if matches!(decl.kind, LocalKind::Return) {
+        for idx in 0..original_local_count {
+            let kind = body.locals[idx].kind;
+            if matches!(kind, LocalKind::Return) {
                 continue;
             }
             if body.escape_locals.get(idx).copied().unwrap_or(false) {
-                let old_ty = decl.ty;
+                let old_ty = body.locals[idx].ty;
+                let span = body.locals[idx].span;
                 let new_ty = gcx
                     .store
                     .interners
                     .intern_ty(TyKind::Reference(old_ty, Mutability::Mutable));
-                decl.ty = new_ty;
-                heapified[idx] = Some(old_ty);
+                if matches!(kind, LocalKind::Param) {
+                    let heap_local = body.locals.push(LocalDecl {
+                        ty: new_ty,
+                        kind: LocalKind::Temp,
+                        name: None,
+                        span,
+                    });
+                    body.escape_locals.push(false);
+                    heapified.push(Some(old_ty));
+                    param_replacements[idx] = Some(heap_local);
+                } else {
+                    body.locals[idx].ty = new_ty;
+                    heapified[idx] = Some(old_ty);
+                }
             }
         }
 
@@ -333,10 +349,10 @@ impl<'ctx> MirPass<'ctx> for ApplyEscapeAnalysis {
 
         for bb in body.basic_blocks.iter_mut() {
             for stmt in &mut bb.statements {
-                rewrite_statement(stmt, &heapified);
+                rewrite_statement(stmt, &heapified, &param_replacements);
             }
             if let Some(term) = &mut bb.terminator {
-                rewrite_terminator(term, &heapified);
+                rewrite_terminator(term, &heapified, &param_replacements);
             }
         }
 
@@ -351,10 +367,30 @@ impl<'ctx> MirPass<'ctx> for ApplyEscapeAnalysis {
             });
         }
 
-        if !allocs.is_empty() {
+        let mut param_inits: Vec<Statement<'ctx>> = Vec::new();
+        for (idx, heap_local) in param_replacements.iter().enumerate() {
+            let Some(heap_local) = heap_local else { continue };
+            let heap_place = Place {
+                local: *heap_local,
+                projection: vec![PlaceElem::Deref],
+            };
+            let param_place = Place::from_local(LocalId::from_raw(idx as u32));
+            param_inits.push(Statement {
+                kind: StatementKind::Assign(
+                    heap_place,
+                    Rvalue::Use(Operand::Move(param_place)),
+                ),
+                span,
+            });
+        }
+
+        if !allocs.is_empty() || !param_inits.is_empty() {
             let entry = body.start_block;
             let statements = &mut body.basic_blocks[entry].statements;
-            statements.splice(0..0, allocs);
+            let mut insertions = Vec::with_capacity(allocs.len() + param_inits.len());
+            insertions.extend(allocs);
+            insertions.extend(param_inits);
+            statements.splice(0..0, insertions);
         }
     }
 }
@@ -498,36 +534,50 @@ fn ref_local_operand<'a>(body: &Body<'a>, operand: &Operand<'a>) -> Option<Local
     }
 }
 
-fn rewrite_statement<'ctx>(stmt: &mut Statement<'ctx>, heapified: &[Option<Ty<'ctx>>]) {
+fn rewrite_statement<'ctx>(
+    stmt: &mut Statement<'ctx>,
+    heapified: &[Option<Ty<'ctx>>],
+    param_replacements: &[Option<LocalId>],
+) {
     if let StatementKind::Assign(place, rvalue) = &mut stmt.kind {
-        rewrite_place(place, heapified);
-        rewrite_rvalue(rvalue, heapified);
+        rewrite_place(place, heapified, param_replacements);
+        rewrite_rvalue(rvalue, heapified, param_replacements);
     }
 }
 
-fn rewrite_rvalue<'ctx>(rvalue: &mut Rvalue<'ctx>, heapified: &[Option<Ty<'ctx>>]) {
+fn rewrite_rvalue<'ctx>(
+    rvalue: &mut Rvalue<'ctx>,
+    heapified: &[Option<Ty<'ctx>>],
+    param_replacements: &[Option<LocalId>],
+) {
     match rvalue {
-        Rvalue::Use(op) => rewrite_operand(op, heapified),
-        Rvalue::UnaryOp { operand, .. } => rewrite_operand(operand, heapified),
+        Rvalue::Use(op) => rewrite_operand(op, heapified, param_replacements),
+        Rvalue::UnaryOp { operand, .. } => rewrite_operand(operand, heapified, param_replacements),
         Rvalue::BinaryOp { lhs, rhs, .. } => {
-            rewrite_operand(lhs, heapified);
-            rewrite_operand(rhs, heapified);
+            rewrite_operand(lhs, heapified, param_replacements);
+            rewrite_operand(rhs, heapified, param_replacements);
         }
-        Rvalue::Cast { operand, .. } => rewrite_operand(operand, heapified),
-        Rvalue::Ref { place, .. } => rewrite_place(place, heapified),
-        Rvalue::Discriminant { place } => rewrite_place(place, heapified),
+        Rvalue::Cast { operand, .. } => rewrite_operand(operand, heapified, param_replacements),
+        Rvalue::Ref { place, .. } => rewrite_place(place, heapified, param_replacements),
+        Rvalue::Discriminant { place } => rewrite_place(place, heapified, param_replacements),
         Rvalue::Aggregate { fields, .. } => {
             for field in fields.iter_mut() {
-                rewrite_operand(field, heapified);
+                rewrite_operand(field, heapified, param_replacements);
             }
         }
         Rvalue::Alloc { .. } => {}
     }
 }
 
-fn rewrite_operand<'ctx>(operand: &mut Operand<'ctx>, heapified: &[Option<Ty<'ctx>>]) {
+fn rewrite_operand<'ctx>(
+    operand: &mut Operand<'ctx>,
+    heapified: &[Option<Ty<'ctx>>],
+    param_replacements: &[Option<LocalId>],
+) {
     match operand {
-        Operand::Copy(place) | Operand::Move(place) => rewrite_place(place, heapified),
+        Operand::Copy(place) | Operand::Move(place) => {
+            rewrite_place(place, heapified, param_replacements)
+        }
         Operand::Constant(_) => {}
     }
 }
@@ -535,26 +585,40 @@ fn rewrite_operand<'ctx>(operand: &mut Operand<'ctx>, heapified: &[Option<Ty<'ct
 fn rewrite_terminator<'ctx>(
     term: &mut crate::mir::Terminator<'ctx>,
     heapified: &[Option<Ty<'ctx>>],
+    param_replacements: &[Option<LocalId>],
 ) {
     match &mut term.kind {
-        TerminatorKind::SwitchInt { discr, .. } => rewrite_operand(discr, heapified),
+        TerminatorKind::SwitchInt { discr, .. } => {
+            rewrite_operand(discr, heapified, param_replacements)
+        }
         TerminatorKind::Call {
             func,
             args,
             destination,
             ..
         } => {
-            rewrite_operand(func, heapified);
+            rewrite_operand(func, heapified, param_replacements);
             for arg in args {
-                rewrite_operand(arg, heapified);
+                rewrite_operand(arg, heapified, param_replacements);
             }
-            rewrite_place(destination, heapified);
+            rewrite_place(destination, heapified, param_replacements);
         }
         _ => {}
     }
 }
 
-fn rewrite_place<'ctx>(place: &mut Place<'ctx>, heapified: &[Option<Ty<'ctx>>]) {
+fn rewrite_place<'ctx>(
+    place: &mut Place<'ctx>,
+    heapified: &[Option<Ty<'ctx>>],
+    param_replacements: &[Option<LocalId>],
+) {
+    if let Some(local) = param_replacements
+        .get(place.local.index())
+        .and_then(|item| *item)
+    {
+        place.local = local;
+    }
+
     if heapified
         .get(place.local.index())
         .and_then(|item| *item)

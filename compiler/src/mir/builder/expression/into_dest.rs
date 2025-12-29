@@ -1,8 +1,8 @@
 use crate::{
     compile::context::Gcx,
     mir::{
-        self, AggregateKind, BasicBlockId, BinaryOperator, BlockAnd, BlockAndExtension, Category,
-        Constant, Operand, Place, PlaceElem, Rvalue, RvalueFunc, TerminatorKind,
+        self, AggregateKind, BasicBlockId, BinaryOperator, BlockAnd, BlockAndExtension, CastKind,
+        Category, Constant, Operand, Place, PlaceElem, Rvalue, RvalueFunc, TerminatorKind,
         builder::MirBuilder,
     },
     span::Span,
@@ -128,6 +128,26 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 };
                 self.terminate(block, expr.span, terminator);
                 next.unit()
+            }
+            ExprKind::BoxExistential { value, .. } => {
+                let operand = unpack!(block = self.as_operand(block, *value));
+                let rvalue = Rvalue::Cast {
+                    operand,
+                    ty: expr.ty,
+                    kind: CastKind::BoxExistential,
+                };
+                self.push_assign(block, destination, rvalue, expr.span);
+                block.unit()
+            }
+            ExprKind::ExistentialUpcast { value, .. } => {
+                let operand = unpack!(block = self.as_operand(block, *value));
+                let rvalue = Rvalue::Cast {
+                    operand,
+                    ty: expr.ty,
+                    kind: CastKind::ExistentialUpcast,
+                };
+                self.push_assign(block, destination, rvalue, expr.span);
+                block.unit()
             }
             ExprKind::Make { value } => {
                 let value_ty = self.thir.exprs[*value].ty;

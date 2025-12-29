@@ -22,6 +22,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let from = self.structurally_resolve(from);
         let to = self.structurally_resolve(to);
 
+        if let Some(result) = self.solve_existential_upcast(location, node_id, from, to) {
+            return result;
+        }
+
         if let Some(result) = self.solve_boxing_coercion(location, node_id, from, to) {
             return result;
         }
@@ -84,6 +88,49 @@ impl<'ctx> ConstraintSolver<'ctx> {
             .collect();
 
         Some(SolverResult::Error(errors))
+    }
+
+    fn solve_existential_upcast(
+        &mut self,
+        location: Span,
+        node_id: NodeID,
+        from: Ty<'ctx>,
+        to: Ty<'ctx>,
+    ) -> Option<SolverResult<'ctx>> {
+        let TyKind::BoxedExistential {
+            interfaces: from_ifaces,
+        } = from.kind()
+        else {
+            return None;
+        };
+        let TyKind::BoxedExistential {
+            interfaces: to_ifaces,
+        } = to.kind()
+        else {
+            return None;
+        };
+
+        if from == to {
+            return Some(SolverResult::Solved(vec![]));
+        }
+
+        if self.interface_subset(from_ifaces, to_ifaces) {
+            self.record_adjustments(
+                node_id,
+                vec![Adjustment::ExistentialUpcast { from, to }],
+            );
+            return Some(SolverResult::Solved(vec![]));
+        }
+
+        if self.interface_superface_upcast(from_ifaces, to_ifaces) {
+            self.record_adjustments(
+                node_id,
+                vec![Adjustment::ExistentialUpcast { from, to }],
+            );
+            return Some(SolverResult::Solved(vec![]));
+        }
+
+        Some(self.solve_equality(location, to, from))
     }
 
     fn solve_pointer_coercion(
@@ -176,5 +223,44 @@ impl<'ctx> ConstraintSolver<'ctx> {
             .iter()
             .zip(actual_args.iter())
             .all(|(a, b)| a == b)
+    }
+
+    fn interface_subset(
+        &self,
+        from_ifaces: &'ctx [InterfaceReference<'ctx>],
+        to_ifaces: &'ctx [InterfaceReference<'ctx>],
+    ) -> bool {
+        to_ifaces.iter().all(|target| {
+            from_ifaces
+                .iter()
+                .any(|source| self.interface_ref_matches(*target, *source))
+        })
+    }
+
+    fn interface_superface_upcast(
+        &self,
+        from_ifaces: &'ctx [InterfaceReference<'ctx>],
+        to_ifaces: &'ctx [InterfaceReference<'ctx>],
+    ) -> bool {
+        to_ifaces.iter().all(|target| {
+            from_ifaces.iter().any(|source| {
+                if self.interface_ref_matches(*target, *source) {
+                    return true;
+                }
+
+                self.collect_interface_with_supers(*source)
+                    .into_iter()
+                    .skip(1)
+                    .any(|candidate| self.interface_ref_matches(*target, candidate))
+            })
+        })
+    }
+
+    fn interface_ref_matches(
+        &self,
+        expected: InterfaceReference<'ctx>,
+        actual: InterfaceReference<'ctx>,
+    ) -> bool {
+        expected.id == actual.id && self.interface_args_match(expected, actual)
     }
 }

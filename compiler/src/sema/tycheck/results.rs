@@ -2,7 +2,7 @@ use crate::{
     hir::{self, DefinitionID, Resolution},
     sema::{
         models::{GenericArguments, Ty},
-        tycheck::solve::Adjustment,
+        tycheck::solve::{Adjustment, InterfaceCallInfo},
     },
 };
 use rustc_hash::FxHashMap;
@@ -11,6 +11,7 @@ use rustc_hash::FxHashMap;
 pub struct TypeCheckResults<'ctx> {
     node_tys: FxHashMap<hir::NodeID, Ty<'ctx>>,
     node_adjustments: FxHashMap<hir::NodeID, Vec<Adjustment<'ctx>>>,
+    interface_calls: FxHashMap<hir::NodeID, InterfaceCallInfo>,
     field_indices: FxHashMap<hir::NodeID, usize>,
     overload_sources: FxHashMap<hir::NodeID, DefinitionID>,
     value_resolutions: FxHashMap<hir::NodeID, Resolution>,
@@ -21,6 +22,7 @@ impl<'ctx> TypeCheckResults<'ctx> {
     pub fn extend_from(&mut self, mut other: TypeCheckResults<'ctx>) {
         self.node_tys.extend(other.node_tys.drain());
         self.node_adjustments.extend(other.node_adjustments.drain());
+        self.interface_calls.extend(other.interface_calls.drain());
         self.field_indices.extend(other.field_indices.drain());
         self.overload_sources.extend(other.overload_sources.drain());
         self.value_resolutions
@@ -37,6 +39,10 @@ impl<'ctx> TypeCheckResults<'ctx> {
             return;
         }
         self.node_adjustments.insert(id, adjustments);
+    }
+
+    pub fn record_interface_call(&mut self, id: hir::NodeID, info: InterfaceCallInfo) {
+        self.interface_calls.insert(id, info);
     }
 
     pub fn record_field_index(&mut self, id: hir::NodeID, index: usize) {
@@ -62,6 +68,10 @@ impl<'ctx> TypeCheckResults<'ctx> {
 
     pub fn node_adjustments(&self, id: hir::NodeID) -> Option<&[Adjustment<'ctx>]> {
         self.node_adjustments.get(&id).map(|v| v.as_slice())
+    }
+
+    pub fn interface_call(&self, id: hir::NodeID) -> Option<InterfaceCallInfo> {
+        self.interface_calls.get(&id).copied()
     }
 
     pub fn field_index(&self, id: hir::NodeID) -> Option<usize> {

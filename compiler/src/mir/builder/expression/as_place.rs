@@ -58,6 +58,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             | ExprKind::Cast { .. }
             | ExprKind::Logical { .. }
             | ExprKind::Call { .. }
+            | ExprKind::BoxExistential { .. }
+            | ExprKind::ExistentialUpcast { .. }
             | ExprKind::Block { .. }
             | ExprKind::Tuple { .. }
             | ExprKind::Adt { .. }

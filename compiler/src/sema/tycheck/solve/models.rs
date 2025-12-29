@@ -3,7 +3,7 @@ use crate::{
     hir::{BinaryOperator, NodeID, UnaryOperator},
     sema::{
         error::SpannedErrorList,
-        models::{InterfaceReference, Ty},
+        models::{GenericArguments, InterfaceReference, Ty},
         resolve::models::DefinitionID,
     },
     span::Span,
@@ -18,6 +18,10 @@ pub enum Adjustment<'ctx> {
         from: Ty<'ctx>,
         interfaces: &'ctx [InterfaceReference<'ctx>],
     },
+    ExistentialUpcast {
+        from: Ty<'ctx>,
+        to: Ty<'ctx>,
+    },
     Ignore(&'ctx ()),
 }
 
@@ -26,6 +30,7 @@ pub enum Goal<'ctx> {
     Equal(Ty<'ctx>, Ty<'ctx>),
     Apply(ApplyGoalData<'ctx>),
     BindOverload(BindOverloadGoalData<'ctx>),
+    BindInterfaceMethod(BindInterfaceMethodGoalData<'ctx>),
     Disjunction(Vec<DisjunctionBranch<'ctx>>),
     BinaryOp(BinOpGoalData<'ctx>),
     UnaryOp(UnOpGoalData<'ctx>),
@@ -59,6 +64,24 @@ pub struct BindOverloadGoalData<'ctx> {
     pub var_ty: Ty<'ctx>,
     pub candidate_ty: Ty<'ctx>,
     pub source: DefinitionID,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct InterfaceCallInfo {
+    pub root_interface: DefinitionID,
+    pub method_interface: DefinitionID,
+    pub method_id: DefinitionID,
+    pub slot: usize,
+    pub table_index: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct BindInterfaceMethodGoalData<'ctx> {
+    pub node_id: NodeID,
+    pub var_ty: Ty<'ctx>,
+    pub candidate_ty: Ty<'ctx>,
+    pub call_info: InterfaceCallInfo,
+    pub instantiation_args: Option<GenericArguments<'ctx>>,
 }
 
 pub enum SolverResult<'ctx> {

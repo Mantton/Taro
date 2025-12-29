@@ -16,6 +16,7 @@ use std::{cell::RefCell, cmp::Reverse, collections::VecDeque, rc::Rc};
 mod adt;
 mod apply;
 mod coerce;
+mod interface;
 mod member;
 mod method;
 mod models;
@@ -29,6 +30,7 @@ pub struct ConstraintSystem<'ctx> {
     obligations: VecDeque<Obligation<'ctx>>,
     expr_tys: FxHashMap<NodeID, Ty<'ctx>>,
     adjustments: FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
+    interface_calls: FxHashMap<NodeID, InterfaceCallInfo>,
     pub locals: RefCell<FxHashMap<NodeID, Ty<'ctx>>>,
     pub field_indices: FxHashMap<NodeID, usize>,
     overload_sources: FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
@@ -47,6 +49,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
             expr_tys: Default::default(),
             locals: Default::default(),
             adjustments: Default::default(),
+            interface_calls: Default::default(),
             field_indices: Default::default(),
             overload_sources: Default::default(),
             instantiation_args: Default::default(),
@@ -118,6 +121,10 @@ impl<'ctx> ConstraintSystem<'ctx> {
         self.adjustments.clone()
     }
 
+    pub fn resolved_interface_calls(&self) -> FxHashMap<NodeID, InterfaceCallInfo> {
+        self.interface_calls.clone()
+    }
+
     pub fn resolved_field_indices(&self) -> FxHashMap<NodeID, usize> {
         self.field_indices.clone()
     }
@@ -162,6 +169,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
             icx: self.infer_cx.clone(),
             obligations: std::mem::take(&mut self.obligations),
             adjustments: std::mem::take(&mut self.adjustments),
+            interface_calls: std::mem::take(&mut self.interface_calls),
             field_indices: std::mem::take(&mut self.field_indices),
             overload_sources: std::mem::take(&mut self.overload_sources),
             instantiation_args: std::mem::take(&mut self.instantiation_args),
@@ -171,9 +179,10 @@ impl<'ctx> ConstraintSystem<'ctx> {
         let mut driver = SolverDriver::new(solver);
         let result = driver.solve_to_fixpoint();
         // Pull adjustments back out of the solver/driver.
-        let (adjustments, field_indices, overload_sources, instantiation_args) =
+        let (adjustments, interface_calls, field_indices, overload_sources, instantiation_args) =
             driver.into_parts();
         self.adjustments = adjustments;
+        self.interface_calls = interface_calls;
         self.field_indices = field_indices;
         self.overload_sources = overload_sources;
         self.instantiation_args = instantiation_args;
@@ -221,6 +230,7 @@ struct ConstraintSolver<'ctx> {
     pub icx: Rc<InferCtx<'ctx>>,
     obligations: VecDeque<Obligation<'ctx>>,
     adjustments: FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
+    interface_calls: FxHashMap<NodeID, InterfaceCallInfo>,
     pub field_indices: FxHashMap<NodeID, usize>,
     overload_sources: FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
     instantiation_args: FxHashMap<NodeID, GenericArguments<'ctx>>,
@@ -247,6 +257,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
     pub fn record_instantiation(&mut self, node_id: NodeID, args: GenericArguments<'ctx>) {
         self.instantiation_args.insert(node_id, args);
     }
+
+    pub fn record_interface_call(&mut self, node_id: NodeID, info: InterfaceCallInfo) {
+        self.interface_calls.insert(node_id, info);
+    }
 }
 
 impl<'ctx> ConstraintSolver<'ctx> {
@@ -257,6 +271,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             Goal::Equal(lhs, rhs) => self.solve_equality(location, lhs, rhs),
             Goal::Apply(data) => self.solve_apply(data),
             Goal::BindOverload(data) => self.solve_bind_overload(location, data),
+            Goal::BindInterfaceMethod(data) => self.solve_bind_interface_method(location, data),
             Goal::Disjunction(branches) => self.solve_disjunction(location, branches),
             Goal::UnaryOp(data) => self.solve_unary(data),
             Goal::BinaryOp(data) => self.solve_binary(data),
@@ -290,6 +305,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             icx: self.icx.clone(),
             obligations: self.obligations.clone(),
             adjustments: self.adjustments.clone(),
+            interface_calls: self.interface_calls.clone(),
             field_indices: self.field_indices.clone(),
             overload_sources: self.overload_sources.clone(),
             instantiation_args: self.instantiation_args.clone(),
@@ -344,12 +360,14 @@ impl<'ctx> SolverDriver<'ctx> {
         self,
     ) -> (
         FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
+        FxHashMap<NodeID, InterfaceCallInfo>,
         FxHashMap<NodeID, usize>,
         FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
         FxHashMap<NodeID, GenericArguments<'ctx>>,
     ) {
         (
             self.solver.adjustments,
+            self.solver.interface_calls,
             self.solver.field_indices,
             self.solver.overload_sources,
             self.solver.instantiation_args,

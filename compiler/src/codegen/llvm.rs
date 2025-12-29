@@ -3,13 +3,17 @@ use crate::{
     compile::context::{Gcx, GlobalContext},
     error::CompileResult,
     hir,
-    mir::{self, Operand},
+    mir::{self, Operand, Place},
     sema::{
-        models::{FloatTy, GenericArgument, GenericArguments, IntTy, Ty, TyKind, UIntTy},
-        tycheck::utils::instantiate::instantiate_ty_with_args,
+        models::{
+            FloatTy, GenericArgument, GenericArguments, IntTy, InterfaceDefinition,
+            InterfaceReference, InterfaceRequirements, Ty, TyKind, UIntTy,
+        },
+        resolve::models::{DefinitionKind, TypeHead},
+        tycheck::utils::{instantiate::instantiate_ty_with_args, type_head_from_value_ty},
     },
     span::Symbol,
-    specialize::Instance,
+    specialize::{Instance, InstanceKind, resolve_instance},
 };
 use inkwell::{
     AddressSpace, FloatPredicate, IntPredicate,
@@ -64,6 +68,10 @@ struct Emitter<'llvm, 'gcx> {
     strings: FxHashMap<Symbol, PointerValue<'llvm>>,
     target_data: inkwell::targets::TargetData,
     gc_descs: FxHashMap<Ty<'gcx>, PointerValue<'llvm>>,
+    witness_tables: FxHashMap<(TypeHead, hir::DefinitionID), PointerValue<'llvm>>,
+    /// Cache for witness table thunks: (type_head, interface_id, impl_method_id) -> thunk_fn_ptr
+    witness_thunks:
+        FxHashMap<(TypeHead, hir::DefinitionID, hir::DefinitionID), PointerValue<'llvm>>,
     gc_desc_ty: inkwell::types::StructType<'llvm>,
     usize_ty: inkwell::types::IntType<'llvm>,
     shadow: Option<ShadowStackInfo<'llvm, 'gcx>>,
@@ -125,6 +133,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             strings: FxHashMap::default(),
             target_data,
             gc_descs: FxHashMap::default(),
+            witness_tables: FxHashMap::default(),
+            witness_thunks: FxHashMap::default(),
             gc_desc_ty,
             usize_ty,
             shadow: None,
@@ -157,7 +167,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         args: GenericArguments<'gcx>,
     ) -> Instance<'gcx> {
         let args = self.resolve_generic_args(args);
-        Instance::new(def_id, args)
+        resolve_instance(self.gcx, def_id, args)
     }
 
     /// Lower a type with substitution context applied.
@@ -192,7 +202,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let current_pkg = self.gcx.package_index();
         let instances = self.gcx.specializations_of(current_pkg);
         for instance in instances {
-            let def_id = instance.def_id();
+            let def_id = match instance.kind() {
+                InstanceKind::Item(def_id) => def_id,
+                InstanceKind::Virtual(_) => continue,
+            };
             // Set substitution context for this instance
             self.current_subst = instance.args();
 
@@ -214,7 +227,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 continue;
             }
 
-            let def_id = instance.def_id();
+            let def_id = match instance.kind() {
+                InstanceKind::Item(def_id) => def_id,
+                InstanceKind::Virtual(_) => continue,
+            };
             let body = self.gcx.get_mir_body(def_id);
             self.lower_body(instance, body)?;
 
@@ -229,7 +245,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             return;
         };
         // Entry point is always a concrete instance with no generic args
-        let entry_instance = Instance::new(entry, &[]);
+        let entry_instance = Instance::item(entry, &[]);
         let Some(&user_fn) = self.functions.get(&entry_instance) else {
             return;
         };
@@ -549,8 +565,13 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         }
                     }
                     crate::sema::models::AdtKind::Enum => {
-                        let offsets =
-                            enum_pointer_offsets(self.context, self.gcx, &self.target_data, def.id, adt_args);
+                        let offsets = enum_pointer_offsets(
+                            self.context,
+                            self.gcx,
+                            &self.target_data,
+                            def.id,
+                            adt_args,
+                        );
                         for offset in offsets {
                             local_slots.push(ShadowSlotKind::EnumFieldOffset(offset));
                         }
@@ -817,13 +838,23 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 };
                 self.lower_binary(lhs_ty, *op, lhs, rhs)
             }
-            mir::Rvalue::Cast { operand, ty } => {
+            mir::Rvalue::Cast { operand, ty, kind } => {
                 let from_ty = self.operand_ty(body, operand);
                 let val = match self.eval_operand(body, locals, operand)? {
                     Some(val) => val,
                     None => return Ok(None),
                 };
-                self.lower_cast(from_ty, *ty, val)
+                match kind {
+                    mir::CastKind::Numeric => return Ok(self.lower_cast(from_ty, *ty, val)),
+                    mir::CastKind::BoxExistential => {
+                        let value = self.lower_boxed_existential(from_ty, *ty, val)?;
+                        return Ok(Some(value));
+                    }
+                    mir::CastKind::ExistentialUpcast => {
+                        let value = self.lower_existential_upcast(from_ty, *ty, val)?;
+                        return Ok(Some(value));
+                    }
+                }
             }
             mir::Rvalue::Ref { place, .. } => {
                 // Produce the address of the place.
@@ -1288,6 +1319,580 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         None
     }
 
+    fn lower_boxed_existential(
+        &mut self,
+        from_ty: Ty<'gcx>,
+        to_ty: Ty<'gcx>,
+        value: BasicValueEnum<'llvm>,
+    ) -> CompileResult<BasicValueEnum<'llvm>> {
+        let TyKind::BoxedExistential { interfaces } = to_ty.kind() else {
+            return Ok(value);
+        };
+
+        let data_ptr = self.box_value(from_ty, value)?;
+        let mut table_ptrs = Vec::with_capacity(interfaces.len());
+        for iface in interfaces.iter().copied() {
+            let ptr = self.witness_table_ptr(from_ty, iface);
+            table_ptrs.push(ptr);
+        }
+
+        Ok(self.build_existential_value(to_ty, data_ptr, &table_ptrs))
+    }
+
+    fn lower_existential_upcast(
+        &mut self,
+        from_ty: Ty<'gcx>,
+        to_ty: Ty<'gcx>,
+        value: BasicValueEnum<'llvm>,
+    ) -> CompileResult<BasicValueEnum<'llvm>> {
+        let TyKind::BoxedExistential {
+            interfaces: from_ifaces,
+        } = from_ty.kind()
+        else {
+            return Ok(value);
+        };
+        let TyKind::BoxedExistential {
+            interfaces: to_ifaces,
+        } = to_ty.kind()
+        else {
+            return Ok(value);
+        };
+
+        let src = value.into_struct_value();
+        let data_ptr = self
+            .builder
+            .build_extract_value(src, 0, "exist_data")
+            .unwrap()
+            .into_pointer_value();
+
+        let mut table_ptrs = Vec::with_capacity(to_ifaces.len());
+        for target in to_ifaces.iter().copied() {
+            if let Some(index) = self.interface_index(from_ifaces, target.id) {
+                let ptr = self
+                    .builder
+                    .build_extract_value(src, (index + 1) as u32, "exist_table")
+                    .unwrap()
+                    .into_pointer_value();
+                table_ptrs.push(ptr);
+                continue;
+            }
+
+            if let Some((root_index, chain)) =
+                self.superface_chain_from_root(from_ifaces, target.id)
+            {
+                let mut current_ptr = self
+                    .builder
+                    .build_extract_value(src, (root_index + 1) as u32, "exist_root_table")
+                    .unwrap()
+                    .into_pointer_value();
+                for (current_iface, super_index) in chain {
+                    let table_ty = self.witness_table_struct_ty(current_iface);
+                    let table_ptr_ty = self.context.ptr_type(AddressSpace::default());
+                    let typed_ptr = self
+                        .builder
+                        .build_bit_cast(current_ptr, table_ptr_ty, "wt_cast")
+                        .unwrap()
+                        .into_pointer_value();
+                    let field_index = self.interface_method_count(current_iface) + super_index;
+                    let field_ptr = self
+                        .builder
+                        .build_struct_gep(table_ty, typed_ptr, field_index as u32, "wt_super_ptr")
+                        .unwrap();
+                    current_ptr = self
+                        .builder
+                        .build_load(
+                            self.context.ptr_type(AddressSpace::default()),
+                            field_ptr,
+                            "wt_super_load",
+                        )
+                        .unwrap()
+                        .into_pointer_value();
+                }
+                table_ptrs.push(current_ptr);
+                continue;
+            }
+
+            table_ptrs.push(self.context.ptr_type(AddressSpace::default()).const_null());
+        }
+
+        Ok(self.build_existential_value(to_ty, data_ptr, &table_ptrs))
+    }
+
+    fn box_value(
+        &mut self,
+        ty: Ty<'gcx>,
+        value: BasicValueEnum<'llvm>,
+    ) -> CompileResult<PointerValue<'llvm>> {
+        let Some(llvm_payload_ty) = self.lower_ty(ty) else {
+            return Ok(self.context.ptr_type(AddressSpace::default()).const_null());
+        };
+        let size = self.target_data.get_store_size(&llvm_payload_ty);
+        let size_const = self.usize_ty.const_int(size, false);
+        let desc_ptr = self.gc_desc_for(ty);
+        let callee = self.get_gc_alloc();
+        let call = self
+            .builder
+            .build_call(
+                callee,
+                &[
+                    BasicMetadataValueEnum::from(size_const),
+                    BasicMetadataValueEnum::from(desc_ptr),
+                ],
+                "exist_alloc",
+            )
+            .unwrap();
+        let raw_ptr = call
+            .try_as_basic_value()
+            .basic()
+            .expect("gc_alloc returned void")
+            .into_pointer_value();
+        let typed_ptr = self
+            .builder
+            .build_bit_cast(
+                raw_ptr,
+                self.context.ptr_type(AddressSpace::default()),
+                "exist_payload_ptr",
+            )
+            .unwrap()
+            .into_pointer_value();
+        let _ = self.builder.build_store(typed_ptr, value).unwrap();
+        Ok(raw_ptr)
+    }
+
+    fn build_existential_value(
+        &self,
+        ty: Ty<'gcx>,
+        data_ptr: PointerValue<'llvm>,
+        tables: &[PointerValue<'llvm>],
+    ) -> BasicValueEnum<'llvm> {
+        let Some(BasicTypeEnum::StructType(struct_ty)) = self.lower_ty(ty) else {
+            return data_ptr.as_basic_value_enum();
+        };
+
+        let mut value = struct_ty.get_undef();
+        value = self
+            .builder
+            .build_insert_value(value, data_ptr, 0, "exist_data")
+            .unwrap()
+            .into_struct_value();
+        for (index, table) in tables.iter().enumerate() {
+            value = self
+                .builder
+                .build_insert_value(
+                    value,
+                    (*table).as_basic_value_enum(),
+                    (index + 1) as u32,
+                    "exist_table",
+                )
+                .unwrap()
+                .into_struct_value();
+        }
+
+        value.as_basic_value_enum()
+    }
+
+    fn witness_table_ptr(
+        &mut self,
+        concrete_ty: Ty<'gcx>,
+        iface: InterfaceReference<'gcx>,
+    ) -> PointerValue<'llvm> {
+        let Some(type_head) = type_head_from_value_ty(concrete_ty) else {
+            return self.context.ptr_type(AddressSpace::default()).const_null();
+        };
+
+        let iface = self.interface_args_with_self(concrete_ty, iface);
+
+        if let Some(ptr) = self.witness_tables.get(&(type_head, iface.id)) {
+            return *ptr;
+        }
+
+        let requirements = match self.interface_requirements(iface.id) {
+            Some(req) => req,
+            None => return self.context.ptr_type(AddressSpace::default()).const_null(),
+        };
+        let witness = self.conformance_witness(type_head, iface.id);
+
+        let mut entries: Vec<BasicValueEnum<'llvm>> =
+            Vec::with_capacity(requirements.methods.len());
+        for method in &requirements.methods {
+            let impl_def_id = witness
+                .as_ref()
+                .and_then(|w| w.method_witnesses.get(&method.id).copied())
+                .unwrap_or(method.id);
+            let args = if self.gcx.generics_of(impl_def_id).has_self {
+                iface.arguments
+            } else if self.gcx.generics_of(impl_def_id).is_empty() {
+                &[]
+            } else {
+                &[]
+            };
+            // Use a thunk to bridge virtual call signature (ptr self) to concrete impl
+            let thunk_ptr = self.witness_method_thunk(type_head, iface.id, impl_def_id, args);
+            entries.push(thunk_ptr.as_basic_value_enum());
+        }
+
+        let superfaces = self.interface_superfaces(iface);
+        for superface in superfaces {
+            let ptr = self.witness_table_ptr(concrete_ty, superface);
+            entries.push(ptr.as_basic_value_enum());
+        }
+
+        let table_ty = self.witness_table_struct_ty(iface.id);
+        let const_struct = table_ty.const_named_struct(&entries);
+        let gv = self.module.add_global(
+            table_ty,
+            None,
+            &format!("__wt_{}", self.witness_tables.len()),
+        );
+        gv.set_initializer(&const_struct);
+        gv.set_constant(true);
+        gv.set_linkage(Linkage::Internal);
+        let ptr = gv.as_pointer_value();
+        let opaque_ptr = ptr.const_cast(self.context.ptr_type(AddressSpace::default()));
+        self.witness_tables
+            .insert((type_head, iface.id), opaque_ptr);
+        opaque_ptr
+    }
+
+    fn function_ptr_for_instance(&mut self, instance: Instance<'gcx>) -> PointerValue<'llvm> {
+        let def_id = match instance.kind() {
+            InstanceKind::Item(def_id) => def_id,
+            InstanceKind::Virtual(_) => {
+                return self.context.ptr_type(AddressSpace::default()).const_null();
+            }
+        };
+
+        if let Some(&f) = self.functions.get(&instance) {
+            return f.as_global_value().as_pointer_value();
+        }
+
+        if self.is_foreign_function(def_id) {
+            let f = self.declare_foreign_function(def_id);
+            self.functions.insert(instance, f);
+            return f.as_global_value().as_pointer_value();
+        }
+
+        let prev_subst = self.current_subst;
+        self.current_subst = instance.args();
+        let sig = self.gcx.get_signature(def_id);
+        let fn_ty = self.lower_fn_sig(sig);
+        let name = mangle_instance(self.gcx, instance);
+        let f = self
+            .module
+            .add_function(&name, fn_ty, Some(Linkage::External));
+        self.functions.insert(instance, f);
+        self.current_subst = prev_subst;
+        f.as_global_value().as_pointer_value()
+    }
+
+    /// Generate a thunk for witness table entries.
+    /// The thunk takes a raw ptr as self (from existential data pointer) and forwards
+    /// to the concrete implementation with the correct signature.
+    fn witness_method_thunk(
+        &mut self,
+        type_head: TypeHead,
+        interface_id: hir::DefinitionID,
+        impl_def_id: hir::DefinitionID,
+        args: GenericArguments<'gcx>,
+    ) -> PointerValue<'llvm> {
+        // Check cache first
+        let cache_key = (type_head, interface_id, impl_def_id);
+        if let Some(&ptr) = self.witness_thunks.get(&cache_key) {
+            return ptr;
+        }
+
+        // Get the concrete implementation function
+        let impl_instance = Instance::item(impl_def_id, args);
+        let impl_fn = self.function_ptr_for_instance(impl_instance);
+
+        // Get the implementation signature
+        let prev_subst = self.current_subst;
+        self.current_subst = args;
+        let sig = self.gcx.get_signature(impl_def_id);
+
+        // Build thunk parameter types: first param is raw ptr (data pointer from existential)
+        // Rest are the same as the implementation
+        let opaque_ptr = self.context.ptr_type(AddressSpace::default());
+        let mut thunk_param_types: Vec<BasicMetadataTypeEnum<'llvm>> = vec![opaque_ptr.into()];
+        for param in sig.inputs.iter().skip(1) {
+            if let Some(ty) = self.lower_ty(param.ty) {
+                thunk_param_types.push(ty.into());
+            }
+        }
+
+        // Build thunk return type
+        let thunk_fn_ty = match self.lower_ty(sig.output) {
+            Some(ret) => ret.fn_type(&thunk_param_types, false),
+            None => self.context.void_type().fn_type(&thunk_param_types, false),
+        };
+
+        // Create thunk function
+        let thunk_name = format!(
+            "__wt_thunk_{}_{}",
+            self.witness_thunks.len(),
+            self.gcx.definition_ident(impl_def_id).symbol,
+        );
+        let thunk_fn = self.module.add_function(&thunk_name, thunk_fn_ty, None);
+
+        // Save current position and build thunk body
+        let current_block = self.builder.get_insert_block();
+        let entry = self.context.append_basic_block(thunk_fn, "entry");
+        self.builder.position_at_end(entry);
+
+        // Gather arguments: first is the data pointer, rest are passed through
+        let mut call_args: Vec<BasicMetadataValueEnum<'llvm>> =
+            Vec::with_capacity(thunk_param_types.len());
+
+        // First argument is the raw data pointer - pass it directly to impl
+        // (the impl expects a reference/pointer to the concrete type, which is what data_ptr points to)
+        call_args.push(thunk_fn.get_nth_param(0).unwrap().into());
+
+        // Forward remaining arguments
+        for i in 1..thunk_fn.count_params() {
+            call_args.push(thunk_fn.get_nth_param(i).unwrap().into());
+        }
+
+        // Get the implementation function type for indirect call
+        let impl_fn_ty = self.lower_fn_sig(sig);
+
+        // Call the implementation
+        let call = self
+            .builder
+            .build_indirect_call(impl_fn_ty, impl_fn, &call_args, "thunk_call")
+            .unwrap();
+
+        // Return the result
+        if sig.output == self.gcx.types.void {
+            self.builder.build_return(None).unwrap();
+        } else if let Some(ret_val) = call.try_as_basic_value().basic() {
+            self.builder.build_return(Some(&ret_val)).unwrap();
+        } else {
+            self.builder.build_return(None).unwrap();
+        }
+
+        // Restore builder position
+        if let Some(block) = current_block {
+            self.builder.position_at_end(block);
+        }
+
+        self.current_subst = prev_subst;
+
+        // Cache and return
+        let thunk_ptr = thunk_fn.as_global_value().as_pointer_value();
+        self.witness_thunks.insert(cache_key, thunk_ptr);
+        thunk_ptr
+    }
+
+    fn interface_requirements(
+        &self,
+        interface_id: hir::DefinitionID,
+    ) -> Option<&'gcx InterfaceRequirements<'gcx>> {
+        self.gcx.with_type_database(interface_id.package(), |db| {
+            db.interface_requirements.get(&interface_id).copied()
+        })
+    }
+
+    fn interface_definition(
+        &self,
+        interface_id: hir::DefinitionID,
+    ) -> Option<&'gcx InterfaceDefinition<'gcx>> {
+        self.gcx.with_type_database(interface_id.package(), |db| {
+            db.def_to_iface_def.get(&interface_id).copied()
+        })
+    }
+
+    fn conformance_witness(
+        &self,
+        type_head: TypeHead,
+        interface_id: hir::DefinitionID,
+    ) -> Option<crate::sema::models::ConformanceWitness<'gcx>> {
+        self.gcx.with_session_type_database(|db| {
+            db.conformance_witnesses
+                .get(&(type_head, interface_id))
+                .cloned()
+        })
+    }
+
+    fn interface_method_count(&self, interface_id: hir::DefinitionID) -> usize {
+        self.interface_requirements(interface_id)
+            .map(|req| req.methods.len())
+            .unwrap_or(0)
+    }
+
+    fn interface_method_parent(&self, def_id: hir::DefinitionID) -> Option<hir::DefinitionID> {
+        if self.gcx.definition_kind(def_id) != DefinitionKind::AssociatedFunction {
+            return None;
+        }
+        let parent = self.gcx.definition_parent(def_id)?;
+        if self.gcx.definition_kind(parent) == DefinitionKind::Interface {
+            Some(parent)
+        } else {
+            None
+        }
+    }
+
+    fn interface_superfaces(
+        &self,
+        iface: InterfaceReference<'gcx>,
+    ) -> Vec<InterfaceReference<'gcx>> {
+        let Some(def) = self.interface_definition(iface.id) else {
+            return Vec::new();
+        };
+
+        let mut out = Vec::with_capacity(def.superfaces.len());
+        for superface in &def.superfaces {
+            let substituted = self.substitute_interface_ref(superface.value, iface.arguments);
+            out.push(substituted);
+        }
+        out
+    }
+
+    fn interface_args_with_self(
+        &self,
+        self_ty: Ty<'gcx>,
+        iface: InterfaceReference<'gcx>,
+    ) -> InterfaceReference<'gcx> {
+        if iface.arguments.is_empty() {
+            return iface;
+        }
+
+        let mut args: Vec<_> = iface.arguments.iter().copied().collect();
+        if let Some(first) = args.get_mut(0) {
+            *first = GenericArgument::Type(self_ty);
+        }
+
+        let interned = self.gcx.store.interners.intern_generic_args(args);
+        InterfaceReference {
+            id: iface.id,
+            arguments: interned,
+        }
+    }
+
+    fn substitute_interface_ref(
+        &self,
+        template: InterfaceReference<'gcx>,
+        args: GenericArguments<'gcx>,
+    ) -> InterfaceReference<'gcx> {
+        if args.is_empty() {
+            return template;
+        }
+
+        let mut new_args = Vec::with_capacity(template.arguments.len());
+        for arg in template.arguments.iter() {
+            match arg {
+                GenericArgument::Type(ty) => {
+                    let substituted = instantiate_ty_with_args(self.gcx, *ty, args);
+                    new_args.push(GenericArgument::Type(substituted));
+                }
+                GenericArgument::Const(_) => {
+                    return template;
+                }
+            }
+        }
+
+        let interned = self.gcx.store.interners.intern_generic_args(new_args);
+        InterfaceReference {
+            id: template.id,
+            arguments: interned,
+        }
+    }
+
+    fn witness_table_struct_ty(&self, interface_id: hir::DefinitionID) -> StructType<'llvm> {
+        let method_count = self.interface_method_count(interface_id);
+        let super_count = self
+            .interface_definition(interface_id)
+            .map(|def| def.superfaces.len())
+            .unwrap_or(0);
+        let total = method_count + super_count;
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let fields: Vec<_> = (0..total).map(|_| ptr_ty.into()).collect();
+        self.context.struct_type(&fields, false)
+    }
+
+    fn interface_index(
+        &self,
+        interfaces: &[InterfaceReference<'gcx>],
+        interface_id: hir::DefinitionID,
+    ) -> Option<usize> {
+        interfaces.iter().position(|iface| iface.id == interface_id)
+    }
+
+    fn superface_chain_from_root(
+        &self,
+        interfaces: &[InterfaceReference<'gcx>],
+        target_id: hir::DefinitionID,
+    ) -> Option<(usize, Vec<(hir::DefinitionID, usize)>)> {
+        for (index, iface) in interfaces.iter().enumerate() {
+            if iface.id == target_id {
+                return Some((index, Vec::new()));
+            }
+            if !self.interface_has_superface(iface.id, target_id) {
+                continue;
+            }
+            let chain = self.superface_chain_indices(iface.id, target_id)?;
+            return Some((index, chain));
+        }
+        None
+    }
+
+    fn interface_has_superface(
+        &self,
+        interface_id: hir::DefinitionID,
+        target_id: hir::DefinitionID,
+    ) -> bool {
+        self.gcx.with_type_database(interface_id.package(), |db| {
+            db.interface_to_supers
+                .get(&interface_id)
+                .map_or(false, |supers| supers.contains(&target_id))
+        })
+    }
+
+    fn superface_chain_indices(
+        &self,
+        root_id: hir::DefinitionID,
+        target_id: hir::DefinitionID,
+    ) -> Option<Vec<(hir::DefinitionID, usize)>> {
+        use std::collections::{HashMap, VecDeque};
+
+        let mut queue = VecDeque::new();
+        let mut parents: HashMap<hir::DefinitionID, (hir::DefinitionID, usize)> = HashMap::new();
+        queue.push_back(root_id);
+        parents.insert(root_id, (root_id, 0));
+
+        while let Some(current) = queue.pop_front() {
+            if current == target_id {
+                break;
+            }
+            let Some(def) = self.interface_definition(current) else {
+                continue;
+            };
+            for (index, superface) in def.superfaces.iter().enumerate() {
+                let next = superface.value.id;
+                if parents.contains_key(&next) {
+                    continue;
+                }
+                parents.insert(next, (current, index));
+                queue.push_back(next);
+            }
+        }
+
+        if !parents.contains_key(&target_id) {
+            return None;
+        }
+
+        let mut chain = Vec::new();
+        let mut current = target_id;
+        while current != root_id {
+            let Some((parent, index)) = parents.get(&current).copied() else {
+                return None;
+            };
+            chain.push((parent, index));
+            current = parent;
+        }
+        chain.reverse();
+        Some(chain)
+    }
+
     fn lower_terminator(
         &mut self,
         body: &mir::Body<'gcx>,
@@ -1355,22 +1960,26 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 destination,
                 target,
             } => {
-                let callable = self.lower_callable(func);
+                if let Some(instance) = self.virtual_instance_for_call(func) {
+                    self.lower_virtual_call(body, locals, &instance, args, destination)?;
+                } else {
+                    let callable = self.lower_callable(func);
 
-                let mut lowered_args = Vec::with_capacity(args.len());
-                for arg in args {
-                    if let Some(val) = self.eval_operand(body, locals, arg)? {
-                        lowered_args.push(BasicMetadataValueEnum::from(val));
+                    let mut lowered_args = Vec::with_capacity(args.len());
+                    for arg in args {
+                        if let Some(val) = self.eval_operand(body, locals, arg)? {
+                            lowered_args.push(BasicMetadataValueEnum::from(val));
+                        }
                     }
-                }
 
-                let call_site = self
-                    .builder
-                    .build_call(callable, &lowered_args, "call")
-                    .unwrap();
+                    let call_site = self
+                        .builder
+                        .build_call(callable, &lowered_args, "call")
+                        .unwrap();
 
-                if let Some(ret) = call_site.try_as_basic_value().basic() {
-                    self.store_place(&destination, body, locals, ret)?;
+                    if let Some(ret) = call_site.try_as_basic_value().basic() {
+                        self.store_place(&destination, body, locals, ret)?;
+                    }
                 }
                 let _ = self
                     .builder
@@ -1385,6 +1994,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         if let Operand::Constant(c) = func {
             if let mir::ConstantKind::Function(def_id, args, _) = c.value {
                 let instance = self.instance_for_call(def_id, args);
+                if let InstanceKind::Virtual(_) = instance.kind() {
+                    todo!("virtual call codegen for boxed existentials");
+                }
 
                 if let Some(&f) = self.functions.get(&instance) {
                     return f;
@@ -1416,6 +2028,236 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .copied()
             .next()
             .expect("at least one function")
+    }
+
+    fn virtual_instance_for_call(
+        &self,
+        func: &Operand<'gcx>,
+    ) -> Option<crate::specialize::VirtualInstance> {
+        let Operand::Constant(c) = func else {
+            return None;
+        };
+        let mir::ConstantKind::Function(def_id, args, _) = c.value else {
+            return None;
+        };
+        let instance = resolve_instance(self.gcx, def_id, args);
+        match instance.kind() {
+            InstanceKind::Virtual(instance) => Some(instance),
+            InstanceKind::Item(_) => None,
+        }
+    }
+
+    fn lower_virtual_call(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        instance: &crate::specialize::VirtualInstance,
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+    ) -> CompileResult<()> {
+        let receiver = args.first().expect("virtual call missing receiver");
+        let receiver_ty = self.operand_ty(body, receiver);
+        let Some(receiver_val) = self.eval_operand(body, locals, receiver)? else {
+            return Ok(());
+        };
+
+        let self_ty = match receiver_ty.kind() {
+            TyKind::Reference(inner, _) | TyKind::Pointer(inner, _) => inner,
+            _ => receiver_ty,
+        };
+
+        let TyKind::BoxedExistential { interfaces } = self_ty.kind() else {
+            return Ok(());
+        };
+        let Some(root_iface) = interfaces.get(instance.table_index).copied() else {
+            return Ok(());
+        };
+
+        let (data_ptr, root_table_ptr) =
+            self.extract_existential_parts(receiver_ty, receiver_val, instance.table_index)?;
+
+        let method_table_ptr = if root_iface.id == instance.method_interface {
+            root_table_ptr
+        } else if let Some(chain) =
+            self.superface_chain_indices(root_iface.id, instance.method_interface)
+        {
+            let mut current_ptr = root_table_ptr;
+            for (current_iface, super_index) in chain {
+                let table_ty = self.witness_table_struct_ty(current_iface);
+                let table_ptr_ty = table_ty.ptr_type(AddressSpace::default());
+                let typed_ptr = self
+                    .builder
+                    .build_bit_cast(current_ptr, table_ptr_ty, "wt_cast")
+                    .unwrap()
+                    .into_pointer_value();
+                let field_index = self.interface_method_count(current_iface) + super_index;
+                let field_ptr = self
+                    .builder
+                    .build_struct_gep(table_ty, typed_ptr, field_index as u32, "wt_super_ptr")
+                    .unwrap();
+                current_ptr = self
+                    .builder
+                    .build_load(
+                        self.context.ptr_type(AddressSpace::default()),
+                        field_ptr,
+                        "wt_super_load",
+                    )
+                    .unwrap()
+                    .into_pointer_value();
+            }
+            current_ptr
+        } else {
+            root_table_ptr
+        };
+
+        let method_table_ty = self.witness_table_struct_ty(instance.method_interface);
+        let method_table_ptr_ty = method_table_ty.ptr_type(AddressSpace::default());
+        let typed_method_table = self
+            .builder
+            .build_bit_cast(method_table_ptr, method_table_ptr_ty, "wt_method_cast")
+            .unwrap()
+            .into_pointer_value();
+        let slot_ptr = self
+            .builder
+            .build_struct_gep(
+                method_table_ty,
+                typed_method_table,
+                instance.slot as u32,
+                "wt_method_ptr",
+            )
+            .unwrap();
+        let fn_ptr = self
+            .builder
+            .build_load(
+                self.context.ptr_type(AddressSpace::default()),
+                slot_ptr,
+                "wt_method_load",
+            )
+            .unwrap()
+            .into_pointer_value();
+
+        let mut lowered_args: Vec<BasicMetadataValueEnum<'llvm>> = Vec::with_capacity(args.len());
+        lowered_args.push(BasicMetadataValueEnum::from(data_ptr.as_basic_value_enum()));
+        for arg in args.iter().skip(1) {
+            if let Some(val) = self.eval_operand(body, locals, arg)? {
+                lowered_args.push(BasicMetadataValueEnum::from(val));
+            }
+        }
+
+        let param_types: Vec<BasicMetadataTypeEnum<'llvm>> = lowered_args
+            .iter()
+            .map(|arg| match arg {
+                BasicMetadataValueEnum::ArrayValue(v) => v.get_type().into(),
+                BasicMetadataValueEnum::IntValue(v) => v.get_type().into(),
+                BasicMetadataValueEnum::FloatValue(v) => v.get_type().into(),
+                BasicMetadataValueEnum::PointerValue(v) => v.get_type().into(),
+                BasicMetadataValueEnum::StructValue(v) => v.get_type().into(),
+                BasicMetadataValueEnum::VectorValue(v) => v.get_type().into(),
+                BasicMetadataValueEnum::ScalableVectorValue(v) => v.get_type().into(),
+                BasicMetadataValueEnum::MetadataValue(_) => self.context.metadata_type().into(),
+            })
+            .collect();
+        let ret_ty = self.place_ty(body, destination);
+        let fn_ty = match self.lower_ty(ret_ty) {
+            Some(ret) => ret.fn_type(&param_types, false),
+            None => self.context.void_type().fn_type(&param_types, false),
+        };
+
+        let fn_ptr_cast = self
+            .builder
+            .build_bit_cast(
+                fn_ptr,
+                fn_ty.ptr_type(AddressSpace::default()),
+                "virt_fn_ptr",
+            )
+            .unwrap()
+            .into_pointer_value();
+        let call_site = self
+            .builder
+            .build_indirect_call(fn_ty, fn_ptr_cast, &lowered_args, "virt_call")
+            .unwrap();
+
+        if let Some(ret) = call_site.try_as_basic_value().basic() {
+            self.store_place(destination, body, locals, ret)?;
+        }
+
+        Ok(())
+    }
+
+    fn extract_existential_parts(
+        &self,
+        receiver_ty: Ty<'gcx>,
+        receiver_val: BasicValueEnum<'llvm>,
+        table_index: usize,
+    ) -> CompileResult<(PointerValue<'llvm>, PointerValue<'llvm>)> {
+        let (existential_ty, struct_ptr, struct_val) = match receiver_ty.kind() {
+            TyKind::Reference(inner, _) | TyKind::Pointer(inner, _) => {
+                (inner, Some(receiver_val.into_pointer_value()), None)
+            }
+            TyKind::BoxedExistential { .. } => {
+                (receiver_ty, None, Some(receiver_val.into_struct_value()))
+            }
+            _ => (receiver_ty, None, Some(receiver_val.into_struct_value())),
+        };
+
+        let TyKind::BoxedExistential { interfaces } = existential_ty.kind() else {
+            let null_ptr = self.context.ptr_type(AddressSpace::default()).const_null();
+            return Ok((null_ptr, null_ptr));
+        };
+        if table_index >= interfaces.len() {
+            let null_ptr = self.context.ptr_type(AddressSpace::default()).const_null();
+            return Ok((null_ptr, null_ptr));
+        }
+
+        let table_field = table_index + 1;
+        let Some(BasicTypeEnum::StructType(struct_ty)) = self.lower_ty(existential_ty) else {
+            let null_ptr = self.context.ptr_type(AddressSpace::default()).const_null();
+            return Ok((null_ptr, null_ptr));
+        };
+
+        if let Some(struct_val) = struct_val {
+            let data_ptr = self
+                .builder
+                .build_extract_value(struct_val, 0, "exist_data")
+                .unwrap()
+                .into_pointer_value();
+            let table_ptr = self
+                .builder
+                .build_extract_value(struct_val, table_field as u32, "exist_table")
+                .unwrap()
+                .into_pointer_value();
+            return Ok((data_ptr, table_ptr));
+        }
+
+        let struct_ptr = struct_ptr.expect("existential pointer");
+        let data_ptr_gep = self
+            .builder
+            .build_struct_gep(struct_ty, struct_ptr, 0, "exist_data_ptr")
+            .unwrap();
+        let data_ptr = self
+            .builder
+            .build_load(
+                self.context.ptr_type(AddressSpace::default()),
+                data_ptr_gep,
+                "exist_data_load",
+            )
+            .unwrap()
+            .into_pointer_value();
+        let table_ptr_gep = self
+            .builder
+            .build_struct_gep(struct_ty, struct_ptr, table_field as u32, "exist_table_ptr")
+            .unwrap();
+        let table_ptr = self
+            .builder
+            .build_load(
+                self.context.ptr_type(AddressSpace::default()),
+                table_ptr_gep,
+                "exist_table_load",
+            )
+            .unwrap()
+            .into_pointer_value();
+
+        Ok((data_ptr, table_ptr))
     }
 
     fn is_foreign_function(&self, id: hir::DefinitionID) -> bool {
@@ -1581,10 +2423,15 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 }
                 mir::PlaceElem::VariantDowncast { name: _, index } => {
                     let (def, adt_args) = match ty.kind() {
-                        TyKind::Adt(def, args) if def.kind == crate::sema::models::AdtKind::Enum => (def, args),
+                        TyKind::Adt(def, args)
+                            if def.kind == crate::sema::models::AdtKind::Enum =>
+                        {
+                            (def, args)
+                        }
                         _ => panic!("variant downcast on non-enum type {}", ty.format(self.gcx)),
                     };
-                    let layout = enum_layout(self.context, self.gcx, &self.target_data, def.id, adt_args);
+                    let layout =
+                        enum_layout(self.context, self.gcx, &self.target_data, def.id, adt_args);
                     let payload_index = layout
                         .payload_field_index
                         .expect("enum payload field index");
@@ -1638,7 +2485,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 }
                 mir::PlaceElem::VariantDowncast { name: _, index } => {
                     let (def, adt_args) = match ty.kind() {
-                        TyKind::Adt(def, args) if def.kind == crate::sema::models::AdtKind::Enum => {
+                        TyKind::Adt(def, args)
+                            if def.kind == crate::sema::models::AdtKind::Enum =>
+                        {
                             (def, args)
                         }
                         _ => panic!("variant downcast on non-enum type {}", ty.format(self.gcx)),
@@ -1684,6 +2533,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             mir::ConstantKind::Unit => None,
             mir::ConstantKind::Function(def_id, args, _) => {
                 let instance = self.instance_for_call(def_id, args);
+                if let InstanceKind::Virtual(_) = instance.kind() {
+                    todo!("function pointers to virtual interface methods are not supported");
+                }
                 self.functions
                     .get(&instance)
                     .map(|f| f.as_global_value().as_pointer_value().as_basic_value_enum())
@@ -1779,8 +2631,13 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     }
                 }
                 crate::sema::models::AdtKind::Enum => {
-                    offsets =
-                        enum_pointer_offsets(self.context, self.gcx, &self.target_data, def.id, adt_args);
+                    offsets = enum_pointer_offsets(
+                        self.context,
+                        self.gcx,
+                        &self.target_data,
+                        def.id,
+                        adt_args,
+                    );
                 }
             },
             TyKind::Tuple(items) => {
@@ -1795,7 +2652,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     }
                 }
             }
-            TyKind::String | TyKind::GcPtr | TyKind::Reference(..) => {
+            TyKind::String
+            | TyKind::GcPtr
+            | TyKind::Reference(..)
+            | TyKind::BoxedExistential { .. } => {
                 offsets.push(0);
             }
             _ => {}
@@ -1886,7 +2746,8 @@ fn enum_layout<'llvm, 'gcx>(
                 if fields.is_empty() {
                     (0u64, 1u64)
                 } else {
-                    let struct_ty = enum_variant_struct_ty(context, gcx, target_data, fields, adt_args);
+                    let struct_ty =
+                        enum_variant_struct_ty(context, gcx, target_data, fields, adt_args);
                     let size = target_data.get_store_size(&struct_ty);
                     let align = target_data.get_abi_alignment(&struct_ty) as u64;
                     (size, align)
@@ -1997,7 +2858,7 @@ fn enum_pointer_offsets<'llvm, 'gcx>(
 fn is_pointer_ty(ty: Ty) -> bool {
     matches!(
         ty.kind(),
-        TyKind::Reference(..) | TyKind::String | TyKind::GcPtr
+        TyKind::Reference(..) | TyKind::String | TyKind::GcPtr | TyKind::BoxedExistential { .. }
     )
 }
 
@@ -2018,7 +2879,6 @@ fn lower_fn_sig<'llvm, 'gcx>(
     }
 }
 
-#[track_caller]
 fn lower_type<'llvm, 'gcx>(
     context: &'llvm Context,
     gcx: GlobalContext<'gcx>,
@@ -2103,19 +2963,25 @@ fn lower_type<'llvm, 'gcx>(
                 .ptr_type(AddressSpace::default())
                 .as_basic_type_enum(),
         ),
-        TyKind::BoxedExistential { .. } => {
-            todo!("codegen for boxed existentials")
+        TyKind::BoxedExistential { interfaces } => {
+            let ptr_ty = context.ptr_type(AddressSpace::default());
+            let mut fields: Vec<BasicTypeEnum<'llvm>> = Vec::with_capacity(1 + interfaces.len());
+            fields.push(ptr_ty.into());
+            for _ in interfaces.iter() {
+                fields.push(ptr_ty.into());
+            }
+            Some(context.struct_type(&fields, false).into())
         }
         TyKind::Parameter(_) => {
             // Should have been resolved by instantiate_ty_with_args above
             unreachable!(
-                "unresolved type parameter in lower_type: {}",
+                "ICE: unresolved type parameter in lower_type: {}",
                 ty.format(gcx)
             )
         }
         TyKind::Alias { .. } => {
             // Aliases should be normalized before codegen
-            unreachable!("alias type in codegen: {}", ty.format(gcx))
+            unreachable!("ICE: alias type in codegen: {}", ty.format(gcx))
         }
         TyKind::Infer(_) | TyKind::Error => unreachable!(),
     }

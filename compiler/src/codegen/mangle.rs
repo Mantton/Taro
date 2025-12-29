@@ -5,7 +5,7 @@ use crate::{
         models::{GenericArgument, Ty, TyKind},
         resolve::models::{DefinitionKind, PrimaryType, TypeHead},
     },
-    specialize::Instance,
+    specialize::{Instance, InstanceKind},
 };
 use rustc_hash::FxHashSet;
 use std::collections::hash_map::DefaultHasher;
@@ -51,8 +51,13 @@ fn ty_symbol_with(gcx: GlobalContext, ty: Ty) -> String {
             format!("tuple{}", parts.join("_"))
         }
         TyKind::FnPointer { .. } => "fnptr".into(),
-        TyKind::BoxedExistential { .. } => {
-            todo!("mangling for boxed existentials")
+        TyKind::BoxedExistential { interfaces } => {
+            let mut parts: Vec<String> = Vec::with_capacity(interfaces.len());
+            for iface in interfaces.iter() {
+                let ident = gcx.definition_ident(iface.id);
+                parts.push(sanitize(ident.symbol.as_str()));
+            }
+            format!("any{}", parts.join("_"))
         }
         TyKind::Alias { def_id, .. } => {
             // Use alias definition name
@@ -167,7 +172,12 @@ pub fn mangle(gcx: GlobalContext, id: hir::DefinitionID) -> String {
 
 /// Mangle an Instance (specialized function) to a unique symbol name.
 pub fn mangle_instance(gcx: GlobalContext, instance: Instance) -> String {
-    let def_id = instance.def_id();
+    let def_id = match instance.kind() {
+        InstanceKind::Item(def_id) => def_id,
+        InstanceKind::Virtual(_) => {
+            unreachable!("virtual instances do not have a global symbol")
+        }
+    };
     let base = mangle(gcx, def_id);
     let args = instance.args();
 

@@ -3,7 +3,7 @@ use crate::{
     hir::DefinitionID,
     mir::{Body, Constant, ConstantKind, Operand, Rvalue, StatementKind, TerminatorKind},
     sema::models::{GenericArgument, GenericArguments},
-    specialize::Instance,
+    specialize::{Instance, resolve_instance},
 };
 use rustc_hash::FxHashSet;
 use std::mem;
@@ -58,7 +58,7 @@ impl<'ctx> Collector<'ctx> {
         if let Some(entry_id) = package.entry {
             let generics = self.gcx.generics_of(entry_id);
             if generics.is_empty() {
-                let root = Instance::new(entry_id, &[]);
+                let root = Instance::item(entry_id, &[]);
                 self.worklist.push(root);
             }
         }
@@ -67,7 +67,7 @@ impl<'ctx> Collector<'ctx> {
         for (&def_id, _) in &package.functions {
             let generics = self.gcx.generics_of(def_id);
             if generics.is_empty() {
-                let root = Instance::new(def_id, &[]);
+                let root = Instance::item(def_id, &[]);
                 if !self.items.contains(&root) {
                     self.worklist.push(root);
                 }
@@ -118,9 +118,7 @@ impl<'ctx> Collector<'ctx> {
 
                 // Compute the instantiation key
                 let instance = self.compute_instance(callee_id, concrete_args);
-
-                // Add to worklist if new
-                if !self.items.contains(&instance) {
+                if instance.is_item() && !self.items.contains(&instance) {
                     self.worklist.push(instance);
                 }
             }
@@ -165,7 +163,7 @@ impl<'ctx> Collector<'ctx> {
         call_args: GenericArguments<'ctx>,
     ) -> GenericArguments<'ctx> {
         let parent_args = parent.args();
-        
+
         if parent_args.is_empty() {
             // Parent has no substitutions, call args are already concrete
             call_args
@@ -206,7 +204,6 @@ impl<'ctx> Collector<'ctx> {
         def_id: DefinitionID,
         args: GenericArguments<'ctx>,
     ) -> Instance<'ctx> {
-        // Always use monomorphization (concrete instantiation)
-        Instance::new(def_id, args)
+        resolve_instance(self.gcx, def_id, args)
     }
 }

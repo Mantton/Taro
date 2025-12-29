@@ -181,6 +181,7 @@ pub enum Rvalue<'ctx> {
     Cast {
         operand: Operand<'ctx>,
         ty: Ty<'ctx>,
+        kind: CastKind,
     },
     Ref {
         mutable: bool,
@@ -196,6 +197,13 @@ pub enum Rvalue<'ctx> {
         kind: AggregateKind<'ctx>,
         fields: IndexVec<FieldIndex, Operand<'ctx>>,
     },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum CastKind {
+    Numeric,
+    BoxExistential,
+    ExistentialUpcast,
 }
 
 #[derive(Debug, Clone)]
@@ -356,6 +364,8 @@ impl Category {
             | thir::ExprKind::If { .. }
             | thir::ExprKind::Match { .. }
             | thir::ExprKind::Call { .. }
+            | thir::ExprKind::BoxExistential { .. }
+            | thir::ExprKind::ExistentialUpcast { .. }
             | thir::ExprKind::Block(..)
             | thir::ExprKind::Adt(..) => Category::Rvalue(RvalueFunc::Into),
 

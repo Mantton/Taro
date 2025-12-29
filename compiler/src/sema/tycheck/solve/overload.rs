@@ -1,8 +1,8 @@
 use crate::{
     sema::tycheck::{
         solve::{
-            BindOverloadGoalData, ConstraintSolver, DisjunctionBranch, Obligation, SolverDriver,
-            SolverResult, rank_branches,
+            BindInterfaceMethodGoalData, BindOverloadGoalData, ConstraintSolver,
+            DisjunctionBranch, Obligation, SolverDriver, SolverResult, rank_branches,
         },
         utils::instantiate::instantiate_ty_with_args,
     },
@@ -110,6 +110,35 @@ impl<'ctx> ConstraintSolver<'ctx> {
             Ok(_) => {
                 self.record_overload_source(node_id, source);
                 self.icx.bind_overload(var_ty, source);
+                SolverResult::Solved(vec![])
+            }
+            Err(e) => {
+                let error = Spanned::new(e, location);
+                SolverResult::Error(vec![error])
+            }
+        }
+    }
+
+    pub fn solve_bind_interface_method(
+        &mut self,
+        location: Span,
+        data: BindInterfaceMethodGoalData<'ctx>,
+    ) -> SolverResult<'ctx> {
+        let BindInterfaceMethodGoalData {
+            node_id,
+            var_ty,
+            candidate_ty,
+            call_info,
+            instantiation_args,
+        } = data;
+
+        match self.unify(var_ty, candidate_ty) {
+            Ok(_) => {
+                if let Some(args) = instantiation_args {
+                    self.record_instantiation(node_id, args);
+                }
+                self.record_overload_source(node_id, call_info.method_id);
+                self.record_interface_call(node_id, call_info);
                 SolverResult::Solved(vec![])
             }
             Err(e) => {

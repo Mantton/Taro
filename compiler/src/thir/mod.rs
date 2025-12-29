@@ -1,7 +1,7 @@
 use crate::{
     hir::{DefinitionID, NodeID},
     mir::{BinaryOperator, LogicalOperator, UnaryOperator},
-    sema::models::{AdtDef, EnumVariant, GenericArguments, Ty},
+    sema::models::{AdtDef, EnumVariant, GenericArguments, InterfaceReference, Ty},
     span::{Span, Symbol},
 };
 use index_vec::IndexVec;
@@ -121,6 +121,16 @@ pub enum ExprKind<'a> {
     Call {
         callee: ExprId,
         args: Vec<ExprId>,
+    },
+    /// Box a concrete value into a Swift-style existential container
+    BoxExistential {
+        value: ExprId,
+        interfaces: &'a [InterfaceReference<'a>],
+    },
+    /// Upcast an existential to a subset or superface existential
+    ExistentialUpcast {
+        value: ExprId,
+        to: Ty<'a>,
     },
     /// Block expression
     Block(BlockId),

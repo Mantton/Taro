@@ -298,7 +298,38 @@ impl<'ctx> FunctionLower<'ctx> {
                 }
             }
             Adjustment::BoxExistential { .. } => {
-                todo!("THIR lowering for boxed existentials")
+                let Adjustment::BoxExistential { interfaces, .. } = adjustment else {
+                    unreachable!()
+                };
+                let boxed_ty = Ty::new(
+                    TyKind::BoxedExistential { interfaces },
+                    self.gcx,
+                );
+                let inner_id = self.push_expr(expr.kind, expr.ty, expr.span);
+
+                Expr {
+                    kind: ExprKind::BoxExistential {
+                        value: inner_id,
+                        interfaces,
+                    },
+                    ty: boxed_ty,
+                    span,
+                }
+            }
+            Adjustment::ExistentialUpcast { .. } => {
+                let Adjustment::ExistentialUpcast { to, .. } = adjustment else {
+                    unreachable!()
+                };
+                let inner_id = self.push_expr(expr.kind, expr.ty, expr.span);
+
+                Expr {
+                    kind: ExprKind::ExistentialUpcast {
+                        value: inner_id,
+                        to,
+                    },
+                    ty: to,
+                    span,
+                }
             }
             Adjustment::Ignore(_) => expr,
         }

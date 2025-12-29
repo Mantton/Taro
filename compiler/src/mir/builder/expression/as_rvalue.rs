@@ -1,7 +1,7 @@
 use crate::{
     mir::{
-        AggregateKind, BasicBlockId, BinaryOperator, BlockAnd, BlockAndExtension, Category,
-        Constant, ConstantKind, Operand, Rvalue, RvalueFunc, builder::MirBuilder,
+        AggregateKind, BasicBlockId, BinaryOperator, BlockAnd, BlockAndExtension, CastKind,
+        Category, Constant, ConstantKind, Operand, Rvalue, RvalueFunc, builder::MirBuilder,
     },
     thir::{ExprId, ExprKind, FieldIndex},
     unpack,
@@ -36,6 +36,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 block.and(Rvalue::Cast {
                     operand,
                     ty: expr.ty,
+                    kind: CastKind::Numeric,
                 })
             }
             ExprKind::Make { .. } => unreachable!("make should be handled in into_dest"),
@@ -64,6 +65,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             | ExprKind::Local(..)
             | ExprKind::Logical { .. }
             | ExprKind::Call { .. }
+            | ExprKind::BoxExistential { .. }
+            | ExprKind::ExistentialUpcast { .. }
             | ExprKind::Block(..)
             | ExprKind::Adt(..)
             | ExprKind::Field { .. } => {

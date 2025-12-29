@@ -141,6 +141,9 @@ impl<'ctx> Checker<'ctx> {
                     .borrow_mut()
                     .record_node_adjustments(id, adjustments);
             }
+            for (id, info) in cs.resolved_interface_calls() {
+                self.results.borrow_mut().record_interface_call(id, info);
+            }
             for (id, def_id) in cs.resolved_overload_sources() {
                 self.results.borrow_mut().record_overload_source(id, def_id);
             }
@@ -218,6 +221,9 @@ impl<'ctx> Checker<'ctx> {
                     .borrow_mut()
                     .record_node_adjustments(id, adjustments);
             }
+            for (id, info) in cs.resolved_interface_calls() {
+                self.results.borrow_mut().record_interface_call(id, info);
+            }
             for (id, def_id) in cs.resolved_overload_sources() {
                 self.results.borrow_mut().record_overload_source(id, def_id);
             }
@@ -253,6 +259,9 @@ impl<'ctx> Checker<'ctx> {
             self.results
                 .borrow_mut()
                 .record_node_adjustments(id, adjustments);
+        }
+        for (id, info) in cs.resolved_interface_calls() {
+            self.results.borrow_mut().record_interface_call(id, info);
         }
         for (id, def_id) in cs.resolved_overload_sources() {
             self.results.borrow_mut().record_overload_source(id, def_id);
