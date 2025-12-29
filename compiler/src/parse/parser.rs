@@ -2786,7 +2786,12 @@ impl Parser {
 
     fn parse_match_arm(&mut self) -> R<MatchArm> {
         let lo = self.lo_span();
-        self.expect(Token::Case)?;
+        
+        // Allow `_ => ...` as shorthand for `case _ => ...`
+        let is_wildcard_shorthand = self.matches(Token::Underscore) && self.next_matches(1, Token::EqArrow);
+        if !is_wildcard_shorthand {
+            self.expect(Token::Case)?;
+        }
         let pattern = self.parse_match_arm_pattern()?;
         let guard = if self.eat(Token::If) {
             Some(self.parse_expression()?)
