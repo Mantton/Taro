@@ -891,10 +891,12 @@ impl Parser {
     }
 
     fn parse_mutability(&mut self) -> Mutability {
-        if self.eat(Token::Const) {
+        if self.eat(Token::Mut) {
+            Mutability::Mutable
+        } else if self.eat(Token::Const) {
             Mutability::Immutable
         } else {
-            Mutability::Mutable
+            Mutability::Immutable
         }
     }
 }

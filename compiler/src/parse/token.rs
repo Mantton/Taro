@@ -96,6 +96,7 @@ pub enum Token {
     Let,
     Loop,
     Match,
+    Mut,
     Namespace,
     Nil,
     Operator,
@@ -117,11 +118,9 @@ pub enum Token {
     Override,
     FilePrivate,
     Protected,
-    Get,
-    Set,
     Async,
     Await,
-    Mut,
+    Ref,
     Init,
 }
 

@@ -845,11 +845,10 @@ fn str_to_keyword(word: &str) -> Option<Token> {
         "override" => Token::Override,
         "fileprivate" => Token::FilePrivate,
         "protected" => Token::Protected,
-        "get" => Token::Get,
-        "set" => Token::Set,
         "async" => Token::Async,
         "await" => Token::Await,
         "mut" => Token::Mut,
+        "ref" => Token::Ref,
         _ => return None,
     };
 

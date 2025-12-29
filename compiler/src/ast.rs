@@ -37,8 +37,8 @@ pub enum Mutability {
 impl Mutability {
     pub fn display_str(self) -> &'static str {
         match self {
-            Mutability::Mutable => "",
-            Mutability::Immutable => "const ",
+            Mutability::Mutable => "mut ",
+            Mutability::Immutable => "",
         }
     }
 }
