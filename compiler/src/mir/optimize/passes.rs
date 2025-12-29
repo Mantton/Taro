@@ -56,8 +56,19 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
             let mut lowered: Vec<Statement> = Vec::with_capacity(statements.len());
 
             for stmt in statements {
+                let span = stmt.span;
                 match stmt.kind {
                     StatementKind::Assign(dest, Rvalue::Aggregate { kind, fields }) => {
+                        if matches!(kind, crate::mir::AggregateKind::Array { .. }) {
+                            lowered.push(Statement {
+                                kind: StatementKind::Assign(
+                                    dest,
+                                    Rvalue::Aggregate { kind, fields },
+                                ),
+                                span,
+                            });
+                            continue;
+                        }
                         // Materialize operands into temps to preserve evaluation order.
                         let field_ops: Vec<(FieldIndex, Operand)> =
                             fields.into_iter_enumerated().collect();
@@ -74,7 +85,7 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                 ty: *ty,
                                 kind: LocalKind::Temp,
                                 name: None,
-                                span: stmt.span,
+                                span,
                             });
                             body.escape_locals.push(false);
                             lowered.push(Statement {
@@ -82,7 +93,7 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                     Place::from_local(temp_local),
                                     Rvalue::Use(operand.clone()),
                                 ),
-                                span: stmt.span,
+                                span,
                             });
                             temps.push((temp_local, *idx));
                         }
@@ -110,10 +121,29 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                                 temp_local,
                                             ))),
                                         ),
-                                        span: stmt.span,
+                                        span,
                                     });
                                 }
                             }
+                            crate::mir::AggregateKind::Array { element, .. } => {
+                                for (temp_local, idx) in temps.into_iter() {
+                                    let mut proj = dest.projection.clone();
+                                    proj.push(PlaceElem::Field(idx, element));
+                                    let place = Place {
+                                        local: dest.local,
+                                        projection: proj,
+                                    };
+                                    lowered.push(Statement {
+                                        kind: StatementKind::Assign(
+                                        place,
+                                        Rvalue::Use(Operand::Move(Place::from_local(
+                                            temp_local,
+                                        ))),
+                                    ),
+                                    span,
+                                });
+                            }
+                        }
                             crate::mir::AggregateKind::Adt {
                                 def_id,
                                 variant_index,
@@ -137,15 +167,15 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                             };
                                             lowered.push(Statement {
                                                 kind: StatementKind::Assign(
-                                                    place,
-                                                    Rvalue::Use(Operand::Move(Place::from_local(
-                                                        temp_local,
-                                                    ))),
-                                                ),
-                                                span: stmt.span,
-                                            });
-                                        }
-                                    }
+                                            place,
+                                            Rvalue::Use(Operand::Move(Place::from_local(
+                                                temp_local,
+                                            ))),
+                                        ),
+                                        span,
+                                    });
+                                }
+                            }
                                     DefinitionKind::Enum => {
                                         let Some(variant_index) = variant_index else {
                                             unreachable!();
@@ -159,7 +189,7 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                                 place: dest.clone(),
                                                 variant_index,
                                             },
-                                            span: stmt.span,
+                                            span,
                                         });
 
                                         for ((temp_local, idx), (_, _, ty)) in
@@ -182,7 +212,7 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                                         temp_local,
                                                     ))),
                                                 ),
-                                                span: stmt.span,
+                                                span,
                                             });
                                         }
                                     }
@@ -564,6 +594,9 @@ fn rewrite_rvalue<'ctx>(
             for field in fields.iter_mut() {
                 rewrite_operand(field, heapified, param_replacements);
             }
+        }
+        Rvalue::Repeat { operand, .. } => {
+            rewrite_operand(operand, heapified, param_replacements);
         }
         Rvalue::Alloc { .. } => {}
     }

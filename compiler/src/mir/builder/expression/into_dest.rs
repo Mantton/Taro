@@ -230,6 +230,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 block.unit()
             }
             ExprKind::Tuple { .. }
+            | ExprKind::Array { .. }
+            | ExprKind::Repeat { .. }
             | ExprKind::Literal(..)
             | ExprKind::Unary { .. }
             | ExprKind::Binary { .. }

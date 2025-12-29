@@ -6,8 +6,8 @@ use crate::{
     mir::{self, Operand, Place},
     sema::{
         models::{
-            FloatTy, GenericArgument, GenericArguments, IntTy, InterfaceDefinition,
-            InterfaceReference, InterfaceRequirements, Ty, TyKind, UIntTy,
+            ConstKind, ConstValue, FloatTy, GenericArgument, GenericArguments, IntTy,
+            InterfaceDefinition, InterfaceReference, InterfaceRequirements, Ty, TyKind, UIntTy,
         },
         resolve::models::TypeHead,
         tycheck::resolve_conformance_witness,
@@ -884,7 +884,53 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     .unwrap();
                 Some(discr_val.as_basic_value_enum())
             }
-            mir::Rvalue::Aggregate { .. } => unreachable!("aggregates should be lowered in MIR"),
+            mir::Rvalue::Aggregate { kind, fields } => match kind {
+                mir::AggregateKind::Array { .. } => {
+                    let llvm_ty = self
+                        .lower_ty(dest_ty)
+                        .expect("array aggregate destination type");
+                    let arr_ty = llvm_ty.into_array_type();
+                    let mut agg = arr_ty.get_undef();
+                    for (idx, field) in fields.iter_enumerated() {
+                        let Some(val) = self.eval_operand(body, locals, field)? else {
+                            return Ok(None);
+                        };
+                        let insert_idx =
+                            u32::try_from(idx.index()).expect("array element index fits in u32");
+                        let insert = self
+                            .builder
+                            .build_insert_value(agg, val, insert_idx, "array_ins")
+                            .unwrap();
+                        agg = insert.into_array_value();
+                    }
+                    Some(agg.as_basic_value_enum())
+                }
+                _ => unreachable!("non-array aggregates should be lowered in MIR"),
+            },
+            mir::Rvalue::Repeat { operand, count, .. } => {
+                let arr_ty = match self.lower_ty(dest_ty) {
+                    Some(ty) => ty.into_array_type(),
+                    None => return Ok(None),
+                };
+                let Some(val) = self.eval_operand(body, locals, operand)? else {
+                    return Ok(None);
+                };
+                // Build the array by inserting the repeated value at each index.
+                // For small arrays, LLVM optimizes this well. For very large arrays,
+                // a memory-based approach with memset/loop could be more efficient,
+                // but would require restructuring the rvalue lowering to store directly.
+                let mut agg = arr_ty.get_undef();
+                for i in 0..*count {
+                    let insert_idx =
+                        u32::try_from(i).expect("repeat count should fit in u32 for LLVM array");
+                    let insert = self
+                        .builder
+                        .build_insert_value(agg, val, insert_idx, "repeat_ins")
+                        .unwrap();
+                    agg = insert.into_array_value();
+                }
+                Some(agg.as_basic_value_enum())
+            }
             mir::Rvalue::Alloc { ty: alloc_ty } => {
                 let llvm_payload_ty = self.lower_ty(*alloc_ty).expect("alloc type");
                 let size = self.target_data.get_store_size(&llvm_payload_ty);
@@ -2398,19 +2444,34 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 mir::PlaceElem::Field(idx, field_ty) => {
                     // Compute pointer to the requested field.
                     let agg_ty = self.lower_ty(ty).expect("aggregate type lowered");
-                    let struct_ty = match agg_ty {
-                        BasicTypeEnum::StructType(st) => st,
-                        _ => panic!(
-                            "field projection on non-struct type {}",
-                            ty.format(self.gcx)
-                        ),
-                    };
+                    match agg_ty {
+                        BasicTypeEnum::StructType(st) => {
+                            let gep = self
+                                .builder
+                                .build_struct_gep(st, ptr, idx.index() as u32, "field_ptr")
+                                .unwrap();
+                            ptr = gep;
+                        }
+                        BasicTypeEnum::ArrayType(arr_ty) => {
+                            let zero = self.usize_ty.const_zero();
+                            let idx_val = self
+                                .usize_ty
+                                .const_int(idx.index() as u64, false);
+                            let gep = unsafe {
+                                self.builder
+                                    .build_gep(arr_ty, ptr, &[zero, idx_val], "array_elem_ptr")
+                                    .unwrap()
+                            };
+                            ptr = gep;
+                        }
+                        _ => {
+                            panic!(
+                                "field projection on non-aggregate type {}",
+                                ty.format(self.gcx)
+                            )
+                        }
+                    }
 
-                    let gep = self
-                        .builder
-                        .build_struct_gep(struct_ty, ptr, idx.index() as u32, "field_ptr")
-                        .unwrap();
-                    ptr = gep;
                     ptr_is_storage = true;
                     ty = *field_ty;
                 }
@@ -2641,6 +2702,19 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                             self.target_data.offset_of_element(&struct_ty, idx as u32)
                         {
                             offsets.push(off);
+                        }
+                    }
+                }
+            }
+            TyKind::Array { element, len } => {
+                if !is_pointer_ty(element) {
+                    // Only track direct pointer-like elements for now.
+                } else if let ConstKind::Value(ConstValue::Integer(n)) = len.kind {
+                    if n > 0 {
+                        let elem_ty = self.lower_ty(element).expect("array element type");
+                        let elem_size = self.target_data.get_store_size(&elem_ty);
+                        for i in 0..(n as u64) {
+                            offsets.push(i * elem_size);
                         }
                     }
                 }
@@ -2895,6 +2969,18 @@ fn lower_type<'llvm, 'gcx>(
                 .ptr_type(AddressSpace::default())
                 .as_basic_type_enum(),
         ),
+        TyKind::Array { element, len } => {
+            let Some(elem_ty) = lower_type(context, gcx, target_data, element, subst) else {
+                return None;
+            };
+            let count = match len.kind {
+                ConstKind::Value(ConstValue::Integer(i)) if i >= 0 => {
+                    usize::try_from(i).ok()?
+                }
+                _ => return None,
+            };
+            Some(elem_ty.array_type(count as u32).into())
+        }
         TyKind::Int(i) => Some(int_from_kind(context, target_data, i).into()),
         TyKind::UInt(u) => Some(uint_from_kind(context, target_data, u).into()),
         TyKind::Float(f) => Some(match f {

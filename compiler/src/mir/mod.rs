@@ -197,6 +197,12 @@ pub enum Rvalue<'ctx> {
         kind: AggregateKind<'ctx>,
         fields: IndexVec<FieldIndex, Operand<'ctx>>,
     },
+    /// Repeat the same operand `count` times into an array.
+    Repeat {
+        operand: Operand<'ctx>,
+        count: usize,
+        element: Ty<'ctx>,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -213,6 +219,10 @@ pub enum AggregateKind<'ctx> {
         def_id: DefinitionID,
         variant_index: Option<VariantIndex>,
         generic_args: GenericArguments<'ctx>,
+    },
+    Array {
+        len: usize,
+        element: Ty<'ctx>,
     },
 }
 
@@ -376,6 +386,8 @@ impl Category {
             | thir::ExprKind::Unary { .. }
             | thir::ExprKind::Cast { .. }
             | thir::ExprKind::Tuple { .. }
+            | thir::ExprKind::Array { .. }
+            | thir::ExprKind::Repeat { .. }
             | thir::ExprKind::Make { .. } => Category::Rvalue(RvalueFunc::AsRvalue),
 
             thir::ExprKind::Literal(..) | thir::ExprKind::Zst { .. } => Category::Constant,

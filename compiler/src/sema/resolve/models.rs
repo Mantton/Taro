@@ -1,7 +1,7 @@
 use crate::{
     ast::{self, Identifier, NodeID},
     diagnostics::{Diagnostic, DiagnosticLevel},
-    hir::FoundationDecl,
+    hir::StdType,
     sema::models::{FloatTy, IntTy, UIntTy},
     span::{FileID, Span, Symbol},
     utils::intern::Interned,
@@ -212,7 +212,7 @@ pub enum Resolution<LocalNode = ast::NodeID> {
     FunctionSet(Vec<DefinitionID>),
     LocalVariable(LocalNode),
     SelfConstructor(DefinitionID),
-    Foundation(FoundationDecl),
+    Foundation(StdType),
     Error,
 }
 
@@ -227,7 +227,7 @@ impl<LocalNode> Resolution<LocalNode> {
             Resolution::PrimaryType(_) => "primary type",
             Resolution::SelfConstructor(_) => "self constructor",
             Resolution::Error => "error",
-            Resolution::Foundation(_) => "foundation declaration",
+            Resolution::Foundation(_) => "std type",
         }
     }
 

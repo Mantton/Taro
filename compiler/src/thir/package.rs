@@ -343,6 +343,39 @@ impl<'ctx> FunctionLower<'ctx> {
                 let value = self.lower_literal(lit);
                 ExprKind::Literal(Constant { ty, value })
             }
+            hir::ExpressionKind::Array(items) => {
+                let elements: Vec<_> = items.iter().map(|e| self.lower_expr(e)).collect();
+                ExprKind::Array { elements }
+            }
+            hir::ExpressionKind::Repeat { value, count: _ } => {
+                let element = self.lower_expr(value);
+                let count = match ty.kind() {
+                    TyKind::Array { len, .. } => match len.kind {
+                        ConstKind::Value(ConstValue::Integer(i)) => {
+                            debug_assert!(
+                                i >= 0,
+                                "repeat count should be validated during typechecking"
+                            );
+                            usize::try_from(i).unwrap_or(0)
+                        }
+                        _ => {
+                            debug_assert!(
+                                false,
+                                "repeat count should be a concrete integer const after typechecking"
+                            );
+                            0
+                        }
+                    },
+                    _ => {
+                        debug_assert!(
+                            false,
+                            "repeat expressions should typecheck to array types before THIR lowering"
+                        );
+                        0
+                    }
+                };
+                ExprKind::Repeat { element, count }
+            }
             hir::ExpressionKind::Path(path) => {
                 let res = if let Some(def_id) = self.results.overload_source(expr.id) {
                     Resolution::Definition(def_id, self.gcx.definition_kind(def_id))
@@ -368,7 +401,7 @@ impl<'ctx> FunctionLower<'ctx> {
                 if let hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) = &callee.kind
                     && matches!(
                         path.resolution,
-                        hir::Resolution::Foundation(hir::FoundationDecl::Make)
+                        hir::Resolution::Foundation(hir::StdType::Make)
                     )
                 {
                     if arguments.len() != 1 {

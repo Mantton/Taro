@@ -1,7 +1,7 @@
 use crate::{
     mir::{
         AggregateKind, BasicBlockId, BinaryOperator, BlockAnd, BlockAndExtension, CastKind,
-        Category, Constant, ConstantKind, Operand, Rvalue, RvalueFunc, builder::MirBuilder,
+        Category, Constant, ConstantKind, Operand, Place, Rvalue, RvalueFunc, builder::MirBuilder,
     },
     thir::{ExprId, ExprKind, FieldIndex},
     unpack,
@@ -56,6 +56,54 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 block.and(Rvalue::Aggregate {
                     kind: AggregateKind::Tuple,
                     fields,
+                })
+            }
+            ExprKind::Array { elements } => {
+                let mut ops = Vec::with_capacity(elements.len());
+                for elem in elements.iter() {
+                    let op = unpack!(block = self.as_operand(block, *elem));
+                    ops.push(op);
+                }
+                let fields: index_vec::IndexVec<FieldIndex, Operand<'ctx>> =
+                    index_vec::IndexVec::from_vec(ops);
+                let element_ty = match expr.ty.kind() {
+                    crate::sema::models::TyKind::Array { element, .. } => element,
+                    _ => expr.ty,
+                };
+                block.and(Rvalue::Aggregate {
+                    kind: AggregateKind::Array {
+                        len: elements.len(),
+                        element: element_ty,
+                    },
+                    fields,
+                })
+            }
+            ExprKind::Repeat { element, count } => {
+                let element_ty = match expr.ty.kind() {
+                    crate::sema::models::TyKind::Array { element, .. } => element,
+                    _ => {
+                        debug_assert!(
+                            false,
+                            "repeat expressions should only be used with array types"
+                        );
+                        expr.ty
+                    }
+                };
+                let op = unpack!(block = self.as_operand(block, *element));
+
+                // Store once then copy for each slot to avoid multiple moves.
+                let tmp = self.new_temp_with_ty(element_ty, expr.span);
+                self.push_assign(
+                    block,
+                    Place::from_local(tmp),
+                    Rvalue::Use(op),
+                    expr.span,
+                );
+                let tmp_op = Operand::Copy(Place::from_local(tmp));
+                block.and(Rvalue::Repeat {
+                    operand: tmp_op,
+                    count: *count,
+                    element: element_ty,
                 })
             }
             ExprKind::If { .. }

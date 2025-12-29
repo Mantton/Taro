@@ -310,6 +310,35 @@ impl<'arena> GlobalContext<'arena> {
         *output.definition_to_kind.get(&id).expect("definition kind")
     }
 
+    pub fn std_package_index(self) -> Option<PackageIndex> {
+        self.context
+            .store
+            .package_idents
+            .borrow()
+            .iter()
+            .find_map(|(idx, ident)| (ident.as_str() == STD_PREFIX).then_some(*idx))
+    }
+
+    pub fn find_std_type(self, name: &str) -> Option<DefinitionID> {
+        let pkg = self.std_package_index()?;
+        let output = self.resolution_output(pkg);
+        output.definition_to_ident.iter().find_map(|(id, ident)| {
+            let kind = output.definition_to_kind.get(id)?;
+            if matches!(
+                kind,
+                DefinitionKind::Interface
+                    | DefinitionKind::Struct
+                    | DefinitionKind::Enum
+                    | DefinitionKind::TypeAlias
+            ) && ident.symbol.as_str() == name
+            {
+                Some(*id)
+            } else {
+                None
+            }
+        })
+    }
+
     pub fn definition_visibility(self, id: DefinitionID) -> Visibility {
         let output = self.resolution_output(id.package());
         output

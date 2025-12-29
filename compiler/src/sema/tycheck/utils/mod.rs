@@ -37,6 +37,7 @@ pub fn type_head_from_value_ty(ty: Ty<'_>) -> Option<TypeHead> {
         TyKind::Float(k) => Some(TypeHead::Primary(
             crate::sema::resolve::models::PrimaryType::Float(k),
         )),
+        TyKind::Array { .. } => Some(TypeHead::Array),
         TyKind::Adt(def, _) => Some(TypeHead::Nominal(def.id)),
         TyKind::Reference(_, mutbl) => Some(TypeHead::Reference(mutbl)),
         TyKind::Pointer(_, mutbl) => Some(TypeHead::Pointer(mutbl)),

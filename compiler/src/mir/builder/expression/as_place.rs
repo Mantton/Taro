@@ -62,6 +62,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             | ExprKind::ExistentialUpcast { .. }
             | ExprKind::Block { .. }
             | ExprKind::Tuple { .. }
+            | ExprKind::Array { .. }
+            | ExprKind::Repeat { .. }
             | ExprKind::Adt { .. }
             | ExprKind::Zst { .. } => {
                 let temp = unpack!(block = self.as_temp(block, expr_id));

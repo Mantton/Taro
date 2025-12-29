@@ -2543,6 +2543,19 @@ impl Parser {
 }
 
 impl Parser {
+    /// Parses a collection literal expression.
+    ///
+    /// Syntax:
+    /// - `[]` → empty array
+    /// - `[:]` → empty dictionary  
+    /// - `[a, b, c]` → array with elements
+    /// - `[a: b, c: d]` → dictionary with key-value pairs
+    /// - `[expr; count]` → repeat expression (array of `count` copies of `expr`)
+    ///
+    /// The parser determines array vs dictionary by looking at the first element:
+    /// - If followed by `:`, it's a dictionary
+    /// - If followed by `;`, it's a repeat expression
+    /// - Otherwise, it's an array
     fn parse_collection_expr(&mut self) -> R<Box<Expression>> {
         let lo = self.lo_span();
         self.expect(Token::LBracket)?;
@@ -2571,48 +2584,56 @@ impl Parser {
         enum SS {
             Dict,
             Array,
-            Infer,
         }
 
-        let mut state = SS::Infer;
+        // Parse first element
+        let first_expr = self.parse_expression()?;
 
-        let mut parser = |p: &mut Parser| -> R<()> {
-            let k = p.parse_expression()?;
+        // Repeat expression: [expr; count]
+        if self.eat(Token::Semicolon) {
+            let count = self.parse_anon_const()?;
+            self.expect(Token::RBracket)?;
+            let kind = ExpressionKind::Repeat {
+                value: first_expr,
+                count,
+            };
+            let expr = self.build_expr(kind, lo.to(self.hi_span()));
+            return Ok(expr);
+        }
 
-            // check if sequence is denoted as a map
-            let mut did_change = false;
-            if state == SS::Infer {
-                did_change = true;
-                state = if p.eat(Token::Colon) {
-                    SS::Dict
-                } else {
-                    SS::Array
-                };
-            }
-
-            // is an array
-            if state == SS::Array {
-                array_elements.push(k);
-                return Ok(());
-            }
-
-            // is a dictionary
-            if !did_change {
-                p.expect(Token::Colon)?;
-            }
-
-            let v = p.parse_expression()?;
-            let pair = MapPair { key: k, value: v };
-            map_pairs.push(pair);
-            return Ok(());
+        // Dictionary vs array detection based on colon
+        let state = if self.eat(Token::Colon) {
+            let value = self.parse_expression()?;
+            map_pairs.push(MapPair {
+                key: first_expr,
+                value,
+            });
+            SS::Dict
+        } else {
+            array_elements.push(first_expr);
+            SS::Array
         };
 
-        let _ = self.parse_sequence_until(&[Token::RBracket], Token::Comma, |p| parser(p))?;
+        // If there's a comma after the first element, parse remaining elements
+        if self.eat(Token::Comma) && !self.matches(Token::RBracket) {
+            let mut parser = |p: &mut Parser| -> R<()> {
+                let k = p.parse_expression()?;
 
-        if self.matches(Token::Semicolon) {
-            return Err(self.err_at_current(ParserError::UnexpectedSemicolonInList {
-                context: "collection literal - add a trailing comma before the newline",
-            }));
+                match state {
+                    SS::Array => {
+                        array_elements.push(k);
+                    }
+                    SS::Dict => {
+                        p.expect(Token::Colon)?;
+                        let v = p.parse_expression()?;
+                        let pair = MapPair { key: k, value: v };
+                        map_pairs.push(pair);
+                    }
+                }
+                Ok(())
+            };
+
+            let _ = self.parse_sequence_until(&[Token::RBracket], Token::Comma, |p| parser(p))?;
         }
 
         self.expect(Token::RBracket)?;
@@ -2620,12 +2641,6 @@ impl Parser {
         let kind = match state {
             SS::Dict => ExpressionKind::DictionaryLiteral(map_pairs),
             SS::Array => ExpressionKind::Array(array_elements),
-            SS::Infer => {
-                return Err(Spanned::new(
-                    ParserError::UnableToDeduceArrayOrDictionarySequence,
-                    lo.to(self.hi_span()),
-                ));
-            }
         };
 
         let expr = self.build_expr(kind, lo.to(self.hi_span()));
@@ -3396,7 +3411,6 @@ enum ParserError {
     DisallowedWildcardExpression,
     DisallowedBindingCondition,
     DisallowedLabel,
-    UnableToDeduceArrayOrDictionarySequence,
     FunctionBodyRequired,
     UnknownBinaryOperator,
     UnknownOperator,
@@ -3441,9 +3455,6 @@ impl Display for ParserError {
             DisallowedWildcardExpression => f.write_str("disallowed wildcard expression"),
             DisallowedBindingCondition => f.write_str("disallowed binding condition"),
             DisallowedLabel => f.write_str("disallowed label"),
-            UnableToDeduceArrayOrDictionarySequence => {
-                f.write_str("unable to deduce whether sequence is an array or a dictionary")
-            }
             FunctionBodyRequired => f.write_str("function body required"),
             UnknownBinaryOperator => f.write_str("unknown binary operator"),
             UnknownOperator => f.write_str("unknown operator"),

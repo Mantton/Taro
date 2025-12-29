@@ -2,7 +2,7 @@ use crate::{
     compile::context::GlobalContext,
     hir,
     sema::{
-        models::{GenericArgument, Ty, TyKind},
+        models::{ConstKind, ConstValue, GenericArgument, Ty, TyKind},
         resolve::models::{DefinitionKind, PrimaryType, TypeHead},
     },
     specialize::{Instance, InstanceKind},
@@ -42,6 +42,15 @@ fn ty_symbol_with(gcx: GlobalContext, ty: Ty) -> String {
             let ident = gcx.definition_ident(def.id);
             let name = ident.symbol.as_str();
             sanitize(name)
+        }
+        TyKind::Array { element, len } => {
+            let elem = ty_symbol_with(gcx, element);
+            let len_str = match len.kind {
+                ConstKind::Value(ConstValue::Integer(i)) => format!("{i}"),
+                ConstKind::Param(p) => sanitize(p.name.as_str()),
+                _ => "c".into(),
+            };
+            format!("array{}_{}", elem, len_str)
         }
         TyKind::Tuple(items) => {
             let parts: Vec<_> = items

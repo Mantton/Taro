@@ -175,6 +175,9 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
             Rvalue::Aggregate { kind, fields } => {
                 match kind {
                     super::AggregateKind::Tuple => write!(f, "tuple")?,
+                    super::AggregateKind::Array { len, .. } => {
+                        write!(f, "array[{len}]")?
+                    }
                     super::AggregateKind::Adt {
                         def_id,
                         variant_index,
@@ -202,6 +205,10 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                     self.write_operand(field, f)?;
                 }
                 write!(f, " }}")
+            }
+            Rvalue::Repeat { operand, count, .. } => {
+                write!(f, "repeat {} x ", count)?;
+                self.write_operand(operand, f)
             }
         }
     }

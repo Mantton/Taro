@@ -2,7 +2,7 @@ use crate::{
     ast::{self, Identifier},
     compile::context::GlobalContext,
     error::CompileResult,
-    hir::{self, FoundationDecl},
+    hir::{self, StdType},
     sema::resolve::models::{
         ExpressionResolutionState, Resolution, ResolutionOutput, ResolutionState,
     },
@@ -611,7 +611,7 @@ impl Actor<'_, '_> {
             ast::TypeKind::Optional(element) => {
                 let path = hir::Path {
                     span: node.span,
-                    resolution: Resolution::Foundation(hir::FoundationDecl::Option),
+                    resolution: Resolution::Foundation(hir::StdType::Option),
                     segments: vec![hir::PathSegment {
                         id: self.next_index(),
                         identifier: Identifier::new(Symbol::new("Option"), node.span),
@@ -620,7 +620,7 @@ impl Actor<'_, '_> {
                             arguments: vec![hir::TypeArgument::Type(self.lower_type(element))],
                         }),
                         span: node.span,
-                        resolution: Resolution::Foundation(hir::FoundationDecl::Option),
+                        resolution: Resolution::Foundation(hir::StdType::Option),
                     }],
                 };
 
@@ -630,7 +630,7 @@ impl Actor<'_, '_> {
             ast::TypeKind::List(element) => {
                 let path = hir::Path {
                     span: node.span,
-                    resolution: Resolution::Foundation(hir::FoundationDecl::List),
+                    resolution: Resolution::Foundation(hir::StdType::List),
                     segments: vec![hir::PathSegment {
                         id: self.next_index(),
                         identifier: Identifier::new(Symbol::new("List"), node.span),
@@ -639,7 +639,7 @@ impl Actor<'_, '_> {
                             arguments: vec![hir::TypeArgument::Type(self.lower_type(element))],
                         }),
                         span: node.span,
-                        resolution: Resolution::Foundation(hir::FoundationDecl::List),
+                        resolution: Resolution::Foundation(hir::StdType::List),
                     }],
                 };
 
@@ -649,7 +649,7 @@ impl Actor<'_, '_> {
             ast::TypeKind::Dictionary { key, value } => {
                 let path = hir::Path {
                     span: node.span,
-                    resolution: Resolution::Foundation(hir::FoundationDecl::Dictionary),
+                    resolution: Resolution::Foundation(hir::StdType::Dictionary),
                     segments: vec![hir::PathSegment {
                         id: self.next_index(),
                         identifier: Identifier::new(Symbol::new("Dictionary"), node.span),
@@ -661,7 +661,7 @@ impl Actor<'_, '_> {
                             ],
                         }),
                         span: node.span,
-                        resolution: Resolution::Foundation(hir::FoundationDecl::Dictionary),
+                        resolution: Resolution::Foundation(hir::StdType::Dictionary),
                     }],
                 };
 
@@ -934,6 +934,10 @@ impl Actor<'_, '_> {
                     .map(|expr| self.lower_expression(expr))
                     .collect(),
             ),
+            ast::ExpressionKind::Repeat { value, count } => hir::ExpressionKind::Repeat {
+                value: self.lower_expression(value),
+                count: self.lower_anon_const(count),
+            },
             ast::ExpressionKind::Tuple(nodes) => hir::ExpressionKind::Tuple(
                 nodes
                     .into_iter()
@@ -1052,9 +1056,9 @@ impl Actor<'_, '_> {
             ast::ExpressionKind::Range(lhs, rhs, inclusive) => {
                 // `1..10`
                 let foundational = if inclusive {
-                    FoundationDecl::ClosedRange
+                    StdType::ClosedRange
                 } else {
-                    FoundationDecl::Range
+                    StdType::Range
                 };
 
                 let lhs = self.lower_expression(lhs);
@@ -1090,7 +1094,7 @@ impl Actor<'_, '_> {
                 let ctor_ident = Identifier::new(Symbol::new("Dictionary"), node.span);
                 let ctor_path = self.mk_single_segment_resolved_path(
                     ctor_ident,
-                    Resolution::Foundation(hir::FoundationDecl::Dictionary),
+                    Resolution::Foundation(hir::StdType::Dictionary),
                 );
                 let ctor = self.mk_expression(hir::ExpressionKind::Path(ctor_path), node.span);
                 let initializer = self.mk_expression(

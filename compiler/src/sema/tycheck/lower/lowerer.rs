@@ -60,7 +60,11 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                     gcx,
                 )
             }
-            hir::TypeKind::Array { .. } => todo!(),
+            hir::TypeKind::Array { size, element } => {
+                let element = self.lower_type(element);
+                let len = self.lower_array_length(size);
+                Ty::new(TyKind::Array { element, len }, gcx)
+            }
             hir::TypeKind::Function { .. } => todo!(),
             hir::TypeKind::BoxedExistential { interfaces } => {
                 let self_ty = gcx.types.self_type_parameter;
@@ -95,6 +99,10 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 PrimaryType::String => gcx.types.string,
                 PrimaryType::Bool => gcx.types.bool,
                 PrimaryType::Rune => gcx.types.rune,
+            },
+            Resolution::Foundation(decl) => match self.lower_foundation_type(path, decl) {
+                Some(ty) => ty,
+                None => gcx.types.error,
             },
             Resolution::Definition(id, DefinitionKind::TypeParameter) => {
                 // TODO: Prohibit Generics
@@ -167,7 +175,6 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 // Inside an interface, `Self` refers to the abstract Self type parameter
                 gcx.types.self_type_parameter
             }
-            Resolution::Foundation(..) => todo!(),
             Resolution::Error => gcx.types.error,
             Resolution::SelfConstructor(..)
             | Resolution::FunctionSet(..)
@@ -222,19 +229,29 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 }
                 (Some(&arg), Some(&param)) => {
                     let lowered = match (&param.kind, arg) {
-                        (GenericParameterDefinitionKind::Type { .. }, hir::TypeArgument::Type(ty)) => {
-                            GenericArgument::Type(self.lower_type(ty))
-                        }
-                        (GenericParameterDefinitionKind::Const { ty, .. }, hir::TypeArgument::Const(c)) => {
+                        (
+                            GenericParameterDefinitionKind::Type { .. },
+                            hir::TypeArgument::Type(ty),
+                        ) => GenericArgument::Type(self.lower_type(ty)),
+                        (
+                            GenericParameterDefinitionKind::Const { ty, .. },
+                            hir::TypeArgument::Const(c),
+                        ) => {
                             let expected_ty = self.lower_type(ty);
                             GenericArgument::Const(self.lower_const_argument(expected_ty, c))
                         }
-                        (GenericParameterDefinitionKind::Type { .. }, hir::TypeArgument::Const(c)) => {
+                        (
+                            GenericParameterDefinitionKind::Type { .. },
+                            hir::TypeArgument::Const(c),
+                        ) => {
                             gcx.dcx()
                                 .emit_error("expected type argument".into(), Some(c.value.span));
                             GenericArgument::Type(gcx.types.error)
                         }
-                        (GenericParameterDefinitionKind::Const { .. }, hir::TypeArgument::Type(ty)) => {
+                        (
+                            GenericParameterDefinitionKind::Const { .. },
+                            hir::TypeArgument::Type(ty),
+                        ) => {
                             gcx.dcx()
                                 .emit_error("expected const argument".into(), Some(ty.span));
                             GenericArgument::Const(self.error_const())
@@ -267,10 +284,8 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                                 let konst = self.lower_const_argument(expected_ty, default);
                                 output.push(GenericArgument::Const(konst));
                             } else {
-                                gcx.dcx().emit_error(
-                                    "missing const argument".into(),
-                                    Some(span),
-                                );
+                                gcx.dcx()
+                                    .emit_error("missing const argument".into(), Some(span));
                                 output.push(GenericArgument::Const(self.error_const()));
                             }
                         }
@@ -493,6 +508,102 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         gcx.cache_alias_type(alias_id, lowered);
 
         lowered
+    }
+
+    pub fn lower_array_length(&self, anon: &hir::AnonConst) -> Const<'ctx> {
+        if let Some(param) = self.lower_const_parameter(anon) {
+            return param;
+        }
+
+        let gcx = self.gcx();
+        let Some(value) = eval_const_expression(gcx, &anon.value) else {
+            return self.error_const();
+        };
+
+        let len = match value {
+            ConstValue::Integer(i) if i >= 0 => i,
+            ConstValue::Integer(_) => {
+                gcx.dcx().emit_error(
+                    "array length must be non-negative".into(),
+                    Some(anon.value.span),
+                );
+                return self.error_const();
+            }
+            _ => {
+                gcx.dcx().emit_error(
+                    "array length must be an integer constant".into(),
+                    Some(anon.value.span),
+                );
+                return self.error_const();
+            }
+        };
+
+        Const {
+            ty: gcx.types.uint,
+            kind: ConstKind::Value(ConstValue::Integer(len)),
+        }
+    }
+
+    fn lower_const_parameter(&self, anon: &hir::AnonConst) -> Option<Const<'ctx>> {
+        let hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) = &anon.value.kind else {
+            return None;
+        };
+
+        let hir::Resolution::Definition(
+            param_id,
+            crate::sema::resolve::models::DefinitionKind::ConstParameter,
+        ) = path.resolution
+        else {
+            return None;
+        };
+
+        let gcx = self.gcx();
+        let owner = gcx.definition_parent(param_id)?;
+        let generics = gcx.generics_of(owner);
+        let def = generics.parameters.iter().find(|p| p.id == param_id)?;
+
+        let ty = match &def.kind {
+            GenericParameterDefinitionKind::Const { ty, .. } => self.lower_type(ty),
+            _ => return None,
+        };
+
+        let param = GenericParameter {
+            index: def.index,
+            name: def.name,
+        };
+
+        Some(Const {
+            ty,
+            kind: ConstKind::Param(param),
+        })
+    }
+
+    fn lower_foundation_type(&self, path: &hir::Path, decl: hir::StdType) -> Option<Ty<'ctx>> {
+        let gcx = self.gcx();
+        let name = match decl {
+            hir::StdType::Option => "Option",
+            hir::StdType::List => "List",
+            hir::StdType::Set => "Set",
+            hir::StdType::Dictionary => "Dictionary",
+            hir::StdType::Range => "Range",
+            hir::StdType::ClosedRange => "ClosedRange",
+            hir::StdType::Make => return None,
+        };
+
+        let def_id = match gcx.find_std_type(name) {
+            Some(id) => id,
+            None => {
+                gcx.dcx().emit_error(
+                    format!("unable to resolve std type '{name}'"),
+                    Some(path.span),
+                );
+                return None;
+            }
+        };
+        let segment = path.segments.last().unwrap();
+        let args = self.lower_type_arguments(def_id, segment);
+
+        Some(instantiate_ty_with_args(gcx, gcx.get_type(def_id), args))
     }
 }
 

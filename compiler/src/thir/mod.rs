@@ -97,6 +97,15 @@ pub enum ExprKind<'a> {
     },
     /// Literal constant
     Literal(Constant<'a>),
+    /// Array literal
+    Array {
+        elements: Vec<ExprId>,
+    },
+    /// Repeat literal `[expr; len]`
+    Repeat {
+        element: ExprId,
+        count: usize,
+    },
     /// Unary op
     Unary {
         op: UnaryOperator,

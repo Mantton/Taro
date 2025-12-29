@@ -2,10 +2,11 @@ use crate::{
     compile::context::Gcx,
     hir::{self, DefinitionID, NodeID},
     sema::{
-        models::{Const, ConstKind, GenericArguments, InferTy, Ty, TyKind},
+        models::{Const, ConstKind, ConstValue, GenericArguments, InferTy, Ty, TyKind},
         resolve::models::{DefinitionKind, TypeHead},
         tycheck::{
             check::{checker::Checker, gather::GatherLocalsVisitor},
+            lower::lowerer::TypeLowerer,
             solve::{
                 ApplyArgument, ApplyGoalData, AssignOpGoalData, BinOpGoalData,
                 BindOverloadGoalData, ConstraintSystem, DisjunctionBranch, Goal, MemberGoalData,
@@ -16,7 +17,7 @@ use crate::{
                 const_eval::eval_const_expression,
                 generics::GenericsBuilder,
                 instantiate::{instantiate_signature_with_args, instantiate_ty_with_args},
-                type_head_from_value_ty,
+                normalize_ty, type_head_from_value_ty,
             },
         },
     },
@@ -376,7 +377,12 @@ impl<'ctx> Checker<'ctx> {
             hir::ExpressionKind::Member { target, name } => {
                 self.synth_member_expression(expression, target, name, expectation, cs)
             }
-            hir::ExpressionKind::Array(..) => todo!(),
+            hir::ExpressionKind::Array(elements) => {
+                self.synth_array_expression(expression, elements, expectation, cs)
+            }
+            hir::ExpressionKind::Repeat { value, count } => {
+                self.synth_repeat_expression(expression, value, count, expectation, cs)
+            }
             hir::ExpressionKind::Tuple(elements) => {
                 self.synth_tuple_expression(expression, elements, expectation, cs)
             }
@@ -1059,7 +1065,7 @@ impl<'ctx> Checker<'ctx> {
         if let hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) = &callee.kind
             && matches!(
                 path.resolution,
-                hir::Resolution::Foundation(hir::FoundationDecl::Make)
+                hir::Resolution::Foundation(hir::StdType::Make)
             )
         {
             if arguments.len() != 1 {
@@ -1373,8 +1379,24 @@ impl<'ctx> Checker<'ctx> {
         expectation: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
-        let lhs_ty = self.synth(lhs, cs);
-        let rhs_ty = self.synth(rhs, cs);
+        // For arithmetic/bitwise ops where result type = operand type, forward expectation
+        // to help infer literal types (e.g., 2 * 3 with expectation isize)
+        let operand_expectation = match operator {
+            hir::BinaryOperator::Add
+            | hir::BinaryOperator::Sub
+            | hir::BinaryOperator::Mul
+            | hir::BinaryOperator::Div
+            | hir::BinaryOperator::Rem
+            | hir::BinaryOperator::BitAnd
+            | hir::BinaryOperator::BitOr
+            | hir::BinaryOperator::BitXor
+            | hir::BinaryOperator::BitShl
+            | hir::BinaryOperator::BitShr => expectation,
+            // Comparison/boolean ops return bool, not operand type
+            _ => None,
+        };
+        let lhs_ty = self.synth_with_expectation(lhs, operand_expectation, cs);
+        let rhs_ty = self.synth_with_expectation(rhs, operand_expectation, cs);
         let result_ty = cs.infer_cx.next_ty_var(expression.span);
 
         let data = BinOpGoalData {
@@ -1795,6 +1817,111 @@ impl<'ctx> Checker<'ctx> {
             TyKind::Tuple(self.gcx().store.interners.intern_ty_list(element_types)),
             self.gcx(),
         )
+    }
+
+    fn synth_array_expression(
+        &self,
+        expression: &hir::Expression,
+        elements: &[Box<hir::Expression>],
+        expectation: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        let gcx = self.gcx();
+        let expectation = expectation.map(|ty| normalize_ty(gcx, ty));
+        let (expected_elem, expected_array) = if let Some(expectation) = expectation {
+            match expectation.kind() {
+                TyKind::Array { element, .. } => (Some(element), Some(expectation)),
+                _ => (None, None),
+            }
+        } else {
+            (None, None)
+        };
+
+        let element_ty = expected_elem.unwrap_or_else(|| cs.infer_cx.next_ty_var(expression.span));
+
+        for elem in elements {
+            let ty = self.synth_with_expectation(elem, Some(element_ty), cs);
+            cs.equal(element_ty, ty, elem.span);
+        }
+
+        let len_const = Const {
+            ty: gcx.types.uint,
+            kind: ConstKind::Value(ConstValue::Integer(elements.len() as i128)),
+        };
+
+        if let Some(expect) = expected_array {
+            let arr_ty = Ty::new(
+                TyKind::Array {
+                    element: element_ty,
+                    len: len_const,
+                },
+                gcx,
+            );
+            cs.equal(expect, arr_ty, expression.span);
+            expect
+        } else {
+            Ty::new(
+                TyKind::Array {
+                    element: element_ty,
+                    len: len_const,
+                },
+                gcx,
+            )
+        }
+    }
+
+    fn synth_repeat_expression(
+        &self,
+        expression: &hir::Expression,
+        value: &hir::Expression,
+        count: &hir::AnonConst,
+        expectation: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        let gcx = self.gcx();
+        let expectation = expectation.map(|ty| normalize_ty(gcx, ty));
+
+        // Extract expected element type from array expectation to guide inference
+        let expected_elem = expectation.and_then(|ty| match ty.kind() {
+            TyKind::Array { element, .. } => Some(element),
+            _ => None,
+        });
+
+        let elem_ty = self.synth_with_expectation(value, expected_elem, cs);
+
+        let len_const = self.lowerer().lower_array_length(count);
+        if !matches!(len_const.kind, ConstKind::Value(ConstValue::Integer(_))) {
+            if len_const.ty != gcx.types.error {
+                gcx.dcx().emit_error(
+                    "repeat expression count must be a known integer constant".into(),
+                    Some(count.value.span),
+                );
+            }
+            return Ty::error(gcx);
+        }
+
+        let array_ty = Ty::new(
+            TyKind::Array {
+                element: elem_ty,
+                len: len_const,
+            },
+            gcx,
+        );
+
+        if let Some(expectation) = expectation {
+            if let TyKind::Array { .. } = expectation.kind() {
+                cs.equal(expectation, array_ty, expression.span);
+                expectation
+            } else {
+                gcx.dcx().emit_error(
+                    "repeat expressions are only valid for fixed-size array types".into(),
+                    Some(expression.span),
+                );
+                array_ty
+            }
+        } else {
+            array_ty
+        }
     }
 
     fn synth_tuple_access_expression(

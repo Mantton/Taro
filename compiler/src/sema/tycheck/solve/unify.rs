@@ -98,6 +98,13 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 self.unify_generic_args(a_args, b_args)?;
                 return Ok(());
             }
+            (Array { element: a_elem, len: a_len }, Array { element: b_elem, len: b_len }) => {
+                self.unify(a_elem, b_elem)?;
+                if a_len != b_len {
+                    return Err(TypeError::TyMismatch(ExpectedFound::new(a, b)));
+                }
+                return Ok(());
+            }
             (Pointer(a_ty, a_mut), Pointer(b_ty, b_mut)) => {
                 if a_mut != b_mut {
                     return Err(TypeError::Mutability(ExpectedFound::new(a_ty, b_ty)));

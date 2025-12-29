@@ -437,6 +437,11 @@ pub enum ExpressionKind {
     },
     /// `[a, b, c]`
     Array(Vec<Box<Expression>>),
+    /// `[expr; len]`
+    Repeat {
+        value: Box<Expression>,
+        count: AnonConst,
+    },
     /// `(a, b, c)`
     Tuple(Vec<Box<Expression>>),
     /// `if foo { } else { }`
@@ -587,11 +592,13 @@ pub enum PatternPath {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FoundationDecl {
+pub enum StdType {
     /// Option Type
     Option,
     /// List Type
     List,
+    /// Set Type
+    Set,
     /// Dictionary Type
     Dictionary,
     /// Range Type
@@ -1303,6 +1310,10 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, node: &Expression) -> V::
         }
         ExpressionKind::Array(expressions) => {
             walk_list!(visitor, visit_expression, expressions);
+        }
+        ExpressionKind::Repeat { value, count } => {
+            try_visit!(visitor.visit_expression(value));
+            try_visit!(visitor.visit_anon_const(count));
         }
         ExpressionKind::Tuple(expressions) => {
             walk_list!(visitor, visit_expression, expressions);

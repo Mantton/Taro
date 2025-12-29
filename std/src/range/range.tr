@@ -1,0 +1,5 @@
+
+public struct Range[Bound] {}
+
+public struct ClosedRange[Bound] {}
+

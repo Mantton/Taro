@@ -187,6 +187,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             TyKind::Pointer(_, mutbl) => Some(TypeHead::Pointer(mutbl)),
             TyKind::GcPtr => Some(TypeHead::GcPtr),
             TyKind::Tuple(items) => Some(TypeHead::Tuple(items.len() as u16)),
+            TyKind::Array { .. } => Some(TypeHead::Array),
             TyKind::Parameter(_) => todo!(),
             TyKind::Alias { .. } => None, // Alias should be normalized before lookup
             TyKind::Infer(_)

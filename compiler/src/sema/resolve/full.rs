@@ -83,6 +83,7 @@ impl<'r, 'a> Actor<'r, 'a> {
         let mut scope = LexicalScope::new(LexicalScopeSource::Plain);
         for param in &type_parameters.parameters {
             let def_id = self.resolver.definition_id(param.id);
+            let def_kind = self.resolver.definition_kind(def_id);
             let name = param.identifier.symbol;
             let entry = seen_bindings.entry(name);
 
@@ -106,14 +107,11 @@ impl<'r, 'a> Actor<'r, 'a> {
 
             self.resolver.record_resolution(
                 param.id,
-                ResolutionState::Complete(Resolution::Definition(
-                    def_id,
-                    self.resolver.definition_kind(def_id),
-                )),
+                ResolutionState::Complete(Resolution::Definition(def_id, def_kind)),
             );
             scope.define(
                 name,
-                Resolution::Definition(def_id, DefinitionKind::TypeParameter),
+                Resolution::Definition(def_id, def_kind),
             );
         }
 

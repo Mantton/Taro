@@ -140,6 +140,7 @@ impl<'ctx> Collector<'ctx> {
                     self.visit_operand(parent, field);
                 }
             }
+            Rvalue::Repeat { operand, .. } => self.visit_operand(parent, operand),
             _ => {}
         }
     }

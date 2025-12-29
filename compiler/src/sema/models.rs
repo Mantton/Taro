@@ -117,6 +117,14 @@ impl<'arena> Ty<'arena> {
             TyKind::Int(i) => i.name_str().into(),
             TyKind::UInt(u) => u.name_str().into(),
             TyKind::Float(f) => f.name_str().into(),
+            TyKind::Array { element, len } => {
+                let len_str = match len.kind {
+                    ConstKind::Value(ConstValue::Integer(i)) => format!("{i}"),
+                    ConstKind::Param(p) => p.name.as_str().into(),
+                    _ => "<const>".into(),
+                };
+                format!("[{}; {}]", element.format(gcx), len_str)
+            }
             TyKind::Adt(adt, args) => {
                 let mut out = String::from(adt.name.as_str());
                 out.push_str(&format_generic_args(args, gcx));
@@ -193,6 +201,7 @@ impl<'ctx> Ty<'ctx> {
                 }),
                 // Walk composite types
                 TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => visit(inner),
+                TyKind::Array { element, .. } => visit(element),
                 TyKind::Tuple(elems) => elems.iter().copied().any(visit),
                 TyKind::FnPointer { inputs, output, .. } => {
                     inputs.iter().copied().any(visit) || visit(output)
@@ -213,6 +222,10 @@ impl<'ctx> Ty<'ctx> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TyKind<'arena> {
+    Array {
+        element: Ty<'arena>,
+        len: Const<'arena>,
+    },
     Bool,
     Rune,
     String,

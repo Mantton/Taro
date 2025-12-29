@@ -340,6 +340,11 @@ pub enum ExpressionKind {
 
     /// `[a, b, c]`
     Array(Vec<Box<Expression>>),
+    /// `[expr; len]`
+    Repeat {
+        value: Box<Expression>,
+        count: AnonConst,
+    },
     /// `(a, b, c)`
     Tuple(Vec<Box<Expression>>),
     /// `["a" : 100]`
@@ -1524,6 +1529,10 @@ pub fn walk_expression<V: AstVisitor>(visitor: &mut V, node: &Expression) -> V::
         }
         ExpressionKind::Array(expressions) => {
             walk_list!(visitor, visit_expression, expressions)
+        }
+        ExpressionKind::Repeat { value, count } => {
+            try_visit!(visitor.visit_expression(value));
+            try_visit!(visitor.visit_anon_constant(count));
         }
         ExpressionKind::Tuple(expressions) => {
             walk_list!(visitor, visit_expression, expressions)

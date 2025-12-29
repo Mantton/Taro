@@ -1,4 +1,4 @@
-use crate::hir::FoundationDecl;
+use crate::hir::StdType;
 use crate::sema::resolve::models::LexicalScopeBinding;
 use crate::{
     constants::STD_PREFIX,
@@ -71,7 +71,7 @@ impl<'a> Resolver<'a> {
                 let mut map = FxHashMap::default();
                 map.insert(
                     Symbol::new("make"),
-                    Resolution::Foundation(FoundationDecl::Make),
+                    Resolution::Foundation(StdType::Make),
                 );
                 map
             },
