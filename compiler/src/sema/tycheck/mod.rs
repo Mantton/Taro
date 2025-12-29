@@ -1,4 +1,12 @@
-use crate::{compile::context::GlobalContext, error::CompileResult, hir};
+use crate::{
+    compile::context::GlobalContext,
+    error::CompileResult,
+    hir,
+    sema::{
+        models::{ConformanceWitness, InterfaceReference},
+        resolve::models::TypeHead,
+    },
+};
 
 mod check;
 mod collect;
@@ -11,6 +19,14 @@ pub mod results;
 pub mod solve;
 pub mod utils;
 mod wf;
+
+pub fn resolve_conformance_witness<'ctx>(
+    context: GlobalContext<'ctx>,
+    type_head: TypeHead,
+    interface: InterfaceReference<'ctx>,
+) -> Option<ConformanceWitness<'ctx>> {
+    collect::interface::conform::resolve_conformance_witness(context, type_head, interface)
+}
 
 pub fn typecheck_package<'ctx>(
     package: &hir::Package,

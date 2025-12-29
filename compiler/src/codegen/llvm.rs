@@ -10,6 +10,7 @@ use crate::{
             InterfaceReference, InterfaceRequirements, Ty, TyKind, UIntTy,
         },
         resolve::models::TypeHead,
+        tycheck::resolve_conformance_witness,
         tycheck::utils::{instantiate::instantiate_ty_with_args, type_head_from_value_ty},
     },
     span::Symbol,
@@ -1705,11 +1706,16 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         type_head: TypeHead,
         interface: InterfaceReference<'gcx>,
     ) -> Option<crate::sema::models::ConformanceWitness<'gcx>> {
-        self.gcx.with_session_type_database(|db| {
+        let cached = self.gcx.with_session_type_database(|db| {
             db.conformance_witnesses
                 .get(&(type_head, interface))
                 .cloned()
-        })
+        });
+        if cached.is_some() {
+            return cached;
+        }
+
+        resolve_conformance_witness(self.gcx, type_head, interface)
     }
 
     fn interface_method_count(&self, interface_id: hir::DefinitionID) -> usize {

@@ -68,17 +68,17 @@ impl<'ctx> Actor<'ctx> {
 
         for (type_head, records) in conformances {
             for record in &records {
-                // A conformance to a subinterface implies conformances to all of its superfaces.
-                // We materialize those derived conformances here so witness tables are built
-                // for the full superface chain (and dynamic dispatch can find them).
-                for iface in self.collect_interface_with_supers(record.interface) {
+                self.check_conformance(type_head, record);
+
+                // Also validate superface requirements, but defer witness creation until needed.
+                for iface in self.collect_interface_with_supers(record.interface).into_iter().skip(1) {
                     if !seen.insert((type_head, iface)) {
                         continue;
                     }
 
                     let mut derived = *record;
                     derived.interface = iface;
-                    self.check_conformance(type_head, &derived);
+                    self.validate_conformance(type_head, &derived);
                 }
             }
         }
@@ -89,12 +89,38 @@ impl<'ctx> Actor<'ctx> {
         type_head: TypeHead,
         record: &crate::sema::models::ConformanceRecord<'ctx>,
     ) {
+        match self.build_witness(type_head, record) {
+            Ok(witness) => {
+                // Store witness for later use (codegen, method dispatch, etc.)
+                self.store_witness(type_head, record.interface, witness);
+            }
+            Err(errors) => {
+                self.emit_conformance_errors(type_head, record, errors);
+            }
+        }
+    }
+
+    fn validate_conformance(
+        &self,
+        type_head: TypeHead,
+        record: &crate::sema::models::ConformanceRecord<'ctx>,
+    ) {
+        if let Err(errors) = self.build_witness(type_head, record) {
+            self.emit_conformance_errors(type_head, record, errors);
+        }
+    }
+
+    fn build_witness(
+        &self,
+        type_head: TypeHead,
+        record: &crate::sema::models::ConformanceRecord<'ctx>,
+    ) -> Result<ConformanceWitness<'ctx>, Vec<ConformanceError<'ctx>>> {
         let interface_id = record.interface.id;
 
         // Get requirements for this interface
         let Some(requirements) = self.get_requirements(interface_id) else {
             // No requirements found - likely an error elsewhere
-            return;
+            return Ok(ConformanceWitness::default());
         };
 
         let mut witness = ConformanceWitness::default();
@@ -140,11 +166,10 @@ impl<'ctx> Actor<'ctx> {
             }
         }
 
-        if !errors.is_empty() {
-            self.emit_conformance_errors(type_head, record, errors);
+        if errors.is_empty() {
+            Ok(witness)
         } else {
-            // Store witness for later use (codegen, method dispatch, etc.)
-            self.store_witness(type_head, record.interface, witness);
+            Err(errors)
         }
     }
 
@@ -234,6 +259,62 @@ impl<'ctx> Actor<'ctx> {
             arguments: interned,
         }
     }
+
+    fn resolve_conformance_witness(
+        &self,
+        type_head: TypeHead,
+        interface: InterfaceReference<'ctx>,
+    ) -> Option<ConformanceWitness<'ctx>> {
+        if let Some(witness) = self.context.with_session_type_database(|db| {
+            db.conformance_witnesses
+                .get(&(type_head, interface))
+                .cloned()
+        }) {
+            return Some(witness);
+        }
+
+        let records = self.context.with_session_type_database(|db| {
+            db.conformances
+                .get(&type_head)
+                .cloned()
+                .unwrap_or_default()
+        });
+
+        for record in records {
+            if record.interface == interface {
+                if let Ok(witness) = self.build_witness(type_head, &record) {
+                    self.store_witness(type_head, interface, witness.clone());
+                    return Some(witness);
+                }
+                return None;
+            }
+
+            for iface in self.collect_interface_with_supers(record.interface).into_iter().skip(1) {
+                if iface != interface {
+                    continue;
+                }
+
+                let mut derived = record;
+                derived.interface = iface;
+                if let Ok(witness) = self.build_witness(type_head, &derived) {
+                    self.store_witness(type_head, interface, witness.clone());
+                    return Some(witness);
+                }
+                return None;
+            }
+        }
+
+        None
+    }
+}
+
+pub fn resolve_conformance_witness<'ctx>(
+    context: Gcx<'ctx>,
+    type_head: TypeHead,
+    interface: InterfaceReference<'ctx>,
+) -> Option<ConformanceWitness<'ctx>> {
+    let actor = Actor::new(context);
+    actor.resolve_conformance_witness(type_head, interface)
 }
 
 // Type witness lookup (stub - full implementation needs associated types)
