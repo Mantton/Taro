@@ -32,7 +32,7 @@ pub fn run(
 
     let graph = sync_dependencies(arguments.path)?;
 
-    let _ = compile_std(&icx)?;
+    let _ = compile_std(&icx, arguments.std_path.clone())?;
     build_runtime(&icx, &project_root)?;
 
     let total = graph.ordered.len();
@@ -139,22 +139,17 @@ fn build_runtime(ctx: &CompilerContext<'_>, project_root: &PathBuf) -> Result<()
     Ok(())
 }
 
-fn compile_std<'a>(ctx: &'a CompilerContext<'a>) -> Result<(), ReportedError> {
+fn compile_std<'a>(
+    ctx: &'a CompilerContext<'a>,
+    std_path: Option<PathBuf>,
+) -> Result<(), ReportedError> {
     println!("Compiling – std");
 
-    let src = language_home()
-        .map_err(|e| {
-            let message = format!("failed to resolve language home – {}", e);
-            ctx.dcx.emit_error(message, None);
-            ReportedError
-        })?
-        .join(STD_PREFIX)
-        .canonicalize()
-        .map_err(|e| {
-            let message = format!("failed to resolve standard library location – {}", e);
-            ctx.dcx.emit_error(message, None);
-            ReportedError
-        })?;
+    let src = resolve_std_path(std_path).map_err(|e| {
+        let message = format!("failed to resolve standard library location – {}", e);
+        ctx.dcx.emit_error(message, None);
+        ReportedError
+    })?;
 
     let index = PackageIndex::new(0);
 
@@ -170,4 +165,17 @@ fn compile_std<'a>(ctx: &'a CompilerContext<'a>) -> Result<(), ReportedError> {
     let mut compiler = Compiler::new(ctx, config);
     let _ = compiler.build()?;
     Ok(())
+}
+
+fn resolve_std_path(std_path: Option<PathBuf>) -> Result<PathBuf, String> {
+    if let Some(path) = std_path {
+        return path
+            .canonicalize()
+            .map_err(|e| format!("--std-path {} is invalid: {}", path.display(), e));
+    }
+
+    let std_root = language_home()?.join(STD_PREFIX);
+    std_root
+        .canonicalize()
+        .map_err(|e| format!("{} is invalid: {}", std_root.display(), e))
 }

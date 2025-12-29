@@ -1,0 +1,10 @@
+
+
+extern "taro_intrinsic" {
+    func __rt__exit(_ code: int32)
+}
+
+
+public func exit(_ code: int32) {
+    __rt__exit(code)
+}

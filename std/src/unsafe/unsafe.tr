@@ -1,0 +1,56 @@
+
+struct GcPtr {}
+
+
+struct GcDesc {
+    size: usize
+    ptr_offsets: *const usize
+    ptr_count: usize
+}
+
+
+extern "taro_intrinsic" {
+    func gc_makeslice(_ desc: *const GcDesc, _ len: usize, _ cap: usize) -> GcPtr
+    func gc_desc_u8() -> *const GcDesc
+    func __rt__string_from_parts(_ data: *const uint8, _ len: usize) -> string
+    func gcptr_null() -> GcPtr
+    func gcptr_is_null(_ ptr: GcPtr) -> bool
+    func gcptr_from_raw(_ ptr: *const uint8) -> GcPtr
+    func gcptr_to_raw(_ ptr: GcPtr) -> *const uint8
+    func gcptr_add_bytes(_ ptr: GcPtr, _ offset: usize) -> GcPtr
+    func gc_memcpy(_ dst: GcPtr, _ src: *const uint8, _ len: usize)
+}
+
+public func alloc_bytes(_ len: usize) -> GcPtr {
+    return gc_makeslice(gc_desc_u8(), len, len)
+}
+
+public func string_from_parts(_ data: GcPtr, _ len: usize) -> string {
+    return __rt__string_from_parts(data.to_raw(), len)
+}
+
+extend GcPtr {
+    public func null() -> GcPtr {
+        return gcptr_null()
+    }
+
+    public func is_null(self) -> bool {
+        return gcptr_is_null(self)
+    }
+
+    public func from_raw(_ ptr: *const uint8) -> GcPtr {
+        return gcptr_from_raw(ptr)
+    }
+
+    public func to_raw(self) -> *const uint8 {
+        return gcptr_to_raw(self)
+    }
+
+    public func add_bytes(self, _ offset: usize) -> GcPtr {
+        return gcptr_add_bytes(self, offset)
+    }
+
+    public func copy_from_raw(self, _ src: *const uint8, _ len: usize) {
+        gc_memcpy(self, src, len)
+    }
+}

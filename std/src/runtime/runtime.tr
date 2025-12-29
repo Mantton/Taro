@@ -1,0 +1,11 @@
+
+
+
+extern "taro_intrinsic" {
+    func gc_collect()
+}
+
+
+public func collect() {
+    gc_collect()
+}

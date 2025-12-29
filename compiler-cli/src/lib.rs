@@ -10,6 +10,8 @@ pub struct CommandLineArguments {
     pub path: PathBuf,
     #[arg(short = 'o', long = "output")]
     pub output: Option<PathBuf>,
+    #[arg(long = "std-path")]
+    pub std_path: Option<PathBuf>,
 }
 
 pub fn run() {

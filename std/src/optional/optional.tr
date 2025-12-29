@@ -1,0 +1,13 @@
+public enum Optional[Wrapped] {
+    case some(Wrapped)
+    case none
+}
+
+
+extend[Wrapped] Optional[Wrapped] {
+    public func unwrap(&self) -> Wrapped {}
+    public func isSome(&self) -> bool { false }
+    public func isNone(&self) -> bool {
+        false
+    }
+}
