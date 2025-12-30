@@ -11,7 +11,10 @@ use crate::{
         },
         resolve::models::TypeHead,
         tycheck::resolve_conformance_witness,
-        tycheck::utils::{instantiate::instantiate_ty_with_args, type_head_from_value_ty},
+        tycheck::utils::{
+            instantiate::{instantiate_const_with_args, instantiate_ty_with_args},
+            type_head_from_value_ty,
+        },
     },
     span::Symbol,
     specialize::{Instance, InstanceKind, resolve_instance},
@@ -1562,16 +1565,15 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let mut entries: Vec<BasicValueEnum<'llvm>> =
             Vec::with_capacity(requirements.methods.len());
         for method in &requirements.methods {
-            let impl_def_id = witness
+            let (impl_def_id, args) = if let Some(method_witness) = witness
                 .as_ref()
-                .and_then(|w| w.method_witnesses.get(&method.id).copied())
-                .unwrap_or(method.id);
-            let args = if self.gcx.generics_of(impl_def_id).has_self {
-                iface.arguments
-            } else if self.gcx.generics_of(impl_def_id).is_empty() {
-                &[]
+                .and_then(|w| w.method_witnesses.get(&method.id))
+            {
+                let args =
+                    self.instantiate_generic_args_with_args(method_witness.args_template, iface.arguments);
+                (method_witness.impl_id, args)
             } else {
-                &[]
+                (method.id, iface.arguments)
             };
             // Use a thunk to bridge virtual call signature (ptr self) to concrete impl
             let thunk_ptr = self.witness_method_thunk(type_head, iface, impl_def_id, args);
@@ -1805,6 +1807,32 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             id: iface.id,
             arguments: interned,
         }
+    }
+
+    fn instantiate_generic_args_with_args(
+        &self,
+        template: GenericArguments<'gcx>,
+        args: GenericArguments<'gcx>,
+    ) -> GenericArguments<'gcx> {
+        if template.is_empty() {
+            return template;
+        }
+
+        let mut out = Vec::with_capacity(template.len());
+        for arg in template.iter() {
+            match arg {
+                GenericArgument::Type(ty) => {
+                    let instantiated = instantiate_ty_with_args(self.gcx, *ty, args);
+                    out.push(GenericArgument::Type(instantiated));
+                }
+                GenericArgument::Const(c) => {
+                    let instantiated = instantiate_const_with_args(self.gcx, *c, args);
+                    out.push(GenericArgument::Const(instantiated));
+                }
+            }
+        }
+
+        self.gcx.store.interners.intern_generic_args(out)
     }
 
     fn substitute_interface_ref(

@@ -11,7 +11,7 @@ use crate::{
             ConformanceRecord, ConformanceWitness, Const, EnumDefinition, EnumVariant, FloatTy,
             GenericArgument, GenericParameter, Generics, IntTy, InterfaceDefinition,
             InterfaceReference, InterfaceRequirements, LabeledFunctionSignature, StructDefinition,
-            Ty, TyKind, UIntTy,
+            Ty, TyKind, UIntTy, Constraint,
         },
         resolve::models::{
             DefinitionKind, PrimaryType, ResolutionOutput, ScopeData, ScopeEntryData, TypeHead,
@@ -88,6 +88,49 @@ impl<'arena> GlobalContext<'arena> {
         let package_index = id.package();
         let database = cache.entry(package_index).or_insert(Default::default());
         database.def_to_const.insert(id, value);
+    }
+
+    pub fn cache_constraints(
+        self,
+        id: DefinitionID,
+        constraints: Vec<crate::span::Spanned<Constraint<'arena>>>,
+    ) {
+        let mut cache = self.context.store.type_databases.borrow_mut();
+        let package_index = id.package();
+        let database = cache.entry(package_index).or_insert(Default::default());
+        database.def_to_constraints.insert(id, constraints);
+    }
+
+    pub fn constraints_of(
+        self,
+        id: DefinitionID,
+    ) -> Vec<crate::span::Spanned<Constraint<'arena>>> {
+        self.with_type_database(id.package(), |db| {
+            db.def_to_constraints.get(&id).cloned().unwrap_or_default()
+        })
+    }
+
+    pub fn cache_canonical_constraints(
+        self,
+        id: DefinitionID,
+        constraints: Vec<crate::span::Spanned<Constraint<'arena>>>,
+    ) {
+        let mut cache = self.context.store.type_databases.borrow_mut();
+        let package_index = id.package();
+        let database = cache.entry(package_index).or_insert(Default::default());
+        database.def_to_canon_constraints.insert(id, constraints);
+    }
+
+    pub fn canonical_constraints_of(
+        self,
+        id: DefinitionID,
+    ) -> Vec<crate::span::Spanned<Constraint<'arena>>> {
+        self.with_type_database(id.package(), |db| {
+            db.def_to_canon_constraints
+                .get(&id)
+                .cloned()
+                .unwrap_or_default()
+        })
     }
 
     pub fn cache_alias_type(self, id: DefinitionID, ty: Ty<'arena>) {
@@ -731,6 +774,9 @@ pub struct TypeDatabase<'arena> {
     pub def_to_fn_sig: FxHashMap<DefinitionID, &'arena LabeledFunctionSignature<'arena>>,
     pub def_to_struct_def: FxHashMap<DefinitionID, &'arena StructDefinition<'arena>>,
     pub def_to_enum_def: FxHashMap<DefinitionID, &'arena EnumDefinition<'arena>>,
+    pub def_to_constraints: FxHashMap<DefinitionID, Vec<crate::span::Spanned<Constraint<'arena>>>>,
+    pub def_to_canon_constraints:
+        FxHashMap<DefinitionID, Vec<crate::span::Spanned<Constraint<'arena>>>>,
     pub extension_to_type_head: FxHashMap<DefinitionID, TypeHead>,
     pub type_head_to_extensions: FxHashMap<TypeHead, Vec<DefinitionID>>,
     pub type_head_to_members: FxHashMap<TypeHead, TypeMemberIndex>,

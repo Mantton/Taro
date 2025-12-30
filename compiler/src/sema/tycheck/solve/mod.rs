@@ -3,14 +3,17 @@ use crate::{
     hir::NodeID,
     sema::{
         error::SpannedErrorList,
-        models::{GenericArguments, Ty},
+        models::{Constraint, GenericArguments, InterfaceReference, Ty, TyKind},
         tycheck::infer::InferCtx,
-        tycheck::utils::normalize_ty,
+        tycheck::{
+            constraints::canonical_constraints_of,
+            utils::{instantiate::instantiate_constraint_with_args, normalize_ty},
+        },
     },
     span::{Span, Spanned},
 };
 pub use models::*;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::{cell::RefCell, cmp::Reverse, collections::VecDeque, rc::Rc};
 
 mod adt;
@@ -43,7 +46,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
         context: Gcx<'ctx>,
         current_def: crate::sema::resolve::models::DefinitionID,
     ) -> ConstraintSystem<'ctx> {
-        ConstraintSystem {
+        let mut cs = ConstraintSystem {
             infer_cx: Rc::new(InferCtx::new(context)),
             obligations: Default::default(),
             expr_tys: Default::default(),
@@ -54,7 +57,11 @@ impl<'ctx> ConstraintSystem<'ctx> {
             overload_sources: Default::default(),
             instantiation_args: Default::default(),
             current_def,
-        }
+        };
+
+        let def_span = context.definition_ident(current_def).span;
+        cs.add_constraints_for_def(current_def, None, def_span);
+        cs
     }
 }
 
@@ -72,6 +79,34 @@ impl<'ctx> ConstraintSystem<'ctx> {
 
     pub fn add_goal(&mut self, goal: Goal<'ctx>, location: Span) {
         self.obligations.push_back(Obligation { location, goal });
+    }
+
+    pub fn add_constraints_for_def(
+        &mut self,
+        def_id: crate::sema::resolve::models::DefinitionID,
+        args: Option<GenericArguments<'ctx>>,
+        location: Span,
+    ) {
+        let gcx = self.infer_cx.gcx;
+        let constraints = canonical_constraints_of(gcx, def_id);
+        for constraint in constraints {
+            let constraint = match args {
+                Some(args) => instantiate_constraint_with_args(gcx, constraint.value, args),
+                None => constraint.value,
+            };
+            self.add_constraint(constraint, location);
+        }
+    }
+
+    fn add_constraint(&mut self, constraint: Constraint<'ctx>, location: Span) {
+        match constraint {
+            Constraint::TypeEquality(lhs, rhs) => {
+                self.add_goal(Goal::ConstraintEqual(lhs, rhs), location);
+            }
+            Constraint::Bound { ty, interface } => {
+                self.add_goal(Goal::Conforms { ty, interface }, location);
+            }
+        }
     }
 
     pub fn record_expr_ty(&mut self, id: NodeID, ty: Ty<'ctx>) {
@@ -264,11 +299,95 @@ impl<'ctx> ConstraintSolver<'ctx> {
 }
 
 impl<'ctx> ConstraintSolver<'ctx> {
+    fn constraints_for_def(
+        &self,
+        def_id: crate::sema::resolve::models::DefinitionID,
+        args: Option<GenericArguments<'ctx>>,
+        location: Span,
+    ) -> Vec<Obligation<'ctx>> {
+        let gcx = self.gcx();
+        let constraints = canonical_constraints_of(gcx, def_id);
+        constraints
+            .into_iter()
+            .map(|constraint| {
+                let constraint = match args {
+                    Some(args) => instantiate_constraint_with_args(gcx, constraint.value, args),
+                    None => constraint.value,
+                };
+                let goal = match constraint {
+                    Constraint::TypeEquality(lhs, rhs) => Goal::ConstraintEqual(lhs, rhs),
+                    Constraint::Bound { ty, interface } => Goal::Conforms { ty, interface },
+                };
+                Obligation { location, goal }
+            })
+            .collect()
+    }
+
+    fn constraints_in_scope(&self) -> Vec<Constraint<'ctx>> {
+        canonical_constraints_of(self.gcx(), self.current_def)
+            .into_iter()
+            .map(|c| c.value)
+            .collect()
+    }
+
+    fn equivalent_types_in_scope(&self, ty: Ty<'ctx>) -> FxHashSet<Ty<'ctx>> {
+        let ty = self.structurally_resolve(ty);
+        let constraints = self.constraints_in_scope();
+        let mut edges = Vec::new();
+        for constraint in constraints {
+            if let Constraint::TypeEquality(a, b) = constraint {
+                edges.push((a, b));
+            }
+        }
+
+        let mut seen: FxHashSet<Ty<'ctx>> = FxHashSet::default();
+        let mut stack = vec![ty];
+        seen.insert(ty);
+
+        while let Some(cur) = stack.pop() {
+            for (a, b) in edges.iter() {
+                if *a == cur && seen.insert(*b) {
+                    stack.push(*b);
+                } else if *b == cur && seen.insert(*a) {
+                    stack.push(*a);
+                }
+            }
+        }
+
+        seen
+    }
+
+    fn in_scope_equal(&self, a: Ty<'ctx>, b: Ty<'ctx>) -> bool {
+        let a = self.structurally_resolve(a);
+        let b = self.structurally_resolve(b);
+        if a == b {
+            return true;
+        }
+        self.equivalent_types_in_scope(a).contains(&b)
+    }
+
+    fn bounds_for_type_in_scope(&self, ty: Ty<'ctx>) -> Vec<InterfaceReference<'ctx>> {
+        let eq_set = self.equivalent_types_in_scope(ty);
+        let mut out: FxHashSet<InterfaceReference<'ctx>> = FxHashSet::default();
+
+        for constraint in self.constraints_in_scope() {
+            if let Constraint::Bound { ty, interface } = constraint {
+                if eq_set.contains(&ty) {
+                    out.insert(interface);
+                }
+            }
+        }
+
+        out.into_iter().collect()
+    }
+
     fn solve(&mut self, obligation: Obligation<'ctx>) -> SolverResult<'ctx> {
         let location = obligation.location;
         let goal = obligation.goal;
         match goal {
             Goal::Equal(lhs, rhs) => self.solve_equality(location, lhs, rhs),
+            Goal::ConstraintEqual(lhs, rhs) => self.solve_constraint_equality(location, lhs, rhs),
+            Goal::Conforms { ty, interface } => self.solve_conforms(location, ty, interface),
             Goal::Apply(data) => self.solve_apply(data),
             Goal::BindOverload(data) => self.solve_bind_overload(location, data),
             Goal::BindInterfaceMethod(data) => self.solve_bind_interface_method(location, data),
@@ -298,6 +417,24 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 SolverResult::Error(errors)
             }
         }
+    }
+
+    fn solve_constraint_equality(
+        &mut self,
+        location: Span,
+        lhs: Ty<'ctx>,
+        rhs: Ty<'ctx>,
+    ) -> SolverResult<'ctx> {
+        let lhs = self.structurally_resolve(lhs);
+        let rhs = self.structurally_resolve(rhs);
+
+        if matches!(lhs.kind(), TyKind::Parameter(_))
+            || matches!(rhs.kind(), TyKind::Parameter(_))
+        {
+            return SolverResult::Solved(vec![]);
+        }
+
+        self.solve_equality(location, lhs, rhs)
     }
 
     fn fork(&self) -> ConstraintSolver<'ctx> {

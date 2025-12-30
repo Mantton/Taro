@@ -3,7 +3,8 @@ use crate::{
     sema::{
         models::{
             Const, ConstKind, Constraint, EnumDefinition, GenericArgument, GenericArguments,
-            LabeledFunctionParameter, LabeledFunctionSignature, StructDefinition, Ty, TyKind,
+            InterfaceReference, LabeledFunctionParameter, LabeledFunctionSignature,
+            StructDefinition, Ty, TyKind,
         },
         tycheck::fold::{TypeFoldable, TypeFolder, TypeSuperFoldable},
     },
@@ -41,6 +42,10 @@ impl<'ctx> InstantiateFolder<'ctx> {
             Constraint::TypeEquality(a, b) => {
                 Constraint::TypeEquality(self.fold_ty(a), self.fold_ty(b))
             }
+            Constraint::Bound { ty, interface } => Constraint::Bound {
+                ty: self.fold_ty(ty),
+                interface: instantiate_interface_ref_with_args(self.gcx, interface, self.args),
+            },
         }
     }
 }
@@ -81,6 +86,36 @@ pub fn instantiate_constraint_with_args<'ctx>(
 ) -> Constraint<'ctx> {
     let mut folder = InstantiateFolder { gcx, args };
     folder.fold_constraint(constraint)
+}
+
+pub fn instantiate_interface_ref_with_args<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    interface: InterfaceReference<'ctx>,
+    args: GenericArguments<'ctx>,
+) -> InterfaceReference<'ctx> {
+    if args.is_empty() {
+        return interface;
+    }
+
+    let mut new_args = Vec::with_capacity(interface.arguments.len());
+    for arg in interface.arguments.iter() {
+        match arg {
+            GenericArgument::Type(ty) => {
+                let substituted = instantiate_ty_with_args(gcx, *ty, args);
+                new_args.push(GenericArgument::Type(substituted));
+            }
+            GenericArgument::Const(c) => {
+                let substituted = instantiate_const_with_args(gcx, *c, args);
+                new_args.push(GenericArgument::Const(substituted));
+            }
+        }
+    }
+
+    let interned = gcx.store.interners.intern_generic_args(new_args);
+    InterfaceReference {
+        id: interface.id,
+        arguments: interned,
+    }
 }
 
 pub fn instantiate_signature_with_args<'ctx>(

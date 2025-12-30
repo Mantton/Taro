@@ -84,12 +84,13 @@ impl<'ctx> Actor<'ctx> {
             }
 
             // Register the conformance
+            let is_conditional = !self.context.canonical_constraints_of(extend_id).is_empty();
             let record = ConformanceRecord {
                 target: ty_key,
                 interface: reference,
                 extension: extend_id,
                 location: interface.span,
-                is_conditional: false, // TODO: check generics where clause
+                is_conditional,
             };
 
             self.context.with_session_type_database(|db| {

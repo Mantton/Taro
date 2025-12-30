@@ -4,7 +4,7 @@ use crate::{
         error::{ExpectedFound, TypeError},
         models::{InterfaceReference, Ty, TyKind},
         resolve::models::TypeHead,
-        tycheck::utils::type_head_from_value_ty,
+        tycheck::{resolve_conformance_witness, utils::type_head_from_value_ty},
     },
     span::{Span, Spanned},
 };
@@ -32,6 +32,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         if let Some(result) = self.solve_pointer_coercion(location, from, to) {
             return result;
+        }
+
+        if self.in_scope_equal(from, to) {
+            return SolverResult::Solved(vec![]);
         }
 
         // Minimal coercion: just equality for now.
@@ -262,5 +266,62 @@ impl<'ctx> ConstraintSolver<'ctx> {
         actual: InterfaceReference<'ctx>,
     ) -> bool {
         expected.id == actual.id && self.interface_args_match(expected, actual)
+    }
+
+    pub fn solve_conforms(
+        &mut self,
+        location: Span,
+        ty: Ty<'ctx>,
+        interface: InterfaceReference<'ctx>,
+    ) -> SolverResult<'ctx> {
+        let ty = self.structurally_resolve(ty);
+        let (interface, has_infer) = self.resolve_interface_ref(interface);
+
+        if has_infer {
+            return SolverResult::Deferred;
+        }
+
+        if ty.is_error() {
+            return SolverResult::Solved(vec![]);
+        }
+
+        match ty.kind() {
+            TyKind::Infer(_) => return SolverResult::Deferred,
+            TyKind::Parameter(_) => return SolverResult::Solved(vec![]),
+            TyKind::BoxedExistential { interfaces } => {
+                let mut satisfied = interfaces
+                    .iter()
+                    .any(|source| self.interface_ref_matches(interface, *source));
+
+                if !satisfied {
+                    satisfied = interfaces.iter().any(|source| {
+                        self.collect_interface_with_supers(*source)
+                            .into_iter()
+                            .skip(1)
+                            .any(|candidate| self.interface_ref_matches(interface, candidate))
+                    });
+                }
+
+                if satisfied {
+                    return SolverResult::Solved(vec![]);
+                }
+
+                let error = Spanned::new(TypeError::NonConformance { ty, interface }, location);
+                return SolverResult::Error(vec![error]);
+            }
+            _ => {}
+        }
+
+        let Some(head) = type_head_from_value_ty(ty) else {
+            let error = Spanned::new(TypeError::NonConformance { ty, interface }, location);
+            return SolverResult::Error(vec![error]);
+        };
+
+        if resolve_conformance_witness(self.gcx(), head, interface).is_some() {
+            return SolverResult::Solved(vec![]);
+        }
+
+        let error = Spanned::new(TypeError::NonConformance { ty, interface }, location);
+        SolverResult::Error(vec![error])
     }
 }

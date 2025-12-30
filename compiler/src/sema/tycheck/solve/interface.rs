@@ -14,6 +14,35 @@ use rustc_hash::FxHashSet;
 use super::ConstraintSolver;
 
 impl<'ctx> ConstraintSolver<'ctx> {
+    pub fn resolve_interface_ref(
+        &self,
+        interface: InterfaceReference<'ctx>,
+    ) -> (InterfaceReference<'ctx>, bool) {
+        let mut has_infer = false;
+        let mut new_args = Vec::with_capacity(interface.arguments.len());
+        for arg in interface.arguments.iter() {
+            match arg {
+                GenericArgument::Type(ty) => {
+                    let resolved = self.structurally_resolve(*ty);
+                    if resolved.is_infer() {
+                        has_infer = true;
+                    }
+                    new_args.push(GenericArgument::Type(resolved));
+                }
+                GenericArgument::Const(c) => new_args.push(GenericArgument::Const(*c)),
+            }
+        }
+
+        let interned = self.gcx().store.interners.intern_generic_args(new_args);
+        (
+            InterfaceReference {
+                id: interface.id,
+                arguments: interned,
+            },
+            has_infer,
+        )
+    }
+
     pub fn interface_requirements(
         &self,
         interface_id: DefinitionID,

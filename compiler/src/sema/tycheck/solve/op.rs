@@ -145,7 +145,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 callee_ty: method_ty,
                 callee_source: None,
                 result_ty: data.rho,
-                expect_ty: data.expectation,
+                _expect_ty: data.expectation,
                 arguments: vec![ApplyArgument {
                     id: data.rhs_id,
                     label: None,
@@ -306,7 +306,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 callee_ty: method_ty,
                 callee_source: None,
                 result_ty: data.rho,
-                expect_ty: data.expectation,
+                _expect_ty: data.expectation,
                 arguments: vec![
                     ApplyArgument {
                         id: data.lhs_id,
@@ -729,7 +729,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 callee_ty: method_ty,
                 callee_source: None,
                 result_ty: self.gcx().types.void,
-                expect_ty: None,
+                _expect_ty: None,
                 arguments: vec![
                     ApplyArgument {
                         id: data.lhs_id,

@@ -28,6 +28,11 @@ pub enum Adjustment<'ctx> {
 #[derive(Debug, Clone)]
 pub enum Goal<'ctx> {
     Equal(Ty<'ctx>, Ty<'ctx>),
+    ConstraintEqual(Ty<'ctx>, Ty<'ctx>),
+    Conforms {
+        ty: Ty<'ctx>,
+        interface: InterfaceReference<'ctx>,
+    },
     Apply(ApplyGoalData<'ctx>),
     BindOverload(BindOverloadGoalData<'ctx>),
     BindInterfaceMethod(BindInterfaceMethodGoalData<'ctx>),
@@ -97,7 +102,7 @@ pub struct ApplyGoalData<'ctx> {
     pub callee_ty: Ty<'ctx>,
     pub callee_source: Option<DefinitionID>,
     pub result_ty: Ty<'ctx>,
-    pub expect_ty: Option<Ty<'ctx>>,
+    pub _expect_ty: Option<Ty<'ctx>>,
     pub arguments: Vec<ApplyArgument<'ctx>>,
     /// If true, skip label validation (used for operator calls)
     pub skip_labels: bool,

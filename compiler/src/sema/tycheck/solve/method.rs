@@ -15,7 +15,9 @@ use crate::{
             solve::{
                 Adjustment, ApplyArgument, ApplyGoalData, BindOverloadGoalData, DisjunctionBranch,
             },
-            utils::{generics::GenericsBuilder, instantiate::instantiate_ty_with_args, AutoReference},
+            utils::{
+                AutoReference, generics::GenericsBuilder, instantiate::instantiate_ty_with_args,
+            },
         },
     },
     span::{Spanned, Symbol},
@@ -71,6 +73,22 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     AutoReference::None => {}
                     AutoReference::Immutable => adjustments.push(Adjustment::BorrowImmutable),
                     AutoReference::Mutable => adjustments.push(Adjustment::BorrowMutable),
+                }
+
+                if matches!(candidate_ty.kind(), TyKind::Parameter(_)) {
+                    let bounds = self.bounds_for_type_in_scope(candidate_ty);
+                    if !bounds.is_empty() {
+                        let list = self.gcx().store.arenas.global.alloc_slice_copy(&bounds);
+                        if let Some(result) = self.solve_interface_method_call(
+                            &data,
+                            candidate_ty,
+                            reciever_ty,
+                            list,
+                            adjustments.clone(),
+                        ) {
+                            return result;
+                        }
+                    }
                 }
 
                 if let TyKind::BoxedExistential { interfaces } = candidate_ty.kind() {
@@ -133,7 +151,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         callee_ty: *method_ty,
                         callee_source: None,
                         result_ty: *result,
-                        expect_ty: *expect_ty,
+                        _expect_ty: *expect_ty,
                         arguments: args,
                         skip_labels: false,
                     }),
@@ -262,7 +280,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 callee_ty: data.method_ty,
                 callee_source: None,
                 result_ty: data.result,
-                expect_ty: data.expect_ty,
+                _expect_ty: data.expect_ty,
                 arguments: args,
                 skip_labels: false,
             }),
@@ -394,10 +412,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         (instantiated, instantiation_args)
     }
 
-    fn labeled_signature_to_ty(
-        &self,
-        sig: &LabeledFunctionSignature<'ctx>,
-    ) -> Ty<'ctx> {
+    fn labeled_signature_to_ty(&self, sig: &LabeledFunctionSignature<'ctx>) -> Ty<'ctx> {
         let inputs: Vec<_> = sig.inputs.iter().map(|p| p.ty).collect();
         let inputs = self.gcx().store.interners.intern_ty_list(inputs);
         Ty::new(

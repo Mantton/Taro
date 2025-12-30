@@ -419,6 +419,11 @@ pub struct LabeledFunctionParameter<'ctx> {
 pub enum Constraint<'ctx> {
     /// `T == U`
     TypeEquality(Ty<'ctx>, Ty<'ctx>),
+    /// `T: Interface`
+    Bound {
+        ty: Ty<'ctx>,
+        interface: InterfaceReference<'ctx>,
+    },
 }
 
 index_vec::define_index_type! {
@@ -672,12 +677,6 @@ impl<'ctx> InterfaceReference<'ctx> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TypeErasure {
-    Existential, // any Protocol
-    Opaque,      // some Protocol
-}
-
 #[derive(Debug, Clone)]
 pub struct AssociatedTypeDefinition<'ctx> {
     pub id: DefinitionID,
@@ -699,13 +698,21 @@ pub struct ConformanceRecord<'ctx> {
 #[derive(Debug, Clone, Default)]
 pub struct ConformanceWitness<'ctx> {
     /// Maps interface method → implementing method
-    pub method_witnesses: FxHashMap<DefinitionID, DefinitionID>,
+    pub method_witnesses: FxHashMap<DefinitionID, MethodWitness<'ctx>>,
     /// Maps interface operator kind → implementing operator
     pub operator_witnesses: FxHashMap<hir::OperatorKind, DefinitionID>,
     /// Maps interface constant → implementing constant
     pub constant_witnesses: FxHashMap<DefinitionID, DefinitionID>,
     /// Maps interface associated type → concrete type
     pub type_witnesses: FxHashMap<DefinitionID, Ty<'ctx>>,
+}
+
+/// Mapping from an interface method to its implementation and instantiation template.
+#[derive(Debug, Clone, Copy)]
+pub struct MethodWitness<'ctx> {
+    pub impl_id: DefinitionID,
+    /// Generic argument template expressed in terms of the interface method's params.
+    pub args_template: GenericArguments<'ctx>,
 }
 
 /// Definition of a type alias (top-level or associated)

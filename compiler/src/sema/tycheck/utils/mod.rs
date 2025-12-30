@@ -8,6 +8,7 @@ pub mod const_eval;
 pub mod generics;
 pub mod instantiate;
 pub mod normalize;
+pub mod unify;
 
 pub use normalize::normalize_ty;
 

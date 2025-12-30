@@ -7,14 +7,19 @@ use crate::{
             AssociatedTypeDefinition, ConformanceWitness, GenericArgument, GenericArguments,
             InterfaceConstantRequirement, InterfaceDefinition, InterfaceMethodRequirement,
             InterfaceOperatorRequirement, InterfaceReference, InterfaceRequirements,
-            LabeledFunctionSignature, Ty,
+            LabeledFunctionSignature, MethodWitness, Ty,
         },
         resolve::models::TypeHead,
-        tycheck::fold::{TypeFoldable, TypeFolder},
+        tycheck::{
+            fold::{TypeFoldable, TypeFolder},
+            infer::InferCtx,
+            utils::{generics::GenericsBuilder, unify::TypeUnifier},
+        },
     },
     span::Symbol,
 };
 use rustc_hash::FxHashSet;
+use std::rc::Rc;
 
 use crate::sema::tycheck::utils::instantiate::{
     instantiate_const_with_args, instantiate_ty_with_args,
@@ -73,7 +78,11 @@ impl<'ctx> Actor<'ctx> {
                 self.check_conformance(type_head, record);
 
                 // Also validate superface requirements, but defer witness creation until needed.
-                for iface in self.collect_interface_with_supers(record.interface).into_iter().skip(1) {
+                for iface in self
+                    .collect_interface_with_supers(record.interface)
+                    .into_iter()
+                    .skip(1)
+                {
                     if !seen.insert((type_head, iface)) {
                         continue;
                     }
@@ -141,8 +150,8 @@ impl<'ctx> Actor<'ctx> {
         // 2. Check methods
         for method in &requirements.methods {
             match self.find_method_witness(type_head, method, record) {
-                Ok(id) => {
-                    witness.method_witnesses.insert(method.id, id);
+                Ok(witness_entry) => {
+                    witness.method_witnesses.insert(method.id, witness_entry);
                 }
                 Err(e) => errors.push(e),
             }
@@ -201,9 +210,10 @@ impl<'ctx> Actor<'ctx> {
         &self,
         interface_id: DefinitionID,
     ) -> Option<&'ctx InterfaceDefinition<'ctx>> {
-        self.context.with_type_database(interface_id.package(), |db| {
-            db.def_to_iface_def.get(&interface_id).copied()
-        })
+        self.context
+            .with_type_database(interface_id.package(), |db| {
+                db.def_to_iface_def.get(&interface_id).copied()
+            })
     }
 
     fn collect_interface_with_supers(
@@ -279,10 +289,7 @@ impl<'ctx> Actor<'ctx> {
         }
 
         let records = self.context.with_session_type_database(|db| {
-            db.conformances
-                .get(&type_head)
-                .cloned()
-                .unwrap_or_default()
+            db.conformances.get(&type_head).cloned().unwrap_or_default()
         });
 
         for record in records {
@@ -294,7 +301,11 @@ impl<'ctx> Actor<'ctx> {
                 return None;
             }
 
-            for iface in self.collect_interface_with_supers(record.interface).into_iter().skip(1) {
+            for iface in self
+                .collect_interface_with_supers(record.interface)
+                .into_iter()
+                .skip(1)
+            {
                 if iface != interface {
                     continue;
                 }
@@ -358,7 +369,7 @@ impl<'ctx> Actor<'ctx> {
         type_head: TypeHead,
         requirement: &InterfaceMethodRequirement<'ctx>,
         record: &crate::sema::models::ConformanceRecord<'ctx>,
-    ) -> Result<DefinitionID, ConformanceError<'ctx>> {
+    ) -> Result<MethodWitness<'ctx>, ConformanceError<'ctx>> {
         // Look up candidates in type's member index
         let candidates = self
             .context
@@ -373,13 +384,22 @@ impl<'ctx> Actor<'ctx> {
         // Find matching signature
         for candidate in candidates {
             if self.signatures_match(requirement.id, candidate, record) {
-                return Ok(candidate);
+                let args_template =
+                    self.build_method_args_template(requirement.id, candidate, record);
+                return Ok(MethodWitness {
+                    impl_id: candidate,
+                    args_template,
+                });
             }
         }
 
         // Check for default implementation
         if !requirement.is_required {
-            return Ok(requirement.id);
+            let args_template = GenericsBuilder::identity_for_item(self.context, requirement.id);
+            return Ok(MethodWitness {
+                impl_id: requirement.id,
+                args_template,
+            });
         }
 
         Err(ConformanceError::MissingMethod {
@@ -511,6 +531,49 @@ impl<'ctx> Actor<'ctx> {
         let fresh_impl_ty = freshener.freshen(impl_fn_ty);
 
         fresh_interface_ty == fresh_impl_ty
+    }
+
+    fn build_method_args_template(
+        &self,
+        interface_method_id: DefinitionID,
+        impl_method_id: DefinitionID,
+        record: &crate::sema::models::ConformanceRecord<'ctx>,
+    ) -> GenericArguments<'ctx> {
+        let gcx = self.context;
+        let impl_generics = gcx.generics_of(impl_method_id);
+        if impl_generics.is_empty() {
+            return gcx.store.interners.intern_generic_args(Vec::new());
+        }
+
+        let interface_sig = gcx.get_signature(interface_method_id);
+        let interface_fn_ty = self.labeled_signature_to_ty(interface_sig);
+        let substituted_interface_ty =
+            self.substitute_with_args(interface_fn_ty, record.interface.arguments);
+
+        let impl_sig = gcx.get_signature(impl_method_id);
+        let impl_fn_ty = self.labeled_signature_to_ty(impl_sig);
+
+        let icx = Rc::new(InferCtx::new(gcx));
+        let span = record.location;
+        let fresh_impl_args = icx.fresh_args_for_def(impl_method_id, span);
+        let impl_fn_ty = instantiate_ty_with_args(gcx, impl_fn_ty, fresh_impl_args);
+
+        let unifier = TypeUnifier::new(icx.clone());
+        if unifier.unify(impl_fn_ty, substituted_interface_ty).is_err() {
+            return GenericsBuilder::identity_for_item(gcx, impl_method_id);
+        }
+
+        let resolved: Vec<_> = fresh_impl_args
+            .iter()
+            .map(|arg| match arg {
+                GenericArgument::Type(ty) => {
+                    GenericArgument::Type(icx.resolve_vars_if_possible(*ty))
+                }
+                GenericArgument::Const(c) => GenericArgument::Const(*c),
+            })
+            .collect();
+
+        gcx.store.interners.intern_generic_args(resolved)
     }
 
     fn labeled_signature_to_ty(&self, sig: &LabeledFunctionSignature<'ctx>) -> Ty<'ctx> {

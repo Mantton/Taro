@@ -4,6 +4,11 @@ use crate::{
     sema::{
         models::{GenericArgument, GenericArguments, InterfaceReference, Ty, TyKind},
         resolve::models::DefinitionKind,
+        tycheck::{
+            resolve_conformance_witness,
+            utils::instantiate::{instantiate_const_with_args, instantiate_ty_with_args},
+            utils::type_head_from_value_ty,
+        },
     },
     specialize::Instance,
 };
@@ -22,6 +27,12 @@ pub fn resolve_instance<'ctx>(
     };
 
     let TyKind::BoxedExistential { interfaces } = self_ty.kind() else {
+        if let Some(instance) =
+            resolve_interface_method_for_concrete(gcx, def_id, interface_id, self_ty, args)
+        {
+            return instance;
+        }
+
         return Instance::item(def_id, args);
     };
 
@@ -34,6 +45,25 @@ pub fn resolve_instance<'ctx>(
     };
 
     Instance::virtual_call(def_id, interface_id, slot, table_index, args)
+}
+
+fn resolve_interface_method_for_concrete<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    method_id: DefinitionID,
+    interface_id: DefinitionID,
+    self_ty: Ty<'ctx>,
+    call_args: GenericArguments<'ctx>,
+) -> Option<Instance<'ctx>> {
+    let type_head = type_head_from_value_ty(self_ty)?;
+    let interface_args = interface_args_from_call(gcx, interface_id, call_args)?;
+    let interface = InterfaceReference {
+        id: interface_id,
+        arguments: interface_args,
+    };
+    let witness = resolve_conformance_witness(gcx, type_head, interface)?;
+    let method = witness.method_witnesses.get(&method_id)?;
+    let impl_args = instantiate_generic_args_with_args(gcx, method.args_template, call_args);
+    Some(Instance::item(method.impl_id, impl_args))
 }
 
 fn interface_method_parent(gcx: GlobalContext<'_>, def_id: DefinitionID) -> Option<DefinitionID> {
@@ -108,4 +138,46 @@ fn interface_has_superface(
             .get(&root_interface)
             .map_or(false, |supers| supers.contains(&target_interface))
     })
+}
+
+fn interface_args_from_call<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    interface_id: DefinitionID,
+    args: GenericArguments<'ctx>,
+) -> Option<GenericArguments<'ctx>> {
+    let count = gcx.generics_of(interface_id).total_count();
+    if count == 0 {
+        return Some(gcx.store.interners.intern_generic_args(Vec::new()));
+    }
+    if args.len() < count {
+        return None;
+    }
+    let slice: Vec<_> = args.iter().take(count).copied().collect();
+    Some(gcx.store.interners.intern_generic_args(slice))
+}
+
+fn instantiate_generic_args_with_args<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    template: GenericArguments<'ctx>,
+    args: GenericArguments<'ctx>,
+) -> GenericArguments<'ctx> {
+    if template.is_empty() {
+        return template;
+    }
+
+    let mut out = Vec::with_capacity(template.len());
+    for arg in template.iter() {
+        match arg {
+            GenericArgument::Type(ty) => {
+                let instantiated = instantiate_ty_with_args(gcx, *ty, args);
+                out.push(GenericArgument::Type(instantiated));
+            }
+            GenericArgument::Const(c) => {
+                let instantiated = instantiate_const_with_args(gcx, *c, args);
+                out.push(GenericArgument::Const(instantiated));
+            }
+        }
+    }
+
+    gcx.store.interners.intern_generic_args(out)
 }

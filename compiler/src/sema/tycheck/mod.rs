@@ -10,6 +10,7 @@ use crate::{
 
 mod check;
 mod collect;
+pub mod constraints;
 mod extend;
 mod fold;
 pub mod freshen;
@@ -39,7 +40,7 @@ pub fn typecheck_package<'ctx>(
     extend::identify::run(package, context)?; // Resolve Extension Identities
     collect::alias::run(package, context)?; // Collect Type Aliases
     collect::constant::run(package, context)?; // Collect Constant Types
-
+    collect::constraints::run(package, context)?; // Collect Generic Constraints
     collect::function::run(package, context)?; // Collect Function Type Signatures
     collect::variant::run(package, context)?; // Collect Enum Variant Definitions
     collect::field::run(package, context)?; // Collect ADT Type Definitions

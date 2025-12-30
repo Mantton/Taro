@@ -9,8 +9,7 @@ use crate::{
         models::{StructField, Ty, TyKind},
         resolve::models::{DefinitionID, DefinitionKind, PrimaryType, TypeHead},
         tycheck::utils::{
-            autoderef::Autoderef,
-            instantiate::instantiate_struct_definition_with_args,
+            autoderef::Autoderef, instantiate::instantiate_struct_definition_with_args,
         },
     },
     span::{Spanned, Symbol},
@@ -188,7 +187,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             TyKind::GcPtr => Some(TypeHead::GcPtr),
             TyKind::Tuple(items) => Some(TypeHead::Tuple(items.len() as u16)),
             TyKind::Array { .. } => Some(TypeHead::Array),
-            TyKind::Parameter(_) => todo!(),
+            TyKind::Parameter(_) => None,
             TyKind::Alias { .. } => None, // Alias should be normalized before lookup
             TyKind::Infer(_)
             | TyKind::FnPointer { .. }

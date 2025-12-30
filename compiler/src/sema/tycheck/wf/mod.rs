@@ -3,6 +3,7 @@ use crate::{
     error::CompileResult,
     hir::{self, DefinitionID, HirVisitor, walk_declaration},
     sema::models::{AdtKind, Ty, TyKind},
+    sema::tycheck::solve::ConstraintSystem,
 };
 use rustc_hash::FxHashSet;
 
@@ -28,25 +29,56 @@ struct Actor<'ctx> {
 impl<'ctx> HirVisitor for Actor<'ctx> {
     fn visit_declaration(&mut self, node: &hir::Declaration) -> Self::Result {
         match &node.kind {
-            hir::DeclarationKind::Interface(..) => {}
-            hir::DeclarationKind::Struct(_) => self.check_struct(node.id),
-            hir::DeclarationKind::Enum(_) => self.check_enum(node.id),
-            hir::DeclarationKind::Function(function) => self.check_function(node.id, function),
-            hir::DeclarationKind::TypeAlias(..) => {}
+            hir::DeclarationKind::Interface(..) => self.check_constraints(node.id),
+            hir::DeclarationKind::Struct(_) => {
+                self.check_constraints(node.id);
+                self.check_struct(node.id);
+            }
+            hir::DeclarationKind::Enum(_) => {
+                self.check_constraints(node.id);
+                self.check_enum(node.id);
+            }
+            hir::DeclarationKind::Function(function) => {
+                self.check_constraints(node.id);
+                self.check_function(node.id, function);
+            }
+            hir::DeclarationKind::TypeAlias(..) => self.check_constraints(node.id),
             hir::DeclarationKind::Constant(..) => {}
             hir::DeclarationKind::Variable(..) => {}
             hir::DeclarationKind::Import(..) => {}
             hir::DeclarationKind::Export(..) => {}
             hir::DeclarationKind::Namespace(..) => {}
-            hir::DeclarationKind::Extension(..) => {}
+            hir::DeclarationKind::Extension(..) => self.check_constraints(node.id),
             hir::DeclarationKind::Malformed => unreachable!(),
         }
 
         walk_declaration(self, node)
     }
+
+    fn visit_assoc_declaration(
+        &mut self,
+        node: &hir::AssociatedDeclaration,
+        context: hir::AssocContext,
+    ) -> Self::Result {
+        match &node.kind {
+            hir::AssociatedDeclarationKind::Function(..)
+            | hir::AssociatedDeclarationKind::Type(..)
+            | hir::AssociatedDeclarationKind::Operator(..) => {
+                self.check_constraints(node.id);
+            }
+            _ => {}
+        }
+
+        hir::walk_assoc_declaration(self, node, context)
+    }
 }
 
 impl<'ctx> Actor<'ctx> {
+    fn check_constraints(&self, id: DefinitionID) {
+        let mut cs = ConstraintSystem::new(self.context, id);
+        cs.solve_all();
+    }
+
     fn check_function(&self, id: DefinitionID, _: &hir::Function) {
         let _ = self.context.get_signature(id);
     }

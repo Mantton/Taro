@@ -2,7 +2,9 @@ use crate::{
     compile::context::Gcx,
     hir::{self, DefinitionID, NodeID},
     sema::{
-        models::{Const, ConstKind, ConstValue, GenericArguments, InferTy, Ty, TyKind},
+        models::{
+            Const, ConstKind, ConstValue, GenericArgument, GenericArguments, InferTy, Ty, TyKind,
+        },
         resolve::models::{DefinitionKind, TypeHead},
         tycheck::{
             check::{checker::Checker, gather::GatherLocalsVisitor},
@@ -155,10 +157,20 @@ impl<'ctx> Checker<'ctx> {
         self.with_infer_ctx(cs.infer_cx.clone(), || {
             GatherLocalsVisitor::from_local(&cs, &self, node);
             let local_ty = self.get_local(node.id).ty;
+            if let Some(annotation) = node.ty.as_deref() {
+                self.add_type_constraints(local_ty, annotation.span, &mut cs);
+            }
 
             if let Some(expression) = node.initializer.as_ref() {
                 let init_ty = self.synth_with_expectation(expression, Some(local_ty), &mut cs);
-                cs.equal(local_ty, init_ty, expression.span);
+                cs.add_goal(
+                    Goal::Coerce {
+                        node_id: expression.id,
+                        from: init_ty,
+                        to: local_ty,
+                    },
+                    expression.span,
+                );
             }
 
             self.check_pattern_structure(&node.pattern, local_ty, &mut cs);
@@ -197,10 +209,20 @@ impl<'ctx> Checker<'ctx> {
     fn check_local_in_block(&self, node: &hir::Local, cs: &mut Cs<'ctx>) {
         GatherLocalsVisitor::from_local(cs, self, node);
         let local_ty = self.get_local(node.id).ty;
+        if let Some(annotation) = node.ty.as_deref() {
+            self.add_type_constraints(local_ty, annotation.span, cs);
+        }
 
         if let Some(expression) = node.initializer.as_ref() {
             let init_ty = self.synth_with_expectation(expression, Some(local_ty), cs);
-            cs.equal(local_ty, init_ty, expression.span);
+            cs.add_goal(
+                Goal::Coerce {
+                    node_id: expression.id,
+                    from: init_ty,
+                    to: local_ty,
+                },
+                expression.span,
+            );
         }
 
         self.check_pattern_structure(&node.pattern, local_ty, cs);
@@ -240,7 +262,15 @@ impl<'ctx> Checker<'ctx> {
         self.with_infer_ctx(cs.infer_cx.clone(), || {
             let provided = self.synth_with_expectation(expression, expectation, &mut cs);
             if let Some(expectation) = expectation {
-                cs.equal(expectation, provided, expression.span);
+                self.add_type_constraints(expectation, expression.span, &mut cs);
+                cs.add_goal(
+                    Goal::Coerce {
+                        node_id: expression.id,
+                        from: provided,
+                        to: expectation,
+                    },
+                    expression.span,
+                );
             }
             cs.solve_all();
 
@@ -312,6 +342,48 @@ impl<'ctx> Checker<'ctx> {
 
 type Cs<'c> = ConstraintSystem<'c>;
 impl<'ctx> Checker<'ctx> {
+    fn add_type_constraints(&self, ty: Ty<'ctx>, span: Span, cs: &mut Cs<'ctx>) {
+        let ty = cs.infer_cx.resolve_vars_if_possible(ty);
+        match ty.kind() {
+            TyKind::Adt(def, args) => {
+                cs.add_constraints_for_def(def.id, Some(args), span);
+                for arg in args.iter() {
+                    if let GenericArgument::Type(ty) = arg {
+                        self.add_type_constraints(*ty, span, cs);
+                    }
+                }
+            }
+            TyKind::Alias { def_id, args, .. } => {
+                cs.add_constraints_for_def(def_id, Some(args), span);
+                let normalized = crate::sema::tycheck::utils::normalize_ty(self.gcx(), ty);
+                if normalized != ty {
+                    self.add_type_constraints(normalized, span, cs);
+                }
+            }
+            TyKind::BoxedExistential { interfaces } => {
+                for iface in interfaces.iter() {
+                    cs.add_constraints_for_def(iface.id, Some(iface.arguments), span);
+                }
+            }
+            TyKind::Array { element, .. } => self.add_type_constraints(element, span, cs),
+            TyKind::Tuple(items) => {
+                for item in items.iter() {
+                    self.add_type_constraints(*item, span, cs);
+                }
+            }
+            TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => {
+                self.add_type_constraints(inner, span, cs);
+            }
+            TyKind::FnPointer { inputs, output } => {
+                for input in inputs.iter() {
+                    self.add_type_constraints(*input, span, cs);
+                }
+                self.add_type_constraints(output, span, cs);
+            }
+            _ => {}
+        }
+    }
+
     fn synth_with_needs(
         &self,
         node: &hir::Expression,
@@ -463,6 +535,7 @@ impl<'ctx> Checker<'ctx> {
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         let target_ty = self.lower_type(target);
+        self.add_type_constraints(target_ty, target.span, cs);
         let value_ty = self.synth(value, cs);
 
         if target_ty.is_error() || value_ty.is_error() {
@@ -1107,7 +1180,7 @@ impl<'ctx> Checker<'ctx> {
             callee_ty,
             callee_source: self.resolve_callee(callee),
             result_ty,
-            expect_ty,
+            _expect_ty: expect_ty,
             arguments: apply_arguments,
             skip_labels: false,
         };
@@ -1656,6 +1729,7 @@ impl<'ctx> Checker<'ctx> {
                 };
                 let instantiated = instantiate_ty_with_args(self.gcx(), ty, args);
                 cs.record_instantiation(node_id, args);
+                cs.add_constraints_for_def(def_id, Some(args), span);
                 return instantiated;
             }
         }
@@ -1675,6 +1749,10 @@ impl<'ctx> Checker<'ctx> {
         let (resolution, base_args) =
             self.resolve_value_path_resolution_with_args(path, expression.span, true);
         self.record_value_path_resolution(expression.id, &resolution);
+        if let hir::ResolvedPath::Relative(base_ty, _) = path {
+            let ty = self.lower_type(base_ty);
+            self.add_type_constraints(ty, base_ty.span, cs);
+        }
         self.instantiate_value_path(
             expression.id,
             expression.span,
@@ -1749,6 +1827,7 @@ impl<'ctx> Checker<'ctx> {
             );
             return Ty::error(gcx);
         }
+        self.add_type_constraints(struct_ty, type_span, cs);
 
         // Synthesize fields
         let mut fields = Vec::with_capacity(lit.fields.len());
@@ -2073,6 +2152,10 @@ impl<'ctx> Checker<'ctx> {
     ) -> Option<(crate::sema::models::EnumVariant<'ctx>, Ty<'ctx>)> {
         match path {
             hir::PatternPath::Qualified { path } => {
+                if let hir::ResolvedPath::Relative(base_ty, _) = path {
+                    let ty = self.lower_type(base_ty);
+                    self.add_type_constraints(ty, base_ty.span, cs);
+                }
                 let (resolution, base_args) =
                     self.resolve_value_path_resolution_with_args(path, span, true);
                 self.record_value_path_resolution(id, &resolution);
@@ -2189,6 +2272,7 @@ impl<'ctx> Checker<'ctx> {
         };
 
         let enum_ty = Ty::new(TyKind::Adt(def.adt_def, args), gcx);
+        cs.add_constraints_for_def(enum_id, Some(args), span);
         let def = crate::sema::tycheck::utils::instantiate::instantiate_enum_definition_with_args(
             gcx, &def, args,
         );
@@ -2294,6 +2378,7 @@ impl<'ctx> Checker<'ctx> {
 
         // Instantiate the variant with the scrutinee's type arguments
         let enum_ty = Ty::new(TyKind::Adt(adt_def, args), gcx);
+        cs.add_constraints_for_def(enum_id, Some(args), span);
         let instantiated_def =
             crate::sema::tycheck::utils::instantiate::instantiate_enum_definition_with_args(
                 gcx, def, args,

@@ -97,20 +97,21 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         // Instantiate the candidate type if it has generics
         let generics = self.gcx().generics_of(source);
-        let actual_ty = if !generics.is_empty() {
+        let (actual_ty, instantiation_args) = if !generics.is_empty() {
             let args = self.icx.fresh_args_for_def(source, location);
             let instantiated = instantiate_ty_with_args(self.gcx(), candidate_ty, args);
             self.record_instantiation(node_id, args);
-            instantiated
+            (instantiated, Some(args))
         } else {
-            candidate_ty
+            (candidate_ty, None)
         };
 
         match self.unify(var_ty, actual_ty) {
             Ok(_) => {
                 self.record_overload_source(node_id, source);
                 self.icx.bind_overload(var_ty, source);
-                SolverResult::Solved(vec![])
+                let obligations = self.constraints_for_def(source, instantiation_args, location);
+                SolverResult::Solved(obligations)
             }
             Err(e) => {
                 let error = Spanned::new(e, location);
@@ -139,7 +140,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 }
                 self.record_overload_source(node_id, call_info.method_id);
                 self.record_interface_call(node_id, call_info);
-                SolverResult::Solved(vec![])
+                let obligations =
+                    self.constraints_for_def(call_info.method_id, instantiation_args, location);
+                SolverResult::Solved(obligations)
             }
             Err(e) => {
                 let error = Spanned::new(e, location);
