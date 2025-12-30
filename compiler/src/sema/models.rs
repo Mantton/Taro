@@ -213,6 +213,10 @@ impl<'ctx> Ty<'ctx> {
                         GenericArgument::Const(c) => visit(c.ty),
                     })
                 }),
+                TyKind::Alias { args, .. } => args.iter().any(|arg| match arg {
+                    GenericArgument::Type(ty) => visit(*ty),
+                    GenericArgument::Const(c) => visit(c.ty),
+                }),
                 _ => false,
             }
         }
@@ -261,6 +265,8 @@ pub enum AliasKind {
     Inherent,
     /// Top-level type alias: `type Foo = [Int]`
     Weak,
+    /// Interface associated type accessed on a type parameter: `T.Item`
+    Projection,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

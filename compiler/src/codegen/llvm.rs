@@ -2987,6 +2987,7 @@ fn lower_type<'llvm, 'gcx>(
     } else {
         instantiate_ty_with_args(gcx, ty, subst)
     };
+    let ty = crate::sema::tycheck::utils::normalize_ty(gcx, ty);
 
     match ty.kind() {
         TyKind::Bool => Some(context.bool_type().into()),

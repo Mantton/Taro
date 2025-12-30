@@ -250,6 +250,7 @@ impl<'r, 'a> ast::AstVisitor for Actor<'r, 'a> {
 
     fn visit_generic_bound(&mut self, node: &ast::GenericBound) -> Self::Result {
         self.resolve_path_with_source(node.path.id, &node.path.path, ResolutionSource::Interface);
+        ast::walk_generic_bound(self, node)
     }
 
     fn visit_statement(&mut self, node: &ast::Statement) -> Self::Result {

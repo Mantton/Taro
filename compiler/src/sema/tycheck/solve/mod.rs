@@ -3,7 +3,9 @@ use crate::{
     hir::NodeID,
     sema::{
         error::SpannedErrorList,
-        models::{Constraint, GenericArguments, InterfaceReference, Ty, TyKind},
+        models::{
+            AliasKind, Constraint, GenericArgument, GenericArguments, InterfaceReference, Ty, TyKind,
+        },
         tycheck::infer::InferCtx,
         tycheck::{
             constraints::canonical_constraints_of,
@@ -433,6 +435,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
         {
             return SolverResult::Solved(vec![]);
         }
+        if contains_projection(lhs) || contains_projection(rhs) {
+            return SolverResult::Solved(vec![]);
+        }
 
         self.solve_equality(location, lhs, rhs)
     }
@@ -448,6 +453,32 @@ impl<'ctx> ConstraintSolver<'ctx> {
             instantiation_args: self.instantiation_args.clone(),
             current_def: self.current_def,
         }
+    }
+}
+
+fn contains_projection<'ctx>(ty: Ty<'ctx>) -> bool {
+    match ty.kind() {
+        TyKind::Alias {
+            kind: AliasKind::Projection,
+            ..
+        } => true,
+        TyKind::Alias { args, .. } | TyKind::Adt(_, args) => args.iter().any(|arg| match arg {
+            GenericArgument::Type(ty) => contains_projection(*ty),
+            GenericArgument::Const(c) => contains_projection(c.ty),
+        }),
+        TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => contains_projection(inner),
+        TyKind::Array { element, .. } => contains_projection(element),
+        TyKind::Tuple(items) => items.iter().any(|ty| contains_projection(*ty)),
+        TyKind::FnPointer { inputs, output } => {
+            inputs.iter().any(|ty| contains_projection(*ty)) || contains_projection(output)
+        }
+        TyKind::BoxedExistential { interfaces } => interfaces.iter().any(|iface| {
+            iface.arguments.iter().any(|arg| match arg {
+                GenericArgument::Type(ty) => contains_projection(*ty),
+                GenericArgument::Const(c) => contains_projection(c.ty),
+            })
+        }),
+        _ => false,
     }
 }
 

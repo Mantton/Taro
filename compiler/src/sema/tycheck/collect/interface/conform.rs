@@ -4,21 +4,21 @@ use crate::{
     hir::{self, DefinitionID, OperatorKind},
     sema::{
         models::{
-            AssociatedTypeDefinition, ConformanceWitness, GenericArgument, GenericArguments,
-            InterfaceConstantRequirement, InterfaceDefinition, InterfaceMethodRequirement,
-            InterfaceOperatorRequirement, InterfaceReference, InterfaceRequirements,
-            LabeledFunctionSignature, MethodWitness, Ty,
+            AliasKind, AssociatedTypeDefinition, ConformanceWitness, GenericArgument,
+            GenericArguments, InterfaceConstantRequirement, InterfaceDefinition,
+            InterfaceMethodRequirement, InterfaceOperatorRequirement, InterfaceReference,
+            InterfaceRequirements, LabeledFunctionSignature, MethodWitness, Ty, TyKind,
         },
         resolve::models::TypeHead,
         tycheck::{
-            fold::{TypeFoldable, TypeFolder},
+            fold::{TypeFoldable, TypeFolder, TypeSuperFoldable},
             infer::InferCtx,
             utils::{generics::GenericsBuilder, unify::TypeUnifier},
         },
     },
     span::Symbol,
 };
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::rc::Rc;
 
 use crate::sema::tycheck::utils::instantiate::{
@@ -149,7 +149,7 @@ impl<'ctx> Actor<'ctx> {
 
         // 2. Check methods
         for method in &requirements.methods {
-            match self.find_method_witness(type_head, method, record) {
+            match self.find_method_witness(type_head, method, record, &witness.type_witnesses) {
                 Ok(witness_entry) => {
                     witness.method_witnesses.insert(method.id, witness_entry);
                 }
@@ -369,6 +369,7 @@ impl<'ctx> Actor<'ctx> {
         type_head: TypeHead,
         requirement: &InterfaceMethodRequirement<'ctx>,
         record: &crate::sema::models::ConformanceRecord<'ctx>,
+        type_witnesses: &FxHashMap<DefinitionID, Ty<'ctx>>,
     ) -> Result<MethodWitness<'ctx>, ConformanceError<'ctx>> {
         // Look up candidates in type's member index
         let candidates = self
@@ -383,9 +384,13 @@ impl<'ctx> Actor<'ctx> {
 
         // Find matching signature
         for candidate in candidates {
-            if self.signatures_match(requirement.id, candidate, record) {
-                let args_template =
-                    self.build_method_args_template(requirement.id, candidate, record);
+            if self.signatures_match(requirement.id, candidate, record, type_witnesses) {
+                let args_template = self.build_method_args_template(
+                    requirement.id,
+                    candidate,
+                    record,
+                    type_witnesses,
+                );
                 return Ok(MethodWitness {
                     impl_id: candidate,
                     args_template,
@@ -501,6 +506,7 @@ impl<'ctx> Actor<'ctx> {
         interface_fn_id: DefinitionID,
         impl_fn_id: DefinitionID,
         record: &crate::sema::models::ConformanceRecord<'ctx>,
+        type_witnesses: &FxHashMap<DefinitionID, Ty<'ctx>>,
     ) -> bool {
         let gcx = self.context;
 
@@ -522,6 +528,7 @@ impl<'ctx> Actor<'ctx> {
         // 3. Substitute Self and interface args into requirement signature
         let interface_fn_ty = self.labeled_signature_to_ty(interface_sig);
         let substituted_ty = self.substitute_with_args(interface_fn_ty, record.interface.arguments);
+        let substituted_ty = self.substitute_projection_witnesses(substituted_ty, type_witnesses);
 
         let impl_fn_ty = self.labeled_signature_to_ty(impl_sig);
 
@@ -538,6 +545,7 @@ impl<'ctx> Actor<'ctx> {
         interface_method_id: DefinitionID,
         impl_method_id: DefinitionID,
         record: &crate::sema::models::ConformanceRecord<'ctx>,
+        type_witnesses: &FxHashMap<DefinitionID, Ty<'ctx>>,
     ) -> GenericArguments<'ctx> {
         let gcx = self.context;
         let impl_generics = gcx.generics_of(impl_method_id);
@@ -549,6 +557,8 @@ impl<'ctx> Actor<'ctx> {
         let interface_fn_ty = self.labeled_signature_to_ty(interface_sig);
         let substituted_interface_ty =
             self.substitute_with_args(interface_fn_ty, record.interface.arguments);
+        let substituted_interface_ty =
+            self.substitute_projection_witnesses(substituted_interface_ty, type_witnesses);
 
         let impl_sig = gcx.get_signature(impl_method_id);
         let impl_fn_ty = self.labeled_signature_to_ty(impl_sig);
@@ -601,6 +611,22 @@ impl<'ctx> Actor<'ctx> {
         let mut substitutor = ArgSubstitutor {
             gcx: self.context,
             args,
+        };
+        ty.fold_with(&mut substitutor)
+    }
+
+    fn substitute_projection_witnesses(
+        &self,
+        ty: Ty<'ctx>,
+        type_witnesses: &FxHashMap<DefinitionID, Ty<'ctx>>,
+    ) -> Ty<'ctx> {
+        if type_witnesses.is_empty() {
+            return ty;
+        }
+
+        let mut substitutor = ProjectionSubstitutor {
+            gcx: self.context,
+            type_witnesses,
         };
         ty.fold_with(&mut substitutor)
     }
@@ -684,6 +710,34 @@ impl<'ctx> TypeFolder<'ctx> for ArgSubstitutor<'ctx> {
                     }
                 }
                 ty
+            }
+            _ => ty.super_fold_with(self),
+        }
+    }
+}
+
+struct ProjectionSubstitutor<'ctx, 'w> {
+    gcx: Gcx<'ctx>,
+    type_witnesses: &'w FxHashMap<DefinitionID, Ty<'ctx>>,
+}
+
+impl<'ctx> TypeFolder<'ctx> for ProjectionSubstitutor<'ctx, '_> {
+    fn gcx(&self) -> Gcx<'ctx> {
+        self.gcx
+    }
+
+    fn fold_ty(&mut self, ty: Ty<'ctx>) -> Ty<'ctx> {
+        match ty.kind() {
+            TyKind::Alias {
+                kind: AliasKind::Projection,
+                def_id,
+                args,
+            } => {
+                if let Some(witness_ty) = self.type_witnesses.get(&def_id) {
+                    let instantiated = instantiate_ty_with_args(self.gcx, *witness_ty, args);
+                    return instantiated.fold_with(self);
+                }
+                ty.super_fold_with(self)
             }
             _ => ty.super_fold_with(self),
         }

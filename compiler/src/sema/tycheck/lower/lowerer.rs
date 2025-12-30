@@ -3,21 +3,25 @@ use crate::{
     hir::{self, DefinitionID, DefinitionKind, Resolution},
     sema::{
         models::{
-            AdtDef, AdtKind, Const, ConstKind, ConstValue, GenericArgument, GenericArguments,
-            GenericParameter, GenericParameterDefinition, GenericParameterDefinitionKind,
-            InterfaceReference, Ty, TyKind,
+            AdtDef, AdtKind, AliasKind, Const, ConstKind, ConstValue, Constraint,
+            GenericArgument, GenericArguments, GenericParameter, GenericParameterDefinition,
+            GenericParameterDefinitionKind, InterfaceDefinition, InterfaceReference, Ty, TyKind,
         },
         resolve::models::{PrimaryType, TypeHead},
         tycheck::{
             lower::LoweringRequest,
             utils::{
-                const_eval::eval_const_expression, instantiate::instantiate_ty_with_args,
+                const_eval::eval_const_expression,
+                instantiate::{instantiate_interface_ref_with_args, instantiate_ty_with_args},
                 type_head_from_value_ty,
             },
         },
     },
     span::{Span, Symbol},
 };
+
+use rustc_hash::FxHashSet;
+use std::collections::VecDeque;
 
 thread_local! {
     static LOWERING_REQUEST: LoweringRequest = LoweringRequest::new();
@@ -363,7 +367,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         let gcx = self.gcx();
         let base_ty = self.lower_type(base_ty);
         if let TyKind::Parameter(param) = base_ty.kind() {
-            return self.lower_projection_type_path(param, segment.identifier.symbol, segment.span);
+            return self.lower_projection_type_path(param, segment);
         }
         let Some(head) = type_head_from_value_ty(base_ty) else {
             gcx.dcx().emit_error(
@@ -450,20 +454,140 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
     fn lower_projection_type_path(
         &self,
         base_param: GenericParameter,
-        name: Symbol,
-        span: Span,
+        segment: &hir::PathSegment,
     ) -> Ty<'ctx> {
         let gcx = self.gcx();
-        // TODO: Resolve associated types on generic parameters using bounds.
-        gcx.dcx().emit_error(
-            format!(
-                "associated type '{}' on generic parameter '{}' is not supported yet",
-                name.as_str(),
-                base_param.name.as_str()
-            ),
-            Some(span),
-        );
-        gcx.types.error
+        let name = segment.identifier.symbol;
+
+        let Some(def_id) = self.current_definition() else {
+            gcx.dcx().emit_error(
+                format!(
+                    "cannot resolve associated type '{}' without a surrounding definition",
+                    name.as_str()
+                ),
+                Some(segment.span),
+            );
+            return gcx.types.error;
+        };
+
+        let constraints = self.constraints_in_scope(def_id);
+        let mut candidates: Vec<(DefinitionID, InterfaceReference<'ctx>)> = Vec::new();
+        let mut has_bounds = false;
+
+        for constraint in constraints {
+            let Constraint::Bound { ty, interface } = constraint.value else {
+                continue;
+            };
+            if matches!(ty.kind(), TyKind::Parameter(param) if param == base_param) {
+                has_bounds = true;
+                self.collect_projection_candidates(interface, name, &mut candidates);
+            }
+        }
+
+        if candidates.is_empty() {
+            let message = if has_bounds {
+                format!(
+                    "no associated type '{}' found in bounds for '{}'",
+                    name.as_str(),
+                    base_param.name.as_str()
+                )
+            } else {
+                format!(
+                    "cannot resolve associated type '{}' on '{}' without interface bounds",
+                    name.as_str(),
+                    base_param.name.as_str()
+                )
+            };
+            gcx.dcx().emit_error(message, Some(segment.span));
+            return gcx.types.error;
+        }
+
+        let mut seen = FxHashSet::default();
+        candidates.retain(|candidate| seen.insert(*candidate));
+
+        if candidates.len() > 1 {
+            let mut names: Vec<_> = candidates
+                .iter()
+                .map(|(_, iface)| iface.format(gcx))
+                .collect();
+            names.sort();
+            names.dedup();
+            gcx.dcx().emit_error(
+                format!(
+                    "ambiguous associated type '{}' for '{}'; candidates: {}",
+                    name.as_str(),
+                    base_param.name.as_str(),
+                    names.join(", "),
+                ),
+                Some(segment.span),
+            );
+            return gcx.types.error;
+        }
+
+        let (assoc_id, interface) = candidates[0];
+        let _ = check_generics_prohibited(assoc_id, segment, gcx);
+        Ty::new(
+            TyKind::Alias {
+                kind: AliasKind::Projection,
+                def_id: assoc_id,
+                args: interface.arguments,
+            },
+            gcx,
+        )
+    }
+
+    fn collect_projection_candidates(
+        &self,
+        root: InterfaceReference<'ctx>,
+        name: Symbol,
+        out: &mut Vec<(DefinitionID, InterfaceReference<'ctx>)>,
+    ) {
+        let gcx = self.gcx();
+        let mut queue = VecDeque::new();
+        let mut seen: FxHashSet<InterfaceReference<'ctx>> = FxHashSet::default();
+
+        if seen.insert(root) {
+            queue.push_back(root);
+        }
+
+        while let Some(current) = queue.pop_front() {
+            let Some(def) = self.interface_definition(current.id) else {
+                continue;
+            };
+
+            if let Some(&assoc_id) = def.assoc_types.get(&name) {
+                out.push((assoc_id, current));
+            }
+
+            for superface in &def.superfaces {
+                let iface =
+                    instantiate_interface_ref_with_args(gcx, superface.value, current.arguments);
+                if seen.insert(iface) {
+                    queue.push_back(iface);
+                }
+            }
+        }
+    }
+
+    fn interface_definition(
+        &self,
+        interface_id: DefinitionID,
+    ) -> Option<&'ctx InterfaceDefinition<'ctx>> {
+        self.gcx().with_type_database(interface_id.package(), |db| {
+            db.def_to_iface_def.get(&interface_id).copied()
+        })
+    }
+
+    fn constraints_in_scope(
+        &self,
+        def_id: DefinitionID,
+    ) -> Vec<crate::span::Spanned<Constraint<'ctx>>> {
+        let gcx = self.gcx();
+        let mut constraints = gcx.constraints_of(def_id);
+        if let Some(parent) = gcx.definition_parent(def_id) {
+            constraints.extend(self.constraints_in_scope(parent));
+        }
+        constraints
     }
 
     /// Resolve a type alias with cycle detection (no instantiation).
