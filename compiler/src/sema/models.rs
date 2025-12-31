@@ -179,9 +179,30 @@ impl<'arena> Ty<'arena> {
                 InferTy::FreshTy(_) => todo!(),
             },
             TyKind::Parameter(p) => format!("{}", p.name.as_str()),
-            TyKind::Alias { def_id, .. } => {
+            TyKind::Alias {
+                kind,
+                def_id,
+                args,
+            } => {
                 let ident = gcx.definition_ident(def_id);
-                ident.symbol.as_str().into()
+                if kind == AliasKind::Projection {
+                    if let Some(GenericArgument::Type(self_ty)) = args.get(0) {
+                        let mut out = format!("{}.{}", self_ty.format(gcx), ident.symbol.as_str());
+                        if args.len() > 1 {
+                            out.push_str(&format_generic_args(&args[1..], gcx));
+                        }
+                        out
+                    } else {
+                        // Fallback/Should not happen for valid projections
+                        let mut out = String::from(ident.symbol.as_str());
+                        out.push_str(&format_generic_args(args, gcx));
+                        out
+                    }
+                } else {
+                    let mut out = String::from(ident.symbol.as_str());
+                    out.push_str(&format_generic_args(args, gcx));
+                    out
+                }
             }
         }
     }

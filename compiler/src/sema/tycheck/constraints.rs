@@ -60,12 +60,12 @@ fn normalize_constraints<'ctx>(
             let normalized = match c.value {
                 Constraint::TypeEquality(lhs, rhs) => {
                     Constraint::TypeEquality(
-                        crate::sema::tycheck::utils::normalize_ty(gcx, lhs),
-                        crate::sema::tycheck::utils::normalize_ty(gcx, rhs),
+                        crate::sema::tycheck::utils::normalize_aliases(gcx, lhs),
+                        crate::sema::tycheck::utils::normalize_aliases(gcx, rhs),
                     )
                 }
                 Constraint::Bound { ty, interface } => Constraint::Bound {
-                    ty: crate::sema::tycheck::utils::normalize_ty(gcx, ty),
+                    ty: crate::sema::tycheck::utils::normalize_aliases(gcx, ty),
                     interface: normalize_interface_ref(gcx, interface),
                 },
             };
@@ -326,7 +326,7 @@ fn normalize_interface_ref<'ctx>(
     for arg in interface.arguments.iter() {
         match arg {
             GenericArgument::Type(ty) => {
-                let normalized = crate::sema::tycheck::utils::normalize_ty(gcx, *ty);
+                let normalized = crate::sema::tycheck::utils::normalize_aliases(gcx, *ty);
                 new_args.push(GenericArgument::Type(normalized));
             }
             GenericArgument::Const(c) => new_args.push(GenericArgument::Const(*c)),

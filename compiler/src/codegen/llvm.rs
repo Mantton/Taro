@@ -1569,8 +1569,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 .as_ref()
                 .and_then(|w| w.method_witnesses.get(&method.id))
             {
-                let args =
-                    self.instantiate_generic_args_with_args(method_witness.args_template, iface.arguments);
+                let args = self.instantiate_generic_args_with_args(
+                    method_witness.args_template,
+                    iface.arguments,
+                );
                 (method_witness.impl_id, args)
             } else {
                 (method.id, iface.arguments)
@@ -2482,9 +2484,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         }
                         BasicTypeEnum::ArrayType(arr_ty) => {
                             let zero = self.usize_ty.const_zero();
-                            let idx_val = self
-                                .usize_ty
-                                .const_int(idx.index() as u64, false);
+                            let idx_val = self.usize_ty.const_int(idx.index() as u64, false);
                             let gep = unsafe {
                                 self.builder
                                     .build_gep(arr_ty, ptr, &[zero, idx_val], "array_elem_ptr")
@@ -2974,6 +2974,7 @@ fn lower_fn_sig<'llvm, 'gcx>(
     }
 }
 
+#[track_caller]
 fn lower_type<'llvm, 'gcx>(
     context: &'llvm Context,
     gcx: GlobalContext<'gcx>,
@@ -2987,7 +2988,7 @@ fn lower_type<'llvm, 'gcx>(
     } else {
         instantiate_ty_with_args(gcx, ty, subst)
     };
-    let ty = crate::sema::tycheck::utils::normalize_ty(gcx, ty);
+    let ty = crate::sema::tycheck::utils::normalize_aliases(gcx, ty);
 
     match ty.kind() {
         TyKind::Bool => Some(context.bool_type().into()),
@@ -3003,9 +3004,7 @@ fn lower_type<'llvm, 'gcx>(
                 return None;
             };
             let count = match len.kind {
-                ConstKind::Value(ConstValue::Integer(i)) if i >= 0 => {
-                    usize::try_from(i).ok()?
-                }
+                ConstKind::Value(ConstValue::Integer(i)) if i >= 0 => usize::try_from(i).ok()?,
                 _ => return None,
             };
             Some(elem_ty.array_type(count as u32).into())

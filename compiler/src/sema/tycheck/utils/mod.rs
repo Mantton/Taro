@@ -8,9 +8,11 @@ pub mod const_eval;
 pub mod generics;
 pub mod instantiate;
 pub mod normalize;
+pub mod param_env;
 pub mod unify;
 
-pub use normalize::normalize_ty;
+pub use normalize::{normalize_aliases, normalize_ty};
+pub use param_env::ParamEnv;
 
 pub enum AutoReference {
     None,

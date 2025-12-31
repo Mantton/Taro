@@ -1,8 +1,8 @@
 use crate::{
     sema::tycheck::{
         solve::{
-            BindInterfaceMethodGoalData, BindOverloadGoalData, ConstraintSolver,
-            DisjunctionBranch, Obligation, SolverDriver, SolverResult, rank_branches,
+            BindInterfaceMethodGoalData, BindOverloadGoalData, ConstraintSolver, DisjunctionBranch,
+            Obligation, SolverDriver, SolverResult, rank_branches,
         },
         utils::instantiate::instantiate_ty_with_args,
     },

@@ -1,10 +1,7 @@
 use crate::sema::{
     error::{ExpectedFound, TypeError},
     models::{GenericArgument, GenericArguments, InferTy, Ty, TyKind},
-    tycheck::{
-        infer::{keys::FloatVarValue, keys::IntVarValue, InferCtx},
-        utils::normalize_ty,
-    },
+    tycheck::infer::{keys::FloatVarValue, keys::IntVarValue, InferCtx},
 };
 use std::rc::Rc;
 
@@ -53,9 +50,10 @@ impl<'ctx> TypeUnifier<'ctx> {
         Ok(())
     }
 
+    /// Resolve inference variables only (no normalization).
+    /// The caller (ConstraintSolver) is responsible for normalization.
     pub fn structurally_resolve(&self, ty: Ty<'ctx>) -> Ty<'ctx> {
-        let ty = self.icx.resolve_vars_if_possible(ty);
-        normalize_ty(self.icx.gcx, ty)
+        self.icx.resolve_vars_if_possible(ty)
     }
 
     fn unify_inference_vars(&self, a: Ty<'ctx>, b: Ty<'ctx>) -> UnificationResult<'ctx> {

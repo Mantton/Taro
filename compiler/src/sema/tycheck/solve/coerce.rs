@@ -34,10 +34,6 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return result;
         }
 
-        if self.in_scope_equal(from, to) {
-            return SolverResult::Solved(vec![]);
-        }
-
         // Minimal coercion: just equality for now.
         self.solve_equality(location, to, from)
     }

@@ -4,18 +4,19 @@ use crate::{
     sema::{
         error::SpannedErrorList,
         models::{
-            AliasKind, Constraint, GenericArgument, GenericArguments, InterfaceReference, Ty, TyKind,
+            AliasKind, Constraint, GenericArgument, GenericArguments, InterfaceReference, Ty,
+            TyKind,
         },
-        tycheck::infer::InferCtx,
         tycheck::{
             constraints::canonical_constraints_of,
-            utils::{instantiate::instantiate_constraint_with_args, normalize_ty},
+            infer::InferCtx,
+            utils::{ParamEnv, instantiate::instantiate_constraint_with_args, normalize_ty},
         },
     },
     span::{Span, Spanned},
 };
 pub use models::*;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use std::{cell::RefCell, cmp::Reverse, collections::VecDeque, rc::Rc};
 
 mod adt;
@@ -41,6 +42,7 @@ pub struct ConstraintSystem<'ctx> {
     overload_sources: FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
     instantiation_args: FxHashMap<NodeID, GenericArguments<'ctx>>,
     current_def: crate::sema::resolve::models::DefinitionID,
+    env: ParamEnv<'ctx>,
 }
 
 impl<'ctx> ConstraintSystem<'ctx> {
@@ -48,7 +50,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
         context: Gcx<'ctx>,
         current_def: crate::sema::resolve::models::DefinitionID,
     ) -> ConstraintSystem<'ctx> {
-        let mut cs = ConstraintSystem {
+        ConstraintSystem {
             infer_cx: Rc::new(InferCtx::new(context)),
             obligations: Default::default(),
             expr_tys: Default::default(),
@@ -59,11 +61,13 @@ impl<'ctx> ConstraintSystem<'ctx> {
             overload_sources: Default::default(),
             instantiation_args: Default::default(),
             current_def,
-        };
-
-        let def_span = context.definition_ident(current_def).span;
-        cs.add_constraints_for_def(current_def, None, def_span);
-        cs
+            env: ParamEnv::new(
+                canonical_constraints_of(context, current_def)
+                    .into_iter()
+                    .map(|c| c.value)
+                    .collect(),
+            ),
+        }
     }
 }
 
@@ -124,13 +128,12 @@ impl<'ctx> ConstraintSystem<'ctx> {
         self.expr_tys
             .iter()
             .map(|(&id, &ty)| {
-                let resolved = self.infer_cx.resolve_vars_if_possible(ty);
+                let resolved = self.structurally_resolve(ty);
                 let resolved = if resolved.is_infer() {
                     Ty::error(gcx)
                 } else {
                     resolved
                 };
-                let resolved = normalize_ty(gcx, resolved);
                 (id, resolved)
             })
             .collect()
@@ -142,13 +145,12 @@ impl<'ctx> ConstraintSystem<'ctx> {
             .borrow()
             .iter()
             .map(|(&id, &ty)| {
-                let resolved = self.infer_cx.resolve_vars_if_possible(ty);
+                let resolved = self.structurally_resolve(ty);
                 let resolved = if resolved.is_infer() {
                     Ty::error(gcx)
                 } else {
                     resolved
                 };
-                let resolved = normalize_ty(gcx, resolved);
                 (id, resolved)
             })
             .collect()
@@ -187,7 +189,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
                     .iter()
                     .map(|arg| match arg {
                         GenericArgument::Type(ty) => {
-                            let resolved = self.infer_cx.resolve_vars_if_possible(*ty);
+                            let resolved = self.structurally_resolve(*ty);
                             GenericArgument::Type(resolved)
                         }
                         GenericArgument::Const(c) => GenericArgument::Const(*c),
@@ -198,10 +200,22 @@ impl<'ctx> ConstraintSystem<'ctx> {
             })
             .collect()
     }
+
+    fn structurally_resolve(&self, ty: Ty<'ctx>) -> Ty<'ctx> {
+        let ty = self.infer_cx.resolve_vars_if_possible(ty);
+        normalize_ty(self.infer_cx.clone(), ty, &self.env)
+    }
 }
 
 impl<'ctx> ConstraintSystem<'ctx> {
     pub fn solve_all(&mut self) {
+        let param_env = ParamEnv::new(
+            canonical_constraints_of(self.infer_cx.gcx, self.current_def)
+                .into_iter()
+                .map(|c| c.value)
+                .collect(),
+        );
+
         let solver = ConstraintSolver {
             icx: self.infer_cx.clone(),
             obligations: std::mem::take(&mut self.obligations),
@@ -211,6 +225,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
             overload_sources: std::mem::take(&mut self.overload_sources),
             instantiation_args: std::mem::take(&mut self.instantiation_args),
             current_def: self.current_def,
+            param_env,
         };
 
         let mut driver = SolverDriver::new(solver);
@@ -272,6 +287,7 @@ struct ConstraintSolver<'ctx> {
     overload_sources: FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
     instantiation_args: FxHashMap<NodeID, GenericArguments<'ctx>>,
     current_def: crate::sema::resolve::models::DefinitionID,
+    param_env: ParamEnv<'ctx>,
 }
 
 impl<'ctx> ConstraintSolver<'ctx> {
@@ -325,62 +341,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
             .collect()
     }
 
-    fn constraints_in_scope(&self) -> Vec<Constraint<'ctx>> {
-        canonical_constraints_of(self.gcx(), self.current_def)
-            .into_iter()
-            .map(|c| c.value)
-            .collect()
-    }
-
-    fn equivalent_types_in_scope(&self, ty: Ty<'ctx>) -> FxHashSet<Ty<'ctx>> {
-        let ty = self.structurally_resolve(ty);
-        let constraints = self.constraints_in_scope();
-        let mut edges = Vec::new();
-        for constraint in constraints {
-            if let Constraint::TypeEquality(a, b) = constraint {
-                edges.push((a, b));
-            }
-        }
-
-        let mut seen: FxHashSet<Ty<'ctx>> = FxHashSet::default();
-        let mut stack = vec![ty];
-        seen.insert(ty);
-
-        while let Some(cur) = stack.pop() {
-            for (a, b) in edges.iter() {
-                if *a == cur && seen.insert(*b) {
-                    stack.push(*b);
-                } else if *b == cur && seen.insert(*a) {
-                    stack.push(*a);
-                }
-            }
-        }
-
-        seen
-    }
-
-    fn in_scope_equal(&self, a: Ty<'ctx>, b: Ty<'ctx>) -> bool {
-        let a = self.structurally_resolve(a);
-        let b = self.structurally_resolve(b);
-        if a == b {
-            return true;
-        }
-        self.equivalent_types_in_scope(a).contains(&b)
-    }
-
     fn bounds_for_type_in_scope(&self, ty: Ty<'ctx>) -> Vec<InterfaceReference<'ctx>> {
-        let eq_set = self.equivalent_types_in_scope(ty);
-        let mut out: FxHashSet<InterfaceReference<'ctx>> = FxHashSet::default();
-
-        for constraint in self.constraints_in_scope() {
-            if let Constraint::Bound { ty, interface } = constraint {
-                if eq_set.contains(&ty) {
-                    out.insert(interface);
-                }
-            }
-        }
-
-        out.into_iter().collect()
+        self.param_env.bounds_for(self.structurally_resolve(ty))
     }
 
     fn solve(&mut self, obligation: Obligation<'ctx>) -> SolverResult<'ctx> {
@@ -427,16 +389,16 @@ impl<'ctx> ConstraintSolver<'ctx> {
         lhs: Ty<'ctx>,
         rhs: Ty<'ctx>,
     ) -> SolverResult<'ctx> {
+        // Resolve inference variables first
         let lhs = self.structurally_resolve(lhs);
         let rhs = self.structurally_resolve(rhs);
 
-        if matches!(lhs.kind(), TyKind::Parameter(_))
-            || matches!(rhs.kind(), TyKind::Parameter(_))
+        // If either side has an unresolvable projection (projection on an inference var),
+        // defer until the inference var is bound.
+        if has_unresolvable_projection(&self.icx, lhs)
+            || has_unresolvable_projection(&self.icx, rhs)
         {
-            return SolverResult::Solved(vec![]);
-        }
-        if contains_projection(lhs) || contains_projection(rhs) {
-            return SolverResult::Solved(vec![]);
+            return SolverResult::Deferred;
         }
 
         self.solve_equality(location, lhs, rhs)
@@ -452,33 +414,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
             overload_sources: self.overload_sources.clone(),
             instantiation_args: self.instantiation_args.clone(),
             current_def: self.current_def,
+            param_env: self.param_env.clone(),
         }
-    }
-}
-
-fn contains_projection<'ctx>(ty: Ty<'ctx>) -> bool {
-    match ty.kind() {
-        TyKind::Alias {
-            kind: AliasKind::Projection,
-            ..
-        } => true,
-        TyKind::Alias { args, .. } | TyKind::Adt(_, args) => args.iter().any(|arg| match arg {
-            GenericArgument::Type(ty) => contains_projection(*ty),
-            GenericArgument::Const(c) => contains_projection(c.ty),
-        }),
-        TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => contains_projection(inner),
-        TyKind::Array { element, .. } => contains_projection(element),
-        TyKind::Tuple(items) => items.iter().any(|ty| contains_projection(*ty)),
-        TyKind::FnPointer { inputs, output } => {
-            inputs.iter().any(|ty| contains_projection(*ty)) || contains_projection(output)
-        }
-        TyKind::BoxedExistential { interfaces } => interfaces.iter().any(|iface| {
-            iface.arguments.iter().any(|arg| match arg {
-                GenericArgument::Type(ty) => contains_projection(*ty),
-                GenericArgument::Const(c) => contains_projection(c.ty),
-            })
-        }),
-        _ => false,
     }
 }
 
@@ -592,5 +529,50 @@ impl<'ctx> SolverDriver<'ctx> {
         }
 
         made_progress
+    }
+}
+
+/// Check if a type contains a projection whose self-type is an unresolved inference variable.
+/// Such projections cannot be normalized and need to be deferred.
+fn has_unresolvable_projection<'ctx>(icx: &InferCtx<'ctx>, ty: Ty<'ctx>) -> bool {
+    match ty.kind() {
+        TyKind::Alias {
+            kind: AliasKind::Projection,
+            args,
+            ..
+        } => {
+            // Check if the Self type (first arg) is still an inference variable
+            if let Some(GenericArgument::Type(self_ty)) = args.get(0) {
+                let resolved = icx.resolve_vars_if_possible(*self_ty);
+                if resolved.is_infer() {
+                    return true;
+                }
+            }
+            // Also check nested types in args
+            args.iter().any(|arg| match arg {
+                GenericArgument::Type(t) => has_unresolvable_projection(icx, *t),
+                GenericArgument::Const(c) => has_unresolvable_projection(icx, c.ty),
+            })
+        }
+        TyKind::Alias { args, .. } | TyKind::Adt(_, args) => args.iter().any(|arg| match arg {
+            GenericArgument::Type(t) => has_unresolvable_projection(icx, *t),
+            GenericArgument::Const(c) => has_unresolvable_projection(icx, c.ty),
+        }),
+        TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => {
+            has_unresolvable_projection(icx, inner)
+        }
+        TyKind::Array { element, .. } => has_unresolvable_projection(icx, element),
+        TyKind::Tuple(items) => items.iter().any(|t| has_unresolvable_projection(icx, *t)),
+        TyKind::FnPointer { inputs, output } => {
+            inputs.iter().any(|t| has_unresolvable_projection(icx, *t))
+                || has_unresolvable_projection(icx, output)
+        }
+        TyKind::BoxedExistential { interfaces } => interfaces.iter().any(|iface| {
+            iface.arguments.iter().any(|arg| match arg {
+                GenericArgument::Type(t) => has_unresolvable_projection(icx, *t),
+                GenericArgument::Const(c) => has_unresolvable_projection(icx, c.ty),
+            })
+        }),
+        _ => false,
     }
 }

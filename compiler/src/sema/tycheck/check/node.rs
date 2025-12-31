@@ -19,7 +19,7 @@ use crate::{
                 const_eval::eval_const_expression,
                 generics::GenericsBuilder,
                 instantiate::{instantiate_signature_with_args, instantiate_ty_with_args},
-                normalize_ty, type_head_from_value_ty,
+                type_head_from_value_ty,
             },
         },
     },
@@ -355,7 +355,7 @@ impl<'ctx> Checker<'ctx> {
             }
             TyKind::Alias { def_id, args, .. } => {
                 cs.add_constraints_for_def(def_id, Some(args), span);
-                let normalized = crate::sema::tycheck::utils::normalize_ty(self.gcx(), ty);
+                let normalized = crate::sema::tycheck::utils::normalize_aliases(self.gcx(), ty);
                 if normalized != ty {
                     self.add_type_constraints(normalized, span, cs);
                 }
@@ -1906,7 +1906,6 @@ impl<'ctx> Checker<'ctx> {
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         let gcx = self.gcx();
-        let expectation = expectation.map(|ty| normalize_ty(gcx, ty));
         let (expected_elem, expected_array) = if let Some(expectation) = expectation {
             match expectation.kind() {
                 TyKind::Array { element, .. } => (Some(element), Some(expectation)),
@@ -1958,8 +1957,6 @@ impl<'ctx> Checker<'ctx> {
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         let gcx = self.gcx();
-        let expectation = expectation.map(|ty| normalize_ty(gcx, ty));
-
         // Extract expected element type from array expectation to guide inference
         let expected_elem = expectation.and_then(|ty| match ty.kind() {
             TyKind::Array { element, .. } => Some(element),
