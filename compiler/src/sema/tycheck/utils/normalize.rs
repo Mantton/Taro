@@ -97,6 +97,26 @@ impl<'a, 'ctx> TypeFolder<'ctx> for NormalizeFolder<'a, 'ctx> {
                 let instantiated = instantiate_ty_with_args(self.gcx(), base, args);
                 instantiated.fold_with(self)
             }
+            // Handle type parameters with equality constraints
+            // e.g., for `where T == string`, normalize T to string
+            TyKind::Parameter(_) => {
+                let equiv_types = self.env.equivalent_types(ty);
+                // Find a concrete type equivalent to this parameter
+                // Prefer non-parameter, non-alias types
+                if let Some(&resolved) = equiv_types.iter().find(|&&t| {
+                    !matches!(t.kind(), TyKind::Parameter(_) | TyKind::Alias { .. } | TyKind::Infer(_))
+                }) {
+                    return resolved.fold_with(self);
+                }
+                // If no concrete type found, try any alias (which will be normalized recursively)
+                if let Some(&resolved) = equiv_types
+                    .iter()
+                    .find(|&&t| t != ty && !matches!(t.kind(), TyKind::Parameter(_)))
+                {
+                    return resolved.fold_with(self);
+                }
+                ty
+            }
             _ => ty.super_fold_with(self),
         }
     }
