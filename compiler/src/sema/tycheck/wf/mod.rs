@@ -2,10 +2,13 @@ use crate::{
     compile::context::GlobalContext,
     error::CompileResult,
     hir::{self, DefinitionID, HirVisitor, walk_declaration},
-    sema::models::{AdtKind, Ty, TyKind},
+    sema::models::{AdtKind, GenericArgument, Ty, TyKind},
     sema::tycheck::solve::ConstraintSystem,
+    span::Span,
 };
 use rustc_hash::FxHashSet;
+
+mod implied;
 
 pub fn run(package: &hir::Package, context: GlobalContext) -> CompileResult<()> {
     Actor::run(package, context)
@@ -48,7 +51,10 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
             hir::DeclarationKind::Import(..) => {}
             hir::DeclarationKind::Export(..) => {}
             hir::DeclarationKind::Namespace(..) => {}
-            hir::DeclarationKind::Extension(..) => self.check_constraints(node.id),
+            hir::DeclarationKind::Extension(..) => {
+                self.check_constraints(node.id);
+                self.check_extension(node.id);
+            }
             hir::DeclarationKind::Malformed => unreachable!(),
         }
 
@@ -75,12 +81,63 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
 
 impl<'ctx> Actor<'ctx> {
     fn check_constraints(&self, id: DefinitionID) {
+        // Basic declaration constraints (where clause) are checked here
         let mut cs = ConstraintSystem::new(self.context, id);
         cs.solve_all();
     }
 
+    fn check_type_wf(&self, ty: Ty<'ctx>, span: Span, cs: &mut ConstraintSystem<'ctx>) {
+        match ty.kind() {
+            TyKind::Adt(def, args) => {
+                cs.add_constraints_for_def(def.id, Some(args), span);
+                for arg in args.iter() {
+                    if let GenericArgument::Type(t) = arg {
+                        self.check_type_wf(*t, span, cs);
+                    }
+                }
+            }
+            TyKind::Tuple(items) => {
+                for item in items.iter() {
+                    self.check_type_wf(*item, span, cs);
+                }
+            }
+            TyKind::FnPointer { inputs, output } => {
+                for input in inputs.iter() {
+                    self.check_type_wf(*input, span, cs);
+                }
+                self.check_type_wf(output, span, cs);
+            }
+            TyKind::Array { element, .. } => {
+                self.check_type_wf(element, span, cs);
+            }
+            TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => {
+                self.check_type_wf(inner, span, cs);
+            }
+            TyKind::BoxedExistential { interfaces } => {
+                for iface in interfaces.iter() {
+                    cs.add_constraints_for_def(iface.id, Some(iface.arguments), span);
+                    for arg in iface.arguments.iter() {
+                        if let GenericArgument::Type(t) = arg {
+                            self.check_type_wf(*t, span, cs);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn check_function(&self, id: DefinitionID, _: &hir::Function) {
-        let _ = self.context.get_signature(id);
+        let sig = self.context.get_signature(id);
+        let ident = self.context.definition_ident(id);
+        let mut cs = ConstraintSystem::new(self.context, id);
+
+        for input in sig.inputs.iter() {
+            self.check_type_wf(input.ty, ident.span, &mut cs);
+        }
+        self.check_type_wf(sig.output, ident.span, &mut cs);
+
+        cs.solve_all();
     }
 
     fn check_struct(&self, id: DefinitionID) {
@@ -98,6 +155,8 @@ impl<'ctx> Actor<'ctx> {
         }
 
         let def = self.context.get_struct_definition(id);
+        let mut cs = ConstraintSystem::new(self.context, id);
+
         for field in def.fields {
             if !is_sized(field.ty) {
                 self.context.dcx().emit_error(
@@ -109,7 +168,11 @@ impl<'ctx> Actor<'ctx> {
                     Some(ident.span),
                 );
             }
+            self.check_type_wf(field.ty, ident.span, &mut cs);
         }
+
+        implied::check_conformance_implied_bounds(self.context, id, ident.span, &mut cs);
+        cs.solve_all();
     }
 
     fn check_enum(&self, id: DefinitionID) {
@@ -127,6 +190,8 @@ impl<'ctx> Actor<'ctx> {
         }
 
         let def = self.context.get_enum_definition(id);
+        let mut cs = ConstraintSystem::new(self.context, id);
+
         for variant in def.variants {
             let crate::sema::models::EnumVariantKind::Tuple(fields) = variant.kind else {
                 continue;
@@ -143,8 +208,22 @@ impl<'ctx> Actor<'ctx> {
                         Some(ident.span),
                     );
                 }
+                self.check_type_wf(field.ty, ident.span, &mut cs);
             }
         }
+
+        implied::check_conformance_implied_bounds(self.context, id, ident.span, &mut cs);
+
+        cs.solve_all();
+    }
+
+    fn check_extension(&self, id: DefinitionID) {
+        let ident = self.context.definition_ident(id);
+        let mut cs = ConstraintSystem::new(self.context, id);
+
+        implied::check_conformance_implied_bounds(self.context, id, ident.span, &mut cs);
+
+        cs.solve_all();
     }
 
     fn has_infinite_size(&self, id: DefinitionID) -> bool {
