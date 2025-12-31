@@ -61,13 +61,32 @@ fn resolve_interface_method_for_concrete<'ctx>(
         arguments: interface_args,
     };
     let witness = resolve_conformance_witness(gcx, type_head, interface)?;
-    let method = witness.method_witnesses.get(&method_id)?;
-    let impl_args = instantiate_generic_args_with_args(gcx, method.args_template, call_args);
-    Some(Instance::item(method.impl_id, impl_args))
+    
+    //  Check if this is a method or operator
+    let def_kind = gcx.definition_kind(method_id);
+    match def_kind {
+        DefinitionKind::AssociatedFunction => {
+            // It's a method
+            let method = witness.method_witnesses.get(&method_id)?;
+            let impl_args = instantiate_generic_args_with_args(gcx, method.args_template, call_args);
+            Some(Instance::item(method.impl_id, impl_args))
+        }
+        DefinitionKind::AssociatedOperator => {
+            // It's an operator - find the implementation in operator_witnesses
+            // We don't know the operator kind, so iterate through all of them
+            // In practice there should only be one operator being called here
+            let impl_id = witness.operator_witnesses.values().next()?;
+            // Operators don't have generic parameters typically, use empty args
+            let impl_args = gcx.store.interners.intern_generic_args(vec![]);
+            Some(Instance::item(*impl_id, impl_args))
+        }
+        _ => None,
+    }
 }
 
 fn interface_method_parent(gcx: GlobalContext<'_>, def_id: DefinitionID) -> Option<DefinitionID> {
-    if gcx.definition_kind(def_id) != DefinitionKind::AssociatedFunction {
+    let def_kind = gcx.definition_kind(def_id);
+    if def_kind != DefinitionKind::AssociatedFunction && def_kind != DefinitionKind::AssociatedOperator {
         return None;
     }
 
@@ -78,6 +97,7 @@ fn interface_method_parent(gcx: GlobalContext<'_>, def_id: DefinitionID) -> Opti
         None
     }
 }
+
 
 fn self_ty_from_args<'ctx>(
     gcx: GlobalContext<'ctx>,
