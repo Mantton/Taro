@@ -1154,9 +1154,6 @@ impl<'ctx> Checker<'ctx> {
                 .store
                 .interners
                 .intern_ty(TyKind::Reference(arg_ty, hir::Mutability::Mutable));
-            if let Some(expect_ty) = expect_ty {
-                cs.equal(expect_ty, ptr_ty, expression.span);
-            }
             return ptr_ty;
         }
 
