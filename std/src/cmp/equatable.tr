@@ -1,0 +1,7 @@
+
+public interface Equatable[Rhs=Self] {
+    operator ==(self, rhs: Rhs) -> bool
+    operator !=(self, rhs: Rhs) -> bool {
+        !(self == rhs)
+    }
+}

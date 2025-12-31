@@ -202,11 +202,30 @@ impl<'ctx> ConstraintSolver<'ctx> {
         ty: Ty<'ctx>,
         kind: OperatorKind,
     ) -> Vec<DefinitionID> {
-        let Some(head) = self.type_head_from_type(ty) else {
-            return vec![];
-        };
+        if let Some(head) = self.type_head_from_type(ty) {
+            return self.lookup_operator_candidates_visible(head, kind);
+        }
 
-        self.lookup_operator_candidates_visible(head, kind)
+        // If no primary type head (e.g. generic parameter), check bounds
+        let mut candidates = Vec::new();
+        match ty.kind() {
+            TyKind::Parameter(_) | TyKind::BoxedExistential { .. } => {
+                let bounds = self.bounds_for_type_in_scope(ty);
+                for bound in bounds {
+                    // Look up operators in the interface definition directly
+                    if let Some(requirements) = self.gcx().get_interface_requirements(bound.id) {
+                        for op in &requirements.operators {
+                            if op.kind == kind {
+                                candidates.push(op.id);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        candidates
     }
 
     fn lookup_operator_candidates_visible(

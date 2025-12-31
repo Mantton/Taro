@@ -670,6 +670,7 @@ pub struct InterfaceMethodRequirement<'ctx> {
 
 #[derive(Debug, Clone)]
 pub struct InterfaceOperatorRequirement<'ctx> {
+    pub id: DefinitionID,
     pub kind: hir::OperatorKind,
     pub signature: &'ctx LabeledFunctionSignature<'ctx>,
     pub is_required: bool,

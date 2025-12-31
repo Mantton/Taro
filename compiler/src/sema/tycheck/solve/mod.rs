@@ -341,7 +341,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             .collect()
     }
 
-    fn bounds_for_type_in_scope(&self, ty: Ty<'ctx>) -> Vec<InterfaceReference<'ctx>> {
+    pub(crate) fn bounds_for_type_in_scope(&self, ty: Ty<'ctx>) -> Vec<InterfaceReference<'ctx>> {
         self.param_env.bounds_for(self.structurally_resolve(ty))
     }
 

@@ -1,0 +1,10 @@
+import std.cmp.Equatable
+
+public interface Hashable: Equatable {
+    func has[H: Hasher](&self, into: &mut H)
+}
+
+public interface Hasher {
+    func finalize(&self) -> usize
+    func combine[H](_ value: H) where H : Hashable
+}

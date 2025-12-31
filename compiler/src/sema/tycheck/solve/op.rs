@@ -264,7 +264,12 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 let rhs_param_ty = sig.inputs[1].ty;
                 // Check if RHS can unify with the parameter type
                 // For now, just check if they're the same or if RHS is an inference var
-                if rhs == rhs_param_ty || rhs.is_infer() {
+                // Also allow if the parameter type is generic (e.g. Self or Rhs in interface)
+                // because we can't easily check equality without instantiation.
+                if rhs == rhs_param_ty
+                    || rhs.is_infer()
+                    || matches!(rhs_param_ty.kind(), TyKind::Parameter(_))
+                {
                     matching_candidates.push(candidate);
                 }
             }

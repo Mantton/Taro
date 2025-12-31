@@ -277,6 +277,15 @@ impl<'arena> GlobalContext<'arena> {
         *def.variants.get(index.index()).expect("enum variant index")
     }
 
+    pub fn get_interface_requirements(
+        self,
+        id: DefinitionID,
+    ) -> Option<&'arena InterfaceRequirements<'arena>> {
+        self.with_type_database(id.package(), |db| {
+            db.interface_requirements.get(&id).copied()
+        })
+    }
+
     pub fn get_extension_type_head(self, extension_id: DefinitionID) -> Option<TypeHead> {
         self.with_type_database(extension_id.package(), |db| {
             db.extension_to_type_head.get(&extension_id).cloned()

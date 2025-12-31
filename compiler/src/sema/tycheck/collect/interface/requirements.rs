@@ -113,6 +113,7 @@ impl<'ctx> Actor<'ctx> {
             }
             hir::AssociatedDeclarationKind::Operator(op) => {
                 let req = InterfaceOperatorRequirement {
+                    id: def_id,
                     kind: op.kind,
                     signature: gcx.get_signature(def_id),
                     is_required: op.function.block.is_none(),
