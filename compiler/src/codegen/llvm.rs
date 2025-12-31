@@ -154,11 +154,14 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let resolved: Vec<_> = args
             .iter()
             .map(|arg| match arg {
-                GenericArgument::Type(ty) => GenericArgument::Type(instantiate_ty_with_args(
-                    self.gcx,
-                    *ty,
-                    self.current_subst,
-                )),
+                GenericArgument::Type(ty) => {
+                    let instantiated = instantiate_ty_with_args(self.gcx, *ty, self.current_subst);
+                    let normalized = crate::sema::tycheck::utils::normalize_post_monomorphization(
+                        self.gcx,
+                        instantiated,
+                    );
+                    GenericArgument::Type(normalized)
+                }
                 GenericArgument::Const(c) => GenericArgument::Const(*c),
             })
             .collect();
@@ -2988,7 +2991,8 @@ fn lower_type<'llvm, 'gcx>(
     } else {
         instantiate_ty_with_args(gcx, ty, subst)
     };
-    let ty = crate::sema::tycheck::utils::normalize_aliases(gcx, ty);
+    // Normalize all aliases including projections
+    let ty = crate::sema::tycheck::utils::normalize_post_monomorphization(gcx, ty);
 
     match ty.kind() {
         TyKind::Bool => Some(context.bool_type().into()),
@@ -3086,9 +3090,19 @@ fn lower_type<'llvm, 'gcx>(
                 ty.format(gcx)
             )
         }
-        TyKind::Alias { .. } => {
-            // Aliases should be normalized before codegen
-            unreachable!("ICE: alias type in codegen: {}", ty.format(gcx))
+        TyKind::Alias { kind, def_id, args } => {
+            let formatted = ty.format(gcx);
+            let kind_str = match kind {
+                crate::sema::models::AliasKind::Weak => "weak alias",
+                crate::sema::models::AliasKind::Inherent => "inherent alias",
+                crate::sema::models::AliasKind::Projection => "projection",
+            };
+            unreachable!(
+                "ICE: unnormalized {} in codegen: {}\n\
+                 This should have been normalized by normalize_post_monomorphization.\n\
+                 def_id: {:?}, args: {:?}",
+                kind_str, formatted, def_id, args
+            )
         }
         TyKind::Infer(_) | TyKind::Error => unreachable!(),
     }

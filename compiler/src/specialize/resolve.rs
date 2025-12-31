@@ -170,7 +170,11 @@ fn instantiate_generic_args_with_args<'ctx>(
         match arg {
             GenericArgument::Type(ty) => {
                 let instantiated = instantiate_ty_with_args(gcx, *ty, args);
-                out.push(GenericArgument::Type(instantiated));
+                let normalized = crate::sema::tycheck::utils::normalize_post_monomorphization(
+                    gcx,
+                    instantiated,
+                );
+                out.push(GenericArgument::Type(normalized));
             }
             GenericArgument::Const(c) => {
                 let instantiated = instantiate_const_with_args(gcx, *c, args);
