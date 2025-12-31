@@ -1749,10 +1749,9 @@ impl<'ctx> Checker<'ctx> {
         let (resolution, base_args) =
             self.resolve_value_path_resolution_with_args(path, expression.span, true);
         self.record_value_path_resolution(expression.id, &resolution);
-        if let hir::ResolvedPath::Relative(base_ty, _) = path {
-            let ty = self.lower_type(base_ty);
-            self.add_type_constraints(ty, base_ty.span, cs);
-        }
+        // Note: For relative paths like `Optional.some`, we don't need to add type constraints
+        // for the base type `Optional` since it's only used for name resolution, not as a value.
+        // Adding constraints here creates spurious type variables that cause inference failures.
         self.instantiate_value_path(
             expression.id,
             expression.span,
@@ -2149,10 +2148,9 @@ impl<'ctx> Checker<'ctx> {
     ) -> Option<(crate::sema::models::EnumVariant<'ctx>, Ty<'ctx>)> {
         match path {
             hir::PatternPath::Qualified { path } => {
-                if let hir::ResolvedPath::Relative(base_ty, _) = path {
-                    let ty = self.lower_type(base_ty);
-                    self.add_type_constraints(ty, base_ty.span, cs);
-                }
+                // Note: Similar to value paths, we don't need to add type constraints
+                // for the base type in relative patterns like `Optional.none`.
+                // The base type is only used for name resolution.
                 let (resolution, base_args) =
                     self.resolve_value_path_resolution_with_args(path, span, true);
                 self.record_value_path_resolution(id, &resolution);

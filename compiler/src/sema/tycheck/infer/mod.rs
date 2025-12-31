@@ -3,8 +3,8 @@ use crate::{
     sema::{
         models::{
             Const, ConstKind, ConstValue, FloatTy, GenericArgument, GenericArguments,
-            GenericParameterDefinition, GenericParameterDefinitionKind, InferTy, IntTy, Ty,
-            TyKind, TyVarID,
+            GenericParameterDefinition, GenericParameterDefinitionKind, InferTy, IntTy, Ty, TyKind,
+            TyVarID,
         },
         resolve::models::DefinitionID,
         tycheck::{
@@ -52,7 +52,10 @@ impl<'ctx> InferCtx<'ctx> {
             .inner
             .borrow_mut()
             .type_variables()
-            .new_var(TypeVariableOrigin { location, param_name: None });
+            .new_var(TypeVariableOrigin {
+                location,
+                param_name: None,
+            });
         Ty::new(TyKind::Infer(InferTy::TyVar(id)), self.gcx)
     }
 
@@ -89,11 +92,14 @@ impl<'ctx> InferCtx<'ctx> {
     ) -> GenericArgument<'ctx> {
         match param.kind {
             GenericParameterDefinitionKind::Type { .. } => {
-                let ty_var_id = self
-                    .inner
-                    .borrow_mut()
-                    .type_variables()
-                    .new_var(TypeVariableOrigin { location: span, param_name: Some(param.name) });
+                let ty_var_id =
+                    self.inner
+                        .borrow_mut()
+                        .type_variables()
+                        .new_var(TypeVariableOrigin {
+                            location: span,
+                            param_name: Some(param.name),
+                        });
 
                 let ty = Ty::new(TyKind::Infer(InferTy::TyVar(ty_var_id)), self.gcx);
                 GenericArgument::Type(ty)

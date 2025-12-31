@@ -176,7 +176,7 @@ impl<'arena> Ty<'arena> {
                 InferTy::TyVar(id) => format!("{{var({})}}", id._raw),
                 InferTy::IntVar(id) => format!("{{integer({})}}", id.index()),
                 InferTy::FloatVar(id) => format!("{{float({})}}", id.index()),
-                InferTy::FreshTy(_) => todo!(),
+                InferTy::FreshTy(id) => format!("{{fresh({})}}", id),
             },
             TyKind::Parameter(p) => format!("{}", p.name.as_str()),
             TyKind::Alias {

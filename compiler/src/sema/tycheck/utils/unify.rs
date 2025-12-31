@@ -1,7 +1,7 @@
 use crate::sema::{
     error::{ExpectedFound, TypeError},
     models::{GenericArgument, GenericArguments, InferTy, Ty, TyKind},
-    tycheck::infer::{keys::FloatVarValue, keys::IntVarValue, InferCtx},
+    tycheck::infer::{InferCtx, keys::FloatVarValue, keys::IntVarValue},
 };
 use std::rc::Rc;
 
@@ -69,8 +69,7 @@ impl<'ctx> TypeUnifier<'ctx> {
                 self.icx.equate_int_vars_raw(a_id, b_id);
             }
             (Infer(IntVar(id)), Int(k)) | (Int(k), Infer(IntVar(id))) => {
-                self.icx
-                    .instantiate_int_var_raw(id, IntVarValue::Signed(k));
+                self.icx.instantiate_int_var_raw(id, IntVarValue::Signed(k));
             }
             (Infer(IntVar(id)), UInt(k)) | (UInt(k), Infer(IntVar(id))) => {
                 self.icx
@@ -105,12 +104,21 @@ impl<'ctx> TypeUnifier<'ctx> {
             (Rune | Bool | Int(_) | UInt(_) | Float(_) | String | GcPtr, _) if a == b => {
                 return Ok(());
             }
-            (Parameter(a_p), Parameter(b_p)) if a_p == b_p => return Ok(()),
+            (Parameter(a_p), Parameter(b_p)) if a_p.index == b_p.index => return Ok(()),
             (Adt(a_def, a_args), Adt(b_def, b_args)) if a_def.id == b_def.id => {
                 self.unify_generic_args(a_args, b_args)?;
                 return Ok(());
             }
-            (Array { element: a_elem, len: a_len }, Array { element: b_elem, len: b_len }) => {
+            (
+                Array {
+                    element: a_elem,
+                    len: a_len,
+                },
+                Array {
+                    element: b_elem,
+                    len: b_len,
+                },
+            ) => {
                 self.unify(a_elem, b_elem)?;
                 if a_len != b_len {
                     return Err(TypeError::TyMismatch(ExpectedFound::new(a, b)));
@@ -144,7 +152,14 @@ impl<'ctx> TypeUnifier<'ctx> {
                 }
                 return Ok(());
             }
-            (BoxedExistential { interfaces: a_ifaces }, BoxedExistential { interfaces: b_ifaces }) => {
+            (
+                BoxedExistential {
+                    interfaces: a_ifaces,
+                },
+                BoxedExistential {
+                    interfaces: b_ifaces,
+                },
+            ) => {
                 if a_ifaces.len() != b_ifaces.len() {
                     return Err(TypeError::TyMismatch(ExpectedFound::new(a, b)));
                 }
