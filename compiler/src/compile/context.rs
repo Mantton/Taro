@@ -570,8 +570,9 @@ impl<'arena> CompilerStore<'arena> {
     pub fn new(
         arenas: &'arena CompilerArenas<'arena>,
         output_root: PathBuf,
+        dcx: &DiagCtx,
     ) -> CompileResult<CompilerStore<'arena>> {
-        let target_layout = TargetLayout::for_host()?;
+        let target_layout = TargetLayout::for_host(dcx)?;
         Ok(CompilerStore {
             arenas,
             interners: CompilerInterners::new(arenas),

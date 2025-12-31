@@ -915,7 +915,7 @@ impl Parser {
     }
 
     fn parse_attribute(&mut self) -> R<Option<Attribute>> {
-        // TODO, nested e.g: @available("Platform-iOS")
+        // NOTE: Nested attributes like @available("Platform-iOS") are not yet implemented
         if !self.eat(Token::At) {
             return Ok(None);
         };
@@ -2307,7 +2307,11 @@ impl Parser {
             // specialize: `Foo[T]`
             if self.matches(Token::LBracket) {
                 if seen_type_arguments {
-                    todo!("report - extra type arguments passed")
+                    self.emit_error(
+                        ParserError::ExtraTypeArguments,
+                        self.lo_span(),
+                    );
+                    return Err(self.err_at_current(ParserError::ExtraTypeArguments));
                 }
 
                 let args = self.parse_type_arguments()?;
@@ -3422,6 +3426,7 @@ enum ParserError {
     ExternFunctionBodyNotAllowed,
     DisallowedStructLiteral,
     ExpectedPathExpression,
+    ExtraTypeArguments,
     UnexpectedSemicolonInList {
         context: &'static str,
     },
@@ -3470,6 +3475,7 @@ impl Display for ParserError {
             ExpectedPathExpression => f.write_str(
                 "expected a path expression (identifier, member access, or type specialization)",
             ),
+            ExtraTypeArguments => f.write_str("extra type arguments provided"),
             UnexpectedSemicolonInList { context } => {
                 write!(f, "unexpected semicolon in {}", context)
             }

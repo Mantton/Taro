@@ -52,19 +52,25 @@ pub fn tokenize_module(path: PathBuf, dcx: &DiagCtx) -> Result<Module, ReportedE
         match name {
             Some(name) => name,
             None => {
-                todo!("report - failed to parse directory name")
+                let message = format!("failed to parse directory name from path '{}'", directory.display());
+                dcx.emit_error(message, None);
+                return Err(ReportedError);
             }
         }
     };
 
     if name == ROOT_MODULE_NAME {
-        todo!("report - cannot name module with the root module name")
+        let message = format!("module cannot be named '{}' (reserved for root module)", ROOT_MODULE_NAME);
+        dcx.emit_error(message, None);
+        return Err(ReportedError);
     }
 
     let entries = match read_dir(&directory) {
         Ok(entries) => entries,
-        Err(_) => {
-            todo!("report - failed to read directory")
+        Err(e) => {
+            let message = format!("failed to read directory '{}': {}", directory.display(), e);
+            dcx.emit_error(message, None);
+            return Err(ReportedError);
         }
     };
 
@@ -74,8 +80,10 @@ pub fn tokenize_module(path: PathBuf, dcx: &DiagCtx) -> Result<Module, ReportedE
     for entry in entries {
         let entry = match entry {
             Ok(entry) => entry,
-            Err(_) => {
-                todo!("report - failed to read directory entry");
+            Err(e) => {
+                let message = format!("failed to read directory entry in '{}': {}", directory.display(), e);
+                dcx.emit_error(message, None);
+                return Err(ReportedError);
             }
         };
 
@@ -89,9 +97,13 @@ pub fn tokenize_module(path: PathBuf, dcx: &DiagCtx) -> Result<Module, ReportedE
                 continue;
             };
             let id = dcx.add_file_mapping(path.clone());
-            let file = match tokenize_file(id, path.clone()) {
+            let file = match tokenize_file(id, path.clone(), dcx) {
                 Ok(file) => file,
-                Err(_) => todo!("report - lexer error"),
+                Err(e) => {
+                    let message = format!("lexer error in file '{}': {}", path.display(), e);
+                    dcx.emit_error(message, None);
+                    return Err(ReportedError);
+                }
             };
             files.push(file);
         } else if path.is_dir() {
@@ -107,10 +119,14 @@ pub fn tokenize_module(path: PathBuf, dcx: &DiagCtx) -> Result<Module, ReportedE
     })
 }
 
-pub fn tokenize_file(file: FileID, path: PathBuf) -> Result<File, LexerError> {
+pub fn tokenize_file(file: FileID, path: PathBuf, dcx: &DiagCtx) -> Result<File, LexerError> {
     let source = match read_to_string(&path) {
         Ok(source) => source,
-        Err(_) => todo!("report - failed to read file"),
+        Err(e) => {
+            let message = format!("failed to read file '{}': {}", path.display(), e);
+            dcx.emit_error(message.clone(), None);
+            return Err(LexerError::IO(message));
+        }
     };
     let lexer = Lexer::new(&source, file);
     lexer.tokenize()
@@ -148,7 +164,9 @@ impl Lexer {
             self.anchor = self.position();
             let case = match self.next_token() {
                 Ok(case) => case,
-                Err(_) => todo!("report - lexer error"),
+                Err(e) => {
+                    return Err(e);
+                }
             };
 
             match case {
@@ -866,6 +884,24 @@ pub enum LexerError {
     EscapeIdentifierMustBeSingleLine,
     InvalidIntegerLiteral,
     InvalidFloatLiteral,
+    IO(String),
+}
+
+impl std::fmt::Display for LexerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LexerError::InvalidCharacter(c) => write!(f, "invalid character '{}'", c),
+            LexerError::UnterminatedMultilineComment => write!(f, "unterminated multiline comment"),
+            LexerError::UnterminatedEscapedIdentifier => write!(f, "unterminated escaped identifier"),
+            LexerError::UnterminatedRuneLiteral => write!(f, "unterminated rune literal"),
+            LexerError::UnterminatedStringLiteral => write!(f, "unterminated string literal"),
+            LexerError::StringLiteralMustBeSingleLine => write!(f, "string literals must be on a single line"),
+            LexerError::EscapeIdentifierMustBeSingleLine => write!(f, "escaped identifiers must be on a single line"),
+            LexerError::InvalidIntegerLiteral => write!(f, "invalid integer literal"),
+            LexerError::InvalidFloatLiteral => write!(f, "invalid float literal"),
+            LexerError::IO(msg) => write!(f, "{}", msg),
+        }
+    }
 }
 
 pub enum TokenCase {

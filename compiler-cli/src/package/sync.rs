@@ -79,15 +79,24 @@ impl<'a> Actor<'a> {
 
 impl<'a> Actor<'a> {
     fn download_packages(&mut self, root_path: PathBuf) -> CompileResult<Vec<RPkg<'a>>> {
-        let root_path = std::fs::canonicalize(&root_path).map_err(|_| ReportedError)?;
+        let root_path = std::fs::canonicalize(&root_path).map_err(|e| {
+            eprintln!("error: failed to canonicalize root path '{}': {}", root_path.display(), e);
+            ReportedError
+        })?;
         let mut seen = FxHashSet::default();
         let mut packages = vec![];
 
         let root_manifest =
-            Manifest::parse(root_path.join(MANIFEST_FILE)).map_err(|_| ReportedError)?;
+            Manifest::parse(root_path.join(MANIFEST_FILE)).map_err(|e| {
+                eprintln!("error: failed to parse manifest at '{}': {}", root_path.display(), e);
+                ReportedError
+            })?;
         let root_manifest = root_manifest
             .normalize(root_path.clone())
-            .map_err(|_| ReportedError)?;
+            .map_err(|e| {
+                eprintln!("error: failed to normalize manifest at '{}': {}", root_path.display(), e);
+                ReportedError
+            })?;
         let root_package = self.intern_rdep(ResolvedPackage {
             package: root_manifest.path.clone(),
             source: ResolvedSource::Path {
@@ -285,7 +294,10 @@ impl<'a> Actor<'a> {
             match &selection.source {
                 ResolvedSource::Git { revision, .. } => {
                     git::install_revision(selection.as_ref().clone(), *revision)
-                        .map_err(|_| ReportedError)?;
+                        .map_err(|e| {
+                            eprintln!("error: failed to install git revision for '{}': {}", selection.package.0, e);
+                            ReportedError
+                        })?;
                 }
                 _ => {}
             }

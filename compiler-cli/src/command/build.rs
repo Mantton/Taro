@@ -22,12 +22,18 @@ pub fn run(
     arguments: CommandLineArguments,
     require_executable: bool,
 ) -> Result<Option<std::path::PathBuf>, ReportedError> {
-    let cwd = std::env::current_dir().map_err(|_| ReportedError)?;
+    let cwd = std::env::current_dir().map_err(|e| {
+        eprintln!("error: failed to get current directory: {}", e);
+        ReportedError
+    })?;
     let dcx = Rc::new(DiagCtx::new(cwd));
     let arenas = CompilerArenas::new();
-    let project_root = arguments.path.canonicalize().map_err(|_| ReportedError)?;
+    let project_root = arguments.path.canonicalize().map_err(|e| {
+        eprintln!("error: failed to canonicalize project root path '{}': {}", arguments.path.display(), e);
+        ReportedError
+    })?;
     let target_root = project_root.join("target").join("objects");
-    let store = CompilerStore::new(&arenas, target_root)?;
+    let store = CompilerStore::new(&arenas, target_root, &dcx)?;
     let icx = CompilerContext::new(dcx, store);
 
     let graph = sync_dependencies(arguments.path)?;
@@ -62,9 +68,27 @@ pub fn run(
 
         let package_index = PackageIndex::new(index + 1);
         println!("Compiling – {}", package.package.0);
-        let name = get_package_name(&package.package.0).map_err(|_| ReportedError)?;
-        let identifier = package.unique_identifier().map_err(|_| ReportedError)?;
-        let mut dependencies = graph.dependencies_for(package).map_err(|_| ReportedError)?;
+        let name = get_package_name(&package.package.0).map_err(|e| {
+            icx.dcx.emit_error(
+                format!("failed to get package name for '{}': {}", package.package.0, e),
+                None,
+            );
+            ReportedError
+        })?;
+        let identifier = package.unique_identifier().map_err(|e| {
+            icx.dcx.emit_error(
+                format!("failed to generate unique identifier for '{}': {}", package.package.0, e),
+                None,
+            );
+            ReportedError
+        })?;
+        let mut dependencies = graph.dependencies_for(package).map_err(|e| {
+            icx.dcx.emit_error(
+                format!("failed to resolve dependencies for '{}': {}", package.package.0, e),
+                None,
+            );
+            ReportedError
+        })?;
         dependencies.insert("std".into(), "std".into());
 
         let src = package
@@ -74,7 +98,13 @@ pub fn run(
                     .map_err(|e| format!("failed to resolve path – {}", e))
             })
             .map_err(|e| format!("failed to resolve path – {}", e))
-            .map_err(|_| ReportedError)?;
+            .map_err(|e| {
+                icx.dcx.emit_error(
+                    format!("failed to resolve source path for '{}': {}", package.package.0, e),
+                    None,
+                );
+                ReportedError
+            })?;
         let config = icx.store.arenas.configs.alloc(Config {
             name,
             identifier,
