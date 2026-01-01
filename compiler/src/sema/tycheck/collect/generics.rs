@@ -116,18 +116,19 @@ impl<'ctx> Actor<'ctx> {
 
         let mut own_start = has_self as usize;
         let mut parent_has_self = false;
+        let def_kind = gcx.definition_kind(id);
         let parent_def_id = if let DefinitionKind::AssociatedFunction
         | DefinitionKind::AssociatedOperator
         | DefinitionKind::AssociatedConstant
-        | DefinitionKind::VariantConstructor(..) = gcx.definition_kind(id)
+        | DefinitionKind::VariantConstructor(..) = def_kind
         {
             Some(gcx.definition_parent(id).expect("Parent of Definition"))
         } else {
             None
         };
 
-        let parent_count = parent_def_id.map_or(0, |id| {
-            let parent_generics = gcx.generics_of(id);
+        let parent_count = parent_def_id.map_or(0, |parent_id| {
+            let parent_generics = gcx.generics_of(parent_id);
             assert!(!(has_self && parent_generics.has_self)); // Parent and Def cannot both have self param
             parent_has_self = parent_generics.has_self;
             own_start = parent_generics.total_count();

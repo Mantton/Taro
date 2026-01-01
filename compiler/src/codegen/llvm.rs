@@ -578,6 +578,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                             &self.target_data,
                             def.id,
                             adt_args,
+                            self.current_subst,
                         );
                         for offset in offsets {
                             local_slots.push(ShadowSlotKind::EnumFieldOffset(offset));
@@ -2516,7 +2517,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         _ => panic!("variant downcast on non-enum type {}", ty.format(self.gcx)),
                     };
                     let layout =
-                        enum_layout(self.context, self.gcx, &self.target_data, def.id, adt_args);
+                        enum_layout(self.context, self.gcx, &self.target_data, def.id, adt_args, self.current_subst);
                     let payload_index = layout
                         .payload_field_index
                         .expect("enum payload field index");
@@ -2722,6 +2723,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         &self.target_data,
                         def.id,
                         adt_args,
+                        self.current_subst,
                     );
                 }
             },
@@ -2830,6 +2832,7 @@ fn enum_layout<'llvm, 'gcx>(
     target_data: &TargetData,
     def_id: hir::DefinitionID,
     adt_args: GenericArguments<'gcx>,
+    subst: GenericArguments<'gcx>,
 ) -> EnumLayout<'llvm> {
     let def = gcx.get_enum_definition(def_id);
     let discr_ty = context.ptr_sized_int_type(target_data, None);
@@ -2845,7 +2848,7 @@ fn enum_layout<'llvm, 'gcx>(
                     (0u64, 1u64)
                 } else {
                     let struct_ty =
-                        enum_variant_struct_ty(context, gcx, target_data, fields, adt_args);
+                        enum_variant_struct_ty(context, gcx, target_data, fields, adt_args, subst);
                     let size = target_data.get_store_size(&struct_ty);
                     let align = target_data.get_abi_alignment(&struct_ty) as u64;
                     (size, align)
@@ -2881,13 +2884,14 @@ fn enum_variant_struct_ty<'llvm, 'gcx>(
     target_data: &TargetData,
     fields: &[crate::sema::models::EnumVariantField<'gcx>],
     adt_args: GenericArguments<'gcx>,
+    subst: GenericArguments<'gcx>,
 ) -> StructType<'llvm> {
     let field_tys: Vec<BasicTypeEnum<'llvm>> = fields
         .iter()
         .filter_map(|field| {
             // Substitute field type with ADT's generic args
             let resolved = instantiate_ty_with_args(gcx, field.ty, adt_args);
-            lower_type(context, gcx, target_data, resolved, &[])
+            lower_type(context, gcx, target_data, resolved, subst)
         })
         .collect();
     context.struct_type(&field_tys, false)
@@ -2924,9 +2928,10 @@ fn enum_pointer_offsets<'llvm, 'gcx>(
     target_data: &TargetData,
     def_id: hir::DefinitionID,
     adt_args: GenericArguments<'gcx>,
+    subst: GenericArguments<'gcx>,
 ) -> Vec<u64> {
     let def = gcx.get_enum_definition(def_id);
-    let layout = enum_layout(context, gcx, target_data, def_id, adt_args);
+    let layout = enum_layout(context, gcx, target_data, def_id, adt_args, subst);
     let mut offsets = Vec::new();
 
     for variant in def.variants.iter() {
@@ -2936,7 +2941,7 @@ fn enum_pointer_offsets<'llvm, 'gcx>(
         if fields.is_empty() {
             continue;
         }
-        let struct_ty = enum_variant_struct_ty(context, gcx, target_data, fields, adt_args);
+        let struct_ty = enum_variant_struct_ty(context, gcx, target_data, fields, adt_args, subst);
         for (idx, field) in fields.iter().enumerate() {
             let resolved = instantiate_ty_with_args(gcx, field.ty, adt_args);
             if !is_pointer_ty(resolved) {
@@ -2977,7 +2982,6 @@ fn lower_fn_sig<'llvm, 'gcx>(
     }
 }
 
-#[track_caller]
 fn lower_type<'llvm, 'gcx>(
     context: &'llvm Context,
     gcx: GlobalContext<'gcx>,
@@ -3034,7 +3038,7 @@ fn lower_type<'llvm, 'gcx>(
                 Some(context.struct_type(&field_tys, false).into())
             }
             crate::sema::models::AdtKind::Enum => {
-                let layout = enum_layout(context, gcx, target_data, def.id, adt_args);
+                let layout = enum_layout(context, gcx, target_data, def.id, adt_args, subst);
                 let mut fields: Vec<BasicTypeEnum<'llvm>> = vec![layout.discr_ty.into()];
 
                 if layout.payload_size == 0 {
