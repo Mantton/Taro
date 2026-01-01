@@ -1442,6 +1442,7 @@ impl Parser {
     fn parse_pattern_kind(&mut self) -> R<PatternKind> {
         match self.current_token() {
             Token::LParen => self.parse_pattern_tuple_kind(),
+            Token::Amp => self.parse_ref_pattern(),
             Token::Underscore => {
                 self.bump();
                 Ok(PatternKind::Wildcard)
@@ -1467,6 +1468,16 @@ impl Parser {
             p.parse_pattern()
         })?;
         Ok(PatternKind::Tuple(pats, lo.to(self.hi_span())))
+    }
+
+    fn parse_ref_pattern(&mut self) -> R<PatternKind> {
+        self.expect(Token::Amp)?;
+        let mutability = self.parse_mutability();
+        let pattern = self.parse_pattern()?;
+        Ok(PatternKind::Reference {
+            pattern: Box::new(pattern),
+            mutability,
+        })
     }
 
     fn parse_pattern_path_kind(&mut self) -> R<PatternKind> {
@@ -2307,10 +2318,7 @@ impl Parser {
             // specialize: `Foo[T]`
             if self.matches(Token::LBracket) {
                 if seen_type_arguments {
-                    self.emit_error(
-                        ParserError::ExtraTypeArguments,
-                        self.lo_span(),
-                    );
+                    self.emit_error(ParserError::ExtraTypeArguments, self.lo_span());
                     return Err(self.err_at_current(ParserError::ExtraTypeArguments));
                 }
 
@@ -2551,7 +2559,7 @@ impl Parser {
     ///
     /// Syntax:
     /// - `[]` → empty array
-    /// - `[:]` → empty dictionary  
+    /// - `[:]` → empty dictionary
     /// - `[a, b, c]` → array with elements
     /// - `[a: b, c: d]` → dictionary with key-value pairs
     /// - `[expr; count]` → repeat expression (array of `count` copies of `expr`)

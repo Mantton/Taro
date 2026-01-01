@@ -719,7 +719,10 @@ impl Actor<'_, '_> {
             ast::PatternKind::Rest => hir::PatternKind::Rest,
             ast::PatternKind::Identifier(ident) => {
                 self.node_mapping.insert(node.id, id);
-                hir::PatternKind::Identifier(ident)
+                hir::PatternKind::Binding {
+                    name: ident,
+                    mode: hir::BindingMode::ByValue,
+                }
             }
             ast::PatternKind::Tuple(items, span) => hir::PatternKind::Tuple(
                 items
@@ -728,6 +731,13 @@ impl Actor<'_, '_> {
                     .collect(),
                 span,
             ),
+            ast::PatternKind::Reference {
+                pattern,
+                mutability: mutable,
+            } => hir::PatternKind::Reference {
+                pattern: Box::new(self.lower_pattern(*pattern)),
+                mutable,
+            },
             ast::PatternKind::Member(pattern_path) => {
                 hir::PatternKind::Member(self.lower_pattern_path(node.id, pattern_path))
             }
@@ -1110,7 +1120,10 @@ impl Actor<'_, '_> {
                 let pattern = hir::Pattern {
                     id: self.next_index(),
                     span: node.span,
-                    kind: hir::PatternKind::Identifier(dictionary_ident),
+                    kind: hir::PatternKind::Binding {
+                        name: dictionary_ident,
+                        mode: hir::BindingMode::ByValue,
+                    },
                 };
 
                 let local = hir::Local {

@@ -1,5 +1,5 @@
 use crate::{
-    hir::{DefinitionID, NodeID},
+    hir::{BindingMode, DefinitionID, NodeID},
     mir::{BinaryOperator, LogicalOperator, UnaryOperator},
     sema::models::{AdtDef, EnumVariant, GenericArguments, InterfaceReference, Ty},
     span::{Span, Symbol},
@@ -243,7 +243,10 @@ pub enum PatternKind<'ctx> {
         name: Symbol,
         local: NodeID,
         ty: Ty<'ctx>,
-        mutable: bool,
+        mode: BindingMode,
+    },
+    Deref {
+        pattern: Box<Pattern<'ctx>>,
     },
     Leaf {
         subpatterns: Vec<FieldPattern<'ctx>>,

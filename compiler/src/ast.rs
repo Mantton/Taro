@@ -594,6 +594,11 @@ pub enum PatternKind {
     Or(Vec<Pattern>, Span),
     // Bool, Rune, String, Integer & Float Literals
     Literal(AnonConst),
+    // &T
+    Reference {
+        pattern: Box<Pattern>,
+        mutability: Mutability,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -1693,6 +1698,9 @@ pub fn walk_pattern<V: AstVisitor>(visitor: &mut V, pattern: &Pattern) -> V::Res
         PatternKind::Tuple(patterns, _) => {
             walk_list!(visitor, visit_pattern, patterns);
         }
+        PatternKind::Reference { pattern, .. } => {
+            try_visit!(visitor.visit_pattern(pattern));
+        }
         PatternKind::Or(patterns, _) => {
             walk_list!(visitor, visit_pattern, patterns);
         }
@@ -1735,9 +1743,9 @@ pub fn walk_type_parameters<V: AstVisitor>(
 }
 
 pub fn walk_use_tree<V: AstVisitor>(
-    visitor: &mut V,
-    tree: &UseTree,
-    context: UseTreeContext,
+    _visitor: &mut V,
+    _tree: &UseTree,
+    _context: UseTreeContext,
 ) -> V::Result {
     V::Result::output()
 }
@@ -2006,6 +2014,9 @@ impl Pattern {
             }
             | PatternKind::Or(sub_pats, _) => {
                 sub_pats.iter().for_each(|p| p.walk(action));
+            }
+            PatternKind::Reference { pattern, .. } => {
+                pattern.walk(action);
             }
         }
     }

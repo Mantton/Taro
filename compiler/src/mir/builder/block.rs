@@ -140,7 +140,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 local: pat_id,
                 name,
                 ty,
-                mutable: _,
+                ..
             } => {
                 let local = self.push_local(*ty, mir::LocalKind::User, Some(*name), pattern.span);
                 self.locals.insert(*pat_id, local);
@@ -149,6 +149,20 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     self.push_assign(block, Place::from_local(local), rvalue, pattern.span);
                 }
                 block.unit()
+            }
+            thir::PatternKind::Deref { pattern: inner } => {
+                // Deref pattern: apply deref to the place and bind the inner pattern
+                if let Some(base_place) = place {
+                    let mut proj = base_place.projection.clone();
+                    proj.push(PlaceElem::Deref);
+                    let deref_place = Place {
+                        local: base_place.local,
+                        projection: proj,
+                    };
+                    self.bind_pattern_to_place(block, inner, Some(&deref_place))
+                } else {
+                    block.unit()
+                }
             }
             thir::PatternKind::Constant { .. } => block.unit(),
             thir::PatternKind::Leaf { subpatterns } => {

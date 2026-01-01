@@ -44,11 +44,11 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 builder.projection.push(PlaceElem::Field(*index, expr.ty));
                 block.and(builder)
             }
-            ExprKind::Reference { .. } => todo!(),
             ExprKind::Make { .. } => {
                 unreachable!("make expression cannot be used as place")
             }
-            ExprKind::If { .. }
+            ExprKind::Reference { .. }
+            | ExprKind::If { .. }
             | ExprKind::Match { .. }
             | ExprKind::Assign { .. }
             | ExprKind::AssignOp { .. }

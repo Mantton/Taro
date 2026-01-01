@@ -51,6 +51,9 @@ pub enum TypeError<'ctx> {
     NotATuple {
         ty: Ty<'ctx>,
     },
+    CannotDereference {
+        ty: Ty<'ctx>,
+    },
     InvalidUnaryOp {
         op: UnaryOperator,
         ty: Ty<'ctx>,
@@ -134,6 +137,9 @@ impl<'ctx> TypeError<'ctx> {
             }
             TypeError::NotATuple { ty } => {
                 format!("type {} is not a tuple", ty.format(gcx))
+            }
+            TypeError::CannotDereference { ty } => {
+                format!("cannot dereference non-pointer/reference type '{}'", ty.format(gcx))
             }
             TypeError::InvalidUnaryOp { op, ty } => {
                 format!(

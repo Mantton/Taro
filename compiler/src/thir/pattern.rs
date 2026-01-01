@@ -30,12 +30,26 @@ impl<'ctx, 'r> PatternLoweringContext<'ctx, 'r> {
 
         let kind = match &pattern.kind {
             hir::PatternKind::Wildcard => PatternKind::Wild,
-            hir::PatternKind::Identifier(name) => PatternKind::Binding {
-                name: name.symbol,
-                local: pattern.id,
-                ty,
-                mutable: false,
-            },
+            hir::PatternKind::Binding { name, mode } => {
+                // Get the inferred binding mode from typechecking
+                // Fall back to the HIR mode if not recorded (shouldn't happen in practice)
+                let actual_mode = self.results.binding_mode(pattern.id).unwrap_or(*mode);
+
+                PatternKind::Binding {
+                    name: name.symbol,
+                    local: pattern.id,
+                    ty,
+                    mode: actual_mode,
+                }
+            }
+
+            hir::PatternKind::Reference { pattern: inner, .. } => {
+                let inner = self.lower_pattern(inner);
+                PatternKind::Deref {
+                    pattern: Box::new(inner),
+                }
+            }
+
             hir::PatternKind::Tuple(pats, _) => {
                 let subpatterns = pats
                     .iter()

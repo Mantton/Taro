@@ -1,3 +1,4 @@
+use std::rc::Rc;
 use crate::{
     compile::context::Gcx,
     hir::{self, DefinitionID, NodeID},
@@ -8,12 +9,13 @@ use crate::{
         resolve::models::{DefinitionKind, TypeHead},
         tycheck::{
             check::{checker::Checker, gather::GatherLocalsVisitor},
+            infer::InferCtx,
             lower::lowerer::TypeLowerer,
             solve::{
                 ApplyArgument, ApplyGoalData, AssignOpGoalData, BinOpGoalData,
-                BindOverloadGoalData, ConstraintSystem, DisjunctionBranch, Goal, MemberGoalData,
-                MethodCallData, StructLiteralField, StructLiteralGoalData, TupleAccessGoalData,
-                UnOpGoalData,
+                BindOverloadGoalData, ConstraintSystem, DerefGoalData, DisjunctionBranch, Goal,
+                MemberGoalData, MethodCallData, StructLiteralField, StructLiteralGoalData,
+                TupleAccessGoalData, UnOpGoalData,
             },
             utils::{
                 const_eval::eval_const_expression,
@@ -173,7 +175,8 @@ impl<'ctx> Checker<'ctx> {
                 );
             }
 
-            self.check_pattern_structure(&node.pattern, local_ty, &mut cs);
+            let scrutinee_id = node.initializer.as_ref().map(|e| e.id).unwrap_or(node.id);
+            self.check_pattern(&node.pattern, local_ty, scrutinee_id, &mut cs);
             cs.solve_all();
 
             for (id, ty) in cs.resolved_expr_types() {
@@ -225,7 +228,8 @@ impl<'ctx> Checker<'ctx> {
             );
         }
 
-        self.check_pattern_structure(&node.pattern, local_ty, cs);
+        let scrutinee_id = node.initializer.as_ref().map(|e| e.id).unwrap_or(node.id);
+        self.check_pattern(&node.pattern, local_ty, scrutinee_id, cs);
     }
 
     fn check_loop(&self, block: &hir::Block) {
@@ -475,16 +479,20 @@ impl<'ctx> Checker<'ctx> {
             }
             hir::ExpressionKind::Dereference(inner) => {
                 let ptr_ty = self.synth_with_expectation(inner, None, cs);
-                match ptr_ty.kind() {
-                    TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => inner,
-                    _ => {
-                        self.gcx().dcx().emit_error(
-                            "cannot dereference a non-pointer/reference value".into(),
-                            Some(expression.span),
-                        );
-                        Ty::error(self.gcx())
-                    }
-                }
+                let result_ty = cs.infer_cx.next_ty_var(expression.span);
+
+                cs.add_goal(
+                    Goal::Deref(DerefGoalData {
+                        node_id: expression.id,
+                        operand_node: inner.id,
+                        operand_ty: ptr_ty,
+                        result_ty,
+                        span: expression.span,
+                    }),
+                    expression.span,
+                );
+
+                result_ty
             }
             hir::ExpressionKind::Binary(op, lhs, rhs) => {
                 self.synth_binary_expression(expression, *op, lhs, rhs, expectation, cs)
@@ -1381,32 +1389,37 @@ impl<'ctx> Checker<'ctx> {
             })
         };
 
-        let mut arms_cs = Cs::new(self.context, self.current_def);
-        self.with_infer_ctx(arms_cs.infer_cx.clone(), || {
-            let result_ty =
-                expectation.unwrap_or_else(|| arms_cs.infer_cx.next_ty_var(expression.span));
+        // Create a shared inference context for all arms to share the result type variable
+        let shared_infer_cx = Rc::new(InferCtx::new(self.context));
+        let result_ty = expectation.unwrap_or_else(|| shared_infer_cx.next_ty_var(expression.span));
 
+        self.with_infer_ctx(shared_infer_cx.clone(), || {
             for arm in &node.arms {
-                GatherLocalsVisitor::from_match_arm(&arms_cs, self, &arm.pattern);
-                self.check_pattern_structure(&arm.pattern, scrutinee_ty, &mut arms_cs);
+                // Each arm gets its own constraint system
+                let mut arm_cs = Cs::new(self.context, self.current_def);
+                arm_cs.infer_cx = shared_infer_cx.clone();
+
+                GatherLocalsVisitor::from_match_arm(&arm_cs, self, &arm.pattern);
+                self.check_pattern(&arm.pattern, scrutinee_ty, node.value.id, &mut arm_cs);
 
                 if let Some(guard) = &arm.guard {
                     let guard_ty = self.synth_with_expectation(
                         guard,
                         Some(self.gcx().types.bool),
-                        &mut arms_cs,
+                        &mut arm_cs,
                     );
-                    arms_cs.equal(self.gcx().types.bool, guard_ty, guard.span);
+                    arm_cs.equal(self.gcx().types.bool, guard_ty, guard.span);
                 }
 
-                let arm_ty = self.synth_with_expectation(&arm.body, Some(result_ty), &mut arms_cs);
-                arms_cs.equal(result_ty, arm_ty, arm.body.span);
+                let arm_ty = self.synth_with_expectation(&arm.body, Some(result_ty), &mut arm_cs);
+                arm_cs.equal(result_ty, arm_ty, arm.body.span);
+
+                // Solve and commit each arm independently
+                arm_cs.solve_all();
+                self.commit_constraint_results(&arm_cs);
             }
 
-            arms_cs.solve_all();
-            self.commit_constraint_results(&arms_cs);
-
-            let resolved = arms_cs.infer_cx.resolve_vars_if_possible(result_ty);
+            let resolved = shared_infer_cx.resolve_vars_if_possible(result_ty);
             if resolved.is_infer() {
                 Ty::error(self.gcx())
             } else {
@@ -2033,20 +2046,132 @@ impl<'ctx> Checker<'ctx> {
     }
 }
 
+/// Context for tracking binding modes during pattern matching.
+/// This enables "match ergonomics" - automatic dereferencing and binding mode adjustment.
+struct PatternContext<'ctx> {
+    /// Current default binding mode (starts as ByValue, becomes ByRef when auto-derefing)
+    default_mode: hir::BindingMode,
+    /// The adjusted scrutinee type after auto-derefs
+    adjusted_ty: Ty<'ctx>,
+}
+
+impl<'ctx> PatternContext<'ctx> {
+    fn new(scrutinee: Ty<'ctx>) -> Self {
+        Self {
+            default_mode: hir::BindingMode::ByValue,
+            adjusted_ty: scrutinee,
+        }
+    }
+
+    /// Update binding mode when matching a reference with a non-reference pattern.
+    /// This implements the match ergonomics rules.
+    fn adjust_for_reference(&mut self, mutability: hir::Mutability, inner_ty: Ty<'ctx>) {
+        self.default_mode = match (self.default_mode, mutability) {
+            // If already ByRef, stay ByRef (don't upgrade to ByRef(Mutable))
+            (hir::BindingMode::ByRef(_), hir::Mutability::Mutable) => self.default_mode,
+            // Otherwise, match the reference's mutability
+            (_, mutability) => hir::BindingMode::ByRef(mutability),
+        };
+        self.adjusted_ty = inner_ty;
+    }
+
+    /// Reset to ByValue mode (when encountering an explicit reference pattern)
+    fn reset_to_move(&mut self) {
+        self.default_mode = hir::BindingMode::ByValue;
+    }
+}
+
 impl<'ctx> Checker<'ctx> {
-    fn check_pattern_structure(
+    /// Entry point for pattern checking. Creates a PatternContext and delegates to check_pattern_with_context.
+    fn check_pattern(
         &self,
         pattern: &hir::Pattern,
         scrutinee: Ty<'ctx>,
+        scrutinee_node_id: NodeID,
         cs: &mut Cs<'ctx>,
     ) {
-        cs.record_expr_ty(pattern.id, scrutinee);
+        let mut ctx = PatternContext::new(scrutinee);
+        self.check_pattern_with_context(pattern, &mut ctx, scrutinee_node_id, cs);
+    }
+
+    /// Handles automatic dereferencing (match ergonomics).
+    /// If the scrutinee is a reference and the pattern is not a reference pattern,
+    /// automatically dereference and adjust the binding mode.
+    /// Records Dereference adjustments for each auto-deref.
+    fn check_pattern_with_context(
+        &self,
+        pattern: &hir::Pattern,
+        ctx: &mut PatternContext<'ctx>,
+        scrutinee_node_id: NodeID,
+        cs: &mut Cs<'ctx>,
+    ) {
+        use crate::sema::tycheck::solve::Adjustment;
+
+        // Auto-deref loop: if scrutinee is &T and pattern is NOT &pat, auto-deref
+        let mut adjustments = Vec::new();
+        while let TyKind::Reference(inner_ty, mutability) = ctx.adjusted_ty.kind() {
+            // Don't auto-deref if this is an explicit reference pattern
+            if matches!(pattern.kind, hir::PatternKind::Reference { .. }) {
+                break;
+            }
+
+            // Record the dereference adjustment
+            adjustments.push(Adjustment::Dereference);
+
+            // Auto-deref: adjust the type and binding mode
+            ctx.adjust_for_reference(mutability, inner_ty);
+        }
+
+        // Record all adjustments on the scrutinee expression
+        if !adjustments.is_empty() {
+            self.results
+                .borrow_mut()
+                .record_node_adjustments(scrutinee_node_id, adjustments);
+        }
+
+        // Now check the pattern against the adjusted type
+        self.check_pattern_inner(pattern, ctx, cs);
+    }
+
+    /// The actual pattern checking logic (renamed from check_pattern_structure).
+    /// Now takes a PatternContext to track binding modes.
+    fn check_pattern_inner(
+        &self,
+        pattern: &hir::Pattern,
+        ctx: &mut PatternContext<'ctx>,
+        cs: &mut Cs<'ctx>,
+    ) {
+        cs.record_expr_ty(pattern.id, ctx.adjusted_ty);
         match &pattern.kind {
             hir::PatternKind::Wildcard => {}
             hir::PatternKind::Rest => {}
-            hir::PatternKind::Identifier(_) => {
+            hir::PatternKind::Binding { mode, .. } => {
                 let binding = self.get_local(pattern.id);
-                cs.equal(scrutinee, binding.ty, pattern.span);
+
+                // Determine the actual binding mode:
+                // If the pattern has an explicit mode (not ByValue), use it.
+                // Otherwise, use the default mode from the context (for match ergonomics).
+                let actual_mode = if *mode == hir::BindingMode::ByValue {
+                    ctx.default_mode
+                } else {
+                    *mode
+                };
+
+                // Compute the binding's type based on the binding mode
+                let binding_ty = match actual_mode {
+                    hir::BindingMode::ByValue => ctx.adjusted_ty,
+                    hir::BindingMode::ByRef(mutability) => {
+                        let gcx = self.gcx();
+                        Ty::new(TyKind::Reference(ctx.adjusted_ty, mutability), gcx)
+                    }
+                };
+
+                // Record the inferred binding mode for later phases (THIR, MIR)
+                self.results
+                    .borrow_mut()
+                    .record_binding_mode(pattern.id, actual_mode);
+
+                cs.equal(binding_ty, binding.ty, pattern.span);
             }
             hir::PatternKind::Tuple(pats, _) => {
                 let mut elem_tys = Vec::with_capacity(pats.len());
@@ -2059,15 +2184,17 @@ impl<'ctx> Checker<'ctx> {
                     self.gcx(),
                 );
                 cs.record_expr_ty(pattern.id, tuple_ty);
-                cs.equal(scrutinee, tuple_ty, pattern.span);
+                cs.equal(ctx.adjusted_ty, tuple_ty, pattern.span);
 
                 for (i, pat) in pats.iter().enumerate() {
-                    self.check_pattern_structure(pat, elem_tys[i], cs);
+                    let mut sub_ctx = PatternContext::new(elem_tys[i]);
+                    sub_ctx.default_mode = ctx.default_mode;
+                    self.check_pattern_with_context(pat, &mut sub_ctx, pat.id, cs);
                 }
             }
             hir::PatternKind::Member(path) => {
                 let Some((variant, enum_ty)) = self.resolve_enum_variant_pattern(
-                    scrutinee,
+                    ctx.adjusted_ty,
                     pattern.id,
                     path,
                     pattern.span,
@@ -2088,12 +2215,12 @@ impl<'ctx> Checker<'ctx> {
                     return;
                 }
 
-                cs.equal(scrutinee, enum_ty, pattern.span);
+                cs.equal(ctx.adjusted_ty, enum_ty, pattern.span);
             }
             hir::PatternKind::PathTuple { path, fields, .. } => {
                 let Some((variant, enum_ty, variant_fields)) = self
                     .resolve_enum_tuple_variant_pattern(
-                        scrutinee,
+                        ctx.adjusted_ty,
                         pattern.id,
                         path,
                         pattern.span,
@@ -2117,20 +2244,61 @@ impl<'ctx> Checker<'ctx> {
                     return;
                 }
 
-                cs.equal(scrutinee, enum_ty, pattern.span);
+                cs.equal(ctx.adjusted_ty, enum_ty, pattern.span);
 
                 for (pat, field) in fields.iter().zip(variant_fields.iter()) {
-                    self.check_pattern_structure(pat, field.ty, cs);
+                    let mut sub_ctx = PatternContext::new(field.ty);
+                    sub_ctx.default_mode = ctx.default_mode;
+                    self.check_pattern_with_context(pat, &mut sub_ctx, pat.id, cs);
                 }
             }
             hir::PatternKind::Or(patterns, _) => {
                 for pat in patterns {
-                    self.check_pattern_structure(pat, scrutinee, cs);
+                    let mut sub_ctx = PatternContext::new(ctx.adjusted_ty);
+                    sub_ctx.default_mode = ctx.default_mode;
+                    self.check_pattern_with_context(pat, &mut sub_ctx, pat.id, cs);
                 }
             }
             hir::PatternKind::Literal(literal) => {
                 let lit_ty = self.synth_expression_literal(literal, None, cs);
-                cs.equal(scrutinee, lit_ty, pattern.span);
+                cs.equal(ctx.adjusted_ty, lit_ty, pattern.span);
+            }
+            hir::PatternKind::Reference { pattern, mutable } => {
+                let gcx = self.gcx();
+                // The scrutinee must be a reference type
+                let inner_ty = match ctx.adjusted_ty.kind() {
+                    TyKind::Reference(inner, scrutinee_mut) => {
+                        // Check mutability compatibility:
+                        // Cannot match &mut pattern against immutable reference
+                        if *mutable == hir::Mutability::Mutable
+                            && scrutinee_mut != hir::Mutability::Mutable
+                        {
+                            gcx.dcx().emit_error(
+                                "cannot match `&mut` pattern against immutable reference".into(),
+                                Some(pattern.span),
+                            );
+                            return;
+                        }
+                        inner
+                    }
+                    TyKind::Error => return,
+                    _ => {
+                        gcx.dcx().emit_error(
+                            format!(
+                                "reference pattern requires reference type, found `{}`",
+                                ctx.adjusted_ty.format(gcx)
+                            )
+                            .into(),
+                            Some(pattern.span),
+                        );
+                        return;
+                    }
+                };
+                // Recursively check the inner pattern against the dereferenced type
+                // Reset binding mode to ByValue for explicit reference patterns
+                ctx.reset_to_move();
+                ctx.adjusted_ty = inner_ty;
+                self.check_pattern_inner(pattern, ctx, cs);
             }
         }
     }

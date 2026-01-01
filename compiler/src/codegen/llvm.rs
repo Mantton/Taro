@@ -874,7 +874,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 let _def = match place_ty.kind() {
                     TyKind::Adt(def, _) if def.kind == crate::sema::models::AdtKind::Enum => def,
                     _ => panic!(
-                        "discriminant on non-enum type {}",
+                        "ICE: discriminant on non-enum type {}",
                         place_ty.format(self.gcx)
                     ),
                 };

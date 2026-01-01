@@ -49,6 +49,7 @@ pub enum Goal<'ctx> {
     MethodCall(MethodCallData<'ctx>),
     StructLiteral(StructLiteralGoalData<'ctx>),
     TupleAccess(TupleAccessGoalData<'ctx>),
+    Deref(DerefGoalData<'ctx>),
 }
 
 #[derive(Debug, Clone)]
@@ -202,5 +203,14 @@ pub struct TupleAccessGoalData<'ctx> {
     pub receiver: Ty<'ctx>,
     pub index: usize,
     pub result: Ty<'ctx>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct DerefGoalData<'ctx> {
+    pub node_id: NodeID,
+    pub operand_node: NodeID,
+    pub operand_ty: Ty<'ctx>,
+    pub result_ty: Ty<'ctx>,
     pub span: Span,
 }

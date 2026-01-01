@@ -726,8 +726,21 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             // alternative's NodeID it references.
             self.locals.insert(binding.local, local);
 
-            // Copy from the source place to the local
-            let rvalue = Rvalue::Use(Operand::Copy(src_place.clone()));
+            // Generate the appropriate rvalue based on binding mode
+            let rvalue = match binding.mode {
+                crate::hir::BindingMode::ByValue => {
+                    // Move or copy the value
+                    Rvalue::Use(Operand::Copy(src_place.clone()))
+                }
+                crate::hir::BindingMode::ByRef(mutability) => {
+                    // Take a reference to the place
+                    Rvalue::Ref {
+                        mutable: mutability == crate::hir::Mutability::Mutable,
+                        place: src_place.clone(),
+                    }
+                }
+            };
+
             self.push_assign(block, Place::from_local(local), rvalue, binding.span);
         }
         block.unit()

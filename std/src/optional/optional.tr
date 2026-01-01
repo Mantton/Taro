@@ -6,8 +6,14 @@ public enum Optional[Wrapped] {
 
 extend[Wrapped] Optional[Wrapped] {
     public func unwrap(&self) -> Wrapped {}
-    public func isSome(&self) -> bool { false }
+    public func isSome(&self) -> bool {
+        !self.isNone()
+    }
+
     public func isNone(&self) -> bool {
-        false
+        match self {
+            case .none => true
+            case .some(_) => false
+        }
     }
 }

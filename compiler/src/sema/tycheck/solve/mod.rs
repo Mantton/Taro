@@ -22,6 +22,7 @@ use std::{cell::RefCell, cmp::Reverse, collections::VecDeque, rc::Rc};
 mod adt;
 mod apply;
 mod coerce;
+mod deref;
 mod interface;
 mod member;
 mod method;
@@ -364,6 +365,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             Goal::MethodCall(data) => self.solve_method_call(data),
             Goal::StructLiteral(data) => self.solve_struct_literal(data),
             Goal::TupleAccess(data) => self.solve_tuple_access(data),
+            Goal::Deref(data) => self.solve_deref(data),
         }
     }
 

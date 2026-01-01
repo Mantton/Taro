@@ -16,6 +16,8 @@ pub struct TypeCheckResults<'ctx> {
     overload_sources: FxHashMap<hir::NodeID, DefinitionID>,
     value_resolutions: FxHashMap<hir::NodeID, Resolution>,
     instantiations: FxHashMap<hir::NodeID, GenericArguments<'ctx>>,
+    /// Maps pattern NodeIDs to their inferred binding modes (for Binding patterns)
+    binding_modes: FxHashMap<hir::NodeID, hir::BindingMode>,
 }
 
 impl<'ctx> TypeCheckResults<'ctx> {
@@ -28,6 +30,7 @@ impl<'ctx> TypeCheckResults<'ctx> {
         self.value_resolutions
             .extend(other.value_resolutions.drain());
         self.instantiations.extend(other.instantiations.drain());
+        self.binding_modes.extend(other.binding_modes.drain());
     }
 
     pub fn record_node_type(&mut self, id: hir::NodeID, ty: Ty<'ctx>) {
@@ -88,5 +91,13 @@ impl<'ctx> TypeCheckResults<'ctx> {
 
     pub fn instantiation(&self, id: hir::NodeID) -> Option<GenericArguments<'ctx>> {
         self.instantiations.get(&id).cloned()
+    }
+
+    pub fn record_binding_mode(&mut self, id: hir::NodeID, mode: hir::BindingMode) {
+        self.binding_modes.insert(id, mode);
+    }
+
+    pub fn binding_mode(&self, id: hir::NodeID) -> Option<hir::BindingMode> {
+        self.binding_modes.get(&id).copied()
     }
 }

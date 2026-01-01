@@ -561,16 +561,29 @@ pub struct Pattern {
     pub kind: PatternKind,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindingMode {
+    ByValue,
+    ByRef(Mutability),
+}
+
 #[derive(Debug, Clone)]
 pub enum PatternKind {
     /// _
     Wildcard,
     /// ..
     Rest,
-    // `foo`
-    Identifier(Identifier),
+    Binding {
+        name: Identifier,
+        mode: BindingMode,
+    },
     // (a, b)
     Tuple(Vec<Pattern>, Span),
+    // &T
+    Reference {
+        pattern: Box<Pattern>,
+        mutable: Mutability,
+    },
     // Foo.Bar
     Member(PatternPath),
     // Foo.Bar(a, b)
@@ -1429,11 +1442,14 @@ pub fn walk_pattern_binding_condition<V: HirVisitor>(
 pub fn walk_pattern<V: HirVisitor>(visitor: &mut V, pattern: &Pattern) -> V::Result {
     match &pattern.kind {
         PatternKind::Wildcard | PatternKind::Rest => {}
-        PatternKind::Identifier(identifier) => {
-            try_visit!(visitor.visit_identifier(identifier));
+        PatternKind::Binding { name, .. } => {
+            try_visit!(visitor.visit_identifier(name));
         }
         PatternKind::Tuple(patterns, _) => {
             walk_list!(visitor, visit_pattern, patterns);
+        }
+        PatternKind::Reference { pattern, .. } => {
+            try_visit!(visitor.visit_pattern(pattern));
         }
         PatternKind::Member(pattern_path) => {
             try_visit!(visitor.visit_pattern_path(pattern_path));

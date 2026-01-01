@@ -83,7 +83,7 @@ impl<'cs, 'arena> GatherLocalsVisitor<'cs, 'arena> {
 
 impl HirVisitor for GatherLocalsVisitor<'_, '_> {
     fn visit_pattern(&mut self, p: &hir::Pattern) -> Self::Result {
-        let hir::PatternKind::Identifier(..) = &p.kind else {
+        let hir::PatternKind::Binding { .. } = &p.kind else {
             return hir::walk_pattern(self, p);
         };
 

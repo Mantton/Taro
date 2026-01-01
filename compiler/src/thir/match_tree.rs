@@ -43,6 +43,8 @@ pub struct Binding<'ctx> {
     pub local: NodeID,
     /// The type of the binding.
     pub ty: Ty<'ctx>,
+    /// The binding mode (ByValue or ByRef).
+    pub mode: crate::hir::BindingMode,
     /// Whether the binding is mutable.
     pub mutable: bool,
     /// The span of the binding pattern.
@@ -356,6 +358,7 @@ impl<'ctx> Compiler<'ctx> {
             return Decision::Failure;
         }
 
+        self.peel_deref_patterns(&mut rows);
         expand_or_patterns(&mut rows);
 
         for row in &mut rows {
@@ -376,9 +379,16 @@ impl<'ctx> Compiler<'ctx> {
             };
         }
 
-        let branch_var = self.branch_variable(&rows);
+        let mut branch_var = self.branch_variable(&rows);
 
-        match branch_var.ty.kind() {
+        // Peel off reference to get the actual type for matching
+        // This handles match ergonomics where scrutinee is &T but patterns match T
+        let match_ty = match branch_var.ty.kind() {
+            TyKind::Reference(inner, _) => inner,
+            _ => branch_var.ty,
+        };
+
+        match match_ty.kind() {
             TyKind::Bool => {
                 let cases = vec![
                     (Constructor::Bool(false), Vec::new(), Vec::new()),
@@ -537,6 +547,9 @@ impl<'ctx> Compiler<'ctx> {
                     PatternKind::Binding { .. } | PatternKind::Wild => {
                         unreachable!("binding pattern should have been moved")
                     }
+                    PatternKind::Deref { .. } => {
+                        unreachable!("deref patterns should be lowered in MIR")
+                    }
                 }
             } else {
                 for (_, _, rows) in &mut cases {
@@ -561,13 +574,14 @@ impl<'ctx> Compiler<'ctx> {
                     name,
                     local,
                     ty,
-                    mutable,
+                    mode,
                 } => {
                     row.bindings.push(Binding {
                         name: *name,
                         local: *local,
                         ty: *ty,
-                        mutable: *mutable,
+                        mode: *mode,
+                        mutable: true,
                         span: col.pattern.span,
                         variable: col.variable,
                     });
@@ -585,6 +599,28 @@ impl<'ctx> Compiler<'ctx> {
 
     /// Given a row, returns the variable in that row that's referred to the
     /// most across all rows.
+    fn peel_deref_patterns(&mut self, rows: &mut [Row<'ctx>]) {
+        for row in rows {
+            let mut new_columns = Vec::with_capacity(row.columns.len());
+            for col in row.columns.drain(..) {
+                let mut pattern = col.pattern;
+
+                loop {
+                    match pattern.kind {
+                        PatternKind::Deref { pattern: inner } => {
+                            pattern = *inner;
+                        }
+                        _ => {
+                            new_columns.push(Column::new(col.variable, pattern));
+                            break;
+                        }
+                    }
+                }
+            }
+            row.columns = new_columns;
+        }
+    }
+
     fn branch_variable(&self, rows: &[Row<'ctx>]) -> Variable<'ctx> {
         let mut counts: HashMap<Variable<'ctx>, usize> = HashMap::new();
 
@@ -712,7 +748,9 @@ fn literal_key(pattern: &Pattern<'_>) -> LiteralKey {
             }
         },
         PatternKind::Or(_) => unreachable!("or-patterns should be expanded before compilation"),
-        _ => unreachable!("expected literal pattern"),
+        _ => {
+            unreachable!("expected literal pattern")
+        }
     }
 }
 
