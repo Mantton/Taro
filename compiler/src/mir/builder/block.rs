@@ -58,11 +58,11 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
         match &stmt.kind {
             thir::StmtKind::Let {
-                pattern, expr, ty, ..
+                pattern, expr, ty, mutable, ..
             } => {
                 // Evaluate initializer (if any) into a temp so we can destructure.
                 let init_place = if let Some(init) = expr {
-                    let temp = self.push_local(*ty, LocalKind::Temp, None, stmt.span);
+                    let temp = self.push_local(*ty, LocalKind::Temp, true, None, stmt.span);
                     let place = Place::from_local(temp);
                     block = self
                         .expr_into_dest(place.clone(), block, *init)
@@ -73,7 +73,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 };
 
                 block = self
-                    .bind_pattern_to_place(block, pattern, init_place.as_ref())
+                    .bind_pattern_to_place(block, pattern, init_place.as_ref(), *mutable)
                     .into_block();
                 return block.unit();
             }
@@ -133,6 +133,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         mut block: BasicBlockId,
         pattern: &thir::Pattern<'ctx>,
         place: Option<&Place<'ctx>>,
+        mutable: bool,
     ) -> BlockAnd<()> {
         match &pattern.kind {
             thir::PatternKind::Wild => block.unit(),
@@ -142,7 +143,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 ty,
                 ..
             } => {
-                let local = self.push_local(*ty, mir::LocalKind::User, Some(*name), pattern.span);
+                let local = self.push_local(*ty, mir::LocalKind::User, mutable, Some(*name), pattern.span);
                 self.locals.insert(*pat_id, local);
                 if let Some(src) = place {
                     let rvalue = Rvalue::Use(Operand::Copy(src.clone()));
@@ -159,7 +160,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                         local: base_place.local,
                         projection: proj,
                     };
-                    self.bind_pattern_to_place(block, inner, Some(&deref_place))
+                    self.bind_pattern_to_place(block, inner, Some(&deref_place), mutable)
                 } else {
                     block.unit()
                 }
@@ -177,7 +178,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                         projection: proj,
                     };
                     block = self
-                        .bind_pattern_to_place(block, &field.pattern, Some(&field_place))
+                        .bind_pattern_to_place(block, &field.pattern, Some(&field_place), mutable)
                         .into_block();
                 }
                 block.unit()
@@ -209,7 +210,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                         projection: proj,
                     };
                     block = self
-                        .bind_pattern_to_place(block, &field.pattern, Some(&field_place))
+                        .bind_pattern_to_place(block, &field.pattern, Some(&field_place), mutable)
                         .into_block();
                 }
                 block.unit()
@@ -219,7 +220,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     return block.unit();
                 };
                 // Resolver enforces consistent bindings across or-patterns.
-                self.bind_pattern_to_place(block, first, place)
+                self.bind_pattern_to_place(block, first, place, mutable)
             }
         }
     }

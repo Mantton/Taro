@@ -84,6 +84,7 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                             let temp_local = body.locals.push(LocalDecl {
                                 ty: *ty,
                                 kind: LocalKind::Temp,
+                                mutable: true,
                                 name: None,
                                 span,
                             });
@@ -360,6 +361,7 @@ impl<'ctx> MirPass<'ctx> for ApplyEscapeAnalysis {
                     let heap_local = body.locals.push(LocalDecl {
                         ty: new_ty,
                         kind: LocalKind::Temp,
+                        mutable: true,
                         name: None,
                         span,
                     });

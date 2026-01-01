@@ -1,2 +1,15 @@
+import std.optional.Optional
 
 public struct Dictionary[Key, Value] {}
+
+extend[Key, Value] Dictionary[Key, Value] {
+    public func new() -> Self {
+        Dictionary {}
+    }
+}
+
+extend[Key, Value] Dictionary[Key, Value] {
+    public func insert(&mut self, key: Key, value: Value) -> Key? {
+        Optional.none
+    }
+}

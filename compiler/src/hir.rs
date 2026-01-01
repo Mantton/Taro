@@ -502,8 +502,18 @@ pub enum Literal {
     Nil,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MatchSource {
+    Match,
+    OptionalBinding,
+    OptionalDefault,
+    OptionalUnwrap,
+    Await,
+}
+
 #[derive(Debug, Clone)]
 pub struct MatchExpression {
+    pub source: MatchSource,
     pub value: Box<Expression>,
     pub arms: Vec<MatchArm>,
     pub kw_span: Span,
@@ -622,20 +632,25 @@ pub enum StdType {
     Make,
 }
 
+impl StdType {
+    pub fn name_str(self) -> Option<&'static str> {
+        match self {
+            StdType::Option => Some("Optional"),
+            StdType::List => Some("List"),
+            StdType::Set => Some("Set"),
+            StdType::Dictionary => Some("Dictionary"),
+            StdType::Range => Some("Range"),
+            StdType::ClosedRange => Some("ClosedRange"),
+            StdType::Make => None,
+        }
+    }
+}
+
 // MARK - Visitor
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AssocContext {
     Interface(DefinitionID),
     Extension(DefinitionID),
-}
-
-impl AssocContext {
-    pub fn def_id(self) -> DefinitionID {
-        match self {
-            AssocContext::Interface(id) => id,
-            AssocContext::Extension(id) => id,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -649,7 +664,6 @@ pub enum FunctionContext {
     Free,
     Assoc(AssocContext),
     Operator,
-    Nested,
 }
 
 pub fn is_expression_bodied(block: &Block) -> Option<&Expression> {
@@ -662,6 +676,7 @@ pub fn is_expression_bodied(block: &Block) -> Option<&Expression> {
 pub trait HirVisitor: Sized {
     type Result: VisitorResult = ();
 
+    #[allow(unused)]
     fn visit_package(&mut self, node: &Package) -> Self::Result {
         walk_package(self, node)
     }

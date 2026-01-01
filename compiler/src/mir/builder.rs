@@ -104,6 +104,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let ret_local = body.locals.push(LocalDecl {
             ty: output_ty,
             kind: LocalKind::Return,
+            mutable: true,
             name: Some(Symbol::new("$ret")),
             span: entry_span,
         });
@@ -140,7 +141,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             .map(|(param, lowered)| (param.id, param.name, param.span, lowered.ty))
             .collect();
         for (id, name, span, ty) in params {
-            let local = self.push_local(ty, LocalKind::Param, Some(name), span);
+            let local = self.push_local(ty, LocalKind::Param, false, Some(name), span);
             self.locals.insert(id, local);
         }
     }
@@ -165,16 +166,18 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         self.finalize_unterminated_blocks();
     }
 
-    fn push_local(
+    pub(super) fn push_local(
         &mut self,
         ty: Ty<'ctx>,
         kind: LocalKind,
+        mutable: bool,
         name: Option<Symbol>,
         span: Span,
     ) -> LocalId {
         let local = self.body.locals.push(LocalDecl {
             ty,
             kind,
+            mutable,
             name,
             span,
         });
@@ -183,7 +186,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
     }
 
     fn new_temp_with_ty(&mut self, ty: Ty<'ctx>, span: Span) -> LocalId {
-        self.push_local(ty, LocalKind::Temp, None, span)
+        self.push_local(ty, LocalKind::Temp, true, None, span)
     }
 
     fn new_block(&mut self) -> BasicBlockId {
@@ -203,7 +206,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
     }
 
     fn unit_temp_place(&mut self, span: Span) -> Place<'ctx> {
-        let local = self.push_local(self.gcx.types.void, LocalKind::Temp, None, span);
+        let local = self.push_local(self.gcx.types.void, LocalKind::Temp, true, None, span);
         Place::from_local(local)
     }
 

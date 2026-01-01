@@ -3,8 +3,8 @@ use crate::{
     hir::{self, DefinitionID, DefinitionKind, Resolution},
     sema::{
         models::{
-            AdtDef, AdtKind, AliasKind, Const, ConstKind, ConstValue, Constraint,
-            GenericArgument, GenericArguments, GenericParameter, GenericParameterDefinition,
+            AdtDef, AdtKind, AliasKind, Const, ConstKind, ConstValue, Constraint, GenericArgument,
+            GenericArguments, GenericParameter, GenericParameterDefinition,
             GenericParameterDefinitionKind, InterfaceDefinition, InterfaceReference, Ty, TyKind,
         },
         resolve::models::{PrimaryType, TypeHead},
@@ -704,16 +704,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
 
     fn lower_foundation_type(&self, path: &hir::Path, decl: hir::StdType) -> Option<Ty<'ctx>> {
         let gcx = self.gcx();
-        let name = match decl {
-            hir::StdType::Option => "Option",
-            hir::StdType::List => "List",
-            hir::StdType::Set => "Set",
-            hir::StdType::Dictionary => "Dictionary",
-            hir::StdType::Range => "Range",
-            hir::StdType::ClosedRange => "ClosedRange",
-            hir::StdType::Make => return None,
-        };
-
+        let name = decl.name_str()?;
         let def_id = match gcx.find_std_type(name) {
             Some(id) => id,
             None => {

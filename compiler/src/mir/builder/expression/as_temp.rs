@@ -18,7 +18,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         expression: thir::ExprId,
     ) -> BlockAnd<mir::LocalId> {
         let expr = &self.thir.exprs[expression];
-        let lid = self.push_local(expr.ty, LocalKind::Temp, None, expr.span);
+        let lid = self.push_local(expr.ty, LocalKind::Temp, true, None, expr.span);
         block = self
             .expr_into_dest(Place::from_local(lid), block, expression)
             .into_block();

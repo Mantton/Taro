@@ -188,6 +188,7 @@ pub enum StmtKind<'a> {
         pattern: Pattern<'a>,
         expr: Option<ExprId>,
         ty: Ty<'a>,
+        mutable: bool,
     },
     Return {
         value: Option<ExprId>,

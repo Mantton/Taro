@@ -1,4 +1,3 @@
-use std::rc::Rc;
 use crate::{
     compile::context::Gcx,
     hir::{self, DefinitionID, NodeID},
@@ -27,6 +26,7 @@ use crate::{
     },
     span::{Span, Symbol},
 };
+use std::rc::Rc;
 
 impl<'ctx> Checker<'ctx> {
     pub fn gcx(&self) -> Gcx<'ctx> {
@@ -512,7 +512,9 @@ impl<'ctx> Checker<'ctx> {
             hir::ExpressionKind::CastAs(value, ty) => {
                 self.synth_cast_expression(expression, value, ty, expectation, cs)
             }
-            hir::ExpressionKind::PatternBinding(..) => todo!(),
+            hir::ExpressionKind::PatternBinding(condition) => {
+                self.synth_pattern_binding_expression(expression, condition, cs)
+            }
             hir::ExpressionKind::Block(block) => {
                 self.synth_block_expression(block, expectation, cs)
             }
@@ -1109,9 +1111,47 @@ impl<'ctx> Checker<'ctx> {
                 };
                 self.synth_constructor_value_expression(node_id, nominal, span, expectation, cs)
             }
-            hir::Resolution::PrimaryType(..)
-            | hir::Resolution::InterfaceSelfTypeParameter(..)
-            | hir::Resolution::Foundation(..) => todo!(),
+            hir::Resolution::PrimaryType(..) => {
+                self.gcx().dcx().emit_error(
+                    "primitive types cannot be used as values".into(),
+                    Some(span),
+                );
+                Ty::error(self.gcx())
+            }
+            hir::Resolution::InterfaceSelfTypeParameter(..) => {
+                self.gcx().dcx().emit_error(
+                    "`Self` type parameter cannot be used as a value".into(),
+                    Some(span),
+                );
+                Ty::error(self.gcx())
+            }
+            hir::Resolution::Foundation(std_type) => {
+                // Resolve to the actual std library type (e.g., Dictionary, Optional, List)
+                let Some(name) = std_type.name_str() else {
+                    self.gcx().dcx().emit_error(
+                        "this standard library type cannot be used as a value".into(),
+                        Some(span),
+                    );
+                    return Ty::error(self.gcx());
+                };
+                let Some(def_id) = self.gcx().find_std_type(name) else {
+                    self.gcx().dcx().emit_error(
+                        format!("unable to resolve standard library type '{}'", name).into(),
+                        Some(span),
+                    );
+                    return Ty::error(self.gcx());
+                };
+                // Treat Foundation types like struct/enum constructors - bind to constructor overload set
+                let kind = self.gcx().definition_kind(def_id);
+                match kind {
+                    DefinitionKind::Struct | DefinitionKind::Enum => self
+                        .synth_constructor_value_expression(node_id, def_id, span, expectation, cs),
+                    _ => {
+                        // For other types (interfaces, aliases), just return the type
+                        self.gcx().get_type(def_id)
+                    }
+                }
+            }
             hir::Resolution::Error => unreachable!(),
         }
     }
@@ -1352,6 +1392,26 @@ impl<'ctx> Checker<'ctx> {
                 }
             }
         }
+    }
+
+    fn synth_pattern_binding_expression(
+        &self,
+        _expression: &hir::Expression,
+        condition: &hir::PatternBindingCondition,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        // Typecheck the expression being matched
+        let expr_ty = self.synth(&condition.expression, cs);
+
+        // Gather local bindings from the pattern before checking
+        GatherLocalsVisitor::from_match_arm(cs, self, &condition.pattern);
+
+        // Check the pattern against the expression's type
+        let scrutinee_id = condition.expression.id;
+        self.check_pattern(&condition.pattern, expr_ty, scrutinee_id, cs);
+
+        // Pattern binding conditions always evaluate to bool
+        self.gcx().types.bool
     }
 
     fn synth_match_expression(

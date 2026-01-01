@@ -19,6 +19,10 @@ pub fn build_package<'ctx>(
         }
         let mut body = MirBuilder::build_function(gcx, &func);
         optimize::run_default_passes(gcx, &mut body);
+        
+        // Validate mutable borrows
+        super::validate::validate_mutability(gcx, &body)?;
+        
         // let ident = gcx.definition_ident(id);
         // println!("{} MIR", ident.symbol);
         // println!("{}", super::pretty::PrettyPrintMir { body: &body, gcx });

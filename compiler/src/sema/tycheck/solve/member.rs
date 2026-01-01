@@ -155,12 +155,19 @@ impl<'ctx> ConstraintSolver<'ctx> {
         gcx.with_session_type_database(|db| collect(db));
 
         let mapping = gcx.store.package_mapping.borrow();
-        let deps: Vec<_> = gcx
+        let mut deps: Vec<_> = gcx
             .config
             .dependencies
             .values()
             .filter_map(|ident| mapping.get(ident.as_str()).copied())
             .collect();
+        
+        // Always include the std package for Foundation type method lookup
+        if let Some(std_pkg) = gcx.std_package_index() {
+            if !deps.contains(&std_pkg) {
+                deps.push(std_pkg);
+            }
+        }
         drop(mapping);
 
         for index in deps {
@@ -252,12 +259,19 @@ impl<'ctx> ConstraintSolver<'ctx> {
         gcx.with_session_type_database(|db| collect(db));
 
         let mapping = gcx.store.package_mapping.borrow();
-        let deps: Vec<_> = gcx
+        let mut deps: Vec<_> = gcx
             .config
             .dependencies
             .values()
             .filter_map(|ident| mapping.get(ident.as_str()).copied())
             .collect();
+        
+        // Always include the std package for Foundation type operator lookup
+        if let Some(std_pkg) = gcx.std_package_index() {
+            if !deps.contains(&std_pkg) {
+                deps.push(std_pkg);
+            }
+        }
         drop(mapping);
 
         for index in deps {

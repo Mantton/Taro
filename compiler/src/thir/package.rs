@@ -214,6 +214,7 @@ impl<'ctx> FunctionLower<'ctx> {
                 pattern: pattern_from_hir(self.gcx, self.results.as_ref(), &local.pattern),
                 expr,
                 ty,
+                mutable: local.mutability == hir::Mutability::Mutable,
             },
             span: local.pattern.span,
         }
@@ -692,6 +693,62 @@ impl<'ctx> FunctionLower<'ctx> {
                     index: FieldIndex::from_usize(
                         self.results.field_index(expr.id).expect("Field Index"),
                     ),
+                }
+            }
+            hir::ExpressionKind::PatternBinding(condition) => {
+                // Lower `case pattern = expr` to a match that returns true if the pattern matches.
+                // match expr { case pattern => true, case _ => false }
+                let scrutinee = self.lower_expr(&condition.expression);
+                let pattern = pattern_from_hir(self.gcx, self.results.as_ref(), &condition.pattern);
+
+                // Create the "true" arm for when the pattern matches
+                let true_lit = self.push_expr(
+                    ExprKind::Literal(Constant {
+                        ty: self.gcx.types.bool,
+                        value: ConstantKind::Bool(true),
+                    }),
+                    self.gcx.types.bool,
+                    condition.span,
+                );
+                let true_arm_id = {
+                    let id = thir::ArmId::from_raw(self.func.arms.len() as u32);
+                    self.func.arms.push(thir::Arm {
+                        pattern: Box::new(pattern),
+                        guard: None,
+                        body: true_lit,
+                        span: condition.span,
+                    });
+                    id
+                };
+
+                // Create the "false" arm (wildcard) for when the pattern doesn't match
+                let false_lit = self.push_expr(
+                    ExprKind::Literal(Constant {
+                        ty: self.gcx.types.bool,
+                        value: ConstantKind::Bool(false),
+                    }),
+                    self.gcx.types.bool,
+                    condition.span,
+                );
+                let wild_pattern = thir::Pattern {
+                    ty: self.results.node_type(condition.expression.id),
+                    span: condition.span,
+                    kind: thir::PatternKind::Wild,
+                };
+                let false_arm_id = {
+                    let id = thir::ArmId::from_raw(self.func.arms.len() as u32);
+                    self.func.arms.push(thir::Arm {
+                        pattern: Box::new(wild_pattern),
+                        guard: None,
+                        body: false_lit,
+                        span: condition.span,
+                    });
+                    id
+                };
+
+                ExprKind::Match {
+                    scrutinee,
+                    arms: vec![true_arm_id, false_arm_id],
                 }
             }
             _ => {

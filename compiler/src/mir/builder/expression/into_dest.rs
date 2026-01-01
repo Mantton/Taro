@@ -714,6 +714,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 let new_local = self.push_local(
                     binding.ty,
                     mir::LocalKind::User,
+                    true, // Match bindings are mutable for now to allow pattern binding operations
                     Some(binding.name),
                     binding.span,
                 );
