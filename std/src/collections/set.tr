@@ -1,2 +1,16 @@
+import std.hash.Hashable
 
-public struct Set[Element] {}
+public struct Set[Element: Hashable] {}
+
+
+extend[Element] Set[Element] {
+    public func new() -> Self {
+        Set {}
+    }
+}
+
+
+extend[Element] Set[Element] {
+    public func insert(&mut self, _ value: Element) {}
+    public func contains(&mut self, _ value: Element) -> bool { false }
+}

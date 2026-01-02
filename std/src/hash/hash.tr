@@ -1,7 +1,7 @@
 import std.cmp.Equatable
 
 public interface Hashable: Equatable {
-    func has[H: Hasher](&self, into: &mut H)
+    func hash[H: Hasher](&self, into hasher: &mut H)
 }
 
 public interface Hasher {

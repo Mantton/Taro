@@ -137,7 +137,7 @@ impl<'ctx> Actor<'ctx> {
         let mut witness = ConformanceWitness::default();
         let mut errors = Vec::new();
 
-        // 1. Check associated types (stub for now)
+        // 1. Check associated types
         for assoc in &requirements.types {
             match self.find_type_witness(type_head, assoc, record) {
                 Ok(ty) => {
@@ -167,7 +167,7 @@ impl<'ctx> Actor<'ctx> {
             }
         }
 
-        // 4. Check constants (stub for now)
+        // 4. Check constants
         for constant in &requirements.constants {
             match self.find_constant_witness(type_head, constant, record) {
                 Ok(id) => {
@@ -280,7 +280,10 @@ impl<'ctx> Actor<'ctx> {
         type_head: TypeHead,
         interface: InterfaceReference<'ctx>,
     ) -> Option<ConformanceWitness<'ctx>> {
-        if let Some(witness) = self.context.with_session_type_database(|db| {
+        let gcx = self.context;
+
+        // Check cached witnesses across all packages
+        if let Some(witness) = gcx.find_in_databases(|db| {
             db.conformance_witnesses
                 .get(&(type_head, interface))
                 .cloned()
@@ -288,12 +291,16 @@ impl<'ctx> Actor<'ctx> {
             return Some(witness);
         }
 
-        let records = self.context.with_session_type_database(|db| {
-            db.conformances.get(&type_head).cloned().unwrap_or_default()
+        // Collect conformance records from all packages
+        let records = gcx.collect_from_databases(|db| {
+            db.conformances
+                .get(&type_head)
+                .cloned()
+                .unwrap_or_default()
         });
 
         for record in records {
-            if record.interface == interface {
+            if record.interface.id == interface.id {
                 if let Ok(witness) = self.build_witness(type_head, &record) {
                     self.store_witness(type_head, interface, witness.clone());
                     return Some(witness);
@@ -306,7 +313,7 @@ impl<'ctx> Actor<'ctx> {
                 .into_iter()
                 .skip(1)
             {
-                if iface != interface {
+                if iface.id != interface.id {
                     continue;
                 }
 
@@ -339,10 +346,12 @@ impl<'ctx> Actor<'ctx> {
         &self,
         type_head: TypeHead,
         assoc: &AssociatedTypeDefinition<'ctx>,
-        _record: &crate::sema::models::ConformanceRecord<'ctx>,
+        record: &crate::sema::models::ConformanceRecord<'ctx>,
     ) -> Result<Ty<'ctx>, ConformanceError<'ctx>> {
         let gcx = self.context;
-        let alias_id = gcx.with_session_type_database(|db| {
+        // Look in the extension's package (where the implementation lives)
+        let extension_pkg = record.extension.package();
+        let alias_id = gcx.with_type_database(extension_pkg, |db| {
             db.alias_table
                 .by_type
                 .get(&type_head)
@@ -371,10 +380,11 @@ impl<'ctx> Actor<'ctx> {
         record: &crate::sema::models::ConformanceRecord<'ctx>,
         type_witnesses: &FxHashMap<DefinitionID, Ty<'ctx>>,
     ) -> Result<MethodWitness<'ctx>, ConformanceError<'ctx>> {
-        // Look up candidates in type's member index
+        // Look up candidates in the extension's package (where the implementation lives)
+        let extension_pkg = record.extension.package();
         let candidates = self
             .context
-            .with_session_type_database(|db| {
+            .with_type_database(extension_pkg, |db| {
                 db.type_head_to_members
                     .get(&type_head)
                     .and_then(|idx| idx.instance_functions.get(&requirement.name))
@@ -422,10 +432,11 @@ impl<'ctx> Actor<'ctx> {
         requirement: &InterfaceOperatorRequirement<'ctx>,
         record: &crate::sema::models::ConformanceRecord<'ctx>,
     ) -> Result<DefinitionID, ConformanceError<'ctx>> {
-        // Look up candidates in type's operator index
+        // Look up candidates in the extension's package (where the implementation lives)
+        let extension_pkg = record.extension.package();
         let candidates = self
             .context
-            .with_session_type_database(|db| {
+            .with_type_database(extension_pkg, |db| {
                 db.type_head_to_members
                     .get(&type_head)
                     .and_then(|idx| idx.operators.get(&requirement.kind))
@@ -440,7 +451,11 @@ impl<'ctx> Actor<'ctx> {
             }
         }
 
-        // Operators always need explicit implementation
+        // Check for default implementation
+        if !requirement.is_required {
+            return Ok(requirement.id);
+        }
+
         Err(ConformanceError::MissingOperator {
             kind: requirement.kind,
             signature: requirement.signature,
@@ -469,10 +484,12 @@ impl<'ctx> Actor<'ctx> {
         let substituted_ty = self.substitute_with_args(interface_fn_ty, record.interface.arguments);
         let impl_fn_ty = self.labeled_signature_to_ty(impl_sig);
 
-        // Freshen and compare
-        let mut freshener = crate::sema::tycheck::freshen::TypeFreshener::new(gcx);
-        let fresh_interface_ty = freshener.freshen(substituted_ty);
-        let fresh_impl_ty = freshener.freshen(impl_fn_ty);
+        // Freshen each signature separately so generics are compared positionally
+        let mut interface_freshener = crate::sema::tycheck::freshen::TypeFreshener::new(gcx);
+        let fresh_interface_ty = interface_freshener.freshen(substituted_ty);
+
+        let mut impl_freshener = crate::sema::tycheck::freshen::TypeFreshener::new(gcx);
+        let fresh_impl_ty = impl_freshener.freshen(impl_fn_ty);
 
         fresh_interface_ty == fresh_impl_ty
     }
@@ -532,10 +549,13 @@ impl<'ctx> Actor<'ctx> {
 
         let impl_fn_ty = self.labeled_signature_to_ty(impl_sig);
 
-        // 4. Freshen and compare
-        let mut freshener = crate::sema::tycheck::freshen::TypeFreshener::new(gcx);
-        let fresh_interface_ty = freshener.freshen(substituted_ty);
-        let fresh_impl_ty = freshener.freshen(impl_fn_ty);
+        // 4. Freshen each signature separately so method-local generics are
+        //    compared positionally (first generic matches first generic)
+        let mut interface_freshener = crate::sema::tycheck::freshen::TypeFreshener::new(gcx);
+        let fresh_interface_ty = interface_freshener.freshen(substituted_ty);
+
+        let mut impl_freshener = crate::sema::tycheck::freshen::TypeFreshener::new(gcx);
+        let fresh_impl_ty = impl_freshener.freshen(impl_fn_ty);
 
         fresh_interface_ty == fresh_impl_ty
     }

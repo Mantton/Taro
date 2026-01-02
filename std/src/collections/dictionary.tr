@@ -1,6 +1,7 @@
 import std.optional.Optional
+import std.hash.Hashable
 
-public struct Dictionary[Key, Value] {}
+public struct Dictionary[Key: Hashable, Value] {}
 
 extend[Key, Value] Dictionary[Key, Value] {
     public func new() -> Self {

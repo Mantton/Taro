@@ -1,0 +1,8 @@
+import std.hash.{Hashable, Hasher}
+
+struct _StringHeader {}
+
+extend string: Hashable {
+    public func hash[H: Hasher](&self, into hasher: &mut H) {}
+    public operator ==(self, rhs: Self) -> bool { false }
+}

@@ -214,6 +214,61 @@ impl<'arena> GlobalContext<'arena> {
     }
 }
 
+// Package iteration helpers
+impl<'arena> GlobalContext<'arena> {
+    /// Returns package indices for all dependencies plus std (if available).
+    /// Does NOT include the current session package.
+    pub fn visible_packages(self) -> Vec<PackageIndex> {
+        let mapping = self.store.package_mapping.borrow();
+        let mut deps: Vec<_> = self
+            .config
+            .dependencies
+            .values()
+            .filter_map(|ident| mapping.get(ident.as_str()).copied())
+            .collect();
+        drop(mapping);
+
+        // Always include std for Foundation type lookups
+        if let Some(std_pkg) = self.std_package_index() {
+            if !deps.contains(&std_pkg) {
+                deps.push(std_pkg);
+            }
+        }
+        deps
+    }
+
+    /// Search session first, then all visible packages. Returns first Some result.
+    pub fn find_in_databases<F, T>(self, func: F) -> Option<T>
+    where
+        F: Fn(&mut TypeDatabase<'arena>) -> Option<T>,
+    {
+        // Check session first
+        if let Some(result) = self.with_session_type_database(&func) {
+            return Some(result);
+        }
+
+        // Check dependencies
+        for index in self.visible_packages() {
+            if let Some(result) = self.with_type_database(index, &func) {
+                return Some(result);
+            }
+        }
+        None
+    }
+
+    /// Collect from session first, then from all visible packages.
+    pub fn collect_from_databases<F, T>(self, mut func: F) -> Vec<T>
+    where
+        F: FnMut(&mut TypeDatabase<'arena>) -> Vec<T>,
+    {
+        let mut results = self.with_session_type_database(&mut func);
+        for index in self.visible_packages() {
+            results.extend(self.with_type_database(index, &mut func));
+        }
+        results
+    }
+}
+
 impl<'arena> GlobalContext<'arena> {
     #[inline]
     pub fn get_type(self, id: DefinitionID) -> Ty<'arena> {
