@@ -1760,13 +1760,13 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         type_head: TypeHead,
         interface: InterfaceReference<'gcx>,
     ) -> Option<crate::sema::models::ConformanceWitness<'gcx>> {
-        let cached = self.gcx.with_session_type_database(|db| {
+        // Check cached witnesses across all packages
+        if let Some(cached) = self.gcx.find_in_databases(|db| {
             db.conformance_witnesses
                 .get(&(type_head, interface))
                 .cloned()
-        });
-        if cached.is_some() {
-            return cached;
+        }) {
+            return Some(cached);
         }
 
         resolve_conformance_witness(self.gcx, type_head, interface)

@@ -149,28 +149,11 @@ impl<'ctx> ConstraintSolver<'ctx> {
         interfaces: &'ctx [InterfaceReference<'ctx>],
     ) -> Vec<InterfaceReference<'ctx>> {
         let gcx = self.gcx();
-        let mut records: Vec<crate::sema::models::ConformanceRecord<'ctx>> = Vec::new();
 
-        let mut collect = |db: &crate::compile::context::TypeDatabase<'ctx>| {
-            if let Some(found) = db.conformances.get(&head) {
-                records.extend(found.iter().copied());
-            }
-        };
-
-        gcx.with_session_type_database(|db| collect(db));
-
-        let mapping = gcx.store.package_mapping.borrow();
-        let deps: Vec<_> = gcx
-            .config
-            .dependencies
-            .values()
-            .filter_map(|ident| mapping.get(ident.as_str()).copied())
-            .collect();
-        drop(mapping);
-
-        for index in deps {
-            gcx.with_type_database(index, |db| collect(db));
-        }
+        // Collect conformance records from all visible packages
+        let records = gcx.collect_from_databases(|db| {
+            db.conformances.get(&head).cloned().unwrap_or_default()
+        });
 
         let mut missing = Vec::new();
         for iface in interfaces {

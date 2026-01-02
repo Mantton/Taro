@@ -36,7 +36,7 @@ pub fn check_conformance_implied_bounds<'ctx>(
         });
 
         if let Some(reqs) = requirements {
-            let witness = context.with_session_type_database(|db| {
+            let witness = context.find_in_databases(|db| {
                 db.conformance_witnesses
                     .get(&(type_head, record.interface))
                     .cloned()
