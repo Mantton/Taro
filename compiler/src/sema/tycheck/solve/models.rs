@@ -22,6 +22,11 @@ pub enum Adjustment<'ctx> {
         from: Ty<'ctx>,
         to: Ty<'ctx>,
     },
+    /// Wrap value in Optional: some(value) if is_some=true, none if is_some=false
+    OptionalWrap {
+        is_some: bool,
+        generic_args: GenericArguments<'ctx>,
+    },
     Ignore(&'ctx ()),
 }
 

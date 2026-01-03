@@ -11,8 +11,8 @@ use crate::{
             fold::TypeFoldable,
             infer::{
                 keys::{
-                    FloatVarID, FloatVarValue, IntVarID, IntVarValue, TypeVariableOrigin,
-                    TypeVariableStorage, TypeVariableTable,
+                    FloatVarID, FloatVarValue, IntVarID, IntVarValue, NilVarID, NilVarValue,
+                    TypeVariableOrigin, TypeVariableStorage, TypeVariableTable,
                 },
                 resolve::InferVarResolver,
                 snapshot::IcxEvent,
@@ -77,6 +77,16 @@ impl<'ctx> InferCtx<'ctx> {
             .new_key(FloatVarValue::Unknown);
 
         Ty::new(TyKind::Infer(InferTy::FloatVar(id)), self.gcx)
+    }
+
+    pub fn next_nil_var(&self) -> Ty<'ctx> {
+        let id = self
+            .inner
+            .borrow_mut()
+            .nil_unification_table()
+            .new_key(NilVarValue::Unknown);
+
+        Ty::new(TyKind::Infer(InferTy::NilVar(id)), self.gcx)
     }
 
     pub fn fresh_args_for_def(&self, def_id: DefinitionID, span: Span) -> GenericArguments<'ctx> {
@@ -177,6 +187,8 @@ impl<'ctx> InferCtx<'ctx> {
                     FloatVarValue::Known(k) => Ty::new_float(self.gcx, k),
                 }
             }
+            // NilVar stays as-is during shallow resolve - coercion handles resolution
+            InferTy::NilVar(_) => ty,
             InferTy::FreshTy(_) => ty,
         }
     }
@@ -219,6 +231,7 @@ pub struct InferCtxInner<'ctx> {
     type_storage: TypeVariableStorage<'ctx>,
     int_storage: UnificationTableStorage<IntVarID>,
     float_storage: UnificationTableStorage<FloatVarID>,
+    nil_storage: UnificationTableStorage<NilVarID>,
     overload_bindings: FxHashMap<TyVarID, DefinitionID>,
 }
 
@@ -229,6 +242,7 @@ impl<'ctx> InferCtxInner<'ctx> {
             type_storage: Default::default(),
             int_storage: Default::default(),
             float_storage: Default::default(),
+            nil_storage: Default::default(),
             overload_bindings: Default::default(),
         }
     }
@@ -248,6 +262,11 @@ impl<'ctx> InferCtxInner<'ctx> {
     #[inline]
     pub fn type_variables(&mut self) -> TypeVariableTable<'_, 'ctx> {
         self.type_storage.with_log(&mut self.event_logs)
+    }
+
+    #[inline]
+    pub fn nil_unification_table(&mut self) -> UnificationTable<'_, 'ctx, NilVarID> {
+        self.nil_storage.with_log(&mut self.event_logs)
     }
 }
 
@@ -303,6 +322,19 @@ impl<'ctx> InferCtx<'ctx> {
             .borrow_mut()
             .float_unification_table()
             .union_value(id, value);
+    }
+}
+
+impl<'ctx> InferCtx<'ctx> {
+    pub fn equate_nil_vars_raw(&self, a: NilVarID, b: NilVarID) {
+        self.inner.borrow_mut().nil_unification_table().union(a, b);
+    }
+
+    pub fn mark_nil_var_bound(&self, id: NilVarID) {
+        self.inner
+            .borrow_mut()
+            .nil_unification_table()
+            .union_value(id, NilVarValue::Bound);
     }
 }
 

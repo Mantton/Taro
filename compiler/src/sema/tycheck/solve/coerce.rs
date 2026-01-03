@@ -34,6 +34,16 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return result;
         }
 
+        // Nil coercion: NilVar -> Optional[T] or NilVar -> *T
+        if let Some(result) = self.solve_nil_coercion(location, node_id, from, to) {
+            return result;
+        }
+
+        // Optional wrapping: T -> Optional[T]
+        if let Some(result) = self.solve_optional_wrapping(location, node_id, from, to) {
+            return result;
+        }
+
         // Minimal coercion: just equality for now.
         self.solve_equality(location, to, from)
     }
@@ -302,5 +312,102 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         let error = Spanned::new(TypeError::NonConformance { ty, interface }, location);
         SolverResult::Error(vec![error])
+    }
+
+    /// Coerce NilVar to Optional[T] or *T
+    fn solve_nil_coercion(
+        &mut self,
+        _location: Span,
+        node_id: NodeID,
+        from: Ty<'ctx>,
+        to: Ty<'ctx>,
+    ) -> Option<SolverResult<'ctx>> {
+        use crate::sema::models::InferTy;
+
+        let TyKind::Infer(InferTy::NilVar(nil_id)) = from.kind() else {
+            return None;
+        };
+
+        // Check if target is Optional[T]
+        if let Some((args, _inner)) = self.unwrap_optional_type(to) {
+            self.record_adjustments(
+                node_id,
+                vec![Adjustment::OptionalWrap {
+                    is_some: false,
+                    generic_args: args,
+                }],
+            );
+            self.icx.mark_nil_var_bound(nil_id);
+            return Some(SolverResult::Solved(vec![]));
+        }
+
+        // Check if target is pointer (nil -> null pointer)
+        if let TyKind::Pointer(_, _) = to.kind() {
+            self.icx.mark_nil_var_bound(nil_id);
+            return Some(SolverResult::Solved(vec![]));
+        }
+
+        None
+    }
+
+    /// Coerce T to Optional[T] by wrapping in some
+    fn solve_optional_wrapping(
+        &mut self,
+        location: Span,
+        node_id: NodeID,
+        from: Ty<'ctx>,
+        to: Ty<'ctx>,
+    ) -> Option<SolverResult<'ctx>> {
+        use crate::sema::models::InferTy;
+
+        let (args, inner_ty) = self.unwrap_optional_type(to)?;
+
+        // If from is an unresolved TyVar, let equality handle it.
+        // TyVar could become anything (including Optional), so we can't decide yet.
+        // IntVar/FloatVar will resolve to concrete types that CAN be wrapped.
+        if matches!(from.kind(), TyKind::Infer(InferTy::TyVar(_))) {
+            return None;
+        }
+
+        // Don't apply if from is already Optional
+        if self.unwrap_optional_type(from).is_some() {
+            return None;
+        }
+
+        // Don't apply to NilVar (handled by solve_nil_coercion)
+        if matches!(from.kind(), TyKind::Infer(InferTy::NilVar(_))) {
+            return None;
+        }
+
+        self.record_adjustments(
+            node_id,
+            vec![Adjustment::OptionalWrap {
+                is_some: true,
+                generic_args: args,
+            }],
+        );
+
+        // Recursively coerce inner: from -> inner_ty
+        Some(SolverResult::Solved(vec![super::Obligation {
+            location,
+            goal: super::Goal::Coerce {
+                node_id,
+                from,
+                to: inner_ty,
+            },
+        }]))
+    }
+
+    /// Check if ty is Optional[T] and return (generic_args, inner_ty)
+    fn unwrap_optional_type(&self, ty: Ty<'ctx>) -> Option<(crate::sema::models::GenericArguments<'ctx>, Ty<'ctx>)> {
+        let TyKind::Adt(def, args) = ty.kind() else {
+            return None;
+        };
+        let opt_id = self.gcx().find_std_type("Optional")?;
+        if def.id != opt_id {
+            return None;
+        }
+        let inner = args.first()?.ty()?;
+        Some((args, inner))
     }
 }

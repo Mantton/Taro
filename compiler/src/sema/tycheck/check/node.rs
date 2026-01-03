@@ -1073,9 +1073,7 @@ impl<'ctx> Checker<'ctx> {
 
                 opt_ty.unwrap_or_else(|| cs.infer_cx.next_float_var())
             }
-            hir::Literal::Nil => {
-                todo!();
-            }
+            hir::Literal::Nil => cs.infer_cx.next_nil_var(),
         }
     }
 

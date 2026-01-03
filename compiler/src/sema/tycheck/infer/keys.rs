@@ -106,6 +106,52 @@ impl UnifyValue for FloatVarValue {
         }
     }
 }
+
+// Nil
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NilVarID {
+    _raw: u32,
+}
+
+impl NilVarID {
+    pub fn new(value: u32) -> NilVarID {
+        NilVarID { _raw: value }
+    }
+}
+
+impl UnifyKey for NilVarID {
+    type Value = NilVarValue;
+    #[inline]
+    fn index(&self) -> u32 {
+        self._raw
+    }
+    #[inline]
+    fn from_index(i: u32) -> NilVarID {
+        NilVarID::new(i)
+    }
+    fn tag() -> &'static str {
+        "NilVarID"
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum NilVarValue {
+    #[default]
+    Unknown,
+    Bound,
+}
+
+impl UnifyValue for NilVarValue {
+    type Error = ena::unify::NoError;
+
+    fn unify_values(value1: &Self, value2: &Self) -> Result<Self, Self::Error> {
+        Ok(match (*value1, *value2) {
+            (NilVarValue::Bound, _) | (_, NilVarValue::Bound) => NilVarValue::Bound,
+            _ => NilVarValue::Unknown,
+        })
+    }
+}
+
 // Ty
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TyVarEqID<'ctx> {

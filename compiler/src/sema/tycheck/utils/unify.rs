@@ -84,6 +84,13 @@ impl<'ctx> TypeUnifier<'ctx> {
                 self.icx
                     .instantiate_float_var_raw(id, FloatVarValue::Known(k));
             }
+
+            // NilVars - can only equate with other NilVars
+            // Resolution to Optional/Pointer must go through coercion
+            (Infer(NilVar(a_id)), Infer(NilVar(b_id))) => {
+                self.icx.equate_nil_vars_raw(a_id, b_id);
+            }
+
             (Infer(_), _) | (_, Infer(_)) => {
                 return Err(TypeError::TyMismatch(ExpectedFound::new(a, b)));
             }

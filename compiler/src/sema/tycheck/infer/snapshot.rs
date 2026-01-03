@@ -1,6 +1,6 @@
 use crate::sema::{
     resolve::models::DefinitionID,
-    tycheck::infer::keys::{FloatVarID, IntVarID, TyVarEqID},
+    tycheck::infer::keys::{FloatVarID, IntVarID, NilVarID, TyVarEqID},
 };
 
 use super::InferCtxInner;
@@ -18,6 +18,7 @@ pub enum IcxEvent<'ctx> {
     TypeVar(ena::snapshot_vec::UndoLog<ena::unify::Delegate<TyVarEqID<'ctx>>>),
     IntVar(ena::snapshot_vec::UndoLog<ena::unify::Delegate<IntVarID>>),
     FloatVar(ena::snapshot_vec::UndoLog<ena::unify::Delegate<FloatVarID>>),
+    NilVar(ena::snapshot_vec::UndoLog<ena::unify::Delegate<NilVarID>>),
     OverloadBinding {
         var: crate::sema::models::TyVarID,
         prev: Option<DefinitionID>,
@@ -41,6 +42,7 @@ impl_from! {
     TypeVar(ena::snapshot_vec::UndoLog<ena::unify::Delegate<TyVarEqID<'gcx>>>),
     IntVar(ena::snapshot_vec::UndoLog<ena::unify::Delegate<IntVarID>>),
     FloatVar(ena::snapshot_vec::UndoLog<ena::unify::Delegate<FloatVarID>>),
+    NilVar(ena::snapshot_vec::UndoLog<ena::unify::Delegate<NilVarID>>),
 }
 
 // Combined Event Log for all unifcation tables within the icx
@@ -111,6 +113,7 @@ impl<'tcx> ena::undo_log::Rollback<IcxEvent<'tcx>> for InferCtxInner<'tcx> {
             IcxEvent::TypeVar(undo) => self.type_storage.reverse(undo),
             IcxEvent::IntVar(undo) => self.int_storage.reverse(undo),
             IcxEvent::FloatVar(undo) => self.float_storage.reverse(undo),
+            IcxEvent::NilVar(undo) => self.nil_storage.reverse(undo),
             IcxEvent::OverloadBinding { var, prev } => match prev {
                 Some(def) => {
                     self.overload_bindings.insert(var, def);

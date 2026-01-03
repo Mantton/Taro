@@ -329,6 +329,52 @@ impl<'ctx> FunctionLower<'ctx> {
                     span,
                 }
             }
+            Adjustment::OptionalWrap {
+                is_some,
+                generic_args,
+            } => {
+                let opt_id = self
+                    .gcx
+                    .find_std_type("Optional")
+                    .expect("Optional type must exist");
+                let enum_def = self.gcx.get_enum_definition(opt_id);
+                let adt_def = enum_def.adt_def;
+
+                let (variant_index, fields) = if is_some {
+                    let some_idx = enum_def
+                        .variants
+                        .iter()
+                        .position(|v| v.name.as_str() == "some")
+                        .expect("Optional.some variant");
+                    let inner_id = self.push_expr(expr.kind, expr.ty, expr.span);
+                    (
+                        some_idx,
+                        vec![thir::FieldExpression {
+                            index: FieldIndex::from_usize(0),
+                            expression: inner_id,
+                        }],
+                    )
+                } else {
+                    let none_idx = enum_def
+                        .variants
+                        .iter()
+                        .position(|v| v.name.as_str() == "none")
+                        .expect("Optional.none variant");
+                    (none_idx, vec![])
+                };
+
+                let opt_ty = Ty::new(TyKind::Adt(adt_def, generic_args), self.gcx);
+                Expr {
+                    kind: ExprKind::Adt(thir::AdtExpression {
+                        definition: adt_def,
+                        variant_index: Some(VariantIndex::from_usize(variant_index)),
+                        generic_args,
+                        fields,
+                    }),
+                    ty: opt_ty,
+                    span,
+                }
+            }
             Adjustment::Ignore(_) => expr,
         }
     }
@@ -440,6 +486,9 @@ impl<'ctx> FunctionLower<'ctx> {
                 if let Some(ctor_id) = self.variant_ctor_callee(callee) {
                     let (definition, variant_index) = self.enum_variant_from_ctor(ctor_id);
                     let TyKind::Adt(_, generic_args) = ty.kind() else {
+                        self.gcx
+                            .dcx()
+                            .emit_info(format!("Type is {}", ty.format(self.gcx)), Some(expr.span));
                         unreachable!()
                     };
                     let fields = arguments

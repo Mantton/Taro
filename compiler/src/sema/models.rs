@@ -7,7 +7,7 @@ use crate::{
     hir::{self, DefinitionID, Mutability},
     sema::{
         resolve::models::TypeHead,
-        tycheck::infer::keys::{FloatVarID, IntVarID},
+        tycheck::infer::keys::{FloatVarID, IntVarID, NilVarID},
     },
     span::{Span, Spanned, Symbol},
     utils::intern::Interned,
@@ -176,6 +176,7 @@ impl<'arena> Ty<'arena> {
                 InferTy::TyVar(id) => format!("{{var({})}}", id._raw),
                 InferTy::IntVar(id) => format!("{{integer({})}}", id.index()),
                 InferTy::FloatVar(id) => format!("{{float({})}}", id.index()),
+                InferTy::NilVar(id) => format!("{{nil({})}}", id.index()),
                 InferTy::FreshTy(id) => format!("{{fresh({})}}", id),
             },
             TyKind::Parameter(p) => format!("{}", p.name.as_str()),
@@ -466,6 +467,7 @@ pub enum InferTy {
     TyVar(TyVarID),
     IntVar(IntVarID),
     FloatVar(FloatVarID),
+    NilVar(NilVarID),
     FreshTy(u32),
 }
 
