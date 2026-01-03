@@ -667,6 +667,7 @@ pub struct InterfaceMethodRequirement<'ctx> {
     pub id: DefinitionID,
     pub name: Symbol,
     pub signature: &'ctx LabeledFunctionSignature<'ctx>,
+    pub has_self: bool,
     pub is_required: bool,
 }
 

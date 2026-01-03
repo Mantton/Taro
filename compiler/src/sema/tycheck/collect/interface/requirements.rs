@@ -94,10 +94,17 @@ impl<'ctx> Actor<'ctx> {
 
         match &node.kind {
             hir::AssociatedDeclarationKind::Function(func) => {
+                let has_self = func
+                    .signature
+                    .prototype
+                    .inputs
+                    .first()
+                    .is_some_and(|param| param.name.symbol.as_str() == "self");
                 let req = InterfaceMethodRequirement {
                     id: def_id,
                     name: node.identifier.symbol,
                     signature: gcx.get_signature(def_id),
+                    has_self,
                     is_required: func.block.is_none(),
                 };
                 methods.push(req);

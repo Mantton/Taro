@@ -387,7 +387,13 @@ impl<'ctx> Actor<'ctx> {
             .with_type_database(extension_pkg, |db| {
                 db.type_head_to_members
                     .get(&type_head)
-                    .and_then(|idx| idx.instance_functions.get(&requirement.name))
+                    .and_then(|idx| {
+                        if requirement.has_self {
+                            idx.instance_functions.get(&requirement.name)
+                        } else {
+                            idx.static_functions.get(&requirement.name)
+                        }
+                    })
                     .map(|set| set.members.clone())
             })
             .unwrap_or_default();

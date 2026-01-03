@@ -1566,9 +1566,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         };
         let witness = self.conformance_witness(type_head, iface);
 
-        let mut entries: Vec<BasicValueEnum<'llvm>> =
-            Vec::with_capacity(requirements.methods.len());
-        for method in &requirements.methods {
+        let method_count = requirements.methods.iter().filter(|method| method.has_self).count();
+        let mut entries: Vec<BasicValueEnum<'llvm>> = Vec::with_capacity(method_count);
+        for method in requirements.methods.iter().filter(|method| method.has_self) {
             let (impl_def_id, args) = if let Some(method_witness) = witness
                 .as_ref()
                 .and_then(|w| w.method_witnesses.get(&method.id))

@@ -70,6 +70,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         requirements
             .methods
             .iter()
+            .filter(|method| method.has_self)
             .position(|method| method.id == method_id)
     }
 

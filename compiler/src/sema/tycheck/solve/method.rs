@@ -322,6 +322,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     if method.name != name {
                         continue;
                     }
+                    if !method.has_self {
+                        continue;
+                    }
 
                     let Some(slot) = self.interface_method_slot(iface_ref.id, method.id) else {
                         continue;
