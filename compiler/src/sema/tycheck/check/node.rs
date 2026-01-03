@@ -3,9 +3,10 @@ use crate::{
     hir::{self, DefinitionID, NodeID},
     sema::{
         models::{
-            Const, ConstKind, ConstValue, GenericArgument, GenericArguments, InferTy, Ty, TyKind,
+            Const, ConstKind, ConstValue, GenericArgument, GenericArguments,
+            GenericParameterDefinition, GenericParameterDefinitionKind, InferTy, Ty, TyKind,
         },
-        resolve::models::{DefinitionKind, TypeHead},
+        resolve::models::{DefinitionKind, TypeHead, VariantCtorKind},
         tycheck::{
             check::{checker::Checker, gather::GatherLocalsVisitor},
             infer::InferCtx,
@@ -1933,12 +1934,210 @@ impl<'ctx> Checker<'ctx> {
         members
     }
 
+    fn value_path_def_id(&self, resolution: &hir::Resolution) -> Option<DefinitionID> {
+        match resolution {
+            hir::Resolution::Foundation(std_type) => {
+                let name = std_type.name_str()?;
+                self.gcx().find_std_type(name)
+            }
+            _ => resolution.definition_id(),
+        }
+    }
+
+    fn lower_value_path_instantiation_args(
+        &self,
+        resolution: &hir::Resolution,
+        segment: &hir::PathSegment,
+        base_args: Option<GenericArguments<'ctx>>,
+    ) -> Option<GenericArguments<'ctx>> {
+        let gcx = self.gcx();
+        let explicit_args = segment
+            .arguments
+            .as_ref()
+            .map(|args| args.arguments.as_slice())
+            .unwrap_or(&[]);
+        let has_explicit = segment.arguments.is_some();
+        let args_span = segment
+            .arguments
+            .as_ref()
+            .map(|args| args.span)
+            .unwrap_or(segment.span);
+
+        if let hir::Resolution::Foundation(std_type) = resolution {
+            if std_type.name_str().is_none() {
+                if has_explicit {
+                    gcx.dcx().emit_error(
+                        "generic arguments are not permitted on this builtin".into(),
+                        Some(args_span),
+                    );
+                }
+                return None;
+            }
+        }
+
+        match resolution {
+            hir::Resolution::FunctionSet(_)
+            | hir::Resolution::LocalVariable(_)
+            | hir::Resolution::PrimaryType(_)
+            | hir::Resolution::InterfaceSelfTypeParameter(_)
+            | hir::Resolution::SelfTypeAlias(_)
+            | hir::Resolution::Error => {
+                if has_explicit {
+                    gcx.dcx().emit_error(
+                        format!(
+                            "generic arguments are not permitted on {}",
+                            resolution.description()
+                        )
+                        .into(),
+                        Some(args_span),
+                    );
+                }
+                return None;
+            }
+            _ => {}
+        }
+
+        let Some(def_id) = self.value_path_def_id(resolution) else {
+            return None;
+        };
+
+        let generics = gcx.generics_of(def_id);
+        if generics.is_empty() && base_args.is_none() {
+            if has_explicit {
+                let name = gcx.definition_ident(def_id).symbol;
+                gcx.dcx().emit_error(
+                    format!("'{}' does not accept generic arguments", name.as_str()).into(),
+                    Some(args_span),
+                );
+            }
+            return None;
+        }
+
+        let explicit_count = explicit_args.len();
+        let own_total = generics.total_count();
+        let own_defaults = generics.default_count();
+        let own_has_self = generics.has_self && generics.parent_count == 0;
+        let def_kind = gcx.definition_kind(def_id);
+        let allow_partial = matches!(
+            def_kind,
+            DefinitionKind::Function
+                | DefinitionKind::AssociatedFunction
+                | DefinitionKind::AssociatedOperator
+                | DefinitionKind::VariantConstructor(VariantCtorKind::Function)
+        );
+
+        if explicit_count > own_total {
+            gcx.dcx().emit_error(
+                format!(
+                    "excess generic arguments: {} takes at most {}, provided {}",
+                    def_kind.description(),
+                    own_total,
+                    explicit_count
+                )
+                .into(),
+                Some(args_span),
+            );
+        } else if has_explicit && !allow_partial {
+            let min = own_total
+                .saturating_sub(own_defaults)
+                .saturating_sub(own_has_self as usize);
+            if explicit_count < min {
+                gcx.dcx()
+                    .emit_error("Missing Generic Arguments".into(), Some(segment.identifier.span));
+            }
+        }
+
+        let base_args = base_args.unwrap_or(&[]);
+        let parent_count = if base_args.is_empty() {
+            generics.parent_count
+        } else {
+            base_args.len()
+        };
+        let span = segment
+            .arguments
+            .as_ref()
+            .map(|args| args.span)
+            .unwrap_or(segment.span);
+        let mut explicit_iter = explicit_args.iter();
+
+        let args = GenericsBuilder::for_item(gcx, def_id, |param, _| {
+            if param.index < parent_count {
+                if let Some(arg) = base_args.get(param.index) {
+                    return *arg;
+                }
+                return self.lower_value_path_missing_arg(param, span);
+            }
+
+            if let Some(arg) = explicit_iter.next() {
+                return self.lower_value_path_explicit_arg(param, arg);
+            }
+
+            self.lower_value_path_missing_arg(param, span)
+        });
+
+        Some(args)
+    }
+
+    fn lower_value_path_explicit_arg(
+        &self,
+        param: &GenericParameterDefinition,
+        arg: &hir::TypeArgument,
+    ) -> GenericArgument<'ctx> {
+        let gcx = self.gcx();
+        match (&param.kind, arg) {
+            (GenericParameterDefinitionKind::Type { .. }, hir::TypeArgument::Type(ty)) => {
+                GenericArgument::Type(self.lower_type(ty))
+            }
+            (GenericParameterDefinitionKind::Const { ty, .. }, hir::TypeArgument::Const(c)) => {
+                let expected_ty = self.lower_type(ty);
+                GenericArgument::Const(self.lowerer().lower_const_argument(expected_ty, c))
+            }
+            (GenericParameterDefinitionKind::Type { .. }, hir::TypeArgument::Const(c)) => {
+                gcx.dcx()
+                    .emit_error("expected type argument".into(), Some(c.value.span));
+                GenericArgument::Type(gcx.types.error)
+            }
+            (GenericParameterDefinitionKind::Const { .. }, hir::TypeArgument::Type(ty)) => {
+                gcx.dcx()
+                    .emit_error("expected const argument".into(), Some(ty.span));
+                GenericArgument::Const(self.lowerer().error_const())
+            }
+        }
+    }
+
+    fn lower_value_path_missing_arg(
+        &self,
+        param: &GenericParameterDefinition,
+        span: Span,
+    ) -> GenericArgument<'ctx> {
+        let gcx = self.gcx();
+        match &param.kind {
+            GenericParameterDefinitionKind::Type { default } => {
+                if let Some(default) = default {
+                    GenericArgument::Type(self.lower_type(default))
+                } else {
+                    GenericArgument::Type(self.ty_infer(Some(param), span))
+                }
+            }
+            GenericParameterDefinitionKind::Const { ty, default } => {
+                let expected_ty = self.lower_type(ty);
+                if let Some(default) = default {
+                    GenericArgument::Const(self.lowerer().lower_const_argument(expected_ty, default))
+                } else {
+                    gcx.dcx()
+                        .emit_error("missing const argument".into(), Some(span));
+                    GenericArgument::Const(self.lowerer().error_const())
+                }
+            }
+        }
+    }
+
     fn instantiate_value_path(
         &self,
         node_id: NodeID,
         span: Span,
         resolution: &hir::Resolution,
-        base_args: Option<GenericArguments<'ctx>>,
+        instantiation_args: Option<GenericArguments<'ctx>>,
         expectation: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
@@ -1948,19 +2147,11 @@ impl<'ctx> Checker<'ctx> {
 
         let ty = self.synth_identifier_expression(node_id, span, resolution, expectation, cs);
 
-        if let Some(def_id) = resolution.definition_id() {
+        if let Some(def_id) = self.value_path_def_id(resolution) {
             let generics = self.gcx().generics_of(def_id);
             if !generics.is_empty() && ty.needs_instantiation() {
-                let args = if let Some(base_args) = base_args {
-                    GenericsBuilder::for_item(self.gcx(), def_id, |param, _| {
-                        base_args
-                            .get(param.index)
-                            .copied()
-                            .unwrap_or_else(|| cs.infer_cx.var_for_generic_param(param, span))
-                    })
-                } else {
-                    cs.infer_cx.fresh_args_for_def(def_id, span)
-                };
+                let args = instantiation_args
+                    .unwrap_or_else(|| cs.infer_cx.fresh_args_for_def(def_id, span));
                 let instantiated = instantiate_ty_with_args(self.gcx(), ty, args);
                 cs.record_instantiation(node_id, args);
                 cs.add_constraints_for_def(def_id, Some(args), span);
@@ -1983,6 +2174,14 @@ impl<'ctx> Checker<'ctx> {
         let (resolution, base_args) =
             self.resolve_value_path_resolution_with_args(path, expression.span, true);
         self.record_value_path_resolution(expression.id, &resolution);
+        let segment = match path {
+            hir::ResolvedPath::Resolved(path) => {
+                path.segments.last().expect("path must have segments")
+            }
+            hir::ResolvedPath::Relative(_, segment) => segment,
+        };
+        let instantiation_args =
+            self.lower_value_path_instantiation_args(&resolution, segment, base_args);
         // Note: For relative paths like `Optional.some`, we don't need to add type constraints
         // for the base type `Optional` since it's only used for name resolution, not as a value.
         // Adding constraints here creates spurious type variables that cause inference failures.
@@ -1990,7 +2189,7 @@ impl<'ctx> Checker<'ctx> {
             expression.id,
             expression.span,
             &resolution,
-            base_args,
+            instantiation_args,
             expectation,
             cs,
         )

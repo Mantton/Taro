@@ -95,21 +95,33 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
     fn lower_resolved_type_path(&self, _: hir::NodeID, path: &hir::Path) -> Ty<'ctx> {
         let resolution = path.resolution.clone();
         let gcx = self.gcx();
+        let segment = path.segments.last().expect("path must have segments");
         match resolution {
-            Resolution::PrimaryType(k) => match k {
-                PrimaryType::Int(k) => Ty::new_int(gcx, k),
-                PrimaryType::UInt(k) => Ty::new_uint(gcx, k),
-                PrimaryType::Float(k) => Ty::new_float(gcx, k),
-                PrimaryType::String => gcx.types.string,
-                PrimaryType::Bool => gcx.types.bool,
-                PrimaryType::Rune => gcx.types.rune,
+            Resolution::PrimaryType(k) => {
+                let message = format!(
+                    "'{}' does not accept generic arguments",
+                    segment.identifier.symbol.as_str()
+                );
+                let _ = check_no_type_arguments(segment, gcx, message);
+                match k {
+                    PrimaryType::Int(k) => Ty::new_int(gcx, k),
+                    PrimaryType::UInt(k) => Ty::new_uint(gcx, k),
+                    PrimaryType::Float(k) => Ty::new_float(gcx, k),
+                    PrimaryType::String => gcx.types.string,
+                    PrimaryType::Bool => gcx.types.bool,
+                    PrimaryType::Rune => gcx.types.rune,
+                }
             },
             Resolution::Foundation(decl) => match self.lower_foundation_type(path, decl) {
                 Some(ty) => ty,
                 None => gcx.types.error,
             },
             Resolution::Definition(id, DefinitionKind::TypeParameter) => {
-                // TODO: Prohibit Generics
+                let message = format!(
+                    "'{}' does not accept generic arguments",
+                    segment.identifier.symbol.as_str()
+                );
+                let _ = check_no_type_arguments(segment, gcx, message);
                 gcx.get_type(id)
             }
             Resolution::Definition(id, kind) => {
@@ -126,7 +138,6 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 if gcx.is_std_gc_ptr(id) {
                     return Ty::new(TyKind::GcPtr, gcx);
                 }
-                let segment = path.segments.last().unwrap();
                 let _ = check_generics_prohibited(id, segment, gcx);
                 let args = self.lower_type_arguments(id, segment);
                 let ty = match kind {
@@ -152,26 +163,31 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 };
                 instantiate_ty_with_args(gcx, ty, args)
             }
-            Resolution::SelfTypeAlias(id) => match gcx.definition_kind(id) {
-                crate::sema::resolve::models::DefinitionKind::Struct
-                | crate::sema::resolve::models::DefinitionKind::Enum => gcx.get_type(id),
-                crate::sema::resolve::models::DefinitionKind::Extension => {
-                    if let Some(self_ty) = gcx.get_extension_self_ty(id) {
-                        self_ty
-                    } else {
-                        let Some(head) = gcx.get_extension_type_head(id) else {
-                            return gcx.types.error;
-                        };
-                        match head {
-                            _ => todo!("Self type alias lowering for {head:?}"),
+            Resolution::SelfTypeAlias(id) => {
+                let message = "cannot apply generic arguments to `Self`".to_string();
+                let _ = check_no_type_arguments(segment, gcx, message);
+                match gcx.definition_kind(id) {
+                    crate::sema::resolve::models::DefinitionKind::Struct
+                    | crate::sema::resolve::models::DefinitionKind::Enum => gcx.get_type(id),
+                    crate::sema::resolve::models::DefinitionKind::Extension => {
+                        if let Some(self_ty) = gcx.get_extension_self_ty(id) {
+                            self_ty
+                        } else {
+                            let Some(head) = gcx.get_extension_type_head(id) else {
+                                return gcx.types.error;
+                            };
+                            match head {
+                                _ => todo!("Self type alias lowering for {head:?}"),
+                            }
                         }
                     }
-
+                    other => todo!("Self type alias lowering for {other:?}"),
                 }
-                other => todo!("Self type alias lowering for {other:?}"),
-            },
+            }
             Resolution::InterfaceSelfTypeParameter(_interface_id) => {
                 // Inside an interface, `Self` refers to the abstract Self type parameter
+                let message = "cannot apply generic arguments to `Self`".to_string();
+                let _ = check_no_type_arguments(segment, gcx, message);
                 gcx.types.self_type_parameter
             }
             Resolution::Error => gcx.types.error,
@@ -298,7 +314,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         gcx.store.interners.intern_generic_args(output)
     }
 
-    fn lower_const_argument(&self, expected_ty: Ty<'ctx>, anon: &hir::AnonConst) -> Const<'ctx> {
+    pub fn lower_const_argument(&self, expected_ty: Ty<'ctx>, anon: &hir::AnonConst) -> Const<'ctx> {
         let gcx = self.gcx();
         let Some(value) = eval_const_expression(gcx, &anon.value) else {
             return self.error_const();
@@ -319,7 +335,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         }
     }
 
-    fn error_const(&self) -> Const<'ctx> {
+    pub fn error_const(&self) -> Const<'ctx> {
         let gcx = self.gcx();
         Const {
             ty: gcx.types.error,
@@ -767,9 +783,12 @@ pub fn check_generic_arg_count(
 
     let defaults_count = generics.default_count();
     let total_count = generics.total_count();
+    let owns_self = generics.has_self && generics.parent_count == 0;
 
     let min = if !should_infer {
-        total_count - defaults_count - generics.has_self as usize
+        total_count
+            .saturating_sub(defaults_count)
+            .saturating_sub(owns_self as usize)
     } else {
         0
     };
@@ -799,13 +818,23 @@ pub fn check_generic_arg_count(
     }
 
     if provided > total_count {
-        let message = format!(
-            "excess generic arguments, '{}' requires {} type argument(s), provided {}",
-            segment.identifier.symbol, min, provided
-        );
-        context
-            .dcx()
-            .emit_error(message, segment.arguments.as_ref().map(|v| v.span));
+        if total_count == 0 {
+            let message = format!(
+                "'{}' does not accept generic arguments",
+                segment.identifier.symbol.as_str()
+            );
+            context
+                .dcx()
+                .emit_error(message, segment.arguments.as_ref().map(|v| v.span));
+        } else {
+            let message = format!(
+                "excess generic arguments, '{}' requires {} type argument(s), provided {}",
+                segment.identifier.symbol, min, provided
+            );
+            context
+                .dcx()
+                .emit_error(message, segment.arguments.as_ref().map(|v| v.span));
+        }
     } else {
         context.dcx().emit_error(
             "Missing Generic Arguments".into(),
@@ -814,4 +843,17 @@ pub fn check_generic_arg_count(
     }
 
     return false;
+}
+
+fn check_no_type_arguments(
+    segment: &hir::PathSegment,
+    context: GlobalContext<'_>,
+    message: String,
+) -> bool {
+    let Some(arguments) = &segment.arguments else {
+        return true;
+    };
+
+    context.dcx.emit_error(message.into(), Some(arguments.span));
+    false
 }
