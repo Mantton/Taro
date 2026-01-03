@@ -435,6 +435,10 @@ pub enum ExpressionKind {
         target: Box<Expression>,
         name: Identifier,
     },
+    /// `.bar`
+    InferredMember {
+        name: Identifier,
+    },
     /// `[a, b, c]`
     Array(Vec<Box<Expression>>),
     /// `[expr; len]`
@@ -1334,6 +1338,9 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, node: &Expression) -> V::
         }
         ExpressionKind::Member { target, name } => {
             try_visit!(visitor.visit_expression(target));
+            try_visit!(visitor.visit_identifier(name));
+        }
+        ExpressionKind::InferredMember { name } => {
             try_visit!(visitor.visit_identifier(name));
         }
         ExpressionKind::Array(expressions) => {

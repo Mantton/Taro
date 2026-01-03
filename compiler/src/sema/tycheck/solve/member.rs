@@ -1,15 +1,16 @@
 use super::{
-    Adjustment, BindOverloadGoalData, ConstraintSolver, DisjunctionBranch, Goal, MemberGoalData,
-    Obligation, SolverResult,
+    Adjustment, BindOverloadGoalData, ConstraintSolver, DisjunctionBranch,
+    InferredStaticMemberGoalData, Goal, MemberGoalData, Obligation, SolverResult,
 };
 use crate::{
-    hir::{NodeID, OperatorKind},
+    hir::{NodeID, OperatorKind, Resolution},
     sema::{
         error::TypeError,
         models::{StructField, Ty, TyKind},
-        resolve::models::{DefinitionID, DefinitionKind, PrimaryType, TypeHead},
+        resolve::models::{DefinitionID, DefinitionKind, PrimaryType, TypeHead, VariantCtorKind},
         tycheck::utils::{
-            autoderef::Autoderef, instantiate::instantiate_struct_definition_with_args,
+            autoderef::Autoderef, generics::GenericsBuilder,
+            instantiate::{instantiate_struct_definition_with_args, instantiate_ty_with_args},
         },
     },
     span::{Spanned, Symbol},
@@ -91,6 +92,119 @@ impl<'ctx> ConstraintSolver<'ctx> {
             span,
         );
         SolverResult::Error(vec![error])
+    }
+
+    pub fn solve_inferred_static_member(
+        &mut self,
+        data: InferredStaticMemberGoalData<'ctx>,
+    ) -> SolverResult<'ctx> {
+        let InferredStaticMemberGoalData {
+            node_id,
+            name,
+            expr_ty,
+            base_hint,
+            span,
+        } = data;
+
+        let base_ty = self
+            .select_inferred_member_base(expr_ty, base_hint)
+            .map(|ty| self.structurally_resolve(ty));
+        let Some(base_ty) = base_ty else {
+            return SolverResult::Deferred;
+        };
+
+        let base_args = match base_ty.kind() {
+            TyKind::Adt(_, args) if !args.is_empty() => Some(args),
+            _ => None,
+        };
+
+        let Some(head) = self.type_head_from_type(base_ty) else {
+            let error = Spanned::new(
+                TypeError::NoSuchMember {
+                    name: name.symbol,
+                    on: base_ty,
+                },
+                span,
+            );
+            return SolverResult::Error(vec![error]);
+        };
+
+        let resolution = match self.resolve_static_member_resolution(head, base_ty, name, span) {
+            Ok(resolution) => resolution,
+            Err(errors) => return SolverResult::Error(errors),
+        };
+
+        self.record_value_resolution(node_id, resolution.clone());
+
+        match resolution {
+            Resolution::Definition(def_id, kind) => {
+                let ty = self.gcx().get_type(def_id);
+                let generics = self.gcx().generics_of(def_id);
+                let mut obligations = Vec::new();
+                let final_ty = if !generics.is_empty() && ty.needs_instantiation() {
+                    let args = if let Some(base_args) = base_args {
+                        GenericsBuilder::for_item(self.gcx(), def_id, |param, _| {
+                            base_args
+                                .get(param.index)
+                                .copied()
+                                .unwrap_or_else(|| self.icx.var_for_generic_param(param, span))
+                        })
+                    } else {
+                        self.icx.fresh_args_for_def(def_id, span)
+                    };
+                    let instantiated = instantiate_ty_with_args(self.gcx(), ty, args);
+                    self.record_instantiation(node_id, args);
+                    obligations.extend(self.constraints_for_def(def_id, Some(args), span));
+                    instantiated
+                } else {
+                    ty
+                };
+
+                match self.unify(expr_ty, final_ty) {
+                    Ok(_) => {
+                        if matches!(
+                            kind,
+                            DefinitionKind::Function
+                                | DefinitionKind::AssociatedFunction
+                                | DefinitionKind::VariantConstructor(VariantCtorKind::Function)
+                        ) {
+                            self.icx.bind_overload(expr_ty, def_id);
+                        }
+                        SolverResult::Solved(obligations)
+                    }
+                    Err(e) => SolverResult::Error(vec![Spanned::new(e, span)]),
+                }
+            }
+            Resolution::FunctionSet(candidates) => {
+                let mut branches = Vec::with_capacity(candidates.len());
+                for candidate in candidates {
+                    let candidate_ty = self.gcx().get_type(candidate);
+                    branches.push(DisjunctionBranch {
+                        goal: Goal::BindOverload(BindOverloadGoalData {
+                            node_id,
+                            var_ty: expr_ty,
+                            candidate_ty,
+                            source: candidate,
+                        }),
+                        source: Some(candidate),
+                    });
+                }
+                SolverResult::Solved(vec![Obligation {
+                    location: span,
+                    goal: Goal::Disjunction(branches),
+                }])
+            }
+            _ => {
+                let error = Spanned::new(
+                    TypeError::NoSuchMember {
+                        name: name.symbol,
+                        on: base_ty,
+                    },
+                    span,
+                );
+                SolverResult::Error(vec![error])
+            }
+        }
     }
 
     pub fn autoderef(&self, base: Ty<'ctx>) -> Autoderef<'ctx> {
@@ -185,6 +299,138 @@ impl<'ctx> ConstraintSolver<'ctx> {
             | TyKind::BoxedExistential { .. }
             | TyKind::Error => None,
         }
+    }
+
+    fn select_inferred_member_base(
+        &self,
+        expr_ty: Ty<'ctx>,
+        base_hint: Option<Ty<'ctx>>,
+    ) -> Option<Ty<'ctx>> {
+        let base_hint = base_hint.map(|ty| self.structurally_resolve(ty));
+        if let Some(base_hint) = base_hint {
+            if !base_hint.is_infer() {
+                return match base_hint.kind() {
+                    TyKind::FnPointer { output, .. } => {
+                        let output = self.structurally_resolve(output);
+                        if output.is_infer() {
+                            None
+                        } else {
+                            Some(output)
+                        }
+                    }
+                    _ => Some(base_hint),
+                };
+            }
+        }
+
+        let expr_ty = self.structurally_resolve(expr_ty);
+        if expr_ty.is_infer() {
+            return None;
+        }
+
+        match expr_ty.kind() {
+            TyKind::FnPointer { output, .. } => {
+                let output = self.structurally_resolve(output);
+                if output.is_infer() {
+                    None
+                } else {
+                    Some(output)
+                }
+            }
+            _ => Some(expr_ty),
+        }
+    }
+
+    fn resolve_static_member_resolution(
+        &self,
+        head: TypeHead,
+        base_ty: Ty<'ctx>,
+        name: crate::span::Identifier,
+        span: crate::span::Span,
+    ) -> Result<Resolution, Vec<Spanned<TypeError<'ctx>>>> {
+        let gcx = self.gcx();
+        if let TypeHead::Nominal(def_id) = head {
+            if gcx.definition_kind(def_id) == DefinitionKind::Enum {
+                let enum_def = gcx.get_enum_definition(def_id);
+
+                if let Some(variant) = enum_def.variants.iter().find(|v| v.name == name.symbol) {
+                    if !gcx.is_definition_visible(variant.ctor_def_id, self.current_def) {
+                        let error = Spanned::new(
+                            TypeError::NoSuchMember {
+                                name: name.symbol,
+                                on: base_ty,
+                            },
+                            span,
+                        );
+                        return Err(vec![error]);
+                    }
+
+                    let kind = gcx.definition_kind(variant.ctor_def_id);
+                    return Ok(Resolution::Definition(variant.ctor_def_id, kind));
+                }
+            }
+        }
+
+        let candidates = self.collect_static_member_candidates(head, name.symbol);
+        if candidates.is_empty() {
+            let error = Spanned::new(
+                TypeError::NoSuchMember {
+                    name: name.symbol,
+                    on: base_ty,
+                },
+                span,
+            );
+            return Err(vec![error]);
+        }
+
+        let visible: Vec<_> = candidates
+            .into_iter()
+            .filter(|id| gcx.is_definition_visible(*id, self.current_def))
+            .collect();
+
+        if visible.is_empty() {
+            let error = Spanned::new(
+                TypeError::NoSuchMember {
+                    name: name.symbol,
+                    on: base_ty,
+                },
+                span,
+            );
+            return Err(vec![error]);
+        }
+
+        if visible.len() == 1 {
+            let id = visible[0];
+            let kind = gcx.definition_kind(id);
+            return Ok(Resolution::Definition(id, kind));
+        }
+
+        Ok(Resolution::FunctionSet(visible))
+    }
+
+    fn collect_static_member_candidates(&self, head: TypeHead, name: Symbol) -> Vec<DefinitionID> {
+        let gcx = self.gcx();
+        let mut members = Vec::new();
+        let mut seen: FxHashSet<DefinitionID> = FxHashSet::default();
+
+        let mut collect = |db: &crate::compile::context::TypeDatabase<'ctx>| {
+            if let Some(index) = db.type_head_to_members.get(&head) {
+                if let Some(set) = index.static_functions.get(&name) {
+                    for &id in &set.members {
+                        if seen.insert(id) {
+                            members.push(id);
+                        }
+                    }
+                }
+            }
+        };
+
+        gcx.with_session_type_database(|db| collect(db));
+        for index in gcx.visible_packages() {
+            gcx.with_type_database(index, |db| collect(db));
+        }
+
+        members
     }
 
     /// Look up operator candidates for the given type and operator kind.

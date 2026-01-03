@@ -330,6 +330,10 @@ pub enum ExpressionKind {
         target: Box<Expression>,
         name: Identifier,
     },
+    /// `.bar`
+    InferredMember {
+        name: Identifier,
+    },
     /// A[T]
     Specialize {
         target: Box<Expression>,
@@ -1523,6 +1527,9 @@ pub fn walk_expression<V: AstVisitor>(visitor: &mut V, node: &Expression) -> V::
         }
         ExpressionKind::Member { target, name } => {
             try_visit!(visitor.visit_expression(target));
+            try_visit!(visitor.visit_identifier(name));
+        }
+        ExpressionKind::InferredMember { name } => {
             try_visit!(visitor.visit_identifier(name));
         }
         ExpressionKind::Specialize {

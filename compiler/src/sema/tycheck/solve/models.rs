@@ -46,6 +46,7 @@ pub enum Goal<'ctx> {
         to: Ty<'ctx>,
     },
     Member(MemberGoalData<'ctx>),
+    InferredStaticMember(InferredStaticMemberGoalData<'ctx>),
     MethodCall(MethodCallData<'ctx>),
     StructLiteral(StructLiteralGoalData<'ctx>),
     TupleAccess(TupleAccessGoalData<'ctx>),
@@ -116,6 +117,15 @@ pub struct MemberGoalData<'ctx> {
     pub receiver: Ty<'ctx>,
     pub name: Identifier,
     pub result: Ty<'ctx>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct InferredStaticMemberGoalData<'ctx> {
+    pub node_id: NodeID,
+    pub name: Identifier,
+    pub expr_ty: Ty<'ctx>,
+    pub base_hint: Option<Ty<'ctx>>,
     pub span: Span,
 }
 

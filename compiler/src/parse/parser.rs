@@ -18,7 +18,7 @@ use crate::{
     diagnostics::DiagCtx,
     error::ReportedError,
     parse::{Base, lexer, token::Token},
-    span::{Span, Spanned, Symbol},
+    span::{Position, Span, Spanned, Symbol},
 };
 use std::{cell::RefCell, collections::VecDeque, fmt::Display, rc::Rc};
 
@@ -171,6 +171,123 @@ impl Parser {
             }
         }
         return false;
+    }
+
+    fn matches_question(&self) -> bool {
+        matches!(
+            self.current_token(),
+            Token::Question | Token::QuestionQuestion
+        )
+    }
+
+    fn split_question_token(&mut self) {
+        let Some(current) = self.current() else {
+            return;
+        };
+        if current.value != Token::QuestionQuestion {
+            return;
+        }
+        let span = current.span;
+        let mid = Position {
+            line: span.start.line,
+            offset: span.start.offset + 1,
+        };
+        let first = Span {
+            start: span.start,
+            end: mid,
+            file: span.file,
+        };
+        let second = Span {
+            start: mid,
+            end: span.end,
+            file: span.file,
+        };
+
+        self.file.tokens[self.cursor] = Spanned::new(Token::Question, first);
+        self.file
+            .tokens
+            .insert(self.cursor + 1, Spanned::new(Token::Question, second));
+    }
+
+    fn split_amp_token(&mut self) {
+        let Some(current) = self.current() else {
+            return;
+        };
+        if current.value != Token::AmpAmp {
+            return;
+        }
+        let span = current.span;
+        let mid = Position {
+            line: span.start.line,
+            offset: span.start.offset + 1,
+        };
+        let first = Span {
+            start: span.start,
+            end: mid,
+            file: span.file,
+        };
+        let second = Span {
+            start: mid,
+            end: span.end,
+            file: span.file,
+        };
+
+        self.file.tokens[self.cursor] = Spanned::new(Token::Amp, first);
+        self.file
+            .tokens
+            .insert(self.cursor + 1, Spanned::new(Token::Amp, second));
+    }
+
+    fn eat_question(&mut self) -> bool {
+        match self.current_token() {
+            Token::Question => {
+                self.bump();
+                true
+            }
+            Token::QuestionQuestion => {
+                self.split_question_token();
+                self.bump();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn eat_amp(&mut self) -> bool {
+        match self.current_token() {
+            Token::Amp => {
+                self.bump();
+                true
+            }
+            Token::AmpAmp => {
+                self.split_amp_token();
+                self.bump();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn expect_question(&mut self) -> R<()> {
+        if self.eat_question() {
+            Ok(())
+        } else {
+            Err(self.err_at_current(ParserError::Expected(
+                Token::Question,
+                self.current_token(),
+            )))
+        }
+    }
+
+    fn expect_amp(&mut self) -> R<()> {
+        if self.eat_amp() {
+            Ok(())
+        } else {
+            Err(self.err_at_current(ParserError::Expected(
+                Token::Amp,
+                self.current_token(),
+            )))
+        }
     }
 
     fn eat(&mut self, token: Token) -> bool {
@@ -1067,7 +1184,7 @@ impl Parser {
         };
 
         // optional type : T?
-        if self.matches(Token::Question) {
+        while self.matches_question() {
             let k = self.parse_optional_type(ty)?;
             let hi = self.hi_span();
             ty = Type {
@@ -1082,7 +1199,8 @@ impl Parser {
 
     fn parse_type_kind(&mut self) -> R<TypeKind> {
         let res = match self.current_token() {
-            token @ (Token::Star | Token::Amp) => self.parse_pointer_type(token),
+            Token::Star => self.parse_pointer_type(Token::Star),
+            Token::Amp | Token::AmpAmp => self.parse_pointer_type(Token::Amp),
             Token::Identifier { .. } => self.parse_identifier_type(),
             Token::LParen => self.parse_tuple_type(),
             Token::LBracket => self.parse_collection_type(),
@@ -1110,8 +1228,12 @@ impl Parser {
     }
 
     fn parse_pointer_type(&mut self, k: Token) -> R<TypeKind> {
-        debug_assert!(matches!(k.clone(), Token::Star | Token::Amp));
-        self.expect(k.clone())?; // eat '*' OR '&' symbol
+        debug_assert!(matches!(k, Token::Star | Token::Amp));
+        if matches!(k, Token::Star) {
+            self.expect(Token::Star)?; // eat '*' symbol
+        } else {
+            self.expect_amp()?; // eat '&' symbol
+        }
         let is_pointer = matches!(k, Token::Star);
         let mutability = self.parse_mutability();
         let ty = self.parse_type()?;
@@ -1178,7 +1300,7 @@ impl Parser {
     }
 
     fn parse_optional_type(&mut self, ty: Type) -> R<TypeKind> {
-        self.expect(Token::Question)?;
+        self.expect_question()?;
         let k = TypeKind::Optional(Box::new(ty));
         Ok(k)
     }
@@ -1442,7 +1564,7 @@ impl Parser {
     fn parse_pattern_kind(&mut self) -> R<PatternKind> {
         match self.current_token() {
             Token::LParen => self.parse_pattern_tuple_kind(),
-            Token::Amp => self.parse_ref_pattern(),
+            Token::Amp | Token::AmpAmp => self.parse_ref_pattern(),
             Token::Underscore => {
                 self.bump();
                 Ok(PatternKind::Wildcard)
@@ -1471,7 +1593,7 @@ impl Parser {
     }
 
     fn parse_ref_pattern(&mut self) -> R<PatternKind> {
-        self.expect(Token::Amp)?;
+        self.expect_amp()?;
         let mutability = self.parse_mutability();
         let pattern = self.parse_pattern()?;
         Ok(PatternKind::Reference {
@@ -2245,8 +2367,8 @@ impl Parser {
                     self.build_expr(ExpressionKind::Dereference(expr), lo.to(self.hi_span()))
                 );
             }
-            Token::Amp => {
-                self.bump();
+            Token::Amp | Token::AmpAmp => {
+                self.expect_amp()?;
                 let mutability = self.parse_mutability();
                 let expr = self.parse_prefix_expr()?;
                 return Ok(self.build_expr(
@@ -2671,6 +2793,7 @@ impl Parser {
             | Token::False
             | Token::Nil => self.parse_literal(),
             Token::Identifier { .. } => self.parse_identifier_expression(),
+            Token::Dot => self.parse_inferred_member_expression(),
             Token::LParen => self.parse_tuple_expr(),
             Token::LBracket => self.parse_collection_expr(),
             Token::Case => self.parse_pattern_binding_condition(),
@@ -2699,6 +2822,14 @@ impl Parser {
     }
 }
 impl Parser {
+    fn parse_inferred_member_expression(&mut self) -> R<Box<Expression>> {
+        let lo = self.lo_span();
+        self.expect(Token::Dot)?;
+        let name = self.parse_member_identifier()?;
+        let span = lo.to(self.hi_span());
+        Ok(self.build_expr(ExpressionKind::InferredMember { name }, span))
+    }
+
     fn parse_expression_argument_list(&mut self, delim: Delimiter) -> R<Vec<ExpressionArgument>> {
         self.parse_delimiter_sequence(delim, Token::Comma, |p| p.parse_expression_argument())
     }
@@ -3015,8 +3146,8 @@ impl Parser {
                     return Ok(None);
                 }
             }
-            Token::Amp => {
-                self.bump();
+            Token::Amp | Token::AmpAmp => {
+                self.expect_amp()?;
                 let mutability = self.parse_mutability();
                 (SelfKind::Reference, mutability, self.parse_self()?)
             }

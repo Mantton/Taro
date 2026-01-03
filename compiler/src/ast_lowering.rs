@@ -887,6 +887,9 @@ impl Actor<'_, '_> {
                 let resolved_path = self.lower_identifier_expression_path(node.id, ident);
                 hir::ExpressionKind::Path(resolved_path)
             }
+            ast::ExpressionKind::InferredMember { name } => {
+                hir::ExpressionKind::InferredMember { name }
+            }
             ast::ExpressionKind::Member { target, name } => {
                 match self
                     .resolutions

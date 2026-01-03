@@ -302,10 +302,7 @@ impl<'ctx> FunctionLower<'ctx> {
                 let Adjustment::BoxExistential { interfaces, .. } = adjustment else {
                     unreachable!()
                 };
-                let boxed_ty = Ty::new(
-                    TyKind::BoxedExistential { interfaces },
-                    self.gcx,
-                );
+                let boxed_ty = Ty::new(TyKind::BoxedExistential { interfaces }, self.gcx);
                 let inner_id = self.push_expr(expr.kind, expr.ty, expr.span);
 
                 Expr {
@@ -394,6 +391,20 @@ impl<'ctx> FunctionLower<'ctx> {
                             Resolution::Error
                         }
                     }
+                };
+                self.lower_path_expression(expr, res)
+            }
+            hir::ExpressionKind::InferredMember { .. } => {
+                let res = if let Some(def_id) = self.results.overload_source(expr.id) {
+                    Resolution::Definition(def_id, self.gcx.definition_kind(def_id))
+                } else if let Some(resolution) = self.results.value_resolution(expr.id) {
+                    resolution
+                } else {
+                    self.gcx.dcx().emit_error(
+                        "unresolved inferred member (typecheck should have resolved this)".into(),
+                        Some(expr.span),
+                    );
+                    Resolution::Error
                 };
                 self.lower_path_expression(expr, res)
             }
@@ -783,12 +794,14 @@ impl<'ctx> FunctionLower<'ctx> {
                 id,
                 generic_args: self.results.instantiation(expr.id),
             },
-            Resolution::Definition(id, DefinitionKind::Constant | DefinitionKind::AssociatedConstant) => {
+            Resolution::Definition(
+                id,
+                DefinitionKind::Constant | DefinitionKind::AssociatedConstant,
+            ) => {
                 let Some(constant) = self.gcx.try_get_const(id) else {
-                    self.gcx.dcx().emit_error(
-                        "constant value is not available".into(),
-                        Some(expr.span),
-                    );
+                    self.gcx
+                        .dcx()
+                        .emit_error("constant value is not available".into(), Some(expr.span));
                     return ExprKind::Literal(Constant {
                         ty: self.gcx.types.error,
                         value: ConstantKind::Unit,
@@ -858,12 +871,22 @@ impl<'ctx> FunctionLower<'ctx> {
     }
 
     fn variant_ctor_callee(&self, callee: &hir::Expression) -> Option<DefinitionID> {
-        let resolution = match &callee.kind {
-            hir::ExpressionKind::Path(path) => match path {
-                hir::ResolvedPath::Resolved(path) => Some(path.resolution.clone()),
-                hir::ResolvedPath::Relative(..) => self.results.value_resolution(callee.id),
-            },
-            _ => None,
+        let resolution = if let Some(def_id) = self.results.overload_source(callee.id) {
+            Some(Resolution::Definition(
+                def_id,
+                self.gcx.definition_kind(def_id),
+            ))
+        } else {
+            match &callee.kind {
+                hir::ExpressionKind::Path(path) => match path {
+                    hir::ResolvedPath::Resolved(path) => Some(path.resolution.clone()),
+                    hir::ResolvedPath::Relative(..) => self.results.value_resolution(callee.id),
+                },
+                hir::ExpressionKind::InferredMember { .. } => {
+                    self.results.value_resolution(callee.id)
+                }
+                _ => None,
+            }
         }?;
 
         match resolution {

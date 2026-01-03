@@ -1,6 +1,6 @@
 use crate::{
     compile::context::Gcx,
-    hir::NodeID,
+    hir::{NodeID, Resolution},
     sema::{
         error::SpannedErrorList,
         models::{
@@ -41,6 +41,7 @@ pub struct ConstraintSystem<'ctx> {
     pub locals: RefCell<FxHashMap<NodeID, Ty<'ctx>>>,
     pub field_indices: FxHashMap<NodeID, usize>,
     overload_sources: FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
+    value_resolutions: FxHashMap<NodeID, Resolution>,
     instantiation_args: FxHashMap<NodeID, GenericArguments<'ctx>>,
     current_def: crate::sema::resolve::models::DefinitionID,
     env: ParamEnv<'ctx>,
@@ -60,6 +61,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
             interface_calls: Default::default(),
             field_indices: Default::default(),
             overload_sources: Default::default(),
+            value_resolutions: Default::default(),
             instantiation_args: Default::default(),
             current_def,
             env: ParamEnv::new(
@@ -175,6 +177,10 @@ impl<'ctx> ConstraintSystem<'ctx> {
         self.overload_sources.clone()
     }
 
+    pub fn resolved_value_resolutions(&self) -> FxHashMap<NodeID, Resolution> {
+        self.value_resolutions.clone()
+    }
+
     pub fn record_instantiation(&mut self, node_id: NodeID, args: GenericArguments<'ctx>) {
         self.instantiation_args.insert(node_id, args);
     }
@@ -224,6 +230,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
             interface_calls: std::mem::take(&mut self.interface_calls),
             field_indices: std::mem::take(&mut self.field_indices),
             overload_sources: std::mem::take(&mut self.overload_sources),
+            value_resolutions: std::mem::take(&mut self.value_resolutions),
             instantiation_args: std::mem::take(&mut self.instantiation_args),
             current_def: self.current_def,
             param_env,
@@ -232,12 +239,19 @@ impl<'ctx> ConstraintSystem<'ctx> {
         let mut driver = SolverDriver::new(solver);
         let result = driver.solve_to_fixpoint();
         // Pull adjustments back out of the solver/driver.
-        let (adjustments, interface_calls, field_indices, overload_sources, instantiation_args) =
-            driver.into_parts();
+        let (
+            adjustments,
+            interface_calls,
+            field_indices,
+            overload_sources,
+            value_resolutions,
+            instantiation_args,
+        ) = driver.into_parts();
         self.adjustments = adjustments;
         self.interface_calls = interface_calls;
         self.field_indices = field_indices;
         self.overload_sources = overload_sources;
+        self.value_resolutions = value_resolutions;
         self.instantiation_args = instantiation_args;
 
         let Err(errors) = result else {
@@ -286,6 +300,7 @@ struct ConstraintSolver<'ctx> {
     interface_calls: FxHashMap<NodeID, InterfaceCallInfo>,
     pub field_indices: FxHashMap<NodeID, usize>,
     overload_sources: FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
+    value_resolutions: FxHashMap<NodeID, Resolution>,
     instantiation_args: FxHashMap<NodeID, GenericArguments<'ctx>>,
     current_def: crate::sema::resolve::models::DefinitionID,
     param_env: ParamEnv<'ctx>,
@@ -306,6 +321,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
         source: crate::sema::resolve::models::DefinitionID,
     ) {
         self.overload_sources.insert(node_id, source);
+    }
+
+    pub fn record_value_resolution(&mut self, node_id: NodeID, resolution: Resolution) {
+        self.value_resolutions.insert(node_id, resolution);
     }
 
     pub fn record_instantiation(&mut self, node_id: NodeID, args: GenericArguments<'ctx>) {
@@ -362,6 +381,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             Goal::AssignOp(data) => self.solve_assign_op(data),
             Goal::Coerce { node_id, from, to } => self.solve_coerce(location, node_id, from, to),
             Goal::Member(data) => self.solve_member(data),
+            Goal::InferredStaticMember(data) => self.solve_inferred_static_member(data),
             Goal::MethodCall(data) => self.solve_method_call(data),
             Goal::StructLiteral(data) => self.solve_struct_literal(data),
             Goal::TupleAccess(data) => self.solve_tuple_access(data),
@@ -414,6 +434,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             interface_calls: self.interface_calls.clone(),
             field_indices: self.field_indices.clone(),
             overload_sources: self.overload_sources.clone(),
+            value_resolutions: self.value_resolutions.clone(),
             instantiation_args: self.instantiation_args.clone(),
             current_def: self.current_def,
             param_env: self.param_env.clone(),
@@ -470,6 +491,7 @@ impl<'ctx> SolverDriver<'ctx> {
         FxHashMap<NodeID, InterfaceCallInfo>,
         FxHashMap<NodeID, usize>,
         FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
+        FxHashMap<NodeID, Resolution>,
         FxHashMap<NodeID, GenericArguments<'ctx>>,
     ) {
         (
@@ -477,6 +499,7 @@ impl<'ctx> SolverDriver<'ctx> {
             self.solver.interface_calls,
             self.solver.field_indices,
             self.solver.overload_sources,
+            self.solver.value_resolutions,
             self.solver.instantiation_args,
         )
     }
@@ -508,7 +531,8 @@ impl<'ctx> SolverDriver<'ctx> {
                     continue;
                 }
 
-                todo!("deferred obligations remaining after defaulting");
+                // No progress after defaulting; let unresolved inference vars report errors.
+                return Ok(());
             }
 
             return Ok(());

@@ -10,11 +10,12 @@ use crate::{
             check::{checker::Checker, gather::GatherLocalsVisitor},
             infer::InferCtx,
             lower::lowerer::TypeLowerer,
+            results::TypeCheckResults,
             solve::{
                 ApplyArgument, ApplyGoalData, AssignOpGoalData, BinOpGoalData,
                 BindOverloadGoalData, ConstraintSystem, DerefGoalData, DisjunctionBranch, Goal,
-                MemberGoalData, MethodCallData, StructLiteralField, StructLiteralGoalData,
-                TupleAccessGoalData, UnOpGoalData,
+                InferredStaticMemberGoalData, MemberGoalData, MethodCallData, StructLiteralField,
+                StructLiteralGoalData, TupleAccessGoalData, UnOpGoalData,
             },
             utils::{
                 const_eval::eval_const_expression,
@@ -26,6 +27,7 @@ use crate::{
     },
     span::{Span, Symbol},
 };
+use std::cell::RefCell;
 use std::rc::Rc;
 
 impl<'ctx> Checker<'ctx> {
@@ -115,7 +117,9 @@ impl<'ctx> Checker<'ctx> {
 impl<'ctx> Checker<'ctx> {
     fn check_statement(&self, node: &hir::Statement) {
         match &node.kind {
-            hir::StatementKind::Declaration(..) => return,
+            hir::StatementKind::Declaration(decl) => {
+                self.check_local_declaration(decl);
+            }
             hir::StatementKind::Expression(node) => {
                 self.top_level_check(node, None);
             }
@@ -137,6 +141,34 @@ impl<'ctx> Checker<'ctx> {
         }
 
         return;
+    }
+
+    fn check_local_declaration(&self, decl: &hir::Declaration) {
+        match &decl.kind {
+            hir::DeclarationKind::Function(node) => {
+                let mut checker = Checker::new(
+                    self.context,
+                    decl.id,
+                    RefCell::new(TypeCheckResults::default()),
+                );
+                checker.check_function(decl.id, node, hir::FunctionContext::Free);
+                self.results
+                    .borrow_mut()
+                    .extend_from(checker.results.into_inner());
+            }
+            hir::DeclarationKind::Constant(node) => {
+                let mut checker = Checker::new(
+                    self.context,
+                    decl.id,
+                    RefCell::new(TypeCheckResults::default()),
+                );
+                checker.check_constant(decl.id, node);
+                self.results
+                    .borrow_mut()
+                    .extend_from(checker.results.into_inner());
+            }
+            _ => {}
+        }
     }
 
     fn check_return(&self, node: &hir::Expression) {
@@ -192,6 +224,11 @@ impl<'ctx> Checker<'ctx> {
             }
             for (id, def_id) in cs.resolved_overload_sources() {
                 self.results.borrow_mut().record_overload_source(id, def_id);
+            }
+            for (id, resolution) in cs.resolved_value_resolutions() {
+                self.results
+                    .borrow_mut()
+                    .record_value_resolution(id, resolution);
             }
 
             for (id, index) in cs.resolved_field_indices() {
@@ -292,6 +329,11 @@ impl<'ctx> Checker<'ctx> {
             for (id, def_id) in cs.resolved_overload_sources() {
                 self.results.borrow_mut().record_overload_source(id, def_id);
             }
+            for (id, resolution) in cs.resolved_value_resolutions() {
+                self.results
+                    .borrow_mut()
+                    .record_value_resolution(id, resolution);
+            }
 
             for (id, index) in cs.resolved_field_indices() {
                 self.results.borrow_mut().record_field_index(id, index);
@@ -330,6 +372,11 @@ impl<'ctx> Checker<'ctx> {
         }
         for (id, def_id) in cs.resolved_overload_sources() {
             self.results.borrow_mut().record_overload_source(id, def_id);
+        }
+        for (id, resolution) in cs.resolved_value_resolutions() {
+            self.results
+                .borrow_mut()
+                .record_value_resolution(id, resolution);
         }
         for (id, index) in cs.resolved_field_indices() {
             self.results.borrow_mut().record_field_index(id, index);
@@ -452,6 +499,9 @@ impl<'ctx> Checker<'ctx> {
             ),
             hir::ExpressionKind::Member { target, name } => {
                 self.synth_member_expression(expression, target, name, expectation, cs)
+            }
+            hir::ExpressionKind::InferredMember { name } => {
+                self.synth_inferred_member_expression(expression, name, expectation, cs)
             }
             hir::ExpressionKind::Array(elements) => {
                 self.synth_array_expression(expression, elements, expectation, cs)
@@ -1205,19 +1255,56 @@ impl<'ctx> Checker<'ctx> {
             return ptr_ty;
         }
 
-        let callee_ty = self.synth(callee, cs);
+        let callee_ty = match &callee.kind {
+            hir::ExpressionKind::InferredMember { name } => {
+                let result_ty = cs.infer_cx.next_ty_var(callee.span);
+                cs.add_goal(
+                    Goal::InferredStaticMember(InferredStaticMemberGoalData {
+                        node_id: callee.id,
+                        name: *name,
+                        expr_ty: result_ty,
+                        base_hint: expect_ty,
+                        span: callee.span,
+                    }),
+                    callee.span,
+                );
+                cs.record_expr_ty(callee.id, result_ty);
+                result_ty
+            }
+            _ => self.synth(callee, cs),
+        };
+
+        let positional_args = arguments.iter().all(|arg| arg.label.is_none());
+        let arg_expectations = if positional_args {
+            self.argument_expectations_for_call(callee, callee_ty, expect_ty, cs)
+        } else {
+            None
+        };
 
         let apply_arguments: Vec<ApplyArgument<'ctx>> = arguments
             .iter()
-            .map(|n| ApplyArgument {
-                id: n.expression.id,
-                label: n.label.map(|n| n.identifier),
-                ty: self.synth(&n.expression, cs),
-                span: n.expression.span,
+            .enumerate()
+            .map(|(index, n)| {
+                let expected = arg_expectations
+                    .as_ref()
+                    .and_then(|items| items.get(index))
+                    .copied();
+                let ty = if let Some(expected) = expected {
+                    self.synth_with_expectation(&n.expression, Some(expected), cs)
+                } else {
+                    self.synth(&n.expression, cs)
+                };
+                ApplyArgument {
+                    id: n.expression.id,
+                    label: n.label.map(|n| n.identifier),
+                    ty,
+                    span: n.expression.span,
+                }
             })
             .collect();
 
         let result_ty = cs.infer_cx.next_ty_var(expression.span);
+        cs.record_expr_ty(expression.id, result_ty);
 
         let data = ApplyGoalData {
             call_node_id: expression.id,
@@ -1232,6 +1319,83 @@ impl<'ctx> Checker<'ctx> {
         cs.add_goal(Goal::Apply(data), expression.span);
 
         result_ty
+    }
+
+    fn argument_expectations_for_call(
+        &self,
+        callee: &hir::Expression,
+        callee_ty: Ty<'ctx>,
+        expect_ty: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
+    ) -> Option<Vec<Ty<'ctx>>> {
+        if let hir::ExpressionKind::InferredMember { name } = &callee.kind {
+            if let Some(expect_ty) = expect_ty {
+                if let Some(args) =
+                    self.inferred_member_argument_expectations(name, expect_ty, callee.span, cs)
+                {
+                    return Some(args);
+                }
+            }
+        }
+
+        let callee_ty = cs.infer_cx.resolve_vars_if_possible(callee_ty);
+        match callee_ty.kind() {
+            TyKind::FnPointer { inputs, .. } => Some(inputs.to_vec()),
+            _ => None,
+        }
+    }
+
+    fn inferred_member_argument_expectations(
+        &self,
+        name: &crate::span::Identifier,
+        expect_ty: Ty<'ctx>,
+        span: Span,
+        cs: &mut Cs<'ctx>,
+    ) -> Option<Vec<Ty<'ctx>>> {
+        let expect_ty = cs.infer_cx.resolve_vars_if_possible(expect_ty);
+        if expect_ty.is_infer() || expect_ty.is_error() {
+            return None;
+        }
+
+        let base_ty = match expect_ty.kind() {
+            TyKind::FnPointer { output, .. } => {
+                let output = cs.infer_cx.resolve_vars_if_possible(output);
+                if output.is_infer() {
+                    return None;
+                }
+                output
+            }
+            _ => expect_ty,
+        };
+        let base_ty = cs.infer_cx.resolve_vars_if_possible(base_ty);
+
+        let head = type_head_from_value_ty(base_ty)?;
+        let base_args = match base_ty.kind() {
+            TyKind::Adt(_, args) if !args.is_empty() => Some(args),
+            _ => None,
+        };
+
+        let resolution =
+            self.resolve_static_member_resolution(head, base_ty, name, span, false);
+        let def_id = resolution.definition_id()?;
+        let signature = self.gcx().get_signature(def_id);
+
+        let generics = self.gcx().generics_of(def_id);
+        let signature = if generics.is_empty() {
+            signature.clone()
+        } else if let Some(base_args) = base_args {
+            let args = GenericsBuilder::for_item(self.gcx(), def_id, |param, _| {
+                base_args
+                    .get(param.index)
+                    .copied()
+                    .unwrap_or_else(|| cs.infer_cx.var_for_generic_param(param, span))
+            });
+            instantiate_signature_with_args(self.gcx(), signature, args)
+        } else {
+            return None;
+        };
+
+        Some(signature.inputs.into_iter().map(|param| param.ty).collect())
     }
 
     fn synth_method_call_expression(
@@ -1858,6 +2022,32 @@ impl<'ctx> Checker<'ctx> {
         if let Some(expectation) = expectation {
             cs.equal(expectation, result_ty, expression.span);
         }
+        result_ty
+    }
+
+    fn synth_inferred_member_expression(
+        &self,
+        expression: &hir::Expression,
+        name: &crate::span::Identifier,
+        expectation: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        let result_ty = cs.infer_cx.next_ty_var(expression.span);
+        cs.add_goal(
+            Goal::InferredStaticMember(InferredStaticMemberGoalData {
+                node_id: expression.id,
+                name: *name,
+                expr_ty: result_ty,
+                base_hint: expectation,
+                span: expression.span,
+            }),
+            expression.span,
+        );
+
+        if let Some(expectation) = expectation {
+            cs.equal(expectation, result_ty, expression.span);
+        }
+
         result_ty
     }
 

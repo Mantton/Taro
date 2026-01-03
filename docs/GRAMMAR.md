@@ -326,7 +326,7 @@ async       await       ref
 ## Types
 
 ```ebnf
-<type>                 ::= <type_kind> [ '?' ]   /* optional suffix */
+<type>                 ::= <type_kind> { '?' }   /* optional suffix */
 
 <type_kind>            ::= <nominal_type>
                          | <pointer_type>
@@ -541,6 +541,7 @@ async       await       ref
 ```ebnf
 <primary_expression>   ::= <literal>
                          | <identifier>
+                         | '.' <identifier>                /* inferred member */
                          | <tuple_expression>
                          | <array_expression>
                          | <dictionary_expression>
