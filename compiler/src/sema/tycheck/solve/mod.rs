@@ -10,7 +10,10 @@ use crate::{
         tycheck::{
             constraints::canonical_constraints_of,
             infer::InferCtx,
-            utils::{ParamEnv, instantiate::instantiate_constraint_with_args, normalize_ty},
+            utils::{
+                ParamEnv, instantiate::instantiate_constraint_with_args,
+                instantiate::instantiate_ty_with_args, normalize_ty,
+            },
         },
     },
     span::{Span, Spanned},
@@ -363,6 +366,51 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
     pub(crate) fn bounds_for_type_in_scope(&self, ty: Ty<'ctx>) -> Vec<InterfaceReference<'ctx>> {
         self.param_env.bounds_for(self.structurally_resolve(ty))
+    }
+
+    pub(crate) fn filter_extension_candidates(
+        &self,
+        candidates: Vec<crate::sema::resolve::models::DefinitionID>,
+        receiver: Ty<'ctx>,
+        span: Span,
+    ) -> Vec<crate::sema::resolve::models::DefinitionID> {
+        candidates
+            .into_iter()
+            .filter(|candidate| {
+                let Some(parent) = self.gcx().definition_parent(*candidate) else {
+                    return true;
+                };
+
+                if self.gcx().definition_kind(parent)
+                    != crate::sema::resolve::models::DefinitionKind::Extension
+                {
+                    return true;
+                }
+
+                self.extension_target_matches(parent, receiver, span)
+            })
+            .collect()
+    }
+
+    pub(crate) fn extension_target_matches(
+        &self,
+        extension_id: crate::sema::resolve::models::DefinitionID,
+        receiver: Ty<'ctx>,
+        span: Span,
+    ) -> bool {
+        let Some(target_ty) = self.gcx().get_extension_target_ty(extension_id) else {
+            return true;
+        };
+
+        if target_ty.is_error() || receiver.is_error() {
+            return true;
+        }
+
+        self.icx.probe(|_| {
+            let args = self.icx.fresh_args_for_def(extension_id, span);
+            let instantiated = instantiate_ty_with_args(self.gcx(), target_ty, args);
+            self.unify(receiver, instantiated).is_ok()
+        })
     }
 
     fn solve(&mut self, obligation: Obligation<'ctx>) -> SolverResult<'ctx> {

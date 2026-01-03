@@ -60,6 +60,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
             // Instance methods.
             let candidates = self.lookup_instance_candidates(ty, name.symbol);
+            let candidates = self.filter_extension_candidates(candidates, ty, span);
             if !candidates.is_empty() {
                 self.record_adjustments(receiver_node, adjustments);
                 let mut branches = Vec::with_capacity(candidates.len());

@@ -156,22 +156,17 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 crate::sema::resolve::models::DefinitionKind::Struct
                 | crate::sema::resolve::models::DefinitionKind::Enum => gcx.get_type(id),
                 crate::sema::resolve::models::DefinitionKind::Extension => {
-                    let Some(head) = gcx.get_extension_type_head(id) else {
-                        return gcx.types.error;
-                    };
-                    match head {
-                        TypeHead::Nominal(target_id) => gcx.get_type(target_id),
-                        TypeHead::GcPtr => Ty::new(TyKind::GcPtr, gcx),
-                        TypeHead::Primary(p) => match p {
-                            PrimaryType::Int(k) => Ty::new_int(gcx, k),
-                            PrimaryType::UInt(k) => Ty::new_uint(gcx, k),
-                            PrimaryType::Float(k) => Ty::new_float(gcx, k),
-                            PrimaryType::String => gcx.types.string,
-                            PrimaryType::Bool => gcx.types.bool,
-                            PrimaryType::Rune => gcx.types.rune,
-                        },
-                        _ => todo!("Self type alias lowering for {head:?}"),
+                    if let Some(self_ty) = gcx.get_extension_self_ty(id) {
+                        self_ty
+                    } else {
+                        let Some(head) = gcx.get_extension_type_head(id) else {
+                            return gcx.types.error;
+                        };
+                        match head {
+                            _ => todo!("Self type alias lowering for {head:?}"),
+                        }
                     }
+
                 }
                 other => todo!("Self type alias lowering for {other:?}"),
             },

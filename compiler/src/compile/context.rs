@@ -173,6 +173,12 @@ impl<'arena> GlobalContext<'arena> {
         });
     }
 
+    pub fn cache_extension_target_ty(self, extension_id: DefinitionID, ty: Ty<'arena>) {
+        self.with_type_database(extension_id.package(), |db| {
+            db.extension_to_target_ty.insert(extension_id, ty);
+        });
+    }
+
     pub fn cache_generics(self, id: DefinitionID, generics: Generics) {
         let mut cache = self.context.store.type_databases.borrow_mut();
         let package_index = id.package();
@@ -347,6 +353,12 @@ impl<'arena> GlobalContext<'arena> {
         })
     }
 
+    pub fn get_extension_target_ty(self, extension_id: DefinitionID) -> Option<Ty<'arena>> {
+        self.with_type_database(extension_id.package(), |db| {
+            db.extension_to_target_ty.get(&extension_id).copied()
+        })
+    }
+
     /// Get the Self type for an extension.
     /// - For struct/enum extensions: returns the concrete type
     /// - For interface extensions: returns the Self type parameter
@@ -359,20 +371,24 @@ impl<'arena> GlobalContext<'arena> {
                     Some(self.types.self_type_parameter)
                 }
                 DefinitionKind::Struct | DefinitionKind::Enum => {
-                    // For concrete type extensions, Self is the actual type
-                    Some(self.get_type(target_id))
+                    self.get_extension_target_ty(extension_id)
+                        .or_else(|| Some(self.get_type(target_id)))
                 }
                 _ => None,
             },
-            TypeHead::Primary(p) => Some(match p {
-                PrimaryType::Int(k) => Ty::new_int(self, k),
-                PrimaryType::UInt(k) => Ty::new_uint(self, k),
-                PrimaryType::Float(k) => Ty::new_float(self, k),
-                PrimaryType::String => self.types.string,
-                PrimaryType::Bool => self.types.bool,
-                PrimaryType::Rune => self.types.rune,
+            TypeHead::Primary(p) => self.get_extension_target_ty(extension_id).or_else(|| {
+                Some(match p {
+                    PrimaryType::Int(k) => Ty::new_int(self, k),
+                    PrimaryType::UInt(k) => Ty::new_uint(self, k),
+                    PrimaryType::Float(k) => Ty::new_float(self, k),
+                    PrimaryType::String => self.types.string,
+                    PrimaryType::Bool => self.types.bool,
+                    PrimaryType::Rune => self.types.rune,
+                })
             }),
-            TypeHead::GcPtr => Some(Ty::new(TyKind::GcPtr, self)),
+            TypeHead::GcPtr => self
+                .get_extension_target_ty(extension_id)
+                .or_else(|| Some(Ty::new(TyKind::GcPtr, self))),
             TypeHead::Tuple(_)
             | TypeHead::Reference(_)
             | TypeHead::Pointer(_)
@@ -843,6 +859,7 @@ pub struct TypeDatabase<'arena> {
     pub def_to_canon_constraints:
         FxHashMap<DefinitionID, Vec<crate::span::Spanned<Constraint<'arena>>>>,
     pub extension_to_type_head: FxHashMap<DefinitionID, TypeHead>,
+    pub extension_to_target_ty: FxHashMap<DefinitionID, Ty<'arena>>,
     pub type_head_to_extensions: FxHashMap<TypeHead, Vec<DefinitionID>>,
     pub type_head_to_members: FxHashMap<TypeHead, TypeMemberIndex>,
     pub def_to_generics: FxHashMap<DefinitionID, &'arena Generics>,

@@ -20,7 +20,7 @@ use crate::{
             },
         },
     },
-    span::{Spanned, Symbol},
+    span::{Span, Spanned, Symbol},
 };
 
 struct InterfaceMethodCandidate<'ctx> {
@@ -103,8 +103,12 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     }
                 }
 
-                let candidates =
-                    self.lookup_instance_candidates_method(candidate_ty, reciever_ty, name.symbol);
+                let candidates = self.lookup_instance_candidates_method(
+                    candidate_ty,
+                    reciever_ty,
+                    name.symbol,
+                    *span,
+                );
                 let Some(candidates) = candidates else {
                     continue;
                 };
@@ -188,6 +192,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         candidate: Ty<'ctx>,
         reciever: Ty<'ctx>,
         name: Symbol,
+        span: Span,
     ) -> Option<Vec<DefinitionID>> {
         let head = self.type_head_from_type(candidate)?;
         let all_candidates = self.lookup_instance_candidates_visible(head, name);
@@ -220,6 +225,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             }
         }
 
+        let matching = self.filter_extension_candidates(matching, candidate, span);
         return Some(matching);
     }
 
