@@ -73,6 +73,7 @@ fn ty_symbol_with(gcx: GlobalContext, ty: Ty) -> String {
         }
         TyKind::Parameter(p) => p.name.as_str().into(),
         TyKind::Infer(_) | TyKind::Error => "err".into(),
+        TyKind::Never => "z".into(),
     }
 }
 

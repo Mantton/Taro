@@ -1,10 +1,8 @@
 
-
 extern "taro_rt" {
-    func __rt__exit(_ code: int32)
+    func __rt__exit(_ code: int32) -> !
 }
 
-
-public func exit(_ code: int32) {
+public func exit(_ code: int32) -> ! {
     __rt__exit(code)
 }

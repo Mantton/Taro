@@ -173,6 +173,7 @@ impl<'arena> Ty<'arena> {
                 format!("any {}", parts.join(" & "))
             }
             TyKind::Error => "<<error>>".into(),
+            TyKind::Never => "!".into(),
             TyKind::Infer(k) => match k {
                 InferTy::TyVar(id) => format!("{{var({})}}", id._raw),
                 InferTy::IntVar(id) => format!("{{integer({})}}", id.index()),
@@ -279,6 +280,7 @@ pub enum TyKind<'arena> {
     Infer(InferTy),
     Parameter(GenericParameter),
     Error,
+    Never,
 }
 
 /// Kind of type alias

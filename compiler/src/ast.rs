@@ -564,6 +564,8 @@ pub enum TypeKind {
     BoxedExistential { interfaces: Vec<PathNode> },
     /// _
     Infer,
+    /// !
+    Never,
 }
 
 // Patterns
@@ -1683,6 +1685,7 @@ pub fn walk_type<V: AstVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
         TypeKind::ImplicitSelf => {}
         TypeKind::InferedClosureParameter => {}
         TypeKind::Infer => {}
+        TypeKind::Never => {}
     }
     V::Result::output()
 }

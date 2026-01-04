@@ -17,15 +17,8 @@ pub struct CommandLineArguments {
 pub fn run() {
     let arguments = CommandLineArguments::parse();
     let result = command::handle(arguments);
-
     match result {
-        Ok(_) => {
-            println!("compilation successful");
-            exit(0)
-        }
-        Err(_) => {
-            println!("compilation failed");
-            exit(1)
-        }
+        Ok(_) => exit(0),
+        Err(_) => exit(1),
     }
 }

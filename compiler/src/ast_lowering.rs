@@ -669,6 +669,7 @@ impl Actor<'_, '_> {
                     .map(|n| self.lower_path_node(n))
                     .collect(),
             },
+            ast::TypeKind::Never => hir::TypeKind::Never,
             ast::TypeKind::Infer | ast::TypeKind::InferedClosureParameter => hir::TypeKind::Infer,
         };
 

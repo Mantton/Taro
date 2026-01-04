@@ -29,7 +29,6 @@ extend[Element, const Size: usize] Array[Element, Size] {
         }
         std.print("index out of range\n")
         std.process.exit(1)
-        return __intrinsic_array_read_unchecked(self, 0)
     }
 
     func at_mut(&mut self, _ idx: usize) -> &mut Element {
@@ -38,7 +37,6 @@ extend[Element, const Size: usize] Array[Element, Size] {
         }
         std.print("index out of range\n")
         std.process.exit(1)
-        return __intrinsic_array_read_mut_unchecked(self, 0)
     }
 
     public func get(&self, _ idx: usize) -> Optional[&Element] {

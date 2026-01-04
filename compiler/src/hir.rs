@@ -248,6 +248,8 @@ pub enum TypeKind {
     BoxedExistential { interfaces: Vec<PathNode> },
     /// _
     Infer,
+    /// !
+    Never,
 }
 
 #[derive(Debug, Clone)]
@@ -1149,6 +1151,7 @@ pub fn walk_type<V: HirVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
             walk_list!(visitor, visit_path_node, interfaces);
         }
         TypeKind::Infer => {}
+        TypeKind::Never => {}
     }
     V::Result::output()
 }

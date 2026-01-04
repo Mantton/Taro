@@ -22,6 +22,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let from = self.structurally_resolve(from);
         let to = self.structurally_resolve(to);
 
+        if matches!(from.kind(), TyKind::Never) {
+            return SolverResult::Solved(vec![]);
+        }
+
         if let Some(result) = self.solve_existential_upcast(location, node_id, from, to) {
             return result;
         }

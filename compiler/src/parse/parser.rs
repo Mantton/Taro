@@ -1207,6 +1207,10 @@ impl Parser {
                 let interfaces = self.parse_sequence(Token::Amp, |this| this.parse_path_node())?;
                 Ok(TypeKind::BoxedExistential { interfaces })
             }
+            Token::Bang => {
+                self.bump();
+                Ok(TypeKind::Never)
+            }
             _ => {
                 return Err(self.err_at_current(ParserError::ExpectedType));
             }

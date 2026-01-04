@@ -301,7 +301,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
             TyKind::Infer(_)
             | TyKind::FnPointer { .. }
             | TyKind::BoxedExistential { .. }
-            | TyKind::Error => None,
+            | TyKind::Error
+            | TyKind::Never => None,
         }
     }
 

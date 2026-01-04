@@ -111,7 +111,7 @@ impl<'ctx> TypeUnifier<'ctx> {
             }
             // Error - silently succeed if either side is an error type
             (Error, _) | (_, Error) => return Ok(()),
-            (Rune | Bool | Int(_) | UInt(_) | Float(_) | String | GcPtr, _) if a == b => {
+            (Rune | Bool | Int(_) | UInt(_) | Float(_) | String | GcPtr | Never, _) if a == b => {
                 return Ok(());
             }
             (Parameter(a_p), Parameter(b_p)) if a_p.index == b_p.index => return Ok(()),

@@ -2402,7 +2402,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .builder
             .build_bit_cast(
                 buffer_ptr,
-                llvm_elem_ty.ptr_type(AddressSpace::default()),
+                self.context.ptr_type(AddressSpace::default()),
                 "list_buf_cast",
             )
             .unwrap()
@@ -2469,7 +2469,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .builder
             .build_bit_cast(
                 buffer_ptr,
-                llvm_elem_ty.ptr_type(AddressSpace::default()),
+                self.context.ptr_type(AddressSpace::default()),
                 "list_buf_cast",
             )
             .unwrap()
@@ -2533,7 +2533,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             }
         };
 
-        let byte_ptr_ty = self.context.i8_type().ptr_type(AddressSpace::default());
+        let byte_ptr_ty = self.context.ptr_type(AddressSpace::default());
         let cast = self
             .builder
             .build_bit_cast(ptr_val, byte_ptr_ty, "ptr_u8")
@@ -3531,6 +3531,7 @@ fn lower_type<'llvm, 'gcx>(
     let ty = crate::sema::tycheck::utils::normalize_post_monomorphization(gcx, ty);
 
     match ty.kind() {
+        TyKind::Never => None,
         TyKind::Bool => Some(context.bool_type().into()),
         TyKind::Rune => Some(context.i32_type().into()),
         TyKind::String => Some(string_header_ty(context, target_data).into()),

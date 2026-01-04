@@ -79,6 +79,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 let list = gcx.store.arenas.global.alloc_slice_copy(&lowered);
                 Ty::new(TyKind::BoxedExistential { interfaces: list }, gcx)
             }
+            hir::TypeKind::Never => Ty::new(TyKind::Never, gcx),
             hir::TypeKind::Infer => unreachable!(),
         }
     }

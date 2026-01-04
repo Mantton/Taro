@@ -114,6 +114,7 @@ impl<'ctx> Actor<'ctx> {
                 );
                 None
             }
+            hir::TypeKind::Never => None,
         }
     }
 

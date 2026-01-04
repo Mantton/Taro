@@ -1018,9 +1018,9 @@ fn can_end_statement(tok: &Token) -> bool {
         // postfix optional marker (`T?`) should allow ASI to end the line
         | Token::Question
         // wildcard path suffix at end of import / export line
-        | Token::DotStar => true,
-
-
+        | Token::DotStar
+        // Never type (!) can end a statement (e.g. extern signature)
+        | Token::Bang => true,
         _ => false,
     }
 }
