@@ -1,4 +1,4 @@
-extern "taro_intrinsic" {
+extern "taro_rt" {
     func __rt__print(_ s: string)
 }
 

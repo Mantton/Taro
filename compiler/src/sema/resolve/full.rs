@@ -1234,12 +1234,10 @@ impl<'r, 'a> Actor<'r, 'a> {
                 if matches!(
                     source,
                     ResolutionSource::Type | ResolutionSource::TypeArgument
-                )
-                    && matches!(
-                        resolution,
-                        Resolution::Definition(_, DefinitionKind::Interface)
-                    )
-                {
+                ) && matches!(
+                    resolution,
+                    Resolution::Definition(_, DefinitionKind::Interface)
+                ) {
                     let message = format!(
                         "interface '{symbol}' cannot be used as a type; use `any {symbol}`"
                     );

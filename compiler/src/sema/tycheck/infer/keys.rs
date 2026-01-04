@@ -1,6 +1,6 @@
 use super::{UnificationTable, snapshot::IcxEventLogs};
 use crate::{
-    sema::models::{ConstValue, ConstVarID, FloatTy, IntTy, Ty, TyVarID, UIntTy},
+    sema::models::{ConstValue, ConstVarID, FloatTy, GenericParameter, IntTy, Ty, TyVarID, UIntTy},
     span::{Span, Symbol},
 };
 use ena::unify::{UnificationTableStorage, UnifyKey, UnifyValue};
@@ -190,6 +190,7 @@ impl UnifyKey for ConstVarEqID {
 pub enum ConstVarValue {
     Unknown,
     Known(ConstValue),
+    Param(GenericParameter),
 }
 
 impl UnifyValue for ConstVarValue {
@@ -199,8 +200,21 @@ impl UnifyValue for ConstVarValue {
         match (*value1, *value2) {
             (ConstVarValue::Unknown, ConstVarValue::Unknown) => Ok(ConstVarValue::Unknown),
             (ConstVarValue::Unknown, known @ ConstVarValue::Known(_))
-            | (known @ ConstVarValue::Known(_), ConstVarValue::Unknown) => Ok(known),
+            | (ConstVarValue::Unknown, known @ ConstVarValue::Param(_))
+            | (known @ ConstVarValue::Known(_), ConstVarValue::Unknown)
+            | (known @ ConstVarValue::Param(_), ConstVarValue::Unknown) => Ok(known),
             (ConstVarValue::Known(_), ConstVarValue::Known(_)) => {
+                panic!("differing consts should have been resolved first")
+            }
+            (ConstVarValue::Param(a), ConstVarValue::Param(b)) => {
+                if a == b {
+                    Ok(ConstVarValue::Param(a))
+                } else {
+                    panic!("differing const params should have been resolved first")
+                }
+            }
+            (ConstVarValue::Known(_), ConstVarValue::Param(_))
+            | (ConstVarValue::Param(_), ConstVarValue::Known(_)) => {
                 panic!("differing consts should have been resolved first")
             }
         }

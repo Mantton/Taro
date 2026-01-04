@@ -76,6 +76,7 @@ pub struct BindOverloadGoalData<'ctx> {
     pub var_ty: Ty<'ctx>,
     pub candidate_ty: Ty<'ctx>,
     pub source: DefinitionID,
+    pub instantiation_args: Option<GenericArguments<'ctx>>,
 }
 
 #[derive(Debug, Clone, Copy)]

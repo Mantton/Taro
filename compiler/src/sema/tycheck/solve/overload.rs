@@ -4,7 +4,7 @@ use crate::{
             BindInterfaceMethodGoalData, BindOverloadGoalData, ConstraintSolver, DisjunctionBranch,
             Obligation, SolverDriver, SolverResult, rank_branches,
         },
-        utils::instantiate::instantiate_ty_with_args,
+        utils::{generics::GenericsBuilder, instantiate::instantiate_ty_with_args},
     },
     span::{Span, Spanned},
 };
@@ -93,12 +93,26 @@ impl<'ctx> ConstraintSolver<'ctx> {
             var_ty,
             candidate_ty,
             source,
+            instantiation_args,
         } = data;
 
         // Instantiate the candidate type if it has generics
         let generics = self.gcx().generics_of(source);
         let (actual_ty, instantiation_args) = if !generics.is_empty() {
-            let args = self.icx.fresh_args_for_def(source, location);
+            let args = if let Some(base_args) = instantiation_args {
+                if base_args.len() >= generics.total_count() {
+                    base_args
+                } else {
+                    GenericsBuilder::for_item(self.gcx(), source, |param, _| {
+                        base_args
+                            .get(param.index)
+                            .copied()
+                            .unwrap_or_else(|| self.icx.var_for_generic_param(param, location))
+                    })
+                }
+            } else {
+                self.icx.fresh_args_for_def(source, location)
+            };
             let instantiated = instantiate_ty_with_args(self.gcx(), candidate_ty, args);
             self.record_instantiation(node_id, args);
             (instantiated, Some(args))

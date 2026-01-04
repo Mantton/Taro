@@ -131,11 +131,11 @@ pub extern "C" fn gc_alloc(size: usize, desc: *const GcDesc) -> *mut u8 {
     with_gc(|gc| gc.alloc(size, desc, false))
 }
 
-/// Allocate a GC-managed buffer for slices/strings.
+/// Allocate a GC-managed buffer for dynamic arrays/strings.
 ///
 /// The descriptor is for a single element; total allocation is elem_size * cap.
 #[unsafe(no_mangle)]
-pub extern "C" fn gc_makeslice(desc: *const GcDesc, len: usize, cap: usize) -> *mut u8 {
+pub extern "C" fn gc_makebuf(desc: *const GcDesc, len: usize, cap: usize) -> *mut u8 {
     if cap < len {
         return std::ptr::null_mut();
     }
@@ -195,6 +195,75 @@ pub extern "C" fn gc_add_root(ptr: *const u8) {
         return;
     }
     with_gc(|gc| gc.add_root(ptr));
+}
+
+/// Grow a GC-managed buffer to a new capacity.
+///
+/// Allocates a new buffer with the new capacity and copies existing data.
+/// The old buffer will be collected when no longer referenced.
+/// Returns the new buffer pointer, or null on failure.
+#[unsafe(no_mangle)]
+pub extern "C" fn gc_grow_buf(
+    old_ptr: *mut u8,
+    desc: *const GcDesc,
+    old_len: usize,
+    new_cap: usize,
+) -> *mut u8 {
+    if desc.is_null() || new_cap == 0 {
+        return std::ptr::null_mut();
+    }
+
+    let elem_size = unsafe { desc.as_ref() }.map(|d| d.size).unwrap_or(0);
+    if elem_size == 0 {
+        return std::ptr::null_mut();
+    }
+
+    let new_total = match elem_size.checked_mul(new_cap) {
+        Some(n) => n,
+        None => return std::ptr::null_mut(),
+    };
+
+    // Allocate new buffer
+    let new_ptr = with_gc(|gc| gc.alloc(new_total, desc, true));
+    if new_ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    // Copy existing data if there is any
+    if !old_ptr.is_null() && old_len > 0 {
+        let copy_bytes = old_len.saturating_mul(elem_size);
+        unsafe {
+            std::ptr::copy_nonoverlapping(old_ptr, new_ptr, copy_bytes);
+        }
+    }
+
+    new_ptr
+}
+
+/// Write a value to a GC-managed buffer at a byte offset.
+/// This is used for writing elements to dynamic arrays.
+#[unsafe(no_mangle)]
+pub extern "C" fn gc_write_bytes(dst: *mut u8, offset: usize, src: *const u8, len: usize) {
+    if dst.is_null() || src.is_null() || len == 0 {
+        return;
+    }
+    unsafe {
+        let target = dst.add(offset);
+        std::ptr::copy_nonoverlapping(src, target, len);
+    }
+}
+
+/// Read bytes from a GC-managed buffer at a byte offset.
+/// This is used for reading elements from dynamic arrays.
+#[unsafe(no_mangle)]
+pub extern "C" fn gc_read_bytes(src: *const u8, offset: usize, dst: *mut u8, len: usize) {
+    if src.is_null() || dst.is_null() || len == 0 {
+        return;
+    }
+    unsafe {
+        let source = src.add(offset);
+        std::ptr::copy_nonoverlapping(source, dst, len);
+    }
 }
 
 // === Runtime GC implementation ===

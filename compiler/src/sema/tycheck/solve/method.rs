@@ -125,6 +125,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                             var_ty: *method_ty,
                             candidate_ty: self.gcx().get_type(candidate),
                             source: candidate,
+                            instantiation_args: None,
                         }),
                         source: Some(candidate),
                     };

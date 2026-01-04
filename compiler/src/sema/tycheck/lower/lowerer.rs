@@ -140,7 +140,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 }
                 let _ = check_generics_prohibited(id, segment, gcx);
                 let args = self.lower_type_arguments(id, segment);
-                let ty = match kind {
+                match kind {
                     crate::sema::resolve::models::DefinitionKind::Struct
                     | crate::sema::resolve::models::DefinitionKind::Enum => {
                         let ident = gcx.definition_ident(id);
@@ -152,16 +152,18 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                             },
                             id,
                         };
+                        // Return the Adt directly - args are already lowered and in place.
+                        // Do NOT call instantiate_ty_with_args here, as that would
+                        // incorrectly substitute type parameters within the args themselves.
                         Ty::new(TyKind::Adt(def, args), gcx)
                     }
                     crate::sema::resolve::models::DefinitionKind::TypeAlias => {
                         // Resolve alias in place with cycle detection
                         let ty = self.resolve_alias(id);
-                        return instantiate_ty_with_args(gcx, ty, args);
+                        instantiate_ty_with_args(gcx, ty, args)
                     }
                     _ => todo!("nominal type lowering for {kind:?}"),
-                };
-                instantiate_ty_with_args(gcx, ty, args)
+                }
             }
             Resolution::SelfTypeAlias(id) => {
                 let message = "cannot apply generic arguments to `Self`".to_string();
@@ -752,8 +754,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             return None;
         };
 
-        let hir::Resolution::Definition(param_id, DefinitionKind::ConstParameter) =
-            path.resolution
+        let hir::Resolution::Definition(param_id, DefinitionKind::ConstParameter) = path.resolution
         else {
             return None;
         };

@@ -244,10 +244,19 @@ impl<'ctx> TypeUnifier<'ctx> {
                     return Ok(());
                 }
                 match (
-                    self.icx.const_var_value(a_id),
-                    self.icx.const_var_value(b_id),
+                    self.icx.const_var_binding(a_id),
+                    self.icx.const_var_binding(b_id),
                 ) {
-                    (Some(av), Some(bv)) if av != bv => return Err(()),
+                    (ConstVarValue::Known(av), ConstVarValue::Known(bv)) if av != bv => {
+                        return Err(());
+                    }
+                    (ConstVarValue::Param(ap), ConstVarValue::Param(bp)) if ap != bp => {
+                        return Err(());
+                    }
+                    (ConstVarValue::Known(_), ConstVarValue::Param(_))
+                    | (ConstVarValue::Param(_), ConstVarValue::Known(_)) => {
+                        return Err(());
+                    }
                     _ => {}
                 }
                 self.icx.equate_const_vars_raw(a_id, b_id);
@@ -255,21 +264,39 @@ impl<'ctx> TypeUnifier<'ctx> {
             }
             (ConstKind::Infer(id), ConstKind::Value(v))
             | (ConstKind::Value(v), ConstKind::Infer(id)) => {
-                if let Some(existing) = self.icx.const_var_value(id) {
-                    if existing != v {
-                        return Err(());
+                match self.icx.const_var_binding(id) {
+                    ConstVarValue::Known(existing) => {
+                        if existing != v {
+                            return Err(());
+                        }
                     }
+                    ConstVarValue::Param(_) => return Err(()),
+                    ConstVarValue::Unknown => {}
                 }
                 self.icx
                     .instantiate_const_var_raw(id, ConstVarValue::Known(v));
                 Ok(())
             }
             (ConstKind::Param(a_p), ConstKind::Param(b_p)) if a_p.index == b_p.index => Ok(()),
+            (ConstKind::Infer(id), ConstKind::Param(param))
+            | (ConstKind::Param(param), ConstKind::Infer(id)) => {
+                match self.icx.const_var_binding(id) {
+                    ConstVarValue::Known(_) => return Err(()),
+                    ConstVarValue::Param(existing) => {
+                        if existing != param {
+                            return Err(());
+                        }
+                    }
+                    ConstVarValue::Unknown => {
+                        self.icx
+                            .instantiate_const_var_raw(id, ConstVarValue::Param(param));
+                    }
+                }
+                Ok(())
+            }
             (ConstKind::Param(_), ConstKind::Param(_))
             | (ConstKind::Param(_), ConstKind::Value(_))
-            | (ConstKind::Value(_), ConstKind::Param(_))
-            | (ConstKind::Param(_), ConstKind::Infer(_))
-            | (ConstKind::Infer(_), ConstKind::Param(_)) => Err(()),
+            | (ConstKind::Value(_), ConstKind::Param(_)) => Err(()),
         }
     }
 }

@@ -126,6 +126,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     var_ty: method_ty,
                     candidate_ty,
                     source: candidate,
+                    instantiation_args: None,
                 }),
                 source: Some(candidate),
             });
@@ -292,6 +293,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     var_ty: method_ty,
                     candidate_ty,
                     source: candidate,
+                    instantiation_args: None,
                 }),
                 source: Some(candidate),
             });
@@ -714,6 +716,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     var_ty: method_ty,
                     candidate_ty,
                     source: candidate,
+                    instantiation_args: None,
                 }),
                 source: Some(candidate),
             });

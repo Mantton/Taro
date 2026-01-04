@@ -50,7 +50,8 @@ pub fn validate_mutability<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileRe
 /// Determines if a place is mutable.
 ///
 /// A place is mutable if:
-/// - The base local is declared mutable, AND
+/// - The base local is declared mutable (for value types), OR
+/// - The base local holds a mutable reference/pointer (for ref types), AND
 /// - All projections through references are to mutable references
 fn is_place_mutable<'ctx>(
     _: Gcx<'ctx>,
@@ -58,14 +59,27 @@ fn is_place_mutable<'ctx>(
     place: &crate::mir::Place<'ctx>,
 ) -> bool {
     let local_decl = &body.locals[place.local];
+    let mut current_ty = local_decl.ty;
 
-    // Check if the base local is mutable
-    if !local_decl.mutable {
+    // For reference/pointer types, the mutability comes from the reference itself,
+    // not from whether the local is mutable. A local holding `&mut T` can be immutable
+    // (we never reassign it), but we can still take mutable borrows through it.
+    let base_is_mutable = match current_ty.kind() {
+        TyKind::Reference(_, mutability) | TyKind::Pointer(_, mutability) => {
+            // For reference types, check the reference's mutability
+            mutability == crate::hir::Mutability::Mutable
+        }
+        _ => {
+            // For value types, check the local's mutability
+            local_decl.mutable
+        }
+    };
+
+    if !base_is_mutable {
         return false;
     }
 
     // Walk the projection to check for immutable reference dereferences
-    let mut current_ty = local_decl.ty;
     for elem in &place.projection {
         match elem {
             PlaceElem::Deref => {

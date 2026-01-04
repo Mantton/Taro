@@ -602,7 +602,9 @@ impl<'ctx> Actor<'ctx> {
                 GenericArgument::Type(ty) => {
                     GenericArgument::Type(icx.resolve_vars_if_possible(*ty))
                 }
-                GenericArgument::Const(c) => GenericArgument::Const(*c),
+                GenericArgument::Const(c) => {
+                    GenericArgument::Const(icx.resolve_const_if_possible(*c))
+                }
             })
             .collect();
 

@@ -2,7 +2,7 @@ use crate::{
     compile::context::Gcx,
     sema::{
         models::{
-            Const, ConstKind, ConstValue, ConstVarID, FloatTy, GenericArgument, GenericArguments,
+            Const, ConstKind, ConstVarID, FloatTy, GenericArgument, GenericArguments,
             GenericParameterDefinition, GenericParameterDefinitionKind, InferTy, IntTy, Ty, TyKind,
             TyVarID,
         },
@@ -326,35 +326,33 @@ impl<'ctx> InferCtx<'ctx> {
                 kind: c.kind,
             };
         };
-        let value = {
+        let binding = {
             let mut inner = self.inner.borrow_mut();
             let mut table = inner.const_variables();
-            match table.probe(id) {
-                ConstVarValue::Known(value) => Some(value),
-                ConstVarValue::Unknown => None,
-            }
+            table.probe(id)
         };
 
         let ty = self.resolve_vars_if_possible(c.ty);
-        match value {
-            Some(value) => Const {
+        match binding {
+            ConstVarValue::Known(value) => Const {
                 ty,
                 kind: ConstKind::Value(value),
             },
-            None => Const {
+            ConstVarValue::Param(param) => Const {
+                ty,
+                kind: ConstKind::Param(param),
+            },
+            ConstVarValue::Unknown => Const {
                 ty,
                 kind: ConstKind::Infer(id),
             },
         }
     }
 
-    pub fn const_var_value(&self, id: ConstVarID) -> Option<ConstValue> {
+    pub fn const_var_binding(&self, id: ConstVarID) -> ConstVarValue {
         let mut inner = self.inner.borrow_mut();
         let mut table = inner.const_variables();
-        match table.probe(id) {
-            ConstVarValue::Known(value) => Some(value),
-            ConstVarValue::Unknown => None,
-        }
+        table.probe(id)
     }
 
     pub fn equate_int_vars_raw(&self, a: IntVarID, b: IntVarID) {

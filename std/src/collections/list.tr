@@ -1,12 +1,159 @@
+import std.unsafe.{GcPtr, GcDesc, gc_makebuf, gc_grow_buf, gc_read_bytes, __intrinsic_gc_desc, __intrinsic_list_write, __intrinsic_list_read_unchecked, __intrinsic_list_read_mut_unchecked, __intrinsic_mut_ref_to_ptr, __intrinsic_ptr_to_u8_mut}
+import std.optional.Optional
 
-public struct List[Element] {}
+/// A dynamically-sized list (dynamic array).
+///
+/// List provides an automatically growing buffer that stores elements
+/// contiguously in memory. Elements can be added with `append` and
+/// accessed by index.
+public struct List[Element] {
+    buffer: GcPtr
+    len: usize
+    cap: usize
+}
 
 extend[Element] List[Element] {
+    /// Create a new empty list.
     public func new() -> Self {
-        List {}
+        List[Element] {
+            buffer: GcPtr.null(),
+            len: 0,
+            cap: 0,
+        }
+    }
+
+    /// Create a new list with the specified initial capacity.
+    public func new(withCapacity capacity: usize) -> Self {
+        if capacity == 0 {
+            return List[Element]()
+        }
+
+        let desc = __intrinsic_gc_desc[Element]()
+        let buf = gc_makebuf(desc, 0, capacity)
+        List[Element] {
+            buffer: buf,
+            len: 0,
+            cap: capacity,
+        }
+    }
+
+    /// Returns the number of elements in the list.
+    public func len(&self) -> usize {
+        self.len
+    }
+
+    /// Returns the current capacity of the list.
+    public func capacity(&self) -> usize {
+        self.cap
+    }
+
+    /// Returns true if the list is empty.
+    public func isEmpty(&self) -> bool {
+        self.len == 0
     }
 }
 
 extend[Element] List[Element] {
-    public func append(&mut self, _ item: Element) {}
+    /// Append an element to the end of the list.
+    public func append(&mut self, _ item: Element) {
+        if self.len >= self.cap {
+            self.grow()
+        }
+
+        // Write the element to the buffer using the intrinsic
+        __intrinsic_list_write[Element](self.buffer, self.len, item)
+
+        self.len += 1
+    }
+
+    /// Internal: grow the buffer capacity.
+    func grow(&mut self) {
+        let new_cap = if self.cap == 0 { 4 } else { self.cap * 2 }
+
+        let desc = __intrinsic_gc_desc[Element]()
+        let new_buffer = gc_grow_buf(self.buffer, desc, self.len, new_cap)
+
+        self.buffer = new_buffer
+        self.cap = new_cap
+    }
+}
+
+extend[Element] List[Element] {
+    /// Get a reference to the element at the given index, or none if out of bounds.
+    public func get(&self, _ index: usize) -> Optional[&Element] {
+        if index >= self.len {
+            return .none
+        }
+
+        // Read the element from the buffer using the intrinsic
+        let elem = __intrinsic_list_read_unchecked[Element](self.buffer, index)
+        return .some(elem)
+    }
+
+    /// Get a reference to the element at the given index, panicking if out of bounds.
+    public func at(&self, _ index: usize) -> &Element {
+        if index >= self.len {
+            std.print("list index out of range\n")
+            std.process.exit(1)
+            return __intrinsic_list_read_unchecked[Element](self.buffer, 0)
+        }
+
+        // Read the element from the buffer using the intrinsic
+        return __intrinsic_list_read_unchecked[Element](self.buffer, index)
+    }
+
+    /// Get a mutable reference to the element at the given index, or none if out of bounds.
+    public func get_mut(&mut self, _ index: usize) -> Optional[&mut Element] {
+        if index >= self.len {
+            return .none
+        }
+
+        let elem = __intrinsic_list_read_mut_unchecked[Element](self.buffer, index)
+        return .some(elem)
+    }
+
+    /// Get a mutable reference to the element at the given index, panicking if out of bounds.
+    public func at_mut(&mut self, _ index: usize) -> &mut Element {
+        if index >= self.len {
+            std.print("list index out of range\n")
+            std.process.exit(1)
+            return __intrinsic_list_read_mut_unchecked[Element](self.buffer, 0)
+        }
+
+        return __intrinsic_list_read_mut_unchecked[Element](self.buffer, index)
+    }
+}
+
+extend[Element] List[Element] {
+    /// Set an element at the given index. Panics if out of bounds.
+    public func set(&mut self, _ index: usize, _ value: Element) {
+        if index >= self.len {
+            std.print("list index out of range\n")
+            std.process.exit(1)
+        }
+
+        __intrinsic_list_write[Element](self.buffer, index, value)
+    }
+
+    /// Remove and return the last element, or none if the list is empty.
+    public func pop(&mut self) -> Optional[Element] {
+        if self.len == 0 {
+            return .none
+        }
+
+        self.len -= 1
+        let desc = __intrinsic_gc_desc[Element]()
+        let elem_size = desc.size
+        let offset = self.len * elem_size
+        var elem: Element
+        let elem_ptr = __intrinsic_mut_ref_to_ptr[Element](&mut elem)
+        let dst = __intrinsic_ptr_to_u8_mut[Element](elem_ptr)
+        gc_read_bytes(self.buffer, offset, dst, elem_size)
+        return .some(elem)
+    }
+
+    /// Clear all elements from the list.
+    public func clear(&mut self) {
+        self.len = 0
+    }
 }

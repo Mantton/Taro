@@ -1,5 +1,7 @@
 use crate::{
-    mir::{BasicBlockId, BlockAnd, BlockAndExtension, Operand, builder::MirBuilder},
+    mir::{
+        BasicBlockId, BlockAnd, BlockAndExtension, Operand, Place, Rvalue, builder::MirBuilder,
+    },
     thir::{self, ExprKind},
     unpack,
 };
@@ -25,8 +27,17 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 let lhs_place = unpack!(block = self.as_place(block, *target));
                 let rhs_operand = unpack!(block = self.as_operand(block, *value));
 
-                // Read current value from LHS as an operand (Copy semantics)
-                let lhs_operand = Operand::Copy(lhs_place.clone());
+                // Read current value from LHS into a temp to avoid reusing the
+                // place directly in the binary op (matches `x = x + y` path).
+                let lhs_ty = self.thir.exprs[*target].ty;
+                let lhs_tmp = self.new_temp_with_ty(lhs_ty, expression.span);
+                self.push_assign(
+                    block,
+                    Place::from_local(lhs_tmp),
+                    Rvalue::Use(Operand::Copy(lhs_place.clone())),
+                    expression.span,
+                );
+                let lhs_operand = Operand::Move(Place::from_local(lhs_tmp));
 
                 // Compute binary op result
                 let result =

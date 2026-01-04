@@ -44,6 +44,12 @@ impl<'a, 'gcx> TypeFolder<'gcx> for InferVarResolver<'a, 'gcx> {
             let mut table = inner.const_variables();
             match table.probe(id) {
                 crate::sema::tycheck::infer::keys::ConstVarValue::Known(value) => Some(value),
+                crate::sema::tycheck::infer::keys::ConstVarValue::Param(param) => {
+                    return Const {
+                        ty: c.ty.fold_with(self),
+                        kind: ConstKind::Param(param),
+                    };
+                }
                 crate::sema::tycheck::infer::keys::ConstVarValue::Unknown => None,
             }
         };

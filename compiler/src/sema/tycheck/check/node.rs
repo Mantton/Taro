@@ -1083,6 +1083,7 @@ impl<'ctx> Checker<'ctx> {
         span: Span,
         resolution: &hir::Resolution,
         expectation: Option<Ty<'ctx>>,
+        instantiation_args: Option<GenericArguments<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         match resolution {
@@ -1106,6 +1107,7 @@ impl<'ctx> Checker<'ctx> {
                             nominal,
                             span,
                             expectation,
+                            instantiation_args,
                             cs,
                         )
                     }
@@ -1129,7 +1131,14 @@ impl<'ctx> Checker<'ctx> {
                 let Some(nominal) = self.constructor_nominal_from_resolution(resolution) else {
                     return Ty::error(self.gcx());
                 };
-                self.synth_constructor_value_expression(node_id, nominal, span, expectation, cs)
+                self.synth_constructor_value_expression(
+                    node_id,
+                    nominal,
+                    span,
+                    expectation,
+                    instantiation_args,
+                    cs,
+                )
             }
             hir::Resolution::FunctionSet(candidates) => {
                 let visible: Vec<_> = candidates
@@ -1154,6 +1163,7 @@ impl<'ctx> Checker<'ctx> {
                         var_ty: ty,
                         candidate_ty,
                         source: candidate,
+                        instantiation_args: None,
                     });
                     branches.push(DisjunctionBranch {
                         goal,
@@ -1171,7 +1181,14 @@ impl<'ctx> Checker<'ctx> {
                     );
                     return Ty::error(self.gcx());
                 };
-                self.synth_constructor_value_expression(node_id, nominal, span, expectation, cs)
+                self.synth_constructor_value_expression(
+                    node_id,
+                    nominal,
+                    span,
+                    expectation,
+                    instantiation_args,
+                    cs,
+                )
             }
             hir::Resolution::PrimaryType(..) => {
                 self.gcx().dcx().emit_error(
@@ -1206,8 +1223,14 @@ impl<'ctx> Checker<'ctx> {
                 // Treat Foundation types like struct/enum constructors - bind to constructor overload set
                 let kind = self.gcx().definition_kind(def_id);
                 match kind {
-                    DefinitionKind::Struct | DefinitionKind::Enum => self
-                        .synth_constructor_value_expression(node_id, def_id, span, expectation, cs),
+                    DefinitionKind::Struct | DefinitionKind::Enum => self.synth_constructor_value_expression(
+                        node_id,
+                        def_id,
+                        span,
+                        expectation,
+                        instantiation_args,
+                        cs,
+                    ),
                     _ => {
                         // For other types (interfaces, aliases), just return the type
                         self.gcx().get_type(def_id)
@@ -1224,10 +1247,18 @@ impl<'ctx> Checker<'ctx> {
         nominal: DefinitionID,
         span: Span,
         expectation: Option<Ty<'ctx>>,
+        instantiation_args: Option<GenericArguments<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         let ty = cs.infer_cx.next_ty_var(span);
-        if !self.bind_constructor_overload_set(node_id, nominal, span, ty, cs) {
+        if !self.bind_constructor_overload_set(
+            node_id,
+            nominal,
+            span,
+            ty,
+            instantiation_args,
+            cs,
+        ) {
             return Ty::error(self.gcx());
         }
         if let Some(expectation) = expectation {
@@ -1480,6 +1511,7 @@ impl<'ctx> Checker<'ctx> {
         nominal: DefinitionID,
         span: Span,
         var_ty: Ty<'ctx>,
+        instantiation_args: Option<GenericArguments<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> bool {
         let gcx = self.gcx();
@@ -1505,6 +1537,7 @@ impl<'ctx> Checker<'ctx> {
                     var_ty,
                     candidate_ty,
                     source: ctor,
+                    instantiation_args,
                 }),
                 source: Some(ctor),
             });
@@ -2141,8 +2174,7 @@ impl<'ctx> Checker<'ctx> {
             return None;
         };
 
-        let hir::Resolution::Definition(param_id, DefinitionKind::ConstParameter) =
-            path.resolution
+        let hir::Resolution::Definition(param_id, DefinitionKind::ConstParameter) = path.resolution
         else {
             return None;
         };
@@ -2213,17 +2245,34 @@ impl<'ctx> Checker<'ctx> {
             return Ty::error(self.gcx());
         }
 
-        let ty = self.synth_identifier_expression(node_id, span, resolution, expectation, cs);
+        let ty = self.synth_identifier_expression(
+            node_id,
+            span,
+            resolution,
+            expectation,
+            instantiation_args,
+            cs,
+        );
 
         if let Some(def_id) = self.value_path_def_id(resolution) {
             let generics = self.gcx().generics_of(def_id);
-            if !generics.is_empty() && ty.needs_instantiation() {
-                let args = instantiation_args
-                    .unwrap_or_else(|| cs.infer_cx.fresh_args_for_def(def_id, span));
-                let instantiated = instantiate_ty_with_args(self.gcx(), ty, args);
-                cs.record_instantiation(node_id, args);
-                cs.add_constraints_for_def(def_id, Some(args), span);
-                return instantiated;
+            if !generics.is_empty() {
+                if let Some(args) = instantiation_args {
+                    cs.record_instantiation(node_id, args);
+                    cs.add_constraints_for_def(def_id, Some(args), span);
+                    if ty.needs_instantiation() {
+                        return instantiate_ty_with_args(self.gcx(), ty, args);
+                    }
+                    return ty;
+                }
+
+                if ty.needs_instantiation() {
+                    let args = cs.infer_cx.fresh_args_for_def(def_id, span);
+                    let instantiated = instantiate_ty_with_args(self.gcx(), ty, args);
+                    cs.record_instantiation(node_id, args);
+                    cs.add_constraints_for_def(def_id, Some(args), span);
+                    return instantiated;
+                }
             }
         }
 

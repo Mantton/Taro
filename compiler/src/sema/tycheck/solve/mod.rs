@@ -297,7 +297,10 @@ impl<'ctx> ConstraintSystem<'ctx> {
         }
 
         for (var_id, origin) in self.infer_cx.all_const_var_origins() {
-            if self.infer_cx.const_var_value(var_id).is_none() {
+            if matches!(
+                self.infer_cx.const_var_binding(var_id),
+                crate::sema::tycheck::infer::keys::ConstVarValue::Unknown
+            ) {
                 let msg = if let Some(name) = origin.param_name {
                     format!("const parameter '{}' could not be inferred", name.as_str())
                 } else {

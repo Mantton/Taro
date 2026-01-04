@@ -392,11 +392,12 @@ impl Actor<'_, '_> {
         let Some(abi) = abi else { return None };
         match abi.as_str() {
             "C" | "c" => Some(hir::Abi::C),
+            "taro_rt" | "rt" => Some(hir::Abi::Runtime),
             "taro_intrinsic" | "intrinsic" => Some(hir::Abi::Intrinsic),
             other => {
                 self.context.dcx.emit_error(
                     format!(
-                        "unknown ABI \"{}\" (supported: \"C\", \"taro_intrinsic\")",
+                        "unknown ABI \"{}\" (supported: \"C\", \"taro_rt\", \"taro_intrinsic\")",
                         other
                     ),
                     Some(span),

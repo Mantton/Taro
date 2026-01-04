@@ -1,6 +1,6 @@
 use crate::{
     compile::context::GlobalContext,
-    hir::DefinitionID,
+    hir::{self, DefinitionID},
     mir::{Body, Constant, ConstantKind, Operand, Rvalue, StatementKind, TerminatorKind},
     sema::models::{GenericArgument, GenericArguments},
     specialize::{Instance, resolve_instance},
@@ -35,6 +35,13 @@ pub fn collect_instances<'ctx>(package: &crate::mir::MirPackage<'ctx>, gcx: Glob
 
         // Get the MIR body for this function.
         let def_id = instance.def_id();
+
+        // Skip intrinsic functions - they don't have MIR bodies and are
+        // handled specially during codegen via try_lower_intrinsic_call.
+        if collector.is_intrinsic(def_id) {
+            continue;
+        }
+
         let body = collector.mir_body(def_id);
         collector.visit_body(instance, body);
     }
@@ -157,6 +164,14 @@ impl<'ctx> Collector<'ctx> {
             .expect("mir body for definition")
     }
 
+    /// Check if a function is an intrinsic (has no MIR body).
+    fn is_intrinsic(&self, def_id: DefinitionID) -> bool {
+        matches!(
+            self.gcx.get_signature(def_id).abi,
+            Some(hir::Abi::Intrinsic)
+        )
+    }
+
     /// Substitute parent's concrete types into child's generic arguments.
     fn substitute_args(
         &self,
@@ -193,7 +208,13 @@ impl<'ctx> Collector<'ctx> {
                     );
                     GenericArgument::Type(new_ty)
                 }
-                GenericArgument::Const(c) => GenericArgument::Const(*c),
+                GenericArgument::Const(c) => {
+                    let new_c =
+                        crate::sema::tycheck::utils::instantiate::instantiate_const_with_args(
+                            self.gcx, *c, subst,
+                        );
+                    GenericArgument::Const(new_c)
+                }
             })
             .collect();
 

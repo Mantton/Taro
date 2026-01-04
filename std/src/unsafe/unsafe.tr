@@ -1,16 +1,17 @@
 
 struct GcPtr {}
 
-
 struct GcDesc {
     size: usize
     ptr_offsets: *const usize
     ptr_count: usize
 }
 
-
-extern "taro_intrinsic" {
-    func gc_makeslice(_ desc: *const GcDesc, _ len: usize, _ cap: usize) -> GcPtr
+extern "taro_rt" {
+    func gc_makebuf(_ desc: *const GcDesc, _ len: usize, _ cap: usize) -> GcPtr
+    func gc_grow_buf(_ old_ptr: GcPtr, _ desc: *const GcDesc, _ old_len: usize, _ new_cap: usize) -> GcPtr
+    func gc_write_bytes(_ dst: GcPtr, _ offset: usize, _ src: *const uint8, _ len: usize)
+    func gc_read_bytes(_ src: GcPtr, _ offset: usize, _ dst: *mut uint8, _ len: usize)
     func gc_desc_u8() -> *const GcDesc
     func __rt__string_from_parts(_ data: *const uint8, _ len: usize) -> string
     func gcptr_null() -> GcPtr
@@ -23,8 +24,20 @@ extern "taro_intrinsic" {
     func __rt__string_len(_ s: string) -> usize
 }
 
+// Intrinsics for type metadata and list operations
+extern "taro_intrinsic" {
+    func __intrinsic_gc_desc[T]() -> *const GcDesc
+    func __intrinsic_list_write[T](_ buffer: GcPtr, _ index: usize, _ value: T)
+    func __intrinsic_list_read_unchecked[T](_ buffer: GcPtr, _ index: usize) -> &T
+    func __intrinsic_list_read_mut_unchecked[T](_ buffer: GcPtr, _ index: usize) -> &mut T
+    func __intrinsic_ref_to_ptr[T](_ value: &T) -> *const T
+    func __intrinsic_mut_ref_to_ptr[T](_ value: &mut T) -> *mut T
+    func __intrinsic_ptr_to_u8[T](_ ptr: *const T) -> *const uint8
+    func __intrinsic_ptr_to_u8_mut[T](_ ptr: *mut T) -> *mut uint8
+}
+
 public func alloc_bytes(_ len: usize) -> GcPtr {
-    return gc_makeslice(gc_desc_u8(), len, len)
+    return gc_makebuf(gc_desc_u8(), len, len)
 }
 
 public func string_from_parts(_ data: GcPtr, _ len: usize) -> string {

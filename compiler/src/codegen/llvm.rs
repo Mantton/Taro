@@ -162,7 +162,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     );
                     GenericArgument::Type(normalized)
                 }
-                GenericArgument::Const(c) => GenericArgument::Const(*c),
+                GenericArgument::Const(c) => {
+                    let substituted = instantiate_const_with_args(self.gcx, *c, self.current_subst);
+                    GenericArgument::Const(substituted)
+                }
             })
             .collect();
         self.gcx.store.interners.intern_generic_args(resolved)
@@ -213,6 +216,16 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 InstanceKind::Item(def_id) => def_id,
                 InstanceKind::Virtual(_) => continue,
             };
+
+            // Skip intrinsic functions - they are handled specially via try_lower_intrinsic_call
+            // and don't need to be declared as regular functions.
+            if matches!(
+                self.gcx.get_signature(def_id).abi,
+                Some(hir::Abi::Intrinsic)
+            ) {
+                continue;
+            }
+
             // Set substitution context for this instance
             self.current_subst = instance.args();
 
@@ -238,6 +251,16 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 InstanceKind::Item(def_id) => def_id,
                 InstanceKind::Virtual(_) => continue,
             };
+
+            // Skip intrinsic functions - they are handled specially via try_lower_intrinsic_call
+            // and don't have MIR bodies.
+            if matches!(
+                self.gcx.get_signature(def_id).abi,
+                Some(hir::Abi::Intrinsic)
+            ) {
+                continue;
+            }
+
             let body = self.gcx.get_mir_body(def_id);
             self.lower_body(instance, body)?;
 
@@ -1119,17 +1142,39 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 }
             }
             TyKind::Pointer(..) | TyKind::Reference(..) | TyKind::GcPtr => {
-                let lhs_ptr = lhs.into_pointer_value();
-                let rhs_ptr = rhs.into_pointer_value();
-                let ptr_int_ty = self.context.i64_type();
-                let lhs = self
-                    .builder
-                    .build_ptr_to_int(lhs_ptr, ptr_int_ty, "ptr_l")
-                    .unwrap();
-                let rhs = self
-                    .builder
-                    .build_ptr_to_int(rhs_ptr, ptr_int_ty, "ptr_r")
-                    .unwrap();
+                let ptr_int_ty = self.context.ptr_sized_int_type(&self.target_data, None);
+                let lhs = match lhs {
+                    BasicValueEnum::PointerValue(ptr) => self
+                        .builder
+                        .build_ptr_to_int(ptr, ptr_int_ty, "ptr_l")
+                        .unwrap(),
+                    BasicValueEnum::IntValue(val) => {
+                        if val.get_type() == ptr_int_ty {
+                            val
+                        } else {
+                            self.builder
+                                .build_int_cast(val, ptr_int_ty, "ptr_l_cast")
+                                .unwrap()
+                        }
+                    }
+                    _ => return None,
+                };
+                let rhs = match rhs {
+                    BasicValueEnum::PointerValue(ptr) => self
+                        .builder
+                        .build_ptr_to_int(ptr, ptr_int_ty, "ptr_r")
+                        .unwrap(),
+                    BasicValueEnum::IntValue(val) => {
+                        if val.get_type() == ptr_int_ty {
+                            val
+                        } else {
+                            self.builder
+                                .build_int_cast(val, ptr_int_ty, "ptr_r_cast")
+                                .unwrap()
+                        }
+                    }
+                    _ => return None,
+                };
                 match op {
                     mir::BinaryOperator::Eql => self
                         .builder
@@ -1861,8 +1906,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     let substituted = instantiate_ty_with_args(self.gcx, *ty, args);
                     new_args.push(GenericArgument::Type(substituted));
                 }
-                GenericArgument::Const(_) => {
-                    return template;
+                GenericArgument::Const(c) => {
+                    let substituted = instantiate_const_with_args(self.gcx, *c, args);
+                    new_args.push(GenericArgument::Const(substituted));
                 }
             }
         }
@@ -2037,6 +2083,13 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 destination,
                 target,
             } => {
+                if self.try_lower_intrinsic_call(body, locals, func, args, destination)? {
+                    let _ = self
+                        .builder
+                        .build_unconditional_branch(blocks[target.index()])
+                        .unwrap();
+                    return Ok(());
+                }
                 if let Some(instance) = self.virtual_instance_for_call(func) {
                     self.lower_virtual_call(body, locals, &instance, args, destination)?;
                 } else {
@@ -2065,6 +2118,428 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             }
         }
         Ok(())
+    }
+
+    fn try_lower_intrinsic_call(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        func: &Operand<'gcx>,
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+    ) -> CompileResult<bool> {
+        let Operand::Constant(c) = func else {
+            return Ok(false);
+        };
+        let mir::ConstantKind::Function(def_id, call_args, _) = c.value else {
+            return Ok(false);
+        };
+
+        let Some(hir::Abi::Intrinsic) = self.gcx.get_signature(def_id).abi else {
+            return Ok(false);
+        };
+
+        let ident = self.gcx.definition_ident(def_id);
+        let name = ident.symbol.as_str();
+        match name {
+            "__intrinsic_array_read_unchecked" => {
+                self.lower_intrinsic_array_read(body, locals, args, destination)?;
+                Ok(true)
+            }
+            "__intrinsic_array_read_mut_unchecked" => {
+                self.lower_intrinsic_array_read(body, locals, args, destination)?;
+                Ok(true)
+            }
+            "__intrinsic_array_write_unchecked" => {
+                self.lower_intrinsic_array_write(body, locals, args)?;
+                Ok(true)
+            }
+            "__intrinsic_gc_desc" => {
+                self.lower_intrinsic_gc_desc(body, locals, call_args, destination)?;
+                Ok(true)
+            }
+            "__intrinsic_list_write" => {
+                self.lower_intrinsic_list_write(body, locals, call_args, args)?;
+                Ok(true)
+            }
+            "__intrinsic_list_read_unchecked" => {
+                self.lower_intrinsic_list_read_ref(body, locals, call_args, args, destination)?;
+                Ok(true)
+            }
+            "__intrinsic_list_read_mut_unchecked" => {
+                self.lower_intrinsic_list_read_ref(body, locals, call_args, args, destination)?;
+                Ok(true)
+            }
+            "__intrinsic_ref_to_ptr" => {
+                self.lower_intrinsic_ref_to_ptr(body, locals, args, destination)?;
+                Ok(true)
+            }
+            "__intrinsic_mut_ref_to_ptr" => {
+                self.lower_intrinsic_ref_to_ptr(body, locals, args, destination)?;
+                Ok(true)
+            }
+            "__intrinsic_ptr_to_u8" => {
+                self.lower_intrinsic_ptr_to_u8(body, locals, args, destination)?;
+                Ok(true)
+            }
+            "__intrinsic_ptr_to_u8_mut" => {
+                self.lower_intrinsic_ptr_to_u8(body, locals, args, destination)?;
+                Ok(true)
+            }
+            _ => {
+                self.gcx
+                    .dcx()
+                    .emit_error(format!("unknown intrinsic '{}'", name), None);
+                Ok(true)
+            }
+        }
+    }
+
+    fn lower_intrinsic_array_read(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+    ) -> CompileResult<()> {
+        let arr = args.first().expect("array intrinsic missing array");
+        let idx = args.get(1).expect("array intrinsic missing index");
+
+        let Some(arr_val) = self.eval_operand(body, locals, arr)? else {
+            let _ = self.builder.build_unreachable().unwrap();
+            return Ok(());
+        };
+        let Some(idx_val) = self.eval_operand(body, locals, idx)? else {
+            let _ = self.builder.build_unreachable().unwrap();
+            return Ok(());
+        };
+
+        // Get operand type, substitute generic parameters, then normalize
+        let mut arr_ty = self.operand_ty(body, arr);
+        arr_ty = instantiate_ty_with_args(self.gcx, arr_ty, self.current_subst);
+        arr_ty = crate::sema::tycheck::utils::normalize_post_monomorphization(self.gcx, arr_ty);
+        let arr_ty = match arr_ty.kind() {
+            TyKind::Reference(inner, _) | TyKind::Pointer(inner, _) => inner,
+            _ => arr_ty,
+        };
+        // Normalize again after unwrapping reference (already substituted so just normalize)
+        let arr_ty = crate::sema::tycheck::utils::normalize_post_monomorphization(self.gcx, arr_ty);
+        let TyKind::Array { .. } = arr_ty.kind() else {
+            self.gcx
+                .dcx()
+                .emit_error("array intrinsic used with non-array type".into(), None);
+            return Ok(());
+        };
+
+        let arr_llvm = self
+            .lower_ty(arr_ty)
+            .expect("array type lowered")
+            .into_array_type();
+        let arr_ptr = arr_val.into_pointer_value();
+
+        let mut idx_val = idx_val.into_int_value();
+        if idx_val.get_type() != self.usize_ty {
+            idx_val = self
+                .builder
+                .build_int_cast(idx_val, self.usize_ty, "idx_cast")
+                .unwrap();
+        }
+
+        let zero = self.usize_ty.const_zero();
+        let elem_ptr = unsafe {
+            self.builder
+                .build_gep(arr_llvm, arr_ptr, &[zero, idx_val], "array_elem_ptr")
+                .unwrap()
+        };
+
+        self.store_place(destination, body, locals, elem_ptr.into())
+    }
+
+    fn lower_intrinsic_array_write(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        args: &[Operand<'gcx>],
+    ) -> CompileResult<()> {
+        let arr = args.first().expect("array intrinsic missing array");
+        let idx = args.get(1).expect("array intrinsic missing index");
+        let value = args.get(2).expect("array intrinsic missing value");
+
+        let Some(arr_val) = self.eval_operand(body, locals, arr)? else {
+            let _ = self.builder.build_unreachable().unwrap();
+            return Ok(());
+        };
+        let Some(idx_val) = self.eval_operand(body, locals, idx)? else {
+            let _ = self.builder.build_unreachable().unwrap();
+            return Ok(());
+        };
+        let Some(value_val) = self.eval_operand(body, locals, value)? else {
+            let _ = self.builder.build_unreachable().unwrap();
+            return Ok(());
+        };
+
+        // Get operand type, substitute generic parameters, then normalize
+        let mut arr_ty = self.operand_ty(body, arr);
+        arr_ty = instantiate_ty_with_args(self.gcx, arr_ty, self.current_subst);
+        arr_ty = crate::sema::tycheck::utils::normalize_post_monomorphization(self.gcx, arr_ty);
+        let arr_ty = match arr_ty.kind() {
+            TyKind::Reference(inner, _) | TyKind::Pointer(inner, _) => inner,
+            _ => arr_ty,
+        };
+        // Normalize again after unwrapping reference (already substituted so just normalize)
+        let arr_ty = crate::sema::tycheck::utils::normalize_post_monomorphization(self.gcx, arr_ty);
+        let TyKind::Array { .. } = arr_ty.kind() else {
+            self.gcx
+                .dcx()
+                .emit_error("array intrinsic used with non-array type".into(), None);
+            return Ok(());
+        };
+
+        let arr_llvm = self
+            .lower_ty(arr_ty)
+            .expect("array type lowered")
+            .into_array_type();
+        let arr_ptr = arr_val.into_pointer_value();
+
+        let mut idx_val = idx_val.into_int_value();
+        if idx_val.get_type() != self.usize_ty {
+            idx_val = self
+                .builder
+                .build_int_cast(idx_val, self.usize_ty, "idx_cast")
+                .unwrap();
+        }
+
+        let zero = self.usize_ty.const_zero();
+        let elem_ptr = unsafe {
+            self.builder
+                .build_gep(arr_llvm, arr_ptr, &[zero, idx_val], "array_elem_ptr")
+                .unwrap()
+        };
+
+        let _ = self.builder.build_store(elem_ptr, value_val).unwrap();
+        Ok(())
+    }
+
+    /// Intrinsic: __intrinsic_gc_desc[T]() -> *const GcDesc
+    /// Returns a pointer to the GC descriptor for type T.
+    fn lower_intrinsic_gc_desc(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        call_args: GenericArguments<'gcx>,
+        destination: &Place<'gcx>,
+    ) -> CompileResult<()> {
+        // Get the type from the generic arguments
+        let Some(crate::sema::models::GenericArgument::Type(ty)) = call_args.get(0) else {
+            self.gcx
+                .dcx()
+                .emit_error("gc_desc intrinsic requires a type argument".into(), None);
+            return Ok(());
+        };
+
+        // Substitute with current generic context and normalize
+        let ty = instantiate_ty_with_args(self.gcx, *ty, self.current_subst);
+        let ty = crate::sema::tycheck::utils::normalize_post_monomorphization(self.gcx, ty);
+
+        // Get or create the GC descriptor for this type
+        let desc_ptr = self.gc_desc_for(ty);
+
+        self.store_place(destination, body, locals, desc_ptr.into())
+    }
+
+    /// Intrinsic: __intrinsic_list_write[T](buffer: GcPtr, index: usize, value: T)
+    /// Writes a value to the buffer at the given element index.
+    fn lower_intrinsic_list_write(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        call_args: GenericArguments<'gcx>,
+        args: &[Operand<'gcx>],
+    ) -> CompileResult<()> {
+        // Get the element type from generic arguments
+        let Some(crate::sema::models::GenericArgument::Type(elem_ty)) = call_args.get(0) else {
+            self.gcx
+                .dcx()
+                .emit_error("list_write intrinsic requires a type argument".into(), None);
+            return Ok(());
+        };
+
+        let elem_ty = instantiate_ty_with_args(self.gcx, *elem_ty, self.current_subst);
+        let elem_ty =
+            crate::sema::tycheck::utils::normalize_post_monomorphization(self.gcx, elem_ty);
+
+        let Some(llvm_elem_ty) = self.lower_ty(elem_ty) else {
+            return Ok(()); // ZST - nothing to write
+        };
+
+        // Get arguments: buffer, index, value
+        let buffer = args.get(0).expect("list_write missing buffer");
+        let index = args.get(1).expect("list_write missing index");
+        let value = args.get(2).expect("list_write missing value");
+
+        let Some(buffer_val) = self.eval_operand(body, locals, buffer)? else {
+            let _ = self.builder.build_unreachable().unwrap();
+            return Ok(());
+        };
+        let Some(index_val) = self.eval_operand(body, locals, index)? else {
+            let _ = self.builder.build_unreachable().unwrap();
+            return Ok(());
+        };
+        let Some(value_val) = self.eval_operand(body, locals, value)? else {
+            return Ok(());
+        };
+
+        let mut index_val = index_val.into_int_value();
+        if index_val.get_type() != self.usize_ty {
+            index_val = self
+                .builder
+                .build_int_cast(index_val, self.usize_ty, "idx_cast")
+                .unwrap();
+        }
+
+        let buffer_ptr = buffer_val.into_pointer_value();
+        let elem_ptr = self
+            .builder
+            .build_bit_cast(
+                buffer_ptr,
+                llvm_elem_ty.ptr_type(AddressSpace::default()),
+                "list_buf_cast",
+            )
+            .unwrap()
+            .into_pointer_value();
+        let elem_ptr = unsafe {
+            self.builder
+                .build_gep(llvm_elem_ty, elem_ptr, &[index_val], "list_elem_ptr")
+                .unwrap()
+        };
+
+        let _ = self.builder.build_store(elem_ptr, value_val).unwrap();
+
+        Ok(())
+    }
+
+    /// Intrinsic: __intrinsic_list_read_unchecked[T](buffer: GcPtr, index: usize) -> &T
+    /// Intrinsic: __intrinsic_list_read_mut_unchecked[T](buffer: GcPtr, index: usize) -> &mut T
+    /// Returns a pointer to the element at the given index.
+    fn lower_intrinsic_list_read_ref(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        call_args: GenericArguments<'gcx>,
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+    ) -> CompileResult<()> {
+        let Some(crate::sema::models::GenericArgument::Type(elem_ty)) = call_args.get(0) else {
+            self.gcx
+                .dcx()
+                .emit_error("list_read intrinsic requires a type argument".into(), None);
+            return Ok(());
+        };
+
+        let elem_ty = instantiate_ty_with_args(self.gcx, *elem_ty, self.current_subst);
+        let elem_ty =
+            crate::sema::tycheck::utils::normalize_post_monomorphization(self.gcx, elem_ty);
+
+        let Some(llvm_elem_ty) = self.lower_ty(elem_ty) else {
+            return Ok(());
+        };
+
+        let buffer = args.get(0).expect("list_read missing buffer");
+        let index = args.get(1).expect("list_read missing index");
+
+        let Some(buffer_val) = self.eval_operand(body, locals, buffer)? else {
+            let _ = self.builder.build_unreachable().unwrap();
+            return Ok(());
+        };
+        let Some(index_val) = self.eval_operand(body, locals, index)? else {
+            let _ = self.builder.build_unreachable().unwrap();
+            return Ok(());
+        };
+
+        let mut index_val = index_val.into_int_value();
+        if index_val.get_type() != self.usize_ty {
+            index_val = self
+                .builder
+                .build_int_cast(index_val, self.usize_ty, "idx_cast")
+                .unwrap();
+        }
+
+        let buffer_ptr = buffer_val.into_pointer_value();
+        let elem_ptr = self
+            .builder
+            .build_bit_cast(
+                buffer_ptr,
+                llvm_elem_ty.ptr_type(AddressSpace::default()),
+                "list_buf_cast",
+            )
+            .unwrap()
+            .into_pointer_value();
+        let elem_ptr = unsafe {
+            self.builder
+                .build_gep(llvm_elem_ty, elem_ptr, &[index_val], "list_elem_ptr")
+                .unwrap()
+        };
+
+        self.store_place(destination, body, locals, elem_ptr.into())
+    }
+
+    /// Intrinsic: __intrinsic_ref_to_ptr[T](&T) -> *const T
+    /// Intrinsic: __intrinsic_mut_ref_to_ptr[T](&mut T) -> *mut T
+    /// Reinterprets a reference value as a raw pointer.
+    fn lower_intrinsic_ref_to_ptr(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+    ) -> CompileResult<()> {
+        let value = args.first().expect("ref_to_ptr missing value");
+        let Some(val) = self.eval_operand(body, locals, value)? else {
+            let _ = self.builder.build_unreachable().unwrap();
+            return Ok(());
+        };
+
+        self.store_place(destination, body, locals, val)
+    }
+
+    /// Intrinsic: __intrinsic_ptr_to_u8[T](*const T) -> *const uint8
+    /// Intrinsic: __intrinsic_ptr_to_u8_mut[T](*mut T) -> *mut uint8
+    /// Reinterprets a raw pointer as a byte pointer.
+    fn lower_intrinsic_ptr_to_u8(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+    ) -> CompileResult<()> {
+        let value = args.first().expect("ptr_to_u8 missing value");
+        let Some(val) = self.eval_operand(body, locals, value)? else {
+            let _ = self.builder.build_unreachable().unwrap();
+            return Ok(());
+        };
+
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let ptr_val = match val {
+            BasicValueEnum::PointerValue(ptr) => ptr,
+            BasicValueEnum::IntValue(int_val) => self
+                .builder
+                .build_int_to_ptr(int_val, ptr_ty, "int_to_ptr")
+                .unwrap(),
+            _ => {
+                self.gcx
+                    .dcx()
+                    .emit_error("ptr_to_u8 expects a pointer value".into(), None);
+                return Ok(());
+            }
+        };
+
+        let byte_ptr_ty = self.context.i8_type().ptr_type(AddressSpace::default());
+        let cast = self
+            .builder
+            .build_bit_cast(ptr_val, byte_ptr_ty, "ptr_u8")
+            .unwrap();
+
+        self.store_place(destination, body, locals, cast.into())
     }
 
     fn lower_callable(&mut self, func: &Operand<'gcx>) -> FunctionValue<'llvm> {

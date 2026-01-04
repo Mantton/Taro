@@ -105,6 +105,7 @@ pub struct Namespace {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Abi {
     C,
+    Runtime,
     Intrinsic,
 }
 

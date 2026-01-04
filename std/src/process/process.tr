@@ -1,6 +1,6 @@
 
 
-extern "taro_intrinsic" {
+extern "taro_rt" {
     func __rt__exit(_ code: int32)
 }
 
