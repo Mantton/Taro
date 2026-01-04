@@ -109,10 +109,7 @@ impl<'r, 'a> Actor<'r, 'a> {
                 param.id,
                 ResolutionState::Complete(Resolution::Definition(def_id, def_kind)),
             );
-            scope.define(
-                name,
-                Resolution::Definition(def_id, def_kind),
-            );
+            scope.define(name, Resolution::Definition(def_id, def_kind));
         }
 
         self.with_built_scope(scope, work);
@@ -238,6 +235,19 @@ impl<'r, 'a> ast::AstVisitor for Actor<'r, 'a> {
             _ => {}
         }
         ast::walk_type(self, node)
+    }
+
+    fn visit_type_argument(&mut self, node: &ast::TypeArgument) -> Self::Result {
+        match node {
+            ast::TypeArgument::Type(ty) => {
+                self.with_type_source(ResolutionSource::TypeArgument, |this| {
+                    this.visit_type(ty);
+                });
+            }
+            ast::TypeArgument::Const(anon_const) => {
+                self.visit_anon_constant(anon_const);
+            }
+        }
     }
 
     fn visit_local(&mut self, node: &ast::Local) -> Self::Result {
@@ -1223,11 +1233,13 @@ impl<'r, 'a> Actor<'r, 'a> {
                 let symbol = &path.segments.last().unwrap().identifier.symbol;
                 if matches!(
                     source,
-                    ResolutionSource::Type
-                ) && matches!(
-                    resolution,
-                    Resolution::Definition(_, DefinitionKind::Interface)
-                ) {
+                    ResolutionSource::Type | ResolutionSource::TypeArgument
+                )
+                    && matches!(
+                        resolution,
+                        Resolution::Definition(_, DefinitionKind::Interface)
+                    )
+                {
                     let message = format!(
                         "interface '{symbol}' cannot be used as a type; use `any {symbol}`"
                     );

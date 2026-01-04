@@ -1,3 +1,9 @@
 
 
 public type Array[Element, const Size: usize] = [Element; Size]
+
+extend[Element, const Size: usize] Array[Element, Size] {
+    public func len(&self) -> usize {
+        Size
+    }
+}

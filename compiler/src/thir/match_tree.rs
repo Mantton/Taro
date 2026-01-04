@@ -531,6 +531,9 @@ impl<'ctx> Compiler<'ctx> {
                             ConstantKind::Bool(false) => 0,
                             ConstantKind::Bool(true) => 1,
                             ConstantKind::Unit => 0,
+                            ConstantKind::ConstParam(_) => {
+                                unreachable!("const parameters are not supported in patterns")
+                            }
                             _ => unreachable!("non-constructor constant in constructor match"),
                         };
                         let cols = row.columns;
@@ -745,6 +748,9 @@ fn literal_key(pattern: &Pattern<'_>) -> LiteralKey {
             ConstantKind::String(s) => LiteralKey::String(s),
             ConstantKind::Bool(_) | ConstantKind::Unit => {
                 unreachable!("boolean or unit literal used as infinite constructor")
+            }
+            ConstantKind::ConstParam(_) => {
+                unreachable!("const parameters are not supported in patterns")
             }
         },
         PatternKind::Or(_) => unreachable!("or-patterns should be expanded before compilation"),

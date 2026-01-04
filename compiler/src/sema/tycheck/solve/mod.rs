@@ -202,7 +202,9 @@ impl<'ctx> ConstraintSystem<'ctx> {
                             let resolved = self.structurally_resolve(*ty);
                             GenericArgument::Type(resolved)
                         }
-                        GenericArgument::Const(c) => GenericArgument::Const(*c),
+                        GenericArgument::Const(c) => {
+                            GenericArgument::Const(self.infer_cx.resolve_const_if_possible(*c))
+                        }
                     })
                     .collect();
                 let interned = gcx.store.interners.intern_generic_args(resolved);
@@ -289,6 +291,17 @@ impl<'ctx> ConstraintSystem<'ctx> {
                     )
                 } else {
                     "type annotations needed: unable to infer type".into()
+                };
+                gcx.dcx().emit_error(msg.into(), Some(origin.location));
+            }
+        }
+
+        for (var_id, origin) in self.infer_cx.all_const_var_origins() {
+            if self.infer_cx.const_var_value(var_id).is_none() {
+                let msg = if let Some(name) = origin.param_name {
+                    format!("const parameter '{}' could not be inferred", name.as_str())
+                } else {
+                    "const value could not be inferred".into()
                 };
                 gcx.dcx().emit_error(msg.into(), Some(origin.location));
             }

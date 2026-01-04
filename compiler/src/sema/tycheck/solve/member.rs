@@ -1,6 +1,6 @@
 use super::{
-    Adjustment, BindOverloadGoalData, ConstraintSolver, DisjunctionBranch,
-    InferredStaticMemberGoalData, Goal, MemberGoalData, Obligation, SolverResult,
+    Adjustment, BindOverloadGoalData, ConstraintSolver, DisjunctionBranch, Goal,
+    InferredStaticMemberGoalData, MemberGoalData, Obligation, SolverResult,
 };
 use crate::{
     hir::{NodeID, OperatorKind, Resolution},
@@ -9,7 +9,8 @@ use crate::{
         models::{StructField, Ty, TyKind},
         resolve::models::{DefinitionID, DefinitionKind, PrimaryType, TypeHead, VariantCtorKind},
         tycheck::utils::{
-            autoderef::Autoderef, generics::GenericsBuilder,
+            autoderef::Autoderef,
+            generics::GenericsBuilder,
             instantiate::{instantiate_struct_definition_with_args, instantiate_ty_with_args},
         },
     },

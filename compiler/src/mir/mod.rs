@@ -155,7 +155,7 @@ pub struct Constant<'ctx> {
     pub value: ConstantKind<'ctx>,
 }
 
-use crate::sema::models::GenericArguments;
+use crate::sema::models::{GenericArguments, GenericParameter};
 
 #[derive(Debug, Clone)]
 pub enum ConstantKind<'ctx> {
@@ -166,6 +166,7 @@ pub enum ConstantKind<'ctx> {
     Float(f64),
     Unit,
     Function(DefinitionID, GenericArguments<'ctx>, Ty<'ctx>),
+    ConstParam(GenericParameter),
 }
 
 #[derive(Debug, Clone)]

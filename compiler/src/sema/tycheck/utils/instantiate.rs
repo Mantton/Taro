@@ -34,6 +34,10 @@ impl<'ctx> TypeFolder<'ctx> for InstantiateFolder<'ctx> {
             _ => ty.super_fold_with(self),
         }
     }
+
+    fn fold_const(&mut self, c: Const<'ctx>) -> Const<'ctx> {
+        instantiate_const_with_args(self.gcx, c, self.args)
+    }
 }
 
 impl<'ctx> InstantiateFolder<'ctx> {
@@ -74,6 +78,7 @@ pub fn instantiate_const_with_args<'ctx>(
             Some(GenericArgument::Const(arg)) => return *arg,
             _ => ConstKind::Param(p),
         },
+        ConstKind::Infer(_) => c.kind,
         ConstKind::Value(_) => c.kind,
     };
     Const { ty, kind }

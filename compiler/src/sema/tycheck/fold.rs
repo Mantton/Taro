@@ -12,6 +12,13 @@ pub trait TypeFolder<'ctx> {
     /// Called on every `Ty` that is *not* a leaf. You usually match on `ty.kind()`
     /// and reconstruct it with `self.fold_ty(...)` where needed.
     fn fold_ty(&mut self, ty: Ty<'ctx>) -> Ty<'ctx>;
+    /// Called on const values encountered inside types.
+    fn fold_const(&mut self, c: Const<'ctx>) -> Const<'ctx> {
+        Const {
+            ty: c.ty.fold_with(self),
+            kind: c.kind,
+        }
+    }
 
     // Default rewrite for a generic argument.
     // fn fold_generic_arg(&mut self, arg: GenericArgument<'ctx>) -> GenericArgument<'ctx> {
@@ -24,35 +31,41 @@ pub trait TypeFolder<'ctx> {
 
 /// Blanket traversal: every container that can hold a `Ty` implements this.
 pub trait TypeFoldable<'ctx>: Sized {
-    fn fold_with<F: TypeFolder<'ctx>>(self, folder: &mut F) -> Self;
+    fn fold_with<F: TypeFolder<'ctx> + ?Sized>(self, folder: &mut F) -> Self;
 }
 
 impl<'ctx> TypeFoldable<'ctx> for Ty<'ctx> {
-    fn fold_with<F: TypeFolder<'ctx>>(self, folder: &mut F) -> Self {
+    fn fold_with<F: TypeFolder<'ctx> + ?Sized>(self, folder: &mut F) -> Self {
         folder.fold_ty(self)
     }
 }
 
+impl<'ctx> TypeFoldable<'ctx> for Const<'ctx> {
+    fn fold_with<F: TypeFolder<'ctx> + ?Sized>(self, folder: &mut F) -> Self {
+        folder.fold_const(self)
+    }
+}
+
 impl<'ctx> TypeFoldable<'ctx> for TyKind<'ctx> {
-    fn fold_with<F: TypeFolder<'ctx>>(self, folder: &mut F) -> Self {
+    fn fold_with<F: TypeFolder<'ctx> + ?Sized>(self, folder: &mut F) -> Self {
         self.super_fold_with(folder)
     }
 }
 /// Provides default structural folding behavior
 pub trait TypeSuperFoldable<'ctx>: TypeFoldable<'ctx> {
     /// Default structural folding - recurses into substructures
-    fn super_fold_with<F: TypeFolder<'ctx>>(self, folder: &mut F) -> Self;
+    fn super_fold_with<F: TypeFolder<'ctx> + ?Sized>(self, folder: &mut F) -> Self;
 }
 
 impl<'ctx> TypeSuperFoldable<'ctx> for Ty<'ctx> {
-    fn super_fold_with<F: TypeFolder<'ctx>>(self, folder: &mut F) -> Self {
+    fn super_fold_with<F: TypeFolder<'ctx> + ?Sized>(self, folder: &mut F) -> Self {
         let folded_kind = self.kind().super_fold_with(folder);
         Ty::new(folded_kind, folder.gcx())
     }
 }
 
 impl<'ctx> TypeSuperFoldable<'ctx> for TyKind<'ctx> {
-    fn super_fold_with<F: TypeFolder<'ctx>>(self, folder: &mut F) -> Self {
+    fn super_fold_with<F: TypeFolder<'ctx> + ?Sized>(self, folder: &mut F) -> Self {
         use TyKind::*;
         match self {
             // Primitive/leaf types - no folding needed
@@ -126,14 +139,11 @@ impl<'ctx> TypeSuperFoldable<'ctx> for TyKind<'ctx> {
     }
 }
 
-fn fold_const<'ctx, F: TypeFolder<'ctx>>(c: Const<'ctx>, folder: &mut F) -> Const<'ctx> {
-    Const {
-        ty: c.ty.fold_with(folder),
-        kind: c.kind,
-    }
+fn fold_const<'ctx, F: TypeFolder<'ctx> + ?Sized>(c: Const<'ctx>, folder: &mut F) -> Const<'ctx> {
+    folder.fold_const(c)
 }
 
-fn fold_generic_args<'ctx, F: TypeFolder<'ctx>>(
+fn fold_generic_args<'ctx, F: TypeFolder<'ctx> + ?Sized>(
     gcx: GlobalContext<'ctx>,
     args: &'ctx [GenericArgument<'ctx>],
     folder: &mut F,
@@ -150,7 +160,7 @@ fn fold_generic_args<'ctx, F: TypeFolder<'ctx>>(
 }
 
 impl<'ctx> TypeFoldable<'ctx> for StructField<'ctx> {
-    fn fold_with<F: TypeFolder<'ctx>>(self, folder: &mut F) -> Self {
+    fn fold_with<F: TypeFolder<'ctx> + ?Sized>(self, folder: &mut F) -> Self {
         StructField {
             ty: self.ty.fold_with(folder),
             ..self
@@ -159,7 +169,7 @@ impl<'ctx> TypeFoldable<'ctx> for StructField<'ctx> {
 }
 
 impl<'ctx> TypeFoldable<'ctx> for StructDefinition<'ctx> {
-    fn fold_with<F: TypeFolder<'ctx>>(self, folder: &mut F) -> Self {
+    fn fold_with<F: TypeFolder<'ctx> + ?Sized>(self, folder: &mut F) -> Self {
         let fields: Vec<_> = self
             .fields
             .iter()
@@ -175,7 +185,7 @@ impl<'ctx> TypeFoldable<'ctx> for StructDefinition<'ctx> {
 }
 
 impl<'ctx> TypeFoldable<'ctx> for EnumVariantField<'ctx> {
-    fn fold_with<F: TypeFolder<'ctx>>(self, folder: &mut F) -> Self {
+    fn fold_with<F: TypeFolder<'ctx> + ?Sized>(self, folder: &mut F) -> Self {
         EnumVariantField {
             ty: self.ty.fold_with(folder),
             ..self
@@ -184,7 +194,7 @@ impl<'ctx> TypeFoldable<'ctx> for EnumVariantField<'ctx> {
 }
 
 impl<'ctx> TypeFoldable<'ctx> for EnumVariantKind<'ctx> {
-    fn fold_with<F: TypeFolder<'ctx>>(self, folder: &mut F) -> Self {
+    fn fold_with<F: TypeFolder<'ctx> + ?Sized>(self, folder: &mut F) -> Self {
         match self {
             EnumVariantKind::Unit => self,
             EnumVariantKind::Tuple(fields) => {
@@ -204,7 +214,7 @@ impl<'ctx> TypeFoldable<'ctx> for EnumVariantKind<'ctx> {
 }
 
 impl<'ctx> TypeFoldable<'ctx> for EnumVariant<'ctx> {
-    fn fold_with<F: TypeFolder<'ctx>>(self, folder: &mut F) -> Self {
+    fn fold_with<F: TypeFolder<'ctx> + ?Sized>(self, folder: &mut F) -> Self {
         EnumVariant {
             kind: self.kind.fold_with(folder),
             ..self
@@ -213,7 +223,7 @@ impl<'ctx> TypeFoldable<'ctx> for EnumVariant<'ctx> {
 }
 
 impl<'ctx> TypeFoldable<'ctx> for EnumDefinition<'ctx> {
-    fn fold_with<F: TypeFolder<'ctx>>(self, folder: &mut F) -> Self {
+    fn fold_with<F: TypeFolder<'ctx> + ?Sized>(self, folder: &mut F) -> Self {
         let variants: Vec<_> = self
             .variants
             .iter()

@@ -2,7 +2,10 @@ use crate::{
     compile::context::GlobalContext,
     hir::DefinitionID,
     sema::{
-        models::{AliasKind, GenericArgument, GenericArguments, InterfaceReference, Ty, TyKind},
+        models::{
+            AliasKind, Const, ConstKind, GenericArgument, GenericArguments, InterfaceReference, Ty,
+            TyKind,
+        },
         tycheck::{
             fold::{TypeFoldable, TypeFolder, TypeSuperFoldable},
             resolve_conformance_witness,
@@ -86,6 +89,21 @@ impl<'ctx> TypeFolder<'ctx> for PostMonoNormalizeFolder<'ctx> {
             }
             // Recurse into composite types
             _ => ty.super_fold_with(self),
+        }
+    }
+
+    fn fold_const(&mut self, c: Const<'ctx>) -> Const<'ctx> {
+        match c.kind {
+            ConstKind::Param(_) | ConstKind::Infer(_) => {
+                panic!(
+                    "ICE: const parameter in post-monomorphization normalization: {}",
+                    c.ty.format(self.gcx)
+                )
+            }
+            _ => Const {
+                ty: c.ty.fold_with(self),
+                kind: c.kind,
+            },
         }
     }
 }

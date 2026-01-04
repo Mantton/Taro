@@ -121,6 +121,7 @@ impl<'arena> Ty<'arena> {
                 let len_str = match len.kind {
                     ConstKind::Value(ConstValue::Integer(i)) => format!("{i}"),
                     ConstKind::Param(p) => p.name.as_str().into(),
+                    ConstKind::Infer(_) => "_".into(),
                     _ => "<const>".into(),
                 };
                 format!("[{}; {}]", element.format(gcx), len_str)
@@ -180,11 +181,7 @@ impl<'arena> Ty<'arena> {
                 InferTy::FreshTy(id) => format!("{{fresh({})}}", id),
             },
             TyKind::Parameter(p) => format!("{}", p.name.as_str()),
-            TyKind::Alias {
-                kind,
-                def_id,
-                args,
-            } => {
+            TyKind::Alias { kind, def_id, args } => {
                 let ident = gcx.definition_ident(def_id);
                 if kind == AliasKind::Projection {
                     if let Some(GenericArgument::Type(self_ty)) = args.get(0) {
@@ -214,16 +211,20 @@ impl<'ctx> Ty<'ctx> {
     /// Fast “syntactic” check: does this type mention any generic parameters?
     pub fn needs_instantiation(self) -> bool {
         fn visit<'ctx>(ty: Ty<'ctx>) -> bool {
+            fn const_needs_instantiation<'ctx>(c: Const<'ctx>) -> bool {
+                matches!(c.kind, ConstKind::Param(_) | ConstKind::Infer(_)) || visit(c.ty)
+            }
+
             match ty.kind() {
                 // A generic parameter definitely needs instantiation
                 TyKind::Parameter(_) => true,
                 TyKind::Adt(_, args) => args.iter().any(|arg| match arg {
                     GenericArgument::Type(ty) => visit(*ty),
-                    GenericArgument::Const(c) => visit(c.ty),
+                    GenericArgument::Const(c) => const_needs_instantiation(*c),
                 }),
                 // Walk composite types
                 TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => visit(inner),
-                TyKind::Array { element, .. } => visit(element),
+                TyKind::Array { element, len } => visit(element) || const_needs_instantiation(len),
                 TyKind::Tuple(elems) => elems.iter().copied().any(visit),
                 TyKind::FnPointer { inputs, output, .. } => {
                     inputs.iter().copied().any(visit) || visit(output)
@@ -232,12 +233,12 @@ impl<'ctx> Ty<'ctx> {
                 TyKind::BoxedExistential { interfaces } => interfaces.iter().any(|iface| {
                     iface.arguments.iter().any(|arg| match arg {
                         GenericArgument::Type(ty) => visit(*ty),
-                        GenericArgument::Const(c) => visit(c.ty),
+                        GenericArgument::Const(c) => const_needs_instantiation(*c),
                     })
                 }),
                 TyKind::Alias { args, .. } => args.iter().any(|arg| match arg {
                     GenericArgument::Type(ty) => visit(*ty),
-                    GenericArgument::Const(c) => visit(c.ty),
+                    GenericArgument::Const(c) => const_needs_instantiation(*c),
                 }),
                 _ => false,
             }
@@ -459,6 +460,10 @@ index_vec::define_index_type! {
 }
 
 index_vec::define_index_type! {
+    pub struct ConstVarID = u32;
+}
+
+index_vec::define_index_type! {
     pub struct FnVarID = u32;
 }
 
@@ -488,6 +493,7 @@ pub struct Const<'arena> {
 pub enum ConstKind {
     Value(ConstValue),
     Param(GenericParameter),
+    Infer(ConstVarID),
 }
 
 #[derive(Debug, Clone, Copy)]

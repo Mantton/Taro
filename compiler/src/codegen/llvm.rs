@@ -1566,7 +1566,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         };
         let witness = self.conformance_witness(type_head, iface);
 
-        let method_count = requirements.methods.iter().filter(|method| method.has_self).count();
+        let method_count = requirements
+            .methods
+            .iter()
+            .filter(|method| method.has_self)
+            .count();
         let mut entries: Vec<BasicValueEnum<'llvm>> = Vec::with_capacity(method_count);
         for method in requirements.methods.iter().filter(|method| method.has_self) {
             let (impl_def_id, args) = if let Some(method_witness) = witness
@@ -2516,8 +2520,14 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         }
                         _ => panic!("variant downcast on non-enum type {}", ty.format(self.gcx)),
                     };
-                    let layout =
-                        enum_layout(self.context, self.gcx, &self.target_data, def.id, adt_args, self.current_subst);
+                    let layout = enum_layout(
+                        self.context,
+                        self.gcx,
+                        &self.target_data,
+                        def.id,
+                        adt_args,
+                        self.current_subst,
+                    );
                     let payload_index = layout
                         .payload_field_index
                         .expect("enum payload field index");
@@ -2617,6 +2627,53 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 .float_type(constant.ty)
                 .map(|ty| ty.const_float(f).as_basic_value_enum()),
             mir::ConstantKind::Unit => None,
+            mir::ConstantKind::ConstParam(param) => {
+                let konst = crate::sema::models::Const {
+                    ty: constant.ty,
+                    kind: ConstKind::Param(param),
+                };
+                let instantiated = instantiate_const_with_args(self.gcx, konst, self.current_subst);
+                let ConstKind::Value(value) = instantiated.kind else {
+                    self.gcx
+                        .dcx()
+                        .emit_error("const parameter could not be resolved".into(), None);
+                    return None;
+                };
+                match value {
+                    ConstValue::Bool(b) => Some(
+                        self.context
+                            .bool_type()
+                            .const_int(b as u64, false)
+                            .as_basic_value_enum(),
+                    ),
+                    ConstValue::Rune(r) => Some(
+                        self.context
+                            .i32_type()
+                            .const_int(r as u64, false)
+                            .as_basic_value_enum(),
+                    ),
+                    ConstValue::String(sym) => {
+                        let ptr = self.lower_string(sym);
+                        let len = self.usize_ty.const_int(sym.as_str().len() as u64, false);
+                        let Some(ty) = self.lower_ty(constant.ty) else {
+                            return None;
+                        };
+                        let string_ty = ty.into_struct_type();
+                        let value = string_ty.const_named_struct(&[
+                            ptr.as_basic_value_enum(),
+                            len.as_basic_value_enum(),
+                        ]);
+                        Some(value.as_basic_value_enum())
+                    }
+                    ConstValue::Integer(i) => self
+                        .int_type(constant.ty)
+                        .map(|(ty, _)| ty.const_int(i as u64, false).as_basic_value_enum()),
+                    ConstValue::Float(f) => self
+                        .float_type(constant.ty)
+                        .map(|ty| ty.const_float(f).as_basic_value_enum()),
+                    ConstValue::Unit => None,
+                }
+            }
             mir::ConstantKind::Function(def_id, args, _) => {
                 let instance = self.instance_for_call(def_id, args);
                 if let InstanceKind::Virtual(_) = instance.kind() {

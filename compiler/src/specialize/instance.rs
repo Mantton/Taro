@@ -1,7 +1,4 @@
-use crate::{
-    hir::DefinitionID,
-    sema::models::GenericArguments,
-};
+use crate::{hir::DefinitionID, sema::models::GenericArguments};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VirtualInstance {

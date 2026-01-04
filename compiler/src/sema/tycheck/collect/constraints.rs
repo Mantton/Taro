@@ -1,7 +1,9 @@
 use crate::{
     compile::context::GlobalContext,
     error::CompileResult,
-    hir::{self, AssociatedDeclarationKind, DeclarationKind, DefinitionID, DefinitionKind, HirVisitor},
+    hir::{
+        self, AssociatedDeclarationKind, DeclarationKind, DefinitionID, DefinitionKind, HirVisitor,
+    },
     sema::{
         models::{Constraint, InterfaceReference, TyKind},
         tycheck::{
@@ -98,10 +100,7 @@ impl<'ctx> Actor<'ctx> {
                 ty: self_ty,
                 interface: interface_ref,
             };
-            constraints.push(Spanned::new(
-                constraint,
-                gcx.definition_ident(def_id).span,
-            ));
+            constraints.push(Spanned::new(constraint, gcx.definition_ident(def_id).span));
         }
 
         let hir_parameters = generics.type_parameters.as_ref().map(|f| &f.parameters);
@@ -115,9 +114,7 @@ impl<'ctx> Actor<'ctx> {
                 for bound in bounds.iter() {
                     let constraint = Constraint::Bound {
                         ty,
-                        interface: icx
-                            .lowerer()
-                            .lower_interface_reference(ty, &bound.path),
+                        interface: icx.lowerer().lower_interface_reference(ty, &bound.path),
                     };
                     constraints.push(Spanned::new(constraint, bound.path.span));
                 }
@@ -134,9 +131,7 @@ impl<'ctx> Actor<'ctx> {
                     continue;
                 }
                 for bound in node.bounds.iter() {
-                    let interface = icx
-                        .lowerer()
-                        .lower_interface_reference(ty, &bound.path);
+                    let interface = icx.lowerer().lower_interface_reference(ty, &bound.path);
                     let constraint = Constraint::Bound { ty, interface };
                     constraints.push(Spanned::new(constraint, node.span));
                 }
@@ -158,9 +153,8 @@ impl<'ctx> Actor<'ctx> {
                         let ty = icx.lowerer().lower_type(&node.bounded_type);
                         let is_param = matches!(ty.kind(), TyKind::Parameter(_));
                         for bound in node.bounds.iter() {
-                            let interface = icx
-                                .lowerer()
-                                .lower_interface_reference(ty, &bound.path);
+                            let interface =
+                                icx.lowerer().lower_interface_reference(ty, &bound.path);
                             let constraint = Constraint::Bound { ty, interface };
                             if is_param
                                 && constraints.iter().any(|existing| match existing.value {

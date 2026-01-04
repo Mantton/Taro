@@ -1,12 +1,10 @@
-use crate::{
-    sema::{
-        models::{
-            GenericArgument, GenericArguments, InterfaceDefinition, InterfaceReference,
-            InterfaceRequirements,
-        },
-        resolve::models::DefinitionID,
-        tycheck::utils::instantiate::{instantiate_const_with_args, instantiate_ty_with_args},
+use crate::sema::{
+    models::{
+        GenericArgument, GenericArguments, InterfaceDefinition, InterfaceReference,
+        InterfaceRequirements,
     },
+    resolve::models::DefinitionID,
+    tycheck::utils::instantiate::{instantiate_const_with_args, instantiate_ty_with_args},
 };
 
 use rustc_hash::FxHashSet;
@@ -29,7 +27,13 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     }
                     new_args.push(GenericArgument::Type(resolved));
                 }
-                GenericArgument::Const(c) => new_args.push(GenericArgument::Const(*c)),
+                GenericArgument::Const(c) => {
+                    let resolved = self.icx.resolve_const_if_possible(*c);
+                    if matches!(resolved.kind, crate::sema::models::ConstKind::Infer(_)) {
+                        has_infer = true;
+                    }
+                    new_args.push(GenericArgument::Const(resolved));
+                }
             }
         }
 

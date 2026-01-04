@@ -1,7 +1,10 @@
 use crate::sema::{
     error::{ExpectedFound, TypeError},
-    models::{GenericArgument, GenericArguments, InferTy, Ty, TyKind},
-    tycheck::infer::{InferCtx, keys::FloatVarValue, keys::IntVarValue},
+    models::{Const, ConstKind, GenericArgument, GenericArguments, InferTy, Ty, TyKind},
+    tycheck::infer::{
+        InferCtx,
+        keys::{ConstVarValue, FloatVarValue, IntVarValue},
+    },
 };
 use std::rc::Rc;
 
@@ -127,7 +130,7 @@ impl<'ctx> TypeUnifier<'ctx> {
                 },
             ) => {
                 self.unify(a_elem, b_elem)?;
-                if a_len != b_len {
+                if self.unify_const(a_len, b_len).is_err() {
                     return Err(TypeError::TyMismatch(ExpectedFound::new(a, b)));
                 }
                 return Ok(());
@@ -210,15 +213,63 @@ impl<'ctx> TypeUnifier<'ctx> {
         match (a, b) {
             (GenericArgument::Type(a_ty), GenericArgument::Type(b_ty)) => self.unify(a_ty, b_ty),
             (GenericArgument::Const(a_const), GenericArgument::Const(b_const)) => {
-                if a_const.ty.is_error() || b_const.ty.is_error() {
-                    return Ok(());
+                if self.unify_const(a_const, b_const).is_ok() {
+                    Ok(())
+                } else {
+                    Err(TypeError::ArgMismatch(ExpectedFound::new(a, b)))
                 }
-                if a_const == b_const {
-                    return Ok(());
-                }
-                Err(TypeError::ArgMismatch(ExpectedFound::new(a, b)))
             }
             _ => Err(TypeError::ArgMismatch(ExpectedFound::new(a, b))),
+        }
+    }
+
+    fn unify_const(&self, a: Const<'ctx>, b: Const<'ctx>) -> Result<(), ()> {
+        if a.ty.is_error() || b.ty.is_error() {
+            return Ok(());
+        }
+        if self.unify(a.ty, b.ty).is_err() {
+            return Err(());
+        }
+
+        match (a.kind, b.kind) {
+            (ConstKind::Value(av), ConstKind::Value(bv)) => {
+                if av == bv {
+                    Ok(())
+                } else {
+                    Err(())
+                }
+            }
+            (ConstKind::Infer(a_id), ConstKind::Infer(b_id)) => {
+                if a_id == b_id {
+                    return Ok(());
+                }
+                match (
+                    self.icx.const_var_value(a_id),
+                    self.icx.const_var_value(b_id),
+                ) {
+                    (Some(av), Some(bv)) if av != bv => return Err(()),
+                    _ => {}
+                }
+                self.icx.equate_const_vars_raw(a_id, b_id);
+                Ok(())
+            }
+            (ConstKind::Infer(id), ConstKind::Value(v))
+            | (ConstKind::Value(v), ConstKind::Infer(id)) => {
+                if let Some(existing) = self.icx.const_var_value(id) {
+                    if existing != v {
+                        return Err(());
+                    }
+                }
+                self.icx
+                    .instantiate_const_var_raw(id, ConstVarValue::Known(v));
+                Ok(())
+            }
+            (ConstKind::Param(a_p), ConstKind::Param(b_p)) if a_p.index == b_p.index => Ok(()),
+            (ConstKind::Param(_), ConstKind::Param(_))
+            | (ConstKind::Param(_), ConstKind::Value(_))
+            | (ConstKind::Value(_), ConstKind::Param(_))
+            | (ConstKind::Param(_), ConstKind::Infer(_))
+            | (ConstKind::Infer(_), ConstKind::Param(_)) => Err(()),
         }
     }
 }

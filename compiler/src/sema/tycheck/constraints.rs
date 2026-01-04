@@ -58,12 +58,10 @@ fn normalize_constraints<'ctx>(
         .iter()
         .map(|c| {
             let normalized = match c.value {
-                Constraint::TypeEquality(lhs, rhs) => {
-                    Constraint::TypeEquality(
-                        crate::sema::tycheck::utils::normalize_aliases(gcx, lhs),
-                        crate::sema::tycheck::utils::normalize_aliases(gcx, rhs),
-                    )
-                }
+                Constraint::TypeEquality(lhs, rhs) => Constraint::TypeEquality(
+                    crate::sema::tycheck::utils::normalize_aliases(gcx, lhs),
+                    crate::sema::tycheck::utils::normalize_aliases(gcx, rhs),
+                ),
                 Constraint::Bound { ty, interface } => Constraint::Bound {
                     ty: crate::sema::tycheck::utils::normalize_aliases(gcx, ty),
                     interface: normalize_interface_ref(gcx, interface),

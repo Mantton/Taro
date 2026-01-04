@@ -142,6 +142,7 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                 let ident = self.gcx.definition_ident(*def_id);
                 write!(f, "fn {}", ident.symbol)
             }
+            ConstantKind::ConstParam(param) => write!(f, "const {}", param.name.as_str()),
         }
     }
 
@@ -175,9 +176,7 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
             Rvalue::Aggregate { kind, fields } => {
                 match kind {
                     super::AggregateKind::Tuple => write!(f, "tuple")?,
-                    super::AggregateKind::Array { len, .. } => {
-                        write!(f, "array[{len}]")?
-                    }
+                    super::AggregateKind::Array { len, .. } => write!(f, "array[{len}]")?,
                     super::AggregateKind::Adt {
                         def_id,
                         variant_index,

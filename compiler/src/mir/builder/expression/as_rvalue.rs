@@ -93,12 +93,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
                 // Store once then copy for each slot to avoid multiple moves.
                 let tmp = self.new_temp_with_ty(element_ty, expr.span);
-                self.push_assign(
-                    block,
-                    Place::from_local(tmp),
-                    Rvalue::Use(op),
-                    expr.span,
-                );
+                self.push_assign(block, Place::from_local(tmp), Rvalue::Use(op), expr.span);
                 let tmp_op = Operand::Copy(Place::from_local(tmp));
                 block.and(Rvalue::Repeat {
                     operand: tmp_op,

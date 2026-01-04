@@ -1,9 +1,9 @@
 pub mod adt;
 pub mod alias;
 pub mod attributes;
-pub mod constraints;
-pub mod constant;
 pub mod conformances;
+pub mod constant;
+pub mod constraints;
 pub mod field;
 pub mod function;
 pub mod generics;

@@ -3,7 +3,7 @@ use crate::{
     hir::{self, DefinitionID, NodeID},
     sema::{
         models::{
-            Const, ConstKind, ConstValue, GenericArgument, GenericArguments,
+            Const, ConstKind, ConstValue, GenericArgument, GenericArguments, GenericParameter,
             GenericParameterDefinition, GenericParameterDefinitionKind, InferTy, Ty, TyKind,
         },
         resolve::models::{DefinitionKind, TypeHead, VariantCtorKind},
@@ -1109,6 +1109,19 @@ impl<'ctx> Checker<'ctx> {
                             cs,
                         )
                     }
+                    DefinitionKind::ConstParameter => {
+                        let Some(owner) = self.gcx().definition_parent(*id) else {
+                            return Ty::error(self.gcx());
+                        };
+                        let generics = self.gcx().generics_of(owner);
+                        let Some(param) = generics.parameters.iter().find(|p| p.id == *id) else {
+                            return Ty::error(self.gcx());
+                        };
+                        match &param.kind {
+                            GenericParameterDefinitionKind::Const { ty, .. } => self.lower_type(ty),
+                            _ => Ty::error(self.gcx()),
+                        }
+                    }
                     _ => self.gcx().get_type(*id),
                 }
             }
@@ -1374,8 +1387,7 @@ impl<'ctx> Checker<'ctx> {
             _ => None,
         };
 
-        let resolution =
-            self.resolve_static_member_resolution(head, base_ty, name, span, false);
+        let resolution = self.resolve_static_member_resolution(head, base_ty, name, span, false);
         let def_id = resolution.definition_id()?;
         let signature = self.gcx().get_signature(def_id);
 
@@ -2040,8 +2052,10 @@ impl<'ctx> Checker<'ctx> {
                 .saturating_sub(own_defaults)
                 .saturating_sub(own_has_self as usize);
             if explicit_count < min {
-                gcx.dcx()
-                    .emit_error("Missing Generic Arguments".into(), Some(segment.identifier.span));
+                gcx.dcx().emit_error(
+                    "Missing Generic Arguments".into(),
+                    Some(segment.identifier.span),
+                );
             }
         }
 
@@ -2095,12 +2109,62 @@ impl<'ctx> Checker<'ctx> {
                     .emit_error("expected type argument".into(), Some(c.value.span));
                 GenericArgument::Type(gcx.types.error)
             }
-            (GenericParameterDefinitionKind::Const { .. }, hir::TypeArgument::Type(ty)) => {
+            (GenericParameterDefinitionKind::Const { ty, .. }, hir::TypeArgument::Type(ty_arg)) => {
+                let expected_ty = self.lower_type(ty);
+                if let Some(param) = self.const_param_from_type_arg(ty_arg) {
+                    if param.ty != expected_ty
+                        && param.ty != gcx.types.error
+                        && expected_ty != gcx.types.error
+                    {
+                        let message = format!(
+                            "const argument does not match parameter type '{}'",
+                            expected_ty.format(gcx)
+                        );
+                        gcx.dcx().emit_error(message, Some(ty_arg.span));
+                        return GenericArgument::Const(self.lowerer().error_const());
+                    }
+                    return GenericArgument::Const(Const {
+                        ty: expected_ty,
+                        kind: param.kind,
+                    });
+                }
+
                 gcx.dcx()
-                    .emit_error("expected const argument".into(), Some(ty.span));
+                    .emit_error("expected const argument".into(), Some(ty_arg.span));
                 GenericArgument::Const(self.lowerer().error_const())
             }
         }
+    }
+
+    fn const_param_from_type_arg(&self, ty: &hir::Type) -> Option<Const<'ctx>> {
+        let hir::TypeKind::Nominal(hir::ResolvedPath::Resolved(path)) = &ty.kind else {
+            return None;
+        };
+
+        let hir::Resolution::Definition(param_id, DefinitionKind::ConstParameter) =
+            path.resolution
+        else {
+            return None;
+        };
+
+        let gcx = self.gcx();
+        let owner = gcx.definition_parent(param_id)?;
+        let generics = gcx.generics_of(owner);
+        let def = generics.parameters.iter().find(|p| p.id == param_id)?;
+
+        let GenericParameterDefinitionKind::Const { ty, .. } = &def.kind else {
+            return None;
+        };
+
+        let param = GenericParameter {
+            index: def.index,
+            name: def.name,
+        };
+
+        Some(Const {
+            ty: self.lower_type(ty),
+            kind: ConstKind::Param(param),
+        })
     }
 
     fn lower_value_path_missing_arg(
@@ -2120,11 +2184,17 @@ impl<'ctx> Checker<'ctx> {
             GenericParameterDefinitionKind::Const { ty, default } => {
                 let expected_ty = self.lower_type(ty);
                 if let Some(default) = default {
-                    GenericArgument::Const(self.lowerer().lower_const_argument(expected_ty, default))
+                    GenericArgument::Const(
+                        self.lowerer().lower_const_argument(expected_ty, default),
+                    )
                 } else {
-                    gcx.dcx()
-                        .emit_error("missing const argument".into(), Some(span));
-                    GenericArgument::Const(self.lowerer().error_const())
+                    if let Some(infer_cx) = self.infer_ctx() {
+                        infer_cx.var_for_generic_param(param, span)
+                    } else {
+                        gcx.dcx()
+                            .emit_error("missing const argument".into(), Some(span));
+                        GenericArgument::Const(self.lowerer().error_const())
+                    }
                 }
             }
         }
@@ -2422,7 +2492,10 @@ impl<'ctx> Checker<'ctx> {
         let elem_ty = self.synth_with_expectation(value, expected_elem, cs);
 
         let len_const = self.lowerer().lower_array_length(count);
-        if !matches!(len_const.kind, ConstKind::Value(ConstValue::Integer(_))) {
+        if !matches!(
+            len_const.kind,
+            ConstKind::Value(ConstValue::Integer(_)) | ConstKind::Param(_) | ConstKind::Infer(_)
+        ) {
             if len_const.ty != gcx.types.error {
                 gcx.dcx().emit_error(
                     "repeat expression count must be a known integer constant".into(),

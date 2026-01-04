@@ -331,9 +331,7 @@ pub enum ExpressionKind {
         name: Identifier,
     },
     /// `.bar`
-    InferredMember {
-        name: Identifier,
-    },
+    InferredMember { name: Identifier },
     /// A[T]
     Specialize {
         target: Box<Expression>,

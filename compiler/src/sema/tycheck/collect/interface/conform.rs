@@ -293,10 +293,7 @@ impl<'ctx> Actor<'ctx> {
 
         // Collect conformance records from all packages
         let records = gcx.collect_from_databases(|db| {
-            db.conformances
-                .get(&type_head)
-                .cloned()
-                .unwrap_or_default()
+            db.conformances.get(&type_head).cloned().unwrap_or_default()
         });
 
         for record in records {

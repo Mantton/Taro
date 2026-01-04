@@ -7,7 +7,7 @@ use crate::{
             GenericArguments, GenericParameter, GenericParameterDefinition,
             GenericParameterDefinitionKind, InterfaceDefinition, InterfaceReference, Ty, TyKind,
         },
-        resolve::models::{PrimaryType, TypeHead},
+        resolve::models::PrimaryType,
         tycheck::{
             lower::LoweringRequest,
             utils::{
@@ -111,7 +111,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                     PrimaryType::Bool => gcx.types.bool,
                     PrimaryType::Rune => gcx.types.rune,
                 }
-            },
+            }
             Resolution::Foundation(decl) => match self.lower_foundation_type(path, decl) {
                 Some(ty) => ty,
                 None => gcx.types.error,
@@ -264,12 +264,34 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                             GenericArgument::Type(gcx.types.error)
                         }
                         (
-                            GenericParameterDefinitionKind::Const { .. },
-                            hir::TypeArgument::Type(ty),
+                            GenericParameterDefinitionKind::Const { ty: param_ty, .. },
+                            hir::TypeArgument::Type(ty_arg),
                         ) => {
-                            gcx.dcx()
-                                .emit_error("expected const argument".into(), Some(ty.span));
-                            GenericArgument::Const(self.error_const())
+                            let expected_ty = self.lower_type(param_ty);
+                            if let Some(param) = self.const_param_from_type_arg(ty_arg) {
+                                if param.ty != expected_ty
+                                    && param.ty != gcx.types.error
+                                    && expected_ty != gcx.types.error
+                                {
+                                    let message = format!(
+                                        "const argument does not match parameter type '{}'",
+                                        expected_ty.format(gcx)
+                                    );
+                                    gcx.dcx().emit_error(message, Some(ty_arg.span));
+                                    GenericArgument::Const(self.error_const())
+                                } else {
+                                    GenericArgument::Const(Const {
+                                        ty: expected_ty,
+                                        kind: param.kind,
+                                    })
+                                }
+                            } else {
+                                gcx.dcx().emit_error(
+                                    "expected const argument".into(),
+                                    Some(ty_arg.span),
+                                );
+                                GenericArgument::Const(self.error_const())
+                            }
                         }
                     };
                     output.push(lowered);
@@ -314,8 +336,29 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         gcx.store.interners.intern_generic_args(output)
     }
 
-    pub fn lower_const_argument(&self, expected_ty: Ty<'ctx>, anon: &hir::AnonConst) -> Const<'ctx> {
+    pub fn lower_const_argument(
+        &self,
+        expected_ty: Ty<'ctx>,
+        anon: &hir::AnonConst,
+    ) -> Const<'ctx> {
         let gcx = self.gcx();
+        if let Some(param) = self.lower_const_parameter(anon) {
+            if param.ty != expected_ty
+                && param.ty != gcx.types.error
+                && expected_ty != gcx.types.error
+            {
+                let message = format!(
+                    "const argument does not match parameter type '{}'",
+                    expected_ty.format(gcx)
+                );
+                gcx.dcx().emit_error(message, Some(anon.value.span));
+                return self.error_const();
+            }
+            return Const {
+                ty: expected_ty,
+                kind: param.kind,
+            };
+        }
         let Some(value) = eval_const_expression(gcx, &anon.value) else {
             return self.error_const();
         };
@@ -700,6 +743,37 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
 
         Some(Const {
             ty,
+            kind: ConstKind::Param(param),
+        })
+    }
+
+    fn const_param_from_type_arg(&self, ty: &hir::Type) -> Option<Const<'ctx>> {
+        let hir::TypeKind::Nominal(hir::ResolvedPath::Resolved(path)) = &ty.kind else {
+            return None;
+        };
+
+        let hir::Resolution::Definition(param_id, DefinitionKind::ConstParameter) =
+            path.resolution
+        else {
+            return None;
+        };
+
+        let gcx = self.gcx();
+        let owner = gcx.definition_parent(param_id)?;
+        let generics = gcx.generics_of(owner);
+        let def = generics.parameters.iter().find(|p| p.id == param_id)?;
+
+        let GenericParameterDefinitionKind::Const { ty, .. } = &def.kind else {
+            return None;
+        };
+
+        let param = GenericParameter {
+            index: def.index,
+            name: def.name,
+        };
+
+        Some(Const {
+            ty: self.lower_type(ty),
             kind: ConstKind::Param(param),
         })
     }

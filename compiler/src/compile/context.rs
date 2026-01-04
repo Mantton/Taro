@@ -8,10 +8,10 @@ use crate::{
     mir::{self, Body},
     sema::{
         models::{
-            ConformanceRecord, ConformanceWitness, Const, EnumDefinition, EnumVariant, FloatTy,
-            GenericArgument, GenericParameter, Generics, IntTy, InterfaceDefinition,
+            ConformanceRecord, ConformanceWitness, Const, Constraint, EnumDefinition, EnumVariant,
+            FloatTy, GenericArgument, GenericParameter, Generics, IntTy, InterfaceDefinition,
             InterfaceReference, InterfaceRequirements, LabeledFunctionSignature, StructDefinition,
-            Ty, TyKind, UIntTy, Constraint,
+            Ty, TyKind, UIntTy,
         },
         resolve::models::{
             DefinitionKind, PrimaryType, ResolutionOutput, ScopeData, ScopeEntryData, TypeHead,
@@ -101,10 +101,7 @@ impl<'arena> GlobalContext<'arena> {
         database.def_to_constraints.insert(id, constraints);
     }
 
-    pub fn constraints_of(
-        self,
-        id: DefinitionID,
-    ) -> Vec<crate::span::Spanned<Constraint<'arena>>> {
+    pub fn constraints_of(self, id: DefinitionID) -> Vec<crate::span::Spanned<Constraint<'arena>>> {
         self.with_type_database(id.package(), |db| {
             db.def_to_constraints.get(&id).cloned().unwrap_or_default()
         })
@@ -370,10 +367,9 @@ impl<'arena> GlobalContext<'arena> {
                     // For interface extensions, Self is the abstract Self parameter
                     Some(self.types.self_type_parameter)
                 }
-                DefinitionKind::Struct | DefinitionKind::Enum => {
-                    self.get_extension_target_ty(extension_id)
-                        .or_else(|| Some(self.get_type(target_id)))
-                }
+                DefinitionKind::Struct | DefinitionKind::Enum => self
+                    .get_extension_target_ty(extension_id)
+                    .or_else(|| Some(self.get_type(target_id))),
                 _ => None,
             },
             TypeHead::Primary(p) => self.get_extension_target_ty(extension_id).or_else(|| {
@@ -392,7 +388,7 @@ impl<'arena> GlobalContext<'arena> {
             TypeHead::Tuple(_)
             | TypeHead::Reference(_)
             | TypeHead::Pointer(_)
-            | TypeHead::Array => None, // TODO: complex type extensions
+            | TypeHead::Array => self.get_extension_target_ty(extension_id),
         }
     }
 

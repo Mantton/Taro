@@ -1,8 +1,8 @@
 use crate::{
     compile::context::Gcx,
     sema::{
-        models::Ty,
-        tycheck::{fold::TypeFolder, fold::TypeSuperFoldable, infer::InferCtx},
+        models::{Const, ConstKind, Ty},
+        tycheck::{fold::TypeFoldable, fold::TypeFolder, fold::TypeSuperFoldable, infer::InferCtx},
     },
 };
 
@@ -29,5 +29,35 @@ impl<'a, 'gcx> TypeFolder<'gcx> for InferVarResolver<'a, 'gcx> {
         // function pointers.
         let shallow = self.icx.shallow_resolve(ty);
         shallow.super_fold_with(self)
+    }
+
+    fn fold_const(&mut self, c: Const<'gcx>) -> Const<'gcx> {
+        let ConstKind::Infer(id) = c.kind else {
+            return Const {
+                ty: c.ty.fold_with(self),
+                kind: c.kind,
+            };
+        };
+
+        let value = {
+            let mut inner = self.icx.inner.borrow_mut();
+            let mut table = inner.const_variables();
+            match table.probe(id) {
+                crate::sema::tycheck::infer::keys::ConstVarValue::Known(value) => Some(value),
+                crate::sema::tycheck::infer::keys::ConstVarValue::Unknown => None,
+            }
+        };
+
+        let ty = c.ty.fold_with(self);
+        match value {
+            Some(value) => Const {
+                ty,
+                kind: ConstKind::Value(value),
+            },
+            None => Const {
+                ty,
+                kind: ConstKind::Infer(id),
+            },
+        }
     }
 }

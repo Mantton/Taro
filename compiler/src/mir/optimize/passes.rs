@@ -136,15 +136,15 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                     };
                                     lowered.push(Statement {
                                         kind: StatementKind::Assign(
-                                        place,
-                                        Rvalue::Use(Operand::Move(Place::from_local(
-                                            temp_local,
-                                        ))),
-                                    ),
-                                    span,
-                                });
+                                            place,
+                                            Rvalue::Use(Operand::Move(Place::from_local(
+                                                temp_local,
+                                            ))),
+                                        ),
+                                        span,
+                                    });
+                                }
                             }
-                        }
                             crate::mir::AggregateKind::Adt {
                                 def_id,
                                 variant_index,
@@ -159,8 +159,11 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                             temps.into_iter().zip(fields.iter())
                                         {
                                             let mut proj = dest.projection.clone();
-                                            let field_ty =
-                                                instantiate_ty_with_args(gcx, field.ty, generic_args);
+                                            let field_ty = instantiate_ty_with_args(
+                                                gcx,
+                                                field.ty,
+                                                generic_args,
+                                            );
                                             proj.push(PlaceElem::Field(idx, field_ty));
                                             let place = Place {
                                                 local: dest.local,
@@ -168,15 +171,15 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                             };
                                             lowered.push(Statement {
                                                 kind: StatementKind::Assign(
-                                            place,
-                                            Rvalue::Use(Operand::Move(Place::from_local(
-                                                temp_local,
-                                            ))),
-                                        ),
-                                        span,
-                                    });
-                                }
-                            }
+                                                    place,
+                                                    Rvalue::Use(Operand::Move(Place::from_local(
+                                                        temp_local,
+                                                    ))),
+                                                ),
+                                                span,
+                                            });
+                                        }
+                                    }
                                     DefinitionKind::Enum => {
                                         let Some(variant_index) = variant_index else {
                                             unreachable!();
@@ -401,17 +404,16 @@ impl<'ctx> MirPass<'ctx> for ApplyEscapeAnalysis {
 
         let mut param_inits: Vec<Statement<'ctx>> = Vec::new();
         for (idx, heap_local) in param_replacements.iter().enumerate() {
-            let Some(heap_local) = heap_local else { continue };
+            let Some(heap_local) = heap_local else {
+                continue;
+            };
             let heap_place = Place {
                 local: *heap_local,
                 projection: vec![PlaceElem::Deref],
             };
             let param_place = Place::from_local(LocalId::from_raw(idx as u32));
             param_inits.push(Statement {
-                kind: StatementKind::Assign(
-                    heap_place,
-                    Rvalue::Use(Operand::Move(param_place)),
-                ),
+                kind: StatementKind::Assign(heap_place, Rvalue::Use(Operand::Move(param_place))),
                 span,
             });
         }

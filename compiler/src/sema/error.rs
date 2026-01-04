@@ -139,7 +139,10 @@ impl<'ctx> TypeError<'ctx> {
                 format!("type {} is not a tuple", ty.format(gcx))
             }
             TypeError::CannotDereference { ty } => {
-                format!("cannot dereference non-pointer/reference type '{}'", ty.format(gcx))
+                format!(
+                    "cannot dereference non-pointer/reference type '{}'",
+                    ty.format(gcx)
+                )
             }
             TypeError::InvalidUnaryOp { op, ty } => {
                 format!(
@@ -172,7 +175,10 @@ impl<'ctx> TypeError<'ctx> {
                 )
             }
             TypeError::GenericParameterNotInferred { name } => {
-                format!("generic parameter '{}' could not be inferred", name.as_str())
+                format!(
+                    "generic parameter '{}' could not be inferred",
+                    name.as_str()
+                )
             }
             TypeError::ArgCountMismatch(expected, found) => {
                 format!("expected {} generic arguments, found {}", expected, found)

@@ -61,14 +61,15 @@ fn resolve_interface_method_for_concrete<'ctx>(
         arguments: interface_args,
     };
     let witness = resolve_conformance_witness(gcx, type_head, interface)?;
-    
+
     //  Check if this is a method or operator
     let def_kind = gcx.definition_kind(method_id);
     match def_kind {
         DefinitionKind::AssociatedFunction => {
             // It's a method
             let method = witness.method_witnesses.get(&method_id)?;
-            let impl_args = instantiate_generic_args_with_args(gcx, method.args_template, call_args);
+            let impl_args =
+                instantiate_generic_args_with_args(gcx, method.args_template, call_args);
             Some(Instance::item(method.impl_id, impl_args))
         }
         DefinitionKind::AssociatedOperator => {
@@ -86,7 +87,9 @@ fn resolve_interface_method_for_concrete<'ctx>(
 
 fn interface_method_parent(gcx: GlobalContext<'_>, def_id: DefinitionID) -> Option<DefinitionID> {
     let def_kind = gcx.definition_kind(def_id);
-    if def_kind != DefinitionKind::AssociatedFunction && def_kind != DefinitionKind::AssociatedOperator {
+    if def_kind != DefinitionKind::AssociatedFunction
+        && def_kind != DefinitionKind::AssociatedOperator
+    {
         return None;
     }
 
@@ -97,7 +100,6 @@ fn interface_method_parent(gcx: GlobalContext<'_>, def_id: DefinitionID) -> Opti
         None
     }
 }
-
 
 fn self_ty_from_args<'ctx>(
     gcx: GlobalContext<'ctx>,
@@ -190,10 +192,8 @@ fn instantiate_generic_args_with_args<'ctx>(
         match arg {
             GenericArgument::Type(ty) => {
                 let instantiated = instantiate_ty_with_args(gcx, *ty, args);
-                let normalized = crate::sema::tycheck::utils::normalize_post_monomorphization(
-                    gcx,
-                    instantiated,
-                );
+                let normalized =
+                    crate::sema::tycheck::utils::normalize_post_monomorphization(gcx, instantiated);
                 out.push(GenericArgument::Type(normalized));
             }
             GenericArgument::Const(c) => {

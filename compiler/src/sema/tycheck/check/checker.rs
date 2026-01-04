@@ -85,6 +85,10 @@ impl<'arena> Checker<'arena> {
         result
     }
 
+    pub(super) fn infer_ctx(&self) -> Option<Rc<InferCtx<'arena>>> {
+        self.infer_cx.borrow().clone()
+    }
+
     pub fn get_local(&self, id: NodeID) -> LocalBinding<'arena> {
         *self
             .locals

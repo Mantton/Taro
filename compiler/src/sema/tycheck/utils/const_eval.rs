@@ -1,9 +1,4 @@
-use crate::{
-    compile::context::GlobalContext,
-    hir,
-    sema::models::ConstValue,
-    span::Span,
-};
+use crate::{compile::context::GlobalContext, hir, sema::models::ConstValue, span::Span};
 
 pub fn eval_const_expression<'ctx>(
     gcx: GlobalContext<'ctx>,
@@ -12,7 +7,10 @@ pub fn eval_const_expression<'ctx>(
     match &expression.kind {
         hir::ExpressionKind::Literal(lit) => eval_const_literal(gcx, lit, expression.span),
         hir::ExpressionKind::Unary(op, expr)
-            if matches!(op, hir::UnaryOperator::Negate | hir::UnaryOperator::LogicalNot) =>
+            if matches!(
+                op,
+                hir::UnaryOperator::Negate | hir::UnaryOperator::LogicalNot
+            ) =>
         {
             let value = eval_const_expression(gcx, expr)?;
             eval_const_unary(gcx, *op, value, expression.span)

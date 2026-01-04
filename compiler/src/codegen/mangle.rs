@@ -48,15 +48,13 @@ fn ty_symbol_with(gcx: GlobalContext, ty: Ty) -> String {
             let len_str = match len.kind {
                 ConstKind::Value(ConstValue::Integer(i)) => format!("{i}"),
                 ConstKind::Param(p) => sanitize(p.name.as_str()),
+                ConstKind::Infer(_) => "_".into(),
                 _ => "c".into(),
             };
             format!("array{}_{}", elem, len_str)
         }
         TyKind::Tuple(items) => {
-            let parts: Vec<_> = items
-                .iter()
-                .map(|t| ty_symbol_with(gcx, *t))
-                .collect();
+            let parts: Vec<_> = items.iter().map(|t| ty_symbol_with(gcx, *t)).collect();
             format!("tuple{}", parts.join("_"))
         }
         TyKind::FnPointer { .. } => "fnptr".into(),

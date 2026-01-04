@@ -1,6 +1,6 @@
 use super::{UnificationTable, snapshot::IcxEventLogs};
 use crate::{
-    sema::models::{FloatTy, IntTy, Ty, TyVarID, UIntTy},
+    sema::models::{ConstValue, ConstVarID, FloatTy, IntTy, Ty, TyVarID, UIntTy},
     span::{Span, Symbol},
 };
 use ena::unify::{UnificationTableStorage, UnifyKey, UnifyValue};
@@ -152,6 +152,61 @@ impl UnifyValue for NilVarValue {
     }
 }
 
+// Const
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ConstVarEqID {
+    _raw: ConstVarID,
+}
+
+impl From<ConstVarID> for ConstVarEqID {
+    #[inline]
+    fn from(id: ConstVarID) -> Self {
+        ConstVarEqID { _raw: id }
+    }
+}
+
+impl ConstVarEqID {
+    pub fn new(value: ConstVarID) -> ConstVarEqID {
+        ConstVarEqID { _raw: value }
+    }
+}
+
+impl UnifyKey for ConstVarEqID {
+    type Value = ConstVarValue;
+    #[inline]
+    fn index(&self) -> u32 {
+        self._raw.raw()
+    }
+    #[inline]
+    fn from_index(i: u32) -> ConstVarEqID {
+        ConstVarEqID::new(ConstVarID::from_raw(i))
+    }
+    fn tag() -> &'static str {
+        "ConstVarID"
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ConstVarValue {
+    Unknown,
+    Known(ConstValue),
+}
+
+impl UnifyValue for ConstVarValue {
+    type Error = ena::unify::NoError;
+
+    fn unify_values(value1: &Self, value2: &Self) -> Result<Self, Self::Error> {
+        match (*value1, *value2) {
+            (ConstVarValue::Unknown, ConstVarValue::Unknown) => Ok(ConstVarValue::Unknown),
+            (ConstVarValue::Unknown, known @ ConstVarValue::Known(_))
+            | (known @ ConstVarValue::Known(_), ConstVarValue::Unknown) => Ok(known),
+            (ConstVarValue::Known(_), ConstVarValue::Known(_)) => {
+                panic!("differing consts should have been resolved first")
+            }
+        }
+    }
+}
+
 // Ty
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TyVarEqID<'ctx> {
@@ -240,10 +295,24 @@ pub struct TypeVariableOrigin {
     pub param_name: Option<Symbol>,
 }
 
+#[derive(Copy, Clone)]
+pub struct ConstVariableOrigin {
+    pub location: Span,
+    /// When this const variable was created for a generic parameter, stores its name.
+    pub param_name: Option<Symbol>,
+}
+
 #[derive(Default, Clone)]
 pub struct TypeVariableStorage<'gcx> {
     table: UnificationTableStorage<TyVarEqID<'gcx>>,
     values: IndexVec<TyVarID, TypeVariableOrigin>,
+}
+
+#[derive(Default, Clone)]
+pub struct ConstVariableStorage<'gcx> {
+    table: UnificationTableStorage<ConstVarEqID>,
+    values: IndexVec<ConstVarID, ConstVariableOrigin>,
+    _marker: PhantomData<&'gcx ()>,
 }
 
 impl<'gcx> TypeVariableStorage<'gcx> {
@@ -274,8 +343,40 @@ impl<'gcx> TypeVariableStorage<'gcx> {
     }
 }
 
+impl<'gcx> ConstVariableStorage<'gcx> {
+    #[inline]
+    pub fn with_log<'a>(
+        &'a mut self,
+        undo_log: &'a mut IcxEventLogs<'gcx>,
+    ) -> ConstVariableTable<'a, 'gcx> {
+        ConstVariableTable {
+            _storage: self,
+            undo_log,
+        }
+    }
+
+    #[inline]
+    pub fn storage(&self) -> &UnificationTableStorage<ConstVarEqID> {
+        &self.table
+    }
+
+    pub fn iter_origins(&self) -> impl Iterator<Item = (ConstVarID, &ConstVariableOrigin)> {
+        self.values.iter_enumerated()
+    }
+
+    pub fn finalize_rollback(&mut self) {
+        debug_assert!(self.values.len() >= self.storage().len());
+        self.values.truncate(self.storage().len());
+    }
+}
+
 pub struct TypeVariableTable<'a, 'gcx> {
     _storage: &'a mut TypeVariableStorage<'gcx>,
+    undo_log: &'a mut IcxEventLogs<'gcx>,
+}
+
+pub struct ConstVariableTable<'a, 'gcx> {
+    _storage: &'a mut ConstVariableStorage<'gcx>,
     undo_log: &'a mut IcxEventLogs<'gcx>,
 }
 
@@ -289,6 +390,20 @@ impl<'gcx> TypeVariableTable<'_, 'gcx> {
 
     #[inline]
     pub fn storage(&mut self) -> UnificationTable<'_, 'gcx, TyVarEqID<'gcx>> {
+        self._storage.table.with_log(self.undo_log)
+    }
+}
+
+impl<'gcx> ConstVariableTable<'_, 'gcx> {
+    pub fn new_var(&mut self, origin: ConstVariableOrigin) -> ConstVarID {
+        let key = self.storage().new_key(ConstVarValue::Unknown);
+        let index = self._storage.values.push(origin);
+        debug_assert_eq!(key._raw.raw(), index.raw());
+        index
+    }
+
+    #[inline]
+    pub fn storage(&mut self) -> UnificationTable<'_, 'gcx, ConstVarEqID> {
         self._storage.table.with_log(self.undo_log)
     }
 }
@@ -330,11 +445,38 @@ impl<'gcx> TypeVariableTable<'_, 'gcx> {
     }
 }
 
+impl<'gcx> ConstVariableTable<'_, 'gcx> {
+    pub fn probe(&mut self, id: ConstVarID) -> ConstVarValue {
+        self.storage().inlined_probe_value(id)
+    }
+
+    pub fn root_var(&mut self, id: ConstVarID) -> ConstVarID {
+        self.storage().find(id)._raw
+    }
+
+    pub fn equate(&mut self, a: ConstVarID, b: ConstVarID) {
+        self.storage().union(a, b);
+    }
+
+    pub fn instantiate(&mut self, id: ConstVarID, value: ConstVarValue) {
+        let id = self.root_var(id);
+        self.storage().union_value(id, value);
+    }
+}
+
 impl<'ctx>
     ena::undo_log::Rollback<ena::snapshot_vec::UndoLog<ena::unify::Delegate<TyVarEqID<'ctx>>>>
     for TypeVariableStorage<'ctx>
 {
     fn reverse(&mut self, undo: ena::snapshot_vec::UndoLog<ena::unify::Delegate<TyVarEqID<'ctx>>>) {
+        self.table.reverse(undo)
+    }
+}
+
+impl<'ctx> ena::undo_log::Rollback<ena::snapshot_vec::UndoLog<ena::unify::Delegate<ConstVarEqID>>>
+    for ConstVariableStorage<'ctx>
+{
+    fn reverse(&mut self, undo: ena::snapshot_vec::UndoLog<ena::unify::Delegate<ConstVarEqID>>) {
         self.table.reverse(undo)
     }
 }

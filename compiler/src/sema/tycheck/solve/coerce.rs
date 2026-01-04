@@ -161,9 +161,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let gcx = self.gcx();
 
         // Collect conformance records from all visible packages
-        let records = gcx.collect_from_databases(|db| {
-            db.conformances.get(&head).cloned().unwrap_or_default()
-        });
+        let records = gcx
+            .collect_from_databases(|db| db.conformances.get(&head).cloned().unwrap_or_default());
 
         let mut missing = Vec::new();
         for iface in interfaces {
@@ -399,7 +398,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
     }
 
     /// Check if ty is Optional[T] and return (generic_args, inner_ty)
-    fn unwrap_optional_type(&self, ty: Ty<'ctx>) -> Option<(crate::sema::models::GenericArguments<'ctx>, Ty<'ctx>)> {
+    fn unwrap_optional_type(
+        &self,
+        ty: Ty<'ctx>,
+    ) -> Option<(crate::sema::models::GenericArguments<'ctx>, Ty<'ctx>)> {
         let TyKind::Adt(def, args) = ty.kind() else {
             return None;
         };

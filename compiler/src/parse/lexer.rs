@@ -52,7 +52,10 @@ pub fn tokenize_module(path: PathBuf, dcx: &DiagCtx) -> Result<Module, ReportedE
         match name {
             Some(name) => name,
             None => {
-                let message = format!("failed to parse directory name from path '{}'", directory.display());
+                let message = format!(
+                    "failed to parse directory name from path '{}'",
+                    directory.display()
+                );
                 dcx.emit_error(message, None);
                 return Err(ReportedError);
             }
@@ -60,7 +63,10 @@ pub fn tokenize_module(path: PathBuf, dcx: &DiagCtx) -> Result<Module, ReportedE
     };
 
     if name == ROOT_MODULE_NAME {
-        let message = format!("module cannot be named '{}' (reserved for root module)", ROOT_MODULE_NAME);
+        let message = format!(
+            "module cannot be named '{}' (reserved for root module)",
+            ROOT_MODULE_NAME
+        );
         dcx.emit_error(message, None);
         return Err(ReportedError);
     }
@@ -81,7 +87,11 @@ pub fn tokenize_module(path: PathBuf, dcx: &DiagCtx) -> Result<Module, ReportedE
         let entry = match entry {
             Ok(entry) => entry,
             Err(e) => {
-                let message = format!("failed to read directory entry in '{}': {}", directory.display(), e);
+                let message = format!(
+                    "failed to read directory entry in '{}': {}",
+                    directory.display(),
+                    e
+                );
                 dcx.emit_error(message, None);
                 return Err(ReportedError);
             }
@@ -892,11 +902,17 @@ impl std::fmt::Display for LexerError {
         match self {
             LexerError::InvalidCharacter(c) => write!(f, "invalid character '{}'", c),
             LexerError::UnterminatedMultilineComment => write!(f, "unterminated multiline comment"),
-            LexerError::UnterminatedEscapedIdentifier => write!(f, "unterminated escaped identifier"),
+            LexerError::UnterminatedEscapedIdentifier => {
+                write!(f, "unterminated escaped identifier")
+            }
             LexerError::UnterminatedRuneLiteral => write!(f, "unterminated rune literal"),
             LexerError::UnterminatedStringLiteral => write!(f, "unterminated string literal"),
-            LexerError::StringLiteralMustBeSingleLine => write!(f, "string literals must be on a single line"),
-            LexerError::EscapeIdentifierMustBeSingleLine => write!(f, "escaped identifiers must be on a single line"),
+            LexerError::StringLiteralMustBeSingleLine => {
+                write!(f, "string literals must be on a single line")
+            }
+            LexerError::EscapeIdentifierMustBeSingleLine => {
+                write!(f, "escaped identifiers must be on a single line")
+            }
             LexerError::InvalidIntegerLiteral => write!(f, "invalid integer literal"),
             LexerError::InvalidFloatLiteral => write!(f, "invalid float literal"),
             LexerError::IO(msg) => write!(f, "{}", msg),

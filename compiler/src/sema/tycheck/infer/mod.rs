@@ -2,7 +2,7 @@ use crate::{
     compile::context::Gcx,
     sema::{
         models::{
-            Const, ConstKind, ConstValue, FloatTy, GenericArgument, GenericArguments,
+            Const, ConstKind, ConstValue, ConstVarID, FloatTy, GenericArgument, GenericArguments,
             GenericParameterDefinition, GenericParameterDefinitionKind, InferTy, IntTy, Ty, TyKind,
             TyVarID,
         },
@@ -11,12 +11,14 @@ use crate::{
             fold::TypeFoldable,
             infer::{
                 keys::{
+                    ConstVarValue, ConstVariableOrigin, ConstVariableStorage, ConstVariableTable,
                     FloatVarID, FloatVarValue, IntVarID, IntVarValue, NilVarID, NilVarValue,
                     TypeVariableOrigin, TypeVariableStorage, TypeVariableTable,
                 },
                 resolve::InferVarResolver,
                 snapshot::IcxEvent,
             },
+            lower::{DefTyLoweringCtx, TypeLowerer},
             utils::generics::GenericsBuilder,
         },
     },
@@ -115,15 +117,19 @@ impl<'ctx> InferCtx<'ctx> {
                 GenericArgument::Type(ty)
             }
             GenericParameterDefinitionKind::Const { .. } => {
-                self.gcx.dcx().emit_error(
-                    "const generic arguments must be provided explicitly".into(),
-                    Some(span),
-                );
-                let konst = Const {
-                    ty: self.gcx.types.error,
-                    kind: ConstKind::Value(ConstValue::Unit),
+                let origin = ConstVariableOrigin {
+                    location: span,
+                    param_name: Some(param.name),
                 };
-                GenericArgument::Const(konst)
+                let owner = self.gcx.definition_parent(param.id).unwrap_or(param.id);
+                let lower_ctx = DefTyLoweringCtx::new(owner, self.gcx);
+                let expected_ty = match &param.kind {
+                    GenericParameterDefinitionKind::Const { ty, .. } => {
+                        lower_ctx.lowerer().lower_type(ty)
+                    }
+                    _ => self.gcx.types.error,
+                };
+                GenericArgument::Const(self.new_const_var(expected_ty, origin))
             }
         }
     }
@@ -229,6 +235,7 @@ pub(crate) type UnificationTable<'a, 'tcx, T> = ena::unify::UnificationTable<
 pub struct InferCtxInner<'ctx> {
     event_logs: IcxEventLogs<'ctx>,
     type_storage: TypeVariableStorage<'ctx>,
+    const_storage: ConstVariableStorage<'ctx>,
     int_storage: UnificationTableStorage<IntVarID>,
     float_storage: UnificationTableStorage<FloatVarID>,
     nil_storage: UnificationTableStorage<NilVarID>,
@@ -240,6 +247,7 @@ impl<'ctx> InferCtxInner<'ctx> {
         InferCtxInner {
             event_logs: Default::default(),
             type_storage: Default::default(),
+            const_storage: Default::default(),
             int_storage: Default::default(),
             float_storage: Default::default(),
             nil_storage: Default::default(),
@@ -265,6 +273,11 @@ impl<'ctx> InferCtxInner<'ctx> {
     }
 
     #[inline]
+    pub fn const_variables(&mut self) -> ConstVariableTable<'_, 'ctx> {
+        self.const_storage.with_log(&mut self.event_logs)
+    }
+
+    #[inline]
     pub fn nil_unification_table(&mut self) -> UnificationTable<'_, 'ctx, NilVarID> {
         self.nil_storage.with_log(&mut self.event_logs)
     }
@@ -285,6 +298,7 @@ impl<'ctx> InferCtxInner<'ctx> {
         }
 
         self.type_storage.finalize_rollback();
+        self.const_storage.finalize_rollback();
 
         if self.event_logs.open_snapshots == 1 {
             // After the root snapshot the undo log should be empty.
@@ -297,6 +311,52 @@ impl<'ctx> InferCtxInner<'ctx> {
 }
 
 impl<'ctx> InferCtx<'ctx> {
+    pub fn new_const_var(&self, ty: Ty<'ctx>, origin: ConstVariableOrigin) -> Const<'ctx> {
+        let id = self.inner.borrow_mut().const_variables().new_var(origin);
+        Const {
+            ty,
+            kind: ConstKind::Infer(id),
+        }
+    }
+
+    pub fn resolve_const_if_possible(&self, c: Const<'ctx>) -> Const<'ctx> {
+        let ConstKind::Infer(id) = c.kind else {
+            return Const {
+                ty: self.resolve_vars_if_possible(c.ty),
+                kind: c.kind,
+            };
+        };
+        let value = {
+            let mut inner = self.inner.borrow_mut();
+            let mut table = inner.const_variables();
+            match table.probe(id) {
+                ConstVarValue::Known(value) => Some(value),
+                ConstVarValue::Unknown => None,
+            }
+        };
+
+        let ty = self.resolve_vars_if_possible(c.ty);
+        match value {
+            Some(value) => Const {
+                ty,
+                kind: ConstKind::Value(value),
+            },
+            None => Const {
+                ty,
+                kind: ConstKind::Infer(id),
+            },
+        }
+    }
+
+    pub fn const_var_value(&self, id: ConstVarID) -> Option<ConstValue> {
+        let mut inner = self.inner.borrow_mut();
+        let mut table = inner.const_variables();
+        match table.probe(id) {
+            ConstVarValue::Known(value) => Some(value),
+            ConstVarValue::Unknown => None,
+        }
+    }
+
     pub fn equate_int_vars_raw(&self, a: IntVarID, b: IntVarID) {
         self.inner.borrow_mut().int_unification_table().union(a, b);
     }
@@ -326,6 +386,17 @@ impl<'ctx> InferCtx<'ctx> {
 }
 
 impl<'ctx> InferCtx<'ctx> {
+    pub fn equate_const_vars_raw(&self, a: ConstVarID, b: ConstVarID) {
+        self.inner.borrow_mut().const_variables().equate(a, b);
+    }
+
+    pub fn instantiate_const_var_raw(&self, id: ConstVarID, value: ConstVarValue) {
+        self.inner
+            .borrow_mut()
+            .const_variables()
+            .instantiate(id, value);
+    }
+
     pub fn equate_nil_vars_raw(&self, a: NilVarID, b: NilVarID) {
         self.inner.borrow_mut().nil_unification_table().union(a, b);
     }
@@ -345,6 +416,15 @@ impl<'ctx> InferCtx<'ctx> {
         let inner = self.inner.borrow();
         inner
             .type_storage
+            .iter_origins()
+            .map(|(id, origin)| (id, *origin))
+            .collect()
+    }
+
+    pub fn all_const_var_origins(&self) -> Vec<(ConstVarID, ConstVariableOrigin)> {
+        let inner = self.inner.borrow();
+        inner
+            .const_storage
             .iter_origins()
             .map(|(id, origin)| (id, *origin))
             .collect()

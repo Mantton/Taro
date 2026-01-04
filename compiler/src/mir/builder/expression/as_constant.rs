@@ -29,6 +29,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             thir::ConstantKind::Integer(i) => ConstantKind::Integer(*i),
             thir::ConstantKind::Float(f) => ConstantKind::Float(*f),
             thir::ConstantKind::Unit => ConstantKind::Unit,
+            thir::ConstantKind::ConstParam(param) => ConstantKind::ConstParam(*param),
         };
         Constant { ty: lit.ty, value }
     }

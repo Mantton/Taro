@@ -1,19 +1,28 @@
+use crate::constants::STD_PREFIX;
 use crate::{
     compile::context::GlobalContext,
     error::CompileResult,
     hir::{self, DefinitionID, HirVisitor, Resolution},
     sema::resolve::models::{DefinitionKind, TypeHead},
+    span::Span,
 };
-use crate::constants::STD_PREFIX;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 pub fn run(package: &hir::Package, context: GlobalContext) -> CompileResult<()> {
-    let mut actor = Actor { context };
+    let alias_targets = collect_alias_targets(package);
+    let mut actor = Actor {
+        context,
+        alias_targets,
+        alias_visiting: FxHashSet::default(),
+    };
     hir::walk_package(&mut actor, package);
     context.dcx().ok()
 }
 
 struct Actor<'ctx> {
     context: GlobalContext<'ctx>,
+    alias_targets: FxHashMap<DefinitionID, hir::Type>,
+    alias_visiting: FxHashSet<DefinitionID>,
 }
 
 impl<'ctx> Actor<'ctx> {
@@ -27,10 +36,7 @@ impl<'ctx> Actor<'ctx> {
 
     fn is_std_package(&self, pkg: crate::PackageIndex) -> bool {
         matches!(
-            self.context
-                .package_ident(pkg)
-                .as_ref()
-                .map(|s| s.as_str()),
+            self.context.package_ident(pkg).as_ref().map(|s| s.as_str()),
             Some(STD_PREFIX)
         )
     }
@@ -137,6 +143,7 @@ impl<'ctx> Actor<'ctx> {
                     DefinitionKind::Struct | DefinitionKind::Interface | DefinitionKind::Enum => {
                         Some(TypeHead::Nominal(*id))
                     }
+                    DefinitionKind::TypeAlias => self.type_head_for_alias(*id, ty.span),
                     _ => {
                         self.context.dcx().emit_error(
                             format!(
@@ -158,6 +165,26 @@ impl<'ctx> Actor<'ctx> {
             }
         }
     }
+
+    fn type_head_for_alias(&mut self, alias_id: DefinitionID, span: Span) -> Option<TypeHead> {
+        if !self.alias_visiting.insert(alias_id) {
+            self.context.dcx().emit_error(
+                "circular type alias in extension target".to_string(),
+                Some(span),
+            );
+            return None;
+        }
+
+        let alias_ty = self.alias_targets.get(&alias_id).cloned();
+        let head = if let Some(alias_ty) = alias_ty {
+            self.type_head_for_node(&alias_ty)
+        } else {
+            Some(TypeHead::Nominal(alias_id))
+        };
+
+        self.alias_visiting.remove(&alias_id);
+        head
+    }
 }
 
 impl HirVisitor for Actor<'_> {
@@ -169,5 +196,28 @@ impl HirVisitor for Actor<'_> {
 
         self.resolve_extension_identity(declaration.id, node);
         self.validate_inherent_extension(declaration.id, node);
+    }
+}
+
+fn collect_alias_targets(package: &hir::Package) -> FxHashMap<DefinitionID, hir::Type> {
+    let mut targets = FxHashMap::default();
+    collect_alias_targets_in_module(&package.root, &mut targets);
+    targets
+}
+
+fn collect_alias_targets_in_module(
+    module: &hir::Module,
+    targets: &mut FxHashMap<DefinitionID, hir::Type>,
+) {
+    for decl in &module.declarations {
+        if let hir::DeclarationKind::TypeAlias(alias) = &decl.kind {
+            if let Some(ty) = &alias.ty {
+                targets.insert(decl.id, (**ty).clone());
+            }
+        }
+    }
+
+    for submodule in &module.submodules {
+        collect_alias_targets_in_module(submodule, targets);
     }
 }

@@ -58,7 +58,11 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
         match &stmt.kind {
             thir::StmtKind::Let {
-                pattern, expr, ty, mutable, ..
+                pattern,
+                expr,
+                ty,
+                mutable,
+                ..
             } => {
                 // Evaluate initializer (if any) into a temp so we can destructure.
                 let init_place = if let Some(init) = expr {
@@ -143,7 +147,13 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 ty,
                 ..
             } => {
-                let local = self.push_local(*ty, mir::LocalKind::User, mutable, Some(*name), pattern.span);
+                let local = self.push_local(
+                    *ty,
+                    mir::LocalKind::User,
+                    mutable,
+                    Some(*name),
+                    pattern.span,
+                );
                 self.locals.insert(*pat_id, local);
                 if let Some(src) = place {
                     let rvalue = Rvalue::Use(Operand::Copy(src.clone()));

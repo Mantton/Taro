@@ -104,7 +104,10 @@ impl<'a, 'ctx> TypeFolder<'ctx> for NormalizeFolder<'a, 'ctx> {
                 // Find a concrete type equivalent to this parameter
                 // Prefer non-parameter, non-alias types
                 if let Some(&resolved) = equiv_types.iter().find(|&&t| {
-                    !matches!(t.kind(), TyKind::Parameter(_) | TyKind::Alias { .. } | TyKind::Infer(_))
+                    !matches!(
+                        t.kind(),
+                        TyKind::Parameter(_) | TyKind::Alias { .. } | TyKind::Infer(_)
+                    )
                 }) {
                     return resolved.fold_with(self);
                 }

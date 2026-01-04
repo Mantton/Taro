@@ -871,6 +871,30 @@ impl<'ctx> FunctionLower<'ctx> {
                     value,
                 })
             }
+            Resolution::Definition(id, DefinitionKind::ConstParameter) => {
+                let ty = self.results.node_type(expr.id);
+                let Some(owner) = self.gcx.definition_parent(id) else {
+                    return ExprKind::Literal(Constant {
+                        ty: self.gcx.types.error,
+                        value: ConstantKind::Unit,
+                    });
+                };
+                let generics = self.gcx.generics_of(owner);
+                let Some(def) = generics.parameters.iter().find(|p| p.id == id) else {
+                    return ExprKind::Literal(Constant {
+                        ty: self.gcx.types.error,
+                        value: ConstantKind::Unit,
+                    });
+                };
+                let param = crate::sema::models::GenericParameter {
+                    index: def.index,
+                    name: def.name,
+                };
+                ExprKind::Literal(Constant {
+                    ty,
+                    value: ConstantKind::ConstParam(param),
+                })
+            }
             Resolution::Definition(
                 id,
                 DefinitionKind::VariantConstructor(VariantCtorKind::Function),
@@ -909,7 +933,8 @@ impl<'ctx> FunctionLower<'ctx> {
                 ConstValue::Float(f) => ConstantKind::Float(f),
                 ConstValue::Unit => ConstantKind::Unit,
             }),
-            ConstKind::Param(_) => None,
+            ConstKind::Param(p) => Some(ConstantKind::ConstParam(p)),
+            ConstKind::Infer(_) => None,
         }
     }
 

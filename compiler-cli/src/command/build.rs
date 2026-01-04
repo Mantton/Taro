@@ -29,7 +29,11 @@ pub fn run(
     let dcx = Rc::new(DiagCtx::new(cwd));
     let arenas = CompilerArenas::new();
     let project_root = arguments.path.canonicalize().map_err(|e| {
-        eprintln!("error: failed to canonicalize project root path '{}': {}", arguments.path.display(), e);
+        eprintln!(
+            "error: failed to canonicalize project root path '{}': {}",
+            arguments.path.display(),
+            e
+        );
         ReportedError
     })?;
     let target_root = project_root.join("target").join("objects");
@@ -70,21 +74,30 @@ pub fn run(
         println!("Compiling – {}", package.package.0);
         let name = get_package_name(&package.package.0).map_err(|e| {
             icx.dcx.emit_error(
-                format!("failed to get package name for '{}': {}", package.package.0, e),
+                format!(
+                    "failed to get package name for '{}': {}",
+                    package.package.0, e
+                ),
                 None,
             );
             ReportedError
         })?;
         let identifier = package.unique_identifier().map_err(|e| {
             icx.dcx.emit_error(
-                format!("failed to generate unique identifier for '{}': {}", package.package.0, e),
+                format!(
+                    "failed to generate unique identifier for '{}': {}",
+                    package.package.0, e
+                ),
                 None,
             );
             ReportedError
         })?;
         let mut dependencies = graph.dependencies_for(package).map_err(|e| {
             icx.dcx.emit_error(
-                format!("failed to resolve dependencies for '{}': {}", package.package.0, e),
+                format!(
+                    "failed to resolve dependencies for '{}': {}",
+                    package.package.0, e
+                ),
                 None,
             );
             ReportedError
@@ -100,7 +113,10 @@ pub fn run(
             .map_err(|e| format!("failed to resolve path – {}", e))
             .map_err(|e| {
                 icx.dcx.emit_error(
-                    format!("failed to resolve source path for '{}': {}", package.package.0, e),
+                    format!(
+                        "failed to resolve source path for '{}': {}",
+                        package.package.0, e
+                    ),
                     None,
                 );
                 ReportedError

@@ -52,7 +52,7 @@ impl TargetLayout {
             )
             .ok_or_else(|| {
                 dcx.emit_error(
-                    format!("failed to create target machine for triple '{}'" , triple),
+                    format!("failed to create target machine for triple '{}'", triple),
                     None,
                 );
                 crate::error::ReportedError

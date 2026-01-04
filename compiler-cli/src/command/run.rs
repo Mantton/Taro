@@ -10,12 +10,12 @@ pub fn run(arguments: CommandLineArguments) -> Result<(), ReportedError> {
         eprintln!("error: no executable was produced");
         ReportedError
     })?;
-    
+
     let status = Command::new(&exe).status().map_err(|e| {
         eprintln!("error: failed to execute '{}': {}", exe.display(), e);
         ReportedError
     })?;
-    
+
     if status.success() {
         Ok(())
     } else {

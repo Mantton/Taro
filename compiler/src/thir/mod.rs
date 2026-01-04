@@ -1,7 +1,9 @@
 use crate::{
     hir::{BindingMode, DefinitionID, NodeID},
     mir::{BinaryOperator, LogicalOperator, UnaryOperator},
-    sema::models::{AdtDef, EnumVariant, GenericArguments, InterfaceReference, Ty},
+    sema::models::{
+        AdtDef, EnumVariant, GenericArguments, GenericParameter, InterfaceReference, Ty,
+    },
     span::{Span, Symbol},
 };
 use index_vec::IndexVec;
@@ -179,6 +181,7 @@ pub enum ConstantKind {
     Integer(u64),
     Float(f64),
     Unit,
+    ConstParam(GenericParameter),
 }
 
 #[derive(Debug, Clone)]

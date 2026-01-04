@@ -272,10 +272,7 @@ impl Parser {
         if self.eat_question() {
             Ok(())
         } else {
-            Err(self.err_at_current(ParserError::Expected(
-                Token::Question,
-                self.current_token(),
-            )))
+            Err(self.err_at_current(ParserError::Expected(Token::Question, self.current_token())))
         }
     }
 
@@ -283,10 +280,7 @@ impl Parser {
         if self.eat_amp() {
             Ok(())
         } else {
-            Err(self.err_at_current(ParserError::Expected(
-                Token::Amp,
-                self.current_token(),
-            )))
+            Err(self.err_at_current(ParserError::Expected(Token::Amp, self.current_token())))
         }
     }
 

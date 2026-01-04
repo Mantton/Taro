@@ -1,10 +1,10 @@
 use crate::hir::StdType;
 use crate::sema::resolve::models::LexicalScopeBinding;
 use crate::{
-    constants::STD_PREFIX,
     PackageIndex,
     ast::{Identifier, NodeID, PathSegment},
     compile::context::GlobalContext,
+    constants::STD_PREFIX,
     diagnostics::DiagCtx,
     sema::resolve::models::{
         DefinitionID, DefinitionIndex, DefinitionKind, ExpressionResolutionState, Holder,
@@ -69,10 +69,7 @@ impl<'a> Resolver<'a> {
                 .collect(),
             builin_fn_bindings: {
                 let mut map = FxHashMap::default();
-                map.insert(
-                    Symbol::new("make"),
-                    Resolution::Foundation(StdType::Make),
-                );
+                map.insert(Symbol::new("make"), Resolution::Foundation(StdType::Make));
                 map
             },
         }
