@@ -1,0 +1,36 @@
+// Test: Optional Syntax Sugar
+// Checks optional syntax ?, .none/.some, if let, and coalescing.
+
+func main() {
+    useSome()
+    useNone()
+    std.print("PASS: Optional syntax sugar\n")
+}
+
+func useSome() {
+    var opt: string? = Optional.some("FooBarBaz")
+
+    if let val = opt {
+        assert(val == "FooBarBaz", "if let bind failed")
+    } else {
+        assert(false, "Should have value")
+    }
+
+    // Test Optional Default
+    let res = opt ?? "Hello, World"
+    assert(res == "FooBarBaz", "Coalescing non-null failed")
+}
+
+func useNone() {
+    var opt: string? = Optional.none
+
+    if let val = opt {
+        assert(false, "Should be none")
+    } else {
+        assert(true, "if let none branch")
+    }
+
+    // Test Optional Default
+    let res = opt ?? "Hello, World"
+    assert(res == "Hello, World", "Coalescing null failed")
+}

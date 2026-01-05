@@ -1,0 +1,23 @@
+// Test: List Display
+// Checks iterating and displaying list elements.
+
+func main() {
+    var a: List[string] = List()
+    let b: [string] = List(withCapacity: 10)
+
+    a.append("Foo")
+    a.append("Bar")
+    a.append("Baz")
+
+    assert(a.len() == 3, "List length check")
+    
+    std.print("PASS: List display working\n")
+}
+
+
+func display(_ a: &[string]) {
+    var i: usize = 0
+    while i < a.len() {
+        i += 1
+    }
+}

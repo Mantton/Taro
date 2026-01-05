@@ -1,0 +1,22 @@
+// Test: Partial Extensions
+// Checks extending a generic type with specific type arguments partial specialization.
+
+func main() {
+    let a = Foo { a: 'A', b: "B" } // V must be string for the extension to apply
+    let b = a.getB()
+    assert(b == "B", "Partial extension method call result")
+    
+    std.print("PASS: Partial extension working\n")
+}
+
+
+struct Foo[T, V] {
+    a: T
+    b: V
+}
+
+extend[T] Foo[T, string] {
+    func getB(&self) -> string {
+        self.b
+    }
+}

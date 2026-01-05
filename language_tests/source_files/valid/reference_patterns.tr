@@ -1,0 +1,52 @@
+// Test: Reference Patterns
+// Checks matching on reference patterns (&pat, &mut pat).
+
+func main() {
+    test_basic_ref_pattern()
+    test_mut_ref_pattern()
+    test_nested_ref_pattern()
+    std.print("PASS: Reference patterns match\n")
+}
+
+func test_basic_ref_pattern() {
+    let x = 42;
+    let r = &x;
+
+    match r {
+        case &y => {
+            // y should have type int
+            assert(y == 42, "Basic ref pattern match")
+        }
+    }
+}
+
+func test_mut_ref_pattern() {
+    var x = 42;
+    let r = &mut x;
+
+    match r {
+        case &mut y => {
+            // y should have type int
+             assert(y == 42, "Mut ref pattern match")
+             y = 40
+        }
+    }
+
+    assert(x == 40, "Mut ref pattern match")
+
+}
+
+func test_nested_ref_pattern() {
+    let x = 42;
+    let r1 = &x;
+    let r2 = &r1;
+
+    match r2 {
+        case & &y => {
+            // y should have type int
+            assert(y == 42, "Nested ref pattern match")
+        }
+    }
+}
+
+// NOTE: Errors should be tested in invalid/ not valid/

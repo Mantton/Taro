@@ -283,6 +283,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
         let mut var_places: FxHashMap<usize, Place<'ctx>> = FxHashMap::default();
         var_places.insert(tree.root_var.id, scrutinee_place.clone());
+        self.apply_deref_vars(&mut var_places, &tree.deref_vars);
 
         let join_block = self.new_block_with_note("match-join".into());
         self.lower_match_decision(
@@ -292,8 +293,33 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             join_block,
             &var_places,
             expr.span,
+            &tree.deref_vars,
         );
         join_block.unit()
+    }
+
+    fn apply_deref_vars(
+        &self,
+        var_places: &mut FxHashMap<usize, Place<'ctx>>,
+        deref_vars: &[thir::match_tree::DerefVar],
+    ) {
+        for deref_var in deref_vars {
+            if var_places.contains_key(&deref_var.deref) {
+                continue;
+            }
+            let Some(base_place) = var_places.get(&deref_var.base) else {
+                continue;
+            };
+            let mut proj = base_place.projection.clone();
+            proj.push(PlaceElem::Deref);
+            var_places.insert(
+                deref_var.deref,
+                Place {
+                    local: base_place.local,
+                    projection: proj,
+                },
+            );
+        }
     }
 
     fn lower_match_decision(
@@ -304,6 +330,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         join_block: BasicBlockId,
         var_places: &FxHashMap<usize, Place<'ctx>>,
         span: Span,
+        deref_vars: &[thir::match_tree::DerefVar],
     ) {
         match decision {
             thir::match_tree::Decision::Success(body) => {
@@ -349,6 +376,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     join_block,
                     var_places,
                     span,
+                    deref_vars,
                 );
             }
             thir::match_tree::Decision::Switch(branch_var, cases, fallback) => {
@@ -366,6 +394,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                             join_block,
                             var_places,
                             span,
+                            deref_vars,
                         );
                     } else {
                         self.terminate(block, span, TerminatorKind::Unreachable);
@@ -382,6 +411,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                         let case = &cases[0];
                         let mut case_places = var_places.clone();
                         self.add_tuple_case_places(&mut case_places, branch_place, &case.arguments);
+                        self.apply_deref_vars(&mut case_places, deref_vars);
                         self.lower_match_decision(
                             block,
                             &case.body,
@@ -389,6 +419,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                             join_block,
                             &case_places,
                             span,
+                            deref_vars,
                         );
                     }
                     thir::match_tree::Constructor::Literal(
@@ -407,6 +438,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                             join_block,
                             var_places,
                             span,
+                            deref_vars,
                         );
                     }
                     _ => {
@@ -442,6 +474,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                                         variant_index,
                                         &case.arguments,
                                     );
+                                    self.apply_deref_vars(&mut case_places, deref_vars);
                                     *index as u128
                                 }
                                 thir::match_tree::Constructor::Literal(
@@ -469,6 +502,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                                 join_block,
                                 &case_places,
                                 span,
+                                deref_vars,
                             );
                             targets.push((value, case_block));
                         }
@@ -482,6 +516,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                                 join_block,
                                 var_places,
                                 span,
+                                deref_vars,
                             );
                             fallback_block
                         } else {
@@ -516,6 +551,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         join_block: BasicBlockId,
         var_places: &FxHashMap<usize, Place<'ctx>>,
         span: Span,
+        deref_vars: &[thir::match_tree::DerefVar],
     ) {
         if cases.is_empty() {
             if let Some(fallback) = fallback {
@@ -526,6 +562,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     join_block,
                     var_places,
                     span,
+                    deref_vars,
                 );
             } else {
                 self.terminate(block, span, TerminatorKind::Unreachable);
@@ -535,7 +572,15 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
         let fallback_block = fallback.map(|decision| {
             let fb = self.new_block_with_note("match-fallback".into());
-            self.lower_match_decision(fb, decision, destination, join_block, var_places, span);
+            self.lower_match_decision(
+                fb,
+                decision,
+                destination,
+                join_block,
+                var_places,
+                span,
+                deref_vars,
+            );
             fb
         });
 
@@ -575,6 +620,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 join_block,
                 var_places,
                 span,
+                deref_vars,
             );
 
             block = next_block;
@@ -726,6 +772,16 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             // This ensures the body can find the local regardless of which
             // alternative's NodeID it references.
             self.locals.insert(binding.local, local);
+
+            let is_deref_place = src_place
+                .projection
+                .iter()
+                .any(|p| matches!(p, PlaceElem::Deref));
+            if matches!(binding.mode, crate::hir::BindingMode::ByValue) && is_deref_place {
+                self.place_bindings
+                    .insert(binding.local, src_place.clone());
+                continue;
+            }
 
             // Generate the appropriate rvalue based on binding mode
             let rvalue = match binding.mode {

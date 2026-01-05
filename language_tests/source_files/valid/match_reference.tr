@@ -1,0 +1,20 @@
+// Test: Match Reference
+// Checks matching on a reference to an enum.
+
+func main() {
+    let a = &Holder.value("hello, world")
+    match a {
+        case .value(value) => {
+            assert(*value == "hello, world", "Matched value check")
+        }
+        case .none => {
+            assert(false, "Should not be none")
+        }
+    }
+    std.print("PASS: Match reference working\n")
+}
+
+enum Holder {
+    case value(string)
+    case none
+}

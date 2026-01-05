@@ -22,6 +22,7 @@ extern "taro_rt" {
     func gc_memcpy(_ dst: GcPtr, _ src: *const uint8, _ len: usize)
     func __rt__string_data(_ s: string) -> *const uint8
     func __rt__string_len(_ s: string) -> usize
+    func __rt__string_eq(_ lhs: string, _ rhs: string) -> bool
 }
 
 // Intrinsics for type metadata and list operations
@@ -50,6 +51,10 @@ public func string_data(_ s: string) -> *const uint8 {
 
 public func string_len(_ s: string) -> usize {
     __rt__string_len(s)
+}
+
+public func string_eq(_ lhs: string, _ rhs: string) -> bool {
+    __rt__string_eq(lhs, rhs)
 }
 
 extend GcPtr {

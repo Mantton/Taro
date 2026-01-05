@@ -76,6 +76,7 @@ pub struct MirBuilder<'ctx, 'thir> {
     thir: &'thir thir::ThirFunction<'ctx>,
     body: Body<'ctx>,
     locals: FxHashMap<hir::NodeID, LocalId>,
+    place_bindings: FxHashMap<hir::NodeID, Place<'ctx>>,
     /// Tracks MIR locals by (arm_id, binding_name) for or-patterns.
     /// Ensures all alternatives in an or-pattern share the same local.
     arm_binding_locals: FxHashMap<(thir::ArmId, Symbol), LocalId>,
@@ -116,6 +117,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             thir: function,
             body,
             locals: FxHashMap::default(),
+            place_bindings: FxHashMap::default(),
             arm_binding_locals: FxHashMap::default(),
             cleanup_nodes: IndexVec::new(),
             current_cleanup: None,

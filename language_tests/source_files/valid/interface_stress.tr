@@ -1,0 +1,118 @@
+// Test: Interface Constraint Stress
+// Checks complex combinations of interface constraints and implementations.
+
+func main() {
+
+      let user = User { id: 42, name: "Alice" }
+
+      printEntity(user)
+
+      let e: any Entity = user
+      printIdent(e)
+
+      printStringContainer(user)
+      printIntContainer(user)
+      printAliasContainer(user)
+
+      showName(user)
+
+      assertString("ok")
+      sameType("a", "b")
+      sameType(1, 2)
+      
+      std.print("PASS: Constraint stress test\n")
+  }
+
+  interface Identifiable {
+      func identifier(&self) -> usize
+  }
+
+  interface Named {
+      func name(&self) -> string
+  }
+
+  // Entity extends both Identifiable + Named
+  interface Entity: Identifiable, Named {
+      func describe(&self) -> string
+  }
+
+  interface Container[T] {
+      func retrieve(&self) -> T
+  }
+
+  type Str = string
+  type UserName = string
+
+  struct User {
+      id: usize
+      name: string
+  }
+
+  extend User: Entity {
+      func identifier(&self) -> usize { self.id }
+      func name(&self) -> string { self.name }
+      func describe(&self) -> string { self.name }
+  }
+
+  extend User: Container[string] {
+      func retrieve(&self) -> string { self.name }
+  }
+
+  extend User: Container[usize] {
+      func retrieve(&self) -> usize { self.id }
+  }
+
+  func printEntity(_ value: any Entity) {
+      let str = value.describe()
+      assert(str == "Alice", "Describe check")
+
+      let id = value.identifier()
+      match id {
+          case 42 => {
+             assert(true, "ID ok")
+          }
+          case _ => assert(false, "ID mismatch")
+      }
+  }
+
+  func printIdent(_ value: any Identifiable) {
+      let id = value.identifier()
+      match id {
+          case 42 => {
+             assert(true, "Identifiable ok")
+          }
+          case _ => assert(false, "Identifiable fail")
+      }
+  }
+
+  func printStringContainer(_ value: any Container[string]) {
+      let str = value.retrieve()
+      assert(str == "Alice", "String container ok")
+  }
+
+  func printIntContainer(_ value: any Container[usize]) {
+      let id = value.retrieve()
+      match id {
+          case 42 => {
+             assert(true, "Int container ok")
+          }
+          case _ => assert(false, "Int container fail")
+      }
+  }
+
+  func printAliasContainer(_ value: any Container[UserName]) {
+      let str = value.retrieve()
+      assert(str == "Alice", "Inferred alias container lookup ok")
+  }
+
+  func showName[T: Named](_ value: T) {
+      let str = value.name()
+      assert(str == "Alice", "Named constraint ok")
+  }
+
+  func assertString[T](_ value: T) where T == Str {
+      assert(value == "ok", "Equality constraint ok")
+  }
+
+  func sameType[T, U](_ a: T, _ b: U) where T == U {
+  }

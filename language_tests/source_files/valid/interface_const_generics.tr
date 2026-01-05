@@ -1,0 +1,27 @@
+// Test: Interface Const Generics
+// Checks interfaces with constant generic parameters.
+
+func main() {
+    let user = User { id: 42, name: "Alice" }
+    takesOne(user)
+    std.print("PASS: Const generic interface dispatch\n")
+}
+
+interface Marker[const N: usize] {
+    func id(&self) -> usize
+}
+
+struct User {
+    id: usize
+    name: string
+}
+
+extend User: Marker[1] {
+    func id(&self) -> usize { self.id }
+}
+
+
+func takesOne(_ v: any Marker[1]) {
+    let val = v.id()
+    assert(val == 42, "Marker[1] dispatch failed")
+}

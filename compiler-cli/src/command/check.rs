@@ -94,7 +94,7 @@ fn run_single_file(arguments: CommandLineArguments) -> Result<(), ReportedError>
         is_script: true,
     });
 
-    println!("Checking – {}", file_stem);
+    eprintln!("Checking – {}", file_stem);
     let mut compiler = Compiler::new(&icx, config);
     let _ = compiler.check()?;
     Ok(())

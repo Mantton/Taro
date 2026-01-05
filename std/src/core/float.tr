@@ -1,0 +1,14 @@
+import std.hash.{Hashable, Hasher}
+import std.cmp.Equatable
+
+extend float: Hashable {
+    public func hash[H: Hasher](&self, into hasher: &mut H) {}
+    public operator ==(self, rhs: float) -> bool { self == rhs }
+    public operator !=(self, rhs: float) -> bool { self != rhs }
+}
+
+extend double: Hashable {
+    public func hash[H: Hasher](&self, into hasher: &mut H) {}
+    public operator ==(self, rhs: double) -> bool { self == rhs }
+    public operator !=(self, rhs: double) -> bool { self != rhs }
+}

@@ -18,6 +18,17 @@ pub extern "C" fn __rt__print(s: StringHeader) {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn __rt__eprint(s: StringHeader) {
+    if s.len == 0 || s.data.is_null() {
+        return;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(s.data, s.len) };
+    let mut out = std::io::stderr();
+    let _ = out.write_all(bytes);
+    let _ = out.flush();
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn __rt__string_data(s: StringHeader) -> *const u8 {
     s.data
 }
@@ -30,4 +41,20 @@ pub extern "C" fn __rt__string_len(s: StringHeader) -> usize {
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt__string_from_parts(data: *const u8, len: usize) -> StringHeader {
     StringHeader { data, len }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __rt__string_eq(lhs: StringHeader, rhs: StringHeader) -> bool {
+    if lhs.len != rhs.len {
+        return false;
+    }
+    if lhs.len == 0 {
+        return true;
+    }
+    if lhs.data.is_null() || rhs.data.is_null() {
+        return false;
+    }
+    let lhs_bytes = unsafe { std::slice::from_raw_parts(lhs.data, lhs.len) };
+    let rhs_bytes = unsafe { std::slice::from_raw_parts(rhs.data, rhs.len) };
+    lhs_bytes == rhs_bytes
 }

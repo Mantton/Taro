@@ -1,0 +1,12 @@
+// Test: Constants
+// Checks constant definitions.
+
+func main() {
+    assert(EXIT == 10, "Int constant fail")
+    assert(STR == "hello, world\n", "String constant fail")
+    
+    std.print("PASS: Constants working\n")
+}
+
+const EXIT: int32 = 10
+const STR: string = "hello, world\n"

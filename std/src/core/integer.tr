@@ -1,0 +1,72 @@
+import std.hash.{Hashable, Hasher}
+import std.cmp.Equatable
+
+// int8
+extend int8: Hashable {
+    public func hash[H: Hasher](&self, into hasher: &mut H) {}
+    public operator ==(self, rhs: int8) -> bool { self == rhs }
+    public operator !=(self, rhs: int8) -> bool { self != rhs }
+}
+
+// int16
+extend int16: Hashable {
+    public func hash[H: Hasher](&self, into hasher: &mut H) {}
+    public operator ==(self, rhs: int16) -> bool { self == rhs }
+    public operator !=(self, rhs: int16) -> bool { self != rhs }
+}
+
+// int32
+extend int32: Hashable {
+    public func hash[H: Hasher](&self, into hasher: &mut H) {}
+    public operator ==(self, rhs: int32) -> bool { self == rhs }
+    public operator !=(self, rhs: int32) -> bool { self != rhs }
+}
+
+// int64
+extend int64: Hashable {
+    public func hash[H: Hasher](&self, into hasher: &mut H) {}
+    public operator ==(self, rhs: int64) -> bool { self == rhs }
+    public operator !=(self, rhs: int64) -> bool { self != rhs }
+}
+
+// uint8
+extend uint8: Hashable {
+    public func hash[H: Hasher](&self, into hasher: &mut H) {}
+    public operator ==(self, rhs: uint8) -> bool { self == rhs }
+    public operator !=(self, rhs: uint8) -> bool { self != rhs }
+}
+
+// uint16
+extend uint16: Hashable {
+    public func hash[H: Hasher](&self, into hasher: &mut H) {}
+    public operator ==(self, rhs: uint16) -> bool { self == rhs }
+    public operator !=(self, rhs: uint16) -> bool { self != rhs }
+}
+
+// uint32
+extend uint32: Hashable {
+    public func hash[H: Hasher](&self, into hasher: &mut H) {}
+    public operator ==(self, rhs: uint32) -> bool { self == rhs }
+    public operator !=(self, rhs: uint32) -> bool { self != rhs }
+}
+
+// uint64
+extend uint64: Hashable {
+    public func hash[H: Hasher](&self, into hasher: &mut H) {}
+    public operator ==(self, rhs: uint64) -> bool { self == rhs }
+    public operator !=(self, rhs: uint64) -> bool { self != rhs }
+}
+
+// isize
+extend isize: Hashable {
+    public func hash[H: Hasher](&self, into hasher: &mut H) {}
+    public operator ==(self, rhs: isize) -> bool { self == rhs }
+    public operator !=(self, rhs: isize) -> bool { self != rhs }
+}
+
+// usize
+extend usize: Hashable {
+    public func hash[H: Hasher](&self, into hasher: &mut H) {}
+    public operator ==(self, rhs: usize) -> bool { self == rhs }
+    public operator !=(self, rhs: usize) -> bool { self != rhs }
+}

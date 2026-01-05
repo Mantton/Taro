@@ -1,8 +1,9 @@
 import std.hash.{Hashable, Hasher}
+import std.unsafe.string_eq
 
 struct _StringHeader {}
 
 extend string: Hashable {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
-    public operator ==(self, rhs: Self) -> bool { false }
+    public operator ==(self, rhs: Self) -> bool { string_eq(self, rhs) }
 }

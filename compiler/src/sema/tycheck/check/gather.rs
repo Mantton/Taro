@@ -83,11 +83,20 @@ impl<'cs, 'arena> GatherLocalsVisitor<'cs, 'arena> {
 
 impl HirVisitor for GatherLocalsVisitor<'_, '_> {
     fn visit_pattern(&mut self, p: &hir::Pattern) -> Self::Result {
-        let hir::PatternKind::Binding { .. } = &p.kind else {
-            return hir::walk_pattern(self, p);
-        };
+        match &p.kind {
+            hir::PatternKind::Reference { pattern, mutable } => {
+                let prev = self.pattern_mutable;
+                self.pattern_mutable = *mutable == Mutability::Mutable;
+                self.visit_pattern(pattern);
+                self.pattern_mutable = prev;
+                return;
+            }
+            hir::PatternKind::Binding { .. } => {
+                let _ = self.assign(p.span, p.id, None, self.pattern_mutable);
+            }
+            _ => {}
+        }
 
-        let _ = self.assign(p.span, p.id, None, self.pattern_mutable);
-        return hir::walk_pattern(self, p);
+        hir::walk_pattern(self, p)
     }
 }

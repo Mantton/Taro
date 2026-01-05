@@ -1,0 +1,21 @@
+// Test: Never Type Coercion
+// Checks that the Never type (!) coerces to any type.
+
+import std.process
+
+func diverge() -> ! {
+    loop {}
+}
+
+func test_exit() {
+    // These statements are unreachable but valid type check
+    if false {
+        let x: isize = process.exit(1); 
+        let y: string = process.exit(1); 
+    }
+}
+
+func main() {
+    // Only test valid compilation of coercions, don't run diverge/exit
+    std.print("PASS: Never type coercion compiles\n")
+}

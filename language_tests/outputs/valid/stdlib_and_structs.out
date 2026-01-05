@@ -1,0 +1,10 @@
+Hello From Taro
+
+Hello From Taro Concat!
+PASS: useFib
+PASS: withBlocks
+PASS: usePointCompute
+PASS: useTuple
+PASS: useAllocator
+All tests passed!
+Hello From Taro through C!

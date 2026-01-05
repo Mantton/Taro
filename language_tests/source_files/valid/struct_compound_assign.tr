@@ -1,0 +1,31 @@
+// Test: Struct Compound Assignment
+// Checks += operator overloading on a user-defined struct.
+
+func main() {
+    var p = Point(1, 1)
+    let a = &mut p  // a is &mut Point
+    let b = Point(2, 2)
+    
+    (*a += b)
+    
+    assert(p.x == 3, "x member += failed")
+    assert(p.y == 3, "y member += failed")
+    
+    std.print("PASS: Operator overload += working\n")
+}
+
+struct Point {
+    x: int32
+    y: int32
+}
+
+extend Point {
+    func new(_ x: int32, _ y: int32) -> Point {
+        Point { x, y }
+    }
+
+    operator +=(&mut self, rhs: Point) {
+        self.x = self.x + rhs.x
+        self.y = self.y + rhs.y
+    }
+}

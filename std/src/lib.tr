@@ -1,7 +1,23 @@
+import std.process
+
 extern "taro_rt" {
     func __rt__print(_ s: string)
+    func __rt__eprint(_ s: string)
 }
 
 public func print(_ s: string) {
     __rt__print(s)
+}
+
+public func eprint(_ s: string) {
+    __rt__eprint(s)
+}
+
+public func assert(_ condition: bool, _ message: string) {
+    if !condition {
+        eprint("assertion failed: ")
+        eprint(message)
+        eprint("\n")
+        process.exit(1)
+    }
 }

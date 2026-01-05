@@ -101,7 +101,7 @@ fn run_single_file(
         is_script: true,
     });
 
-    println!("Compiling – {}", file_stem);
+    eprintln!("Compiling – {}", file_stem);
     let mut compiler = Compiler::new(&icx, config);
     compiler.build()
 }
@@ -167,7 +167,7 @@ fn run_package(
         }
 
         let package_index = PackageIndex::new(index + 1);
-        println!("Compiling – {}", package.package.0);
+        eprintln!("Compiling – {}", package.package.0);
         let name = get_package_name(&package.package.0).map_err(|e| {
             icx.dcx.emit_error(
                 format!(
@@ -247,6 +247,7 @@ fn build_runtime(ctx: &CompilerContext<'_>, project_root: &PathBuf) -> Result<()
 
     let status = Command::new("cargo")
         .arg("build")
+        .arg("--quiet")
         .arg("-p")
         .arg("taro-runtime")
         .arg("--manifest-path")
@@ -287,7 +288,7 @@ fn compile_std<'a>(
     ctx: &'a CompilerContext<'a>,
     std_path: Option<PathBuf>,
 ) -> Result<(), ReportedError> {
-    println!("Compiling – std");
+    eprintln!("Compiling – std");
 
     let src = resolve_std_path(std_path).map_err(|e| {
         let message = format!("failed to resolve standard library location – {}", e);

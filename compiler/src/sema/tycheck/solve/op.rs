@@ -600,6 +600,13 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         });
                         return Some(obligations);
                     }
+                    (Rune, Rune) => {
+                        obligations.push(Obligation {
+                            location: data.span,
+                            goal: Goal::Equal(data.rho, gcx.types.bool),
+                        });
+                        return Some(obligations);
+                    }
                     _ => { /* not intrinsic */ }
                 }
             }

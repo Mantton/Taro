@@ -1,0 +1,31 @@
+// Test: Generic Inference
+// Checks generic type inference across functions and modules.
+
+func main() {
+    let a: uint32 = 10
+    let b = use(value: a)
+    let c = expose(b)
+
+    assert(c == 10, "Inference chain 1 failed")
+
+    let x = "Hello, World.\n"
+    let y = use(value: x)
+    let z = expose(y)
+
+    z |> std.print // Printing string works
+
+    let a1 = fibonacci(4)
+    assert(a1 == 3, "Fibonacci call failed") // fib(4) = 3 (0,1,1,2,3)
+
+    std.print("PASS: Generic inference functional\n")
+}
+
+func use[V](value: V) -> V { value }
+public func expose[T](_ value: T) -> T { value }
+
+func fibonacci(_ n: uint32) -> uint32 {
+    if n <= 1 {
+        return n
+    }
+    return fibonacci(n - 1) + fibonacci(n - 2)
+}

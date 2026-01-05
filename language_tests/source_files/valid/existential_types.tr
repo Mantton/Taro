@@ -1,0 +1,51 @@
+// Test: Existential Types
+// Checks existential type definitions (any Protocol) and dynamic dispatch.
+
+func main() {
+    std.print("Hello, World.\n")
+    let user = User { id: 1, name: "John Appleseed" }
+    printEntity(user)
+    
+    // Test with root user
+    let root = User { id: 0, name: "Root" }
+    printEntity(root)
+}
+
+interface Entity {
+    func name(&self) -> string
+}
+
+interface Identifable {
+    func identifier(&self) -> usize
+}
+
+struct User {
+    id: usize
+    name: string
+}
+
+extend User: Entity, Identifable {
+    func name(&self) -> string {
+        self.name
+    }
+
+    func identifier(&self) -> usize {
+        self.id
+    }
+}
+
+type IdentifableEntity = any Identifable & Entity
+
+func printEntity(_ value: IdentifableEntity) {
+    let str = value.name()
+    let id = value.identifier()
+
+    match id {
+        case 0 => {
+            std.print("PASS: Root User!\n")
+        }
+        case _ => {
+            std.print("PASS: Regular User!\n")
+        }
+    }
+}

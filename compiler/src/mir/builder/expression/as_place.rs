@@ -31,8 +31,15 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
         match &expr.kind {
             ExprKind::Local(id) => {
-                let local = *self.locals.get(id).expect("lhs local");
-                block.and(PlaceBuilder::from_local(local))
+                if let Some(place) = self.place_bindings.get(id) {
+                    block.and(PlaceBuilder {
+                        base: place.local,
+                        projection: place.projection.clone(),
+                    })
+                } else {
+                    let local = *self.locals.get(id).expect("lhs local");
+                    block.and(PlaceBuilder::from_local(local))
+                }
             }
             ExprKind::Deref(expr_id) => {
                 let mut base = unpack!(block = self.expr_as_place(block, *expr_id, mutability));

@@ -1,0 +1,31 @@
+// Test: Associated Types Basic
+// Checks implementation and usage of associated types in interfaces.
+
+type int = isize
+interface Container {
+    type Item
+    func get(&self) -> Self.Item
+}
+
+struct IntBox {
+    value: int
+}
+
+extend IntBox: Container {
+    type Item = int
+    func get(&self) -> int {
+        self.value
+    }
+}
+
+func takeItem[T: Container](_ c: T) -> T.Item {
+    let v: T.Item = c.get()
+    v
+}
+
+func main() {
+    let box = IntBox { value: 42 }
+    let x = takeItem(box)
+    assert(x == 42, "Associated type retrieval failed")
+    std.print("PASS: Associated types basic\n")
+}

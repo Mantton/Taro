@@ -1,0 +1,43 @@
+// Test: Generic Structs and Methods
+// Checks generic structs, extension methods, and type parameters.
+
+func main() {
+    let a = 10
+    let x = Pair(fst: a, snd: a)
+    let y = Pair { fst: 10, snd: 10 }
+    
+    let z = y.use()
+    assert(z == 10, "Method call on generic struct failed")
+    assert(x.fst == 10, "Field access on generic struct failed")
+    
+    let res = x.fst + z
+    assert(res == 20, "Result calculation failed")
+    
+    usingDict()
+    std.print("PASS: Generic structs and methods working\n")
+}
+
+struct Pair[T] {
+    fst: T
+    snd: T
+}
+
+extend[T] Pair[T] {
+    func new(fst: T, snd: T) -> Pair[T] {
+        Pair { fst, snd }
+    }
+
+    func use(&self) -> T {
+        self.snd
+    }
+}
+
+struct Dictionary[T, V] {
+    key: T
+    value: V
+}
+
+func usingDict() {
+    let a = Dictionary { key: 'A', value: 10 }
+    assert(a.value == 10, "Dictionary value check")
+}

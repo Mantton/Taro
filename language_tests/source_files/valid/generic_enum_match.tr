@@ -1,0 +1,31 @@
+// Test: Generic Enum Matching
+// Checks pattern matching on generic Enums.
+
+func main() {
+    let a = Custom.value("Hello, World.\n")
+
+    match a {
+        case Custom.empty => {
+            assert(false, "Should not match empty")
+        }
+        case Custom.value(str) => {
+            assert(true, "Matched value variant")
+        }
+    }
+    
+    let b: Custom[int32] = Custom.empty
+    match b {
+        case Custom.empty => {
+             std.print("PASS: Generic enum match working\n")
+        }
+        case Custom.value(_) => {
+             assert(false, "Should match empty")
+        }
+    }
+}
+
+
+enum Custom[T] {
+    case empty
+    case value(T)
+}

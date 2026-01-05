@@ -1,0 +1,29 @@
+// Test: Struct Operator Overloading
+// Checks + operator overloading on a user-defined struct.
+
+func main() {
+    std.print("Hello from Taro!\n")
+    let a = Point(1, 1)
+    let b = Point(2, 2)
+    let c = a + b
+    
+    assert(c.x == 3, "x member addition failed")
+    assert(c.y == 3, "y member addition failed")
+    
+    std.print("PASS: Operator overload + working\n")
+}
+
+struct Point {
+    x: int32
+    y: int32
+}
+
+extend Point {
+    func new(_ x: int32, _ y: int32) -> Point {
+        Point { x, y }
+    }
+
+    operator +(self, rhs: Point) -> Point {
+        Point { x: self.x + rhs.x, y: self.y + rhs.y }
+    }
+}

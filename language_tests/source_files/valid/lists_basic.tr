@@ -1,0 +1,10 @@
+// Test: Lists Basic
+// Checks basic list creation and append.
+
+func main() {
+    var a: [string] = List()
+    a.append("Hello, World")
+    
+    
+    std.print("PASS: Lists basic usage\n")
+}

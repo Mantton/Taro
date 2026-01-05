@@ -1,0 +1,33 @@
+// Test: Array Methods Access
+// Checks array access methods and bounds checking simulation.
+
+func main() {
+    let a: [bool; 10] = [true; 10]
+    let b = a.len()
+    let c = array_len(&a)
+
+    assert(b == c, "Len check")
+
+    var i: usize = 0
+
+    while i < a.len() {
+        let element = a.at(i)
+        assert(*element == true, "Element value check")
+        i += 1
+    }
+
+    let oor = a.get(20)
+
+    match oor {
+        case .some(value) => assert(false, "Should be out of range")
+        case .none => {
+            assert(true, "Out of range correctly detected")
+        }
+    }
+    
+    std.print("PASS: Array methods access\n")
+}
+
+func array_len[T, const N: usize](_ arr: &[T; N]) -> usize {
+    N
+}

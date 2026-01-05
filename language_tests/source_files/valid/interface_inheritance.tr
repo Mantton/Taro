@@ -1,0 +1,56 @@
+// Test: Interface Inheritance
+// Checks interface inheritance and super-interface calls.
+
+func main() {
+    std.print("=== Super-Interface Test ===\n")
+
+    let user = User { id: 42, name: "Alice" }
+
+    // Pass as Entity (which requires Identifiable)
+    printEntity(user)
+    
+    std.print("PASS: Interface inheritance\n")
+}
+
+// Base interface
+interface Identifiable {
+    func identifier(&self) -> usize
+}
+
+// Entity extends Identifiable (super-interface)
+interface Entity: Identifiable {
+    func name(&self) -> string
+}
+
+struct User {
+    id: usize
+    name: string
+}
+
+// User conforms to Entity (implicitly Identifiable)
+extend User: Entity {
+    func identifier(&self) -> usize {
+        self.id
+    }
+
+    func name(&self) -> string {
+        self.name
+    }
+}
+
+func printEntity(_ value: any Entity) {
+    // Call method from Entity
+    let str = value.name()
+    assert(str == "Alice", "Name check failed")
+
+    // Call method from super-interface Identifiable
+    let id = value.identifier()
+    match id {
+        case 42 => {
+            assert(true, "ID matched")
+        }
+        case _ => {
+            assert(false, "ID mismatch")
+        }
+    }
+}

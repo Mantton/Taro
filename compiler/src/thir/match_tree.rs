@@ -18,6 +18,7 @@ use std::collections::{HashMap, HashSet};
 pub struct MatchTree<'ctx> {
     pub root_var: Variable<'ctx>,
     pub decision: Decision<'ctx>,
+    pub deref_vars: Vec<DerefVar>,
 }
 
 /// Diagnostics from match compilation.
@@ -32,6 +33,12 @@ pub struct Diagnostics {
 pub struct MatchReport<'ctx> {
     pub tree: MatchTree<'ctx>,
     pub diagnostics: Diagnostics,
+}
+
+#[derive(Clone, Debug)]
+pub struct DerefVar {
+    pub deref: usize,
+    pub base: usize,
 }
 
 /// A captured binding from a pattern.
@@ -148,6 +155,7 @@ pub fn compile_match<'ctx>(
             tree: MatchTree {
                 root_var: scrutinee_var,
                 decision: Decision::Failure,
+                deref_vars: Vec::new(),
             },
             diagnostics: Diagnostics {
                 missing: false,
@@ -164,6 +172,7 @@ pub fn compile_match<'ctx>(
                 tree: MatchTree {
                     root_var: scrutinee_var,
                     decision: Decision::Failure,
+                    deref_vars: Vec::new(),
                 },
                 diagnostics: Diagnostics {
                     missing: false,
@@ -184,6 +193,7 @@ pub fn compile_match<'ctx>(
         tree: MatchTree {
             root_var: scrutinee_var,
             decision,
+            deref_vars: compiler.deref_vars,
         },
         diagnostics,
     }
@@ -329,6 +339,8 @@ struct Compiler<'ctx> {
     variable_id: usize,
     gcx: GlobalContext<'ctx>,
     diagnostics: Diagnostics,
+    deref_vars: Vec<DerefVar>,
+    deref_var_map: HashMap<usize, Variable<'ctx>>,
 }
 
 impl<'ctx> Compiler<'ctx> {
@@ -340,6 +352,8 @@ impl<'ctx> Compiler<'ctx> {
                 missing: false,
                 reachable: Vec::new(),
             },
+            deref_vars: Vec::new(),
+            deref_var_map: HashMap::new(),
         }
     }
 
@@ -607,14 +621,17 @@ impl<'ctx> Compiler<'ctx> {
             let mut new_columns = Vec::with_capacity(row.columns.len());
             for col in row.columns.drain(..) {
                 let mut pattern = col.pattern;
+                let mut variable = col.variable;
 
                 loop {
                     match pattern.kind {
                         PatternKind::Deref { pattern: inner } => {
-                            pattern = *inner;
+                            let inner = *inner;
+                            variable = self.deref_variable(variable, inner.ty);
+                            pattern = inner;
                         }
                         _ => {
-                            new_columns.push(Column::new(col.variable, pattern));
+                            new_columns.push(Column::new(variable, pattern));
                             break;
                         }
                     }
@@ -648,6 +665,19 @@ impl<'ctx> Compiler<'ctx> {
             ty,
         };
         self.variable_id += 1;
+        var
+    }
+
+    fn deref_variable(&mut self, base: Variable<'ctx>, inner_ty: Ty<'ctx>) -> Variable<'ctx> {
+        if let Some(var) = self.deref_var_map.get(&base.id) {
+            return *var;
+        }
+        let var = self.new_variable(inner_ty);
+        self.deref_var_map.insert(base.id, var);
+        self.deref_vars.push(DerefVar {
+            deref: var.id,
+            base: base.id,
+        });
         var
     }
 

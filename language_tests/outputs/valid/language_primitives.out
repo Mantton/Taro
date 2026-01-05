@@ -1,0 +1,8 @@
+PASS: usePlain
+PASS: useLocalIdentifier
+PASS: useNonOverloadCall
+PASS: useOverloadCall
+PASS: useUnaryOperator
+PASS: useBinaryOperator
+PASS: useIfElse
+All tests passed!
