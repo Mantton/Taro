@@ -879,6 +879,7 @@ impl Parser {
         self.expect(Token::Struct)?;
         let identifier = self.parse_identifier()?;
         let type_parameters = self.parse_type_parameters()?;
+        let conformances = self.parse_conformances()?;
         let where_clause = self.parse_generic_where_clause()?;
         let generics = Generics {
             type_parameters,
@@ -887,7 +888,7 @@ impl Parser {
 
         let fields = self.parse_field_definitions(Delimiter::Brace)?;
 
-        let s = Struct { generics, fields };
+        let s = Struct { generics, fields, conformances };
         let s = DeclarationKind::Struct(s);
         Ok((identifier, s))
     }
@@ -896,6 +897,7 @@ impl Parser {
         self.expect(Token::Enum)?;
         let identifier = self.parse_identifier()?;
         let type_parameters = self.parse_type_parameters()?;
+        let conformances = self.parse_conformances()?;
         let where_clause = self.parse_generic_where_clause()?;
         let generics = Generics {
             type_parameters,
@@ -905,7 +907,7 @@ impl Parser {
         let cases = self.parse_delimiter_sequence(Delimiter::Brace, Token::Semicolon, |this| {
             this.parse_enum_case()
         })?;
-        let e = Enum { generics, cases };
+        let e = Enum { generics, cases, conformances };
         Ok((identifier, DeclarationKind::Enum(e)))
     }
 }

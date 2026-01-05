@@ -83,6 +83,9 @@ def run_test(file_path: Path):
         relative_path = file_path.relative_to(SOURCE_FILES_DIR)
         output_file_path = OUTPUTS_DIR / relative_path.with_suffix(".out")
 
+        # Determine if this is an "invalid" test (expected to fail compilation)
+        is_invalid_test = "invalid" in str(relative_path)
+
         # Ensure output directory exists
         output_file_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -108,22 +111,38 @@ def run_test(file_path: Path):
             cmd, capture_output=True, text=True, cwd=PROJECT_ROOT, env=env
         )
 
-        # Only capture stdout for test output - stderr is for errors only
-        actual_output = result.stdout
-
-        # If compilation failed (exit code != 0), report failure UNLESS it's an invalid test case
-        # For now assuming 'valid' means exit code 0
-        if result.returncode != 0:
-            # If we are in 'valid' folder, this is a failure
-            if "valid" in str(file_path):
+        if is_invalid_test:
+            # For invalid tests, we expect compilation to fail
+            if result.returncode == 0:
+                return (
+                    False,
+                    "Expected compilation to fail",
+                    {"stdout": result.stdout, "stderr": result.stderr},
+                )
+            
+            # For invalid tests, compare stderr (error output) against expected
+            actual_output = result.stderr
+            
+            # Normalize the error output: extract just the error lines
+            # (skip compilation progress messages like "Compiling – std")
+            error_lines = [line for line in actual_output.split('\n') 
+                          if line.startswith('error:') or 
+                             (line.strip().startswith('->')  or line.strip().startswith('^') or
+                              (line.strip() and not line.startswith('Compiling')))]
+            actual_output = '\n'.join(error_lines).strip() + '\n' if error_lines else ''
+        else:
+            # For valid tests, we expect compilation to succeed
+            if result.returncode != 0:
                 return (
                     False,
                     "Runtime error",
                     {
                         "stderr": result.stderr,
-                        "stdout": actual_output,
+                        "stdout": result.stdout,
                     },
                 )
+            # Only capture stdout for valid test output
+            actual_output = result.stdout
 
         # Check if output file exists
         if not output_file_path.exists():

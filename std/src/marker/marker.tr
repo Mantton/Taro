@@ -1,0 +1,33 @@
+// Marker interfaces for move semantics
+
+/// A marker interface indicating that a type can be copied by value.
+///
+/// Types that implement Copyable are duplicated when assigned or passed
+/// to functions, rather than being moved. Primitives (int, bool, etc.)
+/// are implicitly Copyable.
+///
+/// To make a struct Copyable, all of its fields must also be Copyable:
+/// ```
+/// struct Point: Copyable {
+///     x: int32
+///     y: int32
+/// }
+/// ```
+public interface Copyable {}
+
+/// A marker interface indicating that a type can be explicitly cloned.
+///
+/// Unlike Copyable, Clone requires an explicit call to `.clone()` to
+/// duplicate a value. This is useful for types where copying might be
+/// expensive or have side effects.
+///
+/// ```
+/// struct Buffer: Clone {
+///     func clone(&self) -> Self {
+///         // Create a deep copy
+///     }
+/// }
+/// ```
+public interface Clone {
+    func clone(&self) -> Self
+}

@@ -333,6 +333,7 @@ impl Actor<'_, '_> {
                 .into_iter()
                 .map(|n| self.lower_field_definition(n))
                 .collect(),
+            conformances: node.conformances.map(|n| self.lower_conformances(n)),
         }
     }
 
@@ -345,6 +346,7 @@ impl Actor<'_, '_> {
                 .flat_map(|c| c.variants)
                 .map(|v| self.lower_variant(v))
                 .collect(),
+            conformances: node.conformances.map(|n| self.lower_conformances(n)),
         }
     }
 

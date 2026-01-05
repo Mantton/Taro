@@ -1,0 +1,4 @@
+error: use of moved value 'x'
+ -> language_tests/source_files/invalid/use_after_move.tr:13:12
+	    let z = x  // ERROR: use of moved value 'x'
+	            ^

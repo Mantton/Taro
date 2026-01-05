@@ -1,0 +1,15 @@
+// Test: Use After Move Error
+// This file should fail to compile because a moved value is used after the move.
+
+struct NoCopy {
+    value: int32
+}
+
+// NoCopy is NOT Copyable, so it will be moved
+
+func main() {
+    let x = NoCopy { value: 42 }
+    let y = x  // move, x is now invalid
+    let z = x  // ERROR: use of moved value 'x'
+    std.print("This should not compile\n")
+}

@@ -43,10 +43,11 @@ func main() {
   type Str = string
   type UserName = string
 
-  struct User {
+  struct User: Copyable {
       id: usize
       name: string
   }
+
 
   extend User: Entity {
       func identifier(&self) -> usize { self.id }

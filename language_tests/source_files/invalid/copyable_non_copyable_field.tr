@@ -1,0 +1,18 @@
+// Test: Cannot Derive Copyable with Non-Copyable Field
+// A struct with a non-Copyable field cannot derive Copyable.
+
+struct NoCopy {
+    value: int32
+}
+
+// NoCopy is NOT Copyable
+
+// ERROR: cannot derive Copyable for 'Wrapper': field 'inner' is not Copyable
+struct Wrapper: Copyable {
+    inner: NoCopy
+}
+
+func main() {
+    let w = Wrapper { inner: NoCopy { value: 42 } }
+    std.print("This should not compile\n")
+}

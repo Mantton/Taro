@@ -1,0 +1,4 @@
+error: cannot derive Copyable for 'Wrapper': field 'inner' of type 'NoCopy' is not Copyable
+ -> language_tests/source_files/invalid/copyable_non_copyable_field.tr:11:16
+	struct Wrapper: Copyable {
+	                ^^^^^^^^

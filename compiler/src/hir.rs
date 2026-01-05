@@ -82,12 +82,14 @@ pub struct Interface {
 pub struct Struct {
     pub generics: Generics,
     pub fields: Vec<FieldDefinition>,
+    pub conformances: Option<Conformances>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Enum {
     pub generics: Generics,
     pub variants: Vec<Variant>,
+    pub conformances: Option<Conformances>,
 }
 
 #[derive(Debug, Clone)]
@@ -653,6 +655,27 @@ impl StdType {
     }
 }
 
+/// Well-known standard library interfaces for move semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StdInterface {
+    /// Marker interface for types that can be copied by value.
+    Copyable,
+    /// Interface for types that can be explicitly cloned.
+    Clone,
+}
+
+impl StdInterface {
+    pub fn name_str(self) -> &'static str {
+        match self {
+            StdInterface::Copyable => "Copyable",
+            StdInterface::Clone => "Clone",
+        }
+    }
+
+    /// Returns all standard interfaces for iteration.
+    pub const ALL: [StdInterface; 2] = [StdInterface::Copyable, StdInterface::Clone];
+}
+
 // MARK - Visitor
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AssocContext {
@@ -1006,12 +1029,18 @@ pub fn walk_interface<V: HirVisitor>(
 
 pub fn walk_struct<V: HirVisitor>(visitor: &mut V, node: &Struct) -> V::Result {
     try_visit!(visitor.visit_generics(&node.generics));
+    if let Some(conformances) = &node.conformances {
+        try_visit!(visitor.visit_conformances(conformances));
+    }
     walk_list!(visitor, visit_field_definition, &node.fields);
     V::Result::output()
 }
 
 pub fn walk_enum<V: HirVisitor>(visitor: &mut V, node: &Enum) -> V::Result {
     try_visit!(visitor.visit_generics(&node.generics));
+    if let Some(conformances) = &node.conformances {
+        try_visit!(visitor.visit_conformances(conformances));
+    }
     walk_list!(visitor, visit_variant, &node.variants);
     V::Result::output()
 }

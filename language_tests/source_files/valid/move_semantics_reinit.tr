@@ -1,0 +1,38 @@
+// Test: Move Semantics - Move and Reinitialization
+// Checks that moved values can be reinitialized and used again.
+
+struct NoCopy {
+    value: int32
+}
+
+func main() {
+    test_reinitialize_after_move()
+    test_move_in_if_else()
+    std.print("PASS: Move and reinitialization work correctly\n")
+}
+
+func test_reinitialize_after_move() {
+    var x = NoCopy { value: 42 }
+    let y = x  // move, x is now invalid
+
+    // Reinitialize x
+    x = NoCopy { value: 100 }
+    
+    // Now x is valid again
+    assert(x.value == 100, "Reinitialized value should be 100")
+    assert(y.value == 42, "Moved value should be 42")
+}
+
+func test_move_in_if_else() {
+    var x = NoCopy { value: 1 }
+    let condition = true
+    
+    if condition {
+        x = NoCopy { value: 2 }
+    } else {
+        x = NoCopy { value: 3 }
+    }
+    
+    // x is definitely initialized on both branches
+    assert(x.value == 2, "Value after conditional assignment")
+}

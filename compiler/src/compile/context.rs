@@ -4,7 +4,7 @@ use crate::{
     compile::config::Config,
     diagnostics::DiagCtx,
     error::CompileResult,
-    hir::{self, DefinitionID},
+    hir::{self, DefinitionID, StdInterface},
     mir::{self, Body},
     sema::{
         models::{
@@ -26,6 +26,7 @@ use crate::{constants::STD_PREFIX, span::Symbol};
 use bumpalo::Bump;
 use ecow::EcoString;
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::cell::OnceCell;
 use std::rc::Rc;
 use std::{cell::RefCell, ops::Deref, path::PathBuf};
 
@@ -458,6 +459,87 @@ impl<'arena> GlobalContext<'arena> {
         })
     }
 
+    /// Returns the DefinitionID for a well-known standard library interface.
+    /// Uses a cached lookup that's initialized on first access.
+    pub fn std_interface_def(self, iface: StdInterface) -> Option<DefinitionID> {
+        self.context
+            .store
+            .std_interfaces
+            .get_or_init(|| self.collect_std_interfaces())
+            .get(&iface)
+            .copied()
+    }
+
+    fn collect_std_interfaces(self) -> FxHashMap<StdInterface, DefinitionID> {
+        let mut map = FxHashMap::default();
+        for iface in StdInterface::ALL {
+            if let Some(id) = self.find_std_type(iface.name_str()) {
+                map.insert(iface, id);
+            }
+        }
+        map
+    }
+
+    /// Checks if a type implements the Copyable interface.
+    /// Primitives, references, pointers, and function pointers are implicitly copyable.
+    /// Structs/enums must explicitly implement Copyable.
+    pub fn is_type_copyable(self, ty: Ty<'arena>) -> bool {
+        match ty.kind() {
+            // Primitives - always copyable
+            TyKind::Int(_) | TyKind::UInt(_) | TyKind::Float(_) | TyKind::Bool | TyKind::Rune => {
+                true
+            }
+
+            // String is copyable (it's a GC-managed reference, copying is cheap)
+            TyKind::String => true,
+
+            // References and pointers - always copyable (copy the reference itself)
+            TyKind::Reference(..) | TyKind::Pointer(..) => true,
+
+            // Never type - vacuously copyable
+            TyKind::Never => true,
+
+            // Tuples - copyable if all elements are copyable
+            TyKind::Tuple(elements) => elements.iter().all(|e| self.is_type_copyable(*e)),
+
+            // Arrays - copyable if element is copyable
+            TyKind::Array { element, .. } => self.is_type_copyable(element),
+
+            // ADTs (struct/enum) - check conformance to Copyable interface
+            TyKind::Adt(def, _) => {
+                let Some(copyable_def) = self.std_interface_def(StdInterface::Copyable) else {
+                    return false; // No Copyable interface defined
+                };
+                let type_head = TypeHead::Nominal(def.id);
+                // Create InterfaceReference with empty arguments (marker interface)
+                let copyable_ref = InterfaceReference {
+                    id: copyable_def,
+                    arguments: &[],
+                };
+                crate::sema::tycheck::resolve_conformance_witness(self, type_head, copyable_ref)
+                    .is_some()
+            }
+
+            // Function pointers - copyable
+            TyKind::FnPointer { .. } => true,
+
+            // GC pointers - copyable (GC manages ownership)
+            TyKind::GcPtr => true,
+
+            // Boxed existentials - NOT copyable (unknown underlying type)
+            TyKind::BoxedExistential { .. } => false,
+
+            // Type parameters - check bounds (for now, assume not copyable)
+            TyKind::Parameter(_) => false,
+
+            // Aliases - resolve and check
+            TyKind::Alias { .. } => false, // TODO: resolve alias and check
+
+            // Error/Infer - assume not copyable for safety
+            TyKind::Error | TyKind::Infer(_) => false,
+        }
+    }
+
     pub fn definition_visibility(self, id: DefinitionID) -> Visibility {
         let output = self.resolution_output(id.package());
         output
@@ -631,6 +713,8 @@ pub struct CompilerStore<'arena> {
     pub compiled_instances: RefCell<FxHashSet<Instance<'arena>>>,
     /// Target-specific layout information (shared between MIR and codegen).
     pub target_layout: TargetLayout,
+    /// Cached lookup of well-known standard library interfaces (Copyable, Clone).
+    pub std_interfaces: OnceCell<FxHashMap<StdInterface, DefinitionID>>,
 }
 
 impl<'arena> CompilerStore<'arena> {
@@ -655,6 +739,7 @@ impl<'arena> CompilerStore<'arena> {
             specialization_instances: Default::default(),
             compiled_instances: Default::default(),
             target_layout,
+            std_interfaces: OnceCell::new(),
         })
     }
 

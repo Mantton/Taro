@@ -81,9 +81,10 @@ interface Printable {
     func print(&self)
 }
 
-struct MyValue {
+struct MyValue: Copyable {
     value: int32
 }
+
 
 extend MyValue: Printable {
     func print(&self) {}

@@ -148,12 +148,14 @@ pub struct Interface {
 pub struct Struct {
     pub generics: Generics,
     pub fields: Vec<FieldDefinition>,
+    pub conformances: Option<Conformances>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Enum {
     pub generics: Generics,
     pub cases: Vec<EnumCase>,
+    pub conformances: Option<Conformances>,
 }
 
 #[derive(Debug, Clone)]
@@ -1820,12 +1822,18 @@ pub fn walk_block<V: AstVisitor>(visitor: &mut V, block: &Block) -> V::Result {
 #[inline]
 pub fn walk_struct_definition<V: AstVisitor>(visitor: &mut V, node: &Struct) -> V::Result {
     try_visit!(visitor.visit_generics(&node.generics));
+    if let Some(conformances) = &node.conformances {
+        try_visit!(visitor.visit_conformance(conformances));
+    }
     walk_list!(visitor, visit_field_definition, &node.fields);
     V::Result::output()
 }
 #[inline]
 pub fn walk_enum_definition<V: AstVisitor>(visitor: &mut V, node: &Enum) -> V::Result {
     try_visit!(visitor.visit_generics(&node.generics));
+    if let Some(conformances) = &node.conformances {
+        try_visit!(visitor.visit_conformance(conformances));
+    }
     let variants: Vec<&Variant> = node.cases.iter().flat_map(|v| &v.variants).collect();
     walk_list!(visitor, visit_enum_variant, variants);
     V::Result::output()

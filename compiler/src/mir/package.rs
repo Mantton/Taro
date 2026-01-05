@@ -23,6 +23,9 @@ pub fn build_package<'ctx>(
         // Validate mutable borrows
         super::validate::validate_mutability(gcx, &body)?;
 
+        // Validate use-after-move
+        super::validate::validate_moves(gcx, &body)?;
+
         // let ident = gcx.definition_ident(id);
         // println!("{} MIR", ident.symbol);
         // println!("{}", super::pretty::PrettyPrintMir { body: &body, gcx });

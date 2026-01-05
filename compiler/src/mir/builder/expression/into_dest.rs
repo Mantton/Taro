@@ -23,7 +23,13 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let block_and = match &expr.kind {
             ExprKind::Local(..) => {
                 let place = unpack!(block = self.as_place(block, expr_id));
-                let rvalue = Rvalue::Use(Operand::Copy(place));
+                // Use Copy for copyable types, Move for non-copyable types
+                let operand = if self.gcx.is_type_copyable(expr.ty) {
+                    Operand::Copy(place)
+                } else {
+                    Operand::Move(place)
+                };
+                let rvalue = Rvalue::Use(operand);
                 self.push_assign(block, destination, rvalue, expr.span);
                 block.unit()
             }
@@ -225,7 +231,13 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             ExprKind::Deref(..) | ExprKind::Field { .. } => {
                 debug_assert!(matches!(Category::of(&expr.kind), Category::Place));
                 let place = unpack!(block = self.as_place(block, expr_id));
-                let rvalue = Rvalue::Use(Operand::Copy(place));
+                // Use Copy for copyable types, Move for non-copyable types
+                let operand = if self.gcx.is_type_copyable(expr.ty) {
+                    Operand::Copy(place)
+                } else {
+                    Operand::Move(place)
+                };
+                let rvalue = Rvalue::Use(operand);
                 self.push_assign(block, destination, rvalue, expr.span);
                 block.unit()
             }
@@ -785,8 +797,13 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             // Generate the appropriate rvalue based on binding mode
             let rvalue = match binding.mode {
                 crate::hir::BindingMode::ByValue => {
-                    // Move or copy the value
-                    Rvalue::Use(Operand::Copy(src_place.clone()))
+                    // Use Copy for copyable types, Move for non-copyable types
+                    let operand = if self.gcx.is_type_copyable(binding.ty) {
+                        Operand::Copy(src_place.clone())
+                    } else {
+                        Operand::Move(src_place.clone())
+                    };
+                    Rvalue::Use(operand)
                 }
                 crate::hir::BindingMode::ByRef(mutability) => {
                     // Take a reference to the place
