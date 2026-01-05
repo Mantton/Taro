@@ -191,7 +191,7 @@ pub fn tokenize_file(file: FileID, path: PathBuf, dcx: &DiagCtx) -> Result<File,
     lexer.tokenize()
 }
 
-struct Lexer {
+pub struct Lexer {
     source: Vec<char>,
     file: FileID,
 
@@ -218,7 +218,7 @@ impl Lexer {
 }
 
 impl Lexer {
-    fn tokenize(mut self) -> Result<File, LexerError> {
+    pub fn tokenize(mut self) -> Result<File, LexerError> {
         while self.has_next() {
             self.anchor = self.position();
             let case = match self.next_token() {

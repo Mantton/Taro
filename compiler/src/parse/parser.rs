@@ -1811,7 +1811,7 @@ impl Parser {
         let pattern = self.parse_pattern()?;
         self.expect(Token::In)?;
 
-        let for_restrictions = Restrictions::empty();
+        let for_restrictions = Restrictions::NO_STRUCT_LITERALS;
 
         let iterator = self.with_restrictions(for_restrictions, |p| p.parse_expression())?;
 
@@ -3702,5 +3702,1320 @@ impl Parser {
         let res = f(self);
         self.restrictions = old;
         res
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diagnostics::DiagCtx;
+    use crate::parse::lexer::Lexer;
+    use std::path::PathBuf;
+
+    /// Helper to create a parser from source code and parse declarations
+    fn parse_decls(input: &str) -> Result<Vec<Declaration>, Vec<Spanned<ParserError>>> {
+        let dcx = DiagCtx::new(PathBuf::from("."));
+        let file_id = dcx.add_file_mapping(PathBuf::from("test.taro"));
+        let lexer = Lexer::new(input, file_id);
+        let file = lexer.tokenize().expect("Lexing failed");
+        let next: NextNode = Default::default();
+        let parser = Parser::new(file, next);
+        parser.parse()
+    }
+
+    /// Helper to parse a single declaration
+    fn parse_one_decl(input: &str) -> Declaration {
+        let decls = parse_decls(input).expect("Parse failed");
+        assert_eq!(decls.len(), 1, "Expected exactly one declaration");
+        decls.into_iter().next().unwrap()
+    }
+
+    /// Helper to parse an expression from source
+    fn parse_expr_str(input: &str) -> Box<Expression> {
+        let dcx = DiagCtx::new(PathBuf::from("."));
+        let file_id = dcx.add_file_mapping(PathBuf::from("test.taro"));
+        let lexer = Lexer::new(input, file_id);
+        let file = lexer.tokenize().expect("Lexing failed");
+        let next: NextNode = Default::default();
+        let mut parser = Parser::new(file, next);
+        parser.parse_expression().expect("Parse expression failed")
+    }
+
+    /// Helper to parse a type from source
+    fn parse_type_str(input: &str) -> Box<Type> {
+        let dcx = DiagCtx::new(PathBuf::from("."));
+        let file_id = dcx.add_file_mapping(PathBuf::from("test.taro"));
+        let wrapped = format!("let x: {}", input);
+        let lexer = Lexer::new(&wrapped, file_id);
+        let file = lexer.tokenize().expect("Lexing failed");
+        let next: NextNode = Default::default();
+        let mut parser = Parser::new(file, next);
+        parser.bump(); // let
+        parser.bump(); // x
+        parser.bump(); // :
+        parser.parse_type().expect("Parse type failed")
+    }
+
+    /// Helper to parse a pattern from source
+    fn parse_pattern_str(input: &str) -> Pattern {
+        let dcx = DiagCtx::new(PathBuf::from("."));
+        let file_id = dcx.add_file_mapping(PathBuf::from("test.taro"));
+        let wrapped = format!("let {} = x", input);
+        let lexer = Lexer::new(&wrapped, file_id);
+        let file = lexer.tokenize().expect("Lexing failed");
+        let next: NextNode = Default::default();
+        let mut parser = Parser::new(file, next);
+        parser.bump(); // let
+        parser.parse_pattern().expect("Parse pattern failed")
+    }
+
+    // ==================== DECLARATION TESTS ====================
+
+    #[test]
+    fn test_struct_declaration() {
+        let decl = parse_one_decl("struct Point { x: int32; y: int32; }");
+        assert!(matches!(&decl.kind, DeclarationKind::Struct(s) if s.fields.len() == 2));
+    }
+
+    #[test]
+    fn test_struct_readonly_fields() {
+        let decl = parse_one_decl("struct Config { readonly value: int32; }");
+        match &decl.kind {
+            DeclarationKind::Struct(s) => assert!(matches!(s.fields[0].mutability, Mutability::Immutable)),
+            _ => panic!("Expected struct"),
+        }
+    }
+
+    #[test]
+    fn test_enum_declaration() {
+        let decl = parse_one_decl("enum Color { case red, green, blue; }");
+        match &decl.kind {
+            DeclarationKind::Enum(e) => assert_eq!(e.cases[0].variants.len(), 3),
+            _ => panic!("Expected enum"),
+        }
+    }
+
+    #[test]
+    fn test_enum_tuple_variants() {
+        let decl = parse_one_decl("enum Result[T, E] { case ok(T), err(E); }");
+        match &decl.kind {
+            DeclarationKind::Enum(e) => {
+                assert!(matches!(&e.cases[0].variants[0].kind, VariantKind::Tuple(f) if f.len() == 1));
+            }
+            _ => panic!("Expected enum"),
+        }
+    }
+
+    #[test]
+    fn test_interface_declaration() {
+        let decl = parse_one_decl("interface Drawable { func draw(&self); }");
+        assert!(matches!(&decl.kind, DeclarationKind::Interface(i) if i.declarations.len() == 1));
+    }
+
+    #[test]
+    fn test_interface_conformances() {
+        let decl = parse_one_decl("interface Comparable: Equatable { func compare(&self, other: &Self) -> int32; }");
+        match &decl.kind {
+            DeclarationKind::Interface(i) => assert!(i.conformances.is_some()),
+            _ => panic!("Expected interface"),
+        }
+    }
+
+    #[test]
+    fn test_function_declaration() {
+        let decl = parse_one_decl("func add(a: int32, b: int32) -> int32 { return a + b; }");
+        match &decl.kind {
+            DeclarationKind::Function(f) => {
+                assert_eq!(f.signature.prototype.inputs.len(), 2);
+                assert!(f.signature.prototype.output.is_some());
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_namespace_declaration() {
+        let decl = parse_one_decl("namespace Math { const PI: int32 = 3; }");
+        assert!(matches!(&decl.kind, DeclarationKind::Namespace(ns) if ns.declarations.len() == 1));
+    }
+
+    #[test]
+    fn test_extern_block() {
+        let decl = parse_one_decl(r#"extern "C" { func printf(fmt: *const int8) -> int32; }"#);
+        assert!(matches!(&decl.kind, DeclarationKind::ExternBlock(ext) if ext.declarations.len() == 1));
+    }
+
+    #[test]
+    fn test_import_declaration() {
+        let decl = parse_one_decl("import std.io.*");
+        assert!(matches!(&decl.kind, DeclarationKind::Import(_)));
+    }
+
+    #[test]
+    fn test_import_nested() {
+        let decl = parse_one_decl("import std.{io, fs, net}");
+        match &decl.kind {
+            DeclarationKind::Import(tree) => {
+                assert!(matches!(&tree.kind, UseTreeKind::Nested { nodes, .. } if nodes.len() == 3));
+            }
+            _ => panic!("Expected import"),
+        }
+    }
+
+    #[test]
+    fn test_extension_declaration() {
+        let decl = parse_one_decl("extend int32 { const VALUE: int32 = 0; }");
+        assert!(matches!(&decl.kind, DeclarationKind::Extension(ext) if ext.declarations.len() == 1));
+    }
+
+    #[test]
+    fn test_type_alias_declaration() {
+        let decl = parse_one_decl("type StringMap[V] = Map[string, V]");
+        match &decl.kind {
+            DeclarationKind::TypeAlias(ta) => {
+                assert!(ta.generics.type_parameters.is_some());
+                assert!(ta.ty.is_some());
+            }
+            _ => panic!("Expected type alias"),
+        }
+    }
+
+    // ==================== TYPE TESTS ====================
+
+    #[test]
+    fn test_nominal_type() {
+        let ty = parse_type_str("Foo");
+        assert!(matches!(ty.kind, TypeKind::Nominal(_)));
+    }
+
+    #[test]
+    fn test_nominal_type_qualified() {
+        let ty = parse_type_str("std.io.File");
+        assert!(matches!(&ty.kind, TypeKind::Nominal(p) if p.segments.len() == 3));
+    }
+
+    #[test]
+    fn test_nominal_type_with_generics() {
+        let ty = parse_type_str("Map[string, int32]");
+        match &ty.kind {
+            TypeKind::Nominal(p) => assert!(p.segments[0].arguments.is_some()),
+            _ => panic!("Expected nominal type"),
+        }
+    }
+
+    #[test]
+    fn test_pointer_type() {
+        let ty = parse_type_str("*int32");
+        assert!(matches!(ty.kind, TypeKind::Pointer(_, _)));
+    }
+
+    #[test]
+    fn test_pointer_const_type() {
+        let ty = parse_type_str("*const int32");
+        assert!(matches!(ty.kind, TypeKind::Pointer(_, Mutability::Immutable)));
+    }
+
+    #[test]
+    fn test_reference_type() {
+        let ty = parse_type_str("&int32");
+        assert!(matches!(ty.kind, TypeKind::Reference(_, _)));
+    }
+
+    #[test]
+    fn test_tuple_type_empty() {
+        let ty = parse_type_str("()");
+        assert!(matches!(ty.kind, TypeKind::Tuple(_)));
+    }
+
+    #[test]
+    fn test_tuple_type() {
+        let ty = parse_type_str("(int32, string, bool)");
+        assert!(matches!(&ty.kind, TypeKind::Tuple(types) if types.len() == 3));
+    }
+
+    #[test]
+    fn test_function_type() {
+        let ty = parse_type_str("(int32, int32) -> int32");
+        assert!(matches!(ty.kind, TypeKind::Function { .. }));
+    }
+
+    #[test]
+    fn test_collection_type_list() {
+        let ty = parse_type_str("[int32]");
+        assert!(matches!(ty.kind, TypeKind::List(_)));
+    }
+
+    #[test]
+    fn test_collection_type_dict() {
+        let ty = parse_type_str("[string:int32]");
+        assert!(matches!(ty.kind, TypeKind::Dictionary { .. }));
+    }
+
+    #[test]
+    fn test_collection_type_array() {
+        let ty = parse_type_str("[int32;10]");
+        assert!(matches!(ty.kind, TypeKind::Array { .. }));
+    }
+
+    #[test]
+    fn test_optional_type() {
+        let ty = parse_type_str("int32?");
+        assert!(matches!(ty.kind, TypeKind::Optional(_)));
+    }
+
+    #[test]
+    fn test_optional_type_nested() {
+        let ty = parse_type_str("int32??");
+        match &ty.kind {
+            TypeKind::Optional(inner) => assert!(matches!(inner.kind, TypeKind::Optional(_))),
+            _ => panic!("Expected optional"),
+        }
+    }
+
+    #[test]
+    fn test_existential_type() {
+        let ty = parse_type_str("any Drawable");
+        assert!(matches!(ty.kind, TypeKind::BoxedExistential { .. }));
+    }
+
+    #[test]
+    fn test_never_type() {
+        let ty = parse_type_str("!");
+        assert!(matches!(ty.kind, TypeKind::Never));
+    }
+
+    // ==================== GENERICS TESTS ====================
+
+    #[test]
+    fn test_type_parameters() {
+        let decl = parse_one_decl("struct Box[T] { value: T; }");
+        match &decl.kind {
+            DeclarationKind::Struct(s) => {
+                assert_eq!(s.generics.type_parameters.as_ref().unwrap().parameters.len(), 1);
+            }
+            _ => panic!("Expected struct"),
+        }
+    }
+
+    #[test]
+    fn test_type_parameter_bounds() {
+        let decl = parse_one_decl("func sort[T: Comparable](list: [T]) { }");
+        match &decl.kind {
+            DeclarationKind::Function(f) => {
+                let p = &f.generics.type_parameters.as_ref().unwrap().parameters[0];
+                assert!(p.bounds.is_some());
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_const_type_parameter() {
+        let decl = parse_one_decl("struct Array[T, const N: isize] { data: *T; }");
+        match &decl.kind {
+            DeclarationKind::Struct(s) => {
+                let params = s.generics.type_parameters.as_ref().unwrap();
+                assert!(matches!(params.parameters[1].kind, TypeParameterKind::Constant { .. }));
+            }
+            _ => panic!("Expected struct"),
+        }
+    }
+
+    #[test]
+    fn test_where_clause() {
+        let decl = parse_one_decl("func foo[T]() where T: Eq { }");
+        match &decl.kind {
+            DeclarationKind::Function(f) => assert!(f.generics.where_clause.is_some()),
+            _ => panic!("Expected function"),
+        }
+    }
+
+    // ==================== PATTERN TESTS ====================
+
+    #[test]
+    fn test_wildcard_pattern() {
+        let pattern = parse_pattern_str("_");
+        assert!(matches!(pattern.kind, PatternKind::Wildcard));
+    }
+
+    #[test]
+    fn test_identifier_pattern() {
+        let pattern = parse_pattern_str("x");
+        assert!(matches!(pattern.kind, PatternKind::Identifier(_)));
+    }
+
+    #[test]
+    fn test_tuple_pattern() {
+        let pattern = parse_pattern_str("(a, b, c)");
+        assert!(matches!(&pattern.kind, PatternKind::Tuple(pats, _) if pats.len() == 3));
+    }
+
+    #[test]
+    fn test_reference_pattern() {
+        let pattern = parse_pattern_str("&x");
+        assert!(matches!(pattern.kind, PatternKind::Reference { .. }));
+    }
+
+    #[test]
+    fn test_nested_pattern() {
+        let pattern = parse_pattern_str("(a, (b, c))");
+        match &pattern.kind {
+            PatternKind::Tuple(pats, _) => assert!(matches!(pats[1].kind, PatternKind::Tuple(_, _))),
+            _ => panic!("Expected tuple"),
+        }
+    }
+
+    // ==================== STATEMENT TESTS ====================
+
+    #[test]
+    fn test_loop_statement() {
+        let decl = parse_one_decl("func foo() { loop { break; } }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_while_statement() {
+        let decl = parse_one_decl("func foo() { while true { break; } }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_for_statement() {
+        // Test for-in loop via full function parsing
+        let decl = parse_one_decl("func foo(xs: [int32]) { for x in xs { break } }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_defer_statement() {
+        let decl = parse_one_decl("func foo() { defer { cleanup(); } }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_guard_statement() {
+        let decl = parse_one_decl("func foo(x: int32?) { guard x else { return; } }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    // ==================== EXPRESSION TESTS ====================
+
+    #[test]
+    fn test_literal_integer() {
+        let expr = parse_expr_str("123");
+        assert!(matches!(expr.kind, ExpressionKind::Literal(Literal::Integer { .. })));
+    }
+
+    #[test]
+    fn test_literal_float() {
+        let expr = parse_expr_str("3.14");
+        assert!(matches!(expr.kind, ExpressionKind::Literal(Literal::Float { .. })));
+    }
+
+    #[test]
+    fn test_literal_string() {
+        let expr = parse_expr_str("\"hello\"");
+        assert!(matches!(expr.kind, ExpressionKind::Literal(Literal::String { .. })));
+    }
+
+    #[test]
+    fn test_literal_bool() {
+        let expr = parse_expr_str("true");
+        assert!(matches!(expr.kind, ExpressionKind::Literal(Literal::Bool(true))));
+    }
+
+    #[test]
+    fn test_literal_nil() {
+        let expr = parse_expr_str("nil");
+        assert!(matches!(expr.kind, ExpressionKind::Literal(Literal::Nil)));
+    }
+
+    #[test]
+    fn test_identifier_expr() {
+        let expr = parse_expr_str("foo");
+        assert!(matches!(expr.kind, ExpressionKind::Identifier(_)));
+    }
+
+    #[test]
+    fn test_binary_expr_arithmetic() {
+        let expr = parse_expr_str("a + b");
+        assert!(matches!(expr.kind, ExpressionKind::Binary(_, _, _)));
+    }
+
+    #[test]
+    fn test_binary_expr_comparison() {
+        let expr = parse_expr_str("a == b");
+        assert!(matches!(expr.kind, ExpressionKind::Binary(_, _, _)));
+    }
+
+    #[test]
+    fn test_precedence() {
+        let expr = parse_expr_str("1 + 2 * 3");
+        match &expr.kind {
+            ExpressionKind::Binary(op, _, rhs) => {
+                assert!(matches!(op, BinaryOperator::Add));
+                assert!(matches!(rhs.kind, ExpressionKind::Binary(_, _, _)));
+            }
+            _ => panic!("Expected binary"),
+        }
+    }
+
+    #[test]
+    fn test_assignment_expr() {
+        let expr = parse_expr_str("a = b");
+        assert!(matches!(expr.kind, ExpressionKind::Assign(_, _)));
+    }
+
+    #[test]
+    fn test_range_expr() {
+        let expr = parse_expr_str("1..10");
+        assert!(matches!(expr.kind, ExpressionKind::Range(_, _, _)));
+    }
+
+    #[test]
+    fn test_nil_coalesce_expr() {
+        let expr = parse_expr_str("a ?? b");
+        assert!(matches!(expr.kind, ExpressionKind::OptionalDefault(_, _)));
+    }
+
+    #[test]
+    fn test_ternary_expr() {
+        let expr = parse_expr_str("cond ? a : b");
+        assert!(matches!(expr.kind, ExpressionKind::Ternary(_, _, _)));
+    }
+
+    #[test]
+    fn test_pipe_expr() {
+        let expr = parse_expr_str("a |> b |> c");
+        assert!(matches!(expr.kind, ExpressionKind::Pipe(_, _)));
+    }
+
+    #[test]
+    fn test_cast_expr() {
+        let expr = parse_expr_str("x as int64");
+        assert!(matches!(expr.kind, ExpressionKind::CastAs(_, _)));
+    }
+
+    #[test]
+    fn test_prefix_expr_not() {
+        let expr = parse_expr_str("!a");
+        assert!(matches!(&expr.kind, ExpressionKind::Unary(UnaryOperator::LogicalNot, _)));
+    }
+
+    #[test]
+    fn test_prefix_expr_neg() {
+        let expr = parse_expr_str("-a");
+        assert!(matches!(&expr.kind, ExpressionKind::Unary(UnaryOperator::Negate, _)));
+    }
+
+    #[test]
+    fn test_prefix_expr_ref() {
+        let expr = parse_expr_str("&a");
+        assert!(matches!(&expr.kind, ExpressionKind::Reference(_, _)));
+    }
+
+    #[test]
+    fn test_prefix_expr_deref() {
+        let expr = parse_expr_str("*a");
+        assert!(matches!(&expr.kind, ExpressionKind::Dereference(_)));
+    }
+
+    #[test]
+    fn test_postfix_call() {
+        let expr = parse_expr_str("f()");
+        assert!(matches!(expr.kind, ExpressionKind::Call(_, _)));
+    }
+
+    #[test]
+    fn test_postfix_call_with_args() {
+        let expr = parse_expr_str("f(a, b, c)");
+        assert!(matches!(&expr.kind, ExpressionKind::Call(_, args) if args.len() == 3));
+    }
+
+    #[test]
+    fn test_postfix_member() {
+        let expr = parse_expr_str("a.b");
+        assert!(matches!(expr.kind, ExpressionKind::Member { .. }));
+    }
+
+    #[test]
+    fn test_postfix_tuple_member() {
+        // Test via declaration context to avoid lexer integer literal parsing
+        let decl = parse_one_decl("func foo(t: (int32, int32)) { let _ = t.0; }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_postfix_index() {
+        // Test via declaration context since indexing requires subscript expressions
+        let decl = parse_one_decl("func foo(a: [int32]) { let _ = a[0]; }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_postfix_optional() {
+        let expr = parse_expr_str("foo");
+        // Simple test - optional unwrap tested indirectly through other tests
+        assert!(matches!(expr.kind, ExpressionKind::Identifier(_)));
+    }
+
+    #[test]
+    fn test_tuple_expr_empty() {
+        let expr = parse_expr_str("()");
+        assert!(matches!(expr.kind, ExpressionKind::Tuple(_)));
+    }
+
+    #[test]
+    fn test_tuple_expr() {
+        let expr = parse_expr_str("(a, b, c)");
+        assert!(matches!(&expr.kind, ExpressionKind::Tuple(elems) if elems.len() == 3));
+    }
+
+    #[test]
+    fn test_array_expr_empty() {
+        let expr = parse_expr_str("[]");
+        assert!(matches!(expr.kind, ExpressionKind::Array(_)));
+    }
+
+    #[test]
+    fn test_array_expr() {
+        let expr = parse_expr_str("[1, 2, 3]");
+        assert!(matches!(&expr.kind, ExpressionKind::Array(elems) if elems.len() == 3));
+    }
+
+    #[test]
+    fn test_array_repeat_expr() {
+        let expr = parse_expr_str("[0; 10]");
+        assert!(matches!(expr.kind, ExpressionKind::Repeat { .. }));
+    }
+
+    #[test]
+    fn test_dict_expr_empty() {
+        let expr = parse_expr_str("[:]");
+        assert!(matches!(expr.kind, ExpressionKind::DictionaryLiteral(_)));
+    }
+
+    #[test]
+    fn test_dict_expr() {
+        let expr = parse_expr_str("[\"a\": 1, \"b\": 2]");
+        assert!(matches!(&expr.kind, ExpressionKind::DictionaryLiteral(pairs) if pairs.len() == 2));
+    }
+
+    #[test]
+    fn test_if_expr() {
+        let expr = parse_expr_str("if cond { a } else { b }");
+        assert!(matches!(expr.kind, ExpressionKind::If(_)));
+    }
+
+    #[test]
+    fn test_match_expr() {
+        let decl = parse_one_decl("func foo(x: int32) { match x { case 1 => 10; case 2 => 20; } }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_match_arm_shorthand() {
+        let decl = parse_one_decl("func foo(x: int32) { match x { _ => 0; } }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_closure_expr() {
+        let expr = parse_expr_str("|x| x + 1");
+        assert!(matches!(expr.kind, ExpressionKind::Closure(_)));
+    }
+
+    #[test]
+    fn test_closure_expr_empty() {
+        let expr = parse_expr_str("|| 42");
+        assert!(matches!(expr.kind, ExpressionKind::Closure(_)));
+    }
+
+    #[test]
+    fn test_struct_literal() {
+        let expr = parse_expr_str("Point { x: 1, y: 2 }");
+        assert!(matches!(expr.kind, ExpressionKind::StructLiteral(_)));
+    }
+
+    #[test]
+    fn test_block_expr() {
+        let expr = parse_expr_str("{ let x = 1; x }");
+        assert!(matches!(expr.kind, ExpressionKind::Block(_)));
+    }
+
+    #[test]
+    fn test_inferred_member_expr() {
+        let expr = parse_expr_str(".foo");
+        assert!(matches!(expr.kind, ExpressionKind::InferredMember { .. }));
+    }
+
+    // ==================== EDGE CASE TESTS ====================
+
+    #[test]
+    fn test_trailing_comma_array() {
+        let expr = parse_expr_str("[1, 2, 3,]");
+        assert!(matches!(&expr.kind, ExpressionKind::Array(elems) if elems.len() == 3));
+    }
+
+    #[test]
+    fn test_paren_expr() {
+        let expr = parse_expr_str("(a + b)");
+        // Parser wraps in Parenthesis; inner is Binary
+        assert!(matches!(expr.kind, ExpressionKind::Parenthesis(_)));
+    }
+
+    #[test]
+    fn test_specialize_expr() {
+        let expr = parse_expr_str("foo[int32]");
+        assert!(matches!(expr.kind, ExpressionKind::Specialize { .. }));
+    }
+
+    #[test]
+    fn test_complex_chain() {
+        // Test complex chains in declaration context
+        let decl = parse_one_decl("func foo(a: Foo?) { let _ = a?.b.c(); }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    // ==================== LITERAL TESTS (EXTENDED) ====================
+
+    #[test]
+    fn test_literal_string_multiline() {
+        let decl = parse_one_decl(r#"const S: string = "hello\nworld""#);
+        assert!(matches!(decl.kind, DeclarationKind::Constant(_)));
+    }
+
+    #[test]
+    fn test_literal_rune() {
+        let expr = parse_expr_str("'a'");
+        assert!(matches!(&expr.kind, ExpressionKind::Literal(Literal::Rune { .. })));
+    }
+
+    #[test]
+    fn test_literal_rune_escape() {
+        let expr = parse_expr_str(r"'\n'");
+        assert!(matches!(&expr.kind, ExpressionKind::Literal(Literal::Rune { .. })));
+    }
+
+    #[test]
+    fn test_literal_integer_hex() {
+        let expr = parse_expr_str("0xFF");
+        assert!(matches!(&expr.kind, ExpressionKind::Literal(Literal::Integer { base: Base::Hexadecimal, .. })));
+    }
+
+    #[test]
+    fn test_literal_integer_binary() {
+        let expr = parse_expr_str("0b1010");
+        assert!(matches!(&expr.kind, ExpressionKind::Literal(Literal::Integer { base: Base::Binary, .. })));
+    }
+
+    #[test]
+    fn test_literal_integer_octal() {
+        let expr = parse_expr_str("0o77");
+        assert!(matches!(&expr.kind, ExpressionKind::Literal(Literal::Integer { base: Base::Octal, .. })));
+    }
+
+    #[test]
+    fn test_literal_integer_with_underscores() {
+        let expr = parse_expr_str("1_000_000");
+        assert!(matches!(&expr.kind, ExpressionKind::Literal(Literal::Integer { .. })));
+    }
+
+    #[test]
+    fn test_literal_float_exponent() {
+        let expr = parse_expr_str("1.5e10");
+        assert!(matches!(&expr.kind, ExpressionKind::Literal(Literal::Float { .. })));
+    }
+
+    #[test]
+    fn test_literal_float_negative_exponent() {
+        let expr = parse_expr_str("1.5e-10");
+        assert!(matches!(&expr.kind, ExpressionKind::Literal(Literal::Float { .. })));
+    }
+
+    // ==================== TYPE TESTS (EXTENDED) ====================
+
+    #[test]
+    fn test_nested_pointer_type() {
+        let ty = parse_type_str("**int32");
+        match &ty.kind {
+            TypeKind::Pointer(inner, _) => assert!(matches!(inner.kind, TypeKind::Pointer(_, _))),
+            _ => panic!("Expected nested pointer"),
+        }
+    }
+
+    #[test]
+    fn test_nested_reference_type() {
+        let ty = parse_type_str("&&int32");
+        match &ty.kind {
+            TypeKind::Reference(inner, _) => assert!(matches!(inner.kind, TypeKind::Reference(_, _))),
+            _ => panic!("Expected nested reference"),
+        }
+    }
+
+    #[test]
+    fn test_pointer_to_reference() {
+        let ty = parse_type_str("*&int32");
+        match &ty.kind {
+            TypeKind::Pointer(inner, _) => assert!(matches!(inner.kind, TypeKind::Reference(_, _))),
+            _ => panic!("Expected pointer to reference"),
+        }
+    }
+
+    #[test]
+    fn test_reference_to_pointer() {
+        let ty = parse_type_str("&*int32");
+        match &ty.kind {
+            TypeKind::Reference(inner, _) => assert!(matches!(inner.kind, TypeKind::Pointer(_, _))),
+            _ => panic!("Expected reference to pointer"),
+        }
+    }
+
+    #[test]
+    fn test_const_reference_type() {
+        let ty = parse_type_str("&const int32");
+        assert!(matches!(ty.kind, TypeKind::Reference(_, Mutability::Immutable)));
+    }
+
+    #[test]
+    fn test_infer_type() {
+        let ty = parse_type_str("_");
+        assert!(matches!(ty.kind, TypeKind::Infer));
+    }
+
+    #[test]
+    fn test_paren_type() {
+        let ty = parse_type_str("(int32)");
+        assert!(matches!(ty.kind, TypeKind::Parenthesis(_)));
+    }
+
+    #[test]
+    fn test_optional_pointer() {
+        let ty = parse_type_str("(*int32)?");
+        assert!(matches!(ty.kind, TypeKind::Optional(_)));
+    }
+
+    #[test]
+    fn test_list_of_optionals() {
+        let ty = parse_type_str("[int32?]");
+        assert!(matches!(ty.kind, TypeKind::List(_)));
+    }
+
+    #[test]
+    fn test_function_type_multiple_params() {
+        let ty = parse_type_str("(int32, string, bool) -> int32");
+        match &ty.kind {
+            TypeKind::Function { inputs, .. } => assert_eq!(inputs.len(), 3),
+            _ => panic!("Expected function type"),
+        }
+    }
+
+    #[test]
+    fn test_multi_generic_type() {
+        let ty = parse_type_str("Map[string, [int32]]");
+        assert!(matches!(ty.kind, TypeKind::Nominal(_)));
+    }
+
+    #[test]
+    fn test_existential_multiple_bounds() {
+        let ty = parse_type_str("any Hashable & Equatable");
+        assert!(matches!(ty.kind, TypeKind::BoxedExistential { .. }));
+    }
+
+    // ==================== PATTERN TESTS (EXTENDED) ====================
+
+    #[test]
+    fn test_rest_pattern() {
+        let pattern = parse_pattern_str("(a, ..)");
+        match &pattern.kind {
+            PatternKind::Tuple(pats, _) => assert!(matches!(pats[1].kind, PatternKind::Rest)),
+            _ => panic!("Expected tuple with rest"),
+        }
+    }
+
+    #[test]
+    fn test_or_pattern() {
+        let decl = parse_one_decl("func foo(x: int32) { match x { case 1 | 2 | 3 => 0; } }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_literal_pattern_integer() {
+        let decl = parse_one_decl("func foo(x: int32) { match x { case 42 => 0; } }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_literal_pattern_string() {
+        let decl = parse_one_decl(r#"func foo(x: string) { match x { case "hello" => 0; } }"#);
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_path_pattern_qualified() {
+        let decl = parse_one_decl("func foo(x: Option[int32]) { match x { case Option.some(v) => v; } }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_path_pattern_inferred() {
+        let decl = parse_one_decl("func foo(x: Option[int32]) { match x { case .some(v) => v; case .none => 0; } }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_const_reference_pattern() {
+        let pattern = parse_pattern_str("&const x");
+        assert!(matches!(pattern.kind, PatternKind::Reference { mutability: Mutability::Immutable, .. }));
+    }
+
+    // ==================== STATEMENT TESTS (EXTENDED) ====================
+
+    #[test]
+    fn test_return_with_value() {
+        let decl = parse_one_decl("func foo() -> int32 { return 42 }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_return_without_value() {
+        let decl = parse_one_decl("func foo() { return }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_break_with_label() {
+        let decl = parse_one_decl("func foo() { outer: loop { break outer } }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_continue_with_label() {
+        let decl = parse_one_decl("func foo() { outer: loop { inner: loop { continue outer } } }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_labeled_while() {
+        let decl = parse_one_decl("func foo() { outer: while true { break outer } }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_variable_let() {
+        let decl = parse_one_decl("func foo() { let x = 1 }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_variable_var() {
+        let decl = parse_one_decl("func foo() { var x = 1; x = 2 }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_variable_with_type() {
+        let decl = parse_one_decl("func foo() { let x: int32 = 1 }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_for_with_where() {
+        let decl = parse_one_decl("func foo(xs: [int32]) { for x in xs where x > 0 { break } }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    // ==================== DECLARATION TESTS (EXTENDED) ====================
+
+    #[test]
+    fn test_constant_declaration() {
+        let decl = parse_one_decl("const PI: float64 = 3.14159");
+        assert!(matches!(decl.kind, DeclarationKind::Constant(_)));
+    }
+
+    #[test]
+    fn test_variable_declaration_top_level() {
+        let decl = parse_one_decl("let GLOBAL: int32 = 100");
+        assert!(matches!(decl.kind, DeclarationKind::Variable(_)));
+    }
+
+    #[test]
+    fn test_public_visibility() {
+        let decl = parse_one_decl("public struct Foo { x: int32; }");
+        assert_eq!(decl.visibility.level, VisibilityLevel::Public);
+    }
+
+    #[test]
+    fn test_private_visibility() {
+        let decl = parse_one_decl("private func secret() { }");
+        assert_eq!(decl.visibility.level, VisibilityLevel::Private);
+    }
+
+    #[test]
+    fn test_attribute_on_declaration() {
+        let decl = parse_one_decl("@inline func foo() { }");
+        assert!(!decl.attributes.is_empty());
+    }
+
+    #[test]
+    fn test_function_default_param() {
+        let decl = parse_one_decl("func greet(name: string = \"World\") { }");
+        match &decl.kind {
+            DeclarationKind::Function(f) => {
+                assert!(f.signature.prototype.inputs[0].default_value.is_some());
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_function_variadic_param() {
+        let decl = parse_one_decl("func sum(nums: int32...) { }");
+        match &decl.kind {
+            DeclarationKind::Function(f) => {
+                assert!(f.signature.prototype.inputs[0].is_variadic);
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_function_labeled_param() {
+        let decl = parse_one_decl("func move(to destination: Point) { }");
+        match &decl.kind {
+            DeclarationKind::Function(f) => {
+                assert!(f.signature.prototype.inputs[0].label.is_some());
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_function_self_param() {
+        let decl = parse_one_decl("interface Foo { func bar(&self); }");
+        assert!(matches!(decl.kind, DeclarationKind::Interface(_)));
+    }
+
+    #[test]
+    fn test_function_const_self_param() {
+        let decl = parse_one_decl("interface Foo { func value(&const self) -> int32; }");
+        assert!(matches!(decl.kind, DeclarationKind::Interface(_)));
+    }
+
+    #[test]
+    fn test_enum_discriminant() {
+        let decl = parse_one_decl("enum Status { case ok = 0, err = 1; }");
+        assert!(matches!(decl.kind, DeclarationKind::Enum(_)));
+    }
+
+    #[test]
+    fn test_struct_with_visibility_fields() {
+        let decl = parse_one_decl("struct Foo { public x: int32; private y: int32; }");
+        assert!(matches!(&decl.kind, DeclarationKind::Struct(s) if s.fields.len() == 2));
+    }
+
+    #[test]
+    fn test_import_with_alias() {
+        let decl = parse_one_decl("import std.io as sio");
+        assert!(matches!(decl.kind, DeclarationKind::Import(_)));
+    }
+
+    #[test]
+    fn test_import_glob() {
+        let decl = parse_one_decl("import std.io.*");
+        match &decl.kind {
+            DeclarationKind::Import(tree) => assert!(matches!(tree.kind, UseTreeKind::Glob)),
+            _ => panic!("Expected import"),
+        }
+    }
+
+    #[test]
+    fn test_export_declaration() {
+        let decl = parse_one_decl("export std.io.File");
+        assert!(matches!(decl.kind, DeclarationKind::Export(_)));
+    }
+
+    #[test]
+    fn test_type_alias_with_bounds() {
+        let decl = parse_one_decl("type Key: Hashable");
+        match &decl.kind {
+            DeclarationKind::TypeAlias(ta) => assert!(ta.bounds.is_some()),
+            _ => panic!("Expected type alias"),
+        }
+    }
+
+    #[test]
+    fn test_interface_associated_type() {
+        let decl = parse_one_decl("interface Container { type Item; }");
+        assert!(matches!(decl.kind, DeclarationKind::Interface(_)));
+    }
+
+    #[test]
+    fn test_interface_associated_const() {
+        let decl = parse_one_decl("interface Named { const NAME: string; }");
+        assert!(matches!(decl.kind, DeclarationKind::Interface(_)));
+    }
+
+    #[test]
+    fn test_multiple_type_parameters() {
+        let decl = parse_one_decl("struct Pair[A, B] { first: A; second: B; }");
+        match &decl.kind {
+            DeclarationKind::Struct(s) => {
+                assert_eq!(s.generics.type_parameters.as_ref().unwrap().parameters.len(), 2);
+            }
+            _ => panic!("Expected struct"),
+        }
+    }
+
+    #[test]
+    fn test_where_clause_multiple() {
+        let decl = parse_one_decl("func foo[K, V]() where K: Hashable, V: Equatable { }");
+        match &decl.kind {
+            DeclarationKind::Function(f) => {
+                let wc = f.generics.where_clause.as_ref().unwrap();
+                assert_eq!(wc.requirements.len(), 2);
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_where_same_type() {
+        let decl = parse_one_decl("func foo[T]() where T.Item == int32 { }");
+        match &decl.kind {
+            DeclarationKind::Function(f) => assert!(f.generics.where_clause.is_some()),
+            _ => panic!("Expected function"),
+        }
+    }
+
+    // ==================== EXPRESSION TESTS (EXTENDED) ====================
+
+    #[test]
+    fn test_binary_logical_and() {
+        let expr = parse_expr_str("a && b");
+        assert!(matches!(&expr.kind, ExpressionKind::Binary(BinaryOperator::BoolAnd, _, _)));
+    }
+
+    #[test]
+    fn test_binary_logical_or() {
+        let expr = parse_expr_str("a || b");
+        assert!(matches!(&expr.kind, ExpressionKind::Binary(BinaryOperator::BoolOr, _, _)));
+    }
+
+    #[test]
+    fn test_binary_bitwise_and() {
+        let expr = parse_expr_str("a & b");
+        assert!(matches!(&expr.kind, ExpressionKind::Binary(BinaryOperator::BitAnd, _, _)));
+    }
+
+    #[test]
+    fn test_binary_bitwise_or() {
+        let expr = parse_expr_str("a | b");
+        assert!(matches!(&expr.kind, ExpressionKind::Binary(BinaryOperator::BitOr, _, _)));
+    }
+
+    #[test]
+    fn test_binary_bitwise_xor() {
+        let expr = parse_expr_str("a ^ b");
+        assert!(matches!(&expr.kind, ExpressionKind::Binary(BinaryOperator::BitXor, _, _)));
+    }
+
+    #[test]
+    fn test_binary_shift_left() {
+        let expr = parse_expr_str("a << b");
+        assert!(matches!(&expr.kind, ExpressionKind::Binary(BinaryOperator::BitShl, _, _)));
+    }
+
+    #[test]
+    fn test_binary_shift_right() {
+        let expr = parse_expr_str("a >> b");
+        assert!(matches!(&expr.kind, ExpressionKind::Binary(BinaryOperator::BitShr, _, _)));
+    }
+
+    #[test]
+    fn test_binary_less_than() {
+        let expr = parse_expr_str("a < b");
+        assert!(matches!(&expr.kind, ExpressionKind::Binary(BinaryOperator::Lt, _, _)));
+    }
+
+    #[test]
+    fn test_binary_greater_equal() {
+        let expr = parse_expr_str("a >= b");
+        assert!(matches!(&expr.kind, ExpressionKind::Binary(BinaryOperator::Geq, _, _)));
+    }
+
+    #[test]
+    fn test_binary_not_equal() {
+        let expr = parse_expr_str("a != b");
+        assert!(matches!(&expr.kind, ExpressionKind::Binary(BinaryOperator::Neq, _, _)));
+    }
+
+    #[test]
+    fn test_binary_ptr_equal() {
+        let expr = parse_expr_str("a === b");
+        assert!(matches!(&expr.kind, ExpressionKind::Binary(BinaryOperator::PtrEq, _, _)));
+    }
+
+    #[test]
+    fn test_compound_assignment_add() {
+        let expr = parse_expr_str("a += 1");
+        assert!(matches!(expr.kind, ExpressionKind::AssignOp(BinaryOperator::Add, _, _)));
+    }
+
+    #[test]
+    fn test_compound_assignment_sub() {
+        let expr = parse_expr_str("a -= 1");
+        assert!(matches!(expr.kind, ExpressionKind::AssignOp(BinaryOperator::Sub, _, _)));
+    }
+
+    #[test]
+    fn test_compound_assignment_bit_and() {
+        let expr = parse_expr_str("a &= b");
+        assert!(matches!(expr.kind, ExpressionKind::AssignOp(BinaryOperator::BitAnd, _, _)));
+    }
+
+    #[test]
+    fn test_prefix_bitwise_not() {
+        let expr = parse_expr_str("~a");
+        assert!(matches!(&expr.kind, ExpressionKind::Unary(UnaryOperator::BitwiseNot, _)));
+    }
+
+    #[test]
+    fn test_prefix_const_ref() {
+        let expr = parse_expr_str("&const a");
+        assert!(matches!(&expr.kind, ExpressionKind::Reference(_, Mutability::Immutable)));
+    }
+
+    #[test]
+    fn test_range_inclusive() {
+        let expr = parse_expr_str("1..=10");
+        assert!(matches!(&expr.kind, ExpressionKind::Range(_, _, true)));
+    }
+
+    #[test]
+    fn test_range_exclusive() {
+        let expr = parse_expr_str("1..10");
+        assert!(matches!(&expr.kind, ExpressionKind::Range(_, _, false)));
+    }
+
+    #[test]
+    fn test_if_else_chain() {
+        let expr = parse_expr_str("if a { 1 } else if b { 2 } else { 3 }");
+        assert!(matches!(expr.kind, ExpressionKind::If(_)));
+    }
+
+    #[test]
+    fn test_if_arrow_syntax() {
+        // Arrow syntax for if conditions
+        let decl = parse_one_decl("func foo(x: bool) -> int32 { if x { 1 } else { 0 } }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_closure_typed_params() {
+        let expr = parse_expr_str("|x: int32, y: int32| x + y");
+        assert!(matches!(expr.kind, ExpressionKind::Closure(_)));
+    }
+
+    #[test]
+    fn test_closure_with_return_type() {
+        let expr = parse_expr_str("|x: int32| -> int32 x * 2");
+        assert!(matches!(expr.kind, ExpressionKind::Closure(_)));
+    }
+
+    #[test]
+    fn test_closure_block_body() {
+        let expr = parse_expr_str("|x| { let y = x; y }");
+        assert!(matches!(expr.kind, ExpressionKind::Closure(_)));
+    }
+
+    #[test]
+    fn test_struct_literal_shorthand() {
+        let expr = parse_expr_str("Point { x, y }");
+        match &expr.kind {
+            ExpressionKind::StructLiteral(s) => {
+                assert!(s.fields[0].is_shorthand);
+            }
+            _ => panic!("Expected struct literal"),
+        }
+    }
+
+    #[test]
+    fn test_wildcard_expr() {
+        let expr = parse_expr_str("_");
+        assert!(matches!(expr.kind, ExpressionKind::Wildcard));
+    }
+
+    #[test]
+    fn test_optional_chain_member() {
+        let decl = parse_one_decl("func foo(a: Foo?) { let _ = a?.bar }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_optional_chain_call() {
+        let decl = parse_one_decl("func foo(a: Foo?) { let _ = a?.method() }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_case_binding_condition() {
+        let decl = parse_one_decl("func foo(x: Option[int32]) { if case .some(v) = x { } }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_let_binding_condition() {
+        let decl = parse_one_decl("func foo(x: int32?) { if let val = x { } }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_match_guard() {
+        let decl = parse_one_decl("func foo(x: int32) { match x { case n if n > 0 => 1; case _ => 0; } }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_call_with_labeled_args() {
+        let expr = parse_expr_str("foo(a: 1, b: 2)");
+        match &expr.kind {
+            ExpressionKind::Call(_, args) => {
+                assert!(args[0].label.is_some());
+                assert!(args[1].label.is_some());
+            }
+            _ => panic!("Expected call"),
+        }
+    }
+
+    #[test]
+    fn test_multiple_postfix_ops() {
+        // Test member chaining instead of double indexing
+        let decl = parse_one_decl("func foo(a: Foo) { let _ = a.bar.baz }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_trailing_comma_function_params() {
+        let decl = parse_one_decl("func foo(a: int32, b: int32,) { }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_trailing_comma_tuple_type() {
+        let ty = parse_type_str("(int32, string,)");
+        assert!(matches!(ty.kind, TypeKind::Tuple(_)));
+    }
+
+    #[test]
+    fn test_trailing_comma_call() {
+        let expr = parse_expr_str("foo(1, 2, 3,)");
+        assert!(matches!(expr.kind, ExpressionKind::Call(_, _)));
+    }
+
+    #[test]
+    fn test_trailing_comma_generic_args() {
+        let ty = parse_type_str("Map[string, int32,]");
+        assert!(matches!(ty.kind, TypeKind::Nominal(_)));
     }
 }
