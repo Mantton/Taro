@@ -750,6 +750,11 @@ impl Lexer {
                 if empty {
                     return Err(LexerError::InvalidFloatLiteral);
                 }
+
+                return Ok(Token::Float {
+                    value: content(self).into(),
+                    base,
+                });
             }
             _ => {}
         }
@@ -801,7 +806,7 @@ impl Lexer {
     }
     fn eat_float_exponents(&mut self) -> bool {
         if self.eat('-') || self.eat('+') {
-            self.next_char();
+            // sign already consumed
         }
 
         self.eat_decimal_digits()
@@ -883,6 +888,7 @@ fn str_to_keyword(word: &str) -> Option<Token> {
     Some(token)
 }
 
+#[derive(Debug)]
 pub enum LexerError {
     #[allow(unused)]
     InvalidCharacter(char),
@@ -1072,4 +1078,540 @@ fn is_line_continuation_starter(tok: &Token) -> bool {
         // casting / infix-like keywords that glue to the previous expr
         | As | In
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse::token::Token;
+
+    fn tokenize(input: &str) -> Vec<Token> {
+        let dcx = DiagCtx::new(PathBuf::from("."));
+        // We use a dummy file ID, effectively ignoring it for these unit tests.
+        let file_id = dcx.add_file_mapping(PathBuf::from("test.taro"));
+        let lexer = Lexer::new(input, file_id);
+
+        let file = lexer.tokenize().expect("Lexing failed");
+        file.tokens.into_iter().map(|s| s.value).collect()
+    }
+
+    #[test]
+    fn test_keywords() {
+        let input = "func let if else return";
+        let tokens = tokenize(input);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Function,
+                Token::Let,
+                Token::If,
+                Token::Else,
+                Token::Return,
+                Token::Semicolon,
+                Token::EOF,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_operators() {
+        let input = "+ - * / %";
+        let tokens = tokenize(input);
+
+        let expected = vec![
+            Token::Plus,
+            Token::Minus,
+            Token::Star,
+            Token::Quotient,
+            Token::Modulus,
+            Token::EOF,
+        ];
+
+        assert_eq!(tokens, expected);
+    }
+
+    #[test]
+    fn test_punctuation_combinations() {
+        // Test ambiguity like .. vs ..= vs .
+        let input = ".. ..= . ...";
+        let tokens = tokenize(input);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::DotDot,
+                Token::DotDotEq,
+                Token::Dot,
+                Token::Ellipsis,
+                Token::EOF,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_literals_integers() {
+        let input = "123 0xFF 0b101 0o77";
+        let tokens = tokenize(input);
+        // 0o77 is Octal 77
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Integer {
+                    value: "123".into(),
+                    base: Base::Decimal
+                },
+                Token::Integer {
+                    value: "0xFF".into(),
+                    base: Base::Hexadecimal
+                },
+                Token::Integer {
+                    value: "0b101".into(),
+                    base: Base::Binary
+                },
+                Token::Integer {
+                    value: "0o77".into(),
+                    base: Base::Octal
+                },
+                Token::Semicolon,
+                Token::EOF,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_literals_floats() {
+        let input = "1.0 0.5 10e-5";
+        let tokens = tokenize(input);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Float {
+                    value: "1.0".into(),
+                    base: Base::Decimal
+                },
+                Token::Float {
+                    value: "0.5".into(),
+                    base: Base::Decimal
+                },
+                Token::Float {
+                    value: "10e-5".into(),
+                    base: Base::Decimal
+                },
+                Token::Semicolon,
+                Token::EOF,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_literals_strings() {
+        let input = r#""hello" "escaped \" quote""#;
+        let tokens = tokenize(input);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::String {
+                    value: "hello".into()
+                },
+                Token::String {
+                    value: r#"escaped \" quote"#.into()
+                },
+                Token::Semicolon,
+                Token::EOF,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_literals_runes() {
+        let input = "'a' '\\n'";
+        let tokens = tokenize(input);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Rune { value: "a".into() },
+                Token::Rune {
+                    value: "\\n".into()
+                },
+                Token::Semicolon,
+                Token::EOF,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_comments() {
+        let input = "
+        // single line
+        /* multi
+           line */
+        123
+        ";
+        let tokens = tokenize(input);
+
+        // Comments are skipped by the lexer
+
+        let expected = vec![
+            Token::Integer {
+                value: "123".into(),
+                base: Base::Decimal,
+            },
+            Token::Semicolon,
+            Token::EOF,
+        ];
+
+        assert_eq!(tokens, expected);
+    }
+
+    #[test]
+    fn test_asi_basic() {
+        let input = "
+        return
+        return
+        ";
+
+        let tokens = tokenize(input);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Return,
+                Token::Semicolon,
+                Token::Return,
+                Token::Semicolon,
+                Token::EOF,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_asi_skip_continuation() {
+        let input = "
+        a
+        + b
+        ";
+
+        let tokens = tokenize(input);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Identifier { value: "a".into() },
+                Token::Plus,
+                Token::Identifier { value: "b".into() },
+                Token::Semicolon,
+                Token::EOF,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_asi_line_continuations() {
+        // Operators that should NOT trigger ASI when at start of next line
+        let input = "
+        a
+        + b
+        - c
+        * d
+        / e
+        % f
+        | g
+        ^ h
+        & i // invalid syntax for bitwise AND but lexer allows it as invalid line start? No, & IS NOT a continuation starter.
+            // Wait, per GRAMMAR.md: & and * are NOT continuation starters.
+            // So: * d should insert semicolon? 
+            // Let's re-read GRAMMAR.md:
+            // - Binary operators: +, -, /, %, |, ^, &&, || (Note: & and * excluded)
+            // So + - / % | ^ && || ARE starters. * & are NOT.
+        ";
+        
+        // Let's test actual starters first
+        let input = "
+        a
+        + b
+        - c
+        / d
+        % e
+        | f
+        ^ g
+        || h
+        && i
+        == j
+        != k
+        < l
+        > m
+        <= n
+        >= o
+        << p
+        >> q
+        . r
+        .. s
+        |> t
+        ?? u
+        ";
+        
+        let tokens = tokenize(input);
+        // Expect NO semicolons until EOF (or after u)
+        let values: Vec<Token> = tokens.into_iter().filter(|t| !matches!(t, Token::Identifier{..})).collect();
+        
+        // They should all be joined.
+        // The last one 'u' is followed by EOF, so it gets a semicolon.
+        // We can just check that we don't have semicolons in between.
+        
+        // Actually, let's just assert exactly.
+        // a + b - c / d % e | f ^ g || h && i == j != k < l > m <= n >= o << p >> q . r .. s |> t ?? u;
+        
+        // Since constructing this vec is tedious, let's verify there is only ONE semicolon at the end.
+        let semi_count = tokenize(input).iter().filter(|t| matches!(t, Token::Semicolon)).count();
+        assert_eq!(semi_count, 1, "Should only have one semicolon at the end");
+    }
+
+    #[test]
+    fn test_asi_not_continuations() {
+        // & and * are NOT continuation starters (unary ambiguity)
+        // so `a \n * b` -> `a; * b`
+        let input = "
+        a
+        * b
+        ";
+        let tokens = tokenize(input);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Identifier { value: "a".into() },
+                Token::Semicolon,
+                Token::Star,
+                Token::Identifier { value: "b".into() },
+                Token::Semicolon,
+                Token::EOF,
+            ]
+        );
+
+        let input = "
+        a
+        & b
+        ";
+        let tokens = tokenize(input);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Identifier { value: "a".into() },
+                Token::Semicolon,
+                Token::Amp,
+                Token::Identifier { value: "b".into() },
+                Token::Semicolon,
+                Token::EOF,
+            ]
+        );
+
+        // ! and ~ are also not starters
+        let input = "
+        a
+        ! b
+        ";
+        let tokens = tokenize(input);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Identifier { value: "a".into() },
+                Token::Semicolon,
+                Token::Bang,
+                Token::Identifier { value: "b".into() },
+                Token::Semicolon,
+                Token::EOF,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_asi_keywords_continuation() {
+        // `as` and `in` ARE continuation starters
+        let input = "
+        a
+        as b
+        ";
+        let tokens = tokenize(input);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Identifier { value: "a".into() },
+                Token::As,
+                Token::Identifier { value: "b".into() },
+                Token::Semicolon,
+                Token::EOF,
+            ]
+        );
+
+        let input = "
+        a
+        in b
+        ";
+        let tokens = tokenize(input);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Identifier { value: "a".into() },
+                Token::In,
+                Token::Identifier { value: "b".into() },
+                Token::Semicolon,
+                Token::EOF,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_asi_control_flow() {
+        // return, break, continue followed by newline SHOULD imply semicolon
+        // return \n value -> return; value
+        let input = "
+        return
+        value
+        ";
+        let tokens = tokenize(input);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Return,
+                Token::Semicolon,
+                Token::Identifier { value: "value".into() },
+                Token::Semicolon,
+                Token::EOF,
+            ]
+        );
+
+        let input = "
+        break
+        label
+        ";
+        let tokens = tokenize(input);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Break,
+                Token::Semicolon,
+                Token::Identifier { value: "label".into() },
+                Token::Semicolon,
+                Token::EOF,
+            ]
+        );
+    }
+    #[test]
+    fn test_all_keywords() {
+        let keywords = vec![
+            ("any", Token::Any),
+            ("as", Token::As),
+            ("break", Token::Break),
+            ("case", Token::Case),
+            ("const", Token::Const),
+            ("continue", Token::Continue),
+            ("defer", Token::Defer),
+            ("else", Token::Else),
+            ("enum", Token::Enum),
+            ("export", Token::Export),
+            ("extern", Token::Extern),
+            ("false", Token::False),
+            ("for", Token::For),
+            ("func", Token::Function),
+            ("guard", Token::Guard),
+            ("if", Token::If),
+            ("extend", Token::Extend),
+            ("import", Token::Import),
+            ("in", Token::In),
+            ("interface", Token::Interface),
+            ("let", Token::Let),
+            ("loop", Token::Loop),
+            ("match", Token::Match),
+            ("mut", Token::Mut),
+            ("namespace", Token::Namespace),
+            ("nil", Token::Nil),
+            ("operator", Token::Operator),
+            ("private", Token::Private),
+            ("public", Token::Public),
+            ("return", Token::Return),
+            ("readonly", Token::Readonly),
+            ("static", Token::Static),
+            ("struct", Token::Struct),
+            ("true", Token::True),
+            ("type", Token::Type),
+            ("var", Token::Var),
+            ("where", Token::Where),
+            ("while", Token::While),
+            // Reserved
+            ("class", Token::Class),
+            ("final", Token::Final),
+            ("override", Token::Override),
+            ("fileprivate", Token::FilePrivate),
+            ("protected", Token::Protected),
+            ("async", Token::Async),
+            ("await", Token::Await),
+            ("ref", Token::Ref),
+            ("init", Token::Init),
+        ];
+
+        for (text, expected_token) in keywords {
+            let tokens = tokenize(text);
+            assert_eq!(tokens[0], expected_token, "Failed to tokenize keyword '{}'", text);
+        }
+    }
+
+    #[test]
+    fn test_all_punctuation() {
+        let punctuation = vec![
+            ("=", Token::Assign),
+            ("+", Token::Plus),
+            ("-", Token::Minus),
+            ("*", Token::Star),
+            ("/", Token::Quotient),
+            ("%", Token::Modulus),
+            ("&", Token::Amp),
+            ("!", Token::Bang),
+            ("~", Token::Tilde),
+            ("<", Token::LChevron),
+            (">", Token::RChevron),
+            ("==", Token::Eql),
+            ("!=", Token::Neq),
+            ("<=", Token::Leq),
+            (">=", Token::Geq),
+            ("&&", Token::AmpAmp),
+            ("||", Token::BarBar),
+            (",", Token::Comma),
+            (".", Token::Dot),
+            (":", Token::Colon),
+            ("(", Token::LParen),
+            (")", Token::RParen),
+            ("{", Token::LBrace),
+            ("}", Token::RBrace),
+            ("[", Token::LBracket),
+            ("]", Token::RBracket),
+            ("+=", Token::PlusEq),
+            ("-=", Token::MinusEq),
+            ("*=", Token::MulEq),
+            ("/=", Token::DivEq),
+            ("%=", Token::RemEq),
+            ("&=", Token::AmpEq),
+            ("|=", Token::BarEq),
+            ("^=", Token::CaretEq),
+            ("<<=", Token::ShlEq),
+            (">>=", Token::ShrEq),
+            ("===", Token::PtrEq),
+            ("|", Token::Bar),
+            ("^", Token::Caret),
+            (">>", Token::Shr),
+            ("<<", Token::Shl),
+            ("->", Token::RArrow),
+            ("=>", Token::EqArrow),
+            ("_", Token::Underscore),
+            ("|>", Token::Pipe),
+            ("?", Token::Question),
+            ("?.", Token::QuestionDot),
+            ("??", Token::QuestionQuestion),
+            ("@", Token::At),
+            ("...", Token::Ellipsis),
+            ("..", Token::DotDot),
+            ("..=", Token::DotDotEq),
+            (".*", Token::DotStar),
+        ];
+
+        for (text, expected_token) in punctuation {
+            let tokens = tokenize(text);
+            assert_eq!(tokens[0], expected_token, "Failed to tokenize punctuation '{}'", text);
+        }
+    }
 }
