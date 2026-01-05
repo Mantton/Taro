@@ -2460,22 +2460,19 @@ impl Parser {
                 continue;
             }
 
-            // parsing optional access: `foo ?. <integer_literal> | <ident>`
+            // parsing optional chaining: `foo?.member`
+            // The `?.` wraps the expression BEFORE it (like Swift)
+            // So `a?.b` becomes Member(OptionalUnwrap(a), b)
             if self.eat(Token::QuestionDot) {
                 *is_optional_chain = true;
+
+                // Wrap the current expression in OptionalUnwrap
                 let span = expr.span.to(self.hi_span());
-
                 let kind = ExpressionKind::OptionalUnwrap(expr);
-                expr = self.build_expr(kind, lo.to(span));
-                pre_consumed_dot = matches!(
-                    self.current_token(),
-                    Token::Identifier { .. }
-                        | Token::Integer {
-                            base: Base::Decimal,
-                            ..
-                        }
-                );
+                expr = self.build_expr(kind, span);
 
+                // The dot is part of the `?.` token, so continue parsing the member/tuple access
+                pre_consumed_dot = true;
                 seen_type_arguments = false;
                 continue;
             }
@@ -2483,6 +2480,7 @@ impl Parser {
             expr = self.try_parse_struct_literal(expr)?;
             break;
         }
+
         Ok(expr)
     }
 
@@ -3781,7 +3779,9 @@ mod tests {
     fn test_struct_readonly_fields() {
         let decl = parse_one_decl("struct Config { readonly value: int32; }");
         match &decl.kind {
-            DeclarationKind::Struct(s) => assert!(matches!(s.fields[0].mutability, Mutability::Immutable)),
+            DeclarationKind::Struct(s) => {
+                assert!(matches!(s.fields[0].mutability, Mutability::Immutable))
+            }
             _ => panic!("Expected struct"),
         }
     }
@@ -3800,7 +3800,9 @@ mod tests {
         let decl = parse_one_decl("enum Result[T, E] { case ok(T), err(E); }");
         match &decl.kind {
             DeclarationKind::Enum(e) => {
-                assert!(matches!(&e.cases[0].variants[0].kind, VariantKind::Tuple(f) if f.len() == 1));
+                assert!(
+                    matches!(&e.cases[0].variants[0].kind, VariantKind::Tuple(f) if f.len() == 1)
+                );
             }
             _ => panic!("Expected enum"),
         }
@@ -3814,7 +3816,9 @@ mod tests {
 
     #[test]
     fn test_interface_conformances() {
-        let decl = parse_one_decl("interface Comparable: Equatable { func compare(&self, other: &Self) -> int32; }");
+        let decl = parse_one_decl(
+            "interface Comparable: Equatable { func compare(&self, other: &Self) -> int32; }",
+        );
         match &decl.kind {
             DeclarationKind::Interface(i) => assert!(i.conformances.is_some()),
             _ => panic!("Expected interface"),
@@ -3842,7 +3846,9 @@ mod tests {
     #[test]
     fn test_extern_block() {
         let decl = parse_one_decl(r#"extern "C" { func printf(fmt: *const int8) -> int32; }"#);
-        assert!(matches!(&decl.kind, DeclarationKind::ExternBlock(ext) if ext.declarations.len() == 1));
+        assert!(
+            matches!(&decl.kind, DeclarationKind::ExternBlock(ext) if ext.declarations.len() == 1)
+        );
     }
 
     #[test]
@@ -3856,7 +3862,9 @@ mod tests {
         let decl = parse_one_decl("import std.{io, fs, net}");
         match &decl.kind {
             DeclarationKind::Import(tree) => {
-                assert!(matches!(&tree.kind, UseTreeKind::Nested { nodes, .. } if nodes.len() == 3));
+                assert!(
+                    matches!(&tree.kind, UseTreeKind::Nested { nodes, .. } if nodes.len() == 3)
+                );
             }
             _ => panic!("Expected import"),
         }
@@ -3865,7 +3873,9 @@ mod tests {
     #[test]
     fn test_extension_declaration() {
         let decl = parse_one_decl("extend int32 { const VALUE: int32 = 0; }");
-        assert!(matches!(&decl.kind, DeclarationKind::Extension(ext) if ext.declarations.len() == 1));
+        assert!(
+            matches!(&decl.kind, DeclarationKind::Extension(ext) if ext.declarations.len() == 1)
+        );
     }
 
     #[test]
@@ -3912,7 +3922,10 @@ mod tests {
     #[test]
     fn test_pointer_const_type() {
         let ty = parse_type_str("*const int32");
-        assert!(matches!(ty.kind, TypeKind::Pointer(_, Mutability::Immutable)));
+        assert!(matches!(
+            ty.kind,
+            TypeKind::Pointer(_, Mutability::Immutable)
+        ));
     }
 
     #[test]
@@ -3991,7 +4004,15 @@ mod tests {
         let decl = parse_one_decl("struct Box[T] { value: T; }");
         match &decl.kind {
             DeclarationKind::Struct(s) => {
-                assert_eq!(s.generics.type_parameters.as_ref().unwrap().parameters.len(), 1);
+                assert_eq!(
+                    s.generics
+                        .type_parameters
+                        .as_ref()
+                        .unwrap()
+                        .parameters
+                        .len(),
+                    1
+                );
             }
             _ => panic!("Expected struct"),
         }
@@ -4015,7 +4036,10 @@ mod tests {
         match &decl.kind {
             DeclarationKind::Struct(s) => {
                 let params = s.generics.type_parameters.as_ref().unwrap();
-                assert!(matches!(params.parameters[1].kind, TypeParameterKind::Constant { .. }));
+                assert!(matches!(
+                    params.parameters[1].kind,
+                    TypeParameterKind::Constant { .. }
+                ));
             }
             _ => panic!("Expected struct"),
         }
@@ -4060,7 +4084,9 @@ mod tests {
     fn test_nested_pattern() {
         let pattern = parse_pattern_str("(a, (b, c))");
         match &pattern.kind {
-            PatternKind::Tuple(pats, _) => assert!(matches!(pats[1].kind, PatternKind::Tuple(_, _))),
+            PatternKind::Tuple(pats, _) => {
+                assert!(matches!(pats[1].kind, PatternKind::Tuple(_, _)))
+            }
             _ => panic!("Expected tuple"),
         }
     }
@@ -4103,25 +4129,37 @@ mod tests {
     #[test]
     fn test_literal_integer() {
         let expr = parse_expr_str("123");
-        assert!(matches!(expr.kind, ExpressionKind::Literal(Literal::Integer { .. })));
+        assert!(matches!(
+            expr.kind,
+            ExpressionKind::Literal(Literal::Integer { .. })
+        ));
     }
 
     #[test]
     fn test_literal_float() {
         let expr = parse_expr_str("3.14");
-        assert!(matches!(expr.kind, ExpressionKind::Literal(Literal::Float { .. })));
+        assert!(matches!(
+            expr.kind,
+            ExpressionKind::Literal(Literal::Float { .. })
+        ));
     }
 
     #[test]
     fn test_literal_string() {
         let expr = parse_expr_str("\"hello\"");
-        assert!(matches!(expr.kind, ExpressionKind::Literal(Literal::String { .. })));
+        assert!(matches!(
+            expr.kind,
+            ExpressionKind::Literal(Literal::String { .. })
+        ));
     }
 
     #[test]
     fn test_literal_bool() {
         let expr = parse_expr_str("true");
-        assert!(matches!(expr.kind, ExpressionKind::Literal(Literal::Bool(true))));
+        assert!(matches!(
+            expr.kind,
+            ExpressionKind::Literal(Literal::Bool(true))
+        ));
     }
 
     #[test]
@@ -4199,13 +4237,19 @@ mod tests {
     #[test]
     fn test_prefix_expr_not() {
         let expr = parse_expr_str("!a");
-        assert!(matches!(&expr.kind, ExpressionKind::Unary(UnaryOperator::LogicalNot, _)));
+        assert!(matches!(
+            &expr.kind,
+            ExpressionKind::Unary(UnaryOperator::LogicalNot, _)
+        ));
     }
 
     #[test]
     fn test_prefix_expr_neg() {
         let expr = parse_expr_str("-a");
-        assert!(matches!(&expr.kind, ExpressionKind::Unary(UnaryOperator::Negate, _)));
+        assert!(matches!(
+            &expr.kind,
+            ExpressionKind::Unary(UnaryOperator::Negate, _)
+        ));
     }
 
     #[test]
@@ -4388,49 +4432,82 @@ mod tests {
     #[test]
     fn test_literal_rune() {
         let expr = parse_expr_str("'a'");
-        assert!(matches!(&expr.kind, ExpressionKind::Literal(Literal::Rune { .. })));
+        assert!(matches!(
+            &expr.kind,
+            ExpressionKind::Literal(Literal::Rune { .. })
+        ));
     }
 
     #[test]
     fn test_literal_rune_escape() {
         let expr = parse_expr_str(r"'\n'");
-        assert!(matches!(&expr.kind, ExpressionKind::Literal(Literal::Rune { .. })));
+        assert!(matches!(
+            &expr.kind,
+            ExpressionKind::Literal(Literal::Rune { .. })
+        ));
     }
 
     #[test]
     fn test_literal_integer_hex() {
         let expr = parse_expr_str("0xFF");
-        assert!(matches!(&expr.kind, ExpressionKind::Literal(Literal::Integer { base: Base::Hexadecimal, .. })));
+        assert!(matches!(
+            &expr.kind,
+            ExpressionKind::Literal(Literal::Integer {
+                base: Base::Hexadecimal,
+                ..
+            })
+        ));
     }
 
     #[test]
     fn test_literal_integer_binary() {
         let expr = parse_expr_str("0b1010");
-        assert!(matches!(&expr.kind, ExpressionKind::Literal(Literal::Integer { base: Base::Binary, .. })));
+        assert!(matches!(
+            &expr.kind,
+            ExpressionKind::Literal(Literal::Integer {
+                base: Base::Binary,
+                ..
+            })
+        ));
     }
 
     #[test]
     fn test_literal_integer_octal() {
         let expr = parse_expr_str("0o77");
-        assert!(matches!(&expr.kind, ExpressionKind::Literal(Literal::Integer { base: Base::Octal, .. })));
+        assert!(matches!(
+            &expr.kind,
+            ExpressionKind::Literal(Literal::Integer {
+                base: Base::Octal,
+                ..
+            })
+        ));
     }
 
     #[test]
     fn test_literal_integer_with_underscores() {
         let expr = parse_expr_str("1_000_000");
-        assert!(matches!(&expr.kind, ExpressionKind::Literal(Literal::Integer { .. })));
+        assert!(matches!(
+            &expr.kind,
+            ExpressionKind::Literal(Literal::Integer { .. })
+        ));
     }
 
     #[test]
     fn test_literal_float_exponent() {
         let expr = parse_expr_str("1.5e10");
-        assert!(matches!(&expr.kind, ExpressionKind::Literal(Literal::Float { .. })));
+        assert!(matches!(
+            &expr.kind,
+            ExpressionKind::Literal(Literal::Float { .. })
+        ));
     }
 
     #[test]
     fn test_literal_float_negative_exponent() {
         let expr = parse_expr_str("1.5e-10");
-        assert!(matches!(&expr.kind, ExpressionKind::Literal(Literal::Float { .. })));
+        assert!(matches!(
+            &expr.kind,
+            ExpressionKind::Literal(Literal::Float { .. })
+        ));
     }
 
     // ==================== TYPE TESTS (EXTENDED) ====================
@@ -4448,7 +4525,9 @@ mod tests {
     fn test_nested_reference_type() {
         let ty = parse_type_str("&&int32");
         match &ty.kind {
-            TypeKind::Reference(inner, _) => assert!(matches!(inner.kind, TypeKind::Reference(_, _))),
+            TypeKind::Reference(inner, _) => {
+                assert!(matches!(inner.kind, TypeKind::Reference(_, _)))
+            }
             _ => panic!("Expected nested reference"),
         }
     }
@@ -4474,7 +4553,10 @@ mod tests {
     #[test]
     fn test_const_reference_type() {
         let ty = parse_type_str("&const int32");
-        assert!(matches!(ty.kind, TypeKind::Reference(_, Mutability::Immutable)));
+        assert!(matches!(
+            ty.kind,
+            TypeKind::Reference(_, Mutability::Immutable)
+        ));
     }
 
     #[test]
@@ -4553,20 +4635,29 @@ mod tests {
 
     #[test]
     fn test_path_pattern_qualified() {
-        let decl = parse_one_decl("func foo(x: Option[int32]) { match x { case Option.some(v) => v; } }");
+        let decl =
+            parse_one_decl("func foo(x: Option[int32]) { match x { case Option.some(v) => v; } }");
         assert!(matches!(decl.kind, DeclarationKind::Function(_)));
     }
 
     #[test]
     fn test_path_pattern_inferred() {
-        let decl = parse_one_decl("func foo(x: Option[int32]) { match x { case .some(v) => v; case .none => 0; } }");
+        let decl = parse_one_decl(
+            "func foo(x: Option[int32]) { match x { case .some(v) => v; case .none => 0; } }",
+        );
         assert!(matches!(decl.kind, DeclarationKind::Function(_)));
     }
 
     #[test]
     fn test_const_reference_pattern() {
         let pattern = parse_pattern_str("&const x");
-        assert!(matches!(pattern.kind, PatternKind::Reference { mutability: Mutability::Immutable, .. }));
+        assert!(matches!(
+            pattern.kind,
+            PatternKind::Reference {
+                mutability: Mutability::Immutable,
+                ..
+            }
+        ));
     }
 
     // ==================== STATEMENT TESTS (EXTENDED) ====================
@@ -4761,7 +4852,15 @@ mod tests {
         let decl = parse_one_decl("struct Pair[A, B] { first: A; second: B; }");
         match &decl.kind {
             DeclarationKind::Struct(s) => {
-                assert_eq!(s.generics.type_parameters.as_ref().unwrap().parameters.len(), 2);
+                assert_eq!(
+                    s.generics
+                        .type_parameters
+                        .as_ref()
+                        .unwrap()
+                        .parameters
+                        .len(),
+                    2
+                );
             }
             _ => panic!("Expected struct"),
         }
@@ -4793,97 +4892,145 @@ mod tests {
     #[test]
     fn test_binary_logical_and() {
         let expr = parse_expr_str("a && b");
-        assert!(matches!(&expr.kind, ExpressionKind::Binary(BinaryOperator::BoolAnd, _, _)));
+        assert!(matches!(
+            &expr.kind,
+            ExpressionKind::Binary(BinaryOperator::BoolAnd, _, _)
+        ));
     }
 
     #[test]
     fn test_binary_logical_or() {
         let expr = parse_expr_str("a || b");
-        assert!(matches!(&expr.kind, ExpressionKind::Binary(BinaryOperator::BoolOr, _, _)));
+        assert!(matches!(
+            &expr.kind,
+            ExpressionKind::Binary(BinaryOperator::BoolOr, _, _)
+        ));
     }
 
     #[test]
     fn test_binary_bitwise_and() {
         let expr = parse_expr_str("a & b");
-        assert!(matches!(&expr.kind, ExpressionKind::Binary(BinaryOperator::BitAnd, _, _)));
+        assert!(matches!(
+            &expr.kind,
+            ExpressionKind::Binary(BinaryOperator::BitAnd, _, _)
+        ));
     }
 
     #[test]
     fn test_binary_bitwise_or() {
         let expr = parse_expr_str("a | b");
-        assert!(matches!(&expr.kind, ExpressionKind::Binary(BinaryOperator::BitOr, _, _)));
+        assert!(matches!(
+            &expr.kind,
+            ExpressionKind::Binary(BinaryOperator::BitOr, _, _)
+        ));
     }
 
     #[test]
     fn test_binary_bitwise_xor() {
         let expr = parse_expr_str("a ^ b");
-        assert!(matches!(&expr.kind, ExpressionKind::Binary(BinaryOperator::BitXor, _, _)));
+        assert!(matches!(
+            &expr.kind,
+            ExpressionKind::Binary(BinaryOperator::BitXor, _, _)
+        ));
     }
 
     #[test]
     fn test_binary_shift_left() {
         let expr = parse_expr_str("a << b");
-        assert!(matches!(&expr.kind, ExpressionKind::Binary(BinaryOperator::BitShl, _, _)));
+        assert!(matches!(
+            &expr.kind,
+            ExpressionKind::Binary(BinaryOperator::BitShl, _, _)
+        ));
     }
 
     #[test]
     fn test_binary_shift_right() {
         let expr = parse_expr_str("a >> b");
-        assert!(matches!(&expr.kind, ExpressionKind::Binary(BinaryOperator::BitShr, _, _)));
+        assert!(matches!(
+            &expr.kind,
+            ExpressionKind::Binary(BinaryOperator::BitShr, _, _)
+        ));
     }
 
     #[test]
     fn test_binary_less_than() {
         let expr = parse_expr_str("a < b");
-        assert!(matches!(&expr.kind, ExpressionKind::Binary(BinaryOperator::Lt, _, _)));
+        assert!(matches!(
+            &expr.kind,
+            ExpressionKind::Binary(BinaryOperator::Lt, _, _)
+        ));
     }
 
     #[test]
     fn test_binary_greater_equal() {
         let expr = parse_expr_str("a >= b");
-        assert!(matches!(&expr.kind, ExpressionKind::Binary(BinaryOperator::Geq, _, _)));
+        assert!(matches!(
+            &expr.kind,
+            ExpressionKind::Binary(BinaryOperator::Geq, _, _)
+        ));
     }
 
     #[test]
     fn test_binary_not_equal() {
         let expr = parse_expr_str("a != b");
-        assert!(matches!(&expr.kind, ExpressionKind::Binary(BinaryOperator::Neq, _, _)));
+        assert!(matches!(
+            &expr.kind,
+            ExpressionKind::Binary(BinaryOperator::Neq, _, _)
+        ));
     }
 
     #[test]
     fn test_binary_ptr_equal() {
         let expr = parse_expr_str("a === b");
-        assert!(matches!(&expr.kind, ExpressionKind::Binary(BinaryOperator::PtrEq, _, _)));
+        assert!(matches!(
+            &expr.kind,
+            ExpressionKind::Binary(BinaryOperator::PtrEq, _, _)
+        ));
     }
 
     #[test]
     fn test_compound_assignment_add() {
         let expr = parse_expr_str("a += 1");
-        assert!(matches!(expr.kind, ExpressionKind::AssignOp(BinaryOperator::Add, _, _)));
+        assert!(matches!(
+            expr.kind,
+            ExpressionKind::AssignOp(BinaryOperator::Add, _, _)
+        ));
     }
 
     #[test]
     fn test_compound_assignment_sub() {
         let expr = parse_expr_str("a -= 1");
-        assert!(matches!(expr.kind, ExpressionKind::AssignOp(BinaryOperator::Sub, _, _)));
+        assert!(matches!(
+            expr.kind,
+            ExpressionKind::AssignOp(BinaryOperator::Sub, _, _)
+        ));
     }
 
     #[test]
     fn test_compound_assignment_bit_and() {
         let expr = parse_expr_str("a &= b");
-        assert!(matches!(expr.kind, ExpressionKind::AssignOp(BinaryOperator::BitAnd, _, _)));
+        assert!(matches!(
+            expr.kind,
+            ExpressionKind::AssignOp(BinaryOperator::BitAnd, _, _)
+        ));
     }
 
     #[test]
     fn test_prefix_bitwise_not() {
         let expr = parse_expr_str("~a");
-        assert!(matches!(&expr.kind, ExpressionKind::Unary(UnaryOperator::BitwiseNot, _)));
+        assert!(matches!(
+            &expr.kind,
+            ExpressionKind::Unary(UnaryOperator::BitwiseNot, _)
+        ));
     }
 
     #[test]
     fn test_prefix_const_ref() {
         let expr = parse_expr_str("&const a");
-        assert!(matches!(&expr.kind, ExpressionKind::Reference(_, Mutability::Immutable)));
+        assert!(matches!(
+            &expr.kind,
+            ExpressionKind::Reference(_, Mutability::Immutable)
+        ));
     }
 
     #[test]
@@ -4972,7 +5119,8 @@ mod tests {
 
     #[test]
     fn test_match_guard() {
-        let decl = parse_one_decl("func foo(x: int32) { match x { case n if n > 0 => 1; case _ => 0; } }");
+        let decl =
+            parse_one_decl("func foo(x: int32) { match x { case n if n > 0 => 1; case _ => 0; } }");
         assert!(matches!(decl.kind, DeclarationKind::Function(_)));
     }
 
@@ -5017,5 +5165,64 @@ mod tests {
     fn test_trailing_comma_generic_args() {
         let ty = parse_type_str("Map[string, int32,]");
         assert!(matches!(ty.kind, TypeKind::Nominal(_)));
+    }
+
+    #[test]
+    fn test_optional_chaining_simple() {
+        // a?.b should parse as OptionalEvaluation(Member(OptionalUnwrap(a), "b"))
+        let expr = parse_expr_str("a?.b");
+        match &expr.kind {
+            ExpressionKind::OptionalEvaluation(inner) => match &inner.kind {
+                ExpressionKind::Member { target, name } => {
+                    assert_eq!(name.symbol.as_str(), "b");
+                    assert!(matches!(target.kind, ExpressionKind::OptionalUnwrap(_)));
+                }
+                _ => panic!("Expected Member inside OptionalEvaluation"),
+            },
+            _ => panic!("Expected OptionalEvaluation"),
+        }
+    }
+
+    #[test]
+    fn test_optional_chaining_nested() {
+        // a?.b?.c should have the structure:
+        // OptionalEvaluation(Member(OptionalUnwrap(Member(OptionalUnwrap(a), "b")), "c"))
+        let expr = parse_expr_str("a?.b?.c");
+        match &expr.kind {
+            ExpressionKind::OptionalEvaluation(inner) => {
+                // Outer: Member(.., "c")
+                match &inner.kind {
+                    ExpressionKind::Member {
+                        target: outer_target,
+                        name: outer_name,
+                    } => {
+                        assert_eq!(outer_name.symbol.as_str(), "c");
+                        // Should be OptionalUnwrap(Member(..))
+                        match &outer_target.kind {
+                            ExpressionKind::OptionalUnwrap(middle) => {
+                                // Inner: Member(.., "b")
+                                match &middle.kind {
+                                    ExpressionKind::Member {
+                                        target: inner_target,
+                                        name: inner_name,
+                                    } => {
+                                        assert_eq!(inner_name.symbol.as_str(), "b");
+                                        // Should be OptionalUnwrap(a)
+                                        assert!(matches!(
+                                            inner_target.kind,
+                                            ExpressionKind::OptionalUnwrap(_)
+                                        ));
+                                    }
+                                    _ => panic!("Expected Member for inner chain"),
+                                }
+                            }
+                            _ => panic!("Expected OptionalUnwrap"),
+                        }
+                    }
+                    _ => panic!("Expected Member at top level"),
+                }
+            }
+            _ => panic!("Expected OptionalEvaluation"),
+        }
     }
 }

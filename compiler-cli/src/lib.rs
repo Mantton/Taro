@@ -17,7 +17,11 @@ pub struct CommandLineArguments {
 impl CommandLineArguments {
     /// Returns true if the path points to a single .tr file
     pub fn is_single_file(&self) -> bool {
-        self.path.extension().map(|ext| ext == "tr").unwrap_or(false) && self.path.is_file()
+        self.path
+            .extension()
+            .map(|ext| ext == "tr")
+            .unwrap_or(false)
+            && self.path.is_file()
     }
 }
 

@@ -1223,14 +1223,15 @@ impl<'ctx> Checker<'ctx> {
                 // Treat Foundation types like struct/enum constructors - bind to constructor overload set
                 let kind = self.gcx().definition_kind(def_id);
                 match kind {
-                    DefinitionKind::Struct | DefinitionKind::Enum => self.synth_constructor_value_expression(
-                        node_id,
-                        def_id,
-                        span,
-                        expectation,
-                        instantiation_args,
-                        cs,
-                    ),
+                    DefinitionKind::Struct | DefinitionKind::Enum => self
+                        .synth_constructor_value_expression(
+                            node_id,
+                            def_id,
+                            span,
+                            expectation,
+                            instantiation_args,
+                            cs,
+                        ),
                     _ => {
                         // For other types (interfaces, aliases), just return the type
                         self.gcx().get_type(def_id)
@@ -1251,14 +1252,7 @@ impl<'ctx> Checker<'ctx> {
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         let ty = cs.infer_cx.next_ty_var(span);
-        if !self.bind_constructor_overload_set(
-            node_id,
-            nominal,
-            span,
-            ty,
-            instantiation_args,
-            cs,
-        ) {
+        if !self.bind_constructor_overload_set(node_id, nominal, span, ty, instantiation_args, cs) {
             return Ty::error(self.gcx());
         }
         if let Some(expectation) = expectation {

@@ -1,7 +1,5 @@
 use crate::{
-    mir::{
-        BasicBlockId, BlockAnd, BlockAndExtension, Operand, Place, Rvalue, builder::MirBuilder,
-    },
+    mir::{BasicBlockId, BlockAnd, BlockAndExtension, Operand, Place, Rvalue, builder::MirBuilder},
     thir::{self, ExprKind},
     unpack,
 };

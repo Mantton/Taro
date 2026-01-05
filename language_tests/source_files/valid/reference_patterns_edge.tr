@@ -1,0 +1,27 @@
+// Test: Reference Pattern Edge Cases
+// Checks nested reference patterns and &mut updates.
+
+func main() {
+    var x = 1
+    let r = &mut x
+
+    match r {
+        case &mut y => {
+            y = y + 2
+        }
+    }
+
+    assert(x == 3, "mut ref update")
+
+    let a = 10
+    let r1 = &a
+    let r2 = &r1
+
+    match r2 {
+        case & &z => {
+            assert(z == 10, "double ref match")
+        }
+    }
+
+    std.print("PASS: Reference pattern edge cases\n")
+}

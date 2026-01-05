@@ -1,0 +1,31 @@
+// Test: Match Reference Guards
+// Checks match guards with reference patterns.
+
+func main() {
+    let x = 41
+    let r = &x
+
+    match r {
+        case &y if y == 41 => {
+            assert(true, "guard matched")
+        }
+        case &y => {
+            assert(false, "guard fallback")
+        }
+    }
+
+    var m = 5
+    let mr = &mut m
+
+    match mr {
+        case &mut y if y == 5 => {
+            y = 7
+            assert(m == 7, "mut guard update")
+        }
+        case &mut _ => {
+            assert(false, "mut guard fallback")
+        }
+    }
+
+    std.print("PASS: Match reference guards\n")
+}

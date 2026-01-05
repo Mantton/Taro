@@ -1,0 +1,12 @@
+// Test: Tuple Destructure Edge Cases
+// Checks nested tuple patterns and wildcards.
+
+func main() {
+    let t = (1, (2, 3))
+    let (a, (b, _)) = t
+
+    assert(a == 1, "outer tuple value")
+    assert(b == 2, "nested tuple value")
+
+    std.print("PASS: Tuple destructure edge cases\n")
+}

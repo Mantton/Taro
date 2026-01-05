@@ -1,0 +1,17 @@
+// Test: String Equality Edge Cases
+// Checks empty, equal, and unequal string comparisons.
+
+func main() {
+    assert("" == "", "empty string equality")
+    assert(!("" == "a"), "empty vs non-empty")
+    assert("abc" == "abc", "same literal equality")
+    assert(!("abc" == "abd"), "different literal inequality")
+
+    let a = "same"
+    let b = "same"
+    let c = "different"
+    assert(a == b, "same value equality")
+    assert(!(a == c), "different value inequality")
+
+    std.print("PASS: String equality edge cases\n")
+}

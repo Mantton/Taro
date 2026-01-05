@@ -778,8 +778,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 .iter()
                 .any(|p| matches!(p, PlaceElem::Deref));
             if matches!(binding.mode, crate::hir::BindingMode::ByValue) && is_deref_place {
-                self.place_bindings
-                    .insert(binding.local, src_place.clone());
+                self.place_bindings.insert(binding.local, src_place.clone());
                 continue;
             }
 

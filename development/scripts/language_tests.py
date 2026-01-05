@@ -1,3 +1,4 @@
+import argparse
 import os
 import shutil
 import subprocess
@@ -152,14 +153,26 @@ def run_test(file_path: Path):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Run Taro language tests")
+    parser.add_argument(
+        "--filter",
+        "-f",
+        type=str,
+        help="Filter tests by name (substring match). E.g., --filter optional_chaining",
+    )
+    args = parser.parse_args()
+
     # Setup: build compiler and create temp directories
     setup_test_environment()
 
     try:
         print(f"Running tests in {SOURCE_FILES_DIR}...")
+        if args.filter:
+            print(f"Filter: {args.filter}")
 
         total = 0
         passed = 0
+        skipped = 0
         failures: list[tuple[Path, str, dict[str, str] | None]] = []
 
         # Walk through source files
@@ -168,6 +181,11 @@ def main():
                 if file.endswith(".tr"):
                     file_path = Path(root) / file
                     relative_path = file_path.relative_to(SOURCE_FILES_DIR)
+
+                    # Apply filter if specified
+                    if args.filter and args.filter not in str(relative_path):
+                        skipped += 1
+                        continue
 
                     print(f"Running {relative_path}...", end=" ", flush=True)
                     success, msg, details = run_test(file_path)
@@ -181,7 +199,10 @@ def main():
                     total += 1
 
         print("-" * 40)
-        print(f"Total: {total}, Passed: {passed}, Failed: {total - passed}")
+        summary = f"Total: {total}, Passed: {passed}, Failed: {total - passed}"
+        if skipped > 0:
+            summary += f", Skipped: {skipped}"
+        print(summary)
         if failures:
             print("Failures:")
             for failed_path, failed_msg, failed_details in failures:

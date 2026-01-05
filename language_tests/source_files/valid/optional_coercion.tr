@@ -1,0 +1,15 @@
+
+struct Box { val: int32 }
+
+func takesOpt(_ o: int32?) {}
+func takesOptBox(_ o: Box?) {}
+
+func main() {
+    let x: int32 = 42;
+    takesOpt(x); // Coercion int32 -> int32?
+    
+    let b = Box { val: 42 };
+    takesOptBox(b); // Coercion Box -> Box?
+    
+    std.print("Coercion works\n");
+}

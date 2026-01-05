@@ -1370,7 +1370,7 @@ mod tests {
             // - Binary operators: +, -, /, %, |, ^, &&, || (Note: & and * excluded)
             // So + - / % | ^ && || ARE starters. * & are NOT.
         ";
-        
+
         // Let's test actual starters first
         let input = "
         a
@@ -1395,20 +1395,26 @@ mod tests {
         |> t
         ?? u
         ";
-        
+
         let tokens = tokenize(input);
         // Expect NO semicolons until EOF (or after u)
-        let values: Vec<Token> = tokens.into_iter().filter(|t| !matches!(t, Token::Identifier{..})).collect();
-        
+        let values: Vec<Token> = tokens
+            .into_iter()
+            .filter(|t| !matches!(t, Token::Identifier { .. }))
+            .collect();
+
         // They should all be joined.
         // The last one 'u' is followed by EOF, so it gets a semicolon.
         // We can just check that we don't have semicolons in between.
-        
+
         // Actually, let's just assert exactly.
         // a + b - c / d % e | f ^ g || h && i == j != k < l > m <= n >= o << p >> q . r .. s |> t ?? u;
-        
+
         // Since constructing this vec is tedious, let's verify there is only ONE semicolon at the end.
-        let semi_count = tokenize(input).iter().filter(|t| matches!(t, Token::Semicolon)).count();
+        let semi_count = tokenize(input)
+            .iter()
+            .filter(|t| matches!(t, Token::Semicolon))
+            .count();
         assert_eq!(semi_count, 1, "Should only have one semicolon at the end");
     }
 
@@ -1519,7 +1525,9 @@ mod tests {
             vec![
                 Token::Return,
                 Token::Semicolon,
-                Token::Identifier { value: "value".into() },
+                Token::Identifier {
+                    value: "value".into()
+                },
                 Token::Semicolon,
                 Token::EOF,
             ]
@@ -1535,7 +1543,9 @@ mod tests {
             vec![
                 Token::Break,
                 Token::Semicolon,
-                Token::Identifier { value: "label".into() },
+                Token::Identifier {
+                    value: "label".into()
+                },
                 Token::Semicolon,
                 Token::EOF,
             ]
@@ -1596,7 +1606,11 @@ mod tests {
 
         for (text, expected_token) in keywords {
             let tokens = tokenize(text);
-            assert_eq!(tokens[0], expected_token, "Failed to tokenize keyword '{}'", text);
+            assert_eq!(
+                tokens[0], expected_token,
+                "Failed to tokenize keyword '{}'",
+                text
+            );
         }
     }
 
@@ -1660,7 +1674,11 @@ mod tests {
 
         for (text, expected_token) in punctuation {
             let tokens = tokenize(text);
-            assert_eq!(tokens[0], expected_token, "Failed to tokenize punctuation '{}'", text);
+            assert_eq!(
+                tokens[0], expected_token,
+                "Failed to tokenize punctuation '{}'",
+                text
+            );
         }
     }
 }
