@@ -1,0 +1,5 @@
+// Test: Missing main function (should fail for executables)
+
+func helper() -> int32 {
+    return 42
+}

@@ -1,5 +1,3 @@
-use std::{path::PathBuf, rc::Rc};
-
 use crate::{
     CommandLineArguments,
     package::{
@@ -11,15 +9,106 @@ use compiler::{
     PackageIndex,
     compile::{
         Compiler,
-        config::Config,
+        config::{Config, PackageKind},
         context::{CompilerArenas, CompilerContext, CompilerStore},
     },
     constants::STD_PREFIX,
     diagnostics::DiagCtx,
     error::ReportedError,
 };
+use rustc_hash::FxHashMap;
+use std::{
+    hash::{Hash, Hasher},
+    path::PathBuf,
+    rc::Rc,
+};
 
 pub fn run(arguments: CommandLineArguments) -> Result<(), ReportedError> {
+    if arguments.is_single_file() {
+        run_single_file(arguments)
+    } else {
+        run_package(arguments)
+    }
+}
+
+fn run_single_file(arguments: CommandLineArguments) -> Result<(), ReportedError> {
+    let cwd = std::env::current_dir().map_err(|e| {
+        eprintln!("error: failed to get current directory: {}", e);
+        ReportedError
+    })?;
+    let dcx = Rc::new(DiagCtx::new(cwd));
+    let arenas = CompilerArenas::new();
+
+    // Resolve file path and extract name
+    let file_path = arguments.path.canonicalize().map_err(|e| {
+        eprintln!(
+            "error: failed to canonicalize file path '{}': {}",
+            arguments.path.display(),
+            e
+        );
+        ReportedError
+    })?;
+
+    let file_stem = file_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| {
+            eprintln!(
+                "error: failed to extract filename from '{}'",
+                file_path.display()
+            );
+            ReportedError
+        })?;
+
+    // Create target directory based on file path hash
+    let target_root = script_target_dir(&file_path);
+    std::fs::create_dir_all(&target_root).map_err(|e| {
+        eprintln!(
+            "error: failed to create target directory '{}': {}",
+            target_root.display(),
+            e
+        );
+        ReportedError
+    })?;
+
+    let store = CompilerStore::new(&arenas, target_root.join("objects"), &dcx)?;
+    let icx = CompilerContext::new(dcx, store);
+
+    // Compile std (index 0)
+    compile_std(&icx, arguments.std_path.clone())?;
+
+    // Create virtual config for single file
+    let package_index = PackageIndex::new(1);
+    let mut dependencies = FxHashMap::default();
+    dependencies.insert("std".into(), "std".into());
+
+    let config = icx.store.arenas.configs.alloc(Config {
+        name: file_stem.into(),
+        identifier: format!("script-{}", file_stem).into(),
+        src: file_path.clone(),
+        dependencies,
+        index: package_index,
+        kind: PackageKind::Executable,
+        executable_out: arguments.output.clone(),
+        no_std_prelude: false,
+        is_script: true,
+    });
+
+    println!("Checking – {}", file_stem);
+    let mut compiler = Compiler::new(&icx, config);
+    let _ = compiler.check()?;
+    Ok(())
+}
+
+fn script_target_dir(file_path: &PathBuf) -> PathBuf {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    file_path.hash(&mut hasher);
+    let hash = format!("{:x}", hasher.finish());
+
+    std::env::temp_dir().join("taro-scripts").join(hash)
+}
+
+fn run_package(arguments: CommandLineArguments) -> Result<(), ReportedError> {
     let cwd = std::env::current_dir().map_err(|e| {
         eprintln!("error: failed to get current directory: {}", e);
         ReportedError
@@ -45,7 +134,7 @@ pub fn run(arguments: CommandLineArguments) -> Result<(), ReportedError> {
     let total = graph.ordered.len();
     for (index, package) in graph.ordered.iter().enumerate() {
         let is_root = index + 1 == total;
-        if !is_root && package.kind != compiler::compile::config::PackageKind::Library {
+        if !is_root && package.kind != PackageKind::Library {
             icx.dcx.emit_error(
                 format!(
                     "dependency `{}` must be a library (found {:?})",
@@ -117,6 +206,7 @@ pub fn run(arguments: CommandLineArguments) -> Result<(), ReportedError> {
             kind: package.kind,
             executable_out: arguments.output.clone(),
             no_std_prelude: package.no_std_prelude,
+            is_script: false,
         });
 
         let mut compiler = Compiler::new(&icx, config);
@@ -146,9 +236,10 @@ fn compile_std<'a>(
         identifier: "std".into(),
         src,
         dependencies: Default::default(),
-        kind: compiler::compile::config::PackageKind::Library,
+        kind: PackageKind::Library,
         executable_out: None,
         no_std_prelude: true,
+        is_script: false,
     });
 
     let mut compiler = Compiler::new(ctx, config);

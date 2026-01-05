@@ -28,4 +28,6 @@ pub struct Config {
     pub kind: PackageKind,
     pub executable_out: Option<PathBuf>,
     pub no_std_prelude: bool,
+    /// True for single-file scripts (no package structure)
+    pub is_script: bool,
 }

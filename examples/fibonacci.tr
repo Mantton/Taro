@@ -1,0 +1,13 @@
+// Fibonacci sequence example
+// Run with: taro run examples/fibonacci.tr
+
+func fibonacci(n: int32) -> int32 {
+    if n <= 1 {
+        return n
+    }
+    return fibonacci(n: n - 1) + fibonacci(n: n - 2)
+}
+
+func main() {
+    let result = fibonacci(n: 10)
+}

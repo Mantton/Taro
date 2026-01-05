@@ -34,6 +34,55 @@ pub fn tokenize_package(path: PathBuf, dcx: &DiagCtx) -> Result<Pacakge, Reporte
     Ok(Pacakge { root })
 }
 
+/// Tokenize a single source file as a virtual package.
+/// The file becomes the root module with name "main".
+pub fn tokenize_single_file(path: PathBuf, dcx: &DiagCtx) -> Result<Pacakge, ReportedError> {
+    let file_path = match path.canonicalize() {
+        Ok(path) => path,
+        Err(e) => {
+            let message = format!("failed to resolve source file – {e}");
+            dcx.emit_error(message, None);
+            return Err(ReportedError);
+        }
+    };
+
+    // Verify it's a .tr file
+    if file_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e != FILE_EXTENSION)
+        .unwrap_or(true)
+    {
+        dcx.emit_error(
+            format!(
+                "expected a .{} file, got '{}'",
+                FILE_EXTENSION,
+                file_path.display()
+            ),
+            None,
+        );
+        return Err(ReportedError);
+    }
+
+    let id = dcx.add_file_mapping(file_path.clone());
+    let file = match tokenize_file(id, file_path.clone(), dcx) {
+        Ok(file) => file,
+        Err(e) => {
+            let message = format!("lexer error in file '{}': {}", file_path.display(), e);
+            dcx.emit_error(message, None);
+            return Err(ReportedError);
+        }
+    };
+
+    let root = Module {
+        name: ROOT_MODULE_NAME.into(),
+        files: vec![file],
+        submodules: vec![],
+    };
+
+    Ok(Pacakge { root })
+}
+
 pub fn tokenize_module(path: PathBuf, dcx: &DiagCtx) -> Result<Module, ReportedError> {
     let directory = match path.canonicalize() {
         Ok(path) => path,

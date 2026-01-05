@@ -1,0 +1,28 @@
+// Basic arithmetic operations example
+// Run with: taro run examples/arithmetic.tr
+
+func add(a: int32, b: int32) -> int32 {
+    return a + b
+}
+
+func subtract(a: int32, b: int32) -> int32 {
+    return a - b
+}
+
+func multiply(a: int32, b: int32) -> int32 {
+    return a * b
+}
+
+func divide(a: int32, b: int32) -> int32 {
+    return a / b
+}
+
+func main() {
+    let x = 10
+    let y = 5
+
+    let sum = add(a: x, b: y)
+    let diff = subtract(a: x, b: y)
+    let product = multiply(a: x, b: y)
+    let quotient = divide(a: x, b: y)
+}

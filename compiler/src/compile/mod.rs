@@ -66,8 +66,11 @@ impl<'state> Compiler<'state> {
                 .cache_package_ident(self.context.config.identifier.clone());
         }
         // Tokenization & Parsing
-        let package =
-            parse::lexer::tokenize_package(self.context.config.src.clone(), &self.context.dcx)?;
+        let package = if self.context.config.is_script {
+            parse::lexer::tokenize_single_file(self.context.config.src.clone(), &self.context.dcx)?
+        } else {
+            parse::lexer::tokenize_package(self.context.config.src.clone(), &self.context.dcx)?
+        };
         let package = parse::parser::parse_package(package, &self.context.dcx)?;
         // AST Passes
         let resolution_output = sema::resolve::resolve_package(&package, self.context)?;

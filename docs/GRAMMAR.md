@@ -131,7 +131,7 @@ async       await       ref
                          | <extern_block>
                          | <namespace_declaration>
 
-<visibility>           ::= [ 'public' | 'private' | 'protected' | 'fileprivate' ]
+<visibility>           ::= [ 'public' | 'private' ]
 ```
 
 ### Import and Export
@@ -159,21 +159,17 @@ async       await       ref
 ### Struct Declaration
 
 ```ebnf
-<struct_declaration>   ::= 'struct' <identifier> <generics> '{' <field_definitions> '}'
+<struct_declaration>   ::= 'struct' <identifier> <generics> '{' <struct_fields> '}'
 
-<field_definitions>    ::= { <field_definition> ';' }
+<struct_fields>        ::= { <struct_field> ';' }
 
-<field_definition>     ::= { <attribute> } <visibility> <mutability> 
-                           [ <label> ] <identifier> ':' <type>
-
-<mutability>           ::= [ 'readonly' ]
-<label>                ::= <identifier> ':'
+<struct_field>         ::= <visibility> [ 'readonly' ] <identifier> ':' <type>
 ```
 
 ### Enum Declaration
 
 ```ebnf
-<enum_declaration>     ::= 'enum' <identifier> <generics> '{' { <enum_case> } '}'
+<enum_declaration>     ::= 'enum' <identifier> <generics> '{' { <enum_case> ';' } '}'
 
 <enum_case>            ::= 'case' <variant_list>
 
@@ -183,7 +179,8 @@ async       await       ref
 
 <variant_kind>         ::= <tuple_variant>
 <tuple_variant>        ::= '(' <tuple_variant_fields> ')'
-<tuple_variant_fields> ::= <field_definition> { ',' <field_definition> } [ ',' ]
+<tuple_variant_fields> ::= <tuple_field> { ',' <tuple_field> } [ ',' ]
+<tuple_field>          ::= <visibility> [ 'readonly' ] [ <label> ] <type>
 ```
 
 ### Interface Declaration
@@ -199,7 +196,7 @@ async       await       ref
                          | <type_alias_declaration>
                          | <operator_declaration>
 
-<conformances>         ::= ':' <path_node> { '&' <path_node> }
+<conformances>         ::= ':' <path_node> { ',' <path_node> }
 ```
 
 ### Extension Declaration
@@ -220,7 +217,7 @@ async       await       ref
 
 <function_parameters>  ::= <function_parameter> { ',' <function_parameter> } [ ',' ]
 
-<function_parameter>   ::= { <attribute> } [ <label> ] <identifier> ':' 
+<function_parameter>   ::= { <attribute> } [ <label> ] <identifier> ':'
                            [ '...' ] <type> [ '=' <expression> ]
                          | <self_parameter>
 
@@ -230,7 +227,7 @@ async       await       ref
 ### Operator Declaration
 
 ```ebnf
-<operator_declaration> ::= 'operator' <operator_kind> <generics> 
+<operator_declaration> ::= 'operator' <operator_kind> <generics>
                            <function_signature> [ <block> ]
 
 <operator_kind>        ::= '+' | '-' | '*' | '/' | '%'
@@ -254,8 +251,8 @@ async       await       ref
 ### Type Alias Declaration
 
 ```ebnf
-<type_alias_declaration> ::= 'type' <identifier> <generics> 
-                             [ ':' <generic_bounds> ] 
+<type_alias_declaration> ::= 'type' <identifier> <generics>
+                             [ ':' <generic_bounds> ]
                              [ '=' <type> ]
 ```
 
@@ -280,7 +277,7 @@ async       await       ref
 ```ebnf
 <extern_block>         ::= 'extern' <string_literal> '{' { <extern_declaration> } '}'
 
-<extern_declaration>   ::= { <attribute> } <visibility> 'func' <identifier> 
+<extern_declaration>   ::= { <attribute> } <visibility> 'func' <identifier>
                            <function_prototype>
 ```
 
@@ -298,7 +295,7 @@ async       await       ref
 ```ebnf
 <generics>             ::= [ <type_parameters> ] [ <where_clause> ]
 
-<type_parameters>      ::= '<' <type_parameter_list> '>'
+<type_parameters>      ::= '[' <type_parameter_list> ']'
 <type_parameter_list>  ::= <type_parameter> { ',' <type_parameter> } [ ',' ]
 
 <type_parameter>       ::= <identifier> [ ':' <generic_bounds> ] [ '=' <type> ]
@@ -316,7 +313,7 @@ async       await       ref
 <generic_bounds>       ::= <generic_bound> { '&' <generic_bound> }
 <generic_bound>        ::= <path_node>
 
-<type_arguments>       ::= '<' <type_argument_list> '>'
+<type_arguments>       ::= '[' <type_argument_list> ']'
 <type_argument_list>   ::= <type_argument> { ',' <type_argument> } [ ',' ]
 <type_argument>        ::= <type> | <const_expression>
 ```
@@ -337,6 +334,7 @@ async       await       ref
                          | <existential_type>
                          | <infer_type>
                          | <paren_type>
+                         | <never_type>
 
 <nominal_type>         ::= <path>
 
@@ -362,6 +360,8 @@ async       await       ref
 <infer_type>           ::= '_'
 
 <paren_type>           ::= '(' <type> ')'
+
+<never_type>           ::= '!'
 ```
 
 ### Path
@@ -388,6 +388,7 @@ async       await       ref
                          | <path_pattern>
                          | <or_pattern>
                          | <literal_pattern>
+                         | <reference_pattern>
 
 <wildcard_pattern>     ::= '_'
 
@@ -406,6 +407,8 @@ async       await       ref
 <or_pattern>           ::= <pattern> { '|' <pattern> }
 
 <literal_pattern>      ::= <literal>
+
+<reference_pattern>    ::= '&' [ 'const' ] <pattern>
 ```
 
 ---
@@ -437,7 +440,7 @@ async       await       ref
 
 <while_statement>      ::= [ <label_def> ] 'while' <expression> <block>
 
-<for_statement>        ::= [ <label_def> ] 'for' <pattern> 'in' <expression> 
+<for_statement>        ::= [ <label_def> ] 'for' <pattern> 'in' <expression>
                            [ 'where' <expression> ] <block>
 
 <return_statement>     ::= 'return' [ <expression> ] ';'
@@ -527,7 +530,7 @@ async       await       ref
                          | '.' <integer_literal>             /* tuple access */
                          | '(' <argument_list> ')'           /* call */
                          | '[' <expression> ']'              /* index */
-                         | '<' <type_argument_list> '>'      /* specialization */
+                         | '[' <type_argument_list> ']'      /* specialization */
                          | '?'                               /* optional unwrap */
                          | '?.' <identifier>                 /* optional chain */
 
@@ -563,6 +566,7 @@ async       await       ref
 
 <array_expression>     ::= '[' ']'
                          | '[' <expression> { ',' <expression> } [ ',' ] ']'
+                         | '[' <expression> ';' <const_expression> ']'   /* repeat */
 
 <dictionary_expression>::= '[' <map_pair_list> ']'
                          | '[' ':' ']'
@@ -576,7 +580,7 @@ async       await       ref
 ### Control Flow Expressions
 
 ```ebnf
-<if_expression>        ::= 'if' <expression> <block_or_expr> 
+<if_expression>        ::= 'if' <expression> <block_or_expr>
                            [ 'else' <else_branch> ]
 
 <else_branch>          ::= <if_expression>
@@ -587,7 +591,7 @@ async       await       ref
 
 <match_expression>     ::= 'match' <expression> '{' { <match_arm> } '}'
 
-<match_arm>            ::= 'case' <pattern> [ 'if' <expression> ] 
+<match_arm>            ::= 'case' <pattern> [ 'if' <expression> ]
                            ( <block_or_expr> | '=>' <expression> )
 
 <block_expression>     ::= <block>
@@ -618,12 +622,12 @@ async       await       ref
 
 <field_init>           ::= [ <label> ] <expression>
                          | <identifier>   /* shorthand: foo instead of foo: foo */
+```
 
 **Note on Disambiguation**: In control flow conditions (e.g., `if User { ... }`), a struct literal is disallowed if it is ambiguous with a block. The parser uses a heuristic to determine if a block-like structure is intended to be a struct literal:
-- It is treated as a struct literal if it contains keys followed by newlines/commas (e.g., `{ key: val, }` or `{ key, }`).
+- It is treated as a struct literal if it contains keys followed by colons or commas.
 - Otherwise, it is parsed as a block.
-- If it looks like a struct literal but appears in a restricted context (like an `if` condition), a specific error is raised (`ParserError::DisallowedStructLiteral`).
-```
+- If it looks like a struct literal but appears in a restricted context (like an `if` condition), a specific error is raised.
 
 ### Binding Conditions
 
@@ -643,7 +647,7 @@ Taro uses automatic semicolon insertion (ASI). Semicolons are automatically inse
 - Identifiers, literals (`true`, `false`, `nil`)
 - `break`, `continue`, `return`
 - `)`, `]`, `}`
-- `?`, `.*`
+- `?`, `!`, `.*`
 
 **Line continuation starters (suppress ASI):**
 - Binary operators: `+`, `-`, `/`, `%`, `|`, `^`, `&&`, `||`
@@ -672,73 +676,87 @@ The following are reserved for future use:
 - `class`, `final`, `override`
 - `async`, `await`
 - `ref`
+- `fileprivate`, `protected`
 
 ---
 
-## Edge Cases and Notes
+## Comma and Semicolon Rules
 
-### Separator and Trailing Comma Rules
+### Semicolon-Separated Lists
 
-Different constructs use different separators and have different trailing separator policies:
+Constructs that use semicolons as separators work naturally with ASI:
 
-| Construct | Separator | Trailing Allowed? | ASI Risk |
-|-----------|-----------|-------------------|----------|
-| Struct fields | `;` | Yes | None (semicolons match ASI) |
-| Enum cases | `;` | Yes | None |
-| Enum variants (in a case) | `,` | **Yes** | Low |
-| Function parameters | `,` | Yes | None |
-| Type parameters | `,` | Yes | None |
-| Type arguments | `,` | Yes | Low |
-| Call arguments | `,` | **Yes** | **HIGH** - comma required on each line |
-| Tuple expressions | `,` | **Yes** | **HIGH** - comma required on each line |
-| Array literals | `,` | **Yes** | **HIGH** - comma required on each line |
-| Dictionary literals | `,` | **Yes** | **HIGH** - comma required on each line |
-| Struct literal fields | `,` | Yes | Trailing comma **required** for multiline |
-| Import nested items | `,` | Yes | None |
-| Closure parameters | `,` | Yes | None |
-| Pattern lists | `,` | Yes | None |
-| Match arms | implicit (newline/`;`) | N/A | None |
+| Construct | Separator |
+|-----------|-----------|
+| Struct fields | `;` |
+| Enum cases | `;` |
+| Match arms | implicit (newline inserts `;`) |
 
-### Multiline Constructs and ASI Interaction
+### Comma-Separated Lists and ASI
+
+For comma-separated lists, **commas are required before newlines** to prevent ASI from inserting semicolons. The trailing comma after the last element is optional.
+
+| Construct | Separator | Trailing Comma |
+|-----------|-----------|----------------|
+| Enum variants (in a case) | `,` | Optional |
+| Function parameters | `,` | Optional |
+| Type parameters | `,` | Optional |
+| Type arguments | `,` | Optional |
+| Call arguments | `,` | Optional |
+| Tuple expressions | `,` | Optional |
+| Array literals | `,` | Optional |
+| Dictionary literals | `,` | Optional |
+| Struct literal fields | `,` | Optional |
+| Import nested items | `,` | Optional |
+| Closure parameters | `,` | Optional |
+| Pattern lists | `,` | Optional |
+
+**Important**: If you write a multiline comma-separated list without commas at the end of lines, ASI will insert semicolons and the parser will error with "unexpected semicolon in multiline list".
+
+---
+
+## Multiline Constructs and ASI Interaction
 
 **Struct Fields**: Since struct fields use semicolons as separators and ASI inserts semicolons after identifiers and closing delimiters on newlines, multiline struct definitions work naturally:
 ```
 struct Point {
-    x: int       // ASI inserts `;` here
-    y: int       // ASI inserts `;` here
+    x: int32       // ASI inserts `;` here
+    y: int32       // ASI inserts `;` here
 }
 ```
 
-**Call Arguments**: Call arguments do **not** allow trailing commas. For multiline calls, you must place the comma at the end of each line (before the newline):
+**Comma-Separated Lists**: Commas are **required** at the end of each line to prevent ASI:
 ```
+// WRONG - ASI inserts `;` after `a`, causing error
 foo(
-    a,           // comma required
-    b,           // comma required
-    c            // no trailing comma
+    a
+    b
+)
+
+// CORRECT - comma prevents ASI
+foo(
+    a,
+    b
+)
+
+// ALSO CORRECT - trailing comma is optional
+foo(
+    a,
+    b,
 )
 ```
 
-**Array/Dictionary Literals**: Similar to call arguments, trailing commas are **not** allowed:
+More examples:
 ```
 let arr = [
-    1,
-    2,
-    3              // no trailing comma
+    1,          // comma required
+    2,          // comma required
+    3           // trailing comma optional
 ]
-```
 
-**Struct Literals**: Trailing commas **are** allowed, and in multiline struct literals, **commas are required after each field** to prevent ASI from inserting semicolons:
-```
-// WRONG - ASI inserts `;` after string literal
 let user = User {
-    id: 1,
-    name: "John"       // ASI inserts `;` here, causing parse error
-}
-
-// CORRECT - comma prevents ASI
-let user = User {
-    id: 1,
-    name: "John",      // comma required (also serves as trailing comma)
+    id: 1,          // comma required
+    name: "John"    // trailing comma optional
 }
 ```
 
