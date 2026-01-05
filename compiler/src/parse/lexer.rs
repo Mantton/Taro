@@ -1353,25 +1353,6 @@ mod tests {
 
     #[test]
     fn test_asi_line_continuations() {
-        // Operators that should NOT trigger ASI when at start of next line
-        let input = "
-        a
-        + b
-        - c
-        * d
-        / e
-        % f
-        | g
-        ^ h
-        & i // invalid syntax for bitwise AND but lexer allows it as invalid line start? No, & IS NOT a continuation starter.
-            // Wait, per GRAMMAR.md: & and * are NOT continuation starters.
-            // So: * d should insert semicolon? 
-            // Let's re-read GRAMMAR.md:
-            // - Binary operators: +, -, /, %, |, ^, &&, || (Note: & and * excluded)
-            // So + - / % | ^ && || ARE starters. * & are NOT.
-        ";
-
-        // Let's test actual starters first
         let input = "
         a
         + b
@@ -1396,21 +1377,6 @@ mod tests {
         ?? u
         ";
 
-        let tokens = tokenize(input);
-        // Expect NO semicolons until EOF (or after u)
-        let values: Vec<Token> = tokens
-            .into_iter()
-            .filter(|t| !matches!(t, Token::Identifier { .. }))
-            .collect();
-
-        // They should all be joined.
-        // The last one 'u' is followed by EOF, so it gets a semicolon.
-        // We can just check that we don't have semicolons in between.
-
-        // Actually, let's just assert exactly.
-        // a + b - c / d % e | f ^ g || h && i == j != k < l > m <= n >= o << p >> q . r .. s |> t ?? u;
-
-        // Since constructing this vec is tedious, let's verify there is only ONE semicolon at the end.
         let semi_count = tokenize(input)
             .iter()
             .filter(|t| matches!(t, Token::Semicolon))
