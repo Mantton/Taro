@@ -7,9 +7,7 @@ use crate::{
     compile::context::GlobalContext,
     hir::{DefinitionID, StdInterface},
     sema::{
-        models::{
-            GenericArgument, InterfaceReference, SyntheticMethodKind, Ty, TyKind,
-        },
+        models::{GenericArgument, InterfaceReference, SyntheticMethodKind, Ty, TyKind},
         resolve::models::TypeHead,
         tycheck::derive::SyntheticMethodInfo,
     },
@@ -24,9 +22,7 @@ use index_vec::IndexVec;
 use rustc_hash::FxHashMap;
 
 /// Generate THIR functions for all registered synthetic methods.
-pub fn synthesize_all<'ctx>(
-    gcx: GlobalContext<'ctx>,
-) -> Vec<ThirFunction<'ctx>> {
+pub fn synthesize_all<'ctx>(gcx: GlobalContext<'ctx>) -> Vec<ThirFunction<'ctx>> {
     let synthetic_methods = gcx.get_synthetic_methods();
     let mut functions = Vec::new();
 
@@ -42,9 +38,9 @@ pub fn synthesize_all<'ctx>(
                 id: info.interface_id,
                 arguments: &[],
             };
-            
+
             let mut key = (type_head, interface_ref_empty);
-            
+
             if !db.conformance_witnesses.contains_key(&key) {
                // Fallback: try looking up with `Self` as a type argument.
                // This handles cases where the interface is parameterized by `Self`.
@@ -59,7 +55,7 @@ pub fn synthesize_all<'ctx>(
             if !db.conformance_witnesses.contains_key(&key) {
                 panic!("Key missing: unable to find conformance witness for synthetic method synthesis.");
             }
-            
+
             let witness = db
                 .conformance_witnesses
                 .get_mut(&key)
@@ -114,9 +110,7 @@ fn register_definition<'ctx>(
     // For Clone, we usually inherit generics from the Self type.
     // If Self is `Foo[T]`, generics are `[T]`.
     let generics = match info.self_ty.kind() {
-        TyKind::Adt(def, _) => {
-           gcx.generics_of(def.id).clone()
-        }
+        TyKind::Adt(def, _) => gcx.generics_of(def.id).clone(),
         _ => crate::sema::models::Generics {
             parameters: vec![],
             has_self: false,
@@ -128,8 +122,11 @@ fn register_definition<'ctx>(
     // Construct Signature
     // func clone(&self) -> Self
     let self_ty = info.self_ty;
-    let self_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(self_ty, crate::hir::Mutability::Immutable));
-    
+    let self_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
+        self_ty,
+        crate::hir::Mutability::Immutable,
+    ));
+
     let signature = crate::sema::models::LabeledFunctionSignature {
         inputs: vec![crate::sema::models::LabeledFunctionParameter {
             name: Symbol::new("self"),
@@ -156,7 +153,6 @@ fn register_definition<'ctx>(
     gcx.register_synthetic_definition(syn_id, def);
 }
 
-
 /// Synthesize a single THIR function for a synthetic method.
 fn synthesize_method<'ctx>(
     gcx: GlobalContext<'ctx>,
@@ -166,7 +162,9 @@ fn synthesize_method<'ctx>(
     syn_id: DefinitionID,
 ) -> Option<ThirFunction<'ctx>> {
     match info.kind {
-        SyntheticMethodKind::CopyClone => synthesize_copy_clone(gcx, type_head, method_id, info, syn_id),
+        SyntheticMethodKind::CopyClone => {
+            synthesize_copy_clone(gcx, type_head, method_id, info, syn_id)
+        }
         SyntheticMethodKind::MemberwiseClone => {
             synthesize_memberwise_clone(gcx, type_head, method_id, info, syn_id)
         }
@@ -251,10 +249,10 @@ fn synthesize_copy_clone<'ctx>(
 
     // Create self parameter with synthetic NodeID
     let self_node_id = synthetic_node_id(syn_id, 0);
-    let self_ref_ty = gcx
-        .store
-        .interners
-        .intern_ty(TyKind::Reference(info.self_ty, crate::hir::Mutability::Immutable));
+    let self_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
+        info.self_ty,
+        crate::hir::Mutability::Immutable,
+    ));
 
     let self_param = Param {
         id: self_node_id,
@@ -309,10 +307,10 @@ fn synthesize_memberwise_clone<'ctx>(
 
     // Create self parameter
     let self_node_id = synthetic_node_id(syn_id, 0);
-    let self_ref_ty = gcx
-        .store
-        .interners
-        .intern_ty(TyKind::Reference(info.self_ty, crate::hir::Mutability::Immutable));
+    let self_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
+        info.self_ty,
+        crate::hir::Mutability::Immutable,
+    ));
 
     let self_param = Param {
         id: self_node_id,
@@ -357,12 +355,12 @@ fn synthesize_memberwise_clone<'ctx>(
                 // If it's an ADT, we can try to clone it
                 match field.ty.kind() {
                     TyKind::Adt(field_def, _) => clone_adt_field(
-                        gcx, 
-                        &mut builder, 
-                        field_access, 
-                        field.ty, 
-                        clone_def, 
-                        field_def.id
+                        gcx,
+                        &mut builder,
+                        field_access,
+                        field.ty,
+                        clone_def,
+                        field_def.id,
                     ),
                     _ => {
                         // For non-ADT non-Copy types, just use the field access (shouldn't happen if type checking passed)
@@ -406,7 +404,17 @@ fn synthesize_memberwise_clone<'ctx>(
     // Handle enums with match expression
     let enum_def = gcx.try_get_enum_definition(def_id)?;
 
-    synthesize_enum_clone(gcx, builder, self_param, self_node_id, self_ref_ty, info, syn_id, enum_def, clone_def)
+    synthesize_enum_clone(
+        gcx,
+        builder,
+        self_param,
+        self_node_id,
+        self_ref_ty,
+        info,
+        syn_id,
+        enum_def,
+        clone_def,
+    )
 }
 
 /// Synthesize `clone` for enum types using a match expression.
@@ -605,10 +613,10 @@ fn clone_adt_field<'ctx>(
     let field_type_head = TypeHead::Nominal(field_def_id);
 
     // Build: field.clone()
-    let field_ref_ty = gcx
-        .store
-        .interners
-        .intern_ty(TyKind::Reference(field_ty, crate::hir::Mutability::Immutable));
+    let field_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
+        field_ty,
+        crate::hir::Mutability::Immutable,
+    ));
     let field_ref = builder.push_expr(
         ExprKind::Reference {
             mutable: false,
@@ -623,11 +631,9 @@ fn clone_adt_field<'ctx>(
     };
 
     // Get the clone method from conformance witness
-    let Some(witness) = crate::sema::tycheck::resolve_conformance_witness(
-        gcx, 
-        field_type_head, 
-        clone_ref
-    ) else {
+    let Some(witness) =
+        crate::sema::tycheck::resolve_conformance_witness(gcx, field_type_head, clone_ref)
+    else {
         return field_access;
     };
 
@@ -645,11 +651,14 @@ fn clone_adt_field<'ctx>(
     };
 
     let impl_id = method_witness.implementation.impl_id();
-    
+
     // If it's synthetic or concrete, use appropriate callee
     let callee_id = impl_id.unwrap_or(clone_method.id);
-    
-    let generic_args = gcx.store.interners.intern_generic_args(vec![GenericArgument::Type(field_ty)]);
+
+    let generic_args = gcx
+        .store
+        .interners
+        .intern_generic_args(vec![GenericArgument::Type(field_ty)]);
 
     let callee_ty = gcx.get_type(callee_id);
     let callee = builder.push_expr(

@@ -1,5 +1,8 @@
 use super::MirPass;
-use super::simplify::{collapse_trivial_gotos, eliminate_dead_locals, merge_consecutive_safepoints, merge_linear_blocks, prune_unreachable_blocks};
+use super::simplify::{
+    collapse_trivial_gotos, eliminate_dead_locals, merge_consecutive_safepoints,
+    merge_linear_blocks, prune_unreachable_blocks,
+};
 use crate::compile::context::Gcx;
 use crate::error::CompileResult;
 use crate::hir::DefinitionKind;

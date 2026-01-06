@@ -292,12 +292,13 @@ impl<'ctx> Actor<'ctx> {
             // Check if we need to patch a stale synthetic ID
             for (method_id, method_witness) in &mut witness.method_witnesses {
                 if let MethodImplementation::Synthetic(kind, None) = method_witness.implementation {
-                     // Try to look up the ID in synthetic_methods
-                     if let Some(info) = self.context.get_synthetic_method(type_head, *method_id) {
-                         if let Some(syn_id) = info.syn_id {
-                             method_witness.implementation = MethodImplementation::Synthetic(kind, Some(syn_id));
-                         }
-                     }
+                    // Try to look up the ID in synthetic_methods
+                    if let Some(info) = self.context.get_synthetic_method(type_head, *method_id) {
+                        if let Some(syn_id) = info.syn_id {
+                            method_witness.implementation =
+                                MethodImplementation::Synthetic(kind, Some(syn_id));
+                        }
+                    }
                 }
             }
             return Some(witness);
@@ -446,10 +447,12 @@ impl<'ctx> Actor<'ctx> {
             // Get the self type for synthesis
             let self_ty = match type_head {
                 TypeHead::Nominal(id) => self.context.get_type(id),
-                _ => return Err(ConformanceError::MissingMethod {
-                    name: requirement.name,
-                    signature: requirement.signature,
-                }),
+                _ => {
+                    return Err(ConformanceError::MissingMethod {
+                        name: requirement.name,
+                        signature: requirement.signature,
+                    });
+                }
             };
 
             let args_template = GenericsBuilder::identity_for_item(self.context, requirement.id);

@@ -111,7 +111,8 @@ fn analyze_function_for_summary<'ctx>(
                 StatementKind::Assign(dest, Rvalue::Ref { place, .. }) => {
                     if let Some(base) = base_local_for_ref(place) {
                         // If the base local is derived from a parameter...
-                        let param_sources = get_param_sources(base, &local_to_param, &ref_param_sources);
+                        let param_sources =
+                            get_param_sources(base, &local_to_param, &ref_param_sources);
 
                         if dest.projection.is_empty() && dest.local == body.return_local {
                             // Reference flows to return

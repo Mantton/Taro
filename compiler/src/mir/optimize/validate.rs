@@ -6,7 +6,10 @@
 use crate::{
     compile::context::Gcx,
     error::CompileResult,
-    mir::{BasicBlockId, Body, LocalId, Operand, Place, PlaceElem, Rvalue, StatementKind, TerminatorKind},
+    mir::{
+        BasicBlockId, Body, LocalId, Operand, Place, PlaceElem, Rvalue, StatementKind,
+        TerminatorKind,
+    },
     sema::models::TyKind,
     thir::FieldIndex,
 };
@@ -47,7 +50,6 @@ impl<'ctx> MirPass<'ctx> for ValidateMoves {
 // ============================================================================
 // Mutability Validation
 // ============================================================================
-
 
 /// Validates that mutable borrows only occur on mutable places.
 ///
@@ -399,10 +401,8 @@ fn check_place_not_moved<'ctx>(
             .name
             .map(|s| format!("'{}'", s))
             .unwrap_or_else(|| "<temporary>".to_string());
-        gcx.dcx().emit_error(
-            format!("use of moved value {}", name).into(),
-            Some(span),
-        );
+        gcx.dcx()
+            .emit_error(format!("use of moved value {}", name).into(), Some(span));
         return gcx.dcx().ok();
     }
 
@@ -414,7 +414,11 @@ fn check_place_not_moved<'ctx>(
                 .map(|s| format!("'{}'", s))
                 .unwrap_or_else(|| "<temporary>".to_string());
             gcx.dcx().emit_error(
-                format!("use of partially moved value {} (field already moved)", name).into(),
+                format!(
+                    "use of partially moved value {} (field already moved)",
+                    name
+                )
+                .into(),
                 Some(span),
             );
             return gcx.dcx().ok();

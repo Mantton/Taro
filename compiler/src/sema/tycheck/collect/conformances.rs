@@ -411,9 +411,16 @@ impl<'ctx> Actor<'ctx> {
                 };
 
                 // Use the function that computes constraints if not cached
-                let constraints = crate::sema::tycheck::constraints::canonical_constraints_of(self.context, context_def);
+                let constraints = crate::sema::tycheck::constraints::canonical_constraints_of(
+                    self.context,
+                    context_def,
+                );
                 constraints.iter().any(|c| {
-                    if let Constraint::Bound { ty: bound_ty, interface } = &c.value {
+                    if let Constraint::Bound {
+                        ty: bound_ty,
+                        interface,
+                    } = &c.value
+                    {
                         // Compare by parameter index since different Ty instances may represent the same parameter
                         let bound_matches = match bound_ty.kind() {
                             TyKind::Parameter(bound_param) => bound_param.index == param.index,

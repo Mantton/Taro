@@ -157,13 +157,9 @@ impl<'ctx> Collector<'ctx> {
         let package = *packages
             .get(&def_id.package())
             .expect("mir package for definition");
-        package
-            .functions
-            .get(&def_id)
-            .copied()
-            .unwrap_or_else(|| {
-                panic!("mir body for definition");
-            })
+        package.functions.get(&def_id).copied().unwrap_or_else(|| {
+            panic!("mir body for definition");
+        })
     }
 
     /// Check if a function is an intrinsic (has no MIR body).

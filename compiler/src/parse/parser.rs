@@ -888,7 +888,11 @@ impl Parser {
 
         let fields = self.parse_field_definitions(Delimiter::Brace)?;
 
-        let s = Struct { generics, fields, conformances };
+        let s = Struct {
+            generics,
+            fields,
+            conformances,
+        };
         let s = DeclarationKind::Struct(s);
         Ok((identifier, s))
     }
@@ -907,7 +911,11 @@ impl Parser {
         let cases = self.parse_delimiter_sequence(Delimiter::Brace, Token::Semicolon, |this| {
             this.parse_enum_case()
         })?;
-        let e = Enum { generics, cases, conformances };
+        let e = Enum {
+            generics,
+            cases,
+            conformances,
+        };
         Ok((identifier, DeclarationKind::Enum(e)))
     }
 }
