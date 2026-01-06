@@ -1,0 +1,4 @@
+error: cannot derive Copy for 'Container': field 'value' of type 'T' is not Copy
+ -> language_tests/source_files/invalid/copy_generic_unbounded.tr:5:21
+	struct Container[T]: Copy {
+	                     ^^^^

@@ -1,14 +1,14 @@
-// Test: Cannot Derive Copyable with Non-Copyable Field
-// A struct with a non-Copyable field cannot derive Copyable.
+// Test: Cannot Derive Copy with Non-Copy Field
+// A struct with a non-Copy field cannot derive Copy.
 
 struct NoCopy {
     value: int32
 }
 
-// NoCopy is NOT Copyable
+// NoCopy is NOT Copy
 
-// ERROR: cannot derive Copyable for 'Wrapper': field 'inner' is not Copyable
-struct Wrapper: Copyable {
+// ERROR: cannot derive Copy for 'Wrapper': field 'inner' is not Copy
+struct Wrapper: Copy {
     inner: NoCopy
 }
 

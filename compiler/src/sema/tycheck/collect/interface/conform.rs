@@ -7,7 +7,8 @@ use crate::{
             AliasKind, AssociatedTypeDefinition, ConformanceWitness, GenericArgument,
             GenericArguments, InterfaceConstantRequirement, InterfaceDefinition,
             InterfaceMethodRequirement, InterfaceOperatorRequirement, InterfaceReference,
-            InterfaceRequirements, LabeledFunctionSignature, MethodWitness, Ty, TyKind,
+            InterfaceRequirements, LabeledFunctionSignature, MethodImplementation, MethodWitness,
+            Ty, TyKind,
         },
         resolve::models::TypeHead,
         tycheck::{
@@ -283,11 +284,22 @@ impl<'ctx> Actor<'ctx> {
         let gcx = self.context;
 
         // Check cached witnesses across all packages
-        if let Some(witness) = gcx.find_in_databases(|db| {
+        if let Some(mut witness) = gcx.find_in_databases(|db| {
             db.conformance_witnesses
                 .get(&(type_head, interface))
                 .cloned()
         }) {
+            // Check if we need to patch a stale synthetic ID
+            for (method_id, method_witness) in &mut witness.method_witnesses {
+                if let MethodImplementation::Synthetic(kind, None) = method_witness.implementation {
+                     // Try to look up the ID in synthetic_methods
+                     if let Some(info) = self.context.get_synthetic_method(type_head, *method_id) {
+                         if let Some(syn_id) = info.syn_id {
+                             method_witness.implementation = MethodImplementation::Synthetic(kind, Some(syn_id));
+                         }
+                     }
+                }
+            }
             return Some(witness);
         }
 
@@ -404,8 +416,17 @@ impl<'ctx> Actor<'ctx> {
                     record,
                     type_witnesses,
                 );
+
+                // Check if this candidate is actually a registered synthetic method
+                if let Some(info) = self.context.get_synthetic_method(type_head, candidate) {
+                    return Ok(MethodWitness {
+                        implementation: MethodImplementation::Synthetic(info.kind, info.syn_id),
+                        args_template,
+                    });
+                }
+
                 return Ok(MethodWitness {
-                    impl_id: candidate,
+                    implementation: MethodImplementation::Concrete(candidate),
                     args_template,
                 });
             }
@@ -415,9 +436,35 @@ impl<'ctx> Actor<'ctx> {
         if !requirement.is_required {
             let args_template = GenericsBuilder::identity_for_item(self.context, requirement.id);
             return Ok(MethodWitness {
-                impl_id: requirement.id,
+                implementation: MethodImplementation::Default(requirement.id),
                 args_template,
             });
+        }
+
+        // Try to synthesize if this is a derivable interface via inline conformance
+        if record.is_inline {
+            // Get the self type for synthesis
+            let self_ty = match type_head {
+                TypeHead::Nominal(id) => self.context.get_type(id),
+                _ => return Err(ConformanceError::MissingMethod {
+                    name: requirement.name,
+                    signature: requirement.signature,
+                }),
+            };
+
+            let args_template = GenericsBuilder::identity_for_item(self.context, requirement.id);
+
+            if let Some(synthesized) = crate::sema::tycheck::derive::try_synthesize_method(
+                self.context,
+                type_head,
+                self_ty,
+                record.interface.id,
+                requirement.name,
+                requirement.id,
+                args_template,
+            ) {
+                return Ok(synthesized.witness);
+            }
         }
 
         Err(ConformanceError::MissingMethod {

@@ -1,0 +1,19 @@
+// Test: Copy cannot be implemented via extension
+// Copy requires inline syntax on the type definition.
+
+struct MyType: Copy {
+    value: int32
+}
+
+struct AnotherType {
+    value: int32
+}
+
+// ERROR: Copy cannot be implemented via extension
+extend AnotherType: Copy {
+}
+
+func main() {
+    let t = AnotherType { value: 42 }
+    std.print("This should not compile\n")
+}

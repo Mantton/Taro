@@ -57,6 +57,13 @@ impl<'ctx> Actor<'ctx> {
     ) -> CompileResult<ThirPackage<'ctx>> {
         let mut actor = Actor::new(gcx, results, entry);
         hir::walk_package(&mut actor, package);
+
+        // Synthesize THIR for any registered synthetic methods (e.g., derived Clone)
+        let synthetic_functions = crate::thir::synthesize::synthesize_all(gcx);
+        for func in synthetic_functions {
+            actor.functions.insert(func.id, func);
+        }
+
         let pkg = ThirPackage {
             functions: actor.functions,
             entry: actor.entry,

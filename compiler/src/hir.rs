@@ -655,25 +655,49 @@ impl StdType {
     }
 }
 
-/// Well-known standard library interfaces for move semantics.
+/// Well-known standard library interfaces for move semantics and derivable protocols.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StdInterface {
     /// Marker interface for types that can be copied by value.
-    Copyable,
+    Copy,
     /// Interface for types that can be explicitly cloned.
     Clone,
+    /// Interface for types that can be hashed.
+    Hashable,
+    /// Interface for types that can be compared for equality.
+    Equatable,
 }
 
 impl StdInterface {
     pub fn name_str(self) -> &'static str {
         match self {
-            StdInterface::Copyable => "Copyable",
+            StdInterface::Copy => "Copy",
             StdInterface::Clone => "Clone",
+            StdInterface::Hashable => "Hashable",
+            StdInterface::Equatable => "Equatable",
         }
     }
 
     /// Returns all standard interfaces for iteration.
-    pub const ALL: [StdInterface; 2] = [StdInterface::Copyable, StdInterface::Clone];
+    pub const ALL: [StdInterface; 4] = [
+        StdInterface::Copy,
+        StdInterface::Clone,
+        StdInterface::Hashable,
+        StdInterface::Equatable,
+    ];
+
+    /// Whether this interface can be auto-derived when declared inline.
+    pub fn is_derivable(self) -> bool {
+        matches!(
+            self,
+            Self::Copy | Self::Clone | Self::Hashable | Self::Equatable
+        )
+    }
+
+    /// Whether this interface is a marker-only interface (no methods to synthesize).
+    pub fn is_marker_only(self) -> bool {
+        matches!(self, Self::Copy)
+    }
 }
 
 // MARK - Visitor

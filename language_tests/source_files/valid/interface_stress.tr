@@ -43,7 +43,7 @@ func main() {
   type Str = string
   type UserName = string
 
-  struct User: Copyable {
+  struct User: Copy {
       id: usize
       name: string
   }

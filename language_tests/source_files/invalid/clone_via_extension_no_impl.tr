@@ -1,0 +1,17 @@
+// Test: Clone via extension requires explicit implementation
+// Clone cannot be auto-synthesized via extension syntax.
+// Users must provide the clone method.
+
+struct MyType {
+    value: int32
+}
+
+// ERROR: Extension conformance to Clone requires explicit implementation
+extend MyType: Clone {
+    // Missing clone() method - synthesis not available for extensions
+}
+
+func main() {
+    let t = MyType { value: 42 }
+    std.print("This should not compile\n")
+}

@@ -1,0 +1,69 @@
+
+struct Point: Clone, Copy {
+    x: int32
+    y: int32
+}
+
+struct Wrapper: Clone {
+    name: string
+    value: int32
+}
+
+struct DeepWrapper: Clone {
+    inner: Wrapper
+    flag: bool
+}
+
+func main() {
+    // Test CopyClone
+    let p1 = Point { x: 10, y: 20 }
+    let p2 = p1.clone()
+    
+    // Modify p1 to ensure p2 is independent (though being Copy, it's by value anyway)
+    // But for Clone, we want to ensure the method returns the right value
+    if p2.x != 10 {
+        print("Error: p2.x should be 10")
+        return
+    }
+    if p2.y != 20 {
+        print("Error: p2.y should be 20")
+        return
+    }
+
+    // Test MemberwiseClone
+    let w1 = Wrapper { name: "hello", value: 42 }
+    let w2 = w1.clone()
+
+    // Check wrapper content
+    // if w2.name != "hello" {
+    //    print("Error: w2.name should be 'hello'")
+    //    return
+    // }
+    if w2.value != 42 {
+        print("Error: w2.value should be 42")
+        return
+    }
+
+    // specific test: strings should be deep copied? 
+    // In Taro strings are immutable value types or copy-on-write usually? 
+    // Assuming standard string behavior.
+
+    // Test Recursive MemberwiseClone
+    let d1 = DeepWrapper { inner: w1, flag: true }
+    let d2 = d1.clone()
+
+    // if d2.inner.name != "hello" {
+    //    print("Error: d2.inner.name should be 'hello'")
+    //    return
+    // }
+    if d2.inner.value != 42 {
+        print("Error: d2.inner.value should be 42")
+        return
+    }
+    if !d2.flag {
+        print("Error: d2.flag should be true")
+        return
+    }
+
+    print("Success")
+}

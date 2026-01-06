@@ -194,6 +194,27 @@ impl<'arena> GlobalContext<'arena> {
         let ok = database.def_to_attributes.insert(id, attributes).is_none();
         debug_assert!(ok, "duplicated attribute information")
     }
+
+    pub fn allocate_synthetic_id(self, package: PackageIndex) -> DefinitionID {
+        let store = &self.context.store;
+        let id = store.next_synthetic_id.get();
+        store.next_synthetic_id.set(id + 1);
+        // Offset to avoid collision with low IDs
+        let index = 0xF000_0000 + id;
+        DefinitionID::new(package, crate::sema::resolve::models::DefinitionIndex::from_raw(index))
+    }
+
+    pub fn register_synthetic_definition(
+        self,
+        id: DefinitionID,
+        def: crate::sema::models::SyntheticDefinition<'arena>,
+    ) {
+        self.context
+            .store
+            .synthetic_definitions
+            .borrow_mut()
+            .insert(id, def);
+    }
 }
 
 impl<'arena> GlobalContext<'arena> {
@@ -306,6 +327,10 @@ impl<'arena> GlobalContext<'arena> {
     }
 
     pub fn get_signature(self, id: DefinitionID) -> &'arena LabeledFunctionSignature<'arena> {
+        if let Some(def) = self.context.store.synthetic_definitions.borrow().get(&id) {
+            return def.signature;
+        }
+
         self.with_type_database(id.package(), |db| {
             *db.def_to_fn_sig
                 .get(&id)
@@ -319,12 +344,20 @@ impl<'arena> GlobalContext<'arena> {
             .expect("struct definition of definition")
     }
 
+    pub fn try_get_struct_definition(self, id: DefinitionID) -> Option<&'arena StructDefinition<'arena>> {
+        self.with_type_database(id.package(), |db| db.def_to_struct_def.get(&id).cloned())
+    }
+
     pub fn get_enum_definition(self, id: DefinitionID) -> &'arena EnumDefinition<'arena> {
         self.with_type_database(id.package(), |db| {
             *db.def_to_enum_def
                 .get(&id)
                 .expect("enum definition of definition")
         })
+    }
+
+    pub fn try_get_enum_definition(self, id: DefinitionID) -> Option<&'arena EnumDefinition<'arena>> {
+        self.with_type_database(id.package(), |db| db.def_to_enum_def.get(&id).cloned())
     }
 
     pub fn enum_variant_by_index(
@@ -405,6 +438,13 @@ impl<'arena> GlobalContext<'arena> {
     }
 
     pub fn definition_ident(self, id: DefinitionID) -> crate::span::Identifier {
+        if let Some(def) = self.context.store.synthetic_definitions.borrow().get(&id) {
+            return crate::span::Identifier {
+                symbol: def.name,
+                span: def.span,
+            };
+        }
+
         let output = self.resolution_output(id.package());
         *output
             .definition_to_ident
@@ -426,6 +466,11 @@ impl<'arena> GlobalContext<'arena> {
     }
 
     pub fn definition_kind(self, id: DefinitionID) -> DefinitionKind {
+        if self.context.store.synthetic_definitions.borrow().contains_key(&id) {
+             // Synthetic definitions are currently only used for methods (Clone etc)
+             return DefinitionKind::AssociatedFunction;
+        }
+
         let output = self.resolution_output(id.package());
         *output.definition_to_kind.get(&id).expect("definition kind")
     }
@@ -480,9 +525,9 @@ impl<'arena> GlobalContext<'arena> {
         map
     }
 
-    /// Checks if a type implements the Copyable interface.
+    /// Checks if a type implements the Copy interface.
     /// Primitives, references, pointers, and function pointers are implicitly copyable.
-    /// Structs/enums must explicitly implement Copyable.
+    /// Structs/enums must explicitly implement Copy.
     pub fn is_type_copyable(self, ty: Ty<'arena>) -> bool {
         match ty.kind() {
             // Primitives - always copyable
@@ -505,18 +550,18 @@ impl<'arena> GlobalContext<'arena> {
             // Arrays - copyable if element is copyable
             TyKind::Array { element, .. } => self.is_type_copyable(element),
 
-            // ADTs (struct/enum) - check conformance to Copyable interface
+            // ADTs (struct/enum) - check conformance to Copy interface
             TyKind::Adt(def, _) => {
-                let Some(copyable_def) = self.std_interface_def(StdInterface::Copyable) else {
-                    return false; // No Copyable interface defined
+                let Some(copy_def) = self.std_interface_def(StdInterface::Copy) else {
+                    return false; // No Copy interface defined
                 };
                 let type_head = TypeHead::Nominal(def.id);
                 // Create InterfaceReference with empty arguments (marker interface)
-                let copyable_ref = InterfaceReference {
-                    id: copyable_def,
+                let copy_ref = InterfaceReference {
+                    id: copy_def,
                     arguments: &[],
                 };
-                crate::sema::tycheck::resolve_conformance_witness(self, type_head, copyable_ref)
+                crate::sema::tycheck::resolve_conformance_witness(self, type_head, copy_ref)
                     .is_some()
             }
 
@@ -644,6 +689,10 @@ impl<'arena> GlobalContext<'arena> {
     }
 
     pub fn generics_of(self, id: DefinitionID) -> &'arena Generics {
+        if let Some(def) = self.context.store.synthetic_definitions.borrow().get(&id) {
+            return def.generics;
+        }
+        
         let mut database = self.context.store.type_databases.borrow_mut();
         let database = database.entry(id.package()).or_default();
 
@@ -713,8 +762,12 @@ pub struct CompilerStore<'arena> {
     pub compiled_instances: RefCell<FxHashSet<Instance<'arena>>>,
     /// Target-specific layout information (shared between MIR and codegen).
     pub target_layout: TargetLayout,
-    /// Cached lookup of well-known standard library interfaces (Copyable, Clone).
+    /// Cached lookup of well-known standard library interfaces (Copy, Clone).
     pub std_interfaces: OnceCell<FxHashMap<StdInterface, DefinitionID>>,
+    
+    // Synthetic definitions (for method synthesis linkage)
+    pub synthetic_definitions: RefCell<FxHashMap<DefinitionID, crate::sema::models::SyntheticDefinition<'arena>>>,
+    pub next_synthetic_id: std::cell::Cell<u32>,
 }
 
 impl<'arena> CompilerStore<'arena> {
@@ -740,6 +793,8 @@ impl<'arena> CompilerStore<'arena> {
             compiled_instances: Default::default(),
             target_layout,
             std_interfaces: OnceCell::new(),
+            synthetic_definitions: Default::default(),
+            next_synthetic_id: std::cell::Cell::new(0),
         })
     }
 
@@ -957,6 +1012,11 @@ pub struct TypeDatabase<'arena> {
     pub resolved_aliases: FxHashMap<DefinitionID, Ty<'arena>>,
     pub empty_generics: Option<&'arena Generics>,
     pub empty_attributes: Option<&'arena hir::AttributeList>,
+    /// Registered synthetic methods for THIR generation
+    pub synthetic_methods: FxHashMap<
+        (TypeHead, DefinitionID),
+        crate::sema::tycheck::derive::SyntheticMethodInfo<'arena>,
+    >,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -972,4 +1032,44 @@ pub struct TypeMemberIndex {
     pub operators: FxHashMap<hir::OperatorKind, MemberSet>,
 }
 
-impl<'arena> GlobalContext<'arena> {}
+impl<'arena> GlobalContext<'arena> {
+    /// Register a synthetic method for later THIR generation.
+    pub fn register_synthetic_method(
+        self,
+        type_head: TypeHead,
+        method_id: DefinitionID,
+        name: Symbol,
+        info: crate::sema::tycheck::derive::SyntheticMethodInfo<'arena>,
+    ) {
+        self.with_session_type_database(|db| {
+            db.synthetic_methods.insert((type_head, method_id), info);
+            
+            // Also register as a member so lookup finds it
+            let members = db.type_head_to_members.entry(type_head).or_default();
+            let member_set = members.instance_functions.entry(name).or_default();
+            if !member_set.members.contains(&method_id) {
+                member_set.members.push(method_id);
+            }
+        });
+    }
+
+    /// Get all registered synthetic methods for THIR generation.
+    pub fn get_synthetic_methods(
+        self,
+    ) -> Vec<((TypeHead, DefinitionID), crate::sema::tycheck::derive::SyntheticMethodInfo<'arena>)> {
+        self.with_session_type_database(|db| {
+            db.synthetic_methods.iter().map(|(k, v)| (*k, *v)).collect()
+        })
+    }
+
+    /// Get a specific registered synthetic method info.
+    pub fn get_synthetic_method(
+        self,
+        type_head: TypeHead,
+        method_id: DefinitionID,
+    ) -> Option<crate::sema::tycheck::derive::SyntheticMethodInfo<'arena>> {
+        self.with_session_type_database(|db| {
+            db.synthetic_methods.get(&(type_head, method_id)).copied()
+        })
+    }
+}

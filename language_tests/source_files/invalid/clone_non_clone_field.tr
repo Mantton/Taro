@@ -1,0 +1,18 @@
+// Test: Cannot Derive Clone with Non-Clone Field
+// A struct with a non-Clone field cannot derive Clone.
+
+struct NoClone {
+    value: int32
+}
+
+// NoClone does NOT implement Clone
+
+// ERROR: cannot derive Clone for 'Wrapper': field does not implement Clone
+struct Wrapper: Clone {
+    inner: NoClone
+}
+
+func main() {
+    let w = Wrapper { inner: NoClone { value: 42 } }
+    std.print("This should not compile\n")
+}

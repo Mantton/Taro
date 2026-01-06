@@ -1,12 +1,12 @@
-// Test: Move Semantics - Copyable Types
-// Checks that Copyable types can be used after being assigned to another variable.
+// Test: Move Semantics - Copy Types
+// Checks that Copy types can be used after being assigned to another variable.
 
-struct Point: Copyable {
+struct Point: Copy {
     x: int32
     y: int32
 }
 
-struct Line: Copyable {
+struct Line: Copy {
     start: Point
     end: Point
 }
@@ -16,7 +16,7 @@ func main() {
     test_struct_copy()
     test_nested_copy()
     test_tuple_copy()
-    std.print("PASS: Copyable types work correctly\n")
+    std.print("PASS: Copy types work correctly\n")
 }
 
 func test_primitive_copy() {

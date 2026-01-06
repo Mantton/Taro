@@ -731,6 +731,9 @@ pub struct ConformanceRecord<'ctx> {
     pub extension: DefinitionID,
     pub location: Span,
     pub is_conditional: bool,
+    /// True if the conformance was declared inline on the type definition (struct Foo: T {}),
+    /// false if declared via extension (extend Foo: T {}). Inline conformances allow auto-synthesis.
+    pub is_inline: bool,
 }
 
 /// Witness mappings for a conformance - maps interface requirements to implementations
@@ -746,10 +749,78 @@ pub struct ConformanceWitness<'ctx> {
     pub type_witnesses: FxHashMap<DefinitionID, Ty<'ctx>>,
 }
 
+/// How a method requirement is satisfied in a conformance.
+#[derive(Debug, Clone, Copy)]
+pub enum MethodImplementation {
+    /// User-provided implementation.
+    Concrete(DefinitionID),
+    /// Compiler-synthesized implementation.
+    /// The DefinitionID is populated during THIR synthesis to allow linkage.
+    Synthetic(SyntheticMethodKind, Option<DefinitionID>),
+    /// Default implementation from interface definition.
+    Default(DefinitionID),
+}
+
+impl MethodImplementation {
+    /// Returns the implementing definition ID for concrete/default implementations.
+    /// Returns None for synthetic implementations (which require special code generation).
+    pub fn impl_id(self) -> Option<DefinitionID> {
+        match self {
+            MethodImplementation::Concrete(id) | MethodImplementation::Default(id) => Some(id),
+            MethodImplementation::Synthetic(_, id) => id,
+        }
+    }
+
+    /// Returns true if this is a synthetic implementation.
+    pub fn is_synthetic(self) -> bool {
+        matches!(self, MethodImplementation::Synthetic(..))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SyntheticDefinition<'arena> {
+    pub name: crate::span::Symbol,
+    pub generics: &'arena Generics,
+    pub signature: &'arena LabeledFunctionSignature<'arena>,
+    pub span: crate::span::Span,
+}
+
+/// Kind of synthesized method for code generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyntheticMethodKind {
+    /// Clone for Copy types: just dereference self (`*self`)
+    CopyClone,
+    /// Clone for non-Copy types: memberwise clone each field
+    MemberwiseClone,
+    /// Hashable.hash: hash each field
+    MemberwiseHash,
+    /// Equatable.==: compare each field for equality
+    MemberwiseEquality,
+}
+
+/// How an operator requirement is satisfied in a conformance.
+#[derive(Debug, Clone, Copy)]
+pub enum OperatorImplementation {
+    /// User-provided implementation.
+    Concrete(DefinitionID),
+    /// Compiler-synthesized implementation.
+    Synthetic(SyntheticOperatorKind),
+    /// Default implementation from interface definition.
+    Default(DefinitionID),
+}
+
+/// Kind of synthesized operator for code generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyntheticOperatorKind {
+    /// Equatable.==: memberwise equality comparison
+    MemberwiseEquality,
+}
+
 /// Mapping from an interface method to its implementation and instantiation template.
 #[derive(Debug, Clone, Copy)]
 pub struct MethodWitness<'ctx> {
-    pub impl_id: DefinitionID,
+    /// How this method is implemented (concrete, synthetic, or default).
+    pub implementation: MethodImplementation,
     /// Generic argument template expressed in terms of the interface method's params.
     pub args_template: GenericArguments<'ctx>,
 }

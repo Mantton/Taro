@@ -1622,11 +1622,16 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 .as_ref()
                 .and_then(|w| w.method_witnesses.get(&method.id))
             {
+                // TODO: Handle synthetic implementations (generated code)
+                let impl_id = method_witness
+                    .implementation
+                    .impl_id()
+                    .expect("synthetic methods not yet supported in vtable generation");
                 let args = self.instantiate_generic_args_with_args(
                     method_witness.args_template,
                     iface.arguments,
                 );
-                (method_witness.impl_id, args)
+                (impl_id, args)
             } else {
                 (method.id, iface.arguments)
             };

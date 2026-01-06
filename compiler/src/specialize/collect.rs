@@ -161,7 +161,9 @@ impl<'ctx> Collector<'ctx> {
             .functions
             .get(&def_id)
             .copied()
-            .expect("mir body for definition")
+            .unwrap_or_else(|| {
+                panic!("mir body for definition");
+            })
     }
 
     /// Check if a function is an intrinsic (has no MIR body).

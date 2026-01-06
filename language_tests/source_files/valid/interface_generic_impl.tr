@@ -19,7 +19,7 @@ interface Container[T] {
     func retrieve(&self) -> T
 }
 
-struct User: Copyable {
+struct User: Copy {
     id: usize
     name: string
 }

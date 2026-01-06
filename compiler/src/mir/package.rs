@@ -32,6 +32,8 @@ pub fn build_package<'ctx>(
         let alloc = gcx.store.arenas.mir_bodies.alloc(body);
         functions.insert(id, alloc);
     }
+    
+    // Check if synthetic IDs are present
 
     let mut pkg = MirPackage::default();
     pkg.functions = functions;

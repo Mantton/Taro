@@ -56,7 +56,7 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
 
 impl<'ctx> Actor<'ctx> {
     /// Collect conformances from extension blocks (extend Foo: Interface {}).
-    /// For marker interfaces like Copyable, extension-based conformances are NOT allowed
+    /// For marker interfaces like Copy, extension-based conformances are NOT allowed
     /// (they require inline syntax on the struct/enum definition).
     fn collect_extension_conformance(
         &mut self,
@@ -109,6 +109,7 @@ impl<'ctx> Actor<'ctx> {
                 extension: extend_id,
                 location: interface.span,
                 is_conditional,
+                is_inline: false, // Extension-based conformance
             };
 
             self.context.with_session_type_database(|db| {
@@ -118,7 +119,7 @@ impl<'ctx> Actor<'ctx> {
     }
 
     /// Collect conformances from inline syntax on struct/enum definitions.
-    /// This allows auto-derivation of marker interfaces like Copyable.
+    /// This allows auto-derivation of derivable interfaces like Copy, Clone, Hashable, Equatable.
     fn collect_inline_conformance(
         &mut self,
         type_id: DefinitionID,
@@ -134,7 +135,6 @@ impl<'ctx> Actor<'ctx> {
         let self_ty = self.context.get_type(type_id);
 
         let icx = DefTyLoweringCtx::new(type_id, self.context);
-        let type_pkg = type_id.package();
 
         for interface in interfaces {
             let reference = icx.lowerer().lower_interface_reference(self_ty, interface);
@@ -145,7 +145,7 @@ impl<'ctx> Actor<'ctx> {
                 continue;
             }
 
-            // Validate auto-derive for marker interfaces (Copyable, etc.)
+            // Validate auto-derive for marker interfaces (Copy, etc.)
             if !self.validate_marker_derivation(ty_key, reference, interface.span, kind) {
                 continue;
             }
@@ -158,6 +158,7 @@ impl<'ctx> Actor<'ctx> {
                 extension: type_id, // For inline conformance, the "extension" is the type itself
                 location: interface.span,
                 is_conditional,
+                is_inline: true, // Inline conformance allows auto-synthesis
             };
 
             self.context.with_session_type_database(|db| {
@@ -166,16 +167,24 @@ impl<'ctx> Actor<'ctx> {
         }
     }
 
-    /// Check if the given interface is a marker interface that requires inline derivation.
-    fn is_marker_interface(&self, interface_id: DefinitionID) -> bool {
-        // Check Copyable
-        if let Some(copyable_def) = self.context.std_interface_def(StdInterface::Copyable) {
-            if interface_id == copyable_def {
-                return true;
+    /// Check if the given interface is a derivable interface that requires inline syntax.
+    /// Returns the StdInterface variant if it's derivable, None otherwise.
+    fn get_derivable_interface(&self, interface_id: DefinitionID) -> Option<StdInterface> {
+        for iface in StdInterface::ALL {
+            if let Some(def_id) = self.context.std_interface_def(iface) {
+                if interface_id == def_id && iface.is_derivable() {
+                    return Some(iface);
+                }
             }
         }
-        // Add other marker interfaces here as needed (Clone, etc.)
-        false
+        None
+    }
+
+    /// Check if the given interface is a marker interface that requires inline derivation.
+    fn is_marker_interface(&self, interface_id: DefinitionID) -> bool {
+        self.get_derivable_interface(interface_id)
+            .map(|iface| iface.is_marker_only())
+            .unwrap_or(false)
     }
 
     fn emit_marker_requires_inline(&self, span: Span, interface: InterfaceReference<'ctx>) {
@@ -299,7 +308,7 @@ impl<'ctx> Actor<'ctx> {
         );
     }
 
-    /// Validate marker interface derivation (e.g., Copyable).
+    /// Validate marker interface derivation (e.g., Copy).
     /// Returns true if validation passes, false if there's an error.
     fn validate_marker_derivation(
         &self,
@@ -308,59 +317,59 @@ impl<'ctx> Actor<'ctx> {
         span: Span,
         kind: DefinitionKind,
     ) -> bool {
-        // Check if this is Copyable
-        let Some(copyable_def) = self.context.std_interface_def(StdInterface::Copyable) else {
-            return true; // No Copyable interface defined, skip validation
+        // Check if this is Copy
+        let Some(copy_def) = self.context.std_interface_def(StdInterface::Copy) else {
+            return true; // No Copy interface defined, skip validation
         };
 
-        if interface.id != copyable_def {
-            return true; // Not Copyable, no special validation needed
+        if interface.id != copy_def {
+            return true; // Not Copy, no special validation needed
         }
 
-        // Validate that all fields are Copyable
+        // Validate that all fields are Copy
         let TypeHead::Nominal(type_id) = ty_key else {
             // Non-nominal types (tuples, arrays, etc.) are handled by is_type_copyable
             return true;
         };
 
         match kind {
-            DefinitionKind::Struct => self.validate_struct_copyable(type_id, span),
-            DefinitionKind::Enum => self.validate_enum_copyable(type_id, span),
+            DefinitionKind::Struct => self.validate_struct_copy(type_id, span),
+            DefinitionKind::Enum => self.validate_enum_copy(type_id, span),
             _ => true, // Other types don't need field validation
         }
     }
 
-    fn validate_struct_copyable(&self, struct_id: DefinitionID, span: Span) -> bool {
+    fn validate_struct_copy(&self, struct_id: DefinitionID, span: Span) -> bool {
         let def = self.context.get_struct_definition(struct_id);
-        let mut all_copyable = true;
+        let mut all_copy = true;
 
         for field in def.fields.iter() {
-            if !self.context.is_type_copyable(field.ty) {
+            if !self.is_type_copyable_in_context(field.ty, struct_id) {
                 let type_name = field.ty.format(self.context);
                 self.context.dcx().emit_error(
                     format!(
-                        "cannot derive Copyable for '{}': field '{}' of type '{}' is not Copyable",
+                        "cannot derive Copy for '{}': field '{}' of type '{}' is not Copy",
                         def.adt_def.name.as_str(),
                         field.name.as_str(),
                         type_name
                     ),
                     Some(span),
                 );
-                all_copyable = false;
+                all_copy = false;
             }
         }
 
-        all_copyable
+        all_copy
     }
 
-    fn validate_enum_copyable(&self, enum_id: DefinitionID, span: Span) -> bool {
+    fn validate_enum_copy(&self, enum_id: DefinitionID, span: Span) -> bool {
         let def = self.context.get_enum_definition(enum_id);
-        let mut all_copyable = true;
+        let mut all_copy = true;
 
         for variant in def.variants.iter() {
             if let EnumVariantKind::Tuple(fields) = &variant.kind {
                 for (idx, field) in fields.iter().enumerate() {
-                    if !self.context.is_type_copyable(field.ty) {
+                    if !self.is_type_copyable_in_context(field.ty, enum_id) {
                         let type_name = field.ty.format(self.context);
                         let field_name = field
                             .label
@@ -368,7 +377,7 @@ impl<'ctx> Actor<'ctx> {
                             .unwrap_or_else(|| format!("{}", idx));
                         self.context.dcx().emit_error(
                             format!(
-                                "cannot derive Copyable for '{}': field '{}' in variant '{}' of type '{}' is not Copyable",
+                                "cannot derive Copy for '{}': field '{}' in variant '{}' of type '{}' is not Copy",
                                 def.adt_def.name.as_str(),
                                 field_name,
                                 variant.name.as_str(),
@@ -376,12 +385,48 @@ impl<'ctx> Actor<'ctx> {
                             ),
                             Some(span),
                         );
-                        all_copyable = false;
+                        all_copy = false;
                     }
                 }
             }
         }
 
-        all_copyable
+        all_copy
+    }
+
+    /// Check if a type is copyable within the context of a specific definition.
+    /// This is needed for type parameters, which need to check if they have a Copy bound.
+    fn is_type_copyable_in_context(
+        &self,
+        ty: crate::sema::models::Ty<'ctx>,
+        context_def: DefinitionID,
+    ) -> bool {
+        use crate::sema::models::{Constraint, TyKind};
+
+        match ty.kind() {
+            TyKind::Parameter(param) => {
+                // For type parameters, check if there's a Copy bound in the constraints
+                let Some(copy_def) = self.context.std_interface_def(StdInterface::Copy) else {
+                    return false;
+                };
+
+                // Use the function that computes constraints if not cached
+                let constraints = crate::sema::tycheck::constraints::canonical_constraints_of(self.context, context_def);
+                constraints.iter().any(|c| {
+                    if let Constraint::Bound { ty: bound_ty, interface } = &c.value {
+                        // Compare by parameter index since different Ty instances may represent the same parameter
+                        let bound_matches = match bound_ty.kind() {
+                            TyKind::Parameter(bound_param) => bound_param.index == param.index,
+                            _ => false,
+                        };
+                        bound_matches && interface.id == copy_def
+                    } else {
+                        false
+                    }
+                })
+            }
+            // For other types, delegate to the regular is_type_copyable
+            _ => self.context.is_type_copyable(ty),
+        }
     }
 }

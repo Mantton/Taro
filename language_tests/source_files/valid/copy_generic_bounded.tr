@@ -1,0 +1,16 @@
+// Test: Copy works with bounded generic parameter
+// A generic struct can derive Copy if type parameters have Copy bound.
+
+struct Container[T: Copy]: Copy {
+    value: T
+}
+
+func main() {
+    let c1 = Container[int32] { value: 42 }
+    let c2 = c1  // Copy, not move
+
+    assert(c1.value == 42, "c1 should still be valid")
+    assert(c2.value == 42, "c2 should have copied value")
+
+    print("Success")
+}

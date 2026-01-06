@@ -313,6 +313,13 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return SolverResult::Solved(vec![]);
         }
 
+        // Special case: primitives implicitly satisfy Copy (no explicit conformance record)
+        if let Some(copy_def) = self.gcx().std_interface_def(crate::hir::StdInterface::Copy) {
+            if interface.id == copy_def && self.gcx().is_type_copyable(ty) {
+                return SolverResult::Solved(vec![]);
+            }
+        }
+
         let error = Spanned::new(TypeError::NonConformance { ty, interface }, location);
         SolverResult::Error(vec![error])
     }

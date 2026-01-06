@@ -13,6 +13,7 @@ pub mod match_tree;
 pub mod package;
 pub mod passes;
 pub mod pattern;
+pub mod synthesize;
 
 index_vec::define_index_type! {
     pub struct BlockId = u32;

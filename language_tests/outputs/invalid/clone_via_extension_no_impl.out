@@ -1,0 +1,8 @@
+error: type 'MyType' does not satisfy requirements for interface 'Clone'
+ -> language_tests/source_files/invalid/clone_via_extension_no_impl.tr:10:15
+	extend MyType: Clone {
+	               ^^^^^
+info: missing required method 'clone' with signature '(&Self) -> Self'
+ -> language_tests/source_files/invalid/clone_via_extension_no_impl.tr:10:15
+	extend MyType: Clone {
+	               ^^^^^

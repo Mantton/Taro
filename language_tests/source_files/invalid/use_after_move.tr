@@ -5,7 +5,7 @@ struct NoCopy {
     value: int32
 }
 
-// NoCopy is NOT Copyable, so it will be moved
+// NoCopy is NOT Copy, so it will be moved
 
 func main() {
     let x = NoCopy { value: 42 }

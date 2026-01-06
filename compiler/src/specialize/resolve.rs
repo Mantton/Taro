@@ -68,9 +68,11 @@ fn resolve_interface_method_for_concrete<'ctx>(
         DefinitionKind::AssociatedFunction => {
             // It's a method
             let method = witness.method_witnesses.get(&method_id)?;
+            // TODO: Handle synthetic implementations (generated code)
+            let impl_id = method.implementation.impl_id()?;
             let impl_args =
                 instantiate_generic_args_with_args(gcx, method.args_template, call_args);
-            Some(Instance::item(method.impl_id, impl_args))
+            Some(Instance::item(impl_id, impl_args))
         }
         DefinitionKind::AssociatedOperator => {
             // It's an operator - find the implementation in operator_witnesses

@@ -11,6 +11,7 @@ use crate::{
 mod check;
 mod collect;
 pub mod constraints;
+pub mod derive;
 mod extend;
 mod fold;
 pub mod freshen;

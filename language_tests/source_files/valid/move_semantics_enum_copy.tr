@@ -1,12 +1,12 @@
-// Test: Move Semantics - Enum Copyable
-// Checks that enums with Copyable variants work correctly.
+// Test: Move Semantics - Enum Copy
+// Checks that enums with Copy variants work correctly.
 
-enum Status: Copyable {
+enum Status: Copy {
     case Active
     case Inactive
 }
 
-enum MyResult: Copyable {
+enum MyResult: Copy {
     case Ok(int32)
     case Error(int32)
 }
@@ -14,7 +14,7 @@ enum MyResult: Copyable {
 func main() {
     test_simple_enum_copy()
     test_enum_with_data_copy()
-    std.print("PASS: Enum Copyable works correctly\n")
+    std.print("PASS: Enum Copy works correctly\n")
 }
 
 func test_simple_enum_copy() {

@@ -1,4 +1,4 @@
-// Test: Move Semantics - References are Copyable
+// Test: Move Semantics - References are Copy
 // References are always copyable (copying the reference, not the value).
 
 struct NoCopy {
