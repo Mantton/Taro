@@ -9,7 +9,7 @@ use compiler::{
     PackageIndex,
     compile::{
         Compiler,
-        config::{Config, PackageKind},
+        config::{Config, DebugOptions, PackageKind},
         context::{CompilerArenas, CompilerContext, CompilerStore},
     },
     constants::STD_PREFIX,
@@ -92,6 +92,7 @@ fn run_single_file(arguments: CommandLineArguments) -> Result<(), ReportedError>
         executable_out: arguments.output.clone(),
         no_std_prelude: false,
         is_script: true,
+        debug: DebugOptions::default(),
     });
 
     eprintln!("Checking – {}", file_stem);
@@ -207,6 +208,7 @@ fn run_package(arguments: CommandLineArguments) -> Result<(), ReportedError> {
             executable_out: arguments.output.clone(),
             no_std_prelude: package.no_std_prelude,
             is_script: false,
+            debug: DebugOptions::default(),
         });
 
         let mut compiler = Compiler::new(&icx, config);
@@ -240,6 +242,7 @@ fn compile_std<'a>(
         executable_out: None,
         no_std_prelude: true,
         is_script: false,
+        debug: DebugOptions::default(),
     });
 
     let mut compiler = Compiler::new(ctx, config);

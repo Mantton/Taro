@@ -1,6 +1,7 @@
 use super::MirPass;
-use super::simplify::{collapse_trivial_gotos, prune_unreachable_blocks};
+use super::simplify::{collapse_trivial_gotos, eliminate_dead_locals, merge_consecutive_safepoints, merge_linear_blocks, prune_unreachable_blocks};
 use crate::compile::context::Gcx;
+use crate::error::CompileResult;
 use crate::hir::{DefinitionKind, Mutability};
 use crate::mir::{
     BasicBlockData, BasicBlockId, Body, LocalDecl, LocalId, LocalKind, MirPhase, Operand, Place,
@@ -17,14 +18,17 @@ pub struct LowerAggregates;
 pub struct EscapeAnalysis;
 pub struct ApplyEscapeAnalysis;
 pub struct InsertSafepoints;
+pub struct DeadLocalElimination;
+pub struct MergeSafepoints;
 
 impl<'ctx> MirPass<'ctx> for PruneUnreachable {
     fn name(&self) -> &'static str {
         "PruneUnreachable"
     }
 
-    fn run(&mut self, _gcx: Gcx<'ctx>, body: &mut Body<'ctx>) {
+    fn run(&mut self, _gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
         prune_unreachable_blocks(body);
+        Ok(())
     }
 }
 
@@ -33,9 +37,36 @@ impl<'ctx> MirPass<'ctx> for SimplifyCfg {
         "SimplifyCfg"
     }
 
-    fn run(&mut self, _gcx: Gcx<'_>, body: &mut Body<'_>) {
+    fn run(&mut self, _gcx: Gcx<'_>, body: &mut Body<'_>) -> CompileResult<()> {
+        // 1. Merge linear chains of blocks (even with statements)
+        merge_linear_blocks(body);
+        // 2. Collapse remaining empty goto chains
         collapse_trivial_gotos(body);
+        // 3. Remove now-unreachable blocks
         prune_unreachable_blocks(body);
+        Ok(())
+    }
+}
+
+impl<'ctx> MirPass<'ctx> for DeadLocalElimination {
+    fn name(&self) -> &'static str {
+        "DeadLocalElimination"
+    }
+
+    fn run(&mut self, _gcx: Gcx<'_>, body: &mut Body<'_>) -> CompileResult<()> {
+        eliminate_dead_locals(body);
+        Ok(())
+    }
+}
+
+impl<'ctx> MirPass<'ctx> for MergeSafepoints {
+    fn name(&self) -> &'static str {
+        "MergeSafepoints"
+    }
+
+    fn run(&mut self, _gcx: Gcx<'_>, body: &mut Body<'_>) -> CompileResult<()> {
+        merge_consecutive_safepoints(body);
+        Ok(())
     }
 }
 
@@ -44,7 +75,7 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
         "LowerAggregates"
     }
 
-    fn run(&mut self, gcx: Gcx<'ctx>, body: &mut Body<'ctx>) {
+    fn run(&mut self, gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
         let mut new_blocks = body.basic_blocks.clone();
 
         for bb in body.basic_blocks.indices() {
@@ -235,6 +266,7 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
         }
 
         body.basic_blocks = new_blocks;
+        Ok(())
     }
 
     fn phase_change(&self) -> Option<MirPhase> {
@@ -247,7 +279,7 @@ impl<'ctx> MirPass<'ctx> for EscapeAnalysis {
         "EscapeAnalysis"
     }
 
-    fn run(&mut self, _gcx: Gcx<'ctx>, body: &mut Body<'ctx>) {
+    fn run(&mut self, _gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
         let local_count = body.locals.len();
         body.escape_locals.clear();
         body.escape_locals.resize(local_count, false);
@@ -334,6 +366,7 @@ impl<'ctx> MirPass<'ctx> for EscapeAnalysis {
                 body.escape_locals[base.index()] = true;
             }
         }
+        Ok(())
     }
 }
 
@@ -342,7 +375,7 @@ impl<'ctx> MirPass<'ctx> for ApplyEscapeAnalysis {
         "ApplyEscapeAnalysis"
     }
 
-    fn run(&mut self, gcx: Gcx<'ctx>, body: &mut Body<'ctx>) {
+    fn run(&mut self, gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
         let mut heapified: Vec<Option<crate::sema::models::Ty<'ctx>>> =
             vec![None; body.locals.len()];
         let mut param_replacements: Vec<Option<LocalId>> = vec![None; body.locals.len()];
@@ -379,7 +412,7 @@ impl<'ctx> MirPass<'ctx> for ApplyEscapeAnalysis {
         }
 
         if heapified.iter().all(|item| item.is_none()) {
-            return;
+            return Ok(());
         }
 
         for bb in body.basic_blocks.iter_mut() {
@@ -426,6 +459,7 @@ impl<'ctx> MirPass<'ctx> for ApplyEscapeAnalysis {
             insertions.extend(param_inits);
             statements.splice(0..0, insertions);
         }
+        Ok(())
     }
 }
 
@@ -434,7 +468,7 @@ impl<'ctx> MirPass<'ctx> for InsertSafepoints {
         "InsertSafepoints"
     }
 
-    fn run(&mut self, _gcx: Gcx<'ctx>, body: &mut Body<'ctx>) {
+    fn run(&mut self, _gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
         let mut targets: FxHashSet<BasicBlockId> = FxHashSet::default();
         targets.insert(body.start_block);
 
@@ -485,6 +519,7 @@ impl<'ctx> MirPass<'ctx> for InsertSafepoints {
                 });
             }
         }
+        Ok(())
     }
 }
 

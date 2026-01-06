@@ -18,6 +18,15 @@ impl Default for PackageKind {
     }
 }
 
+/// Debug options for compiler diagnostics and dumps.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DebugOptions {
+    /// Dump MIR for all functions to stderr
+    pub dump_mir: bool,
+    /// Dump LLVM IR to stderr
+    pub dump_llvm: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub name: EcoString,
@@ -30,4 +39,6 @@ pub struct Config {
     pub no_std_prelude: bool,
     /// True for single-file scripts (no package structure)
     pub is_script: bool,
+    /// Debug options for dumps
+    pub debug: DebugOptions,
 }

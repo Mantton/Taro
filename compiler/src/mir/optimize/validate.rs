@@ -12,6 +12,43 @@ use crate::{
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use super::MirPass;
+
+// ============================================================================
+// MirPass Wrappers
+// ============================================================================
+
+/// MIR pass that validates mutable borrows.
+pub struct ValidateMutability;
+
+impl<'ctx> MirPass<'ctx> for ValidateMutability {
+    fn name(&self) -> &'static str {
+        "ValidateMutability"
+    }
+
+    fn run(&mut self, gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
+        validate_mutability(gcx, body)
+    }
+}
+
+/// MIR pass that validates use-after-move.
+pub struct ValidateMoves;
+
+impl<'ctx> MirPass<'ctx> for ValidateMoves {
+    fn name(&self) -> &'static str {
+        "ValidateMoves"
+    }
+
+    fn run(&mut self, gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
+        validate_moves(gcx, body)
+    }
+}
+
+// ============================================================================
+// Mutability Validation
+// ============================================================================
+
+
 /// Validates that mutable borrows only occur on mutable places.
 ///
 /// This check ensures that code like:

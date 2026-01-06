@@ -12,6 +12,12 @@ pub struct CommandLineArguments {
     pub output: Option<PathBuf>,
     #[arg(long = "std-path")]
     pub std_path: Option<PathBuf>,
+    /// Dump MIR for all functions to stderr
+    #[arg(long = "dump-mir")]
+    pub dump_mir: bool,
+    /// Dump generated LLVM IR to stderr
+    #[arg(long = "dump-llvm")]
+    pub dump_llvm: bool,
 }
 
 impl CommandLineArguments {

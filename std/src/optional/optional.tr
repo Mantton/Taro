@@ -5,15 +5,19 @@ public enum Optional[Wrapped] {
 
 
 extend[Wrapped] Optional[Wrapped] {
+    @inline
     public func new(_ wrapped: Wrapped) -> Self {
         .some(wrapped)
     }
 
     public func unwrap(&self) -> Wrapped {}
+
+    @inline
     public func isSome(&self) -> bool {
         !self.isNone()
     }
 
+    @inline
     public func isNone(&self) -> bool {
         match self {
             case .none => true

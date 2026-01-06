@@ -55,8 +55,13 @@ pub fn emit_package<'gcx>(
     emitter.emit_start_shim(package);
     emitter.run_function_passes();
 
-    // let ir = emitter.module.print_to_string().to_string();
-    // println!("{ir}");
+    // Dump LLVM IR if requested
+    if gcx.config.debug.dump_llvm {
+        eprintln!("\n=== LLVM IR for {} ===", gcx.config.name);
+        let ir = emitter.module.print_to_string().to_string();
+        eprintln!("{ir}");
+        eprintln!("=== End LLVM Dump ===\n");
+    }
 
     let obj = emitter.emit_object_file()?;
     gcx.cache_object_file(obj.clone());

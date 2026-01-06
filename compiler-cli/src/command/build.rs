@@ -9,7 +9,7 @@ use compiler::{
     PackageIndex,
     compile::{
         Compiler,
-        config::{Config, PackageKind},
+        config::{Config, DebugOptions, PackageKind},
         context::{CompilerArenas, CompilerContext, CompilerStore},
     },
     constants::STD_PREFIX,
@@ -99,6 +99,10 @@ fn run_single_file(
         executable_out: arguments.output.clone(),
         no_std_prelude: false,
         is_script: true,
+        debug: DebugOptions {
+            dump_mir: arguments.dump_mir,
+            dump_llvm: arguments.dump_llvm,
+        },
     });
 
     eprintln!("Compiling – {}", file_stem);
@@ -227,6 +231,10 @@ fn run_package(
             executable_out: arguments.output.clone(),
             no_std_prelude: package.no_std_prelude,
             is_script: false,
+            debug: DebugOptions {
+                dump_mir: arguments.dump_mir,
+                dump_llvm: arguments.dump_llvm,
+            },
         });
 
         let mut compiler = Compiler::new(&icx, config);
@@ -308,6 +316,7 @@ fn compile_std<'a>(
         executable_out: None,
         no_std_prelude: true,
         is_script: false,
+        debug: DebugOptions::default(),
     });
     let mut compiler = Compiler::new(ctx, config);
     let _ = compiler.build()?;

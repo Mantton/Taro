@@ -11,7 +11,6 @@ pub mod builder;
 pub mod optimize;
 pub mod package;
 pub mod pretty;
-pub mod validate;
 
 index_vec::define_index_type! {
     pub struct LocalId = u32;

@@ -35,6 +35,26 @@ pub struct Attribute {
     pub identifier: Identifier,
 }
 
+/// Well-known attributes recognized by the compiler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KnownAttribute {
+    /// `@inline` - hint that this function should be inlined
+    Inline,
+    /// `@noinline` - prevent inlining of this function
+    NoInline,
+}
+
+impl Attribute {
+    /// Try to parse this attribute as a known compiler attribute.
+    pub fn as_known(&self) -> Option<KnownAttribute> {
+        match self.identifier.symbol.as_str() {
+            "inline" => Some(KnownAttribute::Inline),
+            "noinline" => Some(KnownAttribute::NoInline),
+            _ => None,
+        }
+    }
+}
+
 pub type AttributeList = Vec<Attribute>;
 
 #[derive(Debug, Clone)]
