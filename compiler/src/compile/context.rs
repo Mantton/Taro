@@ -5,7 +5,7 @@ use crate::{
     diagnostics::DiagCtx,
     error::CompileResult,
     hir::{self, DefinitionID, StdInterface},
-    mir::{self, Body},
+    mir::{self, Body, EscapeSummary},
     sema::{
         models::{
             ConformanceRecord, ConformanceWitness, Const, Constraint, EnumDefinition, EnumVariant,
@@ -336,6 +336,18 @@ impl<'arena> GlobalContext<'arena> {
                 .get(&id)
                 .expect("fn signature of definition")
         })
+    }
+
+    /// Get the escape summary for a function, if one has been computed.
+    pub fn get_escape_summary(self, id: DefinitionID) -> Option<EscapeSummary> {
+        self.with_type_database(id.package(), |db| db.def_to_escape_summary.get(&id).cloned())
+    }
+
+    /// Store an escape summary for a function.
+    pub fn set_escape_summary(self, id: DefinitionID, summary: EscapeSummary) {
+        self.with_type_database(id.package(), |db| {
+            db.def_to_escape_summary.insert(id, summary);
+        });
     }
 
     #[track_caller]
@@ -1010,6 +1022,8 @@ pub struct TypeDatabase<'arena> {
     pub alias_table: crate::sema::models::PackageAliasTable,
     /// Resolved alias types (cached after lowering)
     pub resolved_aliases: FxHashMap<DefinitionID, Ty<'arena>>,
+    /// Escape summaries for functions (computed during MIR optimization)
+    pub def_to_escape_summary: FxHashMap<DefinitionID, EscapeSummary>,
     pub empty_generics: Option<&'arena Generics>,
     pub empty_attributes: Option<&'arena hir::AttributeList>,
     /// Registered synthetic methods for THIR generation

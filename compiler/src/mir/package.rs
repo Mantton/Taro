@@ -20,10 +20,10 @@ pub fn build_package<'ctx>(
             continue;
         }
         let mut body = MirBuilder::build_function(gcx, &func);
-        
+
         // Run local passes (prune, simplify, validate)
         optimize::run_local_passes(gcx, &mut body)?;
-        
+
         bodies.insert(id, body);
     }
 
@@ -43,15 +43,19 @@ pub fn build_package<'ctx>(
         .borrow_mut()
         .insert(gcx.package_index(), pkg);
 
+    // Phase 1.5: Compute escape summaries for all functions
+    // This enables interprocedural escape analysis during global passes
+    optimize::escape::compute_escape_summaries(gcx, &pkg.functions);
+
     // Phase 2: Run global passes (inlining, lowering, escape analysis, safepoints)
     // These passes need access to other function bodies
     let mut final_functions: FxHashMap<DefinitionID, &'ctx Body<'ctx>> = FxHashMap::default();
     for def_id in pkg.functions.keys().copied().collect::<Vec<_>>() {
         let body_ref = pkg.functions.get(&def_id).unwrap();
         let mut body = (*body_ref).clone();
-        
+
         optimize::run_global_passes(gcx, &mut body)?;
-        
+
         let alloc = gcx.store.arenas.mir_bodies.alloc(body);
         final_functions.insert(def_id, alloc);
     }
@@ -60,7 +64,7 @@ pub fn build_package<'ctx>(
     final_pkg.functions = final_functions;
     final_pkg.entry = package.entry;
     let final_pkg = gcx.store.alloc_mir_package(final_pkg);
-    
+
     // Update the stored package with the fully optimized version
     gcx.store
         .mir_packages

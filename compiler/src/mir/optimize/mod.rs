@@ -2,6 +2,7 @@ use crate::compile::context::Gcx;
 use crate::error::CompileResult;
 use crate::mir::{Body, MirPhase};
 
+pub mod escape;
 pub mod inline;
 pub mod passes;
 pub mod simplify;
@@ -48,6 +49,9 @@ pub fn run_local_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileR
 /// Global passes: run after all MIR bodies are built.
 /// These passes may require access to other function bodies (e.g., inlining).
 /// Includes: inlining, lower aggregates, escape analysis, safepoints.
+///
+/// Note: escape::compute_escape_summaries must be called before these passes
+/// to enable interprocedural escape analysis.
 pub fn run_global_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
     let mut passes: Vec<Box<dyn MirPass>> = vec![
         Box::new(inline::Inline::default()),
@@ -56,8 +60,9 @@ pub fn run_global_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> Compile
         // Note: LowerAggregates only expands statements, doesn't change CFG structure
         // DeadLocalElimination runs after LowerAggregates to also clean up temps it creates
         Box::new(passes::DeadLocalElimination),
-        Box::new(passes::EscapeAnalysis),
-        Box::new(passes::ApplyEscapeAnalysis),
+        // Interprocedural escape analysis (uses precomputed summaries)
+        Box::new(escape::EscapeAnalysis),
+        Box::new(escape::ApplyEscapeAnalysis),
         Box::new(passes::InsertSafepoints),
         Box::new(passes::MergeSafepoints), // Clean up redundant consecutive safepoints
     ];
