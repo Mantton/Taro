@@ -1,0 +1,39 @@
+{
+    "name": "taro",
+    "displayName": "Taro Language",
+    "description": "Language support for Taro",
+    "version": "0.1.0",
+    "engines": {
+        "vscode": "^1.74.0"
+    },
+    "categories": [
+        "Programming Languages"
+    ],
+    "contributes": {
+        "languages": [
+            {
+                "id": "taro",
+                "aliases": [
+                    "Taro",
+                    "taro"
+                ],
+                "extensions": [
+                    ".tr"
+                ],
+                "configuration": "./language-configuration.json"
+            }
+        ],
+        "grammars": [
+            {
+                "language": "taro",
+                "scopeName": "source.taro",
+                "path": "./syntaxes/taro.tmLanguage.json"
+            }
+        ]
+    },
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/Mantton/Taro.git",
+        "directory": "editors/vscode"
+    }
+}
