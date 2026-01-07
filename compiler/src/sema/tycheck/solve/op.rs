@@ -75,6 +75,14 @@ impl<'ctx> ConstraintSolver<'ctx> {
     pub fn solve_unary(&mut self, data: UnOpGoalData<'ctx>) -> SolverResult<'ctx> {
         let ty = self.structurally_resolve(data.lhs);
 
+        if ty.is_error() {
+            let obligation = Obligation {
+                location: data.span,
+                goal: Goal::Equal(data.rho, Ty::error(self.gcx())),
+            };
+            return SolverResult::Solved(vec![obligation]);
+        }
+
         // If type is not yet resolved, defer
         if ty.is_infer() {
             return SolverResult::Deferred;
@@ -214,6 +222,14 @@ impl<'ctx> ConstraintSolver<'ctx> {
     pub fn solve_binary(&mut self, data: BinOpGoalData<'ctx>) -> SolverResult<'ctx> {
         let lhs = self.structurally_resolve(data.lhs);
         let rhs = self.structurally_resolve(data.rhs);
+
+        if lhs.is_error() || rhs.is_error() {
+            let obligation = Obligation {
+                location: data.span,
+                goal: Goal::Equal(data.rho, Ty::error(self.gcx())),
+            };
+            return SolverResult::Solved(vec![obligation]);
+        }
 
         // If LHS type is not yet resolved, defer
         if lhs.is_infer() {
@@ -638,6 +654,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
     pub fn solve_assign_op(&mut self, data: AssignOpGoalData<'ctx>) -> SolverResult<'ctx> {
         let lhs = self.structurally_resolve(data.lhs);
         let rhs = self.structurally_resolve(data.rhs);
+
+        if lhs.is_error() || rhs.is_error() {
+            return SolverResult::Solved(vec![]);
+        }
 
         // If LHS type is not yet resolved, defer
         if lhs.is_infer() {

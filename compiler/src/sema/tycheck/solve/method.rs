@@ -46,6 +46,15 @@ impl<'ctx> ConstraintSolver<'ctx> {
             ..
         } = &data;
 
+        let resolved_receiver = self.structurally_resolve(*receiver);
+        if resolved_receiver.is_error() {
+            let obligation = Obligation {
+                location: data.span,
+                goal: Goal::Equal(data.result, Ty::error(self.gcx())),
+            };
+            return SolverResult::Solved(vec![obligation]);
+        }
+
         let rec_candidates = self.reciever_candidates(*receiver);
         for (candidate_ty, deref_steps) in rec_candidates {
             let candidate_ty = self.structurally_resolve(candidate_ty);

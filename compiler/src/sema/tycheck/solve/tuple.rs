@@ -4,7 +4,7 @@ use crate::{
     sema::{
         error::TypeError,
         models::{Ty, TyKind},
-        tycheck::solve::{Adjustment, SolverResult, TupleAccessGoalData},
+        tycheck::solve::{Adjustment, Goal, Obligation, SolverResult, TupleAccessGoalData},
     },
     span::Spanned,
 };
@@ -18,6 +18,15 @@ impl<'ctx> ConstraintSolver<'ctx> {
             result,
             span,
         } = data;
+
+        let final_receiver = self.structurally_resolve(receiver);
+        if final_receiver.is_error() {
+             let obligation = Obligation {
+                location: span,
+                goal: Goal::Equal(result, Ty::error(self.gcx())),
+            };
+            return SolverResult::Solved(vec![obligation]);
+        }
 
         let mut adjustment = Vec::new();
         let mut prev: Option<Ty<'ctx>> = None;

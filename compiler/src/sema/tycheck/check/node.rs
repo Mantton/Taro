@@ -817,6 +817,11 @@ impl<'ctx> Checker<'ctx> {
                 }
             }
             _ => {
+                if let Some(ty) = cs.expr_ty(expr.id) {
+                    if ty.is_error() {
+                        return true;
+                    }
+                }
                 self.gcx().dcx().emit_error(
                     "left-hand side of assignment is not assignable".into(),
                     Some(expr.span),
@@ -831,6 +836,9 @@ impl<'ctx> Checker<'ctx> {
             hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => {
                 if let hir::Resolution::LocalVariable(id) = &path.resolution {
                     let binding = self.get_local(*id);
+                    if binding.ty.is_error() {
+                        return true;
+                    }
                     if !binding.mutable {
                         self.gcx().dcx().emit_error(
                             "cannot take a mutable reference to an immutable binding".into(),
@@ -850,6 +858,7 @@ impl<'ctx> Checker<'ctx> {
                 };
 
                 match ptr_ty.kind() {
+                    TyKind::Error => true,
                     TyKind::Pointer(_, mutbl) | TyKind::Reference(_, mutbl) => {
                         if mutbl != hir::Mutability::Mutable {
                             self.gcx().dcx().emit_error(
@@ -877,6 +886,7 @@ impl<'ctx> Checker<'ctx> {
                 };
 
                 let (base_ty, via_ptr_mut, via_ptr) = match receiver_ty.kind() {
+                    TyKind::Error => return true,
                     TyKind::Pointer(inner, mutbl) | TyKind::Reference(inner, mutbl) => {
                         (inner, mutbl == hir::Mutability::Mutable, true)
                     }
@@ -959,6 +969,7 @@ impl<'ctx> Checker<'ctx> {
                 };
 
                 match receiver_ty.kind() {
+                    TyKind::Error => true,
                     TyKind::Pointer(_, mutbl) | TyKind::Reference(_, mutbl) => {
                         if mutbl != hir::Mutability::Mutable {
                             self.gcx().dcx().emit_error(

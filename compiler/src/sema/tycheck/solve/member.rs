@@ -29,6 +29,15 @@ impl<'ctx> ConstraintSolver<'ctx> {
             span,
         } = data;
 
+        let final_receiver = self.structurally_resolve(receiver);
+        if final_receiver.is_error() {
+            let obligation = Obligation {
+                location: span,
+                goal: Goal::Equal(result, Ty::error(self.gcx())),
+            };
+            return SolverResult::Solved(vec![obligation]);
+        }
+
         let mut adjustments = Vec::new();
         let mut prev: Option<Ty<'ctx>> = None;
         for ty in self.autoderef(receiver) {
@@ -112,6 +121,17 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let base_ty = self
             .select_inferred_member_base(expr_ty, base_hint)
             .map(|ty| self.structurally_resolve(ty));
+        
+        if let Some(base) = base_ty {
+            if base.is_error() {
+                let obligation = Obligation {
+                    location: span,
+                    goal: Goal::Equal(expr_ty, Ty::error(self.gcx())),
+                };
+                return SolverResult::Solved(vec![obligation]);
+            }
+        }
+
         let Some(base_ty) = base_ty else {
             return SolverResult::Deferred;
         };
