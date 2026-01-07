@@ -40,7 +40,7 @@ struct MyData {
     flag: rune
 }
 
-extend MyData: Entity {
+impl Entity for MyData {
     func identifier(&self) -> usize {
         self.id
     }
@@ -53,7 +53,7 @@ struct Container {
     cap: usize
 }
 
-extend Container: Collection {
+impl Collection for Container {
     type Item = Folder.Section.Side
     func len(&self) -> usize {
         self.len
@@ -64,13 +64,13 @@ type OptionalString = std.prelude.Optional[string]
 
 
 struct Folder {}
-extend Folder {
+impl Folder {
     type Section = Page
 
     func use(&self, _ page: Self.Section) {}
 }
 
 struct Page {}
-extend Page {
+impl Page {
     type Side = rune
 }

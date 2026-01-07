@@ -1,0 +1,4 @@
+error: cannot move out of borrowed content
+ -> language_tests/source_files/invalid/move_out_of_borrow_method.tr:35:15
+	    var iter = borrow.makeIterator() 
+	               ^^^^^^

@@ -16,7 +16,7 @@ struct User {
     name: string
 }
 
-extend User: Marker[1] {
+impl Marker[1] for User {
     func id(&self) -> usize { self.id }
 }
 

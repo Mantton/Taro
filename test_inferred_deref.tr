@@ -1,0 +1,10 @@
+func get_ptr() -> &mut int32 {
+    var x = 42
+    return &mut x
+}
+
+func main() {
+    var ptr = get_ptr()
+    *ptr = 100
+    std.print("Success\n")
+}

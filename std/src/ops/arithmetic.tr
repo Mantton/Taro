@@ -1,0 +1,20 @@
+
+public interface Add[Rhs=Self, Output=Self] {
+    func add(self, rhs: Rhs) -> Output
+}
+
+public interface Sub[Rhs=Self, Output=Self] {
+    func sub(self, rhs: Rhs) -> Output
+}
+
+public interface Mul[Rhs=Self, Output=Self] {
+    func mul(self, rhs: Rhs) -> Output
+}
+
+public interface Div[Rhs=Self, Output=Self] {
+    func div(self, rhs: Rhs) -> Output
+}
+
+public interface Rem[Rhs=Self, Output=Self] {
+    func rem(self, rhs: Rhs) -> Output
+}

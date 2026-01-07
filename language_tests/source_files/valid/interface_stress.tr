@@ -49,17 +49,23 @@ func main() {
   }
 
 
-  extend User: Entity {
+  impl Identifiable for User {
       func identifier(&self) -> usize { self.id }
+  }
+
+  impl Named for User {
       func name(&self) -> string { self.name }
+  }
+
+  impl Entity for User {
       func describe(&self) -> string { self.name }
   }
 
-  extend User: Container[string] {
+  impl Container[string] for User {
       func retrieve(&self) -> string { self.name }
   }
 
-  extend User: Container[usize] {
+  impl Container[usize] for User {
       func retrieve(&self) -> usize { self.id }
   }
 

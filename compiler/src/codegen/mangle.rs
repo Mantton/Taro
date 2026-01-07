@@ -146,9 +146,9 @@ pub fn mangle(gcx: GlobalContext, id: hir::DefinitionID) -> String {
     if let Some(parent) = output.definition_to_parent.get(&id) {
         if matches!(
             output.definition_to_kind.get(parent),
-            Some(DefinitionKind::Extension)
+            Some(DefinitionKind::Impl)
         ) {
-            if let Some(head) = gcx.get_extension_type_head(*parent) {
+            if let Some(head) = gcx.get_impl_type_head(*parent) {
                 modules.push(sanitize(&type_head_symbol(gcx, head)));
             }
         }

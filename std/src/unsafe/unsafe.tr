@@ -57,7 +57,7 @@ public func string_eq(_ lhs: string, _ rhs: string) -> bool {
     __rt__string_eq(lhs, rhs)
 }
 
-extend GcPtr {
+impl GcPtr {
     public func null() -> GcPtr {
         return gcptr_null()
     }

@@ -103,7 +103,7 @@ pub fn synthesize_all<'ctx>(gcx: GlobalContext<'ctx>) -> Vec<ThirFunction<'ctx>>
 fn register_definition<'ctx>(
     gcx: GlobalContext<'ctx>,
     syn_id: DefinitionID,
-    type_head: TypeHead,
+    _type_head: TypeHead,
     info: SyntheticMethodInfo<'ctx>,
 ) {
     // Construct Generics
@@ -194,7 +194,7 @@ fn synthetic_node_id(syn_id: DefinitionID, offset: u32) -> crate::hir::NodeID {
 
 /// Builder helper for constructing THIR functions.
 struct ThirBuilder<'ctx> {
-    gcx: GlobalContext<'ctx>,
+    _gcx: GlobalContext<'ctx>,
     stmts: IndexVec<StmtId, Stmt<'ctx>>,
     blocks: IndexVec<BlockId, Block>,
     exprs: IndexVec<ExprId, Expr<'ctx>>,
@@ -205,7 +205,7 @@ struct ThirBuilder<'ctx> {
 impl<'ctx> ThirBuilder<'ctx> {
     fn new(gcx: GlobalContext<'ctx>, span: Span) -> Self {
         ThirBuilder {
-            gcx,
+            _gcx: gcx,
             stmts: IndexVec::new(),
             blocks: IndexVec::new(),
             exprs: IndexVec::new(),
@@ -232,7 +232,7 @@ impl<'ctx> ThirBuilder<'ctx> {
 }
 
 /// Synthesize `clone` for Copy types: just dereference self.
-/// ```
+/// ```ignore
 /// func clone(&self) -> Self {
 ///     *self
 /// }
@@ -282,7 +282,7 @@ fn synthesize_copy_clone<'ctx>(
 }
 
 /// Synthesize `clone` for non-Copy types: memberwise clone each field.
-/// ```
+/// ```ignore
 /// func clone(&self) -> Self {
 ///     Self {
 ///         field1: self.field1.clone(),
@@ -418,7 +418,7 @@ fn synthesize_memberwise_clone<'ctx>(
 }
 
 /// Synthesize `clone` for enum types using a match expression.
-/// ```
+/// ```ignore
 /// func clone(&self) -> Self {
 ///     match *self {
 ///         .Variant1 => .Variant1,
@@ -660,7 +660,15 @@ fn clone_adt_field<'ctx>(
         .interners
         .intern_generic_args(vec![GenericArgument::Type(field_ty)]);
 
-    let callee_ty = gcx.get_type(callee_id);
+    // Get the function type from the signature (works for both synthetic and concrete methods)
+    let sig = gcx.get_signature(callee_id);
+    let inputs: Vec<_> = sig.inputs.iter().map(|p| p.ty).collect();
+    let inputs = gcx.store.interners.intern_ty_list(inputs);
+    let callee_ty = gcx.store.interners.intern_ty(TyKind::FnPointer {
+        inputs,
+        output: sig.output,
+    });
+
     let callee = builder.push_expr(
         ExprKind::Zst {
             id: callee_id,

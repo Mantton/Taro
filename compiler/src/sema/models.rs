@@ -286,7 +286,7 @@ pub enum TyKind<'arena> {
 /// Kind of type alias
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AliasKind {
-    /// Extension associated type: `extend Foo { type Bar = Int }`
+    /// Impl block associated type: `impl Foo { type Bar = Int }`
     Inherent,
     /// Top-level type alias: `type Foo = [Int]`
     Weak,
@@ -665,7 +665,6 @@ pub struct InterfaceDefinition<'ctx> {
 #[derive(Debug, Clone, Default)]
 pub struct InterfaceRequirements<'ctx> {
     pub methods: Vec<InterfaceMethodRequirement<'ctx>>,
-    pub operators: Vec<InterfaceOperatorRequirement<'ctx>>,
     pub types: Vec<AssociatedTypeDefinition<'ctx>>,
     pub constants: Vec<InterfaceConstantRequirement<'ctx>>,
 }
@@ -676,14 +675,6 @@ pub struct InterfaceMethodRequirement<'ctx> {
     pub name: Symbol,
     pub signature: &'ctx LabeledFunctionSignature<'ctx>,
     pub has_self: bool,
-    pub is_required: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct InterfaceOperatorRequirement<'ctx> {
-    pub id: DefinitionID,
-    pub kind: hir::OperatorKind,
-    pub signature: &'ctx LabeledFunctionSignature<'ctx>,
     pub is_required: bool,
 }
 
@@ -732,7 +723,7 @@ pub struct ConformanceRecord<'ctx> {
     pub location: Span,
     pub is_conditional: bool,
     /// True if the conformance was declared inline on the type definition (struct Foo: T {}),
-    /// false if declared via extension (extend Foo: T {}). Inline conformances allow auto-synthesis.
+    /// false if declared via impl block (impl T for Foo {}). Inline conformances allow auto-synthesis.
     pub is_inline: bool,
 }
 
@@ -795,24 +786,6 @@ pub enum SyntheticMethodKind {
     /// Hashable.hash: hash each field
     MemberwiseHash,
     /// Equatable.==: compare each field for equality
-    MemberwiseEquality,
-}
-
-/// How an operator requirement is satisfied in a conformance.
-#[derive(Debug, Clone, Copy)]
-pub enum OperatorImplementation {
-    /// User-provided implementation.
-    Concrete(DefinitionID),
-    /// Compiler-synthesized implementation.
-    Synthetic(SyntheticOperatorKind),
-    /// Default implementation from interface definition.
-    Default(DefinitionID),
-}
-
-/// Kind of synthesized operator for code generation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SyntheticOperatorKind {
-    /// Equatable.==: memberwise equality comparison
     MemberwiseEquality,
 }
 

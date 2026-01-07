@@ -3,13 +3,13 @@ import std.hash.Hashable
 
 public struct Dictionary[Key: Hashable, Value] {}
 
-extend[Key, Value] Dictionary[Key, Value] {
+impl[Key, Value] Dictionary[Key, Value] {
     public func new() -> Self {
         Dictionary {}
     }
 }
 
-extend[Key, Value] Dictionary[Key, Value] {
+impl[Key, Value] Dictionary[Key, Value] {
     public func insert(&mut self, key: Key, value: Value) -> Key? {
         Optional.none
     }

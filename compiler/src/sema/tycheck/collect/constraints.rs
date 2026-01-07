@@ -41,7 +41,7 @@ impl HirVisitor for Actor<'_> {
             DeclarationKind::Struct(node) => self.collect_definition(d.id, &node.generics),
             DeclarationKind::Enum(node) => self.collect_definition(d.id, &node.generics),
             DeclarationKind::Function(node) => self.collect_definition(d.id, &node.generics),
-            DeclarationKind::Extension(node) => self.collect_definition(d.id, &node.generics),
+            DeclarationKind::Impl(node) => self.collect_definition(d.id, &node.generics),
             DeclarationKind::TypeAlias(node) => self.collect_definition(d.id, &node.generics),
             _ => {}
         }
@@ -60,9 +60,6 @@ impl HirVisitor for Actor<'_> {
             }
             AssociatedDeclarationKind::Type(node) => {
                 self.collect_definition(declaration.id, &node.generics)
-            }
-            AssociatedDeclarationKind::Operator(node) => {
-                self.collect_definition(declaration.id, &node.function.generics)
             }
             _ => {}
         }

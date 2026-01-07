@@ -379,13 +379,73 @@ fn check_operand<'ctx>(
     match operand {
         Operand::Copy(place) | Operand::Move(place) => {
             check_place_not_moved(gcx, body, state, place, span)?;
+            if matches!(operand, Operand::Move(_)) {
+                check_borrow_move(gcx, body, place, span)?;
+            }
         }
         Operand::Constant(_) => {}
     }
     Ok(())
 }
 
-/// Check that a place is not moved.
+/// Check that we are not moving out of a reference (unless Copy).
+fn check_borrow_move<'ctx>(
+    gcx: Gcx<'ctx>,
+    body: &Body<'ctx>,
+    place: &Place<'ctx>,
+    span: crate::span::Span,
+) -> CompileResult<()> {
+    let local_decl = &body.locals[place.local];
+    let mut current_ty = local_decl.ty;
+    let mut moved_out_of_reference = false;
+
+    // quick check: if the place is just a local, we can't be moving out of a reference
+    if place.projection.is_empty() {
+        return Ok(());
+    }
+
+    for elem in &place.projection {
+        match elem {
+            PlaceElem::Deref => {
+                match current_ty.kind() {
+                    TyKind::Reference(inner, _) => {
+                        moved_out_of_reference = true;
+                        current_ty = inner;
+                    }
+                    TyKind::Pointer(inner, _) => {
+                        // Pointers are ignored for now (unsafe)
+                        current_ty = inner;
+                    }
+                    _ => {
+                        // Attempt to deref other types if possible
+                        if let Some(inner) = current_ty.dereference() {
+                            current_ty = inner;
+                        }
+                    }
+                }
+            }
+            PlaceElem::Field(_, field_ty) => {
+                current_ty = *field_ty;
+            }
+            PlaceElem::VariantDowncast { .. } => {
+                // Type stays the same (enum)
+            }
+        }
+    }
+
+    if moved_out_of_reference {
+        if !gcx.is_type_copyable(current_ty) {
+            gcx.dcx().emit_error(
+                format!("cannot move out of borrowed content").into(),
+                Some(span),
+            );
+            return gcx.dcx().ok();
+        }
+    }
+
+    Ok(())
+}
+
 fn check_place_not_moved<'ctx>(
     gcx: Gcx<'ctx>,
     body: &Body<'ctx>,

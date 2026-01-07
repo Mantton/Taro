@@ -684,6 +684,7 @@ impl<'ctx> Checker<'ctx> {
                     return false;
                 };
 
+                let ptr_ty = cs.infer_cx.resolve_vars_if_possible(ptr_ty);
                 match ptr_ty.kind() {
                     TyKind::Pointer(_, mutbl) | TyKind::Reference(_, mutbl) => {
                         if mutbl != hir::Mutability::Mutable {
@@ -696,7 +697,10 @@ impl<'ctx> Checker<'ctx> {
                     }
                     _ => {
                         self.gcx().dcx().emit_error(
-                            "cannot assign through a non-pointer/reference value".into(),
+                            format!(
+                                "cannot assign through a non-pointer/reference value type {}",
+                                ptr_ty.format(self.gcx())
+                            ),
                             Some(expr.span),
                         );
                         false
@@ -712,6 +716,7 @@ impl<'ctx> Checker<'ctx> {
                 };
 
                 // Mutability through pointer/reference.
+                let receiver_ty = cs.infer_cx.resolve_vars_if_possible(receiver_ty);
                 let (base_ty, via_ptr_mut) = match receiver_ty.kind() {
                     TyKind::Pointer(inner, mutbl) | TyKind::Reference(inner, mutbl) => {
                         (inner, mutbl == hir::Mutability::Mutable)
@@ -809,7 +814,7 @@ impl<'ctx> Checker<'ctx> {
                     return false;
                 };
 
-                match receiver_ty.kind() {
+                match cs.infer_cx.resolve_vars_if_possible(receiver_ty).kind() {
                     TyKind::Pointer(_, mutbl) | TyKind::Reference(_, mutbl) => {
                         mutbl == hir::Mutability::Mutable
                     }
@@ -857,6 +862,7 @@ impl<'ctx> Checker<'ctx> {
                     return false;
                 };
 
+                let ptr_ty = cs.infer_cx.resolve_vars_if_possible(ptr_ty);
                 match ptr_ty.kind() {
                     TyKind::Error => true,
                     TyKind::Pointer(_, mutbl) | TyKind::Reference(_, mutbl) => {
@@ -1358,7 +1364,7 @@ impl<'ctx> Checker<'ctx> {
             call_node_id: expression.id,
             call_span: expression.span,
             callee_ty,
-            callee_source: self.resolve_callee(callee),
+            callee_source: self.resolve_callee(callee, cs),
             result_ty,
             _expect_ty: expect_ty,
             arguments: apply_arguments,
@@ -1499,7 +1505,7 @@ impl<'ctx> Checker<'ctx> {
             hir::Resolution::SelfConstructor(id) | hir::Resolution::SelfTypeAlias(id) => {
                 match gcx.definition_kind(*id) {
                     DefinitionKind::Struct => Some(*id),
-                    DefinitionKind::Extension => match gcx.get_extension_type_head(*id)? {
+                    DefinitionKind::Impl => match gcx.get_impl_type_head(*id)? {
                         TypeHead::Nominal(nominal) => Some(nominal),
                         _ => None,
                     },
@@ -1622,6 +1628,7 @@ impl<'ctx> Checker<'ctx> {
         // Check the pattern against the expression's type
         let scrutinee_id = condition.expression.id;
         self.check_pattern(&condition.pattern, expr_ty, scrutinee_id, cs);
+        cs.solve_intermediate();
 
         // Pattern binding conditions always evaluate to bool
         self.gcx().types.bool
@@ -1674,6 +1681,7 @@ impl<'ctx> Checker<'ctx> {
 
                 GatherLocalsVisitor::from_match_arm(&arm_cs, self, &arm.pattern);
                 self.check_pattern(&arm.pattern, scrutinee_ty, node.value.id, &mut arm_cs);
+                arm_cs.solve_intermediate();
 
                 if let Some(guard) = &arm.guard {
                     let guard_ty = self.synth_with_expectation(
@@ -1805,13 +1813,13 @@ impl<'ctx> Checker<'ctx> {
 }
 
 impl<'ctx> Checker<'ctx> {
-    fn resolve_callee(&self, node: &hir::Expression) -> Option<DefinitionID> {
+    fn resolve_callee(&self, node: &hir::Expression, cs: &Cs<'ctx>) -> Option<DefinitionID> {
         match &node.kind {
             hir::ExpressionKind::Path(path) => {
                 if let Some(resolution) = self.results.borrow().value_resolution(node.id) {
                     return self.resolve_resolution_callee(&resolution);
                 }
-                let resolution = self.resolve_value_path_resolution(path, node.span, false);
+                let resolution = self.resolve_value_path_resolution(path, node.span, false, cs);
                 self.resolve_resolution_callee(&resolution)
             }
             _ => None,
@@ -1832,8 +1840,9 @@ impl<'ctx> Checker<'ctx> {
         path: &hir::ResolvedPath,
         span: Span,
         emit_errors: bool,
+        cs: &Cs<'ctx>,
     ) -> hir::Resolution {
-        self.resolve_value_path_resolution_with_args(path, span, emit_errors)
+        self.resolve_value_path_resolution_with_args(path, span, emit_errors, cs)
             .0
     }
 
@@ -1842,6 +1851,7 @@ impl<'ctx> Checker<'ctx> {
         path: &hir::ResolvedPath,
         span: Span,
         emit_errors: bool,
+        cs: &Cs<'ctx>,
     ) -> (
         hir::Resolution,
         Option<crate::sema::models::GenericArguments<'ctx>>,
@@ -1854,6 +1864,7 @@ impl<'ctx> Checker<'ctx> {
                 }
 
                 let base_ty = self.lower_type(base_ty);
+                let base_ty = cs.infer_cx.resolve_vars_if_possible(base_ty);
                 let base_args = match base_ty.kind() {
                     TyKind::Adt(_, args) if !args.is_empty() => Some(args),
                     _ => None,
@@ -1973,7 +1984,7 @@ impl<'ctx> Checker<'ctx> {
 
         for db in databases.values() {
             if let Some(index) = db.type_head_to_members.get(&head) {
-                if let Some(set) = index.static_functions.get(&name) {
+                if let Some(set) = index.inherent_static.get(&name) {
                     members.extend(set.members.iter().copied());
                 }
             }
@@ -2294,7 +2305,7 @@ impl<'ctx> Checker<'ctx> {
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         let (resolution, base_args) =
-            self.resolve_value_path_resolution_with_args(path, expression.span, true);
+            self.resolve_value_path_resolution_with_args(path, expression.span, true, cs);
         self.record_value_path_resolution(expression.id, &resolution);
         let segment = match path {
             hir::ResolvedPath::Resolved(path) => {
@@ -2683,9 +2694,18 @@ impl<'ctx> Checker<'ctx> {
 
         // Auto-deref loop: if scrutinee is &T and pattern is NOT &pat, auto-deref
         let mut adjustments = Vec::new();
-        while let TyKind::Reference(inner_ty, mutability) = ctx.adjusted_ty.kind() {
-            // Don't auto-deref if this is an explicit reference pattern
-            if matches!(pattern.kind, hir::PatternKind::Reference { .. }) {
+        while let TyKind::Reference(inner_ty, mutability) =
+            cs.infer_cx.resolve_vars_if_possible(ctx.adjusted_ty).kind()
+        {
+            // Don't auto-deref if this is an explicit reference pattern, or if it's a binding/wildcard
+            // which should consume the reference as-is (fixing a double-reference issue in MIR)
+            if matches!(
+                pattern.kind,
+                hir::PatternKind::Reference { .. }
+                    | hir::PatternKind::Binding { .. }
+                    | hir::PatternKind::Wildcard
+                    | hir::PatternKind::Rest
+            ) {
                 break;
             }
 
@@ -2840,7 +2860,7 @@ impl<'ctx> Checker<'ctx> {
             hir::PatternKind::Reference { pattern, mutable } => {
                 let gcx = self.gcx();
                 // The scrutinee must be a reference type
-                let inner_ty = match ctx.adjusted_ty.kind() {
+                let inner_ty = match cs.infer_cx.resolve_vars_if_possible(ctx.adjusted_ty).kind() {
                     TyKind::Reference(inner, scrutinee_mut) => {
                         // Check mutability compatibility:
                         // Cannot match &mut pattern against immutable reference
@@ -2891,7 +2911,7 @@ impl<'ctx> Checker<'ctx> {
                 // for the base type in relative patterns like `Optional.none`.
                 // The base type is only used for name resolution.
                 let (resolution, base_args) =
-                    self.resolve_value_path_resolution_with_args(path, span, true);
+                    self.resolve_value_path_resolution_with_args(path, span, true, cs);
                 self.record_value_path_resolution(id, &resolution);
                 self.resolve_enum_variant_from_resolution(
                     scrutinee, resolution, span, cs, base_args,
@@ -2993,7 +3013,7 @@ impl<'ctx> Checker<'ctx> {
         let args = if let Some(base_args) = base_args {
             base_args
         } else {
-            match scrutinee.kind() {
+            match cs.infer_cx.resolve_vars_if_possible(scrutinee).kind() {
                 TyKind::Adt(adt_def, args) if adt_def.id == enum_id => {
                     if !args.is_empty() || gcx.generics_of(enum_id).is_empty() {
                         args
@@ -3046,7 +3066,7 @@ impl<'ctx> Checker<'ctx> {
         cs: &mut Cs<'ctx>,
     ) -> Option<(crate::sema::models::EnumVariant<'ctx>, Ty<'ctx>)> {
         let gcx = self.gcx();
-
+        let scrutinee = cs.infer_cx.resolve_vars_if_possible(scrutinee);
         // Scrutinee must be a concrete ADT type
         let TyKind::Adt(adt_def, args) = scrutinee.kind() else {
             gcx.dcx().emit_error(

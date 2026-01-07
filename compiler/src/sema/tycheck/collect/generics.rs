@@ -42,7 +42,7 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
             DeclarationKind::Enum(node) => self.collect(id, &node.generics),
             DeclarationKind::TypeAlias(node) => self.collect(id, &node.generics),
             DeclarationKind::Function(node) => self.collect(id, &node.generics),
-            DeclarationKind::Extension(node) => self.collect(id, &node.generics),
+            DeclarationKind::Impl(node) => self.collect(id, &node.generics),
             _ => {}
         }
 
@@ -59,7 +59,6 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
         match &node.kind {
             AssociatedDeclarationKind::Type(node) => self.collect(id, &node.generics),
             AssociatedDeclarationKind::Function(node) => self.collect(id, &node.generics),
-            AssociatedDeclarationKind::Operator(node) => self.collect(id, &node.function.generics),
             _ => {}
         }
 

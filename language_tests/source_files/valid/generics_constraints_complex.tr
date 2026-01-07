@@ -25,13 +25,13 @@ interface Container {
 }
 
 struct BoxU: Copy { value: usize }
-extend BoxU: Container {
+impl Container for BoxU {
     type Item = usize
     func get(&self) -> usize { self.value }
 }
 
 struct BoxS: Copy { value: string }
-extend BoxS: Container {
+impl Container for BoxS {
     type Item = string
     func get(&self) -> string { self.value }
 }
@@ -51,7 +51,7 @@ interface Container2[T] {
 }
 
 struct BoxU2: Copy { value: usize }
-extend BoxU2: Container2[usize] {
+impl Container2[usize] for BoxU2 {
     func get(&self) -> usize { self.value }
 }
 
@@ -72,8 +72,11 @@ struct User: Copy {
     name: string
 }
 
-extend User: Entity {
+impl Named for User {
     func name(&self) -> string { self.name }
+}
+
+impl Entity for User {
     func id(&self) -> usize { self.id }
 }
 

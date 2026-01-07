@@ -1,9 +1,13 @@
 import std.hash.{Hashable, Hasher}
 import std.unsafe.string_eq
+import std.ops.PartialEq
 
 struct _StringHeader {}
 
-extend string: Hashable {
+impl Hashable for string {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
-    public operator ==(self, rhs: Self) -> bool { string_eq(self, rhs) }
+}
+
+impl PartialEq for string {
+    public func eq(&self, _ other: &string) -> bool { string_eq(*self, *other) }
 }

@@ -51,9 +51,9 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
             hir::DeclarationKind::Import(..) => {}
             hir::DeclarationKind::Export(..) => {}
             hir::DeclarationKind::Namespace(..) => {}
-            hir::DeclarationKind::Extension(..) => {
+            hir::DeclarationKind::Impl(..) => {
                 self.check_constraints(node.id);
-                self.check_extension(node.id);
+                self.check_impl(node.id);
             }
             hir::DeclarationKind::Malformed => unreachable!(),
         }
@@ -68,8 +68,7 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
     ) -> Self::Result {
         match &node.kind {
             hir::AssociatedDeclarationKind::Function(..)
-            | hir::AssociatedDeclarationKind::Type(..)
-            | hir::AssociatedDeclarationKind::Operator(..) => {
+            | hir::AssociatedDeclarationKind::Type(..) => {
                 self.check_constraints(node.id);
             }
             _ => {}
@@ -217,7 +216,7 @@ impl<'ctx> Actor<'ctx> {
         cs.solve_all();
     }
 
-    fn check_extension(&self, id: DefinitionID) {
+    fn check_impl(&self, id: DefinitionID) {
         let ident = self.context.definition_ident(id);
         let mut cs = ConstraintSystem::new(self.context, id);
 

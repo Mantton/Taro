@@ -3,13 +3,13 @@ use crate::{
         self, AnonConst, AssociatedDeclaration, AssociatedDeclarationKind, Attribute,
         AttributeList, BinaryOperator, Block, ClosureExpression, ConformanceConstraint,
         Conformances, Constant, Declaration, DeclarationKind, Enum, EnumCase, Expression,
-        ExpressionArgument, ExpressionField, ExpressionKind, Extension, FieldDefinition,
-        ForStatement, Function, FunctionDeclaration, FunctionDeclarationKind, FunctionParameter,
+        ExpressionArgument, ExpressionField, ExpressionKind, FieldDefinition, ForStatement,
+        Function, FunctionDeclaration, FunctionDeclarationKind, FunctionParameter,
         FunctionPrototype, FunctionSignature, GenericBound, GenericBounds, GenericRequirement,
-        GenericRequirementList, GenericWhereClause, Generics, Identifier, IfExpression, Interface,
-        Label, Literal, Local, MapPair, MatchArm, MatchExpression, Mutability, Namespace,
-        NamespaceDeclaration, NamespaceDeclarationKind, NodeID, Operator, OperatorKind, Path,
-        PathNode, PathSegment, Pattern, PatternBindingCondition, PatternKind, PatternPath,
+        GenericRequirementList, GenericWhereClause, Generics, Identifier, IfExpression, Impl,
+        Interface, Label, Literal, Local, MapPair, MatchArm, MatchExpression, Mutability,
+        Namespace, NamespaceDeclaration, NamespaceDeclarationKind, NodeID, Path, PathNode,
+        PathSegment, Pattern, PatternBindingCondition, PatternKind, PatternPath,
         RequiredTypeConstraint, SelfKind, Statement, StatementKind, Struct, StructLiteral, Type,
         TypeAlias, TypeArgument, TypeArguments, TypeKind, TypeParameter, TypeParameterKind,
         TypeParameters, UnaryOperator, UseTree, UseTreeKind, UseTreeNestedItem, UseTreePath,
@@ -158,6 +158,16 @@ impl Parser {
 
     fn bump(&mut self) {
         self.cursor += 1;
+    }
+
+    /// Save the current parser position for backtracking
+    fn checkpoint(&self) -> usize {
+        self.cursor
+    }
+
+    /// Restore the parser to a previously saved position
+    fn restore(&mut self, checkpoint: usize) {
+        self.cursor = checkpoint;
     }
 
     fn matches(&self, token: Token) -> bool {
@@ -383,13 +393,7 @@ impl Parser {
             return Ok(declaration);
         };
 
-        match &declaration.kind {
-            DeclarationKind::Operator(..) => {
-                return Err(self.err_at_current(ParserError::TopLevelOperatorNotAllowed));
-            }
-
-            _ => return Ok(Some(declaration)),
-        }
+        return Ok(Some(declaration));
     }
 
     fn parse_declaration_internal(&mut self, fn_mode: FnParseMode) -> R<Option<Declaration>> {
@@ -554,9 +558,9 @@ impl Parser {
             Token::Extern => (Identifier::emtpy(self.file.id), self.parse_extern_block()?),
             Token::Type => self.parse_type_declaration()?,
             Token::Function => self.parse_function(mode)?,
-            Token::Extend => (Identifier::emtpy(self.file.id), self.parse_impl()?),
+            Token::Impl => (Identifier::emtpy(self.file.id), self.parse_impl()?),
             Token::Namespace => self.parse_namespace()?,
-            Token::Operator => self.parse_operator(mode)?,
+
             _ => return Ok(None),
         };
 
@@ -845,12 +849,25 @@ impl Parser {
 }
 
 impl Parser {
+    /// Parses an impl block
+    /// - `impl T { ... }` - inherent impl
+    /// - `impl I for T { ... }` - trait impl
     fn parse_impl(&mut self) -> R<DeclarationKind> {
-        self.expect(Token::Extend)?;
+        self.expect(Token::Impl)?;
         let type_parameters = self.parse_type_parameters()?;
 
-        let ty = self.parse_type()?;
-        let conformances = self.parse_conformances()?;
+        // Parse the first type
+        let first_type = self.parse_type()?;
+
+        // Check if this is a trait impl (has `for` keyword)
+        let (interface, target) = if self.eat(Token::For) {
+            // `impl Interface for Type { ... }`
+            let target = self.parse_type()?;
+            (Some(first_type), target)
+        } else {
+            // `impl Type { ... }` - inherent impl
+            (None, first_type)
+        };
 
         let where_clause = self.parse_generic_where_clause()?;
 
@@ -863,14 +880,14 @@ impl Parser {
             where_clause,
         };
 
-        let extend = Extension {
-            ty,
-            declarations,
+        let impl_block = Impl {
             generics,
-            conformances,
+            interface,
+            target,
+            declarations,
         };
 
-        Ok(DeclarationKind::Extension(extend))
+        Ok(DeclarationKind::Impl(impl_block))
     }
 }
 
@@ -1256,6 +1273,11 @@ impl Parser {
     }
 
     fn parse_tuple_type(&mut self) -> R<TypeKind> {
+        // Try to parse qualified access: (T as I).Member
+        if let Some(qualified) = self.try_parse_qualified_access()? {
+            return Ok(qualified);
+        }
+
         let elements =
             self.parse_delimiter_sequence(Delimiter::Parenthesis, Token::Comma, |p| {
                 p.parse_type()
@@ -1279,6 +1301,54 @@ impl Parser {
         }
 
         Ok(TypeKind::Tuple(elements))
+    }
+
+    /// Try to parse qualified type access: `(T as I).Member`
+    /// Returns None if this is not a qualified access (should be parsed as tuple/paren instead)
+    fn try_parse_qualified_access(&mut self) -> R<Option<TypeKind>> {
+        // Qualified access syntax: (T as I).Member
+        // We need to look ahead to see if this matches the pattern
+
+        // Save position for backtracking
+        let checkpoint = self.checkpoint();
+
+        // Expect opening paren
+        if !self.eat(Token::LParen) {
+            return Ok(None);
+        }
+
+        // Parse target type
+        let target = match self.parse_type() {
+            Ok(t) => t,
+            Err(_) => {
+                self.restore(checkpoint);
+                return Ok(None);
+            }
+        };
+
+        // Check for 'as' keyword
+        if !self.eat(Token::As) {
+            self.restore(checkpoint);
+            return Ok(None);
+        }
+
+        // Parse interface type
+        let interface = self.parse_type()?;
+
+        // Expect closing paren
+        self.expect(Token::RParen)?;
+
+        // Expect dot
+        self.expect(Token::Dot)?;
+
+        // Parse member identifier
+        let member = self.parse_identifier()?;
+
+        Ok(Some(TypeKind::QualifiedAccess {
+            target,
+            interface,
+            member,
+        }))
     }
 
     fn parse_collection_type(&mut self) -> R<TypeKind> {
@@ -3003,18 +3073,6 @@ impl Parser {
         Ok((identifier, DeclarationKind::Function(func)))
     }
 
-    pub fn parse_operator(&mut self, mode: FnParseMode) -> R<(Identifier, DeclarationKind)> {
-        self.expect(Token::Operator)?;
-        let lo = self.lo_span();
-        let kind = self.parse_operator_from_token()?;
-        let span = lo.to(self.hi_span());
-        let function = self.parse_fn(mode)?;
-        Ok((
-            Identifier::new(Symbol::new(""), span),
-            DeclarationKind::Operator(Operator { kind, function }),
-        ))
-    }
-
     fn parse_fn(&mut self, mode: FnParseMode) -> R<Function> {
         let lo = self.lo_span();
         let type_parameters = self.parse_type_parameters()?;
@@ -3419,74 +3477,6 @@ impl Parser {
 }
 
 impl Parser {
-    #[allow(unused)]
-    fn parse_operator_from_token(&mut self) -> R<OperatorKind> {
-        let kind = match self.current_token() {
-            Token::Plus => Some(OperatorKind::Add),
-            Token::Minus => Some(OperatorKind::Sub),
-            Token::Star => Some(OperatorKind::Mul),
-            Token::Quotient => Some(OperatorKind::Div),
-            Token::Modulus => Some(OperatorKind::Rem),
-
-            Token::AmpAmp => Some(OperatorKind::BoolAnd),
-            Token::BarBar => Some(OperatorKind::BoolOr),
-
-            Token::Amp => Some(OperatorKind::BitAnd),
-            Token::Bar => Some(OperatorKind::BitOr),
-            Token::Caret => Some(OperatorKind::BitXor),
-
-            Token::Shl => Some(OperatorKind::BitShl),
-            Token::Shr => Some(OperatorKind::BitShr),
-
-            Token::Eql => Some(OperatorKind::Eq),
-            Token::Neq => Some(OperatorKind::Neq),
-            Token::Geq => Some(OperatorKind::Geq),
-            Token::Leq => Some(OperatorKind::Leq),
-
-            Token::RChevron => Some(OperatorKind::Gt),
-            Token::LChevron => Some(OperatorKind::Lt),
-
-            Token::PlusEq => Some(OperatorKind::AddAssign),
-            Token::MinusEq => Some(OperatorKind::SubAssign),
-            Token::MulEq => Some(OperatorKind::MulAssign),
-            Token::DivEq => Some(OperatorKind::DivAssign),
-            Token::RemEq => Some(OperatorKind::RemAssign),
-
-            Token::AmpEq => Some(OperatorKind::BitAndAssign),
-            Token::BarEq => Some(OperatorKind::BitOrAssign),
-            Token::CaretEq => Some(OperatorKind::BitXorAssign),
-
-            Token::ShlEq => Some(OperatorKind::BitShlAssign),
-            Token::ShrEq => Some(OperatorKind::BitShrAssign),
-            Token::Bang => Some(OperatorKind::Not),
-            _ => None,
-        };
-
-        if let Some(kind) = kind {
-            self.bump();
-            return Ok(kind);
-        }
-
-        if self.matches(Token::LBracket) && self.next_matches(1, Token::RBracket) {
-            self.bump();
-            self.bump();
-            if self.eat(Token::Assign) {
-                return Ok(OperatorKind::IndexAssign);
-            }
-            return Ok(OperatorKind::Index);
-        }
-
-        if self.matches(Token::Underscore) && self.next_matches(1, Token::Minus) {
-            self.bump();
-            self.bump();
-            return Ok(OperatorKind::Neg);
-        }
-
-        Err(self.err_at_current(ParserError::UnknownOperator))
-    }
-}
-
-impl Parser {
     fn bin_op_non_assign(k: Token) -> Option<BinaryOperator> {
         match k {
             Token::Plus => Some(BinaryOperator::Add),
@@ -3550,7 +3540,6 @@ enum ParserError {
     ExpectedElseBlock,
     ExpectedExpression,
     InvalidCollectionType,
-    TopLevelOperatorNotAllowed,
     RequiredIdentifierPattern,
     DissallowedAssociatedDeclaration,
     DissallowedFunctionDeclaration,
@@ -3562,7 +3551,6 @@ enum ParserError {
     DisallowedLabel,
     FunctionBodyRequired,
     UnknownBinaryOperator,
-    UnknownOperator,
     ExpectedParameterNameOrLabel,
     ExpectedParameterName,
     ExpectedSelf,
@@ -3595,7 +3583,6 @@ impl Display for ParserError {
             ExpectedElseBlock => f.write_str("expected 'else' block"),
             ExpectedExpression => f.write_str("expected expression"),
             InvalidCollectionType => f.write_str("invalid collection type"),
-            TopLevelOperatorNotAllowed => f.write_str("top-level operator not allowed"),
             RequiredIdentifierPattern => f.write_str("identifier pattern required"),
             DissallowedAssociatedDeclaration => f.write_str("disallowed associated declaration"),
             DissallowedFunctionDeclaration => f.write_str("disallowed function declaration"),
@@ -3607,7 +3594,6 @@ impl Display for ParserError {
             DisallowedLabel => f.write_str("disallowed label"),
             FunctionBodyRequired => f.write_str("function body required"),
             UnknownBinaryOperator => f.write_str("unknown binary operator"),
-            UnknownOperator => f.write_str("unknown operator"),
             ExpectedParameterNameOrLabel => f.write_str("expected parameter name or label"),
             ExpectedParameterName => f.write_str("expected parameter name"),
             ExpectedSelf => f.write_str("expected 'self'"),
@@ -3682,6 +3668,7 @@ fn is_generic_type_disambiguating_token(token: Token) -> bool {
             | Assign
             | As
             | RChevron
+            | For // For `impl Interface[T] for Type` syntax
     ) {
         return true;
     }
@@ -3881,10 +3868,17 @@ mod tests {
     }
 
     #[test]
-    fn test_extension_declaration() {
-        let decl = parse_one_decl("extend int32 { const VALUE: int32 = 0; }");
+    fn test_impl_declaration() {
+        // Test inherent impl
+        let decl = parse_one_decl("impl int32 { const VALUE: int32 = 0; }");
         assert!(
-            matches!(&decl.kind, DeclarationKind::Extension(ext) if ext.declarations.len() == 1)
+            matches!(&decl.kind, DeclarationKind::Impl(impl_block) if impl_block.declarations.len() == 1 && impl_block.interface.is_none())
+        );
+
+        // Test trait impl
+        let decl = parse_one_decl("impl Hashable for Point { func hash() -> int64 { 0 }; }");
+        assert!(
+            matches!(&decl.kind, DeclarationKind::Impl(impl_block) if impl_block.interface.is_some())
         );
     }
 

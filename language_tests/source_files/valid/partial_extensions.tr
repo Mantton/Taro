@@ -15,7 +15,7 @@ struct Foo[T, V] {
     b: V
 }
 
-extend[T] Foo[T, string] {
+impl[T] Foo[T, string] {
     func getB(&self) -> string {
         self.b
     }

@@ -24,11 +24,13 @@ struct User {
     name: string
 }
 
-extend User: Entity, Identifable {
+impl Entity for User {
     func name(&self) -> string {
         self.name
     }
+}
 
+impl Identifable for User {
     func identifier(&self) -> usize {
         self.id
     }

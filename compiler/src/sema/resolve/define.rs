@@ -204,7 +204,7 @@ impl<'r, 'a> Actor<'r, 'a> {
                 self.define(identifier, ScopeNamespace::Value, resolution, visibility);
             }
             ast::DeclarationKind::ExternBlock(..) => return None,
-            ast::DeclarationKind::Extension(_) => return None,
+            ast::DeclarationKind::Impl(_) => return None,
             ast::DeclarationKind::Interface(..) => {
                 let scope = ScopeData::new(
                     ScopeKind::Definition(def_id, DefinitionKind::Interface),
@@ -229,9 +229,6 @@ impl<'r, 'a> Actor<'r, 'a> {
             }
             ast::DeclarationKind::Export(node) => {
                 self.define_use_tree(declaration.id, node, false);
-            }
-            ast::DeclarationKind::Operator(..) => {
-                unreachable!("top level operator")
             }
         }
 
@@ -334,9 +331,6 @@ impl<'r, 'a> Actor<'r, 'a> {
             }
             ast::AssociatedDeclarationKind::AssociatedType(..) => {
                 self.define(identifier, ScopeNamespace::Type, resolution, visibility);
-            }
-            ast::AssociatedDeclarationKind::Operator(..) => {
-                // do nothing
             }
         }
 

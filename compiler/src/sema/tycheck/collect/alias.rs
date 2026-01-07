@@ -41,7 +41,7 @@ impl<'ctx> Actor<'ctx> {
         let id = entry.id;
 
         if let Some(extension_id) = entry.extension_id {
-            if let Some(head) = self.context.get_extension_type_head(extension_id) {
+            if let Some(head) = self.context.get_impl_type_head(extension_id) {
                 self.register_in_bucket(head, entry.name, id, entry.span);
             }
         }
@@ -103,7 +103,7 @@ impl HirVisitor for Actor<'_> {
         node: &hir::AssociatedDeclaration,
         context: hir::AssocContext,
     ) -> Self::Result {
-        let hir::AssocContext::Extension(extension_id) = context else {
+        let hir::AssocContext::Impl(impl_id) = context else {
             return;
         };
 
@@ -120,7 +120,7 @@ impl HirVisitor for Actor<'_> {
             name: node.identifier.symbol,
             span: node.span,
             ast_ty: ty.clone(),
-            extension_id: Some(extension_id),
+            extension_id: Some(impl_id),
             kind: AliasKind::Inherent,
         };
         self.register_alias(entry);

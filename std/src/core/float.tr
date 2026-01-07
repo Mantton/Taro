@@ -1,14 +1,19 @@
 import std.hash.{Hashable, Hasher}
-import std.cmp.Equatable
+import std.ops.PartialEq
 
-extend float: Hashable {
+
+impl Hashable for float {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
-    public operator ==(self, rhs: float) -> bool { self == rhs }
-    public operator !=(self, rhs: float) -> bool { self != rhs }
 }
 
-extend double: Hashable {
+impl PartialEq for float {
+    public func eq(&self, _ other: &float) -> bool { *self == *other }
+}
+
+impl Hashable for double {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
-    public operator ==(self, rhs: double) -> bool { self == rhs }
-    public operator !=(self, rhs: double) -> bool { self != rhs }
+}
+
+impl PartialEq for double {
+    public func eq(&self, _ other: &double) -> bool { *self == *other }
 }

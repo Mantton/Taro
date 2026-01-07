@@ -325,10 +325,7 @@ impl<'r, 'a> Actor<'r, 'a> {
                 self.with_scope(scope, |this| ast::walk_declaration(this, declaration))
             }
             ast::DeclarationKind::ExternBlock(..) => ast::walk_declaration(self, declaration),
-            ast::DeclarationKind::Extension(node) => self.resolve_extension(declaration.id, node),
-            ast::DeclarationKind::Operator(..) => {
-                unreachable!("top level operator")
-            }
+            ast::DeclarationKind::Impl(node) => self.resolve_impl(declaration.id, node),
         }
     }
 
@@ -445,7 +442,7 @@ impl<'r, 'a> Actor<'r, 'a> {
                 let def_id = self.resolver.definition_id(declaration.id);
                 self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
                     this.with_generics_scope(&function.generics, |this| {
-                        if matches!(ctx, AssocContext::Extension(..)) {
+                        if matches!(ctx, AssocContext::Impl(..)) {
                             if let Some(pos) = explicit_self_param_position(&function.signature) {
                                 if pos != 0 {
                                     this.resolver.dcx().emit_error(
@@ -457,14 +454,6 @@ impl<'r, 'a> Actor<'r, 'a> {
                             }
                         }
 
-                        ast::walk_assoc_declaration(this, declaration, ctx);
-                    });
-                })
-            }
-            ast::AssociatedDeclarationKind::Operator(node) => {
-                let def_id = self.resolver.definition_id(declaration.id);
-                self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
-                    this.with_generics_scope(&node.function.generics, |this| {
                         ast::walk_assoc_declaration(this, declaration, ctx);
                     });
                 })
@@ -1177,21 +1166,25 @@ impl<'r, 'a> Actor<'r, 'a> {
 }
 
 impl<'r, 'a> Actor<'r, 'a> {
-    fn resolve_extension(&mut self, id: ast::NodeID, node: &ast::Extension) {
+    fn resolve_impl(&mut self, id: ast::NodeID, node: &ast::Impl) {
         let def_id = self.resolver.definition_id(id);
         self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
             this.with_generics_scope(&node.generics, |this| {
                 let self_res = Resolution::SelfTypeAlias(def_id);
                 this.with_self_alias_scope(self_res, |this| {
-                    this.with_type_source(ResolutionSource::ExtensionTarget, |this| {
-                        this.visit_type(&node.ty);
+                    // Resolve the interface type if present
+                    if let Some(interface) = &node.interface {
+                        this.with_type_source(ResolutionSource::Interface, |this| {
+                            this.visit_type(interface);
+                        });
+                    }
+                    // Resolve the target type
+                    this.with_type_source(ResolutionSource::ImplTarget, |this| {
+                        this.visit_type(&node.target);
                     });
                     this.visit_generics(&node.generics);
-                    if let Some(conformances) = &node.conformances {
-                        this.visit_conformance(conformances)
-                    }
                     for declaration in &node.declarations {
-                        this.visit_assoc_declaration(declaration, AssocContext::Extension(id));
+                        this.visit_assoc_declaration(declaration, AssocContext::Impl(id));
                     }
                 });
             });

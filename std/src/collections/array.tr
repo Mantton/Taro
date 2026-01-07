@@ -18,7 +18,7 @@ extern "taro_intrinsic" {
     )
 }
 
-extend[Element, const Size: usize] Array[Element, Size] {
+impl[Element, const Size: usize] Array[Element, Size] {
     public func len(&self) -> usize {
         Size
     }

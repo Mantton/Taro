@@ -1,72 +1,92 @@
 import std.hash.{Hashable, Hasher}
-import std.cmp.Equatable
+import std.ops.PartialEq
 
 // int8
-extend int8: Hashable {
+impl Hashable for int8 {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
-    public operator ==(self, rhs: int8) -> bool { self == rhs }
-    public operator !=(self, rhs: int8) -> bool { self != rhs }
+}
+
+impl PartialEq for int8 {
+    public func eq(&self, _ other: &int8) -> bool { *self == *other }
 }
 
 // int16
-extend int16: Hashable {
+impl Hashable for int16 {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
-    public operator ==(self, rhs: int16) -> bool { self == rhs }
-    public operator !=(self, rhs: int16) -> bool { self != rhs }
+}
+
+impl PartialEq for int16 {
+    public func eq(&self, _ other: &int16) -> bool { *self == *other }
 }
 
 // int32
-extend int32: Hashable {
+impl Hashable for int32 {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
-    public operator ==(self, rhs: int32) -> bool { self == rhs }
-    public operator !=(self, rhs: int32) -> bool { self != rhs }
+}
+
+impl PartialEq for int32 {
+    public func eq(&self, _ other: &int32) -> bool { *self == *other }
 }
 
 // int64
-extend int64: Hashable {
+impl Hashable for int64 {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
-    public operator ==(self, rhs: int64) -> bool { self == rhs }
-    public operator !=(self, rhs: int64) -> bool { self != rhs }
+}
+
+impl PartialEq for int64 {
+    public func eq(&self, _ other: &int64) -> bool { *self == *other }
 }
 
 // uint8
-extend uint8: Hashable {
+impl Hashable for uint8 {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
-    public operator ==(self, rhs: uint8) -> bool { self == rhs }
-    public operator !=(self, rhs: uint8) -> bool { self != rhs }
+}
+
+impl PartialEq for uint8 {
+    public func eq(&self, _ other: &uint8) -> bool { *self == *other }
 }
 
 // uint16
-extend uint16: Hashable {
+impl Hashable for uint16 {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
-    public operator ==(self, rhs: uint16) -> bool { self == rhs }
-    public operator !=(self, rhs: uint16) -> bool { self != rhs }
+}
+
+impl PartialEq for uint16 {
+    public func eq(&self, _ other: &uint16) -> bool { *self == *other }
 }
 
 // uint32
-extend uint32: Hashable {
+impl Hashable for uint32 {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
-    public operator ==(self, rhs: uint32) -> bool { self == rhs }
-    public operator !=(self, rhs: uint32) -> bool { self != rhs }
+}
+
+impl PartialEq for uint32 {
+    public func eq(&self, _ other: &uint32) -> bool { *self == *other }
 }
 
 // uint64
-extend uint64: Hashable {
+impl Hashable for uint64 {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
-    public operator ==(self, rhs: uint64) -> bool { self == rhs }
-    public operator !=(self, rhs: uint64) -> bool { self != rhs }
+}
+
+impl PartialEq for uint64 {
+    public func eq(&self, _ other: &uint64) -> bool { *self == *other }
 }
 
 // isize
-extend isize: Hashable {
+impl Hashable for isize {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
-    public operator ==(self, rhs: isize) -> bool { self == rhs }
-    public operator !=(self, rhs: isize) -> bool { self != rhs }
+}
+
+impl PartialEq for isize {
+    public func eq(&self, _ other: &isize) -> bool { *self == *other }
 }
 
 // usize
-extend usize: Hashable {
+impl Hashable for usize {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
-    public operator ==(self, rhs: usize) -> bool { self == rhs }
-    public operator !=(self, rhs: usize) -> bool { self != rhs }
+}
+
+impl PartialEq for usize {
+    public func eq(&self, _ other: &usize) -> bool { *self == *other }
 }

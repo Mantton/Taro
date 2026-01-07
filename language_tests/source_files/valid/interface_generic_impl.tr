@@ -25,13 +25,13 @@ struct User: Copy {
 }
 
 
-extend User: Container[string] {
+impl Container[string] for User {
     func retrieve(&self) -> string {
         self.name
     }
 }
 
-extend User: Container[usize] {
+impl Container[usize] for User {
     func retrieve(&self) -> usize {
         self.id
     }

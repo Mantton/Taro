@@ -257,6 +257,21 @@ impl<'ctx> ConstraintSolver<'ctx> {
         )])
     }
 
+    /// Determines if a binary operator is a comparison operator that should use autoref.
+    /// Comparison operators implicitly borrow their operands, matching Rust's semantics:
+    /// `a == b` is equivalent to `PartialEq::eq(&a, &b)`
+    fn is_comparison_operator(op: BinaryOperator) -> bool {
+        matches!(
+            op,
+            BinaryOperator::Eql
+                | BinaryOperator::Neq
+                | BinaryOperator::Lt
+                | BinaryOperator::Gt
+                | BinaryOperator::Leq
+                | BinaryOperator::Geq
+        )
+    }
+
     fn solve_binary_method(
         &mut self,
         data: &BinOpGoalData<'ctx>,
@@ -264,7 +279,158 @@ impl<'ctx> ConstraintSolver<'ctx> {
         rhs: Ty<'ctx>,
     ) -> Option<SolverResult<'ctx>> {
         let op_kind = binary_op_to_operator_kind(data.operator)?;
+        let needs_autoref = Self::is_comparison_operator(data.operator);
 
+        // For comparison operators, we try borrowed types first, then fall back to value types.
+        // This matches Rust's behavior where `a == b` becomes `PartialEq::eq(&a, &b)`.
+        // For other operators (arithmetic, bitwise), we only try value types.
+        if needs_autoref {
+            // Try with autoref (borrowed operands) first
+            if let Some(result) = self.solve_binary_method_with_autoref(data, lhs, rhs, op_kind) {
+                return Some(result);
+            }
+        }
+
+        // Fall back to value types (no autoref)
+        self.solve_binary_method_value(data, lhs, rhs, op_kind)
+    }
+
+    /// Try to resolve binary operator with autoref (implicit borrowing of operands).
+    /// This is used for comparison operators where the trait methods take references.
+    fn solve_binary_method_with_autoref(
+        &mut self,
+        data: &BinOpGoalData<'ctx>,
+        lhs: Ty<'ctx>,
+        rhs: Ty<'ctx>,
+        op_kind: OperatorKind,
+    ) -> Option<SolverResult<'ctx>> {
+        // Create borrowed types for operands
+        let lhs_ref = Ty::new(TyKind::Reference(lhs, Mutability::Immutable), self.gcx());
+        let rhs_ref = Ty::new(TyKind::Reference(rhs, Mutability::Immutable), self.gcx());
+
+        // Look up operator candidates on the original LHS type (not the reference)
+        // because that's where the impl is defined (e.g., `impl PartialEq for string`)
+        let candidates = self.lookup_operator_candidates(lhs, op_kind);
+        if candidates.is_empty() {
+            return None;
+        }
+
+        // Filter candidates to those whose parameters expect references
+        let mut matching_candidates = Vec::new();
+        for candidate in candidates {
+            let sig = self.gcx().get_signature(candidate);
+            if sig.inputs.len() >= 2 {
+                let self_param_ty = sig.inputs[0].ty;
+                let rhs_param_ty = sig.inputs[1].ty;
+
+                // Check if the method expects references
+                let self_expects_ref = matches!(self_param_ty.kind(), TyKind::Reference(_, _))
+                    || matches!(self_param_ty.kind(), TyKind::Parameter(_));
+                let rhs_expects_ref = matches!(rhs_param_ty.kind(), TyKind::Reference(_, _))
+                    || matches!(rhs_param_ty.kind(), TyKind::Parameter(_));
+
+                // For autoref, we need methods that expect references for both operands
+                if self_expects_ref && rhs_expects_ref {
+                    // Verify the reference types are compatible
+                    let self_compatible = match self_param_ty.kind() {
+                        TyKind::Reference(inner, Mutability::Immutable) => {
+                            inner == lhs
+                                || inner.is_infer()
+                                || matches!(inner.kind(), TyKind::Parameter(_))
+                        }
+                        TyKind::Parameter(_) => true,
+                        _ => false,
+                    };
+
+                    let rhs_compatible = match rhs_param_ty.kind() {
+                        TyKind::Reference(inner, Mutability::Immutable) => {
+                            inner == rhs
+                                || inner.is_infer()
+                                || matches!(inner.kind(), TyKind::Parameter(_))
+                        }
+                        TyKind::Parameter(_) => true,
+                        _ => false,
+                    };
+
+                    if self_compatible && rhs_compatible {
+                        matching_candidates.push(candidate);
+                    }
+                }
+            }
+        }
+
+        if matching_candidates.is_empty() {
+            return None;
+        }
+
+        // Record borrowing adjustments for both operands
+        self.record_adjustments(data.lhs_id, vec![Adjustment::BorrowImmutable]);
+        self.record_adjustments(data.rhs_id, vec![Adjustment::BorrowImmutable]);
+
+        // Create a type variable for the method type
+        let method_ty = self.icx.next_ty_var(data.span);
+
+        // Build disjunction branches for each candidate
+        let mut branches = Vec::with_capacity(matching_candidates.len());
+        for candidate in matching_candidates {
+            let candidate_ty = self.gcx().get_type(candidate);
+            branches.push(DisjunctionBranch {
+                goal: Goal::BindOverload(BindOverloadGoalData {
+                    node_id: data.node_id,
+                    var_ty: method_ty,
+                    candidate_ty,
+                    source: candidate,
+                    instantiation_args: None,
+                }),
+                source: Some(candidate),
+            });
+        }
+
+        let disjunction_goal = Obligation {
+            location: data.span,
+            goal: Goal::Disjunction(branches),
+        };
+
+        // Build the Apply goal with borrowed types
+        let apply_goal = Obligation {
+            location: data.span,
+            goal: Goal::Apply(ApplyGoalData {
+                call_node_id: data.node_id,
+                call_span: data.span,
+                callee_ty: method_ty,
+                callee_source: None,
+                result_ty: data.rho,
+                _expect_ty: data.expectation,
+                arguments: vec![
+                    ApplyArgument {
+                        id: data.lhs_id,
+                        label: None,
+                        ty: lhs_ref, // Use borrowed type
+                        span: data.span,
+                    },
+                    ApplyArgument {
+                        id: data.rhs_id,
+                        label: None,
+                        ty: rhs_ref, // Use borrowed type
+                        span: data.span,
+                    },
+                ],
+                skip_labels: true,
+            }),
+        };
+
+        Some(SolverResult::Solved(vec![disjunction_goal, apply_goal]))
+    }
+
+    /// Try to resolve binary operator with value types (no autoref).
+    /// This is the original behavior, used for arithmetic operators and as fallback.
+    fn solve_binary_method_value(
+        &mut self,
+        data: &BinOpGoalData<'ctx>,
+        lhs: Ty<'ctx>,
+        rhs: Ty<'ctx>,
+        op_kind: OperatorKind,
+    ) -> Option<SolverResult<'ctx>> {
         // Look up operator candidates on the LHS type
         let candidates = self.lookup_operator_candidates(lhs, op_kind);
         if candidates.is_empty() {

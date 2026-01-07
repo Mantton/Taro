@@ -19,8 +19,8 @@ struct Actor<'ctx> {
 }
 
 impl<'ctx> Actor<'ctx> {
-    fn cache_extension_target_ty(&mut self, extension_id: DefinitionID, node: &hir::Extension) {
-        let Some(head) = self.context.get_extension_type_head(extension_id) else {
+    fn cache_impl_target_ty(&mut self, impl_id: DefinitionID, node: &hir::Impl) {
+        let Some(head) = self.context.get_impl_type_head(impl_id) else {
             return;
         };
 
@@ -30,18 +30,18 @@ impl<'ctx> Actor<'ctx> {
             }
         }
 
-        let ctx = DefTyLoweringCtx::new(extension_id, self.context);
-        let ty = ctx.lowerer().lower_type(&node.ty);
-        self.context.cache_extension_target_ty(extension_id, ty);
+        let ctx = DefTyLoweringCtx::new(impl_id, self.context);
+        let ty = ctx.lowerer().lower_type(&node.target);
+        self.context.cache_impl_target_ty(impl_id, ty);
     }
 }
 
 impl HirVisitor for Actor<'_> {
     fn visit_declaration(&mut self, declaration: &hir::Declaration) -> Self::Result {
-        let hir::DeclarationKind::Extension(node) = &declaration.kind else {
+        let hir::DeclarationKind::Impl(node) = &declaration.kind else {
             return;
         };
 
-        self.cache_extension_target_ty(declaration.id, node);
+        self.cache_impl_target_ty(declaration.id, node);
     }
 }

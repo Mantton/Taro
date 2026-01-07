@@ -1,0 +1,55 @@
+// Test: Iterator Borrow Match
+// Checks that matching on an iterator yielding references (&T) correctly binds values
+// without double-referencing, fixing a match ergonomics bug.
+
+func main() {
+    usingMove()
+    usingBorrow()
+}
+
+func usingMove() {
+    print("Using Move\n")
+    var l = List[string]()
+    l.append("Hello!\n")
+    l.append("World!\n")
+    l.append("Foo!\n")
+    l.append("Bar!\n")
+    l.append("Baz!\n")
+
+    var iter = l.makeIterator()
+    loop {
+        let res = iter.next()
+        match res {
+            case .some(value) => {
+                print(value)
+            }
+            case .none => {
+                break
+            }
+        }
+    }
+}
+
+func usingBorrow() {
+    print("Using Borrow\n")
+    var l = List[string]()
+    l.append("Hello!\n")
+    l.append("World!\n")
+    l.append("Foo!\n")
+    l.append("Bar!\n")
+    l.append("Baz!\n")
+
+    var borrow = &l
+    var iter = borrow.makeIterator()
+    loop {
+        let res = iter.next()
+        match res {
+            case .some(value) => {
+                print(*value)
+            }
+            case .none => {
+                break
+            }
+        }
+    }
+}

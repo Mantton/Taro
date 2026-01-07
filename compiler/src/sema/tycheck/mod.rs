@@ -12,9 +12,9 @@ mod check;
 mod collect;
 pub mod constraints;
 pub mod derive;
-mod extend;
 mod fold;
 pub mod freshen;
+mod impls;
 pub mod infer;
 pub mod lower;
 pub mod results;
@@ -38,16 +38,16 @@ pub fn typecheck_package<'ctx>(
     collect::generics::run(package, context)?; // Collect Generics Headers
     collect::adt::run(package, context)?; // Collect ADT Definitions
     collect::interface::collect::run(package, context)?; // Collect Interface Definition
-    extend::identify::run(package, context)?; // Resolve Extension Identities
+    impls::identify::run(package, context)?; // Resolve Impl Block Identities
     collect::alias::run(package, context)?; // Collect Type Aliases
     collect::constant::run(package, context)?; // Collect Constant Types
     collect::constraints::run(package, context)?; // Collect Generic Constraints
-    extend::target::run(package, context)?; // Cache Extension Target Types
+    impls::target::run(package, context)?; // Cache Impl Target Types
     collect::function::run(package, context)?; // Collect Function Type Signatures
     collect::variant::run(package, context)?; // Collect Enum Variant Definitions
     collect::field::run(package, context)?; // Collect ADT Type Definitions
     collect::interface::requirements::run(package, context)?; // Collect Interface Requirements
-    extend::member::run(package, context)?; // Collect Extension Members
+    impls::member::run(package, context)?; // Collect Impl Block Members
     collect::conformances::run(package, context)?; // Collect Conformances
     collect::interface::conform::run(package, context)?; // Validate Conformances
 

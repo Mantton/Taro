@@ -5,7 +5,7 @@ public enum Result[Value, Error] {
     case err(Error)
 }
 
-extend[Value, Error] Result[Value, Error] {
+impl[Value, Error] Result[Value, Error] {
     func isSuccess(&self) -> bool {}
     func isFailure(&self) -> bool {}
     func value() -> Optional[Value] {}

@@ -22,7 +22,7 @@ pub enum DefinitionKind {
     Interface,
     TypeAlias,
     Namespace,
-    Extension,
+    Impl,
     Import,
     Export,
     TypeParameter,
@@ -47,7 +47,7 @@ impl DefinitionKind {
             DefinitionKind::TypeAlias => "type alias",
             DefinitionKind::Namespace => "namespace",
             DefinitionKind::Import => "import",
-            DefinitionKind::Extension => "extension",
+            DefinitionKind::Impl => "impl",
             DefinitionKind::TypeParameter => "type parameter",
             DefinitionKind::Field => "field",
             DefinitionKind::Variant => "variant",
@@ -432,7 +432,7 @@ pub struct BindingError {
 pub enum ResolutionSource {
     Type,
     TypeArgument,
-    ExtensionTarget,
+    ImplTarget,
     Interface,
     Module,
     MatchPatternUnit,
@@ -444,7 +444,7 @@ impl ResolutionSource {
         match self {
             ResolutionSource::Type
             | ResolutionSource::TypeArgument
-            | ResolutionSource::ExtensionTarget
+            | ResolutionSource::ImplTarget
             | ResolutionSource::Interface => ScopeNamespace::Type,
             ResolutionSource::MatchPatternUnit => ScopeNamespace::Value,
             ResolutionSource::MatchPatternTupleStruct => ScopeNamespace::Value,
@@ -485,7 +485,7 @@ impl ResolutionSource {
                         | Resolution::PrimaryType(..)
                 )
             }
-            ResolutionSource::ExtensionTarget => {
+            ResolutionSource::ImplTarget => {
                 matches!(
                     res,
                     Resolution::Definition(
@@ -525,7 +525,7 @@ impl ResolutionSource {
         match self {
             ResolutionSource::Type => "type".into(),
             ResolutionSource::TypeArgument => "type or const argument".into(),
-            ResolutionSource::ExtensionTarget => "type or interface".into(),
+            ResolutionSource::ImplTarget => "type or interface".into(),
             ResolutionSource::Interface => "interface".into(),
             ResolutionSource::MatchPatternUnit => "unit enum variant".into(),
             ResolutionSource::MatchPatternTupleStruct => "tuple enum variant".into(),
@@ -537,7 +537,7 @@ impl ResolutionSource {
         match self {
             ResolutionSource::Type => true,
             ResolutionSource::TypeArgument => true,
-            ResolutionSource::ExtensionTarget => true,
+            ResolutionSource::ImplTarget => true,
             ResolutionSource::Interface => false,
             ResolutionSource::MatchPatternUnit => true,
             ResolutionSource::MatchPatternTupleStruct => true,

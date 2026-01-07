@@ -7,7 +7,7 @@ struct MyType {
 }
 
 // ERROR: Extension conformance to Clone requires explicit implementation
-extend MyType: Clone {
+impl Clone for MyType {
     // Missing clone() method - synthesis not available for extensions
 }
 

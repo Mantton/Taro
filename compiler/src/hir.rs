@@ -78,7 +78,7 @@ pub enum DeclarationKind {
     Import(UseTree),
     Export(UseTree),
     Namespace(Namespace),
-    Extension(Extension),
+    Impl(Impl),
     Malformed,
 }
 
@@ -88,7 +88,6 @@ pub enum AssociatedDeclarationKind {
     Constant(Constant),
     Function(Function),
     Type(TypeAlias),
-    Operator(Operator),
 }
 
 #[derive(Debug, Clone)]
@@ -176,12 +175,6 @@ pub struct FunctionSignature {
 }
 
 #[derive(Debug, Clone)]
-pub struct Operator {
-    pub function: Function,
-    pub kind: OperatorKind,
-}
-
-#[derive(Debug, Clone)]
 pub struct UseTree {}
 
 #[derive(Debug, Clone)]
@@ -192,10 +185,12 @@ pub struct Constant {
 }
 
 #[derive(Debug, Clone)]
-pub struct Extension {
-    pub ty: Box<Type>,
+pub struct Impl {
     pub generics: Generics,
-    pub conformances: Option<Conformances>,
+    /// The interface being implemented (Some for `impl I for T`, None for `impl T`)
+    pub interface: Option<Box<Type>>,
+    /// The type implementing the interface (the target type)
+    pub target: Box<Type>,
     pub declarations: Vec<AssociatedDeclaration>,
 }
 
@@ -268,6 +263,16 @@ pub enum TypeKind {
     },
     /// any T
     BoxedExistential { interfaces: Vec<PathNode> },
+    /// Qualified type access: `(T as I).Member`
+    /// Used to disambiguate associated types when a type implements multiple interfaces
+    QualifiedAccess {
+        /// The target type (T)
+        target: Box<Type>,
+        /// The interface (I) - must resolve to an interface
+        interface: Box<Type>,
+        /// The associated type member name
+        member: Identifier,
+    },
     /// _
     Infer,
     /// !
@@ -690,6 +695,44 @@ pub enum StdInterface {
     Iterator,
     /// Interface for types that can be converted into an Iterator.
     Iterable,
+
+    // Arithmetic operator interfaces
+    /// `+` operator: `fn add(self, rhs: Rhs) -> Output`
+    Add,
+    /// `-` operator: `fn sub(self, rhs: Rhs) -> Output`
+    Sub,
+    /// `*` operator: `fn mul(self, rhs: Rhs) -> Output`
+    Mul,
+    /// `/` operator: `fn div(self, rhs: Rhs) -> Output`
+    Div,
+    /// `%` operator: `fn rem(self, rhs: Rhs) -> Output`
+    Rem,
+
+    // Unary operator interfaces
+    /// Unary `-` operator: `fn neg(self) -> Output`
+    Neg,
+    /// Unary `!` operator: `fn not(self) -> Output`
+    Not,
+
+    // Bitwise operator interfaces
+    /// `&` operator: `fn bitand(self, rhs: Rhs) -> Output`
+    BitAnd,
+    /// `|` operator: `fn bitor(self, rhs: Rhs) -> Output`
+    BitOr,
+    /// `^` operator: `fn bitxor(self, rhs: Rhs) -> Output`
+    BitXor,
+    /// `<<` operator: `fn shl(self, rhs: Rhs) -> Output`
+    Shl,
+    /// `>>` operator: `fn shr(self, rhs: Rhs) -> Output`
+    Shr,
+    /// `~` operator: `fn bitnot(self) -> Output`
+    BitNot,
+
+    // Comparison interfaces
+    /// Partial equality: `fn eq(self, other: &Self) -> bool`
+    PartialEq,
+    /// Ordering comparison: `fn cmp(self, other: &Self) -> Ordering`
+    PartialOrd,
 }
 
 impl StdInterface {
@@ -701,17 +744,55 @@ impl StdInterface {
             StdInterface::Equatable => "Equatable",
             StdInterface::Iterator => "Iterator",
             StdInterface::Iterable => "Iterable",
+            // Arithmetic operators
+            StdInterface::Add => "Add",
+            StdInterface::Sub => "Sub",
+            StdInterface::Mul => "Mul",
+            StdInterface::Div => "Div",
+            StdInterface::Rem => "Rem",
+            // Unary operators
+            StdInterface::Neg => "Neg",
+            StdInterface::Not => "Not",
+            // Bitwise operators
+            StdInterface::BitAnd => "BitAnd",
+            StdInterface::BitOr => "BitOr",
+            StdInterface::BitXor => "BitXor",
+            StdInterface::Shl => "Shl",
+            StdInterface::Shr => "Shr",
+            StdInterface::BitNot => "BitNot",
+            // Comparison
+            StdInterface::PartialEq => "PartialEq",
+            StdInterface::PartialOrd => "PartialOrd",
         }
     }
 
     /// Returns all standard interfaces for iteration.
-    pub const ALL: [StdInterface; 6] = [
+    pub const ALL: [StdInterface; 21] = [
         StdInterface::Copy,
         StdInterface::Clone,
         StdInterface::Hashable,
         StdInterface::Equatable,
         StdInterface::Iterator,
         StdInterface::Iterable,
+        // Arithmetic operators
+        StdInterface::Add,
+        StdInterface::Sub,
+        StdInterface::Mul,
+        StdInterface::Div,
+        StdInterface::Rem,
+        // Unary operators
+        StdInterface::Neg,
+        StdInterface::Not,
+        // Bitwise operators
+        StdInterface::BitAnd,
+        StdInterface::BitOr,
+        StdInterface::BitXor,
+        StdInterface::Shl,
+        StdInterface::Shr,
+        StdInterface::BitNot,
+        // Comparison
+        StdInterface::PartialEq,
+        StdInterface::PartialOrd,
     ];
 
     /// Whether this interface can be auto-derived when declared inline.
@@ -726,13 +807,126 @@ impl StdInterface {
     pub fn is_marker_only(self) -> bool {
         matches!(self, Self::Copy)
     }
+
+    /// Whether this interface is an operator interface.
+    pub fn is_operator(self) -> bool {
+        matches!(
+            self,
+            Self::Add
+                | Self::Sub
+                | Self::Mul
+                | Self::Div
+                | Self::Rem
+                | Self::Neg
+                | Self::Not
+                | Self::BitAnd
+                | Self::BitOr
+                | Self::BitXor
+                | Self::Shl
+                | Self::Shr
+                | Self::BitNot
+                | Self::PartialEq
+                | Self::PartialOrd
+        )
+    }
+
+    /// Returns the method name for this operator interface.
+    pub fn operator_method_name(self) -> Option<&'static str> {
+        match self {
+            Self::Add => Some("add"),
+            Self::Sub => Some("sub"),
+            Self::Mul => Some("mul"),
+            Self::Div => Some("div"),
+            Self::Rem => Some("rem"),
+            Self::Neg => Some("neg"),
+            Self::Not => Some("not"),
+            Self::BitAnd => Some("bitand"),
+            Self::BitOr => Some("bitor"),
+            Self::BitXor => Some("bitxor"),
+            Self::Shl => Some("shl"),
+            Self::Shr => Some("shr"),
+            Self::BitNot => Some("bitnot"),
+            Self::PartialEq => Some("eq"),
+            Self::PartialOrd => Some("cmp"),
+
+            _ => None,
+        }
+    }
+
+    /// Convert a binary operator to its corresponding operator interface.
+    /// Returns None for operators that don't map to an interface (e.g., boolean operators).
+    pub fn from_binary_operator(op: crate::ast::BinaryOperator) -> Option<Self> {
+        use crate::ast::BinaryOperator;
+        match op {
+            BinaryOperator::Add => Some(Self::Add),
+            BinaryOperator::Sub => Some(Self::Sub),
+            BinaryOperator::Mul => Some(Self::Mul),
+            BinaryOperator::Div => Some(Self::Div),
+            BinaryOperator::Rem => Some(Self::Rem),
+            BinaryOperator::BitAnd => Some(Self::BitAnd),
+            BinaryOperator::BitOr => Some(Self::BitOr),
+            BinaryOperator::BitXor => Some(Self::BitXor),
+            BinaryOperator::BitShl => Some(Self::Shl),
+            BinaryOperator::BitShr => Some(Self::Shr),
+            BinaryOperator::Eql | BinaryOperator::Neq => Some(Self::PartialEq),
+            BinaryOperator::Lt | BinaryOperator::Gt | BinaryOperator::Leq | BinaryOperator::Geq => {
+                Some(Self::PartialOrd)
+            }
+            // Boolean operators don't use interfaces - they're handled specially
+            BinaryOperator::BoolAnd | BinaryOperator::BoolOr => None,
+            // Pointer equality is a built-in operation
+            BinaryOperator::PtrEq => None,
+        }
+    }
+
+    /// Convert a unary operator to its corresponding operator interface.
+    pub fn from_unary_operator(op: crate::ast::UnaryOperator) -> Option<Self> {
+        use crate::ast::UnaryOperator;
+        match op {
+            UnaryOperator::Negate => Some(Self::Neg),
+            UnaryOperator::LogicalNot => Some(Self::Not),
+            UnaryOperator::BitwiseNot => Some(Self::BitNot),
+        }
+    }
+
+    /// Convert an OperatorKind (from declarations) to its corresponding operator interface.
+    /// Returns None for operators that don't map to an interface.
+    pub fn from_operator_kind(kind: crate::ast::OperatorKind) -> Option<Self> {
+        use crate::ast::OperatorKind;
+        match kind {
+            // Arithmetic operators
+            OperatorKind::Add | OperatorKind::AddAssign => Some(Self::Add),
+            OperatorKind::Sub | OperatorKind::SubAssign => Some(Self::Sub),
+            OperatorKind::Mul | OperatorKind::MulAssign => Some(Self::Mul),
+            OperatorKind::Div | OperatorKind::DivAssign => Some(Self::Div),
+            OperatorKind::Rem | OperatorKind::RemAssign => Some(Self::Rem),
+            // Bitwise operators
+            OperatorKind::BitAnd | OperatorKind::BitAndAssign => Some(Self::BitAnd),
+            OperatorKind::BitOr | OperatorKind::BitOrAssign => Some(Self::BitOr),
+            OperatorKind::BitXor | OperatorKind::BitXorAssign => Some(Self::BitXor),
+            OperatorKind::BitShl | OperatorKind::BitShlAssign => Some(Self::Shl),
+            OperatorKind::BitShr | OperatorKind::BitShrAssign => Some(Self::Shr),
+            // Unary operators
+            OperatorKind::Neg => Some(Self::Neg),
+            OperatorKind::Not => Some(Self::Not),
+            OperatorKind::BitwiseNot => Some(Self::BitNot),
+            // Comparison
+            OperatorKind::Eq | OperatorKind::Neq => Some(Self::PartialEq),
+            OperatorKind::Lt | OperatorKind::Gt | OperatorKind::Leq | OperatorKind::Geq => {
+                Some(Self::PartialOrd)
+            }
+
+            // Boolean operators don't use interfaces
+            OperatorKind::BoolAnd | OperatorKind::BoolOr => None,
+        }
+    }
 }
 
 // MARK - Visitor
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AssocContext {
     Interface(DefinitionID),
-    Extension(DefinitionID),
+    Impl(DefinitionID),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -745,7 +939,6 @@ pub enum UseTreeContext {
 pub enum FunctionContext {
     Free,
     Assoc(AssocContext),
-    Operator,
 }
 
 pub fn is_expression_bodied(block: &Block) -> Option<&Expression> {
@@ -824,10 +1017,6 @@ pub trait HirVisitor: Sized {
         walk_function_parameter(self, node)
     }
 
-    fn visit_operator(&mut self, node: &Operator, id: DefinitionID) -> Self::Result {
-        walk_operator(self, node, id)
-    }
-
     fn visit_type_alias(&mut self, node: &TypeAlias) -> Self::Result {
         walk_type_alias(self, node)
     }
@@ -840,8 +1029,8 @@ pub trait HirVisitor: Sized {
         walk_namespace(self, node)
     }
 
-    fn visit_extension(&mut self, node: &Extension, id: DefinitionID) -> Self::Result {
-        walk_extension(self, node, id)
+    fn visit_impl(&mut self, node: &Impl, id: DefinitionID) -> Self::Result {
+        walk_impl(self, node, id)
     }
 
     fn visit_use_tree(&mut self, node: &UseTree, context: UseTreeContext) -> Self::Result {
@@ -1025,8 +1214,8 @@ pub fn walk_declaration<V: HirVisitor>(visitor: &mut V, declaration: &Declaratio
         DeclarationKind::Namespace(node) => {
             try_visit!(visitor.visit_namespace(node));
         }
-        DeclarationKind::Extension(node) => {
-            try_visit!(visitor.visit_extension(node, declaration.id));
+        DeclarationKind::Impl(node) => {
+            try_visit!(visitor.visit_impl(node, declaration.id));
         }
         DeclarationKind::Malformed => {}
     }
@@ -1054,9 +1243,6 @@ pub fn walk_assoc_declaration<V: HirVisitor>(
         }
         AssociatedDeclarationKind::Type(node) => {
             try_visit!(visitor.visit_type_alias(node));
-        }
-        AssociatedDeclarationKind::Operator(node) => {
-            try_visit!(visitor.visit_operator(node, declaration.id));
         }
     }
 
@@ -1156,15 +1342,6 @@ pub fn walk_function_parameter<V: HirVisitor>(
     V::Result::output()
 }
 
-pub fn walk_operator<V: HirVisitor>(
-    visitor: &mut V,
-    node: &Operator,
-    id: DefinitionID,
-) -> V::Result {
-    try_visit!(visitor.visit_function(id, &node.function, FunctionContext::Operator));
-    V::Result::output()
-}
-
 pub fn walk_type_alias<V: HirVisitor>(visitor: &mut V, node: &TypeAlias) -> V::Result {
     try_visit!(visitor.visit_generics(&node.generics));
     visit_optional!(visitor, visit_type, &node.ty);
@@ -1184,19 +1361,15 @@ pub fn walk_namespace<V: HirVisitor>(visitor: &mut V, node: &Namespace) -> V::Re
     V::Result::output()
 }
 
-pub fn walk_extension<V: HirVisitor>(
-    visitor: &mut V,
-    node: &Extension,
-    id: DefinitionID,
-) -> V::Result {
+pub fn walk_impl<V: HirVisitor>(visitor: &mut V, node: &Impl, id: DefinitionID) -> V::Result {
     try_visit!(visitor.visit_generics(&node.generics));
-    try_visit!(visitor.visit_type(&node.ty));
-    visit_optional!(visitor, visit_conformances, &node.conformances);
+    visit_optional!(visitor, visit_type, &node.interface);
+    try_visit!(visitor.visit_type(&node.target));
     walk_list!(
         visitor,
         visit_assoc_declaration,
         &node.declarations,
-        AssocContext::Extension(id)
+        AssocContext::Impl(id)
     );
     V::Result::output()
 }
@@ -1230,6 +1403,14 @@ pub fn walk_type<V: HirVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
         }
         TypeKind::BoxedExistential { interfaces } => {
             walk_list!(visitor, visit_path_node, interfaces);
+        }
+        TypeKind::QualifiedAccess {
+            target,
+            interface,
+            member: _,
+        } => {
+            try_visit!(visitor.visit_type(target));
+            try_visit!(visitor.visit_type(interface));
         }
         TypeKind::Infer => {}
         TypeKind::Never => {}

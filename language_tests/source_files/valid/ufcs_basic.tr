@@ -1,0 +1,64 @@
+// Test: UFCS Basic
+// Tests Uniform Function Call Syntax with all receiver kinds
+
+interface SpeakerByValue {
+    func speak(self)
+}
+
+interface SpeakerByRef {
+    func greet(&self)
+}
+
+interface SpeakerByMutRef {
+    func increment(&mut self)
+}
+
+struct Human {
+    name: string
+}
+
+impl SpeakerByValue for Human {
+    func speak(self) {
+        print("Speaking: ")
+        print(self.name)
+        print("\n")
+    }
+}
+
+impl SpeakerByRef for Human {
+    func greet(&self) {
+        print("Greeting: ")
+        print(self.name)
+        print("\n")
+    }
+}
+
+struct Counter {
+    value: int
+}
+
+impl SpeakerByMutRef for Counter {
+    func increment(&mut self) {
+        self.value = self.value + 1
+    }
+}
+
+type int = isize
+
+func main() {
+    // Test 1: UFCS with self (by value)
+    let h1 = Human { name: "Alice" }
+    SpeakerByValue.speak(h1)
+    
+    // Test 2: UFCS with &self (immutable reference)
+    let h2 = Human { name: "Bob" }
+    SpeakerByRef.greet(&h2)
+    
+    // Test 3: UFCS with &mut self (mutable reference)
+    var c = Counter { value: 0 }
+    SpeakerByMutRef.increment(&mut c)
+    SpeakerByMutRef.increment(&mut c)
+    assert(c.value == 2, "Counter should be 2")
+    
+    print("PASS: UFCS with all receiver kinds\n")
+}

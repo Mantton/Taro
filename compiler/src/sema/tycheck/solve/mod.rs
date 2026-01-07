@@ -7,6 +7,7 @@ use crate::{
             AliasKind, Constraint, GenericArgument, GenericArguments, InterfaceReference, Ty,
             TyKind,
         },
+        resolve::models::DefinitionID,
         tycheck::{
             constraints::canonical_constraints_of,
             infer::InferCtx,
@@ -19,7 +20,7 @@ use crate::{
     span::{Span, Spanned},
 };
 pub use models::*;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::{cell::RefCell, cmp::Reverse, collections::VecDeque, rc::Rc};
 
 mod adt;
@@ -35,6 +36,71 @@ mod overload;
 mod tuple;
 mod unify;
 
+/// Collect all traits (interfaces) that are visible in the scope of the given definition.
+/// This includes:
+/// - Interfaces defined in the current module and parent modules
+/// - Interfaces explicitly imported via `import` statements
+/// - Interfaces from glob imports (`import some.module.*`)
+fn collect_visible_traits(gcx: Gcx, def_id: DefinitionID) -> FxHashSet<DefinitionID> {
+    use crate::sema::resolve::models::{DefinitionKind, Resolution, ScopeEntryKind};
+
+    let mut visible = FxHashSet::default();
+    let pkg = def_id.package();
+    let resolution_output = gcx.resolution_output(pkg);
+
+    // Get the scope for this definition
+    let mut current_scope = resolution_output
+        .definition_scope_mapping
+        .get(&def_id)
+        .copied();
+
+    // Walk up the scope chain
+    while let Some(scope) = current_scope {
+        let table = scope.table.borrow();
+
+        // Collect interfaces from this scope
+        for name_entry in table.values() {
+            if let Some(type_entry) = &name_entry.ty {
+                match &type_entry.kind {
+                    ScopeEntryKind::Resolution(Resolution::Definition(id, kind)) => {
+                        if *kind == DefinitionKind::Interface {
+                            visible.insert(*id);
+                        }
+                    }
+                    ScopeEntryKind::Usage { used_entry, .. } => {
+                        // Follow the usage chain to the actual definition
+                        if let ScopeEntryKind::Resolution(Resolution::Definition(id, kind)) =
+                            &used_entry.kind
+                        {
+                            if *kind == DefinitionKind::Interface {
+                                visible.insert(*id);
+                            }
+                        }
+                    }
+                    _ => {
+                        // Other resolution types (PrimaryType, SelfTypeAlias, etc.) are not interfaces
+                    }
+                }
+            }
+        }
+
+        // Also check glob imports
+        let glob_imports = scope.glob_imports.borrow();
+        for _usage in glob_imports.iter() {
+            // For glob imports, we need to look at what they bring into scope
+            // This is a simplified version - glob imports should already be resolved into the scope table
+        }
+
+        drop(table);
+        drop(glob_imports);
+
+        // Move to parent scope
+        current_scope = scope.parent;
+    }
+
+    visible
+}
+
 pub struct ConstraintSystem<'ctx> {
     pub infer_cx: Rc<InferCtx<'ctx>>,
     obligations: VecDeque<Obligation<'ctx>>,
@@ -48,6 +114,8 @@ pub struct ConstraintSystem<'ctx> {
     instantiation_args: FxHashMap<NodeID, GenericArguments<'ctx>>,
     current_def: crate::sema::resolve::models::DefinitionID,
     env: ParamEnv<'ctx>,
+    /// Traits (interfaces) visible in the current scope (for trait method lookup)
+    visible_traits: FxHashSet<DefinitionID>,
 }
 
 impl<'ctx> ConstraintSystem<'ctx> {
@@ -55,6 +123,8 @@ impl<'ctx> ConstraintSystem<'ctx> {
         context: Gcx<'ctx>,
         current_def: crate::sema::resolve::models::DefinitionID,
     ) -> ConstraintSystem<'ctx> {
+        let visible_traits = collect_visible_traits(context, current_def);
+
         ConstraintSystem {
             infer_cx: Rc::new(InferCtx::new(context)),
             obligations: Default::default(),
@@ -73,6 +143,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
                     .map(|c| c.value)
                     .collect(),
             ),
+            visible_traits,
         }
     }
 }
@@ -221,6 +292,14 @@ impl<'ctx> ConstraintSystem<'ctx> {
 
 impl<'ctx> ConstraintSystem<'ctx> {
     pub fn solve_all(&mut self) {
+        self.solve_internal(true);
+    }
+
+    pub fn solve_intermediate(&mut self) {
+        self.solve_internal(false);
+    }
+
+    fn solve_internal(&mut self, check_unresolved: bool) {
         let param_env = ParamEnv::new(
             canonical_constraints_of(self.infer_cx.gcx, self.current_def)
                 .into_iter()
@@ -239,6 +318,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
             instantiation_args: std::mem::take(&mut self.instantiation_args),
             current_def: self.current_def,
             param_env,
+            visible_traits: self.visible_traits.clone(),
         };
 
         let mut driver = SolverDriver::new(solver);
@@ -259,12 +339,14 @@ impl<'ctx> ConstraintSystem<'ctx> {
         self.value_resolutions = value_resolutions;
         self.instantiation_args = instantiation_args;
 
-        let Err(errors) = result else {
-            // Only check for unresolved vars when solving succeeded
-            // If there are unresolved vars with no errors, it's a bug
-            self.check_unresolved_vars();
+        if result.is_ok() {
+            if check_unresolved {
+                self.check_unresolved_vars();
+            }
             return;
-        };
+        }
+
+        let Err(errors) = result else { unreachable!() };
 
         let gcx = self.infer_cx.gcx;
 
@@ -323,6 +405,7 @@ struct ConstraintSolver<'ctx> {
     instantiation_args: FxHashMap<NodeID, GenericArguments<'ctx>>,
     current_def: crate::sema::resolve::models::DefinitionID,
     param_env: ParamEnv<'ctx>,
+    visible_traits: FxHashSet<DefinitionID>,
 }
 
 impl<'ctx> ConstraintSolver<'ctx> {
@@ -398,7 +481,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 };
 
                 if self.gcx().definition_kind(parent)
-                    != crate::sema::resolve::models::DefinitionKind::Extension
+                    != crate::sema::resolve::models::DefinitionKind::Impl
                 {
                     return true;
                 }
@@ -414,7 +497,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         receiver: Ty<'ctx>,
         span: Span,
     ) -> bool {
-        let Some(target_ty) = self.gcx().get_extension_target_ty(extension_id) else {
+        let Some(target_ty) = self.gcx().get_impl_target_ty(extension_id) else {
             return true;
         };
 
@@ -502,6 +585,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             instantiation_args: self.instantiation_args.clone(),
             current_def: self.current_def,
             param_env: self.param_env.clone(),
+            visible_traits: self.visible_traits.clone(),
         }
     }
 }

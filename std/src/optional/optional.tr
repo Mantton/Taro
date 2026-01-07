@@ -4,7 +4,7 @@ public enum Optional[Wrapped] {
 }
 
 
-extend[Wrapped] Optional[Wrapped] {
+impl[Wrapped] Optional[Wrapped] {
     @inline
     public func new(_ wrapped: Wrapped) -> Self {
         .some(wrapped)

@@ -1,0 +1,24 @@
+
+public interface BitAnd[Rhs=Self, Output=Self] {
+    func bitand(self, rhs: Rhs) -> Output
+}
+
+public interface BitOr[Rhs=Self, Output=Self] {
+    func bitor(self, rhs: Rhs) -> Output
+}
+
+public interface BitXor[Rhs=Self, Output=Self] {
+    func bitxor(self, rhs: Rhs) -> Output
+}
+
+public interface Shl[Rhs=Self, Output=Self] {
+    func shl(self, rhs: Rhs) -> Output
+}
+
+public interface Shr[Rhs=Self, Output=Self] {
+    func shr(self, rhs: Rhs) -> Output
+}
+
+public interface BitNot[Output=Self] {
+    func bitnot(self) -> Output
+}

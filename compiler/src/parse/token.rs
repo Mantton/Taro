@@ -89,7 +89,7 @@ pub enum Token {
     Function,
     Guard,
     If,
-    Extend,
+    Impl,
     Import,
     In,
     Interface,

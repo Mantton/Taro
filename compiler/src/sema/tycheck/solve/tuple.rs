@@ -21,7 +21,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         let final_receiver = self.structurally_resolve(receiver);
         if final_receiver.is_error() {
-             let obligation = Obligation {
+            let obligation = Obligation {
                 location: span,
                 goal: Goal::Equal(result, Ty::error(self.gcx())),
             };

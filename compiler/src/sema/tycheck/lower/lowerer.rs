@@ -79,6 +79,11 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 let list = gcx.store.arenas.global.alloc_slice_copy(&lowered);
                 Ty::new(TyKind::BoxedExistential { interfaces: list }, gcx)
             }
+            hir::TypeKind::QualifiedAccess {
+                target,
+                interface,
+                member,
+            } => self.lower_qualified_access(node, target, interface, member),
             hir::TypeKind::Never => Ty::new(TyKind::Never, gcx),
             hir::TypeKind::Infer => unreachable!(),
         }
@@ -172,11 +177,11 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 match gcx.definition_kind(id) {
                     crate::sema::resolve::models::DefinitionKind::Struct
                     | crate::sema::resolve::models::DefinitionKind::Enum => gcx.get_type(id),
-                    crate::sema::resolve::models::DefinitionKind::Extension => {
-                        if let Some(self_ty) = gcx.get_extension_self_ty(id) {
+                    crate::sema::resolve::models::DefinitionKind::Impl => {
+                        if let Some(self_ty) = gcx.get_impl_self_ty(id) {
                             self_ty
                         } else {
-                            let Some(head) = gcx.get_extension_type_head(id) else {
+                            let Some(head) = gcx.get_impl_type_head(id) else {
                                 return gcx.types.error;
                             };
                             match head {
@@ -441,28 +446,21 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         // since TypeHead::Reference only contains mutability, not the inner type
         let needs_self_ty_match = matches!(head, TypeHead::Reference(_));
 
+        // Temporary storage for candidates (Alias ID, Span, Extension ID)
+        let mut raw_candidates: Vec<(DefinitionID, Span, Option<DefinitionID>)> = Vec::new();
+
         let mut collect = |db: &mut crate::compile::context::TypeDatabase<'ctx>| {
             if let Some(bucket) = db.alias_table.by_type.get(&head) {
                 if let Some(entry) = bucket.aliases.get(&name) {
-                    // For reference/pointer types, verify the extension's self type matches
-                    if needs_self_ty_match {
-                        let alias_id = entry.0;
-                        if let Some(alias_def) = db.alias_table.aliases.get(&alias_id) {
-                            if let Some(ext_id) = alias_def.extension_id {
-                                if let Some(ext_self_ty) = gcx.get_extension_self_ty(ext_id) {
-                                    // Only include if the extension's self type matches our base_ty
-                                    if self.types_match_for_assoc_lookup(base_ty, ext_self_ty) {
-                                        candidates.push(*entry);
-                                    }
-                                    return;
-                                }
-                            }
-                        }
-                        // If we can't verify, include the candidate (fallback)
-                        candidates.push(*entry);
-                    } else {
-                        candidates.push(*entry);
+                    let alias_id = entry.0;
+                    let span = entry.1;
+                    let mut extension_id = None;
+
+                    if let Some(alias_def) = db.alias_table.aliases.get(&alias_id) {
+                        extension_id = alias_def.extension_id;
                     }
+
+                    raw_candidates.push((alias_id, span, extension_id));
                 }
             }
         };
@@ -471,6 +469,25 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
 
         for index in gcx.visible_packages() {
             gcx.with_type_database(index, |db| collect(db));
+        }
+
+        for (alias_id, span, ext_id) in raw_candidates {
+            // For reference/pointer types, verify the extension's self type matches
+            if needs_self_ty_match {
+                if let Some(ext_id) = ext_id {
+                    if let Some(ext_self_ty) = gcx.get_impl_self_ty(ext_id) {
+                        // Only include if the impl's self type matches our base_ty
+                        if self.types_match_for_assoc_lookup(base_ty, ext_self_ty) {
+                            candidates.push((alias_id, span));
+                        }
+                        continue;
+                    }
+                }
+                // If we can't verify, include the candidate (fallback)
+                candidates.push((alias_id, span));
+            } else {
+                candidates.push((alias_id, span));
+            }
         }
 
         if candidates.is_empty() {
@@ -547,6 +564,129 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             // Primitives and other types: just check equality
             _ => base_ty == ext_self_ty,
         }
+    }
+
+    /// Lower qualified type access: `(T as I).Member`
+    /// This explicitly specifies which interface's associated type to use.
+    fn lower_qualified_access(
+        &self,
+        node: &hir::Type,
+        target: &hir::Type,
+        interface: &hir::Type,
+        member: &crate::span::Identifier,
+    ) -> Ty<'ctx> {
+        let gcx = self.gcx();
+
+        // 1. Lower the target type T
+        let target_ty = self.lower_type(target);
+        if target_ty.is_error() {
+            return gcx.types.error;
+        }
+
+        // 2. Extract interface ID from the interface type
+        let hir::TypeKind::Nominal(ref resolved_path) = interface.kind else {
+            gcx.dcx().emit_error(
+                "interface in qualified access must be a nominal type".into(),
+                Some(interface.span),
+            );
+            return gcx.types.error;
+        };
+
+        let hir::ResolvedPath::Resolved(path) = resolved_path else {
+            gcx.dcx().emit_error(
+                "interface in qualified access must be resolved".into(),
+                Some(interface.span),
+            );
+            return gcx.types.error;
+        };
+
+        let interface_id = match &path.resolution {
+            Resolution::Definition(id, DefinitionKind::Interface) => *id,
+            _ => {
+                gcx.dcx().emit_error(
+                    "qualified access requires an interface type".into(),
+                    Some(interface.span),
+                );
+                return gcx.types.error;
+            }
+        };
+
+        // 3. Get type head for target type
+        let Some(type_head) = type_head_from_value_ty(target_ty) else {
+            gcx.dcx().emit_error(
+                format!(
+                    "cannot use qualified access on type '{}'",
+                    target_ty.format(gcx)
+                ),
+                Some(target.span),
+            );
+            return gcx.types.error;
+        };
+
+        // 4. Build interface reference with proper arguments
+        let segment = path.segments.last().expect("path must have segments");
+        let interface_args = self.lower_generic_args(interface_id, segment, Some(target_ty));
+        let interface_ref = InterfaceReference {
+            id: interface_id,
+            arguments: interface_args,
+        };
+
+        // 5. Look up associated type in interface requirements
+        let interface_name = gcx.definition_ident(interface_id).symbol;
+        let Some(requirements) = gcx.get_interface_requirements(interface_id) else {
+            gcx.dcx().emit_error(
+                format!(
+                    "interface '{}' has no requirements",
+                    interface_name.as_str()
+                ),
+                Some(interface.span),
+            );
+            return gcx.types.error;
+        };
+
+        let assoc_type = requirements.types.iter().find(|t| t.name == member.symbol);
+
+        let Some(assoc_type) = assoc_type else {
+            gcx.dcx().emit_error(
+                format!(
+                    "no associated type '{}' in interface '{}'",
+                    member.symbol.as_str(),
+                    interface_name.as_str()
+                ),
+                Some(member.span),
+            );
+            return gcx.types.error;
+        };
+
+        // 6. Resolve conformance witness
+        let witness =
+            crate::sema::tycheck::resolve_conformance_witness(gcx, type_head, interface_ref);
+
+        let Some(witness) = witness else {
+            gcx.dcx().emit_error(
+                format!(
+                    "type '{}' does not conform to interface '{}'",
+                    target_ty.format(gcx),
+                    interface_name.as_str()
+                ),
+                Some(node.span),
+            );
+            return gcx.types.error;
+        };
+
+        // 7. Look up the associated type in the witness
+        let Some(witness_ty) = witness.type_witnesses.get(&assoc_type.id) else {
+            gcx.dcx().emit_error(
+                format!(
+                    "associated type '{}' not satisfied in conformance",
+                    member.symbol.as_str()
+                ),
+                Some(member.span),
+            );
+            return gcx.types.error;
+        };
+
+        *witness_ty
     }
 
     fn lower_projection_type_path(

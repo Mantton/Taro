@@ -28,11 +28,13 @@ struct User {
 }
 
 // User conforms to Entity (implicitly Identifiable)
-extend User: Entity {
+impl Identifiable for User {
     func identifier(&self) -> usize {
         self.id
     }
+}
 
+impl Entity for User {
     func name(&self) -> string {
         self.name
     }

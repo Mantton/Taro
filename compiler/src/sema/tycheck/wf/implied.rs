@@ -16,8 +16,8 @@ pub fn check_conformance_implied_bounds<'ctx>(
         db.conformances.get(&type_head).cloned().unwrap_or_default()
     });
 
-    // We only check conformances that are declared on THIS definition (struct, enum, extension)
-    // to avoid checking conformances defined elsewhere (e.g. in another package or extension).
+    // We only check conformances that are declared on THIS definition (struct, enum, impl block)
+    // to avoid checking conformances defined elsewhere (e.g. in another package or impl block).
     let local_conformances = conformances.iter().filter(|rec| rec.extension == def_id);
 
     for record in local_conformances {
@@ -45,8 +45,8 @@ pub fn check_conformance_implied_bounds<'ctx>(
             if let Some(_) = witness {
                 // Construct the full argument list for the associated type: [Self, ...InterfaceArgs]
                 let self_ty = match context.definition_kind(def_id) {
-                    crate::sema::resolve::models::DefinitionKind::Extension => context
-                        .get_extension_self_ty(def_id)
+                    crate::sema::resolve::models::DefinitionKind::Impl => context
+                        .get_impl_self_ty(def_id)
                         .unwrap_or_else(|| crate::sema::models::Ty::error(context)),
                     _ => context.get_type(def_id),
                 };

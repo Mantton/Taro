@@ -161,19 +161,16 @@ impl<'arena> GlobalContext<'arena> {
         database.def_to_enum_def.insert(id, alloc);
     }
 
-    pub fn cache_extension_type_head(self, extension_id: DefinitionID, head: TypeHead) {
-        self.with_type_database(extension_id.package(), |db| {
-            db.extension_to_type_head.insert(extension_id, head.clone());
-            db.type_head_to_extensions
-                .entry(head)
-                .or_default()
-                .push(extension_id);
+    pub fn cache_impl_type_head(self, impl_id: DefinitionID, head: TypeHead) {
+        self.with_type_database(impl_id.package(), |db| {
+            db.impl_to_type_head.insert(impl_id, head.clone());
+            db.type_head_to_impls.entry(head).or_default().push(impl_id);
         });
     }
 
-    pub fn cache_extension_target_ty(self, extension_id: DefinitionID, ty: Ty<'arena>) {
-        self.with_type_database(extension_id.package(), |db| {
-            db.extension_to_target_ty.insert(extension_id, ty);
+    pub fn cache_impl_target_ty(self, impl_id: DefinitionID, ty: Ty<'arena>) {
+        self.with_type_database(impl_id.package(), |db| {
+            db.impl_to_target_ty.insert(impl_id, ty);
         });
     }
 
@@ -401,35 +398,35 @@ impl<'arena> GlobalContext<'arena> {
         })
     }
 
-    pub fn get_extension_type_head(self, extension_id: DefinitionID) -> Option<TypeHead> {
-        self.with_type_database(extension_id.package(), |db| {
-            db.extension_to_type_head.get(&extension_id).cloned()
+    pub fn get_impl_type_head(self, impl_id: DefinitionID) -> Option<TypeHead> {
+        self.with_type_database(impl_id.package(), |db| {
+            db.impl_to_type_head.get(&impl_id).cloned()
         })
     }
 
-    pub fn get_extension_target_ty(self, extension_id: DefinitionID) -> Option<Ty<'arena>> {
-        self.with_type_database(extension_id.package(), |db| {
-            db.extension_to_target_ty.get(&extension_id).copied()
+    pub fn get_impl_target_ty(self, impl_id: DefinitionID) -> Option<Ty<'arena>> {
+        self.with_type_database(impl_id.package(), |db| {
+            db.impl_to_target_ty.get(&impl_id).copied()
         })
     }
 
-    /// Get the Self type for an extension.
-    /// - For struct/enum extensions: returns the concrete type
-    /// - For interface extensions: returns the Self type parameter
-    pub fn get_extension_self_ty(self, extension_id: DefinitionID) -> Option<Ty<'arena>> {
-        let head = self.get_extension_type_head(extension_id)?;
+    /// Get the Self type for an impl block.
+    /// - For struct/enum impls: returns the concrete type
+    /// - For interface impls: returns the Self type parameter
+    pub fn get_impl_self_ty(self, impl_id: DefinitionID) -> Option<Ty<'arena>> {
+        let head = self.get_impl_type_head(impl_id)?;
         match head {
             TypeHead::Nominal(target_id) => match self.definition_kind(target_id) {
                 DefinitionKind::Interface => {
-                    // For interface extensions, Self is the abstract Self parameter
+                    // For interface impls, Self is the abstract Self parameter
                     Some(self.types.self_type_parameter)
                 }
                 DefinitionKind::Struct | DefinitionKind::Enum => self
-                    .get_extension_target_ty(extension_id)
+                    .get_impl_target_ty(impl_id)
                     .or_else(|| Some(self.get_type(target_id))),
                 _ => None,
             },
-            TypeHead::Primary(p) => self.get_extension_target_ty(extension_id).or_else(|| {
+            TypeHead::Primary(p) => self.get_impl_target_ty(impl_id).or_else(|| {
                 Some(match p {
                     PrimaryType::Int(k) => Ty::new_int(self, k),
                     PrimaryType::UInt(k) => Ty::new_uint(self, k),
@@ -440,12 +437,12 @@ impl<'arena> GlobalContext<'arena> {
                 })
             }),
             TypeHead::GcPtr => self
-                .get_extension_target_ty(extension_id)
+                .get_impl_target_ty(impl_id)
                 .or_else(|| Some(Ty::new(TyKind::GcPtr, self))),
             TypeHead::Tuple(_)
             | TypeHead::Reference(_)
             | TypeHead::Pointer(_)
-            | TypeHead::Array => self.get_extension_target_ty(extension_id),
+            | TypeHead::Array => self.get_impl_target_ty(impl_id),
         }
     }
 
@@ -1024,9 +1021,9 @@ pub struct TypeDatabase<'arena> {
     pub def_to_constraints: FxHashMap<DefinitionID, Vec<crate::span::Spanned<Constraint<'arena>>>>,
     pub def_to_canon_constraints:
         FxHashMap<DefinitionID, Vec<crate::span::Spanned<Constraint<'arena>>>>,
-    pub extension_to_type_head: FxHashMap<DefinitionID, TypeHead>,
-    pub extension_to_target_ty: FxHashMap<DefinitionID, Ty<'arena>>,
-    pub type_head_to_extensions: FxHashMap<TypeHead, Vec<DefinitionID>>,
+    pub impl_to_type_head: FxHashMap<DefinitionID, TypeHead>,
+    pub impl_to_target_ty: FxHashMap<DefinitionID, Ty<'arena>>,
+    pub type_head_to_impls: FxHashMap<TypeHead, Vec<DefinitionID>>,
     pub type_head_to_members: FxHashMap<TypeHead, TypeMemberIndex>,
     pub def_to_generics: FxHashMap<DefinitionID, &'arena Generics>,
     pub def_to_attributes: FxHashMap<DefinitionID, &'arena hir::AttributeList>,
@@ -1059,8 +1056,14 @@ pub struct MemberSet {
 
 #[derive(Default, Debug, Clone)]
 pub struct TypeMemberIndex {
-    pub static_functions: FxHashMap<Symbol, MemberSet>,
-    pub instance_functions: FxHashMap<Symbol, MemberSet>,
+    // Inherent methods from `impl Type {}`
+    pub inherent_static: FxHashMap<Symbol, MemberSet>,
+    pub inherent_instance: FxHashMap<Symbol, MemberSet>,
+
+    // Trait methods from `impl Trait for Type {}`
+    // Key: (trait_id, method_name) to group overloads per trait
+    pub trait_methods: FxHashMap<(DefinitionID, Symbol), MemberSet>,
+
     pub operators: FxHashMap<hir::OperatorKind, MemberSet>,
 }
 
@@ -1078,7 +1081,7 @@ impl<'arena> GlobalContext<'arena> {
 
             // Also register as a member so lookup finds it
             let members = db.type_head_to_members.entry(type_head).or_default();
-            let member_set = members.instance_functions.entry(name).or_default();
+            let member_set = members.inherent_instance.entry(name).or_default();
             if !member_set.members.contains(&method_id) {
                 member_set.members.push(method_id);
             }

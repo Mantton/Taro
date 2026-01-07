@@ -17,7 +17,7 @@ struct MyValue {
     value: int32
 }
 
-extend MyValue: Printable {
+impl Printable for MyValue {
     func print(&self) {
     }
 }

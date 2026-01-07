@@ -1,6 +1,6 @@
-import std.cmp.Equatable
+import std.ops.PartialEq
 
-public interface Hashable: Equatable {
+public interface Hashable: PartialEq {
     func hash[H: Hasher](&self, into hasher: &mut H)
 }
 

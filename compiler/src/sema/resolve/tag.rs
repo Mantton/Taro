@@ -47,10 +47,9 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
             ast::DeclarationKind::Constant(..) => DefinitionKind::Constant,
             ast::DeclarationKind::Import(..) => DefinitionKind::Import,
             ast::DeclarationKind::Export(..) => DefinitionKind::Export,
-            ast::DeclarationKind::Extension(..) => DefinitionKind::Extension,
+            ast::DeclarationKind::Impl(..) => DefinitionKind::Impl,
             ast::DeclarationKind::TypeAlias(..) => DefinitionKind::TypeAlias,
             ast::DeclarationKind::Namespace(..) => DefinitionKind::Namespace,
-            &ast::DeclarationKind::Operator(..) => unreachable!("top level associated method"),
             ast::DeclarationKind::ExternBlock(..) => unreachable!(),
         };
 
@@ -86,7 +85,6 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
             ast::AssociatedDeclarationKind::Constant(..) => DefinitionKind::AssociatedConstant,
             ast::AssociatedDeclarationKind::Function(..) => DefinitionKind::AssociatedFunction,
             ast::AssociatedDeclarationKind::AssociatedType(..) => DefinitionKind::AssociatedType,
-            ast::AssociatedDeclarationKind::Operator(..) => DefinitionKind::AssociatedOperator,
         };
         let parent = self.tag(&node.identifier, node.id, kind);
         self.record_visibility(parent, node.visibility);

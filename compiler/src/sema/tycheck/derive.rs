@@ -78,6 +78,22 @@ pub fn try_synthesize_method<'ctx>(
             // Iterator and Iterable are not auto-derivable
             None
         }
+        // Operator interfaces are not auto-synthesized; they require explicit impl blocks
+        StdInterface::Add
+        | StdInterface::Sub
+        | StdInterface::Mul
+        | StdInterface::Div
+        | StdInterface::Rem
+        | StdInterface::Neg
+        | StdInterface::Not
+        | StdInterface::BitAnd
+        | StdInterface::BitOr
+        | StdInterface::BitXor
+        | StdInterface::Shl
+        | StdInterface::Shr
+        | StdInterface::BitNot
+        | StdInterface::PartialEq
+        | StdInterface::PartialOrd => None,
     }
 }
 

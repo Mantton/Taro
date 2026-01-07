@@ -1,14 +1,13 @@
 use crate::{
     compile::context::Gcx,
     error::CompileResult,
-    hir::{self, DefinitionID, OperatorKind},
+    hir::{self, DefinitionID},
     sema::{
         models::{
             AliasKind, AssociatedTypeDefinition, ConformanceWitness, GenericArgument,
             GenericArguments, InterfaceConstantRequirement, InterfaceDefinition,
-            InterfaceMethodRequirement, InterfaceOperatorRequirement, InterfaceReference,
-            InterfaceRequirements, LabeledFunctionSignature, MethodImplementation, MethodWitness,
-            Ty, TyKind,
+            InterfaceMethodRequirement, InterfaceReference, InterfaceRequirements,
+            LabeledFunctionSignature, MethodImplementation, MethodWitness, Ty, TyKind,
         },
         resolve::models::TypeHead,
         tycheck::{
@@ -52,10 +51,6 @@ enum ConformanceError<'ctx> {
         name: Symbol,
         signature: &'ctx LabeledFunctionSignature<'ctx>,
     },
-    MissingOperator {
-        kind: OperatorKind,
-        signature: &'ctx LabeledFunctionSignature<'ctx>,
-    },
     MissingConstant {
         name: Symbol,
         ty: Ty<'ctx>,
@@ -72,13 +67,20 @@ impl<'ctx> Actor<'ctx> {
             .context
             .with_session_type_database(|db| db.conformances.clone());
 
+        // PHASE 1: Build all conformance witnesses first
+        for (type_head, records) in &conformances {
+            for record in records {
+                self.check_conformance(*type_head, record);
+            }
+        }
+
+        // PHASE 2: Validate superinterface requirements
+        // Now all witnesses exist, so we can validate that required interfaces are implemented
         let mut seen: FxHashSet<(TypeHead, InterfaceReference<'ctx>)> = FxHashSet::default();
 
         for (type_head, records) in conformances {
             for record in &records {
-                self.check_conformance(type_head, record);
-
-                // Also validate superface requirements, but defer witness creation until needed.
+                // Also validate superface requirements
                 for iface in self
                     .collect_interface_with_supers(record.interface)
                     .into_iter()
@@ -90,7 +92,12 @@ impl<'ctx> Actor<'ctx> {
 
                     let mut derived = *record;
                     derived.interface = iface;
-                    self.validate_conformance(type_head, &derived);
+                    // Pass the original interface to indicate this is a superinterface requirement
+                    self.validate_conformance_with_context(
+                        type_head,
+                        &derived,
+                        Some(record.interface),
+                    );
                 }
             }
         }
@@ -107,7 +114,7 @@ impl<'ctx> Actor<'ctx> {
                 self.store_witness(type_head, record.interface, witness);
             }
             Err(errors) => {
-                self.emit_conformance_errors(type_head, record, errors);
+                self.emit_conformance_errors(type_head, record, errors, None);
             }
         }
     }
@@ -117,8 +124,33 @@ impl<'ctx> Actor<'ctx> {
         type_head: TypeHead,
         record: &crate::sema::models::ConformanceRecord<'ctx>,
     ) {
-        if let Err(errors) = self.build_witness(type_head, record) {
-            self.emit_conformance_errors(type_head, record, errors);
+        self.validate_conformance_with_context(type_head, record, None);
+    }
+
+    fn validate_conformance_with_context(
+        &self,
+        type_head: TypeHead,
+        record: &crate::sema::models::ConformanceRecord<'ctx>,
+        required_by: Option<InterfaceReference<'ctx>>,
+    ) {
+        // For superinterface requirements, check if a witness already exists
+        // (from the user's separate impl block for that interface)
+        if required_by.is_some() {
+            // Check if there's already a conformance witness for this interface
+            let has_witness = self.context.with_session_type_database(|db| {
+                let key = (type_head, record.interface);
+                db.conformance_witnesses.contains_key(&key)
+            });
+
+            if !has_witness {
+                // No impl block exists for this superinterface
+                self.emit_conformance_errors(type_head, record, vec![], required_by);
+            }
+        } else {
+            // For direct conformance, build and validate the witness
+            if let Err(errors) = self.build_witness(type_head, record) {
+                self.emit_conformance_errors(type_head, record, errors, required_by);
+            }
         }
     }
 
@@ -153,16 +185,6 @@ impl<'ctx> Actor<'ctx> {
             match self.find_method_witness(type_head, method, record, &witness.type_witnesses) {
                 Ok(witness_entry) => {
                     witness.method_witnesses.insert(method.id, witness_entry);
-                }
-                Err(e) => errors.push(e),
-            }
-        }
-
-        // 3. Check operators
-        for op in &requirements.operators {
-            match self.find_operator_witness(type_head, op, record) {
-                Ok(id) => {
-                    witness.operator_witnesses.insert(op.kind, id);
                 }
                 Err(e) => errors.push(e),
             }
@@ -333,7 +355,8 @@ impl<'ctx> Actor<'ctx> {
                     self.store_witness(type_head, interface, witness.clone());
                     return Some(witness);
                 }
-                return None;
+                // Don't return None here - continue checking other records
+                // The superinterface impl might not be in this specific impl block
             }
         }
 
@@ -390,21 +413,34 @@ impl<'ctx> Actor<'ctx> {
         record: &crate::sema::models::ConformanceRecord<'ctx>,
         type_witnesses: &FxHashMap<DefinitionID, Ty<'ctx>>,
     ) -> Result<MethodWitness<'ctx>, ConformanceError<'ctx>> {
-        // Look up candidates in the extension's package (where the implementation lives)
-        let extension_pkg = record.extension.package();
-        let candidates = self
+        // RUST-STYLE CONFORMANCE:
+        // Look up candidates ONLY from the specific impl block (record.extension)
+        // NOT from all impls (inherent or other traits)
+
+        let impl_id = record.extension;
+        let extension_pkg = impl_id.package();
+
+        // The interface ID is the one we're checking conformance for
+        let interface_id = record.interface.id;
+
+        // Look up in trait_methods with (interface_id, name) key
+        let candidates: Vec<DefinitionID> = self
             .context
             .with_type_database(extension_pkg, |db| {
                 db.type_head_to_members
                     .get(&type_head)
                     .and_then(|idx| {
-                        if requirement.has_self {
-                            idx.instance_functions.get(&requirement.name)
-                        } else {
-                            idx.static_functions.get(&requirement.name)
-                        }
+                        let key = (interface_id, requirement.name);
+                        idx.trait_methods.get(&key)
                     })
-                    .map(|set| set.members.clone())
+                    .map(|set| {
+                        // Filter to only methods from THIS specific impl block
+                        set.members
+                            .iter()
+                            .filter(|&&id| self.context.definition_parent(id) == Some(impl_id))
+                            .copied()
+                            .collect()
+                    })
             })
             .unwrap_or_default();
 
@@ -474,77 +510,6 @@ impl<'ctx> Actor<'ctx> {
             name: requirement.name,
             signature: requirement.signature,
         })
-    }
-}
-
-// Operator witness lookup
-impl<'ctx> Actor<'ctx> {
-    fn find_operator_witness(
-        &self,
-        type_head: TypeHead,
-        requirement: &InterfaceOperatorRequirement<'ctx>,
-        record: &crate::sema::models::ConformanceRecord<'ctx>,
-    ) -> Result<DefinitionID, ConformanceError<'ctx>> {
-        // Look up candidates in the extension's package (where the implementation lives)
-        let extension_pkg = record.extension.package();
-        let candidates = self
-            .context
-            .with_type_database(extension_pkg, |db| {
-                db.type_head_to_members
-                    .get(&type_head)
-                    .and_then(|idx| idx.operators.get(&requirement.kind))
-                    .map(|set| set.members.clone())
-            })
-            .unwrap_or_default();
-
-        // Find matching signature
-        for candidate in candidates {
-            if self.operator_signatures_match(requirement, candidate, record) {
-                return Ok(candidate);
-            }
-        }
-
-        // Check for default implementation
-        if !requirement.is_required {
-            return Ok(requirement.id);
-        }
-
-        Err(ConformanceError::MissingOperator {
-            kind: requirement.kind,
-            signature: requirement.signature,
-        })
-    }
-
-    fn operator_signatures_match(
-        &self,
-        requirement: &InterfaceOperatorRequirement<'ctx>,
-        candidate_id: DefinitionID,
-        record: &crate::sema::models::ConformanceRecord<'ctx>,
-    ) -> bool {
-        let gcx = self.context;
-        let interface_sig = requirement.signature;
-        let impl_sig = gcx.get_signature(candidate_id);
-
-        // Operators are label-agnostic, only check arity and variadic
-        if interface_sig.is_variadic != impl_sig.is_variadic
-            || interface_sig.inputs.len() != impl_sig.inputs.len()
-        {
-            return false;
-        }
-
-        // Substitute Self and interface args into requirement signature
-        let interface_fn_ty = self.labeled_signature_to_ty(interface_sig);
-        let substituted_ty = self.substitute_with_args(interface_fn_ty, record.interface.arguments);
-        let impl_fn_ty = self.labeled_signature_to_ty(impl_sig);
-
-        // Freshen each signature separately so generics are compared positionally
-        let mut interface_freshener = crate::sema::tycheck::freshen::TypeFreshener::new(gcx);
-        let fresh_interface_ty = interface_freshener.freshen(substituted_ty);
-
-        let mut impl_freshener = crate::sema::tycheck::freshen::TypeFreshener::new(gcx);
-        let fresh_impl_ty = impl_freshener.freshen(impl_fn_ty);
-
-        fresh_interface_ty == fresh_impl_ty
     }
 }
 
@@ -714,49 +679,55 @@ impl<'ctx> Actor<'ctx> {
         type_head: TypeHead,
         record: &crate::sema::models::ConformanceRecord<'ctx>,
         errors: Vec<ConformanceError<'ctx>>,
+        required_by: Option<InterfaceReference<'ctx>>,
     ) {
         let gcx = self.context;
         let type_name = type_head.format(gcx);
         let interface_name = record.interface.format(gcx);
 
-        gcx.dcx().emit_error(
+        // Emit different error message for superinterface requirements
+        let error_msg = if let Some(requiring_interface) = required_by {
+            let requiring_name = requiring_interface.format(gcx);
+            format!(
+                "interface '{}' requires type '{}' to conform to '{}'",
+                requiring_name, type_name, interface_name
+            )
+        } else {
             format!(
                 "type '{}' does not satisfy requirements for interface '{}'",
                 type_name, interface_name
-            ),
-            Some(record.location),
-        );
+            )
+        };
 
-        for error in errors {
-            let msg = match error {
-                ConformanceError::MissingMethod { name, signature } => {
-                    let sig_ty = self.labeled_signature_to_ty(signature);
-                    format!(
-                        "missing required method '{}' with signature '{}'",
-                        name,
-                        sig_ty.format(gcx)
-                    )
-                }
-                ConformanceError::MissingOperator { kind, signature } => {
-                    let sig_ty = self.labeled_signature_to_ty(signature);
-                    format!(
-                        "missing required operator '{:?}' with signature '{}'",
-                        kind,
-                        sig_ty.format(gcx)
-                    )
-                }
-                ConformanceError::MissingConstant { name, ty } => {
-                    format!(
-                        "missing required constant '{}' of type '{}'",
-                        name,
-                        ty.format(gcx)
-                    )
-                }
-                ConformanceError::MissingAssociatedType { name } => {
-                    format!("missing required associated type '{}'", name)
-                }
-            };
-            gcx.dcx().emit_info(msg, Some(record.location));
+        gcx.dcx().emit_error(error_msg, Some(record.location));
+
+        // Only emit detailed errors if this is a direct conformance (not a superinterface requirement)
+        // For superinterface requirements, the user needs to add a separate impl block,
+        // and the detailed errors will be shown when they implement that interface.
+        if required_by.is_none() {
+            for error in errors {
+                let msg = match error {
+                    ConformanceError::MissingMethod { name, signature } => {
+                        let sig_ty = self.labeled_signature_to_ty(signature);
+                        format!(
+                            "missing required method '{}' with signature '{}'",
+                            name,
+                            sig_ty.format(gcx)
+                        )
+                    }
+                    ConformanceError::MissingConstant { name, ty } => {
+                        format!(
+                            "missing required constant '{}' of type '{}'",
+                            name,
+                            ty.format(gcx)
+                        )
+                    }
+                    ConformanceError::MissingAssociatedType { name } => {
+                        format!("missing required associated type '{}'", name)
+                    }
+                };
+                gcx.dcx().emit_info(msg, Some(record.location));
+            }
         }
     }
 }
@@ -810,7 +781,7 @@ impl<'ctx> TypeFolder<'ctx> for ProjectionSubstitutor<'ctx, '_> {
             } => {
                 if let Some(witness_ty) = self.type_witnesses.get(&def_id) {
                     // Return the witness type directly - it's already the concrete type
-                    // assigned in the extension (e.g., `type Element = T`). 
+                    // assigned in the extension (e.g., `type Element = T`).
                     // We don't instantiate with projection args because those represent
                     // the Self type, not arguments to the witness.
                     // Continue folding to resolve any nested projections within the witness type.

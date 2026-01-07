@@ -94,10 +94,9 @@ pub enum DeclarationKind {
     Constant(Constant),
     Import(UseTree),
     Export(UseTree),
-    Extension(Extension),
+    Impl(Impl),
     TypeAlias(TypeAlias),
     Namespace(Namespace),
-    Operator(Operator),
 }
 
 // Function Declarations
@@ -134,7 +133,6 @@ pub enum AssociatedDeclarationKind {
     Constant(Constant),
     Function(Function),
     AssociatedType(TypeAlias),
-    Operator(Operator),
 }
 
 #[derive(Debug, Clone)]
@@ -164,12 +162,6 @@ pub struct Function {
     pub signature: FunctionSignature,
     pub block: Option<Block>,
     pub abi: Option<Symbol>,
-}
-
-#[derive(Debug, Clone)]
-pub struct Operator {
-    pub kind: OperatorKind,
-    pub function: Function,
 }
 
 #[derive(Debug, Clone)]
@@ -216,10 +208,12 @@ pub enum ExternDeclarationKind {
 }
 
 #[derive(Debug, Clone)]
-pub struct Extension {
-    pub ty: Box<Type>,
+pub struct Impl {
     pub generics: Generics,
-    pub conformances: Option<Conformances>,
+    /// The interface being implemented (Some for `impl I for T`, None for `impl T`)
+    pub interface: Option<Box<Type>>,
+    /// The type implementing the interface (the target type)
+    pub target: Box<Type>,
     pub declarations: Vec<AssociatedDeclaration>,
 }
 
@@ -564,6 +558,16 @@ pub enum TypeKind {
     InferedClosureParameter,
     /// any T
     BoxedExistential { interfaces: Vec<PathNode> },
+    /// Qualified type access: `(T as I).Member`
+    /// Used to disambiguate associated types when a type implements multiple interfaces
+    QualifiedAccess {
+        /// The target type (T)
+        target: Box<Type>,
+        /// The interface (I) - must resolve to an interface
+        interface: Box<Type>,
+        /// The associated type member name
+        member: Identifier,
+    },
     /// _
     Infer,
     /// !
@@ -876,9 +880,6 @@ pub enum OperatorKind {
     Geq,
     Eq,
     Neq,
-
-    Index,
-    IndexAssign,
 }
 
 impl OperatorKind {
@@ -898,7 +899,6 @@ impl TryFrom<DeclarationKind> for AssociatedDeclarationKind {
         Ok(match kind {
             DeclarationKind::Constant(node) => AssociatedDeclarationKind::Constant(node),
             DeclarationKind::Function(node) => AssociatedDeclarationKind::Function(node),
-            DeclarationKind::Operator(node) => AssociatedDeclarationKind::Operator(node),
             DeclarationKind::TypeAlias(node) => AssociatedDeclarationKind::AssociatedType(node),
             _ => return Err(kind),
         })
@@ -1018,14 +1018,14 @@ macro_rules! walk_visitable_list {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AssocContext {
     Interface(NodeID),
-    Extension(NodeID),
+    Impl(NodeID),
 }
 
 impl AssocContext {
     pub fn node_id(self) -> NodeID {
         match self {
             AssocContext::Interface(id) => id,
-            AssocContext::Extension(id) => id,
+            AssocContext::Impl(id) => id,
         }
     }
 }
@@ -1041,7 +1041,6 @@ pub enum FunctionContext {
     Free,
     Foreign,
     Assoc(AssocContext),
-    Operator,
     Nested,
 }
 
@@ -1197,10 +1196,6 @@ pub trait AstVisitor: Sized {
         walk_constant(self, node)
     }
 
-    fn visit_operator(&mut self, node: &Operator, id: NodeID) -> Self::Result {
-        walk_operator(self, node, id)
-    }
-
     fn visit_alias(&mut self, node: &TypeAlias) -> Self::Result {
         walk_alias(self, node)
     }
@@ -1323,15 +1318,16 @@ pub fn walk_declaration<V: AstVisitor>(visitor: &mut V, declaration: &Declaratio
         DeclarationKind::Export(node) => {
             try_visit!(visitor.visit_use_tree(node, UseTreeContext::Export(declaration.id)))
         }
-        DeclarationKind::Extension(node) => {
+        DeclarationKind::Impl(node) => {
             try_visit!(visitor.visit_generics(&node.generics));
-            try_visit!(visitor.visit_type(&node.ty));
+            visit_optional!(visitor, visit_type, &node.interface);
+            try_visit!(visitor.visit_type(&node.target));
 
             walk_list!(
                 visitor,
                 visit_assoc_declaration,
                 &node.declarations,
-                AssocContext::Extension(declaration.id)
+                AssocContext::Impl(declaration.id)
             );
         }
         DeclarationKind::TypeAlias(node) => {
@@ -1340,7 +1336,6 @@ pub fn walk_declaration<V: AstVisitor>(visitor: &mut V, declaration: &Declaratio
         DeclarationKind::Namespace(node) => {
             walk_list!(visitor, visit_namespace_declaration, &node.declarations);
         }
-        DeclarationKind::Operator(..) => unreachable!(),
     }
 
     V::Result::output()
@@ -1383,9 +1378,6 @@ pub fn walk_assoc_declaration<V: AstVisitor>(
         }
         AssociatedDeclarationKind::AssociatedType(node) => {
             try_visit!(visitor.visit_alias(&node));
-        }
-        AssociatedDeclarationKind::Operator(node) => {
-            try_visit!(visitor.visit_operator(&node, declaration.id));
         }
     }
 
@@ -1684,6 +1676,14 @@ pub fn walk_type<V: AstVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
         TypeKind::BoxedExistential { interfaces } => {
             walk_list!(visitor, visit_path_node, interfaces);
         }
+        TypeKind::QualifiedAccess {
+            target,
+            interface,
+            member: _,
+        } => {
+            try_visit!(visitor.visit_type(target));
+            try_visit!(visitor.visit_type(interface));
+        }
         TypeKind::ImplicitSelf => {}
         TypeKind::InferedClosureParameter => {}
         TypeKind::Infer => {}
@@ -1872,12 +1872,6 @@ pub fn walk_anon_const<V: AstVisitor>(visitor: &mut V, anon_const: &AnonConst) -
 pub fn walk_constant<V: AstVisitor>(visitor: &mut V, node: &Constant) -> V::Result {
     try_visit!(visitor.visit_type(&node.ty));
     visit_optional!(visitor, visit_expression, &node.expr);
-    V::Result::output()
-}
-
-#[inline]
-pub fn walk_operator<V: AstVisitor>(visitor: &mut V, node: &Operator, id: NodeID) -> V::Result {
-    try_visit!(visitor.visit_function(id, &node.function, FunctionContext::Operator));
     V::Result::output()
 }
 

@@ -86,7 +86,7 @@ struct MyValue: Copy {
 }
 
 
-extend MyValue: Printable {
+impl Printable for MyValue {
     func print(&self) {}
 }
 

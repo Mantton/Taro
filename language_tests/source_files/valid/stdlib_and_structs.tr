@@ -97,7 +97,7 @@ struct Point {
 }
 
 
-extend Point {
+impl Point {
     func new(_ x: int32, _ y: int32) -> &Point {
         &Point { x, y }
     }

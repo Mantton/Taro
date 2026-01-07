@@ -1,0 +1,8 @@
+
+public interface Neg[Output=Self] {
+    func neg(self) -> Output
+}
+
+public interface Not[Output=Self] {
+    func not(self) -> Output
+}

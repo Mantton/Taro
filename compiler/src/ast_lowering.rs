@@ -141,10 +141,7 @@ impl Actor<'_, '_> {
             ast::DeclarationKind::Variable(node) => {
                 hir::DeclarationKind::Variable(self.lower_local(node))
             }
-            ast::DeclarationKind::Extension(node) => {
-                hir::DeclarationKind::Extension(self.lower_extension(node))
-            }
-            ast::DeclarationKind::Operator(..) => unreachable!(),
+            ast::DeclarationKind::Impl(node) => hir::DeclarationKind::Impl(self.lower_impl(node)),
         };
 
         vec![hir::Declaration {
@@ -297,9 +294,6 @@ impl Actor<'_, '_> {
             ast::AssociatedDeclarationKind::AssociatedType(node) => {
                 hir::AssociatedDeclarationKind::Type(self.lower_alias(node))
             }
-            ast::AssociatedDeclarationKind::Operator(node) => {
-                hir::AssociatedDeclarationKind::Operator(self.lower_operator(node))
-            }
         };
 
         hir::AssociatedDeclaration {
@@ -372,14 +366,6 @@ impl Actor<'_, '_> {
 }
 
 impl Actor<'_, '_> {
-    fn lower_operator(&mut self, node: ast::Operator) -> hir::Operator {
-        let span = node.function.signature.span;
-        hir::Operator {
-            function: self.lower_function(node.function, span),
-            kind: node.kind,
-        }
-    }
-
     fn lower_function(&mut self, node: ast::Function, span: Span) -> hir::Function {
         let abi = self.lower_abi(node.abi, span);
         hir::Function {
@@ -454,11 +440,11 @@ impl Actor<'_, '_> {
 }
 
 impl Actor<'_, '_> {
-    fn lower_extension(&mut self, node: ast::Extension) -> hir::Extension {
-        hir::Extension {
-            ty: self.lower_type(node.ty),
+    fn lower_impl(&mut self, node: ast::Impl) -> hir::Impl {
+        hir::Impl {
             generics: self.lower_generics(node.generics),
-            conformances: node.conformances.map(|n| self.lower_conformances(n)),
+            interface: node.interface.map(|ty| self.lower_type(ty)),
+            target: self.lower_type(node.target),
             declarations: node
                 .declarations
                 .into_iter()
@@ -670,6 +656,15 @@ impl Actor<'_, '_> {
                     .into_iter()
                     .map(|n| self.lower_path_node(n))
                     .collect(),
+            },
+            ast::TypeKind::QualifiedAccess {
+                target,
+                interface,
+                member,
+            } => hir::TypeKind::QualifiedAccess {
+                target: self.lower_type(target),
+                interface: self.lower_type(interface),
+                member,
             },
             ast::TypeKind::Never => hir::TypeKind::Never,
             ast::TypeKind::Infer | ast::TypeKind::InferedClosureParameter => hir::TypeKind::Infer,

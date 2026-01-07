@@ -10,7 +10,7 @@ struct AnotherType {
 }
 
 // ERROR: Copy cannot be implemented via extension
-extend AnotherType: Copy {
+impl Copy for AnotherType {
 }
 
 func main() {

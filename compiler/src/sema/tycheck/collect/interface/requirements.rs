@@ -5,7 +5,7 @@ use crate::{
     sema::{
         models::{
             AssociatedTypeDefinition, InterfaceConstantRequirement, InterfaceMethodRequirement,
-            InterfaceOperatorRequirement, InterfaceRequirements,
+            InterfaceRequirements,
         },
         tycheck::lower::{DefTyLoweringCtx, TypeLowerer},
     },
@@ -51,24 +51,15 @@ impl<'ctx> Actor<'ctx> {
         let gcx = self.context;
 
         let mut methods = Vec::new();
-        let mut operators = Vec::new();
         let mut types = Vec::new();
         let mut constants = Vec::new();
 
         for decl in &node.declarations {
-            self.collect_requirement(
-                id,
-                decl,
-                &mut methods,
-                &mut operators,
-                &mut types,
-                &mut constants,
-            );
+            self.collect_requirement(id, decl, &mut methods, &mut types, &mut constants);
         }
 
         let requirements = InterfaceRequirements {
             methods,
-            operators,
             types,
             constants,
         };
@@ -85,7 +76,6 @@ impl<'ctx> Actor<'ctx> {
         interface_id: DefinitionID,
         node: &hir::AssociatedDeclaration,
         methods: &mut Vec<InterfaceMethodRequirement<'ctx>>,
-        operators: &mut Vec<InterfaceOperatorRequirement<'ctx>>,
         types: &mut Vec<AssociatedTypeDefinition<'ctx>>,
         constants: &mut Vec<InterfaceConstantRequirement<'ctx>>,
     ) {
@@ -118,15 +108,16 @@ impl<'ctx> Actor<'ctx> {
                 };
                 types.push(req);
             }
-            hir::AssociatedDeclarationKind::Operator(op) => {
-                let req = InterfaceOperatorRequirement {
-                    id: def_id,
-                    kind: op.kind,
-                    signature: gcx.get_signature(def_id),
-                    is_required: op.function.block.is_none(),
-                };
-                operators.push(req);
-            }
+            // Operators are now implemented via trait methods
+            // hir::AssociatedDeclarationKind::Operator(op) => {
+            //     let req = InterfaceOperatorRequirement {
+            //         id: def_id,
+            //         kind: op.kind,
+            //         signature: gcx.get_signature(def_id),
+            //         is_required: op.function.block.is_none(),
+            //     };
+            //     operators.push(req);
+            // }
             hir::AssociatedDeclarationKind::Constant(c) => {
                 let icx = DefTyLoweringCtx::new(interface_id, gcx);
                 let ty = icx.lowerer().lower_type(&c.ty);

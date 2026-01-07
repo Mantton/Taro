@@ -11,7 +11,7 @@ struct IntBox {
     value: int
 }
 
-extend IntBox: Container {
+impl Container for IntBox {
     type Item = int
     func get(&self) -> int {
         self.value

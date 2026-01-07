@@ -1,0 +1,6 @@
+
+public enum Ordering {
+    case less
+    case equal
+    case greater
+}

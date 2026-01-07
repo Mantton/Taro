@@ -1,5 +1,6 @@
 import std.unsafe.{GcPtr, GcDesc, gc_makebuf, gc_grow_buf, gc_read_bytes, __intrinsic_gc_desc, __intrinsic_list_write, __intrinsic_list_read_unchecked, __intrinsic_list_read_mut_unchecked, __intrinsic_mut_ref_to_ptr, __intrinsic_ptr_to_u8_mut}
 import std.optional.Optional
+import std.iter.{Iterator, Iterable}
 
 /// A dynamically-sized list (dynamic array).
 ///
@@ -12,7 +13,7 @@ public struct List[Element] {
     cap: usize
 }
 
-extend[Element] List[Element] {
+impl[Element] List[Element] {
     /// Create a new empty list.
     public func new() -> Self {
         List[Element] {
@@ -53,7 +54,7 @@ extend[Element] List[Element] {
     }
 }
 
-extend[Element] List[Element] {
+impl[Element] List[Element] {
     /// Append an element to the end of the list.
     public func append(&mut self, _ item: Element) {
         if self.len >= self.cap {
@@ -78,7 +79,7 @@ extend[Element] List[Element] {
     }
 }
 
-extend[Element] List[Element] {
+impl[Element] List[Element] {
     /// Get a reference to the element at the given index, or none if out of bounds.
     public func get(&self, _ index: usize) -> Optional[&Element] {
         if index >= self.len {
@@ -122,7 +123,7 @@ extend[Element] List[Element] {
     }
 }
 
-extend[Element] List[Element] {
+impl[Element] List[Element] {
     /// Set an element at the given index. Panics if out of bounds.
     public func set(&mut self, _ index: usize, _ value: Element) {
         if index >= self.len {
@@ -153,5 +154,106 @@ extend[Element] List[Element] {
     /// Clear all elements from the list.
     public func clear(&mut self) {
         self.len = 0
+    }
+}
+
+public struct ListIterator[Element] {
+    buffer: GcPtr
+    len: usize
+    idx: usize
+}
+
+impl[Element] Iterator for ListIterator[Element] {
+    type Element = Element
+    public func next(&mut self) -> Optional[Self.Element] {
+        if self.idx >= self.len {
+            return .none
+        }
+
+        let desc = __intrinsic_gc_desc[Element]()
+        let elem_size = desc.size
+        let offset = self.idx * elem_size
+        var elem: Element
+        let elem_ptr = __intrinsic_mut_ref_to_ptr[Element](&mut elem)
+        let dst = __intrinsic_ptr_to_u8_mut[Element](elem_ptr)
+        gc_read_bytes(self.buffer, offset, dst, elem_size)
+
+        self.idx += 1
+        return .some(elem)
+    }
+}
+
+public struct ListRefIterator[Element] {
+    buffer: GcPtr
+    len: usize
+    idx: usize
+}
+
+impl[Element] Iterator for ListRefIterator[Element] {
+    type Element = &Element
+    public func next(&mut self) -> Optional[Self.Element] {
+        if self.idx >= self.len {
+            return .none
+        }
+        let elem = __intrinsic_list_read_unchecked[Element](self.buffer, self.idx)
+        self.idx += 1
+        return .some(elem)
+    }
+}
+
+impl[Element] Iterable for List[Element] {
+    type Iterator = ListIterator[Element]
+    type Element = Element
+    public func makeIterator(self) -> Self.Iterator {
+        ListIterator[Element] {
+            buffer: self.buffer,
+            len: self.len,
+            idx: 0,
+        }
+    }
+}
+
+impl[Element] Iterable for &List[Element] {
+    type Iterator = ListRefIterator[Element]
+    type Element = &Element
+    public func makeIterator(self) -> Self.Iterator {
+        ListRefIterator[Element] {
+            buffer: self.buffer,
+            len: self.len,
+            idx: 0,
+        }
+    }
+}
+
+public struct ListMutIterator[Element] {
+    buffer: GcPtr
+    len: usize
+    idx: usize
+}
+
+impl[Element] Iterator for ListMutIterator[Element] {
+    type Element = &mut Element
+
+    public func next(&mut self) -> Optional[&mut Element] {
+        if self.idx >= self.len {
+            return .none
+        }
+
+        let elem = __intrinsic_list_read_mut_unchecked[Element](self.buffer, self.idx)
+        self.idx += 1
+        return .some(elem)
+    }
+}
+
+impl[Element] Iterable for &mut List[Element] {
+    type Iterator = ListMutIterator[Element]
+    type Element = &mut Element
+
+    public func makeIterator(self) -> Self.Iterator {
+        ListMutIterator[Element] {
+            buffer: self.buffer,
+            len: self.len,
+            idx: 0,
+        }
     }
 }
