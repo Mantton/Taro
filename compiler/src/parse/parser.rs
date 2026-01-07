@@ -2230,9 +2230,12 @@ impl Parser {
 impl Parser {
     fn parse_optional_default_expr(&mut self) -> R<Box<Expression>> {
         let mut expr = self.parse_range_expr()?;
-        while matches!(self.current_token(), Token::QuestionQuestion) {
+        // Right-associative: use recursion instead of loop
+        // This makes `a ?? b ?? c` parse as `a ?? (b ?? c)`
+        if matches!(self.current_token(), Token::QuestionQuestion) {
             self.bump();
-            let right = self.parse_range_expr()?;
+            // Recursively parse the rest (right-associative)
+            let right = self.parse_optional_default_expr()?;
 
             let span = expr.span.to(right.span);
             let kind = ExpressionKind::OptionalDefault(expr, right);
@@ -2241,6 +2244,7 @@ impl Parser {
         Ok(expr)
     }
 }
+
 
 impl Parser {
     fn parse_range_expr(&mut self) -> R<Box<Expression>> {
@@ -4219,6 +4223,18 @@ mod tests {
         let expr = parse_expr_str("a ?? b");
         assert!(matches!(expr.kind, ExpressionKind::OptionalDefault(_, _)));
     }
+
+    #[test]
+    fn test_nil_coalesce_chain() {
+        let expr = parse_expr_str("a ?? b ?? c");
+        // Right-associative: a ?? (b ?? c)
+        if let ExpressionKind::OptionalDefault(_, rhs) = &expr.kind {
+            assert!(matches!(rhs.kind, ExpressionKind::OptionalDefault(_, _)));
+        } else {
+            panic!("Expected OptionalDefault");
+        }
+    }
+
 
     #[test]
     fn test_ternary_expr() {

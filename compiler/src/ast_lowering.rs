@@ -1587,8 +1587,142 @@ impl Actor<'_, '_> {
         rhs: Box<ast::Expression>,
         span: Span,
     ) -> hir::MatchExpression {
-        todo!()
+        // Lower `lhs ?? rhs` to:
+        // match lhs {
+        //    case Optional.some(__optional_val) => __optional_val
+        //    case Optional.none => rhs
+        // }
+
+        let lhs_span = lhs.span;
+        let rhs_lowered = self.lower_expression(rhs);
+        let rhs_span = rhs_lowered.span;
+
+        // Create binding for extracted value: __optional_val
+        let val_ident = Identifier::new(Symbol::new("__optional_val"), lhs_span);
+        let val_pattern_id = self.next_index();
+        let val_binding_pattern = hir::Pattern {
+            id: val_pattern_id,
+            span: lhs_span,
+            kind: hir::PatternKind::Binding {
+                name: val_ident,
+                mode: hir::BindingMode::ByValue,
+            },
+        };
+
+        // Create Optional.some(__optional_val) pattern using qualified path
+        let some_path = self.mk_optional_variant_path("some", lhs_span);
+        let some_pattern = hir::Pattern {
+            id: self.next_index(),
+            span: lhs_span,
+            kind: hir::PatternKind::PathTuple {
+                path: hir::PatternPath::Qualified { path: some_path },
+                fields: vec![val_binding_pattern],
+                field_span: lhs_span,
+            },
+        };
+
+        // Create expression that references the bound value
+        let val_ref_path = self.mk_single_segment_resolved_path(
+            val_ident,
+            Resolution::LocalVariable(val_pattern_id),
+        );
+        let val_ref_expr =
+            self.mk_expression(hir::ExpressionKind::Path(val_ref_path), lhs_span);
+
+        // Arm 1: case Optional.some(__optional_val) => __optional_val
+        let some_arm = hir::MatchArm {
+            pattern: some_pattern,
+            body: val_ref_expr,
+            guard: None,
+            span: lhs_span,
+        };
+
+        // Create Optional.none pattern using qualified path
+        let none_path = self.mk_optional_variant_path("none", rhs_span);
+        let none_pattern = hir::Pattern {
+            id: self.next_index(),
+            span: rhs_span,
+            kind: hir::PatternKind::Member(hir::PatternPath::Qualified { path: none_path }),
+        };
+
+        // Arm 2: case Optional.none => rhs
+        let none_arm = hir::MatchArm {
+            pattern: none_pattern,
+            body: rhs_lowered,
+            guard: None,
+            span: rhs_span,
+        };
+
+        hir::MatchExpression {
+            source: hir::MatchSource::OptionalDefault,
+            value: lhs,
+            arms: vec![some_arm, none_arm],
+            kw_span: span,
+        }
     }
+
+    /// Creates a fully resolved path for an Optional variant (e.g., `Optional.some` or `Optional.none`).
+    /// Looks up the Optional enum and its variants from the global context to get actual DefinitionIDs.
+    fn mk_optional_variant_path(&mut self, variant_name: &str, span: Span) -> hir::ResolvedPath {
+        use crate::sema::resolve::models::{DefinitionKind, VariantCtorKind};
+
+        let optional_ident = Identifier::new(Symbol::new("Optional"), span);
+        let variant_ident = Identifier::new(Symbol::new(variant_name), span);
+
+        // Look up the Optional enum from std library
+        let optional_def_id = self.context.find_std_type("Optional")
+            .expect("Optional type must be available from std library");
+
+        // Get the enum definition to find the variant
+        let enum_def = self.context.try_get_enum_definition(optional_def_id)
+            .expect("Optional must be an enum");
+
+        // Find the variant by name
+        let variant = enum_def.variants.iter()
+            .find(|v| v.name.as_str() == variant_name)
+            .expect("Optional must have this variant");
+
+        // Determine the constructor kind based on variant fields
+        let ctor_kind = match variant.kind {
+            crate::sema::models::EnumVariantKind::Unit => VariantCtorKind::Constant,
+            crate::sema::models::EnumVariantKind::Tuple(_) => VariantCtorKind::Function,
+        };
+
+        // Create base segment: Optional (with Definition resolution to the enum)
+        let base_segment = hir::PathSegment {
+            id: self.next_index(),
+            identifier: optional_ident,
+            arguments: None,
+            span,
+            resolution: hir::Resolution::Definition(optional_def_id, DefinitionKind::Enum),
+        };
+
+        // Create variant segment with fully resolved DefinitionID
+        let variant_segment = hir::PathSegment {
+            id: self.next_index(),
+            identifier: variant_ident,
+            arguments: None,
+            span,
+            resolution: hir::Resolution::Definition(
+                variant.ctor_def_id,
+                DefinitionKind::VariantConstructor(ctor_kind),
+            ),
+        };
+
+        hir::ResolvedPath::Resolved(hir::Path {
+            span,
+            // The path resolution is the final segment's resolution (the variant constructor)
+            resolution: hir::Resolution::Definition(
+                variant.ctor_def_id,
+                DefinitionKind::VariantConstructor(ctor_kind),
+            ),
+            segments: vec![base_segment, variant_segment],
+        })
+    }
+
+
+
+
 
     fn lower_optional_evaluation(
         &mut self,

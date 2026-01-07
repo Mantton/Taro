@@ -1669,9 +1669,30 @@ impl<'ctx> Checker<'ctx> {
             })
         };
 
+        // ══════════════════════════════════════════════════════════════════════
+        // PHASE 1.5: Validate OptionalDefault scrutinee
+        // ══════════════════════════════════════════════════════════════════════
+        // For `??` operator (OptionalDefault), the LHS must be an Optional type.
+        // Emit a single clear error instead of cascading pattern match errors.
+        if matches!(node.source, hir::MatchSource::OptionalDefault) {
+            let is_optional = self.is_optional_type(scrutinee_ty);
+            if !is_optional && !scrutinee_ty.is_error() {
+                self.gcx().dcx().emit_error(
+                    format!(
+                        "'??'  operator requires an Optional type on the left-hand side, found '{}'",
+                        scrutinee_ty.format(self.gcx())
+                    )
+                    .into(),
+                    Some(node.value.span),
+                );
+                return Ty::error(self.gcx());
+            }
+        }
+
         // Create a shared inference context for all arms to share the result type variable
         let shared_infer_cx = Rc::new(InferCtx::new(self.context));
         let result_ty = expectation.unwrap_or_else(|| shared_infer_cx.next_ty_var(expression.span));
+
 
         self.with_infer_ctx(shared_infer_cx.clone(), || {
             for arm in &node.arms {
@@ -3155,5 +3176,16 @@ impl<'ctx> Checker<'ctx> {
 
         cs.equal(scrutinee, enum_ty, span);
         Some((instantiated_variant, enum_ty))
+    }
+
+    /// Check if a type is Optional[T]
+    fn is_optional_type(&self, ty: Ty<'ctx>) -> bool {
+        let TyKind::Adt(def, _) = ty.kind() else {
+            return false;
+        };
+        let Some(opt_id) = self.gcx().find_std_type("Optional") else {
+            return false;
+        };
+        def.id == opt_id
     }
 }

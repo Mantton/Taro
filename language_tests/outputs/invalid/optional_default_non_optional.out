@@ -1,0 +1,4 @@
+error: '??'  operator requires an Optional type on the left-hand side, found 'int32'
+ -> language_tests/source_files/invalid/optional_default_non_optional.tr:4:12
+	    let y = x ?? 100
+	            ^
