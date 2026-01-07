@@ -175,10 +175,15 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 return SolverResult::Solved(vec![disjuction_goal, apply_goal]);
             }
         }
+        let final_on = self.structurally_resolve(*receiver);
+        if final_on.contains_inference() {
+            return SolverResult::Deferred;
+        }
+
         return SolverResult::Error(vec![Spanned::new(
             TypeError::NoSuchMember {
                 name: name.symbol,
-                on: self.structurally_resolve(*receiver),
+                on: final_on,
             },
             name.span,
         )]);

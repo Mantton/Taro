@@ -1,0 +1,88 @@
+// Simple range iterator for testing
+struct RangeIterator {
+    current: int32
+    end: int32
+}
+
+impl Iterator for RangeIterator {
+    type Element = int32
+
+    func next(&mut self) -> Optional[int32] {
+        if self.current < self.end {
+            let value = self.current
+            self.current = self.current + 1
+            return Optional.some(value)
+        }
+        return Optional.none
+    }
+}
+
+struct SimpleRange {
+    start: int32
+    end: int32
+}
+
+impl Iterable for SimpleRange {
+    type Iterator = RangeIterator
+    type Element = int32
+
+    func makeIterator(self) -> RangeIterator {
+        return RangeIterator { current: self.start, end: self.end }
+    }
+}
+
+func main() {
+    // Test 1: Basic for loop
+    var sum = 0
+    let range = SimpleRange { start: 0, end: 5 }
+    for i in range {
+        sum = sum + i
+    }
+    assert(sum == 10, "Basic for loop sum failed") // 0 + 1 + 2 + 3 + 4 = 10
+
+
+    // Test 2: For loop with where clause
+    var even_sum = 0
+    let range2 = SimpleRange { start: 0, end: 10 }
+    for i in range2 where i % 2 == 0 {
+        even_sum = even_sum + i
+    }
+    assert(even_sum == 20, "Even sum failed") // 0 + 2 + 4 + 6 + 8 = 20
+
+    // Test 3: Nested for loops
+    var product_sum = 0
+    // We need to re-instantiate or cloned if it consumed,
+    // but here we just create new ones.
+    let x = SimpleRange { start: 1, end: 4 }
+    for i in x {
+        let y = SimpleRange { start: 1, end: 4 }
+        for j in y {
+            product_sum = product_sum + i * j
+        }
+    }
+    assert(product_sum == 36, "Nested product sum failed") // (1+2+3) * (1+2+3) = 6 * 6 = 36
+
+
+    // Test 4: Break in for loop
+    var last = 0
+    let range3 = SimpleRange { start: 0, end: 100 }
+    for i in range3 {
+        if i >= 5 {
+            break
+        }
+        last = i
+    }
+    assert(last == 4, "Break failed")
+
+    // Test 5: Continue in for loop
+    var skip_sum = 0
+    let range4 = SimpleRange { start: 0, end: 5 }
+    for i in range4 {
+        if i == 2 {
+            continue
+        }
+        skip_sum = skip_sum + i
+    }
+    assert(skip_sum == 8, "Continue failed") // 0 + 1 + 3 + 4 = 8
+    print("All for loop tests passed!\n")
+}

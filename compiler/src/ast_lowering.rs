@@ -2,7 +2,7 @@ use crate::{
     ast::{self, Identifier},
     compile::context::GlobalContext,
     error::CompileResult,
-    hir::{self, StdType},
+    hir::{self, DefinitionKind, StdType},
     sema::resolve::models::{
         ExpressionResolutionState, Resolution, ResolutionOutput, ResolutionState,
     },
@@ -860,7 +860,10 @@ impl Actor<'_, '_> {
                 let block = self.mk_block(vec![core_statement], node.span);
                 hir::StatementKind::Loop { label, block }
             }
-            ast::StatementKind::For(..) => todo!(),
+            ast::StatementKind::For(for_stmt) => {
+                let stmt_kind = self.lower_for_statement(for_stmt, node.span);
+                return self.mk_statement(stmt_kind, node.span);
+            }
             ast::StatementKind::Defer(node) => hir::StatementKind::Defer(self.lower_block(node)),
             ast::StatementKind::Guard {
                 condition,
@@ -875,6 +878,310 @@ impl Actor<'_, '_> {
             kind,
             span: node.span,
         }
+    }
+}
+
+impl Actor<'_, '_> {
+    fn lower_for_statement(&mut self, node: ast::ForStatement, span: Span) -> hir::StatementKind {
+        /*
+        Desugars:
+            for pattern in collection { body }
+        to:
+            {
+                var __for_iter = collection.makeIterator();
+                loop {
+                    var element = __for_iter.next()
+                    match element {
+                        case Optional.some(pattern) => { body }
+                        case Optional.none => break
+                    }
+                }
+            }
+        */
+        // 1. Lower the iterator expression
+        let collection = self.lower_expression(node.iterator);
+
+        // 2. Create local binding: var __for_iter = Iterable.makeIterator(collection)
+        let iter_ident = Identifier::new(Symbol::new("__for_iter"), span);
+        let iter_pattern_id = self.next_index();
+        let iter_pattern = hir::Pattern {
+            id: iter_pattern_id,
+            span,
+            kind: hir::PatternKind::Binding {
+                name: iter_ident,
+                mode: hir::BindingMode::ByValue,
+            },
+        };
+
+        // Create Iterable.makeIterator(collection) call as UFCS call
+        let iterable_id = self.context.find_std_type("Iterable").expect("std.Iterable not found");
+        let iterable_path = hir::ResolvedPath::Resolved(hir::Path {
+            span,
+            resolution: Resolution::Definition(iterable_id, DefinitionKind::Interface),
+            segments: vec![hir::PathSegment {
+                id: self.next_index(),
+                identifier: Identifier::new(Symbol::new("Iterable"), span),
+                arguments: None,
+                span,
+                resolution: Resolution::Definition(iterable_id, DefinitionKind::Interface),
+            }],
+        });
+        
+        let iterable_ty = hir::Type {
+            id: self.next_index(),
+            span,
+            kind: hir::TypeKind::Nominal(iterable_path),
+        };
+
+        // Resolve 'makeIterator' within Iterable
+        let iterable_reqs = self.context.get_interface_requirements(iterable_id)
+            .expect("Iterable interface requirements not found");
+        let make_iter_def = iterable_reqs.methods.iter()
+            .find(|m| m.name.as_str() == "makeIterator")
+            .expect("makeIterator method not found in Iterable");
+        
+        let make_iter_id = make_iter_def.id;
+        let make_iter_kind = self.context.definition_kind(make_iter_id);
+
+        let make_iter_segment = hir::PathSegment {
+            id: self.next_index(),
+            identifier: Identifier::new(Symbol::new("makeIterator"), span),
+            arguments: None,
+            span,
+            resolution: Resolution::Definition(make_iter_id, make_iter_kind),
+        };
+        
+        let make_iter_fn_path = hir::ResolvedPath::Relative(Box::new(iterable_ty), make_iter_segment);
+        let make_iter_fn_expr = self.mk_expression(hir::ExpressionKind::Path(make_iter_fn_path), span);
+
+        let make_iterator_call = self.mk_expression(
+            hir::ExpressionKind::Call {
+                callee: make_iter_fn_expr,
+                arguments: vec![hir::ExpressionArgument {
+                    label: None,
+                    expression: collection,
+                    span,
+                }],
+            },
+            span,
+        );
+
+        let iter_local = hir::Local {
+            id: self.next_index(),
+            mutability: hir::Mutability::Mutable,
+            pattern: iter_pattern,
+            ty: None,
+            initializer: Some(make_iterator_call),
+        };
+
+        // 3. Create Iterator.next(&mut __for_iter) call
+        let iter_ref_path = self.mk_single_segment_resolved_path(
+            iter_ident,
+            Resolution::LocalVariable(iter_pattern_id),
+        );
+        let iter_ref_expr = self.mk_expression(hir::ExpressionKind::Path(iter_ref_path), span);
+        let iter_mut_borrow = self.mk_expression(
+            hir::ExpressionKind::Reference(iter_ref_expr, hir::Mutability::Mutable),
+            span,
+        );
+
+        // Resolve Iterator.next path
+        let iterator_id = self.context.find_std_type("Iterator").expect("std.Iterator not found");
+        let iterator_path = hir::ResolvedPath::Resolved(hir::Path {
+            span,
+            resolution: Resolution::Definition(iterator_id, DefinitionKind::Interface),
+            segments: vec![hir::PathSegment {
+                id: self.next_index(),
+                identifier: Identifier::new(Symbol::new("Iterator"), span),
+                arguments: None,
+                span,
+                resolution: Resolution::Definition(iterator_id, DefinitionKind::Interface),
+            }],
+        });
+        
+        let iterator_ty = hir::Type {
+            id: self.next_index(),
+            span,
+            kind: hir::TypeKind::Nominal(iterator_path),
+        };
+
+        let iterator_reqs = self.context.get_interface_requirements(iterator_id)
+            .expect("Iterator interface requirements not found");
+        let next_def = iterator_reqs.methods.iter()
+            .find(|m| m.name.as_str() == "next")
+            .expect("next method not found in Iterator");
+        
+        let next_id = next_def.id;
+        let next_kind = self.context.definition_kind(next_id);
+
+        let next_segment = hir::PathSegment {
+            id: self.next_index(),
+            identifier: Identifier::new(Symbol::new("next"), span),
+            arguments: None,
+            span,
+            resolution: Resolution::Definition(next_id, next_kind),
+        };
+        
+        let next_fn_path = hir::ResolvedPath::Relative(Box::new(iterator_ty), next_segment);
+        let next_fn_expr = self.mk_expression(hir::ExpressionKind::Path(next_fn_path), span);
+
+        let next_call = self.mk_expression(
+            hir::ExpressionKind::Call {
+                callee: next_fn_expr,
+                arguments: vec![hir::ExpressionArgument {
+                    label: None,
+                    expression: iter_mut_borrow,
+                    span,
+                }],
+            },
+            span,
+        );
+
+        // var element = Iterator.next(&mut __for_iter);
+        let element_ident = Identifier::new(Symbol::new("element"), span);
+        let element_pattern_id = self.next_index();
+        let element_pattern = hir::Pattern {
+            id: element_pattern_id,
+            span,
+            kind: hir::PatternKind::Binding {
+                name: element_ident,
+                mode: hir::BindingMode::ByValue,
+            },
+        };
+
+        let element_local = hir::Local {
+            id: self.next_index(),
+            mutability: hir::Mutability::Mutable,
+            pattern: element_pattern,
+            ty: None,
+            initializer: Some(next_call),
+        };
+
+        // 5. Lower the user's pattern from the for loop
+        let user_pattern = self.lower_pattern(node.pattern);
+
+        // 6. Create Optional.some(user_pattern) - FULLY QUALIFIED
+        let some_path = self.mk_optional_variant_path("some", span);
+        let some_pattern = hir::Pattern {
+            id: self.next_index(),
+            span,
+            kind: hir::PatternKind::PathTuple {
+                path: hir::PatternPath::Qualified { path: some_path },
+                fields: vec![user_pattern],
+                field_span: span,
+            },
+        };
+
+        // 7. Create the loop body (with optional where clause)
+        let loop_body_block = self.lower_block(node.block);
+        let body_expr = if let Some(clause) = node.clause {
+            // Add: if !(condition) { continue }
+            let condition = self.lower_expression(clause);
+            let negated = self.mk_expression(
+                hir::ExpressionKind::Unary(hir::UnaryOperator::LogicalNot, condition),
+                span,
+            );
+            let continue_stmt = self.mk_statement(hir::StatementKind::Continue, span);
+            let continue_block = self.mk_block(vec![continue_stmt], span);
+            let guard_if = hir::IfExpression {
+                condition: negated,
+                then_block: self.mk_expression(hir::ExpressionKind::Block(continue_block), span),
+                else_block: None,
+            };
+            let guard_expr = self.mk_expression(hir::ExpressionKind::If(guard_if), span);
+            let guard_stmt = self.mk_statement(hir::StatementKind::Expression(guard_expr), span);
+
+            // Prepend guard to body statements
+            let mut stmts = vec![guard_stmt];
+            stmts.extend(loop_body_block.statements);
+            let combined_block = hir::Block {
+                id: self.next_index(),
+                statements: stmts,
+                tail: loop_body_block.tail,
+                span: loop_body_block.span,
+            };
+            self.mk_expression(hir::ExpressionKind::Block(combined_block), span)
+        } else {
+            self.mk_expression(hir::ExpressionKind::Block(loop_body_block), span)
+        };
+
+        // Arm 1: case Optional.some(pattern) => { body }
+        let some_arm = hir::MatchArm {
+            pattern: some_pattern,
+            body: body_expr,
+            guard: None,
+            span,
+        };
+
+        // 8. Create Optional.none pattern - FULLY QUALIFIED
+        let none_path = self.mk_optional_variant_path("none", span);
+        let none_pattern = hir::Pattern {
+            id: self.next_index(),
+            span,
+            kind: hir::PatternKind::Member(hir::PatternPath::Qualified { path: none_path }),
+        };
+
+        // Arm 2: case Optional.none => break
+        let break_stmt = self.mk_statement(hir::StatementKind::Break, span);
+        let break_block = self.mk_block(vec![break_stmt], span);
+        let none_arm = hir::MatchArm {
+            pattern: none_pattern,
+            body: self.mk_expression(hir::ExpressionKind::Block(break_block), span),
+            guard: None,
+            span,
+        };
+
+        // 9. Create match expression on 'element'
+        let element_ref_path = self.mk_single_segment_resolved_path(
+            element_ident,
+            Resolution::LocalVariable(element_pattern_id),
+        );
+        let element_ref_expr =
+            self.mk_expression(hir::ExpressionKind::Path(element_ref_path), span);
+
+        let match_expr = hir::MatchExpression {
+            source: hir::MatchSource::ForLoop,
+            value: element_ref_expr,
+            arms: vec![some_arm, none_arm],
+            kw_span: span,
+        };
+
+        let match_expr_node = self.mk_expression(hir::ExpressionKind::Match(match_expr), span);
+        let match_stmt = self.mk_statement(hir::StatementKind::Expression(match_expr_node), span);
+        let element_stmt = self.mk_statement(hir::StatementKind::Variable(element_local), span);
+
+        // 10. Create loop block containing the element binding and match
+        let loop_block = self.mk_block(vec![element_stmt, match_stmt], span);
+        let loop_stmt_kind = hir::StatementKind::Loop {
+            label: node.label,
+            block: loop_block,
+        };
+
+        // 11. Create outer block: { var __for_iter = ...; loop { ... } }
+        let iter_stmt = self.mk_statement(hir::StatementKind::Variable(iter_local), span);
+        let loop_stmt = self.mk_statement(loop_stmt_kind, span);
+        let outer_block = self.mk_block(vec![iter_stmt, loop_stmt], span);
+
+        hir::StatementKind::Expression(
+            self.mk_expression(hir::ExpressionKind::Block(outer_block), span),
+        )
+    }
+
+    fn mk_method_call(
+        &mut self,
+        receiver: Box<hir::Expression>,
+        name: Identifier,
+        arguments: Vec<hir::ExpressionArgument>,
+        span: Span,
+    ) -> Box<hir::Expression> {
+        self.mk_expression(
+            hir::ExpressionKind::MethodCall {
+                receiver,
+                name,
+                arguments,
+            },
+            span,
+        )
     }
 }
 
@@ -1622,12 +1929,9 @@ impl Actor<'_, '_> {
         };
 
         // Create expression that references the bound value
-        let val_ref_path = self.mk_single_segment_resolved_path(
-            val_ident,
-            Resolution::LocalVariable(val_pattern_id),
-        );
-        let val_ref_expr =
-            self.mk_expression(hir::ExpressionKind::Path(val_ref_path), lhs_span);
+        let val_ref_path = self
+            .mk_single_segment_resolved_path(val_ident, Resolution::LocalVariable(val_pattern_id));
+        let val_ref_expr = self.mk_expression(hir::ExpressionKind::Path(val_ref_path), lhs_span);
 
         // Arm 1: case Optional.some(__optional_val) => __optional_val
         let some_arm = hir::MatchArm {
@@ -1670,15 +1974,21 @@ impl Actor<'_, '_> {
         let variant_ident = Identifier::new(Symbol::new(variant_name), span);
 
         // Look up the Optional enum from std library
-        let optional_def_id = self.context.find_std_type("Optional")
+        let optional_def_id = self
+            .context
+            .find_std_type("Optional")
             .expect("Optional type must be available from std library");
 
         // Get the enum definition to find the variant
-        let enum_def = self.context.try_get_enum_definition(optional_def_id)
+        let enum_def = self
+            .context
+            .try_get_enum_definition(optional_def_id)
             .expect("Optional must be an enum");
 
         // Find the variant by name
-        let variant = enum_def.variants.iter()
+        let variant = enum_def
+            .variants
+            .iter()
             .find(|v| v.name.as_str() == variant_name)
             .expect("Optional must have this variant");
 
@@ -1720,14 +2030,10 @@ impl Actor<'_, '_> {
         })
     }
 
-
-
-
-
     fn lower_optional_evaluation(
         &mut self,
-        expr: Box<ast::Expression>,
-        span: Span,
+        _expr: Box<ast::Expression>,
+        _span: Span,
     ) -> hir::ExpressionKind {
         todo!()
     }

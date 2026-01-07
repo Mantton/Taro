@@ -99,6 +99,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         // Nothing matched; use last seen type for diagnostics.
         let final_ty = prev.unwrap_or_else(|| self.structurally_resolve(receiver));
+        if final_ty.contains_inference() {
+            return SolverResult::Deferred;
+        }
+
         let error = Spanned::new(
             TypeError::NoSuchMember {
                 name: name.symbol,

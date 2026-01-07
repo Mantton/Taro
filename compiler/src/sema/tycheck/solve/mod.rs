@@ -123,10 +123,18 @@ impl<'ctx> ConstraintSystem<'ctx> {
         context: Gcx<'ctx>,
         current_def: crate::sema::resolve::models::DefinitionID,
     ) -> ConstraintSystem<'ctx> {
+        Self::with_infer_ctx(context, current_def, Rc::new(InferCtx::new(context)))
+    }
+
+    pub fn with_infer_ctx(
+        context: Gcx<'ctx>,
+        current_def: crate::sema::resolve::models::DefinitionID,
+        infer_cx: Rc<InferCtx<'ctx>>,
+    ) -> ConstraintSystem<'ctx> {
         let visible_traits = collect_visible_traits(context, current_def);
 
         ConstraintSystem {
-            infer_cx: Rc::new(InferCtx::new(context)),
+            infer_cx,
             obligations: Default::default(),
             expr_tys: Default::default(),
             locals: Default::default(),
@@ -287,6 +295,22 @@ impl<'ctx> ConstraintSystem<'ctx> {
     fn structurally_resolve(&self, ty: Ty<'ctx>) -> Ty<'ctx> {
         let ty = self.infer_cx.resolve_vars_if_possible(ty);
         normalize_ty(self.infer_cx.clone(), ty, &self.env)
+    }
+
+    pub fn take_obligations(&mut self) -> VecDeque<Obligation<'ctx>> {
+        std::mem::take(&mut self.obligations)
+    }
+
+    pub fn merge(&mut self, other: ConstraintSystem<'ctx>) {
+        self.obligations.extend(other.obligations);
+        self.expr_tys.extend(other.expr_tys);
+        self.adjustments.extend(other.adjustments);
+        self.interface_calls.extend(other.interface_calls);
+        self.locals.borrow_mut().extend(other.locals.into_inner());
+        self.field_indices.extend(other.field_indices);
+        self.overload_sources.extend(other.overload_sources);
+        self.value_resolutions.extend(other.value_resolutions);
+        self.instantiation_args.extend(other.instantiation_args);
     }
 }
 

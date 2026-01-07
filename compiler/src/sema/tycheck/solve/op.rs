@@ -84,7 +84,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         }
 
         // If type is not yet resolved, defer
-        if ty.is_infer() {
+        if ty.contains_inference() {
             return SolverResult::Deferred;
         }
 

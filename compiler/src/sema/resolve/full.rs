@@ -485,6 +485,9 @@ impl<'r, 'a> Actor<'r, 'a> {
                 self.visit_expression(&for_node.iterator);
                 self.with_scope_source(LexicalScopeSource::Plain, |this| {
                     this.resolve_top_level_pattern(&for_node.pattern, PatternSource::ForLoop);
+                    if let Some(clause) = &for_node.clause {
+                        this.visit_expression(clause);
+                    }
                     this.visit_block(&for_node.block);
                 });
             }

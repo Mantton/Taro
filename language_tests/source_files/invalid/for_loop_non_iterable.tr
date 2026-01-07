@@ -1,0 +1,12 @@
+
+struct NotIterable {
+    x: int32
+}
+
+func main() {
+    let n = NotIterable { x: 1 }
+    // Should fail because NotIterable doesn't implement Iterable
+    for i in n {
+        std.print(i)
+    }
+}

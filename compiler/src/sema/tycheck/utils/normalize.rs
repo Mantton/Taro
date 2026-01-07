@@ -138,7 +138,7 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
             return None;
         };
 
-        // Recursively normalize Self type using same context
+        // Recursively normalize substituted Self type
         let self_ty = self.icx.resolve_vars_if_possible(*self_ty);
 
         // If Self is still an inference variable, cannot resolve yet
@@ -147,6 +147,35 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
             return None;
         }
 
+        let instantiate_witness = |witness: crate::sema::models::ConformanceWitness<'ctx>| {
+            let witness_ty = witness.type_witnesses.get(&assoc_id)?;
+
+            if let Some(impl_id) = witness.extension_id {
+                // If the witness comes from a concrete implementation, we need to solve for the
+                // implementation's generic parameters by unifying the actual Self type with
+                // the implementation's target type.
+                // e.g. Self = &List[int32] vs ImplTarget = &List[Element]
+                let impl_generics = gcx.generics_of(impl_id);
+                if !impl_generics.is_empty() {
+                    let span = gcx.definition_ident(assoc_id).span;
+                    let impl_args = self.icx.fresh_args_for_def(impl_id, span);
+
+                    let target_ty = gcx
+                        .get_impl_target_ty(impl_id)
+                        .unwrap_or_else(|| gcx.get_type(impl_id));
+                    let instantiated_target = instantiate_ty_with_args(gcx, target_ty, impl_args);
+
+                    let unifier =
+                        crate::sema::tycheck::utils::unify::TypeUnifier::new(self.icx.clone());
+                    if unifier.unify(self_ty, instantiated_target).is_ok() {
+                        return Some(instantiate_ty_with_args(gcx, *witness_ty, impl_args));
+                    }
+                }
+            }
+
+            Some(instantiate_ty_with_args(gcx, *witness_ty, args))
+        };
+
         // Strategy 1: Check ParamEnv bounds for the matching interface
         let bounds = self.env.bounds_for(self_ty);
         for bound_iface in &bounds {
@@ -154,8 +183,7 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
                 // Found matching bound - look up type witness from conformance
                 let head = type_head_from_value_ty(self_ty)?;
                 let witness = resolve_conformance_witness(gcx, head, *bound_iface)?;
-                let witness_ty = witness.type_witnesses.get(&assoc_id)?;
-                return Some(instantiate_ty_with_args(gcx, *witness_ty, args));
+                return instantiate_witness(witness);
             }
         }
 
@@ -166,7 +194,6 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
             arguments: args,
         };
         let witness = resolve_conformance_witness(gcx, head, interface)?;
-        let witness_ty = witness.type_witnesses.get(&assoc_id)?;
-        Some(instantiate_ty_with_args(gcx, *witness_ty, args))
+        instantiate_witness(witness)
     }
 }

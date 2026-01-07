@@ -1,0 +1,44 @@
+
+import std.collections.List
+
+func test_ref_iterator(_ list: &List[int32]) {
+    var sum = 0
+    for x in list {
+        sum = sum + *x
+    }
+    assert(sum == 6, "Ref iterator sum failed")
+}
+
+func test_mut_iterator(_ list: &mut List[int32]) {
+    for x in list {
+        *x = *x * 2
+    }
+}
+
+func test_val_iterator(_ list: List[int32]) {
+    var sum = 0
+    for x in list {
+        sum = sum + x
+    }
+    // Original 1+2+3 = 6. Doubled = 2+4+6 = 12.
+    assert(sum == 12, "Val iterator (consumed) sum failed")
+}
+
+func main() {
+    var list = List[int32]()
+    list.append(1)
+    list.append(2)
+    list.append(3)
+
+    // 1. Iterate by reference (unmodified)
+    test_ref_iterator(&list)
+
+    // 2. Iterate by mutable reference (modify)
+    test_mut_iterator(&mut list)
+
+    // 3. Iterate by value (consume)
+    // Note: We pass the list by value here.
+    test_val_iterator(list)
+
+    print("All List iterator tests passed!\n")
+}

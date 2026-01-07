@@ -1,0 +1,137 @@
+
+enum IntOutcome {
+    case success(int32)
+    case failure
+}
+
+func make_success(_ val: int32) -> IntOutcome {
+    return IntOutcome.success(val)
+}
+
+// --- Iterator Support ---
+struct RangeIterator {
+    current: int32
+    end: int32
+}
+
+impl Iterator for RangeIterator {
+    type Element = int32
+
+    func next(&mut self) -> Optional[int32] {
+        if self.current < self.end {
+            let value = self.current
+            self.current = self.current + 1
+            return Optional.some(value)
+        }
+        return Optional.none
+    }
+}
+
+struct SimpleRange {
+    start: int32
+    end: int32
+}
+
+impl Iterable for SimpleRange {
+    type Iterator = RangeIterator
+    type Element = int32
+
+    func makeIterator(self) -> RangeIterator {
+        return RangeIterator { current: self.start, end: self.end }
+    }
+}
+// ------------------------
+
+func test_match_inference() {
+    var x = make_success(10)
+    match x {
+        case .success(val) => { let y: int32 = val + 1 }
+        case .failure => {}
+    }
+}
+
+func test_nested_blocks() {
+    var x = IntOutcome.failure
+    if true {
+        if true {
+             x = make_success(42)
+        }
+    }
+    match x {
+        case .success(val) => { let y: int32 = val }
+        case .failure => {}
+    }
+}
+
+func test_ifelse_inference() {
+    let x = if true { make_success(1) } else { IntOutcome.failure }
+    match x {
+        case .success(v) => { let z: int32 = v }
+        case .failure => {}
+    }
+}
+
+func test_nested_match() {
+    var x = make_success(100)
+    match x {
+        case .success(val) => {
+            var y = make_success(val)
+            match y {
+                case .success(inner) => { let z: int32 = inner }
+                case .failure => {}
+            }
+        }
+        case .failure => {}
+    }
+}
+
+func test_match_on_call_nested() {
+    match make_success(200) {
+        case .success(val) => {
+            match make_success(val + 1) {
+                case .success(inner) => { let z: int32 = inner }
+                case .failure => {}
+            }
+        }
+        case .failure => {}
+    }
+}
+
+// NEW: For Loop containing Match
+func test_loop_match_nesting() {
+    let range = SimpleRange { start: 0, end: 3 }
+    for i in range {
+        match make_success(i) {
+            case .success(val) => {
+                // Inferred variable inside loop match
+                let double = val * 2
+            }
+            case .failure => {}
+        }
+    }
+}
+
+// NEW: Match containing For Loop (and inferred range limits)
+func test_match_loop_nesting() {
+    let result = make_success(5)
+    match result {
+        case .success(count) => {
+             // Use matching variable to define range
+             let r = SimpleRange { start: 0, end: count }
+             for k in r {
+                 let _ = k
+             }
+        }
+        case .failure => {}
+    }
+}
+
+func main() {
+    test_match_inference()
+    test_nested_blocks()
+    test_ifelse_inference()
+    test_nested_match()
+    test_match_on_call_nested()
+    test_loop_match_nesting()
+    test_match_loop_nesting()
+}

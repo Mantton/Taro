@@ -107,35 +107,43 @@ impl<'ctx> Checker<'ctx> {
 
         if let Some(body) = hir::is_expression_bodied(body) {
             // --- single-expression body ---
-            self.check_return(body);
+            self.check_return(body, None);
         } else {
             // --- regular block body ---
-            self.check_block(body);
+            self.check_block(body, None);
         }
     }
 }
 
 impl<'ctx> Checker<'ctx> {
-    fn check_statement(&self, node: &hir::Statement) {
+    fn check_statement(&self, node: &hir::Statement, mut cs: Option<&mut Cs<'ctx>>) {
         match &node.kind {
             hir::StatementKind::Declaration(decl) => {
                 self.check_local_declaration(decl);
             }
             hir::StatementKind::Expression(node) => {
-                self.top_level_check(node, None);
+                if let Some(cs) = cs.as_mut() {
+                    self.synth_with_expectation(node, None, cs);
+                } else {
+                    self.top_level_check(node, None);
+                }
             }
             hir::StatementKind::Variable(node) => {
-                self.check_local(node);
+                if let Some(cs) = cs.as_mut() {
+                    self.check_local_in_block(node, cs);
+                } else {
+                    self.check_local(node);
+                }
             }
             hir::StatementKind::Break => self.check_break(node.span),
             hir::StatementKind::Continue => self.check_continue(node.span),
             hir::StatementKind::Return(expression) => {
                 if let Some(expression) = expression {
-                    self.check_return(expression);
+                    self.check_return(expression, cs);
                 }
             }
             hir::StatementKind::Loop { block, .. } => {
-                self.check_loop(block);
+                self.check_loop(block, cs);
             }
             hir::StatementKind::Defer(..) => todo!(),
             hir::StatementKind::Guard { .. } => todo!(),
@@ -172,23 +180,39 @@ impl<'ctx> Checker<'ctx> {
         }
     }
 
-    fn check_return(&self, node: &hir::Expression) {
+    fn check_return(&self, node: &hir::Expression, mut cs: Option<&mut Cs<'ctx>>) {
         let Some(expectation) = self.return_ty else {
             unreachable!("ICE: return check called outside function body")
         };
-        self.top_level_check(node, Some(expectation));
+        if let Some(cs) = cs.as_deref_mut() {
+            let provided = self.synth_with_expectation(node, Some(expectation), cs);
+            cs.add_goal(
+                Goal::Coerce {
+                    node_id: node.id,
+                    from: provided,
+                    to: expectation,
+                },
+                node.span,
+            );
+        } else {
+            self.top_level_check(node, Some(expectation));
+        }
     }
 
-    fn check_block(&self, node: &hir::Block) {
+    fn check_block(&self, node: &hir::Block, mut cs: Option<&mut Cs<'ctx>>) {
         for statement in &node.statements {
-            self.check_statement(statement);
+            self.check_statement(statement, cs.as_deref_mut());
         }
         if let Some(tail) = node.tail.as_deref() {
-            self.top_level_check(tail, None);
+            if let Some(cs) = cs.as_deref_mut() {
+                self.synth_with_expectation(tail, None, cs);
+            } else {
+                self.top_level_check(tail, None);
+            }
         }
     }
     fn check_local(&self, node: &hir::Local) {
-        let mut cs = Cs::new(self.context, self.current_def);
+        let mut cs = self.new_cs();
         self.with_infer_ctx(cs.infer_cx.clone(), || {
             GatherLocalsVisitor::from_local(&cs, &self, node);
             let local_ty = self.get_local(node.id).ty;
@@ -212,38 +236,7 @@ impl<'ctx> Checker<'ctx> {
             self.check_pattern(&node.pattern, local_ty, scrutinee_id, &mut cs);
             cs.solve_all();
 
-            for (id, ty) in cs.resolved_expr_types() {
-                self.results.borrow_mut().record_node_type(id, ty);
-            }
-            for (id, adjustments) in cs.resolved_adjustments() {
-                self.results
-                    .borrow_mut()
-                    .record_node_adjustments(id, adjustments);
-            }
-            for (id, info) in cs.resolved_interface_calls() {
-                self.results.borrow_mut().record_interface_call(id, info);
-            }
-            for (id, def_id) in cs.resolved_overload_sources() {
-                self.results.borrow_mut().record_overload_source(id, def_id);
-            }
-            for (id, resolution) in cs.resolved_value_resolutions() {
-                self.results
-                    .borrow_mut()
-                    .record_value_resolution(id, resolution);
-            }
-
-            for (id, index) in cs.resolved_field_indices() {
-                self.results.borrow_mut().record_field_index(id, index);
-            }
-
-            for (id, args) in cs.resolved_instantiations() {
-                self.results.borrow_mut().record_instantiation(id, args);
-            }
-
-            for (id, ty) in cs.resolved_local_types() {
-                self.finalize_local(id, ty);
-                self.results.borrow_mut().record_node_type(id, ty);
-            }
+            self.commit_constraint_results(&cs);
         });
     }
 
@@ -270,10 +263,10 @@ impl<'ctx> Checker<'ctx> {
         self.check_pattern(&node.pattern, local_ty, scrutinee_id, cs);
     }
 
-    fn check_loop(&self, block: &hir::Block) {
+    fn check_loop(&self, block: &hir::Block, mut cs: Option<&mut Cs<'ctx>>) {
         let depth = self.loop_depth.get();
         self.loop_depth.set(depth + 1);
-        self.check_block(block);
+        self.check_block(block, cs.as_deref_mut());
         self.loop_depth.set(depth);
     }
 
@@ -300,7 +293,7 @@ impl<'ctx> Checker<'ctx> {
         expression: &hir::Expression,
         expectation: Option<Ty<'ctx>>,
     ) -> Ty<'ctx> {
-        let mut cs = Cs::new(self.context, self.current_def);
+        let mut cs = self.new_cs();
         self.with_infer_ctx(cs.infer_cx.clone(), || {
             let provided = self.synth_with_expectation(expression, expectation, &mut cs);
             if let Some(expectation) = expectation {
@@ -316,38 +309,7 @@ impl<'ctx> Checker<'ctx> {
             }
             cs.solve_all();
 
-            for (id, ty) in cs.resolved_expr_types() {
-                self.results.borrow_mut().record_node_type(id, ty);
-            }
-            for (id, adjustments) in cs.resolved_adjustments() {
-                self.results
-                    .borrow_mut()
-                    .record_node_adjustments(id, adjustments);
-            }
-            for (id, info) in cs.resolved_interface_calls() {
-                self.results.borrow_mut().record_interface_call(id, info);
-            }
-            for (id, def_id) in cs.resolved_overload_sources() {
-                self.results.borrow_mut().record_overload_source(id, def_id);
-            }
-            for (id, resolution) in cs.resolved_value_resolutions() {
-                self.results
-                    .borrow_mut()
-                    .record_value_resolution(id, resolution);
-            }
-
-            for (id, index) in cs.resolved_field_indices() {
-                self.results.borrow_mut().record_field_index(id, index);
-            }
-
-            for (id, args) in cs.resolved_instantiations() {
-                self.results.borrow_mut().record_instantiation(id, args);
-            }
-
-            for (id, ty) in cs.resolved_local_types() {
-                self.finalize_local(id, ty);
-                self.results.borrow_mut().record_node_type(id, ty);
-            }
+            self.commit_constraint_results(&cs);
 
             let provided = cs.infer_cx.resolve_vars_if_possible(provided);
             if provided.is_infer() {
@@ -357,10 +319,19 @@ impl<'ctx> Checker<'ctx> {
         })
     }
 
+    fn new_cs(&self) -> Cs<'ctx> {
+        if let Some(infer_cx) = self.infer_ctx() {
+            Cs::with_infer_ctx(self.context, self.current_def, infer_cx)
+        } else {
+            Cs::new(self.context, self.current_def)
+        }
+    }
+
     /// Commits all resolved results from a constraint system to the checker's results.
     /// Used when solving sub-expressions in separate constraint systems (e.g., match scrutinee).
     fn commit_constraint_results(&self, cs: &Cs<'ctx>) {
         for (id, ty) in cs.resolved_expr_types() {
+            let ty = cs.infer_cx.resolve_vars_if_possible(ty);
             self.results.borrow_mut().record_node_type(id, ty);
         }
         for (id, adjustments) in cs.resolved_adjustments() {
@@ -386,6 +357,7 @@ impl<'ctx> Checker<'ctx> {
             self.results.borrow_mut().record_instantiation(id, args);
         }
         for (id, ty) in cs.resolved_local_types() {
+            let ty = cs.infer_cx.resolve_vars_if_possible(ty);
             self.finalize_local(id, ty);
             self.results.borrow_mut().record_node_type(id, ty);
         }
@@ -1043,15 +1015,7 @@ impl<'ctx> Checker<'ctx> {
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         for stmt in &block.statements {
-            match &stmt.kind {
-                hir::StatementKind::Expression(expr) => {
-                    let _ = self.synth_with_expectation(expr, None, cs);
-                }
-                hir::StatementKind::Variable(node) => {
-                    self.check_local_in_block(node, cs);
-                }
-                _ => self.check_statement(stmt),
-            }
+            self.check_statement(stmt, Some(cs));
         }
 
         if let Some(tail) = block.tail.as_deref() {
@@ -1652,22 +1616,24 @@ impl<'ctx> Checker<'ctx> {
         // ══════════════════════════════════════════════════════════════════════
         // PHASE 1: Resolve scrutinee in its own constraint system
         // ══════════════════════════════════════════════════════════════════════
+        // Flush pending constraints in the parent system (e.g., local variable initializations)
+        // so that the scrutinee solver has access to the most up-to-date type information.
+        _cs.solve_intermediate();
+
         // This ensures the scrutinee type is fully concrete before we check arms,
         // enabling inferred pattern resolution (e.g., `.some(value)`).
         let scrutinee_ty = {
-            let mut scrutinee_cs = Cs::new(self.context, self.current_def);
+            let mut scrutinee_cs = self.new_cs();
             self.with_infer_ctx(scrutinee_cs.infer_cx.clone(), || {
                 let ty = self.synth(&node.value, &mut scrutinee_cs);
-                scrutinee_cs.solve_all();
+                scrutinee_cs.solve_intermediate();
                 self.commit_constraint_results(&scrutinee_cs);
-                let resolved = scrutinee_cs.infer_cx.resolve_vars_if_possible(ty);
-                if resolved.is_infer() {
-                    Ty::error(self.gcx())
-                } else {
-                    resolved
-                }
+                _cs.merge(scrutinee_cs);
+                ty
             })
         };
+        // Re-resolve in parent context to get latest state
+        let scrutinee_ty = _cs.infer_cx.resolve_vars_if_possible(scrutinee_ty);
 
         // ══════════════════════════════════════════════════════════════════════
         // PHASE 1.5: Validate OptionalDefault scrutinee
@@ -1690,14 +1656,15 @@ impl<'ctx> Checker<'ctx> {
         }
 
         // Create a shared inference context for all arms to share the result type variable
-        let shared_infer_cx = Rc::new(InferCtx::new(self.context));
+        let shared_infer_cx = self
+            .infer_ctx()
+            .unwrap_or_else(|| Rc::new(InferCtx::new(self.context)));
         let result_ty = expectation.unwrap_or_else(|| shared_infer_cx.next_ty_var(expression.span));
-
 
         self.with_infer_ctx(shared_infer_cx.clone(), || {
             for arm in &node.arms {
                 // Each arm gets its own constraint system
-                let mut arm_cs = Cs::new(self.context, self.current_def);
+                let mut arm_cs = self.new_cs();
                 arm_cs.infer_cx = shared_infer_cx.clone();
 
                 GatherLocalsVisitor::from_match_arm(&arm_cs, self, &arm.pattern);
@@ -1717,8 +1684,9 @@ impl<'ctx> Checker<'ctx> {
                 arm_cs.equal(result_ty, arm_ty, arm.body.span);
 
                 // Solve and commit each arm independently
-                arm_cs.solve_all();
+                arm_cs.solve_intermediate();
                 self.commit_constraint_results(&arm_cs);
+                _cs.merge(arm_cs);
             }
 
             let resolved = shared_infer_cx.resolve_vars_if_possible(result_ty);

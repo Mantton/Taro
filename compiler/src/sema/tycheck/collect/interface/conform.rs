@@ -168,6 +168,7 @@ impl<'ctx> Actor<'ctx> {
         };
 
         let mut witness = ConformanceWitness::default();
+        witness.extension_id = Some(record.extension);
         let mut errors = Vec::new();
 
         // 1. Check associated types

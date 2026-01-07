@@ -96,6 +96,33 @@ impl<'arena> Ty<'arena> {
         matches!(self.kind(), TyKind::Infer(InferTy::TyVar(_)))
     }
 
+    pub fn contains_inference(self) -> bool {
+        fn visit<'ctx>(ty: Ty<'ctx>) -> bool {
+            match ty.kind() {
+                TyKind::Infer(_) => true,
+                TyKind::Alias { .. } => true, // unnormalized aliases might hide inference vars
+                TyKind::Adt(_, args) => args.iter().any(|arg| match arg {
+                    GenericArgument::Type(ty) => visit(*ty),
+                    GenericArgument::Const(c) => matches!(c.kind, ConstKind::Infer(_)) || visit(c.ty),
+                }),
+                TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => visit(inner),
+                TyKind::Array { element, .. } => visit(element), // Skip const len for now, usually it doesn't affect member lookup
+                TyKind::Tuple(elems) => elems.iter().any(|t| visit(*t)),
+                TyKind::FnPointer { inputs, output } => {
+                    inputs.iter().any(|t| visit(*t)) || visit(output)
+                }
+                TyKind::BoxedExistential { interfaces } => interfaces.iter().any(|iface| {
+                    iface.arguments.iter().any(|arg| match arg {
+                        GenericArgument::Type(ty) => visit(*ty),
+                        GenericArgument::Const(c) => matches!(c.kind, ConstKind::Infer(_)) || visit(c.ty),
+                    })
+                }),
+                _ => false,
+            }
+        }
+        visit(self)
+    }
+
     pub fn is_fn(self) -> bool {
         matches!(self.kind(), TyKind::FnPointer { .. })
     }
@@ -738,6 +765,8 @@ pub struct ConformanceWitness<'ctx> {
     pub constant_witnesses: FxHashMap<DefinitionID, DefinitionID>,
     /// Maps interface associated type → concrete type
     pub type_witnesses: FxHashMap<DefinitionID, Ty<'ctx>>,
+    /// The ID of the extension or definition providing compliance.
+    pub extension_id: Option<DefinitionID>,
 }
 
 /// How a method requirement is satisfied in a conformance.

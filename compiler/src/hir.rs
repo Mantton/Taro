@@ -543,6 +543,7 @@ pub enum MatchSource {
     OptionalDefault,
     OptionalUnwrap,
     Await,
+    ForLoop,
 }
 
 #[derive(Debug, Clone)]
