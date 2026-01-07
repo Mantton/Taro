@@ -396,7 +396,14 @@ impl<'ctx> ConstraintSolver<'ctx> {
             }
         }
 
-        let candidates = self.collect_static_member_candidates(head, name.symbol);
+        let mut candidates = self.collect_static_member_candidates(head, name.symbol);
+
+        // UFCS: If no static members found, look for instance methods.
+        // This allows calling `Interface.method(value)` where `method` is an instance method.
+        if candidates.is_empty() {
+            candidates = self.collect_instance_member_candidates(head, name.symbol);
+        }
+
         if candidates.is_empty() {
             let error = Spanned::new(
                 TypeError::NoSuchMember {
@@ -441,6 +448,37 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let mut collect = |db: &crate::compile::context::TypeDatabase<'ctx>| {
             if let Some(index) = db.type_head_to_members.get(&head) {
                 if let Some(set) = index.static_functions.get(&name) {
+                    for &id in &set.members {
+                        if seen.insert(id) {
+                            members.push(id);
+                        }
+                    }
+                }
+            }
+        };
+
+        gcx.with_session_type_database(|db| collect(db));
+        for index in gcx.visible_packages() {
+            gcx.with_type_database(index, |db| collect(db));
+        }
+
+        members
+    }
+
+    /// Collect instance method candidates for UFCS resolution.
+    /// This is used when static member lookup fails to allow `Interface.method(value)` syntax.
+    fn collect_instance_member_candidates(
+        &self,
+        head: TypeHead,
+        name: Symbol,
+    ) -> Vec<DefinitionID> {
+        let gcx = self.gcx();
+        let mut members = Vec::new();
+        let mut seen: FxHashSet<DefinitionID> = FxHashSet::default();
+
+        let mut collect = |db: &crate::compile::context::TypeDatabase<'ctx>| {
+            if let Some(index) = db.type_head_to_members.get(&head) {
+                if let Some(set) = index.instance_functions.get(&name) {
                     for &id in &set.members {
                         if seen.insert(id) {
                             members.push(id);

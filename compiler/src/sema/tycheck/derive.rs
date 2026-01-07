@@ -74,6 +74,10 @@ pub fn try_synthesize_method<'ctx>(
             // Copy is a marker interface, no methods to synthesize
             None
         }
+        StdInterface::Iterator | StdInterface::Iterable => {
+            // Iterator and Iterable are not auto-derivable
+            None
+        }
     }
 }
 

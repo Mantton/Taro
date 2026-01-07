@@ -806,11 +806,15 @@ impl<'ctx> TypeFolder<'ctx> for ProjectionSubstitutor<'ctx, '_> {
             TyKind::Alias {
                 kind: AliasKind::Projection,
                 def_id,
-                args,
+                ..
             } => {
                 if let Some(witness_ty) = self.type_witnesses.get(&def_id) {
-                    let instantiated = instantiate_ty_with_args(self.gcx, *witness_ty, args);
-                    return instantiated.fold_with(self);
+                    // Return the witness type directly - it's already the concrete type
+                    // assigned in the extension (e.g., `type Element = T`). 
+                    // We don't instantiate with projection args because those represent
+                    // the Self type, not arguments to the witness.
+                    // Continue folding to resolve any nested projections within the witness type.
+                    return witness_ty.fold_with(self);
                 }
                 ty.super_fold_with(self)
             }

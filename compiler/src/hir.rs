@@ -686,6 +686,10 @@ pub enum StdInterface {
     Hashable,
     /// Interface for types that can be compared for equality.
     Equatable,
+    /// Interface for types that can yield a sequence of values.
+    Iterator,
+    /// Interface for types that can be converted into an Iterator.
+    Iterable,
 }
 
 impl StdInterface {
@@ -695,15 +699,19 @@ impl StdInterface {
             StdInterface::Clone => "Clone",
             StdInterface::Hashable => "Hashable",
             StdInterface::Equatable => "Equatable",
+            StdInterface::Iterator => "Iterator",
+            StdInterface::Iterable => "Iterable",
         }
     }
 
     /// Returns all standard interfaces for iteration.
-    pub const ALL: [StdInterface; 4] = [
+    pub const ALL: [StdInterface; 6] = [
         StdInterface::Copy,
         StdInterface::Clone,
         StdInterface::Hashable,
         StdInterface::Equatable,
+        StdInterface::Iterator,
+        StdInterface::Iterable,
     ];
 
     /// Whether this interface can be auto-derived when declared inline.

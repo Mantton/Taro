@@ -1,5 +1,13 @@
+/// A half-open range from `start` to `end` (exclusive).
+/// Created with the `..` operator: `start..end`
+public struct Range[Bound] {
+    start: Bound
+    end: Bound
+}
 
-public struct Range[Bound] {}
-
-public struct ClosedRange[Bound] {}
-
+/// A closed range from `start` to `end` (inclusive).
+/// Created with the `..=` operator: `start..=end`
+public struct ClosedRange[Bound] {
+    start: Bound
+    end: Bound
+}

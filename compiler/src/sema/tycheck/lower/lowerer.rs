@@ -7,7 +7,7 @@ use crate::{
             GenericArguments, GenericParameter, GenericParameterDefinition,
             GenericParameterDefinitionKind, InterfaceDefinition, InterfaceReference, Ty, TyKind,
         },
-        resolve::models::PrimaryType,
+        resolve::models::{PrimaryType, TypeHead},
         tycheck::{
             lower::LoweringRequest,
             utils::{
@@ -437,10 +437,32 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         let name = segment.identifier.symbol;
         let mut candidates: Vec<(DefinitionID, Span)> = Vec::new();
 
+        // For reference/pointer types, we need to filter by the actual inner type
+        // since TypeHead::Reference only contains mutability, not the inner type
+        let needs_self_ty_match = matches!(head, TypeHead::Reference(_));
+
         let mut collect = |db: &mut crate::compile::context::TypeDatabase<'ctx>| {
             if let Some(bucket) = db.alias_table.by_type.get(&head) {
                 if let Some(entry) = bucket.aliases.get(&name) {
-                    candidates.push(*entry);
+                    // For reference/pointer types, verify the extension's self type matches
+                    if needs_self_ty_match {
+                        let alias_id = entry.0;
+                        if let Some(alias_def) = db.alias_table.aliases.get(&alias_id) {
+                            if let Some(ext_id) = alias_def.extension_id {
+                                if let Some(ext_self_ty) = gcx.get_extension_self_ty(ext_id) {
+                                    // Only include if the extension's self type matches our base_ty
+                                    if self.types_match_for_assoc_lookup(base_ty, ext_self_ty) {
+                                        candidates.push(*entry);
+                                    }
+                                    return;
+                                }
+                            }
+                        }
+                        // If we can't verify, include the candidate (fallback)
+                        candidates.push(*entry);
+                    } else {
+                        candidates.push(*entry);
+                    }
                 }
             }
         };
@@ -472,6 +494,14 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             candidates
         };
 
+        // Deduplicate by definition ID - the same alias may appear in both
+        // session database and package databases
+        let mut seen_ids = FxHashSet::default();
+        let visible: Vec<_> = visible
+            .into_iter()
+            .filter(|(id, _)| seen_ids.insert(*id))
+            .collect();
+
         if visible.is_empty() {
             gcx.dcx().emit_error(
                 format!("associated type '{}' is not visible here", name.as_str()),
@@ -497,6 +527,26 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         let args = self.lower_type_arguments(alias_id, segment);
         let ty = self.resolve_alias(alias_id);
         instantiate_ty_with_args(gcx, ty, args)
+    }
+
+    /// Check if two types match for associated type lookup purposes.
+    /// This is used to filter candidates when looking up associated types on reference/pointer types.
+    /// We compare the inner nominal types to ensure we match the correct extension.
+    fn types_match_for_assoc_lookup(&self, base_ty: Ty<'ctx>, ext_self_ty: Ty<'ctx>) -> bool {
+        match (base_ty.kind(), ext_self_ty.kind()) {
+            // Reference types: compare inner types
+            (TyKind::Reference(inner1, m1), TyKind::Reference(inner2, m2)) if m1 == m2 => {
+                self.types_match_for_assoc_lookup(inner1, inner2)
+            }
+            // Pointer types: compare inner types
+            (TyKind::Pointer(inner1, m1), TyKind::Pointer(inner2, m2)) if m1 == m2 => {
+                self.types_match_for_assoc_lookup(inner1, inner2)
+            }
+            // Nominal types: compare by definition ID (ignoring generic args which may have params)
+            (TyKind::Adt(def1, _), TyKind::Adt(def2, _)) => def1.id == def2.id,
+            // Primitives and other types: just check equality
+            _ => base_ty == ext_self_ty,
+        }
     }
 
     fn lower_projection_type_path(

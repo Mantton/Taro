@@ -4,7 +4,7 @@ use crate::{
     error::CompileResult,
     hir::{self, DefinitionID, DefinitionKind, HirVisitor, StdInterface},
     sema::{
-        models::{ConformanceRecord, EnumVariantKind, InterfaceReference},
+        models::{ConformanceRecord, EnumVariantKind, InterfaceReference, Ty, TyKind},
         resolve::models::TypeHead,
         tycheck::lower::{DefTyLoweringCtx, TypeLowerer},
     },
@@ -90,7 +90,7 @@ impl<'ctx> Actor<'ctx> {
             }
 
             // Orphan rule check: must own the type OR own the interface
-            if !self.is_conformance_allowed(ty_key, reference.id, extension_pkg) {
+            if !self.is_conformance_allowed(ty_key, self_ty, reference.id, extension_pkg) {
                 self.emit_orphan_error(interface.span, ty_key, reference);
                 continue;
             }
@@ -199,9 +199,11 @@ impl<'ctx> Actor<'ctx> {
     }
 
     /// Orphan rule: you can add a conformance only if you own the type OR own the interface.
+    /// For reference/pointer types, localness propagates through the reference.
     fn is_conformance_allowed(
         &self,
         ty: TypeHead,
+        self_ty: Ty<'ctx>,
         interface_id: DefinitionID,
         extension_pkg: PackageIndex,
     ) -> bool {
@@ -210,16 +212,36 @@ impl<'ctx> Actor<'ctx> {
             return true;
         }
 
-        // Check if we own the type
+        // Check if we own the type (propagating through references/pointers)
+        self.is_type_local(ty, self_ty, extension_pkg)
+    }
+
+    /// Check if a type is "local" to the given package.
+    /// For reference/pointer types, localness propagates to the inner type.
+    fn is_type_local(&self, ty: TypeHead, self_ty: Ty<'ctx>, pkg: PackageIndex) -> bool {
         match ty {
-            TypeHead::Nominal(id) => id.package() == extension_pkg,
+            TypeHead::Nominal(id) => id.package() == pkg,
+            // For references and pointers, check the inner type
+            TypeHead::Reference(_) | TypeHead::Pointer(_) => {
+                self.is_inner_type_local(self_ty, pkg)
+            }
             // Built-in types are owned by std
-            TypeHead::Primary(_)
-            | TypeHead::GcPtr
-            | TypeHead::Tuple(_)
-            | TypeHead::Reference(_)
-            | TypeHead::Pointer(_)
-            | TypeHead::Array => self.is_std_package(extension_pkg),
+            TypeHead::Primary(_) | TypeHead::GcPtr | TypeHead::Tuple(_) | TypeHead::Array => {
+                self.is_std_package(pkg)
+            }
+        }
+    }
+
+    /// Check if the inner type of a reference/pointer is local.
+    fn is_inner_type_local(&self, ty: Ty<'ctx>, pkg: PackageIndex) -> bool {
+        match ty.kind() {
+            TyKind::Reference(inner, _) | TyKind::Pointer(inner, _) => {
+                // Recursively check the inner type
+                self.is_inner_type_local(inner, pkg)
+            }
+            TyKind::Adt(def, _) => def.id.package() == pkg,
+            // For other types, fall back to std ownership
+            _ => self.is_std_package(pkg),
         }
     }
 
