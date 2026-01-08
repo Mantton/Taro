@@ -956,7 +956,7 @@ pub trait VisitorResult {
     type Residual;
     fn output() -> Self;
     fn from_residual(residual: Self::Residual) -> Self;
-    fn from_branch(b: ControlFlow<Self::Residual>) -> Self;
+
     fn branch(self) -> ControlFlow<Self::Residual>;
 }
 
@@ -969,7 +969,7 @@ impl VisitorResult for () {
 
     fn output() -> Self {}
     fn from_residual(_: Self::Residual) -> Self {}
-    fn from_branch(_: ControlFlow<Self::Residual>) -> Self {}
+
     fn branch(self) -> ControlFlow<Self::Residual> {
         ControlFlow::Continue(())
     }
@@ -1021,14 +1021,7 @@ pub enum AssocContext {
     Impl(NodeID),
 }
 
-impl AssocContext {
-    pub fn node_id(self) -> NodeID {
-        match self {
-            AssocContext::Interface(id) => id,
-            AssocContext::Impl(id) => id,
-        }
-    }
-}
+impl AssocContext {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UseTreeContext {
@@ -1053,9 +1046,7 @@ impl<T> VisitorResult for ControlFlow<T> {
     fn from_residual(residual: Self::Residual) -> Self {
         ControlFlow::Break(residual)
     }
-    fn from_branch(b: Self) -> Self {
-        b
-    }
+
     fn branch(self) -> Self {
         self
     }
@@ -1064,6 +1055,7 @@ impl<T> VisitorResult for ControlFlow<T> {
 pub trait AstVisitor: Sized {
     type Result: VisitorResult = ();
 
+    #[allow(dead_code)]
     fn visit_package(&mut self, node: &Package) -> Self::Result {
         walk_package(self, node)
     }

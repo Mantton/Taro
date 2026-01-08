@@ -355,7 +355,9 @@ impl<'ctx> Checker<'ctx> {
         }
         for (id, args) in cs.resolved_instantiations() {
             let resolved_args = cs.infer_cx.resolve_args_if_possible(args);
-            self.results.borrow_mut().record_instantiation(id, resolved_args);
+            self.results
+                .borrow_mut()
+                .record_instantiation(id, resolved_args);
         }
         for (id, ty) in cs.resolved_local_types() {
             let ty = cs.infer_cx.resolve_vars_if_possible(ty);
@@ -507,8 +509,6 @@ impl<'ctx> Checker<'ctx> {
 
                 cs.add_goal(
                     Goal::Deref(DerefGoalData {
-                        node_id: expression.id,
-                        operand_node: inner.id,
                         operand_ty: ptr_ty,
                         result_ty,
                         span: expression.span,

@@ -13,16 +13,6 @@ impl<'ctx> ParamEnv<'ctx> {
         ParamEnv { constraints }
     }
 
-    pub fn empty() -> Self {
-        ParamEnv {
-            constraints: vec![],
-        }
-    }
-
-    pub fn constraints(&self) -> &[Constraint<'ctx>] {
-        &self.constraints
-    }
-
     /// Get all interface bounds for a given type (considering type equalities).
     pub fn bounds_for(&self, ty: Ty<'ctx>) -> Vec<InterfaceReference<'ctx>> {
         let eq_set = self.equivalent_types(ty);
@@ -63,13 +53,5 @@ impl<'ctx> ParamEnv<'ctx> {
         }
 
         seen
-    }
-
-    /// Check if two types are equivalent via in-scope type equalities.
-    pub fn types_equal(&self, a: Ty<'ctx>, b: Ty<'ctx>) -> bool {
-        if a == b {
-            return true;
-        }
-        self.equivalent_types(a).contains(&b)
     }
 }

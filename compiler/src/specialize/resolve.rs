@@ -81,12 +81,16 @@ fn resolve_interface_method_for_concrete<'ctx>(
                 if let Some(deduced_args) = deduce_impl_args(gcx, impl_id, self_ty) {
                     // call_args are [Self, ...method_generics]
                     // We want [deduced_impl_args..., ...method_generics]
-                    let method_generics = if call_args.len() > 0 { &call_args[1..] } else { &[] };
-                    
+                    let method_generics = if call_args.len() > 0 {
+                        &call_args[1..]
+                    } else {
+                        &[]
+                    };
+
                     let mut final_args = deduced_args.to_vec();
                     final_args.extend_from_slice(method_generics);
                     let final_args = gcx.store.interners.intern_generic_args(final_args);
-                    
+
                     return Some(Instance::item(impl_func_id, final_args));
                 }
             }
@@ -227,30 +231,33 @@ fn deduce_impl_args<'ctx>(
     concrete_self_ty: Ty<'ctx>,
 ) -> Option<GenericArguments<'ctx>> {
     let impl_self_ty = gcx.get_impl_self_ty(impl_id)?;
-    
+
     // Create inference context
     let icx = Rc::new(InferCtx::new(gcx));
-    
+
     // Create fresh inference vars for the impl's generic parameters
     // We pass a dummy span since we don't have a real call site span readily available here,
     // but we could thread one through if needed for error reporting (though we swallow errors here).
     let span = crate::span::Span::empty(crate::span::FileID::from_usize(0));
     let fresh_args = icx.fresh_args_for_def(impl_id, span);
-    
+
     // Instantiate the impl's Self type with these fresh variables
     // e.g. ListRefIterator[?0]
     let instantiated_impl_ty = instantiate_ty_with_args(gcx, impl_self_ty, fresh_args);
-    
+
     // Unify the instantiated impl type with the concrete type
     // e.g. Unify ListRefIterator[?0] with ListRefIterator[int32] -> ?0 = int32
     let unifier = TypeUnifier::new(icx.clone());
-    
-    if unifier.unify(instantiated_impl_ty, concrete_self_ty).is_err() {
+
+    if unifier
+        .unify(instantiated_impl_ty, concrete_self_ty)
+        .is_err()
+    {
         return None;
     }
-    
+
     // Resolve the inference variables to their concrete values
     let resolved_args = icx.resolve_args_if_possible(fresh_args);
-    
+
     Some(resolved_args)
 }

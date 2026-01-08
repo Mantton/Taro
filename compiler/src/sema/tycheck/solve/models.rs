@@ -224,8 +224,6 @@ pub struct TupleAccessGoalData<'ctx> {
 
 #[derive(Debug, Clone)]
 pub struct DerefGoalData<'ctx> {
-    pub node_id: NodeID,
-    pub operand_node: NodeID,
     pub operand_ty: Ty<'ctx>,
     pub result_ty: Ty<'ctx>,
     pub span: Span,

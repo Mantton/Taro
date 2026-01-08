@@ -393,7 +393,7 @@ impl<'ctx> Compiler<'ctx> {
             };
         }
 
-        let mut branch_var = self.branch_variable(&rows);
+        let branch_var = self.branch_variable(&rows);
 
         // Peel off reference to get the actual type for matching
         // This handles match ergonomics where scrutinee is &T but patterns match T

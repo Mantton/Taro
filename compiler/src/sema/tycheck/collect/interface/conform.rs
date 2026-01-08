@@ -119,14 +119,6 @@ impl<'ctx> Actor<'ctx> {
         }
     }
 
-    fn validate_conformance(
-        &self,
-        type_head: TypeHead,
-        record: &crate::sema::models::ConformanceRecord<'ctx>,
-    ) {
-        self.validate_conformance_with_context(type_head, record, None);
-    }
-
     fn validate_conformance_with_context(
         &self,
         type_head: TypeHead,

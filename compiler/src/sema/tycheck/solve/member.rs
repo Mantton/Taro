@@ -561,11 +561,11 @@ impl<'ctx> ConstraintSolver<'ctx> {
         }
 
         // If no primary type head (e.g. generic parameter), check bounds
-        let mut candidates = Vec::new();
+        let candidates = Vec::new();
         match ty.kind() {
             TyKind::Parameter(_) | TyKind::BoxedExistential { .. } => {
                 let bounds = self.bounds_for_type_in_scope(ty);
-                for bound in bounds {
+                for _bound in bounds {
                     // TODO : Look up operators in the interface definition directly
                 }
             }

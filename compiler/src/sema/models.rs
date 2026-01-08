@@ -103,7 +103,9 @@ impl<'arena> Ty<'arena> {
                 TyKind::Alias { .. } => true, // unnormalized aliases might hide inference vars
                 TyKind::Adt(_, args) => args.iter().any(|arg| match arg {
                     GenericArgument::Type(ty) => visit(*ty),
-                    GenericArgument::Const(c) => matches!(c.kind, ConstKind::Infer(_)) || visit(c.ty),
+                    GenericArgument::Const(c) => {
+                        matches!(c.kind, ConstKind::Infer(_)) || visit(c.ty)
+                    }
                 }),
                 TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => visit(inner),
                 TyKind::Array { element, .. } => visit(element), // Skip const len for now, usually it doesn't affect member lookup
@@ -114,7 +116,9 @@ impl<'arena> Ty<'arena> {
                 TyKind::BoxedExistential { interfaces } => interfaces.iter().any(|iface| {
                     iface.arguments.iter().any(|arg| match arg {
                         GenericArgument::Type(ty) => visit(*ty),
-                        GenericArgument::Const(c) => matches!(c.kind, ConstKind::Infer(_)) || visit(c.ty),
+                        GenericArgument::Const(c) => {
+                            matches!(c.kind, ConstKind::Infer(_)) || visit(c.ty)
+                        }
                     })
                 }),
                 _ => false,

@@ -208,10 +208,7 @@ impl<'ctx> InferCtx<'ctx> {
     }
 
     /// Resolve inference variables in generic arguments.
-    pub fn resolve_args_if_possible(
-        &self,
-        args: GenericArguments<'ctx>,
-    ) -> GenericArguments<'ctx> {
+    pub fn resolve_args_if_possible(&self, args: GenericArguments<'ctx>) -> GenericArguments<'ctx> {
         if args.is_empty() {
             return args;
         }
@@ -228,7 +225,6 @@ impl<'ctx> InferCtx<'ctx> {
             .collect();
         self.gcx.store.interners.intern_generic_args(resolved)
     }
-
 
     pub fn bind_overload(&self, ty: Ty<'ctx>, source: DefinitionID) {
         let TyKind::Infer(InferTy::TyVar(var_id)) = ty.kind() else {

@@ -297,10 +297,6 @@ impl<'ctx> ConstraintSystem<'ctx> {
         normalize_ty(self.infer_cx.clone(), ty, &self.env)
     }
 
-    pub fn take_obligations(&mut self) -> VecDeque<Obligation<'ctx>> {
-        std::mem::take(&mut self.obligations)
-    }
-
     pub fn merge(&mut self, other: ConstraintSystem<'ctx>) {
         self.obligations.extend(other.obligations);
         self.expr_tys.extend(other.expr_tys);

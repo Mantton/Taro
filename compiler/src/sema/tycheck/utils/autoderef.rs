@@ -30,8 +30,4 @@ impl<'gcx> Autoderef<'gcx> {
             at_start: true,
         }
     }
-
-    pub fn final_ty(&self) -> Ty<'gcx> {
-        self.ty
-    }
 }

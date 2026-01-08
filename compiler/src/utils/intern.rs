@@ -173,20 +173,4 @@ impl<K: Eq + Hash + Copy> WrappedHashSet<K> {
             v
         }
     }
-
-    #[inline]
-    pub fn intern_ref<Q: ?Sized>(&self, value: &Q, make: impl FnOnce() -> K) -> K
-    where
-        K: Borrow<Q>,
-        Q: Hash + Eq,
-    {
-        let mut set = self.wrapped.borrow_mut();
-        if let Some(v) = set.get(value) {
-            return *v;
-        } else {
-            let v = make();
-            set.insert(v);
-            v
-        }
-    }
 }

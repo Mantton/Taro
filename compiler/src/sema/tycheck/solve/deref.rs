@@ -11,8 +11,6 @@ use crate::{
 impl<'ctx> ConstraintSolver<'ctx> {
     pub fn solve_deref(&mut self, data: DerefGoalData<'ctx>) -> SolverResult<'ctx> {
         let DerefGoalData {
-            node_id: _,
-            operand_node: _,
             operand_ty,
             result_ty,
             span,

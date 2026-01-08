@@ -2245,7 +2245,6 @@ impl Parser {
     }
 }
 
-
 impl Parser {
     fn parse_range_expr(&mut self) -> R<Box<Expression>> {
         let mut expr = self.parse_bool_or_expr()?;
@@ -4234,7 +4233,6 @@ mod tests {
             panic!("Expected OptionalDefault");
         }
     }
-
 
     #[test]
     fn test_ternary_expr() {

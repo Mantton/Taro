@@ -72,9 +72,7 @@ pub enum TypeError<'ctx> {
         ty: Ty<'ctx>,
         interface: InterfaceReference<'ctx>,
     },
-    GenericParameterNotInferred {
-        name: Symbol,
-    },
+
     ArgCountMismatch(usize, usize),
     ArgMismatch(ExpectedFound<GenericArgument<'ctx>>),
 }
@@ -174,12 +172,7 @@ impl<'ctx> TypeError<'ctx> {
                     interface.format(gcx)
                 )
             }
-            TypeError::GenericParameterNotInferred { name } => {
-                format!(
-                    "generic parameter '{}' could not be inferred",
-                    name.as_str()
-                )
-            }
+
             TypeError::ArgCountMismatch(expected, found) => {
                 format!("expected {} generic arguments, found {}", expected, found)
             }

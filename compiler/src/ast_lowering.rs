@@ -914,7 +914,10 @@ impl Actor<'_, '_> {
         };
 
         // Create Iterable.makeIterator(collection) call as UFCS call
-        let iterable_id = self.context.find_std_type("Iterable").expect("std.Iterable not found");
+        let iterable_id = self
+            .context
+            .find_std_type("Iterable")
+            .expect("std.Iterable not found");
         let iterable_path = hir::ResolvedPath::Resolved(hir::Path {
             span,
             resolution: Resolution::Definition(iterable_id, DefinitionKind::Interface),
@@ -926,7 +929,7 @@ impl Actor<'_, '_> {
                 resolution: Resolution::Definition(iterable_id, DefinitionKind::Interface),
             }],
         });
-        
+
         let iterable_ty = hir::Type {
             id: self.next_index(),
             span,
@@ -934,12 +937,16 @@ impl Actor<'_, '_> {
         };
 
         // Resolve 'makeIterator' within Iterable
-        let iterable_reqs = self.context.get_interface_requirements(iterable_id)
+        let iterable_reqs = self
+            .context
+            .get_interface_requirements(iterable_id)
             .expect("Iterable interface requirements not found");
-        let make_iter_def = iterable_reqs.methods.iter()
+        let make_iter_def = iterable_reqs
+            .methods
+            .iter()
             .find(|m| m.name.as_str() == "makeIterator")
             .expect("makeIterator method not found in Iterable");
-        
+
         let make_iter_id = make_iter_def.id;
         let make_iter_kind = self.context.definition_kind(make_iter_id);
 
@@ -950,9 +957,11 @@ impl Actor<'_, '_> {
             span,
             resolution: Resolution::Definition(make_iter_id, make_iter_kind),
         };
-        
-        let make_iter_fn_path = hir::ResolvedPath::Relative(Box::new(iterable_ty), make_iter_segment);
-        let make_iter_fn_expr = self.mk_expression(hir::ExpressionKind::Path(make_iter_fn_path), span);
+
+        let make_iter_fn_path =
+            hir::ResolvedPath::Relative(Box::new(iterable_ty), make_iter_segment);
+        let make_iter_fn_expr =
+            self.mk_expression(hir::ExpressionKind::Path(make_iter_fn_path), span);
 
         let make_iterator_call = self.mk_expression(
             hir::ExpressionKind::Call {
@@ -986,7 +995,10 @@ impl Actor<'_, '_> {
         );
 
         // Resolve Iterator.next path
-        let iterator_id = self.context.find_std_type("Iterator").expect("std.Iterator not found");
+        let iterator_id = self
+            .context
+            .find_std_type("Iterator")
+            .expect("std.Iterator not found");
         let iterator_path = hir::ResolvedPath::Resolved(hir::Path {
             span,
             resolution: Resolution::Definition(iterator_id, DefinitionKind::Interface),
@@ -998,19 +1010,23 @@ impl Actor<'_, '_> {
                 resolution: Resolution::Definition(iterator_id, DefinitionKind::Interface),
             }],
         });
-        
+
         let iterator_ty = hir::Type {
             id: self.next_index(),
             span,
             kind: hir::TypeKind::Nominal(iterator_path),
         };
 
-        let iterator_reqs = self.context.get_interface_requirements(iterator_id)
+        let iterator_reqs = self
+            .context
+            .get_interface_requirements(iterator_id)
             .expect("Iterator interface requirements not found");
-        let next_def = iterator_reqs.methods.iter()
+        let next_def = iterator_reqs
+            .methods
+            .iter()
             .find(|m| m.name.as_str() == "next")
             .expect("next method not found in Iterator");
-        
+
         let next_id = next_def.id;
         let next_kind = self.context.definition_kind(next_id);
 
@@ -1021,7 +1037,7 @@ impl Actor<'_, '_> {
             span,
             resolution: Resolution::Definition(next_id, next_kind),
         };
-        
+
         let next_fn_path = hir::ResolvedPath::Relative(Box::new(iterator_ty), next_segment);
         let next_fn_expr = self.mk_expression(hir::ExpressionKind::Path(next_fn_path), span);
 
@@ -1166,25 +1182,7 @@ impl Actor<'_, '_> {
             self.mk_expression(hir::ExpressionKind::Block(outer_block), span),
         )
     }
-
-    fn mk_method_call(
-        &mut self,
-        receiver: Box<hir::Expression>,
-        name: Identifier,
-        arguments: Vec<hir::ExpressionArgument>,
-        span: Span,
-    ) -> Box<hir::Expression> {
-        self.mk_expression(
-            hir::ExpressionKind::MethodCall {
-                receiver,
-                name,
-                arguments,
-            },
-            span,
-        )
-    }
 }
-
 impl Actor<'_, '_> {
     fn lower_expression(&mut self, node: Box<ast::Expression>) -> Box<hir::Expression> {
         let kind = match node.kind {
