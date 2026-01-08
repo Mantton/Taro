@@ -354,7 +354,8 @@ impl<'ctx> Checker<'ctx> {
             self.results.borrow_mut().record_field_index(id, index);
         }
         for (id, args) in cs.resolved_instantiations() {
-            self.results.borrow_mut().record_instantiation(id, args);
+            let resolved_args = cs.infer_cx.resolve_args_if_possible(args);
+            self.results.borrow_mut().record_instantiation(id, resolved_args);
         }
         for (id, ty) in cs.resolved_local_types() {
             let ty = cs.infer_cx.resolve_vars_if_possible(ty);
@@ -1858,6 +1859,7 @@ impl<'ctx> Checker<'ctx> {
                     TyKind::Adt(_, args) if !args.is_empty() => Some(args),
                     _ => None,
                 };
+
                 let Some(head) = type_head_from_value_ty(base_ty) else {
                     if emit_errors {
                         self.gcx().dcx().emit_error(

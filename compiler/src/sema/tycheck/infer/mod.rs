@@ -207,6 +207,29 @@ impl<'ctx> InferCtx<'ctx> {
         value.fold_with(&mut resolver)
     }
 
+    /// Resolve inference variables in generic arguments.
+    pub fn resolve_args_if_possible(
+        &self,
+        args: GenericArguments<'ctx>,
+    ) -> GenericArguments<'ctx> {
+        if args.is_empty() {
+            return args;
+        }
+        let resolved: Vec<_> = args
+            .iter()
+            .map(|arg| match arg {
+                GenericArgument::Type(ty) => {
+                    GenericArgument::Type(self.resolve_vars_if_possible(*ty))
+                }
+                GenericArgument::Const(c) => {
+                    GenericArgument::Const(self.resolve_const_if_possible(*c))
+                }
+            })
+            .collect();
+        self.gcx.store.interners.intern_generic_args(resolved)
+    }
+
+
     pub fn bind_overload(&self, ty: Ty<'ctx>, source: DefinitionID) {
         let TyKind::Infer(InferTy::TyVar(var_id)) = ty.kind() else {
             return;

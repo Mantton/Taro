@@ -13,6 +13,10 @@ use crate::{
     specialize::Instance,
 };
 
+use crate::sema::tycheck::infer::InferCtx;
+use crate::sema::tycheck::utils::unify::TypeUnifier;
+use std::rc::Rc;
+
 pub fn resolve_instance<'ctx>(
     gcx: GlobalContext<'ctx>,
     def_id: DefinitionID,
@@ -66,22 +70,33 @@ fn resolve_interface_method_for_concrete<'ctx>(
     let def_kind = gcx.definition_kind(method_id);
     match def_kind {
         DefinitionKind::AssociatedFunction => {
-            // It's a method
             let method = witness.method_witnesses.get(&method_id)?;
-            // TODO: Handle synthetic implementations (generated code)
-            let impl_id = method.implementation.impl_id()?;
+            let impl_func_id = method.implementation.impl_id()?;
+
+            // Strategy 1: Deduction (Preferred for concrete types)
+            // If this is a method from an impl block, we try to deduce the impl's generic arguments
+            // by structurally matching the concrete Self type (from call) against the impl's Self type.
+            // This handles cases where we need to extract inner types (e.g. List[int32] -> int32).
+            if let Some(impl_id) = witness.extension_id {
+                if let Some(deduced_args) = deduce_impl_args(gcx, impl_id, self_ty) {
+                    // call_args are [Self, ...method_generics]
+                    // We want [deduced_impl_args..., ...method_generics]
+                    let method_generics = if call_args.len() > 0 { &call_args[1..] } else { &[] };
+                    
+                    let mut final_args = deduced_args.to_vec();
+                    final_args.extend_from_slice(method_generics);
+                    let final_args = gcx.store.interners.intern_generic_args(final_args);
+                    
+                    return Some(Instance::item(impl_func_id, final_args));
+                }
+            }
+
+            // Strategy 2: Template Instantiation (Fallback)
+            // Use the static args_template computed during conformance checking.
+            // This works when no deduction is needed or for simple substitutions.
             let impl_args =
                 instantiate_generic_args_with_args(gcx, method.args_template, call_args);
-            Some(Instance::item(impl_id, impl_args))
-        }
-        DefinitionKind::AssociatedOperator => {
-            // It's an operator - find the implementation in operator_witnesses
-            // We don't know the operator kind, so iterate through all of them
-            // In practice there should only be one operator being called here
-            let impl_id = witness.operator_witnesses.values().next()?;
-            // Operators don't have generic parameters typically, use empty args
-            let impl_args = gcx.store.interners.intern_generic_args(vec![]);
-            Some(Instance::item(*impl_id, impl_args))
+            Some(Instance::item(impl_func_id, impl_args))
         }
         _ => None,
     }
@@ -89,9 +104,7 @@ fn resolve_interface_method_for_concrete<'ctx>(
 
 fn interface_method_parent(gcx: GlobalContext<'_>, def_id: DefinitionID) -> Option<DefinitionID> {
     let def_kind = gcx.definition_kind(def_id);
-    if def_kind != DefinitionKind::AssociatedFunction
-        && def_kind != DefinitionKind::AssociatedOperator
-    {
+    if def_kind != DefinitionKind::AssociatedFunction {
         return None;
     }
 
@@ -206,4 +219,38 @@ fn instantiate_generic_args_with_args<'ctx>(
     }
 
     gcx.store.interners.intern_generic_args(out)
+}
+
+fn deduce_impl_args<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    impl_id: DefinitionID,
+    concrete_self_ty: Ty<'ctx>,
+) -> Option<GenericArguments<'ctx>> {
+    let impl_self_ty = gcx.get_impl_self_ty(impl_id)?;
+    
+    // Create inference context
+    let icx = Rc::new(InferCtx::new(gcx));
+    
+    // Create fresh inference vars for the impl's generic parameters
+    // We pass a dummy span since we don't have a real call site span readily available here,
+    // but we could thread one through if needed for error reporting (though we swallow errors here).
+    let span = crate::span::Span::empty(crate::span::FileID::from_usize(0));
+    let fresh_args = icx.fresh_args_for_def(impl_id, span);
+    
+    // Instantiate the impl's Self type with these fresh variables
+    // e.g. ListRefIterator[?0]
+    let instantiated_impl_ty = instantiate_ty_with_args(gcx, impl_self_ty, fresh_args);
+    
+    // Unify the instantiated impl type with the concrete type
+    // e.g. Unify ListRefIterator[?0] with ListRefIterator[int32] -> ?0 = int32
+    let unifier = TypeUnifier::new(icx.clone());
+    
+    if unifier.unify(instantiated_impl_ty, concrete_self_ty).is_err() {
+        return None;
+    }
+    
+    // Resolve the inference variables to their concrete values
+    let resolved_args = icx.resolve_args_if_possible(fresh_args);
+    
+    Some(resolved_args)
 }

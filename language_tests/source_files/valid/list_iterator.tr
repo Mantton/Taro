@@ -1,6 +1,3 @@
-
-import std.collections.List
-
 func test_ref_iterator(_ list: &List[int32]) {
     var sum = 0
     for x in list {
