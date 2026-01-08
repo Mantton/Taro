@@ -66,7 +66,7 @@ This document describes the formal grammar of the Taro programming language in E
 ```
 any         as          break       case        const       continue
 defer       else        enum        export      extern      false
-for         func        guard       if          extend      import
+for         func        guard       if          impl        import
 in          init        interface   let         loop        match
 namespace   nil         operator    private     public      readonly
 return      static      struct      true        type        var
@@ -127,7 +127,7 @@ async       await       ref
                          | <variable_declaration>
                          | <constant_declaration>
                          | <type_alias_declaration>
-                         | <extension_declaration>
+                         | <impl_declaration>
                          | <extern_block>
                          | <namespace_declaration>
 
@@ -199,10 +199,10 @@ async       await       ref
 <conformances>         ::= ':' <path_node> { ',' <path_node> }
 ```
 
-### Extension Declaration
+### Implementation Declaration
 
 ```ebnf
-<extension_declaration>::= 'extend' <type> <generics> [ <conformances> ]
+<impl_declaration>     ::= 'impl' [ <generics> ] <type> [ 'for' <type> ]
                            '{' { <associated_declaration> } '}'
 ```
 

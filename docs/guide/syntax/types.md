@@ -224,7 +224,7 @@ Map[string, int32,]
 
 ## Self Type
 
-Within interfaces and extensions, `Self` refers to the implementing type.
+Within interfaces and implementations, `Self` refers to the implementing type.
 
 ```taro
 interface Cloneable {

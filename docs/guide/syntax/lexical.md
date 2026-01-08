@@ -113,7 +113,7 @@ Runes represent single Unicode code points and are enclosed in single quotes.
 ```
 any         as          break       case        const       continue
 defer       else        enum        export      extern      false
-for         func        guard       if          extend      import
+for         func        guard       if          impl        import
 in          init        interface   let         loop        match
 namespace   nil         operator    private     public      readonly
 return      static      struct      true        type        var

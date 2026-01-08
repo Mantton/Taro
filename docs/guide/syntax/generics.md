@@ -149,20 +149,20 @@ func sum[I](iter: I) -> int32 where I: Iterator, I.Item == int32 {
 
 ---
 
-## Generic Extensions
+## Generic Implementations
 
-Extensions can be generic and constrained.
+Implementations can be generic and constrained.
 
 ```taro
-// Unconditional extension
-extend List[T] {
+// Unconditional implementation
+impl[T] List[T] {
     func isEmpty(&self) -> bool {
         return self.count == 0
     }
 }
 
-// Constrained extension
-extend List[T] where T: Equatable {
+// Constrained implementation
+impl[T] List[T] where T: Equatable {
     func contains(&self, element: T) -> bool {
         for item in self {
             if item == element { return true }
@@ -171,8 +171,8 @@ extend List[T] where T: Equatable {
     }
 }
 
-// Extension with additional type parameters
-extend Map[K, V] {
+// Implementation with additional type parameters
+impl[K, V] Map[K, V] {
     func mapValues[U](f: (V) -> U) -> Map[K, U] {
         var result: Map[K, U] = [:]
         for (key, value) in self {

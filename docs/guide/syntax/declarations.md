@@ -188,41 +188,41 @@ func compare[T](a: T, b: T) -> bool where T: Equatable {
     return a == b
 }
 
-// Self parameters (in interfaces/extensions)
+// Self parameters (in interfaces/implementations)
 func double(&self) -> int32          // Mutable borrow
 func value(&const self) -> int32     // Immutable borrow
 ```
 
 ---
 
-## Extension Declaration
+## Implementation Declaration
 
-Extensions add functionality to existing types.
+Implementations add functionality to existing types.
 
 ```taro
-// Basic extension
-extend int32 {
+// Basic implementation
+impl int32 {
     func double(&self) -> int32 {
         return self * 2
     }
 }
 
-// Extension with interface conformance
-extend int32: Hashable {
+// Implementation of interface
+impl Hashable for int32 {
     func hash(&self) -> int64 {
         return self as int64
     }
 }
 
-// Generic extension
-extend List[T] {
+// Generic implementation
+impl[T] List[T] {
     func first(&self) -> T? {
         return self[0]
     }
 }
 
-// Constrained extension
-extend List[T] where T: Equatable {
+// Constrained implementation
+impl[T] List[T] where T: Equatable {
     func contains(&self, item: T) -> bool {
         for element in self {
             if element == item { return true }
@@ -355,7 +355,7 @@ var counter: int32 = 0
 Custom operator implementations for types.
 
 ```taro
-extend Point {
+impl Point {
     operator +(a: Point, b: Point) -> Point {
         return Point { x: a.x + b.x, y: a.y + b.y }
     }
