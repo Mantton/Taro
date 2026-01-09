@@ -117,6 +117,7 @@ pub struct ConstraintSystem<'ctx> {
     env: ParamEnv<'ctx>,
     /// Traits (interfaces) visible in the current scope (for trait method lookup)
     visible_traits: FxHashSet<DefinitionID>,
+    error_count_at_start: usize,
 }
 
 impl<'ctx> ConstraintSystem<'ctx> {
@@ -133,6 +134,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
         infer_cx: Rc<InferCtx<'ctx>>,
     ) -> ConstraintSystem<'ctx> {
         let visible_traits = collect_visible_traits(context, current_def);
+        let error_count_at_start = context.dcx().error_count();
 
         ConstraintSystem {
             infer_cx,
@@ -153,6 +155,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
                     .collect(),
             ),
             visible_traits,
+            error_count_at_start,
         }
     }
 }
@@ -367,16 +370,18 @@ impl<'ctx> ConstraintSystem<'ctx> {
         self.value_resolutions = value_resolutions;
         self.instantiation_args = instantiation_args;
 
+        let gcx = self.infer_cx.gcx;
+
         if result.is_ok() {
-            if check_unresolved {
+            if check_unresolved
+                && gcx.dcx().error_count() == self.error_count_at_start
+            {
                 self.check_unresolved_vars();
             }
             return;
         }
 
         let Err(errors) = result else { unreachable!() };
-
-        let gcx = self.infer_cx.gcx;
 
         let dcx = gcx.dcx();
         for error in errors {

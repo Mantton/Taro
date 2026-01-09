@@ -32,6 +32,10 @@ impl DiagCtx {
         self.inner.borrow().has_error.get()
     }
 
+    pub fn error_count(&self) -> usize {
+        self.inner.borrow().error_count.get()
+    }
+
     pub fn ok(&self) -> Result<(), ReportedError> {
         if self.has_error() {
             return Err(ReportedError);
@@ -68,6 +72,8 @@ impl DiagCtx {
     pub fn emit(&self, diagnostic: Diagnostic) {
         if matches!(diagnostic.level, DiagnosticLevel::Error) {
             self.inner.borrow().has_error.set(true);
+            let count = self.inner.borrow().error_count.get();
+            self.inner.borrow().error_count.set(count + 1);
         }
 
         if let Some(message) = self.format(&diagnostic, false) {
@@ -147,6 +153,7 @@ impl DiagCtx {
 #[derive(Default)]
 struct DiagCtxInner {
     has_error: Cell<bool>,
+    error_count: Cell<usize>,
     file_mappings: IndexVec<FileID, PathBuf>,
     file_content_mappings: FxHashMap<FileID, EcoString>,
 }

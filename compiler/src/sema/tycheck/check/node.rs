@@ -557,6 +557,9 @@ impl<'ctx> Checker<'ctx> {
             }
             hir::ExpressionKind::Reference(inner, mutability) => {
                 let inner_ty = self.synth_with_expectation(inner, None, cs);
+                if inner_ty.is_error() {
+                    return Ty::error(self.gcx());
+                }
                 if *mutability == hir::Mutability::Mutable {
                     if !self.require_mut_borrow(inner, cs) {
                         return Ty::error(self.gcx());
@@ -566,6 +569,9 @@ impl<'ctx> Checker<'ctx> {
             }
             hir::ExpressionKind::Dereference(inner) => {
                 let ptr_ty = self.synth_with_expectation(inner, None, cs);
+                if ptr_ty.is_error() {
+                    return Ty::error(self.gcx());
+                }
                 let result_ty = cs.infer_cx.next_ty_var(expression.span);
 
                 cs.add_goal(
@@ -1029,6 +1035,9 @@ impl<'ctx> Checker<'ctx> {
 
         // Type-check the RHS against the LHS type.
         let rhs_ty = self.synth_with_expectation(rhs, Some(lhs_ty), cs);
+        if lhs_ty.is_error() || rhs_ty.is_error() {
+            return Ty::error(self.gcx());
+        }
         cs.add_goal(
             crate::sema::tycheck::solve::Goal::Coerce {
                 node_id: rhs.id,
@@ -1342,7 +1351,7 @@ impl<'ctx> Checker<'ctx> {
         };
 
         let positional_args = arguments.iter().all(|arg| arg.label.is_none());
-        let arg_expectations = if positional_args {
+        let arg_expectations = if positional_args && !callee_ty.is_error() {
             self.argument_expectations_for_call(callee, callee_ty, expect_ty, cs)
         } else {
             None
@@ -1369,6 +1378,10 @@ impl<'ctx> Checker<'ctx> {
                 }
             })
             .collect();
+
+        if callee_ty.is_error() || apply_arguments.iter().any(|arg| arg.ty.is_error()) {
+            return Ty::error(self.gcx());
+        }
 
         let result_ty = cs.infer_cx.next_ty_var(expression.span);
         cs.record_expr_ty(expression.id, result_ty);
@@ -1536,6 +1549,12 @@ impl<'ctx> Checker<'ctx> {
                             })
                             .collect();
 
+                        if callee_ty.is_error()
+                            || apply_arguments.iter().any(|arg| arg.ty.is_error())
+                        {
+                            return Ty::error(self.gcx());
+                        }
+
                         let result_ty = cs.infer_cx.next_ty_var(expression.span);
                         cs.record_expr_ty(expression.id, result_ty);
 
@@ -1567,6 +1586,10 @@ impl<'ctx> Checker<'ctx> {
                 span: n.expression.span,
             })
             .collect();
+
+        if recv_ty.is_error() || args.iter().any(|arg| arg.ty.is_error()) {
+            return Ty::error(self.gcx());
+        }
 
         let method_ty = cs.infer_cx.next_ty_var(name.span);
         let result_ty = cs.infer_cx.next_ty_var(expression.span);
@@ -1669,7 +1692,9 @@ impl<'ctx> Checker<'ctx> {
     ) -> Ty<'ctx> {
         // Condition must be bool.
         let cond_ty = self.synth(&node.condition, cs);
-        cs.equal(self.gcx().types.bool, cond_ty, node.condition.span);
+        if !cond_ty.is_error() {
+            cs.equal(self.gcx().types.bool, cond_ty, node.condition.span);
+        }
 
         // then/else branches are expressions; typecheck with shared expectation.
         let then_ty = self.synth_with_expectation(&node.then_block, expectation, cs);
@@ -1679,6 +1704,13 @@ impl<'ctx> Checker<'ctx> {
         } else {
             None
         };
+
+        if cond_ty.is_error()
+            || then_ty.is_error()
+            || else_ty.map(|ty| ty.is_error()).unwrap_or(false)
+        {
+            return Ty::error(self.gcx());
+        }
 
         match else_ty {
             Some(else_ty) => {
@@ -1723,11 +1755,15 @@ impl<'ctx> Checker<'ctx> {
 
         // Typecheck the expression being matched
         let expr_ty = self.synth(&condition.expression, cs);
+        if expr_ty.is_error() {
+            GatherLocalsVisitor::from_match_arm(cs, self, &condition.pattern);
+            self.mark_pattern_bindings_error(&condition.pattern);
+            return Ty::error(self.gcx());
+        }
 
         // Specialized diagnostic for optional binding shorthand (`if let`).
         // Catching this early avoids a cascade of resolution/type errors.
         if condition.source.kind == hir::MatchKind::OptionalBinding
-            && !expr_ty.is_error()
             && !self.is_optional_type(expr_ty)
         {
             self.gcx().dcx().emit_error(
@@ -1792,6 +1828,9 @@ impl<'ctx> Checker<'ctx> {
         };
         // Re-resolve in parent context to get latest state
         let scrutinee_ty = _cs.infer_cx.resolve_vars_if_possible(scrutinee_ty);
+        if scrutinee_ty.is_error() {
+            return Ty::error(self.gcx());
+        }
 
         // ══════════════════════════════════════════════════════════════════════
         // PHASE 1.5: Validate OptionalDefault scrutinee
@@ -2002,6 +2041,9 @@ impl<'ctx> Checker<'ctx> {
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         let operand_ty = self.synth(operand, cs);
+        if operand_ty.is_error() {
+            return Ty::error(self.gcx());
+        }
         let result_ty = cs.infer_cx.next_ty_var(expression.span);
 
         let data = UnOpGoalData {
@@ -2045,6 +2087,9 @@ impl<'ctx> Checker<'ctx> {
         };
         let lhs_ty = self.synth_with_expectation(lhs, operand_expectation, cs);
         let rhs_ty = self.synth_with_expectation(rhs, operand_expectation, cs);
+        if lhs_ty.is_error() || rhs_ty.is_error() {
+            return Ty::error(self.gcx());
+        }
         let result_ty = cs.infer_cx.next_ty_var(expression.span);
 
         let data = BinOpGoalData {
@@ -2078,6 +2123,9 @@ impl<'ctx> Checker<'ctx> {
         }
 
         let rhs_ty = self.synth(rhs, cs);
+        if lhs_ty.is_error() || rhs_ty.is_error() {
+            return Ty::error(self.gcx());
+        }
 
         let data = AssignOpGoalData {
             lhs: lhs_ty,
@@ -2660,6 +2708,9 @@ impl<'ctx> Checker<'ctx> {
     ) -> Ty<'ctx> {
         // Instance receiver (`value.member`) uses synthesized receiver type.
         let receiver_ty = self.synth_with_expectation(target, None, cs);
+        if receiver_ty.is_error() {
+            return Ty::error(self.gcx());
+        }
         let result_ty = cs.infer_cx.next_ty_var(expression.span);
         cs.add_goal(
             Goal::Member(MemberGoalData {
@@ -2744,8 +2795,12 @@ impl<'ctx> Checker<'ctx> {
 
         // Synthesize fields
         let mut fields = Vec::with_capacity(lit.fields.len());
+        let mut had_error = false;
         for field in &lit.fields {
             let ty = self.synth(&field.expression, cs);
+            if ty.is_error() {
+                had_error = true;
+            }
 
             let (name, label_span) = if let Some(label) = &field.label {
                 (label.identifier.symbol, label.span)
@@ -2767,6 +2822,10 @@ impl<'ctx> Checker<'ctx> {
                 value_span: field.expression.span,
                 label_span,
             });
+        }
+
+        if had_error {
+            return Ty::error(gcx);
         }
 
         cs.add_goal(
@@ -2799,10 +2858,18 @@ impl<'ctx> Checker<'ctx> {
         };
 
         let mut element_types = Vec::with_capacity(elements.len());
+        let mut had_error = false;
         for (i, element) in elements.iter().enumerate() {
             let elem_expectation = expected_elements.and_then(|tys| tys.get(i).copied());
             let ty = self.synth_with_expectation(element, elem_expectation, cs);
+            if ty.is_error() {
+                had_error = true;
+            }
             element_types.push(ty);
+        }
+
+        if had_error {
+            return Ty::error(self.gcx());
         }
 
         Ty::new(
@@ -2828,11 +2895,24 @@ impl<'ctx> Checker<'ctx> {
             (None, None)
         };
 
+        if expected_elem.map(|ty| ty.is_error()).unwrap_or(false) {
+            return Ty::error(gcx);
+        }
+
         let element_ty = expected_elem.unwrap_or_else(|| cs.infer_cx.next_ty_var(expression.span));
+        let mut had_error = false;
 
         for elem in elements {
             let ty = self.synth_with_expectation(elem, Some(element_ty), cs);
+            if ty.is_error() {
+                had_error = true;
+                continue;
+            }
             cs.equal(element_ty, ty, elem.span);
+        }
+
+        if had_error {
+            return Ty::error(gcx);
         }
 
         let len_const = Const {
@@ -2877,6 +2957,9 @@ impl<'ctx> Checker<'ctx> {
         });
 
         let elem_ty = self.synth_with_expectation(value, expected_elem, cs);
+        if elem_ty.is_error() {
+            return Ty::error(gcx);
+        }
 
         let len_const = self.lowerer().lower_array_length(count);
         if !matches!(
@@ -2932,6 +3015,9 @@ impl<'ctx> Checker<'ctx> {
             };
 
         let receiver_ty = self.synth(receiver, cs);
+        if receiver_ty.is_error() {
+            return Ty::error(self.gcx());
+        }
         let result_ty = cs.infer_cx.next_ty_var(expression.span);
 
         cs.add_goal(
