@@ -1,0 +1,24 @@
+// Validates generic argument inference for List constructors and static factory methods.
+func main() {
+    // 1. Direct constructor with explicit generic args.
+    var fromCtor = List[rune]()
+    fromCtor.append('a')
+    fromCtor.append('b')
+    assert(fromCtor.len() == 2, "ctor length mismatch")
+    assert(*fromCtor.at(0) == 'a', "ctor element 0 mismatch")
+    assert(*fromCtor.at(1) == 'b', "ctor element 1 mismatch")
+
+    // 2. Static `new` relying on receiver to supply Element.
+    var fromStatic = List[rune].new()
+    fromStatic.append('c')
+    assert(fromStatic.len() == 1, "static new length mismatch")
+    assert(*fromStatic.at(0) == 'c', "static new element mismatch")
+
+    // 3. Overloaded static `new(withCapacity:)` with explicit capacity.
+    var annotated: List[rune] = List[rune].new(withCapacity: 4)
+    annotated.append('d')
+    annotated.append('e')
+    assert(annotated.len() == 2, "capacity new length mismatch")
+    assert(*annotated.at(0) == 'd', "capacity new element 0 mismatch")
+    assert(*annotated.at(1) == 'e', "capacity new element 1 mismatch")
+}

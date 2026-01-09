@@ -1129,7 +1129,7 @@ impl<'ctx> Checker<'ctx> {
                         var_ty: ty,
                         candidate_ty,
                         source: candidate,
-                        instantiation_args: None,
+                        instantiation_args,
                     });
                     branches.push(DisjunctionBranch {
                         goal,
@@ -1412,6 +1412,92 @@ impl<'ctx> Checker<'ctx> {
         expect_ty: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
+        // Static member invocation on a type (e.g., `List[Int].new()`).
+        if let hir::ExpressionKind::Path(path) = &receiver.kind {
+            let (resolution, base_args) =
+                self.resolve_value_path_resolution_with_args(path, receiver.span, true, cs);
+            if let Some(def_id) = self.value_path_def_id(&resolution) {
+                match self.gcx().definition_kind(def_id) {
+                    DefinitionKind::Struct | DefinitionKind::Enum => {
+                        // Treat as a static member call.
+                        let type_node = hir::Type {
+                            id: receiver.id,
+                            kind: hir::TypeKind::Nominal(path.clone()),
+                            span: receiver.span,
+                        };
+                        let base_ty = self.lower_type(&type_node);
+                        self.add_type_constraints(base_ty, receiver.span, cs);
+                        let Some(head) = type_head_from_value_ty(base_ty) else {
+                            self.gcx().dcx().emit_error(
+                                "cannot resolve members on this type receiver".into(),
+                                Some(receiver.span),
+                            );
+                            return Ty::error(self.gcx());
+                        };
+
+                        let base_args = match base_ty.kind() {
+                            TyKind::Adt(_, args) if !args.is_empty() => Some(args),
+                            _ => base_args,
+                        };
+
+                        let resolution = self.resolve_static_member_resolution(
+                            head,
+                            base_ty,
+                            name,
+                            name.span,
+                            true,
+                        );
+                        self.record_value_path_resolution(receiver.id, &resolution);
+
+                        let segment = hir::PathSegment {
+                            id: receiver.id,
+                            identifier: *name,
+                            arguments: None,
+                            span: name.span,
+                            resolution: resolution.clone(),
+                        };
+                        let instantiation_args =
+                            self.lower_value_path_instantiation_args(&resolution, &segment, base_args);
+                        let callee_ty = self.instantiate_value_path(
+                            receiver.id,
+                            receiver.span,
+                            &resolution,
+                            instantiation_args,
+                            expect_ty,
+                            cs,
+                        );
+
+                        let apply_arguments: Vec<ApplyArgument<'ctx>> = arguments
+                            .iter()
+                            .map(|n| ApplyArgument {
+                                id: n.expression.id,
+                                label: n.label.map(|n| n.identifier),
+                                ty: self.synth(&n.expression, cs),
+                                span: n.expression.span,
+                            })
+                            .collect();
+
+                        let result_ty = cs.infer_cx.next_ty_var(expression.span);
+                        cs.record_expr_ty(expression.id, result_ty);
+
+                        let data = ApplyGoalData {
+                            call_node_id: expression.id,
+                            call_span: expression.span,
+                            callee_ty,
+                            callee_source: resolution.definition_id(),
+                            result_ty,
+                            _expect_ty: expect_ty,
+                            arguments: apply_arguments,
+                            skip_labels: false,
+                        };
+                        cs.add_goal(Goal::Apply(data), expression.span);
+                        return result_ty;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         let recv_ty = self.synth(receiver, cs);
         let args: Vec<ApplyArgument<'ctx>> = arguments
             .iter()
@@ -1839,15 +1925,46 @@ impl<'ctx> Checker<'ctx> {
         match path {
             hir::ResolvedPath::Resolved(path) => (path.resolution.clone(), None),
             hir::ResolvedPath::Relative(base_ty, segment) => {
-                if !matches!(segment.resolution, hir::Resolution::Error) {
-                    return (segment.resolution.clone(), None);
+                // Attempt to reuse generic arguments from the base type for inherent
+                // static members (e.g., `List[Int].new`). Avoid lowering interface
+                // types without a provided `Self`, which would panic.
+                let base_is_interface = matches!(
+                    &base_ty.kind,
+                    hir::TypeKind::Nominal(hir::ResolvedPath::Resolved(path))
+                        if matches!(
+                            path.resolution,
+                            hir::Resolution::Definition(_, DefinitionKind::Interface)
+                        )
+                );
+
+                let mut lowered_base_ty = None;
+                let mut base_args = None;
+                if !base_is_interface {
+                    let ty = self.lower_type(base_ty);
+                    let ty = cs.infer_cx.resolve_vars_if_possible(ty);
+                    if let TyKind::Adt(_, args) = ty.kind() {
+                        if !args.is_empty() {
+                            base_args = Some(args);
+                        }
+                    }
+                    lowered_base_ty = Some(ty);
                 }
 
-                let base_ty = self.lower_type(base_ty);
-                let base_ty = cs.infer_cx.resolve_vars_if_possible(base_ty);
-                let base_args = match base_ty.kind() {
-                    TyKind::Adt(_, args) if !args.is_empty() => Some(args),
-                    _ => None,
+                if !matches!(segment.resolution, hir::Resolution::Error) {
+                    return (segment.resolution.clone(), base_args);
+                }
+
+                let base_ty = match lowered_base_ty {
+                    Some(ty) => ty,
+                    None => {
+                        if emit_errors {
+                            self.gcx().dcx().emit_error(
+                                "cannot resolve members on this type receiver".into(),
+                                Some(span),
+                            );
+                        }
+                        return (hir::Resolution::Error, None);
+                    }
                 };
 
                 let Some(head) = type_head_from_value_ty(base_ty) else {
@@ -1860,16 +1977,14 @@ impl<'ctx> Checker<'ctx> {
                     return (hir::Resolution::Error, None);
                 };
 
-                (
-                    self.resolve_static_member_resolution(
-                        head,
-                        base_ty,
-                        &segment.identifier,
-                        segment.identifier.span,
-                        emit_errors,
-                    ),
-                    base_args,
-                )
+                let resolution = self.resolve_static_member_resolution(
+                    head,
+                    base_ty,
+                    &segment.identifier,
+                    segment.identifier.span,
+                    emit_errors,
+                );
+                (resolution, base_args)
             }
         }
     }
@@ -2016,8 +2131,16 @@ impl<'ctx> Checker<'ctx> {
         }
 
         match resolution {
-            hir::Resolution::FunctionSet(_)
-            | hir::Resolution::LocalVariable(_)
+            hir::Resolution::FunctionSet(_) => {
+                if has_explicit {
+                    gcx.dcx().emit_error(
+                        "generic arguments are not permitted on overloaded function sets".into(),
+                        Some(args_span),
+                    );
+                }
+                return base_args;
+            }
+            hir::Resolution::LocalVariable(_)
             | hir::Resolution::PrimaryType(_)
             | hir::Resolution::InterfaceSelfTypeParameter(_)
             | hir::Resolution::SelfTypeAlias(_)
