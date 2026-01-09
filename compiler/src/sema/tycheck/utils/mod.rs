@@ -16,6 +16,7 @@ pub use normalize::{normalize_aliases, normalize_ty};
 pub use normalize_post_mono::normalize_post_monomorphization;
 pub use param_env::ParamEnv;
 
+#[derive(Debug)]
 pub enum AutoReference {
     None,
     Mutable,

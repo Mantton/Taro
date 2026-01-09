@@ -15,7 +15,7 @@ impl[Element, const Size: usize] Array[Element, Size] {
         std.process.exit(1)
     }
 
-    func atMut(&mut self, _ idx: usize) -> &mut Element {
+    public func at(&mut self, _ idx: usize) -> &mut Element {
         if idx < Size {
             return unsafe { (self as *mut Element).add(idx) as &mut Element }
         }
@@ -30,9 +30,9 @@ impl[Element, const Size: usize] Array[Element, Size] {
         return .none
     }
 
-    public func getMut(&mut self, _ idx: usize) -> Optional[&mut Element] {
+    public func get(&mut self, _ idx: usize) -> Optional[&mut Element] {
         if idx < Size {
-            return .some(self.atMut(idx))
+            return .some(self.at(idx))
         }
         return .none
     }

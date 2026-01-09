@@ -543,6 +543,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             Goal::Apply(data) => self.solve_apply(data),
             Goal::BindOverload(data) => self.solve_bind_overload(location, data),
             Goal::BindInterfaceMethod(data) => self.solve_bind_interface_method(location, data),
+            Goal::BindMethodOverload(data) => self.solve_bind_method_overload(location, data),
             Goal::Disjunction(branches) => self.solve_disjunction(location, branches),
             Goal::UnaryOp(data) => self.solve_unary(data),
             Goal::BinaryOp(data) => self.solve_binary(data),
@@ -630,11 +631,38 @@ fn rank_branches<'ctx>(
     let mut ranked: Vec<RankedBranch<'ctx>> = branches
         .into_iter()
         .map(|branch| {
-            let score = match branch.source {
-                Some(def_id) if gcx.generics_of(def_id).is_empty() => 1,
-                _ => 0,
-            };
-            RankedBranch { branch, score }
+            // Higher score = better
+            // Start with a base score of 100 for all candidates
+            let mut score: i32 = 100;
+
+            // Bonus for non-generic methods (prefer concrete over generic)
+            if let Some(def_id) = branch.source {
+                if gcx.generics_of(def_id).is_empty() {
+                    score += 50;
+                }
+            }
+
+            // Huge bonus for matching expectation (especially mutability)
+            if branch.matches_expectation {
+                score += 1000;
+            }
+
+            // Subtract autoref_cost: prefer None (0) over Immutable (1) over Mutable (2)
+            // This ensures that when we have at(&self) and at(&mut self), and the receiver
+            // is immutable, we prefer at(&self) which has lower autoref_cost.
+            // Multiply by 10 to make it significant.
+            let autoref_penalty = branch.autoref_cost as i32 * 10;
+            score -= autoref_penalty;
+
+            // Subtract deref_steps penalty: prefer fewer dereferences (closer to original type)
+            // e.g. prefer impl on &T (0 derefs) over impl on T (1 deref) when calling on &T
+            let deref_penalty = branch.deref_steps as i32 * 5;
+            score -= deref_penalty;
+
+            RankedBranch {
+                branch,
+                score: score.max(0) as u32,
+            }
         })
         .collect();
 

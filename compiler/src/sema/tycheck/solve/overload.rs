@@ -1,7 +1,8 @@
 use crate::{
     sema::tycheck::{
         solve::{
-            BindInterfaceMethodGoalData, BindOverloadGoalData, ConstraintSolver, DisjunctionBranch,
+            BindInterfaceMethodGoalData, BindMethodOverloadGoalData, BindOverloadGoalData,
+            ConstraintSolver, DisjunctionBranch, Goal,
             Obligation, SolverDriver, SolverResult, rank_branches,
         },
         utils::{generics::GenericsBuilder, instantiate::instantiate_ty_with_args},
@@ -156,6 +157,75 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 self.record_interface_call(node_id, call_info);
                 let obligations =
                     self.constraints_for_def(call_info.method_id, instantiation_args, location);
+                SolverResult::Solved(obligations)
+            }
+            Err(e) => {
+                let error = Spanned::new(e, location);
+                SolverResult::Error(vec![error])
+            }
+        }
+    }
+
+    /// Solve a method overload binding with associated receiver adjustments.
+    /// This combines the overload binding with adjustment recording so that
+    /// each branch of a disjunction can carry its own receiver type and adjustments.
+    pub fn solve_bind_method_overload(
+        &mut self,
+        location: Span,
+        data: BindMethodOverloadGoalData<'ctx>,
+    ) -> SolverResult<'ctx> {
+        let BindMethodOverloadGoalData {
+            node_id,
+            receiver_node_id,
+            var_ty,
+            candidate_ty,
+            receiver_ty,
+            receiver_ty_var,
+            source,
+            instantiation_args,
+            adjustments,
+        } = data;
+
+        // Instantiate the candidate type if it has generics
+        let generics = self.gcx().generics_of(source);
+        let (actual_ty, instantiation_args) = if !generics.is_empty() {
+            let args = if let Some(base_args) = instantiation_args {
+                if base_args.len() >= generics.total_count() {
+                    base_args
+                } else {
+                    GenericsBuilder::for_item(self.gcx(), source, |param, _| {
+                        base_args
+                            .get(param.index)
+                            .copied()
+                            .unwrap_or_else(|| self.icx.var_for_generic_param(param, location))
+                    })
+                }
+            } else {
+                self.icx.fresh_args_for_def(source, location)
+            };
+            let instantiated = instantiate_ty_with_args(self.gcx(), candidate_ty, args);
+            self.record_instantiation(node_id, args);
+            (instantiated, Some(args))
+        } else {
+            (candidate_ty, None)
+        };
+
+        match self.unify(var_ty, actual_ty) {
+            Ok(_) => {
+                self.record_overload_source(node_id, source);
+                self.icx.bind_overload(var_ty, source);
+                // Record the receiver adjustments when this overload is selected
+                self.record_adjustments(receiver_node_id, adjustments);
+
+                // Constrain the receiver type variable to match the receiver type.
+                // We do NOT instantiate receiver_ty because it comes from the actual receiver
+                // expression and carries the specific types we want to unify with.
+                let mut obligations = vec![Obligation {
+                    location,
+                    goal: Goal::Equal(receiver_ty_var, receiver_ty),
+                }];
+
+                obligations.extend(self.constraints_for_def(source, instantiation_args, location));
                 SolverResult::Solved(obligations)
             }
             Err(e) => {

@@ -88,6 +88,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
                             instantiation_args: None,
                         }),
                         source: Some(candidate),
+                        autoref_cost: 0,
+                        matches_expectation: false,
+                        deref_steps: 0,
                     });
                 }
                 return SolverResult::Solved(vec![Obligation {
@@ -218,6 +221,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
                             instantiation_args: None,
                         }),
                         source: Some(candidate),
+                        autoref_cost: 0,
+                        matches_expectation: false,
+                        deref_steps: 0,
                     });
                 }
                 SolverResult::Solved(vec![Obligation {

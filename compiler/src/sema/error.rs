@@ -86,7 +86,14 @@ pub type SpannedErrorList<'ctx> = Vec<SpannedError<'ctx>>;
 impl<'ctx> TypeError<'ctx> {
     pub fn format(self, gcx: Gcx<'ctx>) -> String {
         match self {
-            TypeError::Mutability(ef) | TypeError::TyMismatch(ef) => {
+            TypeError::Mutability(ef) => {
+                format!(
+                    "mutability mismatch: expected {}, found {} (reference mutabilities differ)",
+                    ef.expected.format(gcx),
+                    ef.found.format(gcx)
+                )
+            }
+            TypeError::TyMismatch(ef) => {
                 format!(
                     "expected {}, found {}",
                     ef.expected.format(gcx),

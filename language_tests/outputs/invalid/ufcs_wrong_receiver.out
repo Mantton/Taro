@@ -6,7 +6,7 @@ error: expected &mut {var(0)}, found Counter
  -> language_tests/source_files/invalid/ufcs_wrong_receiver.tr:42:30
 	    SpeakerByMutRef.increment(c)
 	                              ^
-error: expected {var(0)}, found Counter
+error: mutability mismatch: expected {var(0)}, found Counter (reference mutabilities differ)
  -> language_tests/source_files/invalid/ufcs_wrong_receiver.tr:45:30
 	    SpeakerByMutRef.increment(&c)
 	                              ^^

@@ -167,7 +167,7 @@ struct Point {
     y: int32
 }
 
-extend Point {
+impl Point {
     // Allows usage of Point(x: ..., y: ...)
     func new(x: int32, y: int32) -> Point {
         return Point { x, y } // shorthand for { x: x, y: y }

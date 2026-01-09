@@ -41,6 +41,9 @@ pub enum Goal<'ctx> {
     Apply(ApplyGoalData<'ctx>),
     BindOverload(BindOverloadGoalData<'ctx>),
     BindInterfaceMethod(BindInterfaceMethodGoalData<'ctx>),
+    /// Binds a method overload with associated receiver adjustments.
+    /// Used when multiple overloads with different receiver mutabilities exist.
+    BindMethodOverload(BindMethodOverloadGoalData<'ctx>),
     Disjunction(Vec<DisjunctionBranch<'ctx>>),
     BinaryOp(BinOpGoalData<'ctx>),
     UnaryOp(UnOpGoalData<'ctx>),
@@ -74,6 +77,17 @@ pub struct Obligation<'ctx> {
 pub struct DisjunctionBranch<'ctx> {
     pub goal: Goal<'ctx>,
     pub source: Option<DefinitionID>,
+    /// Cost of auto-reference applied to reach this candidate.
+    /// Lower is better: None=0, Immutable=1, Mutable=2.
+    /// Used for ranking candidates when multiple match.
+    pub autoref_cost: u8,
+    /// Whether the candidate's return type matches the expected type (e.g. mutability expectations).
+    /// Used for ranking: true gives a significant score bonus (+1000).
+    pub matches_expectation: bool,
+    /// Number of dereferences performed on the receiver to find this candidate.
+    /// Used for ranking method candidates found via autoderef loops.
+    /// Candidates with fewer dereferences (closer to the original type) are preferred.
+    pub deref_steps: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -101,6 +115,32 @@ pub struct BindInterfaceMethodGoalData<'ctx> {
     pub candidate_ty: Ty<'ctx>,
     pub call_info: InterfaceCallInfo,
     pub instantiation_args: Option<GenericArguments<'ctx>>,
+}
+
+/// Binds a method overload with associated receiver type and adjustments.
+/// This is used when method resolution needs to consider multiple overloads
+/// with different receiver mutabilities (e.g., `at(&self)` vs `at(&mut self)`).
+#[derive(Debug, Clone)]
+pub struct BindMethodOverloadGoalData<'ctx> {
+    /// The node ID of the method call expression
+    pub node_id: NodeID,
+    /// The receiver node ID (for recording adjustments)
+    pub receiver_node_id: NodeID,
+    /// The type variable representing the method type
+    pub var_ty: Ty<'ctx>,
+    /// The type of the method candidate
+    pub candidate_ty: Ty<'ctx>,
+    /// The adjusted receiver type (after auto-ref)
+    pub receiver_ty: Ty<'ctx>,
+    /// The type variable used for the receiver in the Apply goal
+    /// When this overload is selected, we equate receiver_ty_var = receiver_ty
+    pub receiver_ty_var: Ty<'ctx>,
+    /// The method's definition ID
+    pub source: DefinitionID,
+    /// Optional instantiation arguments
+    pub instantiation_args: Option<GenericArguments<'ctx>>,
+    /// Adjustments to apply to the receiver (deref, borrow, etc.)
+    pub adjustments: Vec<Adjustment<'ctx>>,
 }
 
 pub enum SolverResult<'ctx> {

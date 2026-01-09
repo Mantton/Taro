@@ -1134,6 +1134,9 @@ impl<'ctx> Checker<'ctx> {
                     branches.push(DisjunctionBranch {
                         goal,
                         source: Some(candidate),
+                        autoref_cost: 0,
+                        matches_expectation: false,
+                        deref_steps: 0,
                     });
                 }
                 cs.add_goal(Goal::Disjunction(branches), span);
@@ -1500,6 +1503,9 @@ impl<'ctx> Checker<'ctx> {
                     instantiation_args,
                 }),
                 source: Some(ctor),
+                autoref_cost: 0,
+                matches_expectation: false,
+                deref_steps: 0,
             });
         }
 

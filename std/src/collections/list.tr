@@ -109,7 +109,7 @@ impl[Element] List[Element] {
     }
 
     /// Get a mutable reference to the element at the given index, or none if out of bounds.
-    public func getMut(&mut self, _ index: usize) -> Optional[&mut Element] {
+    public func get(&mut self, _ index: usize) -> Optional[&mut Element] {
         if index >= self.len {
             return .none
         }
@@ -119,7 +119,7 @@ impl[Element] List[Element] {
     }
 
     /// Get a mutable reference to the element at the given index, panicking if out of bounds.
-    public func atMut(&mut self, _ index: usize) -> &mut Element {
+    public func at(&mut self, _ index: usize) -> &mut Element {
         if index >= self.len {
             std.print("list index out of range\n")
             std.process.exit(1)
