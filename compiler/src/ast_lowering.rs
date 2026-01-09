@@ -1156,7 +1156,7 @@ impl Actor<'_, '_> {
             self.mk_expression(hir::ExpressionKind::Path(element_ref_path), span);
 
         let match_expr = hir::MatchExpression {
-            source: hir::MatchSource::ForLoop,
+            source: hir::MatchSource::desugared(hir::MatchKind::ForLoop),
             value: element_ref_expr,
             arms: vec![some_arm, none_arm],
             kw_span: span,
@@ -1327,7 +1327,10 @@ impl Actor<'_, '_> {
                 return self.lower_pipe_expression(lhs, rhs, node.span);
             }
             ast::ExpressionKind::PatternBinding(node) => {
-                hir::ExpressionKind::PatternBinding(self.lower_pattern_binding_condition(node))
+                let source = hir::MatchSource::user(hir::MatchKind::Match);
+                hir::ExpressionKind::PatternBinding(
+                    self.lower_pattern_binding_condition(node, source),
+                )
             }
             ast::ExpressionKind::Ternary(condition, lhs, rhs) => {
                 // `a ? b : c` -> if a { b } else { c }
@@ -1817,7 +1820,7 @@ impl Actor<'_, '_> {
 
     fn lower_match_expression(&mut self, node: ast::MatchExpression) -> hir::MatchExpression {
         hir::MatchExpression {
-            source: hir::MatchSource::Match,
+            source: hir::MatchSource::user(hir::MatchKind::Match),
             value: self.lower_expression(node.value),
             arms: node
                 .arms
@@ -1853,8 +1856,10 @@ impl Actor<'_, '_> {
     fn lower_pattern_binding_condition(
         &mut self,
         node: ast::PatternBindingCondition,
+        source: hir::MatchSource,
     ) -> hir::PatternBindingCondition {
         hir::PatternBindingCondition {
+            source,
             pattern: self.lower_pattern(node.pattern),
             expression: self.lower_expression(node.expression),
             span: node.span,
@@ -1865,24 +1870,24 @@ impl Actor<'_, '_> {
         &mut self,
         node: ast::PatternBindingCondition,
     ) -> hir::PatternBindingCondition {
-        // Transform `let x = opt` into `case .some(x) = opt`
+        // Transform `let x = opt` into `case Optional.some(x) = opt`
         let inner_pattern = self.lower_pattern(node.pattern);
-        let some_ident = Identifier::new(Symbol::new("some"), inner_pattern.span);
-        // Create `.some(inner_pattern)`
+        let some_span = inner_pattern.span;
+
         let pattern = hir::Pattern {
             id: self.next_index(),
-            span: inner_pattern.span,
+            span: some_span,
             kind: hir::PatternKind::PathTuple {
-                path: hir::PatternPath::Inferred {
-                    name: some_ident,
-                    span: inner_pattern.span,
+                path: hir::PatternPath::Qualified {
+                    path: self.mk_optional_variant_path("some", some_span),
                 },
-                fields: vec![inner_pattern.clone()],
-                field_span: inner_pattern.span,
+                fields: vec![inner_pattern],
+                field_span: some_span,
             },
         };
 
         hir::PatternBindingCondition {
+            source: hir::MatchSource::user(hir::MatchKind::OptionalBinding),
             pattern,
             expression: self.lower_expression(node.expression),
             span: node.span,
@@ -1959,7 +1964,7 @@ impl Actor<'_, '_> {
         };
 
         hir::MatchExpression {
-            source: hir::MatchSource::OptionalDefault,
+            source: hir::MatchSource::desugared(hir::MatchKind::OptionalDefault),
             value: lhs,
             arms: vec![some_arm, none_arm],
             kw_span: span,

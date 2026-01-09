@@ -6,6 +6,7 @@ use crate::{
     span::Span,
     thir::{self, VariantIndex},
 };
+use rustc_hash::FxHashMap;
 
 impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
     pub(super) fn lower_block(
@@ -36,6 +37,20 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         } else if dest_ty == self.gcx.types.void {
             let span = Span::empty(self.thir.span.file);
             self.push_assign_unit(block, span, destination, self.gcx);
+        }
+
+        let cleanup_span = Span::empty(self.thir.span.file);
+        let from_cleanup = self.current_cleanup;
+        if from_cleanup != saved_cleanup
+            && self.body.basic_blocks[block].terminator.is_none()
+        {
+            let next_block = self.new_block_with_note("after cleanup".into());
+            let mut cache = FxHashMap::default();
+            cache.insert(saved_cleanup, next_block);
+            let cleanup_block =
+                self.ensure_cleanup_path(from_cleanup, saved_cleanup, next_block, &mut cache);
+            self.goto(block, cleanup_block, cleanup_span);
+            block = next_block;
         }
 
         self.current_cleanup = saved_cleanup;

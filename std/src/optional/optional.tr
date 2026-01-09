@@ -25,3 +25,11 @@ impl[Wrapped] Optional[Wrapped] {
         }
     }
 }
+
+public func Some[T](_ value: T) -> T? {
+    .some(value)
+}
+
+func None[T]() -> T? {
+    .none
+}

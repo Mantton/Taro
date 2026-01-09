@@ -1,0 +1,18 @@
+func main() {
+    std.print("BEGIN\n")
+    defer { std.print("OUTER-1\n") }
+    defer { std.print("OUTER-2\n") }
+
+    {
+        defer { std.print("INNER\n") }
+        std.print("BODY\n")
+    }
+
+    var i: int32 = 0
+    while i < 2 {
+        defer { std.print("LOOP\n") }
+        i += 1
+    }
+
+    std.print("END\n")
+}

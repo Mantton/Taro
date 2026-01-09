@@ -539,13 +539,47 @@ pub enum Literal {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MatchSource {
+pub enum MatchKind {
     Match,
     OptionalBinding,
     OptionalDefault,
     OptionalUnwrap,
     Await,
     ForLoop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MatchSource {
+    pub kind: MatchKind,
+    /// True if this match was synthesized during lowering (e.g., `??`, `for`).
+    pub desugared: bool,
+}
+
+impl MatchSource {
+    pub const fn user(kind: MatchKind) -> Self {
+        Self {
+            kind,
+            desugared: false,
+        }
+    }
+
+    pub const fn desugared(kind: MatchKind) -> Self {
+        Self {
+            kind,
+            desugared: true,
+        }
+    }
+
+    pub fn diagnostic_name(self) -> &'static str {
+        match self.kind {
+            MatchKind::Match => "match expression",
+            MatchKind::OptionalBinding => "optional binding",
+            MatchKind::OptionalDefault => "'??' operator",
+            MatchKind::OptionalUnwrap => "optional unwrap",
+            MatchKind::Await => "await expression",
+            MatchKind::ForLoop => "`for` loop",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -580,6 +614,7 @@ pub struct IfExpression {
 
 #[derive(Debug, Clone)]
 pub struct PatternBindingCondition {
+    pub source: MatchSource,
     pub pattern: Pattern,
     pub expression: Box<Expression>,
     pub span: Span,

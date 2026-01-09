@@ -107,7 +107,7 @@ impl<'ctx> Checker<'ctx> {
 
         if let Some(body) = hir::is_expression_bodied(body) {
             // --- single-expression body ---
-            self.check_return(body, None);
+            self.check_return(Some(body), body.span, None);
         } else {
             // --- regular block body ---
             self.check_block(body, None);
@@ -138,14 +138,14 @@ impl<'ctx> Checker<'ctx> {
             hir::StatementKind::Break => self.check_break(node.span),
             hir::StatementKind::Continue => self.check_continue(node.span),
             hir::StatementKind::Return(expression) => {
-                if let Some(expression) = expression {
-                    self.check_return(expression, cs);
-                }
+                self.check_return(expression.as_deref(), node.span, cs.as_deref_mut());
             }
             hir::StatementKind::Loop { block, .. } => {
                 self.check_loop(block, cs);
             }
-            hir::StatementKind::Defer(..) => todo!(),
+            hir::StatementKind::Defer(block) => {
+                self.check_defer(block, cs.as_deref_mut());
+            }
             hir::StatementKind::Guard { .. } => todo!(),
         }
 
@@ -180,23 +180,45 @@ impl<'ctx> Checker<'ctx> {
         }
     }
 
-    fn check_return(&self, node: &hir::Expression, mut cs: Option<&mut Cs<'ctx>>) {
+    fn check_return(
+        &self,
+        expression: Option<&hir::Expression>,
+        span: Span,
+        mut cs: Option<&mut Cs<'ctx>>,
+    ) {
+        if self.defer_depth.get() > 0 {
+            self.gcx()
+                .dcx()
+                .emit_error("`return` is not allowed inside a defer block".into(), Some(span));
+        }
+
+        let Some(expression) = expression else {
+            return;
+        };
+
         let Some(expectation) = self.return_ty else {
             unreachable!("ICE: return check called outside function body")
         };
         if let Some(cs) = cs.as_deref_mut() {
-            let provided = self.synth_with_expectation(node, Some(expectation), cs);
+            let provided = self.synth_with_expectation(expression, Some(expectation), cs);
             cs.add_goal(
                 Goal::Coerce {
-                    node_id: node.id,
+                    node_id: expression.id,
                     from: provided,
                     to: expectation,
                 },
-                node.span,
+                expression.span,
             );
         } else {
-            self.top_level_check(node, Some(expectation));
+            self.top_level_check(expression, Some(expectation));
         }
+    }
+
+    fn check_defer(&self, node: &hir::Block, mut cs: Option<&mut Cs<'ctx>>) {
+        let depth = self.defer_depth.get();
+        self.defer_depth.set(depth + 1);
+        self.check_block(node, cs.as_deref_mut());
+        self.defer_depth.set(depth);
     }
 
     fn check_block(&self, node: &hir::Block, mut cs: Option<&mut Cs<'ctx>>) {
@@ -271,6 +293,13 @@ impl<'ctx> Checker<'ctx> {
     }
 
     fn check_break(&self, span: Span) {
+        if self.defer_depth.get() > 0 {
+            self.gcx()
+                .dcx()
+                .emit_error("`break` is not allowed inside a defer block".into(), Some(span));
+            return;
+        }
+
         if self.loop_depth.get() == 0 {
             self.gcx()
                 .dcx()
@@ -279,6 +308,13 @@ impl<'ctx> Checker<'ctx> {
     }
 
     fn check_continue(&self, span: Span) {
+        if self.defer_depth.get() > 0 {
+            self.gcx()
+                .dcx()
+                .emit_error("`continue` is not allowed inside a defer block".into(), Some(span));
+            return;
+        }
+
         if self.loop_depth.get() == 0 {
             self.gcx()
                 .dcx()
@@ -1660,8 +1696,29 @@ impl<'ctx> Checker<'ctx> {
         condition: &hir::PatternBindingCondition,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
+        let source_name = condition.source.diagnostic_name();
+
         // Typecheck the expression being matched
         let expr_ty = self.synth(&condition.expression, cs);
+
+        // Specialized diagnostic for optional binding shorthand (`if let`).
+        // Catching this early avoids a cascade of resolution/type errors.
+        if condition.source.kind == hir::MatchKind::OptionalBinding
+            && !expr_ty.is_error()
+            && !self.is_optional_type(expr_ty)
+        {
+            self.gcx().dcx().emit_error(
+                format!(
+                    "{} requires an Optional value, found '{}'",
+                    source_name,
+                    expr_ty.format(self.gcx())
+                )
+                .into(),
+                Some(condition.expression.span),
+            );
+            self.mark_pattern_bindings_error(&condition.pattern);
+            return Ty::error(self.gcx());
+        }
 
         // Gather local bindings from the pattern before checking
         GatherLocalsVisitor::from_match_arm(cs, self, &condition.pattern);
@@ -1682,9 +1739,10 @@ impl<'ctx> Checker<'ctx> {
         expectation: Option<Ty<'ctx>>,
         _cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
+        let source_name = node.source.diagnostic_name();
         if node.arms.is_empty() {
             self.gcx().dcx().emit_error(
-                "match expression must have at least one arm".into(),
+                format!("{source_name} must have at least one arm").into(),
                 Some(node.kw_span),
             );
             return Ty::error(self.gcx());
@@ -1717,12 +1775,13 @@ impl<'ctx> Checker<'ctx> {
         // ══════════════════════════════════════════════════════════════════════
         // For `??` operator (OptionalDefault), the LHS must be an Optional type.
         // Emit a single clear error instead of cascading pattern match errors.
-        if matches!(node.source, hir::MatchSource::OptionalDefault) {
+        if matches!(node.source.kind, hir::MatchKind::OptionalDefault) {
             let is_optional = self.is_optional_type(scrutinee_ty);
             if !is_optional && !scrutinee_ty.is_error() {
                 self.gcx().dcx().emit_error(
                     format!(
-                        "'??'  operator requires an Optional type on the left-hand side, found '{}'",
+                        "{} requires an Optional type on the left-hand side, found '{}'",
+                        source_name,
                         scrutinee_ty.format(self.gcx())
                     )
                     .into(),
@@ -3270,5 +3329,24 @@ impl<'ctx> Checker<'ctx> {
             return false;
         };
         def.id == opt_id
+    }
+
+    fn mark_pattern_bindings_error(&self, pattern: &hir::Pattern) {
+        match &pattern.kind {
+            hir::PatternKind::Binding { .. } => {
+                self.finalize_local(pattern.id, self.gcx().types.error);
+            }
+            hir::PatternKind::Reference { pattern, .. } => {
+                self.mark_pattern_bindings_error(pattern);
+            }
+            hir::PatternKind::Tuple(patterns, _)
+            | hir::PatternKind::Or(patterns, _)
+            | hir::PatternKind::PathTuple { fields: patterns, .. } => {
+                for pat in patterns {
+                    self.mark_pattern_bindings_error(pat);
+                }
+            }
+            _ => {}
+        }
     }
 }
