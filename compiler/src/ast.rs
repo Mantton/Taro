@@ -404,6 +404,8 @@ pub enum ExpressionKind {
     Closure(ClosureExpression),
     /// { }
     Block(Block),
+    /// unsafe { }
+    UnsafeBlock(Block),
     /// `a?`
     OptionalUnwrap(Box<Expression>),
     ///
@@ -1612,6 +1614,9 @@ pub fn walk_expression<V: AstVisitor>(visitor: &mut V, node: &Expression) -> V::
             try_visit!(visitor.visit_expression(&expression.body))
         }
         ExpressionKind::Block(block) => {
+            try_visit!(visitor.visit_block(block));
+        }
+        ExpressionKind::UnsafeBlock(block) => {
             try_visit!(visitor.visit_block(block));
         }
         ExpressionKind::OptionalUnwrap(expression) => {

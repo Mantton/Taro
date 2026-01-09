@@ -1362,6 +1362,9 @@ impl Actor<'_, '_> {
             ast::ExpressionKind::Block(block) => {
                 hir::ExpressionKind::Block(self.lower_block(block))
             }
+            ast::ExpressionKind::UnsafeBlock(block) => {
+                hir::ExpressionKind::UnsafeBlock(self.lower_block(block))
+            }
             ast::ExpressionKind::Range(lhs, rhs, inclusive) => {
                 // `1..10`
                 let foundational = if inclusive {

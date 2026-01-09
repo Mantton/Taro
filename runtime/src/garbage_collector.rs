@@ -124,7 +124,7 @@ pub extern "C" fn __rt__gc_pop_frame(frame: *mut GcShadowFrame) {
 /// The descriptor controls pointer tracing and determines scan/noscan lane.
 /// Returns null if size is 0 or desc is null.
 #[unsafe(no_mangle)]
-pub extern "C" fn gc_alloc(size: usize, desc: *const GcDesc) -> *mut u8 {
+pub extern "C" fn __gc__alloc(size: usize, desc: *const GcDesc) -> *mut u8 {
     if size == 0 || desc.is_null() {
         return std::ptr::null_mut();
     }
@@ -135,7 +135,7 @@ pub extern "C" fn gc_alloc(size: usize, desc: *const GcDesc) -> *mut u8 {
 ///
 /// The descriptor is for a single element; total allocation is elem_size * cap.
 #[unsafe(no_mangle)]
-pub extern "C" fn gc_makebuf(desc: *const GcDesc, len: usize, cap: usize) -> *mut u8 {
+pub extern "C" fn __gc__makebuf(desc: *const GcDesc, len: usize, cap: usize) -> *mut u8 {
     if cap < len {
         return std::ptr::null_mut();
     }
@@ -154,7 +154,7 @@ pub extern "C" fn gc_makebuf(desc: *const GcDesc, len: usize, cap: usize) -> *mu
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn gc_desc_u8() -> *const GcDesc {
+pub extern "C" fn __gc__desc_u8() -> *const GcDesc {
     static DESC: GcDesc = GcDesc {
         size: 1,
         align: 1,
@@ -165,13 +165,13 @@ pub extern "C" fn gc_desc_u8() -> *const GcDesc {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn gc_collect() {
+pub extern "C" fn __gc__collect() {
     with_gc(|gc| gc.collect());
 }
 
 /// Poll for a pending collection at a compiler-inserted safepoint.
 #[unsafe(no_mangle)]
-pub extern "C" fn gc_poll() {
+pub extern "C" fn __gc__poll() {
     with_gc(|gc| {
         if gc.alloc_since_gc >= gc.gc_threshold_bytes {
             gc.collect();
@@ -179,18 +179,9 @@ pub extern "C" fn gc_poll() {
     });
 }
 
-/// Register a static/global range as a root.
-#[unsafe(no_mangle)]
-pub extern "C" fn gc_register_static(begin: *const u8, end: *const u8) {
-    if begin.is_null() || end.is_null() || end <= begin {
-        return;
-    }
-    with_gc(|gc| gc.register_static(begin..end));
-}
-
 /// Manually add a root pointer (useful for embeddings/tests).
 #[unsafe(no_mangle)]
-pub extern "C" fn gc_add_root(ptr: *const u8) {
+pub extern "C" fn __gc__add_root(ptr: *const u8) {
     if ptr.is_null() {
         return;
     }
@@ -203,7 +194,7 @@ pub extern "C" fn gc_add_root(ptr: *const u8) {
 /// The old buffer will be collected when no longer referenced.
 /// Returns the new buffer pointer, or null on failure.
 #[unsafe(no_mangle)]
-pub extern "C" fn gc_grow_buf(
+pub extern "C" fn __gc__grow_buf(
     old_ptr: *mut u8,
     desc: *const GcDesc,
     old_len: usize,
@@ -238,32 +229,6 @@ pub extern "C" fn gc_grow_buf(
     }
 
     new_ptr
-}
-
-/// Write a value to a GC-managed buffer at a byte offset.
-/// This is used for writing elements to dynamic arrays.
-#[unsafe(no_mangle)]
-pub extern "C" fn gc_write_bytes(dst: *mut u8, offset: usize, src: *const u8, len: usize) {
-    if dst.is_null() || src.is_null() || len == 0 {
-        return;
-    }
-    unsafe {
-        let target = dst.add(offset);
-        std::ptr::copy_nonoverlapping(src, target, len);
-    }
-}
-
-/// Read bytes from a GC-managed buffer at a byte offset.
-/// This is used for reading elements from dynamic arrays.
-#[unsafe(no_mangle)]
-pub extern "C" fn gc_read_bytes(src: *const u8, offset: usize, dst: *mut u8, len: usize) {
-    if src.is_null() || dst.is_null() || len == 0 {
-        return;
-    }
-    unsafe {
-        let source = src.add(offset);
-        std::ptr::copy_nonoverlapping(source, dst, len);
-    }
 }
 
 // === Runtime GC implementation ===
@@ -742,11 +707,6 @@ impl Gc {
             alloc_since_gc: 0,
             gc_threshold_bytes: GC_MIN_TRIGGER,
         }
-    }
-
-    fn register_static(&mut self, range: Range<*const u8>) {
-        // Static ranges are conservatively scanned as potential roots.
-        self.static_roots.push(range);
     }
 
     fn add_root(&mut self, ptr: *const u8) {

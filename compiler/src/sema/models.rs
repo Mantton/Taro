@@ -131,6 +131,13 @@ impl<'arena> Ty<'arena> {
         matches!(self.kind(), TyKind::FnPointer { .. })
     }
 
+    pub fn is_pointer(self) -> bool {
+        matches!(
+            self.kind(),
+            TyKind::Pointer(..) | TyKind::Reference(..)
+        )
+    }
+
     pub fn dereference(self) -> Option<Ty<'arena>> {
         match self.kind() {
             TyKind::Reference(ty, _) | TyKind::Pointer(ty, _) => Some(ty),
@@ -195,7 +202,6 @@ impl<'arena> Ty<'arena> {
                 out.push_str(&output.format(gcx));
                 out
             }
-            TyKind::GcPtr => "GcPtr".into(),
             TyKind::BoxedExistential { interfaces } => {
                 if interfaces.is_empty() {
                     return "any".into();
@@ -294,7 +300,6 @@ pub enum TyKind<'arena> {
     Adt(AdtDef, GenericArguments<'arena>),
     Pointer(Ty<'arena>, Mutability),
     Reference(Ty<'arena>, Mutability),
-    GcPtr,
     Tuple(&'arena [Ty<'arena>]),
     FnPointer {
         inputs: &'arena [Ty<'arena>],

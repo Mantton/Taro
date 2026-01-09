@@ -655,6 +655,10 @@ impl<'ctx> FunctionLower<'ctx> {
                 let block_id = self.lower_block(block);
                 ExprKind::Block(block_id)
             }
+            hir::ExpressionKind::UnsafeBlock(block) => {
+                let block_id = self.lower_block(block);
+                ExprKind::Block(block_id)
+            }
             hir::ExpressionKind::Dereference(inner) => {
                 let operand = self.lower_expr(inner);
                 ExprKind::Deref(operand)

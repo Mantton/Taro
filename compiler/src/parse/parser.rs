@@ -2877,6 +2877,7 @@ impl Parser {
             Token::LBracket => self.parse_collection_expr(),
             Token::Case => self.parse_pattern_binding_condition(),
             Token::Let => self.parse_optional_binding_condition(),
+            Token::Unsafe => self.parse_unsafe_block_expression(),
             Token::LBrace => self.parse_block_expression(),
             Token::Bar | Token::BarBar => self.parse_closure_expression(),
             Token::Underscore => {
@@ -2934,6 +2935,15 @@ impl Parser {
             Token::Match => self.parse_match_expression(),
             _ => unreachable!("must manually check for token kind matching if | switch | match"),
         }
+    }
+
+    fn parse_unsafe_block_expression(&mut self) -> R<Box<Expression>> {
+        let lo = self.lo_span();
+        self.expect(Token::Unsafe)?;
+        let block = self.parse_block()?;
+        let kind = ExpressionKind::UnsafeBlock(block);
+        let span = lo.to(self.hi_span());
+        Ok(self.build_expr(kind, span))
     }
 
     fn parse_block_expression(&mut self) -> R<Box<Expression>> {
@@ -5242,5 +5252,17 @@ mod tests {
             }
             _ => panic!("Expected OptionalEvaluation"),
         }
+    }
+
+    #[test]
+    fn test_extern_block_parsing() {
+        let input = r#"
+        extern "taro_rt" {
+            func __rt__print(_ s: string)
+            func __rt__eprint(_ s: string)
+        }
+        "#;
+        // This should parse correctly with ASI providing semicolons after signatures
+        let _ = parse_one_decl(input);
     }
 }

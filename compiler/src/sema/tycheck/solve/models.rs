@@ -50,6 +50,12 @@ pub enum Goal<'ctx> {
         from: Ty<'ctx>,
         to: Ty<'ctx>,
     },
+    Cast {
+        node_id: NodeID,
+        from: Ty<'ctx>,
+        to: Ty<'ctx>,
+        is_unsafe: bool,
+    },
     Member(MemberGoalData<'ctx>),
     InferredStaticMember(InferredStaticMemberGoalData<'ctx>),
     MethodCall(MethodCallData<'ctx>),

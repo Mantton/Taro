@@ -108,6 +108,7 @@ pub enum Token {
     Struct,
     True,
     Type,
+    Unsafe,
     Var,
     Where,
     While,

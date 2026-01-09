@@ -37,7 +37,6 @@ fn ty_symbol_with(gcx: GlobalContext, ty: Ty) -> String {
         TyKind::Reference(inner, mt) => {
             format!("ref{}{}", mt.display_str(), ty_symbol_with(gcx, inner))
         }
-        TyKind::GcPtr => "gcptr".into(),
         TyKind::Adt(def, _) => {
             let ident = gcx.definition_ident(def.id);
             let name = ident.symbol.as_str();
@@ -97,7 +96,6 @@ pub fn mangle(gcx: GlobalContext, id: hir::DefinitionID) -> String {
             TypeHead::Nominal(def_id) => gcx.definition_ident(def_id).symbol.as_str().into(),
             TypeHead::Reference(mt) => format!("ref{}", mt.display_str()),
             TypeHead::Pointer(mt) => format!("ptr{}", mt.display_str()),
-            TypeHead::GcPtr => "gcptr".into(),
             TypeHead::Tuple(len) => format!("tuple{len}"),
             TypeHead::Array => "array".into(),
         }

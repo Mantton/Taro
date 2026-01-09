@@ -7,7 +7,7 @@ import std.optional.Optional
 ///
 /// Example:
 /// ```
-/// var iter = list.into_iter()
+/// var iter = list.intoIter()
 /// while let value = iter.next() {
 ///     print(value)
 /// }
@@ -28,7 +28,7 @@ public interface Iterator {
 ///
 /// The for loop is desugared to:
 /// ```
-/// var iter = Iterable.into_iter(collection)
+/// var iter = Iterable.intoIter(collection)
 /// loop {
 ///     match Iterator.next(&mut iter) {
 ///         case .some(item) => { /* body */ }

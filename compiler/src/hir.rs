@@ -521,6 +521,8 @@ pub enum ExpressionKind {
     PatternBinding(PatternBindingCondition),
     /// { }
     Block(Block),
+    /// unsafe { }
+    UnsafeBlock(Block),
     /// `Foo { a: 1, b: 2 }`
     StructLiteral(StructLiteral),
     Malformed,
@@ -1671,6 +1673,9 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, node: &Expression) -> V::
             try_visit!(visitor.visit_pattern_binding_condition(condition));
         }
         ExpressionKind::Block(block) => {
+            try_visit!(visitor.visit_block(block));
+        }
+        ExpressionKind::UnsafeBlock(block) => {
             try_visit!(visitor.visit_block(block));
         }
         ExpressionKind::StructLiteral(struct_literal) => {

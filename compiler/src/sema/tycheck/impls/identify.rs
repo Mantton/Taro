@@ -45,7 +45,6 @@ impl<'ctx> Actor<'ctx> {
         match head {
             TypeHead::Nominal(id) => id.package() == impl_pkg,
             TypeHead::Primary(_)
-            | TypeHead::GcPtr
             | TypeHead::Tuple(_)
             | TypeHead::Reference(_)
             | TypeHead::Pointer(_)
@@ -140,9 +139,6 @@ impl<'ctx> Actor<'ctx> {
         match &resolved.resolution {
             Resolution::PrimaryType(p) => Some(TypeHead::Primary(*p)),
             Resolution::Definition(id, kind) => {
-                if self.context.is_std_gc_ptr(*id) {
-                    return Some(TypeHead::GcPtr);
-                }
                 match kind {
                     DefinitionKind::Struct | DefinitionKind::Interface | DefinitionKind::Enum => {
                         Some(TypeHead::Nominal(*id))

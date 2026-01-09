@@ -1,0 +1,17 @@
+public type TrackedPointer = *mut uint8
+
+public struct GcDesc {
+    size: usize
+    ptrOffsets: *const usize
+    ptrCount: usize
+}
+
+extern "taro_rt" {
+    func __gc__makebuf(_ desc: *const GcDesc, _ len: usize, _ cap: usize) -> TrackedPointer
+    func __gc__grow_buf(_ old_ptr: TrackedPointer, _ desc: *const GcDesc, _ old_len: usize, _ new_cap: usize) -> TrackedPointer
+    func __gc__desc_u8() -> *const GcDesc
+}
+
+public func allocBytes(_ len: usize) -> TrackedPointer {
+    __gc__makebuf(__gc__desc_u8(), len, len)
+}

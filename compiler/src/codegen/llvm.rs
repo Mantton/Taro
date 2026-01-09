@@ -319,7 +319,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 .build_float_to_signed_int(val.into_float_value(), i32_ty, "float_to_i32")
                 .unwrap()
                 .as_basic_value_enum(),
-            (TyKind::Pointer(..) | TyKind::Reference(..) | TyKind::GcPtr, Some(val)) => {
+            (TyKind::Pointer(..) | TyKind::Reference(..), Some(val)) => {
                 let ptr = val.into_pointer_value();
                 let int64 = builder
                     .build_ptr_to_int(ptr, self.context.i64_type(), "ptr_to_int")
@@ -586,7 +586,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             let ty = decl.ty;
             let mut local_slots = Vec::new();
             match ty.kind() {
-                TyKind::Reference(..) | TyKind::GcPtr | TyKind::String => {
+                TyKind::Reference(..) | TyKind::String => {
                     local_slots.push(ShadowSlotKind::Local(ty));
                 }
                 TyKind::Adt(def, adt_args) => match def.kind {
@@ -770,7 +770,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         value: BasicValueEnum<'llvm>,
     ) -> Option<PointerValue<'llvm>> {
         match ty.kind() {
-            TyKind::Reference(..) | TyKind::GcPtr => Some(value.into_pointer_value()),
+            TyKind::Reference(..) => Some(value.into_pointer_value()),
             TyKind::String => {
                 let struct_val = value.into_struct_value();
                 let ptr_val = self
@@ -1146,7 +1146,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     _ => return None,
                 }
             }
-            TyKind::Pointer(..) | TyKind::Reference(..) | TyKind::GcPtr => {
+            TyKind::Pointer(..) | TyKind::Reference(..) => {
                 let ptr_int_ty = self.context.ptr_sized_int_type(&self.target_data, None);
                 let lhs = match lhs {
                     BasicValueEnum::PointerValue(ptr) => self
@@ -1402,10 +1402,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             );
         }
 
-        if matches!(
-            to_ty.kind(),
-            TyKind::Pointer(..) | TyKind::Reference(..) | TyKind::GcPtr
-        ) {
+        if matches!(to_ty.kind(), TyKind::Pointer(..) | TyKind::Reference(..)) {
             return Some(
                 self.builder
                     .build_bit_cast(
@@ -2196,6 +2193,50 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 self.lower_intrinsic_ptr_to_u8(body, locals, args, destination)?;
                 Ok(true)
             }
+            "__intrinsic_ptr_add" => {
+                self.lower_intrinsic_ptr_add(body, locals, call_args, args, destination)?;
+                Ok(true)
+            }
+            "__intrinsic_ptr_sub" => {
+                self.lower_intrinsic_ptr_sub(body, locals, call_args, args, destination)?;
+                Ok(true)
+            }
+            "__intrinsic_ptr_offset" => {
+                self.lower_intrinsic_ptr_offset(body, locals, call_args, args, destination)?;
+                Ok(true)
+            }
+            "__intrinsic_ptr_byte_add" => {
+                self.lower_intrinsic_ptr_byte_add(body, locals, call_args, args, destination)?;
+                Ok(true)
+            }
+            "__intrinsic_ptr_byte_sub" => {
+                self.lower_intrinsic_ptr_byte_sub(body, locals, call_args, args, destination)?;
+                Ok(true)
+            }
+            "__intrinsic_ptr_read" => {
+                self.lower_intrinsic_ptr_read(body, locals, call_args, args, destination)?;
+                Ok(true)
+            }
+            "__intrinsic_ptr_write" => {
+                self.lower_intrinsic_ptr_write(body, locals, call_args, args, destination)?;
+                Ok(true)
+            }
+            "__intrinsic_memcpy" => {
+                self.lower_intrinsic_memcpy(body, locals, call_args, args)?;
+                Ok(true)
+            }
+            "__intrinsic_memmove" => {
+                self.lower_intrinsic_memmove(body, locals, call_args, args)?;
+                Ok(true)
+            }
+            "__intrinsic_memset" => {
+                self.lower_intrinsic_memset(body, locals, call_args, args)?;
+                Ok(true)
+            }
+            "__intrinsic_size_of" => {
+                self.lower_intrinsic_size_of(body, locals, call_args, args, destination)?;
+                Ok(true)
+            }
             _ => {
                 self.gcx
                     .dcx()
@@ -2510,6 +2551,310 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         };
 
         self.store_place(destination, body, locals, val)
+    }
+
+    /// Intrinsic: __intrinsic_ptr_add[T](ptr: *T, count: usize) -> *T
+    fn lower_intrinsic_ptr_add(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        call_args: GenericArguments<'gcx>,
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+    ) -> CompileResult<()> {
+        self.lower_intrinsic_ptr_op(body, locals, call_args, args, destination, false)
+    }
+
+    /// Intrinsic: __intrinsic_ptr_sub[T](ptr: *T, count: usize) -> *T
+    fn lower_intrinsic_ptr_sub(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        call_args: GenericArguments<'gcx>,
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+    ) -> CompileResult<()> {
+        self.lower_intrinsic_ptr_op(body, locals, call_args, args, destination, true)
+    }
+
+    /// Intrinsic: __intrinsic_ptr_offset[T](ptr: *T, count: isize) -> *T
+    fn lower_intrinsic_ptr_offset(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        call_args: GenericArguments<'gcx>,
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+    ) -> CompileResult<()> {
+        // Offset is same as Add but with signed/isize count.
+        // For now sharing logic if possible or duplicating.
+        // The underlying GEP works same for signed offset.
+        self.lower_intrinsic_ptr_op(body, locals, call_args, args, destination, false)
+    }
+
+    fn lower_intrinsic_ptr_op(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        call_args: GenericArguments<'gcx>,
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+        negate: bool,
+    ) -> CompileResult<()> {
+        let Some(crate::sema::models::GenericArgument::Type(elem_ty)) = call_args.get(0) else {
+            // Error handling ignored for brevity/ICE
+            return Ok(());
+        };
+        let elem_ty = instantiate_ty_with_args(self.gcx, *elem_ty, self.current_subst);
+        let Some(llvm_elem_ty) = self.lower_ty(elem_ty) else {
+            return Ok(());
+        };
+
+        let ptr_op = args.get(0).unwrap();
+        let count_op = args.get(1).unwrap();
+
+        let ptr_val = self
+            .eval_operand(body, locals, ptr_op)?
+            .unwrap()
+            .into_pointer_value();
+        let mut count_val = self
+            .eval_operand(body, locals, count_op)?
+            .unwrap()
+            .into_int_value();
+
+        if negate {
+            count_val = self.builder.build_int_neg(count_val, "neg_count").unwrap();
+        }
+
+        let new_ptr = unsafe {
+            self.builder
+                .build_gep(llvm_elem_ty, ptr_val, &[count_val], "ptr_op")
+                .unwrap()
+        };
+
+        self.store_place(destination, body, locals, new_ptr.into())
+    }
+
+    fn lower_intrinsic_ptr_byte_add(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        call_args: GenericArguments<'gcx>,
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+    ) -> CompileResult<()> {
+        self.lower_intrinsic_ptr_byte_op(body, locals, call_args, args, destination, false)
+    }
+
+    fn lower_intrinsic_ptr_byte_sub(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        call_args: GenericArguments<'gcx>,
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+    ) -> CompileResult<()> {
+        self.lower_intrinsic_ptr_byte_op(body, locals, call_args, args, destination, true)
+    }
+
+    fn lower_intrinsic_ptr_byte_op(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        _: GenericArguments<'gcx>,
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+        negate: bool,
+    ) -> CompileResult<()> {
+        let ptr_op = args.get(0).unwrap();
+        let count_op = args.get(1).unwrap();
+
+        let ptr_val = self
+            .eval_operand(body, locals, ptr_op)?
+            .unwrap()
+            .into_pointer_value();
+        let mut count_val = self
+            .eval_operand(body, locals, count_op)?
+            .unwrap()
+            .into_int_value();
+
+        if negate {
+            count_val = self.builder.build_int_neg(count_val, "neg_count").unwrap();
+        }
+
+        let i8_ty = self.context.i8_type();
+        let i8_ptr_ty = self.context.ptr_type(AddressSpace::default());
+
+        let raw_ptr = self
+            .builder
+            .build_bit_cast(ptr_val, i8_ptr_ty, "raw_ptr")
+            .unwrap()
+            .into_pointer_value();
+        let new_raw_ptr = unsafe {
+            self.builder
+                .build_gep(i8_ty, raw_ptr, &[count_val], "byte_op")
+                .unwrap()
+        };
+
+        // Cast back to original pointer type
+        let new_ptr = self
+            .builder
+            .build_bit_cast(new_raw_ptr, ptr_val.get_type(), "new_ptr")
+            .unwrap();
+
+        self.store_place(destination, body, locals, new_ptr.into())
+    }
+
+    fn lower_intrinsic_ptr_read(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        call_args: GenericArguments<'gcx>,
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+    ) -> CompileResult<()> {
+        let Some(crate::sema::models::GenericArgument::Type(elem_ty)) = call_args.get(0) else {
+            return Ok(());
+        };
+        let elem_ty = instantiate_ty_with_args(self.gcx, *elem_ty, self.current_subst);
+        let Some(llvm_elem_ty) = self.lower_ty(elem_ty) else {
+            return Ok(());
+        };
+
+        let ptr_op = args.get(0).unwrap();
+        let ptr_val = self
+            .eval_operand(body, locals, ptr_op)?
+            .unwrap()
+            .into_pointer_value();
+
+        let val = self
+            .builder
+            .build_load(llvm_elem_ty, ptr_val, "read_val")
+            .unwrap();
+        self.store_place(destination, body, locals, val.into())
+    }
+
+    fn lower_intrinsic_ptr_write(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        _: GenericArguments<'gcx>,
+        args: &[Operand<'gcx>],
+        _destination: &Place<'gcx>, // returns void
+    ) -> CompileResult<()> {
+        let ptr_op = args.get(0).unwrap();
+        let val_op = args.get(1).unwrap();
+
+        let ptr_val = self
+            .eval_operand(body, locals, ptr_op)?
+            .unwrap()
+            .into_pointer_value();
+        let val_val = self.eval_operand(body, locals, val_op)?.unwrap();
+
+        let _ = self.builder.build_store(ptr_val, val_val).unwrap();
+        Ok(())
+    }
+
+    fn lower_intrinsic_memcpy(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        _call_args: GenericArguments<'gcx>,
+        args: &[Operand<'gcx>],
+    ) -> CompileResult<()> {
+        // args: src, dst, count (bytes)
+        let src = self
+            .eval_operand(body, locals, args.get(0).unwrap())?
+            .unwrap()
+            .into_pointer_value();
+        let dst = self
+            .eval_operand(body, locals, args.get(1).unwrap())?
+            .unwrap()
+            .into_pointer_value();
+        let count = self
+            .eval_operand(body, locals, args.get(2).unwrap())?
+            .unwrap()
+            .into_int_value();
+
+        // alignments? assuming 1 for now or reading from type if available?
+        // intrinsics usually just take pointers.
+        let _ = self.builder.build_memcpy(dst, 1, src, 1, count).unwrap();
+        Ok(())
+    }
+
+    fn lower_intrinsic_memmove(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        _call_args: GenericArguments<'gcx>,
+        args: &[Operand<'gcx>],
+    ) -> CompileResult<()> {
+        let src = self
+            .eval_operand(body, locals, args.get(0).unwrap())?
+            .unwrap()
+            .into_pointer_value();
+        let dst = self
+            .eval_operand(body, locals, args.get(1).unwrap())?
+            .unwrap()
+            .into_pointer_value();
+        let count = self
+            .eval_operand(body, locals, args.get(2).unwrap())?
+            .unwrap()
+            .into_int_value();
+
+        let _ = self.builder.build_memmove(dst, 1, src, 1, count).unwrap();
+        Ok(())
+    }
+
+    fn lower_intrinsic_memset(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        _call_args: GenericArguments<'gcx>,
+        args: &[Operand<'gcx>],
+    ) -> CompileResult<()> {
+        // args: dst, val (u8), count
+        let dst = self
+            .eval_operand(body, locals, args.get(0).unwrap())?
+            .unwrap()
+            .into_pointer_value();
+        let val = self
+            .eval_operand(body, locals, args.get(1).unwrap())?
+            .unwrap()
+            .into_int_value();
+        let count = self
+            .eval_operand(body, locals, args.get(2).unwrap())?
+            .unwrap()
+            .into_int_value();
+
+        let _ = self.builder.build_memset(dst, 1, val, count).unwrap();
+        Ok(())
+    }
+
+    fn lower_intrinsic_size_of(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        call_args: GenericArguments<'gcx>,
+        _args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+    ) -> CompileResult<()> {
+        let Some(crate::sema::models::GenericArgument::Type(elem_ty)) = call_args.get(0) else {
+            return Ok(());
+        };
+        let elem_ty = instantiate_ty_with_args(self.gcx, *elem_ty, self.current_subst);
+        let Some(llvm_elem_ty) = self.lower_ty(elem_ty) else {
+            return Ok(());
+        };
+
+        let size = llvm_elem_ty.size_of().unwrap();
+        // size_of returns an IntValue (i64 usually on 64bit). Cast to usize (which is pointer sized int).
+        let size = self
+            .builder
+            .build_int_cast(size, self.usize_ty, "size_of_cast")
+            .unwrap();
+
+        self.store_place(destination, body, locals, size.into())
     }
 
     /// Intrinsic: __intrinsic_ptr_to_u8[T](*const T) -> *const uint8
@@ -3210,7 +3555,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     }
 
     fn get_gc_alloc(&self) -> FunctionValue<'llvm> {
-        if let Some(f) = self.module.get_function("gc_alloc") {
+        if let Some(f) = self.module.get_function("__gc__alloc") {
             return f;
         }
         let opaque_ptr = self.context.ptr_type(AddressSpace::default());
@@ -3220,16 +3565,16 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .ptr_type(AddressSpace::default())
             .fn_type(&[self.usize_ty.into(), gc_desc_ptr.into()], false);
         self.module
-            .add_function("gc_alloc", fn_ty, Some(Linkage::External))
+            .add_function("__gc__alloc", fn_ty, Some(Linkage::External))
     }
 
     fn get_gc_poll(&self) -> FunctionValue<'llvm> {
-        if let Some(f) = self.module.get_function("gc_poll") {
+        if let Some(f) = self.module.get_function("__gc__poll") {
             return f;
         }
         let fn_ty = self.context.void_type().fn_type(&[], false);
         self.module
-            .add_function("gc_poll", fn_ty, Some(Linkage::External))
+            .add_function("__gc__poll", fn_ty, Some(Linkage::External))
     }
 
     fn gc_desc_for(&mut self, ty: Ty<'gcx>) -> PointerValue<'llvm> {
@@ -3294,10 +3639,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     }
                 }
             }
-            TyKind::String
-            | TyKind::GcPtr
-            | TyKind::Reference(..)
-            | TyKind::BoxedExistential { .. } => {
+            TyKind::String | TyKind::Reference(..) | TyKind::BoxedExistential { .. } => {
                 offsets.push(0);
             }
             _ => {}
@@ -3503,7 +3845,7 @@ fn enum_pointer_offsets<'llvm, 'gcx>(
 fn is_pointer_ty(ty: Ty) -> bool {
     matches!(
         ty.kind(),
-        TyKind::Reference(..) | TyKind::String | TyKind::GcPtr | TyKind::BoxedExistential { .. }
+        TyKind::Reference(..) | TyKind::String | TyKind::BoxedExistential { .. }
     )
 }
 
@@ -3545,11 +3887,6 @@ fn lower_type<'llvm, 'gcx>(
         TyKind::Bool => Some(context.bool_type().into()),
         TyKind::Rune => Some(context.i32_type().into()),
         TyKind::String => Some(string_header_ty(context, target_data).into()),
-        TyKind::GcPtr => Some(
-            context
-                .ptr_type(AddressSpace::default())
-                .as_basic_type_enum(),
-        ),
         TyKind::Array { element, len } => {
             let Some(elem_ty) = lower_type(context, gcx, target_data, element, subst) else {
                 return None;

@@ -228,7 +228,7 @@ impl<'ctx> Actor<'ctx> {
             // For references and pointers, check the inner type
             TypeHead::Reference(_) | TypeHead::Pointer(_) => self.is_inner_type_local(self_ty, pkg),
             // Built-in types are owned by std
-            TypeHead::Primary(_) | TypeHead::GcPtr | TypeHead::Tuple(_) | TypeHead::Array => {
+            TypeHead::Primary(_) | TypeHead::Tuple(_) | TypeHead::Array => {
                 self.is_std_package(pkg)
             }
         }

@@ -3,56 +3,56 @@
 
 func main() {
     usePrint()
-    
-    let combined = concat_string("Hello ", "From Taro Concat!\n")
+
+    let combined = concatString("Hello ", "From Taro Concat!\n")
     print(combined)
-    assert(std.unsafe.string_len(combined) > 0, "concat failed")
-    
+    assert(std.string.stringLen(combined) > 0, "concat failed")
+
     let fib_res = useFib()
     assert(fib_res == 6, "fib logic failed")
     print("PASS: useFib\n")
-    
+
     let block_result = withBlocks()
     assert(block_result == 20, "block logic failed")
     print("PASS: withBlocks\n")
-    
+
     let point_result = usePointCompute()
     assert(point_result == true, "point compute failed")
     print("PASS: usePointCompute\n")
-    
+
     let tuple_result = useTuple()
     let (t1, t2) = tuple_result
     assert(t1 == 1, "tuple.0 failed")
     assert(t2 == 2, "tuple.1 failed")
     print("PASS: useTuple\n")
-    
+
     useAllocator()
     print("PASS: useAllocator\n")
-    
+
     print("All tests passed!\n")
 }
 
 func usePrint() {
     print("Hello From Taro\n")
     let str = "Hello From Taro through C!"
-    let ptr = std.unsafe.string_data(str)
+    let ptr = std.string.stringData(str)
     puts(ptr)
     print("\n")
 }
 
-func concat_string(_ a: string, _ b: string) -> string {
-    let a_len = std.unsafe.string_len(a)
-    let b_len = std.unsafe.string_len(b)
-    let total = a_len + b_len
-    let buf = std.unsafe.alloc_bytes(total)
+func concatString(_ a: string, _ b: string) -> string {
+    let aLen = std.string.stringLen(a)
+    let bLen = std.string.stringLen(b)
+    let total = aLen + bLen
+    let buf = std.mem.allocBytes(total)
 
-    let a_ptr = std.unsafe.string_data(a)
-    let b_ptr = std.unsafe.string_data(b)
-    buf.copy_from_raw(a_ptr, a_len)
-    let dst_b = buf.add_bytes(a_len)
-    dst_b.copy_from_raw(b_ptr, b_len)
+    let aPtr = std.string.stringData(a)
+    let bPtr = std.string.stringData(b)
+    aPtr.copyTo(buf, aLen)
+    let dstB = buf.byteAdd(aLen)
+    bPtr.copyTo(dstB, bLen)
 
-    return std.unsafe.string_from_parts(buf, total)
+    return std.string.stringFromParts(buf, total)
 }
 
 extern "C" {

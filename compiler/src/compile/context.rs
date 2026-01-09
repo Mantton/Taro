@@ -436,9 +436,6 @@ impl<'arena> GlobalContext<'arena> {
                     PrimaryType::Rune => self.types.rune,
                 })
             }),
-            TypeHead::GcPtr => self
-                .get_impl_target_ty(impl_id)
-                .or_else(|| Some(Ty::new(TyKind::GcPtr, self))),
             TypeHead::Tuple(_)
             | TypeHead::Reference(_)
             | TypeHead::Pointer(_)
@@ -470,19 +467,6 @@ impl<'arena> GlobalContext<'arena> {
             .definition_to_ident
             .get(&id)
             .expect("identifier for definition")
-    }
-
-    pub fn is_std_gc_ptr(self, id: DefinitionID) -> bool {
-        let ident = self.definition_ident(id);
-        if ident.symbol.as_str() != "GcPtr" {
-            return false;
-        }
-        matches!(
-            self.package_ident(id.package())
-                .as_ref()
-                .map(|s| s.as_str()),
-            Some(STD_PREFIX)
-        )
     }
 
     pub fn definition_kind(self, id: DefinitionID) -> DefinitionKind {
@@ -593,9 +577,6 @@ impl<'arena> GlobalContext<'arena> {
 
             // Function pointers - copyable
             TyKind::FnPointer { .. } => true,
-
-            // GC pointers - copyable (GC manages ownership)
-            TyKind::GcPtr => true,
 
             // Boxed existentials - NOT copyable (unknown underlying type)
             TyKind::BoxedExistential { .. } => false,

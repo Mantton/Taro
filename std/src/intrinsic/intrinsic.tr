@@ -1,0 +1,18 @@
+import std.mem.{TrackedPointer, GcDesc}
+
+extern "taro_intrinsic" {
+    func __intrinsic_ptr_add[T](_ ptr: *T, _ count: usize) -> *T
+    func __intrinsic_ptr_sub[T](_ ptr: *T, _ count: usize) -> *T
+    func __intrinsic_ptr_offset[T](_ ptr: *T, _ count: isize) -> *T
+    func __intrinsic_ptr_byte_add[T](_ ptr: *T, _ count: usize) -> *T
+    func __intrinsic_ptr_byte_sub[T](_ ptr: *T, _ count: usize) -> *T
+    func __intrinsic_ptr_read[T](_ ptr: *T) -> T
+    func __intrinsic_ptr_write[T](_ ptr: *T, _ val: T)
+    func __intrinsic_memcpy[T](_ src: *T, _ dst: *T, _ count: usize)
+    func __intrinsic_memmove[T](_ src: *T, _ dst: *T, _ count: usize)
+    func __intrinsic_memset[T](_ dst: *T, _ val: uint8, _ count: usize)
+    func __intrinsic_size_of[T]() -> usize
+
+    // Legacy/GC intrinsics
+    func __intrinsic_gc_desc[T]() -> *const GcDesc
+}

@@ -1,0 +1,114 @@
+import std.intrinsic.{
+    __intrinsic_ptr_add,
+    __intrinsic_ptr_sub,
+    __intrinsic_ptr_offset,
+    __intrinsic_ptr_byte_add,
+    __intrinsic_ptr_byte_sub,
+    __intrinsic_ptr_read,
+    __intrinsic_ptr_write,
+    __intrinsic_memcpy,
+    __intrinsic_memmove,
+    __intrinsic_memset,
+    __intrinsic_size_of,
+}
+
+impl[T] *T {
+    public func add(self, _ n: usize) -> *T {
+        unsafe { __intrinsic_ptr_add(self, n) }
+    }
+
+    public func sub(self, _ n: usize) -> *T {
+        unsafe { __intrinsic_ptr_sub(self, n) }
+    }
+
+    public func offset(self, _ n: isize) -> *T {
+        unsafe { __intrinsic_ptr_offset(self, n) }
+    }
+
+    public func byteAdd(self, _ n: usize) -> *T {
+        unsafe { __intrinsic_ptr_byte_add(self, n) }
+    }
+
+    public func byteSub(self, _ n: usize) -> *T {
+        unsafe { __intrinsic_ptr_byte_sub(self, n) }
+    }
+
+    public func read(self) -> T {
+        unsafe { __intrinsic_ptr_read(self) }
+    }
+
+    public func write(self, _ val: T) {
+        unsafe { __intrinsic_ptr_write(self, val) }
+    }
+
+    public func copyTo(self, _ dst: *T, _ count: usize) {
+        unsafe { __intrinsic_memcpy(self, dst, count * __intrinsic_size_of[T]()) }
+    }
+
+    public func copyToNonoverlapping(self, _ dst: *T, _ count: usize) {
+        unsafe { __intrinsic_memmove(self, dst, count * __intrinsic_size_of[T]()) }
+    }
+
+    public func writeBytes(self, _ val: uint8, _ count: usize) {
+        unsafe { __intrinsic_memset(self, val, count) }
+    }
+
+    public func readBytes(self, _ dst: *mut uint8, _ count: usize) {
+        unsafe { __intrinsic_memcpy(self as *uint8, dst, count) }
+    }
+
+    public func null() -> *T {
+        unsafe { 0 as *T }
+    }
+}
+
+
+impl[T] *mut T {
+    public func add(self, _ n: usize) -> *T {
+        unsafe { __intrinsic_ptr_add(self, n) }
+    }
+
+    public func sub(self, _ n: usize) -> *T {
+        unsafe { __intrinsic_ptr_sub(self, n) }
+    }
+
+    public func offset(self, _ n: isize) -> *T {
+        unsafe { __intrinsic_ptr_offset(self, n) }
+    }
+
+    public func byteAdd(self, _ n: usize) -> *T {
+        unsafe { __intrinsic_ptr_byte_add(self, n) }
+    }
+
+    public func byteSub(self, _ n: usize) -> *T {
+        unsafe { __intrinsic_ptr_byte_sub(self, n) }
+    }
+
+    public func read(self) -> T {
+        unsafe { __intrinsic_ptr_read(self) }
+    }
+
+    public func write(self, _ val: T) {
+        unsafe { __intrinsic_ptr_write(self, val) }
+    }
+
+    public func copyTo(self, _ dst: *T, _ count: usize) {
+        unsafe { __intrinsic_memcpy(self, dst, count * __intrinsic_size_of[T]()) }
+    }
+
+    public func copyToNonoverlapping(self, _ dst: *T, _ count: usize) {
+        unsafe { __intrinsic_memmove(self, dst, count * __intrinsic_size_of[T]()) }
+    }
+
+    public func writeBytes(self, _ val: uint8, _ count: usize) {
+        unsafe { __intrinsic_memset(self, val, count) }
+    }
+
+    public func readBytes(self, _ dst: *mut uint8, _ count: usize) {
+        unsafe { __intrinsic_memcpy(self as *uint8, dst, count) }
+    }
+
+    public func null() -> *mut T {
+        unsafe { 0 as *mut T }
+    }
+}

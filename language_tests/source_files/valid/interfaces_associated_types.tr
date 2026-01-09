@@ -8,17 +8,17 @@ func main() {
         isRegistered: true,
         flag: 'F',
     }
-    
+
     assert(d.identifier() == 123, "Interface method implementation check")
-    
+
     let c = Container {
-        data: std.unsafe.GcPtr.null(), // Placeholder buffer
+        data: std.mem.TrackedPointer.null(), // Placeholder buffer
         len: 10,
         cap: 20,
     }
-    
+
     assert(c.len() == 10, "Container implementation check")
-    
+
     std.print("PASS: Interface conformance working\n")
 }
 
@@ -48,7 +48,7 @@ impl Entity for MyData {
 
 
 struct Container {
-    data: std.unsafe.GcPtr
+    data: std.mem.TrackedPointer
     len: usize
     cap: usize
 }

@@ -920,6 +920,7 @@ fn str_to_keyword(word: &str) -> Option<Token> {
         "var" => Token::Var,
         "where" => Token::Where,
         "while" => Token::While,
+        "unsafe" => Token::Unsafe,
 
         // reserved
         "class" => Token::Class,
@@ -1558,6 +1559,7 @@ mod tests {
             ("var", Token::Var),
             ("where", Token::Where),
             ("while", Token::While),
+            ("unsafe", Token::Unsafe),
             // Reserved
             ("class", Token::Class),
             ("final", Token::Final),

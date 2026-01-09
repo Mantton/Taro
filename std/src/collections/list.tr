@@ -1,6 +1,8 @@
-import std.unsafe.{GcPtr, GcDesc, gc_makebuf, gc_grow_buf, gc_read_bytes, __intrinsic_gc_desc, __intrinsic_list_write, __intrinsic_list_read_unchecked, __intrinsic_list_read_mut_unchecked, __intrinsic_mut_ref_to_ptr, __intrinsic_ptr_to_u8_mut}
+import std.mem.{TrackedPointer, GcDesc, __gc__makebuf, __gc__grow_buf}
+import std.intrinsic.__intrinsic_gc_desc
 import std.optional.Optional
 import std.iter.{Iterator, Iterable}
+
 
 /// A dynamically-sized list (dynamic array).
 ///
@@ -8,7 +10,7 @@ import std.iter.{Iterator, Iterable}
 /// contiguously in memory. Elements can be added with `append` and
 /// accessed by index.
 public struct List[Element] {
-    buffer: GcPtr
+    buffer: TrackedPointer
     len: usize
     cap: usize
 }
@@ -17,7 +19,7 @@ impl[Element] List[Element] {
     /// Create a new empty list.
     public func new() -> Self {
         List[Element] {
-            buffer: GcPtr.null(),
+            buffer: TrackedPointer.null(),
             len: 0,
             cap: 0,
         }
@@ -30,7 +32,7 @@ impl[Element] List[Element] {
         }
 
         let desc = __intrinsic_gc_desc[Element]()
-        let buf = gc_makebuf(desc, 0, capacity)
+        let buf = __gc__makebuf(desc, 0, capacity)
         List[Element] {
             buffer: buf,
             len: 0,
@@ -62,20 +64,24 @@ impl[Element] List[Element] {
         }
 
         // Write the element to the buffer using the intrinsic
-        __intrinsic_list_write[Element](self.buffer, self.len, item)
+        unsafe {
+            (self.buffer as *mut Element)
+                .add(self.len)
+                .write(item)
+        }
 
         self.len += 1
     }
 
     /// Internal: grow the buffer capacity.
     func grow(&mut self) {
-        let new_cap = if self.cap == 0 { 4 } else { self.cap * 2 }
+        let newCap = if self.cap == 0 { 4 } else { self.cap * 2 }
 
         let desc = __intrinsic_gc_desc[Element]()
-        let new_buffer = gc_grow_buf(self.buffer, desc, self.len, new_cap)
+        let newBuffer = __gc__grow_buf(self.buffer, desc, self.len, newCap)
 
-        self.buffer = new_buffer
-        self.cap = new_cap
+        self.buffer = newBuffer
+        self.cap = newCap
     }
 }
 
@@ -87,7 +93,7 @@ impl[Element] List[Element] {
         }
 
         // Read the element from the buffer using the intrinsic
-        let elem = __intrinsic_list_read_unchecked[Element](self.buffer, index)
+        let elem = unsafe { (self.buffer as *const Element).add(index) as &Element }
         return .some(elem)
     }
 
@@ -99,27 +105,27 @@ impl[Element] List[Element] {
         }
 
         // Read the element from the buffer using the intrinsic
-        return __intrinsic_list_read_unchecked[Element](self.buffer, index)
+        return unsafe { (self.buffer as *const Element).add(index) as &Element }
     }
 
     /// Get a mutable reference to the element at the given index, or none if out of bounds.
-    public func get_mut(&mut self, _ index: usize) -> Optional[&mut Element] {
+    public func getMut(&mut self, _ index: usize) -> Optional[&mut Element] {
         if index >= self.len {
             return .none
         }
 
-        let elem = __intrinsic_list_read_mut_unchecked[Element](self.buffer, index)
+        let elem = unsafe { (self.buffer as *mut Element).add(index) as &mut Element }
         return .some(elem)
     }
 
     /// Get a mutable reference to the element at the given index, panicking if out of bounds.
-    public func at_mut(&mut self, _ index: usize) -> &mut Element {
+    public func atMut(&mut self, _ index: usize) -> &mut Element {
         if index >= self.len {
             std.print("list index out of range\n")
             std.process.exit(1)
         }
 
-        return __intrinsic_list_read_mut_unchecked[Element](self.buffer, index)
+        return unsafe { (self.buffer as *mut Element).add(index) as &mut Element }
     }
 }
 
@@ -131,7 +137,11 @@ impl[Element] List[Element] {
             std.process.exit(1)
         }
 
-        __intrinsic_list_write[Element](self.buffer, index, value)
+        unsafe {
+            (self.buffer as *mut Element)
+                .add(index)
+                .write(value)
+        }
     }
 
     /// Remove and return the last element, or none if the list is empty.
@@ -142,12 +152,14 @@ impl[Element] List[Element] {
 
         self.len -= 1
         let desc = __intrinsic_gc_desc[Element]()
-        let elem_size = desc.size
-        let offset = self.len * elem_size
+        let elemSize = desc.size
+        let offset = self.len * elemSize
         var elem: Element
-        let elem_ptr = __intrinsic_mut_ref_to_ptr[Element](&mut elem)
-        let dst = __intrinsic_ptr_to_u8_mut[Element](elem_ptr)
-        gc_read_bytes(self.buffer, offset, dst, elem_size)
+        unsafe {
+            let elemPtr = &mut elem as *mut Element
+            let dst = elemPtr as *mut uint8
+            self.buffer.byteAdd(offset).readBytes(dst, elemSize)
+        }
         return .some(elem)
     }
 
@@ -158,7 +170,7 @@ impl[Element] List[Element] {
 }
 
 public struct ListIterator[Element] {
-    buffer: GcPtr
+    buffer: TrackedPointer
     len: usize
     idx: usize
 }
@@ -171,12 +183,14 @@ impl[Element] Iterator for ListIterator[Element] {
         }
 
         let desc = __intrinsic_gc_desc[Element]()
-        let elem_size = desc.size
-        let offset = self.idx * elem_size
+        let elemSize = desc.size
+        let offset = self.idx * elemSize
         var elem: Element
-        let elem_ptr = __intrinsic_mut_ref_to_ptr[Element](&mut elem)
-        let dst = __intrinsic_ptr_to_u8_mut[Element](elem_ptr)
-        gc_read_bytes(self.buffer, offset, dst, elem_size)
+        unsafe {
+            let elemPtr = &mut elem as *mut Element
+            let dst = elemPtr as *mut uint8
+            self.buffer.byteAdd(offset).readBytes(dst, elemSize)
+        }
 
         self.idx += 1
         return .some(elem)
@@ -184,7 +198,7 @@ impl[Element] Iterator for ListIterator[Element] {
 }
 
 public struct ListRefIterator[Element] {
-    buffer: GcPtr
+    buffer: TrackedPointer
     len: usize
     idx: usize
 }
@@ -195,7 +209,7 @@ impl[Element] Iterator for ListRefIterator[Element] {
         if self.idx >= self.len {
             return .none
         }
-        let elem = __intrinsic_list_read_unchecked[Element](self.buffer, self.idx)
+        let elem = unsafe { (self.buffer as *const Element).add(self.idx) as &Element }
         self.idx += 1
         return .some(elem)
     }
@@ -226,7 +240,7 @@ impl[Element] Iterable for &List[Element] {
 }
 
 public struct ListMutIterator[Element] {
-    buffer: GcPtr
+    buffer: TrackedPointer
     len: usize
     idx: usize
 }
@@ -238,8 +252,7 @@ impl[Element] Iterator for ListMutIterator[Element] {
         if self.idx >= self.len {
             return .none
         }
-
-        let elem = __intrinsic_list_read_mut_unchecked[Element](self.buffer, self.idx)
+        let elem = unsafe { (self.buffer as *mut Element).add(self.idx) as &mut Element }
         self.idx += 1
         return .some(elem)
     }

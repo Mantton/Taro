@@ -147,15 +147,19 @@ impl<'ctx> ConstraintSolver<'ctx> {
         from: Ty<'ctx>,
         to: Ty<'ctx>,
     ) -> Option<SolverResult<'ctx>> {
-        let TyKind::Reference(from_inner, Mutability::Mutable) = from.kind() else {
-            return None;
-        };
-        let TyKind::Reference(to_inner, Mutability::Immutable) = to.kind() else {
-            return None;
-        };
+        // Reference coercion: &mut T -> &T
+        if let (TyKind::Reference(from_inner, Mutability::Mutable), TyKind::Reference(to_inner, Mutability::Immutable)) = (from.kind(), to.kind()) {
+            return Some(self.solve_equality(location, to_inner, from_inner));
+        }
 
-        Some(self.solve_equality(location, to_inner, from_inner))
+        // Raw pointer coercion: *mut T -> *T
+        if let (TyKind::Pointer(from_inner, Mutability::Mutable), TyKind::Pointer(to_inner, Mutability::Immutable)) = (from.kind(), to.kind()) {
+            return Some(self.solve_equality(location, to_inner, from_inner));
+        }
+
+        None
     }
+
 
     fn missing_conformances(
         &self,

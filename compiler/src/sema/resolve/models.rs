@@ -494,6 +494,7 @@ impl ResolutionSource {
                             | DefinitionKind::Enum
                             | DefinitionKind::Interface
                             | DefinitionKind::TypeAlias
+                            | DefinitionKind::TypeParameter
                     ) | Resolution::PrimaryType(..)
                 )
             }
@@ -629,7 +630,6 @@ pub enum TypeHead {
     Nominal(DefinitionID),
     Reference(ast::Mutability),
     Pointer(ast::Mutability),
-    GcPtr,
     Tuple(u16),
     Array,
 }
@@ -641,7 +641,6 @@ impl TypeHead {
             TypeHead::Nominal(id) => gcx.definition_ident(id).symbol.as_str().into(),
             TypeHead::Reference(m) => format!("&{}_", m.display_str()),
             TypeHead::Pointer(m) => format!("*{}_", m.display_str()),
-            TypeHead::GcPtr => "GcPtr".into(),
             TypeHead::Tuple(n) => format!("({})", ",".repeat(n as usize)),
             TypeHead::Array => "[_]".into(),
         }

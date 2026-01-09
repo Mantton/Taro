@@ -1,8 +1,8 @@
 
 extern "taro_rt" {
-    func gc_collect()
+    func __gc__collect()
 }
 
 public func collect() {
-    gc_collect()
+    __gc__collect()
 }

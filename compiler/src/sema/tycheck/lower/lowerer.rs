@@ -141,9 +141,6 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                         return gcx.types.error;
                     }
                 }
-                if gcx.is_std_gc_ptr(id) {
-                    return Ty::new(TyKind::GcPtr, gcx);
-                }
                 let _ = check_generics_prohibited(id, segment, gcx);
                 let args = self.lower_type_arguments(id, segment);
                 match kind {

@@ -2,22 +2,6 @@ import std.optional.Optional
 
 public type Array[Element, const Size: usize] = [Element; Size]
 
-extern "taro_intrinsic" {
-    func __intrinsic_array_read_unchecked[Element, const Size: usize](
-        _ arr: &[Element; Size],
-        _ idx: usize,
-    ) -> &Element
-    func __intrinsic_array_read_mut_unchecked[Element, const Size: usize](
-        _ arr: &mut [Element; Size],
-        _ idx: usize,
-    ) -> &mut Element
-    func __intrinsic_array_write_unchecked[Element, const Size: usize](
-        _ arr: &mut [Element; Size],
-        _ idx: usize,
-        _ value: Element,
-    )
-}
-
 impl[Element, const Size: usize] Array[Element, Size] {
     public func len(&self) -> usize {
         Size
@@ -25,15 +9,15 @@ impl[Element, const Size: usize] Array[Element, Size] {
 
     public func at(&self, _ idx: usize) -> &Element {
         if idx < Size {
-            return __intrinsic_array_read_unchecked(self, idx)
+            return unsafe { (self as *const Element).add(idx) as &Element }
         }
         std.print("index out of range\n")
         std.process.exit(1)
     }
 
-    func at_mut(&mut self, _ idx: usize) -> &mut Element {
+    func atMut(&mut self, _ idx: usize) -> &mut Element {
         if idx < Size {
-            return __intrinsic_array_read_mut_unchecked(self, idx)
+            return unsafe { (self as *mut Element).add(idx) as &mut Element }
         }
         std.print("index out of range\n")
         std.process.exit(1)
@@ -46,16 +30,16 @@ impl[Element, const Size: usize] Array[Element, Size] {
         return .none
     }
 
-    public func get_mut(&mut self, _ idx: usize) -> Optional[&mut Element] {
+    public func getMut(&mut self, _ idx: usize) -> Optional[&mut Element] {
         if idx < Size {
-            return .some(self.at_mut(idx))
+            return .some(self.atMut(idx))
         }
         return .none
     }
 
     public func set(&mut self, _ idx: usize, _ value: Element) {
         if idx < Size {
-            __intrinsic_array_write_unchecked(self, idx, value)
+            unsafe { (self as *mut Element).add(idx).write(value) }
             return
         }
         std.print("index out of range")

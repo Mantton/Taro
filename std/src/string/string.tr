@@ -1,6 +1,29 @@
 import std.hash.{Hashable, Hasher}
-import std.unsafe.string_eq
 import std.ops.PartialEq
+import std.mem.TrackedPointer
+
+extern "taro_rt" {
+    func __rt__string_from_parts(_ data: *const uint8, _ len: usize) -> string
+    func __rt__string_data(_ s: string) -> *const uint8
+    func __rt__string_len(_ s: string) -> usize
+    func __rt__string_eq(_ lhs: string, _ rhs: string) -> bool
+}
+
+public func stringFromParts(_ data: TrackedPointer, _ len: usize) -> string {
+    __rt__string_from_parts(data, len)
+}
+
+public func stringData(_ s: string) -> *const uint8 {
+    __rt__string_data(s)
+}
+
+public func stringLen(_ s: string) -> usize {
+    __rt__string_len(s)
+}
+
+public func stringEq(_ lhs: string, _ rhs: string) -> bool {
+    __rt__string_eq(lhs, rhs)
+}
 
 struct _StringHeader {}
 
@@ -9,5 +32,5 @@ impl Hashable for string {
 }
 
 impl PartialEq for string {
-    public func eq(&self, _ other: &string) -> bool { string_eq(*self, *other) }
+    public func eq(&self, _ other: &string) -> bool { stringEq(*self, *other) }
 }

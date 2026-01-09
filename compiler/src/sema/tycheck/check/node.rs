@@ -4,7 +4,7 @@ use crate::{
     sema::{
         models::{
             Const, ConstKind, ConstValue, GenericArgument, GenericArguments, GenericParameter,
-            GenericParameterDefinition, GenericParameterDefinitionKind, InferTy, Ty, TyKind,
+            GenericParameterDefinition, GenericParameterDefinitionKind, Ty, TyKind,
         },
         resolve::models::{DefinitionKind, TypeHead, VariantCtorKind},
         tycheck::{
@@ -542,6 +542,9 @@ impl<'ctx> Checker<'ctx> {
             hir::ExpressionKind::Block(block) => {
                 self.synth_block_expression(block, expectation, cs)
             }
+            hir::ExpressionKind::UnsafeBlock(block) => {
+                self.synth_unsafe_block_expression(block, expectation, cs)
+            }
             hir::ExpressionKind::StructLiteral(lit) => {
                 self.synth_struct_literal(expression, lit, cs)
             }
@@ -576,54 +579,22 @@ impl<'ctx> Checker<'ctx> {
             return Ty::error(self.gcx());
         }
 
-        if !matches!(target_ty.kind(), TyKind::Int(_) | TyKind::UInt(_)) {
-            self.gcx().dcx().emit_error(
-                format!(
-                    "cast target must be an integer type, found {}",
-                    target_ty.format(self.gcx())
-                )
-                .into(),
-                Some(target.span),
-            );
-            return Ty::error(self.gcx());
-        }
-
-        if !self.ensure_integer_cast_operand(value_ty, value.span, cs) {
-            self.gcx().dcx().emit_error(
-                format!(
-                    "cannot cast {} to {}",
-                    value_ty.format(self.gcx()),
-                    target_ty.format(self.gcx())
-                )
-                .into(),
-                Some(expression.span),
-            );
-            return Ty::error(self.gcx());
-        }
+        let is_unsafe = self.unsafe_depth.get() > 0;
+        cs.add_goal(
+            Goal::Cast {
+                node_id: expression.id,
+                from: value_ty,
+                to: target_ty,
+                is_unsafe,
+            },
+            expression.span,
+        );
 
         if let Some(expectation) = expectation {
             cs.equal(expectation, target_ty, expression.span);
         }
 
         target_ty
-    }
-
-    fn ensure_integer_cast_operand(
-        &self,
-        value_ty: Ty<'ctx>,
-        span: Span,
-        cs: &mut Cs<'ctx>,
-    ) -> bool {
-        match value_ty.kind() {
-            TyKind::Int(_) | TyKind::UInt(_) | TyKind::Infer(InferTy::IntVar(_)) => true,
-            TyKind::Infer(InferTy::TyVar(_)) => {
-                let int_var = cs.infer_cx.next_int_var();
-                cs.equal(value_ty, int_var, span);
-                true
-            }
-            TyKind::Error => true,
-            _ => false,
-        }
     }
 
     fn require_mut_place(&self, expr: &hir::Expression, cs: &Cs<'ctx>) -> bool {
@@ -1028,6 +999,19 @@ impl<'ctx> Checker<'ctx> {
 }
 
 impl<'ctx> Checker<'ctx> {
+    fn synth_unsafe_block_expression(
+        &self,
+        block: &hir::Block,
+        expectation: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        let prev = self.unsafe_depth.get();
+        self.unsafe_depth.set(prev + 1);
+        let ty = self.synth_block_expression(block, expectation, cs);
+        self.unsafe_depth.set(prev);
+        ty
+    }
+
     fn synth_expression_literal(
         &self,
         literal: &hir::Literal,

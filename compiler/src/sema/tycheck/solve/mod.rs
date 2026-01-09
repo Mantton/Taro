@@ -25,6 +25,7 @@ use std::{cell::RefCell, cmp::Reverse, collections::VecDeque, rc::Rc};
 
 mod adt;
 mod apply;
+mod cast;
 mod coerce;
 mod deref;
 mod interface;
@@ -547,6 +548,12 @@ impl<'ctx> ConstraintSolver<'ctx> {
             Goal::BinaryOp(data) => self.solve_binary(data),
             Goal::AssignOp(data) => self.solve_assign_op(data),
             Goal::Coerce { node_id, from, to } => self.solve_coerce(location, node_id, from, to),
+            Goal::Cast {
+                node_id,
+                from,
+                to,
+                is_unsafe,
+            } => self.solve_cast(location, node_id, from, to, is_unsafe),
             Goal::Member(data) => self.solve_member(data),
             Goal::InferredStaticMember(data) => self.solve_inferred_static_member(data),
             Goal::MethodCall(data) => self.solve_method_call(data),

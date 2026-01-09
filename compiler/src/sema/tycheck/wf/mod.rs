@@ -301,7 +301,7 @@ fn collect_by_value_adt_deps(ty: Ty, out: &mut Vec<DefinitionID>) {
                 out.push(adt.id);
             }
         }
-        TyKind::Pointer(..) | TyKind::Reference(..) | TyKind::GcPtr => {}
+        TyKind::Pointer(..) | TyKind::Reference(..) => {}
         TyKind::Tuple(items) => {
             for item in items {
                 collect_by_value_adt_deps(*item, out);

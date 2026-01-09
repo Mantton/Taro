@@ -343,7 +343,6 @@ impl<'ctx> ConstraintSolver<'ctx> {
             TyKind::Adt(def, _) => Some(TypeHead::Nominal(def.id)),
             TyKind::Reference(_, mutbl) => Some(TypeHead::Reference(mutbl)),
             TyKind::Pointer(_, mutbl) => Some(TypeHead::Pointer(mutbl)),
-            TyKind::GcPtr => Some(TypeHead::GcPtr),
             TyKind::Tuple(items) => Some(TypeHead::Tuple(items.len() as u16)),
             TyKind::Array { .. } => Some(TypeHead::Array),
             TyKind::Parameter(_) => None,

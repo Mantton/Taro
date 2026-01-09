@@ -17,7 +17,7 @@ impl<T> ExpectedFound<T> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum TypeError<'ctx> {
     Mutability(ExpectedFound<Ty<'ctx>>),
     TyMismatch(ExpectedFound<Ty<'ctx>>),
@@ -75,6 +75,9 @@ pub enum TypeError<'ctx> {
 
     ArgCountMismatch(usize, usize),
     ArgMismatch(ExpectedFound<GenericArgument<'ctx>>),
+
+    LayoutIncompatibleCast(ExpectedFound<Ty<'ctx>>),
+    UnsafePtrCastNeedsUnsafeBlock,
 }
 
 pub type SpannedError<'ctx> = Spanned<TypeError<'ctx>>;
@@ -186,6 +189,16 @@ impl<'ctx> TypeError<'ctx> {
                     GenericArgument::Const(_) => format!("const param"),
                 };
                 format!("expected argument {expected}, found {found}")
+            }
+            TypeError::LayoutIncompatibleCast(ef) => {
+                format!(
+                    "types '{}' and '{}' are not layout compatible for casting",
+                    ef.found.format(gcx),
+                    ef.expected.format(gcx)
+                )
+            }
+            TypeError::UnsafePtrCastNeedsUnsafeBlock => {
+                "cast involves pointers and is unsafe; must be inside an unsafe { ... } block".into()
             }
         }
     }
