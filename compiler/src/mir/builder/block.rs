@@ -41,9 +41,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
         let cleanup_span = Span::empty(self.thir.span.file);
         let from_cleanup = self.current_cleanup;
-        if from_cleanup != saved_cleanup
-            && self.body.basic_blocks[block].terminator.is_none()
-        {
+        if from_cleanup != saved_cleanup && self.body.basic_blocks[block].terminator.is_none() {
             let next_block = self.new_block_with_note("after cleanup".into());
             let mut cache = FxHashMap::default();
             cache.insert(saved_cleanup, next_block);

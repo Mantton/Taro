@@ -1,9 +1,7 @@
 use crate::{
     error::CompileResult,
     sema::resolve::{
-        models::{
-            Holder, ScopeEntryData, ScopeEntryKind, ScopeNamespace, UsageEntry, UsageKind,
-        },
+        models::{Holder, ScopeEntryData, ScopeEntryKind, ScopeNamespace, UsageEntry, UsageKind},
         resolver::Resolver,
     },
 };
@@ -99,12 +97,10 @@ impl<'r, 'a> Actor<'r, 'a> {
         // resolution directly instead of looking for a member inside an empty path.
         if usage.module_path.is_empty() {
             if let Some(resolution) = module.resolution() {
-                let entry = self
-                    .resolver
-                    .create_scope_entry(ScopeEntryData {
-                        kind: ScopeEntryKind::Resolution(resolution),
-                        span: binding.source.span,
-                    });
+                let entry = self.resolver.create_scope_entry(ScopeEntryData {
+                    kind: ScopeEntryKind::Resolution(resolution),
+                    span: binding.source.span,
+                });
                 resolved_holder = Some((Holder::Single(entry), ScopeNamespace::Type));
             }
         }
