@@ -1,7 +1,9 @@
 use crate::{
     error::CompileResult,
     sema::resolve::{
-        models::{ScopeNamespace, UsageEntry, UsageKind},
+        models::{
+            Holder, ScopeEntryData, ScopeEntryKind, ScopeNamespace, UsageEntry, UsageKind,
+        },
         resolver::Resolver,
     },
 };
@@ -63,7 +65,14 @@ impl<'r, 'a> Actor<'r, 'a> {
 
 impl<'r, 'a> Actor<'r, 'a> {
     fn resolve_usage(&mut self, usage: UsageEntry<'a>, finalize: bool) -> bool {
-        let module_result = self.resolver.resolve_module_path(&usage.module_path);
+        let module_result = match (&usage.kind, usage.module_path.is_empty()) {
+            // Handle bare imports like `import std` where module_path would otherwise be empty.
+            (UsageKind::Single(binding), true) => {
+                let path = vec![binding.source];
+                self.resolver.resolve_module_path(&path)
+            }
+            _ => self.resolver.resolve_module_path(&usage.module_path),
+        };
 
         let module = match module_result {
             Ok(scope) => scope,
@@ -83,16 +92,34 @@ impl<'r, 'a> Actor<'r, 'a> {
                 return true;
             }
         };
-        let ns = [ScopeNamespace::Type, ScopeNamespace::Value];
 
         let mut resolved_holder = None;
-        for ns in ns {
-            let Ok(holder) = self.resolver.resolve_in_scope(&binding.source, module, ns) else {
-                continue;
-            };
 
-            resolved_holder = Some((holder, ns));
-            break;
+        // If the import/export is for a module itself (e.g., `import std`), bind the module
+        // resolution directly instead of looking for a member inside an empty path.
+        if usage.module_path.is_empty() {
+            if let Some(resolution) = module.resolution() {
+                let entry = self
+                    .resolver
+                    .create_scope_entry(ScopeEntryData {
+                        kind: ScopeEntryKind::Resolution(resolution),
+                        span: binding.source.span,
+                    });
+                resolved_holder = Some((Holder::Single(entry), ScopeNamespace::Type));
+            }
+        }
+
+        if resolved_holder.is_none() {
+            let ns = [ScopeNamespace::Type, ScopeNamespace::Value];
+
+            for ns in ns {
+                let Ok(holder) = self.resolver.resolve_in_scope(&binding.source, module, ns) else {
+                    continue;
+                };
+
+                resolved_holder = Some((holder, ns));
+                break;
+            }
         }
 
         let Some((holder, ns)) = resolved_holder else {
