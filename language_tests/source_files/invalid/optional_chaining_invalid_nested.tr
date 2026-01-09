@@ -1,0 +1,15 @@
+// Test: Optional Chaining Errors (Nested)
+// Using `?.` on a non-optional chained value should fail.
+
+func main() {
+    let profile = Profile { name: Name { value: "Ana" } }
+    let _ = profile.name?.value
+}
+
+struct Name {
+    value: string
+}
+
+struct Profile {
+    name: Name
+}

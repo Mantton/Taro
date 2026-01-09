@@ -1,0 +1,83 @@
+// Test: Optional Chaining
+// Verifies deep optional chaining and optional calls.
+
+func main() {
+    let addr = Address { city: "Paris" }
+    let profile = Profile { address: Optional.some(addr) }
+    let user = User { profile: Optional.some(profile) }
+    let opt_user: User? = Optional.some(user)
+
+    let city = opt_user?.profile?.address?.city ?? "none"
+    assert(city == "Paris", "Deep chain value failed")
+
+    let none_user: User? = Optional.none
+    let city2 = none_user?.profile?.address?.city ?? "none"
+    assert(city2 == "none", "Deep chain none failed")
+
+    let length = opt_user?.profile?.address?.cityLen() ?? 0
+    assert(length == 5, "Optional call failed")
+
+    let missing_profile: User? = Optional.some(User { profile: Optional.none })
+    let city3 = missing_profile?.profile?.address?.city ?? "none"
+    assert(city3 == "none", "Missing profile failed")
+
+    let city_opt = opt_user?.profile?.address?.city
+    match city_opt {
+        case Optional.some(value) => {
+            assert(value == "Paris", "Optional chain result failed")
+        }
+        case Optional.none => {
+            assert(false, "Optional chain result missing")
+        }
+    }
+
+    let city_none = none_user?.profile?.address?.city
+    match city_none {
+        case Optional.none => {
+            assert(true, "Optional chain none mismatch")
+        }
+        case Optional.some(_) => {
+            assert(false, "Optional chain should be none")
+        }
+    }
+
+    let length_opt = opt_user?.profile?.address?.cityLen()
+    match length_opt {
+        case Optional.some(value) => {
+            assert(value == 5, "Optional chain call result failed")
+        }
+        case Optional.none => {
+            assert(false, "Optional chain call missing")
+        }
+    }
+
+    let length_none = none_user?.profile?.address?.cityLen()
+    match length_none {
+        case Optional.none => {
+            assert(true, "Optional chain call none mismatch")
+        }
+        case Optional.some(_) => {
+            assert(false, "Optional chain call should be none")
+        }
+    }
+
+    std.print("PASS: Optional chaining\n")
+}
+
+struct Address {
+    city: string
+}
+
+impl Address {
+    func cityLen(&self) -> int32 {
+        5
+    }
+}
+
+struct Profile {
+    address: Address?
+}
+
+struct User {
+    profile: Profile?
+}

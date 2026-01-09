@@ -1,0 +1,4 @@
+error: optional unwrap requires an Optional value, found 'Name'
+ -> language_tests/source_files/invalid/optional_chaining_invalid_nested.tr:6:12
+	    let _ = profile.name?.value
+	            ^^^^^^^^^^^^

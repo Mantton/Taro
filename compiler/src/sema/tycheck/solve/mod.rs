@@ -205,6 +205,13 @@ impl<'ctx> ConstraintSystem<'ctx> {
         self.expr_tys.insert(id, ty);
     }
 
+    pub fn record_adjustments(&mut self, node_id: NodeID, adjustments: Vec<Adjustment<'ctx>>) {
+        if adjustments.is_empty() {
+            return;
+        }
+        self.adjustments.insert(node_id, adjustments);
+    }
+
     pub fn expr_ty(&self, id: NodeID) -> Option<Ty<'ctx>> {
         self.expr_tys.get(&id).copied()
     }

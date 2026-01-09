@@ -13,7 +13,7 @@ use crate::{
             lower::lowerer::TypeLowerer,
             results::TypeCheckResults,
             solve::{
-                ApplyArgument, ApplyGoalData, AssignOpGoalData, BinOpGoalData,
+                Adjustment, ApplyArgument, ApplyGoalData, AssignOpGoalData, BinOpGoalData,
                 BindOverloadGoalData, ConstraintSystem, DerefGoalData, DisjunctionBranch, Goal,
                 InferredStaticMemberGoalData, MemberGoalData, MethodCallData, StructLiteralField,
                 StructLiteralGoalData, TupleAccessGoalData, UnOpGoalData,
@@ -1814,6 +1814,32 @@ impl<'ctx> Checker<'ctx> {
             }
         }
 
+        if matches!(node.source.kind, hir::MatchKind::OptionalUnwrap) {
+            let is_optional = self.is_optional_type(scrutinee_ty);
+            if !is_optional && !scrutinee_ty.is_error() {
+                self.gcx().dcx().emit_error(
+                    format!(
+                        "{} requires an Optional value, found '{}'",
+                        source_name,
+                        scrutinee_ty.format(self.gcx())
+                    )
+                    .into(),
+                    Some(node.value.span),
+                );
+                return Ty::error(self.gcx());
+            }
+        }
+
+        if matches!(node.source.kind, hir::MatchKind::OptionalUnwrap) {
+            return self.synth_optional_unwrap_match(
+                expression,
+                node,
+                scrutinee_ty,
+                expectation,
+                _cs,
+            );
+        }
+
         // Create a shared inference context for all arms to share the result type variable
         let shared_infer_cx = self
             .infer_ctx()
@@ -1847,6 +1873,116 @@ impl<'ctx> Checker<'ctx> {
                 self.commit_constraint_results(&arm_cs);
                 _cs.merge(arm_cs);
             }
+
+            let resolved = shared_infer_cx.resolve_vars_if_possible(result_ty);
+            if resolved.is_infer() {
+                Ty::error(self.gcx())
+            } else {
+                resolved
+            }
+        })
+    }
+
+    fn synth_optional_unwrap_match(
+        &self,
+        expression: &hir::Expression,
+        node: &hir::MatchExpression,
+        scrutinee_ty: Ty<'ctx>,
+        expectation: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        let shared_infer_cx = self
+            .infer_ctx()
+            .unwrap_or_else(|| Rc::new(InferCtx::new(self.context)));
+
+        self.with_infer_ctx(shared_infer_cx.clone(), || {
+            let Some((some_arm, rest)) = node.arms.split_first() else {
+                return Ty::error(self.gcx());
+            };
+            let none_arm = match rest {
+                [arm] => arm,
+                _ => {
+                    self.gcx().dcx().emit_error(
+                        "optional unwrap must have exactly two arms".into(),
+                        Some(node.kw_span),
+                    );
+                    return Ty::error(self.gcx());
+                }
+            };
+
+            let (result_ty, _wrap_some, _optional_args) = {
+                let mut arm_cs = self.new_cs();
+                arm_cs.infer_cx = shared_infer_cx.clone();
+
+                GatherLocalsVisitor::from_match_arm(&arm_cs, self, &some_arm.pattern);
+                self.check_pattern(&some_arm.pattern, scrutinee_ty, node.value.id, &mut arm_cs);
+                arm_cs.solve_intermediate();
+
+                if let Some(guard) = &some_arm.guard {
+                    let guard_ty = self.synth_with_expectation(
+                        guard,
+                        Some(self.gcx().types.bool),
+                        &mut arm_cs,
+                    );
+                    arm_cs.equal(self.gcx().types.bool, guard_ty, guard.span);
+                }
+
+                let body_ty = self.synth(&some_arm.body, &mut arm_cs);
+                arm_cs.solve_intermediate();
+
+                let resolved_body_ty = arm_cs.infer_cx.resolve_vars_if_possible(body_ty);
+                let (result_ty, wrap_some, optional_args) = if resolved_body_ty.is_error() {
+                    (resolved_body_ty, false, None)
+                } else if let Some((args, _)) = self.optional_inner_type(resolved_body_ty) {
+                    (resolved_body_ty, false, Some(args))
+                } else {
+                    let (opt_ty, args) = self.mk_optional_type(resolved_body_ty);
+                    (opt_ty, true, Some(args))
+                };
+
+                if wrap_some {
+                    if let Some(args) = optional_args {
+                        arm_cs.record_adjustments(
+                            some_arm.body.id,
+                            vec![Adjustment::OptionalWrap {
+                                is_some: true,
+                                generic_args: args,
+                            }],
+                        );
+                    }
+                }
+
+                self.commit_constraint_results(&arm_cs);
+                cs.merge(arm_cs);
+                (result_ty, wrap_some, optional_args)
+            };
+
+            if let Some(expectation) = expectation {
+                cs.equal(result_ty, expectation, expression.span);
+            }
+
+            let mut none_cs = self.new_cs();
+            none_cs.infer_cx = shared_infer_cx.clone();
+
+            GatherLocalsVisitor::from_match_arm(&none_cs, self, &none_arm.pattern);
+            self.check_pattern(&none_arm.pattern, scrutinee_ty, node.value.id, &mut none_cs);
+            none_cs.solve_intermediate();
+
+            if let Some(guard) = &none_arm.guard {
+                let guard_ty = self.synth_with_expectation(
+                    guard,
+                    Some(self.gcx().types.bool),
+                    &mut none_cs,
+                );
+                none_cs.equal(self.gcx().types.bool, guard_ty, guard.span);
+            }
+
+            let none_ty = self.synth_with_expectation(&none_arm.body, Some(result_ty), &mut none_cs);
+            none_cs.equal(result_ty, none_ty, none_arm.body.span);
+
+            none_cs.solve_intermediate();
+            self.commit_constraint_results(&none_cs);
+            cs.merge(none_cs);
 
             let resolved = shared_infer_cx.resolve_vars_if_possible(result_ty);
             if resolved.is_infer() {
@@ -3352,6 +3488,40 @@ impl<'ctx> Checker<'ctx> {
             return false;
         };
         def.id == opt_id
+    }
+
+    fn optional_inner_type(
+        &self,
+        ty: Ty<'ctx>,
+    ) -> Option<(GenericArguments<'ctx>, Ty<'ctx>)> {
+        let TyKind::Adt(def, args) = ty.kind() else {
+            return None;
+        };
+        let Some(opt_id) = self.gcx().find_std_type("Optional") else {
+            return None;
+        };
+        if def.id != opt_id {
+            return None;
+        }
+        let inner = args.first()?.ty()?;
+        Some((args, inner))
+    }
+
+    fn mk_optional_type(&self, inner: Ty<'ctx>) -> (Ty<'ctx>, GenericArguments<'ctx>) {
+        let gcx = self.gcx();
+        let opt_id = gcx
+            .find_std_type("Optional")
+            .expect("Optional type must exist");
+        let enum_def = gcx.get_enum_definition(opt_id);
+        let args = gcx
+            .store
+            .interners
+            .intern_generic_args(vec![GenericArgument::Type(inner)]);
+        let opt_ty = gcx
+            .store
+            .interners
+            .intern_ty(TyKind::Adt(enum_def.adt_def, args));
+        (opt_ty, args)
     }
 
     fn mark_pattern_bindings_error(&self, pattern: &hir::Pattern) {

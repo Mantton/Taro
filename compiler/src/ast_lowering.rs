@@ -26,6 +26,7 @@ pub struct Actor<'a, 'c> {
     pub resolutions: &'a ResolutionOutput<'c>,
     pub next_index: u32,
     pub node_mapping: FxHashMap<ast::NodeID, hir::NodeID>,
+    optional_unwrap_replacement: Option<OptionalUnwrapReplacement>,
 }
 
 impl<'a, 'c> Actor<'a, 'c> {
@@ -35,6 +36,7 @@ impl<'a, 'c> Actor<'a, 'c> {
             resolutions,
             next_index: 0,
             node_mapping: Default::default(),
+            optional_unwrap_replacement: None,
         }
     }
 
@@ -1185,6 +1187,14 @@ impl Actor<'_, '_> {
 }
 impl Actor<'_, '_> {
     fn lower_expression(&mut self, node: Box<ast::Expression>) -> Box<hir::Expression> {
+        if let ast::ExpressionKind::OptionalUnwrap(_) = &node.kind {
+            if let Some(replacement) = &self.optional_unwrap_replacement {
+                if replacement.target_id == node.id {
+                    return replacement.expression.clone();
+                }
+            }
+        }
+
         let kind = match node.kind {
             ast::ExpressionKind::Literal(lit) => self.lower_literal(lit, node.span),
             ast::ExpressionKind::Identifier(ident) => {
@@ -2038,10 +2048,12 @@ impl Actor<'_, '_> {
 
     fn lower_optional_evaluation(
         &mut self,
-        _expr: Box<ast::Expression>,
+        expr: Box<ast::Expression>,
         _span: Span,
     ) -> hir::ExpressionKind {
-        todo!()
+        let (expr, _) = self.lower_optional_expr(&expr, None, true);
+        let hir::Expression { kind, .. } = *expr;
+        kind
     }
 
     fn lower_pipe_expression(
@@ -2377,6 +2389,223 @@ impl Actor<'_, '_> {
         };
 
         Box::new(ty)
+    }
+}
+
+#[derive(Clone)]
+struct OptionalUnwrapReplacement {
+    target_id: ast::NodeID,
+    expression: Box<hir::Expression>,
+}
+
+impl Actor<'_, '_> {
+    fn with_optional_unwrap_replacement<T>(
+        &mut self,
+        replacement: Option<OptionalUnwrapReplacement>,
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let prev = self.optional_unwrap_replacement.take();
+        self.optional_unwrap_replacement = replacement;
+        let result = f(self);
+        self.optional_unwrap_replacement = prev;
+        result
+    }
+
+    fn lower_optional_expr(
+        &mut self,
+        expr: &ast::Expression,
+        replacement: Option<&OptionalUnwrapReplacement>,
+        force_optional: bool,
+    ) -> (Box<hir::Expression>, bool) {
+        if let Some(replacement) = replacement {
+            if replacement.target_id == expr.id {
+                if matches!(expr.kind, ast::ExpressionKind::OptionalUnwrap(_)) {
+                    return (replacement.expression.clone(), false);
+                }
+            }
+        }
+
+        let skip_id = replacement.map(|r| r.target_id);
+        if let Some((unwrap_id, inner_expr)) = self.find_outer_optional_unwrap(expr, skip_id) {
+            let (scrutinee, _) = self.lower_optional_expr(inner_expr, replacement, false);
+
+            let binding_ident = Identifier::new(Symbol::new("__optional_val"), expr.span);
+            let binding_id = self.next_index();
+            let binding_pattern = hir::Pattern {
+                id: binding_id,
+                span: expr.span,
+                kind: hir::PatternKind::Binding {
+                    name: binding_ident,
+                    mode: hir::BindingMode::ByValue,
+                },
+            };
+
+            let some_pattern = hir::Pattern {
+                id: self.next_index(),
+                span: expr.span,
+                kind: hir::PatternKind::PathTuple {
+                    path: hir::PatternPath::Qualified {
+                        path: self.mk_optional_variant_path("some", expr.span),
+                    },
+                    fields: vec![binding_pattern],
+                    field_span: expr.span,
+                },
+            };
+
+            let none_pattern = hir::Pattern {
+                id: self.next_index(),
+                span: expr.span,
+                kind: hir::PatternKind::Member(hir::PatternPath::Qualified {
+                    path: self.mk_optional_variant_path("none", expr.span),
+                }),
+            };
+
+            let binding_ref_path = self.mk_single_segment_resolved_path(
+                binding_ident,
+                Resolution::LocalVariable(binding_id),
+            );
+            let binding_ref_expr =
+                self.mk_expression(hir::ExpressionKind::Path(binding_ref_path), expr.span);
+
+            let replacement = OptionalUnwrapReplacement {
+                target_id: unwrap_id,
+                expression: binding_ref_expr,
+            };
+
+            let (some_body, _) = self.lower_optional_expr(expr, Some(&replacement), true);
+            let none_body = self.wrap_optional_none(expr.span);
+
+            let match_expr = hir::MatchExpression {
+                source: hir::MatchSource::desugared(hir::MatchKind::OptionalUnwrap),
+                value: scrutinee,
+                arms: vec![
+                    hir::MatchArm {
+                        pattern: some_pattern,
+                        body: some_body,
+                        guard: None,
+                        span: expr.span,
+                    },
+                    hir::MatchArm {
+                        pattern: none_pattern,
+                        body: none_body,
+                        guard: None,
+                        span: expr.span,
+                    },
+                ],
+                kw_span: expr.span,
+            };
+
+            let expr = self.mk_expression(hir::ExpressionKind::Match(match_expr), expr.span);
+            return (expr, true);
+        }
+
+        let lowered = self.with_optional_unwrap_replacement(
+            replacement.cloned(),
+            |this| this.lower_expression(Box::new(expr.clone())),
+        );
+        let _ = force_optional;
+        (lowered, false)
+    }
+
+    fn find_outer_optional_unwrap<'a>(
+        &self,
+        expr: &'a ast::Expression,
+        skip_id: Option<ast::NodeID>,
+    ) -> Option<(ast::NodeID, &'a ast::Expression)> {
+        if let ast::ExpressionKind::OptionalUnwrap(inner) = &expr.kind {
+            if Some(expr.id) == skip_id {
+                return None;
+            }
+            return Some((expr.id, inner));
+        }
+
+        match &expr.kind {
+            ast::ExpressionKind::OptionalEvaluation(_) => None,
+            ast::ExpressionKind::Member { target, .. } => {
+                self.find_outer_optional_unwrap(target, skip_id)
+            }
+            ast::ExpressionKind::TupleAccess(target, _) => {
+                self.find_outer_optional_unwrap(target, skip_id)
+            }
+            ast::ExpressionKind::Call(callee, args) => {
+                if let Some(found) = self.find_outer_optional_unwrap(callee, skip_id) {
+                    return Some(found);
+                }
+                for arg in args {
+                    if let Some(found) =
+                        self.find_outer_optional_unwrap(&arg.expression, skip_id)
+                    {
+                        return Some(found);
+                    }
+                }
+                None
+            }
+            ast::ExpressionKind::Specialize { target, .. }
+            | ast::ExpressionKind::Parenthesis(target) => {
+                self.find_outer_optional_unwrap(target, skip_id)
+            }
+            ast::ExpressionKind::Binary(_, lhs, rhs)
+            | ast::ExpressionKind::Assign(lhs, rhs)
+            | ast::ExpressionKind::AssignOp(_, lhs, rhs) => self
+                .find_outer_optional_unwrap(lhs, skip_id)
+                .or_else(|| self.find_outer_optional_unwrap(rhs, skip_id)),
+            ast::ExpressionKind::Unary(_, rhs)
+            | ast::ExpressionKind::Reference(rhs, _)
+            | ast::ExpressionKind::Dereference(rhs) => self.find_outer_optional_unwrap(rhs, skip_id),
+            ast::ExpressionKind::Range(lhs, rhs, _) => self
+                .find_outer_optional_unwrap(lhs, skip_id)
+                .or_else(|| self.find_outer_optional_unwrap(rhs, skip_id)),
+            ast::ExpressionKind::Array(items) => items
+                .iter()
+                .find_map(|item| self.find_outer_optional_unwrap(item, skip_id)),
+            ast::ExpressionKind::Tuple(items) => items
+                .iter()
+                .find_map(|item| self.find_outer_optional_unwrap(item, skip_id)),
+            ast::ExpressionKind::If(node) => self
+                .find_outer_optional_unwrap(&node.condition, skip_id)
+                .or_else(|| self.find_outer_optional_unwrap(&node.then_block, skip_id))
+                .or_else(|| {
+                    node.else_block
+                        .as_deref()
+                        .and_then(|expr| self.find_outer_optional_unwrap(expr, skip_id))
+                }),
+            ast::ExpressionKind::Match(node) => self
+                .find_outer_optional_unwrap(&node.value, skip_id)
+                .or_else(|| {
+                    node.arms.iter().find_map(|arm| {
+                        self.find_outer_optional_unwrap(&arm.body, skip_id)
+                    })
+                }),
+            ast::ExpressionKind::StructLiteral(node) => node.fields.iter().find_map(|field| {
+                self.find_outer_optional_unwrap(&field.expression, skip_id)
+            }),
+            _ => None,
+        }
+    }
+
+    fn wrap_optional_some(
+        &mut self,
+        value: Box<hir::Expression>,
+        span: Span,
+    ) -> Box<hir::Expression> {
+        let some_path = self.mk_optional_variant_path("some", span);
+        let callee = self.mk_expression(hir::ExpressionKind::Path(some_path), span);
+        self.mk_expression(
+            hir::ExpressionKind::Call {
+                callee,
+                arguments: vec![hir::ExpressionArgument {
+                    label: None,
+                    expression: value,
+                    span,
+                }],
+            },
+            span,
+        )
+    }
+
+    fn wrap_optional_none(&mut self, span: Span) -> Box<hir::Expression> {
+        let none_path = self.mk_optional_variant_path("none", span);
+        self.mk_expression(hir::ExpressionKind::Path(none_path), span)
     }
 }
 

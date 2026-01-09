@@ -1,0 +1,18 @@
+// Test: Optional Chaining Errors (Call Result)
+// Using `?.` on a non-optional call result should fail.
+
+func main() {
+    let _ = make_profile()?.name
+}
+
+func make_profile() -> Profile {
+    Profile { name: Name { value: "Ana" } }
+}
+
+struct Name {
+    value: string
+}
+
+struct Profile {
+    name: Name
+}
