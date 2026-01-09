@@ -4,6 +4,7 @@ use crate::CommandLineArguments;
 
 mod build;
 mod check;
+mod new;
 mod run;
 
 pub fn handle(arguments: CommandLineArguments) -> CompileResult<()> {
@@ -13,6 +14,7 @@ pub fn handle(arguments: CommandLineArguments) -> CompileResult<()> {
             ()
         }
         "check" => check::run(arguments)?,
+        "new" => new::run(arguments)?,
         "run" => run::run(arguments)?,
         _ => panic!("unknown command"),
     };
