@@ -205,7 +205,8 @@ impl<'ctx> TypeError<'ctx> {
                 )
             }
             TypeError::UnsafePtrCastNeedsUnsafeBlock => {
-                "cast involves pointers and is unsafe; must be inside an unsafe { ... } block".into()
+                "cast involves pointers and is unsafe; must be inside an unsafe { ... } block"
+                    .into()
             }
         }
     }

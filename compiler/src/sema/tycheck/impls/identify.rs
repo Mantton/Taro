@@ -138,24 +138,22 @@ impl<'ctx> Actor<'ctx> {
 
         match &resolved.resolution {
             Resolution::PrimaryType(p) => Some(TypeHead::Primary(*p)),
-            Resolution::Definition(id, kind) => {
-                match kind {
-                    DefinitionKind::Struct | DefinitionKind::Interface | DefinitionKind::Enum => {
-                        Some(TypeHead::Nominal(*id))
-                    }
-                    DefinitionKind::TypeAlias => self.type_head_for_alias(*id, ty.span),
-                    _ => {
-                        self.context.dcx().emit_error(
-                            format!(
-                                "cannot impl for `{}` because it does not name a type",
-                                kind.description()
-                            ),
-                            Some(ty.span),
-                        );
-                        None
-                    }
+            Resolution::Definition(id, kind) => match kind {
+                DefinitionKind::Struct | DefinitionKind::Interface | DefinitionKind::Enum => {
+                    Some(TypeHead::Nominal(*id))
                 }
-            }
+                DefinitionKind::TypeAlias => self.type_head_for_alias(*id, ty.span),
+                _ => {
+                    self.context.dcx().emit_error(
+                        format!(
+                            "cannot impl for `{}` because it does not name a type",
+                            kind.description()
+                        ),
+                        Some(ty.span),
+                    );
+                    None
+                }
+            },
             Resolution::Error => None,
             _ => {
                 self.context

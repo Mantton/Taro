@@ -132,10 +132,7 @@ impl<'arena> Ty<'arena> {
     }
 
     pub fn is_pointer(self) -> bool {
-        matches!(
-            self.kind(),
-            TyKind::Pointer(..) | TyKind::Reference(..)
-        )
+        matches!(self.kind(), TyKind::Pointer(..) | TyKind::Reference(..))
     }
 
     pub fn dereference(self) -> Option<Ty<'arena>> {

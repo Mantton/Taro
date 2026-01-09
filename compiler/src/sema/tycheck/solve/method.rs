@@ -152,7 +152,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     let mut matches_expectation = true;
                     if let Some(expect) = data.expect_ty {
                         if let TyKind::Reference(_, Mutability::Mutable) = expect.kind() {
-                            if let TyKind::Reference(_, Mutability::Immutable) = signature.output.kind() {
+                            if let TyKind::Reference(_, Mutability::Immutable) =
+                                signature.output.kind()
+                            {
                                 matches_expectation = false;
                             }
                         }
@@ -175,7 +177,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
             // Check if all candidates have the same receiver type
             // If so, we can use the simpler approach with a fixed receiver type
             let first_receiver_ty = all_candidates[0].receiver_ty;
-            let all_same_receiver = all_candidates.iter().all(|c| c.receiver_ty == first_receiver_ty);
+            let all_same_receiver = all_candidates
+                .iter()
+                .all(|c| c.receiver_ty == first_receiver_ty);
 
             if all_same_receiver {
                 // Simple case: all candidates use the same receiver type
