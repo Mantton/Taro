@@ -146,7 +146,12 @@ impl<'ctx> Checker<'ctx> {
             hir::StatementKind::Defer(block) => {
                 self.check_defer(block, cs.as_deref_mut());
             }
-            hir::StatementKind::Guard { .. } => todo!(),
+            hir::StatementKind::Guard {
+                condition,
+                else_block,
+            } => {
+                self.check_guard(condition, else_block, cs.as_deref_mut());
+            }
         }
 
         return;
@@ -187,9 +192,10 @@ impl<'ctx> Checker<'ctx> {
         mut cs: Option<&mut Cs<'ctx>>,
     ) {
         if self.defer_depth.get() > 0 {
-            self.gcx()
-                .dcx()
-                .emit_error("`return` is not allowed inside a defer block".into(), Some(span));
+            self.gcx().dcx().emit_error(
+                "`return` is not allowed inside a defer block".into(),
+                Some(span),
+            );
         }
 
         let Some(expression) = expression else {
@@ -231,6 +237,23 @@ impl<'ctx> Checker<'ctx> {
             } else {
                 self.top_level_check(tail, None);
             }
+        }
+    }
+
+    fn check_guard(
+        &self,
+        condition: &hir::Expression,
+        else_block: &hir::Block,
+        mut cs: Option<&mut Cs<'ctx>>,
+    ) {
+        // Else block is not allowed to see bindings introduced by the guard condition.
+        self.check_block(else_block, cs.as_deref_mut());
+
+        if let Some(cs) = cs.as_deref_mut() {
+            let cond_ty = self.synth(condition, cs);
+            cs.equal(self.gcx().types.bool, cond_ty, condition.span);
+        } else {
+            self.top_level_check(condition, Some(self.gcx().types.bool));
         }
     }
     fn check_local(&self, node: &hir::Local) {
@@ -294,9 +317,10 @@ impl<'ctx> Checker<'ctx> {
 
     fn check_break(&self, span: Span) {
         if self.defer_depth.get() > 0 {
-            self.gcx()
-                .dcx()
-                .emit_error("`break` is not allowed inside a defer block".into(), Some(span));
+            self.gcx().dcx().emit_error(
+                "`break` is not allowed inside a defer block".into(),
+                Some(span),
+            );
             return;
         }
 
@@ -309,9 +333,10 @@ impl<'ctx> Checker<'ctx> {
 
     fn check_continue(&self, span: Span) {
         if self.defer_depth.get() > 0 {
-            self.gcx()
-                .dcx()
-                .emit_error("`continue` is not allowed inside a defer block".into(), Some(span));
+            self.gcx().dcx().emit_error(
+                "`continue` is not allowed inside a defer block".into(),
+                Some(span),
+            );
             return;
         }
 
@@ -1476,13 +1501,8 @@ impl<'ctx> Checker<'ctx> {
                             _ => base_args,
                         };
 
-                        let resolution = self.resolve_static_member_resolution(
-                            head,
-                            base_ty,
-                            name,
-                            name.span,
-                            true,
-                        );
+                        let resolution = self
+                            .resolve_static_member_resolution(head, base_ty, name, name.span, true);
                         self.record_value_path_resolution(receiver.id, &resolution);
 
                         let segment = hir::PathSegment {
@@ -1492,8 +1512,11 @@ impl<'ctx> Checker<'ctx> {
                             span: name.span,
                             resolution: resolution.clone(),
                         };
-                        let instantiation_args =
-                            self.lower_value_path_instantiation_args(&resolution, &segment, base_args);
+                        let instantiation_args = self.lower_value_path_instantiation_args(
+                            &resolution,
+                            &segment,
+                            base_args,
+                        );
                         let callee_ty = self.instantiate_value_path(
                             receiver.id,
                             receiver.span,
@@ -3341,7 +3364,9 @@ impl<'ctx> Checker<'ctx> {
             }
             hir::PatternKind::Tuple(patterns, _)
             | hir::PatternKind::Or(patterns, _)
-            | hir::PatternKind::PathTuple { fields: patterns, .. } => {
+            | hir::PatternKind::PathTuple {
+                fields: patterns, ..
+            } => {
                 for pat in patterns {
                     self.mark_pattern_bindings_error(pat);
                 }

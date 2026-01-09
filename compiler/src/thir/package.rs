@@ -204,7 +204,39 @@ impl<'ctx> FunctionLower<'ctx> {
                     span: stmt.span,
                 })
             }
-            hir::StatementKind::Guard { .. } => None,
+            hir::StatementKind::Guard {
+                condition,
+                else_block,
+            } => {
+                let cond = self.lower_expr(condition);
+                let else_block_id = self.lower_block(else_block);
+
+                let unit = Constant {
+                    ty: self.gcx.types.void,
+                    value: ConstantKind::Unit,
+                };
+                let then_expr =
+                    self.push_expr(ExprKind::Literal(unit), self.gcx.types.void, stmt.span);
+                let else_expr = self.push_expr(
+                    ExprKind::Block(else_block_id),
+                    self.gcx.types.void,
+                    stmt.span,
+                );
+                let if_expr = self.push_expr(
+                    ExprKind::If {
+                        cond,
+                        then_expr,
+                        else_expr: Some(else_expr),
+                    },
+                    self.gcx.types.void,
+                    stmt.span,
+                );
+
+                Some(Stmt {
+                    kind: StmtKind::Expr(if_expr),
+                    span: stmt.span,
+                })
+            }
         }
     }
 

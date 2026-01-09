@@ -1,0 +1,31 @@
+// Test: Guard Statements
+// Covers boolean guards, optional binding, and enum pattern binding.
+
+func main() {
+    let ok = true
+    guard ok else {
+        std.print("FAIL: bool guard\n")
+        return
+    }
+
+    let opt: int32? = 7
+    guard let value = opt else {
+        std.print("FAIL: optional guard\n")
+        return
+    }
+    assert(value == 7, "Guard let binding failed")
+
+    let status = Status.ok(42)
+    guard case .ok(code) = status else {
+        std.print("FAIL: enum guard\n")
+        return
+    }
+    assert(code == 42, "Guard enum binding failed")
+
+    std.print("PASS: Guard statements\n")
+}
+
+enum Status {
+    case ok(int32)
+    case err(string)
+}
