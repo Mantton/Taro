@@ -555,7 +555,7 @@ impl Parser {
                 Identifier::emtpy(self.file.id),
                 self.parse_import_export_declaration(false)?,
             ),
-            Token::Extern => (Identifier::emtpy(self.file.id), self.parse_extern_block()?),
+            Token::Extern => self.parse_extern_declaration()?,
             Token::Type => self.parse_type_declaration()?,
             Token::Function => self.parse_function(mode)?,
             Token::Impl => (Identifier::emtpy(self.file.id), self.parse_impl()?),
@@ -569,7 +569,7 @@ impl Parser {
 }
 
 impl Parser {
-    fn parse_extern_block(&mut self) -> R<DeclarationKind> {
+    fn parse_extern_declaration(&mut self) -> R<(Identifier, DeclarationKind)> {
         self.expect(Token::Extern)?;
         let abi = match self.current_token() {
             Token::String { value } => {
@@ -579,20 +579,34 @@ impl Parser {
             _ => return Err(self.err_at_current(ParserError::ExpectedExternAbiString)),
         };
 
-        let declarations: Vec<Declaration<ast::ExternDeclarationKind>> =
-            if self.matches(Token::LBrace) {
-                self.parse_declaration_list(|p| p.parse_extern_declaration(abi))?
-            } else {
-                vec![]
+        if self.matches(Token::LBrace) {
+            let declarations: Vec<Declaration<ast::ExternDeclarationKind>> =
+                self.parse_declaration_list(|p| p.parse_extern_block_declaration(abi))?;
+            return Ok((
+                Identifier::emtpy(self.file.id),
+                DeclarationKind::ExternBlock(ast::ExternBlock { abi, declarations }),
+            ));
+        }
+
+        if self.matches(Token::Function) {
+            let (identifier, mut kind) = self.parse_function(FnParseMode { req_body: false })?;
+            let DeclarationKind::Function(func) = &mut kind else {
+                return Ok((identifier, kind));
             };
 
-        Ok(DeclarationKind::ExternBlock(ast::ExternBlock {
-            abi,
-            declarations,
-        }))
+            if let Some(block) = &func.block {
+                self.emit_error(ParserError::ExternFunctionBodyNotAllowed, block.span);
+                func.block = None;
+            }
+            func.abi = Some(abi);
+
+            return Ok((identifier, kind));
+        }
+
+        Err(self.err_at_current(ParserError::ExpectedExternDeclaration))
     }
 
-    fn parse_extern_declaration(
+    fn parse_extern_block_declaration(
         &mut self,
         abi: Symbol,
     ) -> R<Option<Declaration<ast::ExternDeclarationKind>>> {
@@ -3568,6 +3582,7 @@ enum ParserError {
     ExpectedParameterName,
     ExpectedSelf,
     ExpectedExternAbiString,
+    ExpectedExternDeclaration,
     DissallowedExternDeclaration,
     ExternFunctionBodyNotAllowed,
     DisallowedStructLiteral,
@@ -3611,6 +3626,7 @@ impl Display for ParserError {
             ExpectedParameterName => f.write_str("expected parameter name"),
             ExpectedSelf => f.write_str("expected 'self'"),
             ExpectedExternAbiString => f.write_str("expected extern ABI string"),
+            ExpectedExternDeclaration => f.write_str("expected extern declaration"),
             DissallowedExternDeclaration => f.write_str("disallowed extern declaration"),
             ExternFunctionBodyNotAllowed => f.write_str("extern functions cannot have a body"),
             DisallowedStructLiteral => {
@@ -5264,5 +5280,21 @@ mod tests {
         "#;
         // This should parse correctly with ASI providing semicolons after signatures
         let _ = parse_one_decl(input);
+    }
+
+    #[test]
+    fn test_extern_standalone_function() {
+        let input = r#"extern "C" func malloc(size: int32) -> *u8;"#;
+        let decl = parse_one_decl(input);
+        match &decl.kind {
+            DeclarationKind::Function(func) => {
+                assert_eq!(
+                    func.abi.as_ref().expect("Expected ABI").as_str(),
+                    "C"
+                );
+                assert_eq!(decl.identifier.symbol.as_str(), "malloc");
+            }
+            _ => panic!("Expected function"),
+        }
     }
 }

@@ -261,7 +261,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             // and don't have MIR bodies.
             if matches!(
                 self.gcx.get_signature(def_id).abi,
-                Some(hir::Abi::Intrinsic)
+                Some(hir::Abi::Intrinsic | hir::Abi::C)
             ) {
                 continue;
             }

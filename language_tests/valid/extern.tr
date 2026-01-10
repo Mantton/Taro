@@ -1,0 +1,9 @@
+extern "C" {
+    func puts(s: *u8) -> i32
+}
+
+extern "C" func malloc(size: i32) -> *u8
+
+func main() {
+    // Just checking if it parses and compiles
+}
