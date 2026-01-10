@@ -562,3 +562,309 @@ fn collect_move_from_operand(operand: &Operand, state: &mut MoveState) {
         }
     }
 }
+// ============================================================================
+// Borrow Validation
+// ============================================================================
+
+/// MIR pass that validates that values are not moved while borrowed.
+pub struct ValidateBorrows;
+
+impl<'ctx> MirPass<'ctx> for ValidateBorrows {
+    fn name(&self) -> &'static str {
+        "ValidateBorrows"
+    }
+
+    fn run(&mut self, gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
+        validate_borrows(gcx, body)
+    }
+}
+
+pub fn validate_borrows<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResult<()> {
+
+    use crate::mir::analysis::liveness::compute_liveness;
+
+    // 1. Compute Liveness
+    let liveness = compute_liveness(body);
+
+    // 2. Track active borrows: BorrowedLocal -> Vec<(BorrowerLocal, Span)>
+    // Ideally this should flow sensitive, but for now we can approximate:
+    // If a borrow is created, it is "active" as long as the borrower is live.
+    // Liveness handles the scope.
+    // We just need to know "who borrows whom".
+    // Since we don't have alias analysis, we rely on the explicit `_y = &_x` assignment.
+    // We collect these relations.
+    // Note: A borrower might be reassigned. `_y` borrows `_x`, then `_y` borrows `_z`.
+    // Validating strict correctness requires full borrow checking (lifetime inference).
+    // BUT, for the specific issue "implicit copy", we just want to catch "move while borrower is live".
+    // We can be conservative: identifying that `_y` *might* borrow `_x`.
+
+    // Better approach: Forward dataflow with state `ActiveBorrows`.
+    // State: Map<BorrowedLocal, Set<BorrowerLocal>>.
+    // On `_y = &_x`: add `_x -> _y` to state.
+    // On `_y = ...` (reassign): remove `_y` from all values (it no longer borrows them).
+    // On `move _x`: check if any `b` in `state[_x]` is LIVE.
+
+    // We need per-statement liveness.
+
+    let mut visited = FxHashSet::default();
+    let mut worklist = vec![body.start_block];
+
+    // Map block -> In-State
+    let mut block_in_states: FxHashMap<BasicBlockId, FxHashMap<LocalId, FxHashSet<LocalId>>> =
+        FxHashMap::default();
+    block_in_states.insert(body.start_block, FxHashMap::default());
+
+    // We reuse a worklist, but we need to verify convergence if we have loops?
+    // Borrow sets only grow or shrink on strict kill.
+    // Standard dataflow.
+
+    while let Some(bb) = worklist.pop() {
+        if !visited.insert(bb) {
+            // If already visited, we only re-process if input changed.
+            // Simplified: simplified topological walk (Reverse Post Order) is better, but worklist okay.
+        }
+
+        // 1. Recompute liveness at each statement for this block
+        // Liveness is backward.
+        // live_out is known.
+        let live_out = &liveness.live_out[bb];
+        let mut live_at_stmts = Vec::with_capacity(body.basic_blocks[bb].statements.len() + 1);
+
+        let mut current_live = live_out.clone();
+        // Push live_out as the liveness AFTER the last statement (at terminator)
+        live_at_stmts.push(current_live.clone());
+
+        // Walk backwards to compute liveness before each stmt
+        let statements = &body.basic_blocks[bb].statements;
+        for stmt in statements.iter().rev() {
+            // Same logic as liveness.rs
+            match &stmt.kind {
+                StatementKind::Assign(dest, rvalue) => {
+                    if dest.projection.is_empty() {
+                        current_live.remove(&dest.local);
+                    } else {
+                        current_live.insert(dest.local);
+                    }
+                    // Uses
+                    match rvalue {
+                        Rvalue::Use(op)
+                        | Rvalue::UnaryOp { operand: op, .. }
+                        | Rvalue::Cast { operand: op, .. }
+                        | Rvalue::Repeat { operand: op, .. } => use_operand(op, &mut current_live),
+                        Rvalue::BinaryOp { lhs, rhs, .. } => {
+                            use_operand(lhs, &mut current_live);
+                            use_operand(rhs, &mut current_live);
+                        }
+                        Rvalue::Ref { place, .. } | Rvalue::Discriminant { place } => {
+                            current_live.insert(place.local);
+                        }
+                        Rvalue::Aggregate { fields, .. } => {
+                            for f in fields {
+                                use_operand(f, &mut current_live);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                StatementKind::SetDiscriminant { place, .. } => {
+                    if !place.projection.is_empty() {
+                        current_live.insert(place.local);
+                    }
+                }
+                StatementKind::GcSafepoint | StatementKind::Nop => {}
+            }
+            live_at_stmts.push(current_live.clone());
+        }
+        live_at_stmts.reverse();
+        // Now live_at_stmts[i] is liveness BEFORE statement i.
+        // live_at_stmts[len] is liveness AFTER last statement (at terminator).
+
+        // 2. Forward pass for validation
+        let entry_borrows = block_in_states.entry(bb).or_default().clone();
+        let mut active_borrows = entry_borrows; // Map<Borrowed, Set<Borrower>>
+        
+        for (idx, stmt) in statements.iter().enumerate() {
+            match &stmt.kind {
+                StatementKind::Assign(dest, rvalue) => {
+                    // Check for moves in rvalue
+                    check_rvalue_moves_borrowed(
+                        gcx,
+                        rvalue,
+                        &active_borrows,
+                        &live_at_stmts[idx],
+                        stmt.span,
+                    )?;
+
+                    // Update state: Dest is overwritten, so it stops borrowing anything
+                    if dest.projection.is_empty() {
+                        let borrower = dest.local;
+                        for borrowers in active_borrows.values_mut() {
+                            borrowers.remove(&borrower);
+                        }
+                    }
+
+                    // If Ref, add borrow
+                    if let Rvalue::Ref { place, .. } = rvalue {
+                        if dest.projection.is_empty() {
+                            active_borrows
+                                .entry(place.local)
+                                .or_default()
+                                .insert(dest.local);
+                        }
+                    }
+                    // Propagate borrows (copy/move): if _y = _z, and _z borrows _x, then _y borrows _x?
+                    // Yes, copying a reference copies the borrow.
+                    if let Rvalue::Use(op) = rvalue {
+                        if let Some(src_local) = operand_local(op) {
+                            // If src_local is a borrower of X, then dest becomes borrower of X
+                            if dest.projection.is_empty() {
+                                let d = dest.local;
+                                let mut new_borrows = Vec::new();
+                                for (borrowed, borrowers) in &active_borrows {
+                                    if borrowers.contains(&src_local) {
+                                        new_borrows.push(*borrowed);
+                                    }
+                                }
+                                for b in new_borrows {
+                                    active_borrows.entry(b).or_default().insert(d);
+                                }
+                            }
+                        }
+                    }
+                }
+                // Check SetDiscriminant? No moves usually.
+                _ => {}
+            }
+        }
+
+        // Check terminator
+        if let Some(term) = &body.basic_blocks[bb].terminator {
+            check_terminator_moves_borrowed(
+                gcx,
+                term,
+                &active_borrows,
+                &live_at_stmts[statements.len()],
+                term.span,
+            )?;
+
+            // Propagate to successors
+            for succ in successors(&term.kind) {
+                // Union state? Intersect?
+                // Borrow checker is usually strict. If ANY path has a borrow, it exists?
+                // Or rather, we are flowing states.
+                // If we merge, we should merge sets.
+                let succ_state = block_in_states.entry(succ).or_default();
+                let mut changed = false;
+                for (borrowed, borrowers) in &active_borrows {
+                    let entry = succ_state.entry(*borrowed).or_default();
+                    for &b in borrowers {
+                        if entry.insert(b) {
+                            changed = true;
+                        }
+                    }
+                }
+                if changed || !visited.contains(&succ) {
+                    if !worklist.contains(&succ) {
+                        worklist.push(succ);
+                    }
+                }
+            }
+        }
+    }
+
+    gcx.dcx().ok()
+}
+
+fn operand_local(op: &Operand) -> Option<LocalId> {
+    match op {
+        Operand::Copy(p) | Operand::Move(p) if p.projection.is_empty() => Some(p.local),
+        _ => None,
+    }
+}
+
+// Reuse helpers from dse/liveness locally
+fn use_operand(op: &Operand, live: &mut FxHashSet<LocalId>) {
+    match op {
+        Operand::Copy(place) | Operand::Move(place) => {
+            live.insert(place.local);
+        }
+        _ => {}
+    }
+}
+
+fn check_rvalue_moves_borrowed(
+    gcx: Gcx,
+    rvalue: &Rvalue,
+    borrows: &FxHashMap<LocalId, FxHashSet<LocalId>>,
+    live: &FxHashSet<LocalId>,
+    span: crate::span::Span,
+) -> CompileResult<()> {
+    match rvalue {
+        Rvalue::Use(op) => check_operand_move_borrowed(gcx, op, borrows, live, span),
+        Rvalue::UnaryOp { operand, .. }
+        | Rvalue::Cast { operand, .. }
+        | Rvalue::Repeat { operand, .. } => {
+            check_operand_move_borrowed(gcx, operand, borrows, live, span)
+        }
+        Rvalue::BinaryOp { lhs, rhs, .. } => {
+            check_operand_move_borrowed(gcx, lhs, borrows, live, span)?;
+            check_operand_move_borrowed(gcx, rhs, borrows, live, span)
+        }
+        Rvalue::Aggregate { fields, .. } => {
+            for f in fields {
+                check_operand_move_borrowed(gcx, f, borrows, live, span)?;
+            }
+            return Ok(());
+        }
+        _ => Ok(()),
+    }
+}
+
+fn check_terminator_moves_borrowed(
+    gcx: Gcx,
+    term: &crate::mir::Terminator,
+    borrows: &FxHashMap<LocalId, FxHashSet<LocalId>>,
+    live: &FxHashSet<LocalId>,
+    span: crate::span::Span,
+) -> CompileResult<()> {
+    match &term.kind {
+        TerminatorKind::Call { func, args, .. } => {
+            check_operand_move_borrowed(gcx, func, borrows, live, span)?;
+            for arg in args {
+                check_operand_move_borrowed(gcx, arg, borrows, live, span)?;
+            }
+            return Ok(());
+        }
+        TerminatorKind::SwitchInt { discr, .. } => {
+            check_operand_move_borrowed(gcx, discr, borrows, live, span)?;
+            return Ok(());
+        }
+        _ => Ok(()),
+    }
+}
+
+fn check_operand_move_borrowed(
+    gcx: Gcx,
+    op: &Operand,
+    borrows: &FxHashMap<LocalId, FxHashSet<LocalId>>,
+    live: &FxHashSet<LocalId>,
+    span: crate::span::Span,
+) -> CompileResult<()> {
+    if let Operand::Move(place) = op {
+        // ... (original logic)
+        // If we are moving 'place.local', check if it is borrowed
+        if let Some(borrowers) = borrows.get(&place.local) {
+             for &b in borrowers {
+                 if live.contains(&b) {
+                     // Borrower is live!
+                     gcx.dcx().emit_error(
+                         format!("cannot move out of borrowed content").into(),
+                         Some(span),
+                     );
+                     return gcx.dcx().ok();
+                 }
+             }
+        }
+    }
+    Ok(())
+}

@@ -7,6 +7,9 @@ pub mod inline;
 pub mod passes;
 pub mod simplify;
 pub mod validate;
+pub mod dse;
+pub mod propagate;
+pub mod coalesce;
 
 pub trait MirPass<'ctx> {
     fn name(&self) -> &'static str;
@@ -40,6 +43,7 @@ pub fn run_local_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileR
         // Validation passes - must run before inlining to catch errors in original code
         Box::new(validate::ValidateMutability),
         Box::new(validate::ValidateMoves),
+        Box::new(validate::ValidateBorrows),
     ];
     run_passes(gcx, body, &mut passes)?;
     body.phase = MirPhase::CfgClean;
@@ -59,6 +63,9 @@ pub fn run_global_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> Compile
         Box::new(passes::LowerAggregates),
         // Note: LowerAggregates only expands statements, doesn't change CFG structure
         // DeadLocalElimination runs after LowerAggregates to also clean up temps it creates
+        Box::new(propagate::CopyPropagation),
+        Box::new(coalesce::TempCoalescing),
+        Box::new(dse::DeadStoreElimination),
         Box::new(passes::DeadLocalElimination),
         // Interprocedural escape analysis (uses precomputed summaries)
         Box::new(escape::EscapeAnalysis),

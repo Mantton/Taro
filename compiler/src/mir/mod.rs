@@ -9,6 +9,7 @@ use rustc_hash::FxHashMap;
 
 pub mod builder;
 pub mod optimize;
+pub mod analysis;
 pub mod package;
 pub mod pretty;
 
