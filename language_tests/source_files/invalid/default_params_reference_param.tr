@@ -1,0 +1,6 @@
+// Test: Default parameter values cannot reference parameters
+func bad(a: int32, b: int32 = a) -> int32 {
+    return a + b
+}
+
+// EXPECTED: error: unknown symbol `a`

@@ -2583,26 +2583,6 @@ impl Actor<'_, '_> {
         }
     }
 
-    fn wrap_optional_some(
-        &mut self,
-        value: Box<hir::Expression>,
-        span: Span,
-    ) -> Box<hir::Expression> {
-        let some_path = self.mk_optional_variant_path("some", span);
-        let callee = self.mk_expression(hir::ExpressionKind::Path(some_path), span);
-        self.mk_expression(
-            hir::ExpressionKind::Call {
-                callee,
-                arguments: vec![hir::ExpressionArgument {
-                    label: None,
-                    expression: value,
-                    span,
-                }],
-            },
-            span,
-        )
-    }
-
     fn wrap_optional_none(&mut self, span: Span) -> Box<hir::Expression> {
         let none_path = self.mk_optional_variant_path("none", span);
         self.mk_expression(hir::ExpressionKind::Path(none_path), span)

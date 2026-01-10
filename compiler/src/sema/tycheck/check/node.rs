@@ -31,6 +31,37 @@ use crate::{
 use std::cell::RefCell;
 use std::rc::Rc;
 
+struct DefaultParamRefChecker<'a> {
+    param_ids: &'a [NodeID],
+    param_symbols: &'a [Symbol],
+    found: bool,
+}
+
+impl<'a> hir::HirVisitor for DefaultParamRefChecker<'a> {
+    fn visit_resolved_path(&mut self, node: &hir::ResolvedPath) -> Self::Result {
+        if let hir::ResolvedPath::Resolved(path) = node {
+            match path.resolution {
+                hir::Resolution::LocalVariable(id) => {
+                    if self.param_ids.contains(&id) {
+                        self.found = true;
+                    }
+                }
+                hir::Resolution::Error => {
+                    if path
+                        .segments
+                        .iter()
+                        .any(|segment| self.param_symbols.contains(&segment.identifier.symbol))
+                    {
+                        self.found = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        hir::walk_resolved_path(self, node)
+    }
+}
+
 impl<'ctx> Checker<'ctx> {
     pub fn gcx(&self) -> Gcx<'ctx> {
         self.context
@@ -83,6 +114,21 @@ impl<'ctx> Checker<'ctx> {
 
         self.return_ty = Some(return_ty);
 
+        let param_ids: Vec<NodeID> = node
+            .signature
+            .prototype
+            .inputs
+            .iter()
+            .map(|param| param.id)
+            .collect();
+        let param_symbols: Vec<Symbol> = node
+            .signature
+            .prototype
+            .inputs
+            .iter()
+            .map(|param| param.name.symbol)
+            .collect();
+
         // Add Parameters To Locals Map
         for (parameter, parameter_ty) in node
             .signature
@@ -98,6 +144,22 @@ impl<'ctx> Checker<'ctx> {
                     mutable: false,
                 },
             );
+
+            if let Some(expr) = &parameter.default_value {
+                let mut checker = DefaultParamRefChecker {
+                    param_ids: &param_ids,
+                    param_symbols: &param_symbols,
+                    found: false,
+                };
+                hir::walk_expression(&mut checker, expr);
+                if checker.found {
+                    gcx.dcx().emit_error(
+                        "default parameter values cannot reference parameters".into(),
+                        Some(expr.span),
+                    );
+                }
+                self.top_level_check(expr, Some(parameter_ty));
+            }
         }
 
         let Some(body) = &node.block else {

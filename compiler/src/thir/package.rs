@@ -6,8 +6,11 @@ use crate::{
     sema::{
         models::{AdtKind, ConstKind, ConstValue, Ty, TyKind},
         resolve::models::VariantCtorKind,
-        tycheck::results::TypeCheckResults,
-        tycheck::solve::Adjustment,
+        tycheck::{
+            results::TypeCheckResults,
+            solve::Adjustment,
+            utils::instantiate::instantiate_signature_with_args,
+        },
     },
     thir::{
         self, Block, BlockId, Constant, ConstantKind, Expr, ExprId, ExprKind, FieldIndex, Param,
@@ -64,6 +67,16 @@ impl<'ctx> Actor<'ctx> {
             actor.functions.insert(func.id, func);
         }
 
+        // Synthesize default value providers
+        let default_exprs = gcx.store.default_value_exprs.borrow();
+        for (id, expr) in default_exprs.iter() {
+            if id.package() != gcx.package_index() {
+                continue;
+            }
+            let func = FunctionLower::lower_default_provider(gcx, actor.results.clone(), *id, expr);
+            actor.functions.insert(*id, func);
+        }
+
         let pkg = ThirPackage {
             functions: actor.functions,
             entry: actor.entry,
@@ -118,6 +131,199 @@ impl<'ctx> FunctionLower<'ctx> {
         lower.lower_params(node);
         lower.lower_body(node);
         lower.func
+    }
+
+    fn lower_default_provider(
+        gcx: GlobalContext<'ctx>,
+        results: std::rc::Rc<TypeCheckResults<'ctx>>,
+        id: DefinitionID,
+        expr: &hir::Expression,
+    ) -> ThirFunction<'ctx> {
+        let mut lower = FunctionLower {
+            gcx,
+            results,
+            func: ThirFunction {
+                id,
+                body: None,
+                span: expr.span,
+                params: vec![],
+                stmts: IndexVec::new(),
+                blocks: IndexVec::new(),
+                exprs: IndexVec::new(),
+                arms: IndexVec::new(),
+                match_trees: FxHashMap::default(),
+            },
+        };
+
+        let expr_id = lower.lower_expr(expr);
+
+        let block_id = BlockId::from_raw(lower.func.blocks.len() as u32);
+        lower.func.blocks.push(Block {
+            id: block_id,
+            stmts: vec![],
+            expr: Some(expr_id),
+        });
+
+        lower.func.body = Some(block_id);
+        lower.func
+    }
+
+    fn lower_call_args(
+        &mut self,
+        arguments: &[hir::ExpressionArgument],
+        leading_args: &[ExprId],
+    ) -> Vec<ExprId> {
+        let mut args = Vec::with_capacity(arguments.len() + leading_args.len());
+        args.extend_from_slice(leading_args);
+        args.extend(
+            arguments
+                .iter()
+                .map(|arg| self.lower_expr(&arg.expression)),
+        );
+        args
+    }
+
+    fn match_arguments_to_parameters(
+        &self,
+        signature: &crate::sema::models::LabeledFunctionSignature<'ctx>,
+        param_offset: usize,
+        arguments: &[hir::ExpressionArgument],
+    ) -> Option<Vec<Option<usize>>> {
+        if signature.inputs.len() < param_offset {
+            return None;
+        }
+
+        let params = &signature.inputs[param_offset..];
+        let mut param_to_arg: Vec<Option<usize>> = vec![None; params.len()];
+        let mut used_args = vec![false; arguments.len()];
+
+        // First pass: match labeled arguments.
+        for (arg_idx, arg) in arguments.iter().enumerate() {
+            if let Some(label) = &arg.label {
+                let mut found = false;
+                for (param_idx, param) in params.iter().enumerate() {
+                    if param.label.as_ref() == Some(&label.identifier.symbol) {
+                        if param_to_arg[param_idx].is_some() {
+                            return None;
+                        }
+                        param_to_arg[param_idx] = Some(arg_idx);
+                        used_args[arg_idx] = true;
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    return None;
+                }
+            }
+        }
+
+        // Second pass: match positional arguments.
+        let mut param_idx = 0;
+        for (arg_idx, arg) in arguments.iter().enumerate() {
+            if used_args[arg_idx] || arg.label.is_some() {
+                continue;
+            }
+
+            while param_idx < params.len() && param_to_arg[param_idx].is_some() {
+                param_idx += 1;
+            }
+
+            if param_idx >= params.len() {
+                return None;
+            }
+
+            if params[param_idx].label.is_some() {
+                return None;
+            }
+
+            param_to_arg[param_idx] = Some(arg_idx);
+            used_args[arg_idx] = true;
+            param_idx += 1;
+        }
+
+        Some(param_to_arg)
+    }
+
+    fn lower_call_args_with_defaults(
+        &mut self,
+        signature: &crate::sema::models::LabeledFunctionSignature<'ctx>,
+        callee_generic_node: hir::NodeID,
+        arguments: &[hir::ExpressionArgument],
+        leading_args: &[ExprId],
+        span: crate::span::Span,
+    ) -> Option<Vec<ExprId>> {
+        let generic_args = self.results.instantiation(callee_generic_node);
+        let signature = if let Some(args) = generic_args {
+            instantiate_signature_with_args(self.gcx, signature, args)
+        } else {
+            signature.clone()
+        };
+
+        let param_offset = leading_args.len();
+        let param_to_arg = self.match_arguments_to_parameters(&signature, param_offset, arguments)?;
+
+        let mut final_args = Vec::with_capacity(signature.inputs.len());
+        final_args.extend_from_slice(leading_args);
+
+        for (param_idx, arg_opt) in param_to_arg.iter().enumerate() {
+            let param = &signature.inputs[param_offset + param_idx];
+            if let Some(arg_idx) = arg_opt {
+                final_args.push(self.lower_expr(&arguments[*arg_idx].expression));
+            } else if let Some(provider_id) = param.default_provider {
+                let inputs = self.gcx.store.interners.intern_ty_list(Vec::new());
+                let provider_ty = self.gcx.store.interners.intern_ty(TyKind::FnPointer {
+                    inputs,
+                    output: param.ty,
+                });
+                let provider = self.push_expr(
+                    ExprKind::Zst {
+                        id: provider_id,
+                        generic_args,
+                    },
+                    provider_ty,
+                    span,
+                );
+                let call = self.push_expr(
+                    ExprKind::Call {
+                        callee: provider,
+                        args: vec![],
+                    },
+                    param.ty,
+                    span,
+                );
+                final_args.push(call);
+            } else {
+                return None;
+            }
+        }
+
+        Some(final_args)
+    }
+
+    fn resolve_direct_callee_id(&self, callee: &hir::Expression) -> Option<DefinitionID> {
+        let hir::ExpressionKind::Path(path) = &callee.kind else {
+            return None;
+        };
+
+        let resolution = if let Some(def_id) = self.results.overload_source(callee.id) {
+            Resolution::Definition(def_id, self.gcx.definition_kind(def_id))
+        } else if let Some(resolution) = self.results.value_resolution(callee.id) {
+            resolution
+        } else {
+            match path {
+                hir::ResolvedPath::Resolved(path) => path.resolution.clone(),
+                _ => Resolution::Error,
+            }
+        };
+
+        match resolution {
+            Resolution::Definition(
+                id,
+                DefinitionKind::Function | DefinitionKind::AssociatedFunction,
+            ) => Some(id),
+            _ => None,
+        }
     }
 
     fn lower_params(&mut self, node: &hir::Function) {
@@ -549,12 +755,28 @@ impl<'ctx> FunctionLower<'ctx> {
                         span,
                     };
                 }
-                let callee = self.lower_expr(callee);
-                let args: Vec<ExprId> = arguments
-                    .iter()
-                    .map(|arg| self.lower_expr(&arg.expression))
-                    .collect();
-                ExprKind::Call { callee, args }
+
+                // Normal function call
+                let thir_callee = self.lower_expr(callee);
+                let final_args = if let Some(def_id) = self.resolve_direct_callee_id(callee) {
+                    let signature = self.gcx.get_signature(def_id);
+                    self.lower_call_args_with_defaults(signature, callee.id, arguments, &[], expr.span)
+                        .unwrap_or_else(|| {
+                            debug_assert!(
+                                false,
+                                "failed to match direct call arguments for default values"
+                            );
+                            self.lower_call_args(arguments, &[])
+                        })
+                } else {
+                    // Indirect call - just lower args as provided (no defaults).
+                    self.lower_call_args(arguments, &[])
+                };
+
+                ExprKind::Call {
+                    callee: thir_callee,
+                    args: final_args,
+                }
             }
             hir::ExpressionKind::Binary(op, lhs, rhs) => {
                 // Check if this is an operator method call
@@ -722,14 +944,24 @@ impl<'ctx> FunctionLower<'ctx> {
                     };
                 };
 
-                let args: Vec<ExprId> = arguments
-                    .iter()
-                    .map(|arg| self.lower_expr(&arg.expression))
-                    .collect();
                 let recv = self.lower_expr(receiver);
-                let mut all_args = Vec::with_capacity(args.len() + 1);
-                all_args.push(recv);
-                all_args.extend(args);
+                let receiver_args = [recv];
+                let signature = self.gcx.get_signature(def_id);
+                let final_args = self
+                    .lower_call_args_with_defaults(
+                        signature,
+                        expr.id,
+                        arguments,
+                        &receiver_args,
+                        expr.span,
+                    )
+                    .unwrap_or_else(|| {
+                        debug_assert!(
+                            false,
+                            "failed to match method call arguments for default values"
+                        );
+                        self.lower_call_args(arguments, &receiver_args)
+                    });
 
                 let callee_ty = self.gcx.get_type(def_id);
                 let generic_args = self.results.instantiation(expr.id);
@@ -741,10 +973,7 @@ impl<'ctx> FunctionLower<'ctx> {
                     callee_ty,
                     expr.span,
                 );
-                ExprKind::Call {
-                    callee,
-                    args: all_args,
-                }
+                ExprKind::Call { callee, args: final_args }
             }
 
             hir::ExpressionKind::StructLiteral(literal) => {

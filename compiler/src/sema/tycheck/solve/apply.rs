@@ -41,7 +41,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         label: None,
                         name: Symbol::new(""),
                         ty: t,
-                        has_default: false,
+                        default_provider: None,
                     })
                     .collect(),
                 output,
@@ -231,7 +231,7 @@ fn produce_application_subobligations<'c>(
 ) -> Result<Vec<Obligation<'c>>, ApplyValidationError> {
     let mut obligations = vec![];
     for (param_idx, arg_idx) in positions.iter().enumerate() {
-        let param_defaults = signature.inputs[param_idx].has_default;
+        let param_defaults = signature.inputs[param_idx].default_provider.is_some();
         let param_ty = inputs[param_idx];
 
         if let Some(arg_idx) = arg_idx {

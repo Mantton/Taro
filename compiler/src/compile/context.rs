@@ -215,6 +215,14 @@ impl<'arena> GlobalContext<'arena> {
             .borrow_mut()
             .insert(id, def);
     }
+
+    pub fn register_default_value_expr(self, id: DefinitionID, expr: &'arena hir::Expression) {
+        self.context
+            .store
+            .default_value_exprs
+            .borrow_mut()
+            .insert(id, expr);
+    }
 }
 
 impl<'arena> GlobalContext<'arena> {
@@ -776,6 +784,9 @@ pub struct CompilerStore<'arena> {
     pub synthetic_definitions:
         RefCell<FxHashMap<DefinitionID, crate::sema::models::SyntheticDefinition<'arena>>>,
     pub next_synthetic_id: std::cell::Cell<u32>,
+
+    // Default value expressions (mapped by provider ID)
+    pub default_value_exprs: RefCell<FxHashMap<DefinitionID, &'arena hir::Expression>>,
 }
 
 impl<'arena> CompilerStore<'arena> {
@@ -803,6 +814,7 @@ impl<'arena> CompilerStore<'arena> {
             std_interfaces: OnceCell::new(),
             synthetic_definitions: Default::default(),
             next_synthetic_id: std::cell::Cell::new(0),
+            default_value_exprs: Default::default(),
         })
     }
 

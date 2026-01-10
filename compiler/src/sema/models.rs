@@ -448,7 +448,15 @@ pub struct LabeledFunctionSignature<'ctx> {
 
 impl LabeledFunctionSignature<'_> {
     pub fn min_parameter_count(&self) -> usize {
-        self.inputs.len() - self.inputs.iter().filter(|i| i.has_default).count()
+        self.inputs
+            .len()
+            .checked_sub(
+                self.inputs
+                    .iter()
+                    .filter(|i| i.default_provider.is_some())
+                    .count(),
+            )
+            .unwrap_or(0)
     }
 
     /// Compare two signatures ignoring types (`ty`, `output`).
@@ -456,7 +464,7 @@ impl LabeledFunctionSignature<'_> {
     /// Returns `true` when:
     /// * both have the same `is_variadic` flag,
     /// * the parameter list is the same length, and
-    /// * every parameter's `label` and `has_default` match in order.
+    /// * every parameter's `label` and `default_provider` status match in order.
     pub fn same_shape(&self, other: &Self) -> bool {
         // Quick field/length checks first.
         if self.is_variadic != other.is_variadic || self.inputs.len() != other.inputs.len() {
@@ -464,10 +472,9 @@ impl LabeledFunctionSignature<'_> {
         }
 
         // Compare each parameter, ignoring `ty`.
-        self.inputs
-            .iter()
-            .zip(&other.inputs)
-            .all(|(a, b)| a.label == b.label && a.has_default == b.has_default)
+        self.inputs.iter().zip(&other.inputs).all(|(a, b)| {
+            a.label == b.label && a.default_provider.is_some() == b.default_provider.is_some()
+        })
     }
 }
 
@@ -476,7 +483,7 @@ pub struct LabeledFunctionParameter<'ctx> {
     pub label: Option<Symbol>,
     pub name: Symbol,
     pub ty: Ty<'ctx>,
-    pub has_default: bool,
+    pub default_provider: Option<DefinitionID>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

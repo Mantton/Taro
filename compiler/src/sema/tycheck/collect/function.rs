@@ -6,6 +6,7 @@ use crate::{
         models::{LabeledFunctionParameter, LabeledFunctionSignature, Ty},
         tycheck::lower::{DefTyLoweringCtx, TypeLowerer},
     },
+    span::Symbol,
 };
 
 pub fn run(package: &hir::Package, context: GlobalContext) -> CompileResult<()> {
@@ -54,14 +55,60 @@ impl<'ctx> Actor<'ctx> {
         let ctx = DefTyLoweringCtx::new(id, self.context);
         let mut inputs: Vec<LabeledFunctionParameter> = Vec::new();
 
-        inputs.extend(node.signature.prototype.inputs.iter().map(|node| {
-            LabeledFunctionParameter {
+        for (idx, node) in node.signature.prototype.inputs.iter().enumerate() {
+            let ty = ctx.lowerer().lower_type(&node.annotated_type);
+
+            let default_provider = if let Some(default_expr) = &node.default_value {
+                // Allocate a synthetic ID for the provider function
+                let provider_id = self
+                    .context
+                    .allocate_synthetic_id(self.context.package_index());
+
+                // Register the default expression for lowering later
+                // SAFETY: The HIR node is allocated in the arena and lives for 'ctx.
+                // The visitor signature doesn't express this, so we transmute.
+                let default_expr: &'ctx hir::Expression =
+                    unsafe { std::mem::transmute(&**default_expr) };
+                self.context
+                    .register_default_value_expr(provider_id, default_expr);
+
+                // Create and register signature for the provider.
+                // Defaults cannot reference parameters, so providers take no inputs.
+                let generics = self.context.generics_of(id);
+                let provider_sig = LabeledFunctionSignature {
+                    inputs: vec![],
+                    output: ty,
+                    is_variadic: false,
+                    abi: None,
+                };
+                let provider_sig = self
+                    .context
+                    .store
+                    .arenas
+                    .function_signatures
+                    .alloc(provider_sig);
+
+                let fn_name = self.context.definition_ident(id).symbol;
+                let def = crate::sema::models::SyntheticDefinition {
+                    name: Symbol::new(&format!("{}$default_arg{}", fn_name, idx)),
+                    generics,
+                    signature: provider_sig,
+                    span: node.span,
+                };
+                self.context.register_synthetic_definition(provider_id, def);
+
+                Some(provider_id)
+            } else {
+                None
+            };
+
+            inputs.push(LabeledFunctionParameter {
                 label: node.label.map(|n| n.identifier.symbol),
                 name: node.name.symbol,
-                ty: ctx.lowerer().lower_type(&node.annotated_type),
-                has_default: node.default_value.is_some(),
-            }
-        }));
+                ty,
+                default_provider,
+            });
+        }
 
         let output = if let Some(node) = &node.signature.prototype.output {
             ctx.lowerer().lower_type(node)

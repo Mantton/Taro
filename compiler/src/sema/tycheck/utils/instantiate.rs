@@ -144,7 +144,7 @@ pub fn instantiate_signature_with_args<'ctx>(
             label: param.label,
             name: param.name,
             ty: instantiate_ty_with_args(gcx, param.ty, args),
-            has_default: param.has_default,
+            default_provider: param.default_provider,
         })
         .collect();
 

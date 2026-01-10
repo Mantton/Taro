@@ -116,7 +116,7 @@ impl<'ctx> Actor<'ctx> {
                             label: field.label,
                             name,
                             ty: field.ty,
-                            has_default: false,
+                            default_provider: None,
                         });
                         input_tys.push(field.ty);
                     }

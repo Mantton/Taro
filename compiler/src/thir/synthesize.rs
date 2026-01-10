@@ -132,7 +132,7 @@ fn register_definition<'ctx>(
             name: Symbol::new("self"),
             ty: self_ref_ty,
             label: None,
-            has_default: false,
+            default_provider: None,
         }],
         output: self_ty,
         is_variadic: false,
