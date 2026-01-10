@@ -5,6 +5,7 @@ use crate::{
         Category, Constant, Operand, Place, PlaceElem, Rvalue, RvalueFunc, TerminatorKind,
         builder::MirBuilder,
     },
+    sema::resolve::models::DefinitionKind,
     span::Span,
     thir::{self, ExprId, ExprKind, FieldIndex},
     unpack,
@@ -121,14 +122,88 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             }
             ExprKind::Call { callee, args } => {
                 let function = unpack!(block = self.as_local_operand(block, *callee));
-                let args: Vec<Operand<'ctx>> = args
-                    .iter()
-                    .map(|arg| unpack!(block = self.as_operand(block, *arg)))
-                    .collect();
+
+                // Determine whether we need to pack variadic arguments.
+                let mut variadic_split_idx = None;
+                let callee_expr = &self.thir.exprs[*callee];
+                let is_known_variadic = match callee_expr.kind {
+                    ExprKind::Zst { id, .. } => self.gcx.get_signature(id).is_variadic,
+                    _ => false,
+                };
+
+                // Use the callee type to detect variadic shape.
+                let callee_ty = callee_expr.ty;
+                if let crate::sema::models::TyKind::FnPointer { inputs, .. } = callee_ty.kind() {
+                    let param_count = inputs.len();
+                    if is_known_variadic && param_count > 0 {
+                        let list_idx = param_count - 1;
+                        if list_idx <= args.len() {
+                            let needs_pack = if args.len() != param_count {
+                                true
+                            } else {
+                                let last_param_ty = inputs[list_idx];
+                                let last_arg_ty = self.thir.exprs[args[list_idx]].ty;
+                                last_arg_ty != last_param_ty
+                            };
+                            if needs_pack {
+                                variadic_split_idx = Some(list_idx);
+                            }
+                        }
+                    } else if args.len() > param_count && param_count > 0 {
+                        variadic_split_idx = Some(param_count - 1);
+                    }
+                }
+
+                let (fixed_args, variadic_list_operand) = if let Some(split) = variadic_split_idx {
+                    let (fixed, var_args) = args.split_at(split);
+                    let inputs = if let crate::sema::models::TyKind::FnPointer { inputs, .. } =
+                        callee_ty.kind()
+                    {
+                        inputs
+                    } else {
+                        panic!("callee must be fn pointer");
+                    };
+                    let list_ty = inputs[inputs.len() - 1];
+
+                    // Extract element type T from List[T].
+                    let elem_ty = if let crate::sema::models::TyKind::Adt(_, args) = list_ty.kind()
+                    {
+                        if let Some(crate::sema::models::GenericArgument::Type(ty)) = args.get(0) {
+                            *ty
+                        } else {
+                            panic!("List must have generic arg");
+                        }
+                    } else {
+                        panic!("Variadic param must be List");
+                    };
+
+                    let list_operand = unpack!(
+                        block = self
+                            .lower_variadic_sequence(block, var_args, list_ty, elem_ty, expr.span)
+                    );
+
+                    let fixed_operands: Vec<Operand<'ctx>> = fixed
+                        .iter()
+                        .map(|arg| unpack!(block = self.as_operand(block, *arg)))
+                        .collect();
+                    (fixed_operands, Some(list_operand))
+                } else {
+                    let all_args = args
+                        .iter()
+                        .map(|arg| unpack!(block = self.as_operand(block, *arg)))
+                        .collect();
+                    (all_args, None)
+                };
+
+                let mut final_args = fixed_args;
+                if let Some(list) = variadic_list_operand {
+                    final_args.push(list);
+                }
+
                 let next = self.new_block();
                 let terminator = TerminatorKind::Call {
                     func: function,
-                    args,
+                    args: final_args,
                     destination,
                     target: next,
                 };
@@ -682,6 +757,243 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         block.and(Operand::Move(Place::from_local(temp)))
     }
 
+    fn lower_variadic_sequence(
+        &mut self,
+        mut block: BasicBlockId,
+        args: &[ExprId],
+        list_ty: crate::sema::models::Ty<'ctx>,
+        elem_ty: crate::sema::models::Ty<'ctx>,
+        span: Span,
+    ) -> BlockAnd<Operand<'ctx>> {
+        let count = args.len();
+        let usize_ty = self.gcx.types.uint;
+
+        let makebuf_id = self.find_function_in_std("mem", "__gc__makebuf", span);
+        let desc_fn_id = self.find_function_in_std("intrinsic", "__intrinsic_gc_desc", span);
+        let ptr_add_id = self.find_function_in_std("intrinsic", "__intrinsic_ptr_add", span);
+
+        // 1. Call __intrinsic_gc_desc[T]().
+        let generics = vec![crate::sema::models::GenericArgument::Type(elem_ty)];
+        let generics = self.gcx.store.interners.intern_generic_args(generics);
+        let desc_fn_ty = self.gcx.get_type(desc_fn_id);
+        let desc_output = match desc_fn_ty.kind() {
+            crate::sema::models::TyKind::FnPointer { output, .. } => output,
+            _ => panic!("__intrinsic_gc_desc must be a function"),
+        };
+        let desc_func_op = Operand::Constant(Constant {
+            ty: desc_fn_ty,
+            value: mir::ConstantKind::Function(desc_fn_id, generics, desc_fn_ty),
+        });
+
+        let next_block = self.new_block();
+        // `desc_output` is a raw pointer (*const GcDesc).
+        let desc_dest = Place::from_local(self.new_temp_with_ty(desc_output, span));
+
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: desc_func_op,
+                args: vec![],
+                destination: desc_dest.clone(),
+                target: next_block,
+            },
+        );
+        block = next_block;
+
+        // 2. Call __gc__makebuf(desc, count, count)
+        let makebuf_fn_ty = self.gcx.get_type(makebuf_id);
+        let makebuf_output = match makebuf_fn_ty.kind() {
+            crate::sema::models::TyKind::FnPointer { output, .. } => output,
+            _ => panic!("__gc__makebuf must be a function"),
+        };
+
+        let len_const = Operand::Constant(Constant {
+            ty: usize_ty,
+            value: mir::ConstantKind::Integer(count as u64),
+        });
+
+        let makebuf_generic_args = self.gcx.store.interners.intern_generic_args(vec![]);
+        let makebuf_func = Operand::Constant(Constant {
+            ty: makebuf_fn_ty,
+            value: mir::ConstantKind::Function(makebuf_id, makebuf_generic_args, makebuf_fn_ty),
+        });
+
+        let buf_ptr_dest = Place::from_local(self.new_temp_with_ty(makebuf_output, span));
+        let next_block_2 = self.new_block();
+
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: makebuf_func,
+                args: vec![
+                    Operand::Copy(desc_dest),
+                    len_const.clone(),
+                    len_const.clone(),
+                ],
+                destination: buf_ptr_dest.clone(),
+                target: next_block_2,
+            },
+        );
+        block = next_block_2;
+
+        // 3. Cast *mut u8 to *mut T.
+        let ptr_t_ty = crate::sema::models::Ty::new(
+            crate::sema::models::TyKind::Pointer(elem_ty, crate::hir::Mutability::Mutable),
+            self.gcx,
+        );
+        let buf_ptr_t = self.new_temp_with_ty(ptr_t_ty, span);
+
+        self.push_assign(
+            block,
+            Place::from_local(buf_ptr_t),
+            Rvalue::Cast {
+                kind: CastKind::Pointer,
+                operand: Operand::Copy(buf_ptr_dest.clone()),
+                ty: ptr_t_ty,
+            },
+            span,
+        );
+
+        // 4. Fill buffer.
+        let ptr_add_generics = self
+            .gcx
+            .store
+            .interners
+            .intern_generic_args(vec![crate::sema::models::GenericArgument::Type(elem_ty)]);
+
+        let ptr_add_ty = self.gcx.get_type(ptr_add_id);
+
+        let ptr_add_func = Operand::Constant(Constant {
+            ty: ptr_add_ty,
+            value: mir::ConstantKind::Function(ptr_add_id, ptr_add_generics, ptr_add_ty),
+        });
+
+        for (i, arg_expr_id) in args.iter().enumerate() {
+            let arg_operand = unpack!(block = self.as_operand(block, *arg_expr_id));
+
+            let offset_ptr_place = if i == 0 {
+                Place::from_local(buf_ptr_t)
+            } else {
+                let next_block_loop = self.new_block();
+                let temp_ptr = self.new_temp_with_ty(ptr_t_ty, span);
+                let idx_op = Operand::Constant(Constant {
+                    ty: usize_ty,
+                    value: mir::ConstantKind::Integer(i as u64),
+                });
+
+                self.terminate(
+                    block,
+                    span,
+                    TerminatorKind::Call {
+                        func: ptr_add_func.clone(),
+                        args: vec![Operand::Copy(Place::from_local(buf_ptr_t)), idx_op],
+                        destination: Place::from_local(temp_ptr),
+                        target: next_block_loop,
+                    },
+                );
+                block = next_block_loop;
+                Place::from_local(temp_ptr)
+            };
+
+            let dest = Place {
+                local: offset_ptr_place.local,
+                projection: vec![PlaceElem::Deref],
+            };
+            self.push_assign(block, dest, Rvalue::Use(arg_operand), span);
+        }
+
+        // 5. Aggregate List { buffer, len, cap }.
+        let fields = IndexVec::from_vec(vec![
+            Operand::Copy(buf_ptr_dest),
+            len_const.clone(),
+            len_const.clone(),
+        ]);
+
+        let (list_def_id, generic_args) =
+            if let crate::sema::models::TyKind::Adt(def, args) = list_ty.kind() {
+                (def.id, args)
+            } else {
+                unreachable!()
+            };
+
+        let list_temp = self.new_temp_with_ty(list_ty, span);
+
+        self.push_assign(
+            block,
+            Place::from_local(list_temp),
+            Rvalue::Aggregate {
+                kind: AggregateKind::Adt {
+                    def_id: list_def_id,
+                    variant_index: None,
+                    generic_args,
+                },
+                fields,
+            },
+            span,
+        );
+
+        block.and(Operand::Move(Place::from_local(list_temp)))
+    }
+
+    fn find_function_in_std(
+        &self,
+        module: &str,
+        name: &str,
+        _span: Span,
+    ) -> crate::hir::DefinitionID {
+        let std_pkg = self.gcx.std_package_index().expect("std package found");
+        let output = self.gcx.resolution_output(std_pkg);
+
+        let in_module = |id: crate::hir::DefinitionID| {
+            let mut current = id;
+            while let Some(parent) = output.definition_to_parent.get(&current).copied() {
+                if parent == current {
+                    break;
+                }
+                current = parent;
+                if matches!(
+                    output.definition_to_kind.get(&current),
+                    Some(DefinitionKind::Module)
+                ) {
+                    if let Some(ident) = output.definition_to_ident.get(&current) {
+                        if ident.symbol.as_str() == module {
+                            return true;
+                        }
+                    }
+                }
+            }
+            false
+        };
+
+        // Linear scan for now (slow but works)
+        let mut fallback = None;
+        for (id, ident) in output.definition_to_ident.iter() {
+            if ident.symbol.as_str() == name {
+                if !matches!(output.definition_to_kind.get(id), Some(DefinitionKind::Function)) {
+                    continue;
+                }
+                let has_sig = self
+                    .gcx
+                    .with_type_database(id.package(), |db| db.def_to_fn_sig.contains_key(id));
+                if !has_sig {
+                    continue;
+                }
+                if in_module(*id) {
+                    return *id;
+                }
+                fallback = Some(*id);
+            }
+        }
+        if let Some(id) = fallback {
+            return id;
+        }
+        panic!(
+            "Standard library function {} not found in std.{}",
+            name, module
+        );
+    }
     fn enum_discriminant_operand(
         &mut self,
         block: BasicBlockId,

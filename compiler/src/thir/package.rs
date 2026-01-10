@@ -7,8 +7,7 @@ use crate::{
         models::{AdtKind, ConstKind, ConstValue, Ty, TyKind},
         resolve::models::VariantCtorKind,
         tycheck::{
-            results::TypeCheckResults,
-            solve::Adjustment,
+            results::TypeCheckResults, solve::Adjustment,
             utils::instantiate::instantiate_signature_with_args,
         },
     },
@@ -175,11 +174,7 @@ impl<'ctx> FunctionLower<'ctx> {
     ) -> Vec<ExprId> {
         let mut args = Vec::with_capacity(arguments.len() + leading_args.len());
         args.extend_from_slice(leading_args);
-        args.extend(
-            arguments
-                .iter()
-                .map(|arg| self.lower_expr(&arg.expression)),
-        );
+        args.extend(arguments.iter().map(|arg| self.lower_expr(&arg.expression)));
         args
     }
 
@@ -188,13 +183,14 @@ impl<'ctx> FunctionLower<'ctx> {
         signature: &crate::sema::models::LabeledFunctionSignature<'ctx>,
         param_offset: usize,
         arguments: &[hir::ExpressionArgument],
-    ) -> Option<Vec<Option<usize>>> {
+    ) -> Option<(Vec<Option<usize>>, Vec<usize>)> {
         if signature.inputs.len() < param_offset {
             return None;
         }
 
         let params = &signature.inputs[param_offset..];
         let mut param_to_arg: Vec<Option<usize>> = vec![None; params.len()];
+        let mut variadic_args: Vec<usize> = Vec::new();
         let mut used_args = vec![false; arguments.len()];
 
         // First pass: match labeled arguments.
@@ -230,6 +226,11 @@ impl<'ctx> FunctionLower<'ctx> {
             }
 
             if param_idx >= params.len() {
+                if signature.is_variadic {
+                    variadic_args.push(arg_idx);
+                    used_args[arg_idx] = true;
+                    continue;
+                }
                 return None;
             }
 
@@ -242,7 +243,7 @@ impl<'ctx> FunctionLower<'ctx> {
             param_idx += 1;
         }
 
-        Some(param_to_arg)
+        Some((param_to_arg, variadic_args))
     }
 
     fn lower_call_args_with_defaults(
@@ -261,9 +262,11 @@ impl<'ctx> FunctionLower<'ctx> {
         };
 
         let param_offset = leading_args.len();
-        let param_to_arg = self.match_arguments_to_parameters(&signature, param_offset, arguments)?;
+        let (param_to_arg, variadic_args) =
+            self.match_arguments_to_parameters(&signature, param_offset, arguments)?;
 
-        let mut final_args = Vec::with_capacity(signature.inputs.len());
+        let total_capacity = signature.inputs.len() + variadic_args.len();
+        let mut final_args = Vec::with_capacity(total_capacity);
         final_args.extend_from_slice(leading_args);
 
         for (param_idx, arg_opt) in param_to_arg.iter().enumerate() {
@@ -294,8 +297,17 @@ impl<'ctx> FunctionLower<'ctx> {
                 );
                 final_args.push(call);
             } else {
+                let is_variadic_param = signature.is_variadic
+                    && (param_offset + param_idx + 1 == signature.inputs.len());
+                if is_variadic_param {
+                    continue;
+                }
                 return None;
             }
+        }
+
+        for arg_idx in variadic_args {
+            final_args.push(self.lower_expr(&arguments[arg_idx].expression));
         }
 
         Some(final_args)
@@ -760,14 +772,20 @@ impl<'ctx> FunctionLower<'ctx> {
                 let thir_callee = self.lower_expr(callee);
                 let final_args = if let Some(def_id) = self.resolve_direct_callee_id(callee) {
                     let signature = self.gcx.get_signature(def_id);
-                    self.lower_call_args_with_defaults(signature, callee.id, arguments, &[], expr.span)
-                        .unwrap_or_else(|| {
-                            debug_assert!(
-                                false,
-                                "failed to match direct call arguments for default values"
-                            );
-                            self.lower_call_args(arguments, &[])
-                        })
+                    self.lower_call_args_with_defaults(
+                        signature,
+                        callee.id,
+                        arguments,
+                        &[],
+                        expr.span,
+                    )
+                    .unwrap_or_else(|| {
+                        debug_assert!(
+                            false,
+                            "failed to match direct call arguments for default values"
+                        );
+                        self.lower_call_args(arguments, &[])
+                    })
                 } else {
                     // Indirect call - just lower args as provided (no defaults).
                     self.lower_call_args(arguments, &[])
@@ -973,7 +991,10 @@ impl<'ctx> FunctionLower<'ctx> {
                     callee_ty,
                     expr.span,
                 );
-                ExprKind::Call { callee, args: final_args }
+                ExprKind::Call {
+                    callee,
+                    args: final_args,
+                }
             }
 
             hir::ExpressionKind::StructLiteral(literal) => {

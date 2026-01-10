@@ -26,9 +26,9 @@ def setup_test_environment():
 
     print("Building compiler...")
 
-    # Build the compiler in release mode for faster test execution
+    # Build the compiler in debug mode for faster test execution
     build_result = subprocess.run(
-        ["cargo", "build", "-p", TARO_BIN_CRATE, "--release"],
+        ["cargo", "build", "-p", TARO_BIN_CRATE],
         capture_output=True,
         text=True,
         cwd=PROJECT_ROOT,
@@ -46,7 +46,7 @@ def setup_test_environment():
     print(f"Created temp directory: {TEMP_DIR}")
 
     # Copy the compiler executable to temp directory
-    source_bin = PROJECT_ROOT / "target" / "release" / TARO_BIN_CRATE
+    source_bin = PROJECT_ROOT / "target" / "debug" / TARO_BIN_CRATE
     COMPILER_PATH = TEMP_DIR / "taro"
     shutil.copy2(source_bin, COMPILER_PATH)
 
@@ -119,14 +119,14 @@ def run_test(file_path: Path):
                     "Expected compilation to fail",
                     {"stdout": result.stdout, "stderr": result.stderr},
                 )
-            
+
             # For invalid tests, compare stderr (error output) against expected
             actual_output = result.stderr
-            
+
             # Normalize the error output: extract just the error lines
             # (skip compilation progress messages like "Compiling – std")
-            error_lines = [line for line in actual_output.split('\n') 
-                          if line.startswith('error:') or 
+            error_lines = [line for line in actual_output.split('\n')
+                          if line.startswith('error:') or
                              (line.strip().startswith('->')  or line.strip().startswith('^') or
                               (line.strip() and not line.startswith('Compiling')))]
             actual_output = '\n'.join(error_lines).strip() + '\n' if error_lines else ''

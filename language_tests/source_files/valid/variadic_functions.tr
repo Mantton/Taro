@@ -1,0 +1,74 @@
+import std.collections.List
+
+func sum(_ vals: int32...) -> int32 {
+    var result: int32 = 0
+    var i: usize = 0
+    while i < vals.len() {
+        result += *vals.at(i)
+        i += 1
+    }
+    result
+}
+
+func count_args(_ vals: int32...) -> usize {
+    vals.len()
+}
+
+func first_arg(_ vals: int32...) -> int32 {
+    if vals.len() > 0 {
+        *vals.at(0)
+    } else {
+        0
+    }
+}
+
+func main() {
+    // 1. Basic usage
+    let s = sum(1, 2, 3)
+    assert(s == 6, "sum(1, 2, 3) == 6")
+
+    // 2. Empty usage
+    let s0 = sum()
+    assert(s0 == 0, "sum() == 0")
+
+    // 3. Single arg
+    let s1 = sum(10)
+    assert(s1 == 10, "sum(10) == 10")
+
+    // 4. Argument count
+    assert(count_args(1, 2) == 2, "count_args(1, 2) == 2")
+    assert(count_args() == 0, "count_args() == 0")
+
+    // 5. Default parameters before variadic
+    assert(sum_with_base() == 5, "sum_with_base() == 5")
+    assert(sum_with_base(with: 2) == 2, "sum_with_base(with: 2) == 2")
+    assert(sum_with_base(with: 2, 3, 4) == 9, "sum_with_base(with: 2, 3, 4) == 9")
+
+    // 6. Labeled parameters with variadic
+    assert(count_with_label(tag: "x", 1, 2, 3) == 3, "count_with_label(tag: \"x\", 1, 2, 3) == 3")
+    assert(count_with_label(tag: "x") == 0, "count_with_label(tag: \"x\") == 0")
+
+    // 7. Test with strings (ensure generics work)
+    assert(count_strings("a", "b") == 2, "count_strings == 2")
+
+    std.print("PASS: Variadic functions\n")
+}
+
+func count_strings(_ vals: string...) -> usize {
+    vals.len()
+}
+
+func sum_with_base(with base: int32 = 5, _ vals: int32...) -> int32 {
+    var result: int32 = base
+    var i: usize = 0
+    while i < vals.len() {
+        result += *vals.at(i)
+        i += 1
+    }
+    result
+}
+
+func count_with_label(tag label: string, _ vals: int32...) -> usize {
+    let _ = label
+    vals.len()
+}

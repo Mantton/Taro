@@ -125,7 +125,7 @@ impl Actor<'_, '_> {
                 return node
                     .declarations
                     .into_iter()
-                    .map(|decl| self.lower_extern_declaration(decl))
+                    .map(|decl| self.lower_extern_declaration(decl, node.abi))
                     .collect();
             }
             ast::DeclarationKind::Constant(node) => {
@@ -155,7 +155,11 @@ impl Actor<'_, '_> {
         }]
     }
 
-    fn lower_extern_declaration(&mut self, node: ast::ExternDeclaration) -> hir::Declaration {
+    fn lower_extern_declaration(
+        &mut self,
+        node: ast::ExternDeclaration,
+        abi: Symbol,
+    ) -> hir::Declaration {
         let ast::Declaration {
             id,
             kind,
@@ -166,7 +170,10 @@ impl Actor<'_, '_> {
         } = node;
 
         let kind = match kind {
-            ast::ExternDeclarationKind::Function(node) => {
+            ast::ExternDeclarationKind::Function(mut node) => {
+                if node.abi.is_none() {
+                    node.abi = Some(abi);
+                }
                 let span = node.signature.span;
                 hir::DeclarationKind::Function(self.lower_function(node, span))
             }
@@ -2499,10 +2506,9 @@ impl Actor<'_, '_> {
             return (expr, true);
         }
 
-        let lowered = self.with_optional_unwrap_replacement(
-            replacement.cloned(),
-            |this| this.lower_expression(Box::new(expr.clone())),
-        );
+        let lowered = self.with_optional_unwrap_replacement(replacement.cloned(), |this| {
+            this.lower_expression(Box::new(expr.clone()))
+        });
         let _ = force_optional;
         (lowered, false)
     }
@@ -2532,9 +2538,7 @@ impl Actor<'_, '_> {
                     return Some(found);
                 }
                 for arg in args {
-                    if let Some(found) =
-                        self.find_outer_optional_unwrap(&arg.expression, skip_id)
-                    {
+                    if let Some(found) = self.find_outer_optional_unwrap(&arg.expression, skip_id) {
                         return Some(found);
                     }
                 }
@@ -2551,7 +2555,9 @@ impl Actor<'_, '_> {
                 .or_else(|| self.find_outer_optional_unwrap(rhs, skip_id)),
             ast::ExpressionKind::Unary(_, rhs)
             | ast::ExpressionKind::Reference(rhs, _)
-            | ast::ExpressionKind::Dereference(rhs) => self.find_outer_optional_unwrap(rhs, skip_id),
+            | ast::ExpressionKind::Dereference(rhs) => {
+                self.find_outer_optional_unwrap(rhs, skip_id)
+            }
             ast::ExpressionKind::Range(lhs, rhs, _) => self
                 .find_outer_optional_unwrap(lhs, skip_id)
                 .or_else(|| self.find_outer_optional_unwrap(rhs, skip_id)),
@@ -2572,13 +2578,14 @@ impl Actor<'_, '_> {
             ast::ExpressionKind::Match(node) => self
                 .find_outer_optional_unwrap(&node.value, skip_id)
                 .or_else(|| {
-                    node.arms.iter().find_map(|arm| {
-                        self.find_outer_optional_unwrap(&arm.body, skip_id)
-                    })
+                    node.arms
+                        .iter()
+                        .find_map(|arm| self.find_outer_optional_unwrap(&arm.body, skip_id))
                 }),
-            ast::ExpressionKind::StructLiteral(node) => node.fields.iter().find_map(|field| {
-                self.find_outer_optional_unwrap(&field.expression, skip_id)
-            }),
+            ast::ExpressionKind::StructLiteral(node) => node
+                .fields
+                .iter()
+                .find_map(|field| self.find_outer_optional_unwrap(&field.expression, skip_id)),
             _ => None,
         }
     }

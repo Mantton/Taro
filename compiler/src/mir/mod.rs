@@ -230,6 +230,7 @@ pub enum CastKind {
     Numeric,
     BoxExistential,
     ExistentialUpcast,
+    Pointer,
 }
 
 #[derive(Debug, Clone)]

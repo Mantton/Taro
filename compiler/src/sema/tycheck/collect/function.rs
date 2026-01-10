@@ -55,10 +55,45 @@ impl<'ctx> Actor<'ctx> {
         let ctx = DefTyLoweringCtx::new(id, self.context);
         let mut inputs: Vec<LabeledFunctionParameter> = Vec::new();
 
-        for (idx, node) in node.signature.prototype.inputs.iter().enumerate() {
-            let ty = ctx.lowerer().lower_type(&node.annotated_type);
+        for (idx, param) in node.signature.prototype.inputs.iter().enumerate() {
+            let mut ty = ctx.lowerer().lower_type(&param.annotated_type);
 
-            let default_provider = if let Some(default_expr) = &node.default_value {
+            // Handle variadic parameters
+            if param.is_variadic {
+                if idx != node.signature.prototype.inputs.len() - 1 {
+                    self.context.dcx().emit_error(
+                        "only the last parameter can be variadic".into(),
+                        Some(param.span),
+                    );
+                }
+
+                // Desugar T... to List[T]
+                // We need to look up the List type definition
+                if let Some(list_id) = self.context.find_std_type("List") {
+                    let list_def = self.context.get_struct_definition(list_id);
+                    let args = vec![crate::sema::models::GenericArgument::Type(ty)];
+                    let args = self.context.store.interners.intern_generic_args(args);
+                    ty = Ty::new(
+                        crate::sema::models::TyKind::Adt(list_def.adt_def, args),
+                        self.context,
+                    );
+                } else {
+                    self.context.dcx().emit_error(
+                        "variadic functions require the standard library 'List' type".into(),
+                        Some(param.span),
+                    );
+                }
+            }
+
+            let default_provider = if let Some(default_expr) = &param.default_value {
+                // Variadic parameters cannot have default values
+                if param.is_variadic {
+                    self.context.dcx().emit_error(
+                        "variadic parameters cannot have default values".into(),
+                        Some(param.span),
+                    );
+                }
+
                 // Allocate a synthetic ID for the provider function
                 let provider_id = self
                     .context
@@ -93,7 +128,7 @@ impl<'ctx> Actor<'ctx> {
                     name: Symbol::new(&format!("{}$default_arg{}", fn_name, idx)),
                     generics,
                     signature: provider_sig,
-                    span: node.span,
+                    span: param.span,
                 };
                 self.context.register_synthetic_definition(provider_id, def);
 
@@ -103,8 +138,8 @@ impl<'ctx> Actor<'ctx> {
             };
 
             inputs.push(LabeledFunctionParameter {
-                label: node.label.map(|n| n.identifier.symbol),
-                name: node.name.symbol,
+                label: param.label.map(|n| n.identifier.symbol),
+                name: param.name.symbol,
                 ty,
                 default_provider,
             });
@@ -116,10 +151,18 @@ impl<'ctx> Actor<'ctx> {
             self.context.types.void
         };
 
+        // Determine if the function is variadic based on the last parameter
+        let is_variadic = node
+            .signature
+            .prototype
+            .inputs
+            .last()
+            .map_or(false, |p| p.is_variadic);
+
         LabeledFunctionSignature {
             inputs,
             output,
-            is_variadic: false,
+            is_variadic,
             abi: node.abi,
         }
     }

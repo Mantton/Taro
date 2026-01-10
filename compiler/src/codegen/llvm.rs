@@ -890,6 +890,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         let value = self.lower_existential_upcast(from_ty, *ty, val)?;
                         return Ok(Some(value));
                     }
+                    mir::CastKind::Pointer => return Ok(self.lower_cast(from_ty, *ty, val)),
                 }
             }
             mir::Rvalue::Ref { place, .. } => {

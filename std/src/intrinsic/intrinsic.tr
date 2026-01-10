@@ -12,7 +12,5 @@ extern "taro_intrinsic" {
     func __intrinsic_memmove[T](_ src: *T, _ dst: *T, _ count: usize)
     func __intrinsic_memset[T](_ dst: *T, _ val: uint8, _ count: usize)
     func __intrinsic_size_of[T]() -> usize
-
-    // Legacy/GC intrinsics
     func __intrinsic_gc_desc[T]() -> *const GcDesc
 }

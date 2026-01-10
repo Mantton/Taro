@@ -5288,10 +5288,7 @@ mod tests {
         let decl = parse_one_decl(input);
         match &decl.kind {
             DeclarationKind::Function(func) => {
-                assert_eq!(
-                    func.abi.as_ref().expect("Expected ABI").as_str(),
-                    "C"
-                );
+                assert_eq!(func.abi.as_ref().expect("Expected ABI").as_str(), "C");
                 assert_eq!(decl.identifier.symbol.as_str(), "malloc");
             }
             _ => panic!("Expected function"),

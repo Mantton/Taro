@@ -110,10 +110,16 @@ pub fn validate_arity<'ctx>(
     };
 
     // ---- arity / defaults / variadic --------------------------------
-    if call_arity < min_required {
+    let effective_min = if signature.is_variadic && min_required > 0 {
+        min_required - 1
+    } else {
+        min_required
+    };
+
+    if call_arity < effective_min {
         // Report Arity Mismatch, Expected At Least
         return Err(ApplyValidationError::ArityMismatch {
-            expected_min: min_required,
+            expected_min: effective_min,
             expected_max: max_params,
             provided: arguments.len(),
         });
@@ -122,7 +128,7 @@ pub fn validate_arity<'ctx>(
     if call_arity > param_count && !signature.is_variadic {
         // Report Arity Mismatch, Expected At Most
         return Err(ApplyValidationError::ArityMismatch {
-            expected_min: min_required,
+            expected_min: effective_min,
             expected_max: max_params,
             provided: arguments.len(),
         });
@@ -136,8 +142,8 @@ pub fn match_arguments_to_parameters(
     signature: &LabeledFunctionSignature,
     arguments: &[ApplyArgument],
     skip_labels: bool,
-) -> Result<Vec<Option<usize>>, Spanned<ApplyValidationError>> {
-    let mut param_to_arg: Vec<Option<usize>> = vec![None; signature.inputs.len()];
+) -> Result<Vec<Vec<usize>>, Spanned<ApplyValidationError>> {
+    let mut param_to_arg: Vec<Vec<usize>> = vec![vec![]; signature.inputs.len()];
     let mut used_args = vec![false; arguments.len()];
 
     // First pass: match labeled arguments (skip if skip_labels is true)
@@ -147,7 +153,7 @@ pub fn match_arguments_to_parameters(
                 let mut found = false;
                 for (param_idx, param) in signature.inputs.iter().enumerate() {
                     if param.label.as_ref() == Some(&arg_label.symbol) {
-                        if param_to_arg[param_idx].is_some() {
+                        if !param_to_arg[param_idx].is_empty() {
                             // Duplicate label - this is an error
                             return Err(Spanned::new(
                                 ApplyValidationError::LabelMismatch {
@@ -158,7 +164,7 @@ pub fn match_arguments_to_parameters(
                                 arg.span,
                             ));
                         }
-                        param_to_arg[param_idx] = Some(arg_idx);
+                        param_to_arg[param_idx].push(arg_idx);
                         used_args[arg_idx] = true;
                         found = true;
                         break;
@@ -190,11 +196,20 @@ pub fn match_arguments_to_parameters(
         }
 
         // Find next available parameter
-        while param_idx < signature.inputs.len() && param_to_arg[param_idx].is_some() {
+        while param_idx < signature.inputs.len() && !param_to_arg[param_idx].is_empty() {
             param_idx += 1;
         }
 
+        // If we are out of parameters, check if the last one is variadic
         if param_idx >= signature.inputs.len() {
+            if signature.is_variadic {
+                // Determine the index of the variadic parameter (always the last one)
+                let variadic_idx = signature.inputs.len() - 1;
+                param_to_arg[variadic_idx].push(arg_idx);
+                used_args[arg_idx] = true;
+                continue;
+            }
+
             return Err(Spanned::new(
                 ApplyValidationError::ExtraArgument { arg_index: arg_idx },
                 arg.span,
@@ -215,44 +230,73 @@ pub fn match_arguments_to_parameters(
             ));
         }
 
-        param_to_arg[param_idx] = Some(arg_idx);
+        param_to_arg[param_idx].push(arg_idx);
         used_args[arg_idx] = true;
-        param_idx += 1;
+
+        // If this is NOT the variadic parameter, advance.
+        // If it IS variadic, we stay on it to collect more positional args.
+        if !(signature.is_variadic && param_idx == signature.inputs.len() - 1) {
+            param_idx += 1;
+        }
     }
 
     Ok(param_to_arg)
 }
 
 fn produce_application_subobligations<'c>(
-    positions: Vec<Option<usize>>,
+    positions: Vec<Vec<usize>>,
     signature: &LabeledFunctionSignature<'c>,
     inputs: &[Ty<'c>],
     arguments: &[ApplyArgument<'c>],
 ) -> Result<Vec<Obligation<'c>>, ApplyValidationError> {
     let mut obligations = vec![];
-    for (param_idx, arg_idx) in positions.iter().enumerate() {
+    for (param_idx, arg_indices) in positions.iter().enumerate() {
         let param_defaults = signature.inputs[param_idx].default_provider.is_some();
         let param_ty = inputs[param_idx];
 
-        if let Some(arg_idx) = arg_idx {
-            let argument = arguments[*arg_idx];
-            let arg_ty = argument.ty;
-            let constraint = Goal::Coerce {
-                node_id: argument.id,
-                from: arg_ty,
-                to: param_ty,
+        if !arg_indices.is_empty() {
+            // Determine expected type for the arguments
+            // If this is the variadic parameter, we need to extract T from List[T]
+            let expected_ty = if signature.is_variadic && param_idx == signature.inputs.len() - 1 {
+                 if let TyKind::Adt(_, args) = param_ty.kind() {
+                     if let Some(crate::sema::models::GenericArgument::Type(inner)) = args.get(0) {
+                         *inner
+                     } else {
+                         // Should not happen if well-formed
+                         param_ty 
+                     }
+                 } else {
+                     param_ty
+                 }
+            } else {
+                 param_ty
             };
-            let obligatin = Obligation {
-                location: argument.span,
-                goal: constraint,
-            };
-            obligations.push(obligatin);
+
+            for &arg_idx in arg_indices {
+                let argument = arguments[arg_idx];
+                let arg_ty = argument.ty;
+                let constraint = Goal::Coerce {
+                    node_id: argument.id,
+                    from: arg_ty,
+                    to: expected_ty,
+                };
+                let obligatin = Obligation {
+                    location: argument.span,
+                    goal: constraint,
+                };
+                obligations.push(obligatin);
+            }
         } else if !param_defaults {
-            let err = ApplyValidationError::MissingRequiredParameter {
-                param_index: param_idx,
-                param_name: signature.inputs[param_idx].name,
-            };
-            return Err(err);
+            // If it is variadic main parameter, it is allowed to be empty (it will be an empty list)
+            let is_variadic_param = signature.is_variadic && param_idx == signature.inputs.len() - 1;
+            
+            if !is_variadic_param {
+                let err = ApplyValidationError::MissingRequiredParameter {
+                    param_index: param_idx,
+                    param_name: signature.inputs[param_idx].name,
+                };
+                return Err(err);
+            }
         }
     }
 
