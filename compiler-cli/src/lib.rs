@@ -18,6 +18,8 @@ pub struct CommandLineArguments {
     /// Dump generated LLVM IR to stderr
     #[arg(long = "dump-llvm")]
     pub dump_llvm: bool,
+    #[arg(long = "runtime-path")]
+    pub runtime_path: Option<PathBuf>,
 }
 
 impl CommandLineArguments {

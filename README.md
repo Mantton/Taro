@@ -7,37 +7,40 @@ Taro is an experimental programming language that draws inspiration from Rust, S
 - **Rust**: Latest stable version
 - **LLVM**: Version 16
 
-## Installation
+## Installation & Usage
 
-> [!WARNING]
-> **Note:** The installation sequence is currently incomplete. I am working on streamlining the process.
+Taro is distributed as a pre-built binary package. For development, we provide scripts to verify and run code easily.
 
-Currently, you must build Taro from source and run it using `cargo` with specific environment variables.
+### 1. Building the Compiler
 
-## Local Development & Usage
-
-Since the installation process isn't finalized, running Taro requires a bit of manual setup. You'll need to create a temporary "home" directory for the language to store its artifacts and point the compiler to the standard library explicitly.
-
-### 1. Setup Language Home
-
-Create a temporary folder that will act as the `TARO_HOME`. This is where the compiler will look for or store global configurations and cached data.
+To build the compiler, runtime, and standard library from source, use the `build_dist.py` script. This creates a `dist/` directory with a sysroot-like structure.
 
 ```bash
-mkdir -p ./tmp/language_home
+python3 development/scripts/build_dist.py
 ```
 
-### 2. Building and Running
+### 2. Running Code
 
-You can run the compiler directly via `cargo`. By setting the `TARO_HOME` environment variable and using the `--std-path` flag, you can compile and run both single files (scripts) and full packages.
-
-**Command Structure:**
+To compile and run a Taro program (script or package) using your locally built compiler, use the `run_dist.py` script. This script automatically rebuilds the distribution if needed and sets up the strict environment (`TARO_HOME`, etc.) for you.
 
 ```bash
-TARO_HOME=./tmp/language_home cargo run --release -- run <path> --std-path ./std
+python3 development/scripts/run_dist.py examples/hello.tr
 ```
 
--   **Scripts** (`path/to/file.tr`): Single files can be run directly but **cannot use external dependencies**.
--   **Packages** (`path/to/package/`): Point to a package directory (containing `package.toml`) to build and run it with full dependency support.
+You can pass any arguments supported by the `taro run` command:
+
+```bash
+python3 development/scripts/run_dist.py [file_or_package] [args...]
+```
+
+### Manual Usage
+
+If you prefer to run the binary directly (e.g., after adding `dist/bin` to your PATH):
+
+```bash
+export TARO_HOME=$(pwd)/dist
+taro build examples/hello.tr
+```
 
 ## Getting Started
 
@@ -52,10 +55,9 @@ Here is a simple "Hello, World!" example to get you started.
     }
     ```
 
-2.  Run the file using the command configured above:
-
+2.  Run the file:
     ```bash
-    TARO_HOME=./tmp/language_home cargo run --release -- run hello.tr --std-path ./std
+    python3 development/scripts/run_dist.py hello.tr
     ```
 
 ## Architecture & Features

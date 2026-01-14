@@ -39,6 +39,19 @@ def setup_test_environment():
         print(build_result.stderr)
         sys.exit(1)
 
+    print("Building runtime...")
+    runtime_build_result = subprocess.run(
+        ["cargo", "build", "-p", "taro-runtime"],
+        capture_output=True,
+        text=True,
+        cwd=PROJECT_ROOT,
+    )
+
+    if runtime_build_result.returncode != 0:
+        print("Failed to build runtime:")
+        print(runtime_build_result.stderr)
+        sys.exit(1)
+
     print("Compiler built successfully.")
 
     # Create temporary directory
@@ -52,7 +65,13 @@ def setup_test_environment():
 
     # Setup TARO_HOME in temp directory
     TARO_HOME = TEMP_DIR / "taro_home"
-    TARO_HOME.mkdir(parents=True, exist_ok=True)
+    TARO_HOME_LIB = TARO_HOME / "lib"
+    TARO_HOME_LIB.mkdir(parents=True, exist_ok=True)
+
+    # Copy runtime to TARO_HOME/lib
+    runtime_lib_src = PROJECT_ROOT / "target" / "debug" / "libtaro_runtime.a"
+    runtime_lib_dst = TARO_HOME_LIB / "libtaro_runtime.a"
+    shutil.copy2(runtime_lib_src, runtime_lib_dst)
 
     # Standard library path
     STD_PATH = PROJECT_ROOT / "std"

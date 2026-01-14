@@ -82,7 +82,7 @@ fn run_single_file(
 
     // Compile std (index 0)
     compile_std(&icx, arguments.std_path.clone())?;
-    build_runtime(&icx, &target_root)?;
+    build_runtime(&icx, &target_root, arguments.runtime_path.clone())?;
 
     // Create virtual config for single file
     let package_index = PackageIndex::new(1);
@@ -143,7 +143,7 @@ fn run_package(
     let graph = sync_dependencies(arguments.path)?;
 
     let _ = compile_std(&icx, arguments.std_path.clone())?;
-    build_runtime(&icx, &project_root)?;
+    build_runtime(&icx, &project_root, arguments.runtime_path.clone())?;
 
     let total = graph.ordered.len();
 
@@ -246,12 +246,90 @@ fn run_package(
     Ok(None)
 }
 
-fn build_runtime(ctx: &CompilerContext<'_>, project_root: &PathBuf) -> Result<(), ReportedError> {
+/// Locates and links the Taro runtime library.
+///
+/// This function attempts to find `libtaro_runtime.a` using the following priority:
+/// 1. `--runtime-path` CLI argument.
+/// 2. `TARO_RUNTIME_LIB` environment variable.
+/// 3. `TARO_HOME/lib` directory.
+/// 4. Relative to the executable (distribution layout).
+/// 5. Fallback to `cargo build` (dev mode only).
+fn build_runtime(
+    ctx: &CompilerContext<'_>,
+    project_root: &PathBuf,
+    runtime_arg: Option<PathBuf>,
+) -> Result<(), ReportedError> {
+    // 1. CLI Arg
+    if let Some(path) = runtime_arg {
+        if path.exists() {
+            ctx.store.add_link_input(path);
+            return Ok(());
+        }
+        ctx.dcx.emit_error(
+            format!(
+                "runtime library not found at specified path: {}",
+                path.display()
+            ),
+            None,
+        );
+        return Err(ReportedError);
+    }
+
+    // 2. Env Var
+    if let Ok(val) = std::env::var("TARO_RUNTIME_LIB") {
+        let path = PathBuf::from(val);
+        if path.exists() {
+            ctx.store.add_link_input(path);
+            return Ok(());
+        }
+    }
+
+    // 3. TARO_HOME
+    if let Ok(home) = language_home() {
+        let path = home.join("lib").join("libtaro_runtime.a");
+        if path.exists() {
+            ctx.store.add_link_input(path);
+            return Ok(());
+        }
+    }
+
+    // 4. Relative to Executable (Dist)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(bin_dir) = exe.parent() {
+            if let Some(root) = bin_dir.parent() {
+                // <root>/lib/taro/runtime/libtaro_runtime.a
+                let path = root
+                    .join("lib")
+                    .join("taro")
+                    .join("runtime")
+                    .join("libtaro_runtime.a");
+                if path.exists() {
+                    ctx.store.add_link_input(path);
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    // 5. Fallback (Development Mode)
+    // If we're strictly in a dev environment (source checkout), we invoke cargo to build it.
+    // This supports `cargo run` workflows for compiler developers without needing a full `dist` build.
+    // We detect this relying on `CARGO_MANIFEST_DIR` which is set at compile time of the CLI.
+
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .ok_or(ReportedError)?
         .to_path_buf();
     let target_dir = project_root.join("target").join("runtime");
+
+    // Check if the runtime crate exists in the workspace before trying to build it.
+    if !workspace_root.join("runtime").join("Cargo.toml").exists() {
+        ctx.dcx.emit_error(
+            "runtime library not found and cannot be built (not in a workspace)".into(),
+            None,
+        );
+        return Err(ReportedError);
+    }
 
     let status = Command::new("cargo")
         .arg("build")
