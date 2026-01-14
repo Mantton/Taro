@@ -628,6 +628,8 @@ pub enum TypeHead {
     Primary(PrimaryType),
     /// A nominal type identity (struct/interface/enum/etc).
     Nominal(DefinitionID),
+    /// An anonymous closure type identity.
+    Closure(DefinitionID),
     Reference(ast::Mutability),
     Pointer(ast::Mutability),
     Tuple(u16),
@@ -639,6 +641,7 @@ impl TypeHead {
         match self {
             TypeHead::Primary(p) => p.name_str().into(),
             TypeHead::Nominal(id) => gcx.definition_ident(id).symbol.as_str().into(),
+            TypeHead::Closure(_) => "closure".into(),
             TypeHead::Reference(m) => format!("&{}_", m.display_str()),
             TypeHead::Pointer(m) => format!("*{}_", m.display_str()),
             TypeHead::Tuple(n) => format!("({})", ",".repeat(n as usize)),

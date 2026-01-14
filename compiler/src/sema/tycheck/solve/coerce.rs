@@ -38,6 +38,16 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return result;
         }
 
+        // Closure to function pointer coercion: || -> T to fn() -> T
+        if let Some(result) = self.solve_closure_to_fn_pointer(location, node_id, from, to) {
+            return result;
+        }
+
+        // Closure to type parameter with Fn bound coercion
+        if let Some(result) = self.solve_closure_to_fn_bound_param(location, from, to) {
+            return result;
+        }
+
         // Nil coercion: NilVar -> Optional[T] or NilVar -> *T
         if let Some(result) = self.solve_nil_coercion(location, node_id, from, to) {
             return result;
@@ -139,6 +149,71 @@ impl<'ctx> ConstraintSolver<'ctx> {
         }
 
         Some(self.solve_equality(location, to, from))
+    }
+
+    /// Coerce a non-capturing closure to a function pointer.
+    /// This is only valid when the closure captures nothing (empty environment).
+    fn solve_closure_to_fn_pointer(
+        &mut self,
+        location: Span,
+        node_id: NodeID,
+        from: Ty<'ctx>,
+        to: Ty<'ctx>,
+    ) -> Option<SolverResult<'ctx>> {
+        // Check if source is a closure type
+        let TyKind::Closure {
+            closure_def_id,
+            inputs: closure_inputs,
+            output: closure_output,
+            ..
+        } = from.kind()
+        else {
+            return None;
+        };
+
+        // Check if target is a function pointer type
+        let TyKind::FnPointer {
+            inputs: fn_inputs,
+            output: fn_output,
+        } = to.kind()
+        else {
+            return None;
+        };
+
+        // Check if the closure has no captures
+        let gcx = self.gcx();
+        if let Some(captures) = gcx.get_closure_captures(closure_def_id) {
+            if !captures.captures.is_empty() {
+                // Closure has captures - cannot coerce to fn pointer
+                return None;
+            }
+        }
+
+        // Check that signatures match (same number of inputs and compatible types)
+        if closure_inputs.len() != fn_inputs.len() {
+            return None;
+        }
+
+        // Build equality constraints for inputs and output
+        let mut obligations = Vec::new();
+        for (closure_in, fn_in) in closure_inputs.iter().zip(fn_inputs.iter()) {
+            obligations.push(super::Obligation {
+                location,
+                goal: super::Goal::Equal(*closure_in, *fn_in),
+            });
+        }
+        obligations.push(super::Obligation {
+            location,
+            goal: super::Goal::Equal(closure_output, fn_output),
+        });
+
+        // Record the adjustment for codegen
+        self.record_adjustments(
+            node_id,
+            vec![Adjustment::ClosureToFnPointer { closure_def_id }],
+        );
+
+        Some(SolverResult::Solved(obligations))
     }
 
     fn solve_pointer_coercion(
@@ -331,6 +406,11 @@ impl<'ctx> ConstraintSolver<'ctx> {
             }
         }
 
+        // Special case: closures implicitly implement Fn/FnMut/FnOnce
+        if let Some(result) = self.solve_closure_fn_conformance(location, ty, interface) {
+            return result;
+        }
+
         let error = Spanned::new(TypeError::NonConformance { ty, interface }, location);
         SolverResult::Error(vec![error])
     }
@@ -433,5 +513,176 @@ impl<'ctx> ConstraintSolver<'ctx> {
         }
         let inner = args.first()?.ty()?;
         Some((args, inner))
+    }
+
+    /// Check if a closure type conforms to Fn, FnMut, or FnOnce interfaces.
+    /// Closures implicitly implement these traits based on their kind.
+    fn solve_closure_fn_conformance(
+        &mut self,
+        location: Span,
+        ty: Ty<'ctx>,
+        interface: InterfaceReference<'ctx>,
+    ) -> Option<SolverResult<'ctx>> {
+        use crate::hir::StdInterface;
+        use crate::sema::models::ClosureKind;
+
+        // Check if ty is a closure
+        let TyKind::Closure {
+            inputs: closure_inputs,
+            output: closure_output,
+            kind: closure_kind,
+            ..
+        } = ty.kind()
+        else {
+            return None;
+        };
+
+        let gcx = self.gcx();
+
+        // Check which Fn trait is being requested
+        let fn_def = gcx.std_interface_def(StdInterface::Fn);
+        let fn_mut_def = gcx.std_interface_def(StdInterface::FnMut);
+        let fn_once_def = gcx.std_interface_def(StdInterface::FnOnce);
+
+        let required_kind = if fn_def == Some(interface.id) {
+            ClosureKind::Fn
+        } else if fn_mut_def == Some(interface.id) {
+            ClosureKind::FnMut
+        } else if fn_once_def == Some(interface.id) {
+            ClosureKind::FnOnce
+        } else {
+            return None; // Not a Fn trait
+        };
+
+        // Check if the closure's kind is compatible with the required trait
+        // Fn -> can satisfy Fn, FnMut, FnOnce
+        // FnMut -> can satisfy FnMut, FnOnce
+        // FnOnce -> can only satisfy FnOnce
+        let kind_compatible = match (closure_kind, required_kind) {
+            (ClosureKind::Fn, _) => true, // Fn closures implement all three
+            (ClosureKind::FnMut, ClosureKind::Fn) => false,
+            (ClosureKind::FnMut, _) => true, // FnMut implements FnMut and FnOnce
+            (ClosureKind::FnOnce, ClosureKind::FnOnce) => true,
+            (ClosureKind::FnOnce, _) => false, // FnOnce only implements FnOnce
+        };
+
+        if !kind_compatible {
+            return None; // Let normal error handling report the failure
+        }
+
+        // Get the interface's Args and Output type parameters
+        // Fn[Self, Args, Output] - Self is at [0], Args at [1], Output at [2]
+        if interface.arguments.len() < 3 {
+            return None;
+        }
+
+        let expected_args_ty = interface.arguments[1].ty()?;
+        let expected_output_ty = interface.arguments[2].ty()?;
+
+        // Build the closure's args type:
+        // - Single argument: just the type
+        // - Multiple arguments: tuple type
+        let closure_args_ty = if closure_inputs.len() == 1 {
+            closure_inputs[0]
+        } else {
+            // Create tuple type for multiple arguments
+            Ty::new(TyKind::Tuple(closure_inputs), gcx)
+        };
+
+        // Create obligations to match Args and Output
+        let mut obligations = vec![];
+
+        obligations.push(super::Obligation {
+            location,
+            goal: super::Goal::Equal(closure_args_ty, expected_args_ty),
+        });
+
+        obligations.push(super::Obligation {
+            location,
+            goal: super::Goal::Equal(closure_output, expected_output_ty),
+        });
+
+        Some(SolverResult::Solved(obligations))
+    }
+
+    /// Coerce a closure to a type parameter that has Fn/FnMut/FnOnce bounds.
+    /// This extracts the Fn bound from the type param and constrains the closure accordingly.
+    fn solve_closure_to_fn_bound_param(
+        &mut self,
+        location: Span,
+        from: Ty<'ctx>,
+        to: Ty<'ctx>,
+    ) -> Option<SolverResult<'ctx>> {
+        use crate::hir::StdInterface;
+
+        // Check if from is a closure
+        let TyKind::Closure {
+            inputs: closure_inputs,
+            output: closure_output,
+            ..
+        } = from.kind()
+        else {
+            return None;
+        };
+
+        // Check if to is a type parameter
+        let TyKind::Parameter(_) = to.kind() else {
+            return None;
+        };
+
+        // Get Fn bounds for this type parameter from param_env
+        let bounds = self.param_env.bounds_for(to);
+
+        let gcx = self.gcx();
+        let fn_def = gcx.std_interface_def(StdInterface::Fn);
+        let fn_mut_def = gcx.std_interface_def(StdInterface::FnMut);
+        let fn_once_def = gcx.std_interface_def(StdInterface::FnOnce);
+
+        for bound in bounds {
+            // Check if this is an Fn trait bound
+            let is_fn_trait = fn_def == Some(bound.id)
+                || fn_mut_def == Some(bound.id)
+                || fn_once_def == Some(bound.id);
+
+            if !is_fn_trait {
+                continue;
+            }
+
+            // Fn[Args, Output] has Self at [0], Args at [1], Output at [2]
+            if bound.arguments.len() < 3 {
+                continue;
+            }
+
+            let Some(expected_args_ty) = bound.arguments[1].ty() else {
+                continue;
+            };
+            let Some(expected_output_ty) = bound.arguments[2].ty() else {
+                continue;
+            };
+
+            // Build the closure's args type
+            let closure_args_ty = if closure_inputs.len() == 1 {
+                closure_inputs[0]
+            } else {
+                Ty::new(TyKind::Tuple(closure_inputs), gcx)
+            };
+
+            // Create obligations to match Args and Output
+            let mut obligations = vec![];
+
+            obligations.push(super::Obligation {
+                location,
+                goal: super::Goal::Equal(closure_args_ty, expected_args_ty),
+            });
+
+            obligations.push(super::Obligation {
+                location,
+                goal: super::Goal::Equal(closure_output, expected_output_ty),
+            });
+
+            return Some(SolverResult::Solved(obligations));
+        }
+
+        None
     }
 }

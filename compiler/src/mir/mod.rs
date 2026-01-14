@@ -7,9 +7,9 @@ use crate::{
 use index_vec::IndexVec;
 use rustc_hash::FxHashMap;
 
+pub mod analysis;
 pub mod builder;
 pub mod optimize;
-pub mod analysis;
 pub mod package;
 pub mod pretty;
 
@@ -231,6 +231,8 @@ pub enum CastKind {
     BoxExistential,
     ExistentialUpcast,
     Pointer,
+    /// Coerce a non-capturing closure to a function pointer
+    ClosureToFnPointer,
 }
 
 #[derive(Debug, Clone)]
@@ -244,6 +246,11 @@ pub enum AggregateKind<'ctx> {
     Array {
         len: usize,
         element: Ty<'ctx>,
+    },
+    /// Closure environment construction
+    Closure {
+        def_id: DefinitionID,
+        captured_generics: GenericArguments<'ctx>,
     },
 }
 
@@ -389,6 +396,7 @@ impl Category {
         match k {
             thir::ExprKind::Deref(..)
             | thir::ExprKind::Local(..)
+            | thir::ExprKind::Upvar { .. }
             | thir::ExprKind::Field { .. } => Category::Place,
 
             thir::ExprKind::Reference { .. }
@@ -398,7 +406,8 @@ impl Category {
             | thir::ExprKind::BoxExistential { .. }
             | thir::ExprKind::ExistentialUpcast { .. }
             | thir::ExprKind::Block(..)
-            | thir::ExprKind::Adt(..) => Category::Rvalue(RvalueFunc::Into),
+            | thir::ExprKind::Adt(..)
+            | thir::ExprKind::Closure { .. } => Category::Rvalue(RvalueFunc::Into),
 
             thir::ExprKind::Assign { .. }
             | thir::ExprKind::AssignOp { .. }
@@ -406,6 +415,7 @@ impl Category {
             | thir::ExprKind::Logical { .. }
             | thir::ExprKind::Unary { .. }
             | thir::ExprKind::Cast { .. }
+            | thir::ExprKind::ClosureToFnPointer { .. }
             | thir::ExprKind::Tuple { .. }
             | thir::ExprKind::Array { .. }
             | thir::ExprKind::Repeat { .. }

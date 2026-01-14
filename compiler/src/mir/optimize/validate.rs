@@ -580,7 +580,6 @@ impl<'ctx> MirPass<'ctx> for ValidateBorrows {
 }
 
 pub fn validate_borrows<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResult<()> {
-
     use crate::mir::analysis::liveness::compute_liveness;
 
     // 1. Compute Liveness
@@ -682,7 +681,7 @@ pub fn validate_borrows<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResul
         // 2. Forward pass for validation
         let entry_borrows = block_in_states.entry(bb).or_default().clone();
         let mut active_borrows = entry_borrows; // Map<Borrowed, Set<Borrower>>
-        
+
         for (idx, stmt) in statements.iter().enumerate() {
             match &stmt.kind {
                 StatementKind::Assign(dest, rvalue) => {
@@ -728,6 +727,24 @@ pub fn validate_borrows<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResul
                                 for b in new_borrows {
                                     active_borrows.entry(b).or_default().insert(d);
                                 }
+                            }
+                        }
+                    }
+                    if let Rvalue::Aggregate { fields, .. } = rvalue {
+                        if dest.projection.is_empty() {
+                            let d = dest.local;
+                            let mut new_borrows = Vec::new();
+                            for field in fields {
+                                if let Some(src_local) = operand_local(field) {
+                                    for (borrowed, borrowers) in &active_borrows {
+                                        if borrowers.contains(&src_local) {
+                                            new_borrows.push(*borrowed);
+                                        }
+                                    }
+                                }
+                            }
+                            for b in new_borrows {
+                                active_borrows.entry(b).or_default().insert(d);
                             }
                         }
                     }
@@ -854,16 +871,16 @@ fn check_operand_move_borrowed(
         // ... (original logic)
         // If we are moving 'place.local', check if it is borrowed
         if let Some(borrowers) = borrows.get(&place.local) {
-             for &b in borrowers {
-                 if live.contains(&b) {
-                     // Borrower is live!
-                     gcx.dcx().emit_error(
-                         format!("cannot move out of borrowed content").into(),
-                         Some(span),
-                     );
-                     return gcx.dcx().ok();
-                 }
-             }
+            for &b in borrowers {
+                if live.contains(&b) {
+                    // Borrower is live!
+                    gcx.dcx().emit_error(
+                        format!("cannot move out of borrowed content").into(),
+                        Some(span),
+                    );
+                    return gcx.dcx().ok();
+                }
+            }
         }
     }
     Ok(())

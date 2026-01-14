@@ -891,6 +891,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         return Ok(Some(value));
                     }
                     mir::CastKind::Pointer => return Ok(self.lower_cast(from_ty, *ty, val)),
+                    mir::CastKind::ClosureToFnPointer => {
+                        let value = self.lower_closure_to_fn_pointer(from_ty, *ty)?;
+                        return Ok(Some(value));
+                    }
                 }
             }
             mir::Rvalue::Ref { place, .. } => {
@@ -1520,6 +1524,111 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         Ok(self.build_existential_value(to_ty, data_ptr, &table_ptrs))
     }
 
+    /// Coerce a non-capturing closure to a function pointer.
+    /// This generates a shim function that calls the closure body with a null self pointer.
+    fn lower_closure_to_fn_pointer(
+        &mut self,
+        from_ty: Ty<'gcx>,
+        to_ty: Ty<'gcx>,
+    ) -> CompileResult<BasicValueEnum<'llvm>> {
+        let TyKind::Closure { closure_def_id, .. } = from_ty.kind() else {
+            panic!("ICE: closure to fn pointer cast on non-closure type");
+        };
+
+        let TyKind::FnPointer { inputs, output } = to_ty.kind() else {
+            panic!("ICE: closure to fn pointer cast to non-fn-pointer type");
+        };
+
+        // Generate a unique name for the shim
+        let shim_name = format!(
+            "{}_fn_shim",
+            mangle_instance(self.gcx, Instance::item(closure_def_id, &[]))
+        );
+
+        // Check if we've already generated this shim
+        if let Some(existing) = self.module.get_function(&shim_name) {
+            return Ok(existing.as_global_value().as_pointer_value().into());
+        }
+
+        // Get the closure body function
+        let closure_instance = Instance::item(closure_def_id, &[]);
+        let closure_fn = if let Some(&f) = self.functions.get(&closure_instance) {
+            f
+        } else {
+            // Declare the closure body function
+            let prev_subst = self.current_subst;
+            self.current_subst = &[];
+            let sig = self.gcx.get_signature(closure_def_id);
+            let fn_ty = self.lower_fn_sig(sig);
+            let name = mangle_instance(self.gcx, closure_instance);
+            let f = self
+                .module
+                .add_function(&name, fn_ty, Some(Linkage::External));
+            self.functions.insert(closure_instance, f);
+            self.current_subst = prev_subst;
+            f
+        };
+
+        // Build the shim function type (without self parameter)
+        let mut param_types: Vec<BasicMetadataTypeEnum> = Vec::new();
+        for &input_ty in inputs.iter() {
+            if let Some(llvm_ty) = self.lower_ty(input_ty) {
+                param_types.push(llvm_ty.into());
+            }
+        }
+        let ret_ty = self.lower_ty(output);
+        let shim_fn_ty = match ret_ty {
+            Some(ret) => ret.fn_type(&param_types, false),
+            None => self.context.void_type().fn_type(&param_types, false),
+        };
+
+        // Create the shim function
+        let shim_fn = self
+            .module
+            .add_function(&shim_name, shim_fn_ty, Some(Linkage::Internal));
+        let entry_bb = self.context.append_basic_block(shim_fn, "entry");
+
+        // Save current builder position
+        let saved_bb = self.builder.get_insert_block();
+
+        // Build the shim body
+        self.builder.position_at_end(entry_bb);
+
+        // Create null self pointer (closure has no captures)
+        let self_param_ty = closure_fn.get_type().get_param_types().first().copied();
+        let null_self = match self_param_ty {
+            Some(BasicMetadataTypeEnum::PointerType(ptr_ty)) => ptr_ty.const_null(),
+            _ => self.context.ptr_type(AddressSpace::default()).const_null(),
+        };
+
+        // Build arguments: null self + forwarded params
+        let mut call_args: Vec<BasicMetadataValueEnum> = vec![null_self.into()];
+        for (i, _) in inputs.iter().enumerate() {
+            call_args.push(shim_fn.get_nth_param(i as u32).unwrap().into());
+        }
+
+        // Call the closure body
+        let call = self
+            .builder
+            .build_call(closure_fn, &call_args, "closure_call")
+            .unwrap();
+
+        // Return the result
+        if ret_ty.is_some() {
+            let ret_val = call.try_as_basic_value().basic().unwrap();
+            self.builder.build_return(Some(&ret_val)).unwrap();
+        } else {
+            self.builder.build_return(None).unwrap();
+        }
+
+        // Restore builder position
+        if let Some(bb) = saved_bb {
+            self.builder.position_at_end(bb);
+        }
+
+        Ok(shim_fn.as_global_value().as_pointer_value().into())
+    }
+
     fn box_value(
         &mut self,
         ty: Ty<'gcx>,
@@ -2100,6 +2209,43 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 }
                 if let Some(instance) = self.virtual_instance_for_call(func) {
                     self.lower_virtual_call(body, locals, &instance, args, destination)?;
+                } else if let Some(closure_fn) = self.closure_callable(body, func) {
+                    // Calling a closure - call the closure's body function directly
+                    let mut lowered_args = Vec::with_capacity(args.len());
+                    for arg in args {
+                        if let Some(val) = self.eval_operand(body, locals, arg)? {
+                            lowered_args.push(BasicMetadataValueEnum::from(val));
+                        }
+                    }
+
+                    let call_site = self
+                        .builder
+                        .build_call(closure_fn, &lowered_args, "call")
+                        .unwrap();
+
+                    if let Some(ret) = call_site.try_as_basic_value().basic() {
+                        self.store_place(&destination, body, locals, ret)?;
+                    }
+                } else if matches!(self.operand_ty(body, func).kind(), TyKind::FnPointer { .. })
+                    && !matches!(func, Operand::Constant(_))
+                {
+                    let (fn_ty, fn_ptr) = self.lower_fn_pointer_call_target(body, locals, func)?;
+
+                    let mut lowered_args = Vec::with_capacity(args.len());
+                    for arg in args {
+                        if let Some(val) = self.eval_operand(body, locals, arg)? {
+                            lowered_args.push(BasicMetadataValueEnum::from(val));
+                        }
+                    }
+
+                    let call_site = self
+                        .builder
+                        .build_indirect_call(fn_ty, fn_ptr, &lowered_args, "call")
+                        .unwrap();
+
+                    if let Some(ret) = call_site.try_as_basic_value().basic() {
+                        self.store_place(&destination, body, locals, ret)?;
+                    }
                 } else {
                     let callable = self.lower_callable(func);
 
@@ -2936,6 +3082,106 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .copied()
             .next()
             .expect("at least one function")
+    }
+
+    fn lower_fn_pointer_sig(
+        &self,
+        inputs: &'gcx [Ty<'gcx>],
+        output: Ty<'gcx>,
+    ) -> FunctionType<'llvm> {
+        let params: Vec<BasicMetadataTypeEnum<'llvm>> = inputs
+            .iter()
+            .filter_map(|&ty| self.lower_ty(ty).map(|t| t.into()))
+            .collect();
+        match self.lower_ty(output) {
+            Some(ret) => ret.fn_type(&params, false),
+            None => self.context.void_type().fn_type(&params, false),
+        }
+    }
+
+    fn lower_fn_pointer_call_target(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        func: &Operand<'gcx>,
+    ) -> CompileResult<(FunctionType<'llvm>, PointerValue<'llvm>)> {
+        let TyKind::FnPointer { inputs, output } = self.operand_ty(body, func).kind() else {
+            self.gcx
+                .dcx()
+                .emit_error("expected function pointer operand".into(), None);
+            return Err(crate::error::ReportedError);
+        };
+        let Some(value) = self.eval_operand(body, locals, func)? else {
+            self.gcx
+                .dcx()
+                .emit_error("expected function pointer value".into(), None);
+            return Err(crate::error::ReportedError);
+        };
+        let BasicValueEnum::PointerValue(ptr) = value else {
+            self.gcx
+                .dcx()
+                .emit_error("expected function pointer value".into(), None);
+            return Err(crate::error::ReportedError);
+        };
+
+        let fn_ty = self.lower_fn_pointer_sig(inputs, output);
+        let fn_ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let cast_ptr = self
+            .builder
+            .build_bit_cast(ptr, fn_ptr_ty, "fn_ptr_cast")
+            .unwrap()
+            .into_pointer_value();
+        Ok((fn_ty, cast_ptr))
+    }
+
+    /// Check if the func operand is a closure and return the closure body function
+    fn closure_callable(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        func: &Operand<'gcx>,
+    ) -> Option<FunctionValue<'llvm>> {
+        // Get the type of the operand
+        let ty = match func {
+            Operand::Copy(place) | Operand::Move(place) => {
+                // Get the base type from the local
+                let mut ty = body.locals[place.local].ty;
+                // Apply projections to get the final type
+                for elem in &place.projection {
+                    ty = match elem {
+                        mir::PlaceElem::Deref => ty.dereference().unwrap_or(ty),
+                        mir::PlaceElem::Field(_, field_ty) => *field_ty,
+                        mir::PlaceElem::VariantDowncast { .. } => ty,
+                    };
+                }
+                ty
+            }
+            Operand::Constant(_) => return None, // Constants handled by lower_callable
+        };
+
+        // Check if it's a closure type
+        let TyKind::Closure { closure_def_id, .. } = ty.kind() else {
+            return None;
+        };
+
+        // Create an instance for the closure body function
+        let instance = Instance::item(closure_def_id, &[]);
+
+        // Look up or declare the closure body function
+        if let Some(&f) = self.functions.get(&instance) {
+            return Some(f);
+        }
+
+        // Need to declare it as external
+        let prev_subst = self.current_subst;
+        self.current_subst = &[];
+        let sig = self.gcx.get_signature(closure_def_id);
+        let fn_ty = self.lower_fn_sig(sig);
+        let name = mangle_instance(self.gcx, instance);
+        let linkage = Some(Linkage::External);
+        let f = self.module.add_function(&name, fn_ty, linkage);
+        self.functions.insert(instance, f);
+        self.current_subst = prev_subst;
+        Some(f)
     }
 
     fn virtual_instance_for_call(
@@ -3988,6 +4234,41 @@ fn lower_type<'llvm, 'gcx>(
                  def_id: {:?}, args: {:?}",
                 kind_str, formatted, def_id, args
             )
+        }
+        TyKind::Closure { closure_def_id, .. } => {
+            // Closure is represented as its environment struct
+            // Get the captures and build a struct type for them
+            if let Some(captures) = gcx.get_closure_captures(closure_def_id) {
+                if captures.captures.is_empty() {
+                    // Empty closure - zero-sized struct (empty struct in LLVM)
+                    Some(context.struct_type(&[], false).into())
+                } else {
+                    // Build struct from capture field types
+                    let fields: Vec<BasicTypeEnum<'llvm>> = captures
+                        .captures
+                        .iter()
+                        .filter_map(|cap| {
+                            let field_ty = match cap.capture_kind {
+                                crate::sema::models::CaptureKind::ByCopy
+                                | crate::sema::models::CaptureKind::ByMove => cap.ty,
+                                crate::sema::models::CaptureKind::ByRef { mutable } => {
+                                    let mutability = if mutable {
+                                        crate::hir::Mutability::Mutable
+                                    } else {
+                                        crate::hir::Mutability::Immutable
+                                    };
+                                    Ty::new(TyKind::Reference(cap.ty, mutability), gcx)
+                                }
+                            };
+                            lower_type(context, gcx, target_data, field_ty, subst)
+                        })
+                        .collect();
+                    Some(context.struct_type(&fields, false).into())
+                }
+            } else {
+                // No capture info - use empty struct as fallback
+                Some(context.struct_type(&[], false).into())
+            }
         }
         TyKind::Infer(_) | TyKind::Error => unreachable!(),
     }

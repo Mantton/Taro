@@ -1,0 +1,17 @@
+// Test: Closure Move While Borrowed
+// This file should fail to compile because a borrowed capture is moved.
+
+func consume_list(_ list: List[int32]) {
+    // Consumes list by value.
+}
+
+func main() {
+    var list = List[int32]()
+    list.append(1)
+
+    let get_len = || -> int32 { list.len() as int32 }
+
+    // ERROR: cannot move out of borrowed content
+    consume_list(list)
+    get_len()
+}

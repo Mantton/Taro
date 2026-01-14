@@ -101,6 +101,10 @@ impl<'arena> Checker<'arena> {
             .expect("ICE: local variable must have type mapped")
     }
 
+    pub fn try_get_local(&self, id: NodeID) -> Option<LocalBinding<'arena>> {
+        self.locals.borrow().get(&id).copied()
+    }
+
     pub fn set_local(&self, id: NodeID, binding: LocalBinding<'arena>) {
         let mut locals = self.locals.borrow_mut();
         if locals.get(&id).is_some() {

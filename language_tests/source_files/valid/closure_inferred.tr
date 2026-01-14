@@ -1,0 +1,70 @@
+// Test closure parameter type inference
+// Parameter types are inferred from context (Fn bounds)
+
+// Generic function with Fn bound - closure param type inferred as int32
+func apply[F: Fn[int32, int32]](_ f: F, _ x: int32) -> int32 {
+    f(x)
+}
+
+// Generic function with two-arg Fn bound (tuple Args unpacked)
+func apply2[F: Fn[(int32, int32), int32]](_ f: F, _ a: int32, _ b: int32) -> int32 {
+    f(a, b)
+}
+
+// Generic map function
+func map_val[T, F: Fn[T, T]](_ value: T, _ f: F) -> T {
+    f(value)
+}
+
+// Struct with method taking closure
+struct Container {
+    value: int32
+}
+
+impl Container {
+    func map[F: Fn[int32, int32]](&self, _ f: F) -> int32 {
+        f(self.value)
+    }
+
+    func transform[F: Fn[int32, int32], G: Fn[int32, int32]](&self, _ f: F, _ g: G) -> int32 {
+        g(f(self.value))
+    }
+}
+
+func main() {
+    // Test 1: Basic parameter inference
+    let doubled = apply(|x| { x * 2 }, 5)
+    std.assert(doubled == 10, "apply with inferred param should work")
+
+    // Test 2: With capturing - parameter type still inferred
+    let multiplier: int32 = 3
+    let tripled = apply(|x| { x * multiplier }, 4)
+    std.assert(tripled == 12, "capturing closure with inferred param")
+
+    // Test 3: Two-arg closure with inferred params
+    let sum = apply2(|a, b| { a + b }, 10, 20)
+    std.assert(sum == 30, "two-arg closure with inferred params")
+
+    // Test 4: Method call with inferred closure param
+    let container = Container { value: 10 }
+    let result = container.map(|x| { x + 5 })
+    std.assert(result == 15, "method with inferred closure param")
+
+    // Test 5: Chained method with two inferred closures
+    let chained = container.transform(|x| { x * 2 }, |x| { x + 1 })
+    std.assert(chained == 21, "chained closures with inferred params")
+
+    // Test 6: Mixed - some params explicit, some inferred (return type explicit)
+    let mixed = apply(|x| -> int32 { x * 10 }, 5)
+    std.assert(mixed == 50, "explicit return type, inferred param")
+
+    // Test 7: Nested closures with inference
+    let outer_val: int32 = 100
+    let nested = apply(|x| {
+        let inner = apply(|y| { y + outer_val }, x)
+        inner * 2
+    }, 5)
+    std.assert(nested == 210, "nested closures with inferred params")
+
+    std.print("closure_inferred: PASSED\n")
+}

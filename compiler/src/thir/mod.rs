@@ -2,7 +2,8 @@ use crate::{
     hir::{BindingMode, DefinitionID, NodeID},
     mir::{BinaryOperator, LogicalOperator, UnaryOperator},
     sema::models::{
-        AdtDef, EnumVariant, GenericArguments, GenericParameter, InterfaceReference, Ty,
+        AdtDef, CaptureKind, EnumVariant, GenericArguments, GenericParameter, InterfaceReference,
+        Ty,
     },
     span::{Span, Symbol},
 };
@@ -166,6 +167,44 @@ pub enum ExprKind<'a> {
         /// Generic arguments for this definition (if generic)
         generic_args: Option<GenericArguments<'a>>,
     },
+    /// Closure expression
+    Closure {
+        /// Closure definition ID
+        def_id: DefinitionID,
+        /// Captured variables with their capture expressions
+        captures: Vec<ClosureCapture>,
+        /// The closure's callable kind (Fn or FnOnce)
+        kind: crate::sema::models::ClosureKind,
+    },
+    /// Access to a captured variable (upvar) within a closure body
+    /// This is lowered to a field access on the closure's self parameter
+    Upvar {
+        /// Field index in the closure environment struct
+        field_index: FieldIndex,
+        /// How this variable is captured
+        capture_kind: CaptureKind,
+    },
+    /// Coerce a non-capturing closure to a function pointer
+    /// The closure must have no captures for this to be valid
+    ClosureToFnPointer {
+        /// The closure expression
+        closure: ExprId,
+        /// The closure's definition ID (to get the body function)
+        closure_def_id: DefinitionID,
+    },
+}
+
+/// A captured variable in a closure
+#[derive(Debug, Clone, Copy)]
+pub struct ClosureCapture {
+    /// The captured variable's source NodeID
+    pub source_id: NodeID,
+    /// Expression to evaluate for capture (ref creation or value copy/move)
+    pub capture_expr: ExprId,
+    /// How this variable is captured
+    pub capture_kind: crate::sema::models::CaptureKind,
+    /// Field index in the environment struct
+    pub field_index: FieldIndex,
 }
 
 #[derive(Debug, Clone)]

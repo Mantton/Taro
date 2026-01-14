@@ -1,4 +1,5 @@
 use crate::{
+    hir::StdInterface,
     sema::{
         error::{ApplyValidationError, TypeError},
         models::{LabeledFunctionParameter, LabeledFunctionSignature, Ty, TyKind},
@@ -22,7 +23,19 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         let (inputs, output) = match callee_ty.kind() {
             TyKind::FnPointer { inputs, output } => (inputs, output),
+            TyKind::Closure { inputs, output, .. } => (inputs, output),
             TyKind::Infer(_) => return SolverResult::Deferred,
+            TyKind::Parameter(_) => {
+                // Check if this type parameter has Fn/FnMut/FnOnce bounds
+                if let Some((inputs, output)) = self.extract_fn_bound_signature(callee_ty) {
+                    (inputs, output)
+                } else {
+                    return SolverResult::Error(vec![Spanned::new(
+                        TypeError::NotCallable { found: callee_ty },
+                        data.call_span,
+                    )]);
+                }
+            }
             _ => {
                 return SolverResult::Error(vec![Spanned::new(
                     TypeError::NotCallable { found: callee_ty },
@@ -93,6 +106,53 @@ impl<'ctx> ConstraintSolver<'ctx> {
         });
 
         return SolverResult::Solved(obligations);
+    }
+
+    /// Extract (inputs, output) from Fn/FnMut/FnOnce bounds on a type parameter.
+    /// Returns None if the type has no such bounds.
+    fn extract_fn_bound_signature(&self, ty: Ty<'ctx>) -> Option<(&'ctx [Ty<'ctx>], Ty<'ctx>)> {
+        let gcx = self.gcx();
+        let fn_def = gcx.std_interface_def(StdInterface::Fn);
+        let fn_mut_def = gcx.std_interface_def(StdInterface::FnMut);
+        let fn_once_def = gcx.std_interface_def(StdInterface::FnOnce);
+
+        // Get bounds for this type from the parameter environment
+        let bounds = self.param_env.bounds_for(ty);
+
+        for bound in bounds {
+            // Check if this bound is Fn, FnMut, or FnOnce
+            let is_fn_trait = fn_def == Some(bound.id)
+                || fn_mut_def == Some(bound.id)
+                || fn_once_def == Some(bound.id);
+
+            if !is_fn_trait {
+                continue;
+            }
+
+            // Fn[Args, Output] has Self at [0], Args at [1], Output at [2]
+            if bound.arguments.len() < 3 {
+                continue;
+            }
+
+            let args_ty = bound.arguments[1].ty()?;
+            let output_ty = bound.arguments[2].ty()?;
+
+            // Unpack tuple Args into individual parameters (rust-call ABI style).
+            // For Fn[int32, int32] -> one int32 argument
+            // For Fn[(int32, int32), int32] -> two int32 arguments (unpacked)
+            // This allows users to write f(a, b) instead of f((a, b))
+            let inputs: &'ctx [Ty<'ctx>] = if let TyKind::Tuple(elem_tys) = args_ty.kind() {
+                // Tuple Args - unpack into individual parameters
+                elem_tys
+            } else {
+                // Non-tuple Args - treat as single parameter
+                gcx.store.interners.intern_ty_list(vec![args_ty])
+            };
+
+            return Some((inputs, output_ty));
+        }
+
+        None
     }
 }
 
@@ -258,18 +318,18 @@ fn produce_application_subobligations<'c>(
             // Determine expected type for the arguments
             // If this is the variadic parameter, we need to extract T from List[T]
             let expected_ty = if signature.is_variadic && param_idx == signature.inputs.len() - 1 {
-                 if let TyKind::Adt(_, args) = param_ty.kind() {
-                     if let Some(crate::sema::models::GenericArgument::Type(inner)) = args.get(0) {
-                         *inner
-                     } else {
-                         // Should not happen if well-formed
-                         param_ty 
-                     }
-                 } else {
-                     param_ty
-                 }
+                if let TyKind::Adt(_, args) = param_ty.kind() {
+                    if let Some(crate::sema::models::GenericArgument::Type(inner)) = args.get(0) {
+                        *inner
+                    } else {
+                        // Should not happen if well-formed
+                        param_ty
+                    }
+                } else {
+                    param_ty
+                }
             } else {
-                 param_ty
+                param_ty
             };
 
             for &arg_idx in arg_indices {
@@ -288,8 +348,9 @@ fn produce_application_subobligations<'c>(
             }
         } else if !param_defaults {
             // If it is variadic main parameter, it is allowed to be empty (it will be an empty list)
-            let is_variadic_param = signature.is_variadic && param_idx == signature.inputs.len() - 1;
-            
+            let is_variadic_param =
+                signature.is_variadic && param_idx == signature.inputs.len() - 1;
+
             if !is_variadic_param {
                 let err = ApplyValidationError::MissingRequiredParameter {
                     param_index: param_idx,

@@ -328,7 +328,9 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
                 TerminatorKind::Return => {
                     used[body.return_local.index()] = true;
                 }
-                TerminatorKind::Goto { .. } | TerminatorKind::Unreachable | TerminatorKind::UnresolvedGoto => {}
+                TerminatorKind::Goto { .. }
+                | TerminatorKind::Unreachable
+                | TerminatorKind::UnresolvedGoto => {}
             }
         }
     }
@@ -366,7 +368,10 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
                 projection: place.projection.clone(),
             }
         } else {
-            panic!("used local {:?} must be remapped. Place: {:?}", place.local, place);
+            panic!(
+                "used local {:?} must be remapped. Place: {:?}",
+                place.local, place
+            );
         }
     }
 

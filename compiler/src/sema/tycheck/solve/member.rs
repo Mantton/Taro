@@ -351,6 +351,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             TyKind::Pointer(_, mutbl) => Some(TypeHead::Pointer(mutbl)),
             TyKind::Tuple(items) => Some(TypeHead::Tuple(items.len() as u16)),
             TyKind::Array { .. } => Some(TypeHead::Array),
+            TyKind::Closure { closure_def_id, .. } => Some(TypeHead::Closure(closure_def_id)),
             TyKind::Parameter(_) => None,
             TyKind::Alias { .. } => None, // Alias should be normalized before lookup
             TyKind::Infer(_)

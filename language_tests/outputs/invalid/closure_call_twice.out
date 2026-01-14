@@ -1,0 +1,4 @@
+error: use of moved value 'consume'
+ -> language_tests/source_files/invalid/closure_call_twice.tr:14:4
+	    consume() // ERROR: use of moved value 'consume'
+	    ^^^^^^^^^

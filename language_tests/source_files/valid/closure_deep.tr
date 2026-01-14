@@ -1,0 +1,15 @@
+// Test deeply nested closures
+func main() {
+    let a: int32 = 1
+    let deep = || -> int32 {
+        let b: int32 = 2
+        let mid = || -> int32 {
+            let c: int32 = 3
+            let inner = || -> int32 { a + b + c }
+            inner()
+        }
+        mid()
+    }
+    std.assert(deep() == 6, "deeply nested should compute 1+2+3 = 6")
+    std.print("closure_deep: PASSED\n")
+}

@@ -608,5 +608,12 @@ fn remap_aggregate_kind<'ctx>(
             variant_index: *variant_index,
             generic_args: substitute_gen_args(gcx, *adt_gen_args, gen_args),
         },
+        AggregateKind::Closure {
+            def_id,
+            captured_generics,
+        } => AggregateKind::Closure {
+            def_id: *def_id,
+            captured_generics: substitute_gen_args(gcx, *captured_generics, gen_args),
+        },
     }
 }

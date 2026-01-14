@@ -53,10 +53,7 @@ pub fn compute_dominators(body: &Body<'_>) -> Dominators {
             };
 
             for pred in preds[bb].iter().skip(1) {
-                new_set = new_set
-                    .intersection(&doms[*pred])
-                    .copied()
-                    .collect();
+                new_set = new_set.intersection(&doms[*pred]).copied().collect();
             }
 
             new_set.insert(bb);

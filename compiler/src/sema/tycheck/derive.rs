@@ -29,6 +29,7 @@ pub struct SyntheticMethodInfo<'ctx> {
     pub kind: SyntheticMethodKind,
     pub self_ty: Ty<'ctx>,
     pub interface_id: DefinitionID,
+    pub interface_args: GenericArguments<'ctx>,
     pub method_id: DefinitionID,
     pub method_name: Symbol,
     pub syn_id: Option<DefinitionID>,
@@ -43,6 +44,7 @@ pub fn try_synthesize_method<'ctx>(
     type_head: TypeHead,
     self_ty: Ty<'ctx>,
     interface_id: DefinitionID,
+    interface_args: GenericArguments<'ctx>,
     method_name: Symbol,
     method_id: DefinitionID,
     args_template: GenericArguments<'ctx>,
@@ -61,6 +63,7 @@ pub fn try_synthesize_method<'ctx>(
             type_head,
             self_ty,
             interface_id,
+            interface_args,
             method_name,
             method_id,
             args_template,
@@ -70,8 +73,8 @@ pub fn try_synthesize_method<'ctx>(
             // TODO: Implement Hashable and Equatable synthesis
             None
         }
-        StdInterface::Copy => {
-            // Copy is a marker interface, no methods to synthesize
+        StdInterface::Copy | StdInterface::Tuple => {
+            // Copy and Tuple are marker interfaces, no methods to synthesize
             None
         }
         StdInterface::Iterator | StdInterface::Iterable => {
@@ -79,7 +82,10 @@ pub fn try_synthesize_method<'ctx>(
             None
         }
         // Operator interfaces are not auto-synthesized; they require explicit impl blocks
-        StdInterface::Add
+        StdInterface::Fn
+        | StdInterface::FnMut
+        | StdInterface::FnOnce
+        | StdInterface::Add
         | StdInterface::Sub
         | StdInterface::Mul
         | StdInterface::Div
@@ -113,6 +119,7 @@ fn try_synthesize_clone<'ctx>(
     type_head: TypeHead,
     self_ty: Ty<'ctx>,
     interface_id: DefinitionID,
+    interface_args: GenericArguments<'ctx>,
     method_name: Symbol,
     method_id: DefinitionID,
     args_template: GenericArguments<'ctx>,
@@ -147,6 +154,7 @@ fn try_synthesize_clone<'ctx>(
         kind,
         self_ty,
         interface_id,
+        interface_args,
         method_id,
         method_name,
         syn_id,

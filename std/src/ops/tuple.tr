@@ -1,0 +1,8 @@
+/// Marker interface for tuple types.
+///
+/// This interface is automatically implemented by the compiler for all tuple types.
+/// User types cannot implement this interface.
+///
+/// Used to constrain the Args parameter in Fn/FnMut/FnOnce traits,
+/// ensuring that callable arguments are always represented as tuples.
+public interface Tuple {}

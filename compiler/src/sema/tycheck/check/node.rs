@@ -31,37 +31,6 @@ use crate::{
 use std::cell::RefCell;
 use std::rc::Rc;
 
-struct DefaultParamRefChecker<'a> {
-    param_ids: &'a [NodeID],
-    param_symbols: &'a [Symbol],
-    found: bool,
-}
-
-impl<'a> hir::HirVisitor for DefaultParamRefChecker<'a> {
-    fn visit_resolved_path(&mut self, node: &hir::ResolvedPath) -> Self::Result {
-        if let hir::ResolvedPath::Resolved(path) = node {
-            match path.resolution {
-                hir::Resolution::LocalVariable(id) => {
-                    if self.param_ids.contains(&id) {
-                        self.found = true;
-                    }
-                }
-                hir::Resolution::Error => {
-                    if path
-                        .segments
-                        .iter()
-                        .any(|segment| self.param_symbols.contains(&segment.identifier.symbol))
-                    {
-                        self.found = true;
-                    }
-                }
-                _ => {}
-            }
-        }
-        hir::walk_resolved_path(self, node)
-    }
-}
-
 impl<'ctx> Checker<'ctx> {
     pub fn gcx(&self) -> Gcx<'ctx> {
         self.context
@@ -456,6 +425,11 @@ impl<'ctx> Checker<'ctx> {
         for (id, ty) in cs.resolved_expr_types() {
             let ty = cs.infer_cx.resolve_vars_if_possible(ty);
             self.results.borrow_mut().record_node_type(id, ty);
+
+            // FIX: Update closure signature with resolved types to ensure codegen sees concrete types
+            if let TyKind::Closure { closure_def_id, .. } = ty.kind() {
+                self.update_closure_signature(closure_def_id, ty);
+            }
         }
         for (id, adjustments) in cs.resolved_adjustments() {
             self.results
@@ -676,6 +650,9 @@ impl<'ctx> Checker<'ctx> {
             }
             hir::ExpressionKind::StructLiteral(lit) => {
                 self.synth_struct_literal(expression, lit, cs)
+            }
+            hir::ExpressionKind::Closure(closure) => {
+                self.synth_closure_expression(expression, closure, expectation, cs)
             }
             hir::ExpressionKind::Malformed => {
                 unreachable!("ICE: trying to typecheck a malformed expression node")
@@ -1128,6 +1105,227 @@ impl<'ctx> Checker<'ctx> {
             self.gcx().types.void
         }
     }
+
+    fn synth_closure_expression(
+        &self,
+        _expression: &hir::Expression,
+        closure: &hir::ClosureExpr,
+        expectation: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        let gcx = self.gcx();
+
+        // Collect closure parameter IDs (these are NOT captures)
+        let param_ids: rustc_hash::FxHashSet<NodeID> =
+            closure.params.iter().map(|p| p.id).collect();
+
+        // Extract expected input/output types from the expectation (for type inference)
+        let expected_inputs =
+            expectation.and_then(|ty| self.extract_closure_expected_inputs(ty, cs));
+        let expected_output =
+            expectation.and_then(|ty| self.extract_closure_expected_output(ty, cs));
+
+        // Collect parameter types
+        let mut param_tys = Vec::with_capacity(closure.params.len());
+
+        for (index, param) in closure.params.iter().enumerate() {
+            // Check if there's an explicit type annotation (not an inferred placeholder)
+            let has_explicit_type = param
+                .ty
+                .as_ref()
+                .map_or(false, |ty| !matches!(ty.kind, hir::TypeKind::Infer));
+
+            // Use explicit type annotation, or infer from expectation, or create infer var
+            let param_ty = if has_explicit_type {
+                // Explicit type annotation - lower it
+                self.lower_type(param.ty.as_ref().unwrap())
+            } else if let Some(ref inputs) = expected_inputs {
+                // Infer from expected type (e.g., from Fn bound)
+                if let Some(&expected_ty) = inputs.get(index) {
+                    expected_ty
+                } else {
+                    // More params than expected - create infer var
+                    cs.infer_cx.next_ty_var(param.span)
+                }
+            } else {
+                // No expectation available - create inference variable
+                cs.infer_cx.next_ty_var(param.span)
+            };
+
+            param_tys.push(param_ty);
+
+            // Register the parameter as a local binding
+            self.set_local(
+                param.id,
+                super::checker::LocalBinding {
+                    mutable: false,
+                    ty: param_ty,
+                },
+            );
+        }
+
+        // Type check the closure body
+        let return_ty = if let Some(ret_ty) = &closure.return_ty {
+            // Explicit return type annotation
+            let expected_return = self.lower_type(ret_ty);
+            let actual_return =
+                self.synth_with_expectation(&closure.body, Some(expected_return), cs);
+            cs.equal(expected_return, actual_return, closure.body.span);
+            expected_return
+        } else if let Some(expected_return) = expected_output {
+            // Infer return type from expectation (e.g., from Fn bound)
+            let actual_return =
+                self.synth_with_expectation(&closure.body, Some(expected_return), cs);
+            cs.equal(expected_return, actual_return, closure.body.span);
+            expected_return
+        } else {
+            // No expectation - infer from body
+            self.synth(&closure.body, cs)
+        };
+
+        // Resolve what we can so we don't cache infer vars in closure signatures.
+        cs.solve_intermediate();
+        let adjustments = cs.resolved_adjustments();
+        let return_ty = cs.infer_cx.resolve_vars_if_possible(return_ty);
+        let param_tys: Vec<_> = param_tys
+            .into_iter()
+            .map(|ty| cs.infer_cx.resolve_vars_if_possible(ty))
+            .collect();
+
+        // Perform capture analysis - collect free variables from the closure body
+        let mut collector = CaptureCollector {
+            param_ids: &param_ids,
+            local_decls: rustc_hash::FxHashSet::default(),
+            order: Vec::new(),
+            info: rustc_hash::FxHashMap::default(),
+            checker: self,
+            adjustments: &adjustments,
+        };
+        collector.collect_expr(&closure.body, UseContext::Value);
+
+        // Build capture list with types and capture kinds
+        let mut captures = Vec::new();
+        for (field_index, node_id) in collector.order.iter().enumerate() {
+            let info = collector
+                .info
+                .get(node_id)
+                .expect("capture info should exist");
+            // Get the type of the captured variable from local bindings
+            let binding = self.get_local(*node_id);
+            let ty = cs.infer_cx.resolve_vars_if_possible(binding.ty);
+
+            // Determine capture kind based on usage and type
+            let capture_kind = if info.usage.mut_borrow {
+                crate::sema::models::CaptureKind::ByRef { mutable: true }
+            } else if info.usage.moved {
+                crate::sema::models::CaptureKind::ByMove
+            } else if gcx.is_type_copyable(ty) {
+                crate::sema::models::CaptureKind::ByCopy
+            } else {
+                crate::sema::models::CaptureKind::ByRef { mutable: false }
+            };
+
+            captures.push(crate::sema::models::CapturedVar {
+                source_id: *node_id,
+                name: info.name,
+                ty,
+                capture_kind,
+                field_index: crate::thir::FieldIndex::from_raw(field_index as u32),
+            });
+        }
+
+        let kind = if captures
+            .iter()
+            .any(|cap| matches!(cap.capture_kind, crate::sema::models::CaptureKind::ByMove))
+        {
+            crate::sema::models::ClosureKind::FnOnce
+        } else if captures.iter().any(|cap| {
+            matches!(
+                cap.capture_kind,
+                crate::sema::models::CaptureKind::ByRef { mutable: true }
+            )
+        }) {
+            crate::sema::models::ClosureKind::FnMut
+        } else {
+            crate::sema::models::ClosureKind::Fn
+        };
+
+        gcx.cache_closure_captures(
+            closure.def_id,
+            crate::sema::models::ClosureCaptures {
+                captures: captures.clone(),
+                kind,
+            },
+        );
+
+        // Create the closure type (with user-visible parameter types only)
+        let inputs = gcx.store.interners.intern_ty_list(param_tys.clone());
+
+        // Create the closure type first (we need it for the body function signature)
+        let closure_ty = Ty::new(
+            TyKind::Closure {
+                closure_def_id: closure.def_id,
+                captured_generics: &[],
+                inputs,
+                output: return_ty,
+                kind,
+            },
+            gcx,
+        );
+
+        // Cache the closure's function signature
+        // The closure body function takes: self (by ref or by value), then explicit params
+        let self_ty = match kind {
+            crate::sema::models::ClosureKind::Fn => gcx
+                .store
+                .interners
+                .intern_ty(TyKind::Pointer(closure_ty, hir::Mutability::Immutable)),
+            crate::sema::models::ClosureKind::FnMut => gcx
+                .store
+                .interners
+                .intern_ty(TyKind::Pointer(closure_ty, hir::Mutability::Mutable)),
+            crate::sema::models::ClosureKind::FnOnce => closure_ty,
+        };
+
+        let mut sig_inputs = vec![crate::sema::models::LabeledFunctionParameter {
+            label: None,
+            name: crate::span::Symbol::new("self"),
+            ty: self_ty,
+            default_provider: None,
+        }];
+
+        // Add the explicit closure parameters after self
+        sig_inputs.extend(
+            closure
+                .params
+                .iter()
+                .zip(param_tys.iter())
+                .map(|(param, &ty)| {
+                    let name = match &param.pattern.kind {
+                        hir::PatternKind::Binding { name, .. } => name.symbol,
+                        _ => crate::span::Symbol::new("_"),
+                    };
+                    crate::sema::models::LabeledFunctionParameter {
+                        label: None,
+                        name,
+                        ty,
+                        default_provider: None,
+                    }
+                }),
+        );
+
+        gcx.cache_signature(
+            closure.def_id,
+            crate::sema::models::LabeledFunctionSignature {
+                inputs: sig_inputs,
+                output: return_ty,
+                is_variadic: false,
+                abi: None,
+            },
+        );
+
+        closure_ty
+    }
 }
 
 impl<'ctx> Checker<'ctx> {
@@ -1413,8 +1611,9 @@ impl<'ctx> Checker<'ctx> {
         };
 
         let positional_args = arguments.iter().all(|arg| arg.label.is_none());
+        let callee_def = self.resolve_callee(callee, cs);
         let arg_expectations = if positional_args && !callee_ty.is_error() {
-            self.argument_expectations_for_call(callee, callee_ty, expect_ty, cs)
+            self.argument_expectations_for_call(callee, callee_ty, expect_ty, callee_def, cs)
         } else {
             None
         };
@@ -1468,6 +1667,7 @@ impl<'ctx> Checker<'ctx> {
         callee: &hir::Expression,
         callee_ty: Ty<'ctx>,
         expect_ty: Option<Ty<'ctx>>,
+        callee_def: Option<DefinitionID>,
         cs: &mut Cs<'ctx>,
     ) -> Option<Vec<Ty<'ctx>>> {
         if let hir::ExpressionKind::InferredMember { name } = &callee.kind {
@@ -1480,11 +1680,110 @@ impl<'ctx> Checker<'ctx> {
             }
         }
 
+        // Get the callee type (may still have type params if not yet instantiated)
         let callee_ty = cs.infer_cx.resolve_vars_if_possible(callee_ty);
-        match callee_ty.kind() {
-            TyKind::FnPointer { inputs, .. } => Some(inputs.to_vec()),
-            _ => None,
+        let instantiated_inputs = match callee_ty.kind() {
+            TyKind::FnPointer { inputs, .. } => inputs.to_vec(),
+            _ => return None,
+        };
+
+        // If we have a callee definition with type parameters that have Fn bounds,
+        // create synthetic FnPointer expectations to help infer closure parameter types
+        if let Some(def_id) = callee_def {
+            let signature = self.gcx().get_signature(def_id);
+            let original_inputs: Vec<Ty<'ctx>> = signature.inputs.iter().map(|p| p.ty).collect();
+
+            let resolved: Vec<Ty<'ctx>> = original_inputs
+                .iter()
+                .zip(instantiated_inputs.iter())
+                .map(|(&original_ty, &instantiated_ty)| {
+                    // Try to resolve Fn bound if the original param is a type parameter
+                    if let Some(fn_ptr) = self.try_resolve_fn_bound(original_ty, def_id) {
+                        fn_ptr
+                    } else {
+                        // Fall back to instantiated type from callee
+                        instantiated_ty
+                    }
+                })
+                .collect();
+            return Some(resolved);
         }
+
+        Some(instantiated_inputs)
+    }
+
+    /// If the type is a type parameter with an Fn/FnMut/FnOnce bound,
+    /// create a synthetic FnPointer type with the expected inputs/output.
+    /// Returns None if the type is not a type parameter or has no Fn bound.
+    fn try_resolve_fn_bound(&self, ty: Ty<'ctx>, def_id: DefinitionID) -> Option<Ty<'ctx>> {
+        let TyKind::Parameter(param) = ty.kind() else {
+            return None;
+        };
+
+        let gcx = self.gcx();
+        let constraints = crate::sema::tycheck::constraints::canonical_constraints_of(gcx, def_id);
+
+        // Look for Fn/FnMut/FnOnce bounds on this parameter
+        let fn_def = gcx.std_interface_def(hir::StdInterface::Fn);
+        let fn_mut_def = gcx.std_interface_def(hir::StdInterface::FnMut);
+        let fn_once_def = gcx.std_interface_def(hir::StdInterface::FnOnce);
+
+        for constraint in constraints {
+            if let crate::sema::models::Constraint::Bound {
+                ty: bound_ty,
+                interface,
+            } = constraint.value
+            {
+                // Check if this constraint applies to our parameter
+                let TyKind::Parameter(bound_param) = bound_ty.kind() else {
+                    continue;
+                };
+
+                // Match by index and name since we're in the same definition context
+                if bound_param.index != param.index || bound_param.name != param.name {
+                    continue;
+                }
+
+                // Check if this is a Fn trait bound
+                let is_fn_trait = fn_def == Some(interface.id)
+                    || fn_mut_def == Some(interface.id)
+                    || fn_once_def == Some(interface.id);
+
+                if !is_fn_trait {
+                    continue;
+                }
+
+                // Extract Args and Output from Fn[Args, Output]
+                // Interface arguments are: [Self, Args, Output]
+                if interface.arguments.len() < 3 {
+                    continue;
+                }
+
+                let Some(args_ty) = interface.arguments[1].ty() else {
+                    continue;
+                };
+                let Some(output_ty) = interface.arguments[2].ty() else {
+                    continue;
+                };
+
+                // Unpack tuple Args into individual inputs (rust-call ABI)
+                let inputs: Vec<Ty<'ctx>> = if let TyKind::Tuple(elem_tys) = args_ty.kind() {
+                    elem_tys.to_vec()
+                } else {
+                    vec![args_ty]
+                };
+                let inputs = gcx.store.interners.intern_ty_list(inputs);
+
+                // Create a synthetic FnPointer type to pass as expectation
+                // This allows the closure synthesizer to extract expected input types
+                return Some(gcx.store.interners.intern_ty(TyKind::FnPointer {
+                    inputs,
+                    output: output_ty,
+                }));
+            }
+        }
+
+        None
     }
 
     fn inferred_member_argument_expectations(
@@ -2070,15 +2369,13 @@ impl<'ctx> Checker<'ctx> {
             none_cs.solve_intermediate();
 
             if let Some(guard) = &none_arm.guard {
-                let guard_ty = self.synth_with_expectation(
-                    guard,
-                    Some(self.gcx().types.bool),
-                    &mut none_cs,
-                );
+                let guard_ty =
+                    self.synth_with_expectation(guard, Some(self.gcx().types.bool), &mut none_cs);
                 none_cs.equal(self.gcx().types.bool, guard_ty, guard.span);
             }
 
-            let none_ty = self.synth_with_expectation(&none_arm.body, Some(result_ty), &mut none_cs);
+            let none_ty =
+                self.synth_with_expectation(&none_arm.body, Some(result_ty), &mut none_cs);
             none_cs.equal(result_ty, none_ty, none_arm.body.span);
 
             none_cs.solve_intermediate();
@@ -3638,10 +3935,7 @@ impl<'ctx> Checker<'ctx> {
         def.id == opt_id
     }
 
-    fn optional_inner_type(
-        &self,
-        ty: Ty<'ctx>,
-    ) -> Option<(GenericArguments<'ctx>, Ty<'ctx>)> {
+    fn optional_inner_type(&self, ty: Ty<'ctx>) -> Option<(GenericArguments<'ctx>, Ty<'ctx>)> {
         let TyKind::Adt(def, args) = ty.kind() else {
             return None;
         };
@@ -3690,6 +3984,445 @@ impl<'ctx> Checker<'ctx> {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Extract expected input types for closure parameter inference.
+    /// Returns None if no expectation is available or it can't be extracted.
+    fn extract_closure_expected_inputs(
+        &self,
+        expectation: Ty<'ctx>,
+        cs: &mut Cs<'ctx>,
+    ) -> Option<Vec<Ty<'ctx>>> {
+        let expectation = cs.infer_cx.resolve_vars_if_possible(expectation);
+
+        match expectation.kind() {
+            // Direct closure type - use its inputs (this includes synthetic closures from Fn bounds)
+            TyKind::Closure { inputs, .. } => Some(inputs.to_vec()),
+
+            // Function pointer - use its inputs
+            TyKind::FnPointer { inputs, .. } => Some(inputs.to_vec()),
+
+            _ => None,
+        }
+    }
+
+    /// Extract expected output type for closure return type inference.
+    /// Returns None if no expectation is available or it can't be extracted.
+    fn extract_closure_expected_output(
+        &self,
+        expectation: Ty<'ctx>,
+        cs: &mut Cs<'ctx>,
+    ) -> Option<Ty<'ctx>> {
+        let expectation = cs.infer_cx.resolve_vars_if_possible(expectation);
+
+        match expectation.kind() {
+            TyKind::Closure { output, .. } => Some(output),
+            TyKind::FnPointer { output, .. } => Some(output),
+            _ => None,
+        }
+    }
+
+    /// Updates the global function signature for a closure with fully resolved types.
+    ///
+    /// This is critical because the initial signature created during closure synthesis may contain
+    /// inference variables (e.g., `{var(N)}`). Codegen uses the global signature cache, so if we don't
+    /// update it after type inference resolves these variables, `normalize_post_monomorphization` will panic.
+    fn update_closure_signature(&self, closure_def_id: DefinitionID, closure_ty: Ty<'ctx>) {
+        use crate::sema::models::{
+            ClosureKind, LabeledFunctionParameter, LabeledFunctionSignature,
+        };
+
+        let TyKind::Closure {
+            inputs,
+            output,
+            kind,
+            ..
+        } = closure_ty.kind()
+        else {
+            return;
+        };
+
+        let gcx = self.gcx();
+        let old_sig = gcx.get_signature(closure_def_id);
+
+        // Reconstruct self_ty
+        let self_ty = match kind {
+            ClosureKind::Fn => {
+                Ty::new(TyKind::Pointer(closure_ty, hir::Mutability::Immutable), gcx)
+            }
+            ClosureKind::FnMut => {
+                Ty::new(TyKind::Pointer(closure_ty, hir::Mutability::Mutable), gcx)
+            }
+            ClosureKind::FnOnce => closure_ty,
+        };
+
+        let mut new_inputs = Vec::with_capacity(old_sig.inputs.len());
+
+        // Handle self (first arg)
+        if !old_sig.inputs.is_empty() {
+            let old_self = &old_sig.inputs[0];
+            new_inputs.push(LabeledFunctionParameter {
+                ty: self_ty,
+                ..old_self.clone()
+            });
+        }
+
+        // Handle explicit args
+        // inputs (from closure_ty) corresponds to old_sig.inputs[1..]
+        for (i, param_ty) in inputs.iter().enumerate() {
+            // +1 for self
+            if i + 1 < old_sig.inputs.len() {
+                let old_param = &old_sig.inputs[i + 1];
+                new_inputs.push(LabeledFunctionParameter {
+                    ty: *param_ty,
+                    ..old_param.clone()
+                });
+            }
+        }
+
+        let new_sig = LabeledFunctionSignature {
+            inputs: new_inputs,
+            output: output, // resolved output from closure_ty
+            ..old_sig.clone()
+        };
+
+        gcx.cache_signature(closure_def_id, new_sig);
+    }
+}
+
+struct DefaultParamRefChecker<'a> {
+    param_ids: &'a [NodeID],
+    param_symbols: &'a [Symbol],
+    found: bool,
+}
+
+impl<'a> hir::HirVisitor for DefaultParamRefChecker<'a> {
+    fn visit_resolved_path(&mut self, node: &hir::ResolvedPath) -> Self::Result {
+        if let hir::ResolvedPath::Resolved(path) = node {
+            match path.resolution {
+                hir::Resolution::LocalVariable(id) => {
+                    if self.param_ids.contains(&id) {
+                        self.found = true;
+                    }
+                }
+                hir::Resolution::Error => {
+                    if path
+                        .segments
+                        .iter()
+                        .any(|segment| self.param_symbols.contains(&segment.identifier.symbol))
+                    {
+                        self.found = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        hir::walk_resolved_path(self, node)
+    }
+}
+
+#[derive(Default, Clone, Copy)]
+struct CaptureUsage {
+    moved: bool,
+    mut_borrow: bool,
+}
+
+struct CaptureInfo {
+    name: Symbol,
+    usage: CaptureUsage,
+}
+
+enum UseContext {
+    Value,
+    Place,
+    Borrow { mutable: bool },
+}
+
+/// Collects free variable references from a closure body.
+/// A "capture" is a local variable referenced in the closure body
+/// that is not a closure parameter or locally declared.
+struct CaptureCollector<'a, 'ctx> {
+    /// IDs of closure parameters (these are NOT captures)
+    param_ids: &'a rustc_hash::FxHashSet<NodeID>,
+    /// IDs of variables declared inside the closure body (NOT captures)
+    local_decls: rustc_hash::FxHashSet<NodeID>,
+    /// Capture order (first-seen)
+    order: Vec<NodeID>,
+    /// Capture info keyed by NodeID
+    info: rustc_hash::FxHashMap<NodeID, CaptureInfo>,
+    /// Reference to the checker for accessing local bindings
+    checker: &'a Checker<'ctx>,
+    /// Adjustments recorded during type checking
+    adjustments: &'a rustc_hash::FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
+}
+
+impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
+    fn record_capture(&mut self, id: NodeID, name: Symbol, usage: CaptureUsage) {
+        let entry = self.info.entry(id).or_insert_with(|| {
+            self.order.push(id);
+            CaptureInfo {
+                name,
+                usage: CaptureUsage::default(),
+            }
+        });
+        if usage.moved {
+            entry.usage.moved = true;
+        }
+        if usage.mut_borrow {
+            entry.usage.mut_borrow = true;
+        }
+    }
+
+    fn capture_usage(
+        &self,
+        expr: &hir::Expression,
+        ctx: UseContext,
+        local_ty: Ty<'ctx>,
+    ) -> CaptureUsage {
+        match ctx {
+            UseContext::Borrow { mutable } => CaptureUsage {
+                moved: false,
+                mut_borrow: mutable,
+            },
+            UseContext::Place => CaptureUsage {
+                moved: false,
+                mut_borrow: true,
+            },
+            UseContext::Value => {
+                if let Some(adjustments) = self.adjustments.get(&expr.id) {
+                    if adjustments
+                        .iter()
+                        .any(|adj| matches!(adj, Adjustment::BorrowMutable))
+                    {
+                        return CaptureUsage {
+                            moved: false,
+                            mut_borrow: true,
+                        };
+                    }
+                    if adjustments
+                        .iter()
+                        .any(|adj| matches!(adj, Adjustment::BorrowImmutable))
+                    {
+                        return CaptureUsage {
+                            moved: false,
+                            mut_borrow: false,
+                        };
+                    }
+                }
+
+                if self.checker.gcx().is_type_copyable(local_ty) {
+                    CaptureUsage {
+                        moved: false,
+                        mut_borrow: false,
+                    }
+                } else {
+                    CaptureUsage {
+                        moved: true,
+                        mut_borrow: false,
+                    }
+                }
+            }
+        }
+    }
+
+    fn maybe_capture(&mut self, expr: &hir::Expression, path: &hir::ResolvedPath, ctx: UseContext) {
+        let hir::ResolvedPath::Resolved(path) = path else {
+            return;
+        };
+        let hir::Resolution::LocalVariable(id) = path.resolution else {
+            return;
+        };
+        // Skip closure parameters
+        if self.param_ids.contains(&id) {
+            return;
+        }
+        // Skip variables declared inside this closure body
+        if self.local_decls.contains(&id) {
+            return;
+        }
+        let Some(binding) = self.checker.try_get_local(id) else {
+            return;
+        };
+
+        let name = path
+            .segments
+            .last()
+            .map(|s| s.identifier.symbol)
+            .unwrap_or_else(|| Symbol::new("_"));
+        let usage = self.capture_usage(expr, ctx, binding.ty);
+        self.record_capture(id, name, usage);
+    }
+
+    fn collect_block(&mut self, block: &hir::Block) {
+        for stmt in &block.statements {
+            self.collect_statement(stmt);
+        }
+        if let Some(tail) = block.tail.as_deref() {
+            self.collect_expr(tail, UseContext::Value);
+        }
+    }
+
+    fn collect_statement(&mut self, stmt: &hir::Statement) {
+        match &stmt.kind {
+            hir::StatementKind::Declaration(_) => {}
+            hir::StatementKind::Expression(expr) => {
+                self.collect_expr(expr, UseContext::Value);
+            }
+            hir::StatementKind::Variable(local) => {
+                // First collect captures from the initializer (before registering the local)
+                if let Some(init) = local.initializer.as_deref() {
+                    self.collect_expr(init, UseContext::Value);
+                }
+                // Mark this local as declared inside the closure body
+                // Note: Use pattern.id since that's what name resolution uses
+                self.local_decls.insert(local.pattern.id);
+            }
+            hir::StatementKind::Break | hir::StatementKind::Continue => {}
+            hir::StatementKind::Return(expr) => {
+                if let Some(expr) = expr.as_deref() {
+                    self.collect_expr(expr, UseContext::Value);
+                }
+            }
+            hir::StatementKind::Loop { block, .. } => {
+                self.collect_block(block);
+            }
+            hir::StatementKind::Defer(block) => {
+                self.collect_block(block);
+            }
+            hir::StatementKind::Guard {
+                condition,
+                else_block,
+            } => {
+                self.collect_expr(condition, UseContext::Value);
+                self.collect_block(else_block);
+            }
+        }
+    }
+
+    fn collect_expr(&mut self, expr: &hir::Expression, ctx: UseContext) {
+        match &expr.kind {
+            hir::ExpressionKind::Literal(_) | hir::ExpressionKind::Malformed => {}
+            hir::ExpressionKind::Closure(closure) => {
+                // For nested closures, propagate their captures to our capture list.
+                // The nested closure has already been type-checked (during body synthesis),
+                // so its captures are cached.
+                if let Some(nested_captures) =
+                    self.checker.gcx().get_closure_captures(closure.def_id)
+                {
+                    for cap in &nested_captures.captures {
+                        // Skip if this is one of our parameters
+                        if self.param_ids.contains(&cap.source_id) {
+                            continue;
+                        }
+                        // Skip if this is a local declared in our closure body
+                        // (the nested closure can access it directly)
+                        if self.local_decls.contains(&cap.source_id) {
+                            continue;
+                        }
+                        // Skip if we can't find the binding (shouldn't happen)
+                        if self.checker.try_get_local(cap.source_id).is_none() {
+                            continue;
+                        }
+                        // Propagate the capture - the nested closure needs this variable,
+                        // so we must capture it too to make it available
+                        let usage = CaptureUsage {
+                            moved: matches!(
+                                cap.capture_kind,
+                                crate::sema::models::CaptureKind::ByMove
+                            ),
+                            mut_borrow: matches!(
+                                cap.capture_kind,
+                                crate::sema::models::CaptureKind::ByRef { mutable: true }
+                            ),
+                        };
+                        self.record_capture(cap.source_id, cap.name, usage);
+                    }
+                }
+            }
+            hir::ExpressionKind::Path(path) => {
+                self.maybe_capture(expr, path, ctx);
+            }
+            hir::ExpressionKind::Member { target, .. } => {
+                self.collect_expr(target, ctx);
+            }
+            hir::ExpressionKind::InferredMember { .. } => {}
+            hir::ExpressionKind::Array(items) | hir::ExpressionKind::Tuple(items) => {
+                for item in items {
+                    self.collect_expr(item, UseContext::Value);
+                }
+            }
+            hir::ExpressionKind::Repeat { value, .. } => {
+                self.collect_expr(value, UseContext::Value);
+            }
+            hir::ExpressionKind::If(expr) => {
+                self.collect_expr(&expr.condition, UseContext::Value);
+                self.collect_expr(&expr.then_block, UseContext::Value);
+                if let Some(else_block) = expr.else_block.as_deref() {
+                    self.collect_expr(else_block, UseContext::Value);
+                }
+            }
+            hir::ExpressionKind::Match(expr) => {
+                self.collect_expr(&expr.value, UseContext::Value);
+                for arm in &expr.arms {
+                    if let Some(guard) = arm.guard.as_deref() {
+                        self.collect_expr(guard, UseContext::Value);
+                    }
+                    self.collect_expr(&arm.body, UseContext::Value);
+                }
+            }
+            hir::ExpressionKind::Call { callee, arguments } => {
+                self.collect_expr(callee, UseContext::Value);
+                for arg in arguments {
+                    self.collect_expr(&arg.expression, UseContext::Value);
+                }
+            }
+            hir::ExpressionKind::MethodCall {
+                receiver,
+                arguments,
+                ..
+            } => {
+                self.collect_expr(receiver, UseContext::Value);
+                for arg in arguments {
+                    self.collect_expr(&arg.expression, UseContext::Value);
+                }
+            }
+            hir::ExpressionKind::Reference(value, mutability) => {
+                let mutable = matches!(mutability, hir::Mutability::Mutable);
+                self.collect_expr(value, UseContext::Borrow { mutable });
+            }
+            hir::ExpressionKind::Dereference(value) => {
+                self.collect_expr(value, ctx);
+            }
+            hir::ExpressionKind::Binary(_, lhs, rhs) => {
+                self.collect_expr(lhs, UseContext::Value);
+                self.collect_expr(rhs, UseContext::Value);
+            }
+            hir::ExpressionKind::AssignOp(_, lhs, rhs) => {
+                self.collect_expr(lhs, UseContext::Place);
+                self.collect_expr(rhs, UseContext::Value);
+            }
+            hir::ExpressionKind::Unary(_, value) | hir::ExpressionKind::CastAs(value, _) => {
+                self.collect_expr(value, UseContext::Value);
+            }
+            hir::ExpressionKind::TupleAccess(value, _) => {
+                self.collect_expr(value, ctx);
+            }
+            hir::ExpressionKind::Assign(lhs, rhs) => {
+                self.collect_expr(lhs, UseContext::Place);
+                self.collect_expr(rhs, UseContext::Value);
+            }
+            hir::ExpressionKind::PatternBinding(binding) => {
+                self.collect_expr(&binding.expression, UseContext::Value);
+            }
+            hir::ExpressionKind::Block(block) | hir::ExpressionKind::UnsafeBlock(block) => {
+                self.collect_block(block);
+            }
+            hir::ExpressionKind::StructLiteral(literal) => {
+                for field in &literal.fields {
+                    self.collect_expr(&field.expression, UseContext::Value);
+                }
+            }
         }
     }
 }

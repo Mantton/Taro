@@ -373,9 +373,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
         let gcx = self.infer_cx.gcx;
 
         if result.is_ok() {
-            if check_unresolved
-                && gcx.dcx().error_count() == self.error_count_at_start
-            {
+            if check_unresolved && gcx.dcx().error_count() == self.error_count_at_start {
                 self.check_unresolved_vars();
             }
             return;

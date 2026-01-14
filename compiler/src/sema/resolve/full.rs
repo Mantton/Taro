@@ -636,6 +636,15 @@ impl<'r, 'a> Actor<'r, 'a> {
                 self.resolve_path_with_source(node.id, &literal.path, ResolutionSource::Type);
                 ast::walk_expression(self, node);
             }
+            ast::ExpressionKind::Closure(closure) => {
+                // Resolve closure in a new lexical scope
+                self.with_scope_source(LexicalScopeSource::Plain, |this| {
+                    // Resolve signature (registers parameters in current scope)
+                    this.resolve_function_signature(&closure.signature);
+                    // Resolve the body expression in the same scope
+                    this.visit_expression(&closure.body);
+                });
+            }
             _ => ast::walk_expression(self, node),
         }
     }

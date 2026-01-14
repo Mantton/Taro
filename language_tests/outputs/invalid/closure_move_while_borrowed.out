@@ -1,0 +1,4 @@
+error: cannot move out of borrowed content
+ -> language_tests/source_files/invalid/closure_move_while_borrowed.tr:15:17
+	    consume_list(list)
+	                 ^^^^

@@ -1,0 +1,43 @@
+/// Callable interfaces for closures and function-like types.
+///
+/// These interfaces define the calling conventions for closures:
+/// - `Fn`: Can be called multiple times with shared access to captures
+/// - `FnMut`: Can be called multiple times with mutable access to captures
+/// - `FnOnce`: Can be called at most once, consuming the closure
+///
+/// The hierarchy is: Fn ⊂ FnMut ⊂ FnOnce
+/// - All `Fn` closures also implement `FnMut` and `FnOnce`
+/// - All `FnMut` closures also implement `FnOnce`
+
+/// A closure or function that can be called exactly once.
+///
+/// Calling a `FnOnce` closure consumes it, transferring ownership of any
+/// captured values. This is required when a closure needs to move out of
+/// its captured environment.
+///
+/// Any closure that captures values by move and consumes them in its body
+/// will only implement `FnOnce`, not `Fn` or `FnMut`.
+public interface FnOnce[Args: Tuple, Output] {
+    func callOnce(self, args: Args) -> Output
+}
+
+/// A closure or function that can be called multiple times with mutable access.
+///
+/// The closure receives mutable access (`&mut self`) to its captured environment,
+/// allowing mutation of captured values.
+///
+/// All `FnMut` closures also implement `FnOnce`.
+public interface FnMut[Args: Tuple, Output]: FnOnce[Args, Output] {
+    func callMut(&mut self, args: Args) -> Output
+}
+
+/// A closure or function that can be called multiple times.
+///
+/// The closure receives shared access (`&self`) to its captured environment,
+/// meaning it cannot consume or mutate captured values (unless they are
+/// interior-mutable or Copy).
+///
+/// All `Fn` closures also implement `FnMut` and `FnOnce`.
+public interface Fn[Args: Tuple, Output]: FnMut[Args, Output] {
+    func call(&self, args: Args) -> Output
+}

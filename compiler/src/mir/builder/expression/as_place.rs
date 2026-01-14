@@ -3,6 +3,7 @@ use crate::{
     mir::{
         BasicBlockId, BlockAnd, BlockAndExtension, LocalId, Place, PlaceElem, builder::MirBuilder,
     },
+    sema::models::{CaptureKind, TyKind},
     thir::{ExprId, ExprKind},
     unpack,
 };
@@ -41,6 +42,47 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     block.and(PlaceBuilder::from_local(local))
                 }
             }
+            ExprKind::Upvar {
+                field_index,
+                capture_kind,
+            } => {
+                // Upvar access uses the closure's self parameter (_1).
+                let self_local = LocalId::from_raw(1);
+                let self_ty = self.body.locals[self_local].ty;
+                let needs_self_deref =
+                    matches!(self_ty.kind(), TyKind::Pointer(..) | TyKind::Reference(..));
+
+                let mut projection = Vec::new();
+                if needs_self_deref {
+                    projection.push(PlaceElem::Deref);
+                }
+
+                let field_ty = match capture_kind {
+                    CaptureKind::ByRef { mutable } => {
+                        let mutability = if *mutable {
+                            Mutability::Mutable
+                        } else {
+                            Mutability::Immutable
+                        };
+                        crate::sema::models::Ty::new(
+                            TyKind::Reference(expr.ty, mutability),
+                            self.gcx,
+                        )
+                    }
+                    CaptureKind::ByCopy | CaptureKind::ByMove => expr.ty,
+                };
+
+                projection.push(PlaceElem::Field(*field_index, field_ty));
+
+                if matches!(capture_kind, CaptureKind::ByRef { .. }) {
+                    projection.push(PlaceElem::Deref);
+                }
+
+                block.and(PlaceBuilder {
+                    base: self_local,
+                    projection,
+                })
+            }
             ExprKind::Deref(expr_id) => {
                 let mut base = unpack!(block = self.expr_as_place(block, *expr_id, mutability));
                 base.projection.push(PlaceElem::Deref);
@@ -63,6 +105,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             | ExprKind::Unary { .. }
             | ExprKind::Binary { .. }
             | ExprKind::Cast { .. }
+            | ExprKind::ClosureToFnPointer { .. }
             | ExprKind::Logical { .. }
             | ExprKind::Call { .. }
             | ExprKind::BoxExistential { .. }
@@ -72,7 +115,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             | ExprKind::Array { .. }
             | ExprKind::Repeat { .. }
             | ExprKind::Adt { .. }
-            | ExprKind::Zst { .. } => {
+            | ExprKind::Zst { .. }
+            | ExprKind::Closure { .. } => {
                 let temp = unpack!(block = self.as_temp(block, expr_id));
                 block.and(PlaceBuilder::from_local(temp))
             }

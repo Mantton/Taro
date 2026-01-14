@@ -94,6 +94,18 @@ Taro features a built-in package manager that feels familiar to users of Cargo o
 
 Contributions are welcome! Please check the `docs` directory for more information on the language internals.
 
+## Design & Naming
+
+Taro follows specific naming conventions for its standard library and core components:
+
+- **Functions & Methods**: camelCase (e.g., `toString`, `makeIterator`).
+- **Types (Structs, Enums, Interfaces)**: PascalCase (e.g., `String`, `Option`).
+- **Variables**: snake_case (e.g., `local_var`, `index`).
+- **Constants**: SCREAMING_SNAKE_CASE (e.g., `MAX_SIZE`).
+
+**Exceptions:**
+- **Intrinsics**: Intrinsic functions provided by the compiler are prefixed with `__intrinsic_` and use snake_case (e.g., `__intrinsic_ptr_add`).
+
 ## Repository Structure
 
 -   `compiler/`: The core compiler source code (parsing, HIR, THIR, MIR, Codegen).

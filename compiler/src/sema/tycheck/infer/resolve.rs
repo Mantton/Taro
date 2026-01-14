@@ -28,6 +28,13 @@ impl<'a, 'gcx> TypeFolder<'gcx> for InferVarResolver<'a, 'gcx> {
         // inference variables nested inside non-infer shells like `&T`, `*T`, tuples, and
         // function pointers.
         let shallow = self.icx.shallow_resolve(ty);
+
+        // DEBUG
+        // if let TyKind::Infer(_) = ty.kind() {
+        //      let gcx = self.icx.gcx;
+        //      eprintln!("DEBUG InferVarResolver: resolving {} -> {}", ty.format(gcx), shallow.format(gcx));
+        // }
+
         shallow.super_fold_with(self)
     }
 

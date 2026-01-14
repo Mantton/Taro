@@ -71,6 +71,13 @@ fn ty_symbol_with(gcx: GlobalContext, ty: Ty) -> String {
             sanitize(ident.symbol.as_str())
         }
         TyKind::Parameter(p) => p.name.as_str().into(),
+        TyKind::Closure { closure_def_id, .. } => {
+            // Use a hash-based identifier for closures
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            closure_def_id.hash(&mut hasher);
+            format!("closure{:x}", hasher.finish())
+        }
         TyKind::Infer(_) | TyKind::Error => "err".into(),
         TyKind::Never => "z".into(),
     }
@@ -94,6 +101,11 @@ pub fn mangle(gcx: GlobalContext, id: hir::DefinitionID) -> String {
             TypeHead::Primary(PrimaryType::UInt(u)) => u.name_str().into(),
             TypeHead::Primary(PrimaryType::Float(f)) => f.name_str().into(),
             TypeHead::Nominal(def_id) => gcx.definition_ident(def_id).symbol.as_str().into(),
+            TypeHead::Closure(def_id) => {
+                let mut hasher = DefaultHasher::new();
+                def_id.hash(&mut hasher);
+                format!("closure{:x}", hasher.finish())
+            }
             TypeHead::Reference(mt) => format!("ref{}", mt.display_str()),
             TypeHead::Pointer(mt) => format!("ptr{}", mt.display_str()),
             TypeHead::Tuple(len) => format!("tuple{len}"),
@@ -108,11 +120,24 @@ pub fn mangle(gcx: GlobalContext, id: hir::DefinitionID) -> String {
         .unwrap_or_else(|| gcx.config.identifier.clone());
     let pkg_ident = sanitize(pkg_ident.as_ref());
 
-    let leaf_ident = output
-        .definition_to_ident
-        .get(&id)
-        .map(|i| sanitize(i.symbol.as_str()))
-        .unwrap_or_else(|| sanitize(gcx.definition_ident(id).symbol.as_str()));
+    // Check if this is a closure (synthetic definition)
+    let leaf_ident = if let Some(ident) = output.definition_to_ident.get(&id) {
+        sanitize(ident.symbol.as_str())
+    } else if gcx.get_closure_captures(id).is_some() {
+        // This is a closure - generate a unique name based on def_id
+        let mut hasher = DefaultHasher::new();
+        id.hash(&mut hasher);
+        format!("closure_{:x}", hasher.finish())
+    } else {
+        // Try to get from synthetic definitions, or use anonymous fallback
+        if let Some(def) = gcx.store.synthetic_definitions.borrow().get(&id) {
+            sanitize(def.name.as_str())
+        } else {
+            let mut hasher = DefaultHasher::new();
+            id.hash(&mut hasher);
+            format!("anon_{:x}", hasher.finish())
+        }
+    };
 
     // Build module path from parents (skip root module).
     let mut modules: Vec<String> = vec![];

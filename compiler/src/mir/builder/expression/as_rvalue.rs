@@ -39,6 +39,17 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     kind: CastKind::Numeric,
                 })
             }
+            ExprKind::ClosureToFnPointer { closure, .. } => {
+                // Convert non-capturing closure to function pointer
+                // The closure operand is evaluated (though for non-capturing closures
+                // this is essentially a no-op), then cast to a fn pointer type.
+                let operand = unpack!(block = self.as_operand(block, *closure));
+                block.and(Rvalue::Cast {
+                    operand,
+                    ty: expr.ty,
+                    kind: CastKind::ClosureToFnPointer,
+                })
+            }
             ExprKind::Make { .. } => unreachable!("make should be handled in into_dest"),
             ExprKind::Binary { op, lhs, rhs } => {
                 let lhs = unpack!(block = self.as_operand(block, *lhs));
@@ -106,13 +117,15 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             | ExprKind::Deref(..)
             | ExprKind::Reference { .. }
             | ExprKind::Local(..)
+            | ExprKind::Upvar { .. }
             | ExprKind::Logical { .. }
             | ExprKind::Call { .. }
             | ExprKind::BoxExistential { .. }
             | ExprKind::ExistentialUpcast { .. }
             | ExprKind::Block(..)
             | ExprKind::Adt(..)
-            | ExprKind::Field { .. } => {
+            | ExprKind::Field { .. }
+            | ExprKind::Closure { .. } => {
                 debug_assert!(!matches!(
                     Category::of(&expr.kind),
                     Category::Rvalue(RvalueFunc::AsRvalue) | Category::Constant

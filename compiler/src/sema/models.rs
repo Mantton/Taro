@@ -237,6 +237,29 @@ impl<'arena> Ty<'arena> {
                     out
                 }
             }
+            TyKind::Closure {
+                inputs,
+                output,
+                kind,
+                ..
+            } => {
+                let kind_str = match kind {
+                    ClosureKind::Fn => "Fn",
+                    ClosureKind::FnMut => "FnMut",
+                    ClosureKind::FnOnce => "FnOnce",
+                };
+                let mut out = format!("closure<{}>((", kind_str);
+                for (i, input) in inputs.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
+                    }
+                    out.push_str(&input.format(gcx));
+                }
+                out.push_str(") -> ");
+                out.push_str(&output.format(gcx));
+                out.push(')');
+                out
+            }
         }
     }
 }
@@ -312,6 +335,19 @@ pub enum TyKind<'arena> {
     },
     Infer(InferTy),
     Parameter(GenericParameter),
+    /// Anonymous closure type with captured environment
+    Closure {
+        /// Unique ID for this closure definition
+        closure_def_id: DefinitionID,
+        /// Generic arguments captured from enclosing scope
+        captured_generics: GenericArguments<'arena>,
+        /// Input parameter types
+        inputs: &'arena [Ty<'arena>],
+        /// Output type
+        output: Ty<'arena>,
+        /// Callable kind
+        kind: ClosureKind,
+    },
     Error,
     Never,
 }
@@ -325,6 +361,52 @@ pub enum AliasKind {
     Weak,
     /// Interface associated type accessed on a type parameter: `T.Item`
     Projection,
+}
+
+/// Classification of a closure's callable behavior
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClosureKind {
+    /// Can be called multiple times with shared access to captures (&self)
+    Fn,
+    /// Can be called multiple times with mutable access to captures (&mut self)
+    FnMut,
+    /// Can be called at most once, consuming the closure (self)
+    FnOnce,
+}
+
+/// How a variable is captured by a closure
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CaptureKind {
+    /// Value copied into closure (for Copy types)
+    ByCopy,
+    /// Reference to the original value stored in env
+    ByRef { mutable: bool },
+    /// Value moved into closure (ownership transferred)
+    ByMove,
+}
+
+/// A variable captured by a closure
+#[derive(Debug, Clone, Copy)]
+pub struct CapturedVar<'arena> {
+    /// The NodeID of the captured variable in the enclosing scope
+    pub source_id: hir::NodeID,
+    /// Name of the captured variable
+    pub name: Symbol,
+    /// Type of the captured value (original type, not ref type)
+    pub ty: Ty<'arena>,
+    /// How this variable is captured
+    pub capture_kind: CaptureKind,
+    /// Field index in the environment struct
+    pub field_index: crate::thir::FieldIndex,
+}
+
+/// Information about a closure's captured environment
+#[derive(Debug, Clone)]
+pub struct ClosureCaptures<'arena> {
+    /// All captured variables
+    pub captures: Vec<CapturedVar<'arena>>,
+    /// The callable kind inferred from body analysis
+    pub kind: ClosureKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -829,6 +911,12 @@ pub enum SyntheticMethodKind {
     MemberwiseHash,
     /// Equatable.==: compare each field for equality
     MemberwiseEquality,
+    /// Fn.call: invoke closure with shared access.
+    ClosureCall,
+    /// FnMut.call_mut: invoke closure with mutable access.
+    ClosureCallMut,
+    /// FnOnce.call_once: invoke closure consuming self.
+    ClosureCallOnce,
 }
 
 /// Mapping from an interface method to its implementation and instantiation template.

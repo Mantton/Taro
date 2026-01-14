@@ -1,0 +1,27 @@
+// Test nested closures - inner closures capturing from outer closure scopes
+func main() {
+    let x: int32 = 10
+
+    // Simple nested closure
+    let outer = || -> int32 {
+        let inner = || -> int32 { x }
+        inner()
+    }
+    std.assert(outer() == 10, "simple nested should return 10")
+
+    // Nested with computation
+    let y: int32 = 20
+    let outer2 = || -> int32 {
+        let inner = || -> int32 { x + y }
+        inner() + 5
+    }
+    std.assert(outer2() == 35, "nested with computation should return 35")
+
+    // Immediate call nested
+    let result = (|| -> int32 {
+        (|| -> int32 { x * 2 })()
+    })()
+    std.assert(result == 20, "immediate call nested should return 20")
+
+    std.print("closure_nested: PASSED\n")
+}

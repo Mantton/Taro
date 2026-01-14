@@ -69,7 +69,21 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 let len = self.lower_array_length(size);
                 Ty::new(TyKind::Array { element, len }, gcx)
             }
-            hir::TypeKind::Function { .. } => todo!(),
+            hir::TypeKind::Function { inputs, output } => {
+                let mut lowered_inputs = Vec::with_capacity(inputs.len());
+                for input in inputs {
+                    lowered_inputs.push(self.lower_type(input));
+                }
+                let lowered_inputs = gcx.store.interners.intern_ty_list(lowered_inputs);
+                let output = self.lower_type(output);
+                Ty::new(
+                    TyKind::FnPointer {
+                        inputs: lowered_inputs,
+                        output,
+                    },
+                    gcx,
+                )
+            }
             hir::TypeKind::BoxedExistential { interfaces } => {
                 let self_ty = gcx.types.self_type_parameter;
                 let mut lowered = Vec::with_capacity(interfaces.len());

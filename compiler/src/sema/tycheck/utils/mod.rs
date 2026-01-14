@@ -48,6 +48,7 @@ pub fn type_head_from_value_ty(ty: Ty<'_>) -> Option<TypeHead> {
         TyKind::Reference(_, mutbl) => Some(TypeHead::Reference(mutbl)),
         TyKind::Pointer(_, mutbl) => Some(TypeHead::Pointer(mutbl)),
         TyKind::Tuple(items) => Some(TypeHead::Tuple(items.len() as u16)),
+        TyKind::Closure { closure_def_id, .. } => Some(TypeHead::Closure(closure_def_id)),
         TyKind::Parameter(_)
         | TyKind::Infer(_)
         | TyKind::FnPointer { .. }

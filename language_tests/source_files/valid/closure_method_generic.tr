@@ -1,0 +1,98 @@
+// Test closures as generic parameters with generic structs
+
+// Generic container struct - T must be Copy for our methods to work
+struct Container[T: Copy]: Copy {
+    value: T
+}
+
+impl[T: Copy] Container[T] {
+    // Method with closure that transforms T to T
+    // Takes self by value to avoid borrow issues with generic Copy
+    func map[F: Fn[T, T]](self, _ f: F) -> T {
+        f(self.value)
+    }
+
+    // Method with FnOnce bound
+    func map_once[F: FnOnce[T, T]](self, _ f: F) -> T {
+        f(self.value)
+    }
+}
+
+// Generic pair struct
+struct Pair[T: Copy]: Copy {
+    first: T
+    second: T
+}
+
+impl[T: Copy] Pair[T] {
+    // Method with closure taking two args (unpacked tuple ABI), returning T
+    // Takes self by value
+    func combine[F: Fn[(T, T), T]](self, _ f: F) -> T {
+        f(self.first, self.second)  // Unpacked - no tuple construction
+    }
+
+    // Method applying same transformation to both elements
+    func map_both[F: Fn[T, T]](self, _ f: F) -> Pair[T] {
+        Pair[T] { first: f(self.first), second: f(self.second) }
+    }
+}
+
+// Generic higher-order function
+func apply_generic[T, F: Fn[T, T]](_ f: F, _ x: T) -> T {
+    f(x)
+}
+
+// Generic compose function (all same type for simplicity)
+func compose[T, F: Fn[T, T], G: Fn[T, T]](_ f: F, _ g: G, _ x: T) -> T {
+    let intermediate = f(x)
+    g(intermediate)
+}
+
+func main() {
+    // Test generic Container with int32
+    let int_container = Container[int32] { value: 10 }
+
+    let doubled = int_container.map(|x: int32| -> int32 { x * 2 })
+    std.assert(doubled == 20, "int map should work")
+
+    // Test with FnOnce (need fresh container since map consumed it)
+    let container2 = Container[int32] { value: 10 }
+    let incremented = container2.map_once(|x: int32| -> int32 { x + 1 })
+    std.assert(incremented == 11, "map_once should work")
+
+    // Test with capturing closure on generic method
+    let container3 = Container[int32] { value: 10 }
+    let multiplier: int32 = 5
+    let result = container3.map(|x: int32| -> int32 { x * multiplier })
+    std.assert(result == 50, "capturing closure with generic method")
+
+    // Test generic Pair with int32 (unpacked tuple ABI)
+    let int_pair = Pair[int32] { first: 3, second: 7 }
+
+    let sum = int_pair.combine(|a: int32, b: int32| -> int32 { a + b })
+    std.assert(sum == 10, "pair combine should work")
+
+    let pair2 = Pair[int32] { first: 3, second: 7 }
+    let product = pair2.combine(|a: int32, b: int32| -> int32 { a * b })
+    std.assert(product == 21, "pair combine product")
+
+    // Test map_both
+    let pair3 = Pair[int32] { first: 3, second: 7 }
+    let doubled_pair = pair3.map_both(|x: int32| -> int32 { x * 2 })
+    std.assert(doubled_pair.first == 6, "map_both first")
+    std.assert(doubled_pair.second == 14, "map_both second")
+
+    // Test generic higher-order function
+    let applied = apply_generic(|x: int32| -> int32 { x + 100 }, 5)
+    std.assert(applied == 105, "apply_generic should work")
+
+    // Test generic compose
+    let composed = compose(
+        |x: int32| -> int32 { x * 2 },
+        |x: int32| -> int32 { x + 1 },
+        5,
+    )
+    std.assert(composed == 11, "compose (5*2)+1 = 11")
+
+    std.print("closure_method_generic: PASSED\n")
+}

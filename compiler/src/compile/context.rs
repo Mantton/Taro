@@ -8,10 +8,10 @@ use crate::{
     mir::{self, Body, EscapeSummary},
     sema::{
         models::{
-            ConformanceRecord, ConformanceWitness, Const, Constraint, EnumDefinition, EnumVariant,
-            FloatTy, GenericArgument, GenericParameter, Generics, IntTy, InterfaceDefinition,
-            InterfaceReference, InterfaceRequirements, LabeledFunctionSignature, StructDefinition,
-            Ty, TyKind, UIntTy,
+            ClosureCaptures, ConformanceRecord, ConformanceWitness, Const, Constraint,
+            EnumDefinition, EnumVariant, FloatTy, GenericArgument, GenericParameter, Generics,
+            IntTy, InterfaceDefinition, InterfaceReference, InterfaceRequirements,
+            LabeledFunctionSignature, StructDefinition, Ty, TyKind, UIntTy,
         },
         resolve::models::{
             DefinitionKind, PrimaryType, ResolutionOutput, ScopeData, ScopeEntryData, TypeHead,
@@ -360,6 +360,18 @@ impl<'arena> GlobalContext<'arena> {
         });
     }
 
+    /// Get closure capture information for a closure definition.
+    pub fn get_closure_captures(self, id: DefinitionID) -> Option<ClosureCaptures<'arena>> {
+        self.with_type_database(id.package(), |db| db.closure_captures.get(&id).cloned())
+    }
+
+    /// Store closure capture information.
+    pub fn cache_closure_captures(self, id: DefinitionID, captures: ClosureCaptures<'arena>) {
+        self.with_type_database(id.package(), |db| {
+            db.closure_captures.insert(id, captures);
+        });
+    }
+
     #[track_caller]
     pub fn get_struct_definition(self, id: DefinitionID) -> &'arena StructDefinition<'arena> {
         self.with_type_database(id.package(), |db| db.def_to_struct_def.get(&id).cloned())
@@ -447,7 +459,8 @@ impl<'arena> GlobalContext<'arena> {
             TypeHead::Tuple(_)
             | TypeHead::Reference(_)
             | TypeHead::Pointer(_)
-            | TypeHead::Array => self.get_impl_target_ty(impl_id),
+            | TypeHead::Array
+            | TypeHead::Closure(_) => self.get_impl_target_ty(impl_id),
         }
     }
 
@@ -594,6 +607,9 @@ impl<'arena> GlobalContext<'arena> {
 
             // Aliases - resolve and check
             TyKind::Alias { .. } => false, // TODO: resolve alias and check
+
+            // Closures - not copyable by default (may capture non-copyable values)
+            TyKind::Closure { .. } => false,
 
             // Error/Infer - assume not copyable for safety
             TyKind::Error | TyKind::Infer(_) => false,
@@ -1032,6 +1048,8 @@ pub struct TypeDatabase<'arena> {
     pub resolved_aliases: FxHashMap<DefinitionID, Ty<'arena>>,
     /// Escape summaries for functions (computed during MIR optimization)
     pub def_to_escape_summary: FxHashMap<DefinitionID, EscapeSummary>,
+    /// Closure capture information keyed by closure definition ID
+    pub closure_captures: FxHashMap<DefinitionID, ClosureCaptures<'arena>>,
     pub empty_generics: Option<&'arena Generics>,
     pub empty_attributes: Option<&'arena hir::AttributeList>,
     /// Registered synthetic methods for THIR generation

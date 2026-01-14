@@ -1,0 +1,39 @@
+// Test higher-order functions with generic Fn trait bounds
+// Using f() syntax, not f.call()
+
+// Generic function accepting any Fn closure
+func apply[F: Fn[int32, int32]](_ f: F, _ x: int32) -> int32 {
+    f(x)
+}
+
+// Generic function with multiple args (unpacked tuple ABI)
+func apply2[F: Fn[(int32, int32), int32]](_ f: F, _ a: int32, _ b: int32) -> int32 {
+    f(a, b)  // No need to construct tuple - unpacked at call site
+}
+
+// Map-like function
+func map_val[F: Fn[int32, int32]](_ value: int32, _ transform: F) -> int32 {
+    transform(value)
+}
+
+func main() {
+    // Test with non-capturing closure
+    let doubled = apply(|x: int32| -> int32 { x * 2 }, 5)
+    std.assert(doubled == 10, "apply double(5) should be 10")
+
+    // Test with capturing closure (Fn kind - only reads)
+    let multiplier: int32 = 3
+    let tripled = apply(|x: int32| -> int32 { x * multiplier }, 4)
+    std.assert(tripled == 12, "apply triple(4) should be 12")
+
+    // Test multi-arg closure (unpacked tuple ABI)
+    let sum = apply2(|a: int32, b: int32| -> int32 { a + b }, 10, 20)
+    std.assert(sum == 30, "apply2 sum(10, 20) should be 30")
+
+    // Test chained applications
+    let result = map_val(5, |x: int32| -> int32 { x + 10 })
+    let result2 = map_val(result, |x: int32| -> int32 { x * 2 })
+    std.assert(result2 == 30, "chained map should be 30")
+
+    std.print("closure_higher_order: PASSED")
+}

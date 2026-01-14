@@ -12,8 +12,9 @@ use crate::{
         },
     },
     thir::{
-        self, Block, BlockId, Constant, ConstantKind, Expr, ExprId, ExprKind, FieldIndex, Param,
-        Stmt, StmtId, StmtKind, ThirFunction, ThirPackage, VariantIndex, pattern::pattern_from_hir,
+        self, Block, BlockId, ClosureCapture, Constant, ConstantKind, Expr, ExprId, ExprKind,
+        FieldIndex, Param, Stmt, StmtId, StmtKind, ThirFunction, ThirPackage, VariantIndex,
+        pattern::pattern_from_hir,
     },
 };
 use index_vec::IndexVec;
@@ -92,8 +93,13 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
         node: &hir::Function,
         fn_ctx: hir::FunctionContext,
     ) -> Self::Result {
-        let func = FunctionLower::lower(self.gcx, self.results.clone(), id, node);
+        let (func, nested_closures) =
+            FunctionLower::lower(self.gcx, self.results.clone(), id, node);
         self.functions.insert(id, func);
+        // Insert any nested closure bodies
+        for closure_func in nested_closures {
+            self.functions.insert(closure_func.id, closure_func);
+        }
         hir::walk_function(self, id, node, fn_ctx);
     }
 }
@@ -102,6 +108,11 @@ struct FunctionLower<'ctx> {
     gcx: GlobalContext<'ctx>,
     results: std::rc::Rc<TypeCheckResults<'ctx>>,
     func: ThirFunction<'ctx>,
+    /// Nested closure bodies collected during lowering
+    nested_closures: Vec<ThirFunction<'ctx>>,
+    /// For closure bodies: maps captured variable source_ids to (field_index, capture_kind)
+    captures_map:
+        Option<FxHashMap<crate::hir::NodeID, (FieldIndex, crate::sema::models::CaptureKind)>>,
 }
 
 impl<'ctx> FunctionLower<'ctx> {
@@ -110,7 +121,7 @@ impl<'ctx> FunctionLower<'ctx> {
         results: std::rc::Rc<TypeCheckResults<'ctx>>,
         id: DefinitionID,
         node: &hir::Function,
-    ) -> ThirFunction<'ctx> {
+    ) -> (ThirFunction<'ctx>, Vec<ThirFunction<'ctx>>) {
         let mut lower = FunctionLower {
             gcx,
             results,
@@ -125,11 +136,13 @@ impl<'ctx> FunctionLower<'ctx> {
                 arms: IndexVec::new(),
                 match_trees: FxHashMap::default(),
             },
+            nested_closures: Vec::new(),
+            captures_map: None,
         };
 
         lower.lower_params(node);
         lower.lower_body(node);
-        lower.func
+        (lower.func, lower.nested_closures)
     }
 
     fn lower_default_provider(
@@ -152,6 +165,8 @@ impl<'ctx> FunctionLower<'ctx> {
                 arms: IndexVec::new(),
                 match_trees: FxHashMap::default(),
             },
+            nested_closures: Vec::new(),
+            captures_map: None,
         };
 
         let expr_id = lower.lower_expr(expr);
@@ -164,6 +179,7 @@ impl<'ctx> FunctionLower<'ctx> {
         });
 
         lower.func.body = Some(block_id);
+        // Note: nested_closures from default providers are ignored for now
         lower.func
     }
 
@@ -633,6 +649,31 @@ impl<'ctx> FunctionLower<'ctx> {
                 }
             }
             Adjustment::Ignore(_) => expr,
+            Adjustment::ClosureToFnPointer { closure_def_id } => {
+                // Get the fn pointer type from the target type (set by type inference)
+                // The closure expression is converted to a ClosureToFnPointer expression
+                let closure_expr_id = self.push_expr(expr.kind, expr.ty, expr.span);
+
+                // The result type should be the function pointer type.
+                // Since this adjustment is only applied when coercing closure -> fn pointer,
+                // the expected type from the coercion context provides the fn pointer type.
+                // For now, we derive it from the closure's signature.
+                let fn_ptr_ty = match expr.ty.kind() {
+                    TyKind::Closure { inputs, output, .. } => {
+                        Ty::new(TyKind::FnPointer { inputs, output }, self.gcx)
+                    }
+                    _ => expr.ty, // fallback, shouldn't happen
+                };
+
+                Expr {
+                    kind: ExprKind::ClosureToFnPointer {
+                        closure: closure_expr_id,
+                        closure_def_id,
+                    },
+                    ty: fn_ptr_ty,
+                    span,
+                }
+            }
         }
     }
 
@@ -1104,8 +1145,86 @@ impl<'ctx> FunctionLower<'ctx> {
                     arms: vec![true_arm_id, false_arm_id],
                 }
             }
-            _ => {
-                unimplemented!("hir node lowering pass");
+            hir::ExpressionKind::Closure(closure) => {
+                // Get closure capture information from type checking phase
+                let captures_info = self.gcx.get_closure_captures(closure.def_id);
+                let kind = captures_info
+                    .as_ref()
+                    .map(|c| c.kind)
+                    .unwrap_or(crate::sema::models::ClosureKind::Fn);
+
+                // Build capture expressions for each captured variable
+                let mut captures = vec![];
+                if let Some(ref caps) = captures_info {
+                    for cap in &caps.captures {
+                        // Check if this capture is itself an upvar in our current closure scope
+                        // (needed for nested closures)
+                        let base_expr_kind = if let Some(captures_map) = &self.captures_map {
+                            if let Some(&(outer_field_index, outer_capture_kind)) =
+                                captures_map.get(&cap.source_id)
+                            {
+                                // Variable is captured from outer closure - generate Upvar
+                                ExprKind::Upvar {
+                                    field_index: outer_field_index,
+                                    capture_kind: outer_capture_kind,
+                                }
+                            } else {
+                                ExprKind::Local(cap.source_id)
+                            }
+                        } else {
+                            ExprKind::Local(cap.source_id)
+                        };
+
+                        let mut capture_expr_id = self.func.exprs.push(Expr {
+                            kind: base_expr_kind,
+                            ty: cap.ty,
+                            span,
+                        });
+
+                        // For by-ref captures, wrap the local in a reference expression.
+                        if let crate::sema::models::CaptureKind::ByRef { mutable } =
+                            cap.capture_kind
+                        {
+                            let mutability = if mutable {
+                                crate::hir::Mutability::Mutable
+                            } else {
+                                crate::hir::Mutability::Immutable
+                            };
+                            let ref_ty = Ty::new(
+                                crate::sema::models::TyKind::Reference(cap.ty, mutability),
+                                self.gcx,
+                            );
+                            capture_expr_id = self.func.exprs.push(Expr {
+                                kind: ExprKind::Reference {
+                                    mutable,
+                                    expr: capture_expr_id,
+                                },
+                                ty: ref_ty,
+                                span,
+                            });
+                        }
+
+                        captures.push(ClosureCapture {
+                            source_id: cap.source_id,
+                            capture_expr: capture_expr_id,
+                            capture_kind: cap.capture_kind,
+                            field_index: cap.field_index,
+                        });
+                    }
+                }
+
+                // Generate THIR function for the closure body
+                let closure_func = self.lower_closure_body(closure);
+                self.nested_closures.push(closure_func);
+
+                ExprKind::Closure {
+                    def_id: closure.def_id,
+                    captures,
+                    kind,
+                }
+            }
+            hir::ExpressionKind::Malformed => {
+                unreachable!("malformed expression should not reach THIR lowering");
             }
         };
 
@@ -1121,6 +1240,92 @@ impl<'ctx> FunctionLower<'ctx> {
             hir::Literal::Float(f) => ConstantKind::Float(*f),
             hir::Literal::Nil => ConstantKind::Unit,
         }
+    }
+
+    /// Lower a closure body into a separate THIR function
+    fn lower_closure_body(&mut self, closure: &hir::ClosureExpr) -> ThirFunction<'ctx> {
+        // Get captures for this closure
+        let captures = self.gcx.get_closure_captures(closure.def_id);
+
+        // Build the captures_map: source_id -> (field_index, type)
+        let captures_map = captures.as_ref().map(|caps| {
+            caps.captures
+                .iter()
+                .map(|cap| (cap.source_id, (cap.field_index, cap.capture_kind)))
+                .collect::<FxHashMap<_, _>>()
+        });
+
+        // Generate a synthetic node ID for the self parameter
+        // Use a high value based on the closure def_id's package to avoid collisions
+        let self_param_id = crate::hir::NodeID::from_raw(
+            closure
+                .def_id
+                .package()
+                .raw()
+                .wrapping_mul(0x10000)
+                .wrapping_add(0xFFFF0000),
+        );
+
+        // Create a new FunctionLower for the closure body
+        let mut closure_lower = FunctionLower {
+            gcx: self.gcx,
+            results: self.results.clone(),
+            func: ThirFunction {
+                id: closure.def_id,
+                body: None,
+                span: closure.span,
+                params: vec![],
+                stmts: IndexVec::new(),
+                blocks: IndexVec::new(),
+                exprs: IndexVec::new(),
+                arms: IndexVec::new(),
+                match_trees: FxHashMap::default(),
+            },
+            nested_closures: Vec::new(),
+            captures_map,
+        };
+
+        // Get the full signature (self pointer + explicit params)
+        let signature = self.gcx.get_signature(closure.def_id);
+
+        // Add the self parameter (pointer to closure struct)
+        // This is the first parameter in the signature - MIR will place it at _1
+        if !signature.inputs.is_empty() {
+            let self_sig_param = &signature.inputs[0];
+            closure_lower.func.params.push(Param {
+                id: self_param_id, // Synthetic ID, not referenced by body
+                name: self_sig_param.name,
+                ty: self_sig_param.ty,
+                span: closure.span,
+            });
+        }
+
+        // Add explicit closure parameters (after self in the signature)
+        for (param, sig_param) in closure.params.iter().zip(signature.inputs.iter().skip(1)) {
+            closure_lower.func.params.push(Param {
+                id: param.id,
+                name: sig_param.name,
+                ty: sig_param.ty,
+                span: param.span,
+            });
+        }
+
+        // Lower the closure body expression
+        let body_expr_id = closure_lower.lower_expr(&closure.body);
+
+        // Create a block containing just the body expression
+        let block_id = BlockId::from_raw(closure_lower.func.blocks.len() as u32);
+        closure_lower.func.blocks.push(Block {
+            id: block_id,
+            stmts: vec![],
+            expr: Some(body_expr_id),
+        });
+        closure_lower.func.body = Some(block_id);
+
+        // Collect any nested closures from within this closure
+        self.nested_closures.extend(closure_lower.nested_closures);
+
+        closure_lower.func
     }
 
     fn lower_path_expression(
@@ -1211,7 +1416,20 @@ impl<'ctx> FunctionLower<'ctx> {
                     fields: Vec::new(),
                 })
             }
-            Resolution::LocalVariable(id) => ExprKind::Local(id),
+            Resolution::LocalVariable(id) => {
+                // Check if this is a captured variable that needs to be accessed via upvar
+                if let Some(captures_map) = &self.captures_map {
+                    if let Some(&(field_index, capture_kind)) = captures_map.get(&id) {
+                        // This is a captured variable - generate Upvar access
+                        return ExprKind::Upvar {
+                            field_index,
+                            capture_kind,
+                        };
+                    }
+                }
+                // Not a capture - regular local variable
+                ExprKind::Local(id)
+            }
             _ => unreachable!(),
         }
     }

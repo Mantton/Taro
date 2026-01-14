@@ -525,6 +525,8 @@ pub enum ExpressionKind {
     UnsafeBlock(Block),
     /// `Foo { a: 1, b: 2 }`
     StructLiteral(StructLiteral),
+    /// `|a, b| a + b` or `move |x| x`
+    Closure(ClosureExpr),
     Malformed,
 }
 
@@ -633,6 +635,34 @@ pub struct ExpressionField {
     pub span: Span,
 }
 
+/// Closure expression: `|args| body` or `move |args| body`
+#[derive(Debug, Clone)]
+pub struct ClosureExpr {
+    /// Unique definition ID for this closure
+    pub def_id: DefinitionID,
+    /// Closure parameters
+    pub params: Vec<ClosureParam>,
+    /// Optional explicit return type
+    pub return_ty: Option<Box<Type>>,
+    /// Closure body expression
+    pub body: Box<Expression>,
+    /// Whether `move` keyword was specified (forces by-move capture)
+    pub is_move: bool,
+    pub span: Span,
+}
+
+/// A parameter in a closure signature
+#[derive(Debug, Clone)]
+pub struct ClosureParam {
+    /// Node ID for this parameter binding
+    pub id: NodeID,
+    /// Parameter pattern (usually a simple binding)
+    pub pattern: Pattern,
+    /// Optional explicit type annotation
+    pub ty: Option<Box<Type>>,
+    pub span: Span,
+}
+
 // Pattern
 // Patterns
 #[derive(Debug, Clone)]
@@ -733,6 +763,14 @@ pub enum StdInterface {
     Iterator,
     /// Interface for types that can be converted into an Iterator.
     Iterable,
+    /// Callable interface for shared closures.
+    Fn,
+    /// Callable interface for mutable closures.
+    FnMut,
+    /// Callable interface for consuming closures.
+    FnOnce,
+    /// Marker interface for tuple types (compiler-implemented only).
+    Tuple,
 
     // Arithmetic operator interfaces
     /// `+` operator: `fn add(self, rhs: Rhs) -> Output`
@@ -782,6 +820,10 @@ impl StdInterface {
             StdInterface::Equatable => "Equatable",
             StdInterface::Iterator => "Iterator",
             StdInterface::Iterable => "Iterable",
+            StdInterface::Fn => "Fn",
+            StdInterface::FnMut => "FnMut",
+            StdInterface::FnOnce => "FnOnce",
+            StdInterface::Tuple => "Tuple",
             // Arithmetic operators
             StdInterface::Add => "Add",
             StdInterface::Sub => "Sub",
@@ -805,13 +847,17 @@ impl StdInterface {
     }
 
     /// Returns all standard interfaces for iteration.
-    pub const ALL: [StdInterface; 21] = [
+    pub const ALL: [StdInterface; 25] = [
         StdInterface::Copy,
         StdInterface::Clone,
         StdInterface::Hashable,
         StdInterface::Equatable,
         StdInterface::Iterator,
         StdInterface::Iterable,
+        StdInterface::Fn,
+        StdInterface::FnMut,
+        StdInterface::FnOnce,
+        StdInterface::Tuple,
         // Arithmetic operators
         StdInterface::Add,
         StdInterface::Sub,
@@ -843,7 +889,7 @@ impl StdInterface {
 
     /// Whether this interface is a marker-only interface (no methods to synthesize).
     pub fn is_marker_only(self) -> bool {
-        matches!(self, Self::Copy)
+        matches!(self, Self::Copy | Self::Tuple)
     }
 
     /// Whether this interface is an operator interface.
@@ -1718,6 +1764,14 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, node: &Expression) -> V::
             for field in &struct_literal.fields {
                 try_visit!(visitor.visit_expression(&field.expression));
             }
+        }
+        ExpressionKind::Closure(closure) => {
+            for param in &closure.params {
+                try_visit!(visitor.visit_pattern(&param.pattern));
+                visit_optional!(visitor, visit_type, &param.ty);
+            }
+            visit_optional!(visitor, visit_type, &closure.return_ty);
+            try_visit!(visitor.visit_expression(&closure.body));
         }
         ExpressionKind::Malformed => {}
     };

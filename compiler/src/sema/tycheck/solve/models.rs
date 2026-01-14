@@ -27,6 +27,10 @@ pub enum Adjustment<'ctx> {
         is_some: bool,
         generic_args: GenericArguments<'ctx>,
     },
+    /// Coerce a non-capturing closure to a function pointer
+    ClosureToFnPointer {
+        closure_def_id: DefinitionID,
+    },
     Ignore(&'ctx ()),
 }
 

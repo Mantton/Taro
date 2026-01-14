@@ -1,0 +1,61 @@
+// Test closures with explicit parameter types
+
+// Generic function - closure type inferred from usage
+func apply_int[F: Fn[int32, int32]](_ f: F, _ x: int32) -> int32 {
+    f(x)
+}
+
+// Generic function with generic value type
+func map_value[T, F: Fn[T, T]](_ value: T, _ f: F) -> T {
+    f(value)
+}
+
+// Method with known parameter types
+struct IntBox: Copy {
+    value: int32
+}
+
+impl IntBox {
+    func map[F: Fn[int32, int32]](&self, _ f: F) -> int32 {
+        f(self.value)
+    }
+}
+
+func main() {
+    // Test 1: Closure with explicit parameter types
+    let result1 = apply_int(|x: int32| -> int32 { x * 2 }, 5)
+    std.assert(result1 == 10, "apply_int should work")
+
+    // Test 2: Generic map with explicit types
+    let result2 = map_value(10, |x: int32| -> int32 { x + 5 })
+    std.assert(result2 == 15, "map_value should work")
+
+    // Test 3: Method with closure
+    let box = IntBox { value: 20 }
+    let result3 = box.map(|x: int32| -> int32 { x / 2 })
+    std.assert(result3 == 10, "IntBox.map should work")
+
+    // Test 4: Nested closure with explicit types
+    let outer = |a: int32| -> int32 {
+        let inner = |b: int32| -> int32 { b * 2 }
+        inner(a) + 1
+    }
+    let result4 = outer(5)
+    std.assert(result4 == 11, "nested closure should work")
+
+    // Test 5: Closure capturing and transforming
+    let base: int32 = 100
+    let add_base = |x: int32| -> int32 { x + base }
+    let result5 = apply_int(add_base, 50)
+    std.assert(result5 == 150, "capturing closure inference")
+
+    // Test 6: Multiple closures with same signature
+    let double = |x: int32| -> int32 { x * 2 }
+    let triple = |x: int32| -> int32 { x * 3 }
+    let r6a = apply_int(double, 5)
+    let r6b = apply_int(triple, 5)
+    std.assert(r6a == 10, "double should work")
+    std.assert(r6b == 15, "triple should work")
+
+    std.print("closure_explicit_params: PASSED\n")
+}

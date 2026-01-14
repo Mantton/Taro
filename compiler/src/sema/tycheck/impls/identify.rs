@@ -44,6 +44,7 @@ impl<'ctx> Actor<'ctx> {
     fn impl_owns_type(&self, head: TypeHead, impl_pkg: crate::PackageIndex) -> bool {
         match head {
             TypeHead::Nominal(id) => id.package() == impl_pkg,
+            TypeHead::Closure(id) => id.package() == impl_pkg,
             TypeHead::Primary(_)
             | TypeHead::Tuple(_)
             | TypeHead::Reference(_)

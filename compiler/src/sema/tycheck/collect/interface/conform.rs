@@ -4,10 +4,11 @@ use crate::{
     hir::{self, DefinitionID},
     sema::{
         models::{
-            AliasKind, AssociatedTypeDefinition, ConformanceWitness, GenericArgument,
+            AliasKind, AssociatedTypeDefinition, ClosureKind, ConformanceWitness, GenericArgument,
             GenericArguments, InterfaceConstantRequirement, InterfaceDefinition,
             InterfaceMethodRequirement, InterfaceReference, InterfaceRequirements,
-            LabeledFunctionSignature, MethodImplementation, MethodWitness, Ty, TyKind,
+            LabeledFunctionSignature, MethodImplementation, MethodWitness, SyntheticMethodKind, Ty,
+            TyKind,
         },
         resolve::models::TypeHead,
         tycheck::{
@@ -324,6 +325,17 @@ impl<'ctx> Actor<'ctx> {
             db.conformances.get(&type_head).cloned().unwrap_or_default()
         });
 
+        // Auto-implement Tuple for tuple types
+        if let Some(witness) = self.build_tuple_witness(type_head, interface) {
+            self.store_witness(type_head, interface, witness.clone());
+            return Some(witness);
+        }
+
+        if let Some(witness) = self.build_closure_witness(type_head, interface) {
+            self.store_witness(type_head, interface, witness.clone());
+            return Some(witness);
+        }
+
         for record in records {
             if record.interface.id == interface.id {
                 if let Ok(witness) = self.build_witness(type_head, &record) {
@@ -354,6 +366,151 @@ impl<'ctx> Actor<'ctx> {
         }
 
         None
+    }
+
+    /// Auto-implement Tuple for tuple types.
+    fn build_tuple_witness(
+        &self,
+        type_head: TypeHead,
+        interface: InterfaceReference<'ctx>,
+    ) -> Option<ConformanceWitness<'ctx>> {
+        // Only handle Tuple type heads
+        let TypeHead::Tuple(_) = type_head else {
+            return None;
+        };
+
+        // Check if this is the Tuple interface
+        let tuple_def = self
+            .context
+            .std_interface_def(crate::hir::StdInterface::Tuple)?;
+        if interface.id != tuple_def {
+            return None;
+        }
+
+        // Return an empty witness - Tuple is a marker interface with no requirements
+        Some(ConformanceWitness::default())
+    }
+
+    fn build_closure_witness(
+        &self,
+        type_head: TypeHead,
+        interface: InterfaceReference<'ctx>,
+    ) -> Option<ConformanceWitness<'ctx>> {
+        let TypeHead::Closure(closure_def_id) = type_head else {
+            return None;
+        };
+
+        let gcx = self.context;
+        let captures = gcx.get_closure_captures(closure_def_id)?;
+        let closure_kind = captures.kind;
+
+        let (required_kind, synth_kind) = self.closure_interface_kind(interface.id)?;
+        if !self.closure_kind_allows(closure_kind, required_kind) {
+            return None;
+        }
+
+        let sig = gcx.get_signature(closure_def_id);
+        if sig.inputs.is_empty() {
+            return None;
+        }
+
+        let inputs: Vec<Ty<'ctx>> = sig.inputs.iter().skip(1).map(|p| p.ty).collect();
+        let inputs_list = gcx.store.interners.intern_ty_list(inputs.clone());
+        let output = sig.output;
+        let closure_ty = Ty::new(
+            TyKind::Closure {
+                closure_def_id,
+                captured_generics: &[],
+                inputs: inputs_list,
+                output,
+                kind: closure_kind,
+            },
+            gcx,
+        );
+
+        let args_ty = match inputs_list.len() {
+            0 => gcx.types.void,
+            1 => inputs_list[0],
+            _ => Ty::new(TyKind::Tuple(inputs_list), gcx),
+        };
+
+        let mut args_iter = interface.arguments.iter();
+        let self_arg = match args_iter.next() {
+            Some(GenericArgument::Type(ty)) => *ty,
+            _ => return None,
+        };
+        if self_arg != closure_ty {
+            return None;
+        }
+        let args_arg = match args_iter.next() {
+            Some(GenericArgument::Type(ty)) => *ty,
+            _ => return None,
+        };
+        let output_arg = match args_iter.next() {
+            Some(GenericArgument::Type(ty)) => *ty,
+            _ => return None,
+        };
+        if args_iter.next().is_some() {
+            return None;
+        }
+        if args_arg != args_ty || output_arg != output {
+            return None;
+        }
+
+        let requirements = gcx.get_interface_requirements(interface.id)?;
+        let mut witness = ConformanceWitness::default();
+
+        for method in &requirements.methods {
+            let args_template = GenericsBuilder::identity_for_item(gcx, method.id);
+            let info = crate::sema::tycheck::derive::SyntheticMethodInfo {
+                kind: synth_kind,
+                self_ty: closure_ty,
+                interface_id: interface.id,
+                interface_args: interface.arguments,
+                method_id: method.id,
+                method_name: method.name,
+                syn_id: None,
+            };
+            gcx.register_synthetic_method(type_head, method.id, method.name, info);
+            witness.method_witnesses.insert(
+                method.id,
+                MethodWitness {
+                    implementation: MethodImplementation::Synthetic(synth_kind, None),
+                    args_template,
+                },
+            );
+        }
+
+        witness.extension_id = None;
+        Some(witness)
+    }
+
+    fn closure_interface_kind(
+        &self,
+        interface_id: DefinitionID,
+    ) -> Option<(ClosureKind, SyntheticMethodKind)> {
+        let gcx = self.context;
+        let fn_id = gcx.std_interface_def(hir::StdInterface::Fn)?;
+        let fn_mut_id = gcx.std_interface_def(hir::StdInterface::FnMut)?;
+        let fn_once_id = gcx.std_interface_def(hir::StdInterface::FnOnce)?;
+
+        if interface_id == fn_id {
+            Some((ClosureKind::Fn, SyntheticMethodKind::ClosureCall))
+        } else if interface_id == fn_mut_id {
+            Some((ClosureKind::FnMut, SyntheticMethodKind::ClosureCallMut))
+        } else if interface_id == fn_once_id {
+            Some((ClosureKind::FnOnce, SyntheticMethodKind::ClosureCallOnce))
+        } else {
+            None
+        }
+    }
+
+    fn closure_kind_allows(&self, actual: ClosureKind, required: ClosureKind) -> bool {
+        match required {
+            ClosureKind::Fn => matches!(actual, ClosureKind::Fn),
+            ClosureKind::FnMut => matches!(actual, ClosureKind::Fn | ClosureKind::FnMut),
+            ClosureKind::FnOnce => true,
+        }
     }
 }
 
@@ -491,6 +648,7 @@ impl<'ctx> Actor<'ctx> {
                 type_head,
                 self_ty,
                 record.interface.id,
+                record.interface.arguments,
                 requirement.name,
                 requirement.id,
                 args_template,

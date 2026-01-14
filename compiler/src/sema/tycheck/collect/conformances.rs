@@ -149,6 +149,12 @@ impl<'ctx> Actor<'ctx> {
                 continue;
             }
 
+            // Reject compiler-only interfaces (Tuple)
+            if self.is_compiler_only_interface(reference.id) {
+                self.emit_compiler_only_error(interface.span, reference);
+                continue;
+            }
+
             // Validate auto-derive for marker interfaces (Copy, etc.)
             if !self.validate_marker_derivation(ty_key, reference, interface.span, kind) {
                 continue;
@@ -202,6 +208,28 @@ impl<'ctx> Actor<'ctx> {
         );
     }
 
+    /// Check if an interface is compiler-only (cannot be implemented by user code).
+    fn is_compiler_only_interface(&self, interface_id: DefinitionID) -> bool {
+        // Tuple is a compiler-only interface
+        if let Some(tuple_def) = self.context.std_interface_def(StdInterface::Tuple) {
+            if interface_id == tuple_def {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn emit_compiler_only_error(&self, span: Span, interface: InterfaceReference<'ctx>) {
+        let interface_name = interface.format(self.context);
+        self.context.dcx().emit_error(
+            format!(
+                "'{}' is a compiler-internal interface and cannot be implemented by user types",
+                interface_name
+            ),
+            Some(span),
+        );
+    }
+
     /// Orphan rule: you can add a conformance only if you own the type OR own the interface.
     /// For reference/pointer types, localness propagates through the reference.
     fn is_conformance_allowed(
@@ -225,6 +253,7 @@ impl<'ctx> Actor<'ctx> {
     fn is_type_local(&self, ty: TypeHead, self_ty: Ty<'ctx>, pkg: PackageIndex) -> bool {
         match ty {
             TypeHead::Nominal(id) => id.package() == pkg,
+            TypeHead::Closure(id) => id.package() == pkg,
             // For references and pointers, check the inner type
             TypeHead::Reference(_) | TypeHead::Pointer(_) => self.is_inner_type_local(self_ty, pkg),
             // Built-in types are owned by std
@@ -262,6 +291,7 @@ impl<'ctx> Actor<'ctx> {
         // Get the package that owns the type (if nominal)
         let type_pkg = match ty_key {
             TypeHead::Nominal(id) => Some(id.package()),
+            TypeHead::Closure(id) => Some(id.package()),
             _ => None,
         };
 

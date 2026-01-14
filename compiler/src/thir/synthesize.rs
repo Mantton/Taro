@@ -33,24 +33,11 @@ pub fn synthesize_all<'ctx>(gcx: GlobalContext<'ctx>) -> Vec<ThirFunction<'ctx>>
         // 1. Resolve and validate the conformance witness.
         // We must ensure the witness ID is consistent across compiler phases.
         let syn_id = gcx.with_session_type_database(|db| {
-            // Attempt to look up the witness using empty arguments first.
-            let interface_ref_empty = crate::sema::models::InterfaceReference {
+            let interface_ref = crate::sema::models::InterfaceReference {
                 id: info.interface_id,
-                arguments: &[],
+                arguments: info.interface_args,
             };
-
-            let mut key = (type_head, interface_ref_empty);
-
-            if !db.conformance_witnesses.contains_key(&key) {
-               // Fallback: try looking up with `Self` as a type argument.
-               // This handles cases where the interface is parameterized by `Self`.
-                let args = gcx.store.interners.intern_generic_args(vec![crate::sema::models::GenericArgument::Type(info.self_ty)]);
-                let interface_ref_self = crate::sema::models::InterfaceReference {
-                    id: info.interface_id,
-                    arguments: args,
-                };
-                key = (type_head, interface_ref_self);
-            }
+            let key = (type_head, interface_ref);
 
             if !db.conformance_witnesses.contains_key(&key) {
                 panic!("Key missing: unable to find conformance witness for synthetic method synthesis.");
@@ -106,37 +93,89 @@ fn register_definition<'ctx>(
     _type_head: TypeHead,
     info: SyntheticMethodInfo<'ctx>,
 ) {
-    // Construct Generics
-    // For Clone, we usually inherit generics from the Self type.
-    // If Self is `Foo[T]`, generics are `[T]`.
-    let generics = match info.self_ty.kind() {
-        TyKind::Adt(def, _) => gcx.generics_of(def.id).clone(),
-        _ => crate::sema::models::Generics {
-            parameters: vec![],
-            has_self: false,
-            parent: None,
-            parent_count: 0,
-        },
-    };
+    let (generics, signature) = match info.kind {
+        SyntheticMethodKind::ClosureCall
+        | SyntheticMethodKind::ClosureCallMut
+        | SyntheticMethodKind::ClosureCallOnce => {
+            let TyKind::Closure { inputs, output, .. } = info.self_ty.kind() else {
+                return;
+            };
+            let args_ty = closure_args_ty(gcx, inputs);
 
-    // Construct Signature
-    // func clone(&self) -> Self
-    let self_ty = info.self_ty;
-    let self_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
-        self_ty,
-        crate::hir::Mutability::Immutable,
-    ));
+            let self_ty = match info.kind {
+                SyntheticMethodKind::ClosureCallOnce => info.self_ty,
+                SyntheticMethodKind::ClosureCallMut => gcx.store.interners.intern_ty(
+                    TyKind::Reference(info.self_ty, crate::hir::Mutability::Mutable),
+                ),
+                SyntheticMethodKind::ClosureCall => gcx.store.interners.intern_ty(
+                    TyKind::Reference(info.self_ty, crate::hir::Mutability::Immutable),
+                ),
+                _ => info.self_ty,
+            };
 
-    let signature = crate::sema::models::LabeledFunctionSignature {
-        inputs: vec![crate::sema::models::LabeledFunctionParameter {
-            name: Symbol::new("self"),
-            ty: self_ref_ty,
-            label: None,
-            default_provider: None,
-        }],
-        output: self_ty,
-        is_variadic: false,
-        abi: None,
+            let signature = crate::sema::models::LabeledFunctionSignature {
+                inputs: vec![
+                    crate::sema::models::LabeledFunctionParameter {
+                        name: Symbol::new("self"),
+                        ty: self_ty,
+                        label: None,
+                        default_provider: None,
+                    },
+                    crate::sema::models::LabeledFunctionParameter {
+                        name: Symbol::new("args"),
+                        ty: args_ty,
+                        label: None,
+                        default_provider: None,
+                    },
+                ],
+                output,
+                is_variadic: false,
+                abi: None,
+            };
+
+            let generics = crate::sema::models::Generics {
+                parameters: vec![],
+                has_self: false,
+                parent: None,
+                parent_count: 0,
+            };
+            (generics, signature)
+        }
+        _ => {
+            // Construct Generics
+            // For Clone, we usually inherit generics from the Self type.
+            // If Self is `Foo[T]`, generics are `[T]`.
+            let generics = match info.self_ty.kind() {
+                TyKind::Adt(def, _) => gcx.generics_of(def.id).clone(),
+                _ => crate::sema::models::Generics {
+                    parameters: vec![],
+                    has_self: false,
+                    parent: None,
+                    parent_count: 0,
+                },
+            };
+
+            // Construct Signature
+            // func clone(&self) -> Self
+            let self_ty = info.self_ty;
+            let self_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
+                self_ty,
+                crate::hir::Mutability::Immutable,
+            ));
+
+            let signature = crate::sema::models::LabeledFunctionSignature {
+                inputs: vec![crate::sema::models::LabeledFunctionParameter {
+                    name: Symbol::new("self"),
+                    ty: self_ref_ty,
+                    label: None,
+                    default_provider: None,
+                }],
+                output: self_ty,
+                is_variadic: false,
+                abi: None,
+            };
+            (generics, signature)
+        }
     };
     let labeled_sig = gcx.store.arenas.function_signatures.alloc(signature);
 
@@ -168,6 +207,9 @@ fn synthesize_method<'ctx>(
         SyntheticMethodKind::MemberwiseClone => {
             synthesize_memberwise_clone(gcx, type_head, method_id, info, syn_id)
         }
+        SyntheticMethodKind::ClosureCall
+        | SyntheticMethodKind::ClosureCallMut
+        | SyntheticMethodKind::ClosureCallOnce => synthesize_closure_call(gcx, info, syn_id),
         SyntheticMethodKind::MemberwiseHash | SyntheticMethodKind::MemberwiseEquality => {
             // TODO: Implement these
             None
@@ -415,6 +457,115 @@ fn synthesize_memberwise_clone<'ctx>(
         enum_def,
         clone_def,
     )
+}
+
+fn synthesize_closure_call<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    info: SyntheticMethodInfo<'ctx>,
+    syn_id: DefinitionID,
+) -> Option<ThirFunction<'ctx>> {
+    let TyKind::Closure { inputs, output, .. } = info.self_ty.kind() else {
+        return None;
+    };
+
+    let span = synthetic_span();
+    let mut builder = ThirBuilder::new(gcx, span);
+
+    let args_ty = closure_args_ty(gcx, inputs);
+
+    let (self_param_ty, needs_deref) = match info.kind {
+        SyntheticMethodKind::ClosureCallOnce => (info.self_ty, false),
+        SyntheticMethodKind::ClosureCallMut => (
+            gcx.store.interners.intern_ty(TyKind::Reference(
+                info.self_ty,
+                crate::hir::Mutability::Mutable,
+            )),
+            true,
+        ),
+        _ => (
+            gcx.store.interners.intern_ty(TyKind::Reference(
+                info.self_ty,
+                crate::hir::Mutability::Immutable,
+            )),
+            true,
+        ),
+    };
+
+    let self_node_id = synthetic_node_id(syn_id, 0);
+    let args_node_id = synthetic_node_id(syn_id, 1);
+
+    let self_param = Param {
+        id: self_node_id,
+        name: Symbol::new("self"),
+        ty: self_param_ty,
+        span,
+    };
+
+    let args_param = Param {
+        id: args_node_id,
+        name: Symbol::new("args"),
+        ty: args_ty,
+        span,
+    };
+
+    let self_local = builder.push_expr(ExprKind::Local(self_node_id), self_param_ty);
+    let callee = if needs_deref {
+        builder.push_expr(ExprKind::Deref(self_local), info.self_ty)
+    } else {
+        self_local
+    };
+
+    let mut call_args = Vec::new();
+    match inputs.len() {
+        0 => {}
+        1 => {
+            let args_local = builder.push_expr(ExprKind::Local(args_node_id), args_ty);
+            call_args.push(args_local);
+        }
+        _ => {
+            for (idx, &input_ty) in inputs.iter().enumerate() {
+                let args_local = builder.push_expr(ExprKind::Local(args_node_id), args_ty);
+                let field = builder.push_expr(
+                    ExprKind::Field {
+                        lhs: args_local,
+                        index: FieldIndex::from_usize(idx),
+                    },
+                    input_ty,
+                );
+                call_args.push(field);
+            }
+        }
+    }
+
+    let call_expr = builder.push_expr(
+        ExprKind::Call {
+            callee,
+            args: call_args,
+        },
+        output,
+    );
+
+    let body_block = builder.push_block(vec![], Some(call_expr));
+
+    Some(ThirFunction {
+        id: syn_id,
+        body: Some(body_block),
+        span,
+        params: vec![self_param, args_param],
+        stmts: builder.stmts,
+        blocks: builder.blocks,
+        exprs: builder.exprs,
+        arms: IndexVec::new(),
+        match_trees: FxHashMap::default(),
+    })
+}
+
+fn closure_args_ty<'ctx>(gcx: GlobalContext<'ctx>, inputs: &'ctx [Ty<'ctx>]) -> Ty<'ctx> {
+    match inputs.len() {
+        0 => gcx.types.void,
+        1 => inputs[0],
+        _ => Ty::new(TyKind::Tuple(inputs), gcx),
+    }
 }
 
 /// Synthesize `clone` for enum types using a match expression.

@@ -195,6 +195,9 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                             }
                         }
                     }
+                    super::AggregateKind::Closure { def_id, .. } => {
+                        write!(f, "closure@{:?}", def_id)?;
+                    }
                 }
                 write!(f, " {{ ")?;
                 for (i, field) in fields.iter_enumerated() {

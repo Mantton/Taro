@@ -255,6 +255,54 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                     _ => unreachable!(),
                                 }
                             }
+                            crate::mir::AggregateKind::Closure { def_id, .. } => {
+                                // Lower closure aggregate - each capture becomes a field assignment
+                                let captures_info = gcx.get_closure_captures(def_id);
+                                let capture_tys: Vec<Ty<'ctx>> = captures_info
+                                    .as_ref()
+                                    .map(|c| {
+                                        c.captures
+                                            .iter()
+                                            .map(|cap| match cap.capture_kind {
+                                                crate::sema::models::CaptureKind::ByCopy
+                                                | crate::sema::models::CaptureKind::ByMove => {
+                                                    cap.ty
+                                                }
+                                                crate::sema::models::CaptureKind::ByRef {
+                                                    mutable,
+                                                } => {
+                                                    let mutbl = if mutable {
+                                                        crate::hir::Mutability::Mutable
+                                                    } else {
+                                                        crate::hir::Mutability::Immutable
+                                                    };
+                                                    Ty::new(TyKind::Reference(cap.ty, mutbl), gcx)
+                                                }
+                                            })
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+
+                                for ((temp_local, idx), field_ty) in
+                                    temps.into_iter().zip(capture_tys.iter())
+                                {
+                                    let mut proj = dest.projection.clone();
+                                    proj.push(PlaceElem::Field(idx, *field_ty));
+                                    let place = Place {
+                                        local: dest.local,
+                                        projection: proj,
+                                    };
+                                    lowered.push(Statement {
+                                        kind: StatementKind::Assign(
+                                            place,
+                                            Rvalue::Use(Operand::Move(Place::from_local(
+                                                temp_local,
+                                            ))),
+                                        ),
+                                        span,
+                                    });
+                                }
+                            }
                         }
                     }
                     _ => lowered.push(stmt),

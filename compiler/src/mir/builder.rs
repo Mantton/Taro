@@ -1,12 +1,12 @@
 use crate::{
     compile::context::Gcx,
-    hir,
+    hir::{self, StdInterface},
     mir::{
         self, BasicBlockData, BasicBlockId, BlockAnd, BlockAndExtension, Body, LocalDecl, LocalId,
         LocalKind, Place, Rvalue, Statement, StatementKind, Terminator, TerminatorKind,
         pretty::PrettyPrintMir,
     },
-    sema::models::{AdtKind, EnumVariantKind, LabeledFunctionSignature, Ty, TyKind},
+    sema::models::{AdtKind, Constraint, EnumVariantKind, LabeledFunctionSignature, Ty, TyKind},
     span::{Span, Symbol},
     thir,
 };
@@ -317,6 +317,45 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             gcx: self.gcx,
         };
         println!("{}", pretty);
+    }
+
+    /// Check if a type has Fn, FnMut, or FnOnce trait bounds
+    /// in the current function's constraints.
+    pub fn has_fn_trait_bound(&self, ty: Ty<'ctx>) -> bool {
+        self.get_fn_trait_args_type(ty).is_some()
+    }
+
+    /// Get the Args type from a Fn/FnMut/FnOnce bound on a type parameter.
+    /// Returns Some(args_ty) if the type has a Fn trait bound, None otherwise.
+    pub fn get_fn_trait_args_type(&self, ty: Ty<'ctx>) -> Option<Ty<'ctx>> {
+        let fn_def = self.gcx.std_interface_def(StdInterface::Fn);
+        let fn_mut_def = self.gcx.std_interface_def(StdInterface::FnMut);
+        let fn_once_def = self.gcx.std_interface_def(StdInterface::FnOnce);
+
+        let constraints = self.gcx.canonical_constraints_of(self.thir.id);
+        for constraint in constraints {
+            if let Constraint::Bound {
+                ty: bound_ty,
+                interface,
+            } = constraint.value
+            {
+                if bound_ty == ty {
+                    let is_fn_trait = fn_def == Some(interface.id)
+                        || fn_mut_def == Some(interface.id)
+                        || fn_once_def == Some(interface.id);
+                    if is_fn_trait {
+                        // The Args type is the first generic argument (index 1, since index 0 is Self)
+                        // Interface arguments are: [Self, Args, Output]
+                        if let Some(crate::sema::models::GenericArgument::Type(args_ty)) =
+                            interface.arguments.get(1)
+                        {
+                            return Some(*args_ty);
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     fn record_break_edge(&mut self, block: BasicBlockId, span: Span) -> mir::BlockAnd<()> {

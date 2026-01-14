@@ -1,4 +1,4 @@
-use crate::mir::analysis::dominators::{compute_dominators, Dominators};
+use crate::mir::analysis::dominators::{Dominators, compute_dominators};
 use crate::{
     compile::context::Gcx,
     error::CompileResult,
@@ -245,7 +245,9 @@ fn gap_is_safe(body: &Body<'_>, def: &DefSite<'_>, use_site: &UseSite) -> bool {
     for stmt in &block.statements[start..end] {
         match &stmt.kind {
             StatementKind::Assign(_, _) => return false,
-            StatementKind::GcSafepoint | StatementKind::SetDiscriminant { .. } | StatementKind::Nop => {
+            StatementKind::GcSafepoint
+            | StatementKind::SetDiscriminant { .. }
+            | StatementKind::Nop => {
                 return false;
             }
         }
@@ -275,7 +277,9 @@ fn gap_is_safe_source(
                     return false;
                 }
             }
-            StatementKind::GcSafepoint | StatementKind::SetDiscriminant { .. } | StatementKind::Nop => {
+            StatementKind::GcSafepoint
+            | StatementKind::SetDiscriminant { .. }
+            | StatementKind::Nop => {
                 return false;
             }
         }
@@ -283,9 +287,7 @@ fn gap_is_safe_source(
     true
 }
 
-fn replacement_from_operand<'ctx>(
-    op: &Operand<'ctx>,
-) -> Option<(OperandKind, Replacement<'ctx>)> {
+fn replacement_from_operand<'ctx>(op: &Operand<'ctx>) -> Option<(OperandKind, Replacement<'ctx>)> {
     match op {
         Operand::Copy(place) if place.projection.is_empty() => {
             Some((OperandKind::Copy, Replacement::Copy(place.local)))
@@ -401,7 +403,12 @@ fn record_terminator_uses(
     place_used: &mut [bool],
 ) {
     match term {
-        TerminatorKind::Call { func, args, destination, .. } => {
+        TerminatorKind::Call {
+            func,
+            args,
+            destination,
+            ..
+        } => {
             record_operand_use(func, block, stmt_index, use_sites, use_counts, place_used);
             for arg in args {
                 record_operand_use(arg, block, stmt_index, use_sites, use_counts, place_used);
@@ -444,10 +451,7 @@ fn replace_terminator_operands<'ctx>(
     }
 }
 
-fn replace_rvalue_operands<'ctx>(
-    rv: &mut Rvalue<'ctx>,
-    replace_map: &[Option<Replacement<'ctx>>],
-) {
+fn replace_rvalue_operands<'ctx>(rv: &mut Rvalue<'ctx>, replace_map: &[Option<Replacement<'ctx>>]) {
     match rv {
         Rvalue::Use(op)
         | Rvalue::UnaryOp { operand: op, .. }

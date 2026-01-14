@@ -1533,7 +1533,9 @@ impl Actor<'_, '_> {
                 let lhs = self.lower_expression(lhs);
                 hir::ExpressionKind::Match(self.lower_optional_default(lhs, rhs, node.span))
             }
-            ast::ExpressionKind::Closure(_) => todo!("closures!"),
+            ast::ExpressionKind::Closure(closure) => {
+                self.lower_closure_expression(closure, node.span)
+            }
             ast::ExpressionKind::OptionalUnwrap(_) => {
                 // `OptionalUnwrap` should only be encountered within `OptionalEvaluation`.
                 // If we hit this directly, it's an error in the parser or lowerer logic unless
@@ -1868,6 +1870,66 @@ impl Actor<'_, '_> {
                 span: arg.span,
             })
             .collect()
+    }
+
+    fn lower_closure_expression(
+        &mut self,
+        closure: ast::ClosureExpression,
+        span: Span,
+    ) -> hir::ExpressionKind {
+        // Allocate a synthetic definition ID for this closure
+        let def_id = self
+            .context
+            .allocate_synthetic_id(self.context.package_index());
+
+        // Lower closure parameters
+        let params: Vec<hir::ClosureParam> = closure
+            .signature
+            .prototype
+            .inputs
+            .into_iter()
+            .map(|param| {
+                let id = self.next_index();
+                // Map the AST node ID to the HIR node ID for later resolution
+                self.node_mapping.insert(param.id, id);
+
+                // Create a simple binding pattern from the parameter name
+                let pattern = hir::Pattern {
+                    id,
+                    span: param.span,
+                    kind: hir::PatternKind::Binding {
+                        name: param.name,
+                        mode: hir::BindingMode::ByValue,
+                    },
+                };
+
+                hir::ClosureParam {
+                    id,
+                    pattern,
+                    ty: Some(self.lower_type(param.annotated_type)),
+                    span: param.span,
+                }
+            })
+            .collect();
+
+        // Lower return type if specified
+        let return_ty = closure
+            .signature
+            .prototype
+            .output
+            .map(|ty| self.lower_type(ty));
+
+        // Lower the closure body
+        let body = self.lower_expression(closure.body);
+
+        hir::ExpressionKind::Closure(hir::ClosureExpr {
+            def_id,
+            params,
+            return_ty,
+            body,
+            is_move: false, // TODO: Support `move` keyword in parser
+            span,
+        })
     }
 
     fn lower_pattern_binding_condition(

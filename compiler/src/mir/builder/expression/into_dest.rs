@@ -121,8 +121,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 block.unit()
             }
             ExprKind::Call { callee, args } => {
-                let function = unpack!(block = self.as_local_operand(block, *callee));
-
                 // Determine whether we need to pack variadic arguments.
                 let mut variadic_split_idx = None;
                 let callee_expr = &self.thir.exprs[*callee];
@@ -133,6 +131,80 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
                 // Use the callee type to detect variadic shape.
                 let callee_ty = callee_expr.ty;
+
+                let closure_self_param_ty =
+                    if let crate::sema::models::TyKind::Closure { closure_def_id, .. } =
+                        callee_ty.kind()
+                    {
+                        self.gcx
+                            .get_signature(closure_def_id)
+                            .inputs
+                            .first()
+                            .map(|param| param.ty)
+                    } else if let crate::sema::models::TyKind::Parameter(_) = callee_ty.kind() {
+                        // Check if this type parameter has Fn/FnMut/FnOnce bounds
+                        if self.has_fn_trait_bound(callee_ty) {
+                            // For callable type parameters, the self parameter is *const F
+                            // (a pointer to the parameter type)
+                            Some(self.gcx.store.interners.intern_ty(
+                                crate::sema::models::TyKind::Pointer(
+                                    callee_ty,
+                                    crate::hir::Mutability::Immutable,
+                                ),
+                            ))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                let function = if closure_self_param_ty.is_some()
+                    && matches!(Category::of(&callee_expr.kind), Category::Place)
+                {
+                    let place = unpack!(block = self.as_place(block, *callee));
+                    let by_ref = matches!(
+                        closure_self_param_ty.unwrap().kind(),
+                        crate::sema::models::TyKind::Pointer(..)
+                            | crate::sema::models::TyKind::Reference(..)
+                    );
+                    if by_ref {
+                        Operand::Copy(place)
+                    } else {
+                        Operand::Move(place)
+                    }
+                } else {
+                    unpack!(block = self.as_local_operand(block, *callee))
+                };
+
+                // For closure calls, pass self according to the closure kind.
+                let closure_self_arg: Option<Operand<'ctx>> =
+                    closure_self_param_ty.and_then(|self_param_ty| match &function {
+                        Operand::Copy(place) | Operand::Move(place) => {
+                            let closure_place = place.clone();
+                            match self_param_ty.kind() {
+                                crate::sema::models::TyKind::Pointer(_, mutability)
+                                | crate::sema::models::TyKind::Reference(_, mutability) => {
+                                    let ptr_local = self.new_temp_with_ty(self_param_ty, expr.span);
+                                    self.push_assign(
+                                        block,
+                                        Place::from_local(ptr_local),
+                                        Rvalue::Ref {
+                                            mutable: matches!(
+                                                mutability,
+                                                crate::hir::Mutability::Mutable
+                                            ),
+                                            place: closure_place,
+                                        },
+                                        expr.span,
+                                    );
+                                    Some(Operand::Copy(Place::from_local(ptr_local)))
+                                }
+                                _ => Some(Operand::Move(closure_place)),
+                            }
+                        }
+                        Operand::Constant(_) => None,
+                    });
                 if let crate::sema::models::TyKind::FnPointer { inputs, .. } = callee_ty.kind() {
                     let param_count = inputs.len();
                     if is_known_variadic && param_count > 0 {
@@ -153,6 +225,16 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                         variadic_split_idx = Some(param_count - 1);
                     }
                 }
+
+                // Check if we're calling through a Fn bound and need to unpack tuple args.
+                // This implements the "rust-call" ABI: when Args is a tuple like (T1, T2),
+                // we pass individual arguments (self, t1, t2) instead of (self, (t1, t2)).
+                let fn_trait_args_ty =
+                    if let crate::sema::models::TyKind::Parameter(_) = callee_ty.kind() {
+                        self.get_fn_trait_args_type(callee_ty)
+                    } else {
+                        None
+                    };
 
                 let (fixed_args, variadic_list_operand) = if let Some(split) = variadic_split_idx {
                     let (fixed, var_args) = args.split_at(split);
@@ -187,6 +269,74 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                         .map(|arg| unpack!(block = self.as_operand(block, *arg)))
                         .collect();
                     (fixed_operands, Some(list_operand))
+                } else if let Some(args_ty) = fn_trait_args_ty {
+                    // Tuple-unpacking ABI for Fn trait calls.
+                    // If Args is a tuple type, unpack the argument tuple into individual args.
+                    if let crate::sema::models::TyKind::Tuple(elem_tys) = args_ty.kind() {
+                        // Args is a tuple type - check if we have a single tuple argument to unpack
+                        if args.len() == 1 {
+                            let arg_expr = &self.thir.exprs[args[0]];
+                            if let ExprKind::Tuple { fields } = &arg_expr.kind {
+                                // Direct tuple literal - unpack its elements
+                                let unpacked: Vec<Operand<'ctx>> = fields
+                                    .iter()
+                                    .map(|field| unpack!(block = self.as_operand(block, *field)))
+                                    .collect();
+                                (unpacked, None)
+                            } else if matches!(
+                                arg_expr.ty.kind(),
+                                crate::sema::models::TyKind::Tuple(_)
+                            ) {
+                                // Tuple value (variable or expression) - extract elements
+                                let tuple_place = unpack!(block = self.as_place(block, args[0]));
+                                let unpacked: Vec<Operand<'ctx>> = elem_tys
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, &ty)| {
+                                        let field_place = Place {
+                                            local: tuple_place.local,
+                                            projection: {
+                                                let mut proj = tuple_place.projection.clone();
+                                                proj.push(PlaceElem::Field(
+                                                    FieldIndex::from_usize(i),
+                                                    ty,
+                                                ));
+                                                proj
+                                            },
+                                        };
+                                        if self.gcx.is_type_copyable(ty) {
+                                            Operand::Copy(field_place)
+                                        } else {
+                                            Operand::Move(field_place)
+                                        }
+                                    })
+                                    .collect();
+                                (unpacked, None)
+                            } else {
+                                // Single non-tuple arg - pass as-is
+                                let all_args = args
+                                    .iter()
+                                    .map(|arg| unpack!(block = self.as_operand(block, *arg)))
+                                    .collect();
+                                (all_args, None)
+                            }
+                        } else {
+                            // Multiple args provided directly - pass as-is
+                            // This handles the case where user writes f(a, b) instead of f((a, b))
+                            let all_args = args
+                                .iter()
+                                .map(|arg| unpack!(block = self.as_operand(block, *arg)))
+                                .collect();
+                            (all_args, None)
+                        }
+                    } else {
+                        // Args is not a tuple - pass as-is
+                        let all_args = args
+                            .iter()
+                            .map(|arg| unpack!(block = self.as_operand(block, *arg)))
+                            .collect();
+                        (all_args, None)
+                    }
                 } else {
                     let all_args = args
                         .iter()
@@ -195,7 +345,12 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     (all_args, None)
                 };
 
-                let mut final_args = fixed_args;
+                // For closure calls, prepend self pointer to the argument list
+                let mut final_args = Vec::new();
+                if let Some(self_arg) = closure_self_arg {
+                    final_args.push(self_arg);
+                }
+                final_args.extend(fixed_args);
                 if let Some(list) = variadic_list_operand {
                     final_args.push(list);
                 }
@@ -303,7 +458,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 self.push_assign(block, destination, rvalue, expr.span);
                 block.unit()
             }
-            ExprKind::Deref(..) | ExprKind::Field { .. } => {
+            ExprKind::Deref(..) | ExprKind::Field { .. } | ExprKind::Upvar { .. } => {
                 debug_assert!(matches!(Category::of(&expr.kind), Category::Place));
                 let place = unpack!(block = self.as_place(block, expr_id));
                 // Use Copy for copyable types, Move for non-copyable types
@@ -316,6 +471,32 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 self.push_assign(block, destination, rvalue, expr.span);
                 block.unit()
             }
+            ExprKind::Closure {
+                def_id, captures, ..
+            } => {
+                // Build closure environment by evaluating each capture expression
+                let capture_operands: Vec<Operand<'ctx>> = captures
+                    .iter()
+                    .map(|cap| {
+                        // For now, captures are empty, so this won't execute
+                        unpack!(block = self.as_operand(block, cap.capture_expr))
+                    })
+                    .collect();
+
+                let fields: IndexVec<FieldIndex, Operand<'ctx>> =
+                    IndexVec::from_vec(capture_operands);
+
+                let rvalue = Rvalue::Aggregate {
+                    kind: AggregateKind::Closure {
+                        def_id: *def_id,
+                        captured_generics: &[], // TODO: get from closure type
+                    },
+                    fields,
+                };
+
+                self.push_assign(block, destination, rvalue, expr.span);
+                block.unit()
+            }
             ExprKind::Tuple { .. }
             | ExprKind::Array { .. }
             | ExprKind::Repeat { .. }
@@ -323,6 +504,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             | ExprKind::Unary { .. }
             | ExprKind::Binary { .. }
             | ExprKind::Cast { .. }
+            | ExprKind::ClosureToFnPointer { .. }
             | ExprKind::Zst { .. } => {
                 debug_assert!(match Category::of(&expr.kind) {
                     // should be handled above
@@ -971,7 +1153,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let mut fallback = None;
         for (id, ident) in output.definition_to_ident.iter() {
             if ident.symbol.as_str() == name {
-                if !matches!(output.definition_to_kind.get(id), Some(DefinitionKind::Function)) {
+                if !matches!(
+                    output.definition_to_kind.get(id),
+                    Some(DefinitionKind::Function)
+                ) {
                     continue;
                 }
                 let has_sig = self

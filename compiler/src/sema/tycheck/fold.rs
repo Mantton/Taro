@@ -134,6 +134,31 @@ impl<'ctx> TypeSuperFoldable<'ctx> for TyKind<'ctx> {
                 Alias { kind, def_id, args }
             }
 
+            Closure {
+                closure_def_id,
+                captured_generics,
+                inputs,
+                output,
+                kind,
+            } => {
+                // Determine implicit closure types must be deeply resolved to eliminate inference variables.
+                let folded_generics = fold_generic_args(folder.gcx(), captured_generics, folder);
+                let folded_inputs = inputs
+                    .iter()
+                    .map(|t| t.fold_with(folder))
+                    .collect::<Vec<_>>();
+                let folded_inputs = folder.gcx().store.interners.intern_ty_list(folded_inputs);
+                let folded_output = output.fold_with(folder);
+
+                Closure {
+                    closure_def_id,
+                    captured_generics: folded_generics,
+                    inputs: folded_inputs,
+                    output: folded_output,
+                    kind,
+                }
+            }
+
             _ => self,
         }
     }

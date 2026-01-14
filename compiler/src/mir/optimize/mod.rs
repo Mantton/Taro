@@ -2,14 +2,14 @@ use crate::compile::context::Gcx;
 use crate::error::CompileResult;
 use crate::mir::{Body, MirPhase};
 
+pub mod coalesce;
+pub mod dse;
 pub mod escape;
 pub mod inline;
 pub mod passes;
+pub mod propagate;
 pub mod simplify;
 pub mod validate;
-pub mod dse;
-pub mod propagate;
-pub mod coalesce;
 
 pub trait MirPass<'ctx> {
     fn name(&self) -> &'static str;
