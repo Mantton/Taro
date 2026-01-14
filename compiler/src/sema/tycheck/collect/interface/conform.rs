@@ -285,10 +285,20 @@ impl<'ctx> Actor<'ctx> {
             }
         }
 
+        let mut new_bindings = Vec::with_capacity(template.bindings.len());
+        for binding in template.bindings {
+            let substituted = instantiate_ty_with_args(self.context, binding.ty, args);
+            new_bindings.push(crate::sema::models::AssociatedTypeBinding {
+                name: binding.name,
+                ty: substituted,
+            });
+        }
+
         let interned = self.context.store.interners.intern_generic_args(new_args);
         InterfaceReference {
             id: template.id,
             arguments: interned,
+            bindings: self.context.store.arenas.global.alloc_slice_copy(&new_bindings),
         }
     }
 
@@ -467,6 +477,7 @@ impl<'ctx> Actor<'ctx> {
                 self_ty: closure_ty,
                 interface_id: interface.id,
                 interface_args: interface.arguments,
+                interface_bindings: interface.bindings,
                 method_id: method.id,
                 method_name: method.name,
                 syn_id: None,

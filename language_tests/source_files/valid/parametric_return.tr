@@ -1,0 +1,28 @@
+
+type int = isize
+
+interface Factory {
+    type Product
+    func create(&self) -> Self.Product
+}
+
+struct StringFactory {}
+
+impl Factory for StringFactory {
+    type Product = string
+    func create(&self) -> string { return "hello" }
+}
+
+// Test: Returning associated type as concrete type
+// T.produce() returns T.Product. Function returns string. 
+// Requires T.Product -> string normalization.
+func makeString[T: Factory[Product = string]](_ f: T) -> string {
+    return f.create()
+}
+
+func main() {
+    let f = StringFactory {}
+    let s = makeString(f)
+    assert(s == "hello", "Failed to return parametric type as concrete")
+    std.print("PASS: Parametric return type\n")
+}

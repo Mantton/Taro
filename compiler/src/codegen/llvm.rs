@@ -1978,6 +1978,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         InterfaceReference {
             id: iface.id,
             arguments: interned,
+            bindings: &[],
         }
     }
 
@@ -2031,9 +2032,21 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         }
 
         let interned = self.gcx.store.interners.intern_generic_args(new_args);
+        
+        // Also substitute bindings
+        let mut new_bindings = Vec::with_capacity(template.bindings.len());
+        for binding in template.bindings {
+            let substituted_ty = instantiate_ty_with_args(self.gcx, binding.ty, args);
+            new_bindings.push(crate::sema::models::AssociatedTypeBinding {
+                name: binding.name,
+                ty: substituted_ty,
+            });
+        }
+        
         InterfaceReference {
             id: template.id,
             arguments: interned,
+            bindings: self.gcx.store.arenas.global.alloc_slice_copy(&new_bindings),
         }
     }
 

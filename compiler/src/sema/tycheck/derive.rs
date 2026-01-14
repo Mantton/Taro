@@ -3,6 +3,8 @@
 //! This module provides synthesis of interface methods (like Clone.clone)
 //! for types that declare conformance inline (e.g., `struct Foo: Clone {}`).
 
+use crate::sema::tycheck::utils::generics::GenericsBuilder;
+use crate::sema::tycheck::resolve_conformance_witness;
 use crate::{
     compile::context::Gcx,
     hir::{DefinitionID, StdInterface},
@@ -30,6 +32,7 @@ pub struct SyntheticMethodInfo<'ctx> {
     pub self_ty: Ty<'ctx>,
     pub interface_id: DefinitionID,
     pub interface_args: GenericArguments<'ctx>,
+    pub interface_bindings: &'ctx [crate::sema::models::AssociatedTypeBinding<'ctx>],
     pub method_id: DefinitionID,
     pub method_name: Symbol,
     pub syn_id: Option<DefinitionID>,
@@ -155,6 +158,7 @@ fn try_synthesize_clone<'ctx>(
         self_ty,
         interface_id,
         interface_args,
+        interface_bindings: &[],
         method_id,
         method_name,
         syn_id,
@@ -221,9 +225,10 @@ fn type_conforms_to_clone<'ctx>(gcx: Gcx<'ctx>, ty: Ty<'ctx>, clone_def: Definit
         let type_head = TypeHead::Nominal(def.id);
         let clone_ref = InterfaceReference {
             id: clone_def,
-            arguments: &[],
+            arguments: GenericsBuilder::identity_for_item(gcx, clone_def),
+            bindings: &[],
         };
-        return crate::sema::tycheck::resolve_conformance_witness(gcx, type_head, clone_ref)
+        return resolve_conformance_witness(gcx, type_head, clone_ref)
             .is_some();
     }
 

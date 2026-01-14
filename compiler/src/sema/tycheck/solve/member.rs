@@ -643,6 +643,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let interface_ref = InterfaceReference {
             id: interface_id,
             arguments: &[],
+            bindings: &[],
         };
 
         // Check if the type conforms to this interface

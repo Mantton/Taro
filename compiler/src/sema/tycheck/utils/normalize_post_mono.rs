@@ -147,6 +147,7 @@ impl<'ctx> PostMonoNormalizeFolder<'ctx> {
         let interface = InterfaceReference {
             id: interface_id,
             arguments: args,
+            bindings: &[],
         };
 
         // Resolve the witness and get the associated type

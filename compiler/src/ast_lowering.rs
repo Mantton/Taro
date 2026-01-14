@@ -528,6 +528,9 @@ impl Actor<'_, '_> {
         match node {
             ast::TypeArgument::Type(n) => hir::TypeArgument::Type(self.lower_type(n)),
             ast::TypeArgument::Const(n) => hir::TypeArgument::Const(self.lower_anon_const(n)),
+            ast::TypeArgument::AssocType(ident, ty) => {
+                hir::TypeArgument::AssociatedType(ident, self.lower_type(ty))
+            }
         }
     }
 

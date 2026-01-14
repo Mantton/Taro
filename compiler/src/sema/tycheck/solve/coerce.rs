@@ -73,10 +73,15 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return None;
         };
 
+        // When the source type is an inference variable and we're coercing to an
+        // existential, bind the variable directly to the existential type.
+        // This handles function return type inference: `let x = makeSomething()`
+        // where `makeSomething()` returns `any Interface`.
         if from.is_infer() {
-            return Some(SolverResult::Deferred);
+            return Some(self.solve_equality(location, from, to));
         }
 
+        // Existential-to-existential: use equality check for compatible interfaces
         if matches!(from.kind(), TyKind::BoxedExistential { .. }) {
             return Some(self.solve_equality(location, to, from));
         }

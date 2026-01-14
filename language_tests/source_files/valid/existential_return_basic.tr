@@ -1,0 +1,26 @@
+// Test: Existential Return Basic
+// Tests returning existential types from functions (no bindings)
+
+func main() {
+    let p = makePrintable()
+    p.print()
+    
+    std.print("PASS: Existential return basic\n")
+}
+
+interface Printable {
+    func print(&self)
+}
+
+struct MyValue {
+    value: int32
+}
+
+impl Printable for MyValue {
+    func print(&self) {
+    }
+}
+
+func makePrintable() -> any Printable {
+    MyValue { value: 42 }
+}

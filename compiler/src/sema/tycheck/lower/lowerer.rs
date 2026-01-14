@@ -3,9 +3,10 @@ use crate::{
     hir::{self, DefinitionID, DefinitionKind, Resolution},
     sema::{
         models::{
-            AdtDef, AdtKind, AliasKind, Const, ConstKind, ConstValue, Constraint, GenericArgument,
-            GenericArguments, GenericParameter, GenericParameterDefinition,
-            GenericParameterDefinitionKind, InterfaceDefinition, InterfaceReference, Ty, TyKind,
+            AdtDef, AdtKind, AliasKind, AssociatedTypeBinding, Const, ConstKind, ConstValue,
+            Constraint, GenericArgument, GenericArguments, GenericParameter,
+            GenericParameterDefinition, GenericParameterDefinitionKind, InterfaceDefinition,
+            InterfaceReference, Ty, TyKind,
         },
         resolve::models::{PrimaryType, TypeHead},
         tycheck::{
@@ -223,7 +224,14 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         def_id: DefinitionID,
         segment: &hir::PathSegment,
     ) -> GenericArguments<'ctx> {
-        self.lower_generic_args(def_id, segment, None)
+        let (args, bindings) = self.lower_generic_args(def_id, segment, None);
+        if !bindings.is_empty() {
+            self.gcx().dcx().emit_error(
+                "associated type bindings are not allowed here".into(),
+                Some(segment.span),
+            );
+        }
+        args
     }
 
     fn lower_generic_args(
@@ -231,13 +239,14 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         id: DefinitionID,
         segment: &hir::PathSegment,
         self_ty: Option<Ty<'ctx>>,
-    ) -> GenericArguments<'ctx> {
+    ) -> (GenericArguments<'ctx>, &'ctx [AssociatedTypeBinding<'ctx>]) {
         let gcx = self.gcx();
         let _ = check_generic_arg_count(id, segment, gcx);
 
         let generics = gcx.generics_of(id);
 
         let mut output = vec![];
+        let mut bindings = vec![];
 
         let arguments = segment
             .arguments
@@ -253,6 +262,17 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         let mut params_iter = generics.parameters.iter().peekable();
 
         loop {
+            // Check for associated type bindings first
+            if let Some(hir::TypeArgument::AssociatedType(ident, ty)) = args_iter.peek() {
+                let lowered_ty = self.lower_type(ty);
+                bindings.push(AssociatedTypeBinding {
+                    name: ident.symbol,
+                    ty: lowered_ty,
+                });
+                args_iter.next();
+                continue;
+            }
+
             match (args_iter.peek(), params_iter.peek()) {
                 (_, Some(&param)) if generics.has_self && param.index == 0 => {
                     // Self must always be provided for interface references
@@ -312,6 +332,10 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                                 GenericArgument::Const(self.error_const())
                             }
                         }
+                        (
+                            _,
+                            hir::TypeArgument::AssociatedType(..),
+                        ) => unreachable!("Associated types handled above"),
                     };
                     output.push(lowered);
                     args_iter.next();
@@ -352,7 +376,10 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             }
         }
 
-        gcx.store.interners.intern_generic_args(output)
+        (
+            gcx.store.interners.intern_generic_args(output),
+            gcx.store.arenas.global.alloc_slice_copy(&bindings),
+        )
     }
 
     pub fn lower_const_argument(
@@ -423,11 +450,12 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         };
 
         let segment = path.segments.last().unwrap();
-        let arguments = self.lower_generic_args(interface_id, segment, Some(self_ty));
+        let (arguments, bindings) = self.lower_generic_args(interface_id, segment, Some(self_ty));
 
         InterfaceReference {
             id: interface_id,
             arguments,
+            bindings,
         }
     }
 
@@ -636,10 +664,11 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
 
         // 4. Build interface reference with proper arguments
         let segment = path.segments.last().expect("path must have segments");
-        let interface_args = self.lower_generic_args(interface_id, segment, Some(target_ty));
+        let (interface_args, bindings) = self.lower_generic_args(interface_id, segment, Some(target_ty));
         let interface_ref = InterfaceReference {
             id: interface_id,
             arguments: interface_args,
+            bindings,
         };
 
         // 5. Look up associated type in interface requirements
@@ -1073,7 +1102,12 @@ pub fn check_generic_arg_count(
     let provided = segment
         .arguments
         .as_ref()
-        .map(|v| v.arguments.len())
+        .map(|v| {
+            v.arguments
+                .iter()
+                .filter(|arg| !matches!(arg, crate::hir::TypeArgument::AssociatedType(..)))
+                .count()
+        })
         .unwrap_or(0);
 
     if matches!(context.definition_kind(id), DefinitionKind::Function) {

@@ -91,6 +91,26 @@ impl<'arena> GlobalContext<'arena> {
         database.def_to_const.insert(id, value);
     }
 
+    /// Updates the constraints for a definition, overwriting any existing entry.
+    ///
+    /// This is used during multi-pass constraint collection where bounds are collected first
+    /// and committed to the database so that subsequent constraint generation (e.g., for
+    /// associated type projections) can resolve against them.
+    ///
+    /// Also invalidates the canonical constraints cache to ensure re-computation.
+    pub fn update_constraints(
+        self,
+        id: DefinitionID,
+        constraints: Vec<crate::span::Spanned<Constraint<'arena>>>,
+    ) {
+        let mut cache = self.context.store.type_databases.borrow_mut();
+        let package_index = id.package();
+        let database = cache.entry(package_index).or_insert(Default::default());
+        database.def_to_constraints.insert(id, constraints);
+        // Invalidate canonical constraints cache to ensure re-computation
+        database.def_to_canon_constraints.remove(&id);
+    }
+
     pub fn cache_constraints(
         self,
         id: DefinitionID,
@@ -591,6 +611,7 @@ impl<'arena> GlobalContext<'arena> {
                 let copy_ref = InterfaceReference {
                     id: copy_def,
                     arguments: &[],
+                    bindings: &[],
                 };
                 crate::sema::tycheck::resolve_conformance_witness(self, type_head, copy_ref)
                     .is_some()

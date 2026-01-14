@@ -315,6 +315,7 @@ pub struct TypeArguments {
 pub enum TypeArgument {
     Type(Box<Type>),
     Const(AnonConst),
+    AssociatedType(Identifier, Box<Type>),
 }
 
 /// `where T: X & Y`
@@ -1511,6 +1512,7 @@ pub fn walk_type_argument<V: HirVisitor>(visitor: &mut V, node: &TypeArgument) -
     match node {
         TypeArgument::Type(ty) => try_visit!(visitor.visit_type(ty)),
         TypeArgument::Const(c) => try_visit!(visitor.visit_anon_const(c)),
+        TypeArgument::AssociatedType(_, ty) => try_visit!(visitor.visit_type(ty)),
     }
     V::Result::output()
 }

@@ -331,10 +331,20 @@ fn normalize_interface_ref<'ctx>(
         }
     }
 
+    let mut new_bindings = Vec::with_capacity(interface.bindings.len());
+    for binding in interface.bindings {
+        let normalized = crate::sema::tycheck::utils::normalize_aliases(gcx, binding.ty);
+        new_bindings.push(crate::sema::models::AssociatedTypeBinding {
+            name: binding.name,
+            ty: normalized,
+        });
+    }
+
     let interned = gcx.store.interners.intern_generic_args(new_args);
     InterfaceReference {
         id: interface.id,
         arguments: interned,
+        bindings: gcx.store.arenas.global.alloc_slice_copy(&new_bindings),
     }
 }
 

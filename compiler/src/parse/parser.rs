@@ -1421,6 +1421,12 @@ impl Parser {
                 // const
                 Ok(TypeArgument::Const(self.parse_anon_const()?))
             }
+            Token::Identifier { .. } if self.next_matches(1, Token::Assign) => {
+                let identifier = self.parse_identifier()?;
+                self.expect(Token::Assign)?;
+                let ty = self.parse_type()?;
+                Ok(TypeArgument::AssocType(identifier, ty))
+            }
             _ => {
                 let ty = self.parse_type()?;
                 Ok(TypeArgument::Type(ty))

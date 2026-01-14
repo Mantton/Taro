@@ -63,6 +63,7 @@ fn resolve_interface_method_for_concrete<'ctx>(
     let interface = InterfaceReference {
         id: interface_id,
         arguments: interface_args,
+        bindings: &[],
     };
     let witness = resolve_conformance_witness(gcx, type_head, interface)?;
 

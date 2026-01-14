@@ -33,14 +33,16 @@ pub fn synthesize_all<'ctx>(gcx: GlobalContext<'ctx>) -> Vec<ThirFunction<'ctx>>
         // 1. Resolve and validate the conformance witness.
         // We must ensure the witness ID is consistent across compiler phases.
         let syn_id = gcx.with_session_type_database(|db| {
+            // Reconstruct the interface reference used to build the witness
             let interface_ref = crate::sema::models::InterfaceReference {
                 id: info.interface_id,
                 arguments: info.interface_args,
+                bindings: info.interface_bindings,
             };
             let key = (type_head, interface_ref);
 
             if !db.conformance_witnesses.contains_key(&key) {
-                panic!("Key missing: unable to find conformance witness for synthetic method synthesis.");
+                panic!("Key missing: unable to find conformance witness for synthetic method synthesis. Key: {:?}", key);
             }
 
             let witness = db
@@ -779,6 +781,7 @@ fn clone_adt_field<'ctx>(
     let clone_ref = InterfaceReference {
         id: clone_def,
         arguments: &[],
+        bindings: &[],
     };
 
     // Get the clone method from conformance witness

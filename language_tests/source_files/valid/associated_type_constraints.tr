@@ -1,0 +1,38 @@
+// Test: Associated Type Constraints
+// Checks associated type bindings in bounds (e.g. T: Container<Item=int>)
+
+type int = isize
+
+interface Container {
+    type Item
+    func get(&self) -> Self.Item
+}
+
+struct IntBox {
+    value: int
+}
+
+impl Container for IntBox {
+    type Item = int
+    func get(&self) -> int {
+        self.value
+    }
+}
+
+// Function using constraint T: Container[Item=int]
+// Function using constraint T: Container[Item=int]
+func requireIntItem[T: Container[Item = int]](_ c: T) -> int {
+    c.get()
+}
+
+
+
+func main() {
+    let box = IntBox { value: 123 }
+    
+    // Test binding constraint in parameter
+    let val1 = requireIntItem(box)
+    assert(val1 == 123, "requireIntItem failed")
+    
+    std.print("PASS: Associated type constraints\n")
+}

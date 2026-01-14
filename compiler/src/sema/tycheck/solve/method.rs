@@ -459,6 +459,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             let root = InterfaceReference {
                 id: iface.id,
                 arguments: iface_args,
+                bindings: &[],
             };
 
             for iface_ref in self.collect_interface_with_supers(root) {

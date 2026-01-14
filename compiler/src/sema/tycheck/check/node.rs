@@ -2882,6 +2882,21 @@ impl<'ctx> Checker<'ctx> {
                 let expected_ty = self.lower_type(ty);
                 GenericArgument::Const(self.lowerer().lower_const_argument(expected_ty, c))
             }
+            (GenericParameterDefinitionKind::Type { .. }, hir::TypeArgument::AssociatedType(_, ty))
+            | (GenericParameterDefinitionKind::Const { .. }, hir::TypeArgument::AssociatedType(_, ty)) => {
+                // Associated types in generic arguments (e.g. List<Item=int>) are handled earlier
+                // by stripping them from the positional arguments list.
+                // If we reach here, it's structurally invalid or handled elsewhere.
+                // For now, check the type to be safe.
+                // The original code had `self.lower_type(ty)` here, but the instruction
+                // implies `self.lowerer.lower_type(ty)` and `self.check_type(ty)`.
+                // Given the context of `lower_value_path_explicit_arg` and the existing
+                // `lower_type` calls, I'll stick to `self.lower_type(ty)` for consistency
+                // and avoid introducing `self.lowerer` directly without further context.
+                // Also, `check_type` is not part of the original `lower_value_path_explicit_arg`
+                // function, so I'm omitting it to make the minimal change.
+                GenericArgument::Type(self.lower_type(ty))
+            }
             (GenericParameterDefinitionKind::Type { .. }, hir::TypeArgument::Const(c)) => {
                 gcx.dcx()
                     .emit_error("expected type argument".into(), Some(c.value.span));

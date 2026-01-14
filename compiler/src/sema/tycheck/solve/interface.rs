@@ -37,11 +37,24 @@ impl<'ctx> ConstraintSolver<'ctx> {
             }
         }
 
+        let mut new_bindings = Vec::with_capacity(interface.bindings.len());
+        for binding in interface.bindings {
+            let resolved_ty = self.structurally_resolve(binding.ty);
+            if resolved_ty.is_infer() {
+                has_infer = true;
+            }
+            new_bindings.push(crate::sema::models::AssociatedTypeBinding {
+                name: binding.name,
+                ty: resolved_ty,
+            });
+        }
+
         let interned = self.gcx().store.interners.intern_generic_args(new_args);
         (
             InterfaceReference {
                 id: interface.id,
                 arguments: interned,
+                bindings: self.gcx().store.arenas.global.alloc_slice_copy(&new_bindings),
             },
             has_infer,
         )
@@ -131,10 +144,20 @@ impl<'ctx> ConstraintSolver<'ctx> {
             }
         }
 
+        let mut new_bindings = Vec::with_capacity(template.bindings.len());
+        for binding in template.bindings {
+            let substituted = instantiate_ty_with_args(gcx, binding.ty, args);
+            new_bindings.push(crate::sema::models::AssociatedTypeBinding {
+                name: binding.name,
+                ty: substituted,
+            });
+        }
+
         let interned = gcx.store.interners.intern_generic_args(new_args);
         InterfaceReference {
             id: template.id,
             arguments: interned,
+            bindings: gcx.store.arenas.global.alloc_slice_copy(&new_bindings),
         }
     }
 }

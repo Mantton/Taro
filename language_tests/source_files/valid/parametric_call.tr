@@ -1,0 +1,35 @@
+
+type int = isize
+
+interface Transformer {
+    type Input
+    type Output
+    func transform(&self, i: Self.Input) -> Self.Output
+}
+
+struct IntToString {}
+
+impl Transformer for IntToString {
+    type Input = int
+    type Output = string
+    func transform(&self, i: int) -> string { return "transformed" }
+}
+
+// Test: Passing associated type as argument to function expecting concrete type
+func process[T: Transformer[Input = int, Output = string]](_ t: T, _ val: T.Input) -> string {
+    // Here val is T.Input.
+    // We pass it to helper which expects int.
+    // This requires T.Input to normalize to int.
+    return helper(val) 
+}
+
+func helper(_ x: int) -> string {
+    return "helper called"
+}
+
+func main() {
+    let t = IntToString {}
+    let res = process(t, 100)
+    assert(res == "helper called", "Failed to pass parametric arg")
+    std.print("PASS: Parametric call argument\n")
+}

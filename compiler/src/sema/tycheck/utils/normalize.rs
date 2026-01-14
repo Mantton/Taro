@@ -75,18 +75,21 @@ impl<'a, 'ctx> TypeFolder<'ctx> for NormalizeFolder<'a, 'ctx> {
                 def_id,
                 args,
             } => {
-                if let Some(resolved) = self.resolve_projection(def_id, args) {
-                    return resolved.fold_with(self);
-                }
-
-                // Fallback: Check ParamEnv for type equalities.
-                // If we have a constraint like `T.Item == string`, we can use that here.
+                // Priority 1: Check ParamEnv for explicit type equalities.
+                // This handles parametric normalization like `T: Container[Item=int]`
+                // where we want `T.Item` to normalize to `int`.
+                
                 let equiv_types = self.env.equivalent_types(ty);
-                // Prefer concrete types over other aliases
+
+                // Prefer concrete types (non-aliased, non-parameter)
                 if let Some(&resolved) = equiv_types
                     .iter()
                     .find(|&&t| t != ty && !matches!(t.kind(), TyKind::Alias { .. }))
                 {
+                    return resolved.fold_with(self);
+                }
+
+                if let Some(resolved) = self.resolve_projection(def_id, args) {
                     return resolved.fold_with(self);
                 }
 
@@ -143,8 +146,25 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
 
         // If Self is still an inference variable, cannot resolve yet
         if self_ty.is_infer() {
-            // DEBUG: Infered Here
             return None;
+        }
+
+        // Existential types with associated type bindings: resolve projections directly.
+        // For `any Producer[Output = int].Output`, extract `int` from the binding.
+        // This is the most direct resolution path since bindings are explicit.
+        if let TyKind::BoxedExistential { interfaces } = self_ty.kind() {
+            let assoc_name = gcx.definition_ident(assoc_id).symbol;
+            
+            for iface in interfaces.iter() {
+                // Match interface by ID (direct match or parent of associated type)
+                if iface.id == interface_id || gcx.definition_parent(assoc_id) == Some(iface.id) {
+                    for binding in iface.bindings {
+                        if binding.name == assoc_name {
+                            return Some(binding.ty);
+                        }
+                    }
+                }
+            }
         }
 
         let instantiate_witness = |witness: crate::sema::models::ConformanceWitness<'ctx>| {
@@ -192,6 +212,7 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
         let interface = InterfaceReference {
             id: interface_id,
             arguments: args,
+            bindings: &[],
         };
         let witness = resolve_conformance_witness(gcx, head, interface)?;
         instantiate_witness(witness)

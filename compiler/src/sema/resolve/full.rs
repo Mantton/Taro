@@ -244,8 +244,11 @@ impl<'r, 'a> ast::AstVisitor for Actor<'r, 'a> {
                     this.visit_type(ty);
                 });
             }
-            ast::TypeArgument::Const(anon_const) => {
-                self.visit_anon_constant(anon_const);
+            ast::TypeArgument::Const(_) => {
+                // Constants are resolved in type checking
+            }
+            ast::TypeArgument::AssocType(_, ty) => {
+                self.visit_type(ty);
             }
         }
     }

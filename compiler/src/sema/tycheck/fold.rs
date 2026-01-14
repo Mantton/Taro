@@ -114,9 +114,20 @@ impl<'ctx> TypeSuperFoldable<'ctx> for TyKind<'ctx> {
             BoxedExistential { interfaces } => {
                 let folded_refs: Vec<_> = interfaces
                     .iter()
-                    .map(|iface| InterfaceReference {
-                        id: iface.id,
-                        arguments: fold_generic_args(folder.gcx(), iface.arguments, folder),
+                    .map(|iface| {
+                        let bindings: Vec<_> = iface
+                            .bindings
+                            .iter()
+                            .map(|b| crate::sema::models::AssociatedTypeBinding {
+                                name: b.name,
+                                ty: b.ty.fold_with(folder),
+                            })
+                            .collect();
+                        InterfaceReference {
+                            id: iface.id,
+                            arguments: fold_generic_args(folder.gcx(), iface.arguments, folder),
+                            bindings: folder.gcx().store.arenas.global.alloc_slice_copy(&bindings),
+                        }
                     })
                     .collect();
                 let list = folder

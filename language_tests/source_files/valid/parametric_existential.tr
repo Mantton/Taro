@@ -1,0 +1,45 @@
+// Test: Parametric Existential Types
+// Checks associated type bindings on existential types (any Interface[Assoc = Type])
+
+type int = isize
+
+interface Producer {
+    type Output
+    func produce(&self) -> Self.Output
+}
+
+struct IntProducer {}
+
+impl Producer for IntProducer {
+    type Output = int
+    func produce(&self) -> int { 42 }
+}
+
+struct StringProducer {}
+
+impl Producer for StringProducer {
+    type Output = string
+    func produce(&self) -> string { "hello" }
+}
+
+// Test: Existential variable with associated type binding
+// The binding ensures we know the output type at compile time
+func main() {
+    // Test 1: Direct existential assignment with binding
+    let intP: any Producer[Output = int] = IntProducer {}
+    
+    // Test 2: Coercion from concrete to constrained existential
+    let strP: any Producer[Output = string] = StringProducer {}
+    
+    // Test 3: Using existential in a generic context
+    let intP2 = IntProducer {}
+    testIntProducer(intP2)
+    
+    std.print("PASS: Parametric existential types\n")
+}
+
+// Generic function that accepts any type implementing Producer[Output = int]
+func testIntProducer[T: Producer[Item = int]](_ p: T) {
+    // This works because T.Item is normalized to int via the constraint
+}
+

@@ -658,6 +658,7 @@ pub struct TypeArguments {
 pub enum TypeArgument {
     Type(Box<Type>),
     Const(AnonConst),
+    AssocType(Identifier, Box<Type>),
 }
 
 #[derive(Debug, Clone)]
@@ -1895,6 +1896,7 @@ pub fn walk_type_argument<V: AstVisitor>(visitor: &mut V, argument: &TypeArgumen
     match argument {
         TypeArgument::Type(ty) => try_visit!(visitor.visit_type(ty)),
         TypeArgument::Const(anon_const) => try_visit!(visitor.visit_anon_constant(anon_const)),
+        TypeArgument::AssocType(_, ty) => try_visit!(visitor.visit_type(ty)),
     }
     V::Result::output()
 }
