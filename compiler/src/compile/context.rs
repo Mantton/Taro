@@ -833,8 +833,9 @@ impl<'arena> CompilerStore<'arena> {
         arenas: &'arena CompilerArenas<'arena>,
         output_root: PathBuf,
         dcx: &DiagCtx,
+        target_override: Option<String>,
     ) -> CompileResult<CompilerStore<'arena>> {
-        let target_layout = TargetLayout::for_host(dcx)?;
+        let target_layout = TargetLayout::new(dcx, target_override.as_deref())?;
         Ok(CompilerStore {
             arenas,
             interners: CompilerInterners::new(arenas),

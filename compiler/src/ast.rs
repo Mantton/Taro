@@ -69,6 +69,46 @@ pub enum VisibilityLevel {
 #[derive(Debug, Clone)]
 pub struct Attribute {
     pub identifier: Identifier,
+    pub args: Option<AttributeArgs>,
+    /// For @cfg attributes: the predicate expression (new syntax: `@cfg(os("macos"))`)
+    pub cfg_expr: Option<CfgExpr>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct AttributeArgs {
+    pub items: Vec<AttributeArg>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum AttributeArg {
+    /// `key = "value"` or `key = literal`
+    KeyValue {
+        key: Identifier,
+        value: Literal,
+        span: Span,
+    },
+    /// `ident` (boolean flag)
+    Flag { key: Identifier, span: Span },
+}
+
+/// Configuration predicate expression for `@cfg(...)` and `#cfg(...)`
+/// Supports: `os("macos")`, `arch("x86_64")`, `&&`, `||`, `!`
+#[derive(Debug, Clone)]
+pub enum CfgExpr {
+    /// `os("macos")` or `arch("x86_64")`
+    Predicate {
+        name: Identifier,
+        value: Symbol,
+        span: Span,
+    },
+    /// `!expr`
+    Not(Box<CfgExpr>, Span),
+    /// `expr && expr`
+    All(Vec<CfgExpr>, Span),
+    /// `expr || expr`
+    Any(Vec<CfgExpr>, Span),
 }
 
 pub type AttributeList = Vec<Attribute>;
@@ -410,6 +450,8 @@ pub enum ExpressionKind {
     OptionalUnwrap(Box<Expression>),
     ///
     OptionalEvaluation(Box<Expression>),
+    /// `#cfg(os("macos"))` - compile-time config check
+    CfgCheck(CfgExpr),
 }
 
 #[derive(Debug, Clone)]
@@ -1629,6 +1671,9 @@ pub fn walk_expression<V: AstVisitor>(visitor: &mut V, node: &Expression) -> V::
         ExpressionKind::StructLiteral(node) => {
             try_visit!(visitor.visit_path(&node.path));
             walk_list!(visitor, visit_expression_field, &node.fields);
+        }
+        ExpressionKind::CfgCheck(_) => {
+            // CfgExpr doesn't contain inner expressions to visit
         }
     };
 

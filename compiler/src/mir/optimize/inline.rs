@@ -139,6 +139,7 @@ impl Inline {
             match attr.as_known() {
                 Some(KnownAttribute::Inline) => return true,
                 Some(KnownAttribute::NoInline) => return false,
+                Some(KnownAttribute::Cfg) => {} // Cfg doesn't affect inlining
                 None => {}
             }
         }

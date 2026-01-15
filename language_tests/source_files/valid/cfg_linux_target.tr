@@ -1,0 +1,33 @@
+// TARGET: x86_64-unknown-linux-gnu
+// CHECK_ONLY
+// Test cfg with Linux target - verifies cross-target CHECK_ONLY works
+
+@cfg(os("linux"))
+func linux_func() -> int32 {
+    return 1
+}
+
+@cfg(!os("macos"))
+func not_macos_func() -> int32 {
+    return 2
+}
+
+@cfg(os("linux") && arch("x86_64"))
+func linux_x64_func() -> int32 {
+    return 3
+}
+
+// This should NOT be included on Linux target
+@cfg(os("macos"))
+func macos_only_excluded() -> int32 {
+    return 999
+}
+
+func main() {
+    let a = linux_func()
+    let b = not_macos_func()
+    let c = linux_x64_func()
+    
+    // These should all compile when targeting Linux x86_64
+    print("Linux cfg test\n")
+}

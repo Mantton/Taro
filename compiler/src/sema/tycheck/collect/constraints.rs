@@ -91,7 +91,7 @@ impl<'ctx> Actor<'ctx> {
             constraints: &mut Vec<Spanned<Constraint<'ctx>>>,
             ty: crate::sema::models::Ty<'ctx>,
             interface: InterfaceReference<'ctx>,
-            span: crate::span::Span
+            span: crate::span::Span,
         ) {
             // 1. Add Bound Constraint
             // Check for duplicates (exact match)
@@ -107,12 +107,12 @@ impl<'ctx> Actor<'ctx> {
                 let constraint = Constraint::Bound { ty, interface };
                 constraints.push(Spanned::new(constraint, span));
             }
-            
+
             // 2. Add Type Equality Constraints from Bindings
             if !interface.bindings.is_empty() {
                 // Break cycle: Look up associated type ID directly from InterfaceDefinition
                 // which is collected early (phase 40), avoiding dependency on full Requirements (phase 49).
-                
+
                 let assoc_map = gcx.with_type_database(interface.id.package(), |db| {
                     db.def_to_iface_def
                         .get(&interface.id)
@@ -120,16 +120,16 @@ impl<'ctx> Actor<'ctx> {
                 });
 
                 if let Some(assoc_map) = assoc_map {
-                     for binding in interface.bindings {
+                    for binding in interface.bindings {
                         if let Some(&assoc_id) = assoc_map.get(&binding.name) {
-                             let alias_ty = gcx.store.interners.intern_ty(TyKind::Alias {
-                                 kind: crate::sema::models::AliasKind::Projection,
-                                 def_id: assoc_id,
-                                 args: interface.arguments,
-                             });
-                             
-                             let eq_constraint = Constraint::TypeEquality(alias_ty, binding.ty);
-                             constraints.push(Spanned::new(eq_constraint, span));
+                            let alias_ty = gcx.store.interners.intern_ty(TyKind::Alias {
+                                kind: crate::sema::models::AliasKind::Projection,
+                                def_id: assoc_id,
+                                args: interface.arguments,
+                            });
+
+                            let eq_constraint = Constraint::TypeEquality(alias_ty, binding.ty);
+                            constraints.push(Spanned::new(eq_constraint, span));
                         }
                     }
                 }
@@ -166,7 +166,13 @@ impl<'ctx> Actor<'ctx> {
                 let ty = gcx.get_type(param.id);
                 for bound in bounds.iter() {
                     let interface = icx.lowerer().lower_interface_reference(ty, &bound.path);
-                    add_interface_constraints(gcx, &mut constraints, ty, interface, bound.path.span);
+                    add_interface_constraints(
+                        gcx,
+                        &mut constraints,
+                        ty,
+                        interface,
+                        bound.path.span,
+                    );
                 }
             }
         }
@@ -179,7 +185,13 @@ impl<'ctx> Actor<'ctx> {
                         for bound in node.bounds.iter() {
                             let interface =
                                 icx.lowerer().lower_interface_reference(ty, &bound.path);
-                            add_interface_constraints(gcx, &mut constraints, ty, interface, node.span);
+                            add_interface_constraints(
+                                gcx,
+                                &mut constraints,
+                                ty,
+                                interface,
+                                node.span,
+                            );
                         }
                     }
                     _ => {} // Skip equalities in Pass 1
@@ -194,7 +206,7 @@ impl<'ctx> Actor<'ctx> {
         // Now that bounds are visible, we can safely lower projections like `T.Item`.
         if let Some(clause) = &generics.where_clause {
             for requirement in clause.requirements.iter() {
-                 match &requirement {
+                match &requirement {
                     hir::GenericRequirement::SameTypeRequirement(node) => {
                         let constraint = Constraint::TypeEquality(
                             icx.lowerer().lower_type(&node.bounded_type),

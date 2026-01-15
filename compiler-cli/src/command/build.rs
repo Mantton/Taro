@@ -77,7 +77,12 @@ fn run_single_file(
         ReportedError
     })?;
 
-    let store = CompilerStore::new(&arenas, target_root.join("objects"), &dcx)?;
+    let store = CompilerStore::new(
+        &arenas,
+        target_root.join("objects"),
+        &dcx,
+        arguments.target.clone(),
+    )?;
     let icx = CompilerContext::new(dcx, store);
 
     // Compile std (index 0)
@@ -137,7 +142,7 @@ fn run_package(
         ReportedError
     })?;
     let target_root = project_root.join("target").join("objects");
-    let store = CompilerStore::new(&arenas, target_root, &dcx)?;
+    let store = CompilerStore::new(&arenas, target_root, &dcx, arguments.target.clone())?;
     let icx = CompilerContext::new(dcx, store);
 
     let graph = sync_dependencies(arguments.path)?;

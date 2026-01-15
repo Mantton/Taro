@@ -1,0 +1,46 @@
+// TARGET: aarch64-apple-darwin
+// CHECK_ONLY
+// Test @cfg attribute with new predicate expression syntax
+// Verifies: @cfg(os("macos")), @cfg(!os("windows")), @cfg(os("linux") || os("macos"))
+
+// This should compile on macOS
+@cfg(os("macos"))
+func macos_func() -> int32 {
+    return 1
+}
+
+// This should compile on non-Windows
+@cfg(!os("windows"))
+func not_windows_func() -> int32 {
+    return 2
+}
+
+// This should compile on Linux OR macOS
+@cfg(os("linux") || os("macos"))
+func unix_like_func() -> int32 {
+    return 3
+}
+
+// This should NOT compile (linux && x86_64 on Apple Silicon Mac)
+@cfg(os("linux") && arch("x86_64"))
+func linux_x64_only() -> int32 {
+    return 999
+}
+
+func main() {
+    let a = macos_func()
+    let b = not_windows_func()
+    let c = unix_like_func()
+    
+    assert(cond: a == 1)
+    assert(cond: b == 2)
+    assert(cond: c == 3)
+    
+    print("@cfg attribute test passed!\n")
+}
+
+func assert(cond: bool) {
+    if !cond {
+        print("Assertion failed!\n")
+    }
+}

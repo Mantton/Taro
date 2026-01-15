@@ -3,8 +3,8 @@
 //! This module provides synthesis of interface methods (like Clone.clone)
 //! for types that declare conformance inline (e.g., `struct Foo: Clone {}`).
 
-use crate::sema::tycheck::utils::generics::GenericsBuilder;
 use crate::sema::tycheck::resolve_conformance_witness;
+use crate::sema::tycheck::utils::generics::GenericsBuilder;
 use crate::{
     compile::context::Gcx,
     hir::{DefinitionID, StdInterface},
@@ -228,8 +228,7 @@ fn type_conforms_to_clone<'ctx>(gcx: Gcx<'ctx>, ty: Ty<'ctx>, clone_def: Definit
             arguments: GenericsBuilder::identity_for_item(gcx, clone_def),
             bindings: &[],
         };
-        return resolve_conformance_witness(gcx, type_head, clone_ref)
-            .is_some();
+        return resolve_conformance_witness(gcx, type_head, clone_ref).is_some();
     }
 
     false

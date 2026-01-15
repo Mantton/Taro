@@ -96,7 +96,7 @@ impl<'a, 'gcx> TypeFolder<'gcx> for InferVarOrErrorResolver<'a, 'gcx> {
     #[inline]
     fn fold_ty(&mut self, ty: Ty<'gcx>) -> Ty<'gcx> {
         let shallow = self.icx.shallow_resolve(ty);
-        
+
         // If still an inference variable after resolution, replace with error type
         if matches!(shallow.kind(), TyKind::Infer(_)) {
             return Ty::error(self.icx.gcx);

@@ -90,13 +90,51 @@ impl Actor<'_, '_> {
             .into_iter()
             .map(|attr| hir::Attribute {
                 identifier: attr.identifier,
+                args: attr.args.map(|args| self.lower_attribute_args(args)),
+                span: attr.span,
             })
             .collect()
+    }
+
+    fn lower_attribute_args(&mut self, args: ast::AttributeArgs) -> hir::AttributeArgs {
+        hir::AttributeArgs {
+            items: args
+                .items
+                .into_iter()
+                .map(|arg| self.lower_attribute_arg(arg))
+                .collect(),
+            span: args.span,
+        }
+    }
+
+    fn lower_attribute_arg(&mut self, arg: ast::AttributeArg) -> hir::AttributeArg {
+        match arg {
+            ast::AttributeArg::KeyValue { key, value, span } => {
+                let hir_lit = match convert_ast_literal(value) {
+                    Ok(lit) => lit,
+                    Err(err) => {
+                        self.context.dcx.emit_error(err.into(), Some(span));
+                        hir::Literal::Nil
+                    }
+                };
+                hir::AttributeArg::KeyValue {
+                    key,
+                    value: hir_lit,
+                    span,
+                }
+            }
+            ast::AttributeArg::Flag { key, span } => hir::AttributeArg::Flag { key, span },
+        }
     }
 }
 
 impl Actor<'_, '_> {
     fn lower_declaration(&mut self, node: ast::Declaration) -> Vec<hir::Declaration> {
+        // Check @cfg attributes - if any cfg condition fails, skip this declaration
+        if !self.should_include_declaration(&node.attributes) {
+            return vec![];
+        }
+
         let ast::Declaration {
             id,
             kind,
@@ -153,6 +191,151 @@ impl Actor<'_, '_> {
             kind,
             attributes: self.lower_attributes(attributes),
         }]
+    }
+
+    /// Check if a declaration should be included based on @cfg attributes.
+    /// Returns true if all @cfg conditions pass (or if there are no @cfg attrs).
+    fn should_include_declaration(&self, attributes: &ast::AttributeList) -> bool {
+        for attr in attributes {
+            if attr.identifier.symbol.as_str() == "cfg" {
+                if !self.evaluate_cfg(attr) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// Evaluate a single @cfg attribute.
+    /// Returns true if the condition matches, false otherwise.
+    fn evaluate_cfg(&self, attr: &ast::Attribute) -> bool {
+        // New syntax: @cfg(os("macos") && ...)
+        if let Some(cfg_expr) = &attr.cfg_expr {
+            return self.evaluate_cfg_expr(cfg_expr);
+        }
+
+        // Legacy syntax: @cfg(target_os = "macos")
+        let Some(args) = &attr.args else {
+            // @cfg without arguments - treat as always true (or error?)
+            return true;
+        };
+
+        // Get target triple from context
+        let triple = self.context.store.target_layout.triple();
+        let triple_str = triple.as_str().to_str().unwrap_or("");
+
+        // Parse triple for OS and arch (format: arch-vendor-os or arch-vendor-os-env)
+        let parts: Vec<&str> = triple_str.split('-').collect();
+        let target_arch = parts.first().copied().unwrap_or("");
+        let target_os = if parts.len() >= 3 { parts[2] } else { "" };
+
+        for arg in &args.items {
+            match arg {
+                ast::AttributeArg::KeyValue { key, value, .. } => {
+                    let key_str = key.symbol.as_str();
+                    let value_str = match value {
+                        ast::Literal::String { value } => value.as_str(),
+                        _ => continue, // Skip non-string values for now
+                    };
+
+                    match key_str {
+                        "target_os" => {
+                            // Match common OS names
+                            let matches = match value_str {
+                                "macos" | "darwin" => {
+                                    target_os.contains("darwin") || target_os == "macos"
+                                }
+                                "linux" => target_os == "linux",
+                                "windows" => target_os.contains("windows") || target_os == "win32",
+                                _ => target_os == value_str,
+                            };
+                            if !matches {
+                                return false;
+                            }
+                        }
+                        "target_arch" => {
+                            // Match common arch names
+                            let matches = match value_str {
+                                "x86_64" | "amd64" => target_arch == "x86_64",
+                                "aarch64" | "arm64" => {
+                                    target_arch == "aarch64" || target_arch == "arm64"
+                                }
+                                "arm" => target_arch.starts_with("arm"),
+                                _ => target_arch == value_str,
+                            };
+                            if !matches {
+                                return false;
+                            }
+                        }
+                        _ => {
+                            return false;
+                        }
+                    }
+                }
+                ast::AttributeArg::Flag { key, .. } => {
+                    // @cfg(debug)
+                    let key_str = key.symbol.as_str();
+                    match key_str {
+                        "debug" => {
+                            // TODO: Check if we're in debug mode
+                            return false; // For now, assume debug mode
+                        }
+                        _ => {
+                            // Unknown flag - treat as not matching
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+
+        true // All conditions passed
+    }
+
+    /// Evaluate a CfgExpr (from #cfg(...) expression) against target triple
+    fn evaluate_cfg_expr(&self, expr: &ast::CfgExpr) -> bool {
+        // Get target triple from TargetLayout (which may be host or cross-compile target)
+        let triple = self.context.store.target_layout.triple();
+        let triple_str = triple.as_str().to_str().unwrap_or("");
+
+        // Parse triple for OS and arch (format: arch-vendor-os or arch-vendor-os-env)
+        let parts: Vec<&str> = triple_str.split('-').collect();
+        let target_arch = parts.first().copied().unwrap_or("");
+        let target_os = if parts.len() >= 3 { parts[2] } else { "" };
+
+        self.eval_cfg_expr_inner(expr, target_os, target_arch)
+    }
+
+    fn eval_cfg_expr_inner(&self, expr: &ast::CfgExpr, target_os: &str, target_arch: &str) -> bool {
+        match expr {
+            ast::CfgExpr::Predicate { name, value, .. } => {
+                let name_str = name.symbol.as_str();
+                let value_str = value.as_str();
+
+                match name_str {
+                    "os" => match value_str {
+                        "macos" | "darwin" => target_os.contains("darwin") || target_os == "macos",
+                        "linux" => target_os == "linux",
+                        "windows" => target_os.contains("windows") || target_os == "win32",
+                        _ => target_os == value_str,
+                    },
+                    "arch" => match value_str {
+                        "x86_64" | "amd64" => target_arch == "x86_64",
+                        "aarch64" | "arm64" => target_arch == "aarch64" || target_arch == "arm64",
+                        "arm" => target_arch.starts_with("arm"),
+                        _ => target_arch == value_str,
+                    },
+                    _ => false, // Unknown predicate
+                }
+            }
+            ast::CfgExpr::Not(inner, _) => !self.eval_cfg_expr_inner(inner, target_os, target_arch),
+            ast::CfgExpr::All(items, _) => items
+                .iter()
+                .all(|e| self.eval_cfg_expr_inner(e, target_os, target_arch)),
+            ast::CfgExpr::Any(items, _) => items
+                .iter()
+                .any(|e| self.eval_cfg_expr_inner(e, target_os, target_arch)),
+        }
     }
 
     fn lower_extern_declaration(
@@ -1578,6 +1761,11 @@ impl Actor<'_, '_> {
                     })
                     .collect();
                 hir::ExpressionKind::StructLiteral(hir::StructLiteral { path, fields })
+            }
+            ast::ExpressionKind::CfgCheck(cfg_expr) => {
+                // Evaluate the cfg expression at compile time
+                let result = self.evaluate_cfg_expr(&cfg_expr);
+                hir::ExpressionKind::Literal(hir::Literal::Bool(result))
             }
         };
 

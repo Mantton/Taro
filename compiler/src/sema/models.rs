@@ -832,28 +832,30 @@ impl<'ctx> InterfaceReference<'ctx> {
 
         let mut out = String::from(name.as_str());
         out.push_str(&format_generic_args(display_args, gcx));
-        
+
         if !self.bindings.is_empty() {
-             if display_args.is_empty() {
-                 out.push('<');
-             } else {
-                 // Remove closing ']'
-                 out.pop();
-                 out.push_str(", ");
-             }
-             
-             let bindings: Vec<_> = self.bindings.iter().map(|b| {
-                 format!("{} = {}", b.name.as_str(), b.ty.format(gcx))
-             }).collect();
-             out.push_str(&bindings.join(", "));
-             
-             if display_args.is_empty() {
-                 out.push('>');
-             } else {
-                 out.push(']');
-             }
+            if display_args.is_empty() {
+                out.push('<');
+            } else {
+                // Remove closing ']'
+                out.pop();
+                out.push_str(", ");
+            }
+
+            let bindings: Vec<_> = self
+                .bindings
+                .iter()
+                .map(|b| format!("{} = {}", b.name.as_str(), b.ty.format(gcx)))
+                .collect();
+            out.push_str(&bindings.join(", "));
+
+            if display_args.is_empty() {
+                out.push('>');
+            } else {
+                out.push(']');
+            }
         }
-        
+
         out
     }
 }

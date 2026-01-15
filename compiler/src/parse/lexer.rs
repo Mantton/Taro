@@ -351,6 +351,7 @@ impl Lexer {
             ';' => Token::Semicolon,
             ',' => Token::Comma,
             '@' => Token::At,
+            '#' => Token::Hash,
             '~' => Token::Tilde,
             ':' => Token::Colon,
             '.' => {

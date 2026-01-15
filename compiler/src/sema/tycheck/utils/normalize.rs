@@ -78,7 +78,7 @@ impl<'a, 'ctx> TypeFolder<'ctx> for NormalizeFolder<'a, 'ctx> {
                 // Priority 1: Check ParamEnv for explicit type equalities.
                 // This handles parametric normalization like `T: Container[Item=int]`
                 // where we want `T.Item` to normalize to `int`.
-                
+
                 let equiv_types = self.env.equivalent_types(ty);
 
                 // Prefer concrete types (non-aliased, non-parameter)
@@ -154,7 +154,7 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
         // This is the most direct resolution path since bindings are explicit.
         if let TyKind::BoxedExistential { interfaces } = self_ty.kind() {
             let assoc_name = gcx.definition_ident(assoc_id).symbol;
-            
+
             for iface in interfaces.iter() {
                 // Match interface by ID (direct match or parent of associated type)
                 if iface.id == interface_id || gcx.definition_parent(assoc_id) == Some(iface.id) {

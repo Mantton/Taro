@@ -54,7 +54,12 @@ impl<'ctx> ConstraintSolver<'ctx> {
             InterfaceReference {
                 id: interface.id,
                 arguments: interned,
-                bindings: self.gcx().store.arenas.global.alloc_slice_copy(&new_bindings),
+                bindings: self
+                    .gcx()
+                    .store
+                    .arenas
+                    .global
+                    .alloc_slice_copy(&new_bindings),
             },
             has_infer,
         )

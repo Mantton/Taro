@@ -90,6 +90,25 @@ def cleanup_test_environment():
         print(f"Cleaned up temp directory: {TEMP_DIR}")
 
 
+def parse_test_directives(file_path: Path) -> dict:
+    """Parse // TARGET: and // CHECK_ONLY comments from the first few lines of a test file."""
+    result = {"target": None, "check_only": False}
+    try:
+        with open(file_path, 'r') as f:
+            for _ in range(15):  # Check first 15 lines
+                line = f.readline()
+                if not line:
+                    break
+                line = line.strip()
+                if line.startswith('// TARGET:'):
+                    result["target"] = line[len('// TARGET:'):].strip()
+                elif line.startswith('// CHECK_ONLY'):
+                    result["check_only"] = True
+    except Exception:
+        pass
+    return result
+
+
 def run_test(file_path: Path):
     """Runs a single test file and compares output."""
     assert TEMP_DIR is not None, "setup_test_environment() must be called first"
@@ -112,15 +131,29 @@ def run_test(file_path: Path):
         output_bin = TEMP_DIR / "bin" / file_path.stem
         output_bin.parent.mkdir(parents=True, exist_ok=True)
 
+        # Parse test directives (TARGET, CHECK_ONLY)
+        directives = parse_test_directives(file_path)
+        target_triple = directives["target"]
+        is_check_only = directives["check_only"]
+
+        # Choose command: "check" for CHECK_ONLY tests, "run" otherwise
+        command = "check" if is_check_only else "run"
+
         cmd = [
             str(COMPILER_PATH),
-            "run",
+            command,
             str(file_path),
-            "-o",
-            str(output_bin),
             "--std-path",
             str(STD_PATH),
         ]
+
+        # Add output flag only for run command
+        if command == "run":
+            cmd.extend(["-o", str(output_bin)])
+
+        # Add --target flag if specified in test file
+        if target_triple:
+            cmd.extend(["--target", target_triple])
 
         env = os.environ.copy()
         env["TARO_HOME"] = str(TARO_HOME)
@@ -154,12 +187,15 @@ def run_test(file_path: Path):
             if result.returncode != 0:
                 return (
                     False,
-                    "Runtime error",
+                    "Compilation error" if is_check_only else "Runtime error",
                     {
                         "stderr": result.stderr,
                         "stdout": result.stdout,
                     },
                 )
+            # CHECK_ONLY tests have no output to compare
+            if is_check_only:
+                return True, "Check passed", None
             # Only capture stdout for valid test output
             actual_output = result.stdout
 

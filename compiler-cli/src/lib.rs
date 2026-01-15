@@ -20,6 +20,9 @@ pub struct CommandLineArguments {
     pub dump_llvm: bool,
     #[arg(long = "runtime-path")]
     pub runtime_path: Option<PathBuf>,
+    /// Target triple override (e.g., x86_64-unknown-linux-gnu)
+    #[arg(long = "target")]
+    pub target: Option<String>,
 }
 
 impl CommandLineArguments {

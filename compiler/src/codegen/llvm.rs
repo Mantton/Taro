@@ -2032,7 +2032,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         }
 
         let interned = self.gcx.store.interners.intern_generic_args(new_args);
-        
+
         // Also substitute bindings
         let mut new_bindings = Vec::with_capacity(template.bindings.len());
         for binding in template.bindings {
@@ -2042,7 +2042,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 ty: substituted_ty,
             });
         }
-        
+
         InterfaceReference {
             id: template.id,
             arguments: interned,

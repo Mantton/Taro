@@ -298,7 +298,12 @@ impl<'ctx> Actor<'ctx> {
         InterfaceReference {
             id: template.id,
             arguments: interned,
-            bindings: self.context.store.arenas.global.alloc_slice_copy(&new_bindings),
+            bindings: self
+                .context
+                .store
+                .arenas
+                .global
+                .alloc_slice_copy(&new_bindings),
         }
     }
 

@@ -2266,13 +2266,13 @@ impl<'ctx> Checker<'ctx> {
                 }
 
                 let arm_ty = self.synth_with_expectation(&arm.body, Some(result_ty), &mut arm_cs);
-                
+
                 // Solve intermediate to resolve any inference variables in arm_ty
                 arm_cs.solve_intermediate();
-                
+
                 // Check if the resolved arm type is Never
                 let resolved_arm_ty = arm_cs.infer_cx.resolve_vars_if_possible(arm_ty);
-                
+
                 // Use coercion for Never type (!) arms to allow diverging branches,
                 // but use equality for other arms to preserve type inference behavior
                 if matches!(resolved_arm_ty.kind(), TyKind::Never) {
@@ -2902,8 +2902,14 @@ impl<'ctx> Checker<'ctx> {
                 let expected_ty = self.lower_type(ty);
                 GenericArgument::Const(self.lowerer().lower_const_argument(expected_ty, c))
             }
-            (GenericParameterDefinitionKind::Type { .. }, hir::TypeArgument::AssociatedType(_, ty))
-            | (GenericParameterDefinitionKind::Const { .. }, hir::TypeArgument::AssociatedType(_, ty)) => {
+            (
+                GenericParameterDefinitionKind::Type { .. },
+                hir::TypeArgument::AssociatedType(_, ty),
+            )
+            | (
+                GenericParameterDefinitionKind::Const { .. },
+                hir::TypeArgument::AssociatedType(_, ty),
+            ) => {
                 // Associated types in generic arguments (e.g. List<Item=int>) are handled earlier
                 // by stripping them from the positional arguments list.
                 // If we reach here, it's structurally invalid or handled elsewhere.

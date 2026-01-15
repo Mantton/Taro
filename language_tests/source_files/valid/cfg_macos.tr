@@ -1,0 +1,24 @@
+// TARGET: aarch64-apple-darwin
+// CHECK_ONLY
+// Test conditional compilation with @cfg attribute
+// This test verifies that @cfg(os("macos")) works correctly
+
+// This function should only be compiled on macOS
+@cfg(os("macos"))
+func macos_only_func() -> int32 {
+    return 42
+}
+
+// This function should be available on all platforms
+func main() {
+    // Since we're testing on the host (likely macOS), this should work
+    let result = macos_only_func()
+    assert(cond: result == 42)
+    print("@cfg test passed!\n")
+}
+
+func assert(cond: bool) {
+    if !cond {
+        print("Assertion failed!\n")
+    }
+}

@@ -1,10 +1,10 @@
 use crate::{
     ast::{
-        self, AnonConst, AssociatedDeclaration, AssociatedDeclarationKind, Attribute,
-        AttributeList, BinaryOperator, Block, ClosureExpression, ConformanceConstraint,
-        Conformances, Constant, Declaration, DeclarationKind, Enum, EnumCase, Expression,
-        ExpressionArgument, ExpressionField, ExpressionKind, FieldDefinition, ForStatement,
-        Function, FunctionDeclaration, FunctionDeclarationKind, FunctionParameter,
+        self, AnonConst, AssociatedDeclaration, AssociatedDeclarationKind, Attribute, AttributeArg,
+        AttributeArgs, AttributeList, BinaryOperator, Block, CfgExpr, ClosureExpression,
+        ConformanceConstraint, Conformances, Constant, Declaration, DeclarationKind, Enum,
+        EnumCase, Expression, ExpressionArgument, ExpressionField, ExpressionKind, FieldDefinition,
+        ForStatement, Function, FunctionDeclaration, FunctionDeclarationKind, FunctionParameter,
         FunctionPrototype, FunctionSignature, GenericBound, GenericBounds, GenericRequirement,
         GenericRequirementList, GenericWhereClause, Generics, Identifier, IfExpression, Impl,
         Interface, Label, Literal, Local, MapPair, MatchArm, MatchExpression, Mutability,
@@ -1067,14 +1067,206 @@ impl Parser {
     }
 
     fn parse_attribute(&mut self) -> R<Option<Attribute>> {
-        // NOTE: Nested attributes like @available("Platform-iOS") are not yet implemented
+        let lo = self.lo_span();
         if !self.eat(Token::At) {
             return Ok(None);
         };
 
         let identifier = self.parse_identifier()?;
-        let attr = Attribute { identifier };
+
+        // For @cfg attributes, parse the predicate expression with the new syntax
+        if identifier.symbol.as_str() == "cfg" && self.matches(Token::LParen) {
+            self.expect(Token::LParen)?;
+            let cfg_expr = self.parse_cfg_expr()?;
+            self.expect(Token::RParen)?;
+
+            let attr = Attribute {
+                identifier,
+                args: None,
+                cfg_expr: Some(cfg_expr),
+                span: lo.to(self.hi_span()),
+            };
+            return Ok(Some(attr));
+        }
+
+        // For other attributes, parse key-value args
+        let args = if self.matches(Token::LParen) {
+            Some(self.parse_attribute_args()?)
+        } else {
+            None
+        };
+
+        let attr = Attribute {
+            identifier,
+            args,
+            cfg_expr: None,
+            span: lo.to(self.hi_span()),
+        };
         return Ok(Some(attr));
+    }
+
+    fn parse_attribute_args(&mut self) -> R<AttributeArgs> {
+        let lo = self.lo_span();
+        let items =
+            self.parse_delimiter_sequence(Delimiter::Parenthesis, Token::Comma, |this| {
+                this.parse_attribute_arg()
+            })?;
+
+        Ok(AttributeArgs {
+            items,
+            span: lo.to(self.hi_span()),
+        })
+    }
+
+    fn parse_attribute_arg(&mut self) -> R<AttributeArg> {
+        let lo = self.lo_span();
+        let key = self.parse_identifier()?;
+
+        if self.eat(Token::Assign) {
+            // key = value - parse a literal value directly
+            let value = self.parse_attribute_literal_value()?;
+            Ok(AttributeArg::KeyValue {
+                key,
+                value,
+                span: lo.to(self.hi_span()),
+            })
+        } else {
+            // flag
+            Ok(AttributeArg::Flag {
+                key,
+                span: lo.to(self.hi_span()),
+            })
+        }
+    }
+
+    /// Parse a literal value for use in attributes (returns ast::Literal directly)
+    fn parse_attribute_literal_value(&mut self) -> R<Literal> {
+        let literal = match self.current_token() {
+            Token::Integer { value, base } => Literal::Integer { value, base },
+            Token::Float { value, .. } => Literal::Float { value },
+            Token::String { value } => Literal::String { value },
+            Token::Rune { value } => Literal::Rune { value },
+            Token::True => Literal::Bool(true),
+            Token::False => Literal::Bool(false),
+            Token::Nil => Literal::Nil,
+            _ => return Err(self.err_at_current(ParserError::ExpectedExpression)),
+        };
+
+        self.bump(); // consume token
+        Ok(literal)
+    }
+
+    /// Parse `#cfg(...)` compile-time configuration check expression
+    fn parse_cfg_check_expression(&mut self) -> R<Box<Expression>> {
+        let lo = self.lo_span();
+        self.expect(Token::Hash)?;
+
+        // Expect "cfg" identifier
+        let ident = self.parse_identifier()?;
+        if ident.symbol.as_str() != "cfg" {
+            return Err(Spanned::new(
+                ParserError::ExpectedIdentifier, // TODO: better error
+                ident.span,
+            ));
+        }
+
+        self.expect(Token::LParen)?;
+        let cfg_expr = self.parse_cfg_expr()?;
+        self.expect(Token::RParen)?;
+
+        let kind = ExpressionKind::CfgCheck(cfg_expr);
+        Ok(self.build_expr(kind, lo.to(self.hi_span())))
+    }
+
+    /// Parse a cfg predicate expression: `os("macos") && !arch("arm")`
+    fn parse_cfg_expr(&mut self) -> R<CfgExpr> {
+        self.parse_cfg_or_expr()
+    }
+
+    /// Parse OR expressions: `expr || expr`
+    fn parse_cfg_or_expr(&mut self) -> R<CfgExpr> {
+        let lo = self.lo_span();
+        let mut left = self.parse_cfg_and_expr()?;
+
+        while self.eat(Token::BarBar) {
+            let right = self.parse_cfg_and_expr()?;
+            // Flatten consecutive ORs into a single Any
+            match &mut left {
+                CfgExpr::Any(items, span) => {
+                    items.push(right);
+                    *span = lo.to(self.hi_span());
+                }
+                _ => {
+                    left = CfgExpr::Any(vec![left, right], lo.to(self.hi_span()));
+                }
+            }
+        }
+
+        Ok(left)
+    }
+
+    /// Parse AND expressions: `expr && expr`
+    fn parse_cfg_and_expr(&mut self) -> R<CfgExpr> {
+        let lo = self.lo_span();
+        let mut left = self.parse_cfg_unary_expr()?;
+
+        while self.eat(Token::AmpAmp) {
+            let right = self.parse_cfg_unary_expr()?;
+            // Flatten consecutive ANDs into a single All
+            match &mut left {
+                CfgExpr::All(items, span) => {
+                    items.push(right);
+                    *span = lo.to(self.hi_span());
+                }
+                _ => {
+                    left = CfgExpr::All(vec![left, right], lo.to(self.hi_span()));
+                }
+            }
+        }
+
+        Ok(left)
+    }
+
+    /// Parse unary: `!expr` or primary
+    fn parse_cfg_unary_expr(&mut self) -> R<CfgExpr> {
+        let lo = self.lo_span();
+        if self.eat(Token::Bang) {
+            let inner = self.parse_cfg_unary_expr()?;
+            Ok(CfgExpr::Not(Box::new(inner), lo.to(self.hi_span())))
+        } else {
+            self.parse_cfg_primary_expr()
+        }
+    }
+
+    /// Parse primary cfg expression: `os("macos")` or `(expr)`
+    fn parse_cfg_primary_expr(&mut self) -> R<CfgExpr> {
+        if self.eat(Token::LParen) {
+            let inner = self.parse_cfg_expr()?;
+            self.expect(Token::RParen)?;
+            return Ok(inner);
+        }
+
+        // Parse predicate: `os("macos")` or `arch("x86_64")`
+        let lo = self.lo_span();
+        let name = self.parse_identifier()?;
+        self.expect(Token::LParen)?;
+
+        // Parse string value
+        let value = match self.current_token() {
+            Token::String { value } => {
+                self.bump();
+                Symbol::new(&value)
+            }
+            _ => return Err(self.err_at_current(ParserError::ExpectedExpression)),
+        };
+
+        self.expect(Token::RParen)?;
+
+        Ok(CfgExpr::Predicate {
+            name,
+            value,
+            span: lo.to(self.hi_span()),
+        })
     }
 }
 
@@ -2910,6 +3102,7 @@ impl Parser {
                 self.bump();
                 Ok(self.build_expr(kind, lo.to(self.hi_span())))
             }
+            Token::Hash => self.parse_cfg_check_expression(),
             _ => return Err(self.err_at_current(ParserError::ExpectedExpression)),
         }
     }
@@ -5298,6 +5491,88 @@ mod tests {
                 assert_eq!(decl.identifier.symbol.as_str(), "malloc");
             }
             _ => panic!("Expected function"),
+        }
+    }
+
+    // ==================== ATTRIBUTE TESTS ====================
+
+    #[test]
+    fn test_simple_attribute() {
+        let decl = parse_one_decl("@inline func foo() {}");
+        assert_eq!(decl.attributes.len(), 1);
+        assert_eq!(decl.attributes[0].identifier.symbol.as_str(), "inline");
+        assert!(decl.attributes[0].args.is_none());
+    }
+
+    #[test]
+    fn test_attribute_with_key_value_string() {
+        let decl = parse_one_decl(r#"@cfg(target_os = "macos") func foo() {}"#);
+        assert_eq!(decl.attributes.len(), 1);
+        assert_eq!(decl.attributes[0].identifier.symbol.as_str(), "cfg");
+        let args = decl.attributes[0].args.as_ref().expect("Expected args");
+        assert_eq!(args.items.len(), 1);
+        match &args.items[0] {
+            AttributeArg::KeyValue { key, value, .. } => {
+                assert_eq!(key.symbol.as_str(), "target_os");
+                match value {
+                    Literal::String { value } => assert_eq!(value.as_str(), "macos"),
+                    _ => panic!("Expected string literal"),
+                }
+            }
+            _ => panic!("Expected key-value arg"),
+        }
+    }
+
+    #[test]
+    fn test_attribute_with_multiple_args() {
+        let decl =
+            parse_one_decl(r#"@cfg(target_os = "linux", target_arch = "x86_64") func foo() {}"#);
+        assert_eq!(decl.attributes.len(), 1);
+        let args = decl.attributes[0].args.as_ref().expect("Expected args");
+        assert_eq!(args.items.len(), 2);
+
+        match &args.items[0] {
+            AttributeArg::KeyValue { key, .. } => assert_eq!(key.symbol.as_str(), "target_os"),
+            _ => panic!("Expected key-value"),
+        }
+        match &args.items[1] {
+            AttributeArg::KeyValue { key, .. } => assert_eq!(key.symbol.as_str(), "target_arch"),
+            _ => panic!("Expected key-value"),
+        }
+    }
+
+    #[test]
+    fn test_attribute_with_flag() {
+        let decl = parse_one_decl("@cfg(test) func foo() {}");
+        assert_eq!(decl.attributes.len(), 1);
+        let args = decl.attributes[0].args.as_ref().expect("Expected args");
+        assert_eq!(args.items.len(), 1);
+        match &args.items[0] {
+            AttributeArg::Flag { key, .. } => assert_eq!(key.symbol.as_str(), "test"),
+            _ => panic!("Expected flag arg"),
+        }
+    }
+
+    #[test]
+    fn test_multiple_attributes() {
+        let decl = parse_one_decl(r#"@inline @cfg(target_os = "macos") func foo() {}"#);
+        assert_eq!(decl.attributes.len(), 2);
+        assert_eq!(decl.attributes[0].identifier.symbol.as_str(), "inline");
+        assert_eq!(decl.attributes[1].identifier.symbol.as_str(), "cfg");
+    }
+
+    #[test]
+    fn test_attribute_with_integer_value() {
+        let decl = parse_one_decl("@version(major = 1) func foo() {}");
+        assert_eq!(decl.attributes.len(), 1);
+        let args = decl.attributes[0].args.as_ref().expect("Expected args");
+        assert_eq!(args.items.len(), 1);
+        match &args.items[0] {
+            AttributeArg::KeyValue { key, value, .. } => {
+                assert_eq!(key.symbol.as_str(), "major");
+                assert!(matches!(value, Literal::Integer { .. }));
+            }
+            _ => panic!("Expected key-value"),
         }
     }
 }

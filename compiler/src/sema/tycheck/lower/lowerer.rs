@@ -332,10 +332,9 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                                 GenericArgument::Const(self.error_const())
                             }
                         }
-                        (
-                            _,
-                            hir::TypeArgument::AssociatedType(..),
-                        ) => unreachable!("Associated types handled above"),
+                        (_, hir::TypeArgument::AssociatedType(..)) => {
+                            unreachable!("Associated types handled above")
+                        }
                     };
                     output.push(lowered);
                     args_iter.next();
@@ -664,7 +663,8 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
 
         // 4. Build interface reference with proper arguments
         let segment = path.segments.last().expect("path must have segments");
-        let (interface_args, bindings) = self.lower_generic_args(interface_id, segment, Some(target_ty));
+        let (interface_args, bindings) =
+            self.lower_generic_args(interface_id, segment, Some(target_ty));
         let interface_ref = InterfaceReference {
             id: interface_id,
             arguments: interface_args,

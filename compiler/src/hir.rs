@@ -33,6 +33,26 @@ pub struct Module {
 #[derive(Debug, Clone)]
 pub struct Attribute {
     pub identifier: Identifier,
+    pub args: Option<AttributeArgs>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct AttributeArgs {
+    pub items: Vec<AttributeArg>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum AttributeArg {
+    /// `key = "value"` or `key = literal`
+    KeyValue {
+        key: Identifier,
+        value: Literal,
+        span: Span,
+    },
+    /// `ident` (boolean flag)
+    Flag { key: Identifier, span: Span },
 }
 
 /// Well-known attributes recognized by the compiler.
@@ -42,6 +62,8 @@ pub enum KnownAttribute {
     Inline,
     /// `@noinline` - prevent inlining of this function
     NoInline,
+    /// `@cfg` - conditional compilation
+    Cfg,
 }
 
 impl Attribute {
@@ -50,6 +72,7 @@ impl Attribute {
         match self.identifier.symbol.as_str() {
             "inline" => Some(KnownAttribute::Inline),
             "noinline" => Some(KnownAttribute::NoInline),
+            "cfg" => Some(KnownAttribute::Cfg),
             _ => None,
         }
     }

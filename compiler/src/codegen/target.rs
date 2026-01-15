@@ -19,17 +19,26 @@ pub struct TargetLayout {
 }
 
 impl TargetLayout {
-    /// Initialize for the host machine.
-    pub fn for_host(dcx: &DiagCtx) -> CompileResult<Self> {
-        Target::initialize_native(&InitializationConfig::default()).map_err(|e| {
-            dcx.emit_error(
-                format!("failed to initialize LLVM native target: {}", e),
-                None,
-            );
-            crate::error::ReportedError
-        })?;
+    /// Initialize for a specific target, or host if None.
+    pub fn new(dcx: &DiagCtx, target_override: Option<&str>) -> CompileResult<Self> {
+        // Initialize all targets if cross-compiling, otherwise just native
+        if target_override.is_some() {
+            Target::initialize_all(&InitializationConfig::default());
+        } else {
+            Target::initialize_native(&InitializationConfig::default()).map_err(|e| {
+                dcx.emit_error(
+                    format!("failed to initialize LLVM native target: {}", e),
+                    None,
+                );
+                crate::error::ReportedError
+            })?;
+        }
 
-        let triple = TargetMachine::get_default_triple();
+        let triple = match target_override {
+            Some(t) => TargetTriple::create(t),
+            None => TargetMachine::get_default_triple(),
+        };
+
         let target = Target::from_triple(&triple).map_err(|e| {
             dcx.emit_error(
                 format!("failed to get target from triple '{}': {}", triple, e),
@@ -38,14 +47,23 @@ impl TargetLayout {
             crate::error::ReportedError
         })?;
 
-        let cpu = TargetMachine::get_host_cpu_name();
-        let features = TargetMachine::get_host_cpu_features();
+        // Use generic CPU and features for cross-compilation
+        let (cpu, features) = if target_override.is_some() {
+            ("generic".to_string(), "".to_string())
+        } else {
+            let cpu = TargetMachine::get_host_cpu_name();
+            let features = TargetMachine::get_host_cpu_features();
+            (
+                cpu.to_str().unwrap_or("").to_string(),
+                features.to_str().unwrap_or("").to_string(),
+            )
+        };
 
         let target_machine = target
             .create_target_machine(
                 &triple,
-                cpu.to_str().unwrap_or(""),
-                features.to_str().unwrap_or(""),
+                &cpu,
+                &features,
                 OptimizationLevel::Default,
                 RelocMode::Default,
                 CodeModel::Default,
@@ -68,6 +86,11 @@ impl TargetLayout {
             pointer_align,
             target_machine,
         })
+    }
+
+    /// Initialize for the host machine.
+    pub fn for_host(dcx: &DiagCtx) -> CompileResult<Self> {
+        Self::new(dcx, None)
     }
 
     /// Get the underlying LLVM TargetData for precise layout queries.
