@@ -423,7 +423,7 @@ impl<'ctx> Checker<'ctx> {
     /// Used when solving sub-expressions in separate constraint systems (e.g., match scrutinee).
     fn commit_constraint_results(&self, cs: &Cs<'ctx>) {
         for (id, ty) in cs.resolved_expr_types() {
-            let ty = cs.infer_cx.resolve_vars_if_possible(ty);
+            let ty = cs.infer_cx.resolve_vars_or_error(ty);
             self.results.borrow_mut().record_node_type(id, ty);
 
             // FIX: Update closure signature with resolved types to ensure codegen sees concrete types
@@ -457,7 +457,7 @@ impl<'ctx> Checker<'ctx> {
                 .record_instantiation(id, resolved_args);
         }
         for (id, ty) in cs.resolved_local_types() {
-            let ty = cs.infer_cx.resolve_vars_if_possible(ty);
+            let ty = cs.infer_cx.resolve_vars_or_error(ty);
             self.finalize_local(id, ty);
             self.results.borrow_mut().record_node_type(id, ty);
         }
@@ -2266,7 +2266,27 @@ impl<'ctx> Checker<'ctx> {
                 }
 
                 let arm_ty = self.synth_with_expectation(&arm.body, Some(result_ty), &mut arm_cs);
-                arm_cs.equal(result_ty, arm_ty, arm.body.span);
+                
+                // Solve intermediate to resolve any inference variables in arm_ty
+                arm_cs.solve_intermediate();
+                
+                // Check if the resolved arm type is Never
+                let resolved_arm_ty = arm_cs.infer_cx.resolve_vars_if_possible(arm_ty);
+                
+                // Use coercion for Never type (!) arms to allow diverging branches,
+                // but use equality for other arms to preserve type inference behavior
+                if matches!(resolved_arm_ty.kind(), TyKind::Never) {
+                    arm_cs.add_goal(
+                        Goal::Coerce {
+                            node_id: arm.body.id,
+                            from: arm_ty,
+                            to: result_ty,
+                        },
+                        arm.body.span,
+                    );
+                } else {
+                    arm_cs.equal(result_ty, arm_ty, arm.body.span);
+                }
 
                 // Solve and commit each arm independently
                 arm_cs.solve_intermediate();

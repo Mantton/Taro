@@ -1,6 +1,77 @@
+import std.optional.Optional
+import std.ops.PartialEq
+import std.marker.Copy
 
-public enum Ordering {
+/// Represents the result of a comparison between two values.
+public enum Ordering: Copy {
     case less
     case equal
     case greater
+}
+
+impl Ordering {
+    /// Returns true if the ordering indicates less than.
+    @inline
+    public func isLess(&self) -> bool {
+        match self {
+            case .less => true
+            case _ => false
+        }
+    }
+
+    /// Returns true if the ordering indicates equality.
+    @inline
+    public func isEqual(&self) -> bool {
+        match self {
+            case .equal => true
+            case _ => false
+        }
+    }
+
+    /// Returns true if the ordering indicates greater than.
+    @inline
+    public func isGreater(&self) -> bool {
+        match self {
+            case .greater => true
+            case _ => false
+        }
+    }
+
+    /// Reverses the ordering.
+    @inline
+    public func reverse(&self) -> Ordering {
+        match self {
+            case .less => .greater
+            case .equal => .equal
+            case .greater => .less
+        }
+    }
+
+    /// Chains two orderings: use the second if this is equal.
+    @inline
+    public func then(&self, _ other: Ordering) -> Ordering {
+        match self {
+            case .equal => other
+            case .less => .less
+            case .greater => .greater
+        }
+    }
+}
+
+/// Types that have a partial ordering.
+///
+/// A partial ordering means some values may not be comparable.
+/// For example, floating-point NaN values are not comparable.
+public interface PartialOrd: PartialEq {
+    /// Compare two values, returning None if they cannot be compared.
+    func partialCmp(&self, _ other: &Self) -> Optional[Ordering]
+}
+
+/// Types that have a total ordering.
+///
+/// A total ordering means all values are comparable.
+/// Every pair of values has a defined ordering relationship.
+public interface Ord: PartialOrd {
+    /// Compare two values, returning their ordering.
+    func cmp(&self, _ other: &Self) -> Ordering
 }

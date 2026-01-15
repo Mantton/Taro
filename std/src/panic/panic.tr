@@ -1,0 +1,52 @@
+import std.process
+
+/// Terminate the program immediately with an error message.
+///
+/// This function prints "panic: " followed by the message to stderr,
+/// then exits with code 1. It never returns.
+///
+/// Example:
+/// ```
+/// if index >= len {
+///     panic("index out of bounds")
+/// }
+/// ```
+public func panic(_ message: string) -> ! {
+    std.eprint("panic: ")
+    std.eprint(message)
+    std.eprint("\n")
+    process.exit(1)
+}
+
+/// Indicates that this code path should never be reached.
+///
+/// Calling this function terminates the program with a panic.
+/// Use this to mark branches that are logically impossible.
+///
+/// Example:
+/// ```
+/// match result {
+///     case .ok(v) => v
+///     case .err(_) => unreachable()
+/// }
+/// ```
+public func unreachable() -> ! {
+    panic("entered unreachable code")
+}
+
+/// Indicates that a feature is not yet implemented.
+///
+/// Use this as a placeholder during development.
+///
+/// Example:
+/// ```
+/// func complexAlgorithm() {
+///     todo("implement the actual algorithm")
+/// }
+/// ```
+public func todo(_ message: string) -> ! {
+    std.eprint("not yet implemented: ")
+    std.eprint(message)
+    std.eprint("\n")
+    process.exit(1)
+}

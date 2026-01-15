@@ -5,4 +5,5 @@ export std.collections.{Array, Dictionary, List, Set}
 export std.range.{Range, ClosedRange}
 export std.marker.{Copy, Clone}
 export std.iter.{Iterator, Iterable}
+export std.panic.{panic, unreachable, todo}
 export std.{print, assert}

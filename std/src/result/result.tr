@@ -1,12 +1,198 @@
+import std.panic.panic
+import std.marker.Copy
+import std.ops.FnOnce
 import std.optional.Optional
 
+/// A result value that represents either success or failure.
+///
+/// `Result[V, E]` represents either `.ok(value)` containing a success value,
+/// or `.err(error)` containing an error value.
 public enum Result[Value, Error] {
     case ok(Value)
     case err(Error)
 }
 
 impl[Value, Error] Result[Value, Error] {
-    func isSuccess(&self) -> bool {}
-    func isFailure(&self) -> bool {}
-    func value() -> Optional[Value] {}
+    /// Returns true if the result is an ok value.
+    @inline
+    public func isOk(&self) -> bool {
+        match self {
+            case .ok(_) => true
+            case .err(_) => false
+        }
+    }
+
+    /// Returns true if the result is an error.
+    @inline
+    public func isErr(&self) -> bool {
+        match self {
+            case .err(_) => true
+            case .ok(_) => false
+        }
+    }
+}
+
+// Unwrapping methods - require Copy since we take &self but return Value/Error
+impl[Value: Copy, Error] Result[Value, Error] {
+    /// Returns the contained ok value, panicking if error.
+    ///
+    /// Panics with a generic message if the result is an error.
+    /// Prefer `expect` if you want a custom panic message.
+    public func unwrap(&self) -> Value {
+        match self {
+            case .ok(v) => *v
+            case .err(_) => {
+                panic("called unwrap on an error value")
+            }
+        }
+    }
+
+    /// Returns the contained ok value, panicking with the given message if error.
+    public func expect(&self, _ message: string) -> Value {
+        match self {
+            case .ok(v) => *v
+            case .err(_) => {
+                panic(message)
+            }
+        }
+    }
+
+    /// Returns the contained ok value or a default.
+    @inline
+    public func unwrapOr(&self, _ default: Value) -> Value {
+        match self {
+            case .ok(v) => *v
+            case .err(_) => default
+        }
+    }
+
+    /// Returns the contained ok value or computes it from a closure.
+    public func unwrapOrElse[F: FnOnce[Error, Value]](&self, _ f: F) -> Value {
+        match self {
+            case .ok(v) => *v
+            case .err(e) => f(*e)
+        }
+    }
+}
+
+// Error unwrapping - require Copy on Error
+impl[Value, Error: Copy] Result[Value, Error] {
+    /// Returns the contained error, panicking if ok.
+    public func unwrapErr(&self) -> Error {
+        match self {
+            case .err(e) => *e
+            case .ok(_) => {
+                panic("called unwrapErr on an ok value")
+            }
+        }
+    }
+
+    /// Returns the contained error, panicking with the given message if ok.
+    public func expectErr(&self, _ message: string) -> Error {
+        match self {
+            case .err(e) => *e
+            case .ok(_) => {
+                panic(message)
+            }
+        }
+    }
+}
+
+// Transformation methods
+impl[Value: Copy, Error] Result[Value, Error] {
+    /// Transforms the contained ok value using a function.
+    ///
+    /// Returns the error unchanged if this is an error.
+    public func map[U, F: FnOnce[Value, U]](&self, _ f: F) -> Result[U, Error] {
+        match self {
+            case .ok(v) => .ok(f(*v))
+            case .err(e) => .err(*e)
+        }
+    }
+
+    /// Transforms the contained ok value using a function that returns a Result.
+    ///
+    /// This is useful for chaining operations that may fail.
+    public func flatMap[U, F: FnOnce[Value, Result[U, Error]]](&self, _ f: F) -> Result[U, Error] {
+        match self {
+            case .ok(v) => f(*v)
+            case .err(e) => .err(*e)
+        }
+    }
+}
+
+impl[Value, Error: Copy] Result[Value, Error] {
+    /// Transforms the contained error using a function.
+    ///
+    /// Returns the ok value unchanged if this is ok.
+    public func mapErr[F, Fn: FnOnce[Error, F]](&self, _ f: Fn) -> Result[Value, F] {
+        match self {
+            case .ok(v) => .ok(*v)
+            case .err(e) => .err(f(*e))
+        }
+    }
+}
+
+// Conversion to Optional
+impl[Value: Copy, Error] Result[Value, Error] {
+    /// Converts from Result to Optional, discarding the error.
+    @inline
+    public func ok(&self) -> Optional[Value] {
+        match self {
+            case .ok(v) => .some(*v)
+            case .err(_) => .none
+        }
+    }
+}
+
+impl[Value, Error: Copy] Result[Value, Error] {
+    /// Converts from Result to Optional, discarding the ok value.
+    @inline
+    public func err(&self) -> Optional[Error] {
+        match self {
+            case .err(e) => .some(*e)
+            case .ok(_) => .none
+        }
+    }
+}
+
+// Boolean combinators
+impl[Value, Error] Result[Value, Error] {
+    /// Returns `other` if the result is ok, otherwise returns the error of self.
+    @inline
+    public func and[U](&self, _ other: Result[U, Error]) -> Result[U, Error] {
+        match self {
+            case .ok(_) => other
+            case .err(e) => .err(*e)
+        }
+    }
+}
+
+impl[Value: Copy, Error] Result[Value, Error] {
+    /// Returns self if ok, otherwise returns `other`.
+    @inline
+    public func or(&self, _ other: Self) -> Self {
+        match self {
+            case .ok(v) => .ok(*v)
+            case .err(_) => other
+        }
+    }
+
+    /// Returns self if ok, otherwise computes a result from the error.
+    public func orElse[F: FnOnce[Error, Result[Value, Error]]](&self, _ f: F) -> Result[Value, Error] {
+        match self {
+            case .ok(v) => .ok(*v)
+            case .err(e) => f(*e)
+        }
+    }
+}
+
+/// Convenience function to create an Ok result.
+public func Ok[V, E](_ value: V) -> Result[V, E] {
+    .ok(value)
+}
+
+/// Convenience function to create an Err result.
+public func Err[V, E](_ error: E) -> Result[V, E] {
+    .err(error)
 }

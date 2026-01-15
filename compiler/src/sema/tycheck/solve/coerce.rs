@@ -360,12 +360,21 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let ty = self.structurally_resolve(ty);
         let (interface, has_infer) = self.resolve_interface_ref(interface);
 
-        if has_infer {
-            return SolverResult::Deferred;
-        }
-
         if ty.is_error() {
             return SolverResult::Solved(vec![]);
+        }
+
+        // Special case: closures implicitly implement Fn/FnMut/FnOnce
+        // Check this BEFORE deferring on has_infer, because the Equal obligations
+        // we generate will bind any inference variables in the interface (like output type U).
+        if let Some(result) = self.solve_closure_fn_conformance(location, ty, interface) {
+            return result;
+        }
+
+        // Now defer if interface has unresolved inference variables
+        // (except for closure conformance which we already handled)
+        if has_infer {
+            return SolverResult::Deferred;
         }
 
         match ty.kind() {
@@ -409,11 +418,6 @@ impl<'ctx> ConstraintSolver<'ctx> {
             if interface.id == copy_def && self.gcx().is_type_copyable(ty) {
                 return SolverResult::Solved(vec![]);
             }
-        }
-
-        // Special case: closures implicitly implement Fn/FnMut/FnOnce
-        if let Some(result) = self.solve_closure_fn_conformance(location, ty, interface) {
-            return result;
         }
 
         let error = Spanned::new(TypeError::NonConformance { ty, interface }, location);

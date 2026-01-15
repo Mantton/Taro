@@ -1,6 +1,7 @@
 import std.hash.{Hashable, Hasher}
 import std.ops.PartialEq
-
+import std.cmp.{Ordering, PartialOrd, Ord}
+import std.optional.Optional
 
 impl Hashable for bool {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
@@ -8,4 +9,23 @@ impl Hashable for bool {
 
 impl PartialEq for bool {
     public func eq(&self, _ other: &bool) -> bool { *self == *other }
+}
+
+impl PartialOrd for bool {
+    public func partialCmp(&self, _ other: &bool) -> Optional[Ordering] {
+        .some(self.cmp(other))
+    }
+}
+
+// bool ordering: false < true
+impl Ord for bool {
+    public func cmp(&self, _ other: &bool) -> Ordering {
+        if *self == *other {
+            .equal
+        } else if !*self {
+            .less  // false < true
+        } else {
+            .greater
+        }
+    }
 }

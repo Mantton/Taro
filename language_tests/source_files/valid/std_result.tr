@@ -1,0 +1,95 @@
+// Test std.result module
+// Tests: isOk, isErr, unwrap, expect, unwrapOr, unwrapOrElse, map, flatMap, mapErr, ok, err, and, or, orElse
+
+func main() {
+    // Test isOk/isErr
+    let ok_val: Result[int32, string] = .ok(42)
+    let err_val: Result[int32, string] = .err("error")
+    
+    assert(ok_val.isOk(), "isOk should be true for .ok")
+    assert(err_val.isErr(), "isErr should be true for .err")
+    assert(!ok_val.isErr(), "isErr should be false for .ok")
+    assert(!err_val.isOk(), "isOk should be false for .err")
+
+    // Test unwrap
+    let unwrapped = ok_val.unwrap()
+    assert(unwrapped == 42, "unwrap should return value")
+
+    // Test expect
+    let expected = ok_val.expect("should have value")
+    assert(expected == 42, "expect should return value")
+
+    // Test unwrapOr
+    let with_default = err_val.unwrapOr(100)
+    assert(with_default == 100, "unwrapOr should return default for err")
+    let without_default = ok_val.unwrapOr(100)
+    assert(without_default == 42, "unwrapOr should return value for ok")
+
+    // Test unwrapOrElse
+    let computed = err_val.unwrapOrElse(|e| -> int32 { 200 })
+    assert(computed == 200, "unwrapOrElse should compute from error")
+
+    // Test unwrapErr
+    let unwrapped_err = err_val.unwrapErr()
+    // Can't easily compare strings, just verify it doesn't panic
+
+    // Test map
+    let mapped = ok_val.map(|x| -> int32 { x * 2 })
+    assert(mapped.unwrap() == 84, "map should transform value")
+
+    let mapped_err = err_val.map(|x| -> int32 { x * 2 })
+    assert(mapped_err.isErr(), "map on err should return err")
+
+    // Test flatMap
+    let flat_ok = ok_val.flatMap(|x| -> Result[int32, string] { .ok(x + 1) })
+    assert(flat_ok.unwrap() == 43, "flatMap should chain transformations")
+
+    let flat_to_err = ok_val.flatMap(|x| -> Result[int32, string] { .err("failed") })
+    assert(flat_to_err.isErr(), "flatMap returning err should give err")
+
+    // Test mapErr
+    let mapped_error = err_val.mapErr(|e| -> int32 { 999 })
+    assert(mapped_error.isErr(), "mapErr should keep error status")
+
+    // Test ok()
+    let ok_opt = ok_val.ok()
+    assert(ok_opt.isSome(), "ok() on ok result should return some")
+    assert(ok_opt.unwrap() == 42, "ok() should extract value")
+
+    let err_opt = err_val.ok()
+    assert(err_opt.isNone(), "ok() on err result should return none")
+
+    // Test err()
+    let ok_err_opt = ok_val.err()
+    assert(ok_err_opt.isNone(), "err() on ok result should return none")
+
+    let err_err_opt = err_val.err()
+    assert(err_err_opt.isSome(), "err() on err result should return some")
+
+    // Test and
+    let other_ok: Result[int32, string] = .ok(100)
+    let and_result = ok_val.and(other_ok)
+    assert(and_result.unwrap() == 100, "and should return second if first is ok")
+
+    let other_ok2: Result[int32, string] = .ok(100)
+    let and_err = err_val.and(other_ok2)
+    assert(and_err.isErr(), "and on err should return err")
+
+    // Test or
+    let other_ok3: Result[int32, string] = .ok(100)
+    let or_result = ok_val.or(other_ok3)
+    assert(or_result.unwrap() == 42, "or should return first if ok")
+
+    let other_ok4: Result[int32, string] = .ok(100)
+    let or_fallback = err_val.or(other_ok4)
+    assert(or_fallback.unwrap() == 100, "or should return second if first is err")
+
+    // Test orElse  
+    let or_else_ok = ok_val.orElse(|e| -> Result[int32, string] { .ok(999) })
+    assert(or_else_ok.unwrap() == 42, "orElse on ok should return ok")
+
+    let or_else_err = err_val.orElse(|e| -> Result[int32, string] { .ok(888) })
+    assert(or_else_err.unwrap() == 888, "orElse on err should compute fallback")
+
+    print("std_result: PASSED\n")
+}

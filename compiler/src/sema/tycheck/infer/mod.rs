@@ -207,6 +207,17 @@ impl<'ctx> InferCtx<'ctx> {
         value.fold_with(&mut resolver)
     }
 
+    /// Resolve inference variables, replacing any unresolved ones with error type.
+    /// Use this when the infer_ctx is about to be dropped (e.g., at statement boundary)
+    /// to prevent downstream code from accessing invalid type variable IDs.
+    pub fn resolve_vars_or_error<T>(&self, value: T) -> T
+    where
+        T: TypeFoldable<'ctx>,
+    {
+        let mut resolver = resolve::InferVarOrErrorResolver::new(self);
+        value.fold_with(&mut resolver)
+    }
+
     /// Resolve inference variables in generic arguments.
     pub fn resolve_args_if_possible(&self, args: GenericArguments<'ctx>) -> GenericArguments<'ctx> {
         if args.is_empty() {

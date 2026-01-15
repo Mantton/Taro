@@ -623,8 +623,10 @@ impl<'arena> GlobalContext<'arena> {
             // Boxed existentials - NOT copyable (unknown underlying type)
             TyKind::BoxedExistential { .. } => false,
 
-            // Type parameters - check bounds (for now, assume not copyable)
-            TyKind::Parameter(_) => false,
+            // Type parameters - trust that type checker verified Copy bounds.
+            // When code like `*v` appears in a `impl[T: Copy]` block, the type checker
+            // has already enforced the Copy bound, so we can safely allow the copy.
+            TyKind::Parameter(_) => true,
 
             // Aliases - resolve and check
             TyKind::Alias { .. } => false, // TODO: resolve alias and check

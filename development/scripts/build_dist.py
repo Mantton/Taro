@@ -81,13 +81,13 @@ def main():
     print(f"Copying {src_lib} -> {dst_lib}")
     shutil.copy2(src_lib, dst_lib)
     
-    # std
+    # std - symlink instead of copy for development
     std_src = repo_root / "std"
     std_dst = dist_dir / "std"
-    print(f"Copying {std_src} -> {std_dst}")
+    print(f"Symlinking {std_src} -> {std_dst}")
     if std_dst.exists():
-        shutil.rmtree(std_dst)
-    shutil.copytree(std_src, std_dst)
+        std_dst.unlink() if std_dst.is_symlink() else shutil.rmtree(std_dst)
+    std_dst.symlink_to(std_src)
     
     print("\n--- Build Complete ---")
     print(f"Distribution is ready at {dist_dir}")

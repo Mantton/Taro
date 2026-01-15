@@ -406,6 +406,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
                     "type annotations needed: unable to infer type".into()
                 };
                 gcx.dcx().emit_error(msg.into(), Some(origin.location));
+                panic!("Uninferred type parameter")
             }
         }
 

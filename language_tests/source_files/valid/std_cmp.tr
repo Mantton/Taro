@@ -1,0 +1,67 @@
+// Test std.cmp module
+// Tests: Ordering methods, PartialOrd, Ord for primitives
+
+import std.cmp.{Ordering, PartialOrd, Ord}
+
+func main() {
+    // Test Ordering methods
+    let less: Ordering = .less
+    let equal: Ordering = .equal
+    let greater: Ordering = .greater
+
+    assert(less.isLess(), "less.isLess should be true")
+    assert(!less.isEqual(), "less.isEqual should be false")
+    assert(!less.isGreater(), "less.isGreater should be false")
+
+    assert(!equal.isLess(), "equal.isLess should be false")
+    assert(equal.isEqual(), "equal.isEqual should be true")
+    assert(!equal.isGreater(), "equal.isGreater should be false")
+
+    assert(!greater.isLess(), "greater.isLess should be false")
+    assert(!greater.isEqual(), "greater.isEqual should be false")
+    assert(greater.isGreater(), "greater.isGreater should be true")
+
+    // Test reverse
+    assert(less.reverse().isGreater(), "less.reverse should be greater")
+    assert(equal.reverse().isEqual(), "equal.reverse should be equal")
+    assert(greater.reverse().isLess(), "greater.reverse should be less")
+
+    // Test then
+    assert(equal.then(.less).isLess(), "equal.then(less) should be less")
+    assert(less.then(.greater).isLess(), "less.then(greater) should be less")
+
+    // Test int32 comparison
+    let a: int32 = 10
+    let b: int32 = 20
+    let c: int32 = 10
+
+    assert(a.cmp(&b).isLess(), "10 cmp 20 should be less")
+    assert(b.cmp(&a).isGreater(), "20 cmp 10 should be greater")
+    assert(a.cmp(&c).isEqual(), "10 cmp 10 should be equal")
+
+    // Test partialCmp returns Some
+    let partial = a.partialCmp(&b)
+    assert(partial.isSome(), "partialCmp should return some for int32")
+    assert(partial.unwrap().isLess(), "partial ordering should be less")
+
+    // Test bool comparison (false < true)
+    let f = false
+    let t = true
+    assert(f.cmp(&t).isLess(), "false cmp true should be less")
+    assert(t.cmp(&f).isGreater(), "true cmp false should be greater")
+    assert(f.cmp(&f).isEqual(), "false cmp false should be equal")
+
+    // Test float partial comparison
+    let x: double = 1.5
+    let y: double = 2.5
+    let float_partial = x.partialCmp(&y)
+    assert(float_partial.isSome(), "float partialCmp should return some")
+    assert(float_partial.unwrap().isLess(), "1.5 cmp 2.5 should be less")
+
+    // Test rune comparison
+    let ch_a: rune = 'a'
+    let ch_b: rune = 'b'
+    assert(ch_a.cmp(&ch_b).isLess(), "'a' cmp 'b' should be less")
+
+    print("std_cmp: PASSED\n")
+}

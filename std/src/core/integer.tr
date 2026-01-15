@@ -1,5 +1,7 @@
 import std.hash.{Hashable, Hasher}
 import std.ops.PartialEq
+import std.cmp.{Ordering, PartialOrd, Ord}
+import std.optional.Optional
 
 // int8
 impl Hashable for int8 {
@@ -8,6 +10,24 @@ impl Hashable for int8 {
 
 impl PartialEq for int8 {
     public func eq(&self, _ other: &int8) -> bool { *self == *other }
+}
+
+impl PartialOrd for int8 {
+    public func partialCmp(&self, _ other: &int8) -> Optional[Ordering] {
+        .some(self.cmp(other))
+    }
+}
+
+impl Ord for int8 {
+    public func cmp(&self, _ other: &int8) -> Ordering {
+        if *self < *other {
+            .less
+        } else if *self == *other {
+            .equal
+        } else {
+            .greater
+        }
+    }
 }
 
 // int16
@@ -19,6 +39,24 @@ impl PartialEq for int16 {
     public func eq(&self, _ other: &int16) -> bool { *self == *other }
 }
 
+impl PartialOrd for int16 {
+    public func partialCmp(&self, _ other: &int16) -> Optional[Ordering] {
+        .some(self.cmp(other))
+    }
+}
+
+impl Ord for int16 {
+    public func cmp(&self, _ other: &int16) -> Ordering {
+        if *self < *other {
+            .less
+        } else if *self == *other {
+            .equal
+        } else {
+            .greater
+        }
+    }
+}
+
 // int32
 impl Hashable for int32 {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
@@ -26,6 +64,24 @@ impl Hashable for int32 {
 
 impl PartialEq for int32 {
     public func eq(&self, _ other: &int32) -> bool { *self == *other }
+}
+
+impl PartialOrd for int32 {
+    public func partialCmp(&self, _ other: &int32) -> Optional[Ordering] {
+        .some(self.cmp(other))
+    }
+}
+
+impl Ord for int32 {
+    public func cmp(&self, _ other: &int32) -> Ordering {
+        if *self < *other {
+            .less
+        } else if *self == *other {
+            .equal
+        } else {
+            .greater
+        }
+    }
 }
 
 // int64
@@ -37,6 +93,24 @@ impl PartialEq for int64 {
     public func eq(&self, _ other: &int64) -> bool { *self == *other }
 }
 
+impl PartialOrd for int64 {
+    public func partialCmp(&self, _ other: &int64) -> Optional[Ordering] {
+        .some(self.cmp(other))
+    }
+}
+
+impl Ord for int64 {
+    public func cmp(&self, _ other: &int64) -> Ordering {
+        if *self < *other {
+            .less
+        } else if *self == *other {
+            .equal
+        } else {
+            .greater
+        }
+    }
+}
+
 // uint8
 impl Hashable for uint8 {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
@@ -44,6 +118,24 @@ impl Hashable for uint8 {
 
 impl PartialEq for uint8 {
     public func eq(&self, _ other: &uint8) -> bool { *self == *other }
+}
+
+impl PartialOrd for uint8 {
+    public func partialCmp(&self, _ other: &uint8) -> Optional[Ordering] {
+        .some(self.cmp(other))
+    }
+}
+
+impl Ord for uint8 {
+    public func cmp(&self, _ other: &uint8) -> Ordering {
+        if *self < *other {
+            .less
+        } else if *self == *other {
+            .equal
+        } else {
+            .greater
+        }
+    }
 }
 
 // uint16
@@ -55,6 +147,24 @@ impl PartialEq for uint16 {
     public func eq(&self, _ other: &uint16) -> bool { *self == *other }
 }
 
+impl PartialOrd for uint16 {
+    public func partialCmp(&self, _ other: &uint16) -> Optional[Ordering] {
+        .some(self.cmp(other))
+    }
+}
+
+impl Ord for uint16 {
+    public func cmp(&self, _ other: &uint16) -> Ordering {
+        if *self < *other {
+            .less
+        } else if *self == *other {
+            .equal
+        } else {
+            .greater
+        }
+    }
+}
+
 // uint32
 impl Hashable for uint32 {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
@@ -62,6 +172,24 @@ impl Hashable for uint32 {
 
 impl PartialEq for uint32 {
     public func eq(&self, _ other: &uint32) -> bool { *self == *other }
+}
+
+impl PartialOrd for uint32 {
+    public func partialCmp(&self, _ other: &uint32) -> Optional[Ordering] {
+        .some(self.cmp(other))
+    }
+}
+
+impl Ord for uint32 {
+    public func cmp(&self, _ other: &uint32) -> Ordering {
+        if *self < *other {
+            .less
+        } else if *self == *other {
+            .equal
+        } else {
+            .greater
+        }
+    }
 }
 
 // uint64
@@ -73,6 +201,24 @@ impl PartialEq for uint64 {
     public func eq(&self, _ other: &uint64) -> bool { *self == *other }
 }
 
+impl PartialOrd for uint64 {
+    public func partialCmp(&self, _ other: &uint64) -> Optional[Ordering] {
+        .some(self.cmp(other))
+    }
+}
+
+impl Ord for uint64 {
+    public func cmp(&self, _ other: &uint64) -> Ordering {
+        if *self < *other {
+            .less
+        } else if *self == *other {
+            .equal
+        } else {
+            .greater
+        }
+    }
+}
+
 // isize
 impl Hashable for isize {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
@@ -82,6 +228,24 @@ impl PartialEq for isize {
     public func eq(&self, _ other: &isize) -> bool { *self == *other }
 }
 
+impl PartialOrd for isize {
+    public func partialCmp(&self, _ other: &isize) -> Optional[Ordering] {
+        .some(self.cmp(other))
+    }
+}
+
+impl Ord for isize {
+    public func cmp(&self, _ other: &isize) -> Ordering {
+        if *self < *other {
+            .less
+        } else if *self == *other {
+            .equal
+        } else {
+            .greater
+        }
+    }
+}
+
 // usize
 impl Hashable for usize {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
@@ -89,4 +253,22 @@ impl Hashable for usize {
 
 impl PartialEq for usize {
     public func eq(&self, _ other: &usize) -> bool { *self == *other }
+}
+
+impl PartialOrd for usize {
+    public func partialCmp(&self, _ other: &usize) -> Optional[Ordering] {
+        .some(self.cmp(other))
+    }
+}
+
+impl Ord for usize {
+    public func cmp(&self, _ other: &usize) -> Ordering {
+        if *self < *other {
+            .less
+        } else if *self == *other {
+            .equal
+        } else {
+            .greater
+        }
+    }
 }

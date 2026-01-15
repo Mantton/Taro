@@ -1,6 +1,7 @@
 import std.hash.{Hashable, Hasher}
 import std.ops.PartialEq
-
+import std.cmp.{Ordering, PartialOrd}
+import std.optional.Optional
 
 impl Hashable for float {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
@@ -10,10 +11,42 @@ impl PartialEq for float {
     public func eq(&self, _ other: &float) -> bool { *self == *other }
 }
 
+// Floats only implement PartialOrd, not Ord, because NaN != NaN
+impl PartialOrd for float {
+    public func partialCmp(&self, _ other: &float) -> Optional[Ordering] {
+        // NaN comparisons return none
+        if *self < *other {
+            .some(.less)
+        } else if *self == *other {
+            .some(.equal)
+        } else if *self > *other {
+            .some(.greater)
+        } else {
+            .none  // One or both are NaN
+        }
+    }
+}
+
 impl Hashable for double {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
 }
 
 impl PartialEq for double {
     public func eq(&self, _ other: &double) -> bool { *self == *other }
+}
+
+// Doubles only implement PartialOrd, not Ord, because NaN != NaN
+impl PartialOrd for double {
+    public func partialCmp(&self, _ other: &double) -> Optional[Ordering] {
+        // NaN comparisons return none
+        if *self < *other {
+            .some(.less)
+        } else if *self == *other {
+            .some(.equal)
+        } else if *self > *other {
+            .some(.greater)
+        } else {
+            .none  // One or both are NaN
+        }
+    }
 }
