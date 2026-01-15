@@ -1,4 +1,5 @@
 use crate::{
+    cfg,
     constants::{FILE_EXTENSION, ROOT_MODULE_NAME, SOURCE_DIRECTORY},
     diagnostics::DiagCtx,
     error::ReportedError,
@@ -26,9 +27,13 @@ pub struct File {
     pub tokens: Vec<Spanned<Token>>,
 }
 
-pub fn tokenize_package(path: PathBuf, dcx: &DiagCtx) -> Result<Pacakge, ReportedError> {
+pub fn tokenize_package(
+    path: PathBuf,
+    dcx: &DiagCtx,
+    target_triple: Option<&str>,
+) -> Result<Pacakge, ReportedError> {
     let source = path.join(SOURCE_DIRECTORY);
-    let mut root = tokenize_module(source, dcx)?;
+    let mut root = tokenize_module(source, dcx, target_triple)?;
     root.name = ROOT_MODULE_NAME.into();
 
     Ok(Pacakge { root })
@@ -36,7 +41,11 @@ pub fn tokenize_package(path: PathBuf, dcx: &DiagCtx) -> Result<Pacakge, Reporte
 
 /// Tokenize a single source file as a virtual package.
 /// The file becomes the root module with name "main".
-pub fn tokenize_single_file(path: PathBuf, dcx: &DiagCtx) -> Result<Pacakge, ReportedError> {
+pub fn tokenize_single_file(
+    path: PathBuf,
+    dcx: &DiagCtx,
+    target_triple: Option<&str>,
+) -> Result<Pacakge, ReportedError> {
     let file_path = match path.canonicalize() {
         Ok(path) => path,
         Err(e) => {
@@ -65,7 +74,7 @@ pub fn tokenize_single_file(path: PathBuf, dcx: &DiagCtx) -> Result<Pacakge, Rep
     }
 
     let id = dcx.add_file_mapping(file_path.clone());
-    let file = match tokenize_file(id, file_path.clone(), dcx) {
+    let file = match tokenize_file(id, file_path.clone(), dcx, target_triple) {
         Ok(file) => file,
         Err(e) => {
             let message = format!("lexer error in file '{}': {}", file_path.display(), e);
@@ -83,7 +92,11 @@ pub fn tokenize_single_file(path: PathBuf, dcx: &DiagCtx) -> Result<Pacakge, Rep
     Ok(Pacakge { root })
 }
 
-pub fn tokenize_module(path: PathBuf, dcx: &DiagCtx) -> Result<Module, ReportedError> {
+pub fn tokenize_module(
+    path: PathBuf,
+    dcx: &DiagCtx,
+    target_triple: Option<&str>,
+) -> Result<Module, ReportedError> {
     let directory = match path.canonicalize() {
         Ok(path) => path,
         Err(e) => {
@@ -156,7 +169,7 @@ pub fn tokenize_module(path: PathBuf, dcx: &DiagCtx) -> Result<Module, ReportedE
                 continue;
             };
             let id = dcx.add_file_mapping(path.clone());
-            let file = match tokenize_file(id, path.clone(), dcx) {
+            let file = match tokenize_file(id, path.clone(), dcx, target_triple) {
                 Ok(file) => file,
                 Err(e) => {
                     let message = format!("lexer error in file '{}': {}", path.display(), e);
@@ -166,7 +179,7 @@ pub fn tokenize_module(path: PathBuf, dcx: &DiagCtx) -> Result<Module, ReportedE
             };
             files.push(file);
         } else if path.is_dir() {
-            let module = tokenize_module(path.clone(), dcx)?;
+            let module = tokenize_module(path.clone(), dcx, target_triple)?;
             submodules.push(module);
         }
     }
@@ -178,7 +191,12 @@ pub fn tokenize_module(path: PathBuf, dcx: &DiagCtx) -> Result<Module, ReportedE
     })
 }
 
-pub fn tokenize_file(file: FileID, path: PathBuf, dcx: &DiagCtx) -> Result<File, LexerError> {
+pub fn tokenize_file(
+    file: FileID,
+    path: PathBuf,
+    dcx: &DiagCtx,
+    target_triple: Option<&str>,
+) -> Result<File, LexerError> {
     let source = match read_to_string(&path) {
         Ok(source) => source,
         Err(e) => {
@@ -187,6 +205,18 @@ pub fn tokenize_file(file: FileID, path: PathBuf, dcx: &DiagCtx) -> Result<File,
             return Err(LexerError::IO(message));
         }
     };
+
+    // Check for //+cfg directive on first line
+    if let Some(triple) = target_triple {
+        if !cfg::evaluate_file_cfg(&source, triple) {
+            // File is excluded by cfg - return empty file with just EOF
+            return Ok(File {
+                id: file,
+                tokens: vec![Spanned::new(Token::EOF, Span::empty(file))],
+            });
+        }
+    }
+
     let lexer = Lexer::new(&source, file);
     lexer.tokenize()
 }

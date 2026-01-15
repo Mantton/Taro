@@ -3,6 +3,7 @@
 // #![allow(unused)]
 mod ast;
 mod ast_lowering;
+mod cfg;
 pub mod codegen;
 pub mod compile;
 pub mod constants;

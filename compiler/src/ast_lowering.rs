@@ -1,5 +1,6 @@
 use crate::{
     ast::{self, Identifier},
+    cfg::TargetInfo,
     compile::context::GlobalContext,
     error::CompileResult,
     hir::{self, DefinitionKind, StdType},
@@ -297,44 +298,26 @@ impl Actor<'_, '_> {
         // Get target triple from TargetLayout (which may be host or cross-compile target)
         let triple = self.context.store.target_layout.triple();
         let triple_str = triple.as_str().to_str().unwrap_or("");
-
-        // Parse triple for OS and arch (format: arch-vendor-os or arch-vendor-os-env)
-        let parts: Vec<&str> = triple_str.split('-').collect();
-        let target_arch = parts.first().copied().unwrap_or("");
-        let target_os = if parts.len() >= 3 { parts[2] } else { "" };
-
-        self.eval_cfg_expr_inner(expr, target_os, target_arch)
+        let target = TargetInfo::from_triple(triple_str);
+        self.eval_cfg_expr_inner(expr, &target)
     }
 
-    fn eval_cfg_expr_inner(&self, expr: &ast::CfgExpr, target_os: &str, target_arch: &str) -> bool {
+    fn eval_cfg_expr_inner(&self, expr: &ast::CfgExpr, target: &TargetInfo) -> bool {
         match expr {
             ast::CfgExpr::Predicate { name, value, .. } => {
                 let name_str = name.symbol.as_str();
                 let value_str = value.as_str();
 
                 match name_str {
-                    "os" => match value_str {
-                        "macos" | "darwin" => target_os.contains("darwin") || target_os == "macos",
-                        "linux" => target_os == "linux",
-                        "windows" => target_os.contains("windows") || target_os == "win32",
-                        _ => target_os == value_str,
-                    },
-                    "arch" => match value_str {
-                        "x86_64" | "amd64" => target_arch == "x86_64",
-                        "aarch64" | "arm64" => target_arch == "aarch64" || target_arch == "arm64",
-                        "arm" => target_arch.starts_with("arm"),
-                        _ => target_arch == value_str,
-                    },
+                    "os" => target.matches_os(value_str),
+                    "arch" => target.matches_arch(value_str),
+                    "family" => target.matches_family(value_str),
                     _ => false, // Unknown predicate
                 }
             }
-            ast::CfgExpr::Not(inner, _) => !self.eval_cfg_expr_inner(inner, target_os, target_arch),
-            ast::CfgExpr::All(items, _) => items
-                .iter()
-                .all(|e| self.eval_cfg_expr_inner(e, target_os, target_arch)),
-            ast::CfgExpr::Any(items, _) => items
-                .iter()
-                .any(|e| self.eval_cfg_expr_inner(e, target_os, target_arch)),
+            ast::CfgExpr::Not(inner, _) => !self.eval_cfg_expr_inner(inner, target),
+            ast::CfgExpr::All(items, _) => items.iter().all(|e| self.eval_cfg_expr_inner(e, target)),
+            ast::CfgExpr::Any(items, _) => items.iter().any(|e| self.eval_cfg_expr_inner(e, target)),
         }
     }
 

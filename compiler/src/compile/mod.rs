@@ -66,10 +66,21 @@ impl<'state> Compiler<'state> {
                 .cache_package_ident(self.context.config.identifier.clone());
         }
         // Tokenization & Parsing
+        // Get target triple for file-level cfg evaluation
+        let triple = self.context.store.target_layout.triple();
+        let triple_str = triple.as_str().to_str().unwrap_or("");
         let package = if self.context.config.is_script {
-            parse::lexer::tokenize_single_file(self.context.config.src.clone(), &self.context.dcx)?
+            parse::lexer::tokenize_single_file(
+                self.context.config.src.clone(),
+                &self.context.dcx,
+                Some(triple_str),
+            )?
         } else {
-            parse::lexer::tokenize_package(self.context.config.src.clone(), &self.context.dcx)?
+            parse::lexer::tokenize_package(
+                self.context.config.src.clone(),
+                &self.context.dcx,
+                Some(triple_str),
+            )?
         };
         let package = parse::parser::parse_package(package, &self.context.dcx)?;
         // AST Passes
