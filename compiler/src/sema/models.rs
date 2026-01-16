@@ -260,6 +260,10 @@ impl<'arena> Ty<'arena> {
                 out.push(')');
                 out
             }
+            TyKind::Opaque(def_id) => {
+                let ident = gcx.definition_ident(def_id);
+                ident.symbol.as_str().into()
+            }
         }
     }
 }
@@ -348,6 +352,8 @@ pub enum TyKind<'arena> {
         /// Callable kind
         kind: ClosureKind,
     },
+    /// Opaque external type - can only be used behind pointers
+    Opaque(DefinitionID),
     Error,
     Never,
 }

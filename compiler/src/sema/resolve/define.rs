@@ -140,6 +140,14 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
                     visibility,
                 );
             }
+            ast::ExternDeclarationKind::Type(_) => {
+                self.define(
+                    &node.identifier,
+                    ScopeNamespace::Type,
+                    resolution,
+                    visibility,
+                );
+            }
         }
 
         ast::walk_extern_declaration(self, node)

@@ -54,6 +54,7 @@ pub fn type_head_from_value_ty(ty: Ty<'_>) -> Option<TypeHead> {
         | TyKind::FnPointer { .. }
         | TyKind::Alias { .. }
         | TyKind::BoxedExistential { .. }
+        | TyKind::Opaque(_)
         | TyKind::Error
         | TyKind::Never => None,
     }

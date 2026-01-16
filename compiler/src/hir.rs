@@ -102,6 +102,8 @@ pub enum DeclarationKind {
     Export(UseTree),
     Namespace(Namespace),
     Impl(Impl),
+    /// Opaque external type - can only be used behind pointers
+    OpaqueType,
     Malformed,
 }
 
@@ -1324,6 +1326,9 @@ pub fn walk_declaration<V: HirVisitor>(visitor: &mut V, declaration: &Declaratio
         }
         DeclarationKind::Impl(node) => {
             try_visit!(visitor.visit_impl(node, declaration.id));
+        }
+        DeclarationKind::OpaqueType => {
+            // Opaque types have no body to visit
         }
         DeclarationKind::Malformed => {}
     }

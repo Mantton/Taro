@@ -287,12 +287,42 @@ impl<'ctx> Checker<'ctx> {
             self.top_level_check(condition, Some(self.gcx().types.bool));
         }
     }
+    fn check_opaque_type_usage(&self, ty: Ty<'ctx>, span: Span, behind_pointer: bool) {
+        match ty.kind() {
+            TyKind::Opaque(def_id) => {
+                if !behind_pointer {
+                    let ident = self.gcx().definition_ident(def_id);
+                    self.gcx().dcx().emit_error(
+                        format!(
+                            "opaque type `{}` can only be used behind a pointer",
+                            ident.symbol.as_str()
+                        ),
+                        Some(span),
+                    );
+                }
+            }
+            TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => {
+                self.check_opaque_type_usage(inner, span, true);
+            }
+            TyKind::Tuple(items) => {
+                for item in items.iter() {
+                    self.check_opaque_type_usage(*item, span, false);
+                }
+            }
+            TyKind::Array { element, .. } => {
+                self.check_opaque_type_usage(element, span, false);
+            }
+            _ => {}
+        }
+    }
+
     fn check_local(&self, node: &hir::Local) {
         let mut cs = self.new_cs();
         self.with_infer_ctx(cs.infer_cx.clone(), || {
             GatherLocalsVisitor::from_local(&cs, &self, node);
             let local_ty = self.get_local(node.id).ty;
             if let Some(annotation) = node.ty.as_deref() {
+                self.check_opaque_type_usage(local_ty, annotation.span, false);
                 self.add_type_constraints(local_ty, annotation.span, &mut cs);
             }
 
@@ -320,6 +350,7 @@ impl<'ctx> Checker<'ctx> {
         GatherLocalsVisitor::from_local(cs, self, node);
         let local_ty = self.get_local(node.id).ty;
         if let Some(annotation) = node.ty.as_deref() {
+            self.check_opaque_type_usage(local_ty, annotation.span, false);
             self.add_type_constraints(local_ty, annotation.span, cs);
         }
 

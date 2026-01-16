@@ -25,6 +25,9 @@ impl HirVisitor for Actor<'_> {
             hir::DeclarationKind::Enum(_) => {
                 self.cache_adt_type(node.id, node.identifier.symbol, AdtKind::Enum);
             }
+            hir::DeclarationKind::OpaqueType => {
+                self.cache_opaque_type(node.id);
+            }
             _ => {}
         }
         hir::walk_declaration(self, node)
@@ -39,6 +42,11 @@ impl<'ctx> Actor<'ctx> {
             id,
         );
         let ty = Ty::new(TyKind::Adt(adt_def, args), self.context);
+        self.context.cache_type(id, ty);
+    }
+
+    fn cache_opaque_type(&self, id: hir::DefinitionID) {
+        let ty = Ty::new(TyKind::Opaque(id), self.context);
         self.context.cache_type(id, ty);
     }
 }

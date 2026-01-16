@@ -180,6 +180,10 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                         let ty = self.resolve_alias(id);
                         instantiate_ty_with_args(gcx, ty, args)
                     }
+                    crate::sema::resolve::models::DefinitionKind::OpaqueType => {
+                        // Opaque types have no generic parameters
+                        gcx.get_type(id)
+                    }
                     _ => todo!("nominal type lowering for {kind:?}"),
                 }
             }

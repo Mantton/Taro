@@ -245,7 +245,13 @@ pub type ExternDeclaration = Declaration<ExternDeclarationKind>;
 #[derive(Debug, Clone)]
 pub enum ExternDeclarationKind {
     Function(Function),
+    Type(OpaqueType),
 }
+
+/// An opaque external type declaration.
+/// These types have unknown size and can only be used behind pointers.
+#[derive(Debug, Clone)]
+pub struct OpaqueType;
 
 #[derive(Debug, Clone)]
 pub struct Impl {
@@ -1388,6 +1394,9 @@ pub fn walk_extern_declaration<V: AstVisitor>(
     match &declaration.kind {
         ExternDeclarationKind::Function(node) => {
             try_visit!(visitor.visit_function(declaration.id, node, FunctionContext::Foreign));
+        }
+        ExternDeclarationKind::Type(_) => {
+            // Opaque types have no body to visit
         }
     }
 

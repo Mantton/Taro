@@ -316,8 +316,12 @@ impl Actor<'_, '_> {
                 }
             }
             ast::CfgExpr::Not(inner, _) => !self.eval_cfg_expr_inner(inner, target),
-            ast::CfgExpr::All(items, _) => items.iter().all(|e| self.eval_cfg_expr_inner(e, target)),
-            ast::CfgExpr::Any(items, _) => items.iter().any(|e| self.eval_cfg_expr_inner(e, target)),
+            ast::CfgExpr::All(items, _) => {
+                items.iter().all(|e| self.eval_cfg_expr_inner(e, target))
+            }
+            ast::CfgExpr::Any(items, _) => {
+                items.iter().any(|e| self.eval_cfg_expr_inner(e, target))
+            }
         }
     }
 
@@ -343,6 +347,7 @@ impl Actor<'_, '_> {
                 let span = node.signature.span;
                 hir::DeclarationKind::Function(self.lower_function(node, span))
             }
+            ast::ExternDeclarationKind::Type(_) => hir::DeclarationKind::OpaqueType,
         };
 
         hir::Declaration {

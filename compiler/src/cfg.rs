@@ -305,8 +305,14 @@ mod tests {
 
     #[test]
     fn test_extract_file_cfg() {
-        assert_eq!(extract_file_cfg("//+cfg os(\"linux\")"), Some("os(\"linux\")"));
-        assert_eq!(extract_file_cfg("//+cfg  family(\"unix\")"), Some("family(\"unix\")"));
+        assert_eq!(
+            extract_file_cfg("//+cfg os(\"linux\")"),
+            Some("os(\"linux\")")
+        );
+        assert_eq!(
+            extract_file_cfg("//+cfg  family(\"unix\")"),
+            Some("family(\"unix\")")
+        );
         assert_eq!(extract_file_cfg("// normal comment"), None);
         assert_eq!(extract_file_cfg("func main() {}"), None);
     }

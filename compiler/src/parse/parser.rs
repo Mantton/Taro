@@ -426,6 +426,8 @@ impl Parser {
         let mut decls = vec![];
 
         while !self.matches(Token::RBrace) && !self.is_at_end() {
+            // Skip ASI-inserted semicolons between declarations
+            while self.eat(Token::Semicolon) {}
             if self.matches(Token::RBrace) {
                 break;
             }
@@ -608,8 +610,26 @@ impl Parser {
 
     fn parse_extern_block_declaration(
         &mut self,
-        abi: Symbol,
+        _abi: Symbol,
     ) -> R<Option<Declaration<ast::ExternDeclarationKind>>> {
+        // Handle opaque type declarations: `type Identifier`
+        if self.eat(Token::Type) {
+            let start = self.previous().unwrap().span;
+            let identifier = self.parse_identifier()?;
+            let span = start.to(identifier.span);
+            return Ok(Some(Declaration {
+                id: self.next_id(),
+                span,
+                identifier,
+                kind: ast::ExternDeclarationKind::Type(ast::OpaqueType),
+                visibility: ast::Visibility {
+                    span,
+                    level: ast::VisibilityLevel::Private,
+                },
+                attributes: vec![],
+            }));
+        }
+
         let mode = FnParseMode { req_body: false };
         let result = self.parse_declaration_internal(mode)?;
         let Some(result) = result else {
@@ -618,12 +638,21 @@ impl Parser {
 
         let kind = match ast::ExternDeclarationKind::try_from(result.kind) {
             Ok(mut kind) => {
-                let ast::ExternDeclarationKind::Function(func) = &mut kind;
+                let ast::ExternDeclarationKind::Function(func) = &mut kind else {
+                    return Ok(Some(Declaration {
+                        id: result.id,
+                        span: result.span,
+                        identifier: result.identifier,
+                        kind,
+                        visibility: result.visibility,
+                        attributes: result.attributes,
+                    }));
+                };
                 if func.block.is_some() {
                     self.emit_error(ParserError::ExternFunctionBodyNotAllowed, result.span);
                     func.block = None;
                 }
-                func.abi = Some(abi);
+                func.abi = Some(_abi);
                 kind
             }
             Err(_) => {

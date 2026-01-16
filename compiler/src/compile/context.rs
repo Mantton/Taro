@@ -634,6 +634,9 @@ impl<'arena> GlobalContext<'arena> {
             // Closures - not copyable by default (may capture non-copyable values)
             TyKind::Closure { .. } => false,
 
+            // Opaque types - unknown size, not copyable
+            TyKind::Opaque(_) => false,
+
             // Error/Infer - assume not copyable for safety
             TyKind::Error | TyKind::Infer(_) => false,
         }

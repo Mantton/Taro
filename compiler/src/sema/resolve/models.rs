@@ -34,6 +34,7 @@ pub enum DefinitionKind {
     AssociatedOperator,
     AssociatedType,
     VariantConstructor(VariantCtorKind),
+    OpaqueType,
 }
 
 impl DefinitionKind {
@@ -60,6 +61,7 @@ impl DefinitionKind {
             DefinitionKind::ConstParameter => "const parameter",
             DefinitionKind::ModuleVariable => "variable",
             DefinitionKind::AssociatedOperator => "associated operator",
+            DefinitionKind::OpaqueType => "opaque type",
         }
     }
 }
@@ -464,6 +466,7 @@ impl ResolutionSource {
                             | DefinitionKind::TypeParameter
                             | DefinitionKind::TypeAlias
                             | DefinitionKind::AssociatedType
+                            | DefinitionKind::OpaqueType
                     ) | Resolution::SelfTypeAlias(..)
                         | Resolution::InterfaceSelfTypeParameter(..)
                         | Resolution::PrimaryType(..)
@@ -480,6 +483,7 @@ impl ResolutionSource {
                             | DefinitionKind::TypeAlias
                             | DefinitionKind::AssociatedType
                             | DefinitionKind::ConstParameter
+                            | DefinitionKind::OpaqueType
                     ) | Resolution::SelfTypeAlias(..)
                         | Resolution::InterfaceSelfTypeParameter(..)
                         | Resolution::PrimaryType(..)

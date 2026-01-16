@@ -1,0 +1,32 @@
+// CHECK_ONLY
+// Test opaque external type declarations
+// Opaque types can only be used behind pointers
+
+extern "C" {
+    type FILE
+    type Handle
+
+    func fopen(_ path: *uint8, _ mode: *uint8) -> *FILE
+    func fclose(_ file: *FILE) -> int32
+}
+
+// Test that opaque types can be used in function signatures with pointers
+func process_file(_ file: *FILE) -> int32 {
+    return fclose(file)
+}
+
+// Test that opaque types can be stored in struct fields as pointers
+struct FileWrapper {
+    handle: *FILE
+}
+
+// Test opaque type with mut pointer
+func modify_handle(_ h: *mut Handle) {
+    // Just a type-check test
+}
+
+func main() {
+    // Cannot actually call fopen without a real implementation
+    // This test just verifies the type system accepts opaque types
+    print("Opaque type test passed!\n")
+}

@@ -4284,6 +4284,13 @@ fn lower_type<'llvm, 'gcx>(
             }
         }
         TyKind::Infer(_) | TyKind::Error => unreachable!(),
+        TyKind::Opaque(_) => {
+            // Opaque types have no known layout - they can only appear behind pointers
+            unreachable!(
+                "ICE: opaque type used directly in codegen: {}",
+                ty.format(gcx)
+            )
+        }
     }
 }
 

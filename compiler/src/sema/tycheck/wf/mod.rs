@@ -55,6 +55,9 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
                 self.check_constraints(node.id);
                 self.check_impl(node.id);
             }
+            hir::DeclarationKind::OpaqueType => {
+                // Opaque types have no body to validate
+            }
             hir::DeclarationKind::Malformed => unreachable!(),
         }
 
@@ -86,38 +89,61 @@ impl<'ctx> Actor<'ctx> {
     }
 
     fn check_type_wf(&self, ty: Ty<'ctx>, span: Span, cs: &mut ConstraintSystem<'ctx>) {
+        self.check_type_wf_inner(ty, span, cs, false);
+    }
+
+    fn check_type_wf_inner(
+        &self,
+        ty: Ty<'ctx>,
+        span: Span,
+        cs: &mut ConstraintSystem<'ctx>,
+        behind_pointer: bool,
+    ) {
         match ty.kind() {
+            TyKind::Opaque(def_id) => {
+                if !behind_pointer {
+                    let ident = self.context.definition_ident(def_id);
+                    self.context.dcx().emit_error(
+                        format!(
+                            "opaque type `{}` can only be used behind a pointer",
+                            ident.symbol.as_str()
+                        ),
+                        Some(span),
+                    );
+                }
+            }
             TyKind::Adt(def, args) => {
                 cs.add_constraints_for_def(def.id, Some(args), span);
                 for arg in args.iter() {
                     if let GenericArgument::Type(t) = arg {
-                        self.check_type_wf(*t, span, cs);
+                        self.check_type_wf_inner(*t, span, cs, false);
                     }
                 }
             }
             TyKind::Tuple(items) => {
                 for item in items.iter() {
-                    self.check_type_wf(*item, span, cs);
+                    self.check_type_wf_inner(*item, span, cs, false);
                 }
             }
             TyKind::FnPointer { inputs, output } => {
                 for input in inputs.iter() {
-                    self.check_type_wf(*input, span, cs);
+                    self.check_type_wf_inner(*input, span, cs, false);
                 }
-                self.check_type_wf(output, span, cs);
+                self.check_type_wf_inner(output, span, cs, false);
             }
             TyKind::Array { element, .. } => {
-                self.check_type_wf(element, span, cs);
+                self.check_type_wf_inner(element, span, cs, false);
             }
             TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => {
-                self.check_type_wf(inner, span, cs);
+                // Opaque types are allowed directly inside pointers/references
+                self.check_type_wf_inner(inner, span, cs, true);
             }
             TyKind::BoxedExistential { interfaces } => {
                 for iface in interfaces.iter() {
                     cs.add_constraints_for_def(iface.id, Some(iface.arguments), span);
                     for arg in iface.arguments.iter() {
                         if let GenericArgument::Type(t) = arg {
-                            self.check_type_wf(*t, span, cs);
+                            self.check_type_wf_inner(*t, span, cs, false);
                         }
                     }
                 }
@@ -291,7 +317,10 @@ impl<'ctx> Actor<'ctx> {
 }
 
 fn is_sized(ty: Ty) -> bool {
-    !matches!(ty.kind(), TyKind::Infer(_) | TyKind::Error)
+    !matches!(
+        ty.kind(),
+        TyKind::Infer(_) | TyKind::Error | TyKind::Opaque(_)
+    )
 }
 
 fn collect_by_value_adt_deps(ty: Ty, out: &mut Vec<DefinitionID>) {

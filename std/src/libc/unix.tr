@@ -1,6 +1,1 @@
 //+cfg family("unix")
-
-extern "C" {
-    func write(_ fd: int32, _ buf: *uint8, _ len: usize) -> isize
-    func read(_ fd: int32, _ buf: *uint8, _ len: usize) -> isize
-}

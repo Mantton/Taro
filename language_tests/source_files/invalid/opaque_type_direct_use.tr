@@ -1,0 +1,27 @@
+// CHECK_ONLY
+// Test that opaque types cannot be used directly (not behind pointers)
+
+extern "C" {
+    type Handle
+}
+
+// ERROR: opaque type used directly as struct field
+struct BadStruct {
+    handle: Handle  // Should error
+}
+
+// ERROR: opaque type used directly as function parameter
+func bad_param(_ h: Handle) {
+}
+
+// ERROR: opaque type used directly as return type
+func bad_return() -> Handle {
+}
+
+// ERROR: opaque type used directly as variable type
+func bad_variable() {
+    let h: Handle
+}
+
+func main() {
+}

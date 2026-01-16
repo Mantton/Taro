@@ -78,8 +78,9 @@ fn ty_symbol_with(gcx: GlobalContext, ty: Ty) -> String {
             closure_def_id.hash(&mut hasher);
             format!("closure{:x}", hasher.finish())
         }
-        TyKind::Infer(_) | TyKind::Error => "err".into(),
-        TyKind::Never => "z".into(),
+        TyKind::Infer(_) | TyKind::Error => "<<error>>".into(),
+        TyKind::Never => "never".into(),
+        TyKind::Opaque(def_id) => format!("opaque{:?}", def_id),
     }
 }
 

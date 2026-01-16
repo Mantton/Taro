@@ -342,6 +342,9 @@ impl<'r, 'a> Actor<'r, 'a> {
                     });
                 })
             }
+            ast::ExternDeclarationKind::Type(_) => {
+                // Opaque types have no body to resolve
+            }
         }
     }
 

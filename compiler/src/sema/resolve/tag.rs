@@ -115,6 +115,7 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
     fn visit_extern_declaration(&mut self, node: &ast::ExternDeclaration) -> Self::Result {
         let kind = match &node.kind {
             ast::ExternDeclarationKind::Function(..) => DefinitionKind::Function,
+            ast::ExternDeclarationKind::Type(_) => DefinitionKind::OpaqueType,
         };
         let parent = self.tag(&node.identifier, node.id, kind);
         self.record_visibility(parent, node.visibility);

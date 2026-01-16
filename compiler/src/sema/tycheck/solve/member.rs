@@ -357,6 +357,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             TyKind::Infer(_)
             | TyKind::FnPointer { .. }
             | TyKind::BoxedExistential { .. }
+            | TyKind::Opaque(_) // Opaque types have no members
             | TyKind::Error
             | TyKind::Never => None,
         }
