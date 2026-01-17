@@ -1,0 +1,5 @@
+//+cfg family("windows")
+
+public func exit(_ code: int32) -> ! {
+    std.panic.todo("process.exit not implemented on windows yet")
+}

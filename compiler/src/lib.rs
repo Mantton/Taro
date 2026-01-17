@@ -4,6 +4,7 @@
 mod ast;
 mod ast_lowering;
 mod cfg;
+mod cfg_eval;
 pub mod codegen;
 pub mod compile;
 pub mod constants;

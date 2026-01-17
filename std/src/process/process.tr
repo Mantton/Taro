@@ -1,8 +1,1 @@
-
-extern "taro_rt" {
-    func __rt__exit(_ code: int32) -> !
-}
-
-public func exit(_ code: int32) -> ! {
-    __rt__exit(code)
-}
+// Process module (platform-specific impls live in sibling files)

@@ -1,0 +1,160 @@
+use crate::{ast, cfg::TargetInfo};
+
+pub fn filter_package(package: &mut ast::Package, target: &TargetInfo) {
+    filter_module(&mut package.root, target);
+}
+
+fn filter_module(module: &mut ast::Module, target: &TargetInfo) {
+    for file in &mut module.files {
+        filter_file(file, target);
+    }
+
+    for submodule in &mut module.submodules {
+        filter_module(submodule, target);
+    }
+}
+
+fn filter_file(file: &mut ast::File, target: &TargetInfo) {
+    filter_declarations(&mut file.declarations, target);
+}
+
+fn filter_declarations(decls: &mut Vec<ast::Declaration>, target: &TargetInfo) {
+    retain_mut(decls, |decl| filter_declaration(decl, target));
+}
+
+fn filter_declaration(decl: &mut ast::Declaration, target: &TargetInfo) -> bool {
+    if !should_include_attrs(&decl.attributes, target) {
+        return false;
+    }
+
+    match &mut decl.kind {
+        ast::DeclarationKind::Interface(node) => {
+            filter_assoc_declarations(&mut node.declarations, target);
+        }
+        ast::DeclarationKind::Namespace(node) => {
+            filter_namespace_declarations(&mut node.declarations, target);
+        }
+        ast::DeclarationKind::ExternBlock(node) => {
+            filter_extern_declarations(&mut node.declarations, target);
+        }
+        ast::DeclarationKind::Impl(node) => {
+            filter_assoc_declarations(&mut node.declarations, target);
+        }
+        _ => {}
+    }
+
+    true
+}
+
+fn filter_namespace_declarations(decls: &mut Vec<ast::NamespaceDeclaration>, target: &TargetInfo) {
+    retain_mut(decls, |decl| filter_namespace_declaration(decl, target));
+}
+
+fn filter_namespace_declaration(decl: &mut ast::NamespaceDeclaration, target: &TargetInfo) -> bool {
+    if !should_include_attrs(&decl.attributes, target) {
+        return false;
+    }
+
+    match &mut decl.kind {
+        ast::NamespaceDeclarationKind::Namespace(node) => {
+            filter_namespace_declarations(&mut node.declarations, target);
+        }
+        ast::NamespaceDeclarationKind::Interface(node) => {
+            filter_assoc_declarations(&mut node.declarations, target);
+        }
+        _ => {}
+    }
+
+    true
+}
+
+fn filter_assoc_declarations(decls: &mut Vec<ast::AssociatedDeclaration>, target: &TargetInfo) {
+    retain_mut(decls, |decl| should_include_attrs(&decl.attributes, target));
+}
+
+fn filter_extern_declarations(decls: &mut Vec<ast::ExternDeclaration>, target: &TargetInfo) {
+    retain_mut(decls, |decl| should_include_attrs(&decl.attributes, target));
+}
+
+pub fn should_include_attrs(attrs: &ast::AttributeList, target: &TargetInfo) -> bool {
+    for attr in attrs {
+        if attr.identifier.symbol.as_str() == "cfg" && !eval_cfg_attr(attr, target) {
+            return false;
+        }
+    }
+    true
+}
+
+fn eval_cfg_attr(attr: &ast::Attribute, target: &TargetInfo) -> bool {
+    if let Some(cfg_expr) = &attr.cfg_expr {
+        return eval_cfg_expr(cfg_expr, target);
+    }
+
+    let Some(args) = &attr.args else {
+        return true;
+    };
+
+    for arg in &args.items {
+        match arg {
+            ast::AttributeArg::KeyValue { key, value, .. } => {
+                let key_str = key.symbol.as_str();
+                let value_str = match value {
+                    ast::Literal::String { value } => value.as_str(),
+                    _ => continue,
+                };
+
+                match key_str {
+                    "target_os" => {
+                        if !target.matches_os(value_str) {
+                            return false;
+                        }
+                    }
+                    "target_arch" => {
+                        if !target.matches_arch(value_str) {
+                            return false;
+                        }
+                    }
+                    _ => return false,
+                }
+            }
+            ast::AttributeArg::Flag { key, .. } => {
+                let key_str = key.symbol.as_str();
+                match key_str {
+                    "debug" => return false,
+                    _ => return false,
+                }
+            }
+        }
+    }
+
+    true
+}
+
+fn eval_cfg_expr(expr: &ast::CfgExpr, target: &TargetInfo) -> bool {
+    match expr {
+        ast::CfgExpr::Predicate { name, value, .. } => {
+            let name_str = name.symbol.as_str();
+            let value_str = value.as_str();
+
+            match name_str {
+                "os" => target.matches_os(value_str),
+                "arch" => target.matches_arch(value_str),
+                "family" => target.matches_family(value_str),
+                _ => false,
+            }
+        }
+        ast::CfgExpr::Not(inner, _) => !eval_cfg_expr(inner, target),
+        ast::CfgExpr::All(items, _) => items.iter().all(|e| eval_cfg_expr(e, target)),
+        ast::CfgExpr::Any(items, _) => items.iter().any(|e| eval_cfg_expr(e, target)),
+    }
+}
+
+fn retain_mut<T>(items: &mut Vec<T>, mut keep: impl FnMut(&mut T) -> bool) {
+    let mut out = Vec::with_capacity(items.len());
+    for mut item in items.drain(..) {
+        if keep(&mut item) {
+            out.push(item);
+        }
+    }
+    *items = out;
+}

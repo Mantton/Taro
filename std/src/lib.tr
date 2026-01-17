@@ -1,16 +1,43 @@
 import std.process
 
-extern "taro_rt" {
-    func __rt__print(_ s: string)
-    func __rt__eprint(_ s: string)
-}
-
+@cfg(family("unix"))
 public func print(_ s: string) {
-    __rt__print(s)
+    let len = std.string.stringLen(s)
+    if len == 0 {
+        return
+    }
+    let data = std.string.stringData(s)
+    std.libc.write(std.libc.STDOUT_FILENO, data, len)
 }
 
+@cfg(family("unix"))
 public func eprint(_ s: string) {
-    __rt__eprint(s)
+    let len = std.string.stringLen(s)
+    if len == 0 {
+        return
+    }
+    let data = std.string.stringData(s)
+    std.libc.write(std.libc.STDERR_FILENO, data, len)
+}
+
+@cfg(family("windows"))
+public func print(_ s: string) {
+    std.panic.todo("std.print not implemented on windows yet")
+}
+
+@cfg(family("windows"))
+public func eprint(_ s: string) {
+    std.panic.todo("std.eprint not implemented on windows yet")
+}
+
+public func println(_ s: string) {
+    print(s)
+    print("\n")
+}
+
+public func eprintln(_ s: string) {
+    eprint(s)
+    eprint("\n")
 }
 
 public func assert(_ condition: bool, _ message: string) {

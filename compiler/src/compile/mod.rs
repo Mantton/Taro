@@ -1,5 +1,5 @@
 use crate::{
-    ast_lowering, codegen,
+    ast_lowering, cfg, cfg_eval, codegen,
     compile::{
         config::Config,
         context::{CompilerContext, GlobalContext},
@@ -82,8 +82,11 @@ impl<'state> Compiler<'state> {
                 Some(triple_str),
             )?
         };
-        let package = parse::parser::parse_package(package, &self.context.dcx)?;
+        let target = cfg::TargetInfo::from_triple(triple_str);
+
+        let mut package = parse::parser::parse_package(package, &self.context.dcx)?;
         // AST Passes
+        cfg_eval::filter_package(&mut package, &target);
         let resolution_output = sema::resolve::resolve_package(&package, self.context)?;
         let package = ast_lowering::lower_package(package, self.context, &resolution_output)?;
         {

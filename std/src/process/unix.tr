@@ -1,0 +1,5 @@
+//+cfg family("unix")
+
+public func exit(_ code: int32) -> ! {
+    std.libc.exit(code)
+}

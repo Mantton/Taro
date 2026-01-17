@@ -1,1 +1,14 @@
 //+cfg family("unix")
+
+public type size_t = usize
+public type ssize_t = isize
+
+public const STDIN_FILENO: int32 = 0
+public const STDOUT_FILENO: int32 = 1
+public const STDERR_FILENO: int32 = 2
+
+extern "C" {
+    public func read(_ fd: int32, _ buf: *mut uint8, _ count: size_t) -> ssize_t
+    public func write(_ fd: int32, _ buf: *const uint8, _ count: size_t) -> ssize_t
+    public func exit(_ code: int32) -> !
+}
