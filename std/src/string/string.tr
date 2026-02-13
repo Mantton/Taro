@@ -1,31 +1,47 @@
 import std.hash.{Hashable, Hasher}
 import std.ops.PartialEq
 import std.mem.TrackedPointer
-
-extern "taro_rt" {
-    func __rt__string_from_parts(_ data: *const uint8, _ len: usize) -> string
-    func __rt__string_data(_ s: string) -> *const uint8
-    func __rt__string_len(_ s: string) -> usize
-    func __rt__string_eq(_ lhs: string, _ rhs: string) -> bool
+import std.intrinsic.{
+    __intrinsic_string_from_parts,
+    __intrinsic_string_data,
+    __intrinsic_string_len,
 }
 
 public func stringFromParts(_ data: TrackedPointer, _ len: usize) -> string {
-    __rt__string_from_parts(data, len)
+    __intrinsic_string_from_parts(data, len)
 }
 
 public func stringData(_ s: string) -> *const uint8 {
-    __rt__string_data(s)
+    __intrinsic_string_data(s)
 }
 
 public func stringLen(_ s: string) -> usize {
-    __rt__string_len(s)
+    __intrinsic_string_len(s)
 }
 
 public func stringEq(_ lhs: string, _ rhs: string) -> bool {
-    __rt__string_eq(lhs, rhs)
-}
+    let lhs_len = stringLen(lhs)
+    let rhs_len = stringLen(rhs)
+    if lhs_len != rhs_len {
+        return false
+    }
+    if lhs_len == 0 {
+        return true
+    }
 
-struct _StringHeader {}
+    let lhs_ptr = stringData(lhs)
+    let rhs_ptr = stringData(rhs)
+    var idx: usize = 0
+
+    while idx < lhs_len {
+        if lhs_ptr.add(idx).read() != rhs_ptr.add(idx).read() {
+            return false
+        }
+        idx += 1
+    }
+
+    return true
+}
 
 impl Hashable for string {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}

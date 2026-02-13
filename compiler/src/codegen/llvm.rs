@@ -2401,6 +2401,18 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 self.lower_intrinsic_align_of(body, locals, call_args, args, destination)?;
                 Ok(true)
             }
+            "__intrinsic_string_from_parts" => {
+                self.lower_intrinsic_string_from_parts(body, locals, args, destination)?;
+                Ok(true)
+            }
+            "__intrinsic_string_data" => {
+                self.lower_intrinsic_string_data(body, locals, args, destination)?;
+                Ok(true)
+            }
+            "__intrinsic_string_len" => {
+                self.lower_intrinsic_string_len(body, locals, args, destination)?;
+                Ok(true)
+            }
             _ => {
                 self.gcx
                     .dcx()
@@ -3041,6 +3053,137 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let align = self.usize_ty.const_int(align as u64, false);
 
         self.store_place(destination, body, locals, align.into())
+    }
+
+    fn lower_intrinsic_string_from_parts(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+    ) -> CompileResult<()> {
+        let data = args.first().expect("string_from_parts missing data pointer");
+        let len = args.get(1).expect("string_from_parts missing length");
+
+        let Some(data_val) = self.eval_operand(body, locals, data)? else {
+            let _ = self.builder.build_unreachable().unwrap();
+            return Ok(());
+        };
+        let Some(len_val) = self.eval_operand(body, locals, len)? else {
+            let _ = self.builder.build_unreachable().unwrap();
+            return Ok(());
+        };
+
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let data_ptr = match data_val {
+            BasicValueEnum::PointerValue(ptr) => ptr,
+            BasicValueEnum::IntValue(int_val) => self
+                .builder
+                .build_int_to_ptr(int_val, ptr_ty, "string_data_ptr")
+                .unwrap(),
+            _ => {
+                self.gcx
+                    .dcx()
+                    .emit_error("string_from_parts expects a pointer for data".into(), None);
+                return Ok(());
+            }
+        };
+
+        let mut len_int = match len_val {
+            BasicValueEnum::IntValue(int_val) => int_val,
+            _ => {
+                self.gcx
+                    .dcx()
+                    .emit_error("string_from_parts expects an integer length".into(), None);
+                return Ok(());
+            }
+        };
+        if len_int.get_type() != self.usize_ty {
+            len_int = self
+                .builder
+                .build_int_cast(len_int, self.usize_ty, "string_len_cast")
+                .unwrap();
+        }
+
+        let string_ty = self
+            .lower_ty(self.place_ty(body, destination))
+            .expect("string type lowered")
+            .into_struct_type();
+        let mut value = string_ty.get_undef();
+        value = self
+            .builder
+            .build_insert_value(value, data_ptr, 0, "string_ins_data")
+            .unwrap()
+            .into_struct_value();
+        value = self
+            .builder
+            .build_insert_value(value, len_int, 1, "string_ins_len")
+            .unwrap()
+            .into_struct_value();
+
+        self.store_place(destination, body, locals, value.as_basic_value_enum())
+    }
+
+    fn lower_intrinsic_string_data(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+    ) -> CompileResult<()> {
+        let value = args.first().expect("string_data missing string value");
+        let Some(value) = self.eval_operand(body, locals, value)? else {
+            let _ = self.builder.build_unreachable().unwrap();
+            return Ok(());
+        };
+
+        let struct_val = match value {
+            BasicValueEnum::StructValue(struct_val) => struct_val,
+            _ => {
+                self.gcx
+                    .dcx()
+                    .emit_error("string_data expects a string value".into(), None);
+                return Ok(());
+            }
+        };
+
+        let data = self
+            .builder
+            .build_extract_value(struct_val, 0, "string_data")
+            .unwrap()
+            .into_pointer_value();
+        self.store_place(destination, body, locals, data.as_basic_value_enum())
+    }
+
+    fn lower_intrinsic_string_len(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+    ) -> CompileResult<()> {
+        let value = args.first().expect("string_len missing string value");
+        let Some(value) = self.eval_operand(body, locals, value)? else {
+            let _ = self.builder.build_unreachable().unwrap();
+            return Ok(());
+        };
+
+        let struct_val = match value {
+            BasicValueEnum::StructValue(struct_val) => struct_val,
+            _ => {
+                self.gcx
+                    .dcx()
+                    .emit_error("string_len expects a string value".into(), None);
+                return Ok(());
+            }
+        };
+
+        let len = self
+            .builder
+            .build_extract_value(struct_val, 1, "string_len")
+            .unwrap()
+            .into_int_value();
+        self.store_place(destination, body, locals, len.as_basic_value_enum())
     }
 
     /// Intrinsic: __intrinsic_ptr_to_u8[T](*const T) -> *const uint8

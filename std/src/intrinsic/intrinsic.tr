@@ -13,5 +13,8 @@ extern "taro_intrinsic" {
     func __intrinsic_memset[T](_ dst: *T, _ val: uint8, _ count: usize)
     func __intrinsic_size_of[T]() -> usize
     func __intrinsic_align_of[T]() -> usize
+    func __intrinsic_string_from_parts(_ data: *const uint8, _ len: usize) -> string
+    func __intrinsic_string_data(_ s: string) -> *const uint8
+    func __intrinsic_string_len(_ s: string) -> usize
     func __intrinsic_gc_desc[T]() -> *const GcDesc
 }
