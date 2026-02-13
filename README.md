@@ -21,7 +21,7 @@ python3 development/scripts/build_dist.py
 
 ### 2. Running Code
 
-To compile and run a Taro program (script or package) using your locally built compiler, use the `run_dist.py` script. This script automatically rebuilds the distribution if needed and sets up the strict environment (`TARO_HOME`, etc.) for you.
+To compile and run a Taro program (script or package) using your locally built compiler, use the `run_dist.py` script. This script rebuilds the distribution before running and sets up the strict environment (`TARO_HOME`, etc.) for you.
 
 ```bash
 python3 development/scripts/run_dist.py examples/hello.tr
@@ -69,20 +69,20 @@ Taro's compiler pipeline is deeply inspired by modern compiler designs (like Rus
 -   **HIR (High-level IR)**: The AST is lowered to a high-level intermediate representation where aggressive desugaring occurs.
 -   **Type Checking**: A **Bidirectional TypeChecker** performs local expression type inference, handling function overloading and Swift-inspired optional coercions.
 -   **THIR (Typed HIR)**: The fully typed representation where intrinsic operations (like integer addition) are lowered distinctly from overloaded function calls.
--   **MIR (Mid-level IR)**: A control-flow graph representation where significant optimizations happen (inlining, constant propagation, use-after-move catching, escape analysis).
+-   **MIR (Mid-level IR)**: A control-flow graph representation where significant optimizations happen (inlining, copy propagation, use-after-move catching, escape analysis).
 -   **Codegen**: Handles monomorphization of generics and translates MIR to LLVM IR for final machine code generation.
 
 ### Memory Management
 Taro uses a custom **non-moving, mark-and-sweep garbage collector** inspired by Golang's approach but tailored for simplicity and performance.
 -   **Structure**: It uses a segregated-fit allocator with size classes and spans to minimize fragmentation.
 -   **Concurrency**: Currently single-threaded stop-the-world, with future plans for concurrent marking.
--   **Safety**: The compiler emits shadow stack maps to precisely identify roots on the stack.
+-   **Safety**: The compiler emits shadow stack frames and root slots to precisely identify stack roots.
 
 ### Package Management
 Taro features a built-in package manager that feels familiar to users of Cargo or Go Modules.
 -   **Manifest**: Packages are defined in a TOML manifest.
 -   **Dependencies**: Supports Git-based dependencies (tags, branches, commits) and local paths.
--   **Resolution**: Uses a full SAT solver approach (via `semver` and `petgraph`) to resolve dependency graphs.
+-   **Resolution**: Uses semver-aware selection with dependency graph validation (via `semver` and `petgraph`) to resolve dependency graphs.
 
 ### Key Features
 -   **Enums**: Tagged unions (sum types) allow for expressive invalid state modeling.
@@ -151,7 +151,7 @@ To run the language tests (which are easier for E2E verification):
 python3 development/scripts/language_tests.py
 ```
 
-You can also filter tests using a prefix:
+You can also filter tests using a substring match:
 
 ```bash
 python3 development/scripts/language_tests.py --filter basic_

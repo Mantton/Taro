@@ -2397,6 +2397,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 self.lower_intrinsic_size_of(body, locals, call_args, args, destination)?;
                 Ok(true)
             }
+            "__intrinsic_align_of" => {
+                self.lower_intrinsic_align_of(body, locals, call_args, args, destination)?;
+                Ok(true)
+            }
             _ => {
                 self.gcx
                     .dcx()
@@ -3015,6 +3019,28 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .unwrap();
 
         self.store_place(destination, body, locals, size.into())
+    }
+
+    fn lower_intrinsic_align_of(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        call_args: GenericArguments<'gcx>,
+        _args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+    ) -> CompileResult<()> {
+        let Some(crate::sema::models::GenericArgument::Type(elem_ty)) = call_args.get(0) else {
+            return Ok(());
+        };
+        let elem_ty = instantiate_ty_with_args(self.gcx, *elem_ty, self.current_subst);
+        let Some(llvm_elem_ty) = self.lower_ty(elem_ty) else {
+            return Ok(());
+        };
+
+        let align = self.target_data.get_abi_alignment(&llvm_elem_ty);
+        let align = self.usize_ty.const_int(align as u64, false);
+
+        self.store_place(destination, body, locals, align.into())
     }
 
     /// Intrinsic: __intrinsic_ptr_to_u8[T](*const T) -> *const uint8

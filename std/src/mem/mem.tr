@@ -15,3 +15,11 @@ extern "taro_rt" {
 public func allocBytes(_ len: usize) -> TrackedPointer {
     __gc__makebuf(__gc__desc_u8(), len, len)
 }
+
+public func sizeOf[T]() -> usize {
+    std.intrinsic.__intrinsic_size_of[T]()
+}
+
+public func alignOf[T]() -> usize {
+    std.intrinsic.__intrinsic_align_of[T]()
+}
