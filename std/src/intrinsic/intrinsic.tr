@@ -13,6 +13,78 @@ extern "taro_intrinsic" {
     func __intrinsic_memset[T](_ dst: *T, _ val: uint8, _ count: usize)
     func __intrinsic_size_of[T]() -> usize
     func __intrinsic_align_of[T]() -> usize
+
+    // Floating-point math intrinsics (typed ABI symbols).
+    // f32 unary
+    func __intrinsic_sqrt_f32(_ x: float) -> float
+    func __intrinsic_sin_f32(_ x: float) -> float
+    func __intrinsic_cos_f32(_ x: float) -> float
+    func __intrinsic_tan_f32(_ x: float) -> float
+    func __intrinsic_asin_f32(_ x: float) -> float
+    func __intrinsic_acos_f32(_ x: float) -> float
+    func __intrinsic_atan_f32(_ x: float) -> float
+    func __intrinsic_sinh_f32(_ x: float) -> float
+    func __intrinsic_cosh_f32(_ x: float) -> float
+    func __intrinsic_tanh_f32(_ x: float) -> float
+    func __intrinsic_exp_f32(_ x: float) -> float
+    func __intrinsic_exp2_f32(_ x: float) -> float
+    func __intrinsic_log_f32(_ x: float) -> float
+    func __intrinsic_log2_f32(_ x: float) -> float
+    func __intrinsic_log10_f32(_ x: float) -> float
+    func __intrinsic_fabs_f32(_ x: float) -> float
+    func __intrinsic_floor_f32(_ x: float) -> float
+    func __intrinsic_ceil_f32(_ x: float) -> float
+    func __intrinsic_trunc_f32(_ x: float) -> float
+    func __intrinsic_rint_f32(_ x: float) -> float
+    func __intrinsic_nearbyint_f32(_ x: float) -> float
+    func __intrinsic_round_f32(_ x: float) -> float
+    func __intrinsic_roundeven_f32(_ x: float) -> float
+
+    // f64 unary
+    func __intrinsic_sqrt_f64(_ x: double) -> double
+    func __intrinsic_sin_f64(_ x: double) -> double
+    func __intrinsic_cos_f64(_ x: double) -> double
+    func __intrinsic_tan_f64(_ x: double) -> double
+    func __intrinsic_asin_f64(_ x: double) -> double
+    func __intrinsic_acos_f64(_ x: double) -> double
+    func __intrinsic_atan_f64(_ x: double) -> double
+    func __intrinsic_sinh_f64(_ x: double) -> double
+    func __intrinsic_cosh_f64(_ x: double) -> double
+    func __intrinsic_tanh_f64(_ x: double) -> double
+    func __intrinsic_exp_f64(_ x: double) -> double
+    func __intrinsic_exp2_f64(_ x: double) -> double
+    func __intrinsic_log_f64(_ x: double) -> double
+    func __intrinsic_log2_f64(_ x: double) -> double
+    func __intrinsic_log10_f64(_ x: double) -> double
+    func __intrinsic_fabs_f64(_ x: double) -> double
+    func __intrinsic_floor_f64(_ x: double) -> double
+    func __intrinsic_ceil_f64(_ x: double) -> double
+    func __intrinsic_trunc_f64(_ x: double) -> double
+    func __intrinsic_rint_f64(_ x: double) -> double
+    func __intrinsic_nearbyint_f64(_ x: double) -> double
+    func __intrinsic_round_f64(_ x: double) -> double
+    func __intrinsic_roundeven_f64(_ x: double) -> double
+
+    // f32 binary/ternary and powi exponent
+    func __intrinsic_pow_f32(_ x: float, _ y: float) -> float
+    func __intrinsic_powi_f32_i32(_ x: float, _ y: int32) -> float
+    func __intrinsic_copysign_f32(_ x: float, _ y: float) -> float
+    func __intrinsic_fma_f32(_ x: float, _ y: float, _ z: float) -> float
+    func __intrinsic_minimum_f32(_ x: float, _ y: float) -> float
+    func __intrinsic_maximum_f32(_ x: float, _ y: float) -> float
+    func __intrinsic_minimumnum_f32(_ x: float, _ y: float) -> float
+    func __intrinsic_maximumnum_f32(_ x: float, _ y: float) -> float
+
+    // f64 binary/ternary and powi exponent
+    func __intrinsic_pow_f64(_ x: double, _ y: double) -> double
+    func __intrinsic_powi_f64_i32(_ x: double, _ y: int32) -> double
+    func __intrinsic_copysign_f64(_ x: double, _ y: double) -> double
+    func __intrinsic_fma_f64(_ x: double, _ y: double, _ z: double) -> double
+    func __intrinsic_minimum_f64(_ x: double, _ y: double) -> double
+    func __intrinsic_maximum_f64(_ x: double, _ y: double) -> double
+    func __intrinsic_minimumnum_f64(_ x: double, _ y: double) -> double
+    func __intrinsic_maximumnum_f64(_ x: double, _ y: double) -> double
+
     func __intrinsic_string_from_parts(_ data: *const uint8, _ len: usize) -> string
     func __intrinsic_string_data(_ s: string) -> *const uint8
     func __intrinsic_string_len(_ s: string) -> usize

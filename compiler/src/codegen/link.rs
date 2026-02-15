@@ -59,6 +59,12 @@ pub fn link_executable(gcx: GlobalContext) -> CompileResult<Option<PathBuf>> {
     // Order matters for static libraries on some linkers: objects first, then archives.
     cmd.args(obj_inputs.iter().map(PathBuf::as_path));
     cmd.args(lib_inputs.iter().map(PathBuf::as_path));
+
+    // Some math intrinsics are lowered to libm on targets/toolchains where
+    // LLVM does not provide a matching intrinsic.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    cmd.arg("-lm");
+
     cmd.arg("-o").arg(&output);
 
     // On macOS, ensure the SDK root is set so -lSystem can be found.

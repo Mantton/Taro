@@ -2,6 +2,104 @@ import std.hash.{Hashable, Hasher}
 import std.ops.PartialEq
 import std.cmp.{Ordering, PartialOrd}
 import std.optional.Optional
+import std.intrinsic.{
+    __intrinsic_sqrt_f32,
+    __intrinsic_sin_f32,
+    __intrinsic_cos_f32,
+    __intrinsic_tan_f32,
+    __intrinsic_asin_f32,
+    __intrinsic_acos_f32,
+    __intrinsic_atan_f32,
+    __intrinsic_sinh_f32,
+    __intrinsic_cosh_f32,
+    __intrinsic_tanh_f32,
+    __intrinsic_exp_f32,
+    __intrinsic_exp2_f32,
+    __intrinsic_log_f32,
+    __intrinsic_log2_f32,
+    __intrinsic_log10_f32,
+    __intrinsic_fabs_f32,
+    __intrinsic_floor_f32,
+    __intrinsic_ceil_f32,
+    __intrinsic_trunc_f32,
+    __intrinsic_rint_f32,
+    __intrinsic_nearbyint_f32,
+    __intrinsic_round_f32,
+    __intrinsic_roundeven_f32,
+    __intrinsic_pow_f32,
+    __intrinsic_powi_f32_i32,
+    __intrinsic_copysign_f32,
+    __intrinsic_fma_f32,
+    __intrinsic_minimum_f32,
+    __intrinsic_maximum_f32,
+    __intrinsic_minimumnum_f32,
+    __intrinsic_maximumnum_f32,
+    __intrinsic_sqrt_f64,
+    __intrinsic_sin_f64,
+    __intrinsic_cos_f64,
+    __intrinsic_tan_f64,
+    __intrinsic_asin_f64,
+    __intrinsic_acos_f64,
+    __intrinsic_atan_f64,
+    __intrinsic_sinh_f64,
+    __intrinsic_cosh_f64,
+    __intrinsic_tanh_f64,
+    __intrinsic_exp_f64,
+    __intrinsic_exp2_f64,
+    __intrinsic_log_f64,
+    __intrinsic_log2_f64,
+    __intrinsic_log10_f64,
+    __intrinsic_fabs_f64,
+    __intrinsic_floor_f64,
+    __intrinsic_ceil_f64,
+    __intrinsic_trunc_f64,
+    __intrinsic_rint_f64,
+    __intrinsic_nearbyint_f64,
+    __intrinsic_round_f64,
+    __intrinsic_roundeven_f64,
+    __intrinsic_pow_f64,
+    __intrinsic_powi_f64_i32,
+    __intrinsic_copysign_f64,
+    __intrinsic_fma_f64,
+    __intrinsic_minimum_f64,
+    __intrinsic_maximum_f64,
+    __intrinsic_minimumnum_f64,
+    __intrinsic_maximumnum_f64,
+}
+
+impl float {
+    public func sqrt(self) -> float { unsafe { __intrinsic_sqrt_f32(self) } }
+    public func sin(self) -> float { unsafe { __intrinsic_sin_f32(self) } }
+    public func cos(self) -> float { unsafe { __intrinsic_cos_f32(self) } }
+    public func tan(self) -> float { unsafe { __intrinsic_tan_f32(self) } }
+    public func asin(self) -> float { unsafe { __intrinsic_asin_f32(self) } }
+    public func acos(self) -> float { unsafe { __intrinsic_acos_f32(self) } }
+    public func atan(self) -> float { unsafe { __intrinsic_atan_f32(self) } }
+    public func sinh(self) -> float { unsafe { __intrinsic_sinh_f32(self) } }
+    public func cosh(self) -> float { unsafe { __intrinsic_cosh_f32(self) } }
+    public func tanh(self) -> float { unsafe { __intrinsic_tanh_f32(self) } }
+    public func exp(self) -> float { unsafe { __intrinsic_exp_f32(self) } }
+    public func exp2(self) -> float { unsafe { __intrinsic_exp2_f32(self) } }
+    public func log(self) -> float { unsafe { __intrinsic_log_f32(self) } }
+    public func log2(self) -> float { unsafe { __intrinsic_log2_f32(self) } }
+    public func log10(self) -> float { unsafe { __intrinsic_log10_f32(self) } }
+    public func abs(self) -> float { unsafe { __intrinsic_fabs_f32(self) } }
+    public func floor(self) -> float { unsafe { __intrinsic_floor_f32(self) } }
+    public func ceil(self) -> float { unsafe { __intrinsic_ceil_f32(self) } }
+    public func trunc(self) -> float { unsafe { __intrinsic_trunc_f32(self) } }
+    public func rint(self) -> float { unsafe { __intrinsic_rint_f32(self) } }
+    public func nearbyint(self) -> float { unsafe { __intrinsic_nearbyint_f32(self) } }
+    public func round(self) -> float { unsafe { __intrinsic_round_f32(self) } }
+    public func roundeven(self) -> float { unsafe { __intrinsic_roundeven_f32(self) } }
+    public func pow(self, _ y: float) -> float { unsafe { __intrinsic_pow_f32(self, y) } }
+    public func powi(self, _ y: int32) -> float { unsafe { __intrinsic_powi_f32_i32(self, y) } }
+    public func copysign(self, _ y: float) -> float { unsafe { __intrinsic_copysign_f32(self, y) } }
+    public func fma(self, _ y: float, _ z: float) -> float { unsafe { __intrinsic_fma_f32(self, y, z) } }
+    public func minimum(self, _ y: float) -> float { unsafe { __intrinsic_minimum_f32(self, y) } }
+    public func maximum(self, _ y: float) -> float { unsafe { __intrinsic_maximum_f32(self, y) } }
+    public func minimumnum(self, _ y: float) -> float { unsafe { __intrinsic_minimumnum_f32(self, y) } }
+    public func maximumnum(self, _ y: float) -> float { unsafe { __intrinsic_maximumnum_f32(self, y) } }
+}
 
 impl Hashable for float {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
@@ -49,4 +147,38 @@ impl PartialOrd for double {
             .none  // One or both are NaN
         }
     }
+}
+
+impl double {
+    public func sqrt(self) -> double { unsafe { __intrinsic_sqrt_f64(self) } }
+    public func sin(self) -> double { unsafe { __intrinsic_sin_f64(self) } }
+    public func cos(self) -> double { unsafe { __intrinsic_cos_f64(self) } }
+    public func tan(self) -> double { unsafe { __intrinsic_tan_f64(self) } }
+    public func asin(self) -> double { unsafe { __intrinsic_asin_f64(self) } }
+    public func acos(self) -> double { unsafe { __intrinsic_acos_f64(self) } }
+    public func atan(self) -> double { unsafe { __intrinsic_atan_f64(self) } }
+    public func sinh(self) -> double { unsafe { __intrinsic_sinh_f64(self) } }
+    public func cosh(self) -> double { unsafe { __intrinsic_cosh_f64(self) } }
+    public func tanh(self) -> double { unsafe { __intrinsic_tanh_f64(self) } }
+    public func exp(self) -> double { unsafe { __intrinsic_exp_f64(self) } }
+    public func exp2(self) -> double { unsafe { __intrinsic_exp2_f64(self) } }
+    public func log(self) -> double { unsafe { __intrinsic_log_f64(self) } }
+    public func log2(self) -> double { unsafe { __intrinsic_log2_f64(self) } }
+    public func log10(self) -> double { unsafe { __intrinsic_log10_f64(self) } }
+    public func abs(self) -> double { unsafe { __intrinsic_fabs_f64(self) } }
+    public func floor(self) -> double { unsafe { __intrinsic_floor_f64(self) } }
+    public func ceil(self) -> double { unsafe { __intrinsic_ceil_f64(self) } }
+    public func trunc(self) -> double { unsafe { __intrinsic_trunc_f64(self) } }
+    public func rint(self) -> double { unsafe { __intrinsic_rint_f64(self) } }
+    public func nearbyint(self) -> double { unsafe { __intrinsic_nearbyint_f64(self) } }
+    public func round(self) -> double { unsafe { __intrinsic_round_f64(self) } }
+    public func roundeven(self) -> double { unsafe { __intrinsic_roundeven_f64(self) } }
+    public func pow(self, _ y: double) -> double { unsafe { __intrinsic_pow_f64(self, y) } }
+    public func powi(self, _ y: int32) -> double { unsafe { __intrinsic_powi_f64_i32(self, y) } }
+    public func copysign(self, _ y: double) -> double { unsafe { __intrinsic_copysign_f64(self, y) } }
+    public func fma(self, _ y: double, _ z: double) -> double { unsafe { __intrinsic_fma_f64(self, y, z) } }
+    public func minimum(self, _ y: double) -> double { unsafe { __intrinsic_minimum_f64(self, y) } }
+    public func maximum(self, _ y: double) -> double { unsafe { __intrinsic_maximum_f64(self, y) } }
+    public func minimumnum(self, _ y: double) -> double { unsafe { __intrinsic_minimumnum_f64(self, y) } }
+    public func maximumnum(self, _ y: double) -> double { unsafe { __intrinsic_maximumnum_f64(self, y) } }
 }

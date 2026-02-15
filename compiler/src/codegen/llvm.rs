@@ -2308,6 +2308,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         let ident = self.gcx.definition_ident(def_id);
         let name = ident.symbol.as_str();
+        if self.try_lower_typed_math_intrinsic(name, body, locals, args, destination)? {
+            return Ok(true);
+        }
         match name {
             "__intrinsic_array_read_unchecked" => {
                 self.lower_intrinsic_array_read(body, locals, args, destination)?;
@@ -2401,6 +2404,186 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 self.lower_intrinsic_align_of(body, locals, call_args, args, destination)?;
                 Ok(true)
             }
+            "__intrinsic_sqrt" => {
+                self.lower_intrinsic_unary_float(body, locals, args, destination, "sqrt")?;
+                Ok(true)
+            }
+            "__intrinsic_sin" => {
+                self.lower_intrinsic_unary_float(body, locals, args, destination, "sin")?;
+                Ok(true)
+            }
+            "__intrinsic_cos" => {
+                self.lower_intrinsic_unary_float(body, locals, args, destination, "cos")?;
+                Ok(true)
+            }
+            "__intrinsic_tan" => {
+                self.lower_libm_unary_float(
+                    body,
+                    locals,
+                    args,
+                    destination,
+                    "__intrinsic_tan",
+                    "tanf",
+                    "tan",
+                )?;
+                Ok(true)
+            }
+            "__intrinsic_asin" => {
+                self.lower_libm_unary_float(
+                    body,
+                    locals,
+                    args,
+                    destination,
+                    "__intrinsic_asin",
+                    "asinf",
+                    "asin",
+                )?;
+                Ok(true)
+            }
+            "__intrinsic_acos" => {
+                self.lower_libm_unary_float(
+                    body,
+                    locals,
+                    args,
+                    destination,
+                    "__intrinsic_acos",
+                    "acosf",
+                    "acos",
+                )?;
+                Ok(true)
+            }
+            "__intrinsic_atan" => {
+                self.lower_libm_unary_float(
+                    body,
+                    locals,
+                    args,
+                    destination,
+                    "__intrinsic_atan",
+                    "atanf",
+                    "atan",
+                )?;
+                Ok(true)
+            }
+            "__intrinsic_sinh" => {
+                self.lower_libm_unary_float(
+                    body,
+                    locals,
+                    args,
+                    destination,
+                    "__intrinsic_sinh",
+                    "sinhf",
+                    "sinh",
+                )?;
+                Ok(true)
+            }
+            "__intrinsic_cosh" => {
+                self.lower_libm_unary_float(
+                    body,
+                    locals,
+                    args,
+                    destination,
+                    "__intrinsic_cosh",
+                    "coshf",
+                    "cosh",
+                )?;
+                Ok(true)
+            }
+            "__intrinsic_tanh" => {
+                self.lower_libm_unary_float(
+                    body,
+                    locals,
+                    args,
+                    destination,
+                    "__intrinsic_tanh",
+                    "tanhf",
+                    "tanh",
+                )?;
+                Ok(true)
+            }
+            "__intrinsic_exp" => {
+                self.lower_intrinsic_unary_float(body, locals, args, destination, "exp")?;
+                Ok(true)
+            }
+            "__intrinsic_exp2" => {
+                self.lower_intrinsic_unary_float(body, locals, args, destination, "exp2")?;
+                Ok(true)
+            }
+            "__intrinsic_log" => {
+                self.lower_intrinsic_unary_float(body, locals, args, destination, "log")?;
+                Ok(true)
+            }
+            "__intrinsic_log2" => {
+                self.lower_intrinsic_unary_float(body, locals, args, destination, "log2")?;
+                Ok(true)
+            }
+            "__intrinsic_log10" => {
+                self.lower_intrinsic_unary_float(body, locals, args, destination, "log10")?;
+                Ok(true)
+            }
+            "__intrinsic_fabs" => {
+                self.lower_intrinsic_unary_float(body, locals, args, destination, "fabs")?;
+                Ok(true)
+            }
+            "__intrinsic_floor" => {
+                self.lower_intrinsic_unary_float(body, locals, args, destination, "floor")?;
+                Ok(true)
+            }
+            "__intrinsic_ceil" => {
+                self.lower_intrinsic_unary_float(body, locals, args, destination, "ceil")?;
+                Ok(true)
+            }
+            "__intrinsic_trunc" => {
+                self.lower_intrinsic_unary_float(body, locals, args, destination, "trunc")?;
+                Ok(true)
+            }
+            "__intrinsic_rint" => {
+                self.lower_intrinsic_unary_float(body, locals, args, destination, "rint")?;
+                Ok(true)
+            }
+            "__intrinsic_nearbyint" => {
+                self.lower_intrinsic_unary_float(body, locals, args, destination, "nearbyint")?;
+                Ok(true)
+            }
+            "__intrinsic_round" => {
+                self.lower_intrinsic_unary_float(body, locals, args, destination, "round")?;
+                Ok(true)
+            }
+            "__intrinsic_roundeven" => {
+                self.lower_intrinsic_unary_float(body, locals, args, destination, "roundeven")?;
+                Ok(true)
+            }
+            "__intrinsic_pow" => {
+                self.lower_intrinsic_binary_float(body, locals, args, destination, "pow")?;
+                Ok(true)
+            }
+            "__intrinsic_powi" => {
+                self.lower_intrinsic_powi(body, locals, args, destination)?;
+                Ok(true)
+            }
+            "__intrinsic_copysign" => {
+                self.lower_intrinsic_binary_float(body, locals, args, destination, "copysign")?;
+                Ok(true)
+            }
+            "__intrinsic_fma" => {
+                self.lower_intrinsic_ternary_float(body, locals, args, destination, "fma")?;
+                Ok(true)
+            }
+            "__intrinsic_minimum" => {
+                self.lower_intrinsic_binary_float(body, locals, args, destination, "minimum")?;
+                Ok(true)
+            }
+            "__intrinsic_maximum" => {
+                self.lower_intrinsic_binary_float(body, locals, args, destination, "maximum")?;
+                Ok(true)
+            }
+            "__intrinsic_minimumnum" => {
+                self.lower_intrinsic_binary_float(body, locals, args, destination, "minnum")?;
+                Ok(true)
+            }
+            "__intrinsic_maximumnum" => {
+                self.lower_intrinsic_binary_float(body, locals, args, destination, "maxnum")?;
+                Ok(true)
+            }
             "__intrinsic_string_from_parts" => {
                 self.lower_intrinsic_string_from_parts(body, locals, args, destination)?;
                 Ok(true)
@@ -2419,6 +2602,84 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     .emit_error(format!("unknown intrinsic '{}'", name), None);
                 Ok(true)
             }
+        }
+    }
+
+    fn try_lower_typed_math_intrinsic(
+        &mut self,
+        name: &str,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+    ) -> CompileResult<bool> {
+        let Some(stem) = name.strip_prefix("__intrinsic_") else {
+            return Ok(false);
+        };
+
+        if matches!(stem, "powi_f32_i32" | "powi_f64_i32") {
+            self.lower_intrinsic_powi(body, locals, args, destination)?;
+            return Ok(true);
+        }
+
+        let Some(op) = stem
+            .strip_suffix("_f32")
+            .or_else(|| stem.strip_suffix("_f64"))
+        else {
+            return Ok(false);
+        };
+
+        match op {
+            "sqrt" | "sin" | "cos" | "exp" | "exp2" | "log" | "log2" | "log10" | "fabs"
+            | "floor" | "ceil" | "trunc" | "rint" | "nearbyint" | "round" | "roundeven" => {
+                self.lower_intrinsic_unary_float(body, locals, args, destination, op)?;
+                Ok(true)
+            }
+            "tan" => {
+                self.lower_libm_unary_float(body, locals, args, destination, name, "tanf", "tan")?;
+                Ok(true)
+            }
+            "asin" => {
+                self.lower_libm_unary_float(body, locals, args, destination, name, "asinf", "asin")?;
+                Ok(true)
+            }
+            "acos" => {
+                self.lower_libm_unary_float(body, locals, args, destination, name, "acosf", "acos")?;
+                Ok(true)
+            }
+            "atan" => {
+                self.lower_libm_unary_float(body, locals, args, destination, name, "atanf", "atan")?;
+                Ok(true)
+            }
+            "sinh" => {
+                self.lower_libm_unary_float(body, locals, args, destination, name, "sinhf", "sinh")?;
+                Ok(true)
+            }
+            "cosh" => {
+                self.lower_libm_unary_float(body, locals, args, destination, name, "coshf", "cosh")?;
+                Ok(true)
+            }
+            "tanh" => {
+                self.lower_libm_unary_float(body, locals, args, destination, name, "tanhf", "tanh")?;
+                Ok(true)
+            }
+            "pow" | "copysign" | "minimum" | "maximum" => {
+                self.lower_intrinsic_binary_float(body, locals, args, destination, op)?;
+                Ok(true)
+            }
+            "minimumnum" => {
+                self.lower_intrinsic_binary_float(body, locals, args, destination, "minnum")?;
+                Ok(true)
+            }
+            "maximumnum" => {
+                self.lower_intrinsic_binary_float(body, locals, args, destination, "maxnum")?;
+                Ok(true)
+            }
+            "fma" => {
+                self.lower_intrinsic_ternary_float(body, locals, args, destination, "fma")?;
+                Ok(true)
+            }
+            _ => Ok(false),
         }
     }
 
@@ -3184,6 +3445,384 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .unwrap()
             .into_int_value();
         self.store_place(destination, body, locals, len.as_basic_value_enum())
+    }
+
+    fn lower_intrinsic_unary_float(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+        intrinsic: &str,
+    ) -> CompileResult<()> {
+        let operand = args.first().expect("missing unary intrinsic operand");
+        let Some(value) = self.eval_operand(body, locals, operand)? else {
+            let _ = self.builder.build_unreachable().unwrap();
+            return Ok(());
+        };
+
+        let float_val = match value {
+            BasicValueEnum::FloatValue(float_val) => float_val,
+            _ => {
+                self.gcx.dcx().emit_error(
+                    format!("'{}' expects a float or double argument", intrinsic),
+                    None,
+                );
+                return Ok(());
+            }
+        };
+
+        let ty = float_val.get_type();
+        let Some(suffix) = self.float_intrinsic_suffix(ty) else {
+            self.gcx.dcx().emit_error(
+                format!("'{}' only supports float and double", intrinsic),
+                None,
+            );
+            return Ok(());
+        };
+
+        let name = format!("llvm.{}.{}", intrinsic, suffix);
+        let fn_ty = ty.fn_type(&[ty.into()], false);
+        let callee = self.get_or_add_intrinsic_function(&name, fn_ty);
+        let call = self
+            .builder
+            .build_call(callee, &[float_val.into()], "intrinsic_call")
+            .unwrap();
+        let Some(result) = call.try_as_basic_value().basic() else {
+            self.gcx
+                .dcx()
+                .emit_error(format!("intrinsic '{}' returned void", name), None);
+            return Ok(());
+        };
+
+        self.store_place(destination, body, locals, result)
+    }
+
+    fn lower_libm_unary_float(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+        intrinsic_name: &str,
+        f32_symbol: &str,
+        f64_symbol: &str,
+    ) -> CompileResult<()> {
+        let operand = args.first().expect("missing unary intrinsic operand");
+        let Some(value) = self.eval_operand(body, locals, operand)? else {
+            let _ = self.builder.build_unreachable().unwrap();
+            return Ok(());
+        };
+
+        let float_val = match value {
+            BasicValueEnum::FloatValue(float_val) => float_val,
+            _ => {
+                self.gcx.dcx().emit_error(
+                    format!("'{}' expects a float or double argument", intrinsic_name),
+                    None,
+                );
+                return Ok(());
+            }
+        };
+
+        let ty = float_val.get_type();
+        let (symbol, fn_ty) = match ty.get_bit_width() {
+            32 => (f32_symbol, ty.fn_type(&[ty.into()], false)),
+            64 => (f64_symbol, ty.fn_type(&[ty.into()], false)),
+            _ => {
+                self.gcx.dcx().emit_error(
+                    format!("'{}' only supports float and double", intrinsic_name),
+                    None,
+                );
+                return Ok(());
+            }
+        };
+
+        let callee = self.get_or_add_external_function(symbol, fn_ty);
+        let call = self
+            .builder
+            .build_call(callee, &[float_val.into()], "libm_call")
+            .unwrap();
+        let Some(result) = call.try_as_basic_value().basic() else {
+            self.gcx
+                .dcx()
+                .emit_error(format!("libm function '{}' returned void", symbol), None);
+            return Ok(());
+        };
+
+        self.store_place(destination, body, locals, result)
+    }
+
+    fn lower_intrinsic_binary_float(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+        intrinsic: &str,
+    ) -> CompileResult<()> {
+        let lhs = args.first().expect("missing binary intrinsic lhs");
+        let rhs = args.get(1).expect("missing binary intrinsic rhs");
+
+        let Some(lhs_val) = self.eval_operand(body, locals, lhs)? else {
+            let _ = self.builder.build_unreachable().unwrap();
+            return Ok(());
+        };
+        let Some(rhs_val) = self.eval_operand(body, locals, rhs)? else {
+            let _ = self.builder.build_unreachable().unwrap();
+            return Ok(());
+        };
+
+        let lhs_float = match lhs_val {
+            BasicValueEnum::FloatValue(val) => val,
+            _ => {
+                self.gcx.dcx().emit_error(
+                    format!("'{}' expects float or double arguments", intrinsic),
+                    None,
+                );
+                return Ok(());
+            }
+        };
+        let rhs_float = match rhs_val {
+            BasicValueEnum::FloatValue(val) => val,
+            _ => {
+                self.gcx.dcx().emit_error(
+                    format!("'{}' expects float or double arguments", intrinsic),
+                    None,
+                );
+                return Ok(());
+            }
+        };
+
+        let ty = lhs_float.get_type();
+        if ty != rhs_float.get_type() {
+            self.gcx
+                .dcx()
+                .emit_error(format!("'{}' requires matching float types", intrinsic), None);
+            return Ok(());
+        }
+        let Some(suffix) = self.float_intrinsic_suffix(ty) else {
+            self.gcx.dcx().emit_error(
+                format!("'{}' only supports float and double", intrinsic),
+                None,
+            );
+            return Ok(());
+        };
+
+        let name = format!("llvm.{}.{}", intrinsic, suffix);
+        let fn_ty = ty.fn_type(&[ty.into(), ty.into()], false);
+        let callee = self.get_or_add_intrinsic_function(&name, fn_ty);
+        let call = self
+            .builder
+            .build_call(
+                callee,
+                &[lhs_float.into(), rhs_float.into()],
+                "intrinsic_call",
+            )
+            .unwrap();
+        let Some(result) = call.try_as_basic_value().basic() else {
+            self.gcx
+                .dcx()
+                .emit_error(format!("intrinsic '{}' returned void", name), None);
+            return Ok(());
+        };
+
+        self.store_place(destination, body, locals, result)
+    }
+
+    fn lower_intrinsic_ternary_float(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+        intrinsic: &str,
+    ) -> CompileResult<()> {
+        let x = args.first().expect("missing ternary intrinsic operand x");
+        let y = args.get(1).expect("missing ternary intrinsic operand y");
+        let z = args.get(2).expect("missing ternary intrinsic operand z");
+
+        let Some(x_val) = self.eval_operand(body, locals, x)? else {
+            let _ = self.builder.build_unreachable().unwrap();
+            return Ok(());
+        };
+        let Some(y_val) = self.eval_operand(body, locals, y)? else {
+            let _ = self.builder.build_unreachable().unwrap();
+            return Ok(());
+        };
+        let Some(z_val) = self.eval_operand(body, locals, z)? else {
+            let _ = self.builder.build_unreachable().unwrap();
+            return Ok(());
+        };
+
+        let x_float = match x_val {
+            BasicValueEnum::FloatValue(val) => val,
+            _ => {
+                self.gcx.dcx().emit_error(
+                    format!("'{}' expects float or double arguments", intrinsic),
+                    None,
+                );
+                return Ok(());
+            }
+        };
+        let y_float = match y_val {
+            BasicValueEnum::FloatValue(val) => val,
+            _ => {
+                self.gcx.dcx().emit_error(
+                    format!("'{}' expects float or double arguments", intrinsic),
+                    None,
+                );
+                return Ok(());
+            }
+        };
+        let z_float = match z_val {
+            BasicValueEnum::FloatValue(val) => val,
+            _ => {
+                self.gcx.dcx().emit_error(
+                    format!("'{}' expects float or double arguments", intrinsic),
+                    None,
+                );
+                return Ok(());
+            }
+        };
+
+        let ty = x_float.get_type();
+        if ty != y_float.get_type() || ty != z_float.get_type() {
+            self.gcx
+                .dcx()
+                .emit_error(format!("'{}' requires matching float types", intrinsic), None);
+            return Ok(());
+        }
+        let Some(suffix) = self.float_intrinsic_suffix(ty) else {
+            self.gcx.dcx().emit_error(
+                format!("'{}' only supports float and double", intrinsic),
+                None,
+            );
+            return Ok(());
+        };
+
+        let name = format!("llvm.{}.{}", intrinsic, suffix);
+        let fn_ty = ty.fn_type(&[ty.into(), ty.into(), ty.into()], false);
+        let callee = self.get_or_add_intrinsic_function(&name, fn_ty);
+        let call = self
+            .builder
+            .build_call(
+                callee,
+                &[x_float.into(), y_float.into(), z_float.into()],
+                "intrinsic_call",
+            )
+            .unwrap();
+        let Some(result) = call.try_as_basic_value().basic() else {
+            self.gcx
+                .dcx()
+                .emit_error(format!("intrinsic '{}' returned void", name), None);
+            return Ok(());
+        };
+
+        self.store_place(destination, body, locals, result)
+    }
+
+    fn lower_intrinsic_powi(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+    ) -> CompileResult<()> {
+        let base = args.first().expect("missing powi base");
+        let exponent = args.get(1).expect("missing powi exponent");
+
+        let Some(base_val) = self.eval_operand(body, locals, base)? else {
+            let _ = self.builder.build_unreachable().unwrap();
+            return Ok(());
+        };
+        let Some(exponent_val) = self.eval_operand(body, locals, exponent)? else {
+            let _ = self.builder.build_unreachable().unwrap();
+            return Ok(());
+        };
+
+        let base_float = match base_val {
+            BasicValueEnum::FloatValue(val) => val,
+            _ => {
+                self.gcx
+                    .dcx()
+                    .emit_error("'powi' expects a float or double base".into(), None);
+                return Ok(());
+            }
+        };
+        let exponent_int = match exponent_val {
+            BasicValueEnum::IntValue(val) => val,
+            _ => {
+                self.gcx
+                    .dcx()
+                    .emit_error("'powi' expects an int32 exponent".into(), None);
+                return Ok(());
+            }
+        };
+
+        let ty = base_float.get_type();
+        let Some(suffix) = self.float_intrinsic_suffix(ty) else {
+            self.gcx
+                .dcx()
+                .emit_error("'powi' only supports float and double".into(), None);
+            return Ok(());
+        };
+        let i32_ty = self.context.i32_type();
+        let exponent_i32 = if exponent_int.get_type() == i32_ty {
+            exponent_int
+        } else {
+            self.builder
+                .build_int_cast(exponent_int, i32_ty, "powi_exp_cast")
+                .unwrap()
+        };
+
+        let name = format!("llvm.powi.{}.i32", suffix);
+        let fn_ty = ty.fn_type(&[ty.into(), i32_ty.into()], false);
+        let callee = self.get_or_add_intrinsic_function(&name, fn_ty);
+        let call = self
+            .builder
+            .build_call(
+                callee,
+                &[base_float.into(), exponent_i32.into()],
+                "intrinsic_call",
+            )
+            .unwrap();
+        let Some(result) = call.try_as_basic_value().basic() else {
+            self.gcx
+                .dcx()
+                .emit_error(format!("intrinsic '{}' returned void", name), None);
+            return Ok(());
+        };
+
+        self.store_place(destination, body, locals, result)
+    }
+
+    fn float_intrinsic_suffix(&self, ty: FloatType<'llvm>) -> Option<&'static str> {
+        match ty.get_bit_width() {
+            32 => Some("f32"),
+            64 => Some("f64"),
+            _ => None,
+        }
+    }
+
+    fn get_or_add_intrinsic_function(
+        &self,
+        name: &str,
+        fn_ty: FunctionType<'llvm>,
+    ) -> FunctionValue<'llvm> {
+        self.module
+            .get_function(name)
+            .unwrap_or_else(|| self.module.add_function(name, fn_ty, None))
+    }
+
+    fn get_or_add_external_function(
+        &self,
+        name: &str,
+        fn_ty: FunctionType<'llvm>,
+    ) -> FunctionValue<'llvm> {
+        self.module
+            .get_function(name)
+            .unwrap_or_else(|| self.module.add_function(name, fn_ty, Some(Linkage::External)))
     }
 
     /// Intrinsic: __intrinsic_ptr_to_u8[T](*const T) -> *const uint8
