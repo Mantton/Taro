@@ -1,4 +1,4 @@
-import std.process
+import std.runtime
 
 /// Terminate the program immediately with an error message.
 ///
@@ -12,10 +12,7 @@ import std.process
 /// }
 /// ```
 public func panic(_ message: string) -> ! {
-    std.eprint("panic: ")
-    std.eprint(message)
-    std.eprint("\n")
-    process.exit(1)
+    runtime.panicUnwind(message)
 }
 
 /// Indicates that this code path should never be reached.
@@ -45,8 +42,5 @@ public func unreachable() -> ! {
 /// }
 /// ```
 public func todo(_ message: string) -> ! {
-    std.eprint("not yet implemented: ")
-    std.eprint(message)
-    std.eprint("\n")
-    process.exit(1)
+    runtime.panicUnwind(message)
 }

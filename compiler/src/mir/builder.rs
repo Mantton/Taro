@@ -82,6 +82,7 @@ pub struct MirBuilder<'ctx, 'thir> {
     arm_binding_locals: FxHashMap<(thir::ArmId, Symbol), LocalId>,
     cleanup_nodes: IndexVec<CleanupId, CleanupNode>,
     current_cleanup: Option<CleanupId>,
+    resume_unwind_block: Option<BasicBlockId>,
     if_then_scope: Option<IfThenScope>,
     breakable_scopes: Vec<BreakableScope>,
 }
@@ -121,6 +122,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             arm_binding_locals: FxHashMap::default(),
             cleanup_nodes: IndexVec::new(),
             current_cleanup: None,
+            resume_unwind_block: None,
             if_then_scope: None,
             breakable_scopes: vec![],
         };
@@ -531,6 +533,25 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         };
         let idx = self.cleanup_nodes.push(node);
         self.current_cleanup = Some(idx);
+    }
+
+    pub(crate) fn call_unwind_action(&mut self, span: Span) -> mir::CallUnwindAction {
+        let resume_unwind = self.ensure_resume_unwind_block(span);
+        let mut cache = FxHashMap::default();
+        cache.insert(None, resume_unwind);
+        let cleanup_entry =
+            self.ensure_cleanup_path(self.current_cleanup, None, resume_unwind, &mut cache);
+        mir::CallUnwindAction::Cleanup(cleanup_entry)
+    }
+
+    fn ensure_resume_unwind_block(&mut self, span: Span) -> BasicBlockId {
+        if let Some(block) = self.resume_unwind_block {
+            return block;
+        }
+        let block = self.new_block_with_note("resume_unwind".into());
+        self.terminate(block, span, TerminatorKind::ResumeUnwind);
+        self.resume_unwind_block = Some(block);
+        block
     }
 
     pub(crate) fn in_if_then_scope<F>(&mut self, _: Span, f: F) -> (BasicBlockId, BasicBlockId)

@@ -1,8 +1,19 @@
 
 extern "taro_rt" {
     func __gc__collect()
+    func __rt__panic_unwind(_ message: string) -> !
+    func __rt__panic_abort(_ message: string) -> !
+    func __rt__panic_abort_unwind(_ exception: *mut uint8) -> !
 }
 
 public func collect() {
     __gc__collect()
+}
+
+public func panicUnwind(_ message: string) -> ! {
+    __rt__panic_unwind(message)
+}
+
+public func panicAbort(_ message: string) -> ! {
+    __rt__panic_abort(message)
 }

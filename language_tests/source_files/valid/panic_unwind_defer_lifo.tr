@@ -1,0 +1,10 @@
+// EXPECT_EXIT: 1
+// EXPECT_STDERR_CONTAINS: panic: boom
+// EXPECT_STDERR_CONTAINS: panic_unwind_defer_lifo.tr:9
+// EXPECT_STDERR_CONTAINS: stack backtrace
+func main() {
+    std.print("start\n")
+    defer { std.print("defer-1\n") }
+    defer { std.print("defer-2\n") }
+    panic("boom")
+}

@@ -92,10 +92,15 @@ def cleanup_test_environment():
 
 def parse_test_directives(file_path: Path) -> dict:
     """Parse // TARGET: and // CHECK_ONLY comments from the first few lines of a test file."""
-    result = {"target": None, "check_only": False}
+    result = {
+        "target": None,
+        "check_only": False,
+        "expect_exit": None,
+        "expect_stderr_contains": [],
+    }
     try:
         with open(file_path, 'r') as f:
-            for _ in range(15):  # Check first 15 lines
+            for _ in range(30):  # Check first lines for directives
                 line = f.readline()
                 if not line:
                     break
@@ -104,6 +109,16 @@ def parse_test_directives(file_path: Path) -> dict:
                     result["target"] = line[len('// TARGET:'):].strip()
                 elif line.startswith('// CHECK_ONLY'):
                     result["check_only"] = True
+                elif line.startswith('// EXPECT_EXIT:'):
+                    code = line[len('// EXPECT_EXIT:'):].strip()
+                    try:
+                        result["expect_exit"] = int(code)
+                    except ValueError:
+                        pass
+                elif line.startswith('// EXPECT_STDERR_CONTAINS:'):
+                    needle = line[len('// EXPECT_STDERR_CONTAINS:'):].strip()
+                    if needle:
+                        result["expect_stderr_contains"].append(needle)
     except Exception:
         pass
     return result
@@ -135,6 +150,8 @@ def run_test(file_path: Path):
         directives = parse_test_directives(file_path)
         target_triple = directives["target"]
         is_check_only = directives["check_only"]
+        expected_exit = directives["expect_exit"]
+        expected_stderr_contains = directives["expect_stderr_contains"]
 
         # Choose command: "check" for CHECK_ONLY tests, "run" otherwise
         command = "check" if is_check_only else "run"
@@ -183,16 +200,30 @@ def run_test(file_path: Path):
                               (line.strip() and not line.startswith('Compiling')))]
             actual_output = '\n'.join(error_lines).strip() + '\n' if error_lines else ''
         else:
-            # For valid tests, we expect compilation to succeed
-            if result.returncode != 0:
+            # For valid tests, default runtime exit is 0 unless overridden by directive.
+            expected_code = 0 if expected_exit is None else expected_exit
+            if result.returncode != expected_code:
                 return (
                     False,
                     "Compilation error" if is_check_only else "Runtime error",
                     {
                         "stderr": result.stderr,
                         "stdout": result.stdout,
+                        "expected_exit": expected_code,
+                        "actual_exit": result.returncode,
                     },
                 )
+
+            for needle in expected_stderr_contains:
+                if needle not in result.stderr:
+                    return (
+                        False,
+                        "Missing expected stderr fragment",
+                        {
+                            "stderr": result.stderr,
+                            "missing": needle,
+                        },
+                    )
             # CHECK_ONLY tests have no output to compare
             if is_check_only:
                 return True, "Check passed", None

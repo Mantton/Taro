@@ -4,8 +4,8 @@ use crate::compile::context::Gcx;
 use crate::thir::VariantIndex;
 
 use super::{
-    BasicBlockData, Body, Constant, ConstantKind, LocalDecl, LocalKind, Operand, Place, PlaceElem,
-    Rvalue, Statement, StatementKind, Terminator, TerminatorKind,
+    BasicBlockData, Body, CallUnwindAction, Constant, ConstantKind, LocalDecl, LocalKind, Operand,
+    Place, PlaceElem, Rvalue, Statement, StatementKind, Terminator, TerminatorKind,
 };
 
 pub struct PrettyPrintMir<'body, 'ctx> {
@@ -79,12 +79,14 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                 write!(f, "otherwise: bb{:?}]", otherwise)
             }
             TerminatorKind::Return => write!(f, "return"),
+            TerminatorKind::ResumeUnwind => write!(f, "resume_unwind"),
             TerminatorKind::Unreachable => write!(f, "unreachable"),
             TerminatorKind::Call {
                 func,
                 args,
                 destination,
                 target,
+                unwind,
             } => {
                 self.write_place(destination, f)?;
                 write!(f, " = ")?;
@@ -96,7 +98,11 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                     }
                     self.write_operand(arg, f)?;
                 }
-                write!(f, ") -> bb{:?}", target)
+                write!(f, ") -> bb{:?}", target)?;
+                match unwind {
+                    CallUnwindAction::Cleanup(bb) => write!(f, " unwind bb{:?}", bb),
+                    CallUnwindAction::Terminate => write!(f, " unwind terminate"),
+                }
             }
         }
     }

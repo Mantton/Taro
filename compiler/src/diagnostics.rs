@@ -28,6 +28,10 @@ impl DiagCtx {
         self.inner.borrow_mut().file_mappings.push(path)
     }
 
+    pub fn file_path(&self, id: FileID) -> Option<PathBuf> {
+        self.inner.borrow().file_mappings.get(id).cloned()
+    }
+
     pub fn has_error(&self) -> bool {
         self.inner.borrow().has_error.get()
     }

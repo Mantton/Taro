@@ -21,6 +21,7 @@ use crate::{
 };
 use inkwell::{
     AddressSpace, FloatPredicate, IntPredicate,
+    basic_block::BasicBlock,
     builder::Builder,
     context::Context,
     module::{Linkage, Module},
@@ -30,7 +31,10 @@ use inkwell::{
         BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType,
         StructType,
     },
-    values::{BasicMetadataValueEnum, BasicValue, BasicValueEnum, FunctionValue, PointerValue},
+    values::{
+        BasicMetadataValueEnum, BasicValue, BasicValueEnum, CallSiteValue, FunctionValue,
+        PointerValue,
+    },
 };
 use rustc_hash::FxHashMap;
 use std::{fs, path::PathBuf};
@@ -53,6 +57,11 @@ pub fn emit_package<'gcx>(
     emitter.declare_instances();
     emitter.lower_instances(package)?;
     emitter.emit_start_shim(package);
+    if let Err(e) = emitter.module.verify() {
+        let msg = format!("invalid LLVM module: {}", e.to_string());
+        gcx.dcx().emit_error(msg, None);
+        return Err(crate::error::ReportedError);
+    }
     emitter.run_function_passes();
 
     // Dump LLVM IR if requested
@@ -84,6 +93,9 @@ struct Emitter<'llvm, 'gcx> {
     gc_desc_ty: inkwell::types::StructType<'llvm>,
     usize_ty: inkwell::types::IntType<'llvm>,
     shadow: Option<ShadowStackInfo<'llvm, 'gcx>>,
+    eh_personality: Option<FunctionValue<'llvm>>,
+    eh_slot: Option<PointerValue<'llvm>>,
+    current_fn: Option<FunctionValue<'llvm>>,
     /// Current substitution context for monomorphization
     current_subst: GenericArguments<'gcx>,
 }
@@ -92,6 +104,13 @@ struct Emitter<'llvm, 'gcx> {
 enum LocalStorage<'llvm> {
     Value(Option<BasicValueEnum<'llvm>>),
     Stack(PointerValue<'llvm>),
+}
+
+#[derive(Clone, Copy)]
+enum StdPanicCallKind {
+    Panic,
+    Todo,
+    Unreachable,
 }
 
 struct ShadowStackInfo<'llvm, 'gcx> {
@@ -147,6 +166,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             gc_desc_ty,
             usize_ty,
             shadow: None,
+            eh_personality: None,
+            eh_slot: None,
+            current_fn: None,
             current_subst: &[],
         }
     }
@@ -289,11 +311,19 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let i32_ty = self.context.i32_type();
         let start_ty = i32_ty.fn_type(&[], false);
         let start_fn = self.module.add_function("taro_start", start_ty, None);
+        let personality = self.eh_personality_fn();
+        start_fn.set_personality_function(personality);
 
         let builder = self.context.create_builder();
-        let bb = self.context.append_basic_block(start_fn, "entry");
-        builder.position_at_end(bb);
-        let call = builder.build_call(user_fn, &[], "call_main").unwrap();
+        let bb_entry = self.context.append_basic_block(start_fn, "entry");
+        let bb_ret = self.context.append_basic_block(start_fn, "ret");
+        let bb_panic = self.context.append_basic_block(start_fn, "panic");
+        builder.position_at_end(bb_entry);
+        let call = builder
+            .build_invoke(user_fn, &[], bb_ret, bb_panic, "call_main")
+            .unwrap();
+
+        builder.position_at_end(bb_ret);
 
         let exit_code = match (entry_sig.output.kind(), call.try_as_basic_value().basic()) {
             (TyKind::Infer(_) | TyKind::Error, _) => {
@@ -335,6 +365,36 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         let _ = builder.build_return(Some(&exit_code)).unwrap();
 
+        builder.position_at_end(bb_panic);
+        let catch_all = self
+            .context
+            .ptr_type(AddressSpace::default())
+            .const_null()
+            .as_basic_value_enum();
+        let landing = builder
+            .build_landing_pad(
+                self.eh_landingpad_ty(),
+                personality,
+                &[catch_all],
+                false,
+                "start_lpad",
+            )
+            .unwrap()
+            .into_struct_value();
+        let exception_ptr = builder
+            .build_extract_value(landing, 0, "panic_exc_ptr")
+            .unwrap()
+            .into_pointer_value();
+        let abort_unwind = self.get_panic_abort_unwind_fn();
+        let _ = builder
+            .build_call(
+                abort_unwind,
+                &[BasicMetadataValueEnum::from(exception_ptr.as_basic_value_enum())],
+                "panic_abort",
+            )
+            .unwrap();
+        let _ = builder.build_unreachable().unwrap();
+
         // Provide a conventional `main` that forwards to `taro_start` for easier linking.
         let main_fn = self.module.add_function("main", start_ty, None);
         let main_builder = self.context.create_builder();
@@ -349,6 +409,136 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .map(|v| v.into_int_value())
             .unwrap_or_else(|| i32_ty.const_int(0, false));
         let _ = main_builder.build_return(Some(&main_ret)).unwrap();
+    }
+
+    fn get_panic_abort_unwind_fn(&self) -> FunctionValue<'llvm> {
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let fn_ty = self.context.void_type().fn_type(&[ptr_ty.into()], false);
+        self.module
+            .get_function("__rt__panic_abort_unwind")
+            .unwrap_or_else(|| {
+                self.module
+                    .add_function("__rt__panic_abort_unwind", fn_ty, Some(Linkage::External))
+            })
+    }
+
+    fn get_panic_unwind_at_fn(&self) -> FunctionValue<'llvm> {
+        let str_ty = string_header_ty(self.context, &self.target_data);
+        let fn_ty = self.context.void_type().fn_type(
+            &[
+                str_ty.into(),
+                str_ty.into(),
+                self.usize_ty.into(),
+                self.usize_ty.into(),
+            ],
+            false,
+        );
+        self.module
+            .get_function("__rt__panic_unwind_at")
+            .unwrap_or_else(|| {
+                self.module
+                    .add_function("__rt__panic_unwind_at", fn_ty, Some(Linkage::External))
+            })
+    }
+
+    fn const_string_value(&mut self, value: &str) -> BasicValueEnum<'llvm> {
+        let sym = Symbol::new(value);
+        let ptr = self.lower_string(sym);
+        let len = self.usize_ty.const_int(value.len() as u64, false);
+        let string_ty = string_header_ty(self.context, &self.target_data);
+        string_ty
+            .const_named_struct(&[ptr.as_basic_value_enum(), len.as_basic_value_enum()])
+            .as_basic_value_enum()
+    }
+
+    fn std_panic_kind_for_call(&self, func: &Operand<'gcx>) -> Option<StdPanicCallKind> {
+        let Operand::Constant(c) = func else {
+            return None;
+        };
+        let mir::ConstantKind::Function(def_id, _, _) = c.value else {
+            return None;
+        };
+        let Some(std_pkg) = self.gcx.std_package_index() else {
+            return None;
+        };
+        if def_id.package() != std_pkg {
+            return None;
+        }
+        let ident = self.gcx.definition_ident(def_id);
+        let Some(parent) = self.gcx.definition_parent(def_id) else {
+            return None;
+        };
+        if self.gcx.definition_ident(parent).symbol.as_str() != "panic" {
+            return None;
+        }
+        match ident.symbol.as_str() {
+            "panic" => Some(StdPanicCallKind::Panic),
+            "todo" => Some(StdPanicCallKind::Todo),
+            "unreachable" => Some(StdPanicCallKind::Unreachable),
+            _ => None,
+        }
+    }
+
+    fn try_lower_std_panic_call(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        span: crate::span::Span,
+        func: &Operand<'gcx>,
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+        normal_bb: BasicBlock<'llvm>,
+        unwind_target: Option<BasicBlock<'llvm>>,
+    ) -> CompileResult<bool> {
+        let Some(kind) = self.std_panic_kind_for_call(func) else {
+            return Ok(false);
+        };
+
+        let mut lowered_args: Vec<BasicValueEnum<'llvm>> = match kind {
+            StdPanicCallKind::Panic | StdPanicCallKind::Todo => {
+                let lowered = self.lower_call_args(body, locals, args)?;
+                if lowered.len() != 1 {
+                    self.gcx.dcx().emit_error(
+                        format!(
+                            "std panic call expected one message argument, got {}",
+                            lowered.len()
+                        ),
+                        Some(span),
+                    );
+                    return Err(crate::error::ReportedError);
+                }
+                lowered
+            }
+            StdPanicCallKind::Unreachable => {
+                vec![self.const_string_value("entered unreachable code")]
+            }
+        };
+
+        let file = self
+            .gcx
+            .dcx()
+            .file_path(span.file)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let line = (span.start.line + 1) as u64;
+        let column = (span.start.offset + 1) as u64;
+
+        lowered_args.push(self.const_string_value(&file));
+        lowered_args.push(self.usize_ty.const_int(line, false).as_basic_value_enum());
+        lowered_args.push(self.usize_ty.const_int(column, false).as_basic_value_enum());
+
+        let call_site = self.emit_direct_call_maybe_unwind(
+            self.get_panic_unwind_at_fn(),
+            &lowered_args,
+            normal_bb,
+            unwind_target,
+            "panic_unwind_at",
+        )?;
+        if let Some(ret) = call_site.try_as_basic_value().basic() {
+            self.store_place(destination, body, locals, ret)?;
+        }
+        let _ = self.builder.build_unconditional_branch(normal_bb).unwrap();
+        Ok(true)
     }
 
     fn run_function_passes(&self) {
@@ -397,9 +587,16 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .functions
             .get(&instance)
             .expect("function must be declared");
+        self.current_fn = Some(function);
 
         let llvm_blocks = self.create_blocks(function, body);
         let entry_block = llvm_blocks[body.start_block.index()];
+        if self.body_has_unwind(body) {
+            function.set_personality_function(self.eh_personality_fn());
+            self.eh_slot = Some(self.allocate_eh_slot(entry_block));
+        } else {
+            self.eh_slot = None;
+        }
         let mut locals = self.allocate_locals(body, entry_block, function);
         self.builder.position_at_end(entry_block);
         self.setup_shadow_stack(body, entry_block, &locals)?;
@@ -420,7 +617,162 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         }
 
         self.shadow = None;
+        self.eh_slot = None;
+        self.current_fn = None;
         Ok(())
+    }
+
+    fn body_has_unwind(&self, body: &mir::Body<'gcx>) -> bool {
+        body.basic_blocks.iter().any(|bb| {
+            bb.terminator.as_ref().is_some_and(|term| match term.kind {
+                mir::TerminatorKind::ResumeUnwind => true,
+                mir::TerminatorKind::Call {
+                    unwind: mir::CallUnwindAction::Cleanup(_),
+                    ..
+                } => true,
+                _ => false,
+            })
+        })
+    }
+
+    fn eh_personality_fn(&mut self) -> FunctionValue<'llvm> {
+        if let Some(personality) = self.eh_personality {
+            return personality;
+        }
+        let ty = self.context.i32_type().fn_type(&[], true);
+        let func = self
+            .module
+            .get_function("__gcc_personality_v0")
+            .unwrap_or_else(|| {
+                self.module
+                    .add_function("__gcc_personality_v0", ty, Some(Linkage::External))
+            });
+        self.eh_personality = Some(func);
+        func
+    }
+
+    fn eh_landingpad_ty(&self) -> StructType<'llvm> {
+        let ptr = self.context.ptr_type(AddressSpace::default());
+        self.context
+            .struct_type(&[ptr.into(), self.context.i32_type().into()], false)
+    }
+
+    fn allocate_eh_slot(
+        &self,
+        entry_block: inkwell::basic_block::BasicBlock<'llvm>,
+    ) -> PointerValue<'llvm> {
+        let alloc_builder = self.context.create_builder();
+        alloc_builder.position_at_end(entry_block);
+        alloc_builder
+            .build_alloca(self.eh_landingpad_ty(), "eh_slot")
+            .unwrap()
+    }
+
+    fn append_block_to_current_fn(&self, name: &str) -> inkwell::basic_block::BasicBlock<'llvm> {
+        let function = self.current_fn.expect("current function must be set");
+        self.context.append_basic_block(function, name)
+    }
+
+    fn emit_cleanup_landingpad(
+        &mut self,
+        unwind_target: inkwell::basic_block::BasicBlock<'llvm>,
+    ) -> CompileResult<()> {
+        let personality = self.eh_personality_fn();
+        let landing = self
+            .builder
+            .build_landing_pad(self.eh_landingpad_ty(), personality, &[], true, "lpad")
+            .unwrap();
+        let Some(eh_slot) = self.eh_slot else {
+            self.gcx
+                .dcx()
+                .emit_error("missing EH slot for unwind path".into(), None);
+            return Err(crate::error::ReportedError);
+        };
+        let _ = self.builder.build_store(eh_slot, landing).unwrap();
+        let _ = self.builder.build_unconditional_branch(unwind_target).unwrap();
+        Ok(())
+    }
+
+    fn lower_call_args(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &[LocalStorage<'llvm>],
+        args: &[Operand<'gcx>],
+    ) -> CompileResult<Vec<BasicValueEnum<'llvm>>> {
+        let mut lowered = Vec::with_capacity(args.len());
+        for arg in args {
+            if let Some(val) = self.eval_operand(body, locals, arg)? {
+                lowered.push(val);
+            }
+        }
+        Ok(lowered)
+    }
+
+    fn emit_direct_call_maybe_unwind(
+        &mut self,
+        function: FunctionValue<'llvm>,
+        args: &[BasicValueEnum<'llvm>],
+        _normal_bb: BasicBlock<'llvm>,
+        unwind_target: Option<BasicBlock<'llvm>>,
+        name: &str,
+    ) -> CompileResult<CallSiteValue<'llvm>> {
+        if let Some(unwind_bb) = unwind_target {
+            let invoke_normal_bb = self.append_block_to_current_fn("invoke_ok");
+            let landing_bb = self.append_block_to_current_fn("invoke_lpad");
+            let param_types: Vec<BasicMetadataTypeEnum<'llvm>> =
+                args.iter().map(|arg| arg.get_type().into()).collect();
+            let declared_ty = function.get_type();
+            let fn_ty = match declared_ty.get_return_type() {
+                Some(ret) => ret.fn_type(&param_types, declared_ty.is_var_arg()),
+                None => self
+                    .context
+                    .void_type()
+                    .fn_type(&param_types, declared_ty.is_var_arg()),
+            };
+            let fn_ptr = function.as_global_value().as_pointer_value();
+            let call_site = self
+                .builder
+                .build_indirect_invoke(fn_ty, fn_ptr, args, invoke_normal_bb, landing_bb, name)
+                .unwrap();
+            self.builder.position_at_end(landing_bb);
+            self.emit_cleanup_landingpad(unwind_bb)?;
+            self.builder.position_at_end(invoke_normal_bb);
+            Ok(call_site)
+        } else {
+            let args_meta: Vec<BasicMetadataValueEnum<'llvm>> =
+                args.iter().copied().map(BasicMetadataValueEnum::from).collect();
+            Ok(self.builder.build_call(function, &args_meta, name).unwrap())
+        }
+    }
+
+    fn emit_indirect_call_maybe_unwind(
+        &mut self,
+        fn_ty: FunctionType<'llvm>,
+        fn_ptr: PointerValue<'llvm>,
+        args: &[BasicValueEnum<'llvm>],
+        _normal_bb: BasicBlock<'llvm>,
+        unwind_target: Option<BasicBlock<'llvm>>,
+        name: &str,
+    ) -> CompileResult<CallSiteValue<'llvm>> {
+        if let Some(unwind_bb) = unwind_target {
+            let invoke_normal_bb = self.append_block_to_current_fn("invoke_ok");
+            let landing_bb = self.append_block_to_current_fn("invoke_lpad");
+            let call_site = self
+                .builder
+                .build_indirect_invoke(fn_ty, fn_ptr, args, invoke_normal_bb, landing_bb, name)
+                .unwrap();
+            self.builder.position_at_end(landing_bb);
+            self.emit_cleanup_landingpad(unwind_bb)?;
+            self.builder.position_at_end(invoke_normal_bb);
+            Ok(call_site)
+        } else {
+            let args_meta: Vec<BasicMetadataValueEnum<'llvm>> =
+                args.iter().copied().map(BasicMetadataValueEnum::from).collect();
+            Ok(self
+                .builder
+                .build_indirect_call(fn_ty, fn_ptr, &args_meta, name)
+                .unwrap())
+        }
     }
 
     fn create_blocks(
@@ -2204,6 +2556,20 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     }
                 }
             }
+            mir::TerminatorKind::ResumeUnwind => {
+                self.emit_shadow_pop();
+                let Some(eh_slot) = self.eh_slot else {
+                    self.gcx
+                        .dcx()
+                        .emit_error("resume_unwind without EH slot".into(), Some(terminator.span));
+                    return Err(crate::error::ReportedError);
+                };
+                let resume_val = self
+                    .builder
+                    .build_load(self.eh_landingpad_ty(), eh_slot, "eh_resume")
+                    .unwrap();
+                let _ = self.builder.build_resume(resume_val).unwrap();
+            }
             mir::TerminatorKind::Unreachable => {
                 let _ = self.builder.build_unreachable().unwrap();
             }
@@ -2212,6 +2578,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 args,
                 destination,
                 target,
+                unwind,
             } => {
                 if self.try_lower_intrinsic_call(body, locals, func, args, destination)? {
                     let _ = self
@@ -2220,21 +2587,43 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         .unwrap();
                     return Ok(());
                 }
-                if let Some(instance) = self.virtual_instance_for_call(func) {
-                    self.lower_virtual_call(body, locals, &instance, args, destination)?;
+                let normal_bb = blocks[target.index()];
+                let unwind_bb = match unwind {
+                    mir::CallUnwindAction::Cleanup(bb) => Some(blocks[bb.index()]),
+                    mir::CallUnwindAction::Terminate => None,
+                };
+                if self.try_lower_std_panic_call(
+                    body,
+                    locals,
+                    terminator.span,
+                    func,
+                    args,
+                    destination,
+                    normal_bb,
+                    unwind_bb,
+                )? {
+                    return Ok(());
+                }
+                let virtual_instance = self.virtual_instance_for_call(func);
+                if let Some(instance) = virtual_instance.as_ref() {
+                    self.lower_virtual_call(
+                        body,
+                        locals,
+                        instance,
+                        args,
+                        destination,
+                        normal_bb,
+                        unwind_bb,
+                    )?;
                 } else if let Some(closure_fn) = self.closure_callable(body, func) {
-                    // Calling a closure - call the closure's body function directly
-                    let mut lowered_args = Vec::with_capacity(args.len());
-                    for arg in args {
-                        if let Some(val) = self.eval_operand(body, locals, arg)? {
-                            lowered_args.push(BasicMetadataValueEnum::from(val));
-                        }
-                    }
-
-                    let call_site = self
-                        .builder
-                        .build_call(closure_fn, &lowered_args, "call")
-                        .unwrap();
+                    let lowered_args = self.lower_call_args(body, locals, args)?;
+                    let call_site = self.emit_direct_call_maybe_unwind(
+                        closure_fn,
+                        &lowered_args,
+                        normal_bb,
+                        unwind_bb,
+                        "call",
+                    )?;
 
                     if let Some(ret) = call_site.try_as_basic_value().basic() {
                         self.store_place(&destination, body, locals, ret)?;
@@ -2243,45 +2632,37 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     && !matches!(func, Operand::Constant(_))
                 {
                     let (fn_ty, fn_ptr) = self.lower_fn_pointer_call_target(body, locals, func)?;
-
-                    let mut lowered_args = Vec::with_capacity(args.len());
-                    for arg in args {
-                        if let Some(val) = self.eval_operand(body, locals, arg)? {
-                            lowered_args.push(BasicMetadataValueEnum::from(val));
-                        }
-                    }
-
-                    let call_site = self
-                        .builder
-                        .build_indirect_call(fn_ty, fn_ptr, &lowered_args, "call")
-                        .unwrap();
+                    let lowered_args = self.lower_call_args(body, locals, args)?;
+                    let call_site = self.emit_indirect_call_maybe_unwind(
+                        fn_ty,
+                        fn_ptr,
+                        &lowered_args,
+                        normal_bb,
+                        unwind_bb,
+                        "call",
+                    )?;
 
                     if let Some(ret) = call_site.try_as_basic_value().basic() {
                         self.store_place(&destination, body, locals, ret)?;
                     }
                 } else {
                     let callable = self.lower_callable(func);
-
-                    let mut lowered_args = Vec::with_capacity(args.len());
-                    for arg in args {
-                        if let Some(val) = self.eval_operand(body, locals, arg)? {
-                            lowered_args.push(BasicMetadataValueEnum::from(val));
-                        }
-                    }
-
-                    let call_site = self
-                        .builder
-                        .build_call(callable, &lowered_args, "call")
-                        .unwrap();
+                    let lowered_args = self.lower_call_args(body, locals, args)?;
+                    let call_site = self.emit_direct_call_maybe_unwind(
+                        callable,
+                        &lowered_args,
+                        normal_bb,
+                        unwind_bb,
+                        "call",
+                    )?;
 
                     if let Some(ret) = call_site.try_as_basic_value().basic() {
                         self.store_place(&destination, body, locals, ret)?;
                     }
                 }
-                let _ = self
-                    .builder
-                    .build_unconditional_branch(blocks[target.index()])
-                    .unwrap();
+                if virtual_instance.is_none() {
+                    let _ = self.builder.build_unconditional_branch(normal_bb).unwrap();
+                }
             }
         }
         Ok(())
@@ -3898,11 +4279,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             }
         }
 
-        self.functions
-            .values()
-            .copied()
-            .next()
-            .expect("at least one function")
+        panic!("ICE: unable to lower callable operand: {:?}", func);
     }
 
     fn lower_fn_pointer_sig(
@@ -3978,6 +4355,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             }
             Operand::Constant(_) => return None, // Constants handled by lower_callable
         };
+        let ty = instantiate_ty_with_args(self.gcx, ty, self.current_subst);
+        let ty = crate::sema::tycheck::utils::normalize_post_monomorphization(self.gcx, ty);
 
         // Check if it's a closure type
         let TyKind::Closure { closure_def_id, .. } = ty.kind() else {
@@ -4029,6 +4408,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         instance: &crate::specialize::VirtualInstance,
         args: &[Operand<'gcx>],
         destination: &Place<'gcx>,
+        normal_bb: BasicBlock<'llvm>,
+        unwind_target: Option<BasicBlock<'llvm>>,
     ) -> CompileResult<()> {
         let receiver = args.first().expect("virtual call missing receiver");
         let receiver_ty = self.operand_ty(body, receiver);
@@ -4111,25 +4492,24 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .unwrap()
             .into_pointer_value();
 
-        let mut lowered_args: Vec<BasicMetadataValueEnum<'llvm>> = Vec::with_capacity(args.len());
-        lowered_args.push(BasicMetadataValueEnum::from(data_ptr.as_basic_value_enum()));
+        let mut lowered_args: Vec<BasicValueEnum<'llvm>> = Vec::with_capacity(args.len());
+        lowered_args.push(data_ptr.as_basic_value_enum());
         for arg in args.iter().skip(1) {
             if let Some(val) = self.eval_operand(body, locals, arg)? {
-                lowered_args.push(BasicMetadataValueEnum::from(val));
+                lowered_args.push(val);
             }
         }
 
         let param_types: Vec<BasicMetadataTypeEnum<'llvm>> = lowered_args
             .iter()
             .map(|arg| match arg {
-                BasicMetadataValueEnum::ArrayValue(v) => v.get_type().into(),
-                BasicMetadataValueEnum::IntValue(v) => v.get_type().into(),
-                BasicMetadataValueEnum::FloatValue(v) => v.get_type().into(),
-                BasicMetadataValueEnum::PointerValue(v) => v.get_type().into(),
-                BasicMetadataValueEnum::StructValue(v) => v.get_type().into(),
-                BasicMetadataValueEnum::VectorValue(v) => v.get_type().into(),
-                BasicMetadataValueEnum::ScalableVectorValue(v) => v.get_type().into(),
-                BasicMetadataValueEnum::MetadataValue(_) => self.context.metadata_type().into(),
+                BasicValueEnum::ArrayValue(v) => v.get_type().into(),
+                BasicValueEnum::IntValue(v) => v.get_type().into(),
+                BasicValueEnum::FloatValue(v) => v.get_type().into(),
+                BasicValueEnum::PointerValue(v) => v.get_type().into(),
+                BasicValueEnum::StructValue(v) => v.get_type().into(),
+                BasicValueEnum::VectorValue(v) => v.get_type().into(),
+                BasicValueEnum::ScalableVectorValue(v) => v.get_type().into(),
             })
             .collect();
         let ret_ty = self.place_ty(body, destination);
@@ -4147,14 +4527,19 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             )
             .unwrap()
             .into_pointer_value();
-        let call_site = self
-            .builder
-            .build_indirect_call(fn_ty, fn_ptr_cast, &lowered_args, "virt_call")
-            .unwrap();
+        let call_site = self.emit_indirect_call_maybe_unwind(
+            fn_ty,
+            fn_ptr_cast,
+            &lowered_args,
+            normal_bb,
+            unwind_target,
+            "virt_call",
+        )?;
 
         if let Some(ret) = call_site.try_as_basic_value().basic() {
             self.store_place(destination, body, locals, ret)?;
         }
+        let _ = self.builder.build_unconditional_branch(normal_bb).unwrap();
 
         Ok(())
     }

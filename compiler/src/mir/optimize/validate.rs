@@ -7,8 +7,8 @@ use crate::{
     compile::context::Gcx,
     error::CompileResult,
     mir::{
-        BasicBlockId, Body, LocalId, Operand, Place, PlaceElem, Rvalue, StatementKind,
-        TerminatorKind,
+        BasicBlockId, Body, CallUnwindAction, LocalId, Operand, Place, PlaceElem, Rvalue,
+        StatementKind, TerminatorKind,
     },
     sema::models::TyKind,
     thir::FieldIndex,
@@ -306,10 +306,17 @@ fn successors(term: &TerminatorKind) -> Vec<BasicBlockId> {
             succs.push(*otherwise);
             succs
         }
-        TerminatorKind::Call { target, .. } => vec![*target],
-        TerminatorKind::Return | TerminatorKind::Unreachable | TerminatorKind::UnresolvedGoto => {
-            vec![]
+        TerminatorKind::Call { target, unwind, .. } => {
+            let mut succs = vec![*target];
+            if let CallUnwindAction::Cleanup(bb) = unwind {
+                succs.push(*bb);
+            }
+            succs
         }
+        TerminatorKind::Return
+        | TerminatorKind::ResumeUnwind
+        | TerminatorKind::Unreachable
+        | TerminatorKind::UnresolvedGoto => vec![],
     }
 }
 
@@ -362,6 +369,7 @@ fn check_terminator_uses<'ctx>(
         }
         TerminatorKind::Goto { .. }
         | TerminatorKind::Return
+        | TerminatorKind::ResumeUnwind
         | TerminatorKind::Unreachable
         | TerminatorKind::UnresolvedGoto => {}
     }
@@ -545,6 +553,7 @@ fn collect_moves_from_terminator<'ctx>(
         }
         TerminatorKind::Goto { .. }
         | TerminatorKind::Return
+        | TerminatorKind::ResumeUnwind
         | TerminatorKind::Unreachable
         | TerminatorKind::UnresolvedGoto => {}
     }

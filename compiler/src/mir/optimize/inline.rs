@@ -7,9 +7,9 @@ use super::MirPass;
 use crate::compile::context::Gcx;
 use crate::hir::{Abi, DefinitionID, KnownAttribute};
 use crate::mir::{
-    AggregateKind, BasicBlockData, BasicBlockId, Body, Constant, ConstantKind, LocalDecl, LocalId,
-    LocalKind, MirPhase, Operand, Place, PlaceElem, Rvalue, Statement, StatementKind, Terminator,
-    TerminatorKind,
+    AggregateKind, BasicBlockData, BasicBlockId, Body, CallUnwindAction, Constant, ConstantKind,
+    LocalDecl, LocalId, LocalKind, MirPhase, Operand, Place, PlaceElem, Rvalue, Statement,
+    StatementKind, Terminator, TerminatorKind,
 };
 use crate::sema::models::GenericArguments;
 use crate::sema::tycheck::utils::instantiate::{
@@ -71,8 +71,12 @@ impl Inline {
                     args,
                     destination,
                     target,
+                    unwind,
                 } = &terminator.kind
                 {
+                    if !matches!(unwind, CallUnwindAction::Terminate) {
+                        return None;
+                    }
                     let (callee_id, gen_args) = extract_callee(func)?;
 
                     if self.should_inline(gcx, callee_id, gen_args) {
@@ -125,6 +129,9 @@ impl Inline {
         // types that need instantiation. This happens when calling methods on
         // generic types where not all type parameters are available.
         if let Some(callee_body) = resolve_callee_body(gcx, callee_id) {
+            if body_has_unwind(callee_body) {
+                return false;
+            }
             for local in callee_body.locals.iter() {
                 let substituted = instantiate_ty_with_args(gcx, local.ty, gen_args);
                 if substituted.needs_instantiation() {
@@ -309,6 +316,9 @@ fn resolve_callee_body<'ctx>(gcx: Gcx<'ctx>, callee_id: DefinitionID) -> Option<
 
 /// Check if a function body is small enough to inline heuristically.
 fn is_body_small(body: &Body<'_>) -> bool {
+    if body_has_unwind(body) {
+        return false;
+    }
     if body.basic_blocks.len() > SMALL_BODY_BLOCK_LIMIT {
         return false;
     }
@@ -316,6 +326,19 @@ fn is_body_small(body: &Body<'_>) -> bool {
     let stmt_count: usize = body.basic_blocks.iter().map(|bb| bb.statements.len()).sum();
 
     stmt_count <= SMALL_BODY_STMT_LIMIT
+}
+
+fn body_has_unwind(body: &Body<'_>) -> bool {
+    body.basic_blocks.iter().any(|bb| {
+        bb.terminator.as_ref().is_some_and(|term| match term.kind {
+            TerminatorKind::ResumeUnwind => true,
+            TerminatorKind::Call {
+                unwind: CallUnwindAction::Cleanup(_),
+                ..
+            } => true,
+            _ => false,
+        })
+    })
 }
 
 /// Remap a statement's locals to the caller's namespace and substitute types.
@@ -379,11 +402,13 @@ fn remap_terminator<'ctx>(
             }
         }
         TerminatorKind::Unreachable => TerminatorKind::Unreachable,
+        TerminatorKind::ResumeUnwind => TerminatorKind::ResumeUnwind,
         TerminatorKind::Call {
             func,
             args,
             destination,
             target,
+            unwind,
         } => TerminatorKind::Call {
             func: remap_operand(gcx, func, local_map, gen_args),
             args: args
@@ -392,6 +417,10 @@ fn remap_terminator<'ctx>(
                 .collect(),
             destination: remap_place(gcx, destination, local_map, gen_args),
             target: block_map[target.index()],
+            unwind: match unwind {
+                CallUnwindAction::Cleanup(bb) => CallUnwindAction::Cleanup(block_map[bb.index()]),
+                CallUnwindAction::Terminate => CallUnwindAction::Terminate,
+            },
         },
     };
     Terminator {

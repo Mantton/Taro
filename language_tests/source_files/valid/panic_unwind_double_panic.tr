@@ -1,0 +1,9 @@
+// EXPECT_EXIT: 1
+// EXPECT_STDERR_CONTAINS: panic: panic while unwinding
+// EXPECT_STDERR_CONTAINS: stack backtrace
+func main() {
+    defer {
+        panic("second")
+    }
+    panic("first")
+}

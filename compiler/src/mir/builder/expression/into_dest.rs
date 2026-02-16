@@ -356,11 +356,13 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 }
 
                 let next = self.new_block();
+                let unwind = self.call_unwind_for_callee(&function, expr.span);
                 let terminator = TerminatorKind::Call {
                     func: function,
                     args: final_args,
                     destination,
                     target: next,
+                    unwind,
                 };
                 self.terminate(block, expr.span, terminator);
                 next.unit()
@@ -979,6 +981,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 args: vec![],
                 destination: desc_dest.clone(),
                 target: next_block,
+                unwind: mir::CallUnwindAction::Terminate,
             },
         );
         block = next_block;
@@ -1003,6 +1006,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
         let buf_ptr_dest = Place::from_local(self.new_temp_with_ty(makebuf_output, span));
         let next_block_2 = self.new_block();
+        let makebuf_unwind = self.call_unwind_action(span);
 
         self.terminate(
             block,
@@ -1016,6 +1020,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 ],
                 destination: buf_ptr_dest.clone(),
                 target: next_block_2,
+                unwind: makebuf_unwind,
             },
         );
         block = next_block_2;
@@ -1073,6 +1078,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                         args: vec![Operand::Copy(Place::from_local(buf_ptr_t)), idx_op],
                         destination: Place::from_local(temp_ptr),
                         target: next_block_loop,
+                        unwind: mir::CallUnwindAction::Terminate,
                     },
                 );
                 block = next_block_loop;
@@ -1179,6 +1185,32 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             name, module
         );
     }
+
+    fn call_unwind_for_callee(
+        &mut self,
+        callee: &Operand<'ctx>,
+        span: Span,
+    ) -> mir::CallUnwindAction {
+        if self.is_nounwind_callee(callee) {
+            mir::CallUnwindAction::Terminate
+        } else {
+            self.call_unwind_action(span)
+        }
+    }
+
+    fn is_nounwind_callee(&self, callee: &Operand<'ctx>) -> bool {
+        let Operand::Constant(c) = callee else {
+            return false;
+        };
+        let mir::ConstantKind::Function(def_id, _, _) = c.value else {
+            return false;
+        };
+        matches!(
+            self.gcx.get_signature(def_id).abi,
+            Some(crate::hir::Abi::Intrinsic)
+        )
+    }
+
     fn enum_discriminant_operand(
         &mut self,
         block: BasicBlockId,

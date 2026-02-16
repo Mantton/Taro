@@ -1,4 +1,4 @@
-use crate::mir::{BasicBlockId, Body, LocalId, StatementKind, TerminatorKind};
+use crate::mir::{BasicBlockId, Body, CallUnwindAction, LocalId, StatementKind, TerminatorKind};
 use index_vec::IndexVec;
 use rustc_hash::FxHashSet;
 
@@ -60,6 +60,7 @@ pub fn compute_liveness(body: &Body<'_>) -> LivenessResult {
                 }
                 TerminatorKind::Goto { .. }
                 | TerminatorKind::Unreachable
+                | TerminatorKind::ResumeUnwind
                 | TerminatorKind::UnresolvedGoto => {}
             }
         }
@@ -222,7 +223,13 @@ fn successors(term: &TerminatorKind) -> Vec<BasicBlockId> {
             s.push(*otherwise);
             s
         }
-        TerminatorKind::Call { target, .. } => vec![*target],
+        TerminatorKind::Call { target, unwind, .. } => {
+            let mut succ = vec![*target];
+            if let CallUnwindAction::Cleanup(bb) = unwind {
+                succ.push(*bb);
+            }
+            succ
+        }
         _ => vec![],
     }
 }

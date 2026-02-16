@@ -1,4 +1,4 @@
-use crate::mir::{BasicBlockId, Body, TerminatorKind};
+use crate::mir::{BasicBlockId, Body, CallUnwindAction, TerminatorKind};
 use index_vec::IndexVec;
 use rustc_hash::FxHashSet;
 
@@ -77,7 +77,13 @@ fn successors(term: &TerminatorKind<'_>) -> Vec<BasicBlockId> {
             s.push(*otherwise);
             s
         }
-        TerminatorKind::Call { target, .. } => vec![*target],
+        TerminatorKind::Call { target, unwind, .. } => {
+            let mut succ = vec![*target];
+            if let CallUnwindAction::Cleanup(bb) = unwind {
+                succ.push(*bb);
+            }
+            succ
+        }
         _ => vec![],
     }
 }

@@ -63,7 +63,11 @@ pub fn link_executable(gcx: GlobalContext) -> CompileResult<Option<PathBuf>> {
     // Some math intrinsics are lowered to libm on targets/toolchains where
     // LLVM does not provide a matching intrinsic.
     #[cfg(all(unix, not(target_os = "macos")))]
-    cmd.arg("-lm");
+    {
+        cmd.arg("-lm");
+        cmd.arg("-lunwind");
+        cmd.arg("-ldl");
+    }
 
     cmd.arg("-o").arg(&output);
 

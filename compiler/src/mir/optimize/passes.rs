@@ -7,8 +7,8 @@ use crate::compile::context::Gcx;
 use crate::error::CompileResult;
 use crate::hir::DefinitionKind;
 use crate::mir::{
-    BasicBlockData, BasicBlockId, Body, LocalDecl, LocalId, LocalKind, MirPhase, Operand, Place,
-    PlaceElem, Rvalue, Statement, StatementKind, TerminatorKind,
+    BasicBlockData, BasicBlockId, Body, CallUnwindAction, LocalDecl, LocalId, LocalKind,
+    MirPhase, Operand, Place, PlaceElem, Rvalue, Statement, StatementKind, TerminatorKind,
 };
 use crate::sema::models::{AdtKind, EnumVariantKind, StructDefinition, Ty, TyKind};
 use crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args;
@@ -449,9 +449,16 @@ fn terminator_successors(term: &crate::mir::Terminator<'_>) -> Vec<BasicBlockId>
             succs.push(*otherwise);
             succs
         }
-        TerminatorKind::Call { target, .. } => vec![*target],
-        TerminatorKind::Return | TerminatorKind::Unreachable | TerminatorKind::UnresolvedGoto => {
-            vec![]
+        TerminatorKind::Call { target, unwind, .. } => {
+            let mut succs = vec![*target];
+            if let CallUnwindAction::Cleanup(bb) = unwind {
+                succs.push(*bb);
+            }
+            succs
         }
+        TerminatorKind::Return
+        | TerminatorKind::ResumeUnwind
+        | TerminatorKind::Unreachable
+        | TerminatorKind::UnresolvedGoto => vec![],
     }
 }

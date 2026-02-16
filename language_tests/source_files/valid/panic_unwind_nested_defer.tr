@@ -1,0 +1,12 @@
+// EXPECT_EXIT: 1
+// EXPECT_STDERR_CONTAINS: panic: nested-panic
+// EXPECT_STDERR_CONTAINS: panic_unwind_nested_defer.tr:10
+// EXPECT_STDERR_CONTAINS: stack backtrace
+func main() {
+    std.print("begin\n")
+    defer { std.print("outer\n") }
+    {
+        defer { std.print("inner\n") }
+        panic("nested-panic")
+    }
+}

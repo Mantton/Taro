@@ -1,4 +1,4 @@
-use crate::mir::{BasicBlockId, Body, LocalId, TerminatorKind};
+use crate::mir::{BasicBlockId, Body, CallUnwindAction, LocalId, TerminatorKind};
 use index_vec::IndexVec;
 use rustc_hash::FxHashMap;
 
@@ -46,8 +46,11 @@ pub fn collapse_trivial_gotos(body: &mut Body<'_>) {
                         *t = *cache.get(t).unwrap_or(t);
                     }
                 }
-                TerminatorKind::Call { target, .. } => {
+                TerminatorKind::Call { target, unwind, .. } => {
                     *target = *cache.get(target).unwrap_or(target);
+                    if let CallUnwindAction::Cleanup(bb) = unwind {
+                        *bb = *cache.get(bb).unwrap_or(bb);
+                    }
                 }
                 _ => {}
             }
@@ -75,8 +78,11 @@ pub fn merge_linear_blocks(body: &mut Body<'_>) {
                         pred_count[t.index()] += 1;
                     }
                 }
-                TerminatorKind::Call { target, .. } => {
+                TerminatorKind::Call { target, unwind, .. } => {
                     pred_count[target.index()] += 1;
+                    if let CallUnwindAction::Cleanup(bb) = unwind {
+                        pred_count[bb.index()] += 1;
+                    }
                 }
                 _ => {}
             }
@@ -149,8 +155,11 @@ pub fn merge_linear_blocks(body: &mut Body<'_>) {
                                 pred_count[t.index()] += 1;
                             }
                         }
-                        TerminatorKind::Call { target, .. } => {
+                        TerminatorKind::Call { target, unwind, .. } => {
                             pred_count[target.index()] += 1;
+                            if let CallUnwindAction::Cleanup(bb) = unwind {
+                                pred_count[bb.index()] += 1;
+                            }
                         }
                         _ => {}
                     }
@@ -182,8 +191,14 @@ pub fn prune_unreachable_blocks(body: &mut Body<'_>) {
                         stack.push(*t);
                     }
                 }
-                TerminatorKind::Call { target, .. } => stack.push(*target),
+                TerminatorKind::Call { target, unwind, .. } => {
+                    stack.push(*target);
+                    if let CallUnwindAction::Cleanup(bb) = unwind {
+                        stack.push(*bb);
+                    }
+                }
                 TerminatorKind::Return
+                | TerminatorKind::ResumeUnwind
                 | TerminatorKind::Unreachable
                 | TerminatorKind::UnresolvedGoto => {}
             }
@@ -219,8 +234,14 @@ pub fn prune_unreachable_blocks(body: &mut Body<'_>) {
                         *t = remap_bb(*t);
                     }
                 }
-                TerminatorKind::Call { target, .. } => *target = remap_bb(*target),
+                TerminatorKind::Call { target, unwind, .. } => {
+                    *target = remap_bb(*target);
+                    if let CallUnwindAction::Cleanup(bb) = unwind {
+                        *bb = remap_bb(*bb);
+                    }
+                }
                 TerminatorKind::Return
+                | TerminatorKind::ResumeUnwind
                 | TerminatorKind::Unreachable
                 | TerminatorKind::UnresolvedGoto => {}
             }
@@ -329,6 +350,7 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
                     used[body.return_local.index()] = true;
                 }
                 TerminatorKind::Goto { .. }
+                | TerminatorKind::ResumeUnwind
                 | TerminatorKind::Unreachable
                 | TerminatorKind::UnresolvedGoto => {}
             }
@@ -475,11 +497,13 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
                     args,
                     destination,
                     target,
+                    unwind,
                 } => TerminatorKind::Call {
                     func: remap_operand(func, &remap),
                     args: args.iter().map(|a| remap_operand(a, &remap)).collect(),
                     destination: remap_place(destination, &remap),
                     target: *target,
+                    unwind: *unwind,
                 },
                 TerminatorKind::SwitchInt {
                     discr,
@@ -492,6 +516,7 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
                 },
                 TerminatorKind::Goto { target } => TerminatorKind::Goto { target: *target },
                 TerminatorKind::Return => TerminatorKind::Return,
+                TerminatorKind::ResumeUnwind => TerminatorKind::ResumeUnwind,
                 TerminatorKind::Unreachable => TerminatorKind::Unreachable,
                 TerminatorKind::UnresolvedGoto => TerminatorKind::UnresolvedGoto,
             };

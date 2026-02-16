@@ -111,6 +111,12 @@ pub struct Terminator<'ctx> {
     pub span: Span,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallUnwindAction {
+    Cleanup(BasicBlockId),
+    Terminate,
+}
+
 #[derive(Debug, Clone)]
 pub enum TerminatorKind<'ctx> {
     Goto {
@@ -124,12 +130,14 @@ pub enum TerminatorKind<'ctx> {
         otherwise: BasicBlockId,
     },
     Return,
+    ResumeUnwind,
     Unreachable,
     Call {
         func: Operand<'ctx>,
         args: Vec<Operand<'ctx>>,
         destination: Place<'ctx>,
         target: BasicBlockId,
+        unwind: CallUnwindAction,
     },
 }
 
