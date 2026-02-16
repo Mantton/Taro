@@ -1,0 +1,3 @@
+func main() {
+    let _ = sprintf("%q", 1)
+}

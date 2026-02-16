@@ -22,6 +22,7 @@ Taro is a statically-typed systems programming language with:
 - Interfaces for polymorphism
 - Memory safety through references and ownership
 - Automatic semicolon insertion (ASI)
+- `printf`/`sprintf`-style formatted output (`%d`, `%s`, `%v`, `%%`) with compile-time checks for literal format strings
 
 ### Hello World
 

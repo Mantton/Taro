@@ -4,7 +4,10 @@ use crate::{
     hir::{self, DefinitionID, HirVisitor},
     sema::{
         models::{LabeledFunctionParameter, LabeledFunctionSignature, Ty},
-        tycheck::lower::{DefTyLoweringCtx, TypeLowerer},
+        tycheck::{
+            lower::{DefTyLoweringCtx, TypeLowerer},
+            utils::instantiate::instantiate_ty_with_args,
+        },
     },
     span::Symbol,
 };
@@ -70,13 +73,10 @@ impl<'ctx> Actor<'ctx> {
                 // Desugar T... to List[T]
                 // We need to look up the List type definition
                 if let Some(list_id) = self.context.find_std_type("List") {
-                    let list_def = self.context.get_struct_definition(list_id);
+                    let list_ty = self.context.get_type(list_id);
                     let args = vec![crate::sema::models::GenericArgument::Type(ty)];
                     let args = self.context.store.interners.intern_generic_args(args);
-                    ty = Ty::new(
-                        crate::sema::models::TyKind::Adt(list_def.adt_def, args),
-                        self.context,
-                    );
+                    ty = instantiate_ty_with_args(self.context, list_ty, args);
                 } else {
                     self.context.dcx().emit_error(
                         "variadic functions require the standard library 'List' type".into(),

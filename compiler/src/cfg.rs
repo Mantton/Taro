@@ -10,6 +10,7 @@ pub struct TargetInfo {
     pub arch: String,
     pub os: String,
     pub family: String,
+    pub profile: String,
 }
 
 impl TargetInfo {
@@ -33,7 +34,12 @@ impl TargetInfo {
         }
         .to_string();
 
-        TargetInfo { arch, os, family }
+        TargetInfo {
+            arch,
+            os,
+            family,
+            profile: "debug".to_string(),
+        }
     }
 
     /// Check if this matches an os predicate.
@@ -60,6 +66,11 @@ impl TargetInfo {
     pub fn matches_family(&self, value: &str) -> bool {
         self.family == value
     }
+
+    /// Check if this matches a build profile predicate.
+    pub fn matches_profile(&self, value: &str) -> bool {
+        self.profile == value
+    }
 }
 
 /// A parsed cfg expression for file-level directives.
@@ -83,6 +94,7 @@ impl FileCfgExpr {
                 "os" => target.matches_os(value),
                 "arch" => target.matches_arch(value),
                 "family" => target.matches_family(value),
+                "profile" => target.matches_profile(value),
                 _ => false,
             },
             FileCfgExpr::Not(inner) => !inner.evaluate(target),

@@ -268,6 +268,16 @@ impl Actor<'_, '_> {
                                 return false;
                             }
                         }
+                        "target_profile" => {
+                            let profile = match self.context.config.profile {
+                                crate::compile::config::BuildProfile::Debug => "debug",
+                                crate::compile::config::BuildProfile::Release => "release",
+                            };
+
+                            if profile != value_str {
+                                return false;
+                            }
+                        }
                         _ => {
                             return false;
                         }
@@ -278,8 +288,12 @@ impl Actor<'_, '_> {
                     let key_str = key.symbol.as_str();
                     match key_str {
                         "debug" => {
-                            // TODO: Check if we're in debug mode
-                            return false; // For now, assume debug mode
+                            if !matches!(
+                                self.context.config.profile,
+                                crate::compile::config::BuildProfile::Debug
+                            ) {
+                                return false;
+                            }
                         }
                         _ => {
                             // Unknown flag - treat as not matching
@@ -298,7 +312,11 @@ impl Actor<'_, '_> {
         // Get target triple from TargetLayout (which may be host or cross-compile target)
         let triple = self.context.store.target_layout.triple();
         let triple_str = triple.as_str().to_str().unwrap_or("");
-        let target = TargetInfo::from_triple(triple_str);
+        let mut target = TargetInfo::from_triple(triple_str);
+        target.profile = match self.context.config.profile {
+            crate::compile::config::BuildProfile::Debug => "debug".to_string(),
+            crate::compile::config::BuildProfile::Release => "release".to_string(),
+        };
         self.eval_cfg_expr_inner(expr, &target)
     }
 
@@ -312,6 +330,7 @@ impl Actor<'_, '_> {
                     "os" => target.matches_os(value_str),
                     "arch" => target.matches_arch(value_str),
                     "family" => target.matches_family(value_str),
+                    "profile" => target.matches_profile(value_str),
                     _ => false, // Unknown predicate
                 }
             }

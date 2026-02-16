@@ -1,0 +1,4 @@
+error: sprintf format string contains unknown specifier '%q'
+ -> language_tests/source_files/invalid/sprintf_bad_specifier_literal.tr:2:20
+	    let _ = sprintf("%q", 1)
+	                    ^^^^

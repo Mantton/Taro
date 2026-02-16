@@ -1,0 +1,6 @@
+// EXPECT_EXIT: 1
+// EXPECT_STDERR_CONTAINS: printf: unknown format specifier
+func main() {
+    let format = "%q"
+    printf(format, 1)
+}

@@ -82,7 +82,11 @@ impl<'state> Compiler<'state> {
                 Some(triple_str),
             )?
         };
-        let target = cfg::TargetInfo::from_triple(triple_str);
+        let mut target = cfg::TargetInfo::from_triple(triple_str);
+        target.profile = match self.context.config.profile {
+            crate::compile::config::BuildProfile::Debug => "debug".to_string(),
+            crate::compile::config::BuildProfile::Release => "release".to_string(),
+        };
 
         let mut package = parse::parser::parse_package(package, &self.context.dcx)?;
         // AST Passes
@@ -102,6 +106,7 @@ impl<'state> Compiler<'state> {
 
         sema::validate::validate_package(&package, self.context)?;
         let results = sema::tycheck::typecheck_package(&package, self.context)?;
+        sema::validate::validate_post_typecheck(&package, self.context, &results)?;
         let _ = entry::validate_entry_point(&package, self.context)?;
         Ok((package, results))
     }

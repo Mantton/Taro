@@ -1,0 +1,37 @@
+struct TaggedValue {
+    text: string
+}
+
+impl std.fmt.Display for TaggedValue {
+    func display(&self, _ into: &mut std.fmt.Formatter) {
+        into.writeString(self.text)
+    }
+}
+
+impl std.fmt.Formattable for TaggedValue {
+    func format(&self, _ into: &mut std.fmt.Formatter, _ spec: rune, _ state: &std.fmt.FormatState) {
+        if spec == 'v' {
+            into.writeString(self.text)
+            return
+        }
+
+        std.panic.panic("TaggedValue only supports %v")
+    }
+}
+
+func main() {
+    printf("x=%d y=%s z=%v\n", 7, "ok", true)
+    std.printf("100%%\n")
+
+    let rune_as_byte: uint8 = 'A' as uint8
+    assert(rune_as_byte == 65, "rune -> uint8 cast should preserve ASCII codepoint")
+    let byte_as_rune: rune = 66 as rune
+    assert(byte_as_rune == 'B', "uint8/int literal -> rune cast should preserve ASCII codepoint")
+
+    let tagged = TaggedValue { text: "custom" }
+    printf("%v\n", tagged)
+    printf("%v\n", 'B')
+
+    // Ensure integer literals can coerce through existential variadics.
+    printf("%d\n", 1)
+}

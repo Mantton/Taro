@@ -69,6 +69,10 @@ impl<'ctx> TypeCheckResults<'ctx> {
         *self.node_tys.get(&id).expect("type of node")
     }
 
+    pub fn try_node_type(&self, id: hir::NodeID) -> Option<Ty<'ctx>> {
+        self.node_tys.get(&id).copied()
+    }
+
     pub fn node_adjustments(&self, id: hir::NodeID) -> Option<&[Adjustment<'ctx>]> {
         self.node_adjustments.get(&id).map(|v| v.as_slice())
     }

@@ -1,0 +1,4 @@
+error: printf format expects 2 argument(s), but 1 provided
+ -> language_tests/source_files/invalid/printf_argument_count_mismatch_literal.tr:2:4
+	    printf("%d %s", 1)
+	    ^^^^^^^^^^^^^^^^^^

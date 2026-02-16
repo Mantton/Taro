@@ -1,4 +1,4 @@
-import std.process
+import std.fmt
 
 @cfg(family("unix"))
 public func print(_ s: string) {
@@ -35,6 +35,19 @@ public func println(_ s: string) {
     print("\n")
 }
 
+func renderFormat(_ format: string, _ args: std.collections.List[any std.fmt.Formattable]) -> string {
+    std.fmt.formatPrintf(format, args)
+}
+
+public func sprintf(_ format: string, _ args: any std.fmt.Formattable...) -> string {
+    renderFormat(format, args)
+}
+
+public func printf(_ format: string, _ args: any std.fmt.Formattable...) {
+    let rendered = renderFormat(format, args)
+    print(rendered)
+}
+
 public func eprintln(_ s: string) {
     eprint(s)
     eprint("\n")
@@ -42,9 +55,12 @@ public func eprintln(_ s: string) {
 
 public func assert(_ condition: bool, _ message: string) {
     if !condition {
-        eprint("assertion failed: ")
-        eprint(message)
-        eprint("\n")
-        process.exit(1)
+        std.panic.panic(message)
+    }
+}
+
+public func debugAssert(_ condition: bool, _ message: string) {
+    if #cfg(profile("debug")) {
+        assert(condition, message)
     }
 }

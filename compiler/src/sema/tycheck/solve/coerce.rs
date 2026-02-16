@@ -2,7 +2,7 @@ use crate::{
     hir::{Mutability, NodeID},
     sema::{
         error::{ExpectedFound, TypeError},
-        models::{InterfaceReference, Ty, TyKind},
+        models::{InferTy, InterfaceReference, Ty, TyKind},
         resolve::models::TypeHead,
         tycheck::{resolve_conformance_witness, utils::type_head_from_value_ty},
     },
@@ -78,7 +78,15 @@ impl<'ctx> ConstraintSolver<'ctx> {
         // This handles function return type inference: `let x = makeSomething()`
         // where `makeSomething()` returns `any Interface`.
         if from.is_infer() {
-            return Some(self.solve_equality(location, from, to));
+            return Some(match from.kind() {
+                // Keep existing behavior for general type inference variables.
+                TyKind::Infer(InferTy::TyVar(_)) => self.solve_equality(location, from, to),
+                // Let numeric inference resolve to a concrete numeric type before
+                // checking existential conformance (e.g. `printf("%d", 1)`).
+                TyKind::Infer(InferTy::IntVar(_) | InferTy::FloatVar(_)) => SolverResult::Deferred,
+                // Preserve prior behavior for remaining inference kinds.
+                _ => self.solve_equality(location, from, to),
+            });
         }
 
         // Existential-to-existential: use equality check for compatible interfaces

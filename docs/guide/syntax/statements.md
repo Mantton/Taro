@@ -50,6 +50,48 @@ calculate() |> process() // Pipe chain
 
 ---
 
+## Formatted Output (`printf`)
+
+`printf` and `sprintf` are available from the prelude (`printf`, `sprintf`) and as `std.printf` / `std.sprintf`.
+
+Supported format specifiers in v1:
+- `%%` literal percent sign
+- `%d` integer arguments only
+- `%s` string arguments only
+- `%v` any type conforming to `std.fmt.Formattable`
+
+Formatting interfaces:
+- `std.fmt.Display` writes a user-facing representation into `std.fmt.Formatter`.
+- `std.fmt.Formattable` extends `Display` with verb-aware formatting using `FormatState`.
+
+Validation behavior:
+- Literal format strings are validated at compile time (specifier grammar, argument count, and `%d`/`%s` argument types).
+- Non-literal (dynamic) format strings are validated at runtime and panic with a `printf:` message on invalid input.
+
+```taro
+func main() {
+    printf("x=%d y=%s z=%v\n", 7, "ok", true)
+    let line = sprintf("x=%d", 7)
+    std.printf("100%%\n")
+}
+```
+
+---
+
+## Assertions
+
+`assert` always panics on failure.
+
+`debugAssert` uses an inline `#cfg(profile("debug"))` guard and becomes a no-op outside debug builds.
+
+```taro
+func debugOnlyPath() {
+    debugAssert(#cfg(profile("debug")), "expected debug profile")
+}
+```
+
+---
+
 ## Return Statement
 
 Returns a value from a function.

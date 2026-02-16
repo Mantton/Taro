@@ -114,13 +114,22 @@ fn eval_cfg_attr(attr: &ast::Attribute, target: &TargetInfo) -> bool {
                             return false;
                         }
                     }
+                    "target_profile" => {
+                        if !target.matches_profile(value_str) {
+                            return false;
+                        }
+                    }
                     _ => return false,
                 }
             }
             ast::AttributeArg::Flag { key, .. } => {
                 let key_str = key.symbol.as_str();
                 match key_str {
-                    "debug" => return false,
+                    "debug" => {
+                        if !target.matches_profile("debug") {
+                            return false;
+                        }
+                    }
                     _ => return false,
                 }
             }
@@ -140,6 +149,7 @@ fn eval_cfg_expr(expr: &ast::CfgExpr, target: &TargetInfo) -> bool {
                 "os" => target.matches_os(value_str),
                 "arch" => target.matches_arch(value_str),
                 "family" => target.matches_family(value_str),
+                "profile" => target.matches_profile(value_str),
                 _ => false,
             }
         }

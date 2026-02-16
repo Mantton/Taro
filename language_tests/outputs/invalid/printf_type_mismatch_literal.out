@@ -1,0 +1,4 @@
+error: printf specifier '%d' expects an integer argument, found 'string'
+ -> language_tests/source_files/invalid/printf_type_mismatch_literal.tr:2:17
+	    printf("%d", "x")
+	                 ^^^

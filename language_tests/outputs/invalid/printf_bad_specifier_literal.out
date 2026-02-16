@@ -1,0 +1,4 @@
+error: printf format string contains unknown specifier '%q'
+ -> language_tests/source_files/invalid/printf_bad_specifier_literal.tr:2:11
+	    printf("%q", 1)
+	           ^^^^

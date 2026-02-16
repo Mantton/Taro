@@ -1,0 +1,4 @@
+error: printf format string ends with dangling '%'
+ -> language_tests/source_files/invalid/printf_dangling_percent_literal.tr:2:11
+	    printf("value=%")
+	           ^^^^^^^^^
