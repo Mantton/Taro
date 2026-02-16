@@ -1,5 +1,5 @@
 use crate::{
-    CommandLineArguments,
+    CommandLineArguments, CompileModeOptions,
     package::{
         sync::sync_dependencies,
         utils::{get_package_name, language_home},
@@ -9,7 +9,7 @@ use compiler::{
     PackageIndex,
     compile::{
         Compiler,
-        config::{Config, DebugOptions, PackageKind},
+        config::{BuildProfile, Config, DebugOptions, PackageKind},
         context::{CompilerArenas, CompilerContext, CompilerStore},
     },
     constants::STD_PREFIX,
@@ -32,6 +32,8 @@ pub fn run(arguments: CommandLineArguments) -> Result<(), ReportedError> {
 }
 
 fn run_single_file(arguments: CommandLineArguments) -> Result<(), ReportedError> {
+    let compile_options = arguments.compile_mode_options();
+    let profile_dir = profile_dir_name(compile_options.profile);
     let cwd = std::env::current_dir().map_err(|e| {
         eprintln!("error: failed to get current directory: {}", e);
         ReportedError
@@ -61,7 +63,7 @@ fn run_single_file(arguments: CommandLineArguments) -> Result<(), ReportedError>
         })?;
 
     // Create target directory based on file path hash
-    let target_root = script_target_dir(&file_path);
+    let target_root = script_target_dir(&file_path, profile_dir);
     std::fs::create_dir_all(&target_root).map_err(|e| {
         eprintln!(
             "error: failed to create target directory '{}': {}",
@@ -80,7 +82,7 @@ fn run_single_file(arguments: CommandLineArguments) -> Result<(), ReportedError>
     let icx = CompilerContext::new(dcx, store);
 
     // Compile std (index 0)
-    compile_std(&icx, arguments.std_path.clone())?;
+    compile_std(&icx, arguments.std_path.clone(), compile_options)?;
 
     // Create virtual config for single file
     let package_index = PackageIndex::new(1);
@@ -97,6 +99,8 @@ fn run_single_file(arguments: CommandLineArguments) -> Result<(), ReportedError>
         executable_out: arguments.output.clone(),
         no_std_prelude: false,
         is_script: true,
+        profile: compile_options.profile,
+        overflow_checks: compile_options.overflow_checks,
         debug: DebugOptions::default(),
     });
 
@@ -106,15 +110,20 @@ fn run_single_file(arguments: CommandLineArguments) -> Result<(), ReportedError>
     Ok(())
 }
 
-fn script_target_dir(file_path: &PathBuf) -> PathBuf {
+fn script_target_dir(file_path: &PathBuf, profile_dir: &str) -> PathBuf {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     file_path.hash(&mut hasher);
     let hash = format!("{:x}", hasher.finish());
 
-    std::env::temp_dir().join("taro-scripts").join(hash)
+    std::env::temp_dir()
+        .join("taro-scripts")
+        .join(hash)
+        .join(profile_dir)
 }
 
 fn run_package(arguments: CommandLineArguments) -> Result<(), ReportedError> {
+    let compile_options = arguments.compile_mode_options();
+    let profile_dir = profile_dir_name(compile_options.profile);
     let cwd = std::env::current_dir().map_err(|e| {
         eprintln!("error: failed to get current directory: {}", e);
         ReportedError
@@ -129,13 +138,13 @@ fn run_package(arguments: CommandLineArguments) -> Result<(), ReportedError> {
         );
         ReportedError
     })?;
-    let target_root = project_root.join("target").join("objects");
+    let target_root = project_root.join("target").join(profile_dir).join("objects");
     let store = CompilerStore::new(&arenas, target_root, &dcx, arguments.target.clone())?;
     let icx = CompilerContext::new(dcx, store);
 
     let graph = sync_dependencies(arguments.path)?;
 
-    compile_std(&icx, arguments.std_path.clone())?;
+    compile_std(&icx, arguments.std_path.clone(), compile_options)?;
 
     let total = graph.ordered.len();
     for (index, package) in graph.ordered.iter().enumerate() {
@@ -213,6 +222,8 @@ fn run_package(arguments: CommandLineArguments) -> Result<(), ReportedError> {
             executable_out: arguments.output.clone(),
             no_std_prelude: package.no_std_prelude,
             is_script: false,
+            profile: compile_options.profile,
+            overflow_checks: compile_options.overflow_checks,
             debug: DebugOptions::default(),
         });
 
@@ -226,6 +237,7 @@ fn run_package(arguments: CommandLineArguments) -> Result<(), ReportedError> {
 fn compile_std<'a>(
     ctx: &'a CompilerContext<'a>,
     std_path: Option<PathBuf>,
+    compile_options: CompileModeOptions,
 ) -> Result<(), ReportedError> {
     println!("Checking – std");
 
@@ -247,6 +259,8 @@ fn compile_std<'a>(
         executable_out: None,
         no_std_prelude: true,
         is_script: false,
+        profile: compile_options.profile,
+        overflow_checks: compile_options.overflow_checks,
         debug: DebugOptions::default(),
     });
 
@@ -266,4 +280,11 @@ fn resolve_std_path(std_path: Option<PathBuf>) -> Result<PathBuf, String> {
     std_root
         .canonicalize()
         .map_err(|e| format!("{} is invalid: {}", std_root.display(), e))
+}
+
+fn profile_dir_name(profile: BuildProfile) -> &'static str {
+    match profile {
+        BuildProfile::Debug => "debug",
+        BuildProfile::Release => "release",
+    }
 }

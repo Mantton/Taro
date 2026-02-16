@@ -1,5 +1,5 @@
 use crate::{
-    CommandLineArguments,
+    CommandLineArguments, CompileModeOptions,
     package::{
         sync::sync_dependencies,
         utils::{get_package_name, language_home},
@@ -9,7 +9,7 @@ use compiler::{
     PackageIndex,
     compile::{
         Compiler,
-        config::{Config, DebugOptions, PackageKind},
+        config::{BuildProfile, Config, DebugOptions, PackageKind},
         context::{CompilerArenas, CompilerContext, CompilerStore},
     },
     constants::STD_PREFIX,
@@ -38,6 +38,8 @@ pub fn run(
 fn run_single_file(
     arguments: CommandLineArguments,
 ) -> Result<Option<std::path::PathBuf>, ReportedError> {
+    let compile_options = arguments.compile_mode_options();
+    let profile_dir = profile_dir_name(compile_options.profile);
     let cwd = std::env::current_dir().map_err(|e| {
         eprintln!("error: failed to get current directory: {}", e);
         ReportedError
@@ -67,7 +69,7 @@ fn run_single_file(
         })?;
 
     // Create target directory based on file path hash
-    let target_root = script_target_dir(&file_path);
+    let target_root = script_target_dir(&file_path, profile_dir);
     std::fs::create_dir_all(&target_root).map_err(|e| {
         eprintln!(
             "error: failed to create target directory '{}': {}",
@@ -86,7 +88,7 @@ fn run_single_file(
     let icx = CompilerContext::new(dcx, store);
 
     // Compile std (index 0)
-    compile_std(&icx, arguments.std_path.clone())?;
+    compile_std(&icx, arguments.std_path.clone(), compile_options)?;
     build_runtime(&icx, &target_root, arguments.runtime_path.clone())?;
 
     // Create virtual config for single file
@@ -104,6 +106,8 @@ fn run_single_file(
         executable_out: arguments.output.clone(),
         no_std_prelude: false,
         is_script: true,
+        profile: compile_options.profile,
+        overflow_checks: compile_options.overflow_checks,
         debug: DebugOptions {
             dump_mir: arguments.dump_mir,
             dump_llvm: arguments.dump_llvm,
@@ -115,18 +119,23 @@ fn run_single_file(
     compiler.build()
 }
 
-fn script_target_dir(file_path: &PathBuf) -> PathBuf {
+fn script_target_dir(file_path: &PathBuf, profile_dir: &str) -> PathBuf {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     file_path.hash(&mut hasher);
     let hash = format!("{:x}", hasher.finish());
 
-    std::env::temp_dir().join("taro-scripts").join(hash)
+    std::env::temp_dir()
+        .join("taro-scripts")
+        .join(hash)
+        .join(profile_dir)
 }
 
 fn run_package(
     arguments: CommandLineArguments,
     require_executable: bool,
 ) -> Result<Option<std::path::PathBuf>, ReportedError> {
+    let compile_options = arguments.compile_mode_options();
+    let profile_dir = profile_dir_name(compile_options.profile);
     let cwd = std::env::current_dir().map_err(|e| {
         eprintln!("error: failed to get current directory: {}", e);
         ReportedError
@@ -141,13 +150,13 @@ fn run_package(
         );
         ReportedError
     })?;
-    let target_root = project_root.join("target").join("objects");
+    let target_root = project_root.join("target").join(profile_dir).join("objects");
     let store = CompilerStore::new(&arenas, target_root, &dcx, arguments.target.clone())?;
     let icx = CompilerContext::new(dcx, store);
 
     let graph = sync_dependencies(arguments.path)?;
 
-    let _ = compile_std(&icx, arguments.std_path.clone())?;
+    let _ = compile_std(&icx, arguments.std_path.clone(), compile_options)?;
     build_runtime(&icx, &project_root, arguments.runtime_path.clone())?;
 
     let total = graph.ordered.len();
@@ -236,6 +245,8 @@ fn run_package(
             executable_out: arguments.output.clone(),
             no_std_prelude: package.no_std_prelude,
             is_script: false,
+            profile: compile_options.profile,
+            overflow_checks: compile_options.overflow_checks,
             debug: DebugOptions {
                 dump_mir: arguments.dump_mir,
                 dump_llvm: arguments.dump_llvm,
@@ -338,6 +349,7 @@ fn build_runtime(
 
     let status = Command::new("cargo")
         .arg("build")
+        .arg("--release")
         .arg("--quiet")
         .arg("-p")
         .arg("taro-runtime")
@@ -360,7 +372,7 @@ fn build_runtime(
         return Err(ReportedError);
     }
 
-    let lib_path = target_dir.join("debug").join("libtaro_runtime.a");
+    let lib_path = target_dir.join("release").join("libtaro_runtime.a");
     if !lib_path.exists() {
         ctx.dcx.emit_error(
             format!("runtime archive not found at {}", lib_path.display()),
@@ -375,9 +387,17 @@ fn build_runtime(
     Ok(())
 }
 
+fn profile_dir_name(profile: BuildProfile) -> &'static str {
+    match profile {
+        BuildProfile::Debug => "debug",
+        BuildProfile::Release => "release",
+    }
+}
+
 fn compile_std<'a>(
     ctx: &'a CompilerContext<'a>,
     std_path: Option<PathBuf>,
+    compile_options: CompileModeOptions,
 ) -> Result<(), ReportedError> {
     eprintln!("Compiling – std");
 
@@ -399,6 +419,8 @@ fn compile_std<'a>(
         executable_out: None,
         no_std_prelude: true,
         is_script: false,
+        profile: compile_options.profile,
+        overflow_checks: compile_options.overflow_checks,
         debug: DebugOptions::default(),
     });
     let mut compiler = Compiler::new(ctx, config);

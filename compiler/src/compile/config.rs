@@ -18,6 +18,19 @@ impl Default for PackageKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BuildProfile {
+    Debug,
+    Release,
+}
+
+impl Default for BuildProfile {
+    fn default() -> Self {
+        BuildProfile::Debug
+    }
+}
+
 /// Debug options for compiler diagnostics and dumps.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DebugOptions {
@@ -39,6 +52,8 @@ pub struct Config {
     pub no_std_prelude: bool,
     /// True for single-file scripts (no package structure)
     pub is_script: bool,
+    pub profile: BuildProfile,
+    pub overflow_checks: bool,
     /// Debug options for dumps
     pub debug: DebugOptions,
 }
