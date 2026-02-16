@@ -151,6 +151,20 @@ To run the language tests (which are easier for E2E verification):
 python3 development/scripts/language_tests.py
 ```
 
+By default, language tests run concurrently using `min(selected_tests, CPU count)` workers.
+
+To override worker count:
+
+```bash
+python3 development/scripts/language_tests.py --jobs 4
+```
+
+To force serial execution (debug fallback):
+
+```bash
+python3 development/scripts/language_tests.py --jobs 1
+```
+
 You can also filter tests using a substring match:
 
 ```bash
