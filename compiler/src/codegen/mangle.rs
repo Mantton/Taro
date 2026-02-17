@@ -39,14 +39,13 @@ fn ty_symbol_with(gcx: GlobalContext, ty: Ty) -> String {
         }
         TyKind::Adt(def, _) => {
             let ident = gcx.definition_ident(def.id);
-            let name = ident.symbol.as_str();
-            sanitize(name)
+            sanitize(gcx.symbol_text(ident.symbol).as_ref())
         }
         TyKind::Array { element, len } => {
             let elem = ty_symbol_with(gcx, element);
             let len_str = match len.kind {
                 ConstKind::Value(ConstValue::Integer(i)) => format!("{i}"),
-                ConstKind::Param(p) => sanitize(p.name.as_str()),
+                ConstKind::Param(p) => sanitize(gcx.symbol_text(p.name).as_ref()),
                 ConstKind::Infer(_) => "_".into(),
                 _ => "c".into(),
             };
@@ -61,16 +60,16 @@ fn ty_symbol_with(gcx: GlobalContext, ty: Ty) -> String {
             let mut parts: Vec<String> = Vec::with_capacity(interfaces.len());
             for iface in interfaces.iter() {
                 let ident = gcx.definition_ident(iface.id);
-                parts.push(sanitize(ident.symbol.as_str()));
+                parts.push(sanitize(gcx.symbol_text(ident.symbol).as_ref()));
             }
             format!("any{}", parts.join("_"))
         }
         TyKind::Alias { def_id, .. } => {
             // Use alias definition name
             let ident = gcx.definition_ident(def_id);
-            sanitize(ident.symbol.as_str())
+            sanitize(gcx.symbol_text(ident.symbol).as_ref())
         }
-        TyKind::Parameter(p) => p.name.as_str().into(),
+        TyKind::Parameter(p) => gcx.symbol_text(p.name).into(),
         TyKind::Closure { closure_def_id, .. } => {
             // Use a hash-based identifier for closures
             use std::hash::{Hash, Hasher};
@@ -101,7 +100,9 @@ pub fn mangle(gcx: GlobalContext, id: hir::DefinitionID) -> String {
             TypeHead::Primary(PrimaryType::Int(i)) => i.name_str().into(),
             TypeHead::Primary(PrimaryType::UInt(u)) => u.name_str().into(),
             TypeHead::Primary(PrimaryType::Float(f)) => f.name_str().into(),
-            TypeHead::Nominal(def_id) => gcx.definition_ident(def_id).symbol.as_str().into(),
+            TypeHead::Nominal(def_id) => {
+                gcx.symbol_text(gcx.definition_ident(def_id).symbol).into()
+            }
             TypeHead::Closure(def_id) => {
                 let mut hasher = DefaultHasher::new();
                 def_id.hash(&mut hasher);
@@ -123,7 +124,7 @@ pub fn mangle(gcx: GlobalContext, id: hir::DefinitionID) -> String {
 
     // Check if this is a closure (synthetic definition)
     let leaf_ident = if let Some(ident) = output.definition_to_ident.get(&id) {
-        sanitize(ident.symbol.as_str())
+        sanitize(gcx.symbol_text(ident.symbol.clone()).as_ref())
     } else if gcx.get_closure_captures(id).is_some() {
         // This is a closure - generate a unique name based on def_id
         let mut hasher = DefaultHasher::new();
@@ -132,7 +133,7 @@ pub fn mangle(gcx: GlobalContext, id: hir::DefinitionID) -> String {
     } else {
         // Try to get from synthetic definitions, or use anonymous fallback
         if let Some(def) = gcx.store.synthetic_definitions.borrow().get(&id) {
-            sanitize(def.name.as_str())
+            sanitize(gcx.symbol_text(def.name.clone()).as_ref())
         } else {
             let mut hasher = DefaultHasher::new();
             id.hash(&mut hasher);
@@ -154,9 +155,9 @@ pub fn mangle(gcx: GlobalContext, id: hir::DefinitionID) -> String {
             Some(DefinitionKind::Module)
         ) {
             if let Some(ident) = output.definition_to_ident.get(&current) {
-                let name = ident.symbol.as_str();
+                let name = gcx.symbol_text(ident.symbol.clone());
                 if !name.is_empty() {
-                    modules.push(sanitize(name));
+                    modules.push(sanitize(name.as_ref()));
                 }
             }
         }

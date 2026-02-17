@@ -219,7 +219,7 @@ impl<'ctx> Actor<'ctx> {
     ) -> Option<&'ctx InterfaceRequirements<'ctx>> {
         self.context
             .with_type_database(interface_id.package(), |db| {
-                db.interface_requirements.get(&interface_id).copied()
+                db.interface_requirements.get(&interface_id).cloned()
             })
     }
 
@@ -229,7 +229,7 @@ impl<'ctx> Actor<'ctx> {
     ) -> Option<&'ctx InterfaceDefinition<'ctx>> {
         self.context
             .with_type_database(interface_id.package(), |db| {
-                db.def_to_iface_def.get(&interface_id).copied()
+                db.def_to_iface_def.get(&interface_id).cloned()
             })
     }
 
@@ -279,7 +279,7 @@ impl<'ctx> Actor<'ctx> {
                     new_args.push(GenericArgument::Type(substituted));
                 }
                 GenericArgument::Const(c) => {
-                    let substituted = instantiate_const_with_args(self.context, *c, args);
+                    let substituted = instantiate_const_with_args(self.context, c.clone(), args);
                     new_args.push(GenericArgument::Const(substituted));
                 }
             }
@@ -289,7 +289,7 @@ impl<'ctx> Actor<'ctx> {
         for binding in template.bindings {
             let substituted = instantiate_ty_with_args(self.context, binding.ty, args);
             new_bindings.push(crate::sema::models::AssociatedTypeBinding {
-                name: binding.name,
+                name: binding.name.clone(),
                 ty: substituted,
             });
         }
@@ -303,7 +303,7 @@ impl<'ctx> Actor<'ctx> {
                 .store
                 .arenas
                 .global
-                .alloc_slice_copy(&new_bindings),
+                .alloc_slice_clone(&new_bindings),
         }
     }
 
@@ -484,10 +484,10 @@ impl<'ctx> Actor<'ctx> {
                 interface_args: interface.arguments,
                 interface_bindings: interface.bindings,
                 method_id: method.id,
-                method_name: method.name,
+                method_name: method.name.clone(),
                 syn_id: None,
             };
-            gcx.register_synthetic_method(type_head, method.id, method.name, info);
+            gcx.register_synthetic_method(type_head, method.id, method.name.clone(), info);
             witness.method_witnesses.insert(
                 method.id,
                 MethodWitness {
@@ -566,7 +566,7 @@ impl<'ctx> Actor<'ctx> {
             return Ok(default_ty);
         }
 
-        Err(ConformanceError::MissingAssociatedType { name: assoc.name })
+        Err(ConformanceError::MissingAssociatedType { name: assoc.name.clone() })
     }
 }
 
@@ -596,7 +596,7 @@ impl<'ctx> Actor<'ctx> {
                 db.type_head_to_members
                     .get(&type_head)
                     .and_then(|idx| {
-                        let key = (interface_id, requirement.name);
+                        let key = (interface_id, requirement.name.clone());
                         idx.trait_methods.get(&key)
                     })
                     .map(|set| {
@@ -604,7 +604,7 @@ impl<'ctx> Actor<'ctx> {
                         set.members
                             .iter()
                             .filter(|&&id| self.context.definition_parent(id) == Some(impl_id))
-                            .copied()
+                            .cloned()
                             .collect()
                     })
             })
@@ -651,7 +651,7 @@ impl<'ctx> Actor<'ctx> {
                 TypeHead::Nominal(id) => self.context.get_type(id),
                 _ => {
                     return Err(ConformanceError::MissingMethod {
-                        name: requirement.name,
+                        name: requirement.name.clone(),
                         signature: requirement.signature,
                     });
                 }
@@ -665,7 +665,7 @@ impl<'ctx> Actor<'ctx> {
                 self_ty,
                 record.interface.id,
                 record.interface.arguments,
-                requirement.name,
+                requirement.name.clone(),
                 requirement.id,
                 args_template,
             ) {
@@ -674,7 +674,7 @@ impl<'ctx> Actor<'ctx> {
         }
 
         Err(ConformanceError::MissingMethod {
-            name: requirement.name,
+            name: requirement.name.clone(),
             signature: requirement.signature,
         })
     }
@@ -695,7 +695,7 @@ impl<'ctx> Actor<'ctx> {
         }
 
         Err(ConformanceError::MissingConstant {
-            name: requirement.name,
+            name: requirement.name.clone(),
             ty: requirement.ty,
         })
     }
@@ -785,7 +785,7 @@ impl<'ctx> Actor<'ctx> {
                     GenericArgument::Type(icx.resolve_vars_if_possible(*ty))
                 }
                 GenericArgument::Const(c) => {
-                    GenericArgument::Const(icx.resolve_const_if_possible(*c))
+                    GenericArgument::Const(icx.resolve_const_if_possible(c.clone()))
                 }
             })
             .collect();

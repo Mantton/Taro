@@ -1,5 +1,3 @@
-use std::str::FromStr;
-
 use petgraph::algo::kosaraju_scc;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::{Dfs, EdgeRef};
@@ -81,8 +79,10 @@ impl<'ctx> Actor<'ctx> {
                 let context = self.context;
                 let mut cycle_display: Vec<_> = nodes
                     .iter()
-                    .flat_map(|node| {
-                        String::from_str(context.definition_ident(*node).symbol.as_str())
+                    .map(|node| {
+                        context
+                            .symbol_text(context.definition_ident(*node).symbol)
+                            .to_string()
                     })
                     .collect();
 

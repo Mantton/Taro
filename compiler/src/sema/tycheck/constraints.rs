@@ -327,7 +327,7 @@ fn normalize_interface_ref<'ctx>(
                 let normalized = crate::sema::tycheck::utils::normalize_aliases(gcx, *ty);
                 new_args.push(GenericArgument::Type(normalized));
             }
-            GenericArgument::Const(c) => new_args.push(GenericArgument::Const(*c)),
+            GenericArgument::Const(c) => new_args.push(GenericArgument::Const(c.clone())),
         }
     }
 
@@ -335,7 +335,7 @@ fn normalize_interface_ref<'ctx>(
     for binding in interface.bindings {
         let normalized = crate::sema::tycheck::utils::normalize_aliases(gcx, binding.ty);
         new_bindings.push(crate::sema::models::AssociatedTypeBinding {
-            name: binding.name,
+            name: binding.name.clone(),
             ty: normalized,
         });
     }
@@ -344,7 +344,7 @@ fn normalize_interface_ref<'ctx>(
     InterfaceReference {
         id: interface.id,
         arguments: interned,
-        bindings: gcx.store.arenas.global.alloc_slice_copy(&new_bindings),
+        bindings: gcx.store.arenas.global.alloc_slice_clone(&new_bindings),
     }
 }
 
@@ -353,7 +353,7 @@ fn interface_definition<'ctx>(
     interface_id: DefinitionID,
 ) -> Option<&'ctx InterfaceDefinition<'ctx>> {
     gcx.with_type_database(interface_id.package(), |db| {
-        db.def_to_iface_def.get(&interface_id).copied()
+        db.def_to_iface_def.get(&interface_id).cloned()
     })
 }
 

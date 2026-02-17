@@ -9,7 +9,6 @@ use crate::{
         GenericParameter, GenericParameterDefinition, GenericParameterDefinitionKind, Generics, Ty,
         TyKind,
     },
-    span::Symbol,
 };
 
 pub fn run(package: &hir::Package, context: GlobalContext) -> CompileResult<()> {
@@ -98,7 +97,7 @@ impl<'ctx> Actor<'ctx> {
             let def = GenericParameterDefinition {
                 id,
                 index: 0,
-                name: Symbol::new("Self"),
+                name: gcx.intern_symbol("Self"),
                 kind: GenericParameterDefinitionKind::Type { default: None },
             };
             Some(def)
@@ -146,11 +145,11 @@ impl<'ctx> Actor<'ctx> {
         if let Some(hir_parameters) = hir_parameters {
             for (index, param) in hir_parameters.iter().enumerate() {
                 let id = param.id;
-                let name = param.identifier.symbol;
+                let name = param.identifier.symbol.clone();
                 let index = start + index;
                 // Definition
                 let def = GenericParameterDefinition {
-                    name,
+                    name: name.clone(),
                     id,
                     index,
                     kind: match &param.kind {

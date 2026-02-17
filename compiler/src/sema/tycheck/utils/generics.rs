@@ -20,7 +20,7 @@ impl<'ctx> GenericsBuilder<'ctx> {
             GenericParameterDefinitionKind::Type { .. } => {
                 let p = GenericParameter {
                     index: param.index,
-                    name: param.name,
+                    name: param.name.clone(),
                 };
                 let ty = Ty::new(TyKind::Parameter(p), gcx);
                 GenericArgument::Type(ty)
@@ -28,7 +28,7 @@ impl<'ctx> GenericsBuilder<'ctx> {
             GenericParameterDefinitionKind::Const { ty, .. } => {
                 let p = GenericParameter {
                     index: param.index,
-                    name: param.name,
+                    name: param.name.clone(),
                 };
                 let ty = lower_ctx.lowerer().lower_type(ty);
                 GenericArgument::Const(Const {

@@ -1,5 +1,5 @@
+use ecow::EcoString;
 use index_vec::define_index_type;
-use internment::Intern;
 use std::fmt;
 
 index_vec::define_index_type! {
@@ -57,32 +57,48 @@ impl<T> Spanned<T> {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Symbol(internment::Intern<String>);
+#[derive(Default, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Symbol(EcoString);
 
 impl Symbol {
-    pub fn new(string: &str) -> Symbol {
-        Symbol(Intern::new(String::from(string)))
+    pub fn empty() -> Symbol {
+        Symbol(EcoString::new())
+    }
+
+    pub fn new(value: &str) -> Symbol {
+        Symbol(value.into())
     }
 
     pub fn as_str(&self) -> &str {
-        &self.0.as_str()
+        self.0.as_str()
     }
 }
 
 impl fmt::Debug for Symbol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(self.as_str(), f)
+        write!(f, "{}", self.0)
     }
 }
 
 impl fmt::Display for Symbol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self.as_str(), f)
+        write!(f, "{}", self.0)
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+impl AsRef<str> for Symbol {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl From<&str> for Symbol {
+    fn from(value: &str) -> Self {
+        Symbol::new(value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identifier {
     pub symbol: Symbol,
     pub span: Span,
@@ -92,7 +108,7 @@ impl Identifier {
     pub fn emtpy(file: FileID) -> Self {
         Identifier {
             span: Span::empty(file),
-            symbol: Symbol::new(""),
+            symbol: Symbol::empty(),
         }
     }
 

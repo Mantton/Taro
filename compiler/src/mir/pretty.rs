@@ -148,7 +148,9 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                 let ident = self.gcx.definition_ident(*def_id);
                 write!(f, "fn {}", ident.symbol)
             }
-            ConstantKind::ConstParam(param) => write!(f, "const {}", param.name.as_str()),
+            ConstantKind::ConstParam(param) => {
+                write!(f, "const {}", self.gcx.symbol_text(param.name.clone()))
+            }
         }
     }
 
@@ -248,7 +250,7 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                 enum_def
                     .variants
                     .get(variant_index.index())
-                    .map(|variant| variant.name)
+                    .map(|variant| variant.name.clone())
             }
             _ => None,
         }
@@ -265,7 +267,7 @@ impl<'body, 'ctx> fmt::Display for PrettyPrintMir<'body, 'ctx> {
                 local,
                 decl.ty.format(self.gcx)
             )?;
-            if let Some(name) = decl.name {
+            if let Some(name) = &decl.name {
                 write!(f, "        // debug: {}", name)?;
             }
             writeln!(f)?;

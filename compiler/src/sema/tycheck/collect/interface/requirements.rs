@@ -89,10 +89,10 @@ impl<'ctx> Actor<'ctx> {
                     .prototype
                     .inputs
                     .first()
-                    .is_some_and(|param| param.name.symbol.as_str() == "self");
+                    .is_some_and(|param| gcx.symbol_eq(param.name.symbol.clone(), "self"));
                 let req = InterfaceMethodRequirement {
                     id: def_id,
-                    name: node.identifier.symbol,
+                    name: node.identifier.symbol.clone(),
                     signature: gcx.get_signature(def_id),
                     has_self,
                     is_required: func.block.is_none(),
@@ -103,7 +103,7 @@ impl<'ctx> Actor<'ctx> {
                 // Don't lower default type here - defer to avoid circular dependencies
                 let req = AssociatedTypeDefinition {
                     id: def_id,
-                    name: node.identifier.symbol,
+                    name: node.identifier.symbol.clone(),
                     default_type: None,
                 };
                 types.push(req);
@@ -124,7 +124,7 @@ impl<'ctx> Actor<'ctx> {
                 // Default value evaluation is deferred to type checking
                 let req = InterfaceConstantRequirement {
                     id: def_id,
-                    name: node.identifier.symbol,
+                    name: node.identifier.symbol.clone(),
                     ty,
                     default: None, // TODO: evaluate during type checking if c.expr.is_some()
                 };

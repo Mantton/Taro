@@ -199,7 +199,7 @@ impl<'ctx> TypeUnifier<'ctx> {
         }
 
         for (a, b) in a.iter().zip(b.iter()) {
-            self.unify_generic_arg(*a, *b)?;
+            self.unify_generic_arg(a.clone(), b.clone())?;
         }
 
         Ok(())
@@ -210,7 +210,7 @@ impl<'ctx> TypeUnifier<'ctx> {
         a: GenericArgument<'ctx>,
         b: GenericArgument<'ctx>,
     ) -> UnificationResult<'ctx> {
-        match (a, b) {
+        match (a.clone(), b.clone()) {
             (GenericArgument::Type(a_ty), GenericArgument::Type(b_ty)) => self.unify(a_ty, b_ty),
             (GenericArgument::Const(a_const), GenericArgument::Const(b_const)) => {
                 if self.unify_const(a_const, b_const).is_ok() {

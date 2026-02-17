@@ -106,7 +106,7 @@ impl<'ctx> Actor<'ctx> {
                     self.context.dcx().emit_error(
                         format!(
                             "opaque type `{}` can only be used behind a pointer",
-                            ident.symbol.as_str()
+                            self.context.symbol_text(ident.symbol)
                         ),
                         Some(span),
                     );
@@ -172,7 +172,7 @@ impl<'ctx> Actor<'ctx> {
             self.context.dcx().emit_error(
                 format!(
                     "recursive struct `{}` has infinite size",
-                    ident.symbol.as_str()
+                    self.context.symbol_text(ident.symbol)
                 ),
                 Some(ident.span),
             );
@@ -187,8 +187,8 @@ impl<'ctx> Actor<'ctx> {
                 self.context.dcx().emit_error(
                     format!(
                         "field `{}` of struct `{}` does not have a sized type",
-                        field.name.as_str(),
-                        ident.symbol.as_str()
+                        self.context.symbol_text(field.name.clone()),
+                        self.context.symbol_text(ident.symbol.clone())
                     ),
                     Some(ident.span),
                 );
@@ -207,7 +207,7 @@ impl<'ctx> Actor<'ctx> {
             self.context.dcx().emit_error(
                 format!(
                     "recursive enum `{}` has infinite size",
-                    ident.symbol.as_str()
+                    self.context.symbol_text(ident.symbol)
                 ),
                 Some(ident.span),
             );
@@ -227,8 +227,8 @@ impl<'ctx> Actor<'ctx> {
                         format!(
                             "field {} of enum variant '{}' in '{}' does not have a sized type",
                             idx,
-                            variant.name.as_str(),
-                            ident.symbol.as_str()
+                            self.context.symbol_text(variant.name.clone()),
+                            self.context.symbol_text(ident.symbol.clone())
                         ),
                         Some(ident.span),
                     );

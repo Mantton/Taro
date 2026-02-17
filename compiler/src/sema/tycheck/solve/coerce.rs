@@ -528,7 +528,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         if def.id != opt_id {
             return None;
         }
-        let inner = args.first()?.ty()?;
+        let inner = args.first()?.clone().ty()?;
         Some((args, inner))
     }
 
@@ -593,8 +593,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return None;
         }
 
-        let expected_args_ty = interface.arguments[1].ty()?;
-        let expected_output_ty = interface.arguments[2].ty()?;
+        let expected_args_ty = interface.arguments[1].clone().ty()?;
+        let expected_output_ty = interface.arguments[2].clone().ty()?;
 
         // Build the closure's args type:
         // - Single argument: just the type
@@ -670,10 +670,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 continue;
             }
 
-            let Some(expected_args_ty) = bound.arguments[1].ty() else {
+            let Some(expected_args_ty) = bound.arguments[1].clone().ty() else {
                 continue;
             };
-            let Some(expected_output_ty) = bound.arguments[2].ty() else {
+            let Some(expected_output_ty) = bound.arguments[2].clone().ty() else {
                 continue;
             };
 

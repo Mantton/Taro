@@ -26,7 +26,7 @@ pub struct SynthesizedMethod<'ctx> {
 }
 
 /// Information stored for later THIR generation of synthetic methods.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct SyntheticMethodInfo<'ctx> {
     pub kind: SyntheticMethodKind,
     pub self_ty: Ty<'ctx>,
@@ -128,7 +128,7 @@ fn try_synthesize_clone<'ctx>(
     args_template: GenericArguments<'ctx>,
 ) -> Option<SynthesizedMethod<'ctx>> {
     // Verify that the method name matches "clone".
-    if method_name.as_str() != "clone" {
+    if !gcx.symbol_eq(&method_name, "clone") {
         return None;
     }
 
@@ -160,7 +160,7 @@ fn try_synthesize_clone<'ctx>(
         interface_args,
         interface_bindings: &[],
         method_id,
-        method_name,
+        method_name: method_name.clone(),
         syn_id,
     };
     gcx.register_synthetic_method(type_head, method_id, method_name, info);

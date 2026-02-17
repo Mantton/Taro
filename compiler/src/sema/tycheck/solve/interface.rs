@@ -28,7 +28,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     new_args.push(GenericArgument::Type(resolved));
                 }
                 GenericArgument::Const(c) => {
-                    let resolved = self.icx.resolve_const_if_possible(*c);
+                    let resolved = self.icx.resolve_const_if_possible(c.clone());
                     if matches!(resolved.kind, crate::sema::models::ConstKind::Infer(_)) {
                         has_infer = true;
                     }
@@ -44,7 +44,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 has_infer = true;
             }
             new_bindings.push(crate::sema::models::AssociatedTypeBinding {
-                name: binding.name,
+                name: binding.name.clone(),
                 ty: resolved_ty,
             });
         }
@@ -59,7 +59,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     .store
                     .arenas
                     .global
-                    .alloc_slice_copy(&new_bindings),
+                    .alloc_slice_clone(&new_bindings),
             },
             has_infer,
         )
@@ -70,7 +70,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         interface_id: DefinitionID,
     ) -> Option<&'ctx InterfaceRequirements<'ctx>> {
         self.gcx().with_type_database(interface_id.package(), |db| {
-            db.interface_requirements.get(&interface_id).copied()
+            db.interface_requirements.get(&interface_id).cloned()
         })
     }
 
@@ -79,7 +79,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         interface_id: DefinitionID,
     ) -> Option<&'ctx InterfaceDefinition<'ctx>> {
         self.gcx().with_type_database(interface_id.package(), |db| {
-            db.def_to_iface_def.get(&interface_id).copied()
+            db.def_to_iface_def.get(&interface_id).cloned()
         })
     }
 
@@ -143,7 +143,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     new_args.push(GenericArgument::Type(substituted));
                 }
                 GenericArgument::Const(c) => {
-                    let substituted = instantiate_const_with_args(gcx, *c, args);
+                    let substituted = instantiate_const_with_args(gcx, c.clone(), args);
                     new_args.push(GenericArgument::Const(substituted));
                 }
             }
@@ -153,7 +153,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         for binding in template.bindings {
             let substituted = instantiate_ty_with_args(gcx, binding.ty, args);
             new_bindings.push(crate::sema::models::AssociatedTypeBinding {
-                name: binding.name,
+                name: binding.name.clone(),
                 ty: substituted,
             });
         }
@@ -162,7 +162,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         InterfaceReference {
             id: template.id,
             arguments: interned,
-            bindings: gcx.store.arenas.global.alloc_slice_copy(&new_bindings),
+            bindings: gcx.store.arenas.global.alloc_slice_clone(&new_bindings),
         }
     }
 }

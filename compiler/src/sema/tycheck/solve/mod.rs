@@ -53,7 +53,7 @@ fn collect_visible_traits(gcx: Gcx, def_id: DefinitionID) -> FxHashSet<Definitio
     let mut current_scope = resolution_output
         .definition_scope_mapping
         .get(&def_id)
-        .copied();
+        .cloned();
 
     // Walk up the scope chain
     while let Some(scope) = current_scope {
@@ -216,7 +216,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
     }
 
     pub fn expr_ty(&self, id: NodeID) -> Option<Ty<'ctx>> {
-        self.expr_tys.get(&id).copied()
+        self.expr_tys.get(&id).cloned()
     }
 
     pub fn resolved_expr_types(&self) -> FxHashMap<NodeID, Ty<'ctx>> {
@@ -293,7 +293,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
                             GenericArgument::Type(resolved)
                         }
                         GenericArgument::Const(c) => {
-                            GenericArgument::Const(self.infer_cx.resolve_const_if_possible(*c))
+                            GenericArgument::Const(self.infer_cx.resolve_const_if_possible(c.clone()))
                         }
                     })
                     .collect();
@@ -400,7 +400,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
                 let msg = if let Some(name) = origin.param_name {
                     format!(
                         "generic parameter '{}' could not be inferred",
-                        name.as_str()
+                        gcx.symbol_text(name)
                     )
                 } else {
                     "type annotations needed: unable to infer type".into()
@@ -416,7 +416,10 @@ impl<'ctx> ConstraintSystem<'ctx> {
                 crate::sema::tycheck::infer::keys::ConstVarValue::Unknown
             ) {
                 let msg = if let Some(name) = origin.param_name {
-                    format!("const parameter '{}' could not be inferred", name.as_str())
+                    format!(
+                        "const parameter '{}' could not be inferred",
+                        gcx.symbol_text(name)
+                    )
                 } else {
                     "const value could not be inferred".into()
                 };

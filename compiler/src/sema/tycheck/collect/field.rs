@@ -40,7 +40,7 @@ impl<'ctx> Actor<'ctx> {
             let ty = ctx.lowerer().lower_type(&field.ty);
             let visibility = self.context.definition_visibility(field.def_id);
             fields.push(StructField {
-                name: field.identifier.symbol,
+                name: field.identifier.symbol.clone(),
                 ty,
                 mutability: field.mutability,
                 def_id: field.def_id,
@@ -48,7 +48,7 @@ impl<'ctx> Actor<'ctx> {
             });
         }
 
-        let fields = self.context.store.arenas.global.alloc_slice_copy(&fields);
+        let fields = self.context.store.arenas.global.alloc_slice_clone(&fields);
         let def = StructDefinition { adt_def, fields };
         self.context.cache_struct_definition(id, def);
     }

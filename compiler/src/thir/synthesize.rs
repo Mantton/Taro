@@ -11,7 +11,7 @@ use crate::{
         resolve::models::TypeHead,
         tycheck::derive::SyntheticMethodInfo,
     },
-    span::{FileID, Span, Symbol},
+    span::{FileID, Span},
     thir::{
         AdtExpression, Arm, ArmId, BindingMode, Block, BlockId, Expr, ExprId, ExprKind,
         FieldExpression, FieldIndex, FieldPattern, Param, Pattern, PatternKind, Stmt, StmtId,
@@ -78,7 +78,7 @@ pub fn synthesize_all<'ctx>(gcx: GlobalContext<'ctx>) -> Vec<ThirFunction<'ctx>>
         });
 
         // 2. Register Definition (Generics, Signature)
-        register_definition(gcx, syn_id, type_head, info);
+        register_definition(gcx, syn_id, type_head, info.clone());
 
         // 3. Synthesize Body
         if let Some(func) = synthesize_method(gcx, type_head, method_id, info, syn_id) {
@@ -118,13 +118,13 @@ fn register_definition<'ctx>(
             let signature = crate::sema::models::LabeledFunctionSignature {
                 inputs: vec![
                     crate::sema::models::LabeledFunctionParameter {
-                        name: Symbol::new("self"),
+                        name: gcx.intern_symbol("self"),
                         ty: self_ty,
                         label: None,
                         default_provider: None,
                     },
                     crate::sema::models::LabeledFunctionParameter {
-                        name: Symbol::new("args"),
+                        name: gcx.intern_symbol("args"),
                         ty: args_ty,
                         label: None,
                         default_provider: None,
@@ -167,7 +167,7 @@ fn register_definition<'ctx>(
 
             let signature = crate::sema::models::LabeledFunctionSignature {
                 inputs: vec![crate::sema::models::LabeledFunctionParameter {
-                    name: Symbol::new("self"),
+                    name: gcx.intern_symbol("self"),
                     ty: self_ref_ty,
                     label: None,
                     default_provider: None,
@@ -300,7 +300,7 @@ fn synthesize_copy_clone<'ctx>(
 
     let self_param = Param {
         id: self_node_id,
-        name: Symbol::new("self"),
+        name: gcx.intern_symbol("self"),
         ty: self_ref_ty,
         span,
     };
@@ -358,7 +358,7 @@ fn synthesize_memberwise_clone<'ctx>(
 
     let self_param = Param {
         id: self_node_id,
-        name: Symbol::new("self"),
+        name: gcx.intern_symbol("self"),
         ty: self_ref_ty,
         span,
     };
@@ -371,7 +371,7 @@ fn synthesize_memberwise_clone<'ctx>(
 
     if let Some(struct_def) = struct_def {
         // Struct: create Self { field1: self.field1.clone(), ... }
-        let adt_def = struct_def.adt_def;
+        let adt_def = struct_def.adt_def.clone();
         let mut field_exprs = Vec::new();
 
         // Get generic args from self_ty if it's an ADT
@@ -498,14 +498,14 @@ fn synthesize_closure_call<'ctx>(
 
     let self_param = Param {
         id: self_node_id,
-        name: Symbol::new("self"),
+        name: gcx.intern_symbol("self"),
         ty: self_param_ty,
         span,
     };
 
     let args_param = Param {
         id: args_node_id,
-        name: Symbol::new("args"),
+        name: gcx.intern_symbol("args"),
         ty: args_ty,
         span,
     };
@@ -594,7 +594,7 @@ fn synthesize_enum_clone<'ctx>(
     use crate::sema::models::EnumVariantKind;
 
     let span = synthetic_span();
-    let adt_def = enum_def.adt_def;
+    let adt_def = enum_def.adt_def.clone();
 
     // Get generic args from self_ty
     let generic_args = match info.self_ty.kind() {
@@ -620,8 +620,8 @@ fn synthesize_enum_clone<'ctx>(
                     ty: info.self_ty,
                     span,
                     kind: PatternKind::Variant {
-                        definition: adt_def,
-                        variant: *variant,
+                        definition: adt_def.clone(),
+                        variant: variant.clone(),
                         subpatterns: vec![],
                     },
                 };
@@ -629,7 +629,7 @@ fn synthesize_enum_clone<'ctx>(
                 // Body: Self.Variant (unit variant constructor)
                 let body_expr = builder.push_expr(
                     ExprKind::Adt(AdtExpression {
-                        definition: adt_def,
+                        definition: adt_def.clone(),
                         variant_index: Some(variant_index),
                         generic_args,
                         fields: vec![],
@@ -656,7 +656,7 @@ fn synthesize_enum_clone<'ctx>(
                     let binding_node_id = synthetic_node_id(syn_id, node_offset);
                     node_offset += 1;
 
-                    let binding_name = Symbol::new(&format!("_f{}", field_idx));
+                    let binding_name = gcx.intern_symbol(&format!("_f{}", field_idx));
 
                     subpatterns.push(FieldPattern {
                         index: FieldIndex::from_usize(field_idx),
@@ -701,8 +701,8 @@ fn synthesize_enum_clone<'ctx>(
                     ty: info.self_ty,
                     span,
                     kind: PatternKind::Variant {
-                        definition: adt_def,
-                        variant: *variant,
+                        definition: adt_def.clone(),
+                        variant: variant.clone(),
                         subpatterns,
                     },
                 };
@@ -710,7 +710,7 @@ fn synthesize_enum_clone<'ctx>(
                 // Body: Self.Variant(cloned_fields...)
                 let body_expr = builder.push_expr(
                     ExprKind::Adt(AdtExpression {
-                        definition: adt_def,
+                        definition: adt_def.clone(),
                         variant_index: Some(variant_index),
                         generic_args,
                         fields: field_exprs,
@@ -796,7 +796,7 @@ fn clone_adt_field<'ctx>(
         return field_access;
     };
 
-    let Some(clone_method) = reqs.methods.iter().find(|m| m.name.as_str() == "clone") else {
+    let Some(clone_method) = reqs.methods.iter().find(|m| gcx.symbol_eq(m.name.clone(), "clone")) else {
         return field_access;
     };
 

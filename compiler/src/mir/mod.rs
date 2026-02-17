@@ -161,7 +161,7 @@ pub struct Place<'ctx> {
     pub projection: Vec<PlaceElem<'ctx>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlaceElem<'ctx> {
     Deref,
     Field(FieldIndex, Ty<'ctx>),

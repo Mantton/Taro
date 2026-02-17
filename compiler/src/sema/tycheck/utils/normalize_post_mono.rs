@@ -124,7 +124,7 @@ impl<'ctx> PostMonoNormalizeFolder<'ctx> {
         // Self must be concrete - no parameters, no inference vars
         // EXCEPTION: Allow Self parameter for interface methods (e.g., Self.Item in interface definitions)
         if let TyKind::Parameter(param) = self_ty.kind() {
-            if param.name.as_str() == "Self" {
+            if gcx.symbol_eq(param.name, "Self") {
                 // Return the projection unchanged - it's valid in interface method context
                 return None;
             } else {

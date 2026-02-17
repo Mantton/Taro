@@ -70,7 +70,7 @@ impl<'ctx> TypeCheckResults<'ctx> {
     }
 
     pub fn try_node_type(&self, id: hir::NodeID) -> Option<Ty<'ctx>> {
-        self.node_tys.get(&id).copied()
+        self.node_tys.get(&id).cloned()
     }
 
     pub fn node_adjustments(&self, id: hir::NodeID) -> Option<&[Adjustment<'ctx>]> {
@@ -78,15 +78,15 @@ impl<'ctx> TypeCheckResults<'ctx> {
     }
 
     pub fn interface_call(&self, id: hir::NodeID) -> Option<InterfaceCallInfo> {
-        self.interface_calls.get(&id).copied()
+        self.interface_calls.get(&id).cloned()
     }
 
     pub fn field_index(&self, id: hir::NodeID) -> Option<usize> {
-        self.field_indices.get(&id).copied()
+        self.field_indices.get(&id).cloned()
     }
 
     pub fn overload_source(&self, id: hir::NodeID) -> Option<DefinitionID> {
-        self.overload_sources.get(&id).copied()
+        self.overload_sources.get(&id).cloned()
     }
 
     pub fn value_resolution(&self, id: hir::NodeID) -> Option<Resolution> {
@@ -102,6 +102,6 @@ impl<'ctx> TypeCheckResults<'ctx> {
     }
 
     pub fn binding_mode(&self, id: hir::NodeID) -> Option<hir::BindingMode> {
-        self.binding_modes.get(&id).copied()
+        self.binding_modes.get(&id).cloned()
     }
 }

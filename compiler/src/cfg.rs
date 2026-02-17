@@ -18,7 +18,7 @@ impl TargetInfo {
     /// Format: arch-vendor-os or arch-vendor-os-env
     pub fn from_triple(triple: &str) -> TargetInfo {
         let parts: Vec<&str> = triple.split('-').collect();
-        let arch = parts.first().copied().unwrap_or("").to_string();
+        let arch = parts.first().cloned().unwrap_or("").to_string();
         let os = if parts.len() >= 3 {
             parts[2].to_string()
         } else {

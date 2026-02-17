@@ -74,6 +74,18 @@ impl<'arena> GlobalContext<'arena> {
             .get(&pkg)
             .cloned()
     }
+
+    pub fn intern_symbol(self, text: &str) -> Symbol {
+        Symbol::new(text)
+    }
+
+    pub fn symbol_eq(self, symbol: impl AsRef<str>, text: &str) -> bool {
+        symbol.as_ref() == text
+    }
+
+    pub fn symbol_text(self, symbol: impl AsRef<str>) -> EcoString {
+        symbol.as_ref().into()
+    }
 }
 
 impl<'arena> GlobalContext<'arena> {
@@ -277,7 +289,7 @@ impl<'arena> GlobalContext<'arena> {
             .config
             .dependencies
             .values()
-            .filter_map(|ident| mapping.get(ident.as_str()).copied())
+            .filter_map(|ident| mapping.get(ident.as_str()).cloned())
             .collect();
         drop(mapping);
 
@@ -331,18 +343,18 @@ impl<'arena> GlobalContext<'arena> {
     }
 
     pub fn try_get_const(self, id: DefinitionID) -> Option<Const<'arena>> {
-        self.with_type_database(id.package(), |db| db.def_to_const.get(&id).copied())
+        self.with_type_database(id.package(), |db| db.def_to_const.get(&id).cloned())
     }
 
     #[inline]
     pub fn get_const(self, id: DefinitionID) -> Const<'arena> {
         self.with_type_database(id.package(), |db| {
-            *db.def_to_const.get(&id).expect("const value")
+            db.def_to_const.get(&id).expect("const value").clone()
         })
     }
 
     pub fn try_get_alias_type(self, id: DefinitionID) -> Option<Ty<'arena>> {
-        self.with_type_database(id.package(), |db| db.resolved_aliases.get(&id).copied())
+        self.with_type_database(id.package(), |db| db.resolved_aliases.get(&id).cloned())
     }
 
     #[inline]
@@ -426,7 +438,10 @@ impl<'arena> GlobalContext<'arena> {
         index: VariantIndex,
     ) -> EnumVariant<'arena> {
         let def = self.get_enum_definition(enum_id);
-        *def.variants.get(index.index()).expect("enum variant index")
+        def.variants
+            .get(index.index())
+            .expect("enum variant index")
+            .clone()
     }
 
     pub fn get_interface_requirements(
@@ -434,7 +449,7 @@ impl<'arena> GlobalContext<'arena> {
         id: DefinitionID,
     ) -> Option<&'arena InterfaceRequirements<'arena>> {
         self.with_type_database(id.package(), |db| {
-            db.interface_requirements.get(&id).copied()
+            db.interface_requirements.get(&id).cloned()
         })
     }
 
@@ -442,7 +457,7 @@ impl<'arena> GlobalContext<'arena> {
         self,
         id: DefinitionID,
     ) -> Option<&'arena InterfaceDefinition<'arena>> {
-        self.with_type_database(id.package(), |db| db.def_to_iface_def.get(&id).copied())
+        self.with_type_database(id.package(), |db| db.def_to_iface_def.get(&id).cloned())
     }
 
     pub fn get_impl_type_head(self, impl_id: DefinitionID) -> Option<TypeHead> {
@@ -453,7 +468,7 @@ impl<'arena> GlobalContext<'arena> {
 
     pub fn get_impl_target_ty(self, impl_id: DefinitionID) -> Option<Ty<'arena>> {
         self.with_type_database(impl_id.package(), |db| {
-            db.impl_to_target_ty.get(&impl_id).copied()
+            db.impl_to_target_ty.get(&impl_id).cloned()
         })
     }
 
@@ -505,16 +520,17 @@ impl<'arena> GlobalContext<'arena> {
     pub fn definition_ident(self, id: DefinitionID) -> crate::span::Identifier {
         if let Some(def) = self.context.store.synthetic_definitions.borrow().get(&id) {
             return crate::span::Identifier {
-                symbol: def.name,
+                symbol: def.name.clone(),
                 span: def.span,
             };
         }
 
         let output = self.resolution_output(id.package());
-        *output
+        output
             .definition_to_ident
             .get(&id)
             .expect("identifier for definition")
+            .clone()
     }
 
     pub fn definition_kind(self, id: DefinitionID) -> DefinitionKind {
@@ -553,7 +569,7 @@ impl<'arena> GlobalContext<'arena> {
                     | DefinitionKind::Struct
                     | DefinitionKind::Enum
                     | DefinitionKind::TypeAlias
-            ) && ident.symbol.as_str() == name
+            ) && self.symbol_eq(ident.symbol.clone(), name)
             {
                 Some(*id)
             } else {
@@ -570,7 +586,7 @@ impl<'arena> GlobalContext<'arena> {
             .std_interfaces
             .get_or_init(|| self.collect_std_interfaces())
             .get(&iface)
-            .copied()
+            .cloned()
     }
 
     fn collect_std_interfaces(self) -> FxHashMap<StdInterface, DefinitionID> {
@@ -654,13 +670,13 @@ impl<'arena> GlobalContext<'arena> {
         output
             .definition_to_visibility
             .get(&id)
-            .copied()
+            .cloned()
             .unwrap_or(Visibility::Public)
     }
 
     pub fn definition_parent(self, id: DefinitionID) -> Option<DefinitionID> {
         let output = self.resolution_output(id.package());
-        output.definition_to_parent.get(&id).copied()
+        output.definition_to_parent.get(&id).cloned()
     }
 
     pub fn is_visibility_allowed(self, visibility: Visibility, from: DefinitionID) -> bool {
@@ -712,7 +728,7 @@ impl<'arena> GlobalContext<'arena> {
     pub fn specializations_of(self, pkg: PackageIndex) -> Vec<Instance<'arena>> {
         let cache = self.context.store.specialization_instances.borrow();
         match cache.get(&pkg) {
-            Some(instances) => instances.iter().copied().collect(),
+            Some(instances) => instances.iter().cloned().collect(),
             None => Vec::new(),
         }
     }
@@ -800,7 +816,8 @@ pub struct CompilerContext<'arena> {
 
 impl<'arena> CompilerContext<'arena> {
     pub fn new(dcx: Rc<DiagCtx>, store: CompilerStore<'arena>) -> CompilerContext<'arena> {
-        let types = CommonTypes::new(&store.interners);
+        let self_symbol = Symbol::new("Self");
+        let types = CommonTypes::new(&store.interners, self_symbol);
         CompilerContext { dcx, store, types }
     }
 
@@ -1012,7 +1029,7 @@ pub struct CommonTypes<'arena> {
 }
 
 impl<'a> CommonTypes<'a> {
-    pub fn new(interner: &CompilerInterners<'a>) -> CommonTypes<'a> {
+    pub fn new(interner: &CompilerInterners<'a>, self_symbol: Symbol) -> CommonTypes<'a> {
         let mk = |ty| interner.intern_ty(ty);
 
         CommonTypes {
@@ -1042,7 +1059,7 @@ impl<'a> CommonTypes<'a> {
             self_type_parameter: {
                 let parameter = GenericParameter {
                     index: 0,
-                    name: Symbol::new("Self"),
+                    name: self_symbol,
                 };
 
                 let kind = TyKind::Parameter(parameter);
@@ -1141,7 +1158,10 @@ impl<'arena> GlobalContext<'arena> {
         crate::sema::tycheck::derive::SyntheticMethodInfo<'arena>,
     )> {
         self.with_session_type_database(|db| {
-            db.synthetic_methods.iter().map(|(k, v)| (*k, *v)).collect()
+            db.synthetic_methods
+                .iter()
+                .map(|(k, v)| (*k, v.clone()))
+                .collect()
         })
     }
 
@@ -1152,7 +1172,7 @@ impl<'arena> GlobalContext<'arena> {
         method_id: DefinitionID,
     ) -> Option<crate::sema::tycheck::derive::SyntheticMethodInfo<'arena>> {
         self.with_session_type_database(|db| {
-            db.synthetic_methods.get(&(type_head, method_id)).copied()
+            db.synthetic_methods.get(&(type_head, method_id)).cloned()
         })
     }
 }

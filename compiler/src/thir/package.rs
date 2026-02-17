@@ -364,7 +364,7 @@ impl<'ctx> FunctionLower<'ctx> {
             .zip(signature.inputs.iter())
             .map(|(param, lowered)| Param {
                 id: param.id,
-                name: param.name.symbol,
+                name: param.name.symbol.clone(),
                 ty: lowered.ty,
                 span: param.span,
             })
@@ -611,13 +611,13 @@ impl<'ctx> FunctionLower<'ctx> {
                     .find_std_type("Optional")
                     .expect("Optional type must exist");
                 let enum_def = self.gcx.get_enum_definition(opt_id);
-                let adt_def = enum_def.adt_def;
+                let adt_def = enum_def.adt_def.clone();
 
                 let (variant_index, fields) = if is_some {
                     let some_idx = enum_def
                         .variants
                         .iter()
-                        .position(|v| v.name.as_str() == "some")
+                        .position(|v| self.gcx.symbol_eq(v.name.clone(), "some"))
                         .expect("Optional.some variant");
                     let inner_id = self.push_expr(expr.kind, expr.ty, expr.span);
                     (
@@ -631,12 +631,12 @@ impl<'ctx> FunctionLower<'ctx> {
                     let none_idx = enum_def
                         .variants
                         .iter()
-                        .position(|v| v.name.as_str() == "none")
+                        .position(|v| self.gcx.symbol_eq(v.name.clone(), "none"))
                         .expect("Optional.none variant");
                     (none_idx, vec![])
                 };
 
-                let opt_ty = Ty::new(TyKind::Adt(adt_def, generic_args), self.gcx);
+                let opt_ty = Ty::new(TyKind::Adt(adt_def.clone(), generic_args), self.gcx);
                 Expr {
                     kind: ExprKind::Adt(thir::AdtExpression {
                         definition: adt_def,
@@ -1235,7 +1235,7 @@ impl<'ctx> FunctionLower<'ctx> {
         match lit {
             hir::Literal::Bool(b) => ConstantKind::Bool(*b),
             hir::Literal::Rune(r) => ConstantKind::Rune(*r),
-            hir::Literal::String(s) => ConstantKind::String(*s),
+            hir::Literal::String(s) => ConstantKind::String(s.clone()),
             hir::Literal::Integer(i) => ConstantKind::Integer(*i),
             hir::Literal::Float(f) => ConstantKind::Float(*f),
             hir::Literal::Nil => ConstantKind::Unit,
@@ -1294,7 +1294,7 @@ impl<'ctx> FunctionLower<'ctx> {
             let self_sig_param = &signature.inputs[0];
             closure_lower.func.params.push(Param {
                 id: self_param_id, // Synthetic ID, not referenced by body
-                name: self_sig_param.name,
+                name: self_sig_param.name.clone(),
                 ty: self_sig_param.ty,
                 span: closure.span,
             });
@@ -1304,7 +1304,7 @@ impl<'ctx> FunctionLower<'ctx> {
         for (param, sig_param) in closure.params.iter().zip(signature.inputs.iter().skip(1)) {
             closure_lower.func.params.push(Param {
                 id: param.id,
-                name: sig_param.name,
+                name: sig_param.name.clone(),
                 ty: sig_param.ty,
                 span: param.span,
             });
@@ -1386,7 +1386,7 @@ impl<'ctx> FunctionLower<'ctx> {
                 };
                 let param = crate::sema::models::GenericParameter {
                     index: def.index,
-                    name: def.name,
+                    name: def.name.clone(),
                 };
                 ExprKind::Literal(Constant {
                     ty,
@@ -1514,7 +1514,7 @@ impl<'ctx> FunctionLower<'ctx> {
             unreachable!()
         };
 
-        (def.adt_def, VariantIndex::from_usize(index))
+        (def.adt_def.clone(), VariantIndex::from_usize(index))
     }
 
     fn lower_match_arm(&mut self, arm: &hir::MatchArm) -> thir::ArmId {

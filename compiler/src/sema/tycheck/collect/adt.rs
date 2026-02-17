@@ -20,10 +20,10 @@ impl HirVisitor for Actor<'_> {
     fn visit_declaration(&mut self, node: &hir::Declaration) -> Self::Result {
         match &node.kind {
             hir::DeclarationKind::Struct(_) => {
-                self.cache_adt_type(node.id, node.identifier.symbol, AdtKind::Struct);
+                self.cache_adt_type(node.id, node.identifier.symbol.clone(), AdtKind::Struct);
             }
             hir::DeclarationKind::Enum(_) => {
-                self.cache_adt_type(node.id, node.identifier.symbol, AdtKind::Enum);
+                self.cache_adt_type(node.id, node.identifier.symbol.clone(), AdtKind::Enum);
             }
             hir::DeclarationKind::OpaqueType => {
                 self.cache_opaque_type(node.id);

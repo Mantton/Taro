@@ -190,7 +190,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     GenericArgument::Type(normalized)
                 }
                 GenericArgument::Const(c) => {
-                    let substituted = instantiate_const_with_args(self.gcx, *c, self.current_subst);
+                    let substituted = instantiate_const_with_args(self.gcx, c.clone(), self.current_subst);
                     GenericArgument::Const(substituted)
                 }
             })
@@ -389,7 +389,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let _ = builder
             .build_call(
                 abort_unwind,
-                &[BasicMetadataValueEnum::from(exception_ptr.as_basic_value_enum())],
+                &[BasicMetadataValueEnum::from(
+                    exception_ptr.as_basic_value_enum(),
+                )],
                 "panic_abort",
             )
             .unwrap();
@@ -442,7 +444,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     }
 
     fn const_string_value(&mut self, value: &str) -> BasicValueEnum<'llvm> {
-        let sym = Symbol::new(value);
+        let sym = self.gcx.intern_symbol(value);
         let ptr = self.lower_string(sym);
         let len = self.usize_ty.const_int(value.len() as u64, false);
         let string_ty = string_header_ty(self.context, &self.target_data);
@@ -468,10 +470,13 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let Some(parent) = self.gcx.definition_parent(def_id) else {
             return None;
         };
-        if self.gcx.definition_ident(parent).symbol.as_str() != "panic" {
+        if !self
+            .gcx
+            .symbol_eq(self.gcx.definition_ident(parent).symbol, "panic")
+        {
             return None;
         }
-        match ident.symbol.as_str() {
+        match self.gcx.symbol_text(ident.symbol).as_str() {
             "panic" => Some(StdPanicCallKind::Panic),
             "todo" => Some(StdPanicCallKind::Todo),
             "unreachable" => Some(StdPanicCallKind::Unreachable),
@@ -689,7 +694,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             return Err(crate::error::ReportedError);
         };
         let _ = self.builder.build_store(eh_slot, landing).unwrap();
-        let _ = self.builder.build_unconditional_branch(unwind_target).unwrap();
+        let _ = self
+            .builder
+            .build_unconditional_branch(unwind_target)
+            .unwrap();
         Ok(())
     }
 
@@ -739,8 +747,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             self.builder.position_at_end(invoke_normal_bb);
             Ok(call_site)
         } else {
-            let args_meta: Vec<BasicMetadataValueEnum<'llvm>> =
-                args.iter().copied().map(BasicMetadataValueEnum::from).collect();
+            let args_meta: Vec<BasicMetadataValueEnum<'llvm>> = args
+                .iter()
+                .cloned()
+                .map(BasicMetadataValueEnum::from)
+                .collect();
             Ok(self.builder.build_call(function, &args_meta, name).unwrap())
         }
     }
@@ -766,8 +777,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             self.builder.position_at_end(invoke_normal_bb);
             Ok(call_site)
         } else {
-            let args_meta: Vec<BasicMetadataValueEnum<'llvm>> =
-                args.iter().copied().map(BasicMetadataValueEnum::from).collect();
+            let args_meta: Vec<BasicMetadataValueEnum<'llvm>> = args
+                .iter()
+                .cloned()
+                .map(BasicMetadataValueEnum::from)
+                .collect();
             Ok(self
                 .builder
                 .build_indirect_call(fn_ty, fn_ptr, &args_meta, name)
@@ -802,8 +816,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let mut locals = Vec::with_capacity(body.locals.len());
         for (idx, decl) in body.locals.iter().enumerate() {
             let name = decl
-                .name
-                .map(|s| s.as_str().to_string())
+                .name.clone()
+                .map(|s| self.gcx.symbol_text(s).to_string())
                 .unwrap_or_else(|| format!("tmp{idx}"));
             // Use stack slots for all locals with a representable LLVM type.
             // This avoids incorrect behavior at control-flow joins when "locals"
@@ -1789,7 +1803,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         let data_ptr = self.box_value(from_ty, value)?;
         let mut table_ptrs = Vec::with_capacity(interfaces.len());
-        for iface in interfaces.iter().copied() {
+        for iface in interfaces.iter().cloned() {
             let ptr = self.witness_table_ptr(from_ty, iface);
             table_ptrs.push(ptr);
         }
@@ -1824,7 +1838,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .into_pointer_value();
 
         let mut table_ptrs = Vec::with_capacity(to_ifaces.len());
-        for target in to_ifaces.iter().copied() {
+        for target in to_ifaces.iter().cloned() {
             if let Some(index) = self.interface_index(from_ifaces, target.id) {
                 let ptr = self
                     .builder
@@ -1947,7 +1961,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         self.builder.position_at_end(entry_bb);
 
         // Create null self pointer (closure has no captures)
-        let self_param_ty = closure_fn.get_type().get_param_types().first().copied();
+        let self_param_ty = closure_fn.get_type().get_param_types().first().cloned();
         let null_self = match self_param_ty {
             Some(BasicMetadataTypeEnum::PointerType(ptr_ty)) => ptr_ty.const_null(),
             _ => self.context.ptr_type(AddressSpace::default()).const_null(),
@@ -2260,7 +2274,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         interface_id: hir::DefinitionID,
     ) -> Option<&'gcx InterfaceRequirements<'gcx>> {
         self.gcx.with_type_database(interface_id.package(), |db| {
-            db.interface_requirements.get(&interface_id).copied()
+            db.interface_requirements.get(&interface_id).cloned()
         })
     }
 
@@ -2269,7 +2283,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         interface_id: hir::DefinitionID,
     ) -> Option<&'gcx InterfaceDefinition<'gcx>> {
         self.gcx.with_type_database(interface_id.package(), |db| {
-            db.def_to_iface_def.get(&interface_id).copied()
+            db.def_to_iface_def.get(&interface_id).cloned()
         })
     }
 
@@ -2321,7 +2335,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             return iface;
         }
 
-        let mut args: Vec<_> = iface.arguments.iter().copied().collect();
+        let mut args: Vec<_> = iface.arguments.iter().cloned().collect();
         if let Some(first) = args.get_mut(0) {
             *first = GenericArgument::Type(self_ty);
         }
@@ -2351,7 +2365,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     out.push(GenericArgument::Type(instantiated));
                 }
                 GenericArgument::Const(c) => {
-                    let instantiated = instantiate_const_with_args(self.gcx, *c, args);
+                    let instantiated = instantiate_const_with_args(self.gcx, c.clone(), args);
                     out.push(GenericArgument::Const(instantiated));
                 }
             }
@@ -2377,7 +2391,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     new_args.push(GenericArgument::Type(substituted));
                 }
                 GenericArgument::Const(c) => {
-                    let substituted = instantiate_const_with_args(self.gcx, *c, args);
+                    let substituted = instantiate_const_with_args(self.gcx, c.clone(), args);
                     new_args.push(GenericArgument::Const(substituted));
                 }
             }
@@ -2390,7 +2404,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         for binding in template.bindings {
             let substituted_ty = instantiate_ty_with_args(self.gcx, binding.ty, args);
             new_bindings.push(crate::sema::models::AssociatedTypeBinding {
-                name: binding.name,
+                name: binding.name.clone(),
                 ty: substituted_ty,
             });
         }
@@ -2398,7 +2412,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         InterfaceReference {
             id: template.id,
             arguments: interned,
-            bindings: self.gcx.store.arenas.global.alloc_slice_copy(&new_bindings),
+            bindings: self.gcx.store.arenas.global.alloc_slice_clone(&new_bindings),
         }
     }
 
@@ -2488,7 +2502,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let mut chain = Vec::new();
         let mut current = target_id;
         while current != root_id {
-            let Some((parent, index)) = parents.get(&current).copied() else {
+            let Some((parent, index)) = parents.get(&current).cloned() else {
                 return None;
             };
             chain.push((parent, index));
@@ -2559,9 +2573,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             mir::TerminatorKind::ResumeUnwind => {
                 self.emit_shadow_pop();
                 let Some(eh_slot) = self.eh_slot else {
-                    self.gcx
-                        .dcx()
-                        .emit_error("resume_unwind without EH slot".into(), Some(terminator.span));
+                    self.gcx.dcx().emit_error(
+                        "resume_unwind without EH slot".into(),
+                        Some(terminator.span),
+                    );
                     return Err(crate::error::ReportedError);
                 };
                 let resume_val = self
@@ -2688,7 +2703,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         };
 
         let ident = self.gcx.definition_ident(def_id);
-        let name = ident.symbol.as_str();
+        let name = self.gcx.symbol_text(ident.symbol);
+        let name = name.as_ref();
         if self.try_lower_typed_math_intrinsic(name, body, locals, args, destination)? {
             return Ok(true);
         }
@@ -3021,27 +3037,75 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 Ok(true)
             }
             "asin" => {
-                self.lower_libm_unary_float(body, locals, args, destination, name, "asinf", "asin")?;
+                self.lower_libm_unary_float(
+                    body,
+                    locals,
+                    args,
+                    destination,
+                    name,
+                    "asinf",
+                    "asin",
+                )?;
                 Ok(true)
             }
             "acos" => {
-                self.lower_libm_unary_float(body, locals, args, destination, name, "acosf", "acos")?;
+                self.lower_libm_unary_float(
+                    body,
+                    locals,
+                    args,
+                    destination,
+                    name,
+                    "acosf",
+                    "acos",
+                )?;
                 Ok(true)
             }
             "atan" => {
-                self.lower_libm_unary_float(body, locals, args, destination, name, "atanf", "atan")?;
+                self.lower_libm_unary_float(
+                    body,
+                    locals,
+                    args,
+                    destination,
+                    name,
+                    "atanf",
+                    "atan",
+                )?;
                 Ok(true)
             }
             "sinh" => {
-                self.lower_libm_unary_float(body, locals, args, destination, name, "sinhf", "sinh")?;
+                self.lower_libm_unary_float(
+                    body,
+                    locals,
+                    args,
+                    destination,
+                    name,
+                    "sinhf",
+                    "sinh",
+                )?;
                 Ok(true)
             }
             "cosh" => {
-                self.lower_libm_unary_float(body, locals, args, destination, name, "coshf", "cosh")?;
+                self.lower_libm_unary_float(
+                    body,
+                    locals,
+                    args,
+                    destination,
+                    name,
+                    "coshf",
+                    "cosh",
+                )?;
                 Ok(true)
             }
             "tanh" => {
-                self.lower_libm_unary_float(body, locals, args, destination, name, "tanhf", "tanh")?;
+                self.lower_libm_unary_float(
+                    body,
+                    locals,
+                    args,
+                    destination,
+                    name,
+                    "tanhf",
+                    "tanh",
+                )?;
                 Ok(true)
             }
             "pow" | "copysign" | "minimum" | "maximum" => {
@@ -3704,7 +3768,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         args: &[Operand<'gcx>],
         destination: &Place<'gcx>,
     ) -> CompileResult<()> {
-        let data = args.first().expect("string_from_parts missing data pointer");
+        let data = args
+            .first()
+            .expect("string_from_parts missing data pointer");
         let len = args.get(1).expect("string_from_parts missing length");
 
         let Some(data_val) = self.eval_operand(body, locals, data)? else {
@@ -3977,9 +4043,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         let ty = lhs_float.get_type();
         if ty != rhs_float.get_type() {
-            self.gcx
-                .dcx()
-                .emit_error(format!("'{}' requires matching float types", intrinsic), None);
+            self.gcx.dcx().emit_error(
+                format!("'{}' requires matching float types", intrinsic),
+                None,
+            );
             return Ok(());
         }
         let Some(suffix) = self.float_intrinsic_suffix(ty) else {
@@ -4069,9 +4136,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         let ty = x_float.get_type();
         if ty != y_float.get_type() || ty != z_float.get_type() {
-            self.gcx
-                .dcx()
-                .emit_error(format!("'{}' requires matching float types", intrinsic), None);
+            self.gcx.dcx().emit_error(
+                format!("'{}' requires matching float types", intrinsic),
+                None,
+            );
             return Ok(());
         }
         let Some(suffix) = self.float_intrinsic_suffix(ty) else {
@@ -4201,9 +4269,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         name: &str,
         fn_ty: FunctionType<'llvm>,
     ) -> FunctionValue<'llvm> {
-        self.module
-            .get_function(name)
-            .unwrap_or_else(|| self.module.add_function(name, fn_ty, Some(Linkage::External)))
+        self.module.get_function(name).unwrap_or_else(|| {
+            self.module
+                .add_function(name, fn_ty, Some(Linkage::External))
+        })
     }
 
     /// Intrinsic: __intrinsic_ptr_to_u8[T](*const T) -> *const uint8
@@ -4425,7 +4494,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let TyKind::BoxedExistential { interfaces } = self_ty.kind() else {
             return Ok(());
         };
-        let Some(root_iface) = interfaces.get(instance.table_index).copied() else {
+        let Some(root_iface) = interfaces.get(instance.table_index).cloned() else {
             return Ok(());
         };
 
@@ -4628,7 +4697,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let sig = self.gcx.get_signature(id);
         let fn_ty = lower_fn_sig(self.context, self.gcx, &self.target_data, sig);
         let ident = self.gcx.definition_ident(id);
-        let name = ident.symbol.as_str();
+        let name = self.gcx.symbol_text(ident.symbol);
+        let name = name.as_ref();
         self.module.get_function(name).unwrap_or_else(|| {
             self.module
                 .add_function(name, fn_ty, Some(Linkage::External))
@@ -4883,22 +4953,24 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     }
 
     fn lower_constant(&mut self, constant: &mir::Constant<'gcx>) -> Option<BasicValueEnum<'llvm>> {
-        match constant.value {
+        match &constant.value {
             mir::ConstantKind::Bool(b) => Some(
                 self.context
                     .bool_type()
-                    .const_int(b as u64, false)
+                    .const_int(*b as u64, false)
                     .as_basic_value_enum(),
             ),
             mir::ConstantKind::Rune(r) => Some(
                 self.context
                     .i32_type()
-                    .const_int(r as u64, false)
+                    .const_int(*r as u64, false)
                     .as_basic_value_enum(),
             ),
             mir::ConstantKind::String(sym) => {
-                let ptr = self.lower_string(sym);
-                let len = self.usize_ty.const_int(sym.as_str().len() as u64, false);
+                let ptr = self.lower_string(sym.clone());
+                let len = self
+                    .usize_ty
+                    .const_int(self.gcx.symbol_text(sym).len() as u64, false);
                 let Some(ty) = self.lower_ty(constant.ty) else {
                     return None;
                 };
@@ -4909,15 +4981,15 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             }
             mir::ConstantKind::Integer(i) => self
                 .int_type(constant.ty)
-                .map(|(ty, _)| ty.const_int(i, false).as_basic_value_enum()),
+                .map(|(ty, _)| ty.const_int(*i, false).as_basic_value_enum()),
             mir::ConstantKind::Float(f) => self
                 .float_type(constant.ty)
-                .map(|ty| ty.const_float(f).as_basic_value_enum()),
+                .map(|ty| ty.const_float(*f).as_basic_value_enum()),
             mir::ConstantKind::Unit => None,
             mir::ConstantKind::ConstParam(param) => {
                 let konst = crate::sema::models::Const {
                     ty: constant.ty,
-                    kind: ConstKind::Param(param),
+                    kind: ConstKind::Param(param.clone()),
                 };
                 let instantiated = instantiate_const_with_args(self.gcx, konst, self.current_subst);
                 let ConstKind::Value(value) = instantiated.kind else {
@@ -4940,8 +5012,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                             .as_basic_value_enum(),
                     ),
                     ConstValue::String(sym) => {
-                        let ptr = self.lower_string(sym);
-                        let len = self.usize_ty.const_int(sym.as_str().len() as u64, false);
+                        let ptr = self.lower_string(sym.clone());
+                        let len = self
+                            .usize_ty
+                            .const_int(self.gcx.symbol_text(sym).len() as u64, false);
                         let Some(ty) = self.lower_ty(constant.ty) else {
                             return None;
                         };
@@ -4962,7 +5036,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 }
             }
             mir::ConstantKind::Function(def_id, args, _) => {
-                let instance = self.instance_for_call(def_id, args);
+                let instance = self.instance_for_call(*def_id, *args);
                 if let InstanceKind::Virtual(_) = instance.kind() {
                     todo!("function pointers to virtual interface methods are not supported");
                 }
@@ -4977,9 +5051,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         if let Some(ptr) = self.strings.get(&sym) {
             return *ptr;
         }
+        let sym_text = self.gcx.symbol_text(&sym);
         let gv = self
             .builder
-            .build_global_string_ptr(sym.as_str(), "str")
+            .build_global_string_ptr(sym_text.as_ref(), "str")
             .unwrap();
         let ptr = gv.as_pointer_value();
         let _ = self.strings.insert(sym, ptr);

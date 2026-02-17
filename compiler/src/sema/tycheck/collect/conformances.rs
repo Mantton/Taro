@@ -401,8 +401,8 @@ impl<'ctx> Actor<'ctx> {
                 self.context.dcx().emit_error(
                     format!(
                         "cannot derive Copy for '{}': field '{}' of type '{}' is not Copy",
-                        def.adt_def.name.as_str(),
-                        field.name.as_str(),
+                        self.context.symbol_text(def.adt_def.name.clone()),
+                        self.context.symbol_text(field.name.clone()),
                         type_name
                     ),
                     Some(span),
@@ -424,15 +424,15 @@ impl<'ctx> Actor<'ctx> {
                     if !self.is_type_copyable_in_context(field.ty, enum_id) {
                         let type_name = field.ty.format(self.context);
                         let field_name = field
-                            .label
-                            .map(|s| s.as_str().to_string())
+                            .label.clone()
+                            .map(|s| self.context.symbol_text(s).to_string())
                             .unwrap_or_else(|| format!("{}", idx));
                         self.context.dcx().emit_error(
                             format!(
                                 "cannot derive Copy for '{}': field '{}' in variant '{}' of type '{}' is not Copy",
-                                def.adt_def.name.as_str(),
+                                self.context.symbol_text(def.adt_def.name.clone()),
                                 field_name,
-                                variant.name.as_str(),
+                                self.context.symbol_text(variant.name.clone()),
                                 type_name
                             ),
                             Some(span),

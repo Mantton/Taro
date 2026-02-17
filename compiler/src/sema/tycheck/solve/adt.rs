@@ -53,7 +53,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     {
                         let error = Spanned::new(
                             TypeError::FieldNotVisible {
-                                name: def_field.name,
+                                name: def_field.name.clone(),
                                 struct_ty,
                             },
                             provided_field.label_span,
@@ -81,7 +81,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             if !found {
                 let error = Spanned::new(
                     TypeError::UnknownStructField {
-                        name: provided_field.name,
+                        name: provided_field.name.clone(),
                         struct_ty,
                     },
                     provided_field.label_span,
@@ -100,7 +100,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 {
                     let error = Spanned::new(
                         TypeError::FieldNotVisible {
-                            name: missing_field.name,
+                            name: missing_field.name.clone(),
                             struct_ty,
                         },
                         data.span,
@@ -109,7 +109,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 }
                 let error = Spanned::new(
                     TypeError::MissingStructField {
-                        name: missing_field.name,
+                        name: missing_field.name.clone(),
                         struct_ty,
                     },
                     data.span,

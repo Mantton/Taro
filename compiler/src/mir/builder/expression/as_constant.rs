@@ -25,11 +25,11 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let value = match &lit.value {
             thir::ConstantKind::Bool(b) => ConstantKind::Bool(*b),
             thir::ConstantKind::Rune(r) => ConstantKind::Rune(*r),
-            thir::ConstantKind::String(s) => ConstantKind::String(*s),
+            thir::ConstantKind::String(s) => ConstantKind::String(s.clone()),
             thir::ConstantKind::Integer(i) => ConstantKind::Integer(*i),
             thir::ConstantKind::Float(f) => ConstantKind::Float(*f),
             thir::ConstantKind::Unit => ConstantKind::Unit,
-            thir::ConstantKind::ConstParam(param) => ConstantKind::ConstParam(*param),
+            thir::ConstantKind::ConstParam(param) => ConstantKind::ConstParam(param.clone()),
         };
         Constant { ty: lit.ty, value }
     }

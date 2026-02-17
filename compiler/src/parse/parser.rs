@@ -343,6 +343,14 @@ impl Parser {
 }
 
 impl Parser {
+    fn intern_symbol(&mut self, text: &str) -> Symbol {
+        Symbol::new(text)
+    }
+
+    fn symbol_eq(&self, symbol: impl AsRef<str>, text: &str) -> bool {
+        symbol.as_ref() == text
+    }
+
     fn next_id(&mut self) -> NodeID {
         self.next_index.borrow_mut().next()
     }
@@ -576,14 +584,14 @@ impl Parser {
         let abi = match self.current_token() {
             Token::String { value } => {
                 self.bump();
-                Symbol::new(&value)
+                self.intern_symbol(&value)
             }
             _ => return Err(self.err_at_current(ParserError::ExpectedExternAbiString)),
         };
 
         if self.matches(Token::LBrace) {
             let declarations: Vec<Declaration<ast::ExternDeclarationKind>> =
-                self.parse_declaration_list(|p| p.parse_extern_block_declaration(abi))?;
+                self.parse_declaration_list(|p| p.parse_extern_block_declaration(abi.clone()))?;
             return Ok((
                 Identifier::emtpy(self.file.id),
                 DeclarationKind::ExternBlock(ast::ExternBlock { abi, declarations }),
@@ -843,7 +851,7 @@ impl Parser {
         };
 
         let decl = Constant {
-            identifier: identifier,
+            identifier: identifier.clone(),
             ty,
             expr,
         };
@@ -1023,7 +1031,7 @@ impl Parser {
             Token::Identifier { value: symbol } => {
                 let v = Identifier {
                     span,
-                    symbol: Symbol::new(&symbol),
+                    symbol: self.intern_symbol(&symbol),
                 };
                 self.bump();
                 return Ok(v);
@@ -1044,7 +1052,7 @@ impl Parser {
             Token::Identifier { value: symbol } => {
                 let v = Identifier {
                     span,
-                    symbol: Symbol::new(&symbol),
+                    symbol: self.intern_symbol(&symbol),
                 };
                 self.bump();
                 Ok(v)
@@ -1052,7 +1060,7 @@ impl Parser {
             Token::Init => {
                 let v = Identifier {
                     span,
-                    symbol: Symbol::new("init"),
+                    symbol: self.intern_symbol("init"),
                 };
                 self.bump();
                 Ok(v)
@@ -1103,24 +1111,32 @@ impl Parser {
 
         let identifier = self.parse_identifier()?;
 
-        // For @cfg attributes, parse the predicate expression with the new syntax
-        if identifier.symbol.as_str() == "cfg" && self.matches(Token::LParen) {
-            self.expect(Token::LParen)?;
-            let cfg_expr = self.parse_cfg_expr()?;
-            self.expect(Token::RParen)?;
-
-            let attr = Attribute {
-                identifier,
-                args: None,
-                cfg_expr: Some(cfg_expr),
-                span: lo.to(self.hi_span()),
-            };
-            return Ok(Some(attr));
-        }
-
-        // For other attributes, parse key-value args
+        // Parse attribute arguments. `@cfg(...)` supports both:
+        // - predicate syntax: `@cfg(os("macos"))`
+        // - legacy key/value syntax: `@cfg(target_os = "macos")`
+        let mut cfg_expr = None;
         let args = if self.matches(Token::LParen) {
-            Some(self.parse_attribute_args()?)
+            if self.symbol_eq(identifier.symbol.clone(), "cfg") {
+                let checkpoint = self.checkpoint();
+                self.bump(); // consume `(`
+                let parsed_cfg = self.parse_cfg_expr().and_then(|expr| {
+                    self.expect(Token::RParen)?;
+                    Ok(expr)
+                });
+
+                match parsed_cfg {
+                    Ok(expr) => {
+                        cfg_expr = Some(expr);
+                        None
+                    }
+                    Err(_) => {
+                        self.restore(checkpoint);
+                        Some(self.parse_attribute_args()?)
+                    }
+                }
+            } else {
+                Some(self.parse_attribute_args()?)
+            }
         } else {
             None
         };
@@ -1128,7 +1144,7 @@ impl Parser {
         let attr = Attribute {
             identifier,
             args,
-            cfg_expr: None,
+            cfg_expr,
             span: lo.to(self.hi_span()),
         };
         return Ok(Some(attr));
@@ -1192,7 +1208,7 @@ impl Parser {
 
         // Expect "cfg" identifier
         let ident = self.parse_identifier()?;
-        if ident.symbol.as_str() != "cfg" {
+        if !self.symbol_eq(ident.symbol, "cfg") {
             return Err(Spanned::new(
                 ParserError::ExpectedIdentifier, // TODO: better error
                 ident.span,
@@ -1284,7 +1300,7 @@ impl Parser {
         let value = match self.current_token() {
             Token::String { value } => {
                 self.bump();
-                Symbol::new(&value)
+                self.intern_symbol(&value)
             }
             _ => return Err(self.err_at_current(ParserError::ExpectedExpression)),
         };
@@ -2869,13 +2885,13 @@ impl Parser {
         let pattern = Pattern {
             id: self.next_id(),
             span: identifier.span,
-            kind: PatternKind::Identifier(identifier),
+            kind: PatternKind::Identifier(identifier.clone()),
         };
 
         let expression = if self.eat(Token::Assign) {
             self.parse_expression()?
         } else {
-            self.build_expr(ExpressionKind::Identifier(identifier), identifier.span)
+            self.build_expr(ExpressionKind::Identifier(identifier.clone()), identifier.span)
         };
 
         let span = lo.to(self.hi_span());
@@ -3406,8 +3422,8 @@ impl Parser {
 
         let name = if matches!(self.current_token(), Token::Identifier { .. }) {
             self.parse_identifier()?
-        } else if let Some(label) = label {
-            label
+        } else if let Some(label) = label.as_ref() {
+            label.clone()
         } else if underscore_label {
             Identifier::emtpy(self.file.id)
         } else {
@@ -3458,7 +3474,7 @@ impl Parser {
                 let anchor = self.cursor;
                 let ident = self.parse_identifier()?;
 
-                if ident.symbol.as_str() == "self" {
+                if self.symbol_eq(ident.symbol.clone(), "self") {
                     (SelfKind::Copy, Mutability::Immutable, ident)
                 } else {
                     self.cursor = anchor;
@@ -3503,7 +3519,7 @@ impl Parser {
     fn parse_self(&mut self) -> R<Identifier> {
         let ident = self.parse_identifier()?;
 
-        if ident.symbol.as_str() != "self" {
+        if !self.symbol_eq(ident.symbol.clone(), "self") {
             return Err(self.err_at_current(ParserError::ExpectedSelf));
         }
 
@@ -3964,6 +3980,13 @@ mod tests {
     use crate::parse::lexer::Lexer;
     use std::path::PathBuf;
 
+    #[derive(Default)]
+    struct Symbols;
+
+    fn symbol_text(_symbols: &Symbols, symbol: impl AsRef<str>) -> String {
+        symbol.as_ref().to_string()
+    }
+
     /// Helper to create a parser from source code and parse declarations
     fn parse_decls(input: &str) -> Result<Vec<Declaration>, Vec<Spanned<ParserError>>> {
         let dcx = DiagCtx::new(PathBuf::from("."));
@@ -3982,6 +4005,18 @@ mod tests {
         decls.into_iter().next().unwrap()
     }
 
+    fn parse_one_decl_with_symbols(input: &str) -> (Declaration, Symbols) {
+        let dcx = DiagCtx::new(PathBuf::from("."));
+        let file_id = dcx.add_file_mapping(PathBuf::from("test.taro"));
+        let lexer = Lexer::new(input, file_id);
+        let file = lexer.tokenize().expect("Lexing failed");
+        let next: NextNode = Default::default();
+        let parser = Parser::new(file, next);
+        let decls = parser.parse().expect("Parse failed");
+        assert_eq!(decls.len(), 1, "Expected exactly one declaration");
+        (decls.into_iter().next().unwrap(), Symbols)
+    }
+
     /// Helper to parse an expression from source
     fn parse_expr_str(input: &str) -> Box<Expression> {
         let dcx = DiagCtx::new(PathBuf::from("."));
@@ -3991,6 +4026,17 @@ mod tests {
         let next: NextNode = Default::default();
         let mut parser = Parser::new(file, next);
         parser.parse_expression().expect("Parse expression failed")
+    }
+
+    fn parse_expr_with_symbols(input: &str) -> (Box<Expression>, Symbols) {
+        let dcx = DiagCtx::new(PathBuf::from("."));
+        let file_id = dcx.add_file_mapping(PathBuf::from("test.taro"));
+        let lexer = Lexer::new(input, file_id);
+        let file = lexer.tokenize().expect("Lexing failed");
+        let next: NextNode = Default::default();
+        let mut parser = Parser::new(file, next);
+        let expr = parser.parse_expression().expect("Parse expression failed");
+        (expr, Symbols)
     }
 
     /// Helper to parse a type from source
@@ -5442,11 +5488,11 @@ mod tests {
     #[test]
     fn test_optional_chaining_simple() {
         // a?.b should parse as OptionalEvaluation(Member(OptionalUnwrap(a), "b"))
-        let expr = parse_expr_str("a?.b");
+        let (expr, symbols) = parse_expr_with_symbols("a?.b");
         match &expr.kind {
             ExpressionKind::OptionalEvaluation(inner) => match &inner.kind {
                 ExpressionKind::Member { target, name } => {
-                    assert_eq!(name.symbol.as_str(), "b");
+                    assert_eq!(symbol_text(&symbols, name.symbol.clone()), "b");
                     assert!(matches!(target.kind, ExpressionKind::OptionalUnwrap(_)));
                 }
                 _ => panic!("Expected Member inside OptionalEvaluation"),
@@ -5459,7 +5505,7 @@ mod tests {
     fn test_optional_chaining_nested() {
         // a?.b?.c should have the structure:
         // OptionalEvaluation(Member(OptionalUnwrap(Member(OptionalUnwrap(a), "b")), "c"))
-        let expr = parse_expr_str("a?.b?.c");
+        let (expr, symbols) = parse_expr_with_symbols("a?.b?.c");
         match &expr.kind {
             ExpressionKind::OptionalEvaluation(inner) => {
                 // Outer: Member(.., "c")
@@ -5468,7 +5514,7 @@ mod tests {
                         target: outer_target,
                         name: outer_name,
                     } => {
-                        assert_eq!(outer_name.symbol.as_str(), "c");
+                        assert_eq!(symbol_text(&symbols, outer_name.symbol.clone()), "c");
                         // Should be OptionalUnwrap(Member(..))
                         match &outer_target.kind {
                             ExpressionKind::OptionalUnwrap(middle) => {
@@ -5478,7 +5524,10 @@ mod tests {
                                         target: inner_target,
                                         name: inner_name,
                                     } => {
-                                        assert_eq!(inner_name.symbol.as_str(), "b");
+                                        assert_eq!(
+                                            symbol_text(&symbols, inner_name.symbol.clone()),
+                                            "b"
+                                        );
                                         // Should be OptionalUnwrap(a)
                                         assert!(matches!(
                                             inner_target.kind,
@@ -5513,11 +5562,14 @@ mod tests {
     #[test]
     fn test_extern_standalone_function() {
         let input = r#"extern "C" func malloc(size: int32) -> *u8;"#;
-        let decl = parse_one_decl(input);
+        let (decl, symbols) = parse_one_decl_with_symbols(input);
         match &decl.kind {
             DeclarationKind::Function(func) => {
-                assert_eq!(func.abi.as_ref().expect("Expected ABI").as_str(), "C");
-                assert_eq!(decl.identifier.symbol.as_str(), "malloc");
+                assert_eq!(
+                    symbol_text(&symbols, func.abi.as_ref().expect("Expected ABI").clone()),
+                    "C"
+                );
+                assert_eq!(symbol_text(&symbols, decl.identifier.symbol.clone()), "malloc");
             }
             _ => panic!("Expected function"),
         }
@@ -5527,24 +5579,31 @@ mod tests {
 
     #[test]
     fn test_simple_attribute() {
-        let decl = parse_one_decl("@inline func foo() {}");
+        let (decl, symbols) = parse_one_decl_with_symbols("@inline func foo() {}");
         assert_eq!(decl.attributes.len(), 1);
-        assert_eq!(decl.attributes[0].identifier.symbol.as_str(), "inline");
+        assert_eq!(
+            symbol_text(&symbols, decl.attributes[0].identifier.symbol.clone()),
+            "inline"
+        );
         assert!(decl.attributes[0].args.is_none());
     }
 
     #[test]
     fn test_attribute_with_key_value_string() {
-        let decl = parse_one_decl(r#"@cfg(target_os = "macos") func foo() {}"#);
+        let (decl, symbols) =
+            parse_one_decl_with_symbols(r#"@cfg(target_os = "macos") func foo() {}"#);
         assert_eq!(decl.attributes.len(), 1);
-        assert_eq!(decl.attributes[0].identifier.symbol.as_str(), "cfg");
+        assert_eq!(
+            symbol_text(&symbols, decl.attributes[0].identifier.symbol.clone()),
+            "cfg"
+        );
         let args = decl.attributes[0].args.as_ref().expect("Expected args");
         assert_eq!(args.items.len(), 1);
         match &args.items[0] {
             AttributeArg::KeyValue { key, value, .. } => {
-                assert_eq!(key.symbol.as_str(), "target_os");
+                assert_eq!(symbol_text(&symbols, key.symbol.clone()), "target_os");
                 match value {
-                    Literal::String { value } => assert_eq!(value.as_str(), "macos"),
+                    Literal::String { value } => assert_eq!(value, "macos"),
                     _ => panic!("Expected string literal"),
                 }
             }
@@ -5554,51 +5613,65 @@ mod tests {
 
     #[test]
     fn test_attribute_with_multiple_args() {
-        let decl =
-            parse_one_decl(r#"@cfg(target_os = "linux", target_arch = "x86_64") func foo() {}"#);
+        let (decl, symbols) = parse_one_decl_with_symbols(
+            r#"@cfg(target_os = "linux", target_arch = "x86_64") func foo() {}"#,
+        );
         assert_eq!(decl.attributes.len(), 1);
         let args = decl.attributes[0].args.as_ref().expect("Expected args");
         assert_eq!(args.items.len(), 2);
 
         match &args.items[0] {
-            AttributeArg::KeyValue { key, .. } => assert_eq!(key.symbol.as_str(), "target_os"),
+            AttributeArg::KeyValue { key, .. } => {
+                assert_eq!(symbol_text(&symbols, key.symbol.clone()), "target_os")
+            }
             _ => panic!("Expected key-value"),
         }
         match &args.items[1] {
-            AttributeArg::KeyValue { key, .. } => assert_eq!(key.symbol.as_str(), "target_arch"),
+            AttributeArg::KeyValue { key, .. } => {
+                assert_eq!(symbol_text(&symbols, key.symbol.clone()), "target_arch")
+            }
             _ => panic!("Expected key-value"),
         }
     }
 
     #[test]
     fn test_attribute_with_flag() {
-        let decl = parse_one_decl("@cfg(test) func foo() {}");
+        let (decl, symbols) = parse_one_decl_with_symbols("@cfg(test) func foo() {}");
         assert_eq!(decl.attributes.len(), 1);
         let args = decl.attributes[0].args.as_ref().expect("Expected args");
         assert_eq!(args.items.len(), 1);
         match &args.items[0] {
-            AttributeArg::Flag { key, .. } => assert_eq!(key.symbol.as_str(), "test"),
+            AttributeArg::Flag { key, .. } => {
+                assert_eq!(symbol_text(&symbols, key.symbol.clone()), "test")
+            }
             _ => panic!("Expected flag arg"),
         }
     }
 
     #[test]
     fn test_multiple_attributes() {
-        let decl = parse_one_decl(r#"@inline @cfg(target_os = "macos") func foo() {}"#);
+        let (decl, symbols) =
+            parse_one_decl_with_symbols(r#"@inline @cfg(target_os = "macos") func foo() {}"#);
         assert_eq!(decl.attributes.len(), 2);
-        assert_eq!(decl.attributes[0].identifier.symbol.as_str(), "inline");
-        assert_eq!(decl.attributes[1].identifier.symbol.as_str(), "cfg");
+        assert_eq!(
+            symbol_text(&symbols, decl.attributes[0].identifier.symbol.clone()),
+            "inline"
+        );
+        assert_eq!(
+            symbol_text(&symbols, decl.attributes[1].identifier.symbol.clone()),
+            "cfg"
+        );
     }
 
     #[test]
     fn test_attribute_with_integer_value() {
-        let decl = parse_one_decl("@version(major = 1) func foo() {}");
+        let (decl, symbols) = parse_one_decl_with_symbols("@version(major = 1) func foo() {}");
         assert_eq!(decl.attributes.len(), 1);
         let args = decl.attributes[0].args.as_ref().expect("Expected args");
         assert_eq!(args.items.len(), 1);
         match &args.items[0] {
             AttributeArg::KeyValue { key, value, .. } => {
-                assert_eq!(key.symbol.as_str(), "major");
+                assert_eq!(symbol_text(&symbols, key.symbol.clone()), "major");
                 assert!(matches!(value, Literal::Integer { .. }));
             }
             _ => panic!("Expected key-value"),

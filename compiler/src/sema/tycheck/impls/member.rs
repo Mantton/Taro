@@ -28,7 +28,7 @@ impl<'ctx> Actor<'ctx> {
         };
 
         // Check if this impl has an interface (trait impl vs inherent impl)
-        let interface_id = self.impl_interfaces.get(&impl_id).copied().flatten();
+        let interface_id = self.impl_interfaces.get(&impl_id).cloned().flatten();
         let _ = interface_id.is_some();
 
         match &decl.kind {
@@ -38,12 +38,12 @@ impl<'ctx> Actor<'ctx> {
                     .prototype
                     .inputs
                     .first()
-                    .is_some_and(|param| param.name.symbol.as_str() == "self");
+                    .is_some_and(|param| self.context.symbol_eq(param.name.symbol.clone(), "self"));
                 self.collect_function(
                     head,
                     impl_id,
                     decl.id,
-                    decl.identifier,
+                    decl.identifier.clone(),
                     has_self,
                     interface_id,
                 );
@@ -67,23 +67,29 @@ impl<'ctx> Actor<'ctx> {
 
             let set: &mut MemberSet = if let Some(interface_id) = interface_id {
                 // Trait impl: store in trait_methods with (interface_id, name) key
-                let key = (interface_id, ident.symbol);
+                let key = (interface_id, ident.symbol.clone());
                 index.trait_methods.entry(key).or_default()
             } else {
                 // Inherent impl: store in inherent_static or inherent_instance
                 if has_self {
-                    index.inherent_instance.entry(ident.symbol).or_default()
+                    index.inherent_instance.entry(ident.symbol.clone()).or_default()
                 } else {
-                    index.inherent_static.entry(ident.symbol).or_default()
+                    index.inherent_static.entry(ident.symbol.clone()).or_default()
                 }
             };
 
             if let Some(previous) = set.fingerprints.insert(fingerprint, def_id) {
-                let msg = format!("invalid redeclaration of '{}'", ident.symbol.as_str());
+                let msg = format!(
+                    "invalid redeclaration of '{}'",
+                    self.context.symbol_text(ident.symbol.clone())
+                );
                 self.context.dcx().emit_error(msg, Some(ident.span));
 
                 let prev_ident = self.context.definition_ident(previous);
-                let msg = format!("'{}' is initially defined here", ident.symbol.as_str());
+                let msg = format!(
+                    "'{}' is initially defined here",
+                    self.context.symbol_text(ident.symbol.clone())
+                );
                 self.context.dcx().emit_info(msg, Some(prev_ident.span));
                 return;
             }

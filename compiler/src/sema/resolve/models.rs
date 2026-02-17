@@ -262,7 +262,7 @@ pub enum UsageKind {
     Single(UsageBinding),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct UsageBinding {
     pub node_id: NodeID,
     pub source: Identifier,
@@ -341,7 +341,7 @@ pub enum ResolutionError {
 }
 
 impl ResolutionError {
-    pub fn diag(&self) -> Diagnostic {
+    pub fn diag(&self, gcx: crate::compile::context::Gcx<'_>) -> Diagnostic {
         match self {
             ResolutionError::Expectation {
                 expectation,
@@ -357,28 +357,34 @@ impl ResolutionError {
             ),
 
             ResolutionError::UnknownSymbol(ident) => Diagnostic::error(
-                format!("unknown symbol `{}`", ident.symbol),
+                format!("unknown symbol `{}`", gcx.symbol_text(ident.symbol.clone())),
                 Some(ident.span),
             ),
 
             ResolutionError::AlreadyInScope(ident) => Diagnostic::error(
-                format!("`{}` is already in scope", ident.symbol),
+                format!("`{}` is already in scope", gcx.symbol_text(ident.symbol.clone())),
                 Some(ident.span),
             ),
 
             ResolutionError::AmbiguousUsage(ident) => Diagnostic::error(
-                format!("ambiguous usage of `{}`", ident.symbol),
+                format!("ambiguous usage of `{}`", gcx.symbol_text(ident.symbol.clone())),
                 Some(ident.span),
             ),
 
             ResolutionError::VariableNotBoundInPattern(binding_err, span) => {
                 let mut base = Diagnostic::error(
-                    format!("variable not bound in pattern: {}", binding_err.name),
+                    format!(
+                        "variable not bound in pattern: {}",
+                        gcx.symbol_text(binding_err.name.clone())
+                    ),
                     Some(*span),
                 );
 
                 for &sp in binding_err.target.iter() {
-                    let msg = format!("pattern does not bind variable '{}'", binding_err.name);
+                    let msg = format!(
+                        "pattern does not bind variable '{}'",
+                        gcx.symbol_text(binding_err.name.clone())
+                    );
                     base.children
                         .push(Diagnostic::new(msg, Some(sp), DiagnosticLevel::Warn));
                 }
@@ -390,7 +396,7 @@ impl ResolutionError {
                 Diagnostic::error(
                     format!(
                         "identifier `{}` bound more than once in parameter list",
-                        ident.symbol
+                        gcx.symbol_text(ident.symbol.clone())
                     ),
                     Some(ident.span),
                 )
@@ -399,13 +405,13 @@ impl ResolutionError {
             ResolutionError::IdentifierBoundMoreThanOnceInSamePattern(ident) => Diagnostic::error(
                 format!(
                     "identifier `{}` bound more than once in the same pattern",
-                    ident.symbol
+                    gcx.symbol_text(ident.symbol.clone())
                 ),
                 Some(ident.span),
             ),
 
             ResolutionError::UnknownMember(ident) => Diagnostic::error(
-                format!("unknown member `{}`", ident.symbol),
+                format!("unknown member `{}`", gcx.symbol_text(ident.symbol.clone())),
                 Some(ident.span),
             ),
 
@@ -644,7 +650,7 @@ impl TypeHead {
     pub fn format(self, gcx: crate::compile::context::Gcx) -> String {
         match self {
             TypeHead::Primary(p) => p.name_str().into(),
-            TypeHead::Nominal(id) => gcx.definition_ident(id).symbol.as_str().into(),
+            TypeHead::Nominal(id) => gcx.symbol_text(gcx.definition_ident(id).symbol).into(),
             TypeHead::Closure(_) => "closure".into(),
             TypeHead::Reference(m) => format!("&{}_", m.display_str()),
             TypeHead::Pointer(m) => format!("*{}_", m.display_str()),

@@ -32,7 +32,7 @@ pub fn check_conformance_implied_bounds<'ctx>(
 
         // 2. Check Associated Type Bounds
         let requirements = context.with_type_database(interface_id.package(), |db| {
-            db.interface_requirements.get(&interface_id).copied()
+            db.interface_requirements.get(&interface_id).cloned()
         });
 
         if let Some(reqs) = requirements {

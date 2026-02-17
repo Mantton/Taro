@@ -51,7 +51,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             prev = Some(ty);
 
             // Field lookup (structs only for now).
-            if let Some((field, index)) = self.lookup_field(ty, name.symbol) {
+            if let Some((field, index)) = self.lookup_field(ty, name.symbol.clone()) {
                 if !self
                     .gcx()
                     .is_visibility_allowed(field.visibility, self.current_def)
@@ -72,7 +72,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             }
 
             // Instance methods.
-            let candidates = self.lookup_instance_candidates(ty, name.symbol);
+            let candidates = self.lookup_instance_candidates(ty, name.symbol.clone());
             let candidates = self.filter_extension_candidates(candidates, ty, span);
             if !candidates.is_empty() {
                 self.record_adjustments(receiver_node, adjustments);
@@ -108,7 +108,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         let error = Spanned::new(
             TypeError::NoSuchMember {
-                name: name.symbol,
+                name: name.symbol.clone(),
                 on: final_ty,
             },
             span,
@@ -154,7 +154,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let Some(head) = self.type_head_from_type(base_ty) else {
             let error = Spanned::new(
                 TypeError::NoSuchMember {
-                    name: name.symbol,
+                    name: name.symbol.clone(),
                     on: base_ty,
                 },
                 span,
@@ -162,7 +162,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return SolverResult::Error(vec![error]);
         };
 
-        let resolution = match self.resolve_static_member_resolution(head, base_ty, name, span) {
+        let resolution = match self.resolve_static_member_resolution(head, base_ty, name.clone(), span)
+        {
             Ok(resolution) => resolution,
             Err(errors) => return SolverResult::Error(errors),
         };
@@ -179,7 +180,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         GenericsBuilder::for_item(self.gcx(), def_id, |param, _| {
                             base_args
                                 .get(param.index)
-                                .copied()
+                                .cloned()
                                 .unwrap_or_else(|| self.icx.var_for_generic_param(param, span))
                         })
                     } else {
@@ -234,7 +235,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             _ => {
                 let error = Spanned::new(
                     TypeError::NoSuchMember {
-                        name: name.symbol,
+                        name: name.symbol.clone(),
                         on: base_ty,
                     },
                     span,
@@ -268,7 +269,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let struct_def = instantiate_struct_definition_with_args(self.gcx(), struct_def, args);
         for (idx, field) in struct_def.fields.iter().enumerate() {
             if field.name == name {
-                return Some((*field, idx));
+                return Some((field.clone(), idx));
             }
         }
         None
@@ -433,18 +434,18 @@ impl<'ctx> ConstraintSolver<'ctx> {
             }
         }
 
-        let mut candidates = self.collect_static_member_candidates(head, name.symbol);
+        let mut candidates = self.collect_static_member_candidates(head, name.symbol.clone());
 
         // UFCS: If no static members found, look for instance methods.
         // This allows calling `Interface.method(value)` where `method` is an instance method.
         if candidates.is_empty() {
-            candidates = self.collect_instance_member_candidates(head, name.symbol);
+            candidates = self.collect_instance_member_candidates(head, name.symbol.clone());
         }
 
         if candidates.is_empty() {
             let error = Spanned::new(
                 TypeError::NoSuchMember {
-                    name: name.symbol,
+                    name: name.symbol.clone(),
                     on: base_ty,
                 },
                 span,
@@ -460,7 +461,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         if visible.is_empty() {
             let error = Spanned::new(
                 TypeError::NoSuchMember {
-                    name: name.symbol,
+                    name: name.symbol.clone(),
                     on: base_ty,
                 },
                 span,
@@ -592,7 +593,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let Some(method_name) = std_interface.operator_method_name() else {
             return Vec::new();
         };
-        let method_symbol = Symbol::new(method_name);
+        let method_symbol = gcx.intern_symbol(method_name);
 
         // Collect all explicit bounds from the current parameter environment.
         let mut bounds = self.bounds_for_type_in_scope(ty);
@@ -710,7 +711,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         // Get the method name for this operator
         let method_name = std_interface.operator_method_name()?;
-        let method_symbol = Symbol::new(method_name);
+        let method_symbol = gcx.intern_symbol(method_name);
 
         // Look up the method witness
         // We need to find the method requirement ID first

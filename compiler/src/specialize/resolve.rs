@@ -207,7 +207,7 @@ fn interface_args_from_call<'ctx>(
     if args.len() < count {
         return None;
     }
-    let slice: Vec<_> = args.iter().take(count).copied().collect();
+    let slice: Vec<_> = args.iter().take(count).cloned().collect();
     Some(gcx.store.interners.intern_generic_args(slice))
 }
 
@@ -230,7 +230,7 @@ fn instantiate_generic_args_with_args<'ctx>(
                 out.push(GenericArgument::Type(normalized));
             }
             GenericArgument::Const(c) => {
-                let instantiated = instantiate_const_with_args(gcx, *c, args);
+                let instantiated = instantiate_const_with_args(gcx, c.clone(), args);
                 out.push(GenericArgument::Const(instantiated));
             }
         }

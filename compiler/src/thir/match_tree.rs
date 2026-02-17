@@ -201,11 +201,11 @@ pub fn compile_match<'ctx>(
 
 impl<'ctx> MatchReport<'ctx> {
     /// Returns a list of patterns not covered by the match expression.
-    pub fn missing_patterns(&self) -> Vec<String> {
+    pub fn missing_patterns(&self, gcx: GlobalContext<'ctx>) -> Vec<String> {
         let mut names = HashSet::new();
         let mut steps = Vec::new();
 
-        self.add_missing_patterns(&self.tree.decision, &mut steps, &mut names);
+        self.add_missing_patterns(&self.tree.decision, &mut steps, &mut names, gcx);
 
         let mut missing: Vec<String> = names.into_iter().collect();
         missing.sort();
@@ -217,6 +217,7 @@ impl<'ctx> MatchReport<'ctx> {
         node: &Decision<'ctx>,
         terms: &mut Vec<Term<'ctx>>,
         missing: &mut HashSet<String>,
+        gcx: GlobalContext<'ctx>,
     ) {
         match node {
             Decision::Success(_) => {}
@@ -235,7 +236,7 @@ impl<'ctx> MatchReport<'ctx> {
                 missing.insert(name);
             }
             Decision::Guard(_, _, fallback) => {
-                self.add_missing_patterns(fallback, terms, missing);
+                self.add_missing_patterns(fallback, terms, missing, gcx);
             }
             Decision::Switch(var, cases, fallback) => {
                 for case in cases {
@@ -260,18 +261,18 @@ impl<'ctx> MatchReport<'ctx> {
                         Constructor::Variant { name, .. } => {
                             terms.push(Term::new(
                                 *var,
-                                name.as_str().to_string(),
+                                gcx.symbol_text(name.clone()).to_string(),
                                 case.arguments.clone(),
                             ));
                         }
                     }
 
-                    self.add_missing_patterns(&case.body, terms, missing);
+                    self.add_missing_patterns(&case.body, terms, missing, gcx);
                     terms.pop();
                 }
 
                 if let Some(node) = fallback {
-                    self.add_missing_patterns(node, terms, missing);
+                    self.add_missing_patterns(node, terms, missing, gcx);
                 }
             }
         }
@@ -433,9 +434,9 @@ impl<'ctx> Compiler<'ctx> {
                     .iter()
                     .enumerate()
                     .map(|(idx, variant)| {
-                        let vars = self.new_variables(&variant_field_types(*variant));
+                        let vars = self.new_variables(&variant_field_types(variant.clone()));
                         let cons = Constructor::Variant {
-                            name: variant.name,
+                            name: variant.name.clone(),
                             index: idx,
                         };
                         (cons, vars, Vec::new())
@@ -517,7 +518,7 @@ impl<'ctx> Compiler<'ctx> {
                         variant,
                         subpatterns,
                     } => {
-                        let idx = self.variant_index(*definition, *variant);
+                        let idx = self.variant_index(definition.clone(), variant.clone());
                         let mut cols = row.columns;
                         let vars = cases[idx].1.clone();
                         self.apply_field_patterns(&mut cols, &vars, subpatterns, col.pattern.span);
@@ -594,7 +595,7 @@ impl<'ctx> Compiler<'ctx> {
                     mode,
                 } => {
                     row.bindings.push(Binding {
-                        name: *name,
+                        name: name.clone(),
                         local: *local,
                         ty: *ty,
                         mode: *mode,
@@ -771,11 +772,11 @@ fn variant_field_types<'ctx>(variant: EnumVariant<'ctx>) -> Vec<Ty<'ctx>> {
 
 fn literal_key(pattern: &Pattern<'_>) -> LiteralKey {
     match &pattern.kind {
-        PatternKind::Constant { value } => match value.value {
-            ConstantKind::Integer(i) => LiteralKey::Integer(i),
+        PatternKind::Constant { value } => match &value.value {
+            ConstantKind::Integer(i) => LiteralKey::Integer(*i),
             ConstantKind::Float(f) => LiteralKey::Float(f.to_bits()),
-            ConstantKind::Rune(r) => LiteralKey::Rune(r),
-            ConstantKind::String(s) => LiteralKey::String(s),
+            ConstantKind::Rune(r) => LiteralKey::Rune(*r),
+            ConstantKind::String(s) => LiteralKey::String(s.clone()),
             ConstantKind::Bool(_) | ConstantKind::Unit => {
                 unreachable!("boolean or unit literal used as infinite constructor")
             }
@@ -869,8 +870,8 @@ fn expand_pattern_or<'ctx>(pattern: &Pattern<'ctx>) -> Vec<Pattern<'ctx>> {
                 ty: pattern.ty,
                 span: pattern.span,
                 kind: PatternKind::Variant {
-                    definition: *definition,
-                    variant: *variant,
+                    definition: definition.clone(),
+                    variant: variant.clone(),
                     subpatterns: fields,
                 },
             })

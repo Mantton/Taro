@@ -80,7 +80,7 @@ impl<'ctx> Actor<'ctx> {
             match &declaration.kind {
                 AssociatedDeclarationKind::Type(_) => {
                     let assoc_id = declaration.id;
-                    assoc_types.insert(declaration.identifier.symbol, assoc_id);
+                    assoc_types.insert(declaration.identifier.symbol.clone(), assoc_id);
 
                     // TODO: Record Type for ID
                 }

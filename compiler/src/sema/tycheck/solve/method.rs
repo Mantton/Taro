@@ -108,7 +108,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 if matches!(candidate_ty.kind(), TyKind::Parameter(_)) {
                     let bounds = self.bounds_for_type_in_scope(candidate_ty);
                     if !bounds.is_empty() {
-                        let list = self.gcx().store.arenas.global.alloc_slice_copy(&bounds);
+                        let list = self.gcx().store.arenas.global.alloc_slice_clone(&bounds);
                         if let Some(result) = self.solve_interface_method_call(
                             &data,
                             candidate_ty,
@@ -138,7 +138,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 let candidates = self.lookup_instance_candidates_method(
                     candidate_ty,
                     receiver_ty,
-                    name.symbol,
+                    name.symbol.clone(),
                     *span,
                 );
                 let Some(candidates) = candidates else {
@@ -312,7 +312,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         return SolverResult::Error(vec![Spanned::new(
             TypeError::NoSuchMember {
-                name: name.symbol,
+                name: name.symbol.clone(),
                 on: final_on,
             },
             name.span,
@@ -386,7 +386,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             candidate_ty,
             reciever_ty,
             interfaces,
-            data.name.symbol,
+            data.name.symbol.clone(),
             data.span,
         );
         if candidates.is_empty() {
@@ -515,7 +515,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let TyKind::FnPointer { inputs, .. } = method_ty.kind() else {
             return false;
         };
-        let Some(expected) = inputs.first().copied() else {
+        let Some(expected) = inputs.first().cloned() else {
             return false;
         };
 
@@ -536,7 +536,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return iface.arguments;
         }
 
-        let mut args: Vec<GenericArgument<'ctx>> = iface.arguments.iter().copied().collect();
+        let mut args: Vec<GenericArgument<'ctx>> = iface.arguments.iter().cloned().collect();
         if let Some(first) = args.get_mut(0) {
             *first = GenericArgument::Type(self_ty);
         }
@@ -555,7 +555,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let args = GenericsBuilder::for_item(gcx, method_id, |param, _| {
             interface_args
                 .get(param.index)
-                .copied()
+                .cloned()
                 .unwrap_or_else(|| self.icx.var_for_generic_param(param, span))
         });
 

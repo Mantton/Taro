@@ -107,7 +107,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     GenericsBuilder::for_item(self.gcx(), source, |param, _| {
                         base_args
                             .get(param.index)
-                            .copied()
+                            .cloned()
                             .unwrap_or_else(|| self.icx.var_for_generic_param(param, location))
                     })
                 }
@@ -196,7 +196,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     GenericsBuilder::for_item(self.gcx(), source, |param, _| {
                         base_args
                             .get(param.index)
-                            .copied()
+                            .cloned()
                             .unwrap_or_else(|| self.icx.var_for_generic_param(param, location))
                     })
                 }

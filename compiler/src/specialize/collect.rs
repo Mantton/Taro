@@ -157,7 +157,7 @@ impl<'ctx> Collector<'ctx> {
         let package = *packages
             .get(&def_id.package())
             .expect("mir package for definition");
-        package.functions.get(&def_id).copied().unwrap_or_else(|| {
+        package.functions.get(&def_id).cloned().unwrap_or_else(|| {
             panic!("mir body for definition");
         })
     }
@@ -209,7 +209,7 @@ impl<'ctx> Collector<'ctx> {
                 GenericArgument::Const(c) => {
                     let new_c =
                         crate::sema::tycheck::utils::instantiate::instantiate_const_with_args(
-                            self.gcx, *c, subst,
+                            self.gcx, c.clone(), subst,
                         );
                     GenericArgument::Const(new_c)
                 }

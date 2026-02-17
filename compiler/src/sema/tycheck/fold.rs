@@ -119,14 +119,14 @@ impl<'ctx> TypeSuperFoldable<'ctx> for TyKind<'ctx> {
                             .bindings
                             .iter()
                             .map(|b| crate::sema::models::AssociatedTypeBinding {
-                                name: b.name,
+                                name: b.name.clone(),
                                 ty: b.ty.fold_with(folder),
                             })
                             .collect();
                         InterfaceReference {
                             id: iface.id,
                             arguments: fold_generic_args(folder.gcx(), iface.arguments, folder),
-                            bindings: folder.gcx().store.arenas.global.alloc_slice_copy(&bindings),
+                            bindings: folder.gcx().store.arenas.global.alloc_slice_clone(&bindings),
                         }
                     })
                     .collect();
@@ -135,7 +135,7 @@ impl<'ctx> TypeSuperFoldable<'ctx> for TyKind<'ctx> {
                     .store
                     .arenas
                     .global
-                    .alloc_slice_copy(&folded_refs);
+                    .alloc_slice_clone(&folded_refs);
                 BoxedExistential { interfaces: list }
             }
 
@@ -188,7 +188,7 @@ fn fold_generic_args<'ctx, F: TypeFolder<'ctx> + ?Sized>(
         .iter()
         .map(|arg| match arg {
             GenericArgument::Type(ty) => GenericArgument::Type(ty.fold_with(folder)),
-            GenericArgument::Const(c) => GenericArgument::Const(fold_const(*c, folder)),
+            GenericArgument::Const(c) => GenericArgument::Const(fold_const(c.clone(), folder)),
         })
         .collect();
 
@@ -209,10 +209,10 @@ impl<'ctx> TypeFoldable<'ctx> for StructDefinition<'ctx> {
         let fields: Vec<_> = self
             .fields
             .iter()
-            .map(|field| field.fold_with(folder))
+            .map(|field| field.clone().fold_with(folder))
             .collect();
 
-        let fields = folder.gcx().store.arenas.global.alloc_slice_copy(&fields);
+        let fields = folder.gcx().store.arenas.global.alloc_slice_clone(&fields);
         StructDefinition {
             adt_def: self.adt_def,
             fields,
@@ -235,14 +235,14 @@ impl<'ctx> TypeFoldable<'ctx> for EnumVariantKind<'ctx> {
             EnumVariantKind::Unit => self,
             EnumVariantKind::Tuple(fields) => {
                 let folded_fields: Vec<_> =
-                    fields.iter().map(|field| field.fold_with(folder)).collect();
+                    fields.iter().map(|field| field.clone().fold_with(folder)).collect();
 
                 let folded_fields = folder
                     .gcx()
                     .store
                     .arenas
                     .global
-                    .alloc_slice_copy(&folded_fields);
+                    .alloc_slice_clone(&folded_fields);
                 EnumVariantKind::Tuple(folded_fields)
             }
         }
@@ -263,10 +263,10 @@ impl<'ctx> TypeFoldable<'ctx> for EnumDefinition<'ctx> {
         let variants: Vec<_> = self
             .variants
             .iter()
-            .map(|variant| variant.fold_with(folder))
+            .map(|variant| variant.clone().fold_with(folder))
             .collect();
 
-        let variants = folder.gcx().store.arenas.global.alloc_slice_copy(&variants);
+        let variants = folder.gcx().store.arenas.global.alloc_slice_clone(&variants);
         EnumDefinition {
             adt_def: self.adt_def,
             variants,

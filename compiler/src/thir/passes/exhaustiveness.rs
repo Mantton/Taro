@@ -56,7 +56,7 @@ impl<'ctx> ExhaustivenessPass<'ctx> {
         }
 
         let result = compile_match(self.gcx, func, scrutinee, arms);
-        let missing = result.missing_patterns();
+        let missing = result.missing_patterns(self.gcx);
         let diagnostics = result.diagnostics.clone();
         func.match_trees.insert(expr_id, result.tree);
 

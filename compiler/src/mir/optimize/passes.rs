@@ -138,7 +138,7 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                     let mut proj = dest.projection.clone();
                                     let field_ty = match dest_ty.kind() {
                                         TyKind::Tuple(items) => {
-                                            items.get(i).copied().unwrap_or(dest_ty)
+                                            items.get(i).cloned().unwrap_or(dest_ty)
                                         }
                                         _ => dest_ty,
                                     };
@@ -233,7 +233,7 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                         {
                                             let mut proj = dest.projection.clone();
                                             proj.push(PlaceElem::VariantDowncast {
-                                                name: variant_data.name,
+                                                name: variant_data.name.clone(),
                                                 index: variant_index,
                                             });
                                             proj.push(PlaceElem::Field(idx, *ty));

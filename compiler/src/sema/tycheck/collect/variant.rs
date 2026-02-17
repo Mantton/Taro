@@ -9,7 +9,6 @@ use crate::{
         },
         tycheck::lower::{DefTyLoweringCtx, TypeLowerer},
     },
-    span::Symbol,
 };
 use rustc_hash::FxHashSet;
 
@@ -72,16 +71,16 @@ impl<'ctx> Actor<'ctx> {
                     let mut out: Vec<EnumVariantField<'ctx>> = Vec::with_capacity(fields.len());
                     for field in fields {
                         let ty = ctx.lowerer().lower_type(&field.ty);
-                        let label = field.label.map(|l| l.identifier.symbol);
+                        let label = field.label.clone().map(|l| l.identifier.symbol);
                         out.push(EnumVariantField { label, ty });
                     }
-                    let fields = self.context.store.arenas.global.alloc_slice_copy(&out);
+                    let fields = self.context.store.arenas.global.alloc_slice_clone(&out);
                     EnumVariantKind::Tuple(fields)
                 }
             };
 
             variants.push(EnumVariant {
-                name: variant.identifier.symbol,
+                name: variant.identifier.symbol.clone(),
                 def_id: variant.def_id,
                 ctor_def_id: variant.ctor_def_id,
                 kind,
@@ -89,7 +88,7 @@ impl<'ctx> Actor<'ctx> {
             });
         }
 
-        let variants = self.context.store.arenas.global.alloc_slice_copy(&variants);
+        let variants = self.context.store.arenas.global.alloc_slice_clone(&variants);
         let def = EnumDefinition { adt_def, variants };
         self.cache_variant_constructors(id, &def);
         self.context.cache_enum_definition(id, def);
@@ -110,10 +109,10 @@ impl<'ctx> Actor<'ctx> {
 
                     for (idx, field) in fields.iter().enumerate() {
                         let name = field
-                            .label
-                            .unwrap_or_else(|| Symbol::new(&format!("arg{}", idx)));
+                            .label.clone()
+                            .unwrap_or_else(|| self.context.intern_symbol(&format!("arg{}", idx)));
                         inputs.push(LabeledFunctionParameter {
-                            label: field.label,
+                            label: field.label.clone(),
                             name,
                             ty: field.ty,
                             default_provider: None,

@@ -21,7 +21,7 @@ pub fn validate_entry_point(
                 .root
                 .submodules
                 .iter()
-                .find(|m| m.name.as_str() == ROOT_MODULE_NAME);
+                .find(|m| gcx.symbol_eq(m.name.clone(), ROOT_MODULE_NAME));
             let Some(main_mod) = main_mod else {
                 gcx.dcx().emit_error(
                     "expected a `main` module containing an entry-point function".into(),
@@ -69,7 +69,7 @@ fn find_main_in_module(
     for decl in &module.declarations {
         if let DeclarationKind::Function(_) = &decl.kind {
             let ident = gcx.definition_ident(decl.id);
-            if ident.symbol.as_str() == ROOT_MODULE_NAME {
+            if gcx.symbol_eq(ident.symbol, ROOT_MODULE_NAME) {
                 if found.is_some() {
                     gcx.dcx().emit_error(
                         "multiple `main` entry-point functions found".into(),

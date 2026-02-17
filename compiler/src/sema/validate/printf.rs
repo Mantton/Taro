@@ -32,7 +32,7 @@ fn find_std_format_function(gcx: GlobalContext<'_>, name: &str) -> Option<Defini
     let output = gcx.resolution_output(std_pkg);
     output.definition_to_ident.iter().find_map(|(id, ident)| {
         let kind = output.definition_to_kind.get(id)?;
-        if *kind == DefinitionKind::Function && ident.symbol.as_str() == name {
+        if *kind == DefinitionKind::Function && gcx.symbol_eq(ident.symbol.clone(), name) {
             Some(*id)
         } else {
             None
@@ -103,13 +103,12 @@ impl<'ctx> Actor<'ctx, '_> {
             return;
         };
 
-        let format_text = format_literal.as_str();
+        let format_text = self.gcx.symbol_text(format_literal.clone());
+        let format_text = format_text.as_ref();
         let specs = match parse_specs(format_text) {
             Ok(specs) => specs,
             Err(FormatParseError::DanglingPercent) => {
-                let message = format!(
-                    "{format_fn_name} format string ends with dangling '%'"
-                );
+                let message = format!("{format_fn_name} format string ends with dangling '%'");
                 self.gcx
                     .dcx()
                     .emit_error(message.into(), Some(format_arg.expression.span));

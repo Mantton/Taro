@@ -111,7 +111,7 @@ impl Actor<'_, '_> {
     fn lower_attribute_arg(&mut self, arg: ast::AttributeArg) -> hir::AttributeArg {
         match arg {
             ast::AttributeArg::KeyValue { key, value, span } => {
-                let hir_lit = match convert_ast_literal(value) {
+                let hir_lit = match convert_ast_literal(self.context, value) {
                     Ok(lit) => lit,
                     Err(err) => {
                         self.context.dcx.emit_error(err.into(), Some(span));
@@ -164,7 +164,7 @@ impl Actor<'_, '_> {
                 return node
                     .declarations
                     .into_iter()
-                    .map(|decl| self.lower_extern_declaration(decl, node.abi))
+                    .map(|decl| self.lower_extern_declaration(decl, node.abi.clone()))
                     .collect();
             }
             ast::DeclarationKind::Constant(node) => {
@@ -198,7 +198,7 @@ impl Actor<'_, '_> {
     /// Returns true if all @cfg conditions pass (or if there are no @cfg attrs).
     fn should_include_declaration(&self, attributes: &ast::AttributeList) -> bool {
         for attr in attributes {
-            if attr.identifier.symbol.as_str() == "cfg" {
+            if self.context.symbol_eq(attr.identifier.symbol.clone(), "cfg") {
                 if !self.evaluate_cfg(attr) {
                     return false;
                 }
@@ -227,13 +227,14 @@ impl Actor<'_, '_> {
 
         // Parse triple for OS and arch (format: arch-vendor-os or arch-vendor-os-env)
         let parts: Vec<&str> = triple_str.split('-').collect();
-        let target_arch = parts.first().copied().unwrap_or("");
+        let target_arch = parts.first().cloned().unwrap_or("");
         let target_os = if parts.len() >= 3 { parts[2] } else { "" };
 
         for arg in &args.items {
             match arg {
                 ast::AttributeArg::KeyValue { key, value, .. } => {
-                    let key_str = key.symbol.as_str();
+                    let key_text = self.context.symbol_text(key.symbol.clone());
+                    let key_str = key_text.as_str();
                     let value_str = match value {
                         ast::Literal::String { value } => value.as_str(),
                         _ => continue, // Skip non-string values for now
@@ -285,7 +286,8 @@ impl Actor<'_, '_> {
                 }
                 ast::AttributeArg::Flag { key, .. } => {
                     // @cfg(debug)
-                    let key_str = key.symbol.as_str();
+                    let key_text = self.context.symbol_text(key.symbol.clone());
+                    let key_str = key_text.as_str();
                     match key_str {
                         "debug" => {
                             if !matches!(
@@ -323,8 +325,10 @@ impl Actor<'_, '_> {
     fn eval_cfg_expr_inner(&self, expr: &ast::CfgExpr, target: &TargetInfo) -> bool {
         match expr {
             ast::CfgExpr::Predicate { name, value, .. } => {
-                let name_str = name.symbol.as_str();
-                let value_str = value.as_str();
+                let name_text = self.context.symbol_text(name.symbol.clone());
+                let name_str = name_text.as_str();
+                let value_text = self.context.symbol_text(value.clone());
+                let value_str = value_text.as_str();
 
                 match name_str {
                     "os" => target.matches_os(value_str),
@@ -577,7 +581,8 @@ impl Actor<'_, '_> {
 
     fn lower_abi(&mut self, abi: Option<Symbol>, span: Span) -> Option<hir::Abi> {
         let Some(abi) = abi else { return None };
-        match abi.as_str() {
+        let abi_text = self.context.symbol_text(abi);
+        match abi_text.as_str() {
             "C" | "c" => Some(hir::Abi::C),
             "taro_rt" | "rt" => Some(hir::Abi::Runtime),
             "taro_intrinsic" | "intrinsic" => Some(hir::Abi::Intrinsic),
@@ -842,7 +847,7 @@ impl Actor<'_, '_> {
                     segments: vec![hir::PathSegment {
                         id: self.next_index(),
                         identifier: Identifier {
-                            symbol: Symbol::new("Self"),
+                            symbol: self.context.intern_symbol("Self"),
                             span: node.span,
                         },
                         arguments: None,
@@ -892,7 +897,7 @@ impl Actor<'_, '_> {
             resolution: Resolution::Foundation(kind),
             segments: vec![hir::PathSegment {
                 id: self.next_index(),
-                identifier: Identifier::new(Symbol::new(name), span),
+                identifier: Identifier::new(self.context.intern_symbol(name), span),
                 arguments: Some(hir::TypeArguments { span, arguments }),
                 span,
                 resolution: Resolution::Foundation(kind),
@@ -956,13 +961,15 @@ impl Actor<'_, '_> {
             ast::PatternKind::Literal(expr) => {
                 let value = *expr.value;
                 let literal = match value.kind {
-                    ast::ExpressionKind::Literal(lit) => match convert_ast_literal(lit) {
-                        Ok(lit) => lit,
-                        Err(err) => {
-                            self.context.dcx.emit_error(err.into(), Some(value.span));
-                            hir::Literal::Nil
+                    ast::ExpressionKind::Literal(lit) => {
+                        match convert_ast_literal(self.context, lit) {
+                            Ok(lit) => lit,
+                            Err(err) => {
+                                self.context.dcx.emit_error(err.into(), Some(value.span));
+                                hir::Literal::Nil
+                            }
                         }
-                    },
+                    }
                     _ => {
                         self.context.dcx.emit_error(
                             "pattern literals must be a literal value".into(),
@@ -1104,13 +1111,13 @@ impl Actor<'_, '_> {
         let collection = self.lower_expression(node.iterator);
 
         // 2. Create local binding: var __for_iter = Iterable.makeIterator(collection)
-        let iter_ident = Identifier::new(Symbol::new("__for_iter"), span);
+        let iter_ident = Identifier::new(self.context.intern_symbol("__for_iter"), span);
         let iter_pattern_id = self.next_index();
         let iter_pattern = hir::Pattern {
             id: iter_pattern_id,
             span,
             kind: hir::PatternKind::Binding {
-                name: iter_ident,
+                name: iter_ident.clone(),
                 mode: hir::BindingMode::ByValue,
             },
         };
@@ -1125,7 +1132,7 @@ impl Actor<'_, '_> {
             resolution: Resolution::Definition(iterable_id, DefinitionKind::Interface),
             segments: vec![hir::PathSegment {
                 id: self.next_index(),
-                identifier: Identifier::new(Symbol::new("Iterable"), span),
+                identifier: Identifier::new(self.context.intern_symbol("Iterable"), span),
                 arguments: None,
                 span,
                 resolution: Resolution::Definition(iterable_id, DefinitionKind::Interface),
@@ -1146,7 +1153,7 @@ impl Actor<'_, '_> {
         let make_iter_def = iterable_reqs
             .methods
             .iter()
-            .find(|m| m.name.as_str() == "makeIterator")
+            .find(|m| self.context.symbol_eq(m.name.clone(), "makeIterator"))
             .expect("makeIterator method not found in Iterable");
 
         let make_iter_id = make_iter_def.id;
@@ -1154,7 +1161,7 @@ impl Actor<'_, '_> {
 
         let make_iter_segment = hir::PathSegment {
             id: self.next_index(),
-            identifier: Identifier::new(Symbol::new("makeIterator"), span),
+            identifier: Identifier::new(self.context.intern_symbol("makeIterator"), span),
             arguments: None,
             span,
             resolution: Resolution::Definition(make_iter_id, make_iter_kind),
@@ -1206,7 +1213,7 @@ impl Actor<'_, '_> {
             resolution: Resolution::Definition(iterator_id, DefinitionKind::Interface),
             segments: vec![hir::PathSegment {
                 id: self.next_index(),
-                identifier: Identifier::new(Symbol::new("Iterator"), span),
+                identifier: Identifier::new(self.context.intern_symbol("Iterator"), span),
                 arguments: None,
                 span,
                 resolution: Resolution::Definition(iterator_id, DefinitionKind::Interface),
@@ -1226,7 +1233,7 @@ impl Actor<'_, '_> {
         let next_def = iterator_reqs
             .methods
             .iter()
-            .find(|m| m.name.as_str() == "next")
+            .find(|m| self.context.symbol_eq(m.name.clone(), "next"))
             .expect("next method not found in Iterator");
 
         let next_id = next_def.id;
@@ -1234,7 +1241,7 @@ impl Actor<'_, '_> {
 
         let next_segment = hir::PathSegment {
             id: self.next_index(),
-            identifier: Identifier::new(Symbol::new("next"), span),
+            identifier: Identifier::new(self.context.intern_symbol("next"), span),
             arguments: None,
             span,
             resolution: Resolution::Definition(next_id, next_kind),
@@ -1256,13 +1263,13 @@ impl Actor<'_, '_> {
         );
 
         // var element = Iterator.next(&mut __for_iter);
-        let element_ident = Identifier::new(Symbol::new("element"), span);
+        let element_ident = Identifier::new(self.context.intern_symbol("element"), span);
         let element_pattern_id = self.next_index();
         let element_pattern = hir::Pattern {
             id: element_pattern_id,
             span,
             kind: hir::PatternKind::Binding {
-                name: element_ident,
+                name: element_ident.clone(),
                 mode: hir::BindingMode::ByValue,
             },
         };
@@ -1588,7 +1595,7 @@ impl Actor<'_, '_> {
 
                 let lhs = self.lower_expression(lhs);
                 let rhs = self.lower_expression(rhs);
-                let identiier = Identifier::new(Symbol::new("Range"), node.span);
+                let identiier = Identifier::new(self.context.intern_symbol("Range"), node.span);
                 let range_path = self.mk_single_segment_resolved_path(
                     identiier,
                     Resolution::Foundation(foundational),
@@ -1616,7 +1623,8 @@ impl Actor<'_, '_> {
             ast::ExpressionKind::DictionaryLiteral(map_pairs) => {
                 // ["foo": "bar"] => { let dictionary = Dictionary(); dictionary.insert("foo", "bar"); dictionary }
                 // Initialize the dictionary via a foundational call.
-                let ctor_ident = Identifier::new(Symbol::new("Dictionary"), node.span);
+                let ctor_ident =
+                    Identifier::new(self.context.intern_symbol("Dictionary"), node.span);
                 let ctor_path = self.mk_single_segment_resolved_path(
                     ctor_ident,
                     Resolution::Foundation(hir::StdType::Dictionary),
@@ -1631,12 +1639,13 @@ impl Actor<'_, '_> {
                 );
 
                 // Bind the dictionary to a mutable local so we can perform insertions.
-                let dictionary_ident = Identifier::new(Symbol::new("__dictionary"), node.span);
+                let dictionary_ident =
+                    Identifier::new(self.context.intern_symbol("__dictionary"), node.span);
                 let pattern = hir::Pattern {
                     id: self.next_index(),
                     span: node.span,
                     kind: hir::PatternKind::Binding {
-                        name: dictionary_ident,
+                        name: dictionary_ident.clone(),
                         mode: hir::BindingMode::ByValue,
                     },
                 };
@@ -1658,13 +1667,13 @@ impl Actor<'_, '_> {
                 let mut statements =
                     vec![self.mk_statement(hir::StatementKind::Variable(local), node.span)];
 
-                let insert_ident = Identifier::new(Symbol::new("insert"), node.span);
+                let insert_ident = Identifier::new(self.context.intern_symbol("insert"), node.span);
                 for pair in map_pairs {
                     let key = self.lower_expression(pair.key);
                     let value = self.lower_expression(pair.value);
 
                     let dictionary_path = self.mk_single_segment_resolved_path(
-                        dictionary_ident,
+                        dictionary_ident.clone(),
                         Resolution::LocalVariable(local_id),
                     );
                     let target =
@@ -1672,7 +1681,7 @@ impl Actor<'_, '_> {
                     let member = self.mk_expression(
                         hir::ExpressionKind::Member {
                             target,
-                            name: insert_ident,
+                            name: insert_ident.clone(),
                         },
                         node.span,
                     );
@@ -1689,7 +1698,7 @@ impl Actor<'_, '_> {
                     let call = self.mk_expression(
                         hir::ExpressionKind::MethodCall {
                             receiver: member,
-                            name: insert_ident,
+                            name: insert_ident.clone(),
                             arguments,
                         },
                         node.span,
@@ -1797,13 +1806,13 @@ impl Actor<'_, '_> {
         self.collect_member_chain_parts(target, &mut parts)?;
         parts.push((member_expr_id, name));
 
-        let (base_id, base_ident) = *parts.first()?;
+        let (base_id, base_ident) = parts.first()?;
 
-        let mut last_resolution = self.get_resolution(base_id);
+        let mut last_resolution = self.get_resolution(*base_id);
         let mut segments = Vec::with_capacity(parts.len());
         segments.push(hir::PathSegment {
             id: self.next_index(),
-            identifier: base_ident,
+            identifier: base_ident.clone(),
             arguments: None,
             span: base_ident.span,
             resolution: last_resolution.clone(),
@@ -1820,7 +1829,7 @@ impl Actor<'_, '_> {
                     last_resolution = self.lower_resolution(res);
                     segments.push(hir::PathSegment {
                         id: self.next_index(),
-                        identifier: ident,
+                        identifier: ident.clone(),
                         arguments: None,
                         span: ident.span,
                         resolution: last_resolution.clone(),
@@ -1869,7 +1878,7 @@ impl Actor<'_, '_> {
                 break;
             };
 
-            segs.push(*seg_name);
+            segs.push(seg_name.clone());
             base_expr = inner.clone();
         }
 
@@ -1887,7 +1896,7 @@ impl Actor<'_, '_> {
         for (idx, ident) in segs.into_iter().enumerate() {
             let seg = hir::PathSegment {
                 id: self.next_index(),
-                identifier: ident,
+                identifier: ident.clone(),
                 arguments: None,
                 span: ident.span,
                 resolution: Resolution::Error,
@@ -1912,12 +1921,12 @@ impl Actor<'_, '_> {
     ) -> Option<()> {
         match &expr.kind {
             ast::ExpressionKind::Identifier(ident) => {
-                out.push((expr.id, *ident));
+                out.push((expr.id, ident.clone()));
                 Some(())
             }
             ast::ExpressionKind::Member { target, name } => {
                 self.collect_member_chain_parts(target, out)?;
-                out.push((expr.id, *name));
+                out.push((expr.id, name.clone()));
                 Some(())
             }
             _ => None,
@@ -1929,7 +1938,7 @@ impl Actor<'_, '_> {
     fn try_expr_as_resolved_path(&mut self, expr: &ast::Expression) -> Option<hir::ResolvedPath> {
         match &expr.kind {
             ast::ExpressionKind::Identifier(ident) => {
-                let resolved_path = self.lower_identifier_expression_path(expr.id, *ident);
+                let resolved_path = self.lower_identifier_expression_path(expr.id, ident.clone());
                 Some(resolved_path)
             }
             ast::ExpressionKind::Member { target, name } => {
@@ -1942,13 +1951,13 @@ impl Actor<'_, '_> {
                 {
                     Some(ExpressionResolutionState::Resolved(_)) => {
                         let path = self.try_lower_resolved_member_chain_as_path(
-                            expr.id, target, *name, expr.span,
+                            expr.id, target, name.clone(), expr.span,
                         )?;
                         Some(hir::ResolvedPath::Resolved(path))
                     }
                     Some(ExpressionResolutionState::DeferredAssociatedType) => {
                         let path =
-                            self.lower_deferred_associated_type_member_chain(target.clone(), *name);
+                            self.lower_deferred_associated_type_member_chain(target.clone(), name.clone());
                         Some(path)
                     }
                     // DeferredAssociatedValue and None cannot be converted to paths for specialization
@@ -2017,7 +2026,7 @@ impl Actor<'_, '_> {
     }
 
     fn lower_literal(&mut self, node: ast::Literal, span: Span) -> hir::ExpressionKind {
-        let result = convert_ast_literal(node);
+        let result = convert_ast_literal(self.context, node);
 
         match result {
             Ok(v) => return hir::ExpressionKind::Literal(v),
@@ -2188,13 +2197,13 @@ impl Actor<'_, '_> {
         let rhs_span = rhs_lowered.span;
 
         // Create binding for extracted value: __optional_val
-        let val_ident = Identifier::new(Symbol::new("__optional_val"), lhs_span);
+        let val_ident = Identifier::new(self.context.intern_symbol("__optional_val"), lhs_span);
         let val_pattern_id = self.next_index();
         let val_binding_pattern = hir::Pattern {
             id: val_pattern_id,
             span: lhs_span,
             kind: hir::PatternKind::Binding {
-                name: val_ident,
+                name: val_ident.clone(),
                 mode: hir::BindingMode::ByValue,
             },
         };
@@ -2253,8 +2262,8 @@ impl Actor<'_, '_> {
     fn mk_optional_variant_path(&mut self, variant_name: &str, span: Span) -> hir::ResolvedPath {
         use crate::sema::resolve::models::{DefinitionKind, VariantCtorKind};
 
-        let optional_ident = Identifier::new(Symbol::new("Optional"), span);
-        let variant_ident = Identifier::new(Symbol::new(variant_name), span);
+        let optional_ident = Identifier::new(self.context.intern_symbol("Optional"), span);
+        let variant_ident = Identifier::new(self.context.intern_symbol(variant_name), span);
 
         // Look up the Optional enum from std library
         let optional_def_id = self
@@ -2272,7 +2281,7 @@ impl Actor<'_, '_> {
         let variant = enum_def
             .variants
             .iter()
-            .find(|v| v.name.as_str() == variant_name)
+            .find(|v| self.context.symbol_eq(v.name.clone(), variant_name))
             .expect("Optional must have this variant");
 
         // Determine the constructor kind based on variant fields
@@ -2575,7 +2584,7 @@ impl Actor<'_, '_> {
     ) -> hir::ResolvedPath {
         let segment = hir::PathSegment {
             id: self.next_index(),
-            identifier,
+            identifier: identifier.clone(),
             arguments: None,
             span: identifier.span,
             resolution: resolution.clone(),
@@ -2595,7 +2604,7 @@ impl Actor<'_, '_> {
         let resolution = self.get_resolution(id);
         let segment = hir::PathSegment {
             id: self.next_index(),
-            identifier,
+            identifier: identifier.clone(),
             arguments: None,
             span: identifier.span,
             resolution: resolution.clone(),
@@ -2696,13 +2705,14 @@ impl Actor<'_, '_> {
         if let Some((unwrap_id, inner_expr)) = self.find_outer_optional_unwrap(expr, skip_id) {
             let (scrutinee, _) = self.lower_optional_expr(inner_expr, replacement, false);
 
-            let binding_ident = Identifier::new(Symbol::new("__optional_val"), expr.span);
+            let binding_ident =
+                Identifier::new(self.context.intern_symbol("__optional_val"), expr.span);
             let binding_id = self.next_index();
             let binding_pattern = hir::Pattern {
                 id: binding_id,
                 span: expr.span,
                 kind: hir::PatternKind::Binding {
-                    name: binding_ident,
+                    name: binding_ident.clone(),
                     mode: hir::BindingMode::ByValue,
                 },
             };
@@ -2856,7 +2866,10 @@ impl Actor<'_, '_> {
     }
 }
 
-fn convert_ast_literal(literal: ast::Literal) -> Result<hir::Literal, String> {
+fn convert_ast_literal(
+    gcx: GlobalContext<'_>,
+    literal: ast::Literal,
+) -> Result<hir::Literal, String> {
     match literal {
         ast::Literal::Bool(value) => Ok(hir::Literal::Bool(value)),
         ast::Literal::Rune { value } => {
@@ -2867,7 +2880,7 @@ fn convert_ast_literal(literal: ast::Literal) -> Result<hir::Literal, String> {
         ast::Literal::String { value } => {
             let value = escape::unescape_str(&value)
                 .map_err(|err| format!("malformed string, {:?}", err))?;
-            Ok(hir::Literal::String(Symbol::new(&value)))
+            Ok(hir::Literal::String(gcx.intern_symbol(&value)))
         }
         ast::Literal::Integer { value, base } => {
             let content = value.replace("_", "");

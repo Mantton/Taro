@@ -84,8 +84,8 @@ impl<'r, 'a> Actor<'r, 'a> {
         for param in &type_parameters.parameters {
             let def_id = self.resolver.definition_id(param.id);
             let def_kind = self.resolver.definition_kind(def_id);
-            let name = param.identifier.symbol;
-            let entry = seen_bindings.entry(name);
+            let name = param.identifier.symbol.clone();
+            let entry = seen_bindings.entry(name.clone());
 
             match entry {
                 std::collections::hash_map::Entry::Occupied(_) => {
@@ -117,7 +117,7 @@ impl<'r, 'a> Actor<'r, 'a> {
 
     fn with_self_alias_scope(&mut self, self_res: Resolution, work: impl FnOnce(&mut Self)) {
         let mut scope = LexicalScope::new(LexicalScopeSource::Plain);
-        scope.define(Symbol::new("Self"), self_res);
+        scope.define(self.resolver.context.intern_symbol("Self"), self_res);
         self.with_built_scope(scope, work);
     }
 }
@@ -210,7 +210,7 @@ impl<'r, 'a> ast::AstVisitor for Actor<'r, 'a> {
                 // Record the resolution for the synthetic `Self` type so lowering can build a HIR
                 // nominal path with the correct identity.
                 let ident = Identifier {
-                    symbol: Symbol::new("Self"),
+                    symbol: self.resolver.context.intern_symbol("Self"),
                     span: node.span,
                 };
                 match self.resolver.resolve_in_lexical_scopes(
@@ -228,7 +228,7 @@ impl<'r, 'a> ast::AstVisitor for Actor<'r, 'a> {
                             .record_resolution(node.id, ResolutionState::Complete(res));
                     }
                     Err(e) => {
-                        self.resolver.dcx().emit(e.diag());
+                        self.resolver.dcx().emit(e.diag(self.resolver.context));
                     }
                 }
             }
@@ -449,7 +449,10 @@ impl<'r, 'a> Actor<'r, 'a> {
                 self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
                     this.with_generics_scope(&function.generics, |this| {
                         if matches!(ctx, AssocContext::Impl(..)) {
-                            if let Some(pos) = explicit_self_param_position(&function.signature) {
+                            if let Some(pos) = explicit_self_param_position(
+                                &function.signature,
+                                this.resolver.context,
+                            ) {
                                 if pos != 0 {
                                     this.resolver.dcx().emit_error(
                                         "`self` must be the first parameter of a method"
@@ -468,12 +471,15 @@ impl<'r, 'a> Actor<'r, 'a> {
     }
 }
 
-fn explicit_self_param_position(signature: &ast::FunctionSignature) -> Option<usize> {
+fn explicit_self_param_position(
+    signature: &ast::FunctionSignature,
+    gcx: crate::compile::context::GlobalContext<'_>,
+) -> Option<usize> {
     signature
         .prototype
         .inputs
         .iter()
-        .position(|param| param.name.symbol.as_str() == "self")
+        .position(|param| gcx.symbol_eq(param.name.symbol.clone(), "self"))
 }
 
 #[derive(Debug, Clone)]
@@ -708,7 +714,7 @@ impl<'r, 'a> Actor<'r, 'a> {
 
         let path = vec![PathSegment {
             id,
-            identifier: *name,
+            identifier: name.clone(),
             arguments: None,
             span: name.span,
         }];
@@ -747,7 +753,7 @@ impl<'r, 'a> Actor<'r, 'a> {
         }
 
         let Some(entity) = entity else {
-            return Err(ResolutionError::UnknownSymbol(*name));
+            return Err(ResolutionError::UnknownSymbol(name.clone()));
         };
 
         return Ok(entity);
@@ -801,10 +807,10 @@ impl<'r, 'a> Actor<'r, 'a> {
                         return Ok(ResolvedEntity::DeferredAssociatedValue);
                     }
                     DefinitionKind::ConstParameter => {
-                        return Err(ResolutionError::UnknownMember(*name));
+                        return Err(ResolutionError::UnknownMember(name.clone()));
                     }
                     DefinitionKind::Function | DefinitionKind::VariantConstructor(..) => {
-                        return Err(ResolutionError::UnknownMember(*name));
+                        return Err(ResolutionError::UnknownMember(name.clone()));
                     }
                     _ => unreachable!(),
                 },
@@ -816,7 +822,7 @@ impl<'r, 'a> Actor<'r, 'a> {
                 }
                 Resolution::LocalVariable(_) => return Ok(ResolvedEntity::DeferredAssociatedValue),
                 Resolution::FunctionSet(..) | Resolution::SelfConstructor(..) => {
-                    return Err(ResolutionError::UnknownMember(*name));
+                    return Err(ResolutionError::UnknownMember(name.clone()));
                 }
                 // Variants Not Created By Resolver Step
                 Resolution::Foundation(_) | Resolution::Error => unreachable!(),
@@ -829,7 +835,7 @@ impl<'r, 'a> Actor<'r, 'a> {
             }
         }
 
-        return Err(ResolutionError::UnknownSymbol(*name));
+        return Err(ResolutionError::UnknownSymbol(name.clone()));
     }
 
     fn apply_specialization(
@@ -921,7 +927,7 @@ impl<'r, 'a> Actor<'r, 'a> {
             let pat = ast::Pattern {
                 id: param.id,
                 span: param.span,
-                kind: ast::PatternKind::Identifier(param.name),
+                kind: ast::PatternKind::Identifier(param.name.clone()),
             };
 
             self.resolve_pattern_inner(&pat, PatternSource::FunctionParameter, &mut bindings);
@@ -1053,9 +1059,9 @@ impl<'r, 'a> Actor<'r, 'a> {
         if already_bound_and {
             let err = match source {
                 PatternSource::FunctionParameter => {
-                    ResolutionError::IdentifierBoundMoreThanOnceInParameterList(*ident)
+                    ResolutionError::IdentifierBoundMoreThanOnceInParameterList(ident.clone())
                 }
-                _ => ResolutionError::IdentifierBoundMoreThanOnceInSamePattern(*ident),
+                _ => ResolutionError::IdentifierBoundMoreThanOnceInSamePattern(ident.clone()),
             };
 
             self.report_error(err);
@@ -1081,7 +1087,7 @@ impl<'r, 'a> Actor<'r, 'a> {
             .last_mut()
             .unwrap()
             .1
-            .insert(ident.symbol, res.clone());
+            .insert(ident.symbol.clone(), res.clone());
 
         res
     }
@@ -1153,11 +1159,11 @@ impl<'r, 'a> Actor<'r, 'a> {
                 .filter(|(_, p)| p.id != pat_outer.id)
                 .flat_map(|(m, _)| m);
 
-            for (&name, &span) in others {
+            for (name, &span) in others {
                 match map_outer.get(&name) {
                     None => {
-                        let err = missing_vars.entry(name).or_insert_with(|| BindingError {
-                            name,
+                        let err = missing_vars.entry(name.clone()).or_insert_with(|| BindingError {
+                            name: name.clone(),
                             origin: Default::default(),
                             target: Default::default(),
                         });
@@ -1231,7 +1237,7 @@ impl<'r, 'a> Actor<'r, 'a> {
                 }
             }
             PathResult::Failed { error, .. } => {
-                self.resolver.dcx().emit(error.diag());
+                self.resolver.dcx().emit(error.diag(self.resolver.context));
                 return;
             }
         };
@@ -1268,7 +1274,7 @@ impl<'r, 'a> Actor<'r, 'a> {
 
 impl<'r, 'a> Actor<'r, 'a> {
     fn report_error(&self, e: ResolutionError) {
-        self.resolver.dcx().emit(e.diag());
+        self.resolver.dcx().emit(e.diag(self.resolver.context));
     }
 }
 

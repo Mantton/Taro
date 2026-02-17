@@ -4,6 +4,7 @@ pub use crate::ast::Mutability;
 pub use crate::ast::OperatorKind;
 pub use crate::ast::UnaryOperator;
 use crate::ast::VisitorResult;
+use crate::compile::context::GlobalContext;
 use crate::span::{Identifier, Span, Symbol};
 use crate::try_visit;
 use crate::visit_optional;
@@ -68,8 +69,9 @@ pub enum KnownAttribute {
 
 impl Attribute {
     /// Try to parse this attribute as a known compiler attribute.
-    pub fn as_known(&self) -> Option<KnownAttribute> {
-        match self.identifier.symbol.as_str() {
+    pub fn as_known(&self, gcx: GlobalContext<'_>) -> Option<KnownAttribute> {
+        let name = gcx.symbol_text(self.identifier.symbol.clone());
+        match name.as_str() {
             "inline" => Some(KnownAttribute::Inline),
             "noinline" => Some(KnownAttribute::NoInline),
             "cfg" => Some(KnownAttribute::Cfg),

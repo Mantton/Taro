@@ -90,7 +90,7 @@ impl<'state> Compiler<'state> {
 
         let mut package = parse::parser::parse_package(package, &self.context.dcx)?;
         // AST Passes
-        cfg_eval::filter_package(&mut package, &target);
+        cfg_eval::filter_package(&mut package, &target, self.context);
         let resolution_output = sema::resolve::resolve_package(&package, self.context)?;
         let package = ast_lowering::lower_package(package, self.context, &resolution_output)?;
         {

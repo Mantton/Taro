@@ -1,44 +1,52 @@
-use crate::{ast, cfg::TargetInfo};
+use crate::{ast, cfg::TargetInfo, compile::context::GlobalContext};
 
-pub fn filter_package(package: &mut ast::Package, target: &TargetInfo) {
-    filter_module(&mut package.root, target);
+pub fn filter_package(package: &mut ast::Package, target: &TargetInfo, gcx: GlobalContext<'_>) {
+    filter_module(&mut package.root, target, gcx);
 }
 
-fn filter_module(module: &mut ast::Module, target: &TargetInfo) {
+fn filter_module(module: &mut ast::Module, target: &TargetInfo, gcx: GlobalContext<'_>) {
     for file in &mut module.files {
-        filter_file(file, target);
+        filter_file(file, target, gcx);
     }
 
     for submodule in &mut module.submodules {
-        filter_module(submodule, target);
+        filter_module(submodule, target, gcx);
     }
 }
 
-fn filter_file(file: &mut ast::File, target: &TargetInfo) {
-    filter_declarations(&mut file.declarations, target);
+fn filter_file(file: &mut ast::File, target: &TargetInfo, gcx: GlobalContext<'_>) {
+    filter_declarations(&mut file.declarations, target, gcx);
 }
 
-fn filter_declarations(decls: &mut Vec<ast::Declaration>, target: &TargetInfo) {
-    retain_mut(decls, |decl| filter_declaration(decl, target));
+fn filter_declarations(
+    decls: &mut Vec<ast::Declaration>,
+    target: &TargetInfo,
+    gcx: GlobalContext<'_>,
+) {
+    retain_mut(decls, |decl| filter_declaration(decl, target, gcx));
 }
 
-fn filter_declaration(decl: &mut ast::Declaration, target: &TargetInfo) -> bool {
-    if !should_include_attrs(&decl.attributes, target) {
+fn filter_declaration(
+    decl: &mut ast::Declaration,
+    target: &TargetInfo,
+    gcx: GlobalContext<'_>,
+) -> bool {
+    if !should_include_attrs(&decl.attributes, target, gcx) {
         return false;
     }
 
     match &mut decl.kind {
         ast::DeclarationKind::Interface(node) => {
-            filter_assoc_declarations(&mut node.declarations, target);
+            filter_assoc_declarations(&mut node.declarations, target, gcx);
         }
         ast::DeclarationKind::Namespace(node) => {
-            filter_namespace_declarations(&mut node.declarations, target);
+            filter_namespace_declarations(&mut node.declarations, target, gcx);
         }
         ast::DeclarationKind::ExternBlock(node) => {
-            filter_extern_declarations(&mut node.declarations, target);
+            filter_extern_declarations(&mut node.declarations, target, gcx);
         }
         ast::DeclarationKind::Impl(node) => {
-            filter_assoc_declarations(&mut node.declarations, target);
+            filter_assoc_declarations(&mut node.declarations, target, gcx);
         }
         _ => {}
     }
@@ -46,21 +54,31 @@ fn filter_declaration(decl: &mut ast::Declaration, target: &TargetInfo) -> bool 
     true
 }
 
-fn filter_namespace_declarations(decls: &mut Vec<ast::NamespaceDeclaration>, target: &TargetInfo) {
-    retain_mut(decls, |decl| filter_namespace_declaration(decl, target));
+fn filter_namespace_declarations(
+    decls: &mut Vec<ast::NamespaceDeclaration>,
+    target: &TargetInfo,
+    gcx: GlobalContext<'_>,
+) {
+    retain_mut(decls, |decl| {
+        filter_namespace_declaration(decl, target, gcx)
+    });
 }
 
-fn filter_namespace_declaration(decl: &mut ast::NamespaceDeclaration, target: &TargetInfo) -> bool {
-    if !should_include_attrs(&decl.attributes, target) {
+fn filter_namespace_declaration(
+    decl: &mut ast::NamespaceDeclaration,
+    target: &TargetInfo,
+    gcx: GlobalContext<'_>,
+) -> bool {
+    if !should_include_attrs(&decl.attributes, target, gcx) {
         return false;
     }
 
     match &mut decl.kind {
         ast::NamespaceDeclarationKind::Namespace(node) => {
-            filter_namespace_declarations(&mut node.declarations, target);
+            filter_namespace_declarations(&mut node.declarations, target, gcx);
         }
         ast::NamespaceDeclarationKind::Interface(node) => {
-            filter_assoc_declarations(&mut node.declarations, target);
+            filter_assoc_declarations(&mut node.declarations, target, gcx);
         }
         _ => {}
     }
@@ -68,26 +86,42 @@ fn filter_namespace_declaration(decl: &mut ast::NamespaceDeclaration, target: &T
     true
 }
 
-fn filter_assoc_declarations(decls: &mut Vec<ast::AssociatedDeclaration>, target: &TargetInfo) {
-    retain_mut(decls, |decl| should_include_attrs(&decl.attributes, target));
+fn filter_assoc_declarations(
+    decls: &mut Vec<ast::AssociatedDeclaration>,
+    target: &TargetInfo,
+    gcx: GlobalContext<'_>,
+) {
+    retain_mut(decls, |decl| {
+        should_include_attrs(&decl.attributes, target, gcx)
+    });
 }
 
-fn filter_extern_declarations(decls: &mut Vec<ast::ExternDeclaration>, target: &TargetInfo) {
-    retain_mut(decls, |decl| should_include_attrs(&decl.attributes, target));
+fn filter_extern_declarations(
+    decls: &mut Vec<ast::ExternDeclaration>,
+    target: &TargetInfo,
+    gcx: GlobalContext<'_>,
+) {
+    retain_mut(decls, |decl| {
+        should_include_attrs(&decl.attributes, target, gcx)
+    });
 }
 
-pub fn should_include_attrs(attrs: &ast::AttributeList, target: &TargetInfo) -> bool {
+pub fn should_include_attrs(
+    attrs: &ast::AttributeList,
+    target: &TargetInfo,
+    gcx: GlobalContext<'_>,
+) -> bool {
     for attr in attrs {
-        if attr.identifier.symbol.as_str() == "cfg" && !eval_cfg_attr(attr, target) {
+        if gcx.symbol_eq(attr.identifier.symbol.clone(), "cfg") && !eval_cfg_attr(attr, target, gcx) {
             return false;
         }
     }
     true
 }
 
-fn eval_cfg_attr(attr: &ast::Attribute, target: &TargetInfo) -> bool {
+fn eval_cfg_attr(attr: &ast::Attribute, target: &TargetInfo, gcx: GlobalContext<'_>) -> bool {
     if let Some(cfg_expr) = &attr.cfg_expr {
-        return eval_cfg_expr(cfg_expr, target);
+        return eval_cfg_expr(cfg_expr, target, gcx);
     }
 
     let Some(args) = &attr.args else {
@@ -97,7 +131,8 @@ fn eval_cfg_attr(attr: &ast::Attribute, target: &TargetInfo) -> bool {
     for arg in &args.items {
         match arg {
             ast::AttributeArg::KeyValue { key, value, .. } => {
-                let key_str = key.symbol.as_str();
+                let key_text = gcx.symbol_text(key.symbol.clone());
+                let key_str = key_text.as_str();
                 let value_str = match value {
                     ast::Literal::String { value } => value.as_str(),
                     _ => continue,
@@ -123,7 +158,8 @@ fn eval_cfg_attr(attr: &ast::Attribute, target: &TargetInfo) -> bool {
                 }
             }
             ast::AttributeArg::Flag { key, .. } => {
-                let key_str = key.symbol.as_str();
+                let key_text = gcx.symbol_text(key.symbol.clone());
+                let key_str = key_text.as_str();
                 match key_str {
                     "debug" => {
                         if !target.matches_profile("debug") {
@@ -139,11 +175,13 @@ fn eval_cfg_attr(attr: &ast::Attribute, target: &TargetInfo) -> bool {
     true
 }
 
-fn eval_cfg_expr(expr: &ast::CfgExpr, target: &TargetInfo) -> bool {
+fn eval_cfg_expr(expr: &ast::CfgExpr, target: &TargetInfo, gcx: GlobalContext<'_>) -> bool {
     match expr {
         ast::CfgExpr::Predicate { name, value, .. } => {
-            let name_str = name.symbol.as_str();
-            let value_str = value.as_str();
+            let name_text = gcx.symbol_text(name.symbol.clone());
+            let name_str = name_text.as_str();
+            let value_text = gcx.symbol_text(value.clone());
+            let value_str = value_text.as_str();
 
             match name_str {
                 "os" => target.matches_os(value_str),
@@ -153,9 +191,9 @@ fn eval_cfg_expr(expr: &ast::CfgExpr, target: &TargetInfo) -> bool {
                 _ => false,
             }
         }
-        ast::CfgExpr::Not(inner, _) => !eval_cfg_expr(inner, target),
-        ast::CfgExpr::All(items, _) => items.iter().all(|e| eval_cfg_expr(e, target)),
-        ast::CfgExpr::Any(items, _) => items.iter().any(|e| eval_cfg_expr(e, target)),
+        ast::CfgExpr::Not(inner, _) => !eval_cfg_expr(inner, target, gcx),
+        ast::CfgExpr::All(items, _) => items.iter().all(|e| eval_cfg_expr(e, target, gcx)),
+        ast::CfgExpr::Any(items, _) => items.iter().any(|e| eval_cfg_expr(e, target, gcx)),
     }
 }
 

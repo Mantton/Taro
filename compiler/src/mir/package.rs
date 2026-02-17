@@ -50,7 +50,7 @@ pub fn build_package<'ctx>(
     // Phase 2: Run global passes (inlining, lowering, escape analysis, safepoints)
     // These passes need access to other function bodies
     let mut final_functions: FxHashMap<DefinitionID, &'ctx Body<'ctx>> = FxHashMap::default();
-    for def_id in pkg.functions.keys().copied().collect::<Vec<_>>() {
+    for def_id in pkg.functions.keys().cloned().collect::<Vec<_>>() {
         let body_ref = pkg.functions.get(&def_id).unwrap();
         let mut body = (*body_ref).clone();
 

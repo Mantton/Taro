@@ -53,7 +53,7 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
             self.define(
                 &Identifier {
                     span: Span::empty(FileID::new(0)),
-                    symbol: node.name,
+                    symbol: node.name.clone(),
                 },
                 ScopeNamespace::Type,
                 Resolution::Definition(id, DefinitionKind::Module),
@@ -445,12 +445,12 @@ impl<'r, 'a> Actor<'r, 'a> {
                 }
                 for node in nodes {
                     let module_path = tree.path.nodes.clone();
-                    let target = if let Some(alias) = node.alias {
-                        alias
+                    let target = if let Some(alias) = &node.alias {
+                        alias.clone()
                     } else {
-                        node.name
+                        node.name.clone()
                     };
-                    let source = node.name;
+                    let source = node.name.clone();
                     let binding = UsageBinding {
                         node_id: node.id,
                         source,

@@ -31,7 +31,7 @@ pub fn compute_escape_summaries<'ctx>(
     gcx: Gcx<'ctx>,
     functions: &FxHashMap<DefinitionID, &'ctx Body<'ctx>>,
 ) {
-    let def_ids: Vec<DefinitionID> = functions.keys().copied().collect();
+    let def_ids: Vec<DefinitionID> = functions.keys().cloned().collect();
 
     // Initialize all summaries with "nothing escapes"
     let mut summaries: FxHashMap<DefinitionID, EscapeSummary> = FxHashMap::default();
@@ -407,7 +407,7 @@ impl<'ctx> MirPass<'ctx> for ApplyEscapeAnalysis {
             if matches!(kind, LocalKind::Return) {
                 continue;
             }
-            if body.escape_locals.get(idx).copied().unwrap_or(false) {
+            if body.escape_locals.get(idx).cloned().unwrap_or(false) {
                 let old_ty = body.locals[idx].ty;
                 let span = body.locals[idx].span;
                 let new_ty = gcx

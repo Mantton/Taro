@@ -9,7 +9,6 @@ use crate::{
             utils::instantiate::instantiate_ty_with_args,
         },
     },
-    span::Symbol,
 };
 
 pub fn run(package: &hir::Package, context: GlobalContext) -> CompileResult<()> {
@@ -124,8 +123,11 @@ impl<'ctx> Actor<'ctx> {
                     .alloc(provider_sig);
 
                 let fn_name = self.context.definition_ident(id).symbol;
+                let fn_name_text = self.context.symbol_text(fn_name);
                 let def = crate::sema::models::SyntheticDefinition {
-                    name: Symbol::new(&format!("{}$default_arg{}", fn_name, idx)),
+                    name: self
+                        .context
+                        .intern_symbol(&format!("{}$default_arg{}", fn_name_text, idx)),
                     generics,
                     signature: provider_sig,
                     span: param.span,
@@ -138,8 +140,8 @@ impl<'ctx> Actor<'ctx> {
             };
 
             inputs.push(LabeledFunctionParameter {
-                label: param.label.map(|n| n.identifier.symbol),
-                name: param.name.symbol,
+                label: param.label.clone().map(|n| n.identifier.symbol),
+                name: param.name.symbol.clone(),
                 ty,
                 default_provider,
             });

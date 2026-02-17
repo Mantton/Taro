@@ -143,7 +143,7 @@ impl Inline {
         // Check attributes
         let attrs = gcx.attributes_of(callee_id);
         for attr in attrs.iter() {
-            match attr.as_known() {
+            match attr.as_known(gcx) {
                 Some(KnownAttribute::Inline) => return true,
                 Some(KnownAttribute::NoInline) => return false,
                 Some(KnownAttribute::Cfg) => {} // Cfg doesn't affect inlining
@@ -189,7 +189,7 @@ impl Inline {
                     ty: substituted_ty,
                     kind: inlined_kind,
                     mutable: local_decl.mutable,
-                    name: local_decl.name,
+                    name: local_decl.name.clone(),
                     span: local_decl.span,
                 };
                 let new_local = caller.locals.push(new_decl);
@@ -311,7 +311,7 @@ fn extract_callee<'ctx>(func: &Operand<'ctx>) -> Option<(DefinitionID, GenericAr
 fn resolve_callee_body<'ctx>(gcx: Gcx<'ctx>, callee_id: DefinitionID) -> Option<&'ctx Body<'ctx>> {
     let packages = gcx.store.mir_packages.borrow();
     let package = packages.get(&callee_id.package())?;
-    package.functions.get(&callee_id).copied()
+    package.functions.get(&callee_id).cloned()
 }
 
 /// Check if a function body is small enough to inline heuristically.
@@ -458,7 +458,7 @@ fn remap_place_elem<'ctx>(
         // Other projections don't contain types that need substitution
         PlaceElem::Deref => PlaceElem::Deref,
         PlaceElem::VariantDowncast { name, index } => PlaceElem::VariantDowncast {
-            name: *name,
+            name: name.clone(),
             index: *index,
         },
     }
@@ -497,13 +497,13 @@ fn remap_constant<'ctx>(
                 match arg {
                     crate::sema::models::GenericArgument::Const(sema_const) => {
                         // Convert sema Const to MIR ConstantKind
-                        match sema_const.kind {
+                        match &sema_const.kind {
                             crate::sema::models::ConstKind::Value(val) => {
-                                sema_const_value_to_mir(val)
+                                sema_const_value_to_mir(val.clone())
                             }
                             crate::sema::models::ConstKind::Param(inner_param) => {
                                 // Still a param - pass it through (shouldn't happen with valid gen_args)
-                                ConstantKind::ConstParam(inner_param)
+                                ConstantKind::ConstParam(inner_param.clone())
                             }
                             crate::sema::models::ConstKind::Infer(_) => {
                                 // Inference should be resolved by now
@@ -559,7 +559,7 @@ fn substitute_gen_args<'ctx>(
                 GenericArgument::Type(instantiate_ty_with_args(gcx, *ty, substitution))
             }
             GenericArgument::Const(c) => {
-                GenericArgument::Const(instantiate_const_with_args(gcx, *c, substitution))
+                GenericArgument::Const(instantiate_const_with_args(gcx, c.clone(), substitution))
             }
         })
         .collect();

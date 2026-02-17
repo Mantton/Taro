@@ -108,7 +108,7 @@ impl<'ctx> TypeError<'ctx> {
                 "expected tuple with at least {} elements, found {}",
                 ef.expected, ef.found
             ),
-            TypeError::Apply(e) => format!("{e}"),
+            TypeError::Apply(e) => e.format(gcx),
             TypeError::NoOverloadMatches => "no overload matches this call".into(),
             TypeError::AmbiguousOverload => {
                 "ambiguous overload; unable to pick a best candidate".into()
@@ -116,14 +116,14 @@ impl<'ctx> TypeError<'ctx> {
             TypeError::NoSuchMember { name, on } => {
                 format!(
                     "no member named '{}' found on type {}",
-                    name,
+                    gcx.symbol_text(name),
                     on.format(gcx)
                 )
             }
             TypeError::FieldNotVisible { name, struct_ty } => {
                 format!(
                     "field '{}' of {} is not visible here",
-                    name,
+                    gcx.symbol_text(name),
                     struct_ty.format(gcx)
                 )
             }
@@ -134,12 +134,16 @@ impl<'ctx> TypeError<'ctx> {
                 format!("type {} is not a struct", ty.format(gcx))
             }
             TypeError::UnknownStructField { name, struct_ty } => {
-                format!("no field '{}' on struct {}", name, struct_ty.format(gcx))
+                format!(
+                    "no field '{}' on struct {}",
+                    gcx.symbol_text(name),
+                    struct_ty.format(gcx)
+                )
             }
             TypeError::MissingStructField { name, struct_ty } => {
                 format!(
                     "missing field '{}' in {} literal",
-                    name,
+                    gcx.symbol_text(name),
                     struct_ty.format(gcx)
                 )
             }
@@ -213,7 +217,7 @@ impl<'ctx> TypeError<'ctx> {
 }
 
 // Validation errors
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum ApplyValidationError {
     ArityMismatch {
         expected_min: usize,
@@ -234,8 +238,8 @@ pub enum ApplyValidationError {
     },
 }
 
-impl std::fmt::Display for ApplyValidationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl ApplyValidationError {
+    fn format_with_symbol(self, mut symbol_text: impl FnMut(Symbol) -> String) -> String {
         match self {
             ApplyValidationError::ArityMismatch {
                 expected_min,
@@ -243,33 +247,30 @@ impl std::fmt::Display for ApplyValidationError {
                 provided,
             } => match expected_max {
                 Some(max) if max == expected_min => {
-                    write!(
-                        f,
+                    format!(
                         "Expected exactly {} argument{}, but {} {} provided",
                         expected_min,
-                        if *expected_min == 1 { "" } else { "s" },
+                        if expected_min == 1 { "" } else { "s" },
                         provided,
-                        if *provided == 1 { "was" } else { "were" }
+                        if provided == 1 { "was" } else { "were" }
                     )
                 }
                 Some(max) => {
-                    write!(
-                        f,
+                    format!(
                         "Expected {}-{} arguments, but {} {} provided",
                         expected_min,
                         max,
                         provided,
-                        if *provided == 1 { "was" } else { "were" }
+                        if provided == 1 { "was" } else { "were" }
                     )
                 }
                 None => {
-                    write!(
-                        f,
+                    format!(
                         "Expected at least {} argument{}, but {} {} provided",
                         expected_min,
-                        if *expected_min == 1 { "" } else { "s" },
+                        if expected_min == 1 { "" } else { "s" },
                         provided,
-                        if *provided == 1 { "was" } else { "were" }
+                        if provided == 1 { "was" } else { "were" }
                     )
                 }
             },
@@ -279,53 +280,58 @@ impl std::fmt::Display for ApplyValidationError {
                 provided,
             } => match (expected, provided) {
                 (Some(exp), Some(prov)) => {
-                    write!(
-                        f,
+                    format!(
                         "Argument label mismatch at parameter {}: expected '{}', but '{}' was provided",
                         param_index + 1,
-                        exp,
-                        prov
+                        symbol_text(exp),
+                        symbol_text(prov)
                     )
                 }
                 (Some(exp), None) => {
-                    write!(
-                        f,
+                    format!(
                         "Missing argument label at parameter {}: expected '{}', but no label was provided",
                         param_index + 1,
-                        exp
+                        symbol_text(exp)
                     )
                 }
                 (None, Some(prov)) => {
-                    write!(
-                        f,
+                    format!(
                         "Unexpected argument label at parameter {}: '{}' was provided, but no label was expected",
                         param_index + 1,
-                        prov
+                        symbol_text(prov)
                     )
                 }
                 (None, None) => {
-                    write!(f, "Label validation error at parameter {}", param_index + 1)
+                    format!("Label validation error at parameter {}", param_index + 1)
                 }
             },
             ApplyValidationError::MissingRequiredParameter {
                 param_index,
                 param_name,
             } => {
-                write!(
-                    f,
+                format!(
                     "Missing required parameter '{}' at position {}",
-                    param_name,
+                    symbol_text(param_name),
                     param_index + 1
                 )
             }
             ApplyValidationError::ExtraArgument { arg_index } => {
-                write!(
-                    f,
+                format!(
                     "Extra argument at position {}: no corresponding parameter",
                     arg_index + 1
                 )
             }
         }
+    }
+
+    pub fn format(self, gcx: Gcx<'_>) -> String {
+        self.format_with_symbol(|sym| gcx.symbol_text(sym).to_string())
+    }
+}
+
+impl std::fmt::Display for ApplyValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.clone().format_with_symbol(|sym| sym.to_string()))
     }
 }
 

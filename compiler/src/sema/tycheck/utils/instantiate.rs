@@ -24,7 +24,7 @@ impl<'ctx> TypeFolder<'ctx> for InstantiateFolder<'ctx> {
         match ty.kind() {
             TyKind::Parameter(p) => {
                 if let Some(ty) = self.args.get(p.index) {
-                    ty.ty().expect("Argument is not a Type")
+                    ty.clone().ty().expect("Argument is not a Type")
                 } else {
                     ty
                 }
@@ -75,7 +75,7 @@ pub fn instantiate_const_with_args<'ctx>(
     let ty = instantiate_ty_with_args(gcx, c.ty, args);
     let kind = match c.kind {
         ConstKind::Param(p) => match args.get(p.index) {
-            Some(GenericArgument::Const(arg)) => return *arg,
+            Some(GenericArgument::Const(arg)) => return arg.clone(),
             _ => ConstKind::Param(p),
         },
         ConstKind::Infer(_) => c.kind,
@@ -110,7 +110,7 @@ pub fn instantiate_interface_ref_with_args<'ctx>(
                 new_args.push(GenericArgument::Type(substituted));
             }
             GenericArgument::Const(c) => {
-                let substituted = instantiate_const_with_args(gcx, *c, args);
+                let substituted = instantiate_const_with_args(gcx, c.clone(), args);
                 new_args.push(GenericArgument::Const(substituted));
             }
         }
@@ -120,7 +120,7 @@ pub fn instantiate_interface_ref_with_args<'ctx>(
     for binding in interface.bindings {
         let substituted = instantiate_ty_with_args(gcx, binding.ty, args);
         new_bindings.push(crate::sema::models::AssociatedTypeBinding {
-            name: binding.name,
+            name: binding.name.clone(),
             ty: substituted,
         });
     }
@@ -129,7 +129,7 @@ pub fn instantiate_interface_ref_with_args<'ctx>(
     InterfaceReference {
         id: interface.id,
         arguments: interned,
-        bindings: gcx.store.arenas.global.alloc_slice_copy(&new_bindings),
+        bindings: gcx.store.arenas.global.alloc_slice_clone(&new_bindings),
     }
 }
 
@@ -151,8 +151,8 @@ pub fn instantiate_signature_with_args<'ctx>(
         .inputs
         .iter()
         .map(|param| LabeledFunctionParameter {
-            label: param.label,
-            name: param.name,
+            label: param.label.clone(),
+            name: param.name.clone(),
             ty: instantiate_ty_with_args(gcx, param.ty, args),
             default_provider: param.default_provider,
         })

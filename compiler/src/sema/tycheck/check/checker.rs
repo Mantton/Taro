@@ -102,7 +102,7 @@ impl<'arena> Checker<'arena> {
     }
 
     pub fn try_get_local(&self, id: NodeID) -> Option<LocalBinding<'arena>> {
-        self.locals.borrow().get(&id).copied()
+        self.locals.borrow().get(&id).cloned()
     }
 
     pub fn set_local(&self, id: NodeID, binding: LocalBinding<'arena>) {

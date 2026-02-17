@@ -66,7 +66,7 @@ impl<'r, 'a> Actor<'r, 'a> {
         let module_result = match (&usage.kind, usage.module_path.is_empty()) {
             // Handle bare imports like `import std` where module_path would otherwise be empty.
             (UsageKind::Single(binding), true) => {
-                let path = vec![binding.source];
+                let path = vec![binding.source.clone()];
                 self.resolver.resolve_module_path(&path)
             }
             _ => self.resolver.resolve_module_path(&usage.module_path),
@@ -76,7 +76,7 @@ impl<'r, 'a> Actor<'r, 'a> {
             Ok(scope) => scope,
             Err(e) => {
                 if finalize {
-                    self.resolver.dcx().emit(e.diag());
+                    self.resolver.dcx().emit(e.diag(self.resolver.context));
                 }
                 return false;
             }
@@ -135,9 +135,9 @@ impl<'r, 'a> Actor<'r, 'a> {
                 .create_scope_entry_from_usage(entry, module, usage);
 
             let result = if usage.is_import {
-                self.resolver.import(usage.scope, binding.target, entry, ns)
+                self.resolver.import(usage.scope, binding.target.clone(), entry, ns)
             } else {
-                self.resolver.export(usage.scope, binding.target, entry, ns)
+                self.resolver.export(usage.scope, binding.target.clone(), entry, ns)
             };
 
             match result {

@@ -108,7 +108,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             ty: output_ty,
             kind: LocalKind::Return,
             mutable: true,
-            name: Some(Symbol::new("$ret")),
+            name: Some(gcx.intern_symbol("$ret")),
             span: entry_span,
         });
         body.escape_locals.push(false);
@@ -188,7 +188,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             .params
             .iter()
             .zip(signature.inputs.iter())
-            .map(|(param, lowered)| (param.id, param.name, param.span, lowered.ty))
+            .map(|(param, lowered)| (param.id, param.name.clone(), param.span, lowered.ty))
             .collect();
         for (id, name, span, ty) in params {
             let local = self.push_local(ty, LocalKind::Param, false, Some(name), span);
