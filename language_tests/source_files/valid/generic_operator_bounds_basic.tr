@@ -1,0 +1,27 @@
+// Validates bounded generic comparison operators.
+import std.cmp.Ord
+
+func geq[T: Ord](_ a: T, _ b: T) -> bool {
+    a >= b
+}
+
+func less[T: Ord](_ a: T, _ b: T) -> bool {
+    a < b
+}
+
+func equals[T: PartialEq](_ a: T, _ b: T) -> bool {
+    a == b
+}
+
+func main() {
+    assert(geq(10, 5), "10 >= 5")
+    assert(!geq(2, 7), "2 >= 7 should be false")
+
+    assert(less(1, 4), "1 < 4")
+    assert(!less(9, 3), "9 < 3 should be false")
+
+    assert(equals(true, true), "true == true")
+    assert(!equals(false, true), "false == true should be false")
+
+    print("generic operator bounds basic ok\n")
+}

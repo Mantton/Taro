@@ -1,0 +1,20 @@
+// Default interface method should execute through a generic bound path.
+
+interface Counter {
+    func next(self, _ seed: int32) -> int32 { seed + 1 }
+}
+
+struct Tick {}
+
+impl Counter for Tick {}
+
+func advance[T: Counter](_ counter: T, _ seed: int32) -> int32 {
+    Counter.next(counter, seed)
+}
+
+func main() {
+    let tick = Tick {}
+    let n = advance(tick, 41)
+    assert(n == 42, "generic bound default call should return 42")
+    print("default methods generic bound ok\n")
+}

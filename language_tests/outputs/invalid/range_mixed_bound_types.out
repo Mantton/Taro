@@ -1,0 +1,4 @@
+error: expected int32, found uint32
+ -> language_tests/source_files/invalid/range_mixed_bound_types.tr:5:20
+	    for _ in start..end {
+	                    ^^^

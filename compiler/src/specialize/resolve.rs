@@ -72,6 +72,19 @@ fn resolve_interface_method_for_concrete<'ctx>(
     match def_kind {
         DefinitionKind::AssociatedFunction => {
             let method = witness.method_witnesses.get(&method_id)?;
+
+            // Default interface methods are represented by the requirement definition itself.
+            // They should use the witness args template directly; attempting impl-arg deduction
+            // (which is designed for concrete impl methods) can drop `Self` substitutions.
+            if matches!(
+                method.implementation,
+                crate::sema::models::MethodImplementation::Default(_)
+            ) {
+                let default_args =
+                    instantiate_generic_args_with_args(gcx, method.args_template, call_args);
+                return Some(Instance::item(method_id, default_args));
+            }
+
             let impl_func_id = method.implementation.impl_id()?;
 
             // Strategy 1: Deduction (Preferred for concrete types)

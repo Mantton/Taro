@@ -1,13 +1,145 @@
+import std.iter.{Iterator, Iterable}
+import std.optional.Optional
+import std.cmp.Ord
+
+/// Values that can advance one step at a time for range iteration.
+public interface Step: Ord {
+    func stepForward(self) -> Self
+}
+
+impl Step for int8 {
+    public func stepForward(self) -> int8 { self + 1 }
+}
+
+impl Step for int16 {
+    public func stepForward(self) -> int16 { self + 1 }
+}
+
+impl Step for int32 {
+    public func stepForward(self) -> int32 { self + 1 }
+}
+
+impl Step for int64 {
+    public func stepForward(self) -> int64 { self + 1 }
+}
+
+impl Step for uint8 {
+    public func stepForward(self) -> uint8 { self + 1 }
+}
+
+impl Step for uint16 {
+    public func stepForward(self) -> uint16 { self + 1 }
+}
+
+impl Step for uint32 {
+    public func stepForward(self) -> uint32 { self + 1 }
+}
+
+impl Step for uint64 {
+    public func stepForward(self) -> uint64 { self + 1 }
+}
+
+impl Step for isize {
+    public func stepForward(self) -> isize { self + 1 }
+}
+
+impl Step for usize {
+    public func stepForward(self) -> usize { self + 1 }
+}
+
 /// A half-open range from `start` to `end` (exclusive).
 /// Created with the `..` operator: `start..end`
-public struct Range[Bound] {
+public struct Range[Bound: Step] {
     start: Bound
     end: Bound
 }
 
+impl[Bound: Step] Range[Bound] {
+    public func new(_ start: Bound, _ end: Bound) -> Self {
+        Range[Bound] { start: start, end: end }
+    }
+}
+
+public struct RangeIterator[Bound: Step] {
+    current: Bound
+    end: Bound
+}
+
+impl[Bound: Step] Iterator for RangeIterator[Bound] {
+    type Element = Bound
+
+    public func next(&mut self) -> Optional[Self.Element] {
+        if self.current >= self.end {
+            return .none
+        }
+
+        let value = self.current
+        self.current = value.stepForward()
+        return .some(value)
+    }
+}
+
+impl[Bound: Step] Iterable for Range[Bound] {
+    type Iterator = RangeIterator[Bound]
+    type Element = Bound
+
+    public func makeIterator(self) -> Self.Iterator {
+        RangeIterator[Bound] { current: self.start, end: self.end }
+    }
+}
+
 /// A closed range from `start` to `end` (inclusive).
 /// Created with the `..=` operator: `start..=end`
-public struct ClosedRange[Bound] {
+public struct ClosedRange[Bound: Step] {
     start: Bound
     end: Bound
+}
+
+impl[Bound: Step] ClosedRange[Bound] {
+    public func new(_ start: Bound, _ end: Bound) -> Self {
+        ClosedRange[Bound] { start: start, end: end }
+    }
+}
+
+public struct ClosedRangeIterator[Bound: Step] {
+    current: Bound
+    end: Bound
+    done: bool
+}
+
+impl[Bound: Step] Iterator for ClosedRangeIterator[Bound] {
+    type Element = Bound
+
+    public func next(&mut self) -> Optional[Self.Element] {
+        if self.done {
+            return .none
+        }
+
+        if self.current > self.end {
+            self.done = true
+            return .none
+        }
+
+        let value = self.current
+        if self.current < self.end {
+            self.current = value.stepForward()
+        } else {
+            self.done = true
+        }
+
+        return .some(value)
+    }
+}
+
+impl[Bound: Step] Iterable for ClosedRange[Bound] {
+    type Iterator = ClosedRangeIterator[Bound]
+    type Element = Bound
+
+    public func makeIterator(self) -> Self.Iterator {
+        ClosedRangeIterator[Bound] {
+            current: self.start,
+            end: self.end,
+            done: false,
+        }
+    }
 }

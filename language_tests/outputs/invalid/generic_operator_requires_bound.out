@@ -1,0 +1,4 @@
+error: cannot apply binary operator 'Geq' to types T and T
+ -> language_tests/source_files/invalid/generic_operator_requires_bound.tr:4:4
+	    a >= b
+	    ^^^^^^

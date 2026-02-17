@@ -4875,7 +4875,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 }
             }
         }
-        ty
+        if self.current_subst.is_empty() {
+            return ty;
+        }
+
+        instantiate_ty_with_args(self.gcx, ty, self.current_subst)
     }
 
     fn lower_constant(&mut self, constant: &mir::Constant<'gcx>) -> Option<BasicValueEnum<'llvm>> {
@@ -4983,10 +4987,16 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     }
 
     fn operand_ty(&self, body: &mir::Body<'gcx>, operand: &mir::Operand<'gcx>) -> Ty<'gcx> {
-        match operand {
+        let ty = match operand {
             mir::Operand::Copy(place) | mir::Operand::Move(place) => body.locals[place.local].ty,
             mir::Operand::Constant(c) => c.ty,
+        };
+
+        if self.current_subst.is_empty() {
+            return ty;
         }
+
+        instantiate_ty_with_args(self.gcx, ty, self.current_subst)
     }
 
     fn int_type(&self, ty: Ty<'gcx>) -> Option<(IntType<'llvm>, bool)> {

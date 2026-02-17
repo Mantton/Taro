@@ -5,7 +5,7 @@ use crate::{
 use colored::{ColoredString, Colorize};
 use ecow::EcoString;
 use index_vec::IndexVec;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::{
     cell::{Cell, RefCell},
     fs,
@@ -73,11 +73,35 @@ impl DiagCtx {
 }
 
 impl DiagCtx {
+    fn dedup_key(diagnostic: &Diagnostic) -> String {
+        if let Some(span) = diagnostic.span {
+            format!(
+                "{}|{}|{}:{}|{}:{}",
+                diagnostic.message,
+                span.file.raw(),
+                span.start.line,
+                span.start.offset,
+                span.end.line,
+                span.end.offset
+            )
+        } else {
+            format!("{}|<no-span>", diagnostic.message)
+        }
+    }
+
     pub fn emit(&self, diagnostic: Diagnostic) {
         if matches!(diagnostic.level, DiagnosticLevel::Error) {
-            self.inner.borrow().has_error.set(true);
-            let count = self.inner.borrow().error_count.get();
-            self.inner.borrow().error_count.set(count + 1);
+            let key = Self::dedup_key(&diagnostic);
+            let mut inner = self.inner.borrow_mut();
+
+            // Avoid emitting the exact same error multiple times.
+            if !inner.emitted_error_keys.insert(key) {
+                return;
+            }
+
+            inner.has_error.set(true);
+            let count = inner.error_count.get();
+            inner.error_count.set(count + 1);
         }
 
         if let Some(message) = self.format(&diagnostic, false) {
@@ -160,6 +184,7 @@ struct DiagCtxInner {
     error_count: Cell<usize>,
     file_mappings: IndexVec<FileID, PathBuf>,
     file_content_mappings: FxHashMap<FileID, EcoString>,
+    emitted_error_keys: FxHashSet<String>,
 }
 
 pub struct Diagnostic {

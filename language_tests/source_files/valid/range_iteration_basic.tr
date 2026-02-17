@@ -1,0 +1,39 @@
+func main() {
+    var sum_exclusive = 0
+    for i in 0..5 {
+        sum_exclusive = sum_exclusive + i
+    }
+    assert(sum_exclusive == 10, "0..5 should yield 0,1,2,3,4")
+
+    var sum_inclusive = 0
+    for i in 0..=5 {
+        sum_inclusive = sum_inclusive + i
+    }
+    assert(sum_inclusive == 15, "0..=5 should yield 0..5")
+
+    var empty_desc_exclusive = 0
+    for _ in 5..2 {
+        empty_desc_exclusive = empty_desc_exclusive + 1
+    }
+    assert(empty_desc_exclusive == 0, "5..2 should be empty")
+
+    var empty_desc_inclusive = 0
+    for _ in 5..=2 {
+        empty_desc_inclusive = empty_desc_inclusive + 1
+    }
+    assert(empty_desc_inclusive == 0, "5..=2 should be empty")
+
+    var singleton_inclusive = 0
+    for i in 4..=4 {
+        singleton_inclusive = singleton_inclusive + i
+    }
+    assert(singleton_inclusive == 4, "4..=4 should yield one element")
+
+    var singleton_exclusive = 0
+    for _ in 4..4 {
+        singleton_exclusive = singleton_exclusive + 1
+    }
+    assert(singleton_exclusive == 0, "4..4 should be empty")
+
+    print("Range iteration basic ok\n")
+}

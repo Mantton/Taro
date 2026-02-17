@@ -1,0 +1,16 @@
+// Default interface method should execute via UFCS.
+
+interface Greeter {
+    func value(self) -> int32 { 42 }
+}
+
+struct Unit {}
+
+impl Greeter for Unit {}
+
+func main() {
+    let u = Unit {}
+    let v = Greeter.value(u)
+    assert(v == 42, "default method should return 42")
+    print("default methods ufcs ok\n")
+}

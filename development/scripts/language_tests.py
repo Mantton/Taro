@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -307,6 +308,15 @@ def resolve_jobs(requested_jobs: int | None, selected_tests: int) -> int:
     return min(selected_tests, cpu_count)
 
 
+def format_elapsed(seconds: float) -> str:
+    total_seconds = max(0.0, seconds)
+    minutes, secs = divmod(total_seconds, 60)
+    hours, mins = divmod(int(minutes), 60)
+    if hours > 0:
+        return f"{hours:02d}:{mins:02d}:{secs:05.2f}"
+    return f"{mins:02d}:{secs:05.2f}"
+
+
 def run_tests_serial(test_files: list[Path], env: TestEnvironment) -> tuple[int, list[tuple[Path, str, TestDetails | None]]]:
     passed = 0
     failures: list[tuple[Path, str, TestDetails | None]] = []
@@ -357,6 +367,7 @@ def run_tests_parallel(
 
 
 def main():
+    start_time = time.perf_counter()
     parser = argparse.ArgumentParser(description="Run Taro language tests")
     parser.add_argument(
         "--filter",
@@ -391,9 +402,11 @@ def main():
             passed, failures = run_tests_parallel(test_files, env, jobs)
 
         print("-" * 40)
+        elapsed = format_elapsed(time.perf_counter() - start_time)
         summary = f"Total: {total}, Passed: {passed}, Failed: {total - passed}"
         if skipped > 0:
             summary += f", Skipped: {skipped}"
+        summary += f", Elapsed: {elapsed}"
         print(summary)
         if failures:
             print("Failures:")

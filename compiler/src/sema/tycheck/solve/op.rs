@@ -798,6 +798,43 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         });
                         return Some(obligations);
                     }
+                    // Generic/existential fallback: permit comparison operators when
+                    // interface bounds guarantee comparability.
+                    //
+                    // This keeps generic code like `func geq[T: Ord](a: T, b: T) -> bool`
+                    // type-checking even when operand types are type parameters.
+                    _ if lhs == rhs => {
+                        let has_bound = |interface_name: &str| -> bool {
+                            let Some(interface_id) = gcx.find_std_type(interface_name) else {
+                                return false;
+                            };
+
+                            let mut bounds = self.bounds_for_type_in_scope(lhs);
+                            if let TyKind::BoxedExistential { interfaces } = lhs.kind() {
+                                bounds.extend_from_slice(interfaces);
+                            }
+
+                            bounds.into_iter().any(|bound| {
+                                self.collect_interface_with_supers(bound)
+                                    .into_iter()
+                                    .any(|iface| iface.id == interface_id)
+                            })
+                        };
+
+                        let allowed = match data.operator {
+                            Eql | Neq => has_bound("PartialEq"),
+                            Lt | Gt | Leq | Geq => has_bound("Ord"),
+                            _ => false,
+                        };
+
+                        if allowed {
+                            obligations.push(Obligation {
+                                location: data.span,
+                                goal: Goal::Equal(data.rho, gcx.types.bool),
+                            });
+                            return Some(obligations);
+                        }
+                    }
                     _ => { /* not intrinsic */ }
                 }
             }

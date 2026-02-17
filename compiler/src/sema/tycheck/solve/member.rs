@@ -567,19 +567,77 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return self.lookup_operator_candidates_visible(head, kind);
         }
 
-        // If no primary type head (e.g. generic parameter), check bounds
-        let candidates = Vec::new();
+        // If no primary type head (e.g. generic parameter), resolve operators from
+        // in-scope bounds (`T: Ord`, `T: PartialEq`, etc.) and existential interfaces.
         match ty.kind() {
             TyKind::Parameter(_) | TyKind::BoxedExistential { .. } => {
-                let bounds = self.bounds_for_type_in_scope(ty);
-                for _bound in bounds {
-                    // TODO : Look up operators in the interface definition directly
-                }
+                self.lookup_operator_candidates_from_bounds(ty, kind)
             }
-            _ => {}
+            _ => Vec::new(),
+        }
+    }
+
+    fn lookup_operator_candidates_from_bounds(
+        &self,
+        ty: Ty<'ctx>,
+        kind: OperatorKind,
+    ) -> Vec<DefinitionID> {
+        let gcx = self.gcx();
+        let Some(std_interface) = StdInterface::from_operator_kind(kind) else {
+            return Vec::new();
+        };
+        let Some(interface_id) = gcx.std_interface_def(std_interface) else {
+            return Vec::new();
+        };
+        let Some(method_name) = std_interface.operator_method_name() else {
+            return Vec::new();
+        };
+        let method_symbol = Symbol::new(method_name);
+
+        // Collect all explicit bounds from the current parameter environment.
+        let mut bounds = self.bounds_for_type_in_scope(ty);
+
+        // Existentials carry their own interface list on the type itself.
+        if let TyKind::BoxedExistential { interfaces } = ty.kind() {
+            bounds.extend_from_slice(interfaces);
         }
 
-        candidates
+        let mut out = Vec::new();
+        let mut seen_defs: FxHashSet<DefinitionID> = FxHashSet::default();
+        let mut seen_ifaces: FxHashSet<InterfaceReference<'ctx>> = FxHashSet::default();
+
+        for bound in bounds {
+            // Resolve inference where possible; skip unresolved bounds for now.
+            let (bound, has_infer) = self.resolve_interface_ref(bound);
+            if has_infer {
+                continue;
+            }
+
+            // Include superinterfaces so `T: Ord` can satisfy PartialOrd/PartialEq operators.
+            for iface in self.collect_interface_with_supers(bound) {
+                if !seen_ifaces.insert(iface) || iface.id != interface_id {
+                    continue;
+                }
+
+                let Some(requirements) = self.interface_requirements(iface.id) else {
+                    continue;
+                };
+
+                for method_req in &requirements.methods {
+                    if method_req.name != method_symbol {
+                        continue;
+                    }
+
+                    if seen_defs.insert(method_req.id)
+                        && gcx.is_definition_visible(method_req.id, self.current_def)
+                    {
+                        out.push(method_req.id);
+                    }
+                }
+            }
+        }
+
+        out
     }
 
     fn lookup_operator_candidates_visible(
