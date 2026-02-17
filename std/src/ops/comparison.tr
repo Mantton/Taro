@@ -1,7 +1,7 @@
 
-public interface PartialEq {
-    func eq(&self, _ other: &Self) -> bool
-    func neq(&self, _ other: &Self) -> bool {
+public interface PartialEq[Rhs = Self] {
+    func eq(&self, _ other: &Rhs) -> bool
+    func neq(&self, _ other: &Rhs) -> bool {
         !(self.eq(other))
     }
 }

@@ -1,0 +1,20 @@
+interface SameAs[T = Self] {
+    func same(&self, _ other: &T) -> bool
+}
+
+struct Boxed {
+    value: int32
+}
+
+impl SameAs for Boxed {
+    func same(&self, _ other: &Boxed) -> bool {
+        self.value == other.value
+    }
+}
+
+func main() {
+    let a = Boxed { value: 7 }
+    let b = Boxed { value: 7 }
+    assert(a.same(&b), "default generic argument Self should substitute to concrete impl self type")
+    std.print("ok\n")
+}

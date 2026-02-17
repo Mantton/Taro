@@ -10,6 +10,7 @@ use crate::{
         },
         resolve::models::{PrimaryType, TypeHead},
         tycheck::{
+            fold::{TypeFoldable, TypeFolder, TypeSuperFoldable},
             lower::LoweringRequest,
             utils::{
                 const_eval::eval_const_expression,
@@ -351,7 +352,10 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                     match &param.kind {
                         // ---- provided default ----
                         GenericParameterDefinitionKind::Type { default: Some(d) } => {
-                            let ty = self.lower_type(&d);
+                            let mut ty = self.lower_type(&d);
+                            if let Some(concrete_self_ty) = self_ty {
+                                ty = self.substitute_interface_self_default(ty, concrete_self_ty);
+                            }
                             output.push(GenericArgument::Type(ty));
                         }
 
@@ -383,6 +387,40 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             gcx.store.interners.intern_generic_args(output),
             gcx.store.arenas.global.alloc_slice_clone(&bindings),
         )
+    }
+
+    /// Substitute abstract interface `Self` defaults with the concrete `self_ty`.
+    ///
+    /// This is needed for defaults like `Rhs = Self` when lowering references such as
+    /// `impl PartialEq for T`, where omitted generic arguments should concretize to `T`.
+    fn substitute_interface_self_default(
+        &self,
+        ty: Ty<'ctx>,
+        concrete_self_ty: Ty<'ctx>,
+    ) -> Ty<'ctx> {
+        struct InterfaceSelfSubstitutor<'ctx> {
+            gcx: GlobalContext<'ctx>,
+            concrete_self_ty: Ty<'ctx>,
+        }
+
+        impl<'ctx> TypeFolder<'ctx> for InterfaceSelfSubstitutor<'ctx> {
+            fn gcx(&self) -> GlobalContext<'ctx> {
+                self.gcx
+            }
+
+            fn fold_ty(&mut self, ty: Ty<'ctx>) -> Ty<'ctx> {
+                if ty == self.gcx.types.self_type_parameter {
+                    return self.concrete_self_ty;
+                }
+                ty.super_fold_with(self)
+            }
+        }
+
+        let mut substitutor = InterfaceSelfSubstitutor {
+            gcx: self.gcx(),
+            concrete_self_ty,
+        };
+        ty.fold_with(&mut substitutor)
     }
 
     pub fn lower_const_argument(

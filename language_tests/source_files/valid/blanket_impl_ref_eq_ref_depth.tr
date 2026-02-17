@@ -1,0 +1,9 @@
+func main() {
+    let x = 1
+    let rx = &x
+    let rrx = &rx
+
+    assert(rrx == rx, "&&T should compare with &T")
+    assert(rrx == x, "&&T should compare with T")
+    std.print("ok\n")
+}

@@ -62,9 +62,45 @@ impl Ordering {
 ///
 /// A partial ordering means some values may not be comparable.
 /// For example, floating-point NaN values are not comparable.
-public interface PartialOrd: PartialEq {
+public interface PartialOrd[Rhs = Self]: PartialEq[Rhs] {
     /// Compare two values, returning None if they cannot be compared.
-    func partialCmp(&self, _ other: &Self) -> Optional[Ordering]
+    func partialCmp(&self, _ other: &Rhs) -> Optional[Ordering]
+
+    /// Returns true if `self < other`.
+    @inline
+    func lt(&self, _ other: &Rhs) -> bool {
+        match self.partialCmp(other) {
+            case .some(ordering) => ordering.isLess()
+            case .none => false
+        }
+    }
+
+    /// Returns true if `self <= other`.
+    @inline
+    func le(&self, _ other: &Rhs) -> bool {
+        match self.partialCmp(other) {
+            case .some(ordering) => ordering.isLess() || ordering.isEqual()
+            case .none => false
+        }
+    }
+
+    /// Returns true if `self > other`.
+    @inline
+    func gt(&self, _ other: &Rhs) -> bool {
+        match self.partialCmp(other) {
+            case .some(ordering) => ordering.isGreater()
+            case .none => false
+        }
+    }
+
+    /// Returns true if `self >= other`.
+    @inline
+    func ge(&self, _ other: &Rhs) -> bool {
+        match self.partialCmp(other) {
+            case .some(ordering) => ordering.isGreater() || ordering.isEqual()
+            case .none => false
+        }
+    }
 }
 
 /// Types that have a total ordering.

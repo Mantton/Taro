@@ -1,0 +1,23 @@
+interface Retrieve[T] {
+    func retrieve(&self) -> T
+}
+
+struct Boxed[T: Copy] {
+    value: T
+}
+
+// Blanket impl: every Boxed[T] where T: Copy implements Retrieve[T].
+impl[T: Copy] Retrieve[T] for Boxed[T] {
+    func retrieve(&self) -> T {
+        self.value
+    }
+}
+
+func main() {
+    let intBox = Boxed[int32] { value: 42 }
+    let boolBox = Boxed[bool] { value: true }
+
+    assert(intBox.retrieve() == 42, "generic blanket impl should work for int32")
+    assert(boolBox.retrieve(), "generic blanket impl should work for bool")
+    std.print("ok\n")
+}

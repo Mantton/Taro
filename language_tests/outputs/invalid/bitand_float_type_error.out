@@ -1,0 +1,4 @@
+error: cannot apply binary operator 'BitAnd' to types double and double
+ -> language_tests/source_files/invalid/bitand_float_type_error.tr:2:12
+	    let x = 1.0 & 2.0
+	            ^^^^^^^^^

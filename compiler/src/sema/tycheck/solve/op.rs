@@ -275,6 +275,31 @@ impl<'ctx> ConstraintSolver<'ctx> {
         )
     }
 
+    /// Count leading shared-reference layers for a type.
+    fn ref_depth(mut ty: Ty<'ctx>) -> usize {
+        let mut depth = 0usize;
+        while let TyKind::Reference(inner, _) = ty.kind() {
+            ty = inner;
+            depth += 1;
+        }
+        depth
+    }
+
+    /// Dereference up to `steps` shared-reference layers from a type.
+    fn deref_ref_layers(mut ty: Ty<'ctx>, steps: usize) -> Ty<'ctx> {
+        let mut i = 0usize;
+        while i < steps {
+            match ty.kind() {
+                TyKind::Reference(inner, _) => {
+                    ty = inner;
+                    i += 1;
+                }
+                _ => break,
+            }
+        }
+        ty
+    }
+
     fn solve_binary_method(
         &mut self,
         data: &BinOpGoalData<'ctx>,
@@ -284,14 +309,30 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let op_kind = binary_op_to_operator_kind(data.operator)?;
         let needs_autoref = Self::is_comparison_operator(data.operator);
 
-        // For comparison operators, we try borrowed types first, then fall back to value types.
-        // This matches Rust's behavior where `a == b` becomes `PartialEq::eq(&a, &b)`.
-        // For other operators (arithmetic, bitwise), we only try value types.
+        // For comparison operators, try all shared-reference deref combinations first,
+        // then autoref both sides. This matches Rust-like behavior for `&T`, `&&T`, etc.
         if needs_autoref {
-            // Try with autoref (borrowed operands) first
-            if let Some(result) = self.solve_binary_method_with_autoref(data, lhs, rhs, op_kind) {
-                return Some(result);
+            let lhs_ref_depth = Self::ref_depth(lhs);
+            let rhs_ref_depth = Self::ref_depth(rhs);
+            for lhs_deref_steps in (0..=lhs_ref_depth).rev() {
+                let lhs_try = Self::deref_ref_layers(lhs, lhs_deref_steps);
+                for rhs_deref_steps in (0..=rhs_ref_depth).rev() {
+                    let rhs_try = Self::deref_ref_layers(rhs, rhs_deref_steps);
+                    if let Some(result) = self.solve_binary_method_with_autoref(
+                        data,
+                        lhs_try,
+                        rhs_try,
+                        op_kind,
+                        lhs_deref_steps,
+                        rhs_deref_steps,
+                    ) {
+                        return Some(result);
+                    }
+                }
             }
+
+            // Comparisons are always by-reference; do not fall back to by-value method calls.
+            return None;
         }
 
         // Fall back to value types (no autoref)
@@ -306,6 +347,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
         lhs: Ty<'ctx>,
         rhs: Ty<'ctx>,
         op_kind: OperatorKind,
+        lhs_deref_steps: usize,
+        rhs_deref_steps: usize,
     ) -> Option<SolverResult<'ctx>> {
         // Create borrowed types for operands
         let lhs_ref = Ty::new(TyKind::Reference(lhs, Mutability::Immutable), self.gcx());
@@ -366,9 +409,19 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return None;
         }
 
-        // Record borrowing adjustments for both operands
-        self.record_adjustments(data.lhs_id, vec![Adjustment::BorrowImmutable]);
-        self.record_adjustments(data.rhs_id, vec![Adjustment::BorrowImmutable]);
+        // Record deref+borrow adjustments for both operands.
+        let mut lhs_adjustments = Vec::with_capacity(lhs_deref_steps + 1);
+        let mut rhs_adjustments = Vec::with_capacity(rhs_deref_steps + 1);
+        for _ in 0..lhs_deref_steps {
+            lhs_adjustments.push(Adjustment::Dereference);
+        }
+        for _ in 0..rhs_deref_steps {
+            rhs_adjustments.push(Adjustment::Dereference);
+        }
+        lhs_adjustments.push(Adjustment::BorrowImmutable);
+        rhs_adjustments.push(Adjustment::BorrowImmutable);
+        self.record_adjustments(data.lhs_id, lhs_adjustments);
+        self.record_adjustments(data.rhs_id, rhs_adjustments);
 
         // Create a type variable for the method type
         let method_ty = self.icx.next_ty_var(data.span);
@@ -531,7 +584,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
     /// Try to resolve “intrinsic” binary operations on primitives without invoking overloads.
     /// Returns Some(obligations) if handled intrinsically; None to fall back to overload search.
     fn solve_binary_intrinsic(
-        &self,
+        &mut self,
         data: &BinOpGoalData<'ctx>,
         lhs: Ty<'ctx>,
         rhs: Ty<'ctx>,
@@ -635,6 +688,40 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 }
             };
 
+        // Integer-only variant used by bitwise operators.
+        let unify_integer_binop =
+            |obligations: &mut Vec<_>, lhs: Ty<'ctx>, rhs: Ty<'ctx>| -> Option<()> {
+                match (lhs.kind(), rhs.kind()) {
+                    (Int(_) | UInt(_), Infer(IntVar(_))) => {
+                        obligations.push(Obligation {
+                            location: data.span,
+                            goal: Goal::Equal(rhs, lhs),
+                        });
+                        push_rho_eq(obligations, lhs);
+                        maybe_defer_literal_fit(obligations, lhs);
+                        Some(())
+                    }
+                    (Infer(IntVar(_)), Int(_) | UInt(_)) => {
+                        obligations.push(Obligation {
+                            location: data.span,
+                            goal: Goal::Equal(lhs, rhs),
+                        });
+                        push_rho_eq(obligations, rhs);
+                        maybe_defer_literal_fit(obligations, rhs);
+                        Some(())
+                    }
+                    (Infer(IntVar(_)), Infer(IntVar(_))) => {
+                        obligations.push(Obligation {
+                            location: data.span,
+                            goal: Goal::Equal(lhs, rhs),
+                        });
+                        push_rho_eq(obligations, lhs);
+                        Some(())
+                    }
+                    _ => None,
+                }
+            };
+
         let gcx = self.gcx();
         let mut obligations = vec![];
 
@@ -693,7 +780,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         push_rho_eq(&mut obligations, lhs);
                         return Some(obligations);
                     }
-                    if unify_numeric_binop(&mut obligations, lhs, rhs).is_some() {
+                    if unify_integer_binop(&mut obligations, lhs, rhs).is_some() {
                         return Some(obligations);
                     }
                     // else: not intrinsic
@@ -798,64 +885,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         });
                         return Some(obligations);
                     }
-                    // Generic/existential fallback: permit comparison operators when
-                    // interface bounds guarantee comparability.
-                    //
-                    // This keeps generic code like `func geq[T: Ord](a: T, b: T) -> bool`
-                    // type-checking even when operand types are type parameters.
-                    _ if lhs == rhs => {
-                        let has_bound = |interface_name: &str| -> bool {
-                            let Some(interface_id) = gcx.find_std_type(interface_name) else {
-                                return false;
-                            };
-
-                            let mut bounds = self.bounds_for_type_in_scope(lhs);
-                            if let TyKind::BoxedExistential { interfaces } = lhs.kind() {
-                                bounds.extend_from_slice(interfaces);
-                            }
-
-                            bounds.into_iter().any(|bound| {
-                                self.collect_interface_with_supers(bound)
-                                    .into_iter()
-                                    .any(|iface| iface.id == interface_id)
-                            })
-                        };
-
-                        let allowed = match data.operator {
-                            Eql | Neq => has_bound("PartialEq"),
-                            Lt | Gt | Leq | Geq => has_bound("Ord"),
-                            _ => false,
-                        };
-
-                        if allowed {
-                            obligations.push(Obligation {
-                                location: data.span,
-                                goal: Goal::Equal(data.rho, gcx.types.bool),
-                            });
-                            return Some(obligations);
-                        }
-                    }
                     _ => { /* not intrinsic */ }
                 }
             }
             PtrEq => unreachable!(),
-        }
-
-        let numeric_same = |a: Ty<'ctx>, b: Ty<'ctx>| -> bool {
-            match (a.kind(), b.kind()) {
-                (Int(ka), Int(kb)) => ka == kb,
-                (UInt(ka), UInt(kb)) => ka == kb,
-                (Float(ka), Float(kb)) => ka == kb,
-                _ => false,
-            }
-        };
-
-        if numeric_same(lhs, rhs) {
-            obligations.push(Obligation {
-                location: data.span,
-                goal: Goal::Equal(data.rho, gcx.types.bool),
-            });
-            return Some(obligations);
         }
 
         None

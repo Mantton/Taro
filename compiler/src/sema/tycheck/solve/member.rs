@@ -22,6 +22,31 @@ use crate::{
 use rustc_hash::FxHashSet;
 
 impl<'ctx> ConstraintSolver<'ctx> {
+    fn operator_method_name_for_kind(kind: OperatorKind) -> Option<&'static str> {
+        match kind {
+            OperatorKind::Add | OperatorKind::AddAssign => Some("add"),
+            OperatorKind::Sub | OperatorKind::SubAssign => Some("sub"),
+            OperatorKind::Mul | OperatorKind::MulAssign => Some("mul"),
+            OperatorKind::Div | OperatorKind::DivAssign => Some("div"),
+            OperatorKind::Rem | OperatorKind::RemAssign => Some("rem"),
+            OperatorKind::BitAnd | OperatorKind::BitAndAssign => Some("bitand"),
+            OperatorKind::BitOr | OperatorKind::BitOrAssign => Some("bitor"),
+            OperatorKind::BitXor | OperatorKind::BitXorAssign => Some("bitxor"),
+            OperatorKind::BitShl | OperatorKind::BitShlAssign => Some("shl"),
+            OperatorKind::BitShr | OperatorKind::BitShrAssign => Some("shr"),
+            OperatorKind::Neg => Some("neg"),
+            OperatorKind::Not => Some("not"),
+            OperatorKind::BitwiseNot => Some("bitnot"),
+            OperatorKind::Eq => Some("eq"),
+            OperatorKind::Neq => Some("neq"),
+            OperatorKind::Lt => Some("lt"),
+            OperatorKind::Gt => Some("gt"),
+            OperatorKind::Leq => Some("le"),
+            OperatorKind::Geq => Some("ge"),
+            OperatorKind::BoolAnd | OperatorKind::BoolOr => None,
+        }
+    }
+
     pub fn solve_member(&mut self, data: MemberGoalData<'ctx>) -> SolverResult<'ctx> {
         let MemberGoalData {
             node_id,
@@ -590,7 +615,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let Some(interface_id) = gcx.std_interface_def(std_interface) else {
             return Vec::new();
         };
-        let Some(method_name) = std_interface.operator_method_name() else {
+        let Some(method_name) = Self::operator_method_name_for_kind(kind) else {
             return Vec::new();
         };
         let method_symbol = gcx.intern_symbol(method_name);
@@ -709,8 +734,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
         // Check if the type conforms to this interface
         let witness = resolve_conformance_witness(gcx, head, interface_ref)?;
 
-        // Get the method name for this operator
-        let method_name = std_interface.operator_method_name()?;
+        // Get the requirement method for this concrete operator kind
+        let method_name = Self::operator_method_name_for_kind(kind)?;
         let method_symbol = gcx.intern_symbol(method_name);
 
         // Look up the method witness

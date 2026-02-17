@@ -1,6 +1,7 @@
 import argparse
 import concurrent.futures
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -203,16 +204,14 @@ def run_test(file_path: Path, env: TestEnvironment) -> TestRunResult:
 
             # Normalize the error output: extract just the error lines
             # (skip compilation progress messages like "Compiling – std")
-            error_lines = [
-                line
-                for line in actual_output.split("\n")
-                if line.startswith("error:")
-                or (
-                    line.strip().startswith("->")
-                    or line.strip().startswith("^")
-                    or (line.strip() and not line.startswith("Compiling"))
-                )
-            ]
+            error_lines = []
+            for line in actual_output.split("\n"):
+                stripped = line.strip()
+                if not stripped or line.startswith("Compiling"):
+                    continue
+                # Rust panic output may include per-run thread IDs; normalize to keep snapshots stable.
+                line = re.sub(r"thread 'main' \(\d+\)", "thread 'main' (<pid>)", line)
+                error_lines.append(line)
             actual_output = "\n".join(error_lines).strip() + "\n" if error_lines else ""
         else:
             # For valid tests, default runtime exit is 0 unless overridden by directive.

@@ -1545,6 +1545,7 @@ fn bin_op(op: hir::BinaryOperator) -> mir::BinaryOperator {
         hir::BinaryOperator::Mul => mir::BinaryOperator::Mul,
         hir::BinaryOperator::Div => mir::BinaryOperator::Div,
         hir::BinaryOperator::Rem => mir::BinaryOperator::Rem,
+        hir::BinaryOperator::BitAnd => mir::BinaryOperator::BitAnd,
         hir::BinaryOperator::BitOr => mir::BinaryOperator::BitOr,
         hir::BinaryOperator::BitXor => mir::BinaryOperator::BitXor,
         hir::BinaryOperator::BitShl => mir::BinaryOperator::BitShl,

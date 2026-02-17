@@ -1,0 +1,22 @@
+struct Word {
+    value: string
+}
+
+impl std.ops.PartialEq[string] for Word {
+    public func eq(&self, _ other: &string) -> bool {
+        self.value == *other
+    }
+}
+
+func matches[T: std.ops.PartialEq[U], U](_ lhs: T, _ rhs: U) -> bool {
+    lhs == rhs
+}
+
+func main() {
+    let w1 = Word { value: "ok" }
+    let w2 = Word { value: "ok" }
+    assert(matches(w1, "ok"), "generic PartialEq[Rhs] bound should work")
+    assert(w2 != "no", "neq should dispatch through PartialEq[Rhs]")
+    assert(w2 == "ok", "comparison should borrow and allow reuse")
+    std.print("ok\n")
+}

@@ -766,6 +766,9 @@ impl<'ctx> Checker<'ctx> {
                 };
 
                 let ptr_ty = cs.infer_cx.resolve_vars_if_possible(ptr_ty);
+                if ptr_ty.contains_inference() {
+                    return true;
+                }
                 match ptr_ty.kind() {
                     TyKind::Pointer(_, mutbl) | TyKind::Reference(_, mutbl) => {
                         if mutbl != hir::Mutability::Mutable {
@@ -798,6 +801,9 @@ impl<'ctx> Checker<'ctx> {
 
                 // Mutability through pointer/reference.
                 let receiver_ty = cs.infer_cx.resolve_vars_if_possible(receiver_ty);
+                if receiver_ty.contains_inference() {
+                    return true;
+                }
                 let (base_ty, via_ptr_mut) = match receiver_ty.kind() {
                     TyKind::Pointer(inner, mutbl) | TyKind::Reference(inner, mutbl) => {
                         (inner, mutbl == hir::Mutability::Mutable)
@@ -832,6 +838,7 @@ impl<'ctx> Checker<'ctx> {
                             true
                         }
                     }
+                    hir::ExpressionKind::Dereference(_) => true,
                     _ => {
                         self.gcx().dcx().emit_error(
                             "left-hand side of assignment is not assignable".into(),
@@ -944,6 +951,9 @@ impl<'ctx> Checker<'ctx> {
                 };
 
                 let ptr_ty = cs.infer_cx.resolve_vars_if_possible(ptr_ty);
+                if ptr_ty.contains_inference() {
+                    return true;
+                }
                 match ptr_ty.kind() {
                     TyKind::Error => true,
                     TyKind::Pointer(_, mutbl) | TyKind::Reference(_, mutbl) => {
@@ -972,13 +982,48 @@ impl<'ctx> Checker<'ctx> {
                     return false;
                 };
 
-                let (base_ty, via_ptr_mut, via_ptr) = match receiver_ty.kind() {
-                    TyKind::Error => return true,
-                    TyKind::Pointer(inner, mutbl) | TyKind::Reference(inner, mutbl) => {
-                        (inner, mutbl == hir::Mutability::Mutable, true)
-                    }
-                    _ => (receiver_ty, true, false),
-                };
+                let receiver_ty = cs.infer_cx.resolve_vars_if_possible(receiver_ty);
+                if receiver_ty.contains_inference() {
+                    return true;
+                }
+
+                let (base_ty, via_ptr_mut, via_ptr) =
+                    if let hir::ExpressionKind::Dereference(inner) = &target.kind {
+                        let Some(ptr_ty) = cs.expr_ty(inner.id) else {
+                            self.gcx().dcx().emit_error(
+                                "missing type for deref operand".into(),
+                                Some(expr.span),
+                            );
+                            return false;
+                        };
+
+                        let ptr_ty = cs.infer_cx.resolve_vars_if_possible(ptr_ty);
+                        if ptr_ty.contains_inference() {
+                            return true;
+                        }
+
+                        match ptr_ty.kind() {
+                            TyKind::Error => return true,
+                            TyKind::Pointer(inner, mutbl) | TyKind::Reference(inner, mutbl) => {
+                                (inner, mutbl == hir::Mutability::Mutable, true)
+                            }
+                            _ => {
+                                self.gcx().dcx().emit_error(
+                                    "cannot borrow through a non-pointer/reference value".into(),
+                                    Some(expr.span),
+                                );
+                                return false;
+                            }
+                        }
+                    } else {
+                        match receiver_ty.kind() {
+                            TyKind::Error => return true,
+                            TyKind::Pointer(inner, mutbl) | TyKind::Reference(inner, mutbl) => {
+                                (inner, mutbl == hir::Mutability::Mutable, true)
+                            }
+                            _ => (receiver_ty, true, false),
+                        }
+                    };
 
                 if !via_ptr_mut {
                     self.gcx().dcx().emit_error(
