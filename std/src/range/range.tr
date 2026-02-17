@@ -1,9 +1,10 @@
 import std.iter.{Iterator, Iterable}
 import std.optional.Optional
 import std.cmp.Ord
+import std.marker.Clone
 
 /// Values that can advance one step at a time for range iteration.
-public interface Step: Ord {
+public interface Step: Ord, Clone {
     func stepForward(self) -> Self
 }
 
@@ -69,12 +70,12 @@ impl[Bound: Step] Iterator for RangeIterator[Bound] {
     type Element = Bound
 
     public func next(&mut self) -> Optional[Self.Element] {
-        if self.current >= self.end {
+        if self.current.clone() >= self.end.clone() {
             return .none
         }
 
-        let value = self.current
-        self.current = value.stepForward()
+        let value = self.current.clone()
+        self.current = self.current.clone().stepForward()
         return .some(value)
     }
 }
@@ -115,14 +116,14 @@ impl[Bound: Step] Iterator for ClosedRangeIterator[Bound] {
             return .none
         }
 
-        if self.current > self.end {
+        if self.current.clone() > self.end.clone() {
             self.done = true
             return .none
         }
 
-        let value = self.current
-        if self.current < self.end {
-            self.current = value.stepForward()
+        let value = self.current.clone()
+        if self.current.clone() < self.end.clone() {
+            self.current = self.current.clone().stepForward()
         } else {
             self.done = true
         }

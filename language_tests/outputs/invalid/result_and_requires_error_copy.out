@@ -1,0 +1,4 @@
+error: type 'NonCopyError' does not conform to interface 'Copy'
+ -> language_tests/source_files/invalid/result_and_requires_error_copy.tr:8:17
+	    let _ = left.and(right)
+	                 ^^^

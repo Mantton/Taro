@@ -6,11 +6,12 @@
 use crate::{
     compile::context::Gcx,
     error::CompileResult,
+    hir::StdInterface,
     mir::{
         BasicBlockId, Body, CallUnwindAction, LocalId, Operand, Place, PlaceElem, Rvalue,
         StatementKind, TerminatorKind,
     },
-    sema::models::TyKind,
+    sema::models::{Constraint, Ty, TyKind},
     thir::FieldIndex,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -442,7 +443,7 @@ fn check_borrow_move<'ctx>(
     }
 
     if moved_out_of_reference {
-        if !gcx.is_type_copyable(current_ty) {
+        if !is_type_copyable_in_body_context(gcx, body, current_ty) {
             gcx.dcx().emit_error(
                 format!("cannot move out of borrowed content").into(),
                 Some(span),
@@ -452,6 +453,50 @@ fn check_borrow_move<'ctx>(
     }
 
     Ok(())
+}
+
+fn is_type_copyable_in_body_context<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>, ty: Ty<'ctx>) -> bool {
+    let TyKind::Parameter(param) = ty.kind() else {
+        return gcx.is_type_copyable(ty);
+    };
+
+    let Some(copy_def) = gcx.std_interface_def(StdInterface::Copy) else {
+        return false;
+    };
+
+    fn interface_has_copy_bound<'ctx>(
+        gcx: Gcx<'ctx>,
+        interface_id: crate::hir::DefinitionID,
+        copy_def: crate::hir::DefinitionID,
+        visited: &mut std::collections::HashSet<crate::hir::DefinitionID>,
+    ) -> bool {
+        if interface_id == copy_def {
+            return true;
+        }
+        if !visited.insert(interface_id) {
+            return false;
+        }
+        let Some(def) = gcx.get_interface_definition(interface_id) else {
+            return false;
+        };
+        def.superfaces.iter().any(|super_iface| {
+            interface_has_copy_bound(gcx, super_iface.value.id, copy_def, visited)
+        })
+    }
+
+    let param_ty = Ty::new(TyKind::Parameter(param), gcx);
+    gcx.canonical_constraints_of(body.owner)
+        .iter()
+        .any(|constraint| match constraint.value {
+            Constraint::Bound { ty, interface } => {
+                if ty != param_ty {
+                    return false;
+                }
+                let mut visited = std::collections::HashSet::new();
+                interface_has_copy_bound(gcx, interface.id, copy_def, &mut visited)
+            }
+            Constraint::TypeEquality(_, _) => false,
+        })
 }
 
 fn check_place_not_moved<'ctx>(

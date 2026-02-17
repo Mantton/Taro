@@ -1,0 +1,6 @@
+func main() {
+    let s = "abc"
+    let src: *const uint8 = std.string.stringData(s)
+    let dst: *const uint8 = std.string.stringData(s)
+    src.copyTo(dst, 1)
+}

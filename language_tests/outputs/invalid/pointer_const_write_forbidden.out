@@ -1,0 +1,4 @@
+error: no member named 'write' found on type *uint8
+ -> language_tests/source_files/invalid/pointer_const_write_forbidden.tr:4:6
+	    p.write(65)
+	      ^^^^^

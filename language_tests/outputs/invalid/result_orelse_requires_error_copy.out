@@ -1,0 +1,4 @@
+error: type 'NonCopyError' does not conform to interface 'Copy'
+ -> language_tests/source_files/invalid/result_orelse_requires_error_copy.tr:7:17
+	    let _ = left.orElse(|e| -> Result[int32, NonCopyError] { .ok(e.code) })
+	                 ^^^^^^

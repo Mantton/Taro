@@ -94,6 +94,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let entry_span = function.span;
 
         let mut body = Body {
+            owner: function.id,
             locals: Default::default(),
             basic_blocks: Default::default(),
             start_block: BasicBlockId::from_raw(0),
@@ -134,6 +135,51 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
     fn finish(self) -> Body<'ctx> {
         self.body
+    }
+
+    fn is_type_copyable(&self, ty: Ty<'ctx>) -> bool {
+        let TyKind::Parameter(param) = ty.kind() else {
+            return self.gcx.is_type_copyable(ty);
+        };
+
+        let Some(copy_def) = self.gcx.std_interface_def(StdInterface::Copy) else {
+            return false;
+        };
+
+        fn interface_has_copy_bound<'ctx>(
+            gcx: Gcx<'ctx>,
+            interface_id: hir::DefinitionID,
+            copy_def: hir::DefinitionID,
+            visited: &mut std::collections::HashSet<hir::DefinitionID>,
+        ) -> bool {
+            if interface_id == copy_def {
+                return true;
+            }
+            if !visited.insert(interface_id) {
+                return false;
+            }
+            let Some(def) = gcx.get_interface_definition(interface_id) else {
+                return false;
+            };
+            def.superfaces.iter().any(|super_iface| {
+                interface_has_copy_bound(gcx, super_iface.value.id, copy_def, visited)
+            })
+        }
+
+        let param_ty = Ty::new(TyKind::Parameter(param), self.gcx);
+        self.gcx
+            .canonical_constraints_of(self.thir.id)
+            .iter()
+            .any(|constraint| match constraint.value {
+                Constraint::Bound { ty, interface } => {
+                    if ty != param_ty {
+                        return false;
+                    }
+                    let mut visited = std::collections::HashSet::new();
+                    interface_has_copy_bound(self.gcx, interface.id, copy_def, &mut visited)
+                }
+                Constraint::TypeEquality(_, _) => false,
+            })
     }
 
     fn declare_parameters(&mut self, signature: &LabeledFunctionSignature<'ctx>) {

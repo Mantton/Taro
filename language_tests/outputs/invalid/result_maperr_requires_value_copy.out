@@ -1,0 +1,4 @@
+error: type 'NonCopyValue' does not conform to interface 'Copy'
+ -> language_tests/source_files/invalid/result_maperr_requires_value_copy.tr:7:14
+	    let _ = r.mapErr(|e| -> int32 { e + 1 })
+	              ^^^^^^

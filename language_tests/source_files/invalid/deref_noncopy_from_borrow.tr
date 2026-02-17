@@ -1,0 +1,12 @@
+struct NoCopy {
+    value: int32
+}
+
+func copyOut(_ x: &NoCopy) -> NoCopy {
+    *x
+}
+
+func main() {
+    let item = NoCopy { value: 1 }
+    let _ = copyOut(&item)
+}

@@ -1,4 +1,5 @@
 import std.hash.{Hashable, Hasher}
+import std.marker.Clone
 import std.ops.PartialEq
 import std.cmp.{Ordering, PartialOrd, Ord}
 import std.optional.Optional
@@ -6,6 +7,10 @@ import std.optional.Optional
 // int8
 impl Hashable for int8 {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
+}
+
+impl Clone for int8 {
+    public func clone(&self) -> int8 { *self }
 }
 
 impl PartialEq for int8 {
@@ -35,6 +40,10 @@ impl Hashable for int16 {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
 }
 
+impl Clone for int16 {
+    public func clone(&self) -> int16 { *self }
+}
+
 impl PartialEq for int16 {
     public func eq(&self, _ other: &int16) -> bool { *self == *other }
 }
@@ -60,6 +69,10 @@ impl Ord for int16 {
 // int32
 impl Hashable for int32 {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
+}
+
+impl Clone for int32 {
+    public func clone(&self) -> int32 { *self }
 }
 
 impl PartialEq for int32 {
@@ -89,6 +102,10 @@ impl Hashable for int64 {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
 }
 
+impl Clone for int64 {
+    public func clone(&self) -> int64 { *self }
+}
+
 impl PartialEq for int64 {
     public func eq(&self, _ other: &int64) -> bool { *self == *other }
 }
@@ -114,6 +131,10 @@ impl Ord for int64 {
 // uint8
 impl Hashable for uint8 {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
+}
+
+impl Clone for uint8 {
+    public func clone(&self) -> uint8 { *self }
 }
 
 impl PartialEq for uint8 {
@@ -143,6 +164,10 @@ impl Hashable for uint16 {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
 }
 
+impl Clone for uint16 {
+    public func clone(&self) -> uint16 { *self }
+}
+
 impl PartialEq for uint16 {
     public func eq(&self, _ other: &uint16) -> bool { *self == *other }
 }
@@ -168,6 +193,10 @@ impl Ord for uint16 {
 // uint32
 impl Hashable for uint32 {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
+}
+
+impl Clone for uint32 {
+    public func clone(&self) -> uint32 { *self }
 }
 
 impl PartialEq for uint32 {
@@ -197,6 +226,10 @@ impl Hashable for uint64 {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
 }
 
+impl Clone for uint64 {
+    public func clone(&self) -> uint64 { *self }
+}
+
 impl PartialEq for uint64 {
     public func eq(&self, _ other: &uint64) -> bool { *self == *other }
 }
@@ -224,6 +257,10 @@ impl Hashable for isize {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
 }
 
+impl Clone for isize {
+    public func clone(&self) -> isize { *self }
+}
+
 impl PartialEq for isize {
     public func eq(&self, _ other: &isize) -> bool { *self == *other }
 }
@@ -249,6 +286,10 @@ impl Ord for isize {
 // usize
 impl Hashable for usize {
     public func hash[H: Hasher](&self, into hasher: &mut H) {}
+}
+
+impl Clone for usize {
+    public func clone(&self) -> usize { *self }
 }
 
 impl PartialEq for usize {

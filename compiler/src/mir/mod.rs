@@ -56,6 +56,7 @@ pub struct EscapeSummary {
 
 #[derive(Debug, Clone)]
 pub struct Body<'ctx> {
+    pub owner: DefinitionID,
     pub locals: IndexVec<LocalId, LocalDecl<'ctx>>,
     pub basic_blocks: IndexVec<BasicBlockId, BasicBlockData<'ctx>>,
     pub start_block: BasicBlockId,

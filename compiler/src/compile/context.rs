@@ -438,6 +438,13 @@ impl<'arena> GlobalContext<'arena> {
         })
     }
 
+    pub fn get_interface_definition(
+        self,
+        id: DefinitionID,
+    ) -> Option<&'arena InterfaceDefinition<'arena>> {
+        self.with_type_database(id.package(), |db| db.def_to_iface_def.get(&id).copied())
+    }
+
     pub fn get_impl_type_head(self, impl_id: DefinitionID) -> Option<TypeHead> {
         self.with_type_database(impl_id.package(), |db| {
             db.impl_to_type_head.get(&impl_id).cloned()

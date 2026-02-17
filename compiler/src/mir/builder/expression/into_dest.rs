@@ -25,7 +25,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             ExprKind::Local(..) => {
                 let place = unpack!(block = self.as_place(block, expr_id));
                 // Use Copy for copyable types, Move for non-copyable types
-                let operand = if self.gcx.is_type_copyable(expr.ty) {
+                let operand = if self.is_type_copyable(expr.ty) {
                     Operand::Copy(place)
                 } else {
                     Operand::Move(place)
@@ -304,7 +304,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                                                 proj
                                             },
                                         };
-                                        if self.gcx.is_type_copyable(ty) {
+                                        if self.is_type_copyable(ty) {
                                             Operand::Copy(field_place)
                                         } else {
                                             Operand::Move(field_place)
@@ -464,7 +464,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 debug_assert!(matches!(Category::of(&expr.kind), Category::Place));
                 let place = unpack!(block = self.as_place(block, expr_id));
                 // Use Copy for copyable types, Move for non-copyable types
-                let operand = if self.gcx.is_type_copyable(expr.ty) {
+                let operand = if self.is_type_copyable(expr.ty) {
                     Operand::Copy(place)
                 } else {
                     Operand::Move(place)
@@ -1327,7 +1327,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             let rvalue = match binding.mode {
                 crate::hir::BindingMode::ByValue => {
                     // Use Copy for copyable types, Move for non-copyable types
-                    let operand = if self.gcx.is_type_copyable(binding.ty) {
+                    let operand = if self.is_type_copyable(binding.ty) {
                         Operand::Copy(src_place.clone())
                     } else {
                         Operand::Move(src_place.clone())

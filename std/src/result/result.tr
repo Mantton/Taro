@@ -66,6 +66,9 @@ impl[Value: Copy, Error] Result[Value, Error] {
         }
     }
 
+}
+
+impl[Value: Copy, Error: Copy] Result[Value, Error] {
     /// Returns the contained ok value or computes it from a closure.
     public func unwrapOrElse[F: FnOnce[Error, Value]](&self, _ f: F) -> Value {
         match self {
@@ -99,7 +102,7 @@ impl[Value, Error: Copy] Result[Value, Error] {
 }
 
 // Transformation methods
-impl[Value: Copy, Error] Result[Value, Error] {
+impl[Value: Copy, Error: Copy] Result[Value, Error] {
     /// Transforms the contained ok value using a function.
     ///
     /// Returns the error unchanged if this is an error.
@@ -121,7 +124,7 @@ impl[Value: Copy, Error] Result[Value, Error] {
     }
 }
 
-impl[Value, Error: Copy] Result[Value, Error] {
+impl[Value: Copy, Error: Copy] Result[Value, Error] {
     /// Transforms the contained error using a function.
     ///
     /// Returns the ok value unchanged if this is ok.
@@ -157,7 +160,7 @@ impl[Value, Error: Copy] Result[Value, Error] {
 }
 
 // Boolean combinators
-impl[Value, Error] Result[Value, Error] {
+impl[Value, Error: Copy] Result[Value, Error] {
     /// Returns `other` if the result is ok, otherwise returns the error of self.
     @inline
     public func and[U](&self, _ other: Result[U, Error]) -> Result[U, Error] {
@@ -178,6 +181,9 @@ impl[Value: Copy, Error] Result[Value, Error] {
         }
     }
 
+}
+
+impl[Value: Copy, Error: Copy] Result[Value, Error] {
     /// Returns self if ok, otherwise computes a result from the error.
     public func orElse[F: FnOnce[Error, Result[Value, Error]]](&self, _ f: F) -> Result[Value, Error] {
         match self {
