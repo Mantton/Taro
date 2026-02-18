@@ -106,10 +106,19 @@ def cleanup_test_environment(env: TestEnvironment):
 
 
 def parse_test_directives(file_path: Path) -> dict[str, Any]:
-    """Parse // TARGET: and // CHECK_ONLY comments from the first few lines of a test file."""
+    """Parse directives from the first few lines of a test file.
+
+    Supported directives:
+      // TARGET: <triple>          — cross-compile for the given target triple
+      // CHECK_ONLY                — compile with `taro check` (no run, no output compare)
+      // TEST                      — run with `taro test` instead of `taro run`; passes if exit 0
+      // EXPECT_EXIT: <code>       — expect the given exit code (default 0)
+      // EXPECT_STDERR_CONTAINS: … — assert this substring appears in stderr
+    """
     result = {
         "target": None,
         "check_only": False,
+        "run_as_test": False,
         "expect_exit": None,
         "expect_stderr_contains": [],
     }
@@ -124,6 +133,8 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
                     result["target"] = line[len("// TARGET:"):].strip()
                 elif line.startswith("// CHECK_ONLY"):
                     result["check_only"] = True
+                elif line.startswith("// TEST"):
+                    result["run_as_test"] = True
                 elif line.startswith("// EXPECT_EXIT:"):
                     code = line[len("// EXPECT_EXIT:"):].strip()
                     try:
@@ -156,15 +167,24 @@ def run_test(file_path: Path, env: TestEnvironment) -> TestRunResult:
         output_bin = env.temp_dir / "bin" / relative_path.with_suffix("")
         output_bin.parent.mkdir(parents=True, exist_ok=True)
 
-        # Parse test directives (TARGET, CHECK_ONLY)
+        # Parse test directives (TARGET, CHECK_ONLY, TEST, …)
         directives = parse_test_directives(file_path)
         target_triple = directives["target"]
         is_check_only = directives["check_only"]
+        is_run_as_test = directives["run_as_test"]
         expected_exit = directives["expect_exit"]
         expected_stderr_contains = directives["expect_stderr_contains"]
 
-        # Choose command: "check" for CHECK_ONLY tests, "run" otherwise
-        command = "check" if is_check_only else "run"
+        # Choose sub-command:
+        #   "check"  — CHECK_ONLY: type-check only, no binary produced
+        #   "test"   — TEST: compile & run as a test binary (exit 0 = all pass)
+        #   "run"    — default: compile & run normally
+        if is_check_only:
+            command = "check"
+        elif is_run_as_test:
+            command = "test"
+        else:
+            command = "run"
 
         cmd = [
             str(env.compiler_path),
@@ -174,7 +194,7 @@ def run_test(file_path: Path, env: TestEnvironment) -> TestRunResult:
             str(env.std_path),
         ]
 
-        # Add output flag only for run command
+        # Add output flag only for run command (check/test handle their own output)
         if command == "run":
             cmd.extend(["-o", str(output_bin)])
 
@@ -238,10 +258,11 @@ def run_test(file_path: Path, env: TestEnvironment) -> TestRunResult:
                             "missing": needle,
                         },
                     )
-            # CHECK_ONLY tests have no output to compare
-            if is_check_only:
-                return True, "Check passed", None
-            # Only capture stdout for valid test output
+            # CHECK_ONLY and TEST files have no output snapshot to compare —
+            # a clean exit code is the entire success criterion.
+            if is_check_only or is_run_as_test:
+                return True, "Passed", None
+            # Only capture stdout for normal run output comparison
             actual_output = result.stdout
 
         # Check if output file exists

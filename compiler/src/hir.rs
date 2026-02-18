@@ -65,6 +65,12 @@ pub enum KnownAttribute {
     NoInline,
     /// `@cfg` - conditional compilation
     Cfg,
+    /// `@test` - marks a function as a test case
+    Test,
+    /// `@skip` or `@skip("reason")` - skip this test
+    Skip,
+    /// `@expectPanic` or `@expectPanic("expected message")` - test expects a panic
+    ExpectPanic,
 }
 
 impl Attribute {
@@ -75,8 +81,30 @@ impl Attribute {
             "inline" => Some(KnownAttribute::Inline),
             "noinline" => Some(KnownAttribute::NoInline),
             "cfg" => Some(KnownAttribute::Cfg),
+            "test" => Some(KnownAttribute::Test),
+            "skip" => Some(KnownAttribute::Skip),
+            "expectPanic" => Some(KnownAttribute::ExpectPanic),
             _ => None,
         }
+    }
+
+    /// Extract the first string argument from the attribute, if present.
+    /// Used for `@skip("reason")` and `@expectPanic("expected message")`.
+    pub fn first_string_arg(&self, gcx: GlobalContext<'_>) -> Option<String> {
+        let args = self.args.as_ref()?;
+        for arg in &args.items {
+            match arg {
+                AttributeArg::Flag { key, .. } => {
+                    return Some(gcx.symbol_text(key.symbol.clone()).to_string());
+                }
+                AttributeArg::KeyValue { value, .. } => {
+                    if let Literal::String(s) = value {
+                        return Some(gcx.symbol_text(s.clone()).to_string());
+                    }
+                }
+            }
+        }
+        None
     }
 }
 

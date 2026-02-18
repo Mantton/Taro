@@ -102,6 +102,7 @@ fn run_single_file(arguments: CommandLineArguments) -> Result<(), ReportedError>
         profile: compile_options.profile,
         overflow_checks: compile_options.overflow_checks,
         debug: DebugOptions::default(),
+        test_mode: false,
     });
 
     eprintln!("Checking – {}", file_stem);
@@ -225,6 +226,7 @@ fn run_package(arguments: CommandLineArguments) -> Result<(), ReportedError> {
             profile: compile_options.profile,
             overflow_checks: compile_options.overflow_checks,
             debug: DebugOptions::default(),
+            test_mode: false,
         });
 
         let mut compiler = Compiler::new(&icx, config);
@@ -262,6 +264,7 @@ fn compile_std<'a>(
         profile: compile_options.profile,
         overflow_checks: compile_options.overflow_checks,
         debug: DebugOptions::default(),
+        test_mode: false,
     });
 
     let mut compiler = Compiler::new(ctx, config);

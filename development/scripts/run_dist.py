@@ -9,10 +9,14 @@ run_dist.py
 
 A convenience script for development.
 It rebuilds the compiler distribution (using build_dist.py) and then runs
-the `taro` executable from that distribution with the provided arguments.
+or tests the `taro` executable from that distribution with the provided arguments.
 
 Usage:
     python3 development/scripts/run_dist.py <file_or_package> [args...]
+    python3 development/scripts/run_dist.py --test <file_or_package> [args...]
+
+Flags:
+    --test   Run `taro test` instead of `taro run`.
 """
 
 
@@ -32,35 +36,36 @@ def main():
         print("Error: Build failed.")
         sys.exit(1)
 
-    # 2. Prepare Command
-    if len(sys.argv) < 2:
-        print("Usage: python3 run_dist.py <file_or_package> [args...]")
+    # 2. Parse arguments — strip our own --test flag before forwarding the rest
+    raw_args = sys.argv[1:]
+
+    use_test = False
+    if "--test" in raw_args:
+        use_test = True
+        raw_args = [a for a in raw_args if a != "--test"]
+
+    if not raw_args:
+        print("Usage: python3 run_dist.py [--test] <file_or_package> [args...]")
         sys.exit(1)
 
-    # Arguments to pass to taro run
-    # The first arg to this script is the script name, so user args start at 1
-    user_args = sys.argv[1:]
-    
-    # Construct taro command: taro run <user_args>
-    # Note: user might provide 'run' themselves or just the file? 
-    # The request says "run provided code". Usually that implies `taro run`.
-    # Let's assume we invoke `taro run` + args.
-    
-    cmd = [str(taro_bin), "run"] + user_args
+    # 3. Construct taro command
+    taro_subcommand = "test" if use_test else "run"
+    cmd = [str(taro_bin), taro_subcommand] + raw_args
 
-    # 3. environment setup
+    # 4. Environment setup
     env = os.environ.copy()
     env["TARO_HOME"] = str(dist_dir)
 
     print(f">>> Running: {' '.join(cmd)}")
     print("-" * 40)
-    
+
     try:
         subprocess.run(cmd, env=env, check=True)
     except subprocess.CalledProcessError as e:
         sys.exit(e.returncode)
     except KeyboardInterrupt:
         sys.exit(130)
+
 
 if __name__ == "__main__":
     main()

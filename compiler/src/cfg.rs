@@ -11,6 +11,8 @@ pub struct TargetInfo {
     pub os: String,
     pub family: String,
     pub profile: String,
+    /// True when compiling in test mode (`taro test`)
+    pub test_mode: bool,
 }
 
 impl TargetInfo {
@@ -39,6 +41,7 @@ impl TargetInfo {
             os,
             family,
             profile: "debug".to_string(),
+            test_mode: false,
         }
     }
 

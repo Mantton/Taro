@@ -77,6 +77,43 @@ pub fn emit_package<'gcx>(
     Ok(obj)
 }
 
+/// Lower MIR for a package and generate a test harness instead of a normal entry shim.
+pub fn emit_test_package<'gcx>(
+    package: &'gcx mir::MirPackage<'gcx>,
+    gcx: GlobalContext<'gcx>,
+    tests: &[crate::compile::test_collector::TestCase],
+) -> CompileResult<PathBuf> {
+    let context = Context::create();
+    let module = context.create_module(&gcx.config.identifier);
+    let builder = context.create_builder();
+
+    let target_layout = &gcx.store.target_layout;
+    module.set_data_layout(&target_layout.data_layout());
+    module.set_triple(&target_layout.triple());
+
+    let mut emitter = Emitter::new(&context, module, builder, gcx);
+    emitter.declare_instances();
+    emitter.lower_instances(package)?;
+    emitter.emit_test_harness(tests);
+    if let Err(e) = emitter.module.verify() {
+        let msg = format!("invalid LLVM module: {}", e.to_string());
+        gcx.dcx().emit_error(msg, None);
+        return Err(crate::error::ReportedError);
+    }
+    emitter.run_function_passes();
+
+    if gcx.config.debug.dump_llvm {
+        eprintln!("\n=== LLVM IR for {} ===", gcx.config.name);
+        let ir = emitter.module.print_to_string().to_string();
+        eprintln!("{ir}");
+        eprintln!("=== End LLVM Dump ===\n");
+    }
+
+    let obj = emitter.emit_object_file()?;
+    gcx.cache_object_file(obj.clone());
+    Ok(obj)
+}
+
 struct Emitter<'llvm, 'gcx> {
     context: &'llvm Context,
     module: Module<'llvm>,
@@ -297,6 +334,15 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         Ok(())
     }
 
+    /// Emit the `taro_start` / `main` entry shim for a normal (non-test) binary.
+    ///
+    /// `taro_start` invokes the user's `main` function via an `invoke` instruction so
+    /// that any Taro panic that unwinds past it is caught by the landing pad below.
+    /// The landing pad is a catch-all (null filter list, `cleanup=false`) that calls
+    /// `__rt__panic_abort_unwind`, which prints the panic report and exits.
+    ///
+    /// A thin `main` wrapper is also emitted so the linker finds a conventional
+    /// entry point; it simply tail-calls `taro_start` and forwards its return value.
     fn emit_start_shim(&mut self, package: &mir::MirPackage<'gcx>) {
         let Some(entry) = package.entry else {
             return;
@@ -411,6 +457,345 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .map(|v| v.into_int_value())
             .unwrap_or_else(|| i32_ty.const_int(0, false));
         let _ = main_builder.build_return(Some(&main_ret)).unwrap();
+    }
+
+    /// Emit the `taro_start` / `main` entry shim for test mode.
+    ///
+    /// Instead of a normal entry point this generates a test runner that:
+    ///
+    /// 1. Prints `running N tests`.
+    /// 2. For each `@test` function:
+    ///    - If `@skip`, print `SKIPPED` and move on without calling the function.
+    ///    - Otherwise call the function via `__rt__test_call_fn`, which wraps the
+    ///      call in `catch_unwind` and returns `true` if the function panicked.
+    ///    - Combine the panicked flag with `@expectPanic` to decide pass/fail.
+    ///    - Call `__rt__panic_clear()` after any caught panic so thread-local
+    ///      panic state is reset before the next test runs.
+    /// 3. Print a `test result:` summary line and exit with 0 (all passed) or 101
+    ///    (at least one failure).
+    ///
+    /// Panic interception works because `__rt__panic_unwind_at` checks the
+    /// `IN_TEST_HARNESS` thread-local (set by `__rt__test_call_fn`) and uses
+    /// `panic_any` instead of `_Unwind_ForcedUnwind` when running inside a test,
+    /// making the panic catchable by `catch_unwind`.
+    fn emit_test_harness(
+        &mut self,
+        tests: &[crate::compile::test_collector::TestCase],
+    ) {
+        let i32_ty = self.context.i32_type();
+
+        // Declare runtime/libc helpers
+        let puts_fn = self.declare_puts_fn();
+        let printf_fn = self.declare_printf_fn();
+        let panic_clear_fn = self.declare_panic_clear_fn();
+        let test_call_fn = self.declare_test_call_fn();
+
+        // --- taro_start function ---
+        let start_ty = i32_ty.fn_type(&[], false);
+        let start_fn = self.module.add_function("taro_start", start_ty, None);
+
+        let builder = self.context.create_builder();
+        let entry_bb = self.context.append_basic_block(start_fn, "entry");
+        builder.position_at_end(entry_bb);
+
+        // Counters: passed, failed, skipped (alloca in entry)
+        let passed_ptr = builder.build_alloca(i32_ty, "passed").unwrap();
+        let failed_ptr = builder.build_alloca(i32_ty, "failed").unwrap();
+        let skipped_ptr = builder.build_alloca(i32_ty, "skipped").unwrap();
+        builder.build_store(passed_ptr, i32_ty.const_zero()).unwrap();
+        builder.build_store(failed_ptr, i32_ty.const_zero()).unwrap();
+        builder.build_store(skipped_ptr, i32_ty.const_zero()).unwrap();
+
+        // Print header
+        let header = format!(
+            "\nrunning {} test{}\n",
+            tests.len(),
+            if tests.len() == 1 { "" } else { "s" }
+        );
+        let header_global = self.build_global_cstring(&header, "test_header");
+        builder
+            .build_call(puts_fn, &[header_global.into()], "")
+            .unwrap();
+
+        // For each test, generate invoke + handling
+        for (idx, test) in tests.iter().enumerate() {
+            let test_instance = Instance::item(test.id, &[]);
+
+            let test_fn = match self.functions.get(&test_instance) {
+                Some(f) => *f,
+                None => continue,
+            };
+
+            // Print "test <name> ... "
+            let prefix = format!("test {} ... ", test.display_name);
+            let prefix_global =
+                self.build_global_cstring(&prefix, &format!("test_prefix_{}", idx));
+            builder
+                .build_call(
+                    printf_fn,
+                    &[prefix_global.into()],
+                    "",
+                )
+                .unwrap();
+
+            if test.skipped {
+                // Print "SKIPPED\n" (with optional reason), increment skipped counter
+                let msg = match &test.skip_reason {
+                    Some(r) => format!("SKIPPED ({})\n", r),
+                    None => "SKIPPED\n".to_string(),
+                };
+                let msg_global =
+                    self.build_global_cstring(&msg, &format!("skipped_msg_{}", idx));
+                builder
+                    .build_call(printf_fn, &[msg_global.into()], "")
+                    .unwrap();
+                self.increment_counter(&builder, skipped_ptr, i32_ty);
+                continue;
+            }
+
+            // Call __rt__test_call_fn(test_fn) -> bool (true = panicked)
+            let fn_ptr = test_fn.as_global_value().as_pointer_value();
+            let call_result = builder
+                .build_call(test_call_fn, &[fn_ptr.into()], &format!("panicked_{}", idx))
+                .unwrap()
+                .try_as_basic_value()
+                .basic()
+                .unwrap()
+                .into_int_value();
+
+            // Branch on whether the test panicked
+            let bb_panicked = self
+                .context
+                .append_basic_block(start_fn, &format!("test_{}_panicked", idx));
+            let bb_normal = self
+                .context
+                .append_basic_block(start_fn, &format!("test_{}_normal", idx));
+            let bb_after = self
+                .context
+                .append_basic_block(start_fn, &format!("test_{}_after", idx));
+
+            builder
+                .build_conditional_branch(call_result, bb_panicked, bb_normal)
+                .unwrap();
+
+            // --- bb_normal: test didn't panic ---
+            builder.position_at_end(bb_normal);
+            if test.expect_panic {
+                // Expected panic but got none → FAIL
+                let fail_msg = self.build_global_cstring(
+                    "FAILED (expected panic but test completed normally)\n",
+                    &format!("sp_fail_{}", idx),
+                );
+                builder
+                    .build_call(printf_fn, &[fail_msg.into()], "")
+                    .unwrap();
+                self.increment_counter(&builder, failed_ptr, i32_ty);
+            } else {
+                // Normal test passed
+                let ok_msg = self.build_global_cstring("ok\n", &format!("ok_msg_{}", idx));
+                builder
+                    .build_call(printf_fn, &[ok_msg.into()], "")
+                    .unwrap();
+                self.increment_counter(&builder, passed_ptr, i32_ty);
+            }
+            builder.build_unconditional_branch(bb_after).unwrap();
+
+            // --- bb_panicked: test panicked ---
+            builder.position_at_end(bb_panicked);
+
+            // Reset panic state so the next test starts clean.
+            builder
+                .build_call(panic_clear_fn, &[], "")
+                .unwrap();
+
+            if test.expect_panic {
+                // Panic is expected → PASS
+                let ok_msg = self.build_global_cstring(
+                    "ok\n",
+                    &format!("sp_ok_{}", idx),
+                );
+                builder
+                    .build_call(printf_fn, &[ok_msg.into()], "")
+                    .unwrap();
+                self.increment_counter(&builder, passed_ptr, i32_ty);
+            } else {
+                // Unexpected panic → FAIL
+                let fail_msg = self.build_global_cstring(
+                    "FAILED (panicked)\n",
+                    &format!("fail_panic_{}", idx),
+                );
+                builder
+                    .build_call(printf_fn, &[fail_msg.into()], "")
+                    .unwrap();
+                self.increment_counter(&builder, failed_ptr, i32_ty);
+            }
+            builder.build_unconditional_branch(bb_after).unwrap();
+
+            // Continue to next test
+            builder.position_at_end(bb_after);
+        }
+
+        // --- Summary ---
+        let result_bb = self.context.append_basic_block(start_fn, "result");
+        builder.build_unconditional_branch(result_bb).unwrap();
+        builder.position_at_end(result_bb);
+
+        let passed = builder
+            .build_load(i32_ty, passed_ptr, "p_final")
+            .unwrap();
+        let failed = builder
+            .build_load(i32_ty, failed_ptr, "f_final")
+            .unwrap();
+        let skipped = builder
+            .build_load(i32_ty, skipped_ptr, "s_final")
+            .unwrap();
+
+        let failed_int = failed.into_int_value();
+        let has_failures = builder
+            .build_int_compare(
+                IntPredicate::UGT,
+                failed_int,
+                i32_ty.const_zero(),
+                "has_fail",
+            )
+            .unwrap();
+
+        let ok_str = self.build_global_cstring("ok", "str_ok");
+        let fail_str = self.build_global_cstring("FAILED", "str_fail");
+        let result_str = builder
+            .build_select(has_failures, fail_str, ok_str, "result_str")
+            .unwrap();
+
+        let fmt = self.build_global_cstring(
+            "\ntest result: %s. %d passed; %d failed; %d skipped\n\n",
+            "summary_fmt",
+        );
+        builder
+            .build_call(
+                printf_fn,
+                &[
+                    fmt.into(),
+                    result_str.into(),
+                    passed.into(),
+                    failed.into(),
+                    skipped.into(),
+                ],
+                "",
+            )
+            .unwrap();
+
+        // Exit code: 0 if no failures, 101 if any
+        let exit_code = builder
+            .build_select(
+                has_failures,
+                i32_ty.const_int(101, false),
+                i32_ty.const_zero(),
+                "exit_code",
+            )
+            .unwrap();
+        builder.build_return(Some(&exit_code)).unwrap();
+
+        // Wrapper main()
+        let main_fn = self.module.add_function("main", start_ty, None);
+        let main_bb = self.context.append_basic_block(main_fn, "entry");
+        let mb = self.context.create_builder();
+        mb.position_at_end(main_bb);
+        let ret = mb
+            .build_call(start_fn, &[], "ret")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .map(|v| v.into_int_value())
+            .unwrap_or_else(|| i32_ty.const_int(0, false));
+        mb.build_return(Some(&ret)).unwrap();
+    }
+
+    /// Helper: Increment an i32 counter via load-add-store
+    fn increment_counter(
+        &self,
+        builder: &Builder<'llvm>,
+        counter_ptr: PointerValue<'llvm>,
+        i32_ty: IntType<'llvm>,
+    ) {
+        let cur = builder
+            .build_load(i32_ty, counter_ptr, "cnt")
+            .unwrap()
+            .into_int_value();
+        let inc = builder
+            .build_int_add(cur, i32_ty.const_int(1, false), "inc")
+            .unwrap();
+        builder.build_store(counter_ptr, inc).unwrap();
+    }
+
+    /// Helper: declare C puts
+    fn declare_puts_fn(&self) -> FunctionValue<'llvm> {
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let ty = self.context.i32_type().fn_type(&[ptr_ty.into()], false);
+        self.module
+            .get_function("puts")
+            .unwrap_or_else(|| self.module.add_function("puts", ty, Some(Linkage::External)))
+    }
+
+    /// Helper: declare C printf (variadic)
+    fn declare_printf_fn(&self) -> FunctionValue<'llvm> {
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let ty = self.context.i32_type().fn_type(&[ptr_ty.into()], true);
+        self.module
+            .get_function("printf")
+            .unwrap_or_else(|| self.module.add_function("printf", ty, Some(Linkage::External)))
+    }
+
+    /// Helper: declare __rt__panic_clear() -> void
+    ///
+    /// Resets PANIC_ACTIVE and PANIC_REPORT after a caught panic so the next
+    /// test starts cleanly.  Returning void avoids struct-return ABI issues on
+    /// ARM64 that `__rt__panic_take_report` (24-byte sret) can trigger.
+    fn declare_panic_clear_fn(&self) -> FunctionValue<'llvm> {
+        let fn_ty = self.context.void_type().fn_type(&[], false);
+        self.module
+            .get_function("__rt__panic_clear")
+            .unwrap_or_else(|| {
+                self.module
+                    .add_function("__rt__panic_clear", fn_ty, Some(Linkage::External))
+            })
+    }
+
+    /// Helper: declare `__rt__test_call_fn(fn_ptr: ptr) -> i1`
+    ///
+    /// Sets `IN_TEST_HARNESS`, wraps the call in `catch_unwind`, and returns
+    /// `true` if the function panicked.  The `fn_ptr` is typed as an opaque
+    /// pointer because LLVM does not care about the callee ABI here — the
+    /// runtime casts it internally.
+    fn declare_test_call_fn(&self) -> FunctionValue<'llvm> {
+        let ptr = self.context.ptr_type(AddressSpace::default());
+        let i1 = self.context.bool_type();
+        let fn_ty = i1.fn_type(&[ptr.into()], false);
+        self.module
+            .get_function("__rt__test_call_fn")
+            .unwrap_or_else(|| {
+                self.module
+                    .add_function("__rt__test_call_fn", fn_ty, Some(Linkage::External))
+            })
+    }
+
+    /// Helper: create a null-terminated global string constant, return pointer
+    fn build_global_cstring(
+        &self,
+        value: &str,
+        name: &str,
+    ) -> PointerValue<'llvm> {
+        let bytes: Vec<u8> = value.bytes().chain(std::iter::once(0)).collect();
+        let vals: Vec<_> = bytes
+            .iter()
+            .map(|b| self.context.i8_type().const_int(*b as u64, false))
+            .collect();
+        let arr_ty = self.context.i8_type().array_type(bytes.len() as u32);
+        let global = self.module.add_global(arr_ty, None, name);
+        global.set_initializer(&self.context.i8_type().const_array(&vals));
+        global.set_constant(true);
+        global.set_linkage(Linkage::Private);
+        global.set_unnamed_addr(true);
+        global.as_pointer_value()
     }
 
     fn get_panic_abort_unwind_fn(&self) -> FunctionValue<'llvm> {

@@ -25,7 +25,12 @@ pub fn build_package<'ctx>(
     gcx: GlobalContext<'ctx>,
     results: TypeCheckResults<'ctx>,
 ) -> CompileResult<ThirPackage<'ctx>> {
-    let entry = validate_entry_point(&package, gcx)?;
+    // In test mode the harness provides its own entry point; skip main validation.
+    let entry = if gcx.config.test_mode {
+        None
+    } else {
+        validate_entry_point(&package, gcx)?
+    };
     let mut package = Actor::run(package, gcx, results, entry)?;
     thir::passes::exhaustiveness::run(&mut package, gcx)?;
     Ok(package)

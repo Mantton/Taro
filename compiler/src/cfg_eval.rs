@@ -166,6 +166,11 @@ fn eval_cfg_attr(attr: &ast::Attribute, target: &TargetInfo, gcx: GlobalContext<
                             return false;
                         }
                     }
+                    "test" => {
+                        if !target.test_mode {
+                            return false;
+                        }
+                    }
                     _ => return false,
                 }
             }

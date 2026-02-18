@@ -1,3 +1,32 @@
+//! Panic and unwind runtime support for Taro.
+//!
+//! # Two unwind mechanisms
+//!
+//! Taro needs panic unwinding to work in two distinct contexts:
+//!
+//! **Normal mode** (a regular binary): A panic should run every cleanup/defer
+//! landing pad on the way up the stack, then terminate the program with an
+//! error report.  This is done with `_Unwind_ForcedUnwind`, which visits every
+//! frame unconditionally (running cleanup actions) and stops only when a custom
+//! stop function signals end-of-stack.  The `taro_start` landing pad is NOT used
+//! for catching — the stop function calls `__rt__panic_abort_unwind` directly.
+//!
+//! **Test mode** (a `@test` binary): A panic inside a test function must be
+//! catchable so that `@expectPanic` tests pass and the harness can continue
+//! to the next test.  `_Unwind_ForcedUnwind` cannot be caught by Rust's
+//! `catch_unwind`, so instead we use `std::panic::panic_any`, which goes
+//! through `_Unwind_RaiseException`.  Rust's `catch_unwind` in
+//! `__rt__test_call_fn` intercepts it cleanly.
+//!
+//! # `IN_TEST_HARNESS` flag
+//!
+//! The `__rt__panic_unwind_at` function checks the `IN_TEST_HARNESS`
+//! thread-local (set by `__rt__test_call_fn` around each test invocation) to
+//! select the right mechanism.  Cleanup landing pads (defer blocks) still run
+//! in test mode because `_Unwind_RaiseException` performs a normal
+//! search-then-cleanup two-phase unwind, and `__gcc_personality_v0` runs
+//! cleanup actions for any exception type.
+
 use std::{
     backtrace::Backtrace,
     cell::{Cell, RefCell},
@@ -34,6 +63,11 @@ struct PanicReport {
 std::thread_local! {
     static PANIC_REPORT: RefCell<Option<PanicReport>> = const { RefCell::new(None) };
     static PANIC_ACTIVE: Cell<bool> = const { Cell::new(false) };
+    /// Set to `true` by `__rt__test_call_fn` while a test function is running.
+    /// When true, `__rt__panic_unwind_at` uses `panic_any` so `catch_unwind`
+    /// can intercept it.  When false, it uses `_Unwind_ForcedUnwind` so that
+    /// cleanup/defer landing pads execute correctly in normal mode.
+    static IN_TEST_HARNESS: Cell<bool> = const { Cell::new(false) };
 }
 
 #[inline]
@@ -135,6 +169,90 @@ pub extern "C" fn __rt__panic_abort_unwind(exception_ptr: *mut u8) -> ! {
     abort_with_report("panic reached runtime boundary");
 }
 
+/// FFI-safe result type for `__rt__panic_take_report`.
+#[repr(C)]
+pub struct PanicTakeReportResult {
+    pub had_panic: bool,
+    pub message_ptr: *const u8,
+    pub message_len: usize,
+}
+
+/// Take the current panic report, reset panic state, and return whether
+/// a panic was active along with the panic message.
+#[unsafe(no_mangle)]
+pub extern "C" fn __rt__panic_take_report() -> PanicTakeReportResult {
+    let was_active = PANIC_ACTIVE.with(|f| {
+        let v = f.get();
+        f.set(false);
+        v
+    });
+
+    if !was_active {
+        return PanicTakeReportResult {
+            had_panic: false,
+            message_ptr: std::ptr::null(),
+            message_len: 0,
+        };
+    }
+
+    let msg = PANIC_REPORT.with(|slot| {
+        slot.borrow_mut()
+            .take()
+            .map(|r| r.message)
+            .unwrap_or_default()
+    });
+
+    let ptr = msg.as_ptr();
+    let len = msg.len();
+    std::mem::forget(msg); // Small leak per failed test — acceptable
+    PanicTakeReportResult {
+        had_panic: was_active,
+        message_ptr: ptr,
+        message_len: len,
+    }
+}
+
+/// Clears the panic state after a caught panic so the next test can run cleanly.
+///
+/// Called by the compiler-generated test harness in the `bb_panicked` branch.
+/// Returns `void` to avoid ARM64 sret ABI complications.
+#[unsafe(no_mangle)]
+pub extern "C" fn __rt__panic_clear() {
+    PANIC_ACTIVE.with(|f| f.set(false));
+    PANIC_REPORT.with(|slot| {
+        slot.borrow_mut().take();
+    });
+}
+
+/// Zero-sized marker type used as the `panic_any` payload for Taro panics
+/// in test mode. Lets `catch_unwind` identify and intercept them.
+struct TaroPanicPayload;
+
+/// Call a `void()` Taro function and return whether it panicked.
+///
+/// Sets `IN_TEST_HARNESS` for the duration of the call so that
+/// `__rt__panic_unwind_at` uses `panic_any` (catchable by `catch_unwind`)
+/// instead of `_Unwind_ForcedUnwind`.
+///
+/// Returns `true` if the function panicked, `false` if it returned normally.
+#[unsafe(no_mangle)]
+pub extern "C" fn __rt__test_call_fn(fn_ptr: extern "C-unwind" fn()) -> bool {
+    IN_TEST_HARNESS.with(|f| f.set(true));
+
+    // Suppress Rust's built-in panic output; Taro's test harness owns reporting.
+    let old_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        fn_ptr();
+    }))
+    .is_err();
+
+    std::panic::set_hook(old_hook);
+    IN_TEST_HARNESS.with(|f| f.set(false));
+    panicked
+}
+
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn __rt__panic_unwind(message: RtString) -> ! {
     __rt__panic_unwind_at(
@@ -148,6 +266,16 @@ pub extern "C-unwind" fn __rt__panic_unwind(message: RtString) -> ! {
     )
 }
 
+/// The primary Taro panic entry point.
+///
+/// Records the panic message/location, then raises an unwind using the
+/// appropriate mechanism:
+///
+/// - **Test mode** (`IN_TEST_HARNESS == true`): `panic_any(TaroPanicPayload)`
+///   so `catch_unwind` in `__rt__test_call_fn` can intercept it.
+/// - **Normal mode** (`IN_TEST_HARNESS == false`): `_Unwind_ForcedUnwind`
+///   so cleanup/defer landing pads execute before the stack unwinds to
+///   `taro_start`, which calls `__rt__panic_abort_unwind`.
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn __rt__panic_unwind_at(
     message: RtString,
@@ -169,6 +297,21 @@ pub extern "C-unwind" fn __rt__panic_unwind_at(
     let location = format_location(file, line, column);
     set_panic_report_with_location(msg, location);
 
+    if IN_TEST_HARNESS.with(|f| f.get()) {
+        // Test mode: raise via Rust's panic so catch_unwind can intercept it.
+        std::panic::panic_any(TaroPanicPayload)
+    } else {
+        // Normal mode: forced unwind runs defer/cleanup landing pads.
+        panic_forced_unwind()
+    }
+}
+
+/// Raises `_Unwind_ForcedUnwind`, which walks the stack running cleanup
+/// landing pads (defer blocks) without being catchable by personality
+/// functions. The `forced_unwind_stop` callback terminates the unwind at
+/// the top of the stack by calling `__rt__panic_abort_unwind`.
+#[cold]
+fn panic_forced_unwind() -> ! {
     #[cfg(all(unix, any(target_arch = "x86_64", target_arch = "aarch64")))]
     unsafe {
         let exception = Box::new(UnwindException {
@@ -179,7 +322,7 @@ pub extern "C-unwind" fn __rt__panic_unwind_at(
         });
         let exception_ptr = Box::into_raw(exception);
         let reason = _Unwind_ForcedUnwind(exception_ptr, forced_unwind_stop, std::ptr::null_mut());
-        // If forced unwind returns, unwinding failed.
+        // If _Unwind_ForcedUnwind returns, unwinding failed.
         _Unwind_DeleteException(exception_ptr);
         let msg = format!("unwind failed with reason {}", reason);
         set_panic_report(msg);
@@ -197,6 +340,8 @@ pub extern "C-unwind" fn __rt__panic_unwind_at(
         abort_with_report("panic unwind unsupported");
     }
 }
+
+// ── Platform-specific _Unwind_ForcedUnwind machinery ──────────────────────────
 
 #[cfg(all(unix, any(target_arch = "x86_64", target_arch = "aarch64")))]
 type UnwindReasonCode = i32;

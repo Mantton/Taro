@@ -8,3 +8,4 @@ export std.iter.{Iterator, Iterable}
 export std.panic.{panic, unreachable, todo}
 export std.mem.{sizeOf, alignOf}
 export std.{print, println, eprint, eprintln, printf, sprintf, assert, debugAssert}
+export std.testing.{assertEqual, assertTrue, assertFalse, fail}

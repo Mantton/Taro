@@ -6,6 +6,7 @@ mod build;
 mod check;
 mod new;
 mod run;
+mod test;
 
 pub fn handle(arguments: CommandLineArguments) -> CompileResult<()> {
     let _ = match arguments.command.as_str() {
@@ -16,6 +17,7 @@ pub fn handle(arguments: CommandLineArguments) -> CompileResult<()> {
         "check" => check::run(arguments)?,
         "new" => new::run(arguments)?,
         "run" => run::run(arguments)?,
+        "test" => test::run(arguments)?,
         _ => panic!("unknown command"),
     };
 

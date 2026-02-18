@@ -1097,6 +1097,21 @@ impl Parser {
             };
 
             attrs.push(attr);
+
+            // When attributes are stacked on separate lines, ASI inserts a
+            // semicolon between them (e.g. `@test\n@ignore\nfunc foo()`).
+            // Speculatively eat any trailing semicolons; if the next real token
+            // isn't another `@`, restore so the semicolon is still available for
+            // the caller (e.g. `expect_semi` in `parse_declaration_internal`).
+            if self.matches(Token::Semicolon) {
+                let cp = self.checkpoint();
+                while self.eat(Token::Semicolon) {}
+                if !self.matches(Token::At) {
+                    self.restore(cp);
+                    break;
+                }
+                // Another `@attr` follows — let the loop parse it.
+            }
         }
 
         self.eat(Token::Semicolon);

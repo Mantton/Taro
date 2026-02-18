@@ -27,10 +27,10 @@ To compile and run a Taro program (script or package) using your locally built c
 python3 development/scripts/run_dist.py examples/hello.tr
 ```
 
-You can pass any arguments supported by the `taro run` command:
+To run a file's test suite instead, pass `--test`:
 
 ```bash
-python3 development/scripts/run_dist.py [file_or_package] [args...]
+python3 development/scripts/run_dist.py --test examples/test_example.tr
 ```
 
 ### Manual Usage
@@ -59,6 +59,68 @@ Here is a simple "Hello, World!" example to get you started.
     ```bash
     python3 development/scripts/run_dist.py hello.tr
     ```
+
+## Testing
+
+Taro has a built-in test runner. Mark any `() -> void` function with `@test` and run it with `taro test`:
+
+```bash
+taro test my_file.tr
+# or for a package:
+taro test my-package/
+```
+
+### Test Attributes
+
+| Attribute | Description |
+|-----------|-------------|
+| `@test` | Marks a function as a test case. Must be `() -> void`. |
+| `@skip` | Skips the test. Accepts an optional reason string: `@skip("not yet implemented")`. |
+| `@expectPanic` | Passes if the function panics, fails if it returns normally. Accepts an optional expected message: `@expectPanic("out of bounds")`. |
+
+### Example
+
+```rust
+@test
+func testAddition() {
+    assertEqual(1 + 2, 3, "basic addition")
+}
+
+@test
+@expectPanic
+func testDivisionByZero() {
+    let _ = 1 / 0
+}
+
+@test
+@skip("pending implementation")
+func testNotYetReady() {
+    fail("not implemented")
+}
+```
+
+Running `taro test` on the above produces:
+
+```
+running 3 tests
+
+test testAddition ... ok
+test testDivisionByZero ... ok
+test testNotYetReady ... SKIPPED (pending implementation)
+
+test result: ok. 2 passed; 0 failed; 1 skipped
+```
+
+### Assertion Helpers
+
+The standard library provides assertion helpers in `std/testing`:
+
+| Function | Description |
+|----------|-------------|
+| `assertEqual(a, b, msg)` | Fails if `a != b` |
+| `assertTrue(cond, msg)` | Fails if `cond` is `false` |
+| `assertFalse(cond, msg)` | Fails if `cond` is `true` |
+| `fail(msg)` | Unconditionally fails the test |
 
 ## Architecture & Features
 
@@ -90,6 +152,7 @@ Taro features a built-in package manager that feels familiar to users of Cargo o
 -   **Diagnostics**: Rich, clear error messages to guide developers.
 -   **Optimizations**: Sophisticated MIR passes including inlining, escape analysis, and simplify-cfg.
 -   **Interoperability**: C ABI compatibility for easy FFI.
+-   **Built-in Testing**: First-class test support via `taro test` with `@test`, `@skip`, and `@expectPanic` attributes.
 
 
 ## Contributing
@@ -171,6 +234,28 @@ You can also filter tests using a substring match:
 python3 development/scripts/language_tests.py --filter basic_
 ```
 
+### Language Test Directives
+
+Test files in `language_tests/source_files/` can contain directive comments that control how the runner executes them:
+
+| Directive | Description |
+|-----------|-------------|
+| `// TEST` | Run with `taro test` instead of `taro run`. Passes if exit code is 0 (all tests pass). No output snapshot is compared. |
+| `// CHECK_ONLY` | Type-check only via `taro check`. No binary is produced or run. |
+| `// TARGET: <triple>` | Cross-compile for the given target triple. |
+| `// EXPECT_EXIT: <code>` | Expect the given exit code instead of 0. |
+| `// EXPECT_STDERR_CONTAINS: <text>` | Assert that `<text>` appears in stderr output. |
+
+Use `// TEST` to write language tests that exercise the test harness itself:
+
+```rust
+// TEST
+@test
+func myTest() {
+    assertEqual(1 + 1, 2, "math works")
+}
+```
+
 ## Roadmap & Status
 
 Taro is currently **experimental**.
@@ -178,6 +263,7 @@ Taro is currently **experimental**.
 -   [x] Basic Compiler Pipeline (Parse -> Codegen)
 -   [x] Garbage Collection (Stop-the-world)
 -   [x] Generics & Monomorphization
+-   [x] Built-in Test Framework (`taro test`, `@test`, `@skip`, `@expectPanic`)
 -   [ ] Concurrency & Garbage Collection improvements
 -   [ ] LSP Support & Editor Integration
 -   [ ] Package Manager Polish & Registry

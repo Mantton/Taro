@@ -147,6 +147,7 @@ impl Inline {
                 Some(KnownAttribute::Inline) => return true,
                 Some(KnownAttribute::NoInline) => return false,
                 Some(KnownAttribute::Cfg) => {} // Cfg doesn't affect inlining
+                Some(_) => {} // Test, Ignore, ShouldPanic etc. don't affect inlining
                 None => {}
             }
         }

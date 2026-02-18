@@ -1,0 +1,19 @@
+// TEST
+// Basic smoke test for the test harness: @test, @skip, @expectPanic.
+
+@test
+func testPasses() {
+    assertEqual(1 + 1, 2, "1 + 1 should be 2")
+}
+
+@test
+@expectPanic
+func testExpectPanic() {
+    panic("intentional")
+}
+
+@test
+@skip
+func testSkipped() {
+    fail("should never run")
+}

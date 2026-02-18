@@ -56,4 +56,6 @@ pub struct Config {
     pub overflow_checks: bool,
     /// Debug options for dumps
     pub debug: DebugOptions,
+    /// True when building in test mode (`taro test`)
+    pub test_mode: bool,
 }

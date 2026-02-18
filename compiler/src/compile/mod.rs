@@ -11,6 +11,7 @@ use crate::{
 pub mod config;
 pub mod context;
 pub mod entry;
+pub mod test_collector;
 
 pub struct Compiler<'state> {
     pub context: GlobalContext<'state>,
@@ -39,6 +40,26 @@ impl<'state> Compiler<'state> {
         let package = mir::package::build_package(thir, self.context)?;
         specialize::collect::collect_instances(package, self.context);
         let _ = codegen::llvm::emit_package(package, self.context)?;
+        let exe = codegen::link::link_executable(self.context)?;
+        Ok(exe)
+    }
+
+    /// Build in test mode: compile all code, discover tests, and generate
+    /// a test harness as the entry point instead of the normal main.
+    pub fn test(&mut self) -> CompileResult<Option<std::path::PathBuf>> {
+        let (package, results) = self.analyze()?;
+
+        // Collect tests from HIR (needs type info from analysis)
+        let tests = test_collector::collect_tests(&package, self.context)?;
+        if tests.is_empty() {
+            eprintln!("warning: no test functions found");
+            return Ok(None);
+        }
+
+        let thir = thir::package::build_package(&package, self.context, results)?;
+        let package = mir::package::build_package(thir, self.context)?;
+        specialize::collect::collect_instances(package, self.context);
+        let _ = codegen::llvm::emit_test_package(package, self.context, &tests)?;
         let exe = codegen::link::link_executable(self.context)?;
         Ok(exe)
     }
@@ -87,6 +108,7 @@ impl<'state> Compiler<'state> {
             crate::compile::config::BuildProfile::Debug => "debug".to_string(),
             crate::compile::config::BuildProfile::Release => "release".to_string(),
         };
+        target.test_mode = self.context.config.test_mode;
 
         let mut package = parse::parser::parse_package(package, &self.context.dcx)?;
         // AST Passes
@@ -107,7 +129,9 @@ impl<'state> Compiler<'state> {
         sema::validate::validate_package(&package, self.context)?;
         let results = sema::tycheck::typecheck_package(&package, self.context)?;
         sema::validate::validate_post_typecheck(&package, self.context, &results)?;
-        let _ = entry::validate_entry_point(&package, self.context)?;
+        if !self.context.config.test_mode {
+            let _ = entry::validate_entry_point(&package, self.context)?;
+        }
         Ok((package, results))
     }
 }

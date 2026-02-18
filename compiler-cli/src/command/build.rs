@@ -112,6 +112,7 @@ fn run_single_file(
             dump_mir: arguments.dump_mir,
             dump_llvm: arguments.dump_llvm,
         },
+        test_mode: false,
     });
 
     eprintln!("Compiling – {}", file_stem);
@@ -251,6 +252,7 @@ fn run_package(
                 dump_mir: arguments.dump_mir,
                 dump_llvm: arguments.dump_llvm,
             },
+            test_mode: false,
         });
 
         let mut compiler = Compiler::new(&icx, config);
@@ -422,6 +424,7 @@ fn compile_std<'a>(
         profile: compile_options.profile,
         overflow_checks: compile_options.overflow_checks,
         debug: DebugOptions::default(),
+        test_mode: false,
     });
     let mut compiler = Compiler::new(ctx, config);
     let _ = compiler.build()?;
@@ -439,4 +442,240 @@ fn resolve_std_path(std_path: Option<PathBuf>) -> Result<PathBuf, String> {
     std_root
         .canonicalize()
         .map_err(|e| format!("{} is invalid: {}", std_root.display(), e))
+}
+
+// ─── Test mode build ──────────────────────────────────────────────────
+
+pub fn run_test_mode(
+    arguments: CommandLineArguments,
+) -> Result<Option<std::path::PathBuf>, ReportedError> {
+    if arguments.is_single_file() {
+        run_single_file_test(arguments)
+    } else {
+        run_package_test(arguments)
+    }
+}
+
+fn run_single_file_test(
+    arguments: CommandLineArguments,
+) -> Result<Option<std::path::PathBuf>, ReportedError> {
+    let compile_options = arguments.compile_mode_options();
+    let profile_dir = profile_dir_name(compile_options.profile);
+    let cwd = std::env::current_dir().map_err(|e| {
+        eprintln!("error: failed to get current directory: {}", e);
+        ReportedError
+    })?;
+    let dcx = Rc::new(DiagCtx::new(cwd));
+    let arenas = CompilerArenas::new();
+
+    let file_path = arguments.path.canonicalize().map_err(|e| {
+        eprintln!(
+            "error: failed to canonicalize file path '{}': {}",
+            arguments.path.display(),
+            e
+        );
+        ReportedError
+    })?;
+
+    let file_stem = file_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| {
+            eprintln!(
+                "error: failed to extract filename from '{}'",
+                file_path.display()
+            );
+            ReportedError
+        })?;
+
+    let target_root = script_target_dir(&file_path, profile_dir);
+    std::fs::create_dir_all(&target_root).map_err(|e| {
+        eprintln!(
+            "error: failed to create target directory '{}': {}",
+            target_root.display(),
+            e
+        );
+        ReportedError
+    })?;
+
+    let store = CompilerStore::new(
+        &arenas,
+        target_root.join("objects"),
+        &dcx,
+        arguments.target.clone(),
+    )?;
+    let icx = CompilerContext::new(dcx, store);
+
+    compile_std(&icx, arguments.std_path.clone(), compile_options)?;
+    build_runtime(&icx, &target_root, arguments.runtime_path.clone())?;
+
+    let package_index = PackageIndex::new(1);
+    let mut dependencies = FxHashMap::default();
+    dependencies.insert("std".into(), "std".into());
+
+    let config = icx.store.arenas.configs.alloc(Config {
+        name: file_stem.into(),
+        identifier: format!("script-{}", file_stem).into(),
+        src: file_path.clone(),
+        dependencies,
+        index: package_index,
+        kind: PackageKind::Executable,
+        executable_out: arguments.output.clone(),
+        no_std_prelude: false,
+        is_script: true,
+        profile: compile_options.profile,
+        overflow_checks: compile_options.overflow_checks,
+        debug: DebugOptions {
+            dump_mir: arguments.dump_mir,
+            dump_llvm: arguments.dump_llvm,
+        },
+        test_mode: true,
+    });
+
+    eprintln!("Compiling tests – {}", file_stem);
+    let mut compiler = Compiler::new(&icx, config);
+    compiler.test()
+}
+
+fn run_package_test(
+    arguments: CommandLineArguments,
+) -> Result<Option<std::path::PathBuf>, ReportedError> {
+    let compile_options = arguments.compile_mode_options();
+    let profile_dir = profile_dir_name(compile_options.profile);
+    let cwd = std::env::current_dir().map_err(|e| {
+        eprintln!("error: failed to get current directory: {}", e);
+        ReportedError
+    })?;
+    let dcx = Rc::new(DiagCtx::new(cwd));
+    let arenas = CompilerArenas::new();
+    let project_root = arguments.path.canonicalize().map_err(|e| {
+        eprintln!(
+            "error: failed to canonicalize project root path '{}': {}",
+            arguments.path.display(),
+            e
+        );
+        ReportedError
+    })?;
+    let target_root = project_root.join("target").join(profile_dir).join("objects");
+    let store = CompilerStore::new(&arenas, target_root, &dcx, arguments.target.clone())?;
+    let icx = CompilerContext::new(dcx, store);
+
+    let graph = sync_dependencies(arguments.path)?;
+
+    let _ = compile_std(&icx, arguments.std_path.clone(), compile_options)?;
+    build_runtime(&icx, &project_root, arguments.runtime_path.clone())?;
+
+    let total = graph.ordered.len();
+
+    for (index, package) in graph.ordered.iter().enumerate() {
+        let is_root = index + 1 == total;
+
+        // Non-root packages are compiled normally (as libraries)
+        if !is_root {
+            if package.kind != PackageKind::Library {
+                icx.dcx.emit_error(
+                    format!(
+                        "dependency `{}` must be a library (found {:?})",
+                        package.package.0, package.kind
+                    ),
+                    None,
+                );
+                return Err(ReportedError);
+            }
+        }
+
+        let package_index = PackageIndex::new(index + 1);
+        let name = get_package_name(&package.package.0).map_err(|e| {
+            icx.dcx.emit_error(
+                format!(
+                    "failed to get package name for '{}': {}",
+                    package.package.0, e
+                ),
+                None,
+            );
+            ReportedError
+        })?;
+        let identifier = package.unique_identifier().map_err(|e| {
+            icx.dcx.emit_error(
+                format!(
+                    "failed to generate unique identifier for '{}': {}",
+                    package.package.0, e
+                ),
+                None,
+            );
+            ReportedError
+        })?;
+        let mut dependencies = graph.dependencies_for(package).map_err(|e| {
+            icx.dcx.emit_error(
+                format!(
+                    "failed to resolve dependencies for '{}': {}",
+                    package.package.0, e
+                ),
+                None,
+            );
+            ReportedError
+        })?;
+        dependencies.insert("std".into(), "std".into());
+
+        let src = package
+            .path()
+            .and_then(|p| {
+                p.canonicalize()
+                    .map_err(|e| format!("failed to resolve path – {}", e))
+            })
+            .map_err(|e| format!("failed to resolve path – {}", e))
+            .map_err(|e| {
+                icx.dcx.emit_error(
+                    format!(
+                        "failed to resolve source path for '{}': {}",
+                        package.package.0, e
+                    ),
+                    None,
+                );
+                ReportedError
+            })?;
+
+        // Root package gets test mode; dependencies are compiled normally
+        let test_mode = is_root;
+        let kind = if is_root {
+            PackageKind::Executable
+        } else {
+            package.kind
+        };
+
+        let config = icx.store.arenas.configs.alloc(Config {
+            name,
+            identifier,
+            src,
+            dependencies,
+            index: package_index,
+            kind,
+            executable_out: arguments.output.clone(),
+            no_std_prelude: package.no_std_prelude,
+            is_script: false,
+            profile: compile_options.profile,
+            overflow_checks: compile_options.overflow_checks,
+            debug: DebugOptions {
+                dump_mir: arguments.dump_mir,
+                dump_llvm: arguments.dump_llvm,
+            },
+            test_mode,
+        });
+
+        let mut compiler = Compiler::new(&icx, config);
+        if is_root {
+            eprintln!("Compiling tests – {}", package.package.0);
+            let exe_path = compiler.test()?;
+            if exe_path.is_some() {
+                return Ok(exe_path);
+            }
+        } else {
+            eprintln!("Compiling – {}", package.package.0);
+            let exe_path = compiler.build()?;
+            if exe_path.is_some() {
+                return Ok(exe_path);
+            }
+        }
+    }
+    Ok(None)
 }
