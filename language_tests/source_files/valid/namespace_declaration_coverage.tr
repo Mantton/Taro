@@ -1,0 +1,30 @@
+// Test: Namespace declaration coverage.
+
+namespace Math {
+    const TWO: int32 = 2
+    const PI: float = 3.14159
+    const E: float = 2.71828
+}
+
+namespace Strings {
+    const EMPTY: string = ""
+    const SPACE: string = " "
+}
+
+func main() {
+    let x = Math.TWO
+    assert(x == 2, "Math.TWO should be 2")
+
+    let pi = Math.PI
+    assert(pi > 3.14 && pi < 3.15, "Math.PI should be approximately 3.14159")
+
+    let e = Math.E
+    assert(e > 2.71 && e < 2.72, "Math.E should be approximately 2.71828")
+
+    let empty = Strings.EMPTY
+    assert(empty == "", "Strings.EMPTY should be empty string")
+
+    let space = Strings.SPACE
+    assert(space == " ", "Strings.SPACE should be single space")
+    std.print("PASS: namespace declaration coverage\n")
+}

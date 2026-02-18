@@ -774,32 +774,17 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     return Some(obligations);
                 }
 
-                // Non-shift bitwise: integers, same type after inference; eagerly bind if needed
-                if matches!(data.operator, BitAnd | BitOr | BitXor) {
-                    if is_same_int(lhs, rhs) {
-                        push_rho_eq(&mut obligations, lhs);
-                        return Some(obligations);
-                    }
-                    if unify_integer_binop(&mut obligations, lhs, rhs).is_some() {
-                        return Some(obligations);
-                    }
-                    // else: not intrinsic
-                } else {
-                    // Shifts: LHS must be integer; RHS can be any integer type/var; result = LHS
-                    match (lhs.kind(), rhs.kind()) {
-                        // Concrete LHS integer; any RHS integer kind (incl. IntVar) is OK
-                        (Int(_) | UInt(_), Int(_) | UInt(_) | Infer(IntVar(_))) => {
-                            push_rho_eq(&mut obligations, lhs);
-                            return Some(obligations);
-                        }
-                        // LHS is IntVar ⇒ say “it’s an integer”; RHS must also be integer-ish
-                        (Infer(IntVar(_)), Int(_) | UInt(_) | Infer(IntVar(_))) => {
-                            push_rho_eq(&mut obligations, lhs);
-                            return Some(obligations);
-                        }
-                        _ => { /* not intrinsic */ }
-                    }
+                // Bitwise & shift ops: both operands must be the same integer type.
+                // Eagerly unify an IntVar operand to the concrete side so that
+                // literals like `x << 1` infer the `1` as the same type as `x`.
+                if is_same_int(lhs, rhs) {
+                    push_rho_eq(&mut obligations, lhs);
+                    return Some(obligations);
                 }
+                if unify_integer_binop(&mut obligations, lhs, rhs).is_some() {
+                    return Some(obligations);
+                }
+                // else: not intrinsic
             }
             // -------- Lazy boolean ops (not overloadable) --------
             BoolAnd | BoolOr => {

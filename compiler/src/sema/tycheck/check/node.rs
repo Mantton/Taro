@@ -3250,14 +3250,45 @@ impl<'ctx> Checker<'ctx> {
             hir::ResolvedPath::Relative(_, s) => s.span,
         };
 
-        // We construct a temporary Type node to reuse the lower_type logic.
-        let type_node = hir::Type {
-            id: expression.id,
-            kind: hir::TypeKind::Nominal(lit.path.clone()),
-            span: type_span,
-        };
+        // Check if we can infer the generic arguments from the context (e.g. Buf { ... })
+        // If the user did not provide any generic arguments, we generate fresh inference variables
+        // for them instead of letting `lower_type` act, which would eagerly apply defaults.
+        let struct_ty = 'ty: {
+            if let hir::ResolvedPath::Resolved(path) = &lit.path {
+                if let Some(segment) = path.segments.last() {
+                    let has_args = segment
+                        .arguments
+                        .as_ref()
+                        .map(|a| !a.arguments.is_empty())
+                        .unwrap_or(false);
 
-        let struct_ty = self.lower_type(&type_node);
+                    if !has_args {
+                        if let hir::Resolution::Definition(def_id, kind) = path.resolution {
+                            if kind == DefinitionKind::Struct {
+                                let infer_cx = self.infer_ctx().expect("ICE: no infer cx");
+                                let args = infer_cx.fresh_args_for_def(def_id, type_span);
+                                let gcx = self.gcx();
+                                let ident = gcx.definition_ident(def_id);
+                                let def = crate::sema::models::AdtDef {
+                                    name: ident.symbol,
+                                    kind: crate::sema::models::AdtKind::Struct,
+                                    id: def_id,
+                                };
+                                break 'ty Ty::new(TyKind::Adt(def, args), gcx);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Fallback: use standard type lowering (handles explicit args + defaults)
+            let type_node = hir::Type {
+                id: expression.id,
+                kind: hir::TypeKind::Nominal(lit.path.clone()),
+                span: type_span,
+            };
+            self.lower_type(&type_node)
+        };
         let gcx = self.gcx();
         let is_struct = match struct_ty.kind() {
             TyKind::Adt(def, _) => gcx.definition_kind(def.id) == DefinitionKind::Struct,

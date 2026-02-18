@@ -130,19 +130,19 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
                     break
                 line = line.strip()
                 if line.startswith("// TARGET:"):
-                    result["target"] = line[len("// TARGET:"):].strip()
+                    result["target"] = line[len("// TARGET:") :].strip()
                 elif line.startswith("// CHECK_ONLY"):
                     result["check_only"] = True
                 elif line.startswith("// TEST"):
                     result["run_as_test"] = True
                 elif line.startswith("// EXPECT_EXIT:"):
-                    code = line[len("// EXPECT_EXIT:"):].strip()
+                    code = line[len("// EXPECT_EXIT:") :].strip()
                     try:
                         result["expect_exit"] = int(code)
                     except ValueError:
                         pass
                 elif line.startswith("// EXPECT_STDERR_CONTAINS:"):
-                    needle = line[len("// EXPECT_STDERR_CONTAINS:"):].strip()
+                    needle = line[len("// EXPECT_STDERR_CONTAINS:") :].strip()
                     if needle:
                         result["expect_stderr_contains"].append(needle)
     except Exception:
@@ -337,7 +337,9 @@ def format_elapsed(seconds: float) -> str:
     return f"{mins:02d}:{secs:05.2f}"
 
 
-def run_tests_serial(test_files: list[Path], env: TestEnvironment) -> tuple[int, list[tuple[Path, str, TestDetails | None]]]:
+def run_tests_serial(
+    test_files: list[Path], env: TestEnvironment
+) -> tuple[int, list[tuple[Path, str, TestDetails | None]]]:
     passed = 0
     failures: list[tuple[Path, str, TestDetails | None]] = []
 
@@ -364,14 +366,17 @@ def run_tests_parallel(
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as executor:
         future_to_path = {
-            executor.submit(run_test, file_path, env): file_path for file_path in test_files
+            executor.submit(run_test, file_path, env): file_path
+            for file_path in test_files
         }
         for future in concurrent.futures.as_completed(future_to_path):
             file_path = future_to_path[future]
             relative_path = file_path.relative_to(SOURCE_FILES_DIR)
             try:
                 success, msg, details = future.result()
-            except Exception as error:  # Defensive fallback; run_test also catches internally.
+            except (
+                Exception
+            ) as error:  # Defensive fallback; run_test also catches internally.
                 success = False
                 msg = "Exception"
                 details = {"error": str(error)}

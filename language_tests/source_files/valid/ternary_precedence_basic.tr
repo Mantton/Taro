@@ -1,0 +1,13 @@
+// Test: Ternary precedence and basic behavior.
+
+func main() {
+    let a = true ? 1 : 2
+    let b = false ? 10 : 20
+    assert(a == 1, "true branch should be selected")
+    assert(b == 20, "false branch should be selected")
+
+    let c = false ? 1 : 2 + 3
+    assert(c == 5, "ternary else expression should evaluate fully")
+
+    std.print("PASS: ternary precedence basic\n")
+}

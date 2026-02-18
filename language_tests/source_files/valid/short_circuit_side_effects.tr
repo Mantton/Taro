@@ -1,0 +1,33 @@
+// Test: Short-circuit behavior for && and ||.
+
+func mustNotCall() -> bool {
+    panic("short-circuit failed: RHS was evaluated")
+}
+
+func identity(_ v: bool) -> bool { v }
+
+func main() {
+    // && short-circuits on false lhs — RHS must NOT be evaluated
+    let a = false && mustNotCall()
+    assert(a == false, "&& with false lhs should be false")
+
+    // || short-circuits on true lhs — RHS must NOT be evaluated
+    let b = true || mustNotCall()
+    assert(b == true, "|| with true lhs should be true")
+
+    // && evaluates RHS when lhs is true
+    let c = true && identity(false)
+    assert(c == false, "&& true,false should be false")
+
+    let d = true && identity(true)
+    assert(d == true, "&& true,true should be true")
+
+    // || evaluates RHS when lhs is false
+    let e = false || identity(true)
+    assert(e == true, "|| false,true should be true")
+
+    let f = false || identity(false)
+    assert(f == false, "|| false,false should be false")
+
+    std.print("PASS: short-circuit side effects\n")
+}

@@ -47,7 +47,12 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
             }
             hir::DeclarationKind::TypeAlias(..) => self.check_constraints(node.id),
             hir::DeclarationKind::Constant(..) => {}
-            hir::DeclarationKind::Variable(..) => {}
+            hir::DeclarationKind::Variable(..) => {
+                self.context.dcx().emit_error(
+                    "module-level variables are not yet supported; use local variables or constants instead".into(),
+                    Some(node.span),
+                );
+            }
             hir::DeclarationKind::Import(..) => {}
             hir::DeclarationKind::Export(..) => {}
             hir::DeclarationKind::Namespace(..) => {}

@@ -20,16 +20,18 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
         if let hir::DeclarationKind::Constant(node) = &declaration.kind {
             self.collect_constant(declaration.id, node);
         }
+        hir::walk_declaration(self, declaration)
     }
 
     fn visit_assoc_declaration(
         &mut self,
         declaration: &hir::AssociatedDeclaration,
-        _: hir::AssocContext,
+        context: hir::AssocContext,
     ) -> Self::Result {
         if let hir::AssociatedDeclarationKind::Constant(node) = &declaration.kind {
             self.collect_constant(declaration.id, node);
         }
+        hir::walk_assoc_declaration(self, declaration, context)
     }
 }
 
