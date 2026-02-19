@@ -6,18 +6,5 @@ public interface Hashable: PartialEq {
 
 public interface Hasher {
     func finalize(&self) -> usize
-    func combine[H](_ value: H) where H : Hashable
-
-    // Primitive write methods
-    func writeBool(&mut self, _ value: bool)
-    func writeU8(&mut self, _ value: uint8)
-    func writeU16(&mut self, _ value: uint16)
-    func writeU32(&mut self, _ value: uint32)
-    func writeU64(&mut self, _ value: uint64)
-    func writeI8(&mut self, _ value: int8)
-    func writeI16(&mut self, _ value: int16)
-    func writeI32(&mut self, _ value: int32)
-    func writeI64(&mut self, _ value: int64)
-    func writeUsize(&mut self, _ value: usize)
-    func writeIsize(&mut self, _ value: isize)
+    func combine[Value: Hashable](&mut self, _ value: Value)
 }
