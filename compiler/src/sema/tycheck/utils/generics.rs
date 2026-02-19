@@ -44,7 +44,7 @@ impl<'ctx> GenericsBuilder<'ctx> {
         mut mk_kind: F,
     ) -> GenericArguments<'ctx>
     where
-        F: FnMut(&GenericParameterDefinition, &[GenericArgument]) -> GenericArgument<'ctx>,
+        F: FnMut(&GenericParameterDefinition, &[GenericArgument<'ctx>]) -> GenericArgument<'ctx>,
     {
         let generics = gcx.generics_of(id);
         let mut arguments = vec![];
@@ -59,7 +59,7 @@ impl<'ctx> GenericsBuilder<'ctx> {
         defintion: &Generics,
         mk: &mut F,
     ) where
-        F: FnMut(&GenericParameterDefinition, &[GenericArgument]) -> GenericArgument<'ctx>,
+        F: FnMut(&GenericParameterDefinition, &[GenericArgument<'ctx>]) -> GenericArgument<'ctx>,
     {
         if let Some(id) = defintion.parent {
             let parent_def = gcx.generics_of(id);
@@ -73,7 +73,7 @@ impl<'ctx> GenericsBuilder<'ctx> {
         defintion: &Generics,
         mk: &mut F,
     ) where
-        F: FnMut(&GenericParameterDefinition, &[GenericArgument]) -> GenericArgument<'ctx>,
+        F: FnMut(&GenericParameterDefinition, &[GenericArgument<'ctx>]) -> GenericArgument<'ctx>,
     {
         for param in &defintion.parameters {
             let kind = mk(param, arguments);

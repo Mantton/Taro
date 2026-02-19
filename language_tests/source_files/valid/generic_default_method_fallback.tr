@@ -1,0 +1,13 @@
+// CHECK_ONLY
+// Method overload binding should honor generic defaults as deferred fallbacks.
+
+struct S { }
+
+impl S {
+    func ping[T = int32](&self) { }
+}
+
+func main() {
+    let s = S { }
+    s.ping()
+}

@@ -16,7 +16,7 @@ use crate::{
                 Adjustment, ApplyArgument, ApplyGoalData, BindOverloadGoalData, DisjunctionBranch,
             },
             utils::{
-                AutoReference, generics::GenericsBuilder, instantiate::instantiate_ty_with_args,
+                AutoReference, instantiate::instantiate_ty_with_args,
             },
         },
     },
@@ -445,7 +445,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
     }
 
     fn interface_method_candidates(
-        &self,
+        &mut self,
         self_ty: Ty<'ctx>,
         reciever_ty: Ty<'ctx>,
         interfaces: &'ctx [InterfaceReference<'ctx>],
@@ -545,19 +545,14 @@ impl<'ctx> ConstraintSolver<'ctx> {
     }
 
     fn instantiate_interface_method(
-        &self,
+        &mut self,
         signature: &LabeledFunctionSignature<'ctx>,
         method_id: DefinitionID,
         interface_args: GenericArguments<'ctx>,
         span: crate::span::Span,
     ) -> (Ty<'ctx>, Option<GenericArguments<'ctx>>) {
         let gcx = self.gcx();
-        let args = GenericsBuilder::for_item(gcx, method_id, |param, _| {
-            interface_args
-                .get(param.index)
-                .cloned()
-                .unwrap_or_else(|| self.icx.var_for_generic_param(param, span))
-        });
+        let args = self.instantiate_generic_args_with_defaults(method_id, Some(interface_args), span);
 
         let signature_ty = self.labeled_signature_to_ty(signature);
         let instantiated = instantiate_ty_with_args(gcx, signature_ty, args);

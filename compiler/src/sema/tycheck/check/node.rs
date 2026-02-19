@@ -21,7 +21,10 @@ use crate::{
             utils::{
                 const_eval::eval_const_expression,
                 generics::GenericsBuilder,
-                instantiate::{instantiate_signature_with_args, instantiate_ty_with_args},
+                instantiate::{
+                    instantiate_const_with_args, instantiate_signature_with_args,
+                    instantiate_ty_with_args,
+                },
                 type_head_from_value_ty,
             },
         },
@@ -2950,19 +2953,20 @@ impl<'ctx> Checker<'ctx> {
             .unwrap_or(segment.span);
         let mut explicit_iter = explicit_args.iter();
 
-        let args = GenericsBuilder::for_item(gcx, def_id, |param, _| {
+        let args = GenericsBuilder::for_item(gcx, def_id, |param, current_args| {
+            let current_args = gcx.store.interners.intern_generic_args(current_args.to_vec());
             if param.index < parent_count {
                 if let Some(arg) = base_args.get(param.index) {
                     return arg.clone();
                 }
-                return self.lower_value_path_missing_arg(param, span);
+                return self.lower_value_path_missing_arg(param, span, current_args);
             }
 
             if let Some(arg) = explicit_iter.next() {
                 return self.lower_value_path_explicit_arg(param, arg);
             }
 
-            self.lower_value_path_missing_arg(param, span)
+            self.lower_value_path_missing_arg(param, span, current_args)
         });
 
         Some(args)
@@ -3069,12 +3073,27 @@ impl<'ctx> Checker<'ctx> {
         &self,
         param: &GenericParameterDefinition,
         span: Span,
+        current_args: GenericArguments<'ctx>,
     ) -> GenericArgument<'ctx> {
         let gcx = self.gcx();
         match &param.kind {
             GenericParameterDefinitionKind::Type { default } => {
                 if let Some(default) = default {
-                    GenericArgument::Type(self.lower_type(default))
+                    if self.can_infer() {
+                        let infer_ty = self.ty_infer(Some(param), span);
+                        let mut default_ty = self.lower_type(default);
+                        default_ty = instantiate_ty_with_args(gcx, default_ty, current_args);
+                        self.register_default_fallback(
+                            crate::sema::tycheck::solve::DefaultFallbackGoalData {
+                                infer_var: GenericArgument::Type(infer_ty),
+                                default: GenericArgument::Type(default_ty),
+                                span,
+                            },
+                        );
+                        GenericArgument::Type(infer_ty)
+                    } else {
+                        GenericArgument::Type(self.lower_type(default))
+                    }
                 } else {
                     GenericArgument::Type(self.ty_infer(Some(param), span))
                 }
@@ -3082,12 +3101,26 @@ impl<'ctx> Checker<'ctx> {
             GenericParameterDefinitionKind::Const { ty, default } => {
                 let expected_ty = self.lower_type(ty);
                 if let Some(default) = default {
-                    GenericArgument::Const(
-                        self.lowerer().lower_const_argument(expected_ty, default),
-                    )
+                    if self.can_infer() {
+                        let infer_const = self.const_infer(expected_ty, Some(param), span);
+                        let mut default_const = self.lowerer().lower_const_argument(expected_ty, default);
+                        default_const = instantiate_const_with_args(gcx, default_const, current_args);
+                        self.register_default_fallback(
+                            crate::sema::tycheck::solve::DefaultFallbackGoalData {
+                                infer_var: GenericArgument::Const(infer_const.clone()),
+                                default: GenericArgument::Const(default_const),
+                                span,
+                            },
+                        );
+                        GenericArgument::Const(infer_const)
+                    } else {
+                        GenericArgument::Const(
+                            self.lowerer().lower_const_argument(expected_ty, default),
+                        )
+                    }
                 } else {
-                    if let Some(infer_cx) = self.infer_ctx() {
-                        infer_cx.var_for_generic_param(param, span)
+                    if self.can_infer() {
+                        GenericArgument::Const(self.const_infer(expected_ty, Some(param), span))
                     } else {
                         gcx.dcx()
                             .emit_error("missing const argument".into(), Some(span));

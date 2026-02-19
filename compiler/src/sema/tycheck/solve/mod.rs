@@ -5,16 +5,21 @@ use crate::{
         error::SpannedErrorList,
         models::{
             AliasKind, ConstKind, Constraint, GenericArgument, GenericArguments,
-            InterfaceReference, Ty, TyKind,
+            GenericParameterDefinition, GenericParameterDefinitionKind, InterfaceReference, Ty,
+            TyKind,
         },
         resolve::models::DefinitionID,
         tycheck::{
             constraints::canonical_constraints_of,
+            fold::{TypeFoldable, TypeFolder, TypeSuperFoldable},
             infer::InferCtx,
+            lower::{DefTyLoweringCtx, TypeLowerer},
             utils::{
                 ParamEnv, instantiate::instantiate_constraint_with_args,
-                instantiate::instantiate_ty_with_args, normalize_ty,
+                instantiate::instantiate_const_with_args, instantiate::instantiate_ty_with_args,
+                normalize_ty,
             },
+            utils::generics::GenericsBuilder,
         },
     },
     span::{Span, Spanned},
@@ -406,7 +411,6 @@ impl<'ctx> ConstraintSystem<'ctx> {
                     "type annotations needed: unable to infer type".into()
                 };
                 gcx.dcx().emit_error(msg.into(), Some(origin.location));
-                panic!("Uninferred type parameter")
             }
         }
 
@@ -545,6 +549,121 @@ impl<'ctx> ConstraintSolver<'ctx> {
             let instantiated = instantiate_ty_with_args(self.gcx(), target_ty, args);
             self.unify(receiver, instantiated).is_ok()
         })
+    }
+
+    fn instantiate_generic_args_with_defaults(
+        &mut self,
+        def_id: DefinitionID,
+        provided: Option<GenericArguments<'ctx>>,
+        span: Span,
+    ) -> GenericArguments<'ctx> {
+        let gcx = self.gcx();
+        let provided = provided.unwrap_or(&[]);
+        GenericsBuilder::for_item(gcx, def_id, |param, current_args| {
+            if let Some(arg) = provided.get(param.index) {
+                return arg.clone();
+            }
+            self.instantiate_missing_generic_arg(def_id, param, current_args, span)
+        })
+    }
+
+    fn instantiate_missing_generic_arg(
+        &mut self,
+        def_id: DefinitionID,
+        param: &GenericParameterDefinition,
+        current_args: &[GenericArgument<'ctx>],
+        span: Span,
+    ) -> GenericArgument<'ctx> {
+        let gcx = self.gcx();
+        let owner = gcx.definition_parent(param.id).unwrap_or(def_id);
+        let lower_ctx = DefTyLoweringCtx::new(owner, gcx);
+        let current_args = gcx
+            .store
+            .interners
+            .intern_generic_args(current_args.to_vec());
+
+        match &param.kind {
+            GenericParameterDefinitionKind::Type { default: Some(default) } => {
+                let infer_var = self.icx.var_for_generic_param(param, span);
+                let mut default_ty = lower_ctx.lowerer().lower_type(default);
+                default_ty = self.substitute_interface_self_default(default_ty, current_args);
+                default_ty = instantiate_ty_with_args(gcx, default_ty, current_args);
+                self.push_default_fallback_goal(
+                    infer_var.clone(),
+                    GenericArgument::Type(default_ty),
+                    span,
+                );
+                infer_var
+            }
+            GenericParameterDefinitionKind::Type { default: None } => {
+                self.icx.var_for_generic_param(param, span)
+            }
+            GenericParameterDefinitionKind::Const { ty, default: Some(default) } => {
+                let expected_ty = lower_ctx.lowerer().lower_type(ty);
+                let infer_var = self.icx.var_for_generic_param(param, span);
+                let mut default_const = lower_ctx.lowerer().lower_const_argument(expected_ty, default);
+                default_const = instantiate_const_with_args(gcx, default_const, current_args);
+                self.push_default_fallback_goal(
+                    infer_var.clone(),
+                    GenericArgument::Const(default_const),
+                    span,
+                );
+                infer_var
+            }
+            GenericParameterDefinitionKind::Const { default: None, .. } => {
+                self.icx.var_for_generic_param(param, span)
+            }
+        }
+    }
+
+    fn push_default_fallback_goal(
+        &mut self,
+        infer_var: GenericArgument<'ctx>,
+        default: GenericArgument<'ctx>,
+        span: Span,
+    ) {
+        self.obligations.push_back(Obligation {
+            location: span,
+            goal: Goal::DefaultFallback(DefaultFallbackGoalData {
+                infer_var,
+                default,
+                span,
+            }),
+        });
+    }
+
+    fn substitute_interface_self_default(
+        &self,
+        ty: Ty<'ctx>,
+        args: GenericArguments<'ctx>,
+    ) -> Ty<'ctx> {
+        let Some(GenericArgument::Type(concrete_self_ty)) = args.first() else {
+            return ty;
+        };
+
+        struct InterfaceSelfSubstitutor<'ctx> {
+            gcx: Gcx<'ctx>,
+            concrete_self_ty: Ty<'ctx>,
+        }
+
+        impl<'ctx> TypeFolder<'ctx> for InterfaceSelfSubstitutor<'ctx> {
+            fn gcx(&self) -> Gcx<'ctx> {
+                self.gcx
+            }
+
+            fn fold_ty(&mut self, ty: Ty<'ctx>) -> Ty<'ctx> {
+                if ty == self.gcx.types.self_type_parameter {
+                    return self.concrete_self_ty;
+                }
+                ty.super_fold_with(self)
+            }
+        }
+
+        let mut substitutor = InterfaceSelfSubstitutor {
+            gcx: self.gcx(),
+            concrete_self_ty: *concrete_self_ty,
+        };
+        ty.fold_with(&mut substitutor)
     }
 
     fn solve(&mut self, obligation: Obligation<'ctx>) -> SolverResult<'ctx> {

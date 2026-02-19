@@ -15,7 +15,10 @@ use crate::{
             solve::DefaultFallbackGoalData,
             utils::{
                 const_eval::eval_const_expression,
-                instantiate::{instantiate_interface_ref_with_args, instantiate_ty_with_args},
+                instantiate::{
+                    instantiate_const_with_args, instantiate_interface_ref_with_args,
+                    instantiate_ty_with_args,
+                },
                 type_head_from_value_ty,
             },
         },
@@ -415,8 +418,14 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                                 if self.can_infer() {
                                     let infer_const =
                                         self.const_infer(expected_ty, Some(param), span);
-                                    let default_const =
+                                    let mut default_const =
                                         self.lower_const_argument(expected_ty, default);
+                                    let current_args = gcx
+                                        .store
+                                        .interners
+                                        .intern_generic_args(output.clone());
+                                    default_const =
+                                        instantiate_const_with_args(gcx, default_const, current_args);
                                     self.register_default_fallback(DefaultFallbackGoalData {
                                         infer_var: GenericArgument::Const(infer_const.clone()),
                                         default: GenericArgument::Const(default_const),

@@ -1,0 +1,23 @@
+// CHECK_ONLY
+// Value-path generic defaults should infer from arguments first, then fallback.
+
+struct Marker {}
+
+impl Marker {
+    func wrap[T = int32](_ x: T) -> T { x }
+}
+
+func id[T = int32](_ x: T) -> T { x }
+
+func pairFirst[T, U = T](_ x: T, _ y: U) -> U { y }
+
+func main() {
+    let a = id(true)
+    let a_ok: bool = a
+
+    let b = Marker.wrap(true)
+    let b_ok: bool = b
+
+    let c = pairFirst[int32](1, 2)
+    let c_ok: int32 = c
+}

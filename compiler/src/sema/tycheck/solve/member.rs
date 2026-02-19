@@ -12,7 +12,6 @@ use crate::{
             resolve_conformance_witness,
             utils::{
                 autoderef::Autoderef,
-                generics::GenericsBuilder,
                 instantiate::{instantiate_struct_definition_with_args, instantiate_ty_with_args},
             },
         },
@@ -201,16 +200,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 let generics = self.gcx().generics_of(def_id);
                 let mut obligations = Vec::new();
                 let final_ty = if !generics.is_empty() && ty.needs_instantiation() {
-                    let args = if let Some(base_args) = base_args {
-                        GenericsBuilder::for_item(self.gcx(), def_id, |param, _| {
-                            base_args
-                                .get(param.index)
-                                .cloned()
-                                .unwrap_or_else(|| self.icx.var_for_generic_param(param, span))
-                        })
-                    } else {
-                        self.icx.fresh_args_for_def(def_id, span)
-                    };
+                    let args =
+                        self.instantiate_generic_args_with_defaults(def_id, base_args, span);
                     let instantiated = instantiate_ty_with_args(self.gcx(), ty, args);
                     self.record_instantiation(node_id, args);
                     obligations.extend(self.constraints_for_def(def_id, Some(args), span));

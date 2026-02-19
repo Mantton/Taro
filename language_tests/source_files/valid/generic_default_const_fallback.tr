@@ -1,0 +1,13 @@
+// CHECK_ONLY
+// Const generic defaults should be instantiated against earlier arguments.
+
+struct Pair[const N: usize, const M: usize = N] { }
+struct Buf[const N: usize = 8] { }
+
+func main() {
+    let a = Pair[3] { }
+    let a_ok: Pair[3, 3] = a
+
+    let b = Buf { }
+    let b_ok: Buf[8] = b
+}
