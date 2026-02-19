@@ -276,7 +276,7 @@ impl<'ctx> ThirBuilder<'ctx> {
 }
 
 /// Synthesize `clone` for Copy types: just dereference self.
-/// ```ignore
+/// ```text
 /// func clone(&self) -> Self {
 ///     *self
 /// }
@@ -326,7 +326,7 @@ fn synthesize_copy_clone<'ctx>(
 }
 
 /// Synthesize `clone` for non-Copy types: memberwise clone each field.
-/// ```ignore
+/// ```text
 /// func clone(&self) -> Self {
 ///     Self {
 ///         field1: self.field1.clone(),
@@ -571,7 +571,7 @@ fn closure_args_ty<'ctx>(gcx: GlobalContext<'ctx>, inputs: &'ctx [Ty<'ctx>]) -> 
 }
 
 /// Synthesize `clone` for enum types using a match expression.
-/// ```ignore
+/// ```text
 /// func clone(&self) -> Self {
 ///     match *self {
 ///         .Variant1 => .Variant1,

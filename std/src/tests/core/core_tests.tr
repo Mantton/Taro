@@ -1,0 +1,17 @@
+@test
+func testInt32Arithmetic() {
+    let a: int32 = 10
+    let b: int32 = 4
+
+    let add_expected: int32 = 14
+    let sub_expected: int32 = 6
+    let mul_expected: int32 = 40
+    let div_expected: int32 = 2
+    let rem_expected: int32 = 2
+
+    std.testing.assertEqual(a + b, add_expected, "int32 addition failed")
+    std.testing.assertEqual(a - b, sub_expected, "int32 subtraction failed")
+    std.testing.assertEqual(a * b, mul_expected, "int32 multiplication failed")
+    std.testing.assertEqual(a / b, div_expected, "int32 division failed")
+    std.testing.assertEqual(a % b, rem_expected, "int32 remainder failed")
+}

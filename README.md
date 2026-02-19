@@ -42,6 +42,20 @@ export TARO_HOME=$(pwd)/dist
 taro build examples/hello.tr
 ```
 
+### Quick Commands (Makefile)
+
+For day-to-day development, you can use the root `Makefile`:
+
+```bash
+make help
+make run FILE=examples/hello.tr
+make check FILE=examples/hello.tr
+make test
+make language-tests
+make std-tests
+make all-tests
+```
+
 ## Getting Started
 
 Here is a simple "Hello, World!" example to get you started.
@@ -206,32 +220,21 @@ kind = "library" # Required for libraries, defaults to "binary"
 
 ## Running Tests
 
-To verify the compiler implementation, you can run the language test suite using the provided script. Note that we have both compiler unit tests (run via `cargo test`) and language E2E tests.
+To verify the compiler implementation, use the command that matches the test surface you want:
 
-To run the language tests (which are easier for E2E verification):
+- `cargo test --workspace`: Rust unit/integration/doctests for workspace crates.
+- `python3 development/scripts/language_tests.py`: Taro language E2E tests in `language_tests/source_files`.
+- `python3 development/scripts/test_all.py`: unified fail-fast pipeline (cargo tests, dist build, std compile smoke, std package tests, language tests).
+- `make all-tests`: shorthand for the unified pipeline.
 
-```bash
-python3 development/scripts/language_tests.py
-```
+Std package tests live under `std/src/tests/<module>/<module_tests>.tr` and run in the `test_all.py` std stage (or via `make std-tests`).
 
-By default, language tests run concurrently using `min(selected_tests, CPU count)` workers.
-
-To override worker count:
-
-```bash
-python3 development/scripts/language_tests.py --jobs 4
-```
-
-To force serial execution (debug fallback):
+If you only want language tests with simple flags:
 
 ```bash
-python3 development/scripts/language_tests.py --jobs 1
-```
-
-You can also filter tests using a substring match:
-
-```bash
-python3 development/scripts/language_tests.py --filter basic_
+make language-tests
+make language-tests JOBS=4
+make language-tests FILTER=std_
 ```
 
 ### Language Test Directives

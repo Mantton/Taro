@@ -55,7 +55,7 @@ impl<'ctx> MirPass<'ctx> for ValidateMoves {
 /// Validates that mutable borrows only occur on mutable places.
 ///
 /// This check ensures that code like:
-/// ```ignore
+/// ```text
 /// let a: [int32: string] = [:]
 /// a.insert(key: 10, value: "Hello")  // Error: cannot borrow immutable local `a` as mutable
 /// ```
@@ -235,7 +235,7 @@ impl MoveState {
 /// Validates that moved values are not used after being moved.
 ///
 /// This check ensures that code like:
-/// ```ignore
+/// ```text
 /// let x = SomeNonCopyableType { ... }
 /// let y = x  // moves x
 /// let z = x  // ERROR: use of moved value 'x'
