@@ -136,12 +136,26 @@ impl<'ctx> ConstraintSolver<'ctx> {
             instantiation_args,
         } = data;
 
-        match self.unify(var_ty, candidate_ty) {
+        // Instantiate interface method generics only for the selected branch.
+        // This avoids leaking unconstrained inference vars from rejected candidates.
+        let generics = self.gcx().generics_of(call_info.method_id);
+        let (actual_ty, instantiation_args) = if !generics.is_empty() {
+            let args = self.instantiate_generic_args_with_defaults(
+                call_info.method_id,
+                instantiation_args,
+                location,
+            );
+            let instantiated = instantiate_ty_with_args(self.gcx(), candidate_ty, args);
+            self.record_instantiation(node_id, args);
+            (instantiated, Some(args))
+        } else {
+            (candidate_ty, None)
+        };
+
+        match self.unify(var_ty, actual_ty) {
             Ok(_) => {
-                if let Some(args) = instantiation_args {
-                    self.record_instantiation(node_id, args);
-                }
                 self.record_overload_source(node_id, call_info.method_id);
+                self.icx.bind_overload(var_ty, call_info.method_id);
                 self.record_interface_call(node_id, call_info);
                 let obligations =
                     self.constraints_for_def(call_info.method_id, instantiation_args, location);

@@ -2884,7 +2884,15 @@ fn convert_ast_literal(
         }
         ast::Literal::Integer { value, base } => {
             let content = value.replace("_", "");
-            u64::from_str_radix(&content, base.radix())
+            let digits = match base {
+                crate::parse::Base::Decimal => content.as_str(),
+                crate::parse::Base::Binary => content.strip_prefix("0b").unwrap_or(content.as_str()),
+                crate::parse::Base::Octal => content.strip_prefix("0o").unwrap_or(content.as_str()),
+                crate::parse::Base::Hexadecimal => {
+                    content.strip_prefix("0x").unwrap_or(content.as_str())
+                }
+            };
+            u64::from_str_radix(digits, base.radix())
                 .map(|i| hir::Literal::Integer(i))
                 .map_err(|err| format!("malformed integer literal: {}", err))
         }

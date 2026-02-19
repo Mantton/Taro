@@ -4,9 +4,49 @@ import std.ops.PartialEq
 import std.cmp.{Ordering, PartialOrd, Ord}
 import std.optional.Optional
 
+// Hash integers as little-endian bytes for stable, explicit byte feeds.
+func hashU8[H: Hasher](_ hasher: &mut H, _ value: uint8) {
+    let bytes: [uint8; 1] = [value]
+    hasher.write(bytes.as_span())
+}
+
+func hashU16[H: Hasher](_ hasher: &mut H, _ value: uint16) {
+    let bytes: [uint8; 2] = [
+        (value & (0xff as uint16)) as uint8,
+        ((value >> 8) & (0xff as uint16)) as uint8,
+    ]
+    hasher.write(bytes.as_span())
+}
+
+func hashU32[H: Hasher](_ hasher: &mut H, _ value: uint32) {
+    let bytes: [uint8; 4] = [
+        (value & (0xff as uint32)) as uint8,
+        ((value >> 8) & (0xff as uint32)) as uint8,
+        ((value >> 16) & (0xff as uint32)) as uint8,
+        ((value >> 24) & (0xff as uint32)) as uint8,
+    ]
+    hasher.write(bytes.as_span())
+}
+
+func hashU64[H: Hasher](_ hasher: &mut H, _ value: uint64) {
+    let bytes: [uint8; 8] = [
+        (value & (0xff as uint64)) as uint8,
+        ((value >> 8) & (0xff as uint64)) as uint8,
+        ((value >> 16) & (0xff as uint64)) as uint8,
+        ((value >> 24) & (0xff as uint64)) as uint8,
+        ((value >> 32) & (0xff as uint64)) as uint8,
+        ((value >> 40) & (0xff as uint64)) as uint8,
+        ((value >> 48) & (0xff as uint64)) as uint8,
+        ((value >> 56) & (0xff as uint64)) as uint8,
+    ]
+    hasher.write(bytes.as_span())
+}
+
 // int8
 impl Hashable for int8 {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {}
+    public func hash[H: Hasher](&self, into hasher: &mut H) {
+        hashU8(hasher, *self as uint8)
+    }
 }
 
 impl Clone for int8 {
@@ -37,7 +77,9 @@ impl Ord for int8 {
 
 // int16
 impl Hashable for int16 {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {}
+    public func hash[H: Hasher](&self, into hasher: &mut H) {
+        hashU16(hasher, *self as uint16)
+    }
 }
 
 impl Clone for int16 {
@@ -68,7 +110,9 @@ impl Ord for int16 {
 
 // int32
 impl Hashable for int32 {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {}
+    public func hash[H: Hasher](&self, into hasher: &mut H) {
+        hashU32(hasher, *self as uint32)
+    }
 }
 
 impl Clone for int32 {
@@ -99,7 +143,9 @@ impl Ord for int32 {
 
 // int64
 impl Hashable for int64 {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {}
+    public func hash[H: Hasher](&self, into hasher: &mut H) {
+        hashU64(hasher, *self as uint64)
+    }
 }
 
 impl Clone for int64 {
@@ -130,7 +176,9 @@ impl Ord for int64 {
 
 // uint8
 impl Hashable for uint8 {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {}
+    public func hash[H: Hasher](&self, into hasher: &mut H) {
+        hashU8(hasher, *self)
+    }
 }
 
 impl Clone for uint8 {
@@ -161,7 +209,9 @@ impl Ord for uint8 {
 
 // uint16
 impl Hashable for uint16 {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {}
+    public func hash[H: Hasher](&self, into hasher: &mut H) {
+        hashU16(hasher, *self)
+    }
 }
 
 impl Clone for uint16 {
@@ -192,7 +242,9 @@ impl Ord for uint16 {
 
 // uint32
 impl Hashable for uint32 {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {}
+    public func hash[H: Hasher](&self, into hasher: &mut H) {
+        hashU32(hasher, *self)
+    }
 }
 
 impl Clone for uint32 {
@@ -223,7 +275,9 @@ impl Ord for uint32 {
 
 // uint64
 impl Hashable for uint64 {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {}
+    public func hash[H: Hasher](&self, into hasher: &mut H) {
+        hashU64(hasher, *self)
+    }
 }
 
 impl Clone for uint64 {
@@ -254,7 +308,9 @@ impl Ord for uint64 {
 
 // isize
 impl Hashable for isize {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {}
+    public func hash[H: Hasher](&self, into hasher: &mut H) {
+        hashU64(hasher, *self as uint64)
+    }
 }
 
 impl Clone for isize {
@@ -285,7 +341,9 @@ impl Ord for isize {
 
 // usize
 impl Hashable for usize {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {}
+    public func hash[H: Hasher](&self, into hasher: &mut H) {
+        hashU64(hasher, *self as uint64)
+    }
 }
 
 impl Clone for usize {

@@ -4,6 +4,8 @@ extern "taro_rt" {
     func __rt__panic_unwind(_ message: string) -> !
     func __rt__panic_abort(_ message: string) -> !
     func __rt__panic_abort_unwind(_ exception: *mut uint8) -> !
+    func __rt__hash_seed0() -> uint64
+    func __rt__hash_seed1() -> uint64
 }
 
 public func collect() {
@@ -16,4 +18,12 @@ public func panicUnwind(_ message: string) -> ! {
 
 public func panicAbort(_ message: string) -> ! {
     __rt__panic_abort(message)
+}
+
+public func hashSeed0() -> uint64 {
+    __rt__hash_seed0()
+}
+
+public func hashSeed1() -> uint64 {
+    __rt__hash_seed1()
 }

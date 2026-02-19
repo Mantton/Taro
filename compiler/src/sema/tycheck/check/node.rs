@@ -731,7 +731,7 @@ impl<'ctx> Checker<'ctx> {
         );
 
         if let Some(expectation) = expectation {
-            cs.equal(expectation, target_ty, expression.span);
+            cs.add_goal(Goal::ConstraintEqual(expectation, target_ty), expression.span);
         }
 
         target_ty

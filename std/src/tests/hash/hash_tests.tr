@@ -1,0 +1,222 @@
+import std.hash.DefaultHasher
+
+const KEY0: uint64 = 0x0706050403020100
+const KEY1: uint64 = 0x0f0e0d0c0b0a0908
+
+func hashWithFixedSeeds[Value: std.hash.Hashable](_ value: Value) -> uint64 {
+    var hasher = DefaultHasher.new(KEY0, KEY1)
+    value.hash(into: &mut hasher)
+    hasher.finish()
+}
+
+func hashPairWithFixedSeeds[
+    A: std.hash.Hashable,
+    B: std.hash.Hashable,
+](_ first: A, _ second: B) -> uint64 {
+    var hasher = DefaultHasher.new(KEY0, KEY1)
+    first.hash(into: &mut hasher)
+    second.hash(into: &mut hasher)
+    hasher.finish()
+}
+
+@test
+func testSipHash13KnownVectorsUpTo16() {
+    let data: [uint8; 17] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    let all = data.as_span()
+    let expected: [uint64; 17] = [
+        0xabac0158050fc4dc,
+        0xc9f49bf37d57ca93,
+        0x82cb9b024dc7d44d,
+        0x8bf80ab8e7ddf7fb,
+        0xcf75576088d38328,
+        0xdef9d52f49533b67,
+        0xc50d2b50c59f22a7,
+        0xd3927d989bb11140,
+        0x369095118d299a8e,
+        0x25a48eb36c063de4,
+        0x79de85ee92ff097f,
+        0x70c118c1f94dc352,
+        0x78a384b157b4d9a2,
+        0x306f760c1229ffa7,
+        0x605aa111c0f95d34,
+        0xd320d86d2a519956,
+        0xcc4fdd1a7d908b66,
+    ]
+
+    var idx: usize = 0
+    while idx < (17 as usize) {
+        var hasher = DefaultHasher.new(KEY0, KEY1)
+        let chunk = all.slice(0, idx)
+        hasher.write(chunk)
+        std.testing.assertEqual(
+            hasher.finish(),
+            *expected.at(idx),
+            "SipHash1-3 deterministic vector mismatch",
+        )
+        idx += 1
+    }
+}
+
+@test
+func testSipHash13ChunkedWriteMatchesSingleWrite() {
+    let data: [uint8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    let all = data.as_span()
+
+    var oneShot = DefaultHasher.new(KEY0, KEY1)
+    let full = all.slice(0, 16)
+    oneShot.write(full)
+
+    var chunked = DefaultHasher.new(KEY0, KEY1)
+    let c0 = all.slice(0, 3)
+    let c1 = all.slice(3, 5)
+    let c2 = all.slice(8, 8)
+    chunked.write(c0)
+    chunked.write(c1)
+    chunked.write(c2)
+
+    std.testing.assertEqual(
+        chunked.finish(),
+        oneShot.finish(),
+        "Chunked SipHash writes should match one-shot",
+    )
+}
+
+@test
+func testPrimitiveEqualValuesHashEqual() {
+    std.testing.assertEqual(
+        hashWithFixedSeeds(true),
+        hashWithFixedSeeds(true),
+        "bool equal values must hash equally",
+    )
+    std.testing.assertEqual(
+        hashWithFixedSeeds(false),
+        hashWithFixedSeeds(false),
+        "bool equal values must hash equally",
+    )
+
+    let i8a: int8 = -5 as int8
+    let i8b: int8 = -5 as int8
+    std.testing.assertEqual(hashWithFixedSeeds(i8a), hashWithFixedSeeds(i8b), "int8 equal values must hash equally")
+
+    let i16a: int16 = -1024 as int16
+    let i16b: int16 = -1024 as int16
+    std.testing.assertEqual(hashWithFixedSeeds(i16a), hashWithFixedSeeds(i16b), "int16 equal values must hash equally")
+
+    let i32a: int32 = -123456
+    let i32b: int32 = -123456
+    std.testing.assertEqual(hashWithFixedSeeds(i32a), hashWithFixedSeeds(i32b), "int32 equal values must hash equally")
+
+    let i64a: int64 = -(0x1234_5678_9abc_def as int64)
+    let i64b: int64 = -(0x1234_5678_9abc_def as int64)
+    std.testing.assertEqual(hashWithFixedSeeds(i64a), hashWithFixedSeeds(i64b), "int64 equal values must hash equally")
+
+    let u8a: uint8 = 200
+    let u8b: uint8 = 200
+    std.testing.assertEqual(hashWithFixedSeeds(u8a), hashWithFixedSeeds(u8b), "uint8 equal values must hash equally")
+
+    let u16a: uint16 = 0xabcd
+    let u16b: uint16 = 0xabcd
+    std.testing.assertEqual(hashWithFixedSeeds(u16a), hashWithFixedSeeds(u16b), "uint16 equal values must hash equally")
+
+    let u32a: uint32 = 0x89ab_cdef
+    let u32b: uint32 = 0x89ab_cdef
+    std.testing.assertEqual(hashWithFixedSeeds(u32a), hashWithFixedSeeds(u32b), "uint32 equal values must hash equally")
+
+    let u64a: uint64 = 0xfedc_ba98_7654_3210
+    let u64b: uint64 = 0xfedc_ba98_7654_3210
+    std.testing.assertEqual(hashWithFixedSeeds(u64a), hashWithFixedSeeds(u64b), "uint64 equal values must hash equally")
+
+    let isizeA: isize = -42 as isize
+    let isizeB: isize = -42 as isize
+    std.testing.assertEqual(hashWithFixedSeeds(isizeA), hashWithFixedSeeds(isizeB), "isize equal values must hash equally")
+
+    let usizeA: usize = 42
+    let usizeB: usize = 42
+    std.testing.assertEqual(hashWithFixedSeeds(usizeA), hashWithFixedSeeds(usizeB), "usize equal values must hash equally")
+}
+
+@test
+func testRuneAndStringHashContracts() {
+    let runeA: rune = 'é'
+    let runeB: rune = 'é'
+    let runeC: rune = 'e'
+    std.testing.assertEqual(
+        hashWithFixedSeeds(runeA),
+        hashWithFixedSeeds(runeB),
+        "equal rune values must hash equally",
+    )
+    std.testing.assertFalse(
+        hashWithFixedSeeds(runeA) == hashWithFixedSeeds(runeC),
+        "different rune values should usually hash differently",
+    )
+
+    let s1 = "héllo"
+    let s2 = "héllo"
+    std.testing.assertEqual(
+        hashWithFixedSeeds(s1),
+        hashWithFixedSeeds(s2),
+        "equal UTF-8 strings must hash equally",
+    )
+
+    // Prefix-safe composition check matching Rust's str hashing model.
+    let leftPair = hashPairWithFixedSeeds("ab", "c")
+    let rightPair = hashPairWithFixedSeeds("a", "bc")
+    std.testing.assertFalse(
+        leftPair == rightPair,
+        "string hashing must be prefix-safe in sequential composition",
+    )
+}
+
+@test
+func testFloatHashContracts() {
+    let plusZeroF: float = 0.0 as float
+    let negOneF: float = (0.0 as float) - (1.0 as float)
+    let minusZeroF: float = (0.0 as float).copysign(negOneF)
+    std.testing.assertEqual(
+        hashWithFixedSeeds(plusZeroF),
+        hashWithFixedSeeds(minusZeroF),
+        "float +0.0 and -0.0 must hash equally",
+    )
+
+    let plusZeroD: double = 0.0
+    let minusZeroD: double = -0.0
+    std.testing.assertEqual(
+        hashWithFixedSeeds(plusZeroD),
+        hashWithFixedSeeds(minusZeroD),
+        "double +0.0 and -0.0 must hash equally",
+    )
+
+    let f1: float = 1.25 as float
+    let f2: float = 1.25 as float
+    std.testing.assertEqual(
+        hashWithFixedSeeds(f1),
+        hashWithFixedSeeds(f2),
+        "equal float values must hash equally",
+    )
+
+    let d1: double = 1.25
+    let d2: double = 1.25
+    std.testing.assertEqual(
+        hashWithFixedSeeds(d1),
+        hashWithFixedSeeds(d2),
+        "equal double values must hash equally",
+    )
+
+    let nanF: float = (0.0 as float) / (0.0 as float)
+    std.testing.assertFalse(nanF == nanF, "float NaN should remain non-reflexive")
+    std.testing.assertTrue(nanF.partialCmp(&nanF).isNone(), "float NaN partialCmp should be none")
+    std.testing.assertEqual(
+        hashWithFixedSeeds(nanF),
+        hashWithFixedSeeds(nanF),
+        "float NaN hashing should be deterministic for the same value",
+    )
+
+    let nanD: double = 0.0 / 0.0
+    std.testing.assertFalse(nanD == nanD, "double NaN should remain non-reflexive")
+    std.testing.assertTrue(nanD.partialCmp(&nanD).isNone(), "double NaN partialCmp should be none")
+    std.testing.assertEqual(
+        hashWithFixedSeeds(nanD),
+        hashWithFixedSeeds(nanD),
+        "double NaN hashing should be deterministic for the same value",
+    )
+}

@@ -1,0 +1,38 @@
+func first(_ view: Span[int32]) -> int32 {
+    *view.at(0)
+}
+
+func writeFirst(_ view: MutableSpan[int32], _ value: int32) {
+    var local = view
+    *local.at(0) = value
+}
+
+func main() {
+    var values: [int32; 3] = [10, 20, 30]
+
+    let baseConst = unsafe { (&values as *const [int32; 3]) as *const int32 }
+    let view = Span[int32].from(baseConst, 3)
+    let viewCopy = view
+
+    assert(*view.at(1) == 20, "Span original should still be usable after copy")
+    assert(*viewCopy.at(2) == 30, "Span copy should read same backing values")
+
+    let a = first(view)
+    assert(a == 10, "Span pass-by-value should work")
+    assert(*view.at(0) == 10, "Span should still be usable after by-value call")
+
+    let baseMut = unsafe { (&mut values as *mut [int32; 3]) as *mut int32 }
+    var mutView = MutableSpan[int32].from(baseMut, 3)
+    var mutCopy = mutView
+
+    *mutCopy.at(1) = 200
+    *mutView.at(2) = 300
+
+    assert(*values.at(1) == 200, "MutableSpan copy should alias backing storage")
+    assert(*values.at(2) == 300, "MutableSpan original should remain usable after copy")
+
+    writeFirst(mutView, 111)
+    assert(*mutView.at(0) == 111, "MutableSpan should still be usable after by-value call")
+
+    std.print("PASS: span copy semantics\n")
+}

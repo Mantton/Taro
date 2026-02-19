@@ -1,0 +1,8 @@
+// CHECK_ONLY
+
+func main() {
+    let k0: uint64 = std.runtime.hashSeed0()
+    let k1: uint64 = std.runtime.hashSeed1()
+    let folded: uint64 = k0 ^ k1
+    let _keep: uint64 = folded
+}

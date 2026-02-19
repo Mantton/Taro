@@ -1,0 +1,27 @@
+// CHECK_ONLY
+// Repro: default interface methods should be callable on concrete receiver types.
+
+interface Hashable {
+    func hash[H](&self, _ hasher: &mut H)
+}
+
+interface Hasher {
+    func combine[V: Hashable](&mut self, _ value: V) {
+        value.hash(self)
+    }
+}
+
+struct Token {}
+
+impl Hashable for Token {
+    public func hash[H](&self, _ hasher: &mut H) {}
+}
+
+struct DummyHasher {}
+
+impl Hasher for DummyHasher {}
+
+func main() {
+    var hasher = DummyHasher {}
+    hasher.combine(Token {})
+}

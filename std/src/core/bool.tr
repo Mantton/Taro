@@ -4,7 +4,11 @@ import std.cmp.{Ordering, PartialOrd, Ord}
 import std.optional.Optional
 
 impl Hashable for bool {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {}
+    public func hash[H: Hasher](&self, into hasher: &mut H) {
+        let byte: uint8 = if *self { 1 } else { 0 }
+        let bytes: [uint8; 1] = [byte]
+        hasher.write(bytes.as_span())
+    }
 }
 
 impl PartialEq for bool {

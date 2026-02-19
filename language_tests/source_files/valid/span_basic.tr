@@ -1,0 +1,33 @@
+// Test: Span Basic
+// Verifies read/mutable span operations over contiguous memory.
+
+func main() {
+    var values: [int32; 4] = [10, 20, 30, 40]
+
+    let baseConst = unsafe { (&values as *const [int32; 4]) as *const int32 }
+    let view = Span[int32].from(baseConst, 4)
+
+    assert(view.len() == 4, "Span length should match input length")
+    assert(!view.isEmpty(), "Span should not be empty")
+    assert(*view.at(0) == 10, "Span.at should read first element")
+    assert(view.get(99).isNone(), "Span.get out of range should return none")
+
+    let tail = view.slice(2, 2)
+    assert(tail.len() == 2, "Span.slice should return requested length")
+    assert(*tail.at(0) == 30, "Span.slice should start at requested offset")
+
+    let byteView = view.asBytes()
+    assert(byteView.len() == (4 as usize) * sizeOf[int32](), "Span.asBytes should scale by element size")
+
+    let baseMut = unsafe { (&mut values as *mut [int32; 4]) as *mut int32 }
+    var mutView = MutableSpan[int32].from(baseMut, 4)
+    *mutView.at(1) = 200
+    assert(*values.at(1) == 200, "MutableSpan.at should allow writes")
+
+    var mutTail = mutView.slice(1, 2)
+    *mutTail.at(0) = 250
+    assert(*values.at(1) == 250, "MutableSpan.slice (mut) should map to same backing storage")
+    assert(mutView.get(99).isNone(), "MutableSpan.get out of range should return none")
+
+    std.print("PASS: Span basic usage\n")
+}

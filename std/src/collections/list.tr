@@ -1,4 +1,4 @@
-import std.mem.{TrackedPointer, GcDesc, __gc__makebuf, __gc__grow_buf}
+import std.mem.{TrackedPointer, GcDesc, __gc__makebuf, __gc__grow_buf, Span, MutableSpan}
 import std.intrinsic.__intrinsic_gc_desc
 import std.optional.Optional
 import std.iter.{Iterator, Iterable}
@@ -53,6 +53,16 @@ impl[Element] List[Element] {
     /// Returns true if the list is empty.
     public func isEmpty(&self) -> bool {
         self.len == 0
+    }
+
+    public func as_span(&self) -> Span[Element] {
+        let ptr = unsafe { self.buffer as *const Element }
+        return Span[Element].from(ptr, self.len)
+    }
+
+    public func as_span(&mut self) -> MutableSpan[Element] {
+        let ptr = unsafe { self.buffer as *mut Element }
+        return MutableSpan[Element].from(ptr, self.len)
     }
 }
 

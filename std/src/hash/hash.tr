@@ -1,10 +1,16 @@
 import std.ops.PartialEq
+import std.mem.Span
 
 public interface Hashable: PartialEq {
     func hash[H: Hasher](&self, into hasher: &mut H)
 }
 
 public interface Hasher {
-    func finalize(&self) -> usize
-    func combine[Value: Hashable](&mut self, _ value: Value)
+    func write(&mut self, _ bytes: Span[uint8])
+    func finish(&self) -> uint64
+    func combine[Value: Hashable](&mut self, _ value: Value) {
+        value.hash(into: self)
+    }
 }
+
+public type DefaultHasher = SipHasher13

@@ -1,6 +1,7 @@
 import std.hash.{Hashable, Hasher}
 import std.ops.PartialEq
 import std.mem.TrackedPointer
+import std.mem.Span
 import std.intrinsic.{
     __intrinsic_string_from_parts,
     __intrinsic_string_data,
@@ -44,7 +45,17 @@ public func stringEq(_ lhs: string, _ rhs: string) -> bool {
 }
 
 impl Hashable for string {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {}
+    public func hash[H: Hasher](&self, into hasher: &mut H) {
+        let len = stringLen(*self)
+        let data = stringData(*self)
+        let bytes = Span[uint8].from(data, len)
+        hasher.write(bytes)
+
+        // Rust-style str hashing: append 0xff delimiter so sequential string
+        // hashing remains prefix-safe ("ab","c" != "a","bc").
+        let delimiter: [uint8; 1] = [0xff]
+        hasher.write(delimiter.as_span())
+    }
 }
 
 impl PartialEq for string {

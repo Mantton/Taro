@@ -1,0 +1,38 @@
+import std.collections.List
+
+@test
+func testArrayAsSpanReadWrite() {
+    var values: [int32; 4] = [7, 8, 9, 10]
+
+    let view = values.as_span()
+    std.testing.assertEqual(view.len(), 4 as usize, "Array.as_span length should match")
+    std.testing.assertEqual(*view.at(1), 8, "Array.as_span immutable read mismatch")
+
+    var mutView = values.as_span()
+    *mutView.at(1) = 80
+    std.testing.assertEqual(*values.at(1), 80, "Array.as_span mutable write mismatch")
+
+    var tail = mutView.slice(1, 2)
+    *tail.at(0) = 81
+    std.testing.assertEqual(*values.at(1), 81, "Array.as_span mutable slice write mismatch")
+}
+
+@test
+func testListAsSpanReadWrite() {
+    var values: List[int32] = List()
+    values.append(100)
+    values.append(101)
+    values.append(102)
+
+    let view = values.as_span()
+    std.testing.assertEqual(view.len(), 3 as usize, "List.as_span length should match")
+    std.testing.assertEqual(*view.at(0), 100, "List.as_span immutable read mismatch")
+
+    var mutView = values.as_span()
+    *mutView.at(2) = 1002
+    std.testing.assertEqual(*values.at(2), 1002, "List.as_span mutable write mismatch")
+
+    var tail = mutView.slice(1, 2)
+    *tail.at(0) = 1001
+    std.testing.assertEqual(*values.at(1), 1001, "List.as_span mutable slice write mismatch")
+}

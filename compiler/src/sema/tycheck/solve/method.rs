@@ -22,6 +22,7 @@ use crate::{
     },
     span::{Span, Spanned, Symbol},
 };
+use rustc_hash::FxHashSet;
 
 struct InterfaceMethodCandidate<'ctx> {
     call_info: InterfaceCallInfo,
@@ -141,9 +142,24 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     name.symbol.clone(),
                     *span,
                 );
-                let Some(candidates) = candidates else {
+                let candidates = candidates.unwrap_or_default();
+
+                if candidates.is_empty() {
+                    // Concrete types may satisfy interface requirements via conformance,
+                    // including default interface methods with no concrete impl body.
+                    if let Some(interfaces) = self.concrete_interface_roots(candidate_ty, *span) {
+                        if let Some(result) = self.solve_interface_method_call(
+                            &data,
+                            candidate_ty,
+                            receiver_ty,
+                            interfaces,
+                            adjustments.clone(),
+                        ) {
+                            return result;
+                        }
+                    }
                     continue;
-                };
+                }
 
                 // Add all candidates with their receiver info
                 for def_id in candidates {
@@ -374,6 +390,43 @@ impl<'ctx> ConstraintSolver<'ctx> {
         return Some(matching);
     }
 
+    fn concrete_interface_roots(
+        &self,
+        self_ty: Ty<'ctx>,
+        span: Span,
+    ) -> Option<&'ctx [InterfaceReference<'ctx>]> {
+        let head = self.type_head_from_type(self_ty)?;
+        let records = self
+            .gcx()
+            .collect_from_databases(|db| db.conformances.get(&head).cloned().unwrap_or_default());
+        if records.is_empty() {
+            return None;
+        }
+
+        let mut interfaces = Vec::new();
+        let mut seen: FxHashSet<InterfaceReference<'ctx>> = FxHashSet::default();
+
+        for record in records {
+            if !self.extension_target_matches(record.extension, self_ty, span) {
+                continue;
+            }
+            let iface = InterfaceReference {
+                id: record.interface.id,
+                arguments: self.interface_args_with_self(record.interface, self_ty),
+                bindings: record.interface.bindings,
+            };
+            if seen.insert(iface) {
+                interfaces.push(iface);
+            }
+        }
+
+        if interfaces.is_empty() {
+            return None;
+        }
+
+        Some(self.gcx().store.arenas.global.alloc_slice_clone(&interfaces))
+    }
+
     fn solve_interface_method_call(
         &mut self,
         data: &MethodCallData<'ctx>,
@@ -387,7 +440,6 @@ impl<'ctx> ConstraintSolver<'ctx> {
             reciever_ty,
             interfaces,
             data.name.symbol.clone(),
-            data.span,
         );
         if candidates.is_empty() {
             return None;
@@ -450,7 +502,6 @@ impl<'ctx> ConstraintSolver<'ctx> {
         reciever_ty: Ty<'ctx>,
         interfaces: &'ctx [InterfaceReference<'ctx>],
         name: Symbol,
-        span: crate::span::Span,
     ) -> Vec<InterfaceMethodCandidate<'ctx>> {
         let mut out = Vec::new();
 
@@ -479,14 +530,13 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         continue;
                     };
 
-                    let (candidate_ty, instantiation_args) = self.instantiate_interface_method(
-                        method.signature,
-                        method.id,
-                        iface_ref.arguments,
-                        span,
-                    );
+                    // Only substitute interface-level args (e.g. `Self`) for receiver matching.
+                    // Method-generic inference vars are created later, when a branch is selected.
+                    let candidate_ty = self.labeled_signature_to_ty(method.signature);
+                    let candidate_receiver_ty =
+                        instantiate_ty_with_args(self.gcx(), candidate_ty, iface_ref.arguments);
 
-                    if !self.receiver_matches_method(reciever_ty, candidate_ty) {
+                    if !self.receiver_matches_method(reciever_ty, candidate_receiver_ty) {
                         continue;
                     }
 
@@ -501,7 +551,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     out.push(InterfaceMethodCandidate {
                         call_info,
                         candidate_ty,
-                        instantiation_args,
+                        instantiation_args: Some(iface_ref.arguments),
                         source: method.id,
                     });
                 }
@@ -542,27 +592,6 @@ impl<'ctx> ConstraintSolver<'ctx> {
         }
 
         self.gcx().store.interners.intern_generic_args(args)
-    }
-
-    fn instantiate_interface_method(
-        &mut self,
-        signature: &LabeledFunctionSignature<'ctx>,
-        method_id: DefinitionID,
-        interface_args: GenericArguments<'ctx>,
-        span: crate::span::Span,
-    ) -> (Ty<'ctx>, Option<GenericArguments<'ctx>>) {
-        let gcx = self.gcx();
-        let args = self.instantiate_generic_args_with_defaults(method_id, Some(interface_args), span);
-
-        let signature_ty = self.labeled_signature_to_ty(signature);
-        let instantiated = instantiate_ty_with_args(gcx, signature_ty, args);
-        let instantiation_args = if gcx.generics_of(method_id).is_empty() {
-            None
-        } else {
-            Some(args)
-        };
-
-        (instantiated, instantiation_args)
     }
 
     fn labeled_signature_to_ty(&self, sig: &LabeledFunctionSignature<'ctx>) -> Ty<'ctx> {

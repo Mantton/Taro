@@ -67,6 +67,40 @@ import std.intrinsic.{
     __intrinsic_maximumnum_f64,
 }
 
+func hashU32[H: Hasher](_ hasher: &mut H, _ value: uint32) {
+    let bytes: [uint8; 4] = [
+        (value & (0xff as uint32)) as uint8,
+        ((value >> 8) & (0xff as uint32)) as uint8,
+        ((value >> 16) & (0xff as uint32)) as uint8,
+        ((value >> 24) & (0xff as uint32)) as uint8,
+    ]
+    hasher.write(bytes.as_span())
+}
+
+func hashU64[H: Hasher](_ hasher: &mut H, _ value: uint64) {
+    let bytes: [uint8; 8] = [
+        (value & (0xff as uint64)) as uint8,
+        ((value >> 8) & (0xff as uint64)) as uint8,
+        ((value >> 16) & (0xff as uint64)) as uint8,
+        ((value >> 24) & (0xff as uint64)) as uint8,
+        ((value >> 32) & (0xff as uint64)) as uint8,
+        ((value >> 40) & (0xff as uint64)) as uint8,
+        ((value >> 48) & (0xff as uint64)) as uint8,
+        ((value >> 56) & (0xff as uint64)) as uint8,
+    ]
+    hasher.write(bytes.as_span())
+}
+
+func floatToBits(_ value: float) -> uint32 {
+    let bitsPtr = unsafe { (&value as *const float) as *const uint32 }
+    bitsPtr.read()
+}
+
+func doubleToBits(_ value: double) -> uint64 {
+    let bitsPtr = unsafe { (&value as *const double) as *const uint64 }
+    bitsPtr.read()
+}
+
 impl float {
     public func sqrt(self) -> float { unsafe { __intrinsic_sqrt_f32(self) } }
     public func sin(self) -> float { unsafe { __intrinsic_sin_f32(self) } }
@@ -102,7 +136,15 @@ impl float {
 }
 
 impl Hashable for float {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {}
+    public func hash[H: Hasher](&self, into hasher: &mut H) {
+        // Match equality contract: +0.0 == -0.0, so they must hash equally.
+        let bits: uint32 = if *self == (0.0 as float) {
+            0 as uint32
+        } else {
+            floatToBits(*self)
+        }
+        hashU32(hasher, bits)
+    }
 }
 
 impl PartialEq for float {
@@ -126,7 +168,15 @@ impl PartialOrd for float {
 }
 
 impl Hashable for double {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {}
+    public func hash[H: Hasher](&self, into hasher: &mut H) {
+        // Match equality contract: +0.0 == -0.0, so they must hash equally.
+        let bits: uint64 = if *self == (0.0 as double) {
+            0 as uint64
+        } else {
+            doubleToBits(*self)
+        }
+        hashU64(hasher, bits)
+    }
 }
 
 impl PartialEq for double {

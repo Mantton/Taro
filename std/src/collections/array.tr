@@ -1,4 +1,5 @@
 import std.optional.Optional
+import std.mem.{Span, MutableSpan}
 
 public type Array[Element, const Size: usize] = [Element; Size]
 
@@ -44,5 +45,15 @@ impl[Element, const Size: usize] Array[Element, Size] {
         }
         std.print("index out of range")
         std.process.exit(1)
+    }
+
+    public func as_span(&self) -> Span[Element] {
+        let ptr = unsafe { self as *const Element }
+        return Span[Element].from(ptr, Size)
+    }
+
+    public func as_span(&mut self) -> MutableSpan[Element] {
+        let ptr = unsafe { self as *mut Element }
+        return MutableSpan[Element].from(ptr, Size)
     }
 }

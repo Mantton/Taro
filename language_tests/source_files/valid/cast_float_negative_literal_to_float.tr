@@ -1,0 +1,11 @@
+func main() {
+    let a: float = (-0.0) as float
+    let b: float = (1.25) as float
+    let c: float = ((1.0 as double) / (2.0 as double)) as float
+
+    assert(a == (0.0 as float), "-0.0 cast to float should typecheck and compare equal to +0.0")
+    assert(b == (1.25 as float), "double literal cast to float should preserve value")
+    assert(c == (0.5 as float), "double expression cast to float should typecheck")
+
+    std.print("PASS: float casts to float\n")
+}

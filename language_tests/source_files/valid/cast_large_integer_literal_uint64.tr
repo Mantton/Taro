@@ -1,0 +1,11 @@
+// Test: casting large integer literals to uint64 should not truncate through i32 fallback.
+
+func main() {
+    let a: uint64 = 3931806377309739662 as uint64
+    assert(a == 3931806377309739662, "large uint64 cast should preserve value")
+
+    let b: uint64 = 18446744073709551615 as uint64
+    assert(b == 18446744073709551615, "max uint64 cast should preserve value")
+
+    std.print("PASS: large integer literal cast to uint64\n")
+}

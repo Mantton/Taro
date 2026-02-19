@@ -1,0 +1,120 @@
+import std.mem.Span
+import std.runtime
+
+const SIP_V0_INIT: uint64 = 0x736f6d6570736575
+const SIP_V1_INIT: uint64 = 0x646f72616e646f6d
+const SIP_V2_INIT: uint64 = 0x6c7967656e657261
+const SIP_V3_INIT: uint64 = 0x7465646279746573
+
+func sipRound(_ v0: &mut uint64, _ v1: &mut uint64, _ v2: &mut uint64, _ v3: &mut uint64) {
+    *v0 += *v1
+    *v2 += *v3
+    *v1 = (*v1 << 13) | (*v1 >> 51)
+    *v1 ^= *v0
+    *v3 = (*v3 << 16) | (*v3 >> 48)
+    *v3 ^= *v2
+    *v0 = (*v0 << 32) | (*v0 >> 32)
+
+    *v2 += *v1
+    *v0 += *v3
+    *v1 = (*v1 << 17) | (*v1 >> 47)
+    *v1 ^= *v2
+    *v3 = (*v3 << 21) | (*v3 >> 43)
+    *v3 ^= *v0
+    *v2 = (*v2 << 32) | (*v2 >> 32)
+}
+
+func loadLeWord(_ bytes: &Span[uint8], _ start: usize, _ count: usize) -> uint64 {
+    var out: uint64 = 0
+    var idx: usize = 0
+    while idx < count {
+        let value = (*bytes.at(start + idx)) as uint64
+        out |= value << ((idx * (8 as usize)) as uint64)
+        idx += 1
+    }
+    out
+}
+
+public struct SipHasher13 {
+    length: usize
+    v0: uint64
+    v1: uint64
+    v2: uint64
+    v3: uint64
+    tail: uint64
+    ntail: usize
+}
+
+impl SipHasher13 {
+    public func new(
+        _ key0: uint64 = runtime.hashSeed0(),
+        _ key1: uint64 = runtime.hashSeed1(),
+    ) -> Self {
+        SipHasher13 {
+            length: 0,
+            v0: key0 ^ SIP_V0_INIT,
+            v1: key1 ^ SIP_V1_INIT,
+            v2: key0 ^ SIP_V2_INIT,
+            v3: key1 ^ SIP_V3_INIT,
+            tail: 0,
+            ntail: 0,
+        }
+    }
+}
+
+impl Hasher for SipHasher13 {
+    public func write(&mut self, _ bytes: Span[uint8]) {
+        let message_len = bytes.len()
+        self.length += message_len
+
+        var needed: usize = 0
+        if self.ntail != 0 {
+            needed = (8 as usize) - self.ntail
+            let take = if message_len < needed { message_len } else { needed }
+            self.tail |= loadLeWord(&bytes, 0, take) << ((self.ntail * (8 as usize)) as uint64)
+
+            if message_len < needed {
+                self.ntail += message_len
+                return
+            }
+
+            self.v3 ^= self.tail
+            sipRound(&mut self.v0, &mut self.v1, &mut self.v2, &mut self.v3)
+            self.v0 ^= self.tail
+            self.ntail = 0
+        }
+
+        let len = message_len - needed
+        let left = len & (7 as usize)
+        var idx = needed
+        while idx < (len - left) {
+            let word = loadLeWord(&bytes, idx, 8 as usize)
+            self.v3 ^= word
+            sipRound(&mut self.v0, &mut self.v1, &mut self.v2, &mut self.v3)
+            self.v0 ^= word
+            idx += 8 as usize
+        }
+
+        self.tail = loadLeWord(&bytes, idx, left)
+        self.ntail = left
+    }
+
+    public func finish(&self) -> uint64 {
+        var v0 = self.v0
+        var v1 = self.v1
+        var v2 = self.v2
+        var v3 = self.v3
+
+        let b = (((self.length as uint64) & (0xff as uint64)) << 56) | self.tail
+        v3 ^= b
+        sipRound(&mut v0, &mut v1, &mut v2, &mut v3)
+        v0 ^= b
+
+        v2 ^= 0xff as uint64
+        sipRound(&mut v0, &mut v1, &mut v2, &mut v3)
+        sipRound(&mut v0, &mut v1, &mut v2, &mut v3)
+        sipRound(&mut v0, &mut v1, &mut v2, &mut v3)
+
+        v0 ^ v1 ^ v2 ^ v3
+    }
+}

@@ -1,0 +1,49 @@
+@test
+func testSpanReadsAndSlices() {
+    let data: [int32; 4] = [11, 22, 33, 44]
+    let ptr = unsafe { (&data as *const [int32; 4]) as *const int32 }
+    let view = std.mem.Span[int32].from(ptr, 4)
+
+    std.testing.assertEqual(view.len(), 4 as usize, "Span.len should match source length")
+    std.testing.assertFalse(view.isEmpty(), "Span over populated storage should not be empty")
+    std.testing.assertEqual(*view.at(0), 11, "Span.at should read first element")
+    std.testing.assertTrue(view.get(5).isNone(), "Span.get should return none when out of bounds")
+
+    let tail = view.slice(2, 2)
+    std.testing.assertEqual(tail.len(), 2 as usize, "Span.slice length mismatch")
+    std.testing.assertEqual(*tail.at(0), 33, "Span.slice start element mismatch")
+}
+
+@test
+func testMutableSpanWritesAndSubslice() {
+    var data: [int32; 4] = [5, 6, 7, 8]
+    let ptr = unsafe { (&mut data as *mut [int32; 4]) as *mut int32 }
+    var view = std.mem.MutableSpan[int32].from(ptr, 4)
+
+    *view.at(1) = 60
+    std.testing.assertEqual(*data.at(1), 60, "MutableSpan.at write should update backing storage")
+
+    var sub = view.slice(1, 2)
+    *sub.at(0) = 61
+    std.testing.assertEqual(*data.at(1), 61, "MutableSpan.slice should alias original storage")
+    std.testing.assertTrue(view.get(99).isNone(), "MutableSpan.get should return none when out of bounds")
+}
+
+@test
+func testSpansAreCopy() {
+    var data: [int32; 3] = [1, 2, 3]
+
+    let constPtr = unsafe { (&data as *const [int32; 3]) as *const int32 }
+    let view = std.mem.Span[int32].from(constPtr, 3)
+    let viewCopy = view
+    std.testing.assertEqual(*view.at(0), 1, "Span original should remain usable after copy")
+    std.testing.assertEqual(*viewCopy.at(2), 3, "Span copy should read same backing storage")
+
+    let mutPtr = unsafe { (&mut data as *mut [int32; 3]) as *mut int32 }
+    var mutView = std.mem.MutableSpan[int32].from(mutPtr, 3)
+    var mutCopy = mutView
+    *mutCopy.at(1) = 20
+    *mutView.at(2) = 30
+    std.testing.assertEqual(*data.at(1), 20, "MutableSpan copy should alias backing storage")
+    std.testing.assertEqual(*data.at(2), 30, "MutableSpan original should remain usable after copy")
+}

@@ -2,7 +2,8 @@ use crate::{
     hir::NodeID,
     sema::{
         error::{ExpectedFound, TypeError},
-        models::{Ty, TyKind},
+        models::{InferTy, IntTy, Ty, TyKind},
+        tycheck::infer::keys::{FloatVarValue, IntVarValue},
         tycheck::utils::is_type_layout_compatible,
     },
     span::{Span, Spanned},
@@ -42,12 +43,52 @@ impl<'ctx> ConstraintSolver<'ctx> {
             )
         };
 
+        // If the source is an unconstrained integer variable (e.g. integer literal),
+        // bind it to the concrete target integer kind before allowing the cast.
+        // Otherwise it may default to i32 later and silently truncate large literals.
+        if let TyKind::Infer(InferTy::IntVar(id)) = from.kind() {
+            match to.kind() {
+                TyKind::Int(kind) => {
+                    self.icx
+                        .instantiate_int_var_raw(id, IntVarValue::Signed(kind));
+                }
+                TyKind::UInt(kind) => {
+                    self.icx
+                        .instantiate_int_var_raw(id, IntVarValue::Unsigned(kind));
+                }
+                TyKind::Rune => {
+                    self.icx
+                        .instantiate_int_var_raw(id, IntVarValue::Signed(IntTy::I32));
+                }
+                _ => {}
+            }
+        }
+
         // 1. Integer <-> Integer
         if is_numeric_int_like(from) && is_numeric_int_like(to) {
             return SolverResult::Solved(vec![]);
         }
 
-        // 2. TODO: Float <-> Float
+        // 2. Float <-> Float
+        let is_numeric_float_like = |ty: Ty<'ctx>| {
+            matches!(
+                ty.kind(),
+                TyKind::Float(_) | TyKind::Infer(crate::sema::models::InferTy::FloatVar(_))
+            )
+        };
+
+        // If the source is an unconstrained float variable (e.g. float literal),
+        // bind it to the concrete target float kind before allowing the cast.
+        if let TyKind::Infer(InferTy::FloatVar(id)) = from.kind() {
+            if let TyKind::Float(kind) = to.kind() {
+                self.icx
+                    .instantiate_float_var_raw(id, FloatVarValue::Known(kind));
+            }
+        }
+
+        if is_numeric_float_like(from) && is_numeric_float_like(to) {
+            return SolverResult::Solved(vec![]);
+        }
 
         // Pointer-int casts keep prior restrictions (rune is excluded here).
         let is_ptr_int_like = |ty: Ty<'ctx>| {

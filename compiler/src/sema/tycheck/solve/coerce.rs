@@ -58,8 +58,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return result;
         }
 
-        // Minimal coercion: just equality for now.
-        self.solve_equality(location, to, from)
+        // Minimal coercion: fall back to constraint-equality so unresolved
+        // projections (e.g. `T.Item` with unresolved `T`) defer instead of
+        // producing an early hard mismatch.
+        self.solve_constraint_equality(location, to, from)
     }
 
     fn solve_boxing_coercion(

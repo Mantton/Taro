@@ -4,7 +4,16 @@ import std.cmp.{Ordering, PartialOrd, Ord}
 import std.optional.Optional
 
 impl Hashable for rune {
-    public func hash[H: Hasher](&self, into hasher: &mut H) {}
+    public func hash[H: Hasher](&self, into hasher: &mut H) {
+        let value: uint32 = *self as uint32
+        let bytes: [uint8; 4] = [
+            (value & (0xff as uint32)) as uint8,
+            ((value >> 8) & (0xff as uint32)) as uint8,
+            ((value >> 16) & (0xff as uint32)) as uint8,
+            ((value >> 24) & (0xff as uint32)) as uint8,
+        ]
+        hasher.write(bytes.as_span())
+    }
 }
 
 impl PartialEq for rune {

@@ -1,4 +1,146 @@
+import std.optional.Optional
+import std.panic.panic
+import std.marker.Copy
+
 public type TrackedPointer = *mut uint8
+
+public struct Span[Element]: Copy {
+    ptr: *const Element
+    len: usize
+}
+
+public struct MutableSpan[Element]: Copy {
+    ptr: *mut Element
+    len: usize
+}
+
+impl[Element] Span[Element] {
+    public func from(_ ptr: *const Element, _ len: usize) -> Self {
+        return Span[Element] { ptr, len }
+    }
+
+    public func len(&self) -> usize {
+        return self.len
+    }
+
+    public func isEmpty(&self) -> bool {
+        return self.len == 0
+    }
+
+    public func at(&self, _ index: usize) -> &Element {
+        if index >= self.len {
+            panic("span index out of range")
+        }
+        return unsafe { self.ptr.add(index) as &Element }
+    }
+
+    public func get(&self, _ index: usize) -> Optional[&Element] {
+        if index >= self.len {
+            return .none
+        }
+        return .some(self.at(index))
+    }
+
+    public func slice(&self, _ start: usize, _ count: usize) -> Self {
+        if start > self.len || count > (self.len - start) {
+            panic("span slice out of range")
+        }
+        return Span[Element] {
+            ptr: self.ptr.add(start),
+            len: count,
+        }
+    }
+
+    public func asBytes(&self) -> Span[uint8] {
+        return Span[uint8] {
+            ptr: unsafe { self.ptr as *const uint8 },
+            len: self.len * sizeOf[Element](),
+        }
+    }
+}
+
+impl[Element] MutableSpan[Element] {
+    public func from(_ ptr: *mut Element, _ len: usize) -> Self {
+        return MutableSpan[Element] { ptr, len }
+    }
+
+    public func len(&self) -> usize {
+        return self.len
+    }
+
+    public func isEmpty(&self) -> bool {
+        return self.len == 0
+    }
+
+    public func at(&self, _ index: usize) -> &Element {
+        if index >= self.len {
+            panic("mutable span index out of range")
+        }
+        return unsafe { self.ptr.add(index) as &Element }
+    }
+
+    public func at(&mut self, _ index: usize) -> &mut Element {
+        if index >= self.len {
+            panic("mutable span index out of range")
+        }
+        return unsafe { self.ptr.add(index) as &mut Element }
+    }
+
+    public func get(&self, _ index: usize) -> Optional[&Element] {
+        if index >= self.len {
+            return .none
+        }
+        return .some(self.at(index))
+    }
+
+    public func get(&mut self, _ index: usize) -> Optional[&mut Element] {
+        if index >= self.len {
+            return .none
+        }
+        return .some(self.at(index))
+    }
+
+    public func slice(&self, _ start: usize, _ count: usize) -> Span[Element] {
+        if start > self.len || count > (self.len - start) {
+            panic("mutable span slice out of range")
+        }
+        return Span[Element] {
+            ptr: unsafe { self.ptr.add(start) as *const Element },
+            len: count,
+        }
+    }
+
+    public func slice(&mut self, _ start: usize, _ count: usize) -> MutableSpan[Element] {
+        if start > self.len || count > (self.len - start) {
+            panic("mutable span slice out of range")
+        }
+        return MutableSpan[Element] {
+            ptr: self.ptr.add(start),
+            len: count,
+        }
+    }
+
+    public func asConst(&self) -> Span[Element] {
+        return Span[Element] {
+            ptr: unsafe { self.ptr as *const Element },
+            len: self.len,
+        }
+    }
+
+    public func asBytes(&self) -> Span[uint8] {
+        return Span[uint8] {
+            ptr: unsafe { self.ptr as *const uint8 },
+            len: self.len * sizeOf[Element](),
+        }
+    }
+
+    public func asBytes(&mut self) -> MutableSpan[uint8] {
+        return MutableSpan[uint8] {
+            ptr: unsafe { self.ptr as *mut uint8 },
+            len: self.len * sizeOf[Element](),
+        }
+    }
+}
 
 public struct GcDesc {
     size: usize

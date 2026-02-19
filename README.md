@@ -223,7 +223,7 @@ kind = "library" # Required for libraries, defaults to "binary"
 To verify the compiler implementation, use the command that matches the test surface you want:
 
 - `cargo test --workspace`: Rust unit/integration/doctests for workspace crates.
-- `python3 development/scripts/language_tests.py`: Taro language E2E tests in `language_tests/source_files`.
+- `python3 development/scripts/language_tests.py`: Taro language E2E tests in `language_tests/source_files`. Runs in parallel by default using `min(selected_tests, CPU core count)` workers; `--jobs` is only needed to override (for example, `--jobs 1` for serial mode).
 - `python3 development/scripts/test_all.py`: unified fail-fast pipeline (cargo tests, dist build, std compile smoke, std package tests, language tests).
 - `make all-tests`: shorthand for the unified pipeline.
 
@@ -232,8 +232,8 @@ Std package tests live under `std/src/tests/<module>/<module_tests>.tr` and run 
 If you only want language tests with simple flags:
 
 ```bash
-make language-tests
-make language-tests JOBS=4
+make language-tests            # JOBS auto-defaults to the language test runner default
+make language-tests JOBS=4     # optional override
 make language-tests FILTER=std_
 ```
 
