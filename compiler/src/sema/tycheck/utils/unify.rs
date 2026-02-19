@@ -223,7 +223,7 @@ impl<'ctx> TypeUnifier<'ctx> {
         }
     }
 
-    fn unify_const(&self, a: Const<'ctx>, b: Const<'ctx>) -> Result<(), ()> {
+    pub fn unify_const(&self, a: Const<'ctx>, b: Const<'ctx>) -> Result<(), ()> {
         if a.ty.is_error() || b.ty.is_error() {
             return Ok(());
         }

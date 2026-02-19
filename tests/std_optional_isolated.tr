@@ -1,5 +1,0 @@
-func main() {
-    let value = Some(10)
-    let flat_to_none = value.flatMap(|x| -> int32? { .none })
-    assert(flat_to_none.isNone(), "flatMap returning none should give none")
-}

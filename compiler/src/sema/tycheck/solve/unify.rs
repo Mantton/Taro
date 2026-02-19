@@ -14,15 +14,17 @@ impl<'ctx> ConstraintSolver<'ctx> {
         if a == b {
             return Ok(());
         }
-        // println!("Pre– {} & {}", a.format(self.gcx()), b.format(self.gcx()));
         let a = self.structurally_resolve(a);
         let b = self.structurally_resolve(b);
-        // println!(
-        //     "Post– {} & {}\n",
-        //     a.format(self.gcx()),
-        //     b.format(self.gcx())
-        // );
         TypeUnifier::new(self.icx.clone()).unify(a, b)
+    }
+
+    pub fn unify_const(
+        &self,
+        a: crate::sema::models::Const<'ctx>,
+        b: crate::sema::models::Const<'ctx>,
+    ) -> Result<(), ()> {
+        TypeUnifier::new(self.icx.clone()).unify_const(a, b)
     }
 
     /// Resolve inference variables AND normalize using param env.

@@ -3,7 +3,12 @@ use crate::{
     hir::{self, DefinitionID, NodeID},
     sema::{
         models::Ty,
-        tycheck::{infer::InferCtx, lower::TypeLowerer, results::TypeCheckResults},
+        tycheck::{
+            infer::InferCtx,
+            lower::TypeLowerer,
+            results::TypeCheckResults,
+            solve::DefaultFallbackGoalData,
+        },
     },
 };
 use rustc_hash::FxHashMap;
@@ -72,6 +77,40 @@ impl<'arena> TypeLowerer<'arena> for Checker<'arena> {
 
         infer_cx.next_ty_var(span)
     }
+
+    fn const_infer(
+        &self,
+        ty: crate::sema::models::Ty<'arena>,
+        param: Option<&crate::sema::models::GenericParameterDefinition>,
+        span: crate::span::Span,
+    ) -> crate::sema::models::Const<'arena> {
+        let infer_cx = self.infer_cx.borrow().clone();
+        let Some(infer_cx) = infer_cx else {
+            let gcx = self.gcx();
+            gcx.dcx()
+                .emit_error("missing generic argument".into(), Some(span));
+            return crate::sema::models::Const {
+                ty,
+                kind: crate::sema::models::ConstKind::Value(crate::sema::models::ConstValue::Unit),
+            };
+        };
+
+        let origin = crate::sema::tycheck::infer::keys::ConstVariableOrigin {
+            location: span,
+            param_name: param.map(|p| p.name.clone()),
+        };
+        infer_cx.new_const_var(ty, origin)
+    }
+
+    fn can_infer(&self) -> bool {
+        self.infer_cx.borrow().is_some()
+    }
+
+    fn register_default_fallback(&self, data: DefaultFallbackGoalData<'arena>) {
+        if let Some(icx) = self.infer_cx.borrow().as_ref() {
+            icx.register_pending_fallback(data);
+        }
+    }
 }
 
 impl<'arena> Checker<'arena> {
@@ -115,8 +154,7 @@ impl<'arena> Checker<'arena> {
     }
 
     pub fn lower_type(&self, node: &hir::Type) -> Ty<'arena> {
-        let ty = self.lowerer().lower_type(node);
-        ty
+        self.lowerer().lower_type(node)
     }
 
     pub fn finalize_local(&self, id: NodeID, ty: Ty<'arena>) {

@@ -3,7 +3,7 @@ use crate::{
     hir::{BinaryOperator, NodeID, UnaryOperator},
     sema::{
         error::SpannedErrorList,
-        models::{GenericArguments, InterfaceReference, Ty},
+        models::{GenericArgument, GenericArguments, InterfaceReference, Ty},
         resolve::models::DefinitionID,
     },
     span::Span,
@@ -69,6 +69,14 @@ pub enum Goal<'ctx> {
     StructLiteral(StructLiteralGoalData<'ctx>),
     TupleAccess(TupleAccessGoalData<'ctx>),
     Deref(DerefGoalData<'ctx>),
+    DefaultFallback(DefaultFallbackGoalData<'ctx>),
+}
+
+#[derive(Debug, Clone)]
+pub struct DefaultFallbackGoalData<'ctx> {
+    pub infer_var: GenericArgument<'ctx>,
+    pub default: GenericArgument<'ctx>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

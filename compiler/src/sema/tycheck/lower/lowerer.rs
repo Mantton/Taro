@@ -12,6 +12,7 @@ use crate::{
         tycheck::{
             fold::{TypeFoldable, TypeFolder, TypeSuperFoldable},
             lower::LoweringRequest,
+            solve::DefaultFallbackGoalData,
             utils::{
                 const_eval::eval_const_expression,
                 instantiate::{instantiate_interface_ref_with_args, instantiate_ty_with_args},
@@ -41,6 +42,23 @@ pub trait TypeLowerer<'ctx> {
         self
     }
     fn ty_infer(&self, param: Option<&GenericParameterDefinition>, span: Span) -> Ty<'ctx>;
+    fn const_infer(
+        &self,
+        ty: Ty<'ctx>,
+        param: Option<&GenericParameterDefinition>,
+        span: Span,
+    ) -> Const<'ctx>;
+
+    /// Whether this lowering context supports type inference.
+    /// When true, generic defaults create inference variables + fallback goals.
+    /// When false, defaults are applied eagerly.
+    fn can_infer(&self) -> bool {
+        false
+    }
+
+    fn register_default_fallback(&self, _data: DefaultFallbackGoalData<'ctx>) {
+        // No-op by default: only Checker (with an InferCtx) supports fallbacks.
+    }
 }
 
 impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
@@ -350,26 +368,65 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 }
                 (None, Some(&param)) => {
                     match &param.kind {
-                        // ---- provided default ----
+                        // ---- type param with default ----
                         GenericParameterDefinitionKind::Type { default: Some(d) } => {
-                            let mut ty = self.lower_type(&d);
-                            if let Some(concrete_self_ty) = self_ty {
-                                ty = self.substitute_interface_self_default(ty, concrete_self_ty);
+                            if self.can_infer() {
+                                let infer_ty = self.ty_infer(Some(param), span);
+                                let mut default_ty = self.lower_type(&d);
+                                if let Some(self_ty) = self_ty {
+                                    default_ty = self
+                                        .substitute_interface_self_default(default_ty, self_ty);
+                                }
+
+                                let current_args = gcx
+                                    .store
+                                    .interners
+                                    .intern_generic_args(output.clone());
+                                default_ty =
+                                    instantiate_ty_with_args(gcx, default_ty, current_args);
+
+                                self.register_default_fallback(DefaultFallbackGoalData {
+                                    infer_var: GenericArgument::Type(infer_ty),
+                                    default: GenericArgument::Type(default_ty),
+                                    span,
+                                });
+
+                                output.push(GenericArgument::Type(infer_ty));
+                            } else {
+                                let mut ty = self.lower_type(&d);
+                                if let Some(self_ty) = self_ty {
+                                    ty = self
+                                        .substitute_interface_self_default(ty, self_ty);
+                                }
+                                output.push(GenericArgument::Type(ty));
                             }
-                            output.push(GenericArgument::Type(ty));
                         }
 
-                        // ---- no default ----
+                        // ---- type param without default ----
                         GenericParameterDefinitionKind::Type { default: None } => {
                             let ty = self.ty_infer(Some(param), span);
                             output.push(GenericArgument::Type(ty));
                         }
 
+                        // ---- const param ----
                         GenericParameterDefinitionKind::Const { ty, default } => {
                             let expected_ty = self.lower_type(ty);
                             if let Some(default) = default {
-                                let konst = self.lower_const_argument(expected_ty, default);
-                                output.push(GenericArgument::Const(konst));
+                                if self.can_infer() {
+                                    let infer_const =
+                                        self.const_infer(expected_ty, Some(param), span);
+                                    let default_const =
+                                        self.lower_const_argument(expected_ty, default);
+                                    self.register_default_fallback(DefaultFallbackGoalData {
+                                        infer_var: GenericArgument::Const(infer_const.clone()),
+                                        default: GenericArgument::Const(default_const),
+                                        span,
+                                    });
+                                    output.push(GenericArgument::Const(infer_const));
+                                } else {
+                                    let konst = self.lower_const_argument(expected_ty, default);
+                                    output.push(GenericArgument::Const(konst));
+                                }
                             } else {
                                 gcx.dcx()
                                     .emit_error("missing const argument".into(), Some(span));

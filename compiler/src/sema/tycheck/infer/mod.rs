@@ -19,6 +19,7 @@ use crate::{
                 snapshot::IcxEvent,
             },
             lower::{DefTyLoweringCtx, TypeLowerer},
+            solve::DefaultFallbackGoalData,
             utils::generics::GenericsBuilder,
         },
     },
@@ -270,6 +271,7 @@ pub struct InferCtxInner<'ctx> {
     float_storage: UnificationTableStorage<FloatVarID>,
     nil_storage: UnificationTableStorage<NilVarID>,
     overload_bindings: FxHashMap<TyVarID, DefinitionID>,
+    pending_fallbacks: Vec<DefaultFallbackGoalData<'ctx>>,
 }
 
 impl<'ctx> InferCtxInner<'ctx> {
@@ -282,6 +284,7 @@ impl<'ctx> InferCtxInner<'ctx> {
             float_storage: Default::default(),
             nil_storage: Default::default(),
             overload_bindings: Default::default(),
+            pending_fallbacks: Default::default(),
         }
     }
 }
@@ -499,5 +502,13 @@ impl<'ctx> InferCtx<'ctx> {
                 }
             }
         }
+    }
+
+    pub fn register_pending_fallback(&self, data: DefaultFallbackGoalData<'ctx>) {
+        self.inner.borrow_mut().pending_fallbacks.push(data);
+    }
+
+    pub fn take_pending_fallbacks(&self) -> Vec<DefaultFallbackGoalData<'ctx>> {
+        std::mem::take(&mut self.inner.borrow_mut().pending_fallbacks)
     }
 }

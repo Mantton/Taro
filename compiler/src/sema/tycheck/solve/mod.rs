@@ -4,8 +4,8 @@ use crate::{
     sema::{
         error::SpannedErrorList,
         models::{
-            AliasKind, Constraint, GenericArgument, GenericArguments, InterfaceReference, Ty,
-            TyKind,
+            AliasKind, ConstKind, Constraint, GenericArgument, GenericArguments,
+            InterfaceReference, Ty, TyKind,
         },
         resolve::models::DefinitionID,
         tycheck::{
@@ -292,9 +292,9 @@ impl<'ctx> ConstraintSystem<'ctx> {
                             let resolved = self.structurally_resolve(*ty);
                             GenericArgument::Type(resolved)
                         }
-                        GenericArgument::Const(c) => {
-                            GenericArgument::Const(self.infer_cx.resolve_const_if_possible(c.clone()))
-                        }
+                        GenericArgument::Const(c) => GenericArgument::Const(
+                            self.infer_cx.resolve_const_if_possible(c.clone()),
+                        ),
                     })
                     .collect();
                 let interned = gcx.store.interners.intern_generic_args(resolved);
@@ -575,6 +575,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             Goal::StructLiteral(data) => self.solve_struct_literal(data),
             Goal::TupleAccess(data) => self.solve_tuple_access(data),
             Goal::Deref(data) => self.solve_deref(data),
+            Goal::DefaultFallback(_) => SolverResult::Deferred,
         }
     }
 
@@ -723,6 +724,15 @@ impl<'ctx> SolverDriver<'ctx> {
 
     fn solve_to_fixpoint(&mut self) -> Result<(), SpannedErrorList<'ctx>> {
         loop {
+            // Drain pending fallbacks from lowering
+            let pending = self.solver.icx.take_pending_fallbacks();
+            for data in pending {
+                self.solver.obligations.push_back(Obligation {
+                    location: data.span,
+                    goal: Goal::DefaultFallback(data),
+                });
+            }
+
             let made_progress = self.drain_queue();
 
             if !self.errors.is_empty() {
@@ -736,6 +746,7 @@ impl<'ctx> SolverDriver<'ctx> {
             if !self.defaulted {
                 self.defaulted = true;
                 self.solver.icx.default_numeric_vars();
+                self.apply_default_fallbacks();
                 if !self.deferred.is_empty() {
                     self.solver.obligations.append(&mut self.deferred);
                 }
@@ -772,6 +783,38 @@ impl<'ctx> SolverDriver<'ctx> {
         }
 
         made_progress
+    }
+
+    fn apply_default_fallbacks(&mut self) {
+        let mut remaining = VecDeque::new();
+        while let Some(obligation) = self.deferred.pop_front() {
+            let goal = obligation.goal;
+            let location = obligation.location;
+            if let Goal::DefaultFallback(data) = goal {
+                self.attempt_default_fallback(data, location);
+            } else {
+                remaining.push_back(Obligation { goal, location });
+            }
+        }
+        self.deferred = remaining;
+    }
+
+    fn attempt_default_fallback(&mut self, data: DefaultFallbackGoalData<'ctx>, span: Span) {
+        match (data.infer_var, data.default) {
+            (GenericArgument::Type(var), GenericArgument::Type(default)) => {
+                let resolved = self.solver.icx.resolve_vars_if_possible(var);
+                if resolved.is_infer() {
+                    let _ = self.solver.solve_equality(span, var, default);
+                }
+            }
+            (GenericArgument::Const(var), GenericArgument::Const(default)) => {
+                let resolved = self.solver.icx.resolve_const_if_possible(var.clone());
+                if matches!(resolved.kind, ConstKind::Infer(_)) {
+                    let _ = self.solver.unify_const(var, default);
+                }
+            }
+            _ => {}
+        }
     }
 }
 
