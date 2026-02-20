@@ -34,15 +34,12 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
         match &node.kind {
             hir::DeclarationKind::Interface(..) => self.check_constraints(node.id),
             hir::DeclarationKind::Struct(_) => {
-                self.check_constraints(node.id);
                 self.check_struct(node.id);
             }
             hir::DeclarationKind::Enum(_) => {
-                self.check_constraints(node.id);
                 self.check_enum(node.id);
             }
             hir::DeclarationKind::Function(function) => {
-                self.check_constraints(node.id);
                 self.check_function(node.id, function);
             }
             hir::DeclarationKind::TypeAlias(..) => self.check_constraints(node.id),
@@ -57,7 +54,6 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
             hir::DeclarationKind::Export(..) => {}
             hir::DeclarationKind::Namespace(..) => {}
             hir::DeclarationKind::Impl(..) => {
-                self.check_constraints(node.id);
                 self.check_impl(node.id);
             }
             hir::DeclarationKind::OpaqueType => {

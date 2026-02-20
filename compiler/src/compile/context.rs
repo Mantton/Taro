@@ -599,6 +599,65 @@ impl<'arena> GlobalContext<'arena> {
         map
     }
 
+    pub fn visible_traits(self, def_id: DefinitionID) -> Rc<FxHashSet<DefinitionID>> {
+        if let Some(cached) = self.with_type_database(def_id.package(), |db| db.visible_traits.get(&def_id).cloned()) {
+            return cached;
+        }
+
+        use crate::sema::resolve::models::{DefinitionKind, Resolution, ScopeEntryKind};
+
+        let mut visible = FxHashSet::default();
+        let pkg = def_id.package();
+        let resolution_output = self.resolution_output(pkg);
+
+        let mut current_scope = resolution_output
+            .definition_scope_mapping
+            .get(&def_id)
+            .cloned();
+
+        while let Some(scope) = current_scope {
+            let table = scope.table.borrow();
+
+            for name_entry in table.values() {
+                if let Some(type_entry) = &name_entry.ty {
+                    match &type_entry.kind {
+                        ScopeEntryKind::Resolution(Resolution::Definition(id, kind)) => {
+                            if *kind == DefinitionKind::Interface {
+                                visible.insert(*id);
+                            }
+                        }
+                        ScopeEntryKind::Usage { used_entry, .. } => {
+                            if let ScopeEntryKind::Resolution(Resolution::Definition(id, kind)) =
+                                &used_entry.kind
+                            {
+                                if *kind == DefinitionKind::Interface {
+                                    visible.insert(*id);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            let glob_imports = scope.glob_imports.borrow();
+            for _usage in glob_imports.iter() {
+            }
+
+            drop(table);
+            drop(glob_imports);
+
+            current_scope = scope.parent;
+        }
+
+        let rc_visible = Rc::new(visible);
+        self.with_type_database(def_id.package(), |db| {
+            db.visible_traits.insert(def_id, rc_visible.clone());
+        });
+
+        rc_visible
+    }
+
     /// Checks if a type implements the Copy interface.
     /// Primitives, references, pointers, and function pointers are implicitly copyable.
     /// Structs/enums must explicitly implement Copy.
@@ -1108,6 +1167,7 @@ pub struct TypeDatabase<'arena> {
         (TypeHead, DefinitionID),
         crate::sema::tycheck::derive::SyntheticMethodInfo<'arena>,
     >,
+    pub visible_traits: FxHashMap<DefinitionID, Rc<FxHashSet<DefinitionID>>>,
 }
 
 #[derive(Default, Debug, Clone)]

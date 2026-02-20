@@ -427,9 +427,9 @@ impl<'ctx> Checker<'ctx> {
 
     fn new_cs(&self) -> Cs<'ctx> {
         if let Some(infer_cx) = self.infer_ctx() {
-            Cs::with_infer_ctx(self.context, self.current_def, infer_cx)
+            Cs::with_infer_ctx(self.context, self.current_def, infer_cx, self.visible_traits.clone())
         } else {
-            Cs::new(self.context, self.current_def)
+            Cs::with_infer_ctx(self.context, self.current_def, Rc::new(InferCtx::new(self.context)), self.visible_traits.clone())
         }
     }
 

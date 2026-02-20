@@ -42,70 +42,7 @@ mod overload;
 mod tuple;
 mod unify;
 
-/// Collect all traits (interfaces) that are visible in the scope of the given definition.
-/// This includes:
-/// - Interfaces defined in the current module and parent modules
-/// - Interfaces explicitly imported via `import` statements
-/// - Interfaces from glob imports (`import some.module.*`)
-fn collect_visible_traits(gcx: Gcx, def_id: DefinitionID) -> FxHashSet<DefinitionID> {
-    use crate::sema::resolve::models::{DefinitionKind, Resolution, ScopeEntryKind};
 
-    let mut visible = FxHashSet::default();
-    let pkg = def_id.package();
-    let resolution_output = gcx.resolution_output(pkg);
-
-    // Get the scope for this definition
-    let mut current_scope = resolution_output
-        .definition_scope_mapping
-        .get(&def_id)
-        .cloned();
-
-    // Walk up the scope chain
-    while let Some(scope) = current_scope {
-        let table = scope.table.borrow();
-
-        // Collect interfaces from this scope
-        for name_entry in table.values() {
-            if let Some(type_entry) = &name_entry.ty {
-                match &type_entry.kind {
-                    ScopeEntryKind::Resolution(Resolution::Definition(id, kind)) => {
-                        if *kind == DefinitionKind::Interface {
-                            visible.insert(*id);
-                        }
-                    }
-                    ScopeEntryKind::Usage { used_entry, .. } => {
-                        // Follow the usage chain to the actual definition
-                        if let ScopeEntryKind::Resolution(Resolution::Definition(id, kind)) =
-                            &used_entry.kind
-                        {
-                            if *kind == DefinitionKind::Interface {
-                                visible.insert(*id);
-                            }
-                        }
-                    }
-                    _ => {
-                        // Other resolution types (PrimaryType, SelfTypeAlias, etc.) are not interfaces
-                    }
-                }
-            }
-        }
-
-        // Also check glob imports
-        let glob_imports = scope.glob_imports.borrow();
-        for _usage in glob_imports.iter() {
-            // For glob imports, we need to look at what they bring into scope
-            // This is a simplified version - glob imports should already be resolved into the scope table
-        }
-
-        drop(table);
-        drop(glob_imports);
-
-        // Move to parent scope
-        current_scope = scope.parent;
-    }
-
-    visible
-}
 
 pub struct ConstraintSystem<'ctx> {
     pub infer_cx: Rc<InferCtx<'ctx>>,
@@ -121,7 +58,7 @@ pub struct ConstraintSystem<'ctx> {
     current_def: crate::sema::resolve::models::DefinitionID,
     env: ParamEnv<'ctx>,
     /// Traits (interfaces) visible in the current scope (for trait method lookup)
-    visible_traits: FxHashSet<DefinitionID>,
+    visible_traits: Rc<FxHashSet<DefinitionID>>,
     error_count_at_start: usize,
 }
 
@@ -130,15 +67,20 @@ impl<'ctx> ConstraintSystem<'ctx> {
         context: Gcx<'ctx>,
         current_def: crate::sema::resolve::models::DefinitionID,
     ) -> ConstraintSystem<'ctx> {
-        Self::with_infer_ctx(context, current_def, Rc::new(InferCtx::new(context)))
+        Self::with_infer_ctx(
+            context,
+            current_def,
+            Rc::new(InferCtx::new(context)),
+            context.visible_traits(current_def),
+        )
     }
 
     pub fn with_infer_ctx(
         context: Gcx<'ctx>,
         current_def: crate::sema::resolve::models::DefinitionID,
         infer_cx: Rc<InferCtx<'ctx>>,
+        visible_traits: Rc<FxHashSet<DefinitionID>>,
     ) -> ConstraintSystem<'ctx> {
-        let visible_traits = collect_visible_traits(context, current_def);
         let error_count_at_start = context.dcx().error_count();
 
         ConstraintSystem {
@@ -444,7 +386,7 @@ struct ConstraintSolver<'ctx> {
     instantiation_args: FxHashMap<NodeID, GenericArguments<'ctx>>,
     current_def: crate::sema::resolve::models::DefinitionID,
     param_env: ParamEnv<'ctx>,
-    visible_traits: FxHashSet<DefinitionID>,
+    visible_traits: Rc<FxHashSet<DefinitionID>>,
 }
 
 impl<'ctx> ConstraintSolver<'ctx> {

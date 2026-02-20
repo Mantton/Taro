@@ -11,7 +11,7 @@ use crate::{
         },
     },
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -25,6 +25,7 @@ pub struct Checker<'arena> {
     pub current_def: DefinitionID,
     pub results: Rc<RefCell<TypeCheckResults<'arena>>>,
     infer_cx: RefCell<Option<Rc<InferCtx<'arena>>>>,
+    pub visible_traits: Rc<FxHashSet<DefinitionID>>,
 }
 
 #[derive(Clone, Copy)]
@@ -39,6 +40,7 @@ impl<'arena> Checker<'arena> {
         current_def: DefinitionID,
         results: Rc<RefCell<TypeCheckResults<'arena>>>,
     ) -> Checker<'arena> {
+        let visible_traits = context.visible_traits(current_def);
         Checker {
             context,
             return_ty: None,
@@ -49,6 +51,7 @@ impl<'arena> Checker<'arena> {
             current_def,
             results,
             infer_cx: RefCell::new(None),
+            visible_traits,
         }
     }
 }
