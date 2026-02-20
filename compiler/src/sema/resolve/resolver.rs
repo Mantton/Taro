@@ -295,7 +295,9 @@ impl<'a> Resolver<'a> {
 
                             Some(scope)
                         }
-                        Holder::Overloaded(..) => todo!("report not module"),
+                        Holder::Overloaded(..) => {
+                            return Err(ResolutionError::AmbiguousUsage(identifier.clone()));
+                        }
                     },
                     Err(e) => return Err(e),
                 }

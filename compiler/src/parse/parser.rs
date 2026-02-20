@@ -1225,7 +1225,7 @@ impl Parser {
         let ident = self.parse_identifier()?;
         if !self.symbol_eq(ident.symbol, "cfg") {
             return Err(Spanned::new(
-                ParserError::ExpectedIdentifier, // TODO: better error
+                ParserError::ExpectedCfgIdentifier,
                 ident.span,
             ));
         }
@@ -3815,6 +3815,7 @@ enum ParserError {
     #[allow(unused)]
     Expected(Token, Token),
     ExpectedIdentifier,
+    ExpectedCfgIdentifier,
     ExpectedSemiColon,
     ExpectedDeclaration,
     ExpectedTopLevelDeclaration,
@@ -3859,6 +3860,7 @@ impl Display for ParserError {
                 write!(f, "expected token {:?}, found {:?}", expected, found)
             }
             ExpectedIdentifier => f.write_str("expected identifier"),
+            ExpectedCfgIdentifier => f.write_str("expected 'cfg' following '#' in configuration expression"),
             ExpectedSemiColon => f.write_str("expected ';'"),
             ExpectedDeclaration => f.write_str("expected declaration"),
             ExpectedTopLevelDeclaration => f.write_str("expected top-level declaration"),
