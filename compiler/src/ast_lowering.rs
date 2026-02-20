@@ -197,6 +197,19 @@ impl Actor<'_, '_> {
     /// Check if a declaration should be included based on @cfg attributes.
     /// Returns true if all @cfg conditions pass (or if there are no @cfg attrs).
     fn should_include_declaration(&self, attributes: &ast::AttributeList) -> bool {
+        // In normal builds, test declarations are ignored unless test mode is active.
+        if !self.context.config.test_mode {
+            for attr in attributes {
+                let sym = attr.identifier.symbol.clone();
+                if self.context.symbol_eq(sym.clone(), "test")
+                    || self.context.symbol_eq(sym.clone(), "skip")
+                    || self.context.symbol_eq(sym, "expectPanic")
+                {
+                    return false;
+                }
+            }
+        }
+
         for attr in attributes {
             if self.context.symbol_eq(attr.identifier.symbol.clone(), "cfg") {
                 if !self.evaluate_cfg(attr) {

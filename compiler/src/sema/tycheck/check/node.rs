@@ -11,7 +11,6 @@ use crate::{
             check::{checker::Checker, gather::GatherLocalsVisitor},
             infer::InferCtx,
             lower::lowerer::TypeLowerer,
-            results::TypeCheckResults,
             solve::{
                 Adjustment, ApplyArgument, ApplyGoalData, AssignOpGoalData, BinOpGoalData,
                 BindOverloadGoalData, ConstraintSystem, DerefGoalData, DisjunctionBranch, Goal,
@@ -32,7 +31,6 @@ use crate::{
     span::{Span, Symbol},
 };
 use rustc_hash::FxHashSet;
-use std::cell::RefCell;
 use std::rc::Rc;
 
 impl<'ctx> Checker<'ctx> {
@@ -190,26 +188,12 @@ impl<'ctx> Checker<'ctx> {
     fn check_local_declaration(&self, decl: &hir::Declaration) {
         match &decl.kind {
             hir::DeclarationKind::Function(node) => {
-                let mut checker = Checker::new(
-                    self.context,
-                    decl.id,
-                    RefCell::new(TypeCheckResults::default()),
-                );
+                let mut checker = Checker::new(self.context, decl.id, self.results.clone());
                 checker.check_function(decl.id, node, hir::FunctionContext::Free);
-                self.results
-                    .borrow_mut()
-                    .extend_from(checker.results.into_inner());
             }
             hir::DeclarationKind::Constant(node) => {
-                let mut checker = Checker::new(
-                    self.context,
-                    decl.id,
-                    RefCell::new(TypeCheckResults::default()),
-                );
+                let mut checker = Checker::new(self.context, decl.id, self.results.clone());
                 checker.check_constant(decl.id, node);
-                self.results
-                    .borrow_mut()
-                    .extend_from(checker.results.into_inner());
             }
             _ => {}
         }
@@ -2086,7 +2070,7 @@ impl<'ctx> Checker<'ctx> {
         receiver_ty: Ty<'ctx>,
         name: &crate::span::Identifier,
         argument_count: usize,
-        span: Span,
+        _span: Span,
         cs: &mut Cs<'ctx>,
     ) -> Option<Vec<Ty<'ctx>>> {
         let gcx = self.gcx();

@@ -31,13 +31,16 @@ TestDetails = dict[str, Any]
 TestRunResult = tuple[bool, str, TestDetails | None]
 
 
-def setup_test_environment() -> TestEnvironment:
+def setup_test_environment(use_release: bool) -> TestEnvironment:
     """Build the compiler and setup temporary directories."""
-    print("Building compiler...")
+    profile = "release" if use_release else "debug"
+    print(f"Building compiler ({profile})...")
 
-    # Build the compiler in debug mode for faster test execution
+    compiler_build_cmd = ["cargo", "build", "-p", TARO_BIN_CRATE]
+    if use_release:
+        compiler_build_cmd.append("--release")
     build_result = subprocess.run(
-        ["cargo", "build", "-p", TARO_BIN_CRATE],
+        compiler_build_cmd,
         capture_output=True,
         text=True,
         cwd=PROJECT_ROOT,
@@ -48,9 +51,12 @@ def setup_test_environment() -> TestEnvironment:
         print(build_result.stderr)
         sys.exit(1)
 
-    print("Building runtime...")
+    print(f"Building runtime ({profile})...")
+    runtime_build_cmd = ["cargo", "build", "-p", "taro-runtime"]
+    if use_release:
+        runtime_build_cmd.append("--release")
     runtime_build_result = subprocess.run(
-        ["cargo", "build", "-p", "taro-runtime"],
+        runtime_build_cmd,
         capture_output=True,
         text=True,
         cwd=PROJECT_ROOT,
@@ -68,7 +74,7 @@ def setup_test_environment() -> TestEnvironment:
     print(f"Created temp directory: {temp_dir}")
 
     # Copy the compiler executable to temp directory
-    source_bin = PROJECT_ROOT / "target" / "debug" / TARO_BIN_CRATE
+    source_bin = PROJECT_ROOT / "target" / profile / TARO_BIN_CRATE
     compiler_path = temp_dir / "taro"
     shutil.copy2(source_bin, compiler_path)
 
@@ -78,7 +84,7 @@ def setup_test_environment() -> TestEnvironment:
     taro_home_lib.mkdir(parents=True, exist_ok=True)
 
     # Copy runtime to TARO_HOME/lib
-    runtime_lib_src = PROJECT_ROOT / "target" / "debug" / "libtaro_runtime.a"
+    runtime_lib_src = PROJECT_ROOT / "target" / profile / "libtaro_runtime.a"
     runtime_lib_dst = taro_home_lib / "libtaro_runtime.a"
     shutil.copy2(runtime_lib_src, runtime_lib_dst)
 
@@ -406,10 +412,24 @@ def main():
         type=positive_int,
         help="Number of concurrent workers. Defaults to min(selected_tests, CPU count). Use --jobs 1 for serial mode.",
     )
+    profile_group = parser.add_mutually_exclusive_group()
+    profile_group.add_argument(
+        "--release",
+        dest="release",
+        action="store_true",
+        default=True,
+        help="Build and run tests with release compiler/runtime binaries (default).",
+    )
+    profile_group.add_argument(
+        "--debug",
+        dest="release",
+        action="store_false",
+        help="Build and run tests with debug compiler/runtime binaries.",
+    )
     args = parser.parse_args()
 
     # Setup: build compiler and create temp directories
-    env = setup_test_environment()
+    env = setup_test_environment(args.release)
 
     try:
         print(f"Running tests in {SOURCE_FILES_DIR}...")

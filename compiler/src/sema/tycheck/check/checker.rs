@@ -23,7 +23,7 @@ pub struct Checker<'arena> {
     pub(super) unsafe_depth: Cell<usize>,
     pub(super) defer_depth: Cell<usize>,
     pub current_def: DefinitionID,
-    pub results: RefCell<TypeCheckResults<'arena>>,
+    pub results: Rc<RefCell<TypeCheckResults<'arena>>>,
     infer_cx: RefCell<Option<Rc<InferCtx<'arena>>>>,
 }
 
@@ -37,7 +37,7 @@ impl<'arena> Checker<'arena> {
     pub fn new(
         context: Gcx<'arena>,
         current_def: DefinitionID,
-        results: RefCell<TypeCheckResults<'arena>>,
+        results: Rc<RefCell<TypeCheckResults<'arena>>>,
     ) -> Checker<'arena> {
         Checker {
             context,

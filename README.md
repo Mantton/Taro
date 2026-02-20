@@ -49,6 +49,14 @@ taro build examples/hello.tr --timings
 taro check examples/hello.tr --timings
 ```
 
+To benchmark timings across both debug and release profiles (including `std`) and print comparison tables:
+
+```bash
+python3 development/scripts/benchmark_timings.py examples/hello.tr
+python3 development/scripts/benchmark_timings.py examples/hello.tr --runs 10
+python3 development/scripts/benchmark_timings.py examples/hello.tr --command run --runs 5
+```
+
 ### Quick Commands (Makefile)
 
 For day-to-day development, you can use the root `Makefile`:
@@ -230,7 +238,7 @@ kind = "library" # Required for libraries, defaults to "binary"
 To verify the compiler implementation, use the command that matches the test surface you want:
 
 - `cargo test --workspace`: Rust unit/integration/doctests for workspace crates.
-- `python3 development/scripts/language_tests.py`: Taro language E2E tests in `language_tests/source_files`. Runs in parallel by default using `min(selected_tests, CPU core count)` workers; `--jobs` is only needed to override (for example, `--jobs 1` for serial mode).
+- `python3 development/scripts/language_tests.py`: Taro language E2E tests in `language_tests/source_files`. Runs in parallel by default using `min(selected_tests, CPU core count)` workers; `--jobs` is only needed to override (for example, `--jobs 1` for serial mode). Uses release compiler/runtime binaries by default; pass `--debug` when you need debug compiler behavior.
 - `python3 development/scripts/test_all.py`: unified fail-fast pipeline (cargo tests, dist build, std compile smoke, std package tests, language tests).
 - `make all-tests`: shorthand for the unified pipeline.
 

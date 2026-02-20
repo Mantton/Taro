@@ -4,7 +4,7 @@ use crate::{
     hir::{self, DefinitionID, HirVisitor},
     sema::tycheck::results::TypeCheckResults,
 };
-use std::cell::RefCell;
+use std::{cell::RefCell, rc::Rc};
 
 mod checker;
 mod gather;
@@ -17,19 +17,19 @@ pub fn run<'ctx>(
     let mut actor = Actor::new(context);
     hir::walk_package(&mut actor, package);
     context.dcx().ok()?;
-    Ok(actor.results)
+    Ok(std::mem::take(&mut *actor.results.borrow_mut()))
 }
 
 struct Actor<'ctx> {
     context: Gcx<'ctx>,
-    results: TypeCheckResults<'ctx>,
+    results: Rc<RefCell<TypeCheckResults<'ctx>>>,
 }
 
 impl<'ctx> Actor<'ctx> {
     fn new(context: Gcx<'ctx>) -> Actor<'ctx> {
         Actor {
             context,
-            results: TypeCheckResults::default(),
+            results: Rc::new(RefCell::new(TypeCheckResults::default())),
         }
     }
 }
@@ -54,22 +54,19 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
 }
 
 impl<'ctx> Actor<'ctx> {
+
     fn check_function(
         &mut self,
         id: DefinitionID,
         node: &hir::Function,
         fn_ctx: hir::FunctionContext,
     ) {
-        let mut checker =
-            checker::Checker::new(self.context, id, RefCell::new(TypeCheckResults::default()));
+        let mut checker = checker::Checker::new(self.context, id, self.results.clone());
         checker.check_function(id, node, fn_ctx);
-        self.results.extend_from(checker.results.into_inner());
     }
 
     fn check_constant(&mut self, id: DefinitionID, node: &hir::Constant) {
-        let mut checker =
-            checker::Checker::new(self.context, id, RefCell::new(TypeCheckResults::default()));
+        let mut checker = checker::Checker::new(self.context, id, self.results.clone());
         checker.check_constant(id, node);
-        self.results.extend_from(checker.results.into_inner());
     }
 }

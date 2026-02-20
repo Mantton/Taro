@@ -37,6 +37,10 @@ impl TimingReport {
         });
     }
 
+    fn push_duration(&mut self, name: &'static str, duration: Duration) {
+        self.phases.push(PhaseTiming { name, duration });
+    }
+
     fn emit(&self, package_name: &str, mode: &str, total: Duration) {
         eprintln!("Timings – {} ({})", package_name, mode);
         for phase in &self.phases {
@@ -260,7 +264,16 @@ impl<'state> Compiler<'state> {
         timings.push_elapsed("sema.validate", phase_started_at);
 
         let phase_started_at = Instant::now();
-        let results = sema::tycheck::typecheck_package(&package, self.context)?;
+        let results = if self.context.config.debug.timings {
+            let (results, typecheck_timings) =
+                sema::tycheck::typecheck_package_with_timings(&package, self.context)?;
+            for phase in typecheck_timings {
+                timings.push_duration(phase.name, phase.duration);
+            }
+            results
+        } else {
+            sema::tycheck::typecheck_package(&package, self.context)?
+        };
         timings.push_elapsed("sema.typecheck", phase_started_at);
 
         let phase_started_at = Instant::now();
