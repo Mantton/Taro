@@ -9,6 +9,7 @@ mod package;
 pub struct CompileModeOptions {
     pub profile: BuildProfile,
     pub overflow_checks: bool,
+    pub timings: bool,
 }
 
 #[derive(Parser, Clone, Debug)]
@@ -39,6 +40,9 @@ pub struct CommandLineArguments {
     /// Force integer overflow checks off.
     #[arg(long = "no-overflow-checks", conflicts_with = "overflow_checks")]
     pub no_overflow_checks: bool,
+    /// Print compiler phase timings (parse -> link) to stderr.
+    #[arg(long = "timings")]
+    pub timings: bool,
 }
 
 impl CommandLineArguments {
@@ -73,6 +77,7 @@ impl CommandLineArguments {
         CompileModeOptions {
             profile: self.build_profile(),
             overflow_checks: self.overflow_checks_enabled(),
+            timings: self.timings,
         }
     }
 }

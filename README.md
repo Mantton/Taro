@@ -42,6 +42,13 @@ export TARO_HOME=$(pwd)/dist
 taro build examples/hello.tr
 ```
 
+To print compiler phase timings (parse/typecheck/THIR/MIR/codegen/link), pass `--timings`:
+
+```bash
+taro build examples/hello.tr --timings
+taro check examples/hello.tr --timings
+```
+
 ### Quick Commands (Makefile)
 
 For day-to-day development, you can use the root `Makefile`:

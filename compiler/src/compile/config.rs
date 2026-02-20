@@ -38,6 +38,8 @@ pub struct DebugOptions {
     pub dump_mir: bool,
     /// Dump LLVM IR to stderr
     pub dump_llvm: bool,
+    /// Print per-phase compiler timings to stderr
+    pub timings: bool,
 }
 
 #[derive(Debug, Clone)]

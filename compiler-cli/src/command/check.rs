@@ -101,7 +101,11 @@ fn run_single_file(arguments: CommandLineArguments) -> Result<(), ReportedError>
         is_script: true,
         profile: compile_options.profile,
         overflow_checks: compile_options.overflow_checks,
-        debug: DebugOptions::default(),
+        debug: DebugOptions {
+            dump_mir: false,
+            dump_llvm: false,
+            timings: arguments.timings,
+        },
         test_mode: false,
     });
 
@@ -225,7 +229,11 @@ fn run_package(arguments: CommandLineArguments) -> Result<(), ReportedError> {
             is_script: false,
             profile: compile_options.profile,
             overflow_checks: compile_options.overflow_checks,
-            debug: DebugOptions::default(),
+            debug: DebugOptions {
+                dump_mir: false,
+                dump_llvm: false,
+                timings: arguments.timings,
+            },
             test_mode: false,
         });
 
@@ -263,7 +271,11 @@ fn compile_std<'a>(
         is_script: false,
         profile: compile_options.profile,
         overflow_checks: compile_options.overflow_checks,
-        debug: DebugOptions::default(),
+        debug: DebugOptions {
+            dump_mir: false,
+            dump_llvm: false,
+            timings: compile_options.timings,
+        },
         test_mode: false,
     });
 

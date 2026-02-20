@@ -111,6 +111,7 @@ fn run_single_file(
         debug: DebugOptions {
             dump_mir: arguments.dump_mir,
             dump_llvm: arguments.dump_llvm,
+            timings: arguments.timings,
         },
         test_mode: false,
     });
@@ -251,6 +252,7 @@ fn run_package(
             debug: DebugOptions {
                 dump_mir: arguments.dump_mir,
                 dump_llvm: arguments.dump_llvm,
+                timings: arguments.timings,
             },
             test_mode: false,
         });
@@ -423,7 +425,11 @@ fn compile_std<'a>(
         is_script: false,
         profile: compile_options.profile,
         overflow_checks: compile_options.overflow_checks,
-        debug: DebugOptions::default(),
+        debug: DebugOptions {
+            dump_mir: false,
+            dump_llvm: false,
+            timings: compile_options.timings,
+        },
         test_mode: false,
     });
     let mut compiler = Compiler::new(ctx, config);
@@ -528,6 +534,7 @@ fn run_single_file_test(
         debug: DebugOptions {
             dump_mir: arguments.dump_mir,
             dump_llvm: arguments.dump_llvm,
+            timings: arguments.timings,
         },
         test_mode: true,
     });
@@ -658,6 +665,7 @@ fn run_package_test(
             debug: DebugOptions {
                 dump_mir: arguments.dump_mir,
                 dump_llvm: arguments.dump_llvm,
+                timings: arguments.timings,
             },
             test_mode,
         });
