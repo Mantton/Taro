@@ -1,0 +1,21 @@
+// CHECK_ONLY
+
+func spinUntilDone() -> int32 {
+    var state: int32 = 0
+
+    loop {
+        match state {
+            case 0 => {
+                state = 1
+                continue
+            }
+            case _ => break
+        }
+    }
+
+    state
+}
+
+func main() {
+    let _ = spinUntilDone()
+}

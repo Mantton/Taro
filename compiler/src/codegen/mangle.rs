@@ -23,6 +23,37 @@ fn sanitize(s: &str) -> String {
         .collect()
 }
 
+fn const_symbol_with(gcx: GlobalContext, c: &crate::sema::models::Const) -> String {
+    match &c.kind {
+        ConstKind::Value(ConstValue::Integer(i)) => format!("i{i}"),
+        ConstKind::Value(ConstValue::Bool(b)) => {
+            if *b {
+                "b1".into()
+            } else {
+                "b0".into()
+            }
+        }
+        ConstKind::Value(ConstValue::Rune(ch)) => format!("r{}", *ch as u32),
+        ConstKind::Value(ConstValue::String(sym)) => {
+            let text = gcx.symbol_text(sym.clone());
+            format!("s{}", sanitize(text.as_ref()))
+        }
+        ConstKind::Value(ConstValue::Float(f)) => format!("f{:x}", f.to_bits()),
+        ConstKind::Value(ConstValue::Unit) => "unit".into(),
+        ConstKind::Param(p) => {
+            format!("cp{}", sanitize(gcx.symbol_text(p.name.clone()).as_ref()))
+        }
+        ConstKind::Infer(_) => "cinfer".into(),
+    }
+}
+
+fn generic_arg_symbol_with(gcx: GlobalContext, arg: GenericArgument) -> String {
+    match arg {
+        GenericArgument::Type(ty) => ty_symbol_with(gcx, ty),
+        GenericArgument::Const(c) => const_symbol_with(gcx, &c),
+    }
+}
+
 fn ty_symbol_with(gcx: GlobalContext, ty: Ty) -> String {
     match ty.kind() {
         TyKind::Bool => "bool".into(),
@@ -37,9 +68,28 @@ fn ty_symbol_with(gcx: GlobalContext, ty: Ty) -> String {
         TyKind::Reference(inner, mt) => {
             format!("ref{}{}", mt.display_str(), ty_symbol_with(gcx, inner))
         }
-        TyKind::Adt(def, _) => {
+        TyKind::Adt(def, args) => {
             let ident = gcx.definition_ident(def.id);
-            sanitize(gcx.symbol_text(ident.symbol).as_ref())
+            let mut head_hash = DefaultHasher::new();
+            def.id.hash(&mut head_hash);
+            let mut out = format!(
+                "{}{:x}",
+                sanitize(gcx.symbol_text(ident.symbol).as_ref()),
+                head_hash.finish()
+            );
+
+            if !args.is_empty() {
+                out.push('_');
+                out.push_str(
+                    &args
+                        .iter()
+                        .map(|arg| generic_arg_symbol_with(gcx, arg.clone()))
+                        .collect::<Vec<_>>()
+                        .join("_"),
+                );
+            }
+
+            out
         }
         TyKind::Array { element, len } => {
             let elem = ty_symbol_with(gcx, element);
@@ -64,10 +114,29 @@ fn ty_symbol_with(gcx: GlobalContext, ty: Ty) -> String {
             }
             format!("any{}", parts.join("_"))
         }
-        TyKind::Alias { def_id, .. } => {
+        TyKind::Alias { def_id, args, .. } => {
             // Use alias definition name
             let ident = gcx.definition_ident(def_id);
-            sanitize(gcx.symbol_text(ident.symbol).as_ref())
+            let mut head_hash = DefaultHasher::new();
+            def_id.hash(&mut head_hash);
+            let mut out = format!(
+                "{}{:x}",
+                sanitize(gcx.symbol_text(ident.symbol).as_ref()),
+                head_hash.finish()
+            );
+
+            if !args.is_empty() {
+                out.push('_');
+                out.push_str(
+                    &args
+                        .iter()
+                        .map(|arg| generic_arg_symbol_with(gcx, arg.clone()))
+                        .collect::<Vec<_>>()
+                        .join("_"),
+                );
+            }
+
+            out
         }
         TyKind::Parameter(p) => gcx.symbol_text(p.name).into(),
         TyKind::Closure { closure_def_id, .. } => {

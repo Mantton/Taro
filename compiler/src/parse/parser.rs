@@ -2054,9 +2054,6 @@ impl Parser {
             Token::Loop => self.parse_loop_stmt(label),
             Token::While => self.parse_while_stmt(label),
             Token::For => self.parse_for_stmt(label),
-            Token::Return => self.parse_return_stmt(),
-            Token::Break => self.parse_break_stmt(),
-            Token::Continue => self.parse_continue_stmt(),
             Token::Defer => self.parse_defer_stmt(),
             Token::Guard => self.parse_guard_stmt(),
             _ => {
@@ -2188,27 +2185,34 @@ impl Parser {
 }
 
 impl Parser {
-    fn parse_return_stmt(&mut self) -> R<StatementKind> {
+    fn parse_return_expression(&mut self) -> R<Box<Expression>> {
+        let lo = self.lo_span();
         self.expect(Token::Return)?;
 
         if self.matches_any(&[Token::Semicolon, Token::RBrace]) {
-            return Ok(StatementKind::Return(None));
+            let kind = ExpressionKind::Return { value: None };
+            return Ok(self.build_expr(kind, lo.to(self.hi_span())));
         }
 
-        let expr = Some(self.parse_expression()?);
-        Ok(StatementKind::Return(expr))
+        let value = Some(self.parse_expression()?);
+        let kind = ExpressionKind::Return { value };
+        Ok(self.build_expr(kind, lo.to(self.hi_span())))
     }
 
-    fn parse_break_stmt(&mut self) -> R<StatementKind> {
+    fn parse_break_expression(&mut self) -> R<Box<Expression>> {
+        let lo = self.lo_span();
         self.expect(Token::Break)?;
-        let ident = self.parse_optional_identifier()?;
-        Ok(StatementKind::Break(ident))
+        let label = self.parse_optional_identifier()?;
+        let kind = ExpressionKind::Break { label };
+        Ok(self.build_expr(kind, lo.to(self.hi_span())))
     }
 
-    fn parse_continue_stmt(&mut self) -> R<StatementKind> {
+    fn parse_continue_expression(&mut self) -> R<Box<Expression>> {
+        let lo = self.lo_span();
         self.expect(Token::Continue)?;
-        let ident = self.parse_optional_identifier()?;
-        Ok(StatementKind::Continue(ident))
+        let label = self.parse_optional_identifier()?;
+        let kind = ExpressionKind::Continue { label };
+        Ok(self.build_expr(kind, lo.to(self.hi_span())))
     }
 
     fn parse_defer_stmt(&mut self) -> R<StatementKind> {
@@ -3148,6 +3152,9 @@ impl Parser {
             Token::LBracket => self.parse_collection_expr(),
             Token::Case => self.parse_pattern_binding_condition(),
             Token::Let => self.parse_optional_binding_condition(),
+            Token::Return => self.parse_return_expression(),
+            Token::Break => self.parse_break_expression(),
+            Token::Continue => self.parse_continue_expression(),
             Token::Unsafe => self.parse_unsafe_block_expression(),
             Token::LBrace => self.parse_block_expression(),
             Token::Bar | Token::BarBar => self.parse_closure_expression(),

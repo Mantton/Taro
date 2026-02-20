@@ -332,7 +332,16 @@ func process(msg: Message) {
 ## Syntax Notes
 
 -   **Automatic Semicolon Insertion (ASI)**: Semicolons are optional at the end of statements.
+-   **Leading `.` on a New Line**: A line that starts with `.` is parsed as postfix continuation of the previous expression unless the previous statement is explicitly terminated.
 -   **Trailing Commas**: In multi-line sequences (like struct instantiation or lists), ensure you use explicit commas for the last element to prevent ASI from interpreting the newline as the end of the statement.
+
+```rust
+let out = value
+.some(out)     // parsed as: value.some(out)
+
+let out = value;
+.some(out)     // standalone inferred member expression
+```
 
 ```rust
 // Correct

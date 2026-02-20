@@ -1027,11 +1027,6 @@ impl Actor<'_, '_> {
             ast::StatementKind::Variable(local) => {
                 hir::StatementKind::Variable(self.lower_local(local))
             }
-            ast::StatementKind::Break(..) => hir::StatementKind::Break,
-            ast::StatementKind::Continue(..) => hir::StatementKind::Continue,
-            ast::StatementKind::Return(node) => {
-                hir::StatementKind::Return(node.map(|n| self.lower_expression(n)))
-            }
             ast::StatementKind::Loop { label, block } => hir::StatementKind::Loop {
                 label,
                 block: self.lower_block(block),
@@ -1052,7 +1047,12 @@ impl Actor<'_, '_> {
                 */
                 let condition = self.lower_expression(condition);
                 let then_block = self.lower_block(block);
-                let break_statement = self.mk_statement(hir::StatementKind::Break, node.span);
+                let break_expr = self.mk_expression(
+                    hir::ExpressionKind::Break { label: None },
+                    node.span,
+                );
+                let break_statement =
+                    self.mk_statement(hir::StatementKind::Expression(break_expr), node.span);
                 let else_block = self.mk_block(vec![break_statement], node.span);
                 let if_node = hir::IfExpression {
                     condition,
@@ -1306,7 +1306,10 @@ impl Actor<'_, '_> {
                 hir::ExpressionKind::Unary(hir::UnaryOperator::LogicalNot, condition),
                 span,
             );
-            let continue_stmt = self.mk_statement(hir::StatementKind::Continue, span);
+            let continue_expr =
+                self.mk_expression(hir::ExpressionKind::Continue { label: None }, span);
+            let continue_stmt =
+                self.mk_statement(hir::StatementKind::Expression(continue_expr), span);
             let continue_block = self.mk_block(vec![continue_stmt], span);
             let guard_if = hir::IfExpression {
                 condition: negated,
@@ -1347,7 +1350,8 @@ impl Actor<'_, '_> {
         };
 
         // Arm 2: case Optional.none => break
-        let break_stmt = self.mk_statement(hir::StatementKind::Break, span);
+        let break_expr = self.mk_expression(hir::ExpressionKind::Break { label: None }, span);
+        let break_stmt = self.mk_statement(hir::StatementKind::Expression(break_expr), span);
         let break_block = self.mk_block(vec![break_stmt], span);
         let none_arm = hir::MatchArm {
             pattern: none_pattern,
@@ -1476,6 +1480,11 @@ impl Actor<'_, '_> {
             ast::ExpressionKind::Match(node) => {
                 hir::ExpressionKind::Match(self.lower_match_expression(node))
             }
+            ast::ExpressionKind::Return { value } => hir::ExpressionKind::Return {
+                value: value.map(|expr| self.lower_expression(expr)),
+            },
+            ast::ExpressionKind::Break { label } => hir::ExpressionKind::Break { label },
+            ast::ExpressionKind::Continue { label } => hir::ExpressionKind::Continue { label },
             ast::ExpressionKind::Call(node, args) => {
                 let callee_state = self
                     .resolutions
@@ -1653,11 +1662,25 @@ impl Actor<'_, '_> {
                 // Store the pattern's ID - this is what THIR uses to register the local binding
                 let pattern_id = pattern.id;
 
+                // Keep temporary dictionary typed as `Dictionary[_, _]` so method calls
+                // on the local can constrain key/value inference from inserted pairs.
+                let inferred_key_ty = self.mk_ty(hir::TypeKind::Infer, node.span);
+                let inferred_value_ty = self.mk_ty(hir::TypeKind::Infer, node.span);
+                let dictionary_local_ty_kind = self.mk_foundation_type(
+                    node.span,
+                    hir::StdType::Dictionary,
+                    vec![
+                        hir::TypeArgument::Type(inferred_key_ty),
+                        hir::TypeArgument::Type(inferred_value_ty),
+                    ],
+                );
+                let dictionary_local_ty = self.mk_ty(dictionary_local_ty_kind, node.span);
+
                 let local = hir::Local {
                     id: self.next_index(),
                     mutability: hir::Mutability::Mutable,
                     pattern,
-                    ty: None,
+                    ty: Some(dictionary_local_ty),
                     initializer: Some(initializer),
                 };
 
@@ -1678,26 +1701,30 @@ impl Actor<'_, '_> {
                     );
                     let target =
                         self.mk_expression(hir::ExpressionKind::Path(dictionary_path), node.span);
-                    let member = self.mk_expression(
-                        hir::ExpressionKind::Member {
-                            target,
-                            name: insert_ident.clone(),
+                    let key_label = hir::Label {
+                        identifier: Identifier::new(self.context.intern_symbol("key"), node.span),
+                        span: node.span,
+                    };
+                    let value_label = hir::Label {
+                        identifier: Identifier::new(self.context.intern_symbol("value"), node.span),
+                        span: node.span,
+                    };
+                    let arguments = vec![
+                        hir::ExpressionArgument {
+                            label: Some(key_label),
+                            span: key.span,
+                            expression: key,
                         },
-                        node.span,
-                    );
-
-                    let arguments = vec![key, value]
-                        .into_iter()
-                        .map(|expr| hir::ExpressionArgument {
-                            label: None,
-                            span: expr.span,
-                            expression: expr,
-                        })
-                        .collect();
+                        hir::ExpressionArgument {
+                            label: Some(value_label),
+                            span: value.span,
+                            expression: value,
+                        },
+                    ];
 
                     let call = self.mk_expression(
                         hir::ExpressionKind::MethodCall {
-                            receiver: member,
+                            receiver: target,
                             name: insert_ident.clone(),
                             arguments,
                         },

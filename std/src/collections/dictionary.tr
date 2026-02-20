@@ -1,16 +1,444 @@
 import std.optional.Optional
-import std.hash.Hashable
+import std.hash.{Hashable, DefaultHasher}
+import std.collections.List
+import std.panic.panic
 
-public struct Dictionary[Key: Hashable, Value] {}
+const SWISS_GROUP_WIDTH: usize = 8
+const SWISS_CTRL_EMPTY: uint8 = 0x80
+const SWISS_CTRL_DELETED: uint8 = 0xfe
+const SWISS_INITIAL_CAPACITY: usize = 16
 
-impl[Key, Value] Dictionary[Key, Value] {
-    public func new() -> Self {
-        Dictionary {}
-    }
+func swissFingerprint(_ hash: uint64) -> uint8 {
+    ((hash >> 57) as uint8) & (0x7f as uint8)
 }
 
-impl[Key, Value] Dictionary[Key, Value] {
-    public func insert(&mut self, key: Key, value: Value) -> Key? {
-        Optional.none
+func swissCtrlIsFull(_ ctrl: uint8) -> bool {
+    ctrl < SWISS_CTRL_EMPTY
+}
+
+func hashKey[Key: Hashable](_ key: &Key) -> uint64 {
+    var hasher = DefaultHasher.new()
+    key.hash(into: &mut hasher)
+    hasher.finish()
+}
+
+/// Hash table layout (scalar Swiss-style probing):
+/// - `controls` stores metadata per slot:
+///   - `SWISS_CTRL_EMPTY` marks the end of a probe chain.
+///   - `SWISS_CTRL_DELETED` is a tombstone slot used by `remove`.
+///   - full slots store a 7-bit hash fingerprint.
+/// - probing walks fixed groups of `SWISS_GROUP_WIDTH` slots using `(base + offset) & mask`.
+/// - candidate hits are validated by `fingerprint -> full hash -> key equality`.
+/// - `insert` remembers the first deleted slot and prefers it once an empty slot is found.
+/// - growth uses capacity doubling and rehashes all full slots.
+/// - removals mark tombstones (`SWISS_CTRL_DELETED`) so probe chains remain intact.
+public struct Dictionary[Key: Hashable, Value] {
+    len: usize
+    capacity: usize
+    controls: List[uint8]
+    hashes: List[uint64]
+    keys: List[Key?]
+    values: List[Value?]
+}
+
+impl[Key: Hashable, Value] Dictionary[Key, Value] {
+    public func new() -> Self {
+        var controls: List[uint8] = List(withCapacity: SWISS_INITIAL_CAPACITY)
+        var hashes: List[uint64] = List(withCapacity: SWISS_INITIAL_CAPACITY)
+        var keys: List[Key?] = List(withCapacity: SWISS_INITIAL_CAPACITY)
+        var values: List[Value?] = List(withCapacity: SWISS_INITIAL_CAPACITY)
+
+        var idx: usize = 0
+        while idx < SWISS_INITIAL_CAPACITY {
+            controls.append(SWISS_CTRL_EMPTY)
+            hashes.append(0 as uint64)
+            keys.append(.none)
+            values.append(.none)
+            idx += 1
+        }
+
+        Dictionary[Key, Value] {
+            len: 0,
+            capacity: SWISS_INITIAL_CAPACITY,
+            controls,
+            hashes,
+            keys,
+            values,
+        }
+    }
+
+    public func len(&self) -> usize {
+        self.len
+    }
+
+    public func isEmpty(&self) -> bool {
+        self.len == 0
+    }
+
+    public func contains(&self, _ key: Key) -> bool {
+        self.get(key).isSome()
+    }
+
+    public func remove(&mut self, _ key: Key) -> Value? {
+        if self.capacity == 0 {
+            return .none
+        }
+
+        let hash = hashKey(&key)
+        let fp = swissFingerprint(hash)
+        let mask = self.capacity - (1 as usize)
+        let base = (hash as usize) & mask
+
+        var groupOffset: usize = 0
+        while groupOffset < self.capacity {
+            let groupStart = (base + groupOffset) & mask
+
+            var slotOffset: usize = 0
+            while slotOffset < SWISS_GROUP_WIDTH {
+                let slot = (groupStart + slotOffset) & mask
+                let ctrl = *self.controls.at(slot)
+
+                if ctrl == SWISS_CTRL_EMPTY {
+                    return .none
+                }
+
+                if swissCtrlIsFull(ctrl) && ctrl == fp {
+                    let slotHash = *self.hashes.at(slot)
+                    if slotHash == hash {
+                        let keysRead: &List[Key?] = &self.keys
+                        let keySlot = keysRead.at(slot)
+                        match keySlot {
+                            case .some(existingKey) => {
+                                if key.eq(existingKey) {
+                                    let values: &mut List[Value?] = &mut self.values
+                                    let valueSlot = values.at(slot)
+                                    var removed: Value?
+                                    unsafe {
+                                        let valuePtr: *mut Value? = valueSlot as *mut Value?
+                                        removed = valuePtr.read()
+                                        valuePtr.write(.none)
+                                    }
+
+                                    let keysWrite: &mut List[Key?] = &mut self.keys
+                                    *keysWrite.at(slot) = .none
+                                    *self.controls.at(slot) = SWISS_CTRL_DELETED
+                                    *self.hashes.at(slot) = 0 as uint64
+
+                                    if removed.isSome() {
+                                        self.len -= 1
+                                    }
+                                    return removed
+                                }
+                            }
+                            case .none => {}
+                        }
+                    }
+                }
+
+                slotOffset += 1
+            }
+
+            groupOffset += SWISS_GROUP_WIDTH
+        }
+
+        return .none
+    }
+
+    public func get(&self, _ key: Key) -> Optional[&Value] {
+        if self.capacity == 0 {
+            return .none
+        }
+
+        let hash = hashKey(&key)
+        let fp = swissFingerprint(hash)
+        let mask = self.capacity - (1 as usize)
+        let base = (hash as usize) & mask
+
+        var groupOffset: usize = 0
+        while groupOffset < self.capacity {
+            let groupStart = (base + groupOffset) & mask
+
+            var slotOffset: usize = 0
+            while slotOffset < SWISS_GROUP_WIDTH {
+                let slot = (groupStart + slotOffset) & mask
+                let ctrl = *self.controls.at(slot)
+
+                if ctrl == SWISS_CTRL_EMPTY {
+                    return .none
+                }
+
+                if swissCtrlIsFull(ctrl) && ctrl == fp {
+                    let slotHash = *self.hashes.at(slot)
+                    if slotHash == hash {
+                        let keySlot: &Key? = self.keys.at(slot)
+                        match keySlot {
+                            case .some(existingKey) => {
+                                if key.eq(existingKey) {
+                                    let valueSlot: &Value? = self.values.at(slot)
+                                    match valueSlot {
+                                        case .some(existingValue) => {
+                                            return .some(existingValue)
+                                        }
+                                        case .none => {
+                                            return .none
+                                        }
+                                    }
+                                }
+                            }
+                            case .none => {}
+                        }
+                    }
+                }
+
+                slotOffset += 1
+            }
+
+            groupOffset += SWISS_GROUP_WIDTH
+        }
+
+        return .none
+    }
+
+    public func get(&mut self, _ key: Key) -> Optional[&mut Value] {
+        if self.capacity == 0 {
+            return .none
+        }
+
+        let hash = hashKey(&key)
+        let fp = swissFingerprint(hash)
+        let mask = self.capacity - (1 as usize)
+        let base = (hash as usize) & mask
+
+        var groupOffset: usize = 0
+        while groupOffset < self.capacity {
+            let groupStart = (base + groupOffset) & mask
+
+            var slotOffset: usize = 0
+            while slotOffset < SWISS_GROUP_WIDTH {
+                let slot = (groupStart + slotOffset) & mask
+                let ctrl = *self.controls.at(slot)
+
+                if ctrl == SWISS_CTRL_EMPTY {
+                    return .none
+                }
+
+                if swissCtrlIsFull(ctrl) && ctrl == fp {
+                    let slotHash = *self.hashes.at(slot)
+                    if slotHash == hash {
+                        let keys: &mut List[Key?] = &mut self.keys
+                        let keySlot = keys.at(slot)
+                        match keySlot {
+                            case .some(existingKey) => {
+                                if key.eq(existingKey) {
+                                    let values: &mut List[Value?] = &mut self.values
+                                    let valueSlot = values.at(slot)
+                                    match valueSlot {
+                                        case .some(existingValue) => {
+                                            return .some(existingValue)
+                                        }
+                                        case .none => {
+                                            return .none
+                                        }
+                                    }
+                                }
+                            }
+                            case .none => {}
+                        }
+                    }
+                }
+
+                slotOffset += 1
+            }
+
+            groupOffset += SWISS_GROUP_WIDTH
+        }
+
+        return .none
+    }
+
+    public func insert(&mut self, key: Key, value: Value) -> Value? {
+        if self.capacity == 0 {
+            return .none
+        }
+
+        let hash = hashKey(&key)
+        let fp = swissFingerprint(hash)
+        let mask = self.capacity - (1 as usize)
+        let base = (hash as usize) & mask
+
+        var firstDeleted: usize = 0 as usize
+        var hasDeleted = false
+
+        var groupOffset: usize = 0
+        while groupOffset < self.capacity {
+            let groupStart = (base + groupOffset) & mask
+
+            var slotOffset: usize = 0
+            while slotOffset < SWISS_GROUP_WIDTH {
+                let slot = (groupStart + slotOffset) & mask
+                let ctrl = *self.controls.at(slot)
+
+                if ctrl == SWISS_CTRL_EMPTY {
+                    if self.shouldGrowForInsert() {
+                        self.grow()
+                        return self.insert(key: key, value: value)
+                    }
+
+                    let insertSlot = if hasDeleted { firstDeleted } else { slot }
+                    *self.controls.at(insertSlot) = fp
+                    *self.hashes.at(insertSlot) = hash
+                    *self.keys.at(insertSlot) = .some(key)
+                    *self.values.at(insertSlot) = .some(value)
+                    self.len += 1
+                    return .none
+                }
+
+                if ctrl == SWISS_CTRL_DELETED {
+                    if !hasDeleted {
+                        hasDeleted = true
+                        firstDeleted = slot
+                    }
+                } else if swissCtrlIsFull(ctrl) && ctrl == fp {
+                    let slotHash = *self.hashes.at(slot)
+                    if slotHash == hash {
+                        let keySlot: &mut Key? = self.keys.at(slot)
+                        match keySlot {
+                            case .some(existingKey) => {
+                                if key == *existingKey {
+                                    let values: &mut List[Value?] = &mut self.values
+                                    let valueSlot = values.at(slot)
+                                    var previous: Value?
+                                    unsafe {
+                                        let valueSlotPtr: *mut Value? = valueSlot as *mut Value?
+                                        previous = valueSlotPtr.read()
+                                        let replacement: Value? = .some(value)
+                                        valueSlotPtr.write(replacement)
+                                    }
+                                    return previous
+                                }
+                            }
+                            case .none => {}
+                        }
+                    }
+                }
+
+                slotOffset += 1
+            }
+
+            groupOffset += SWISS_GROUP_WIDTH
+        }
+
+        self.grow()
+        return self.insert(key: key, value: value)
+    }
+
+    func shouldGrowForInsert(&self) -> bool {
+        if self.capacity == 0 {
+            return true
+        }
+
+        let nextLen = self.len + (1 as usize)
+        return nextLen * (4 as usize) > self.capacity * (3 as usize)
+    }
+
+    func grow(&mut self) {
+        let newCapacity = if self.capacity == 0 {
+            SWISS_INITIAL_CAPACITY
+        } else {
+            self.capacity * 2
+        }
+
+        var newControls: List[uint8] = List(withCapacity: newCapacity)
+        var newHashes: List[uint64] = List(withCapacity: newCapacity)
+        var newKeys: List[Key?] = List(withCapacity: newCapacity)
+        var newValues: List[Value?] = List(withCapacity: newCapacity)
+
+        var initIdx: usize = 0
+        while initIdx < newCapacity {
+            newControls.append(SWISS_CTRL_EMPTY)
+            newHashes.append(0 as uint64)
+            newKeys.append(.none)
+            newValues.append(.none)
+            initIdx += 1
+        }
+
+        var oldSlot: usize = 0
+        while oldSlot < self.capacity {
+            let ctrl = *self.controls.at(oldSlot)
+            if swissCtrlIsFull(ctrl) {
+                let hash = *self.hashes.at(oldSlot)
+                var movedKeyOpt: Key?
+                var movedValueOpt: Value?
+                {
+                    let oldKeys: &mut List[Key?] = &mut self.keys
+                    let oldValues: &mut List[Value?] = &mut self.values
+                    let oldKeySlot = oldKeys.at(oldSlot)
+                    let oldValueSlot = oldValues.at(oldSlot)
+                    unsafe {
+                        let oldKeyPtr: *mut Key? = oldKeySlot as *mut Key?
+                        let oldValuePtr: *mut Value? = oldValueSlot as *mut Value?
+                        movedKeyOpt = oldKeyPtr.read()
+                        movedValueOpt = oldValuePtr.read()
+                        oldKeyPtr.write(.none)
+                        oldValuePtr.write(.none)
+                    }
+                }
+
+                match movedKeyOpt {
+                    case .some(movedKey) => {
+                        match movedValueOpt {
+                            case .some(movedValue) => {
+                                let fp = swissFingerprint(hash)
+                                let mask = newCapacity - (1 as usize)
+                                let base = (hash as usize) & mask
+                                var inserted = false
+                                var insertSlot: usize = 0 as usize
+
+                                var groupOffset: usize = 0
+                                while groupOffset < newCapacity {
+                                    let groupStart = (base + groupOffset) & mask
+
+                                    var slotOffset: usize = 0
+                                    while slotOffset < SWISS_GROUP_WIDTH {
+                                        let slot = (groupStart + slotOffset) & mask
+                                        let candidateCtrl = *newControls.at(slot)
+                                        if candidateCtrl == SWISS_CTRL_EMPTY || candidateCtrl == SWISS_CTRL_DELETED {
+                                            insertSlot = slot
+                                            inserted = true
+                                            break
+                                        }
+                                        slotOffset += 1
+                                    }
+
+                                    if inserted {
+                                        break
+                                    }
+
+                                    groupOffset += SWISS_GROUP_WIDTH
+                                }
+
+                                if !inserted {
+                                    panic("dictionary grow failed: unable to place entry")
+                                }
+
+                                *newControls.at(insertSlot) = fp
+                                *newHashes.at(insertSlot) = hash
+                                *newKeys.at(insertSlot) = .some(movedKey)
+                                *newValues.at(insertSlot) = .some(movedValue)
+                            }
+                            case .none => {}
+                        }
+                    }
+                    case .none => {}
+                }
+            }
+            oldSlot += 1
+        }
+
+        self.controls = newControls
+        self.hashes = newHashes
+        self.keys = newKeys
+        self.values = newValues
+        self.capacity = newCapacity
     }
 }

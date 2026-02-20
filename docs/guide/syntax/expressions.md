@@ -59,6 +59,16 @@ Access enum variant or static member without type prefix.
 .MAX_VALUE          // Inferred static constant
 ```
 
+If a new line begins with `.`, it is treated as postfix continuation of the previous expression unless the previous statement is explicitly terminated.
+
+```taro
+let out = value
+.some(out)          // parsed as: value.some(out)
+
+let out = value;
+.some(out)          // standalone inferred member expression
+```
+
 ### Wildcard
 
 The wildcard expression represents an ignored value.

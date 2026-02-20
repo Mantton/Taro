@@ -5222,10 +5222,23 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     let agg_ty = self.lower_ty(ty).expect("aggregate type lowered");
                     match agg_ty {
                         BasicTypeEnum::StructType(st) => {
-                            let gep = self
+                            let field_index = idx.index() as u32;
+                            let gep = match self
                                 .builder
-                                .build_struct_gep(st, ptr, idx.index() as u32, "field_ptr")
-                                .unwrap();
+                                .build_struct_gep(st, ptr, field_index, "field_ptr")
+                            {
+                                Ok(gep) => gep,
+                                Err(err) => {
+                                    panic!(
+                                        "field projection GEP failed: index={}, base_ty={}, field_ty={}, place={:?}, err={:?}",
+                                        field_index,
+                                        ty.format(self.gcx),
+                                        field_ty.format(self.gcx),
+                                        place,
+                                        err
+                                    );
+                                }
+                            };
                             ptr = gep;
                         }
                         BasicTypeEnum::ArrayType(arr_ty) => {
@@ -5266,16 +5279,17 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         adt_args,
                         self.current_subst,
                     );
-                    let payload_index = layout
-                        .payload_field_index
-                        .expect("enum payload field index");
-
-                    let enum_ty = self.lower_ty(ty).expect("enum");
-                    let enum_struct = enum_ty.into_struct_type();
-                    let payload_ptr = self
-                        .builder
-                        .build_struct_gep(enum_struct, ptr, payload_index, "enum_payload_ptr")
-                        .unwrap();
+                    let payload_ptr = if let Some(payload_index) = layout.payload_field_index {
+                        let enum_ty = self.lower_ty(ty).expect("enum");
+                        let enum_struct = enum_ty.into_struct_type();
+                        self.builder
+                            .build_struct_gep(enum_struct, ptr, payload_index, "enum_payload_ptr")
+                            .unwrap()
+                    } else {
+                        // Zero-sized enum payloads (e.g. Optional[()]) have no dedicated payload field.
+                        // Reuse the enum base address as the variant payload base.
+                        ptr
+                    };
 
                     let variant_ty = enum_variant_tuple_ty(self.gcx, def.id, *index, adt_args);
                     let _variant_struct = match self.lower_ty(variant_ty) {
@@ -5695,10 +5709,12 @@ fn enum_variant_struct_ty<'llvm, 'gcx>(
 ) -> StructType<'llvm> {
     let field_tys: Vec<BasicTypeEnum<'llvm>> = fields
         .iter()
-        .filter_map(|field| {
-            // Substitute field type with ADT's generic args
+        .map(|field| {
+            // Substitute field type with ADT's generic args.
+            // Preserve field index positions for zero-sized fields (e.g. `()` payloads).
             let resolved = instantiate_ty_with_args(gcx, field.ty, adt_args);
             lower_type(context, gcx, target_data, resolved, subst)
+                .unwrap_or_else(|| context.i8_type().array_type(0).into())
         })
         .collect();
     context.struct_type(&field_tys, false)
@@ -5832,10 +5848,12 @@ fn lower_type<'llvm, 'gcx>(
                 let field_tys: Vec<BasicTypeEnum<'llvm>> = defn
                     .fields
                     .iter()
-                    .filter_map(|f| {
+                    .map(|f| {
                         // Substitute field type with ADT's generic args
                         let resolved = instantiate_ty_with_args(gcx, f.ty, adt_args);
+                        // Preserve field index positions for zero-sized fields.
                         lower_type(context, gcx, target_data, resolved, subst)
+                            .unwrap_or_else(|| context.i8_type().array_type(0).into())
                     })
                     .collect();
                 Some(context.struct_type(&field_tys, false).into())
@@ -5871,7 +5889,11 @@ fn lower_type<'llvm, 'gcx>(
             } else {
                 let fields: Vec<BasicTypeEnum<'llvm>> = items
                     .iter()
-                    .filter_map(|t| lower_type(context, gcx, target_data, *t, subst))
+                    .map(|t| {
+                        // Preserve tuple field indices for zero-sized elements (e.g. `((), T)`).
+                        lower_type(context, gcx, target_data, *t, subst)
+                            .unwrap_or_else(|| context.i8_type().array_type(0).into())
+                    })
                     .collect();
                 Some(context.struct_type(&fields, false).into())
             }

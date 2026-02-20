@@ -84,8 +84,11 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
                 // Join both paths.
                 let join = self.new_block_with_note("logical-join".into());
-                self.goto(rhs_block, join, expr.span);
-                self.goto(short_block, join, expr.span);
+                let rhs_incoming = self.goto_if_fallthrough(rhs_block, join, expr.span);
+                let short_incoming = self.goto_if_fallthrough(short_block, join, expr.span);
+                if !rhs_incoming && !short_incoming {
+                    self.terminate(join, expr.span, TerminatorKind::Unreachable);
+                }
                 join.unit()
             }
             ExprKind::If {
@@ -108,13 +111,27 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 }
 
                 let join_block = self.new_block_with_note("Join Block".into());
-                self.goto(then_end, join_block, expr.span);
-                self.goto(else_blk, join_block, expr.span);
+                let then_incoming = self.goto_if_fallthrough(then_end, join_block, expr.span);
+                let else_incoming = self.goto_if_fallthrough(else_blk, join_block, expr.span);
+                if !then_incoming && !else_incoming {
+                    self.terminate(join_block, expr.span, TerminatorKind::Unreachable);
+                }
                 join_block.unit()
             }
             ExprKind::Match { scrutinee, arms } => {
                 self.lower_match_expr(destination, block, expr_id, *scrutinee, arms)
             }
+            ExprKind::Return { value } => {
+                let place = Place::from_local(self.body.return_local);
+                if let Some(&value) = value.as_ref() {
+                    block = self.expr_into_dest(place, block, value).into_block();
+                } else {
+                    self.push_assign_unit(block, expr.span, place, self.gcx);
+                }
+                self.record_return_edge(block, expr.span)
+            }
+            ExprKind::Break => self.record_break_edge(block, expr.span),
+            ExprKind::Continue => self.record_continue_edge(block, expr.span),
             ExprKind::Assign { .. } | ExprKind::AssignOp { .. } => {
                 block = self.lower_statement_expression(block, expr_id).into_block();
                 self.push_assign_unit(block, expr.span, destination, self.gcx);
@@ -529,6 +546,20 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         block_and
     }
 
+    fn goto_if_fallthrough(
+        &mut self,
+        source: BasicBlockId,
+        destination: BasicBlockId,
+        span: Span,
+    ) -> bool {
+        if self.body.basic_blocks[source].terminator.is_none() {
+            self.goto(source, destination, span);
+            true
+        } else {
+            false
+        }
+    }
+
     fn lower_match_expr(
         &mut self,
         destination: Place<'ctx>,
@@ -557,15 +588,20 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         self.apply_deref_vars(&mut var_places, &tree.deref_vars);
 
         let join_block = self.new_block_with_note("match-join".into());
+        let mut join_has_incoming = false;
         self.lower_match_decision(
             block,
             &tree.decision,
             &destination,
             join_block,
+            &mut join_has_incoming,
             &var_places,
             expr.span,
             &tree.deref_vars,
         );
+        if !join_has_incoming {
+            self.terminate(join_block, expr.span, TerminatorKind::Unreachable);
+        }
         join_block.unit()
     }
 
@@ -599,6 +635,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         decision: &thir::match_tree::Decision<'ctx>,
         destination: &Place<'ctx>,
         join_block: BasicBlockId,
+        join_has_incoming: &mut bool,
         var_places: &FxHashMap<usize, Place<'ctx>>,
         span: Span,
         deref_vars: &[thir::match_tree::DerefVar],
@@ -607,14 +644,18 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             thir::match_tree::Decision::Success(body) => {
                 let arm = &self.thir.arms[body.arm];
                 let arm_block = self.new_block_with_note(format!("match-arm-{}", body.arm.index()));
-                self.goto(block, arm_block, span);
+                if !self.goto_if_fallthrough(block, arm_block, span) {
+                    return;
+                }
                 let arm_block = self
                     .bind_match_bindings(arm_block, body.arm, &body.bindings, var_places)
                     .into_block();
                 let arm_block = self
                     .expr_into_dest(destination.clone(), arm_block, arm.body)
                     .into_block();
-                self.goto(arm_block, join_block, arm.span);
+                if self.goto_if_fallthrough(arm_block, join_block, arm.span) {
+                    *join_has_incoming = true;
+                }
             }
             thir::match_tree::Decision::Failure => {
                 self.terminate(block, span, TerminatorKind::Unreachable);
@@ -623,7 +664,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 let arm = &self.thir.arms[body.arm];
                 let guard_block =
                     self.new_block_with_note(format!("match-guard-{}", body.arm.index()));
-                self.goto(block, guard_block, span);
+                if !self.goto_if_fallthrough(block, guard_block, span) {
+                    return;
+                }
                 block = self
                     .bind_match_bindings(guard_block, body.arm, &body.bindings, var_places)
                     .into_block();
@@ -639,12 +682,15 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 let then_block = self
                     .expr_into_dest(destination.clone(), then_block, arm.body)
                     .into_block();
-                self.goto(then_block, join_block, arm.span);
+                if self.goto_if_fallthrough(then_block, join_block, arm.span) {
+                    *join_has_incoming = true;
+                }
                 self.lower_match_decision(
                     else_block,
                     fallback,
                     destination,
                     join_block,
+                    join_has_incoming,
                     var_places,
                     span,
                     deref_vars,
@@ -663,6 +709,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                             fallback,
                             destination,
                             join_block,
+                            join_has_incoming,
                             var_places,
                             span,
                             deref_vars,
@@ -688,6 +735,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                             &case.body,
                             destination,
                             join_block,
+                            join_has_incoming,
                             &case_places,
                             span,
                             deref_vars,
@@ -707,6 +755,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                             fallback.as_deref(),
                             destination,
                             join_block,
+                            join_has_incoming,
                             var_places,
                             span,
                             deref_vars,
@@ -771,6 +820,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                                 &case.body,
                                 destination,
                                 join_block,
+                                join_has_incoming,
                                 &case_places,
                                 span,
                                 deref_vars,
@@ -785,6 +835,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                                 fallback,
                                 destination,
                                 join_block,
+                                join_has_incoming,
                                 var_places,
                                 span,
                                 deref_vars,
@@ -820,6 +871,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         fallback: Option<&thir::match_tree::Decision<'ctx>>,
         destination: &Place<'ctx>,
         join_block: BasicBlockId,
+        join_has_incoming: &mut bool,
         var_places: &FxHashMap<usize, Place<'ctx>>,
         span: Span,
         deref_vars: &[thir::match_tree::DerefVar],
@@ -831,6 +883,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     fallback,
                     destination,
                     join_block,
+                    join_has_incoming,
                     var_places,
                     span,
                     deref_vars,
@@ -848,6 +901,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 decision,
                 destination,
                 join_block,
+                join_has_incoming,
                 var_places,
                 span,
                 deref_vars,
@@ -889,6 +943,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 &case.body,
                 destination,
                 join_block,
+                join_has_incoming,
                 var_places,
                 span,
                 deref_vars,

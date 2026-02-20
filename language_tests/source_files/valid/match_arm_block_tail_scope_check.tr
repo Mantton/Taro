@@ -1,0 +1,15 @@
+// CHECK_ONLY
+
+func wrap(_ opt: int32?) -> int32? {
+    return match opt {
+        case .some(value) => {
+            let out = value;
+            .some(out)
+        }
+        case .none => .none
+    }
+}
+
+func main() {
+    let _ = wrap(.some(1))
+}

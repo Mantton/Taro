@@ -22,11 +22,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             .into_block();
         let dest_ty = self.place_ty(&destination);
 
-        // TODO: Do we wanna break out early?
-        // if self.body.basic_blocks[block].terminator.is_some() {
-        //     self.current_cleanup = saved_cleanup;
-        //     return block.unit();
-        // }
 
         if let Some(expr) = self.thir.blocks[thir_block].expr {
             block = if dest_ty == self.gcx.types.void {

@@ -309,9 +309,6 @@ pub enum StatementKind {
     Declaration(FunctionDeclaration),
     Expression(Box<Expression>),
     Variable(Local),
-    Break(Option<Identifier>),
-    Continue(Option<Identifier>),
-    Return(Option<Box<Expression>>),
     Loop {
         label: Option<Label>,
         block: Block,
@@ -399,6 +396,18 @@ pub enum ExpressionKind {
     ///     case <pattern> => ...
     /// }`
     Match(MatchExpression),
+    /// `return` | `return expr`
+    Return {
+        value: Option<Box<Expression>>,
+    },
+    /// `break` | `break label`
+    Break {
+        label: Option<Identifier>,
+    },
+    /// `continue` | `continue label`
+    Continue {
+        label: Option<Identifier>,
+    },
     /// `main()`
     Call(Box<Expression>, Vec<ExpressionArgument>),
     /// &a | &const T
@@ -1513,15 +1522,6 @@ pub fn walk_statement<V: AstVisitor>(visitor: &mut V, s: &Statement) -> V::Resul
         StatementKind::Variable(local) => {
             try_visit!(visitor.visit_local(local))
         }
-        StatementKind::Break(label) => {
-            visit_optional!(visitor, visit_identifier, label);
-        }
-        StatementKind::Continue(label) => {
-            visit_optional!(visitor, visit_identifier, label);
-        }
-        StatementKind::Return(expr) => {
-            visit_optional!(visitor, visit_expression, expr);
-        }
         StatementKind::Loop { label, block } => {
             visit_optional!(visitor, visit_label, label);
             try_visit!(visitor.visit_block(block));
@@ -1597,6 +1597,12 @@ pub fn walk_expression<V: AstVisitor>(visitor: &mut V, node: &Expression) -> V::
         ExpressionKind::Match(node) => {
             try_visit!(visitor.visit_expression(&node.value));
             walk_list!(visitor, visit_match_arm, &node.arms);
+        }
+        ExpressionKind::Return { value } => {
+            visit_optional!(visitor, visit_expression, value);
+        }
+        ExpressionKind::Break { label } | ExpressionKind::Continue { label } => {
+            visit_optional!(visitor, visit_identifier, label);
         }
         ExpressionKind::Call(expression, arguments) => {
             try_visit!(visitor.visit_expression(expression));

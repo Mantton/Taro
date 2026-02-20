@@ -411,6 +411,9 @@ impl Category {
             thir::ExprKind::Reference { .. }
             | thir::ExprKind::If { .. }
             | thir::ExprKind::Match { .. }
+            | thir::ExprKind::Return { .. }
+            | thir::ExprKind::Break
+            | thir::ExprKind::Continue
             | thir::ExprKind::Call { .. }
             | thir::ExprKind::BoxExistential { .. }
             | thir::ExprKind::ExistentialUpcast { .. }

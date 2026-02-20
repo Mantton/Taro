@@ -1,0 +1,12 @@
+// CHECK_ONLY
+
+func classify(_ value: int32) -> int32 {
+    match value {
+        case 0 => return 1
+        case _ => 2
+    }
+}
+
+func main() {
+    let _ = classify(0)
+}

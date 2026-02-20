@@ -1,0 +1,45 @@
+// CHECK_ONLY
+
+import std.collections.List
+import std.hash.Hashable
+
+func probeWithOperator[Key: Hashable](_ keys: &mut List[Key?], _ key: Key) -> bool {
+    var idx: usize = 0
+    while idx < (1 as usize) {
+        let keySlot: &mut Key? = keys.at(idx)
+        match keySlot {
+            case .some(existingKey) => {
+                if key == *existingKey {
+                    return true
+                }
+            }
+            case .none => {}
+        }
+        idx += 1
+    }
+    return false
+}
+
+func probeWithEqMethod[Key: Hashable](_ keys: &mut List[Key?], _ key: Key) -> bool {
+    var idx: usize = 0
+    while idx < (1 as usize) {
+        let keySlot: &mut Key? = keys.at(idx)
+        match keySlot {
+            case .some(existingKey) => {
+                if key.eq(existingKey) {
+                    return true
+                }
+            }
+            case .none => {}
+        }
+        idx += 1
+    }
+    return false
+}
+
+func main() {
+    var keys: List[int32?] = List()
+    keys.append(.some(10))
+    let _ = probeWithOperator(&mut keys, 10)
+    let _ = probeWithEqMethod(&mut keys, 10)
+}

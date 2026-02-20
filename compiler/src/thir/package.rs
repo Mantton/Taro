@@ -414,21 +414,6 @@ impl<'ctx> FunctionLower<'ctx> {
                 })
             }
             hir::StatementKind::Variable(local) => Some(self.lower_local(local)),
-            hir::StatementKind::Break => Some(Stmt {
-                kind: StmtKind::Break,
-                span: stmt.span,
-            }),
-            hir::StatementKind::Continue => Some(Stmt {
-                kind: StmtKind::Continue,
-                span: stmt.span,
-            }),
-            hir::StatementKind::Return(value) => {
-                let expr_id = value.as_deref().map(|expr| self.lower_expr(expr));
-                Some(Stmt {
-                    kind: StmtKind::Return { value: expr_id },
-                    span: stmt.span,
-                })
-            }
             hir::StatementKind::Loop { block, .. } => {
                 let block_id = self.lower_block(block);
                 Some(Stmt {
@@ -968,6 +953,12 @@ impl<'ctx> FunctionLower<'ctx> {
                     .collect();
                 ExprKind::Match { scrutinee, arms }
             }
+            hir::ExpressionKind::Return { value } => {
+                let value = value.as_deref().map(|expr| self.lower_expr(expr));
+                ExprKind::Return { value }
+            }
+            hir::ExpressionKind::Break { .. } => ExprKind::Break,
+            hir::ExpressionKind::Continue { .. } => ExprKind::Continue,
             hir::ExpressionKind::Block(block) => {
                 let block_id = self.lower_block(block);
                 ExprKind::Block(block_id)

@@ -277,23 +277,51 @@ pub fn validate_moves<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResult<
             check_terminator_uses(gcx, body, &state, term)?;
             collect_moves_from_terminator(gcx, body, term, &mut state);
 
-            // Propagate state to successors
-            for succ in successors(&term.kind) {
-                let changed = if let Some(succ_state) = block_states.get_mut(&succ) {
-                    succ_state.merge(&state)
-                } else {
-                    block_states.insert(succ, state.clone());
-                    true
-                };
+            match &term.kind {
+                TerminatorKind::Call {
+                    destination,
+                    target,
+                    unwind,
+                    ..
+                } => {
+                    // A successful call initializes the destination place.
+                    let mut normal_state = state.clone();
+                    normal_state.reinitialize(destination.local);
+                    propagate_move_state(&mut block_states, &mut worklist, *target, &normal_state);
 
-                if changed && !worklist.contains(&succ) {
-                    worklist.push(succ);
+                    if let CallUnwindAction::Cleanup(cleanup) = unwind {
+                        propagate_move_state(&mut block_states, &mut worklist, *cleanup, &state);
+                    }
+                }
+                _ => {
+                    // Propagate state to successors
+                    for succ in successors(&term.kind) {
+                        propagate_move_state(&mut block_states, &mut worklist, succ, &state);
+                    }
                 }
             }
         }
     }
 
     gcx.dcx().ok()
+}
+
+fn propagate_move_state(
+    block_states: &mut FxHashMap<BasicBlockId, MoveState>,
+    worklist: &mut Vec<BasicBlockId>,
+    succ: BasicBlockId,
+    state: &MoveState,
+) {
+    let changed = if let Some(succ_state) = block_states.get_mut(&succ) {
+        succ_state.merge(state)
+    } else {
+        block_states.insert(succ, state.clone());
+        true
+    };
+
+    if changed && !worklist.contains(&succ) {
+        worklist.push(succ);
+    }
 }
 
 /// Get successors of a terminator.

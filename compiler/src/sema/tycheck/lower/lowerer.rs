@@ -122,7 +122,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 member,
             } => self.lower_qualified_access(node, target, interface, member),
             hir::TypeKind::Never => Ty::new(TyKind::Never, gcx),
-            hir::TypeKind::Infer => unreachable!(),
+            hir::TypeKind::Infer => self.ty_infer(None, node.span),
         }
     }
 

@@ -114,6 +114,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             }
             ExprKind::If { .. }
             | ExprKind::Match { .. }
+            | ExprKind::Return { .. }
+            | ExprKind::Break
+            | ExprKind::Continue
             | ExprKind::Deref(..)
             | ExprKind::Reference { .. }
             | ExprKind::Local(..)

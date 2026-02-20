@@ -89,6 +89,14 @@ pub enum ExprKind<'a> {
         then_expr: ExprId,
         else_expr: Option<ExprId>,
     },
+    /// `return` / `return value`
+    Return {
+        value: Option<ExprId>,
+    },
+    /// `break`
+    Break,
+    /// `continue`
+    Continue,
     Assign {
         target: ExprId,
         value: ExprId,

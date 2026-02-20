@@ -99,6 +99,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             ExprKind::Reference { .. }
             | ExprKind::If { .. }
             | ExprKind::Match { .. }
+            | ExprKind::Return { .. }
+            | ExprKind::Break
+            | ExprKind::Continue
             | ExprKind::Assign { .. }
             | ExprKind::AssignOp { .. }
             | ExprKind::Literal(..)

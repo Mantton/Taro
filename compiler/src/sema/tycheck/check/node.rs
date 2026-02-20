@@ -31,6 +31,7 @@ use crate::{
     },
     span::{Span, Symbol},
 };
+use rustc_hash::FxHashSet;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -168,11 +169,6 @@ impl<'ctx> Checker<'ctx> {
                 } else {
                     self.check_local(node);
                 }
-            }
-            hir::StatementKind::Break => self.check_break(node.span),
-            hir::StatementKind::Continue => self.check_continue(node.span),
-            hir::StatementKind::Return(expression) => {
-                self.check_return(expression.as_deref(), node.span, cs.as_deref_mut());
             }
             hir::StatementKind::Loop { block, .. } => {
                 self.check_loop(block, cs);
@@ -624,6 +620,18 @@ impl<'ctx> Checker<'ctx> {
             }
             hir::ExpressionKind::Match(expr) => {
                 self.synth_match_expression(expression, expr, expectation, cs)
+            }
+            hir::ExpressionKind::Return { value } => {
+                self.check_return(value.as_deref(), expression.span, Some(cs));
+                Ty::new(TyKind::Never, self.gcx())
+            }
+            hir::ExpressionKind::Break { .. } => {
+                self.check_break(expression.span);
+                Ty::new(TyKind::Never, self.gcx())
+            }
+            hir::ExpressionKind::Continue { .. } => {
+                self.check_continue(expression.span);
+                Ty::new(TyKind::Never, self.gcx())
             }
             hir::ExpressionKind::Reference(inner, mutability) => {
                 let inner_ty = self.synth_with_expectation(inner, None, cs);
@@ -2017,13 +2025,31 @@ impl<'ctx> Checker<'ctx> {
         }
 
         let recv_ty = self.synth(receiver, cs);
+        let arg_expectations = if recv_ty.is_error() {
+            None
+        } else {
+            self.method_argument_expectations(recv_ty, name, arguments.len(), expression.span, cs)
+        };
+
         let args: Vec<ApplyArgument<'ctx>> = arguments
             .iter()
-            .map(|n| ApplyArgument {
-                id: n.expression.id,
-                label: n.label.clone().map(|n| n.identifier),
-                ty: self.synth(&n.expression, cs),
-                span: n.expression.span,
+            .enumerate()
+            .map(|(index, n)| {
+                let expected = arg_expectations
+                    .as_ref()
+                    .and_then(|items| items.get(index))
+                    .cloned();
+                let ty = if let Some(expected) = expected {
+                    self.synth_with_expectation(&n.expression, Some(expected), cs)
+                } else {
+                    self.synth(&n.expression, cs)
+                };
+                ApplyArgument {
+                    id: n.expression.id,
+                    label: n.label.clone().map(|n| n.identifier),
+                    ty,
+                    span: n.expression.span,
+                }
             })
             .collect();
 
@@ -2055,6 +2081,113 @@ impl<'ctx> Checker<'ctx> {
 }
 
 impl<'ctx> Checker<'ctx> {
+    fn method_argument_expectations(
+        &self,
+        receiver_ty: Ty<'ctx>,
+        name: &crate::span::Identifier,
+        argument_count: usize,
+        span: Span,
+        cs: &mut Cs<'ctx>,
+    ) -> Option<Vec<Ty<'ctx>>> {
+        let gcx = self.gcx();
+
+        let mut base_ty = cs.infer_cx.resolve_vars_if_possible(receiver_ty);
+        if base_ty.is_error() || base_ty.is_infer() {
+            return None;
+        }
+
+        loop {
+            match base_ty.kind() {
+                TyKind::Reference(inner, _) | TyKind::Pointer(inner, _) => {
+                    base_ty = cs.infer_cx.resolve_vars_if_possible(inner);
+                    if base_ty.is_error() || base_ty.is_infer() {
+                        return None;
+                    }
+                }
+                _ => break,
+            }
+        }
+
+        let Some(head) = type_head_from_value_ty(base_ty) else {
+            return None;
+        };
+
+        let base_args = match base_ty.kind() {
+            TyKind::Adt(_, args) if !args.is_empty() => Some(args),
+            _ => None,
+        };
+
+        let candidates = self.collect_inherent_instance_candidates(head, name.symbol.clone());
+        if candidates.is_empty() {
+            return None;
+        }
+
+        let mut candidate_inputs: Vec<Vec<Ty<'ctx>>> = vec![];
+
+        for def_id in candidates {
+            if !gcx.is_definition_visible(def_id, self.current_def) {
+                continue;
+            }
+
+            let signature = gcx.get_signature(def_id);
+            let signature = if let Some(base_args) = base_args {
+                instantiate_signature_with_args(gcx, signature, base_args)
+            } else {
+                signature.clone()
+            };
+
+            let mut input_tys: Vec<Ty<'ctx>> = signature.inputs.iter().map(|input| input.ty).collect();
+            if input_tys.is_empty() {
+                continue;
+            }
+
+            // Drop the receiver parameter; only infer user-supplied arguments.
+            input_tys.remove(0);
+
+            if input_tys.len() != argument_count {
+                continue;
+            }
+
+            candidate_inputs.push(input_tys);
+        }
+
+        if candidate_inputs.is_empty() {
+            return None;
+        }
+
+        let first = candidate_inputs[0].clone();
+        if candidate_inputs.iter().all(|inputs| *inputs == first) {
+            Some(first)
+        } else {
+            None
+        }
+    }
+
+    fn collect_inherent_instance_candidates(
+        &self,
+        head: TypeHead,
+        name: Symbol,
+    ) -> Vec<DefinitionID> {
+        let gcx = self.gcx();
+        let databases = gcx.store.type_databases.borrow();
+        let mut members = Vec::new();
+        let mut seen = FxHashSet::default();
+
+        for db in databases.values() {
+            if let Some(index) = db.type_head_to_members.get(&head) {
+                if let Some(set) = index.inherent_instance.get(&name) {
+                    for &id in &set.members {
+                        if seen.insert(id) {
+                            members.push(id);
+                        }
+                    }
+                }
+            }
+        }
+
+        members
+    }
+
     fn constructor_nominal_from_resolution(
         &self,
         resolution: &hir::Resolution,
@@ -2154,33 +2287,56 @@ impl<'ctx> Checker<'ctx> {
 
         match else_ty {
             Some(else_ty) => {
-                // Branches must agree.
-                cs.equal(
-                    then_ty,
-                    else_ty,
-                    node.else_block
-                        .as_ref()
-                        .map(|e| e.span)
-                        .unwrap_or(node.then_block.span),
-                );
-                then_ty
-            }
-            None => {
-                // No else: coerce the then branch into the expected type if provided,
-                // otherwise use void/unit.
-                if let Some(exp) = expectation {
+                let result_ty = expectation
+                    .unwrap_or_else(|| cs.infer_cx.next_ty_var(expression.span));
+
+                let resolved_then = cs.infer_cx.resolve_vars_if_possible(then_ty);
+                if matches!(resolved_then.kind(), TyKind::Never) {
                     cs.add_goal(
                         Goal::Coerce {
                             node_id: node.then_block.id,
                             from: then_ty,
-                            to: exp,
+                            to: result_ty,
                         },
-                        expression.span,
+                        node.then_block.span,
                     );
-                    exp
                 } else {
-                    self.gcx().types.void
+                    cs.equal(result_ty, then_ty, node.then_block.span);
                 }
+
+                let else_expr = node
+                    .else_block
+                    .as_ref()
+                    .expect("else_ty exists iff else block exists");
+                let resolved_else = cs.infer_cx.resolve_vars_if_possible(else_ty);
+                if matches!(resolved_else.kind(), TyKind::Never) {
+                    cs.add_goal(
+                        Goal::Coerce {
+                            node_id: else_expr.id,
+                            from: else_ty,
+                            to: result_ty,
+                        },
+                        else_expr.span,
+                    );
+                } else {
+                    cs.equal(result_ty, else_ty, else_expr.span);
+                }
+
+                result_ty
+            }
+            None => {
+                // `if cond { ... }` without an else always has unit type.
+                // The then branch value must be coercible to unit (or diverge).
+                let unit_ty = self.gcx().types.void;
+                cs.add_goal(
+                    Goal::Coerce {
+                        node_id: node.then_block.id,
+                        from: then_ty,
+                        to: unit_ty,
+                    },
+                    node.then_block.span,
+                );
+                unit_ty
             }
         }
     }
@@ -2323,9 +2479,11 @@ impl<'ctx> Checker<'ctx> {
         let shared_infer_cx = self
             .infer_ctx()
             .unwrap_or_else(|| Rc::new(InferCtx::new(self.context)));
+        let had_expectation = expectation.is_some();
         let result_ty = expectation.unwrap_or_else(|| shared_infer_cx.next_ty_var(expression.span));
 
         self.with_infer_ctx(shared_infer_cx.clone(), || {
+            let mut all_arms_never = true;
             for arm in &node.arms {
                 // Each arm gets its own constraint system
                 let mut arm_cs = self.new_cs();
@@ -2364,6 +2522,7 @@ impl<'ctx> Checker<'ctx> {
                         arm.body.span,
                     );
                 } else {
+                    all_arms_never = false;
                     arm_cs.equal(result_ty, arm_ty, arm.body.span);
                 }
 
@@ -2371,6 +2530,15 @@ impl<'ctx> Checker<'ctx> {
                 arm_cs.solve_intermediate();
                 self.commit_constraint_results(&arm_cs);
                 _cs.merge(arm_cs);
+            }
+
+            if all_arms_never {
+                let never_ty = Ty::new(TyKind::Never, self.gcx());
+                if !had_expectation && result_ty.is_infer() {
+                    _cs.equal(result_ty, never_ty, expression.span);
+                    _cs.solve_intermediate();
+                }
+                return never_ty;
             }
 
             let resolved = shared_infer_cx.resolve_vars_if_possible(result_ty);
@@ -4433,12 +4601,6 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                 // Note: Use pattern.id since that's what name resolution uses
                 self.local_decls.insert(local.pattern.id);
             }
-            hir::StatementKind::Break | hir::StatementKind::Continue => {}
-            hir::StatementKind::Return(expr) => {
-                if let Some(expr) = expr.as_deref() {
-                    self.collect_expr(expr, UseContext::Value);
-                }
-            }
             hir::StatementKind::Loop { block, .. } => {
                 self.collect_block(block);
             }
@@ -4526,6 +4688,12 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                     self.collect_expr(&arm.body, UseContext::Value);
                 }
             }
+            hir::ExpressionKind::Return { value } => {
+                if let Some(value) = value.as_deref() {
+                    self.collect_expr(value, UseContext::Value);
+                }
+            }
+            hir::ExpressionKind::Break { .. } | hir::ExpressionKind::Continue { .. } => {}
             hir::ExpressionKind::Call { callee, arguments } => {
                 self.collect_expr(callee, UseContext::Value);
                 for arg in arguments {

@@ -1,0 +1,19 @@
+// CHECK_ONLY
+
+import std.collections.List
+import std.optional.Optional
+
+func firstMutable(_ values: &mut List[int32?]) -> Optional[&mut int32] {
+    let slot = values.at(0 as usize)
+    return match slot {
+        case .some(v) => .some(v)
+        case .none => .none
+    }
+}
+
+func main() {
+    var values: List[int32?] = List()
+    let entry: int32? = .some(1)
+    values.append(entry)
+    let _ = firstMutable(&mut values)
+}

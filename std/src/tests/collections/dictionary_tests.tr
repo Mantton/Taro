@@ -1,0 +1,97 @@
+import std.hash.{Hashable, Hasher}
+
+struct CollisionKey {
+    id: int32
+}
+
+impl std.ops.PartialEq for CollisionKey {
+    public func eq(&self, _ other: &CollisionKey) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Hashable for CollisionKey {
+    public func hash[H: Hasher](&self, into hasher: &mut H) {
+        // Constant marker forces all keys into the same hash stream.
+        let marker: [uint8; 1] = [1]
+        hasher.write(marker.as_span())
+    }
+}
+
+@test
+func testCollisionInsertLookupOverwrite() {
+    var dict: [CollisionKey: int32] = [:]
+
+    let _ = dict.insert(key: CollisionKey { id: 1 }, value: 100)
+    let _ = dict.insert(key: CollisionKey { id: 2 }, value: 200)
+
+    let hit1 = dict.get(CollisionKey { id: 1 })
+    let hit2 = dict.get(CollisionKey { id: 2 })
+    std.testing.assertTrue(hit1.isSome(), "collision lookup should find key 1")
+    std.testing.assertTrue(hit2.isSome(), "collision lookup should find key 2")
+    std.testing.assertEqual(*hit1.unwrap(), 100, "collision key 1 value mismatch")
+    std.testing.assertEqual(*hit2.unwrap(), 200, "collision key 2 value mismatch")
+
+    let old2 = dict.insert(key: CollisionKey { id: 2 }, value: 201)
+    std.testing.assertTrue(old2.isSome(), "collision overwrite should return previous value")
+    std.testing.assertEqual(old2.unwrap(), 200, "collision overwrite previous value mismatch")
+}
+
+@test
+func testRemoveTombstoneKeepsProbeChain() {
+    var dict: [CollisionKey: int32] = [:]
+
+    let _ = dict.insert(key: CollisionKey { id: 1 }, value: 100)
+    let _ = dict.insert(key: CollisionKey { id: 2 }, value: 200)
+    let _ = dict.insert(key: CollisionKey { id: 3 }, value: 300)
+
+    let removed = dict.remove(CollisionKey { id: 2 })
+    std.testing.assertTrue(removed.isSome(), "remove should return value for present collision key")
+    std.testing.assertEqual(removed.unwrap(), 200, "removed value mismatch for collision key")
+
+    let hit1 = dict.get(CollisionKey { id: 1 })
+    let hit2 = dict.get(CollisionKey { id: 2 })
+    let hit3 = dict.get(CollisionKey { id: 3 })
+    std.testing.assertTrue(hit1.isSome(), "key 1 should still be reachable after tombstone creation")
+    std.testing.assertTrue(hit2.isNone(), "removed key should not be reachable")
+    std.testing.assertTrue(hit3.isSome(), "key 3 should remain reachable through tombstone")
+}
+
+@test
+func testDeletedSlotCanBeReused() {
+    var dict: [CollisionKey: int32] = [:]
+
+    let _ = dict.insert(key: CollisionKey { id: 10 }, value: 1000)
+    let _ = dict.insert(key: CollisionKey { id: 11 }, value: 1100)
+    let _ = dict.remove(CollisionKey { id: 10 })
+
+    let added = dict.insert(key: CollisionKey { id: 12 }, value: 1200)
+    std.testing.assertTrue(added.isNone(), "insert into table with tombstone should behave as new insert")
+    std.testing.assertEqual(dict.len(), 2 as usize, "len should account for tombstone reuse correctly")
+
+    let hit11 = dict.get(CollisionKey { id: 11 })
+    let hit12 = dict.get(CollisionKey { id: 12 })
+    std.testing.assertTrue(hit11.isSome(), "existing key should survive tombstone reuse")
+    std.testing.assertTrue(hit12.isSome(), "new key should be reachable after tombstone reuse")
+    std.testing.assertEqual(*hit11.unwrap(), 1100, "key 11 value mismatch after tombstone reuse")
+    std.testing.assertEqual(*hit12.unwrap(), 1200, "key 12 value mismatch after tombstone reuse")
+}
+
+@test
+func testGrowthThresholdAndOverwrite() {
+    var dict: [int32: int32] = [:]
+
+    var i: int32 = 0
+    while i < 13 {
+        let previous = dict.insert(key: i, value: i + 100)
+        std.testing.assertTrue(previous.isNone(), "new insert should return none before/at threshold")
+        i += 1
+    }
+
+    std.testing.assertEqual(dict.len(), 13 as usize, "len should reflect threshold-crossing inserts")
+
+    let overwrite = dict.insert(key: 5, value: 999)
+    std.testing.assertTrue(overwrite.isSome(), "overwrite should return previous value after threshold growth")
+    std.testing.assertEqual(overwrite.unwrap(), 105, "overwrite previous value mismatch after threshold growth")
+    std.testing.assertEqual(dict.len(), 13 as usize, "overwrite should not change len")
+}

@@ -1,0 +1,97 @@
+// TEST
+
+func useReadApiShape(_ dict: &Dictionary[int32, string]) {
+    let count: usize = dict.len()
+    let empty: bool = dict.isEmpty()
+    let hasKey: bool = dict.contains(10)
+    let maybeValue: Optional[&string] = dict.get(10)
+
+    let _ = count
+    let _ = empty
+    let _ = hasKey
+    let _ = maybeValue
+}
+
+func useWriteApiShape(_ dict: &mut Dictionary[int32, string]) {
+    let previous: string? = dict.insert(key: 10, value: "hello")
+    let maybeValue: Optional[&mut string] = dict.get(10)
+
+    let _ = previous
+    let _ = maybeValue
+}
+
+@test
+func dictionaryApiShapeTypecheck() {
+    var fromLiteral: [int32: string] = [:]
+    useWriteApiShape(&mut fromLiteral)
+    useReadApiShape(&fromLiteral)
+
+    var fromCtor: Dictionary[int32, string] = Dictionary()
+    useWriteApiShape(&mut fromCtor)
+    useReadApiShape(&fromCtor)
+}
+
+@test
+func dictionaryInitAndBasicLookup() {
+    var dict: Dictionary[int32, int32] = Dictionary()
+    std.testing.assertEqual(dict.len(), 0 as usize, "new dictionary should start empty")
+    std.testing.assertTrue(dict.isEmpty(), "new dictionary should report empty")
+    std.testing.assertTrue(dict.get(1).isNone(), "missing key should return none")
+}
+
+@test
+func dictionaryInsertOverwriteMutateRemove() {
+    var dict: Dictionary[int32, int32] = Dictionary()
+
+    let first = dict.insert(key: 7, value: 10)
+    std.testing.assertTrue(first.isNone(), "first insert should return none")
+    std.testing.assertEqual(dict.len(), 1 as usize, "len should be 1 after first insert")
+
+    let second = dict.insert(key: 7, value: 11)
+    std.testing.assertTrue(second.isSome(), "overwrite should return previous value")
+    std.testing.assertEqual(second.unwrap(), 10, "overwrite previous value mismatch")
+    std.testing.assertEqual(dict.len(), 1 as usize, "overwrite should not change len")
+
+    let imm = dict.get(7)
+    std.testing.assertTrue(imm.isSome(), "immutable get should find key")
+    std.testing.assertEqual(*imm.unwrap(), 11, "immutable get should return latest value")
+
+    {
+        let mutValue = dict.get(7)
+        std.testing.assertTrue(mutValue.isSome(), "mutable get should find key")
+        *mutValue.unwrap() = 12
+    }
+
+    let removed = dict.remove(7)
+    std.testing.assertTrue(removed.isSome(), "remove should return removed value")
+    std.testing.assertEqual(removed.unwrap(), 12, "remove returned value mismatch")
+    std.testing.assertEqual(dict.len(), 0 as usize, "len should decrease after remove")
+    std.testing.assertFalse(dict.contains(7), "removed key should no longer be present")
+
+    let missing = dict.remove(7)
+    std.testing.assertTrue(missing.isNone(), "removing missing key should return none")
+}
+
+@test
+func dictionaryGrowthRetainsEntries() {
+    var dict: Dictionary[int32, int32] = Dictionary()
+
+    var i: int32 = 0
+    while i < 40 {
+        let previous = dict.insert(key: i, value: i * 10)
+        std.testing.assertTrue(previous.isNone(), "new insert should return none")
+        i += 1
+    }
+
+    std.testing.assertEqual(dict.len(), 40 as usize, "len should reflect all inserted keys")
+
+    i = 0
+    while i < 40 {
+        let value = dict.get(i)
+        std.testing.assertTrue(value.isSome(), "key should remain accessible after growth")
+        std.testing.assertEqual(*value.unwrap(), i * 10, "value mismatch after growth")
+        i += 1
+    }
+}
+
+func main() {}

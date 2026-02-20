@@ -466,9 +466,6 @@ pub enum StatementKind {
     Declaration(Declaration),
     Expression(Box<Expression>),
     Variable(Local),
-    Break,
-    Continue,
-    Return(Option<Box<Expression>>),
     Loop {
         label: Option<Label>,
         block: Block,
@@ -540,6 +537,18 @@ pub enum ExpressionKind {
     ///     case <pattern> => ...
     /// }`
     Match(MatchExpression),
+    /// `return` | `return expr`
+    Return {
+        value: Option<Box<Expression>>,
+    },
+    /// `break` | `break label`
+    Break {
+        label: Option<Identifier>,
+    },
+    /// `continue` | `continue label`
+    Continue {
+        label: Option<Identifier>,
+    },
     /// `main()`
     Call {
         callee: Box<Expression>,
@@ -1703,10 +1712,6 @@ pub fn walk_statement<V: HirVisitor>(visitor: &mut V, s: &Statement) -> V::Resul
         StatementKind::Variable(local) => {
             try_visit!(visitor.visit_local(local));
         }
-        StatementKind::Break | StatementKind::Continue => {}
-        StatementKind::Return(expr) => {
-            visit_optional!(visitor, visit_expression, expr);
-        }
         StatementKind::Loop { label, block } => {
             visit_optional!(visitor, visit_label, label);
             try_visit!(visitor.visit_block(block));
@@ -1766,6 +1771,12 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, node: &Expression) -> V::
         }
         ExpressionKind::Match(expr) => {
             try_visit!(visitor.visit_match_expression(expr));
+        }
+        ExpressionKind::Return { value } => {
+            visit_optional!(visitor, visit_expression, value);
+        }
+        ExpressionKind::Break { label } | ExpressionKind::Continue { label } => {
+            visit_optional!(visitor, visit_identifier, label);
         }
         ExpressionKind::Call { callee, arguments } => {
             try_visit!(visitor.visit_expression(callee));

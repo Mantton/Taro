@@ -1,0 +1,41 @@
+import std.hash.{Hashable, Hasher}
+
+struct SetCollisionKey {
+    id: int32
+}
+
+impl std.ops.PartialEq for SetCollisionKey {
+    public func eq(&self, _ other: &SetCollisionKey) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Hashable for SetCollisionKey {
+    public func hash[H: Hasher](&self, into hasher: &mut H) {
+        // Constant marker forces probe-chain collisions.
+        let marker: [uint8; 1] = [1]
+        hasher.write(marker.as_span())
+    }
+}
+
+@test
+func testSetCollisionInsertContainsRemove() {
+    var set: std.collections.Set[SetCollisionKey] = std.collections.Set()
+
+    set.insert(SetCollisionKey { id: 1 })
+    set.insert(SetCollisionKey { id: 2 })
+    set.insert(SetCollisionKey { id: 2 })
+
+    std.testing.assertEqual(set.len(), 2 as usize, "set should deduplicate equal elements")
+    std.testing.assertTrue(set.contains(SetCollisionKey { id: 1 }), "set should contain key 1")
+    std.testing.assertTrue(set.contains(SetCollisionKey { id: 2 }), "set should contain key 2")
+    std.testing.assertFalse(set.contains(SetCollisionKey { id: 3 }), "set should not contain missing key")
+
+    let removed = set.remove(SetCollisionKey { id: 2 })
+    std.testing.assertTrue(removed, "remove should succeed for present collision key")
+    std.testing.assertFalse(set.contains(SetCollisionKey { id: 2 }), "removed collision key should be absent")
+    std.testing.assertEqual(set.len(), 1 as usize, "set len should update after remove")
+
+    let removedMissing = set.remove(SetCollisionKey { id: 2 })
+    std.testing.assertFalse(removedMissing, "remove should fail for missing key")
+}

@@ -39,6 +39,7 @@ struct MethodCandidate<'ctx> {
     /// Cost of auto-reference: None=0, Immutable=1, Mutable=2
     autoref_cost: u8,
     matches_expectation: bool,
+    output_ref_mutability: Option<Mutability>,
     deref_steps: usize,
 }
 
@@ -165,6 +166,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 for def_id in candidates {
                     // Check if signature matches expectation (mutability)
                     let signature = self.gcx().get_signature(def_id);
+                    let output_ref_mutability = match signature.output.kind() {
+                        TyKind::Reference(_, mutability) => Some(mutability),
+                        _ => None,
+                    };
                     let mut matches_expectation = true;
                     if let Some(expect) = data.expect_ty {
                         if let TyKind::Reference(_, Mutability::Mutable) = expect.kind() {
@@ -182,8 +187,44 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         adjustments: adjustments.clone(),
                         autoref_cost,
                         matches_expectation,
+                        output_ref_mutability,
                         deref_steps,
                     });
+                }
+            }
+        }
+
+        // If no expected type is available yet and this call has both mutable- and
+        // immutable-reference return candidates, prefer mutable-reference variants.
+        //
+        // This prevents early commitment to immutable overloads in contexts where
+        // downstream constraints later require `&mut`.
+        let has_unresolved_expectation = match data.expect_ty {
+            None => true,
+            Some(expect) => {
+                let expect = self.structurally_resolve(expect);
+                expect.is_infer() || expect.contains_inference()
+            }
+        };
+
+        let receiver_is_mut_ref = matches!(
+            resolved_receiver.kind(),
+            TyKind::Reference(_, Mutability::Mutable)
+        );
+
+        if has_unresolved_expectation && receiver_is_mut_ref {
+            let has_mut_ref_output = all_candidates
+                .iter()
+                .any(|candidate| candidate.output_ref_mutability == Some(Mutability::Mutable));
+            let has_imm_ref_output = all_candidates
+                .iter()
+                .any(|candidate| candidate.output_ref_mutability == Some(Mutability::Immutable));
+
+            if has_mut_ref_output && has_imm_ref_output {
+                for candidate in &mut all_candidates {
+                    if candidate.output_ref_mutability == Some(Mutability::Immutable) {
+                        candidate.matches_expectation = false;
+                    }
                 }
             }
         }

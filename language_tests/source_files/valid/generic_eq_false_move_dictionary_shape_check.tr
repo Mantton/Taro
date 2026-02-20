@@ -1,0 +1,117 @@
+// CHECK_ONLY
+
+import std.collections.List
+import std.hash.{Hashable, DefaultHasher}
+import std.optional.Optional
+
+const GROUP_WIDTH: usize = 8
+const CTRL_EMPTY: uint8 = 0x80
+
+func fingerprint(_ hash: uint64) -> uint8 {
+    ((hash >> 57) as uint8) & (0x7f as uint8)
+}
+
+func hashKey[Key: Hashable](_ key: &Key) -> uint64 {
+    var hasher = DefaultHasher.new()
+    key.hash(into: &mut hasher)
+    hasher.finish()
+}
+
+struct ProbeMap[Key: Hashable, Value] {
+    capacity: usize
+    controls: List[uint8]
+    hashes: List[uint64]
+    keys: List[Key?]
+    values: List[Value?]
+}
+
+impl[Key: Hashable, Value] ProbeMap[Key, Value] {
+    func new() -> Self {
+        var controls: List[uint8] = List()
+        var hashes: List[uint64] = List()
+        var keys: List[Key?] = List()
+        var values: List[Value?] = List()
+
+        var idx: usize = 0
+        while idx < (16 as usize) {
+            controls.append(CTRL_EMPTY)
+            hashes.append(0 as uint64)
+            keys.append(.none)
+            values.append(.none)
+            idx += 1
+        }
+
+        ProbeMap[Key, Value] {
+            capacity: 16 as usize,
+            controls,
+            hashes,
+            keys,
+            values,
+        }
+    }
+
+    func get(&self, _ key: Key) -> Optional[&Value] {
+        let _ = key
+        return .none
+    }
+
+    func get(&mut self, _ key: Key) -> Optional[&mut Value] {
+        if self.capacity == 0 {
+            return .none
+        }
+
+        let hash = hashKey(&key)
+        let fp = fingerprint(hash)
+        let mask = self.capacity - (1 as usize)
+        let base = (hash as usize) & mask
+
+        var groupOffset: usize = 0
+        while groupOffset < self.capacity {
+            let groupStart = (base + groupOffset) & mask
+
+            var slotOffset: usize = 0
+            while slotOffset < GROUP_WIDTH {
+                let slot = (groupStart + slotOffset) & mask
+                let ctrl = *self.controls.at(slot)
+
+                if ctrl == CTRL_EMPTY {
+                    return .none
+                }
+
+                if ctrl < CTRL_EMPTY && ctrl == fp {
+                    let slotHash = *self.hashes.at(slot)
+                    if slotHash == hash {
+                        let keySlot = self.keys.at(slot)
+                        match keySlot {
+                            case .some(existingKey) => {
+                                if key.eq(existingKey) {
+                                    let valueSlot: &mut Value? = self.values.at(slot)
+                                    match valueSlot {
+                                        case .some(existingValue) => {
+                                            return .some(existingValue)
+                                        }
+                                        case .none => {
+                                            return .none
+                                        }
+                                    }
+                                }
+                            }
+                            case .none => {}
+                        }
+                    }
+                }
+
+                slotOffset += 1
+            }
+
+            groupOffset += GROUP_WIDTH
+        }
+
+        return .none
+    }
+}
+
+func main() {
+    var map = ProbeMap[int32, int32].new()
+    let _ = map.get(10)
+}
