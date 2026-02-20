@@ -442,11 +442,7 @@ impl Lexer {
             }
             '=' => {
                 if self.eat('=') {
-                    if self.eat('=') {
-                        Token::PtrEq
-                    } else {
-                        Token::Eql
-                    }
+                    Token::Eql
                 } else if self.eat('>') {
                     Token::EqArrow
                 } else {
@@ -1144,7 +1140,7 @@ fn is_line_continuation_starter(tok: &Token) -> bool {
         | Caret | Bar
         | AmpAmp | BarBar
         // relational / equality
-        | LChevron | RChevron | Leq | Geq | Eql | Neq | PtrEq
+        | LChevron | RChevron | Leq | Geq | Eql | Neq
         // shifts
         | Shl | Shr
         // assignment family (leading assignment style)
@@ -1652,7 +1648,6 @@ mod tests {
             ("^=", Token::CaretEq),
             ("<<=", Token::ShlEq),
             (">>=", Token::ShrEq),
-            ("===", Token::PtrEq),
             ("|", Token::Bar),
             ("^", Token::Caret),
             (">>", Token::Shr),

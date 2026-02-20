@@ -877,9 +877,6 @@ pub enum BinaryOperator {
     Geq,
     /// `!=`
     Neq,
-    /// Pointer Equality
-    /// `===`
-    PtrEq,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]

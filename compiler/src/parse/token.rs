@@ -51,7 +51,6 @@ pub enum Token {
     CaretEq, // ^=
     ShlEq,   // <<=
     ShrEq,   // >>=
-    PtrEq,   // ===
 
     Bar,   // |
     Caret, // ^

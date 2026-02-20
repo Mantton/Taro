@@ -2571,7 +2571,6 @@ impl Parser {
                 | Token::Leq
                 | Token::Neq
                 | Token::Eql
-                | Token::PtrEq
         ) {
             expr = self.build_binary_expr(expr, |p| p.parse_bit_or_expr())?;
         }
@@ -3788,7 +3787,6 @@ impl Parser {
 
             Token::RChevron => Some(BinaryOperator::Gt),
             Token::LChevron => Some(BinaryOperator::Lt),
-            Token::PtrEq => Some(BinaryOperator::PtrEq),
             _ => None,
         }
     }
@@ -5309,15 +5307,6 @@ mod tests {
         assert!(matches!(
             &expr.kind,
             ExpressionKind::Binary(BinaryOperator::Neq, _, _)
-        ));
-    }
-
-    #[test]
-    fn test_binary_ptr_equal() {
-        let expr = parse_expr_str("a === b");
-        assert!(matches!(
-            &expr.kind,
-            ExpressionKind::Binary(BinaryOperator::PtrEq, _, _)
         ));
     }
 

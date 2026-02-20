@@ -32,7 +32,7 @@ fn binary_op_to_operator_kind(op: BinaryOperator) -> Option<OperatorKind> {
         BinaryOperator::Leq => Some(OperatorKind::Leq),
         BinaryOperator::Geq => Some(OperatorKind::Geq),
         // Not overloadable
-        BinaryOperator::BoolAnd | BinaryOperator::BoolOr | BinaryOperator::PtrEq => None,
+        BinaryOperator::BoolAnd | BinaryOperator::BoolOr => None,
     }
 }
 
@@ -66,8 +66,7 @@ fn binary_op_to_assign_operator_kind(op: BinaryOperator) -> Option<OperatorKind>
         | BinaryOperator::Leq
         | BinaryOperator::Geq
         | BinaryOperator::BoolAnd
-        | BinaryOperator::BoolOr
-        | BinaryOperator::PtrEq => None,
+        | BinaryOperator::BoolOr => None,
     }
 }
 
@@ -873,7 +872,6 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     _ => { /* not intrinsic */ }
                 }
             }
-            PtrEq => unreachable!(),
         }
 
         None
@@ -1136,7 +1134,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             }
 
             // These operators don't have compound assignment forms
-            Eql | Neq | Lt | Gt | Leq | Geq | BoolAnd | BoolOr | PtrEq => {}
+            Eql | Neq | Lt | Gt | Leq | Geq | BoolAnd | BoolOr => {}
         }
 
         None

@@ -874,7 +874,6 @@ impl<'ctx> FunctionLower<'ctx> {
                             lhs: self.lower_expr(lhs),
                             rhs: self.lower_expr(rhs),
                         },
-                        hir::BinaryOperator::PtrEq => todo!(),
                         _ => {
                             let lhs = self.lower_expr(lhs);
                             let rhs = self.lower_expr(rhs);

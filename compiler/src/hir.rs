@@ -1014,8 +1014,6 @@ impl StdInterface {
             }
             // Boolean operators don't use interfaces - they're handled specially
             BinaryOperator::BoolAnd | BinaryOperator::BoolOr => None,
-            // Pointer equality is a built-in operation
-            BinaryOperator::PtrEq => None,
         }
     }
 
