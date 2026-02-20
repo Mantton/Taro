@@ -1936,8 +1936,10 @@ impl Parser {
 
     fn parse_pattern_tuple_kind(&mut self) -> R<PatternKind> {
         let lo = self.lo_span();
-        let pats = self.parse_delimiter_sequence(Delimiter::Parenthesis, Token::Comma, |p| {
-            p.parse_pattern()
+        let mut res = Restrictions::empty();
+        res.insert(Restrictions::ALLOW_REST_PATTERN);
+        let pats = self.with_restrictions(res, |p| {
+            p.parse_delimiter_sequence(Delimiter::Parenthesis, Token::Comma, |p| p.parse_pattern())
         })?;
         Ok(PatternKind::Tuple(pats, lo.to(self.hi_span())))
     }

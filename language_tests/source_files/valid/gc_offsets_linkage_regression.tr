@@ -1,0 +1,32 @@
+// TEST
+
+struct LinkProbe {
+    name: string
+}
+
+@test
+func testGcOffsetsPrivateLinkageAcrossModules() {
+    let root = "taro_gc_offsets_linkage_root"
+    let file = "taro_gc_offsets_linkage_root/a.txt"
+
+    let _ = std.fs.removeDirAll(root)
+    std.assert(std.fs.createDirAll(root).isOk(), "failed to create linkage root")
+    std.assert(std.fs.writeString(file, "payload").isOk(), "failed to create linkage file")
+
+    // Exercise std-side descriptors through DirEntry creation.
+    let entriesRes = std.fs.readDir(root)
+    let entries = match entriesRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("readDir failed for linkage regression")
+    }
+    std.assert(entries.len() >= 1, "readDir should return at least one entry")
+
+    // Exercise script-side descriptors using a pointer-bearing struct.
+    var probes = std.collections.List[LinkProbe]()
+    probes.append(LinkProbe { name: "x" })
+    std.assert(probes.len() == 1, "script-side list append failed")
+
+    std.assert(std.fs.removeDirAll(root).isOk(), "failed to cleanup linkage root")
+}
+
+func main() {}

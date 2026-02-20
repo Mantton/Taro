@@ -1,0 +1,62 @@
+@test
+func testEnumerateHelperProducesIndexValuePairs() {
+    var iter = std.iter.enumerate((2 as usize)..(5 as usize)).makeIterator()
+
+    match iter.next() {
+        case .some(pair) => {
+            let (index, value) = pair
+            std.testing.assertEqual(index, 0 as usize, "first enumerate index should be 0")
+            std.testing.assertEqual(value, 2 as usize, "first enumerate value mismatch")
+        }
+        case .none => std.testing.fail("first enumerate element missing")
+    }
+
+    match iter.next() {
+        case .some(pair) => {
+            let (index, value) = pair
+            std.testing.assertEqual(index, 1 as usize, "second enumerate index should be 1")
+            std.testing.assertEqual(value, 3 as usize, "second enumerate value mismatch")
+        }
+        case .none => std.testing.fail("second enumerate element missing")
+    }
+
+    match iter.next() {
+        case .some(pair) => {
+            let (index, value) = pair
+            std.testing.assertEqual(index, 2 as usize, "third enumerate index should be 2")
+            std.testing.assertEqual(value, 4 as usize, "third enumerate value mismatch")
+        }
+        case .none => std.testing.fail("third enumerate element missing")
+    }
+
+    std.testing.assertTrue(iter.next().isNone(), "enumerate iterator should be exhausted")
+}
+
+@test
+func testIterableEnumerateDefaultMethod() {
+    var iter = ((7 as usize)..(10 as usize)).enumerate().makeIterator()
+
+    match iter.next() {
+        case .some(pair) => {
+            let (index, value) = pair
+            std.testing.assertEqual(index, 0 as usize, "default method enumerate index mismatch")
+            std.testing.assertEqual(value, 7 as usize, "default method enumerate value mismatch")
+        }
+        case .none => std.testing.fail("default method enumerate should yield first element")
+    }
+}
+
+@test
+func testEnumerateInForLoop() {
+    var indexSum = 0 as usize
+    var valueSum = 0 as usize
+
+    for pair in std.iter.enumerate((1 as usize)..(4 as usize)) {
+        let (index, value) = pair
+        indexSum += index
+        valueSum += value
+    }
+
+    std.testing.assertEqual(indexSum, 3 as usize, "for-loop enumerate index sum mismatch")
+    std.testing.assertEqual(valueSum, 6 as usize, "for-loop enumerate value sum mismatch")
+}

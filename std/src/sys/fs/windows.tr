@@ -1,0 +1,83 @@
+//+cfg family("windows")
+
+import std.io.Error
+import std.result.Result
+
+public struct PlatformFile {
+    raw: int32
+}
+
+func impOpenReadOnly(_ path: string) -> Result[PlatformFile, Error] {
+    std.panic.todo("std.sys.fs.openReadOnly not implemented on windows yet")
+}
+
+func impCreateWrite(_ path: string) -> Result[PlatformFile, Error] {
+    std.panic.todo("std.sys.fs.createWrite not implemented on windows yet")
+}
+
+func impOpenWithOptions(
+    _ path: string,
+    _ read: bool,
+    _ write: bool,
+    _ append: bool,
+    _ create: bool,
+    _ truncate: bool,
+) -> Result[PlatformFile, Error] {
+    std.panic.todo("std.sys.fs.openWithOptions not implemented on windows yet")
+}
+
+func impMetadata(_ path: string) -> Result[Metadata, Error] {
+    std.panic.todo("std.sys.fs.metadata not implemented on windows yet")
+}
+
+func impSymlinkMetadata(_ path: string) -> Result[Metadata, Error] {
+    std.panic.todo("std.sys.fs.symlinkMetadata not implemented on windows yet")
+}
+
+func impReadDir(_ path: string) -> Result[std.collections.List[DirEntry], Error] {
+    std.panic.todo("std.sys.fs.readDir not implemented on windows yet")
+}
+
+func impCreateDirAll(_ path: string) -> Result[(), Error] {
+    std.panic.todo("std.sys.fs.createDirAll not implemented on windows yet")
+}
+
+func impRemoveDirAll(_ path: string) -> Result[(), Error] {
+    std.panic.todo("std.sys.fs.removeDirAll not implemented on windows yet")
+}
+
+func impSymlink(_ target: string, _ linkPath: string) -> Result[(), Error] {
+    std.panic.todo("std.sys.fs.symlink not implemented on windows yet")
+}
+
+func impClose(_ file: &mut PlatformFile) -> Result[(), Error] {
+    std.panic.todo("std.sys.fs.close not implemented on windows yet")
+}
+
+func impRead(_ file: &PlatformFile, _ buf: *mut uint8, _ len: usize) -> Result[usize, Error] {
+    std.panic.todo("std.sys.fs.read not implemented on windows yet")
+}
+
+func impWrite(_ file: &PlatformFile, _ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
+    std.panic.todo("std.sys.fs.write not implemented on windows yet")
+}
+
+func impSeek(_ file: &PlatformFile, _ offset: isize, _ whence: int32) -> Result[isize, Error] {
+    std.panic.todo("std.sys.fs.seek not implemented on windows yet")
+}
+
+func impCreateDir(_ path: string) -> Result[(), Error] {
+    std.panic.todo("std.sys.fs.createDir not implemented on windows yet")
+}
+
+func impRemoveDir(_ path: string) -> Result[(), Error] {
+    std.panic.todo("std.sys.fs.removeDir not implemented on windows yet")
+}
+
+func impRemoveFile(_ path: string) -> Result[(), Error] {
+    std.panic.todo("std.sys.fs.removeFile not implemented on windows yet")
+}
+
+func impRename(_ from: string, _ to: string) -> Result[(), Error] {
+    std.panic.todo("std.sys.fs.rename not implemented on windows yet")
+}

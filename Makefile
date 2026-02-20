@@ -8,12 +8,13 @@ BUILD_DIST := $(ROOT)/development/scripts/build_dist.py
 RUN_DIST := $(ROOT)/development/scripts/run_dist.py
 LANGUAGE_TESTS := $(ROOT)/development/scripts/language_tests.py
 TEST_ALL := $(ROOT)/development/scripts/test_all.py
+BENCHMARK_TIMINGS := $(ROOT)/development/scripts/benchmark_timings.py
 
 DIST_DIR := $(ROOT)/dist
 TARO := $(DIST_DIR)/bin/taro
 STD_PATH := $(ROOT)/std
 
-.PHONY: help compiler compiler-release dist run check cargo-test test language-tests std-tests all-tests
+.PHONY: help compiler compiler-release dist run check cargo-test test language-tests std-tests all-tests benchmark
 
 help:
 	@echo "Taro development shortcuts"
@@ -35,7 +36,10 @@ help:
 	@echo "  make std-tests                Run std package test files"
 	@echo "  make all-tests                Run full test_all.py pipeline"
 	@echo "  make all-tests JOBS=4"
-
+	@echo ""
+	@echo "Benchmarks:"
+	@echo "  make benchmark PACKAGE=std"
+	@echo "  make benchmark PACKAGE=std RUNS=10"
 compiler:
 	$(CARGO) build -p taro-bin
 
@@ -72,3 +76,10 @@ std-tests: dist
 
 all-tests:
 	$(PYTHON) $(TEST_ALL) $(if $(JOBS),--jobs $(JOBS),)
+
+benchmark:
+	@if [ -z "$(PACKAGE)" ]; then \
+		echo "error: PACKAGE is required (example: make benchmark PACKAGE=std)"; \
+		exit 1; \
+	fi
+	$(PYTHON) $(BENCHMARK_TIMINGS) $(PACKAGE) $(if $(RUNS),--runs $(RUNS),)

@@ -3766,6 +3766,24 @@ impl<'ctx> Checker<'ctx> {
     ) {
         use crate::sema::tycheck::solve::Adjustment;
 
+        let pattern_uses_rest = match &pattern.kind {
+            hir::PatternKind::Tuple(patterns, _) => patterns
+                .iter()
+                .any(|pattern| matches!(pattern.kind, hir::PatternKind::Rest)),
+            hir::PatternKind::PathTuple { fields, .. } => fields
+                .iter()
+                .any(|pattern| matches!(pattern.kind, hir::PatternKind::Rest)),
+            _ => false,
+        };
+        if pattern_uses_rest {
+            if let Some(scrutinee_ty) = cs.expr_ty(scrutinee_node_id) {
+                let resolved = cs.infer_cx.resolve_vars_if_possible(scrutinee_ty);
+                if !resolved.is_infer() {
+                    ctx.adjusted_ty = resolved;
+                }
+            }
+        }
+
         // Auto-deref loop: if scrutinee is &T and pattern is NOT &pat, auto-deref
         let mut adjustments = Vec::new();
         while let TyKind::Reference(inner_ty, mutability) =
@@ -3842,6 +3860,56 @@ impl<'ctx> Checker<'ctx> {
                 cs.equal(binding_ty, binding.ty, pattern.span);
             }
             hir::PatternKind::Tuple(pats, _) => {
+                let has_rest = pats
+                    .iter()
+                    .any(|pat| matches!(pat.kind, hir::PatternKind::Rest));
+                if has_rest {
+                    let resolved_scrutinee = cs.infer_cx.resolve_vars_if_possible(ctx.adjusted_ty);
+                    let elem_tys = match resolved_scrutinee.kind() {
+                        TyKind::Tuple(items) => items.to_vec(),
+                        TyKind::Error => return,
+                        _ => {
+                            self.gcx().dcx().emit_error(
+                                format!(
+                                    "rest pattern requires a tuple scrutinee with known arity, found `{}`",
+                                    resolved_scrutinee.format(self.gcx())
+                                )
+                                .into(),
+                                Some(pattern.span),
+                            );
+                            return;
+                        }
+                    };
+
+                    let Some(field_mapping) = self.compute_pattern_field_mapping(
+                        pats,
+                        elem_tys.len(),
+                        "tuple pattern",
+                        pattern.span,
+                    ) else {
+                        return;
+                    };
+
+                    let tuple_ty = Ty::new(
+                        TyKind::Tuple(self.gcx().store.interners.intern_ty_list(elem_tys.clone())),
+                        self.gcx(),
+                    );
+                    cs.record_expr_ty(pattern.id, tuple_ty);
+                    cs.equal(ctx.adjusted_ty, tuple_ty, pattern.span);
+
+                    for (pat_index, field_index) in field_mapping {
+                        let mut sub_ctx = PatternContext::new(elem_tys[field_index]);
+                        sub_ctx.default_mode = ctx.default_mode;
+                        self.check_pattern_with_context(
+                            &pats[pat_index],
+                            &mut sub_ctx,
+                            pats[pat_index].id,
+                            cs,
+                        );
+                    }
+                    return;
+                }
+
                 let mut elem_tys = Vec::with_capacity(pats.len());
                 for _ in pats {
                     elem_tys.push(cs.infer_cx.next_ty_var(pattern.span));
@@ -3898,26 +3966,28 @@ impl<'ctx> Checker<'ctx> {
                     return;
                 };
 
-                if fields.len() != variant_fields.len() {
-                    self.gcx().dcx().emit_error(
-                        format!(
-                            "expected {} field(s) for enum variant '{}', got {}",
-                            variant_fields.len(),
-                            self.gcx().symbol_text(variant.name),
-                            fields.len()
-                        )
-                        .into(),
-                        Some(pattern.span),
-                    );
+                let variant_name = self.gcx().symbol_text(variant.name);
+                let context = format!("enum variant '{}'", variant_name);
+                let Some(field_mapping) = self.compute_pattern_field_mapping(
+                    fields,
+                    variant_fields.len(),
+                    &context,
+                    pattern.span,
+                ) else {
                     return;
-                }
+                };
 
                 cs.equal(ctx.adjusted_ty, enum_ty, pattern.span);
 
-                for (pat, field) in fields.iter().zip(variant_fields.iter()) {
-                    let mut sub_ctx = PatternContext::new(field.ty);
+                for (pat_index, field_index) in field_mapping {
+                    let mut sub_ctx = PatternContext::new(variant_fields[field_index].ty);
                     sub_ctx.default_mode = ctx.default_mode;
-                    self.check_pattern_with_context(pat, &mut sub_ctx, pat.id, cs);
+                    self.check_pattern_with_context(
+                        &fields[pat_index],
+                        &mut sub_ctx,
+                        fields[pat_index].id,
+                        cs,
+                    );
                 }
             }
             hir::PatternKind::Or(patterns, _) => {
@@ -3969,6 +4039,79 @@ impl<'ctx> Checker<'ctx> {
                 self.check_pattern_inner(pattern, ctx, cs);
             }
         }
+    }
+
+    fn compute_pattern_field_mapping(
+        &self,
+        patterns: &[hir::Pattern],
+        field_count: usize,
+        context: &str,
+        span: Span,
+    ) -> Option<Vec<(usize, usize)>> {
+        let rest_positions: Vec<usize> = patterns
+            .iter()
+            .enumerate()
+            .filter_map(|(index, pattern)| {
+                if matches!(pattern.kind, hir::PatternKind::Rest) {
+                    Some(index)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if rest_positions.len() > 1 {
+            self.gcx().dcx().emit_error(
+                format!("rest pattern (`..`) can appear at most once in {}", context).into(),
+                Some(span),
+            );
+            return None;
+        }
+
+        let Some(rest_index) = rest_positions.first().copied() else {
+            if patterns.len() != field_count {
+                self.gcx().dcx().emit_error(
+                    format!(
+                        "expected {} field(s) in {}, got {}",
+                        field_count,
+                        context,
+                        patterns.len()
+                    )
+                    .into(),
+                    Some(span),
+                );
+                return None;
+            }
+
+            return Some((0..field_count).map(|index| (index, index)).collect());
+        };
+
+        let explicit_field_count = patterns.len() - 1;
+        if explicit_field_count > field_count {
+            self.gcx().dcx().emit_error(
+                format!(
+                    "expected at most {} explicit field(s) in {}, got {}",
+                    field_count, context, explicit_field_count
+                )
+                .into(),
+                Some(span),
+            );
+            return None;
+        }
+
+        let trailing_pattern_count = patterns.len() - rest_index - 1;
+        let trailing_field_start = field_count - trailing_pattern_count;
+
+        let mut mapping = Vec::with_capacity(explicit_field_count);
+        for index in 0..rest_index {
+            mapping.push((index, index));
+        }
+        for offset in 0..trailing_pattern_count {
+            let pattern_index = rest_index + 1 + offset;
+            mapping.push((pattern_index, trailing_field_start + offset));
+        }
+
+        Some(mapping)
     }
 
     fn resolve_enum_variant_pattern(

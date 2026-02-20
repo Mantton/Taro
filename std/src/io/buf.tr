@@ -1,0 +1,212 @@
+import std.mem.{Span, MutableSpan}
+import std.optional.Optional
+import std.result.Result
+
+const BUF_CAP: usize = 4096
+
+public struct BufReader[Inner: Reader] {
+    inner: Inner
+    start: usize
+    end: usize
+    buffer: [uint8; BUF_CAP]
+}
+
+impl[Inner: Reader] BufReader[Inner] {
+    public func new(_ inner: Inner) -> Self {
+        return BufReader[Inner] {
+            inner: inner,
+            start: 0,
+            end: 0,
+            buffer: [0; BUF_CAP],
+        }
+    }
+
+    public func intoInner(self) -> Inner {
+        self.inner
+    }
+
+    func fillBuffer(&mut self) -> Result[(), Error] {
+        self.start = 0
+        self.end = 0
+
+        let ptr = unsafe { (&mut self.buffer as *mut [uint8; BUF_CAP]) as *mut uint8 }
+        let readBuf = MutableSpan[uint8].from(ptr, BUF_CAP)
+        let readRes = self.inner.read(readBuf)
+        match readRes {
+            case .ok(count) => {
+                self.end = count
+                return .ok(())
+            }
+            case .err(err) => return .err(err)
+        }
+    }
+
+    public func readUntil(&mut self, _ delimiter: uint8) -> Result[std.collections.List[uint8], Error] {
+        var out = std.collections.List[uint8]()
+
+        loop {
+            if self.start == self.end {
+                let fillRes = self.fillBuffer()
+                match fillRes {
+                    case .ok(_) => {}
+                    case .err(err) => return .err(err)
+                }
+
+                if self.end == 0 {
+                    break
+                }
+            }
+
+            let b = *self.buffer.at(self.start)
+            out.append(b)
+            self.start += 1
+
+            if b == delimiter {
+                break
+            }
+        }
+
+        return .ok(out)
+    }
+
+    public func readLine(&mut self) -> Result[Optional[string], Error] {
+        let bytesRes = self.readUntil(10) // '\n'
+        let bytes = match bytesRes {
+            case .ok(value) => value
+            case .err(err) => return .err(err)
+        }
+
+        let len = bytes.len()
+        if len == 0 {
+            return .ok(.none)
+        }
+
+        let data = std.mem.allocBytes(len)
+        var idx: usize = 0
+        while idx < len {
+            data.add(idx).write(*bytes.at(idx))
+            idx += 1
+        }
+
+        let line = std.string.stringFromParts(data, len)
+        return .ok(.some(line))
+    }
+}
+
+impl[Inner: Reader] Reader for BufReader[Inner] {
+    public func read(&mut self, _ buf: MutableSpan[uint8]) -> Result[usize, Error] {
+        let len = buf.len()
+        if len == 0 {
+            return .ok(0)
+        }
+
+        if self.start == self.end {
+            let fillRes = self.fillBuffer()
+            match fillRes {
+                case .ok(_) => {}
+                case .err(err) => return .err(err)
+            }
+
+            if self.end == 0 {
+                return .ok(0)
+            }
+        }
+
+        let available = self.end - self.start
+        let count = if len < available { len } else { available }
+
+        var writable = buf
+        let dst = unsafe { writable.at(0) as *mut uint8 }
+        let srcBase = unsafe { (&self.buffer as *const [uint8; BUF_CAP]) as *const uint8 }
+        let src = srcBase.add(self.start)
+        src.copyToNonoverlapping(dst, count)
+
+        self.start += count
+        return .ok(count)
+    }
+}
+
+public struct BufWriter[Inner: Writer] {
+    inner: Inner
+    len: usize
+    buffer: [uint8; BUF_CAP]
+}
+
+impl[Inner: Writer] BufWriter[Inner] {
+    public func new(_ inner: Inner) -> Self {
+        return BufWriter[Inner] {
+            inner: inner,
+            len: 0,
+            buffer: [0; BUF_CAP],
+        }
+    }
+
+    public func intoInner(self) -> Result[Inner, Error] {
+        var writer = self
+        let flushRes = writer.flush()
+        match flushRes {
+            case .ok(_) => return .ok(writer.inner)
+            case .err(err) => return .err(err)
+        }
+    }
+
+    func flushBuffer(&mut self) -> Result[(), Error] {
+        if self.len == 0 {
+            return .ok(())
+        }
+
+        let ptr = unsafe { (&self.buffer as *const [uint8; BUF_CAP]) as *const uint8 }
+        let bytes = Span[uint8].from(ptr, self.len)
+        let writeRes = writeAll(&mut self.inner, bytes)
+        match writeRes {
+            case .ok(_) => {
+                self.len = 0
+                return .ok(())
+            }
+            case .err(err) => return .err(err)
+        }
+    }
+}
+
+impl[Inner: Writer] Writer for BufWriter[Inner] {
+    public func write(&mut self, _ buf: Span[uint8]) -> Result[usize, Error] {
+        let cap: usize = BUF_CAP
+        let len = buf.len()
+        if len == 0 {
+            return .ok(0)
+        }
+
+        // For large writes, bypass the internal buffer after flushing pending bytes.
+        if self.len == 0 && len >= cap {
+            return self.inner.write(buf)
+        }
+
+        if self.len == cap {
+            let flushRes = self.flushBuffer()
+            match flushRes {
+                case .ok(_) => {}
+                case .err(err) => return .err(err)
+            }
+        }
+
+        let space = cap - self.len
+        let count = if len < space { len } else { space }
+
+        let src = unsafe { buf.at(0) as *const uint8 }
+        let dstBase = unsafe { (&mut self.buffer as *mut [uint8; BUF_CAP]) as *mut uint8 }
+        let dst = dstBase.add(self.len)
+        src.copyToNonoverlapping(dst, count)
+
+        self.len += count
+        return .ok(count)
+    }
+
+    public func flush(&mut self) -> Result[(), Error] {
+        let flushRes = self.flushBuffer()
+        match flushRes {
+            case .ok(_) => {}
+            case .err(err) => return .err(err)
+        }
+        return self.inner.flush()
+    }
+}

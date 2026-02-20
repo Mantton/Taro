@@ -1,0 +1,1 @@
+// Internal std.sys root. Platform-dispatched implementations live in child modules.

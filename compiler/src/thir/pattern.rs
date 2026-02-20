@@ -1,6 +1,7 @@
 use crate::{
     compile::context::GlobalContext,
     hir::{self, NodeID, PatternPath, Resolution},
+    sema::models::TyKind,
     sema::tycheck::results::TypeCheckResults,
     thir::{Constant, ConstantKind, FieldIndex, FieldPattern, Pattern, PatternKind},
 };
@@ -51,12 +52,19 @@ impl<'ctx, 'r> PatternLoweringContext<'ctx, 'r> {
             }
 
             hir::PatternKind::Tuple(pats, _) => {
-                let subpatterns = pats
-                    .iter()
-                    .enumerate()
-                    .map(|(index, p)| FieldPattern {
-                        index: FieldIndex::from_usize(index),
-                        pattern: self.lower_pattern(p),
+                let field_count = match ty.kind() {
+                    TyKind::Tuple(items) => items.len(),
+                    _ => pats
+                        .iter()
+                        .filter(|pattern| !matches!(pattern.kind, hir::PatternKind::Rest))
+                        .count(),
+                };
+                let subpatterns = self
+                    .pattern_field_mapping_with_rest(pats, field_count)
+                    .into_iter()
+                    .map(|(pattern_index, field_index)| FieldPattern {
+                        index: FieldIndex::from_usize(field_index),
+                        pattern: self.lower_pattern(&pats[pattern_index]),
                     })
                     .collect();
                 PatternKind::Leaf { subpatterns }
@@ -73,12 +81,18 @@ impl<'ctx, 'r> PatternLoweringContext<'ctx, 'r> {
             hir::PatternKind::PathTuple { path, fields, .. } => {
                 let resolution = self.path_resolution(path, pattern.id);
                 let data = self.variant_of_resolution(resolution);
-                let subpatterns: Vec<_> = fields
-                    .iter()
-                    .enumerate()
-                    .map(|(index, p)| FieldPattern {
-                        index: FieldIndex::from_usize(index),
-                        pattern: self.lower_pattern(p),
+                let field_count = match data.1.kind {
+                    crate::sema::models::EnumVariantKind::Tuple(variant_fields) => {
+                        variant_fields.len()
+                    }
+                    crate::sema::models::EnumVariantKind::Unit => 0,
+                };
+                let subpatterns: Vec<_> = self
+                    .pattern_field_mapping_with_rest(fields, field_count)
+                    .into_iter()
+                    .map(|(pattern_index, field_index)| FieldPattern {
+                        index: FieldIndex::from_usize(field_index),
+                        pattern: self.lower_pattern(&fields[pattern_index]),
                     })
                     .collect();
                 PatternKind::Variant {
@@ -87,6 +101,7 @@ impl<'ctx, 'r> PatternLoweringContext<'ctx, 'r> {
                     subpatterns,
                 }
             }
+            hir::PatternKind::Rest => PatternKind::Wild,
             hir::PatternKind::Or(pats, _) => {
                 let patterns = pats.iter().map(|p| self.lower_pattern(p)).collect();
                 PatternKind::Or(patterns)
@@ -100,13 +115,55 @@ impl<'ctx, 'r> PatternLoweringContext<'ctx, 'r> {
                     },
                 }
             }
-            _ => unimplemented!(
-                "Pattern lowering for {:?} not implemented yet",
-                pattern.kind
-            ),
         };
 
         Pattern { ty, span, kind }
+    }
+
+    fn pattern_field_mapping_with_rest(
+        &self,
+        patterns: &[hir::Pattern],
+        field_count: usize,
+    ) -> Vec<(usize, usize)> {
+        let rest_positions: Vec<usize> = patterns
+            .iter()
+            .enumerate()
+            .filter_map(|(index, pattern)| {
+                if matches!(pattern.kind, hir::PatternKind::Rest) {
+                    Some(index)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if rest_positions.len() > 1 {
+            return Vec::new();
+        }
+
+        let Some(rest_index) = rest_positions.first().copied() else {
+            let count = patterns.len().min(field_count);
+            return (0..count).map(|index| (index, index)).collect();
+        };
+
+        let explicit_field_count = patterns.len().saturating_sub(1);
+        if explicit_field_count > field_count {
+            return Vec::new();
+        }
+
+        let trailing_pattern_count = patterns.len() - rest_index - 1;
+        let trailing_field_start = field_count - trailing_pattern_count;
+
+        let mut mapping = Vec::with_capacity(explicit_field_count);
+        for index in 0..rest_index {
+            mapping.push((index, index));
+        }
+        for offset in 0..trailing_pattern_count {
+            let pattern_index = rest_index + 1 + offset;
+            mapping.push((pattern_index, trailing_field_start + offset));
+        }
+
+        mapping
     }
 
     fn path_resolution(&self, path: &PatternPath, id: NodeID) -> hir::Resolution {

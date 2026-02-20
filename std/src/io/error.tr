@@ -1,0 +1,25 @@
+/// A platform-agnostic list of I/O error categories.
+///
+/// Backends (std.sys.*) map OS-specific error codes into these variants.
+public enum Error {
+    /// An entity was not found, typically a file or directory.
+    case notFound
+    /// The operation lacked the necessary privileges to complete.
+    case permissionDenied
+    /// An entity already exists, often a file.
+    case alreadyExists
+    /// A parameter was incorrect.
+    case invalidInput
+    /// The operation was interrupted before completion.
+    case interrupted
+    /// The operation failed because it would block.
+    case wouldBlock
+    /// The operation timed out.
+    case timedOut
+    /// The operation failed because a pipe/socket endpoint was closed.
+    case brokenPipe
+    /// This operation is not supported on the current platform or backend.
+    case unsupported
+    /// OS-specific error code not currently classified.
+    case unexpected(int32)
+}

@@ -1,0 +1,207 @@
+import std.io.Error
+import std.result.Result
+
+public type RawFile = PlatformFile
+
+public enum FileType {
+    case file
+    case dir
+    case symlink
+    case other
+}
+
+public struct Metadata {
+    kind: FileType
+    size: usize
+    readOnlyFlag: bool
+    modifiedSecs: int64
+    accessedSecs: int64
+    createdSecs: int64
+}
+
+impl Metadata {
+    public func fileType(&self) -> FileType {
+        match self.kind {
+            case .file => .file
+            case .dir => .dir
+            case .symlink => .symlink
+            case .other => .other
+        }
+    }
+
+    public func isFile(&self) -> bool {
+        match self.kind {
+            case .file => true
+            case .dir => false
+            case .symlink => false
+            case .other => false
+        }
+    }
+
+    public func isDir(&self) -> bool {
+        match self.kind {
+            case .dir => true
+            case .file => false
+            case .symlink => false
+            case .other => false
+        }
+    }
+
+    public func isSymlink(&self) -> bool {
+        match self.kind {
+            case .symlink => true
+            case .file => false
+            case .dir => false
+            case .other => false
+        }
+    }
+
+    public func len(&self) -> usize {
+        self.size
+    }
+
+    public func isReadonly(&self) -> bool {
+        self.readOnlyFlag
+    }
+
+    public func modifiedSeconds(&self) -> int64 {
+        self.modifiedSecs
+    }
+
+    public func accessedSeconds(&self) -> int64 {
+        self.accessedSecs
+    }
+
+    public func createdSeconds(&self) -> int64 {
+        self.createdSecs
+    }
+}
+
+public struct DirEntry {
+    name: string
+    kind: FileType
+}
+
+impl DirEntry {
+    public func name(&self) -> string {
+        let len = std.string.stringLen(self.name)
+        if len == 0 {
+            return ""
+        }
+
+        let src = std.string.stringData(self.name)
+        let data = std.mem.allocBytes(len)
+        src.copyTo(data, len)
+        return std.string.stringFromParts(data, len)
+    }
+
+    public func isFile(&self) -> bool {
+        match self.kind {
+            case .file => true
+            case .dir => false
+            case .symlink => false
+            case .other => false
+        }
+    }
+
+    public func isDir(&self) -> bool {
+        match self.kind {
+            case .dir => true
+            case .file => false
+            case .symlink => false
+            case .other => false
+        }
+    }
+
+    public func isSymlink(&self) -> bool {
+        match self.kind {
+            case .symlink => true
+            case .file => false
+            case .dir => false
+            case .other => false
+        }
+    }
+}
+
+public func openReadOnly(_ path: string) -> Result[RawFile, Error] {
+    impOpenReadOnly(path)
+}
+
+public func createWrite(_ path: string) -> Result[RawFile, Error] {
+    impCreateWrite(path)
+}
+
+public func openWithOptions(
+    _ path: string,
+    _ read: bool,
+    _ write: bool,
+    _ append: bool,
+    _ create: bool,
+    _ truncate: bool,
+) -> Result[RawFile, Error] {
+    impOpenWithOptions(path, read, write, append, create, truncate)
+}
+
+public func metadata(_ path: string) -> Result[Metadata, Error] {
+    impMetadata(path)
+}
+
+public func stat(_ path: string) -> Result[Metadata, Error] {
+    metadata(path)
+}
+
+public func symlinkMetadata(_ path: string) -> Result[Metadata, Error] {
+    impSymlinkMetadata(path)
+}
+
+public func lstat(_ path: string) -> Result[Metadata, Error] {
+    symlinkMetadata(path)
+}
+
+public func readDir(_ path: string) -> Result[std.collections.List[DirEntry], Error] {
+    impReadDir(path)
+}
+
+public func createDirAll(_ path: string) -> Result[(), Error] {
+    impCreateDirAll(path)
+}
+
+public func removeDirAll(_ path: string) -> Result[(), Error] {
+    impRemoveDirAll(path)
+}
+
+public func symlink(_ target: string, _ linkPath: string) -> Result[(), Error] {
+    impSymlink(target, linkPath)
+}
+
+public func close(_ file: &mut RawFile) -> Result[(), Error] {
+    impClose(file)
+}
+
+public func read(_ file: &RawFile, _ buf: *mut uint8, _ len: usize) -> Result[usize, Error] {
+    impRead(file, buf, len)
+}
+
+public func write(_ file: &RawFile, _ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
+    impWrite(file, buf, len)
+}
+
+public func seek(_ file: &RawFile, _ offset: isize, _ whence: int32) -> Result[isize, Error] {
+    impSeek(file, offset, whence)
+}
+
+public func createDir(_ path: string) -> Result[(), Error] {
+    impCreateDir(path)
+}
+
+public func removeDir(_ path: string) -> Result[(), Error] {
+    impRemoveDir(path)
+}
+
+public func removeFile(_ path: string) -> Result[(), Error] {
+    impRemoveFile(path)
+}
+
+public func rename(_ from: string, _ to: string) -> Result[(), Error] {
+    impRename(from, to)
+}

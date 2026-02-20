@@ -2,11 +2,18 @@ use crate::{
     compile::context::GlobalContext,
     hir::DefinitionID,
     sema::{
-        models::{GenericArgument, GenericArguments, InterfaceReference, Ty, TyKind},
+        models::{
+            Const, ConstKind, GenericArgument, GenericArguments, InferTy, InterfaceReference, Ty,
+            TyKind,
+        },
         resolve::models::DefinitionKind,
         tycheck::{
+            constraints::canonical_constraints_of,
             resolve_conformance_witness,
             utils::instantiate::{instantiate_const_with_args, instantiate_ty_with_args},
+            utils::instantiate::instantiate_constraint_with_args,
+            utils::normalize::normalize_ty,
+            utils::param_env::ParamEnv,
             utils::type_head_from_value_ty,
         },
     },
@@ -270,8 +277,102 @@ fn deduce_impl_args<'ctx>(
         return None;
     }
 
+    refine_impl_args_from_constraints(gcx, icx.clone(), impl_id, fresh_args);
+
     // Resolve the inference variables to their concrete values
     let resolved_args = icx.resolve_args_if_possible(fresh_args);
+    if generic_args_contain_infer(resolved_args) {
+        return None;
+    }
 
     Some(resolved_args)
+}
+
+fn refine_impl_args_from_constraints<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    icx: Rc<InferCtx<'ctx>>,
+    impl_id: DefinitionID,
+    impl_args: GenericArguments<'ctx>,
+) {
+    let constraints = canonical_constraints_of(gcx, impl_id);
+    if constraints.is_empty() {
+        return;
+    }
+
+    let instantiated: Vec<_> = constraints
+        .into_iter()
+        .map(|constraint| instantiate_constraint_with_args(gcx, constraint.value, impl_args))
+        .collect();
+
+    let env = ParamEnv::new(instantiated.clone());
+    let unifier = TypeUnifier::new(icx.clone());
+    let passes = instantiated.len().max(1) * 2;
+    for _ in 0..passes {
+        for constraint in &instantiated {
+            let crate::sema::models::Constraint::TypeEquality(lhs, rhs) = *constraint else {
+                continue;
+            };
+
+            let lhs = normalize_ty(icx.clone(), lhs, &env);
+            let rhs = normalize_ty(icx.clone(), rhs, &env);
+            let _ = unifier.unify(lhs, rhs);
+        }
+    }
+}
+
+fn generic_args_contain_infer(args: GenericArguments<'_>) -> bool {
+    args.iter().any(generic_arg_contains_infer)
+}
+
+fn generic_arg_contains_infer(arg: &GenericArgument<'_>) -> bool {
+    match arg {
+        GenericArgument::Type(ty) => ty_contains_infer(*ty),
+        GenericArgument::Const(c) => const_contains_infer(c.clone()),
+    }
+}
+
+fn const_contains_infer(c: Const<'_>) -> bool {
+    ty_contains_infer(c.ty) || matches!(c.kind, ConstKind::Infer(_))
+}
+
+fn ty_contains_infer(ty: Ty<'_>) -> bool {
+    match ty.kind() {
+        TyKind::Infer(InferTy::TyVar(_)) => true,
+        TyKind::Array { element, len } => {
+            ty_contains_infer(element) || const_contains_infer(len)
+        }
+        TyKind::Adt(_, args) | TyKind::Alias { args, .. } => {
+            args.iter().any(generic_arg_contains_infer)
+        }
+        TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => ty_contains_infer(inner),
+        TyKind::Tuple(items) => items.iter().any(|t| ty_contains_infer(*t)),
+        TyKind::FnPointer { inputs, output } => {
+            inputs.iter().any(|t| ty_contains_infer(*t)) || ty_contains_infer(output)
+        }
+        TyKind::BoxedExistential { interfaces } => interfaces.iter().any(|iface| {
+            iface.arguments.iter().any(generic_arg_contains_infer)
+                || iface.bindings.iter().any(|binding| ty_contains_infer(binding.ty))
+        }),
+        TyKind::Closure {
+            captured_generics,
+            inputs,
+            output,
+            ..
+        } => {
+            captured_generics.iter().any(generic_arg_contains_infer)
+                || inputs.iter().any(|t| ty_contains_infer(*t))
+                || ty_contains_infer(output)
+        }
+        TyKind::Bool
+        | TyKind::Rune
+        | TyKind::String
+        | TyKind::Int(_)
+        | TyKind::UInt(_)
+        | TyKind::Float(_)
+        | TyKind::Infer(_)
+        | TyKind::Parameter(_)
+        | TyKind::Opaque(_)
+        | TyKind::Error
+        | TyKind::Never => false,
+    }
 }

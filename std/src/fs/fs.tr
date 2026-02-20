@@ -1,0 +1,155 @@
+import std.io.Error
+import std.mem.Span
+import std.result.Result
+
+public type FileType = std.sys.fs.FileType
+public type Metadata = std.sys.fs.Metadata
+public type DirEntry = std.sys.fs.DirEntry
+
+/// Reads the entire file into memory.
+public func read(_ path: string) -> Result[std.collections.List[uint8], Error] {
+    let openRes = std.fs.File.open(path)
+    var file = match openRes {
+        case .ok(value) => value
+        case .err(err) => return .err(err)
+    }
+
+    let readRes = std.io.readAll(&mut file)
+    let closeRes = file.close()
+
+    match readRes {
+        case .ok(bytes) => {
+            match closeRes {
+                case .ok(_) => return .ok(bytes)
+                case .err(err) => return .err(err)
+            }
+        }
+        case .err(err) => return .err(err)
+    }
+}
+
+/// Reads the entire file as a string.
+public func readToString(_ path: string) -> Result[string, Error] {
+    let openRes = std.fs.File.open(path)
+    var file = match openRes {
+        case .ok(value) => value
+        case .err(err) => return .err(err)
+    }
+
+    let readRes = std.io.readToString(&mut file)
+    let closeRes = file.close()
+
+    match readRes {
+        case .ok(text) => {
+            match closeRes {
+                case .ok(_) => return .ok(text)
+                case .err(err) => return .err(err)
+            }
+        }
+        case .err(err) => return .err(err)
+    }
+}
+
+/// Writes all bytes to a file, creating/truncating it first.
+public func write(_ path: string, _ data: Span[uint8]) -> Result[(), Error] {
+    let createRes = std.fs.File.create(path)
+    var file = match createRes {
+        case .ok(value) => value
+        case .err(err) => return .err(err)
+    }
+
+    let writeRes = std.io.writeAll(&mut file, data)
+    let closeRes = file.close()
+
+    match writeRes {
+        case .ok(_) => {
+            match closeRes {
+                case .ok(_) => return .ok(())
+                case .err(err) => return .err(err)
+            }
+        }
+        case .err(err) => return .err(err)
+    }
+}
+
+/// Writes a string to a file, creating/truncating it first.
+public func writeString(_ path: string, _ s: string) -> Result[(), Error] {
+    let createRes = std.fs.File.create(path)
+    var file = match createRes {
+        case .ok(value) => value
+        case .err(err) => return .err(err)
+    }
+
+    let writeRes = std.io.writeString(&mut file, s)
+    let closeRes = file.close()
+
+    match writeRes {
+        case .ok(_) => {
+            match closeRes {
+                case .ok(_) => return .ok(())
+                case .err(err) => return .err(err)
+            }
+        }
+        case .err(err) => return .err(err)
+    }
+}
+
+/// Creates a new, empty directory at the provided path.
+public func createDir(_ path: string) -> Result[(), Error] {
+    return std.sys.fs.createDir(path)
+}
+
+/// Recursively creates a directory and all missing parents.
+public func createDirAll(_ path: string) -> Result[(), Error] {
+    return std.sys.fs.createDirAll(path)
+}
+
+/// Removes an empty directory.
+public func removeDir(_ path: string) -> Result[(), Error] {
+    return std.sys.fs.removeDir(path)
+}
+
+/// Removes a directory and all of its contents.
+public func removeDirAll(_ path: string) -> Result[(), Error] {
+    return std.sys.fs.removeDirAll(path)
+}
+
+/// Removes a file from the filesystem.
+public func removeFile(_ path: string) -> Result[(), Error] {
+    return std.sys.fs.removeFile(path)
+}
+
+/// Creates a new symbolic link.
+public func symlink(_ target: string, _ linkPath: string) -> Result[(), Error] {
+    return std.sys.fs.symlink(target, linkPath)
+}
+
+/// Rename a file or directory to a new name.
+public func rename(_ from: string, _ to: string) -> Result[(), Error] {
+    return std.sys.fs.rename(from, to)
+}
+
+/// Queries filesystem metadata for a path.
+public func metadata(_ path: string) -> Result[Metadata, Error] {
+    return std.sys.fs.metadata(path)
+}
+
+/// Stats a filesystem path and returns metadata.
+public func stat(_ path: string) -> Result[Metadata, Error] {
+    return std.sys.fs.stat(path)
+}
+
+/// Queries metadata without following symbolic links.
+public func symlinkMetadata(_ path: string) -> Result[Metadata, Error] {
+    return std.sys.fs.symlinkMetadata(path)
+}
+
+/// Alias for symlinkMetadata.
+public func lstat(_ path: string) -> Result[Metadata, Error] {
+    return std.sys.fs.lstat(path)
+}
+
+/// Reads direct directory entries at a path.
+public func readDir(_ path: string) -> Result[std.collections.List[DirEntry], Error] {
+    return std.sys.fs.readDir(path)
+}

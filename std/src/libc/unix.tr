@@ -11,4 +11,123 @@ extern "C" {
     public func read(_ fd: int32, _ buf: *mut uint8, _ count: size_t) -> ssize_t
     public func write(_ fd: int32, _ buf: *const uint8, _ count: size_t) -> ssize_t
     public func exit(_ code: int32) -> !
+    public func close(_ fd: int32) -> int32
+    public func lseek(_ fd: int32, _ offset: isize, _ whence: int32) -> isize
+    
+    // File system utilities
+    public func mkdir(_ path: *const uint8, _ mode: int32) -> int32
+    public func rmdir(_ path: *const uint8) -> int32
+    public func unlink(_ path: *const uint8) -> int32
+    public func rename(_ old_path: *const uint8, _ new_path: *const uint8) -> int32
+    public func symlink(_ target: *const uint8, _ linkpath: *const uint8) -> int32
 }
+
+extern "taro_rt" {
+    func __rt__open2(_ path: *const uint8, _ oflags: int32) -> int32
+    func __rt__open3(_ path: *const uint8, _ oflags: int32, _ mode: int32) -> int32
+    func __rt__errno() -> int32
+    func __rt__fs_metadata(
+        _ path: *const uint8,
+        _ out_kind: *mut int32,
+        _ out_len: *mut usize,
+        _ out_readonly: *mut int32,
+        _ out_modified_secs: *mut int64,
+        _ out_accessed_secs: *mut int64,
+        _ out_created_secs: *mut int64,
+    ) -> int32
+    func __rt__fs_symlink_metadata(
+        _ path: *const uint8,
+        _ out_kind: *mut int32,
+        _ out_len: *mut usize,
+        _ out_readonly: *mut int32,
+        _ out_modified_secs: *mut int64,
+        _ out_accessed_secs: *mut int64,
+        _ out_created_secs: *mut int64,
+    ) -> int32
+    func __rt__fs_create_dir_all(_ path: *const uint8) -> int32
+    func __rt__fs_remove_dir_all(_ path: *const uint8) -> int32
+    func __rt__fs_read_dir(_ path: *const uint8, _ out_buf: *mut uint8, _ cap: usize, _ out_written: *mut usize) -> int32
+}
+
+public func openNoMode(_ path: *const uint8, _ oflags: int32) -> int32 {
+    __rt__open2(path, oflags)
+}
+
+public func openWithMode(_ path: *const uint8, _ oflags: int32, _ mode: int32) -> int32 {
+    __rt__open3(path, oflags, mode)
+}
+
+public func errno() -> int32 {
+    __rt__errno()
+}
+
+public func fsMetadata(
+    _ path: *const uint8,
+    _ out_kind: *mut int32,
+    _ out_len: *mut usize,
+    _ out_readonly: *mut int32,
+    _ out_modified_secs: *mut int64,
+    _ out_accessed_secs: *mut int64,
+    _ out_created_secs: *mut int64,
+) -> int32 {
+    __rt__fs_metadata(
+        path,
+        out_kind,
+        out_len,
+        out_readonly,
+        out_modified_secs,
+        out_accessed_secs,
+        out_created_secs,
+    )
+}
+
+public func fsSymlinkMetadata(
+    _ path: *const uint8,
+    _ out_kind: *mut int32,
+    _ out_len: *mut usize,
+    _ out_readonly: *mut int32,
+    _ out_modified_secs: *mut int64,
+    _ out_accessed_secs: *mut int64,
+    _ out_created_secs: *mut int64,
+) -> int32 {
+    __rt__fs_symlink_metadata(
+        path,
+        out_kind,
+        out_len,
+        out_readonly,
+        out_modified_secs,
+        out_accessed_secs,
+        out_created_secs,
+    )
+}
+
+public func fsCreateDirAll(_ path: *const uint8) -> int32 {
+    __rt__fs_create_dir_all(path)
+}
+
+public func fsRemoveDirAll(_ path: *const uint8) -> int32 {
+    __rt__fs_remove_dir_all(path)
+}
+
+public func fsReadDir(_ path: *const uint8, _ out_buf: *mut uint8, _ cap: usize, _ out_written: *mut usize) -> int32 {
+    __rt__fs_read_dir(path, out_buf, cap, out_written)
+}
+
+public const O_RDONLY: int32 = 0
+public const O_WRONLY: int32 = 1
+public const O_RDWR: int32 = 2
+
+@cfg(os("linux"))
+public const O_CREAT: int32 = 64
+@cfg(os("macos"))
+public const O_CREAT: int32 = 512
+
+@cfg(os("linux"))
+public const O_TRUNC: int32 = 512
+@cfg(os("macos"))
+public const O_TRUNC: int32 = 1024
+
+@cfg(os("linux"))
+public const O_APPEND: int32 = 1024
+@cfg(os("macos"))
+public const O_APPEND: int32 = 8

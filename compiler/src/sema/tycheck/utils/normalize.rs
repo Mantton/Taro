@@ -1,7 +1,11 @@
 use crate::sema::tycheck::{
     infer::InferCtx,
     resolve_conformance_witness,
-    utils::{instantiate::instantiate_ty_with_args, param_env::ParamEnv, type_head_from_value_ty},
+    utils::{
+        instantiate::{instantiate_constraint_with_args, instantiate_ty_with_args},
+        param_env::ParamEnv,
+        type_head_from_value_ty,
+    },
 };
 use crate::{
     compile::context::GlobalContext,
@@ -15,11 +19,16 @@ use crate::{
     },
 };
 use std::rc::Rc;
+use rustc_hash::FxHashSet;
 
 /// Normalize a type using the given inference context and parameter environment.
 /// The inference context is used to resolve inference variables before normalizing.
 pub fn normalize_ty<'ctx>(icx: Rc<InferCtx<'ctx>>, ty: Ty<'ctx>, env: &ParamEnv<'ctx>) -> Ty<'ctx> {
-    let mut folder = NormalizeFolder { icx, env };
+    let mut folder = NormalizeFolder {
+        icx,
+        env,
+        in_progress: FxHashSet::default(),
+    };
     ty.fold_with(&mut folder)
 }
 
@@ -55,6 +64,7 @@ impl<'ctx> TypeFolder<'ctx> for ShallowNormalizeFolder<'ctx> {
 struct NormalizeFolder<'a, 'ctx> {
     icx: Rc<InferCtx<'ctx>>,
     env: &'a ParamEnv<'ctx>,
+    in_progress: FxHashSet<Ty<'ctx>>,
 }
 
 fn collect_fresh_impl_var_ids<'ctx>(args: GenericArguments<'ctx>) -> (Vec<TyVarID>, Vec<ConstVarID>) {
@@ -174,6 +184,41 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
     fn gcx(&self) -> GlobalContext<'ctx> {
         self.icx.gcx
     }
+
+    fn refine_impl_args_from_constraints(
+        &self,
+        icx: Rc<InferCtx<'ctx>>,
+        impl_id: DefinitionID,
+        impl_args: GenericArguments<'ctx>,
+    ) {
+        let gcx = self.gcx();
+        let constraints = crate::sema::tycheck::constraints::canonical_constraints_of(gcx, impl_id);
+        if constraints.is_empty() {
+            return;
+        }
+
+        let instantiated: Vec<_> = constraints
+            .into_iter()
+            .map(|constraint| instantiate_constraint_with_args(gcx, constraint.value, impl_args))
+            .collect();
+        let env = ParamEnv::new(instantiated.clone());
+        let unifier = crate::sema::tycheck::utils::unify::TypeUnifier::new(icx.clone());
+
+        // Equalities can unlock each other (e.g. `A == B.C`, `B == Concrete`),
+        // so iterate to a small fixed point.
+        let passes = instantiated.len().max(1) * 2;
+        for _ in 0..passes {
+            for constraint in &instantiated {
+                let crate::sema::models::Constraint::TypeEquality(lhs, rhs) = *constraint else {
+                    continue;
+                };
+
+                let lhs = normalize_ty(icx.clone(), lhs, &env);
+                let rhs = normalize_ty(icx.clone(), rhs, &env);
+                let _ = unifier.unify(lhs, rhs);
+            }
+        }
+    }
 }
 
 impl<'a, 'ctx> TypeFolder<'ctx> for NormalizeFolder<'a, 'ctx> {
@@ -182,10 +227,16 @@ impl<'a, 'ctx> TypeFolder<'ctx> for NormalizeFolder<'a, 'ctx> {
     }
 
     fn fold_ty(&mut self, ty: Ty<'ctx>) -> Ty<'ctx> {
+        // Break normalization cycles such as `T.Item == U` and `U == T.Item`.
+        if !self.in_progress.insert(ty) {
+            return ty;
+        }
+        let original_ty = ty;
+
         // First resolve any inference variables
         let ty = self.icx.resolve_vars_if_possible(ty);
 
-        match ty.kind() {
+        let normalized = match ty.kind() {
             TyKind::Alias {
                 kind: AliasKind::Projection,
                 def_id,
@@ -197,19 +248,21 @@ impl<'a, 'ctx> TypeFolder<'ctx> for NormalizeFolder<'a, 'ctx> {
 
                 let equiv_types = self.env.equivalent_types(ty);
 
-                // Prefer concrete types (non-aliased, non-parameter)
+                // Prefer non-alias equalities first (including parameters).
+                // Cycle prevention is handled by `in_progress`.
                 if let Some(&resolved) = equiv_types
                     .iter()
-                    .find(|&&t| t != ty && !matches!(t.kind(), TyKind::Alias { .. }))
+                    .find(|&&t| {
+                        t != ty
+                            && !matches!(t.kind(), TyKind::Alias { .. } | TyKind::Infer(_))
+                    })
                 {
-                    return resolved.fold_with(self);
+                    resolved.fold_with(self)
+                } else if let Some(resolved) = self.resolve_projection(def_id, args) {
+                    resolved.fold_with(self)
+                } else {
+                    ty.super_fold_with(self)
                 }
-
-                if let Some(resolved) = self.resolve_projection(def_id, args) {
-                    return resolved.fold_with(self);
-                }
-
-                ty.super_fold_with(self)
             }
             TyKind::Alias { def_id, args, .. } => {
                 let base = self.gcx().get_alias_type(def_id);
@@ -228,19 +281,34 @@ impl<'a, 'ctx> TypeFolder<'ctx> for NormalizeFolder<'a, 'ctx> {
                         TyKind::Parameter(_) | TyKind::Alias { .. } | TyKind::Infer(_)
                     )
                 }) {
-                    return resolved.fold_with(self);
+                    resolved.fold_with(self)
+                } else if let Some(&resolved) = equiv_types.iter().find(|&&t| {
+                    if t == ty || matches!(t.kind(), TyKind::Parameter(_) | TyKind::Infer(_)) {
+                        return false;
+                    }
+                    // Avoid selecting a projection currently being normalized.
+                    if matches!(
+                        t.kind(),
+                        TyKind::Alias {
+                            kind: AliasKind::Projection,
+                            ..
+                        }
+                    ) && self.in_progress.contains(&t)
+                    {
+                        return false;
+                    }
+                    true
+                }) {
+                    resolved.fold_with(self)
+                } else {
+                    ty
                 }
-                // If no concrete type found, try any alias (which will be normalized recursively)
-                if let Some(&resolved) = equiv_types
-                    .iter()
-                    .find(|&&t| t != ty && !matches!(t.kind(), TyKind::Parameter(_)))
-                {
-                    return resolved.fold_with(self);
-                }
-                ty
             }
             _ => ty.super_fold_with(self),
-        }
+        };
+
+        self.in_progress.remove(&original_ty);
+        normalized
     }
 }
 
@@ -309,6 +377,7 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
                                 self.icx.clone(),
                             );
                             if unifier.unify(self_ty, instantiated_target).is_ok() {
+                                self.refine_impl_args_from_constraints(self.icx.clone(), impl_id, impl_args);
                                 let resolved_args: Vec<_> = impl_args
                                     .iter()
                                     .map(|arg| match arg {
@@ -346,11 +415,13 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
                         // cannot leak fresh vars into the caller's inference state.
                         let local_icx = Rc::new(InferCtx::new(gcx));
                         let impl_args = local_icx.fresh_args_for_def(impl_id, span);
+                        let (fresh_ty_vars, fresh_const_vars) = collect_fresh_impl_var_ids(impl_args);
                         let instantiated_target = instantiate_ty_with_args(gcx, target_ty, impl_args);
 
                         let unifier =
                             crate::sema::tycheck::utils::unify::TypeUnifier::new(local_icx.clone());
                         if unifier.unify(self_ty, instantiated_target).is_ok() {
+                            self.refine_impl_args_from_constraints(local_icx.clone(), impl_id, impl_args);
                             let resolved_args: Vec<_> = impl_args
                                 .iter()
                                 .map(|arg| match arg {
@@ -364,17 +435,25 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
                                 .collect();
                             let resolved_args = gcx.store.interners.intern_generic_args(resolved_args);
 
-                            // If impl args are still unresolved, do not materialize local infer vars
-                            // into the outer type context.
-                            let unresolved = resolved_args.iter().any(|arg| match arg {
-                                GenericArgument::Type(ty) => ty.contains_inference(),
-                                GenericArgument::Const(c) => matches!(c.kind, ConstKind::Infer(_)),
+                            // If impl args still mention fresh local vars, do not materialize
+                            // those locals into the outer type context.
+                            let unresolved = resolved_args.iter().any(|arg| {
+                                arg_contains_any_fresh_var(
+                                    arg,
+                                    &fresh_ty_vars,
+                                    &fresh_const_vars,
+                                )
                             });
                             if !unresolved {
                                 return Some(instantiate_ty_with_args(gcx, *witness_ty, resolved_args));
                             }
                         }
                     }
+
+                    // Generic impl witness exists, but impl args could not yet be solved.
+                    // Returning `None` avoids incorrectly instantiating witness types with
+                    // projection args (which are interface args, not impl args).
+                    return None;
                 }
             }
 

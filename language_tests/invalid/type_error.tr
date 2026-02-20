@@ -1,5 +1,0 @@
-// Test: Type mismatch error
-
-func main() {
-    let x: int32 = "this is a string" // Type error: expected int32, got string
-}

@@ -1,0 +1,35 @@
+func sumSpan(_ view: Span[int32]) -> int32 {
+    var sum: int32 = 0
+    for value in view {
+        sum = sum + *value
+    }
+    return sum
+}
+
+func doubleMutableSpan(_ view: MutableSpan[int32]) {
+    for value in view {
+        *value = *value * 2
+    }
+}
+
+func main() {
+    var values: [int32; 4] = [1, 2, 3, 4]
+
+    let baseConst = unsafe { (&values as *const [int32; 4]) as *const int32 }
+    let view = Span[int32].from(baseConst, 4)
+
+    assert(sumSpan(view) == 10, "Span iteration by value should sum elements")
+
+    let baseMut = unsafe { (&mut values as *mut [int32; 4]) as *mut int32 }
+    var mutView = MutableSpan[int32].from(baseMut, 4)
+
+    let immutable = mutView.asConst()
+    assert(sumSpan(immutable) == 10, "MutableSpan.asConst iteration should sum elements")
+
+    doubleMutableSpan(mutView)
+
+    assert(*values.at(0) == 2, "MutableSpan mutable iteration should update first element")
+    assert(*values.at(1) == 4, "MutableSpan mutable iteration should update second element")
+    assert(*values.at(2) == 6, "MutableSpan mutable iteration should update third element")
+    assert(*values.at(3) == 8, "MutableSpan mutable iteration should update fourth element")
+}

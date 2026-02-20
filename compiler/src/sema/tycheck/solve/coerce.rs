@@ -2,7 +2,7 @@ use crate::{
     hir::{Mutability, NodeID},
     sema::{
         error::{ExpectedFound, TypeError},
-        models::{InferTy, InterfaceReference, Ty, TyKind},
+        models::{AliasKind, InferTy, InterfaceReference, Ty, TyKind},
         resolve::models::TypeHead,
         tycheck::{resolve_conformance_witness, utils::type_head_from_value_ty},
     },
@@ -390,6 +390,32 @@ impl<'ctx> ConstraintSolver<'ctx> {
         match ty.kind() {
             TyKind::Infer(_) => return SolverResult::Deferred,
             TyKind::Parameter(_) => return SolverResult::Solved(vec![]),
+            TyKind::Alias {
+                kind: AliasKind::Projection,
+                ..
+            } => {
+                if ty.contains_inference() {
+                    return SolverResult::Deferred;
+                }
+
+                let mut satisfied = self
+                    .bounds_for_type_in_scope(ty)
+                    .into_iter()
+                    .any(|bound| self.interface_ref_matches(interface, bound));
+
+                if !satisfied {
+                    satisfied = self.bounds_for_type_in_scope(ty).into_iter().any(|bound| {
+                        self.collect_interface_with_supers(bound)
+                            .into_iter()
+                            .skip(1)
+                            .any(|candidate| self.interface_ref_matches(interface, candidate))
+                    });
+                }
+
+                if satisfied {
+                    return SolverResult::Solved(vec![]);
+                }
+            }
             TyKind::BoxedExistential { interfaces } => {
                 let mut satisfied = interfaces
                     .iter()

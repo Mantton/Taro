@@ -7,8 +7,8 @@ use crate::{
     sema::{
         error::TypeError,
         models::{
-            GenericArgument, GenericArguments, InterfaceReference, LabeledFunctionSignature, Ty,
-            TyKind,
+            AliasKind, GenericArgument, GenericArguments, InterfaceReference,
+            LabeledFunctionSignature, Ty, TyKind,
         },
         resolve::models::DefinitionID,
         tycheck::{
@@ -106,8 +106,17 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     }
                 };
 
-                // Handle interface method calls on type parameters
-                if matches!(candidate_ty.kind(), TyKind::Parameter(_)) {
+                // Handle interface method calls on abstract receivers:
+                // - generic type parameters
+                // - associated type projections (e.g., `T.Iterator`)
+                if matches!(
+                    candidate_ty.kind(),
+                    TyKind::Parameter(_)
+                        | TyKind::Alias {
+                            kind: AliasKind::Projection,
+                            ..
+                        }
+                ) {
                     let bounds = self.bounds_for_type_in_scope(candidate_ty);
                     if !bounds.is_empty() {
                         let list = self.gcx().store.arenas.global.alloc_slice_clone(&bounds);

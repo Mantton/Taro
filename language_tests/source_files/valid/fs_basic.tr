@@ -1,0 +1,75 @@
+// TEST
+
+import std.io.{Reader, Seeker, SeekFrom, Writer}
+
+@test
+func testFileLifecycle() {
+    let testPath = "taro_test_fs_lifecycle.txt"
+    let msg = "Hello from Taro FS!"
+    let msgLen = std.string.stringLen(msg)
+    let msgData = std.string.stringData(msg)
+
+    let createRes = std.fs.File.create(testPath)
+    var writer = match createRes {
+        case .ok(file) => file
+        case .err(_) => std.panic.panic("failed to create file")
+    }
+
+    let writeBytes = std.mem.Span[uint8].from(msgData, msgLen)
+    let writeRes = writer.write(writeBytes)
+    std.assert(writeRes.isOk(), "failed to write file")
+    std.assert(writeRes.unwrap() == msgLen, "write size mismatch")
+
+    let seekTarget: SeekFrom = .start(0 as isize)
+    let seekRes = writer.seek(seekTarget)
+    std.assert(seekRes.isOk(), "failed to seek in writer")
+
+    let closeWriteRes = writer.close()
+    std.assert(closeWriteRes.isOk(), "failed to close writer")
+
+    let openRes = std.fs.File.open(testPath)
+    var reader = match openRes {
+        case .ok(file) => file
+        case .err(_) => std.panic.panic("failed to open file for reading")
+    }
+
+    var storage: [uint8; 64] = [0; 64]
+    let storagePtr = unsafe { (&mut storage as *mut [uint8; 64]) as *mut uint8 }
+    let readBuf = std.mem.MutableSpan[uint8].from(storagePtr, 64)
+    let readRes = reader.read(readBuf)
+    std.assert(readRes.isOk(), "failed to read file")
+
+    let readLen = readRes.unwrap()
+    std.assert(readLen == msgLen, "read size mismatch")
+
+    var idx: usize = 0
+    while idx < readLen {
+        std.assert(*storage.at(idx) == msgData.add(idx).read(), "read content mismatch")
+        idx += 1
+    }
+
+    let closeReadRes = reader.close()
+    std.assert(closeReadRes.isOk(), "failed to close reader")
+
+    let removeRes = std.fs.removeFile(testPath)
+    std.assert(removeRes.isOk(), "failed to remove test file")
+}
+
+@test
+func testOpenMissingFileReturnsNotFound() {
+    let missing = "taro_missing_fs_file_should_not_exist.txt"
+    let openRes = std.fs.File.open(missing)
+    std.assert(openRes.isErr(), "opening missing file should fail")
+
+    match openRes {
+        case .ok(_) => std.panic.panic("expected open to fail for missing file")
+        case .err(err) => {
+            match err {
+                case .notFound => {}
+                case _ => std.panic.panic("expected io.Error.notFound for missing file")
+            }
+        }
+    }
+}
+
+func main() {}

@@ -1,0 +1,364 @@
+//+cfg family("unix")
+
+import std.ffi.CString
+import std.io.Error
+import std.libc
+import std.result.Result
+
+public struct PlatformFile {
+    fd: int32
+}
+
+func mapErrno(_ code: int32) -> Error {
+    match code {
+        case 2  => Error.notFound            // ENOENT
+        case 4  => Error.interrupted         // EINTR
+        case 11 => Error.wouldBlock          // EAGAIN / EWOULDBLOCK
+        case 13 => Error.permissionDenied    // EACCES
+        case 17 => Error.alreadyExists       // EEXIST
+        case 22 => Error.invalidInput        // EINVAL
+        case 32 => Error.brokenPipe          // EPIPE
+        case _  => Error.unexpected(code)
+    }
+}
+
+func lastError() -> Error {
+    mapErrno(std.libc.errno())
+}
+
+func impOpenReadOnly(_ path: string) -> Result[PlatformFile, Error] {
+    let cpath = CString.new(path)
+    let fd = std.libc.openNoMode(cpath.asPtr(), std.libc.O_RDONLY)
+    if fd < 0 {
+        return .err(lastError())
+    }
+    return .ok(PlatformFile { fd })
+}
+
+func impCreateWrite(_ path: string) -> Result[PlatformFile, Error] {
+    let cpath = CString.new(path)
+    let flags = std.libc.O_WRONLY | std.libc.O_CREAT | std.libc.O_TRUNC
+    let fd = std.libc.openWithMode(cpath.asPtr(), flags, 438)
+    if fd < 0 {
+        return .err(lastError())
+    }
+    return .ok(PlatformFile { fd })
+}
+
+func impOpenWithOptions(
+    _ path: string,
+    _ read: bool,
+    _ write: bool,
+    _ append: bool,
+    _ create: bool,
+    _ truncate: bool,
+) -> Result[PlatformFile, Error] {
+    if !read && !write && !append {
+        return .err(Error.invalidInput)
+    }
+
+    if create && !write && !append {
+        return .err(Error.invalidInput)
+    }
+
+    if truncate && !write && !append {
+        return .err(Error.invalidInput)
+    }
+
+    if append && truncate {
+        return .err(Error.invalidInput)
+    }
+
+    var access = std.libc.O_RDONLY
+    if append {
+        access = if read { std.libc.O_RDWR } else { std.libc.O_WRONLY }
+    } else if read && write {
+        access = std.libc.O_RDWR
+    } else if write {
+        access = std.libc.O_WRONLY
+    } else {
+        access = std.libc.O_RDONLY
+    }
+
+    var flags = access
+    if append {
+        flags = flags | std.libc.O_APPEND
+    }
+    if create {
+        flags = flags | std.libc.O_CREAT
+    }
+    if truncate {
+        flags = flags | std.libc.O_TRUNC
+    }
+
+    let cpath = CString.new(path)
+    let fd = if create {
+        std.libc.openWithMode(cpath.asPtr(), flags, 438)
+    } else {
+        std.libc.openNoMode(cpath.asPtr(), flags)
+    }
+    if fd < 0 {
+        return .err(lastError())
+    }
+
+    return .ok(PlatformFile { fd })
+}
+
+func fileTypeFromRaw(_ raw: int32) -> FileType {
+    match raw {
+        case 1 => return .file
+        case 2 => return .dir
+        case 3 => return .symlink
+        case _ => return .other
+    }
+}
+
+func decodeU32LE(_ ptr: *const uint8, _ index: usize) -> usize {
+    let b0 = ptr.add(index).read() as uint32
+    let b1 = ptr.add(index + 1).read() as uint32
+    let b2 = ptr.add(index + 2).read() as uint32
+    let b3 = ptr.add(index + 3).read() as uint32
+    let value = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+    return value as usize
+}
+
+func impMetadata(_ path: string) -> Result[Metadata, Error] {
+    let cpath = CString.new(path)
+    var rawKind: int32 = 0
+    var size: usize = 0
+    var rawReadonly: int32 = 0
+    var modifiedSecs: int64 = -1 as int64
+    var accessedSecs: int64 = -1 as int64
+    var createdSecs: int64 = -1 as int64
+    let kindPtr = unsafe { (&mut rawKind as *mut int32) }
+    let sizePtr = unsafe { (&mut size as *mut usize) }
+    let readonlyPtr = unsafe { (&mut rawReadonly as *mut int32) }
+    let modifiedPtr = unsafe { (&mut modifiedSecs as *mut int64) }
+    let accessedPtr = unsafe { (&mut accessedSecs as *mut int64) }
+    let createdPtr = unsafe { (&mut createdSecs as *mut int64) }
+    let code = std.libc.fsMetadata(
+        cpath.asPtr(),
+        kindPtr,
+        sizePtr,
+        readonlyPtr,
+        modifiedPtr,
+        accessedPtr,
+        createdPtr,
+    )
+    if code != 0 {
+        return .err(mapErrno(code))
+    }
+
+    let kind = fileTypeFromRaw(rawKind)
+    let readOnlyFlag = rawReadonly != 0
+    return .ok(Metadata {
+        kind,
+        size,
+        readOnlyFlag,
+        modifiedSecs,
+        accessedSecs,
+        createdSecs,
+    })
+}
+
+func impSymlinkMetadata(_ path: string) -> Result[Metadata, Error] {
+    let cpath = CString.new(path)
+    var rawKind: int32 = 0
+    var size: usize = 0
+    var rawReadonly: int32 = 0
+    var modifiedSecs: int64 = -1 as int64
+    var accessedSecs: int64 = -1 as int64
+    var createdSecs: int64 = -1 as int64
+    let kindPtr = unsafe { (&mut rawKind as *mut int32) }
+    let sizePtr = unsafe { (&mut size as *mut usize) }
+    let readonlyPtr = unsafe { (&mut rawReadonly as *mut int32) }
+    let modifiedPtr = unsafe { (&mut modifiedSecs as *mut int64) }
+    let accessedPtr = unsafe { (&mut accessedSecs as *mut int64) }
+    let createdPtr = unsafe { (&mut createdSecs as *mut int64) }
+    let code = std.libc.fsSymlinkMetadata(
+        cpath.asPtr(),
+        kindPtr,
+        sizePtr,
+        readonlyPtr,
+        modifiedPtr,
+        accessedPtr,
+        createdPtr,
+    )
+    if code != 0 {
+        return .err(mapErrno(code))
+    }
+
+    let kind = fileTypeFromRaw(rawKind)
+    let readOnlyFlag = rawReadonly != 0
+    return .ok(Metadata {
+        kind,
+        size,
+        readOnlyFlag,
+        modifiedSecs,
+        accessedSecs,
+        createdSecs,
+    })
+}
+
+func impReadDir(_ path: string) -> Result[std.collections.List[DirEntry], Error] {
+    let cpath = CString.new(path)
+    var required: usize = 0
+    let requiredPtr = unsafe { (&mut required as *mut usize) }
+    let nullBuf = unsafe { 0 as *mut uint8 }
+    let probe = std.libc.fsReadDir(cpath.asPtr(), nullBuf, 0, requiredPtr)
+    if probe != 0 {
+        return .err(mapErrno(probe))
+    }
+
+    if required == 0 {
+        return .ok(std.collections.List[DirEntry]())
+    }
+
+    let data = std.mem.allocBytes(required)
+    let dataPtr = unsafe { data as *mut uint8 }
+    let fill = std.libc.fsReadDir(cpath.asPtr(), dataPtr, required, requiredPtr)
+    if fill != 0 {
+        return .err(mapErrno(fill))
+    }
+
+    if required < 4 {
+        return .err(Error.unexpected(0 as int32))
+    }
+
+    let readPtr = unsafe { data as *const uint8 }
+    let count = decodeU32LE(readPtr, 0)
+    var index: usize = 4
+    var entries = std.collections.List[DirEntry]()
+
+    var current: usize = 0
+    while current < count {
+        if index + 5 > required {
+            return .err(Error.unexpected(0 as int32))
+        }
+
+        let rawKind = readPtr.add(index).read() as int32
+        index += 1
+
+        let nameLen = decodeU32LE(readPtr, index)
+        index += 4
+        if index + nameLen > required {
+            return .err(Error.unexpected(0 as int32))
+        }
+
+        let nameData = std.mem.allocBytes(nameLen)
+        let namePtr = unsafe { nameData as *mut uint8 }
+        if nameLen > 0 {
+            readPtr.add(index).copyToNonoverlapping(namePtr, nameLen)
+        }
+        index += nameLen
+
+        let name = std.string.stringFromParts(nameData, nameLen)
+        let kind = fileTypeFromRaw(rawKind)
+        entries.append(DirEntry { name, kind })
+        current += 1
+    }
+
+    return .ok(entries)
+}
+
+func impCreateDirAll(_ path: string) -> Result[(), Error] {
+    let cpath = CString.new(path)
+    let code = std.libc.fsCreateDirAll(cpath.asPtr())
+    if code != 0 {
+        return .err(mapErrno(code))
+    }
+    return .ok(())
+}
+
+func impRemoveDirAll(_ path: string) -> Result[(), Error] {
+    let cpath = CString.new(path)
+    let code = std.libc.fsRemoveDirAll(cpath.asPtr())
+    if code != 0 {
+        return .err(mapErrno(code))
+    }
+    return .ok(())
+}
+
+func impSymlink(_ target: string, _ linkPath: string) -> Result[(), Error] {
+    let ctarget = CString.new(target)
+    let clink = CString.new(linkPath)
+    let res = std.libc.symlink(ctarget.asPtr(), clink.asPtr())
+    if res < 0 {
+        return .err(lastError())
+    }
+    return .ok(())
+}
+
+func impClose(_ file: &mut PlatformFile) -> Result[(), Error] {
+    if file.fd < 0 {
+        return .ok(())
+    }
+
+    let res = std.libc.close(file.fd)
+    if res < 0 {
+        return .err(lastError())
+    }
+    file.fd = -1
+    return .ok(())
+}
+
+func impRead(_ file: &PlatformFile, _ buf: *mut uint8, _ len: usize) -> Result[usize, Error] {
+    let res = std.libc.read(file.fd, buf, len)
+    if res < 0 {
+        return .err(lastError())
+    }
+    return .ok(res as usize)
+}
+
+func impWrite(_ file: &PlatformFile, _ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
+    let res = std.libc.write(file.fd, buf, len)
+    if res < 0 {
+        return .err(lastError())
+    }
+    return .ok(res as usize)
+}
+
+func impSeek(_ file: &PlatformFile, _ offset: isize, _ whence: int32) -> Result[isize, Error] {
+    let res = std.libc.lseek(file.fd, offset, whence)
+    if res < 0 {
+        return .err(lastError())
+    }
+    return .ok(res)
+}
+
+func impCreateDir(_ path: string) -> Result[(), Error] {
+    let cpath = CString.new(path)
+    let res = std.libc.mkdir(cpath.asPtr(), 511)
+    if res < 0 {
+        return .err(lastError())
+    }
+    return .ok(())
+}
+
+func impRemoveDir(_ path: string) -> Result[(), Error] {
+    let cpath = CString.new(path)
+    let res = std.libc.rmdir(cpath.asPtr())
+    if res < 0 {
+        return .err(lastError())
+    }
+    return .ok(())
+}
+
+func impRemoveFile(_ path: string) -> Result[(), Error] {
+    let cpath = CString.new(path)
+    let res = std.libc.unlink(cpath.asPtr())
+    if res < 0 {
+        return .err(lastError())
+    }
+    return .ok(())
+}
+
+func impRename(_ from: string, _ to: string) -> Result[(), Error] {
+    let cfrom = CString.new(from)
+    let cto = CString.new(to)
+    let res = std.libc.rename(cfrom.asPtr(), cto.asPtr())
+    if res < 0 {
+        return .err(lastError())
+    }
+    return .ok(())
+}

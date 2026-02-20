@@ -1,6 +1,7 @@
 import std.optional.Optional
 import std.panic.panic
 import std.marker.Copy
+import std.iter.{Iterator, Iterable}
 
 public type TrackedPointer = *mut uint8
 
@@ -138,6 +139,72 @@ impl[Element] MutableSpan[Element] {
         return MutableSpan[uint8] {
             ptr: unsafe { self.ptr as *mut uint8 },
             len: self.len * sizeOf[Element](),
+        }
+    }
+}
+
+public struct SpanIterator[Element] {
+    ptr: *const Element
+    len: usize
+    idx: usize
+}
+
+impl[Element] Iterator for SpanIterator[Element] {
+    type Element = &Element
+
+    public func next(&mut self) -> Optional[Self.Element] {
+        if self.idx >= self.len {
+            return .none
+        }
+
+        let value = unsafe { self.ptr.add(self.idx) as &Element }
+        self.idx += 1
+        return .some(value)
+    }
+}
+
+impl[Element] Iterable for Span[Element] {
+    type Iterator = SpanIterator[Element]
+    type Element = &Element
+
+    public func makeIterator(self) -> Self.Iterator {
+        return SpanIterator[Element] {
+            ptr: self.ptr,
+            len: self.len,
+            idx: 0,
+        }
+    }
+}
+
+public struct MutableSpanMutIterator[Element] {
+    ptr: *mut Element
+    len: usize
+    idx: usize
+}
+
+impl[Element] Iterator for MutableSpanMutIterator[Element] {
+    type Element = &mut Element
+
+    public func next(&mut self) -> Optional[Self.Element] {
+        if self.idx >= self.len {
+            return .none
+        }
+
+        let value = unsafe { self.ptr.add(self.idx) as &mut Element }
+        self.idx += 1
+        return .some(value)
+    }
+}
+
+impl[Element] Iterable for MutableSpan[Element] {
+    type Iterator = MutableSpanMutIterator[Element]
+    type Element = &mut Element
+
+    public func makeIterator(self) -> Self.Iterator {
+        return MutableSpanMutIterator[Element] {
+            ptr: self.ptr,
+            len: self.len,
+            idx: 0,
         }
     }
 }

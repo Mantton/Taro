@@ -1,0 +1,12 @@
+//+cfg family("windows")
+
+import std.io.Error
+import std.result.Result
+
+func impWriteStdout(_ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
+    std.panic.todo("std.sys.io.writeStdout not implemented on windows yet")
+}
+
+func impWriteStderr(_ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
+    std.panic.todo("std.sys.io.writeStderr not implemented on windows yet")
+}

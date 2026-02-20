@@ -4,7 +4,7 @@ export std.ops.*
 export std.collections.{Array, Dictionary, List, Set}
 export std.range.{Range, ClosedRange, Step}
 export std.marker.{Copy, Clone}
-export std.iter.{Iterator, Iterable}
+export std.iter.{Iterator, Iterable, enumerate}
 export std.panic.{panic, unreachable, todo}
 export std.mem.{sizeOf, alignOf, Span, MutableSpan}
 export std.{print, println, eprint, eprintln, printf, sprintf, assert, debugAssert}

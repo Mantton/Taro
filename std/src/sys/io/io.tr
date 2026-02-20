@@ -1,0 +1,10 @@
+import std.io.Error
+import std.result.Result
+
+public func writeStdout(_ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
+    impWriteStdout(buf, len)
+}
+
+public func writeStderr(_ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
+    impWriteStderr(buf, len)
+}

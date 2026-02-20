@@ -1,0 +1,147 @@
+import std.io.{Error, Reader, Writer, Seeker, SeekFrom}
+import std.mem.{MutableSpan, Span}
+import std.result.Result
+
+public struct OpenOptions {
+    readFlag: bool
+    writeFlag: bool
+    appendFlag: bool
+    createFlag: bool
+    truncateFlag: bool
+}
+
+impl OpenOptions {
+    public func new() -> Self {
+        OpenOptions {
+            readFlag: false,
+            writeFlag: false,
+            appendFlag: false,
+            createFlag: false,
+            truncateFlag: false,
+        }
+    }
+
+    public func read(&mut self, _ enabled: bool) -> &mut Self {
+        self.readFlag = enabled
+        return self
+    }
+
+    public func write(&mut self, _ enabled: bool) -> &mut Self {
+        self.writeFlag = enabled
+        return self
+    }
+
+    public func append(&mut self, _ enabled: bool) -> &mut Self {
+        self.appendFlag = enabled
+        return self
+    }
+
+    public func create(&mut self, _ enabled: bool) -> &mut Self {
+        self.createFlag = enabled
+        return self
+    }
+
+    public func truncate(&mut self, _ enabled: bool) -> &mut Self {
+        self.truncateFlag = enabled
+        return self
+    }
+
+    public func open(&self, _ path: string) -> Result[File, Error] {
+        let res = std.sys.fs.openWithOptions(
+            path,
+            self.readFlag,
+            self.writeFlag,
+            self.appendFlag,
+            self.createFlag,
+            self.truncateFlag,
+        )
+        match res {
+            case .ok(sysFile) => return .ok(File { inner: sysFile })
+            case .err(err) => return .err(err)
+        }
+    }
+}
+
+public struct File {
+    inner: std.sys.fs.RawFile
+}
+
+impl File {
+    public func open(_ path: string) -> Result[File, Error] {
+        let res = std.sys.fs.openReadOnly(path)
+        match res {
+            case .ok(sysFile) => return .ok(File { inner: sysFile })
+            case .err(err) => return .err(err)
+        }
+    }
+
+    public func create(_ path: string) -> Result[File, Error] {
+        let res = std.sys.fs.createWrite(path)
+        match res {
+            case .ok(sysFile) => return .ok(File { inner: sysFile })
+            case .err(err) => return .err(err)
+        }
+    }
+
+    public func close(&mut self) -> Result[(), Error] {
+        let res = std.sys.fs.close(&mut self.inner)
+        match res {
+            case .ok(_) => {}
+            case .err(err) => return .err(err)
+        }
+        return .ok(())
+    }
+}
+
+impl Reader for File {
+    public func read(&mut self, _ buf: MutableSpan[uint8]) -> Result[usize, Error] {
+        let len = buf.len()
+        if len == 0 {
+            return .ok(0)
+        }
+
+        var writable = buf
+        let ptr = unsafe { writable.at(0) as *mut uint8 }
+        return std.sys.fs.read(&self.inner, ptr, len)
+    }
+}
+
+impl Writer for File {
+    public func write(&mut self, _ buf: Span[uint8]) -> Result[usize, Error] {
+        let len = buf.len()
+        if len == 0 {
+            return .ok(0)
+        }
+
+        let ptr = unsafe { buf.at(0) as *const uint8 }
+        return std.sys.fs.write(&self.inner, ptr, len)
+    }
+
+    public func flush(&mut self) -> Result[(), Error] {
+        return .ok(())
+    }
+}
+
+impl Seeker for File {
+    public func seek(&mut self, _ pos: SeekFrom) -> Result[isize, Error] {
+        var offset: isize = 0
+        var whence: int32 = 0
+
+        match pos {
+            case .start(value) => {
+                offset = value
+                whence = 0
+            }
+            case .current(value) => {
+                offset = value
+                whence = 1
+            }
+            case .end(value) => {
+                offset = value
+                whence = 2
+            }
+        }
+
+        return std.sys.fs.seek(&self.inner, offset, whence)
+    }
+}

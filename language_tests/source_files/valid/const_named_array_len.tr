@@ -1,0 +1,16 @@
+// Verifies named constants and const binary expressions are accepted in
+// array-length and repeat-count const contexts.
+
+const N: usize = 2 + 2
+const FILL: uint8 = 7
+
+func main() {
+    let arr: [uint8; N] = [FILL; N]
+    assert(arr.len() == N, "array length should use named const")
+    assert(*arr.at(0) == FILL, "repeat count should use named const")
+    assert(*arr.at(3) == FILL, "repeat count should fill full array")
+
+    let x: [uint8; N + 1] = [1; N + 1]
+    assert(x.len() == 5, "binary const expressions should be accepted")
+    assert(*x.at(4) == 1, "binary const expressions should evaluate")
+}

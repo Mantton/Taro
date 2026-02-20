@@ -2,7 +2,13 @@ use crate::{
     compile::context::Gcx,
     error::CompileResult,
     hir::{self, DefinitionID, HirVisitor},
-    sema::tycheck::lower::{DefTyLoweringCtx, TypeLowerer},
+    sema::{
+        models::{Const, ConstKind},
+        tycheck::{
+            lower::{DefTyLoweringCtx, TypeLowerer},
+            utils::const_eval::eval_const_expression,
+        },
+    },
 };
 
 pub fn run(package: &hir::Package, context: Gcx) -> CompileResult<()> {
@@ -40,5 +46,21 @@ impl<'ctx> Actor<'ctx> {
         let icx = DefTyLoweringCtx::new(id, self.context);
         let ty = icx.lowerer().lower_type(&node.ty);
         self.context.cache_type(id, ty);
+
+        let Some(expr) = &node.expr else {
+            return;
+        };
+
+        let Some(value) = eval_const_expression(self.context, expr) else {
+            return;
+        };
+
+        self.context.cache_const(
+            id,
+            Const {
+                ty,
+                kind: ConstKind::Value(value),
+            },
+        );
     }
 }

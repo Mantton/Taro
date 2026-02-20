@@ -5600,6 +5600,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 &format!("__gc_offsets_{}", self.gc_descs.len()),
             );
             global.set_initializer(&arr_const);
+            global.set_constant(true);
+            // Offset tables are module-local implementation details.
+            // Without private/internal linkage, duplicate names across script/std
+            // objects can collide at link time.
+            global.set_linkage(Linkage::Private);
+            global.set_unnamed_addr(true);
             let ptr = global
                 .as_pointer_value()
                 .const_cast(self.context.ptr_type(AddressSpace::default()));

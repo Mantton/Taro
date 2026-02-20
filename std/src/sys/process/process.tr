@@ -1,0 +1,3 @@
+public func exit(_ code: int32) -> ! {
+    impExit(code)
+}

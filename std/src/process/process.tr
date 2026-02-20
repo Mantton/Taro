@@ -1,1 +1,6 @@
-// Process module (platform-specific impls live in sibling files)
+// Process facade.
+// Platform-specific logic is implemented under std.sys.process.
+
+public func exit(_ code: int32) -> ! {
+    std.sys.process.exit(code)
+}

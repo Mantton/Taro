@@ -471,28 +471,38 @@ fn replace_rvalue_operands<'ctx>(rv: &mut Rvalue<'ctx>, replace_map: &[Option<Re
 }
 
 fn replace_operand<'ctx>(op: &mut Operand<'ctx>, replace_map: &[Option<Replacement<'ctx>>]) {
-    let place = match op {
-        Operand::Copy(place) | Operand::Move(place) => {
-            if place.projection.is_empty() {
-                Some(place.local)
-            } else {
-                None
+    // Resolve transitive replacement chains (e.g., _t2 -> _t1, _t1 -> _x) so we
+    // don't leave stale temps after removing multiple def-sites in one pass.
+    // Bound iterations to avoid infinite loops in malformed cyclic maps.
+    let mut steps = 0usize;
+    while steps < replace_map.len() {
+        let place = match op {
+            Operand::Copy(place) | Operand::Move(place) => {
+                if place.projection.is_empty() {
+                    Some(place.local)
+                } else {
+                    None
+                }
             }
-        }
-        Operand::Constant(_) => None,
-    };
+            Operand::Constant(_) => None,
+        };
 
-    let Some(local) = place else {
-        return;
-    };
-    let Some(replacement) = replace_map[local.index()].as_ref() else {
-        return;
-    };
-    *op = match replacement {
-        Replacement::Copy(src) => Operand::Copy(Place::from_local(*src)),
-        Replacement::Move(src) => Operand::Move(Place::from_local(*src)),
-        Replacement::Constant(c) => Operand::Constant(c.clone()),
-    };
+        let Some(local) = place else {
+            return;
+        };
+        let Some(replacement) = replace_map[local.index()].as_ref() else {
+            return;
+        };
+
+        let next = match replacement {
+            Replacement::Copy(src) => Operand::Copy(Place::from_local(*src)),
+            Replacement::Move(src) => Operand::Move(Place::from_local(*src)),
+            Replacement::Constant(c) => Operand::Constant(c.clone()),
+        };
+
+        *op = next;
+        steps += 1;
+    }
 }
 
 fn rvalue_mentions_local(rv: &Rvalue<'_>, local: LocalId) -> bool {

@@ -1,0 +1,24 @@
+public struct CString {
+    ptr: *mut uint8
+}
+
+impl CString {
+    public func new(_ value: string) -> CString {
+        let len = std.string.stringLen(value)
+        let data = std.string.stringData(value)
+        let buffer = std.mem.allocBytes(len + 1)
+
+        if len > 0 {
+            data.readBytes(buffer, len)
+        }
+        buffer.add(len).write(0)
+
+        return CString {
+            ptr: buffer,
+        }
+    }
+
+    public func asPtr(&self) -> *const uint8 {
+        return unsafe { self.ptr as *const uint8 }
+    }
+}

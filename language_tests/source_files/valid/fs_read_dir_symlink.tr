@@ -1,0 +1,96 @@
+// TEST
+
+@test
+func testReadDirKinds() {
+    let root = "taro_fs_read_dir_root"
+    let subdir = "taro_fs_read_dir_root/subdir"
+    let filePath = "taro_fs_read_dir_root/file.txt"
+    let linkPath = "taro_fs_read_dir_root/link.txt"
+
+    let _ = std.fs.removeDirAll(root)
+    std.assert(std.fs.createDirAll(subdir).isOk(), "failed to create readDir tree")
+    std.assert(std.fs.writeString(filePath, "hello").isOk(), "failed to create readDir file")
+    std.assert(std.fs.symlink("file.txt", linkPath).isOk(), "failed to create readDir symlink")
+
+    let readRes = std.fs.readDir(root)
+    let entries = match readRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("readDir failed")
+    }
+
+    var sawFile = false
+    var sawDir = false
+    var sawLink = false
+    var idx: usize = 0
+    while idx < entries.len() {
+        let entry = entries.at(idx)
+        let name = entry.name()
+        if std.string.stringEq(name, "file.txt") {
+            sawFile = entry.isFile()
+        } else if std.string.stringEq(name, "subdir") {
+            sawDir = entry.isDir()
+        } else if std.string.stringEq(name, "link.txt") {
+            sawLink = entry.isSymlink()
+        }
+        idx += 1
+    }
+
+    std.assert(sawFile, "readDir should include file entry")
+    std.assert(sawDir, "readDir should include directory entry")
+    std.assert(sawLink, "readDir should include symlink entry")
+
+    std.assert(std.fs.removeDirAll(root).isOk(), "failed to cleanup readDir tree")
+}
+
+@test
+func testSymlinkMetadataVsMetadata() {
+    let root = "taro_fs_symlink_metadata_root"
+    let filePath = "taro_fs_symlink_metadata_root/target.txt"
+    let linkPath = "taro_fs_symlink_metadata_root/target.link"
+
+    let _ = std.fs.removeDirAll(root)
+    std.assert(std.fs.createDirAll(root).isOk(), "failed to create symlink metadata root")
+    std.assert(std.fs.writeString(filePath, "payload").isOk(), "failed to create symlink metadata file")
+    std.assert(std.fs.symlink("target.txt", linkPath).isOk(), "failed to create symlink metadata link")
+
+    let followed = match std.fs.metadata(linkPath) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("metadata(link) failed")
+    }
+    std.assert(followed.isFile(), "metadata should follow symlink to target file")
+    std.assert(!followed.isSymlink(), "metadata should not report symlink kind when following")
+
+    let rawLink = match std.fs.symlinkMetadata(linkPath) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("symlinkMetadata(link) failed")
+    }
+    std.assert(rawLink.isSymlink(), "symlinkMetadata should report symlink kind")
+    std.assert(!rawLink.isFile(), "symlinkMetadata should not report target file kind")
+
+    let lstatRes = match std.fs.lstat(linkPath) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("lstat(link) failed")
+    }
+    std.assert(lstatRes.isSymlink(), "lstat should behave like symlinkMetadata")
+
+    std.assert(std.fs.removeDirAll(root).isOk(), "failed to cleanup symlink metadata root")
+}
+
+@test
+func testReadDirMissingReturnsNotFound() {
+    let missing = "taro_fs_read_dir_missing"
+    let readRes = std.fs.readDir(missing)
+    std.assert(readRes.isErr(), "readDir should fail for missing path")
+
+    match readRes {
+        case .ok(_) => std.panic.panic("expected readDir missing to fail")
+        case .err(err) => {
+            match err {
+                case .notFound => {}
+                case _ => std.panic.panic("expected notFound for missing readDir")
+            }
+        }
+    }
+}
+
+func main() {}

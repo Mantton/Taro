@@ -445,7 +445,59 @@ impl<'ctx> ConstraintSolver<'ctx> {
     }
 
     pub(crate) fn bounds_for_type_in_scope(&self, ty: Ty<'ctx>) -> Vec<InterfaceReference<'ctx>> {
-        self.param_env.bounds_for(self.structurally_resolve(ty))
+        let resolved = self.structurally_resolve(ty);
+        let mut bounds = self.param_env.bounds_for(resolved);
+        bounds.extend(self.associated_bounds_for_projection(resolved));
+
+        let mut seen = FxHashSet::default();
+        bounds
+            .into_iter()
+            .filter(|iface| seen.insert(*iface))
+            .collect()
+    }
+
+    fn associated_bounds_for_projection(
+        &self,
+        ty: Ty<'ctx>,
+    ) -> Vec<InterfaceReference<'ctx>> {
+        let TyKind::Alias {
+            kind: AliasKind::Projection,
+            def_id,
+            args,
+        } = ty.kind()
+        else {
+            return Vec::new();
+        };
+
+        let gcx = self.gcx();
+        let constraints = canonical_constraints_of(gcx, def_id);
+        let mut out: FxHashSet<InterfaceReference<'ctx>> = FxHashSet::default();
+
+        for constraint in constraints {
+            let instantiated = instantiate_constraint_with_args(gcx, constraint.value, args);
+            let Constraint::Bound {
+                ty: bound_ty,
+                interface,
+            } = instantiated
+            else {
+                continue;
+            };
+
+            let resolved_bound = self.structurally_resolve(bound_ty);
+            if resolved_bound == ty {
+                out.insert(interface);
+                continue;
+            }
+
+            // Structural fallback for syntactically different but equivalent
+            // representations of the same projection target.
+            let matches = self.icx.probe(|_| self.unify(resolved_bound, ty).is_ok());
+            if matches {
+                out.insert(interface);
+            }
+        }
+
+        out.into_iter().collect()
     }
 
     pub(crate) fn filter_extension_candidates(

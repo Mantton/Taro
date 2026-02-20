@@ -1,0 +1,118 @@
+// TEST
+
+import std.io.Writer
+
+@test
+func testBufWriterWriteStringAndFlush() {
+    let path = "taro_io_buf_writer_text.txt"
+    let content = "buffered write path"
+
+    let createRes = std.fs.File.create(path)
+    let file = match createRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("failed to create buffered writer file")
+    }
+
+    var writer = std.io.BufWriter[std.fs.File].new(file)
+    std.assert(std.io.writeString(&mut writer, content).isOk(), "writeString should succeed")
+    std.assert(writer.flush().isOk(), "flush should succeed")
+
+    var inner = match writer.intoInner() {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("intoInner should flush and succeed")
+    }
+    std.assert(inner.close().isOk(), "failed to close buffered writer file")
+
+    let readRes = std.fs.readToString(path)
+    let readBack = match readRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("failed to read buffered writer file")
+    }
+    std.assert(std.string.stringEq(readBack, content), "buffered write content mismatch")
+    std.assert(std.fs.removeFile(path).isOk(), "failed to remove buffered writer file")
+}
+
+@test
+func testCopyIntoBufWriter() {
+    let srcPath = "taro_io_buf_writer_copy_src.txt"
+    let dstPath = "taro_io_buf_writer_copy_dst.txt"
+    let content = "copy through buffered writer\nline2\nline3\n"
+    let contentLen = std.string.stringLen(content)
+
+    std.assert(std.fs.writeString(srcPath, content).isOk(), "failed to write copy source file")
+
+    let openSrcRes = std.fs.File.open(srcPath)
+    var src = match openSrcRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("failed to open copy source file")
+    }
+
+    let createDstRes = std.fs.File.create(dstPath)
+    let dstFile = match createDstRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("failed to create copy destination file")
+    }
+
+    var writer = std.io.BufWriter[std.fs.File].new(dstFile)
+
+    let copyRes = std.io.copy(&mut src, &mut writer)
+    std.assert(copyRes.isOk(), "copy should succeed")
+    std.assert(copyRes.unwrap() == contentLen, "copy byte count mismatch")
+
+    std.assert(writer.flush().isOk(), "flush after copy should succeed")
+    var inner = match writer.intoInner() {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("intoInner should flush and succeed")
+    }
+    std.assert(inner.close().isOk(), "failed to close copy destination file")
+    std.assert(src.close().isOk(), "failed to close copy source file")
+
+    let readRes = std.fs.readToString(dstPath)
+    let readBack = match readRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("failed to read copy destination file")
+    }
+    std.assert(std.string.stringEq(readBack, content), "copied buffered content mismatch")
+
+    std.assert(std.fs.removeFile(srcPath).isOk(), "failed to remove copy source file")
+    std.assert(std.fs.removeFile(dstPath).isOk(), "failed to remove copy destination file")
+}
+
+@test
+func testBufWriterLargeSequentialWrites() {
+    let path = "taro_io_buf_writer_large.txt"
+    let chunk = "0123456789"
+    let chunkLen = std.string.stringLen(chunk)
+
+    let createRes = std.fs.File.create(path)
+    let file = match createRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("failed to create large buffered writer file")
+    }
+
+    var writer = std.io.BufWriter[std.fs.File].new(file)
+    var total: usize = 0
+    var idx: usize = 0
+    while idx < 700 {
+        std.assert(std.io.writeString(&mut writer, chunk).isOk(), "chunk write should succeed")
+        total += chunkLen
+        idx += 1
+    }
+
+    std.assert(writer.flush().isOk(), "flush for large buffered writer should succeed")
+    var inner = match writer.intoInner() {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("intoInner should flush and succeed")
+    }
+    std.assert(inner.close().isOk(), "failed to close large buffered writer file")
+
+    let readRes = std.fs.read(path)
+    let bytes = match readRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("failed to read large buffered writer file")
+    }
+    std.assert(bytes.len() == total, "large buffered writer byte length mismatch")
+    std.assert(std.fs.removeFile(path).isOk(), "failed to remove large buffered writer file")
+}
+
+func main() {}

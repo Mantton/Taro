@@ -16,6 +16,7 @@ use crate::{
             utils::{
                 const_eval::eval_const_expression,
                 instantiate::{
+                    instantiate_constraint_with_args,
                     instantiate_const_with_args, instantiate_interface_ref_with_args,
                     instantiate_ty_with_args,
                 },
@@ -577,6 +578,14 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         if let TyKind::Parameter(param) = base_ty.kind() {
             return self.lower_projection_type_path(param, segment);
         }
+        if let TyKind::Alias {
+            kind: AliasKind::Projection,
+            def_id,
+            args,
+        } = base_ty.kind()
+        {
+            return self.lower_projection_member_path(base_ty, def_id, args, segment);
+        }
         let Some(head) = type_head_from_value_ty(base_ty) else {
             gcx.dcx().emit_error(
                 "cannot resolve associated types on this type".into(),
@@ -904,6 +913,83 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                     "ambiguous associated type '{}' for '{}'; candidates: {}",
                     gcx.symbol_text(name),
                     gcx.symbol_text(base_param.name),
+                    names.join(", "),
+                ),
+                Some(segment.span),
+            );
+            return gcx.types.error;
+        }
+
+        let (assoc_id, interface) = candidates[0];
+        let _ = check_generics_prohibited(assoc_id, segment, gcx);
+        Ty::new(
+            TyKind::Alias {
+                kind: AliasKind::Projection,
+                def_id: assoc_id,
+                args: interface.arguments,
+            },
+            gcx,
+        )
+    }
+
+    fn lower_projection_member_path(
+        &self,
+        base_projection: Ty<'ctx>,
+        base_assoc_id: DefinitionID,
+        base_args: GenericArguments<'ctx>,
+        segment: &hir::PathSegment,
+    ) -> Ty<'ctx> {
+        let gcx = self.gcx();
+        let name = segment.identifier.symbol.clone();
+        let constraints = crate::sema::tycheck::constraints::canonical_constraints_of(gcx, base_assoc_id);
+
+        let mut candidates: Vec<(DefinitionID, InterfaceReference<'ctx>)> = Vec::new();
+        let mut has_bounds = false;
+
+        for constraint in constraints {
+            let instantiated = instantiate_constraint_with_args(gcx, constraint.value, base_args);
+            let Constraint::Bound { ty, interface } = instantiated else {
+                continue;
+            };
+            if ty == base_projection {
+                has_bounds = true;
+                self.collect_projection_candidates(interface, name.clone(), &mut candidates);
+            }
+        }
+
+        if candidates.is_empty() {
+            let message = if has_bounds {
+                format!(
+                    "no associated type '{}' found in bounds for '{}'",
+                    gcx.symbol_text(name),
+                    base_projection.format(gcx)
+                )
+            } else {
+                format!(
+                    "cannot resolve associated type '{}' on '{}' without interface bounds",
+                    gcx.symbol_text(name),
+                    base_projection.format(gcx)
+                )
+            };
+            gcx.dcx().emit_error(message, Some(segment.span));
+            return gcx.types.error;
+        }
+
+        let mut seen = FxHashSet::default();
+        candidates.retain(|candidate| seen.insert(*candidate));
+
+        if candidates.len() > 1 {
+            let mut names: Vec<_> = candidates
+                .iter()
+                .map(|(_, iface)| iface.format(gcx))
+                .collect();
+            names.sort();
+            names.dedup();
+            gcx.dcx().emit_error(
+                format!(
+                    "ambiguous associated type '{}' for '{}'; candidates: {}",
+                    gcx.symbol_text(name),
+                    base_projection.format(gcx),
                     names.join(", "),
                 ),
                 Some(segment.span),

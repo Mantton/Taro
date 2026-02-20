@@ -1,6 +1,6 @@
 use crate::sema::{
     error::TypeError,
-    models::{Ty, TyKind},
+    models::Ty,
     tycheck::{
         solve::ConstraintSolver,
         utils::{normalize_ty, unify::TypeUnifier},
@@ -30,11 +30,6 @@ impl<'ctx> ConstraintSolver<'ctx> {
     /// Resolve inference variables AND normalize using param env.
     pub fn structurally_resolve(&self, ty: Ty<'ctx>) -> Ty<'ctx> {
         let ty = self.icx.resolve_vars_if_possible(ty);
-
-        if matches!(ty.kind(), TyKind::Alias { .. } | TyKind::Parameter(..)) {
-            return normalize_ty(self.icx.clone(), ty, &self.param_env);
-        }
-
-        return ty;
+        normalize_ty(self.icx.clone(), ty, &self.param_env)
     }
 }

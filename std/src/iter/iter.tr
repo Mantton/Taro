@@ -40,4 +40,49 @@ public interface Iterable {
     type Iterator: Iterator
     type Element
     func makeIterator(self) -> Self.Iterator
+
+    func enumerate(self) -> Enumerate[Self] {
+        return enumerate(self)
+    }
+}
+
+/// Iterator adapter that yields `(index, item)` pairs.
+public struct EnumerateIterator[Item, Inner: Iterator[Element = Item]] {
+    inner: Inner
+    index: usize
+}
+
+impl[Item, Inner: Iterator[Element = Item]] Iterator for EnumerateIterator[Item, Inner] {
+    type Element = (usize, Item)
+
+    public func next(&mut self) -> Optional[Self.Element] {
+        match self.inner.next() {
+            case .some(item) => {
+                let i = self.index
+                self.index += 1
+                return .some((i, item))
+            }
+            case .none => return .none
+        }
+    }
+}
+
+/// Iterable adapter that yields `(index, item)` pairs.
+public struct Enumerate[Source: Iterable] {
+    source: Source
+}
+
+impl[Item, Inner: Iterator[Element = Item], Source: Iterable[Iterator = Inner]] Iterable for Enumerate[Source] {
+    type Iterator = EnumerateIterator[Item, Inner]
+    type Element = (usize, Item)
+
+    public func makeIterator(self) -> Self.Iterator {
+        let inner = self.source.makeIterator()
+        return EnumerateIterator[Item, Inner] { inner: inner, index: 0 as usize }
+    }
+}
+
+/// Create an iterable adapter that yields `(index, item)` pairs.
+public func enumerate[Source: Iterable](_ source: Source) -> Enumerate[Source] {
+    return Enumerate[Source] { source: source }
 }

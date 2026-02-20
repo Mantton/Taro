@@ -1,0 +1,42 @@
+import std.result.Result
+import std.mem.{Span, MutableSpan}
+
+/// The `Reader` interface allows for reading bytes from a source.
+public interface Reader {
+    /// Parses up to `buf.len()` bytes into the `buf` parameter, returning the
+    /// number of bytes that were read.
+    ///
+    /// If 0 is returned, it indicates that the end of the file has been reached.
+    public func read(&mut self, _ buf: MutableSpan[uint8]) -> Result[usize, Error]
+}
+
+/// The `Writer` interface allows for writing bytes into a destination.
+public interface Writer {
+    /// Writes some or all of the bytes in `buf` into the destination, returning
+    /// how many bytes were written.
+    ///
+    /// If an error occurs, no bytes may have been written or only a partial amount.
+    public func write(&mut self, _ buf: Span[uint8]) -> Result[usize, Error]
+    
+    /// Flushes this output stream, ensuring that all intermediately buffered
+    /// contents reach their destination.
+    public func flush(&mut self) -> Result[(), Error]
+}
+
+/// Enumeration of possible methods to seek within an I/O object.
+public enum SeekFrom {
+    /// Sets the offset to the provided number of bytes.
+    case start(isize)
+    /// Sets the offset to the size of this object plus the specified number of bytes.
+    case end(isize)
+    /// Sets the offset to the current position plus the specified number of bytes.
+    case current(isize)
+}
+
+/// The `Seeker` interface provides a cursor which can be moved within a stream
+/// of bytes.
+public interface Seeker {
+    /// Move the cursor to an offset, based on the specified `SeekFrom` instruction.
+    /// Returns the new position from the start of the stream if the operation was successful.
+    public func seek(&mut self, _ pos: SeekFrom) -> Result[isize, Error]
+}

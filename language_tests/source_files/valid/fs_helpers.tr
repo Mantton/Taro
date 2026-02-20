@@ -1,0 +1,68 @@
+// TEST
+
+@test
+func testWriteAndReadToString() {
+    let path = "taro_fs_helpers_text.txt"
+    let text = "fs.writeString + fs.readToString"
+
+    let writeRes = std.fs.writeString(path, text)
+    std.assert(writeRes.isOk(), "writeString should succeed")
+
+    let readRes = std.fs.readToString(path)
+    let readText = match readRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("readToString should succeed")
+    }
+    std.assert(std.string.stringEq(readText, text), "readToString content mismatch")
+
+    let removeRes = std.fs.removeFile(path)
+    std.assert(removeRes.isOk(), "removeFile should succeed")
+}
+
+@test
+func testWriteAndReadBytes() {
+    let path = "taro_fs_helpers_bytes.txt"
+    let text = "ABC123"
+    let len = std.string.stringLen(text)
+    let ptr = std.string.stringData(text)
+    let bytes = std.mem.Span[uint8].from(ptr, len)
+
+    let writeRes = std.fs.write(path, bytes)
+    std.assert(writeRes.isOk(), "write should succeed")
+
+    let readRes = std.fs.read(path)
+    let readBytes = match readRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("read should succeed")
+    }
+    std.assert(readBytes.len() == len, "read length mismatch")
+
+    var idx: usize = 0
+    while idx < len {
+        std.assert(*readBytes.at(idx) == ptr.add(idx).read(), "read byte mismatch")
+        idx += 1
+    }
+
+    let removeRes = std.fs.removeFile(path)
+    std.assert(removeRes.isOk(), "removeFile should succeed")
+}
+
+@test
+func testReadMissingFileReturnsNotFound() {
+    let path = "taro_fs_helpers_missing_should_not_exist.txt"
+
+    let readRes = std.fs.read(path)
+    std.assert(readRes.isErr(), "read should fail for missing file")
+
+    match readRes {
+        case .ok(_) => std.panic.panic("expected read to fail")
+        case .err(err) => {
+            match err {
+                case .notFound => {}
+                case _ => std.panic.panic("expected io.Error.notFound")
+            }
+        }
+    }
+}
+
+func main() {}

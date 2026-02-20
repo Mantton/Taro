@@ -184,6 +184,8 @@ def median(values: list[float]) -> float:
 
 def speedup(debug: float, release: float) -> str:
     if release <= 0.0:
+        if debug <= 0.0:
+            return "N/A"
         return "inf"
     return f"{debug / release:.2f}x"
 
@@ -283,7 +285,7 @@ def main():
         r_avg = mean(r_values)
         total_rows.append(
             [
-                f"{package} ({mode})",
+                package,
                 f"{d_avg:.3f}",
                 f"{median(d_values):.3f}",
                 f"{r_avg:.3f}",
@@ -295,7 +297,7 @@ def main():
     print("Totals (ms)")
     print(
         format_table(
-            ["Package", "Debug avg", "Debug med", "Release avg", "Release med", "Speedup"],
+            ["Package", "Debug avg", "Debug med", "Release avg", "Release med", "Release Speedup"],
             total_rows,
         )
     )
@@ -324,7 +326,6 @@ def main():
             phase_rows.append(
                 [
                     phase,
-                    mode,
                     f"{d_avg:.3f}",
                     f"{r_avg:.3f}",
                     speedup(d_avg, r_avg),
@@ -335,7 +336,7 @@ def main():
         print(f"Detailed phases for package '{package_name}' (ms)")
         print(
             format_table(
-                ["Phase", "Mode", "Debug avg", "Release avg", "Speedup"],
+                ["Phase", "Debug avg", "Release avg", "Release Speedup"],
                 phase_rows,
             )
         )

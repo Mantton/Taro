@@ -1,0 +1,118 @@
+// TEST
+
+import std.io.{Seeker, SeekFrom}
+
+@test
+func testOpenOptionsAppend() {
+    let path = "taro_fs_open_options_append.txt"
+    std.assert(std.fs.writeString(path, "A").isOk(), "failed to seed append file")
+
+    var options = std.fs.OpenOptions.new()
+    options.append(true)
+
+    let openRes = options.open(path)
+    var file = match openRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("append open failed")
+    }
+
+    std.assert(std.io.writeString(&mut file, "B").isOk(), "append write failed")
+    std.assert(file.close().isOk(), "append close failed")
+
+    let readRes = std.fs.readToString(path)
+    let content = match readRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("append read failed")
+    }
+    std.assert(std.string.stringEq(content, "AB"), "append content mismatch")
+    std.assert(std.fs.removeFile(path).isOk(), "append cleanup failed")
+}
+
+@test
+func testOpenOptionsWriteTruncate() {
+    let path = "taro_fs_open_options_truncate.txt"
+    std.assert(std.fs.writeString(path, "abcdef").isOk(), "failed to seed truncate file")
+
+    var options = std.fs.OpenOptions.new()
+    options.write(true).truncate(true)
+
+    let openRes = options.open(path)
+    var file = match openRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("truncate open failed")
+    }
+
+    std.assert(std.io.writeString(&mut file, "xy").isOk(), "truncate write failed")
+    std.assert(file.close().isOk(), "truncate close failed")
+
+    let readRes = std.fs.readToString(path)
+    let content = match readRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("truncate read failed")
+    }
+    std.assert(std.string.stringEq(content, "xy"), "truncate content mismatch")
+    std.assert(std.fs.removeFile(path).isOk(), "truncate cleanup failed")
+}
+
+@test
+func testOpenOptionsReadWriteSeek() {
+    let path = "taro_fs_open_options_read_write.txt"
+    std.assert(std.fs.writeString(path, "hello").isOk(), "failed to seed read/write file")
+
+    var options = std.fs.OpenOptions.new()
+    options.read(true).write(true)
+
+    let openRes = options.open(path)
+    var file = match openRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("read/write open failed")
+    }
+
+    std.assert(std.io.writeString(&mut file, "Y").isOk(), "read/write write failed")
+    let toStart: SeekFrom = .start(0 as isize)
+    std.assert(file.seek(toStart).isOk(), "read/write seek failed")
+
+    let readRes = std.io.readToString(&mut file)
+    let content = match readRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("read/write read failed")
+    }
+    std.assert(std.string.stringEq(content, "Yello"), "read/write content mismatch")
+
+    std.assert(file.close().isOk(), "read/write close failed")
+    std.assert(std.fs.removeFile(path).isOk(), "read/write cleanup failed")
+}
+
+@test
+func testOpenOptionsInvalidConfigurations() {
+    let badPath = "taro_fs_open_options_invalid.txt"
+
+    var noneModes = std.fs.OpenOptions.new()
+    let res1 = noneModes.open(badPath)
+    std.assert(res1.isErr(), "no-mode options should fail")
+    match res1 {
+        case .ok(_) => std.panic.panic("expected invalidInput for no-mode options")
+        case .err(err) => {
+            match err {
+                case .invalidInput => {}
+                case _ => std.panic.panic("expected invalidInput for no-mode options")
+            }
+        }
+    }
+
+    var createReadOnly = std.fs.OpenOptions.new()
+    createReadOnly.read(true).create(true)
+    let res2 = createReadOnly.open(badPath)
+    std.assert(res2.isErr(), "create+read-only options should fail")
+    match res2 {
+        case .ok(_) => std.panic.panic("expected invalidInput for create+read-only options")
+        case .err(err) => {
+            match err {
+                case .invalidInput => {}
+                case _ => std.panic.panic("expected invalidInput for create+read-only options")
+            }
+        }
+    }
+}
+
+func main() {}

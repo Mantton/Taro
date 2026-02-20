@@ -1,0 +1,39 @@
+func main() {
+    testTupleDestructureRest()
+    testMatchTupleRest()
+    testMatchEnumTupleRest()
+    print("rest patterns ok\n")
+}
+
+func testTupleDestructureRest() {
+    let triple = (1 as usize, 2 as usize, 3 as usize)
+    let (first, ..) = triple
+    assert(first == 1 as usize, "tuple rest destructure should bind the leading element")
+}
+
+func testMatchTupleRest() {
+    let value = (4 as usize, 5 as usize, 6 as usize, 7 as usize)
+    match value {
+        case (head, .., tail) => {
+            assert(head == 4 as usize, "tuple rest should bind leading element")
+            assert(tail == 7 as usize, "tuple rest should bind trailing element")
+        }
+    }
+}
+
+enum Message {
+    case data(usize, usize, usize)
+    case none
+}
+
+func testMatchEnumTupleRest() {
+    let message = Message.data(9 as usize, 10 as usize, 11 as usize)
+    match message {
+        case .data(head, ..) => {
+            assert(head == 9 as usize, "enum tuple rest should bind first payload element")
+        }
+        case .none => {
+            assert(false, "unexpected none message")
+        }
+    }
+}

@@ -37,12 +37,18 @@ impl<'ctx> Actor<'ctx> {
 impl HirVisitor for Actor<'_> {
     fn visit_declaration(&mut self, d: &hir::Declaration) -> Self::Result {
         match &d.kind {
-            DeclarationKind::Interface(node) => self.collect_definition(d.id, &node.generics),
-            DeclarationKind::Struct(node) => self.collect_definition(d.id, &node.generics),
-            DeclarationKind::Enum(node) => self.collect_definition(d.id, &node.generics),
-            DeclarationKind::Function(node) => self.collect_definition(d.id, &node.generics),
-            DeclarationKind::Impl(node) => self.collect_definition(d.id, &node.generics),
-            DeclarationKind::TypeAlias(node) => self.collect_definition(d.id, &node.generics),
+            DeclarationKind::Interface(node) => {
+                self.collect_definition(d.id, &node.generics, None)
+            }
+            DeclarationKind::Struct(node) => self.collect_definition(d.id, &node.generics, None),
+            DeclarationKind::Enum(node) => self.collect_definition(d.id, &node.generics, None),
+            DeclarationKind::Function(node) => {
+                self.collect_definition(d.id, &node.generics, None)
+            }
+            DeclarationKind::Impl(node) => self.collect_definition(d.id, &node.generics, None),
+            DeclarationKind::TypeAlias(node) => {
+                self.collect_definition(d.id, &node.generics, node.bounds.as_ref())
+            }
             _ => {}
         }
 
@@ -56,10 +62,10 @@ impl HirVisitor for Actor<'_> {
     ) -> Self::Result {
         match &declaration.kind {
             AssociatedDeclarationKind::Function(node) => {
-                self.collect_definition(declaration.id, &node.generics)
+                self.collect_definition(declaration.id, &node.generics, None)
             }
             AssociatedDeclarationKind::Type(node) => {
-                self.collect_definition(declaration.id, &node.generics)
+                self.collect_definition(declaration.id, &node.generics, node.bounds.as_ref())
             }
             _ => {}
         }
@@ -69,8 +75,13 @@ impl HirVisitor for Actor<'_> {
 }
 
 impl<'ctx> Actor<'ctx> {
-    fn collect_definition(&mut self, id: DefinitionID, generics: &hir::Generics) {
-        let constraints = self.collect_internal(id, generics);
+    fn collect_definition(
+        &mut self,
+        id: DefinitionID,
+        generics: &hir::Generics,
+        alias_bounds: Option<&hir::GenericBounds>,
+    ) {
+        let constraints = self.collect_internal(id, generics, alias_bounds);
         self.context.update_constraints(id, constraints);
     }
 }
@@ -80,6 +91,7 @@ impl<'ctx> Actor<'ctx> {
         &mut self,
         def_id: DefinitionID,
         generics: &hir::Generics,
+        alias_bounds: Option<&hir::GenericBounds>,
     ) -> Vec<Spanned<Constraint<'ctx>>> {
         let gcx = self.context;
         let icx = DefTyLoweringCtx::new(def_id, gcx);
@@ -177,6 +189,17 @@ impl<'ctx> Actor<'ctx> {
             }
         }
 
+        // Bounds declared directly on type aliases / associated types.
+        // For associated types, these bounds describe interfaces implemented by the
+        // projection itself (e.g. `type Iterator: IteratorProtocol`).
+        if let Some(bounds) = alias_bounds {
+            let bounded_ty = self.alias_bounded_ty(def_id, gcx);
+            for bound in bounds.iter() {
+                let interface = icx.lowerer().lower_interface_reference(bounded_ty, &bound.path);
+                add_interface_constraints(gcx, &mut constraints, bounded_ty, interface, bound.path.span);
+            }
+        }
+
         if let Some(clause) = &generics.where_clause {
             for requirement in clause.requirements.iter() {
                 match &requirement {
@@ -220,5 +243,37 @@ impl<'ctx> Actor<'ctx> {
         }
 
         constraints
+    }
+
+    fn alias_bounded_ty(&self, def_id: DefinitionID, gcx: GlobalContext<'ctx>) -> crate::sema::models::Ty<'ctx> {
+        use crate::sema::models::{AliasKind, Ty, TyKind};
+        use crate::sema::resolve::models::DefinitionKind;
+
+        let def_kind = gcx.definition_kind(def_id);
+        if def_kind == DefinitionKind::AssociatedType {
+            if let Some(parent_id) = gcx.definition_parent(def_id) {
+                if gcx.definition_kind(parent_id) == DefinitionKind::Interface {
+                    let args = GenericsBuilder::identity_for_item(gcx, parent_id);
+                    return Ty::new(
+                        TyKind::Alias {
+                            kind: AliasKind::Projection,
+                            def_id,
+                            args,
+                        },
+                        gcx,
+                    );
+                }
+            }
+        }
+
+        let args = GenericsBuilder::identity_for_item(gcx, def_id);
+        Ty::new(
+            TyKind::Alias {
+                kind: AliasKind::Weak,
+                def_id,
+                args,
+            },
+            gcx,
+        )
     }
 }
