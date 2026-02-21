@@ -203,6 +203,12 @@ impl<'state> Compiler<'state> {
             self.context
                 .cache_package_ident(self.context.config.identifier.clone());
         }
+        if self.context.config.is_std_provider {
+            self.context
+                .store
+                .std_provider_index
+                .set(Some(self.context.config.index));
+        }
 
         // Tokenization & Parsing
         // Get target triple for file-level cfg evaluation

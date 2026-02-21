@@ -276,10 +276,7 @@ impl<'ctx> Actor<'ctx> {
 
     /// Check if the given package is the standard library.
     fn is_std_package(&self, pkg: PackageIndex) -> bool {
-        self.context
-            .package_ident(pkg)
-            .map(|ident| ident.as_str() == crate::constants::STD_PREFIX)
-            .unwrap_or(false)
+        self.context.is_std_package(pkg)
     }
 
     /// Find a conflicting conformance across all visible packages.

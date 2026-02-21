@@ -1,4 +1,3 @@
-use crate::constants::STD_PREFIX;
 use crate::{
     compile::context::GlobalContext,
     error::CompileResult,
@@ -35,10 +34,7 @@ impl<'ctx> Actor<'ctx> {
     }
 
     fn is_std_package(&self, pkg: crate::PackageIndex) -> bool {
-        matches!(
-            self.context.package_ident(pkg).as_ref().map(|s| s.as_str()),
-            Some(STD_PREFIX)
-        )
+        self.context.is_std_package(pkg)
     }
 
     fn impl_owns_type(&self, head: TypeHead, impl_pkg: crate::PackageIndex) -> bool {

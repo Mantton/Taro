@@ -31,6 +31,19 @@ impl Default for BuildProfile {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StdMode {
+    BootstrapStd,
+    FullStd,
+}
+
+impl Default for StdMode {
+    fn default() -> Self {
+        StdMode::FullStd
+    }
+}
+
 /// Debug options for compiler diagnostics and dumps.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DebugOptions {
@@ -60,4 +73,17 @@ pub struct Config {
     pub debug: DebugOptions,
     /// True when building in test mode (`taro test`)
     pub test_mode: bool,
+    /// Controls std *availability semantics* during compilation:
+    /// - `BootstrapStd`: compile may proceed without an externally-registered std provider.
+    /// - `FullStd`: compile expects a std provider to be available for std lookups.
+    ///
+    /// This is intentionally separate from `is_std_provider` because mode describes
+    /// resolution behavior, not package identity/privilege.
+    pub std_mode: StdMode,
+    /// True when this package is the std provider selected by the driver.
+    ///
+    /// This is intentionally separate from `std_mode`: provider identity grants
+    /// std-owned behavior (e.g., ownership rules for built-in types), while
+    /// `std_mode` only describes whether std is expected to be externally available.
+    pub is_std_provider: bool,
 }

@@ -1,2 +1,4 @@
 [package]
 name = "github.com/taro/std"
+kind = "library"
+no_std_prelude = true

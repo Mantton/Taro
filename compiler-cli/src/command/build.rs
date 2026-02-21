@@ -1,6 +1,7 @@
 use crate::{
     CommandLineArguments, CompileModeOptions,
     package::{
+        manifest::ValidatedDependencyGraph,
         sync::sync_dependencies,
         utils::{get_package_name, language_home},
     },
@@ -9,7 +10,7 @@ use compiler::{
     PackageIndex,
     compile::{
         Compiler,
-        config::{BuildProfile, Config, DebugOptions, PackageKind},
+        config::{BuildProfile, Config, DebugOptions, PackageKind, StdMode},
         context::{CompilerArenas, CompilerContext, CompilerStore},
     },
     constants::STD_PREFIX,
@@ -114,6 +115,8 @@ fn run_single_file(
             timings: arguments.timings,
         },
         test_mode: false,
+        std_mode: StdMode::FullStd,
+        is_std_provider: false,
     });
 
     eprintln!("Compiling – {}", file_stem);
@@ -158,8 +161,12 @@ fn run_package(
 
     let graph = sync_dependencies(arguments.path)?;
 
-    let _ = compile_std(&icx, arguments.std_path.clone(), compile_options)?;
-    build_runtime(&icx, &project_root, arguments.runtime_path.clone())?;
+    let root_is_std = is_root_std_package(&graph, arguments.std_path.clone(), &icx)?;
+
+    if !root_is_std {
+        let _ = compile_std(&icx, arguments.std_path.clone(), compile_options)?;
+        build_runtime(&icx, &project_root, arguments.runtime_path.clone())?;
+    }
 
     let total = graph.ordered.len();
 
@@ -198,16 +205,21 @@ fn run_package(
             );
             ReportedError
         })?;
-        let identifier = package.unique_identifier().map_err(|e| {
-            icx.dcx.emit_error(
-                format!(
-                    "failed to generate unique identifier for '{}': {}",
-                    package.package.0, e
-                ),
-                None,
-            );
-            ReportedError
-        })?;
+        let is_std_package = root_is_std && is_root;
+        let identifier = if is_std_package {
+            STD_PREFIX.into()
+        } else {
+            package.unique_identifier().map_err(|e| {
+                icx.dcx.emit_error(
+                    format!(
+                        "failed to generate unique identifier for '{}': {}",
+                        package.package.0, e
+                    ),
+                    None,
+                );
+                ReportedError
+            })?
+        };
         let mut dependencies = graph.dependencies_for(package).map_err(|e| {
             icx.dcx.emit_error(
                 format!(
@@ -218,7 +230,9 @@ fn run_package(
             );
             ReportedError
         })?;
-        dependencies.insert("std".into(), "std".into());
+        if !is_std_package {
+            dependencies.insert("std".into(), "std".into());
+        }
 
         let src = package
             .path()
@@ -255,6 +269,12 @@ fn run_package(
                 timings: arguments.timings,
             },
             test_mode: false,
+            std_mode: if is_std_package {
+                StdMode::BootstrapStd
+            } else {
+                StdMode::FullStd
+            },
+            is_std_provider: is_std_package,
         });
 
         let mut compiler = Compiler::new(&icx, config);
@@ -431,6 +451,8 @@ fn compile_std<'a>(
             timings: compile_options.timings,
         },
         test_mode: false,
+        std_mode: StdMode::BootstrapStd,
+        is_std_provider: true,
     });
     let mut compiler = Compiler::new(ctx, config);
     let _ = compiler.build()?;
@@ -448,6 +470,45 @@ fn resolve_std_path(std_path: Option<PathBuf>) -> Result<PathBuf, String> {
     std_root
         .canonicalize()
         .map_err(|e| format!("{} is invalid: {}", std_root.display(), e))
+}
+
+fn is_root_std_package(
+    graph: &ValidatedDependencyGraph,
+    std_path: Option<PathBuf>,
+    ctx: &CompilerContext<'_>,
+) -> Result<bool, ReportedError> {
+    let std_root = resolve_std_path(std_path).map_err(|e| {
+        ctx.dcx
+            .emit_error(format!("failed to resolve standard library location – {}", e), None);
+        ReportedError
+    })?;
+
+    let Some(root_pkg) = graph.ordered.last() else {
+        return Ok(false);
+    };
+
+    let root_src = root_pkg.path().map_err(|e| {
+        ctx.dcx.emit_error(
+            format!(
+                "failed to resolve source path for '{}': {}",
+                root_pkg.package.0, e
+            ),
+            None,
+        );
+        ReportedError
+    })?;
+    let root_src = root_src.canonicalize().map_err(|e| {
+        ctx.dcx.emit_error(
+            format!(
+                "failed to canonicalize source path for '{}': {}",
+                root_pkg.package.0, e
+            ),
+            None,
+        );
+        ReportedError
+    })?;
+
+    Ok(root_src == std_root)
 }
 
 // ─── Test mode build ──────────────────────────────────────────────────
@@ -537,6 +598,8 @@ fn run_single_file_test(
             timings: arguments.timings,
         },
         test_mode: true,
+        std_mode: StdMode::FullStd,
+        is_std_provider: false,
     });
 
     eprintln!("Compiling tests – {}", file_stem);
@@ -569,7 +632,11 @@ fn run_package_test(
 
     let graph = sync_dependencies(arguments.path)?;
 
-    let _ = compile_std(&icx, arguments.std_path.clone(), compile_options)?;
+    let root_is_std = is_root_std_package(&graph, arguments.std_path.clone(), &icx)?;
+
+    if !root_is_std {
+        let _ = compile_std(&icx, arguments.std_path.clone(), compile_options)?;
+    }
     build_runtime(&icx, &project_root, arguments.runtime_path.clone())?;
 
     let total = graph.ordered.len();
@@ -602,16 +669,21 @@ fn run_package_test(
             );
             ReportedError
         })?;
-        let identifier = package.unique_identifier().map_err(|e| {
-            icx.dcx.emit_error(
-                format!(
-                    "failed to generate unique identifier for '{}': {}",
-                    package.package.0, e
-                ),
-                None,
-            );
-            ReportedError
-        })?;
+        let is_std_package = root_is_std && is_root;
+        let identifier = if is_std_package {
+            STD_PREFIX.into()
+        } else {
+            package.unique_identifier().map_err(|e| {
+                icx.dcx.emit_error(
+                    format!(
+                        "failed to generate unique identifier for '{}': {}",
+                        package.package.0, e
+                    ),
+                    None,
+                );
+                ReportedError
+            })?
+        };
         let mut dependencies = graph.dependencies_for(package).map_err(|e| {
             icx.dcx.emit_error(
                 format!(
@@ -622,7 +694,9 @@ fn run_package_test(
             );
             ReportedError
         })?;
-        dependencies.insert("std".into(), "std".into());
+        if !is_std_package {
+            dependencies.insert("std".into(), "std".into());
+        }
 
         let src = package
             .path()
@@ -668,6 +742,12 @@ fn run_package_test(
                 timings: arguments.timings,
             },
             test_mode,
+            std_mode: if is_std_package {
+                StdMode::BootstrapStd
+            } else {
+                StdMode::FullStd
+            },
+            is_std_provider: is_std_package,
         });
 
         let mut compiler = Compiler::new(&icx, config);

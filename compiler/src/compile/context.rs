@@ -1,7 +1,7 @@
 use crate::{
     PackageIndex,
     codegen::target::TargetLayout,
-    compile::config::Config,
+    compile::config::{Config, StdMode},
     diagnostics::DiagCtx,
     error::CompileResult,
     hir::{self, DefinitionID, StdInterface},
@@ -22,7 +22,7 @@ use crate::{
     thir::VariantIndex,
     utils::intern::{Interned, InternedInSet, InternedSet},
 };
-use crate::{constants::STD_PREFIX, span::Symbol};
+use crate::span::Symbol;
 use bumpalo::Bump;
 use ecow::EcoString;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -554,13 +554,32 @@ impl<'arena> GlobalContext<'arena> {
         *output.definition_to_kind.get(&id).expect("definition kind")
     }
 
+    fn is_current_package_std(self) -> bool {
+        self.config.is_std_provider
+    }
+
+    pub fn is_std_package(self, pkg: PackageIndex) -> bool {
+        if pkg == self.package_index() {
+            return self.is_current_package_std();
+        }
+
+        self.context.store.std_provider_index.get() == Some(pkg)
+    }
+
     pub fn std_package_index(self) -> Option<PackageIndex> {
-        self.context
-            .store
-            .package_idents
-            .borrow()
-            .iter()
-            .find_map(|(idx, ident)| (ident.as_str() == STD_PREFIX).then_some(*idx))
+        if self.is_current_package_std() {
+            return Some(self.package_index());
+        }
+
+        if let Some(provider) = self.context.store.std_provider_index.get() {
+            return Some(provider);
+        }
+
+        if matches!(self.config.std_mode, StdMode::BootstrapStd) {
+            return None;
+        }
+
+        None
     }
 
     pub fn find_std_type(self, name: &str) -> Option<DefinitionID> {
@@ -928,6 +947,8 @@ pub struct CompilerStore<'arena> {
     pub target_layout: TargetLayout,
     /// Cached lookup of well-known standard library interfaces (Copy, Clone).
     pub std_interfaces: OnceCell<FxHashMap<StdInterface, DefinitionID>>,
+    /// The std provider package index selected by the driver.
+    pub std_provider_index: std::cell::Cell<Option<PackageIndex>>,
     /// Cached std nominal type definitions (Interface/Struct/Enum/TypeAlias) by symbol.
     pub std_type_definitions: RefCell<Option<(PackageIndex, FxHashMap<Symbol, DefinitionID>)>>,
 
@@ -964,6 +985,7 @@ impl<'arena> CompilerStore<'arena> {
             compiled_instances: Default::default(),
             target_layout,
             std_interfaces: OnceCell::new(),
+            std_provider_index: std::cell::Cell::new(None),
             std_type_definitions: Default::default(),
             synthetic_definitions: Default::default(),
             next_synthetic_id: std::cell::Cell::new(0),
