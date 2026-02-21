@@ -1,0 +1,126 @@
+type int = isize
+
+interface CallTransformer {
+    type Input
+    type Output
+    func transform(&self, i: Self.Input) -> Self.Output
+}
+
+struct IntToString {}
+
+impl CallTransformer for IntToString {
+    type Input = int
+    type Output = string
+    func transform(&self, i: int) -> string { "transformed" }
+}
+
+func helper(_ x: int) -> string {
+    "helper called"
+}
+
+func processCall[T: CallTransformer[Input = int, Output = string]](_ t: T, _ val: T.Input) -> string {
+    let _ = t.transform(i: val)
+    helper(val)
+}
+
+interface OutputProducer {
+    type Output
+    func produce(&self) -> Self.Output
+}
+
+struct IntOutputProducer {}
+
+impl OutputProducer for IntOutputProducer {
+    type Output = int
+    func produce(&self) -> int { 42 }
+}
+
+struct StringOutputProducer {}
+
+impl OutputProducer for StringOutputProducer {
+    type Output = string
+    func produce(&self) -> string { "hello" }
+}
+
+func consumeIntProducer(_ p: any OutputProducer[Output = int]) -> int {
+    p.produce()
+}
+
+func consumeStringProducer(_ p: any OutputProducer[Output = string]) -> string {
+    p.produce()
+}
+
+func makeIntProducer() -> any OutputProducer[Output = int] {
+    IntOutputProducer {}
+}
+
+func testIntProducer[T: OutputProducer[Output = int]](_ p: T) {
+    let produced: int = p.produce()
+    assert(produced == 42, "Output producer constraint")
+}
+
+interface Factory {
+    type Product
+    func create(&self) -> Self.Product
+}
+
+struct StringFactory {}
+
+impl Factory for StringFactory {
+    type Product = string
+    func create(&self) -> string { "hello" }
+}
+
+func makeString[T: Factory[Product = string]](_ f: T) -> string {
+    f.create()
+}
+
+interface ItemProducer {
+    type Item
+    func produce(&self) -> Self.Item
+}
+
+struct IntItemProducer {}
+
+impl ItemProducer for IntItemProducer {
+    type Item = int
+    func produce(&self) -> int { 42 }
+}
+
+func consumeItemProducer[T: ItemProducer[Item = int]](_ p: T) {
+    let x: int = p.produce()
+    assert(x == 42, "Item producer inference")
+}
+
+func main() {
+    let t = IntToString {}
+    let res = processCall(t, 100)
+    assert(res == "helper called", "Parametric call argument")
+
+    let intP: any OutputProducer[Output = int] = IntOutputProducer {}
+    assert(intP.produce() == 42, "existential binding int")
+
+    let strP: any OutputProducer[Output = string] = StringOutputProducer {}
+    assert(strP.produce() == "hello", "existential binding string")
+
+    let intP2 = IntOutputProducer {}
+    testIntProducer(intP2)
+
+    let consumedInt = consumeIntProducer(IntOutputProducer {})
+    assert(consumedInt == 42, "consumeIntProducer")
+
+    let consumedStr = consumeStringProducer(StringOutputProducer {})
+    assert(consumedStr == "hello", "consumeStringProducer")
+
+    let intP3: any OutputProducer[Output = int] = makeIntProducer()
+    assert(intP3.produce() == 42, "return existential with binding")
+
+    let f = StringFactory {}
+    let s = makeString(f)
+    assert(s == "hello", "parametric return concrete type")
+
+    let p = IntItemProducer {}
+    consumeItemProducer(p)
+
+    std.print("PASS: Parametric tests\n")
+}

@@ -1,0 +1,6 @@
+PASS: Match unit
+PASS: Match tuple
+Inside match arm
+PASS: Match expression returned correct value
+PASS: Or-pattern matched
+PASS: Or-pattern matched second variant

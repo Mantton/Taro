@@ -1,0 +1,45 @@
+// Basic smoke test for the test harness: @test, @skip, @expectPanic.
+
+@test
+func testPasses() {
+    std.testing.assertEqual(1 + 1, 2, "1 + 1 should be 2")
+}
+
+@test
+@expectPanic
+func testExpectPanic() {
+    std.panic.panic("intentional")
+}
+
+@test
+@expectPanic
+func testAssertPanics() {
+    std.assert(false, "assert should panic")
+}
+
+@test
+@skip
+func testSkipped() {
+    std.testing.fail("should never run")
+}
+
+@cfg(profile("debug"))
+func profileName() -> string {
+    "debug"
+}
+
+@cfg(profile("release"))
+func profileName() -> string {
+    "release"
+}
+
+@test
+func testDebugAssertProfileCfg() {
+    std.testing.assertTrue(#cfg(profile("debug")), "expected debug profile")
+    std.testing.assertFalse(#cfg(profile("release")), "release cfg should be false in debug profile")
+    std.testing.assertTrue(
+        std.string.stringEq(profileName(), "debug"),
+        "profile-selected declaration should be debug variant",
+    )
+    std.debugAssert(true, "debug assert should not panic")
+}

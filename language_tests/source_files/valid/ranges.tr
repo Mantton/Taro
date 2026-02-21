@@ -1,0 +1,128 @@
+func expectSome(_ next: int32?, _ expected: int32, _ label: string) {
+    match next {
+        case .some(value) => {
+            assert(value == expected, label)
+        }
+        case .none => {
+            assert(false, "expected .some from range iterator")
+        }
+    }
+}
+
+func sumExclusive(_ r: Range[int32]) -> int32 {
+    var sum = 0
+    for x in r {
+        sum = sum + x
+    }
+    sum
+}
+
+func sumInclusive(_ r: ClosedRange[int32]) -> int32 {
+    var sum = 0
+    for x in r {
+        sum = sum + x
+    }
+    sum
+}
+
+func testRangeExpressionEndpoints() {
+    var sum = 0
+    for n in (lower() + 1)..(upper() - 1) {
+        sum = sum + n
+    }
+    assert(sum == 9, "(1+1)..(6-1) should yield 2,3,4")
+
+    let a: int32 = 4
+    let b: int32 = 8
+    var count = 0
+    for _ in (a - 2)..=(b - 6) {
+        count = count + 1
+    }
+    assert(count == 1, "(4-2)..=(8-6) should be a singleton")
+}
+
+func testRangeIterationBasic() {
+    var sum_exclusive = 0
+    for i in 0..5 {
+        sum_exclusive = sum_exclusive + i
+    }
+    assert(sum_exclusive == 10, "0..5 should yield 0,1,2,3,4")
+
+    var sum_inclusive = 0
+    for i in 0..=5 {
+        sum_inclusive = sum_inclusive + i
+    }
+    assert(sum_inclusive == 15, "0..=5 should yield 0..5")
+
+    var empty_desc_exclusive = 0
+    for _ in 5..2 {
+        empty_desc_exclusive = empty_desc_exclusive + 1
+    }
+    assert(empty_desc_exclusive == 0, "5..2 should be empty")
+
+    var empty_desc_inclusive = 0
+    for _ in 5..=2 {
+        empty_desc_inclusive = empty_desc_inclusive + 1
+    }
+    assert(empty_desc_inclusive == 0, "5..=2 should be empty")
+
+    var singleton_inclusive = 0
+    for i in 4..=4 {
+        singleton_inclusive = singleton_inclusive + i
+    }
+    assert(singleton_inclusive == 4, "4..=4 should yield one element")
+
+    var singleton_exclusive = 0
+    for _ in 4..4 {
+        singleton_exclusive = singleton_exclusive + 1
+    }
+    assert(singleton_exclusive == 0, "4..4 should be empty")
+}
+
+func testRangeIteratorNextMatch() {
+    let closed = 3..=5
+    var iter = closed.makeIterator()
+
+    expectSome(iter.next(), 3, "first value should be 3")
+    expectSome(iter.next(), 4, "second value should be 4")
+    expectSome(iter.next(), 5, "third value should be 5")
+
+    match iter.next() {
+        case .none => {}
+        case .some(_) => {
+            assert(false, "closed range iterator should be exhausted")
+        }
+    }
+
+    let empty = 7..7
+    var empty_iter = empty.makeIterator()
+    match empty_iter.next() {
+        case .none => {}
+        case .some(_) => {
+            assert(false, "empty exclusive range should yield no values")
+        }
+    }
+}
+
+func testRangeValueFlow() {
+    let start: int32 = 2
+    let end: int32 = 6
+
+    let ex = Range[int32].new(start, end)
+    let inc = ClosedRange[int32].new(start, end)
+
+    assert(sumExclusive(ex) == 14, "2..6 should sum to 14")
+    assert(sumInclusive(inc) == 20, "2..=6 should sum to 20")
+}
+
+func lower() -> int32 { 1 }
+func upper() -> int32 { 6 }
+
+func main() {
+    testRangeExpressionEndpoints()
+    testRangeIterationBasic()
+    testRangeIteratorNextMatch()
+    testRangeValueFlow()
+
+    print("ranges ok\n")
+}

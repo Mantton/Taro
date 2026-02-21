@@ -1,9 +1,0 @@
-struct NonCopyError {
-    code: int32
-}
-
-func main() {
-    let left: Result[int32, NonCopyError] = .err(NonCopyError { code: 7 })
-    let right: Result[uint8, NonCopyError] = .ok(1)
-    let _ = left.and(right)
-}

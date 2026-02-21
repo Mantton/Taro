@@ -1,0 +1,12 @@
+error: cannot derive Copy for 'UnboundedContainer': field 'value' of type 'T' is not Copy
+ -> language_tests/source_files/invalid/copy.tr:4:30
+	struct UnboundedContainer[T]: Copy {
+	                              ^^^^
+error: 'Copy' cannot be implemented via impl block; use inline syntax on the struct/enum definition instead (e.g., `struct Foo: Copy { ... }`)
+ -> language_tests/source_files/invalid/copy.tr:13:5
+	impl Copy for ExtensionTarget {
+	     ^^^^
+error: cannot derive Copy for 'DerivedCopyWrapper': field 'inner' of type 'NonCopyPayload' is not Copy
+ -> language_tests/source_files/invalid/copy.tr:21:27
+	struct DerivedCopyWrapper: Copy {
+	                           ^^^^

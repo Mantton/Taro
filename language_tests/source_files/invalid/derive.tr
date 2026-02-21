@@ -1,0 +1,23 @@
+// Test: derive/impl Clone failures.
+
+struct NoClone {
+    value: int32
+}
+
+// ERROR: field type does not implement Clone.
+struct WrapperNeedsClone: Clone {
+    inner: NoClone
+}
+
+struct ExtensionCloneType {
+    value: int32
+}
+
+// ERROR: extension Clone conformance requires explicit clone implementation.
+impl Clone for ExtensionCloneType {
+}
+
+func main() {
+    let _ = WrapperNeedsClone { inner: NoClone { value: 42 } }
+    let _ = ExtensionCloneType { value: 1 }
+}

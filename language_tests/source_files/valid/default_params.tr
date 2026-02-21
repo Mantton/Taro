@@ -1,0 +1,39 @@
+struct Counter {
+    base: int32
+}
+
+impl Counter {
+    func add(&self, value: int32 = 10) -> int32 {
+        self.base + value
+    }
+}
+
+func add(a: int32, b: int32 = 10) -> int32 {
+    a + b
+}
+
+func complex_default(a: int32, b: int32 = 5 + 5) -> int32 {
+    a + b
+}
+
+func provider_call() -> int32 {
+    100
+}
+
+func call_provider(a: int32, b: int32 = provider_call()) -> int32 {
+    a + b
+}
+
+func main() {
+    let counter = Counter { base: 7 }
+
+    assert(counter.add() == 17, "counter.add() default")
+    assert(counter.add(value: 5) == 12, "counter.add(value: 5)")
+
+    assert(add(a: 5) == 15, "add(a: 5)")
+    assert(add(a: 5, b: 20) == 25, "add(a: 5, b: 20)")
+    assert(complex_default(a: 5) == 15, "complex_default(a: 5)")
+    assert(call_provider(a: 5) == 105, "call_provider(a: 5)")
+
+    std.print("PASS: Default parameters\n")
+}

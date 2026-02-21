@@ -1,8 +1,0 @@
-struct NonCopyValue {
-    value: int32
-}
-
-func main() {
-    let r: Result[NonCopyValue, int32] = .ok(NonCopyValue { value: 1 })
-    let _ = r.mapErr(|e| -> int32 { e + 1 })
-}

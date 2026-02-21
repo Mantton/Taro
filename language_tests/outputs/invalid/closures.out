@@ -1,0 +1,4 @@
+error: use of moved value 'list'
+ -> language_tests/source_files/invalid/closures.tr:37:4
+	    list.len()
+	    ^^^^

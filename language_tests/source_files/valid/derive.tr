@@ -1,0 +1,85 @@
+// Test: derived Clone for structs and enums.
+
+struct Point: Clone, Copy {
+    x: int32
+    y: int32
+}
+
+struct Wrapper: Clone {
+    name: string
+    value: int32
+}
+
+struct DeepWrapper: Clone {
+    inner: Wrapper
+    flag: bool
+}
+
+enum Status: Clone, Copy {
+    case Active
+    case Inactive
+    case Pending
+}
+
+enum ResultValue: Clone {
+    case Ok(int32)
+    case Error(string)
+}
+
+enum MaybeInt: Clone {
+    case Some(int32)
+    case None
+}
+
+func testStructClone() {
+    let p1 = Point { x: 10, y: 20 }
+    let p2 = p1.clone()
+    assert(p2.x == 10, "p2.x")
+    assert(p2.y == 20, "p2.y")
+
+    let w1 = Wrapper { name: "hello", value: 42 }
+    let w2 = w1.clone()
+    assert(w2.value == 42, "w2.value")
+
+    let d1 = DeepWrapper { inner: w1, flag: true }
+    let d2 = d1.clone()
+    assert(d2.inner.value == 42, "d2.inner.value")
+    assert(d2.flag, "d2.flag")
+}
+
+func testEnumClone() {
+    let s1 = Status.Active
+    let s2 = s1.clone()
+    match s2 {
+        case Status.Active => {}
+        case Status.Inactive => assert(false, "s2 should be Active")
+        case Status.Pending => assert(false, "s2 should be Active")
+    }
+
+    let r1 = ResultValue.Ok(42)
+    let r2 = r1.clone()
+    match r2 {
+        case ResultValue.Ok(v) => assert(v == 42, "r2 should be Ok(42)")
+        case ResultValue.Error(_) => assert(false, "r2 should be Ok")
+    }
+
+    let o1 = MaybeInt.Some(100)
+    let o2 = o1.clone()
+    match o2 {
+        case MaybeInt.Some(v) => assert(v == 100, "o2 should be Some(100)")
+        case MaybeInt.None => assert(false, "o2 should be Some")
+    }
+
+    let o3 = MaybeInt.None
+    let o4 = o3.clone()
+    match o4 {
+        case MaybeInt.Some(_) => assert(false, "o4 should be None")
+        case MaybeInt.None => {}
+    }
+}
+
+func main() {
+    testStructClone()
+    testEnumClone()
+    print("Success")
+}

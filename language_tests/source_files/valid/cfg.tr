@@ -1,0 +1,61 @@
+// CHECK_ONLY
+// Unified cfg test: attribute predicates + #cfg expressions.
+
+@cfg(os("macos"))
+func macosOnly() -> int32 {
+    42
+}
+
+@cfg(os("linux"))
+func linuxOnly() -> int32 {
+    7
+}
+
+@cfg(os("windows"))
+func windowsOnly() -> int32 {
+    9
+}
+
+@cfg(!os("windows"))
+func notWindows() -> int32 {
+    1
+}
+
+@cfg(os("linux") || os("macos"))
+func unixLike() -> int32 {
+    2
+}
+
+@cfg(os("linux") && arch("x86_64"))
+func linuxX64Only() -> int32 {
+    3
+}
+
+@cfg(os("windows") && arch("x86_64"))
+func windowsX64Only() -> int32 {
+    4
+}
+
+func assertCond(_ cond: bool) {
+    if !cond {
+        let _ = 0
+    }
+}
+
+func main() {
+    let hostMac = #cfg(os("macos"))
+    let hostLinux = #cfg(os("linux"))
+    let hostWindows = #cfg(os("windows"))
+    let hostNotWindows = #cfg(!os("windows"))
+    let hostUnixLike = #cfg(!os("windows") && (os("macos") || os("linux")))
+    let hostAppleSilicon = #cfg(os("macos") && arch("aarch64"))
+
+    // Keep these used so CHECK_ONLY validates expression typing and predicate parsing.
+    let _ = hostMac
+    let _ = hostLinux
+    let _ = hostWindows
+    let _ = hostNotWindows
+    let _ = hostUnixLike
+    let _ = hostAppleSilicon
+    assertCond(true)
+}

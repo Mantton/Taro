@@ -1,0 +1,18 @@
+// Test: Copy semantics with bounded generic types.
+
+struct BoundedContainer[T: Copy]: Copy {
+    value: T
+}
+
+func testBoundedGenericCopy() {
+    let c1 = BoundedContainer[int32] { value: 42 }
+    let c2 = c1
+
+    assert(c1.value == 42, "c1 should still be valid")
+    assert(c2.value == 42, "c2 should have copied value")
+}
+
+func main() {
+    testBoundedGenericCopy()
+    print("Success")
+}

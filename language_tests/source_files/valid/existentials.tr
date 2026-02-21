@@ -1,0 +1,81 @@
+// Test: existential boxing, existential returns, and intersection existential types.
+
+interface Printable {
+    func print(&self)
+}
+
+struct PrintableValue {
+    value: int32
+}
+
+impl Printable for PrintableValue {
+    func print(&self) {
+    }
+}
+
+func makePrintable() -> any Printable {
+    PrintableValue { value: 42 }
+}
+
+interface Entity {
+    func name(&self) -> string
+}
+
+interface Identifiable {
+    func identifier(&self) -> usize
+}
+
+struct User {
+    id: usize
+    name: string
+}
+
+impl Entity for User {
+    func name(&self) -> string {
+        self.name
+    }
+}
+
+impl Identifiable for User {
+    func identifier(&self) -> usize {
+        self.id
+    }
+}
+
+type IdentifiableEntity = any Identifiable & Entity
+
+func printEntity(_ value: IdentifiableEntity) {
+    let _ = value.name()
+    let id = value.identifier()
+
+    match id {
+        case 0 => std.print("PASS: Root User!\n")
+        case _ => std.print("PASS: Regular User!\n")
+    }
+}
+
+func testExistentialBoxing() {
+    let v = PrintableValue { value: 10 }
+    let p: any Printable = v
+    p.print()
+}
+
+func testExistentialReturn() {
+    let p = makePrintable()
+    p.print()
+}
+
+func testExistentialIntersection() {
+    let user = User { id: 1, name: "John Appleseed" }
+    printEntity(user)
+
+    let root = User { id: 0, name: "Root" }
+    printEntity(root)
+}
+
+func main() {
+    testExistentialBoxing()
+    testExistentialReturn()
+    testExistentialIntersection()
+    std.print("PASS: Existential tests\n")
+}

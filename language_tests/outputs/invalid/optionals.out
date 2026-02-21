@@ -1,0 +1,16 @@
+error: optional unwrap requires an Optional value, found 'ChainProfile'
+ -> language_tests/source_files/invalid/optionals.tr:13:12
+	    let _ = profile?.name
+	            ^^^^^^^
+error: optional unwrap requires an Optional value, found 'ChainProfile'
+ -> language_tests/source_files/invalid/optionals.tr:21:12
+	    let _ = make_profile()?.name
+	            ^^^^^^^^^^^^^^
+error: optional unwrap requires an Optional value, found 'ChainName'
+ -> language_tests/source_files/invalid/optionals.tr:26:12
+	    let _ = profile.name?.value
+	            ^^^^^^^^^^^^
+error: '??' operator requires an Optional type on the left-hand side, found 'int32'
+ -> language_tests/source_files/invalid/optionals.tr:31:12
+	    let _ = x ?? 100
+	            ^

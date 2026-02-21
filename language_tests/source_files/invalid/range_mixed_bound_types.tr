@@ -1,7 +1,0 @@
-func main() {
-    let start: int32 = 0
-    let end: uint32 = 5
-
-    for _ in start..end {
-    }
-}

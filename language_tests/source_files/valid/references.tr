@@ -1,0 +1,65 @@
+func testBasicRefPattern() {
+    let x = 42
+    let r = &x
+
+    match r {
+        case &y => {
+            assert(y == 42, "basic ref pattern match")
+        }
+    }
+}
+
+func testMutRefPattern() {
+    var x = 42
+    let r = &mut x
+
+    match r {
+        case &mut y => {
+            assert(y == 42, "mut ref pattern match")
+            y = 40
+        }
+    }
+    assert(x == 40, "mut ref update should propagate")
+}
+
+func testNestedRefPattern() {
+    let x = 42
+    let r1 = &x
+    let r2 = &r1
+
+    match r2 {
+        case & &y => {
+            assert(y == 42, "nested ref pattern match")
+        }
+    }
+}
+
+func testReferenceEdgeCases() {
+    var x = 1
+    let r = &mut x
+    match r {
+        case &mut y => {
+            y = y + 2
+        }
+    }
+    assert(x == 3, "mut ref edge update")
+
+    let a = 10
+    let r1 = &a
+    let r2 = &r1
+    match r2 {
+        case & &z => {
+            assert(z == 10, "double ref match")
+        }
+    }
+}
+
+func main() {
+    testBasicRefPattern()
+    testMutRefPattern()
+    testNestedRefPattern()
+    std.print("PASS: Reference patterns match\n")
+
+    testReferenceEdgeCases()
+    std.print("PASS: Reference pattern edge cases\n")
+}

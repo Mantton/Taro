@@ -1,8 +1,0 @@
-error: type 'double' does not conform to interface 'Step'
- -> language_tests/source_files/invalid/range_non_step_bound_multiple_sites.tr:4:13
-	    for _ in 0.0..1.0 {
-	             ^^^^^^^^
-error: type 'double' does not conform to interface 'Step'
- -> language_tests/source_files/invalid/range_non_step_bound_multiple_sites.tr:7:13
-	    for _ in 2.0..=3.0 {
-	             ^^^^^^^^^

@@ -1,0 +1,12 @@
+error: expected int32, found uint32
+ -> language_tests/source_files/invalid/ranges.tr:6:20
+	    for _ in start..end {
+	                    ^^^
+error: type 'double' does not conform to interface 'Step'
+ -> language_tests/source_files/invalid/ranges.tr:12:13
+	    for _ in 0.0..1.0 {
+	             ^^^^^^^^
+error: type 'double' does not conform to interface 'Step'
+ -> language_tests/source_files/invalid/ranges.tr:18:13
+	    for _ in 2.0..=3.0 {
+	             ^^^^^^^^^

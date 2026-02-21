@@ -1,0 +1,4 @@
+error: use of moved value 'x'
+ -> language_tests/source_files/invalid/move_semantics.tr:70:15
+	    consume(n: x)
+	               ^

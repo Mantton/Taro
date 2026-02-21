@@ -517,6 +517,11 @@ impl<'arena> GlobalContext<'arena> {
         *outputs.get(&pkg).expect("resolution output")
     }
 
+    pub fn try_resolution_output(self, pkg: PackageIndex) -> Option<&'arena ResolutionOutput<'arena>> {
+        let outputs = self.context.store.resolution_outputs.borrow();
+        outputs.get(&pkg).copied()
+    }
+
     pub fn definition_ident(self, id: DefinitionID) -> crate::span::Identifier {
         if let Some(def) = self.context.store.synthetic_definitions.borrow().get(&id) {
             return crate::span::Identifier {
@@ -560,27 +565,46 @@ impl<'arena> GlobalContext<'arena> {
 
     pub fn find_std_type(self, name: &str) -> Option<DefinitionID> {
         let pkg = self.std_package_index()?;
-        let output = self.resolution_output(pkg);
-        output.definition_to_ident.iter().find_map(|(id, ident)| {
-            let kind = output.definition_to_kind.get(id)?;
+        let query_symbol = self.intern_symbol(name);
+
+        if let Some((cached_pkg, definitions)) =
+            self.context.store.std_type_definitions.borrow().as_ref()
+        {
+            if *cached_pkg == pkg {
+                return definitions.get(&query_symbol).copied();
+            }
+        }
+
+        let output = self.try_resolution_output(pkg)?;
+        let mut definitions = FxHashMap::default();
+        for (id, ident) in &output.definition_to_ident {
+            let Some(kind) = output.definition_to_kind.get(id) else {
+                continue;
+            };
             if matches!(
                 kind,
                 DefinitionKind::Interface
                     | DefinitionKind::Struct
                     | DefinitionKind::Enum
                     | DefinitionKind::TypeAlias
-            ) && self.symbol_eq(ident.symbol.clone(), name)
-            {
-                Some(*id)
-            } else {
-                None
+            ) {
+                definitions.insert(ident.symbol.clone(), *id);
             }
-        })
+        }
+
+        let result = definitions.get(&query_symbol).copied();
+        *self.context.store.std_type_definitions.borrow_mut() = Some((pkg, definitions));
+        result
     }
 
     /// Returns the DefinitionID for a well-known standard library interface.
     /// Uses a cached lookup that's initialized on first access.
     pub fn std_interface_def(self, iface: StdInterface) -> Option<DefinitionID> {
+        let std_pkg = self.std_package_index()?;
+        if self.try_resolution_output(std_pkg).is_none() {
+            return None;
+        }
+
         self.context
             .store
             .std_interfaces
@@ -904,6 +928,8 @@ pub struct CompilerStore<'arena> {
     pub target_layout: TargetLayout,
     /// Cached lookup of well-known standard library interfaces (Copy, Clone).
     pub std_interfaces: OnceCell<FxHashMap<StdInterface, DefinitionID>>,
+    /// Cached std nominal type definitions (Interface/Struct/Enum/TypeAlias) by symbol.
+    pub std_type_definitions: RefCell<Option<(PackageIndex, FxHashMap<Symbol, DefinitionID>)>>,
 
     // Synthetic definitions (for method synthesis linkage)
     pub synthetic_definitions:
@@ -938,6 +964,7 @@ impl<'arena> CompilerStore<'arena> {
             compiled_instances: Default::default(),
             target_layout,
             std_interfaces: OnceCell::new(),
+            std_type_definitions: Default::default(),
             synthetic_definitions: Default::default(),
             next_synthetic_id: std::cell::Cell::new(0),
             default_value_exprs: Default::default(),

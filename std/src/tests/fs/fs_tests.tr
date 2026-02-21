@@ -1,0 +1,436 @@
+import std.io.{Reader, Seeker, SeekFrom, Writer}
+
+@test
+func testFileLifecycle() {
+    let testPath = "taro_test_fs_lifecycle.txt"
+    let msg = "Hello from Taro FS!"
+    let msgLen = std.string.stringLen(msg)
+    let msgData = std.string.stringData(msg)
+
+    let createRes = std.fs.File.create(testPath)
+    var writer = match createRes {
+        case .ok(file) => file
+        case .err(_) => std.panic.panic("failed to create file")
+    }
+
+    let writeBytes = std.mem.Span[uint8].from(msgData, msgLen)
+    let writeRes = writer.write(writeBytes)
+    std.assert(writeRes.isOk(), "failed to write file")
+    std.assert(writeRes.unwrap() == msgLen, "write size mismatch")
+
+    let seekTarget: SeekFrom = .start(0 as isize)
+    let seekRes = writer.seek(seekTarget)
+    std.assert(seekRes.isOk(), "failed to seek in writer")
+
+    let closeWriteRes = writer.close()
+    std.assert(closeWriteRes.isOk(), "failed to close writer")
+
+    let openRes = std.fs.File.open(testPath)
+    var reader = match openRes {
+        case .ok(file) => file
+        case .err(_) => std.panic.panic("failed to open file for reading")
+    }
+
+    var storage: [uint8; 64] = [0; 64]
+    let storagePtr = unsafe { (&mut storage as *mut [uint8; 64]) as *mut uint8 }
+    let readBuf = std.mem.MutableSpan[uint8].from(storagePtr, 64)
+    let readRes = reader.read(readBuf)
+    std.assert(readRes.isOk(), "failed to read file")
+
+    let readLen = readRes.unwrap()
+    std.assert(readLen == msgLen, "read size mismatch")
+
+    var idx: usize = 0
+    while idx < readLen {
+        std.assert(*storage.at(idx) == msgData.add(idx).read(), "read content mismatch")
+        idx += 1
+    }
+
+    let closeReadRes = reader.close()
+    std.assert(closeReadRes.isOk(), "failed to close reader")
+
+    let removeRes = std.fs.removeFile(testPath)
+    std.assert(removeRes.isOk(), "failed to remove test file")
+}
+
+@test
+func testOpenMissingFileReturnsNotFound() {
+    let missing = "taro_missing_fs_file_should_not_exist.txt"
+    let openRes = std.fs.File.open(missing)
+    std.assert(openRes.isErr(), "opening missing file should fail")
+
+    match openRes {
+        case .ok(_) => std.panic.panic("expected open to fail for missing file")
+        case .err(err) => {
+            match err {
+                case .notFound => {}
+                case _ => std.panic.panic("expected io.Error.notFound for missing file")
+            }
+        }
+    }
+}
+
+@test
+func testWriteAndReadToString() {
+    let path = "taro_fs_helpers_text.txt"
+    let text = "fs.writeString + fs.readToString"
+
+    let writeRes = std.fs.writeString(path, text)
+    std.assert(writeRes.isOk(), "writeString should succeed")
+
+    let readRes = std.fs.readToString(path)
+    let readText = match readRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("readToString should succeed")
+    }
+    std.assert(std.string.stringEq(readText, text), "readToString content mismatch")
+
+    let removeRes = std.fs.removeFile(path)
+    std.assert(removeRes.isOk(), "removeFile should succeed")
+}
+
+@test
+func testWriteAndReadBytes() {
+    let path = "taro_fs_helpers_bytes.txt"
+    let text = "ABC123"
+    let len = std.string.stringLen(text)
+    let ptr = std.string.stringData(text)
+    let bytes = std.mem.Span[uint8].from(ptr, len)
+
+    let writeRes = std.fs.write(path, bytes)
+    std.assert(writeRes.isOk(), "write should succeed")
+
+    let readRes = std.fs.read(path)
+    let readBytes = match readRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("read should succeed")
+    }
+    std.assert(readBytes.len() == len, "read length mismatch")
+
+    var idx: usize = 0
+    while idx < len {
+        std.assert(*readBytes.at(idx) == ptr.add(idx).read(), "read byte mismatch")
+        idx += 1
+    }
+
+    let removeRes = std.fs.removeFile(path)
+    std.assert(removeRes.isOk(), "removeFile should succeed")
+}
+
+@test
+func testReadMissingFileReturnsNotFound() {
+    let path = "taro_fs_helpers_missing_should_not_exist.txt"
+
+    let readRes = std.fs.read(path)
+    std.assert(readRes.isErr(), "read should fail for missing file")
+
+    match readRes {
+        case .ok(_) => std.panic.panic("expected read to fail")
+        case .err(err) => {
+            match err {
+                case .notFound => {}
+                case _ => std.panic.panic("expected io.Error.notFound")
+            }
+        }
+    }
+}
+
+@test
+func testMetadataForFileAndDir() {
+    let root = "taro_fs_metadata_root"
+    let nested = "taro_fs_metadata_root/a/b"
+    let filePath = "taro_fs_metadata_root/a/b/data.txt"
+    let content = "hello"
+
+    std.assert(std.fs.createDirAll(nested).isOk(), "failed to create nested directories")
+    std.assert(std.fs.writeString(filePath, content).isOk(), "failed to write metadata file")
+
+    let fileMetaRes = std.fs.metadata(filePath)
+    let fileMeta = match fileMetaRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("failed to read file metadata")
+    }
+    std.assert(fileMeta.isFile(), "file metadata should report file")
+    std.assert(!fileMeta.isDir(), "file metadata should not report directory")
+    std.assert(!fileMeta.isSymlink(), "file metadata should not report symlink")
+    std.assert(fileMeta.len() == std.string.stringLen(content), "file metadata size mismatch")
+    let _ = fileMeta.isReadonly()
+    std.assert(fileMeta.modifiedSeconds() >= (-1 as int64), "modifiedSeconds should be populated or -1")
+    std.assert(fileMeta.accessedSeconds() >= (-1 as int64), "accessedSeconds should be populated or -1")
+    std.assert(fileMeta.createdSeconds() >= (-1 as int64), "createdSeconds should be populated or -1")
+
+    let statRes = std.fs.stat(filePath)
+    let statMeta = match statRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("failed to stat file metadata")
+    }
+    std.assert(statMeta.isFile(), "stat should report file")
+    std.assert(statMeta.len() == std.string.stringLen(content), "stat size mismatch")
+
+    let dirMetaRes = std.fs.metadata(nested)
+    let dirMeta = match dirMetaRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("failed to read directory metadata")
+    }
+    std.assert(dirMeta.isDir(), "directory metadata should report directory")
+    std.assert(!dirMeta.isFile(), "directory metadata should not report file")
+    std.assert(!dirMeta.isSymlink(), "directory metadata should not report symlink")
+
+    std.assert(std.fs.removeDirAll(root).isOk(), "failed to cleanup metadata root")
+}
+
+@test
+func testCreateDirAllIsIdempotent() {
+    let root = "taro_fs_create_dir_all_root"
+    let nested = "taro_fs_create_dir_all_root/x/y/z"
+
+    std.assert(std.fs.createDirAll(nested).isOk(), "first createDirAll should succeed")
+    std.assert(std.fs.createDirAll(nested).isOk(), "second createDirAll should succeed")
+    std.assert(std.fs.removeDirAll(root).isOk(), "failed to cleanup createDirAll root")
+}
+
+@test
+func testRemoveDirAllRemovesNestedTree() {
+    let root = "taro_fs_remove_dir_all_root"
+    let nested = "taro_fs_remove_dir_all_root/one/two"
+    let filePath = "taro_fs_remove_dir_all_root/one/two/value.txt"
+
+    std.assert(std.fs.createDirAll(nested).isOk(), "failed to create removeDirAll tree")
+    std.assert(std.fs.writeString(filePath, "value").isOk(), "failed to create removeDirAll file")
+    std.assert(std.fs.removeDirAll(root).isOk(), "removeDirAll should succeed")
+
+    let metaRes = std.fs.metadata(root)
+    std.assert(metaRes.isErr(), "metadata should fail after removeDirAll")
+    match metaRes {
+        case .ok(_) => std.panic.panic("expected metadata to fail after removeDirAll")
+        case .err(err) => {
+            match err {
+                case .notFound => {}
+                case _ => std.panic.panic("expected notFound after removeDirAll")
+            }
+        }
+    }
+}
+
+@test
+func testRemoveDirAllMissingReturnsNotFound() {
+    let missing = "taro_fs_remove_dir_all_missing_path"
+    let res = std.fs.removeDirAll(missing)
+    std.assert(res.isErr(), "removeDirAll on missing path should fail")
+
+    match res {
+        case .ok(_) => std.panic.panic("expected removeDirAll missing to fail")
+        case .err(err) => {
+            match err {
+                case .notFound => {}
+                case _ => std.panic.panic("expected notFound for missing removeDirAll")
+            }
+        }
+    }
+}
+
+@test
+func testOpenOptionsAppend() {
+    let path = "taro_fs_open_options_append.txt"
+    std.assert(std.fs.writeString(path, "A").isOk(), "failed to seed append file")
+
+    var options = std.fs.OpenOptions.new()
+    options.append(true)
+
+    let openRes = options.open(path)
+    var file = match openRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("append open failed")
+    }
+
+    std.assert(std.io.writeString(&mut file, "B").isOk(), "append write failed")
+    std.assert(file.close().isOk(), "append close failed")
+
+    let readRes = std.fs.readToString(path)
+    let content = match readRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("append read failed")
+    }
+    std.assert(std.string.stringEq(content, "AB"), "append content mismatch")
+    std.assert(std.fs.removeFile(path).isOk(), "append cleanup failed")
+}
+
+@test
+func testOpenOptionsWriteTruncate() {
+    let path = "taro_fs_open_options_truncate.txt"
+    std.assert(std.fs.writeString(path, "abcdef").isOk(), "failed to seed truncate file")
+
+    var options = std.fs.OpenOptions.new()
+    options.write(true).truncate(true)
+
+    let openRes = options.open(path)
+    var file = match openRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("truncate open failed")
+    }
+
+    std.assert(std.io.writeString(&mut file, "xy").isOk(), "truncate write failed")
+    std.assert(file.close().isOk(), "truncate close failed")
+
+    let readRes = std.fs.readToString(path)
+    let content = match readRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("truncate read failed")
+    }
+    std.assert(std.string.stringEq(content, "xy"), "truncate content mismatch")
+    std.assert(std.fs.removeFile(path).isOk(), "truncate cleanup failed")
+}
+
+@test
+func testOpenOptionsReadWriteSeek() {
+    let path = "taro_fs_open_options_read_write.txt"
+    std.assert(std.fs.writeString(path, "hello").isOk(), "failed to seed read/write file")
+
+    var options = std.fs.OpenOptions.new()
+    options.read(true).write(true)
+
+    let openRes = options.open(path)
+    var file = match openRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("read/write open failed")
+    }
+
+    std.assert(std.io.writeString(&mut file, "Y").isOk(), "read/write write failed")
+    let toStart: SeekFrom = .start(0 as isize)
+    std.assert(file.seek(toStart).isOk(), "read/write seek failed")
+
+    let readRes = std.io.readToString(&mut file)
+    let content = match readRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("read/write read failed")
+    }
+    std.assert(std.string.stringEq(content, "Yello"), "read/write content mismatch")
+
+    std.assert(file.close().isOk(), "read/write close failed")
+    std.assert(std.fs.removeFile(path).isOk(), "read/write cleanup failed")
+}
+
+@test
+func testOpenOptionsInvalidConfigurations() {
+    let badPath = "taro_fs_open_options_invalid.txt"
+
+    var noneModes = std.fs.OpenOptions.new()
+    let res1 = noneModes.open(badPath)
+    std.assert(res1.isErr(), "no-mode options should fail")
+    match res1 {
+        case .ok(_) => std.panic.panic("expected invalidInput for no-mode options")
+        case .err(err) => {
+            match err {
+                case .invalidInput => {}
+                case _ => std.panic.panic("expected invalidInput for no-mode options")
+            }
+        }
+    }
+
+    var createReadOnly = std.fs.OpenOptions.new()
+    createReadOnly.read(true).create(true)
+    let res2 = createReadOnly.open(badPath)
+    std.assert(res2.isErr(), "create+read-only options should fail")
+    match res2 {
+        case .ok(_) => std.panic.panic("expected invalidInput for create+read-only options")
+        case .err(err) => {
+            match err {
+                case .invalidInput => {}
+                case _ => std.panic.panic("expected invalidInput for create+read-only options")
+            }
+        }
+    }
+}
+
+@test
+func testReadDirKinds() {
+    let root = "taro_fs_read_dir_root"
+    let subdir = "taro_fs_read_dir_root/subdir"
+    let filePath = "taro_fs_read_dir_root/file.txt"
+    let linkPath = "taro_fs_read_dir_root/link.txt"
+
+    let _ = std.fs.removeDirAll(root)
+    std.assert(std.fs.createDirAll(subdir).isOk(), "failed to create readDir tree")
+    std.assert(std.fs.writeString(filePath, "hello").isOk(), "failed to create readDir file")
+    std.assert(std.fs.symlink("file.txt", linkPath).isOk(), "failed to create readDir symlink")
+
+    let readRes = std.fs.readDir(root)
+    let entries = match readRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("readDir failed")
+    }
+
+    var sawFile = false
+    var sawDir = false
+    var sawLink = false
+    var idx: usize = 0
+    while idx < entries.len() {
+        let entry = entries.at(idx)
+        let name = entry.name()
+        if std.string.stringEq(name, "file.txt") {
+            sawFile = entry.isFile()
+        } else if std.string.stringEq(name, "subdir") {
+            sawDir = entry.isDir()
+        } else if std.string.stringEq(name, "link.txt") {
+            sawLink = entry.isSymlink()
+        }
+        idx += 1
+    }
+
+    std.assert(sawFile, "readDir should include file entry")
+    std.assert(sawDir, "readDir should include directory entry")
+    std.assert(sawLink, "readDir should include symlink entry")
+
+    std.assert(std.fs.removeDirAll(root).isOk(), "failed to cleanup readDir tree")
+}
+
+@test
+func testSymlinkMetadataVsMetadata() {
+    let root = "taro_fs_symlink_metadata_root"
+    let filePath = "taro_fs_symlink_metadata_root/target.txt"
+    let linkPath = "taro_fs_symlink_metadata_root/target.link"
+
+    let _ = std.fs.removeDirAll(root)
+    std.assert(std.fs.createDirAll(root).isOk(), "failed to create symlink metadata root")
+    std.assert(std.fs.writeString(filePath, "payload").isOk(), "failed to create symlink metadata file")
+    std.assert(std.fs.symlink("target.txt", linkPath).isOk(), "failed to create symlink metadata link")
+
+    let followed = match std.fs.metadata(linkPath) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("metadata(link) failed")
+    }
+    std.assert(followed.isFile(), "metadata should follow symlink to target file")
+    std.assert(!followed.isSymlink(), "metadata should not report symlink kind when following")
+
+    let rawLink = match std.fs.symlinkMetadata(linkPath) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("symlinkMetadata(link) failed")
+    }
+    std.assert(rawLink.isSymlink(), "symlinkMetadata should report symlink kind")
+    std.assert(!rawLink.isFile(), "symlinkMetadata should not report target file kind")
+
+    let lstatRes = match std.fs.lstat(linkPath) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("lstat(link) failed")
+    }
+    std.assert(lstatRes.isSymlink(), "lstat should behave like symlinkMetadata")
+
+    std.assert(std.fs.removeDirAll(root).isOk(), "failed to cleanup symlink metadata root")
+}
+
+@test
+func testReadDirMissingReturnsNotFound() {
+    let missing = "taro_fs_read_dir_missing"
+    let readRes = std.fs.readDir(missing)
+    std.assert(readRes.isErr(), "readDir should fail for missing path")
+
+    match readRes {
+        case .ok(_) => std.panic.panic("expected readDir missing to fail")
+        case .err(err) => {
+            match err {
+                case .notFound => {}
+                case _ => std.panic.panic("expected notFound for missing readDir")
+            }
+        }
+    }
+}

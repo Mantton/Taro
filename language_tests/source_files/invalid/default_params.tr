@@ -1,0 +1,4 @@
+// Test: Default parameter values cannot reference earlier parameters.
+func bad(a: int32, b: int32 = a) -> int32 {
+    a + b
+}

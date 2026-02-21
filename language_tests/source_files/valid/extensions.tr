@@ -1,0 +1,19 @@
+// Test: Partial extensions on generic types.
+
+struct Foo[T, V] {
+    a: T
+    b: V
+}
+
+impl[T] Foo[T, string] {
+    func getB(&self) -> string {
+        self.b
+    }
+}
+
+func main() {
+    let a = Foo { a: 'A', b: "B" }
+    let b = a.getB()
+    assert(b == "B", "partial extension method call")
+    std.print("PASS: Partial extension working\n")
+}

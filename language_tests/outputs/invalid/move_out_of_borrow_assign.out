@@ -1,4 +1,0 @@
-error: cannot move out of borrowed content
- -> language_tests/source_files/invalid/move_out_of_borrow_assign.tr:13:16
-	    var moved = *borrow 
-	                ^^^^^^^

@@ -1,9 +1,0 @@
-// Two distinct sites should each report exactly one Step conformance error.
-
-func main() {
-    for _ in 0.0..1.0 {
-    }
-
-    for _ in 2.0..=3.0 {
-    }
-}

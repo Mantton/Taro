@@ -1,0 +1,79 @@
+func wrap(_ opt: int32?) -> int32? {
+    match opt {
+        case .some(value) => {
+            let out = value;
+            .some(out)
+        }
+        case .none => .none
+    }
+}
+
+func spinUntilDone() -> int32 {
+    var state: int32 = 0
+
+    loop {
+        match state {
+            case 0 => {
+                state = 1
+                continue
+            }
+            case _ => break
+        }
+    }
+
+    state
+}
+
+enum Holder {
+    case value(string)
+    case none
+}
+
+func testMatchReference() {
+    let a = &Holder.value("hello, world")
+    match a {
+        case .value(value) => assert(*value == "hello, world", "matched value")
+        case .none => assert(false, "should not be none")
+    }
+    std.print("PASS: Match reference working\n")
+}
+
+func testMatchReferenceGuard() {
+    let x = 41
+    let r = &x
+
+    match r {
+        case &y if y == 41 => assert(true, "guard matched")
+        case &y => {
+            let _ = y
+            assert(false, "guard fallback")
+        }
+    }
+
+    var m = 5
+    let mr = &mut m
+
+    match mr {
+        case &mut y if y == 5 => {
+            y = 7
+            assert(m == 7, "mut guard update")
+        }
+        case &mut _ => assert(false, "mut guard fallback")
+    }
+
+    std.print("PASS: Match reference guards\n")
+}
+
+func main() {
+    let wrapped = wrap(.some(1))
+    match wrapped {
+        case .some(value) => assert(value == 1, "wrap should preserve some")
+        case .none => assert(false, "wrap should preserve some")
+    }
+
+    let state = spinUntilDone()
+    assert(state == 1, "spinUntilDone should break at state 1")
+
+    testMatchReference()
+    testMatchReferenceGuard()
+}

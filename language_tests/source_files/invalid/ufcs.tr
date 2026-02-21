@@ -1,0 +1,45 @@
+// Test: UFCS invalid receiver usage.
+
+type int = isize
+
+interface SpeakerByRef {
+    func greet(&self)
+}
+
+interface SpeakerByMutRef {
+    func increment(&mut self)
+}
+
+struct Human {
+    name: string
+}
+
+struct Counter {
+    value: int
+}
+
+impl SpeakerByRef for Human {
+    func greet(&self) {
+        print(self.name)
+    }
+}
+
+impl SpeakerByMutRef for Counter {
+    func increment(&mut self) {
+        self.value = self.value + 1
+    }
+}
+
+func main() {
+    let h = Human { name: "Alice" }
+    var c = Counter { value: 0 }
+
+    // ERROR: Missing & for &self receiver.
+    SpeakerByRef.greet(h)
+
+    // ERROR: Missing &mut for &mut self receiver.
+    SpeakerByMutRef.increment(c)
+
+    // ERROR: Wrong mutability (& instead of &mut).
+    SpeakerByMutRef.increment(&c)
+}

@@ -1,0 +1,19 @@
+// Test: deref of non-Copy values out of borrow should fail.
+
+struct NoCopy {
+    value: int32
+}
+
+func copyOutGeneric[T](_ x: &T) -> T {
+    *x
+}
+
+func copyOutConcrete(_ x: &NoCopy) -> NoCopy {
+    *x
+}
+
+func main() {
+    let item = NoCopy { value: 1 }
+    let _ = copyOutGeneric(&item)
+    let _ = copyOutConcrete(&item)
+}

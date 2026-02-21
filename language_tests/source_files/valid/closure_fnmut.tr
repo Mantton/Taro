@@ -1,8 +1,0 @@
-func main() {
-    var counter: int32 = 0
-    var inc = || { counter = counter + 1 }
-    inc()
-    inc()
-    std.assert(counter == 2, "counter should be 2")
-    std.print("closure_fnmut: PASSED\n")
-}

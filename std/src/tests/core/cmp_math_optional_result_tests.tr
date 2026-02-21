@@ -1,0 +1,299 @@
+import std.cmp.{Ordering, PartialOrd, Ord}
+import std.optional.Optional
+
+func approxEq(_ a: double, _ b: double, _ eps: double) -> bool {
+    (a - b).abs() <= eps
+}
+
+@test
+func testStdCmpOrderingAndPrimitiveComparisons() {
+    let less: Ordering = .less
+    let equal: Ordering = .equal
+    let greater: Ordering = .greater
+
+    std.testing.assertTrue(less.isLess(), "less.isLess should be true")
+    std.testing.assertFalse(less.isEqual(), "less.isEqual should be false")
+    std.testing.assertFalse(less.isGreater(), "less.isGreater should be false")
+
+    std.testing.assertFalse(equal.isLess(), "equal.isLess should be false")
+    std.testing.assertTrue(equal.isEqual(), "equal.isEqual should be true")
+    std.testing.assertFalse(equal.isGreater(), "equal.isGreater should be false")
+
+    std.testing.assertFalse(greater.isLess(), "greater.isLess should be false")
+    std.testing.assertFalse(greater.isEqual(), "greater.isEqual should be false")
+    std.testing.assertTrue(greater.isGreater(), "greater.isGreater should be true")
+
+    std.testing.assertTrue(less.reverse().isGreater(), "less.reverse should be greater")
+    std.testing.assertTrue(equal.reverse().isEqual(), "equal.reverse should be equal")
+    std.testing.assertTrue(greater.reverse().isLess(), "greater.reverse should be less")
+
+    std.testing.assertTrue(equal.then(.less).isLess(), "equal.then(less) should be less")
+    std.testing.assertTrue(less.then(.greater).isLess(), "less.then(greater) should be less")
+
+    let a: int32 = 10
+    let b: int32 = 20
+    let c: int32 = 10
+    std.testing.assertTrue(a.cmp(&b).isLess(), "10 cmp 20 should be less")
+    std.testing.assertTrue(b.cmp(&a).isGreater(), "20 cmp 10 should be greater")
+    std.testing.assertTrue(a.cmp(&c).isEqual(), "10 cmp 10 should be equal")
+
+    let partial = a.partialCmp(&b)
+    std.testing.assertTrue(partial.isSome(), "partialCmp should return some for int32")
+    std.testing.assertTrue(partial.unwrap().isLess(), "partial ordering should be less")
+
+    let f = false
+    let t = true
+    std.testing.assertTrue(f.cmp(&t).isLess(), "false cmp true should be less")
+    std.testing.assertTrue(t.cmp(&f).isGreater(), "true cmp false should be greater")
+
+    let x: double = 1.5
+    let y: double = 2.5
+    let floatPartial = x.partialCmp(&y)
+    std.testing.assertTrue(floatPartial.isSome(), "float partialCmp should return some")
+    std.testing.assertTrue(floatPartial.unwrap().isLess(), "1.5 cmp 2.5 should be less")
+}
+
+@test
+func testStdFloatMethodsMath() {
+    let eps: double = 0.000001
+    std.testing.assertTrue(approxEq(9.0.sqrt(), 3.0, eps), "sqrt")
+    std.testing.assertTrue(approxEq(0.0.sin(), 0.0, eps), "sin")
+    std.testing.assertTrue(approxEq(0.0.cos(), 1.0, eps), "cos")
+    std.testing.assertTrue(approxEq(0.0.tan(), 0.0, eps), "tan")
+
+    std.testing.assertTrue(approxEq(0.0.exp(), 1.0, eps), "exp")
+    std.testing.assertTrue(approxEq(3.0.exp2(), 8.0, eps), "exp2")
+    std.testing.assertTrue(approxEq(1.0.log(), 0.0, eps), "log")
+    std.testing.assertTrue(approxEq(8.0.log2(), 3.0, eps), "log2")
+    std.testing.assertTrue(approxEq(100.0.log10(), 2.0, eps), "log10")
+
+    std.testing.assertTrue(approxEq(3.7.floor(), 3.0, eps), "floor")
+    std.testing.assertTrue(approxEq(3.2.ceil(), 4.0, eps), "ceil")
+    std.testing.assertTrue(approxEq((-3.7).trunc(), -3.0, eps), "trunc")
+    std.testing.assertTrue(approxEq(2.3.round(), 2.0, eps), "round")
+    std.testing.assertTrue(approxEq(2.5.roundeven(), 2.0, eps), "roundeven")
+
+    std.testing.assertTrue(approxEq(2.0.pow(3.0), 8.0, eps), "pow")
+    std.testing.assertTrue(approxEq(2.0.powi(3), 8.0, eps), "powi")
+    std.testing.assertTrue(approxEq(3.0.copysign(-1.0), -3.0, eps), "copysign")
+    std.testing.assertTrue(approxEq(2.0.fma(3.0, 4.0), 10.0, eps), "fma")
+    std.testing.assertTrue(approxEq(2.0.minimum(3.0), 2.0, eps), "minimum")
+    std.testing.assertTrue(approxEq(2.0.maximum(3.0), 3.0, eps), "maximum")
+    std.testing.assertTrue(approxEq(2.0.minimumnum(3.0), 2.0, eps), "minimumnum")
+    std.testing.assertTrue(approxEq(2.0.maximumnum(3.0), 3.0, eps), "maximumnum")
+
+    let xf: float = 9.0
+    std.testing.assertEqual(xf.sqrt(), (3.0 as float), "float sqrt")
+}
+
+@test
+func testStdIntrinsicMath() {
+    let eps: double = 0.000001
+
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_sqrt_f64(9.0), 3.0, eps), "sqrt")
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_sin_f64(0.0), 0.0, eps), "sin")
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_cos_f64(0.0), 1.0, eps), "cos")
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_tan_f64(0.0), 0.0, eps), "tan")
+
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_exp_f64(0.0), 1.0, eps), "exp")
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_exp2_f64(3.0), 8.0, eps), "exp2")
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_log_f64(1.0), 0.0, eps), "log")
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_log2_f64(8.0), 3.0, eps), "log2")
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_log10_f64(100.0), 2.0, eps), "log10")
+
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_floor_f64(3.7), 3.0, eps), "floor")
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_ceil_f64(3.2), 4.0, eps), "ceil")
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_trunc_f64(-3.7), -3.0, eps), "trunc")
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_round_f64(2.3), 2.0, eps), "round")
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_roundeven_f64(2.5), 2.0, eps), "roundeven")
+
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_pow_f64(2.0, 3.0), 8.0, eps), "pow")
+    let exp: int32 = 3
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_powi_f64_i32(2.0, exp), 8.0, eps), "powi")
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_copysign_f64(3.0, -1.0), -3.0, eps), "copysign")
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_fma_f64(2.0, 3.0, 4.0), 10.0, eps), "fma")
+}
+
+@test
+func testStdOptionalOperations() {
+    let someVal: int32? = .some(42)
+    let noneVal: int32? = .none
+
+    std.testing.assertTrue(someVal.isSome(), "isSome should be true for .some")
+    std.testing.assertTrue(noneVal.isNone(), "isNone should be true for .none")
+    std.testing.assertEqual(someVal.unwrap(), 42, "unwrap should return value")
+    std.testing.assertEqual(someVal.expect("should have value"), 42, "expect should return value")
+    std.testing.assertEqual(noneVal.unwrapOr(100), 100, "unwrapOr should return default for none")
+    std.testing.assertEqual(someVal.unwrapOr(100), 42, "unwrapOr should return value for some")
+    std.testing.assertEqual(noneVal.unwrapOrElse(|| -> int32 { 50 + 50 }), 100, "unwrapOrElse")
+
+    let mapped = someVal.map(|x| -> int32 { x * 2 })
+    std.testing.assertEqual(mapped.unwrap(), 84, "map should transform value")
+    std.testing.assertTrue(noneVal.map(|x| -> int32 { x * 2 }).isNone(), "map on none should return none")
+
+    std.testing.assertEqual(
+        someVal.flatMap(|x| -> int32? { .some(x + 1) }).unwrap(),
+        43,
+        "flatMap should chain transformations",
+    )
+    std.testing.assertTrue(
+        someVal.flatMap(|x| -> int32? { .none }).isNone(),
+        "flatMap returning none should give none",
+    )
+
+    std.testing.assertTrue(
+        someVal.filter(|x: &int32| -> bool { *x > 0 }).isSome(),
+        "filter passing predicate should keep value",
+    )
+    std.testing.assertTrue(
+        someVal.filter(|x: &int32| -> bool { *x < 0 }).isNone(),
+        "filter failing predicate should return none",
+    )
+
+    let other1: int32? = .some(100)
+    std.testing.assertEqual(someVal.and(other1).unwrap(), 100, "and should return second if first is some")
+    let other2: int32? = .some(100)
+    std.testing.assertTrue(noneVal.and(other2).isNone(), "and on none should return none")
+
+    let other3: int32? = .some(100)
+    std.testing.assertEqual(someVal.or(other3).unwrap(), 42, "or should return first if some")
+    let other4: int32? = .some(100)
+    std.testing.assertEqual(noneVal.or(other4).unwrap(), 100, "or should return second if first is none")
+}
+
+@test
+func testStdResultOperations() {
+    let okVal: std.result.Result[int32, string] = .ok(42)
+    let errVal: std.result.Result[int32, string] = .err("error")
+
+    std.testing.assertTrue(okVal.isOk(), "isOk should be true for .ok")
+    std.testing.assertTrue(errVal.isErr(), "isErr should be true for .err")
+    std.testing.assertFalse(okVal.isErr(), "isErr should be false for .ok")
+    std.testing.assertFalse(errVal.isOk(), "isOk should be false for .err")
+
+    std.testing.assertEqual(okVal.unwrap(), 42, "unwrap should return value")
+    std.testing.assertEqual(okVal.expect("should have value"), 42, "expect should return value")
+    std.testing.assertEqual(errVal.unwrapOr(100), 100, "unwrapOr should return default for err")
+    std.testing.assertEqual(okVal.unwrapOr(100), 42, "unwrapOr should return value for ok")
+    std.testing.assertEqual(errVal.unwrapOrElse(|e| -> int32 { 200 }), 200, "unwrapOrElse should compute from error")
+
+    let mapped = okVal.map(|x| -> int32 { x * 2 })
+    std.testing.assertEqual(mapped.unwrap(), 84, "map should transform value")
+    std.testing.assertTrue(errVal.map(|x| -> int32 { x * 2 }).isErr(), "map on err should return err")
+
+    std.testing.assertEqual(
+        okVal.flatMap(|x| -> std.result.Result[int32, string] { .ok(x + 1) }).unwrap(),
+        43,
+        "flatMap should chain transformations",
+    )
+    std.testing.assertTrue(
+        okVal.flatMap(|x| -> std.result.Result[int32, string] { .err("failed") }).isErr(),
+        "flatMap returning err should give err",
+    )
+
+    std.testing.assertTrue(errVal.mapErr(|e| -> int32 { 999 }).isErr(), "mapErr should keep error status")
+    std.testing.assertTrue(okVal.ok().isSome(), "ok() on ok result should return some")
+    std.testing.assertEqual(okVal.ok().unwrap(), 42, "ok() should extract value")
+    std.testing.assertTrue(errVal.ok().isNone(), "ok() on err result should return none")
+    std.testing.assertTrue(okVal.err().isNone(), "err() on ok result should return none")
+    std.testing.assertTrue(errVal.err().isSome(), "err() on err result should return some")
+
+    let otherOk: std.result.Result[int32, string] = .ok(100)
+    std.testing.assertEqual(okVal.and(otherOk).unwrap(), 100, "and should return second if first is ok")
+    let otherOk2: std.result.Result[int32, string] = .ok(100)
+    std.testing.assertTrue(errVal.and(otherOk2).isErr(), "and on err should return err")
+
+    let otherOk3: std.result.Result[int32, string] = .ok(100)
+    std.testing.assertEqual(okVal.or(otherOk3).unwrap(), 42, "or should return first if ok")
+    let otherOk4: std.result.Result[int32, string] = .ok(100)
+    std.testing.assertEqual(errVal.or(otherOk4).unwrap(), 100, "or should return second if first is err")
+
+    std.testing.assertEqual(
+        okVal.orElse(|e| -> std.result.Result[int32, string] { .ok(999) }).unwrap(),
+        42,
+        "orElse on ok should return ok",
+    )
+    std.testing.assertEqual(
+        errVal.orElse(|e| -> std.result.Result[int32, string] { .ok(888) }).unwrap(),
+        888,
+        "orElse on err should compute fallback",
+    )
+}
+
+struct ScoreNoMove {
+    value: int32
+}
+
+impl std.ops.PartialEq for ScoreNoMove {
+    public func eq(&self, _ other: &ScoreNoMove) -> bool {
+        self.value == other.value
+    }
+}
+
+impl PartialOrd for ScoreNoMove {
+    func partialCmp(&self, _ other: &ScoreNoMove) -> Optional[Ordering] {
+        .some(self.cmp(other))
+    }
+}
+
+impl Ord for ScoreNoMove {
+    func cmp(&self, _ other: &ScoreNoMove) -> Ordering {
+        if self.value < other.value {
+            .less
+        } else if self.value == other.value {
+            .equal
+        } else {
+            .greater
+        }
+    }
+}
+
+func geqThenReuse[T: Ord](_ a: T, _ b: T) -> bool {
+    let ge = a >= b
+    let _keep = &a
+    ge
+}
+
+@test
+func testOrdGenericCompareNoMove() {
+    let a = ScoreNoMove { value: 1 }
+    let b = ScoreNoMove { value: 1 }
+    std.testing.assertTrue(geqThenReuse(a, b), "generic ordered comparison should borrow, not move")
+}
+
+struct WordCross {
+    value: string
+}
+
+impl std.ops.PartialEq[string] for WordCross {
+    public func eq(&self, _ other: &string) -> bool {
+        self.value == *other
+    }
+}
+
+func matchesCross[T: std.ops.PartialEq[U], U](_ lhs: T, _ rhs: U) -> bool {
+    lhs == rhs
+}
+
+@test
+func testPartialEqRhsCrossType() {
+    let w1 = WordCross { value: "ok" }
+    let w2 = WordCross { value: "ok" }
+    std.testing.assertTrue(matchesCross(w1, "ok"), "generic PartialEq[Rhs] bound should work")
+    std.testing.assertTrue(w2 != "no", "neq should dispatch through PartialEq[Rhs]")
+    std.testing.assertTrue(w2 == "ok", "comparison should borrow and allow reuse")
+}
+
+@test
+func testStringEqualityEdgeCases() {
+    std.testing.assertTrue("" == "", "empty string equality")
+    std.testing.assertTrue(!("" == "a"), "empty vs non-empty")
+    std.testing.assertTrue("abc" == "abc", "same literal equality")
+    std.testing.assertTrue(!("abc" == "abd"), "different literal inequality")
+
+    let a = "same"
+    let b = "same"
+    let c = "different"
+    std.testing.assertTrue(a == b, "same value equality")
+    std.testing.assertTrue(!(a == c), "different value inequality")
+}

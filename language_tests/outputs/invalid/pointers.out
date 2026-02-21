@@ -1,0 +1,8 @@
+error: mutability mismatch: expected uint8, found uint8 (reference mutabilities differ)
+ -> language_tests/source_files/invalid/pointers.tr:7:15
+	    src.copyTo(dst, 1)
+	               ^^^
+error: no member named 'write' found on type *uint8
+ -> language_tests/source_files/invalid/pointers.tr:15:6
+	    p.write(65)
+	      ^^^^^

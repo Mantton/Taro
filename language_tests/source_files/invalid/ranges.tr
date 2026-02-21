@@ -1,0 +1,26 @@
+func invalidMixedBoundTypes() {
+    let start: int32 = 0
+    let end: uint32 = 5
+
+    // ERROR: range bounds must have the same type.
+    for _ in start..end {
+    }
+}
+
+func invalidNonStepBoundExclusive() {
+    // ERROR: floating-point types are not valid Step bounds.
+    for _ in 0.0..1.0 {
+    }
+}
+
+func invalidNonStepBoundMultipleSites() {
+    // ERROR: each site should enforce Step conformance.
+    for _ in 2.0..=3.0 {
+    }
+}
+
+func main() {
+    invalidMixedBoundTypes()
+    invalidNonStepBoundExclusive()
+    invalidNonStepBoundMultipleSites()
+}

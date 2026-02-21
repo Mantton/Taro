@@ -1,7 +1,0 @@
-// CHECK_ONLY
-// Repro: non-empty dictionary literals should infer from explicit destination type.
-
-func main() {
-    let values: [int32: string] = [1: "one", 2: "two"]
-    let _ = values
-}

@@ -1,0 +1,50 @@
+struct TaggedValue {
+    text: string
+}
+
+impl std.fmt.Display for TaggedValue {
+    func display(&self, _ into: &mut std.fmt.Formatter) {
+        into.writeString(self.text)
+    }
+}
+
+impl std.fmt.Formattable for TaggedValue {
+    func format(&self, _ into: &mut std.fmt.Formatter, _ spec: rune, _ state: &std.fmt.FormatState) {
+        if spec == 'v' {
+            into.writeString(self.text)
+            return
+        }
+
+        std.panic.panic("TaggedValue only supports %v")
+    }
+}
+
+@test
+func testPrintfBasic() {
+    std.printf("x=%d y=%s z=%v\n", 7, "ok", true)
+    std.printf("100%%\n")
+
+    let runeAsByte: uint8 = 'A' as uint8
+    std.testing.assertEqual(runeAsByte, 65 as uint8, "rune -> uint8 cast should preserve ASCII codepoint")
+
+    let byteAsRune: rune = 66 as rune
+    std.testing.assertEqual(byteAsRune, 'B', "int literal -> rune cast should preserve ASCII codepoint")
+
+    let tagged = TaggedValue { text: "custom" }
+    std.printf("%v\n", tagged)
+    std.printf("%v\n", 'B')
+    std.printf("%d\n", 1)
+}
+
+@test
+func testSprintfBasic() {
+    let text = std.sprintf("x=%d y=%s z=%v pct=100%%", 7, "ok", true)
+    std.testing.assertEqual(text, "x=7 y=ok z=true pct=100%", "sprintf should return rendered string")
+}
+
+@test
+@expectPanic
+func testPrintfDynamicRuntimePanic() {
+    let format = "%q"
+    std.printf(format, 1)
+}

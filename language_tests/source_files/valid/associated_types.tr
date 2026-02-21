@@ -1,0 +1,105 @@
+type int = isize
+
+interface ValueContainer {
+    type Item
+    func get(&self) -> Self.Item
+}
+
+struct IntBox {
+    value: int
+}
+
+impl ValueContainer for IntBox {
+    type Item = int
+    func get(&self) -> int {
+        self.value
+    }
+}
+
+func takeItem[T: ValueContainer](_ c: T) -> T.Item {
+    let v: T.Item = c.get()
+    v
+}
+
+func requireIntItem[T: ValueContainer[Item = int]](_ c: T) -> int {
+    c.get()
+}
+
+interface Entity {
+    func identifier(&self) -> usize
+}
+
+interface Aircraft: Entity, Usable[bool] {}
+interface Usable[T] {}
+
+interface CollectionLike {
+    type Item
+    func len(&self) -> usize
+}
+
+struct MyData {
+    id: usize
+    name: string
+    isRegistered: bool
+    flag: rune
+}
+
+impl Entity for MyData {
+    func identifier(&self) -> usize {
+        self.id
+    }
+}
+
+struct AssocContainer {
+    data: std.mem.TrackedPointer
+    len: usize
+    cap: usize
+}
+
+impl CollectionLike for AssocContainer {
+    type Item = Folder.Section.Side
+    func len(&self) -> usize {
+        self.len
+    }
+}
+
+type OptionalString = std.prelude.Optional[string]
+
+struct Folder {}
+impl Folder {
+    type Section = Page
+
+    func use(&self, _ page: Self.Section) {}
+}
+
+struct Page {}
+impl Page {
+    type Side = rune
+}
+
+func main() {
+    let box = IntBox { value: 42 }
+    assert(takeItem(box) == 42, "associated type retrieval failed")
+
+    let box2 = IntBox { value: 123 }
+    assert(requireIntItem(box2) == 123, "associated type constraint binding failed")
+
+    let d = MyData {
+        id: 123,
+        name: "Test",
+        isRegistered: true,
+        flag: 'F',
+    }
+    assert(d.identifier() == 123, "interface method implementation check")
+
+    let c = AssocContainer {
+        data: std.mem.TrackedPointer.null(),
+        len: 10,
+        cap: 20,
+    }
+    assert(c.len() == 10, "collection implementation check")
+
+    let maybeName: OptionalString = .some("ok")
+    assert(maybeName.isSome(), "type alias over associated-type file should typecheck")
+    std.print("PASS: Associated types\n")
+}

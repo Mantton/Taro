@@ -1,0 +1,16 @@
+error: type 'ExtensionCloneType' does not satisfy requirements for interface 'Clone'
+ -> language_tests/source_files/invalid/derive.tr:17:5
+	impl Clone for ExtensionCloneType {
+	     ^^^^^
+info: missing required method 'clone' with signature '(&Self) -> Self'
+ -> language_tests/source_files/invalid/derive.tr:17:5
+	impl Clone for ExtensionCloneType {
+	     ^^^^^
+error: type 'WrapperNeedsClone' does not satisfy requirements for interface 'Clone'
+ -> language_tests/source_files/invalid/derive.tr:8:26
+	struct WrapperNeedsClone: Clone {
+	                          ^^^^^
+info: missing required method 'clone' with signature '(&Self) -> Self'
+ -> language_tests/source_files/invalid/derive.tr:8:26
+	struct WrapperNeedsClone: Clone {
+	                          ^^^^^

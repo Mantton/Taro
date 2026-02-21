@@ -1,0 +1,11 @@
+error: type 'NotIterable' does not conform to interface 'Iterable'
+ -> language_tests/source_files/invalid/for_loops.tr:9:4
+    for i in n {
+    ^^^^^^^^^^^^
+        std.print(i)
+    }
+     ^
+error: expected string, found NotIterable.Iterator.Element
+ -> language_tests/source_files/invalid/for_loops.tr:10:18
+	        std.print(i)
+	                  ^

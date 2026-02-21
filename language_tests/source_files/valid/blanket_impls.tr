@@ -1,0 +1,49 @@
+struct EqBoxed {
+    value: string
+}
+
+impl std.ops.PartialEq for EqBoxed {
+    public func eq(&self, _ other: &EqBoxed) -> bool {
+        self.value == other.value
+    }
+}
+
+func compareThenReuse[T: std.ops.PartialEq](_ a: T, _ b: T) -> bool {
+    let same = a == b
+    let _keep = &a
+    same
+}
+
+interface Retrieve[T] {
+    func retrieve(&self) -> T
+}
+
+struct GenericBoxed[T: Copy] {
+    value: T
+}
+
+impl[T: Copy] Retrieve[T] for GenericBoxed[T] {
+    func retrieve(&self) -> T {
+        self.value
+    }
+}
+
+func main() {
+    let a = EqBoxed { value: "a" }
+    let b = EqBoxed { value: "a" }
+    assert(compareThenReuse(a, b), "generic comparison should not move operands")
+
+    let x = 1
+    let rx = &x
+    let rrx = &rx
+    assert(rx == x, "&T should compare with T")
+    assert(rrx == rx, "&&T should compare with &T")
+    assert(rrx == x, "&&T should compare with T")
+
+    let intBox = GenericBoxed[int32] { value: 42 }
+    let boolBox = GenericBoxed[bool] { value: true }
+    assert(intBox.retrieve() == 42, "generic blanket impl should work for int32")
+    assert(boolBox.retrieve(), "generic blanket impl should work for bool")
+
+    std.print("ok\n")
+}

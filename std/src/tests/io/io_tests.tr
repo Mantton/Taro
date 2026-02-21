@@ -1,0 +1,420 @@
+import std.io.{Reader, Writer}
+
+@test
+func testBufReaderReadLine() {
+    let path = "taro_io_buf_reader_lines.txt"
+    let content = "alpha\nbeta\n"
+
+    let writeRes = std.fs.writeString(path, content)
+    std.assert(writeRes.isOk(), "failed to write line test file")
+
+    let openRes = std.fs.File.open(path)
+    let file = match openRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("failed to open line test file")
+    }
+
+    var reader = std.io.BufReader[std.fs.File].new(file)
+
+    let line1Res = reader.readLine()
+    let line1 = match line1Res {
+        case .ok(opt) => opt
+        case .err(_) => std.panic.panic("readLine 1 failed")
+    }
+    match line1 {
+        case .some(value) => std.assert(std.string.stringEq(value, "alpha\n"), "line 1 mismatch")
+        case .none => std.panic.panic("line 1 missing")
+    }
+
+    let line2Res = reader.readLine()
+    let line2 = match line2Res {
+        case .ok(opt) => opt
+        case .err(_) => std.panic.panic("readLine 2 failed")
+    }
+    match line2 {
+        case .some(value) => std.assert(std.string.stringEq(value, "beta\n"), "line 2 mismatch")
+        case .none => std.panic.panic("line 2 missing")
+    }
+
+    let line3Res = reader.readLine()
+    let line3 = match line3Res {
+        case .ok(opt) => opt
+        case .err(_) => std.panic.panic("readLine 3 failed")
+    }
+    std.assert(line3.isNone(), "expected EOF after two lines")
+
+    var inner = reader.intoInner()
+    std.assert(inner.close().isOk(), "failed to close line test file")
+    std.assert(std.fs.removeFile(path).isOk(), "failed to remove line test file")
+}
+
+@test
+func testBufReaderImplementsReader() {
+    let path = "taro_io_buf_reader_read_to_string.txt"
+    let content = "one\ntwo\nthree\n"
+
+    let writeRes = std.fs.writeString(path, content)
+    std.assert(writeRes.isOk(), "failed to write reader test file")
+
+    let openRes = std.fs.File.open(path)
+    let file = match openRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("failed to open reader test file")
+    }
+
+    var reader = std.io.BufReader[std.fs.File].new(file)
+    let readRes = std.io.readToString(&mut reader)
+    let text = match readRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("readToString with BufReader failed")
+    }
+    std.assert(std.string.stringEq(text, content), "BufReader Reader impl mismatch")
+
+    var inner = reader.intoInner()
+    std.assert(inner.close().isOk(), "failed to close reader test file")
+    std.assert(std.fs.removeFile(path).isOk(), "failed to remove reader test file")
+}
+
+@test
+func testBufWriterWriteStringAndFlush() {
+    let path = "taro_io_buf_writer_text.txt"
+    let content = "buffered write path"
+
+    let createRes = std.fs.File.create(path)
+    let file = match createRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("failed to create buffered writer file")
+    }
+
+    var writer = std.io.BufWriter[std.fs.File].new(file)
+    std.assert(std.io.writeString(&mut writer, content).isOk(), "writeString should succeed")
+    std.assert(writer.flush().isOk(), "flush should succeed")
+
+    var inner = match writer.intoInner() {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("intoInner should flush and succeed")
+    }
+    std.assert(inner.close().isOk(), "failed to close buffered writer file")
+
+    let readRes = std.fs.readToString(path)
+    let readBack = match readRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("failed to read buffered writer file")
+    }
+    std.assert(std.string.stringEq(readBack, content), "buffered write content mismatch")
+    std.assert(std.fs.removeFile(path).isOk(), "failed to remove buffered writer file")
+}
+
+@test
+func testCopyIntoBufWriter() {
+    let srcPath = "taro_io_buf_writer_copy_src.txt"
+    let dstPath = "taro_io_buf_writer_copy_dst.txt"
+    let content = "copy through buffered writer\nline2\nline3\n"
+    let contentLen = std.string.stringLen(content)
+
+    std.assert(std.fs.writeString(srcPath, content).isOk(), "failed to write copy source file")
+
+    let openSrcRes = std.fs.File.open(srcPath)
+    var src = match openSrcRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("failed to open copy source file")
+    }
+
+    let createDstRes = std.fs.File.create(dstPath)
+    let dstFile = match createDstRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("failed to create copy destination file")
+    }
+
+    var writer = std.io.BufWriter[std.fs.File].new(dstFile)
+
+    let copyRes = std.io.copy(&mut src, &mut writer)
+    std.assert(copyRes.isOk(), "copy should succeed")
+    std.assert(copyRes.unwrap() == contentLen, "copy byte count mismatch")
+
+    std.assert(writer.flush().isOk(), "flush after copy should succeed")
+    var inner = match writer.intoInner() {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("intoInner should flush and succeed")
+    }
+    std.assert(inner.close().isOk(), "failed to close copy destination file")
+    std.assert(src.close().isOk(), "failed to close copy source file")
+
+    let readRes = std.fs.readToString(dstPath)
+    let readBack = match readRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("failed to read copy destination file")
+    }
+    std.assert(std.string.stringEq(readBack, content), "copied buffered content mismatch")
+
+    std.assert(std.fs.removeFile(srcPath).isOk(), "failed to remove copy source file")
+    std.assert(std.fs.removeFile(dstPath).isOk(), "failed to remove copy destination file")
+}
+
+@test
+func testBufWriterLargeSequentialWrites() {
+    let path = "taro_io_buf_writer_large.txt"
+    let chunk = "0123456789"
+    let chunkLen = std.string.stringLen(chunk)
+
+    let createRes = std.fs.File.create(path)
+    let file = match createRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("failed to create large buffered writer file")
+    }
+
+    var writer = std.io.BufWriter[std.fs.File].new(file)
+    var total: usize = 0
+    var idx: usize = 0
+    while idx < 700 {
+        std.assert(std.io.writeString(&mut writer, chunk).isOk(), "chunk write should succeed")
+        total += chunkLen
+        idx += 1
+    }
+
+    std.assert(writer.flush().isOk(), "flush for large buffered writer should succeed")
+    var inner = match writer.intoInner() {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("intoInner should flush and succeed")
+    }
+    std.assert(inner.close().isOk(), "failed to close large buffered writer file")
+
+    let readRes = std.fs.read(path)
+    let bytes = match readRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("failed to read large buffered writer file")
+    }
+    std.assert(bytes.len() == total, "large buffered writer byte length mismatch")
+    std.assert(std.fs.removeFile(path).isOk(), "failed to remove large buffered writer file")
+}
+
+@test
+func testWriteStringAndReadToString() {
+    let path = "taro_io_helpers_text.txt"
+    let text = "hello io helpers\nline two"
+
+    let createRes = std.fs.File.create(path)
+    var writer = match createRes {
+        case .ok(file) => file
+        case .err(_) => std.panic.panic("failed to create test file")
+    }
+
+    let writeRes = std.io.writeString(&mut writer, text)
+    std.assert(writeRes.isOk(), "writeString failed")
+
+    let closeWriteRes = writer.close()
+    std.assert(closeWriteRes.isOk(), "failed to close writer")
+
+    let openRes = std.fs.File.open(path)
+    var reader = match openRes {
+        case .ok(file) => file
+        case .err(_) => std.panic.panic("failed to open test file")
+    }
+
+    let readRes = std.io.readToString(&mut reader)
+    let readText = match readRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("readToString failed")
+    }
+
+    std.assert(std.string.stringEq(readText, text), "readToString content mismatch")
+
+    let closeReadRes = reader.close()
+    std.assert(closeReadRes.isOk(), "failed to close reader")
+
+    let removeRes = std.fs.removeFile(path)
+    std.assert(removeRes.isOk(), "failed to remove text file")
+}
+
+@test
+func testWriteAllReadAllAndCopy() {
+    let srcPath = "taro_io_helpers_src.bin"
+    let dstPath = "taro_io_helpers_dst.bin"
+    let text = "copy me through io.copy"
+    let textLen = std.string.stringLen(text)
+    let textPtr = std.string.stringData(text)
+    let textBytes = std.mem.Span[uint8].from(textPtr, textLen)
+
+    let createSrcRes = std.fs.File.create(srcPath)
+    var srcWriter = match createSrcRes {
+        case .ok(file) => file
+        case .err(_) => std.panic.panic("failed to create src file")
+    }
+
+    let writeAllRes = std.io.writeAll(&mut srcWriter, textBytes)
+    std.assert(writeAllRes.isOk(), "writeAll failed")
+    std.assert(srcWriter.close().isOk(), "failed to close src writer")
+
+    let openSrcRes = std.fs.File.open(srcPath)
+    var srcReader = match openSrcRes {
+        case .ok(file) => file
+        case .err(_) => std.panic.panic("failed to open src file")
+    }
+
+    let readAllRes = std.io.readAll(&mut srcReader)
+    let bytes = match readAllRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("readAll failed")
+    }
+    std.assert(bytes.len() == textLen, "readAll length mismatch")
+    std.assert(srcReader.close().isOk(), "failed to close src reader after readAll")
+
+    let openSrcCopyRes = std.fs.File.open(srcPath)
+    var srcForCopy = match openSrcCopyRes {
+        case .ok(file) => file
+        case .err(_) => std.panic.panic("failed to reopen src file")
+    }
+
+    let createDstRes = std.fs.File.create(dstPath)
+    var dstWriter = match createDstRes {
+        case .ok(file) => file
+        case .err(_) => std.panic.panic("failed to create dst file")
+    }
+
+    let copyRes = std.io.copy(&mut srcForCopy, &mut dstWriter)
+    std.assert(copyRes.isOk(), "copy failed")
+    std.assert(copyRes.unwrap() == textLen, "copy byte count mismatch")
+    std.assert(srcForCopy.close().isOk(), "failed to close src copy reader")
+    std.assert(dstWriter.close().isOk(), "failed to close dst writer")
+
+    let openDstRes = std.fs.File.open(dstPath)
+    var dstReader = match openDstRes {
+        case .ok(file) => file
+        case .err(_) => std.panic.panic("failed to open dst file")
+    }
+
+    let readBackRes = std.io.readToString(&mut dstReader)
+    let readBack = match readBackRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("failed to read dst file")
+    }
+    std.assert(std.string.stringEq(readBack, text), "copied content mismatch")
+    std.assert(dstReader.close().isOk(), "failed to close dst reader")
+
+    std.assert(std.fs.removeFile(srcPath).isOk(), "failed to remove src file")
+    std.assert(std.fs.removeFile(dstPath).isOk(), "failed to remove dst file")
+}
+
+@test
+func testReadExactSuccess() {
+    let path = "taro_io_read_exact_success.txt"
+    let content = "abcdef"
+    let contentLen = std.string.stringLen(content)
+    let contentPtr = std.string.stringData(content)
+
+    std.assert(std.fs.writeString(path, content).isOk(), "failed to write readExact success file")
+
+    let openRes = std.fs.File.open(path)
+    var reader = match openRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("failed to open readExact success file")
+    }
+
+    var storage: [uint8; 6] = [0; 6]
+    let storagePtr = unsafe { (&mut storage as *mut [uint8; 6]) as *mut uint8 }
+    let buf = std.mem.MutableSpan[uint8].from(storagePtr, 6)
+    std.assert(std.io.readExact(&mut reader, buf).isOk(), "readExact should succeed")
+
+    var idx: usize = 0
+    while idx < contentLen {
+        std.assert(*storage.at(idx) == contentPtr.add(idx).read(), "readExact byte mismatch")
+        idx += 1
+    }
+
+    std.assert(reader.close().isOk(), "failed to close readExact success file")
+    std.assert(std.fs.removeFile(path).isOk(), "failed to remove readExact success file")
+}
+
+@test
+func testReadExactUnexpectedEof() {
+    let path = "taro_io_read_exact_eof.txt"
+    std.assert(std.fs.writeString(path, "abc").isOk(), "failed to write readExact eof file")
+
+    let openRes = std.fs.File.open(path)
+    var reader = match openRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("failed to open readExact eof file")
+    }
+
+    var storage: [uint8; 5] = [0; 5]
+    let storagePtr = unsafe { (&mut storage as *mut [uint8; 5]) as *mut uint8 }
+    let buf = std.mem.MutableSpan[uint8].from(storagePtr, 5)
+    let readRes = std.io.readExact(&mut reader, buf)
+    std.assert(readRes.isErr(), "readExact should fail on short input")
+    match readRes {
+        case .ok(_) => std.panic.panic("expected readExact eof to fail")
+        case .err(err) => {
+            match err {
+                case .unexpected(_) => {}
+                case _ => std.panic.panic("expected unexpected error for readExact eof")
+            }
+        }
+    }
+
+    std.assert(reader.close().isOk(), "failed to close readExact eof file")
+    std.assert(std.fs.removeFile(path).isOk(), "failed to remove readExact eof file")
+}
+
+@test
+func testReadAtLeastSuccess() {
+    let path = "taro_io_read_at_least_success.txt"
+    let content = "abcdefg"
+    let contentPtr = std.string.stringData(content)
+
+    std.assert(std.fs.writeString(path, content).isOk(), "failed to write readAtLeast file")
+
+    let openRes = std.fs.File.open(path)
+    var reader = match openRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("failed to open readAtLeast file")
+    }
+
+    var storage: [uint8; 8] = [0; 8]
+    let storagePtr = unsafe { (&mut storage as *mut [uint8; 8]) as *mut uint8 }
+    let buf = std.mem.MutableSpan[uint8].from(storagePtr, 8)
+    let readRes = std.io.readAtLeast(&mut reader, 4, buf)
+    let count = match readRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("readAtLeast should succeed")
+    }
+    std.assert(count >= 4, "readAtLeast count should be at least min")
+
+    var idx: usize = 0
+    while idx < 4 {
+        std.assert(*storage.at(idx) == contentPtr.add(idx).read(), "readAtLeast leading bytes mismatch")
+        idx += 1
+    }
+
+    std.assert(reader.close().isOk(), "failed to close readAtLeast file")
+    std.assert(std.fs.removeFile(path).isOk(), "failed to remove readAtLeast file")
+}
+
+@test
+func testReadAtLeastInvalidInput() {
+    let path = "taro_io_read_at_least_invalid.txt"
+    std.assert(std.fs.writeString(path, "ok").isOk(), "failed to write readAtLeast invalid file")
+
+    let openRes = std.fs.File.open(path)
+    var reader = match openRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("failed to open readAtLeast invalid file")
+    }
+
+    var storage: [uint8; 2] = [0; 2]
+    let storagePtr = unsafe { (&mut storage as *mut [uint8; 2]) as *mut uint8 }
+    let buf = std.mem.MutableSpan[uint8].from(storagePtr, 2)
+    let readRes = std.io.readAtLeast(&mut reader, 3, buf)
+    std.assert(readRes.isErr(), "readAtLeast should fail when min > buf.len")
+    match readRes {
+        case .ok(_) => std.panic.panic("expected invalidInput for readAtLeast min > len")
+        case .err(err) => {
+            match err {
+                case .invalidInput => {}
+                case _ => std.panic.panic("expected invalidInput for readAtLeast min > len")
+            }
+        }
+    }
+
+    std.assert(reader.close().isOk(), "failed to close readAtLeast invalid file")
+    std.assert(std.fs.removeFile(path).isOk(), "failed to remove readAtLeast invalid file")
+}

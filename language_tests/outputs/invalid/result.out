@@ -1,0 +1,16 @@
+error: type 'NonCopyError' does not conform to interface 'Copy'
+ -> language_tests/source_files/invalid/result.tr:14:17
+	    let _ = left.and(right)
+	                 ^^^
+error: type 'NonCopyError' does not conform to interface 'Copy'
+ -> language_tests/source_files/invalid/result.tr:19:14
+	    let _ = r.map(|x| -> int32 { x + 1 })
+	              ^^^
+error: type 'NonCopyValue' does not conform to interface 'Copy'
+ -> language_tests/source_files/invalid/result.tr:24:14
+	    let _ = r.mapErr(|e| -> int32 { e + 1 })
+	              ^^^^^^
+error: type 'NonCopyError' does not conform to interface 'Copy'
+ -> language_tests/source_files/invalid/result.tr:29:17
+	    let _ = left.orElse(|e| -> Result[int32, NonCopyError] { .ok(e.code) })
+	                 ^^^^^^

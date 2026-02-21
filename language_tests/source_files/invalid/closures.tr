@@ -1,0 +1,45 @@
+// Closure diagnostics: call-twice, move-while-borrowed, and use-after-move.
+
+func consumeListCallTwice(_ list: List[int32]) {
+}
+
+func invalidClosureCallTwice() {
+    var list = List[int32]()
+    list.append(1)
+
+    let consume = || { consumeListCallTwice(list) }
+    consume()
+    consume()
+}
+
+func consumeListBorrowed(_ list: List[int32]) {
+}
+
+func invalidClosureMoveWhileBorrowed() {
+    var list = List[int32]()
+    list.append(1)
+
+    let get_len = || -> int32 { list.len() as int32 }
+
+    consumeListBorrowed(list)
+    get_len()
+}
+
+func consumeListMoved(_ list: List[int32]) {
+}
+
+func invalidClosureUseAfterMove() {
+    var list = List[int32]()
+    list.append(1)
+
+    let consume = || { consumeListMoved(list) }
+
+    list.len()
+    consume()
+}
+
+func main() {
+    invalidClosureCallTwice()
+    invalidClosureMoveWhileBorrowed()
+    invalidClosureUseAfterMove()
+}

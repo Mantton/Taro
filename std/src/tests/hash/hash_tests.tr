@@ -1,4 +1,6 @@
 import std.hash.DefaultHasher
+import std.hash.Hasher
+import std.mem.Span
 
 const KEY0: uint64 = 0x0706050403020100
 const KEY1: uint64 = 0x0f0e0d0c0b0a0908
@@ -17,6 +19,20 @@ func hashPairWithFixedSeeds[
     first.hash(into: &mut hasher)
     second.hash(into: &mut hasher)
     hasher.finish()
+}
+
+struct DummyHasher {}
+
+impl Hasher for DummyHasher {
+    public func write(&mut self, _ bytes: Span[uint8]) {}
+    public func finish(&self) -> uint64 { 0 }
+}
+
+func useHasher[H: Hasher](_ hasher: &mut H) -> uint64 {
+    let bytes: [uint8; 4] = [1, 2, 3, 4]
+    hasher.write(bytes.as_span())
+    hasher.combine(42 as int32)
+    return hasher.finish()
 }
 
 @test
@@ -219,4 +235,41 @@ func testFloatHashContracts() {
         hashWithFixedSeeds(nanD),
         "double NaN hashing should be deterministic for the same value",
     )
+}
+
+@test
+func testDefaultHasherUsesRuntimeSeeds() {
+    let bytes: [uint8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+
+    var withDefaults = DefaultHasher.new()
+    withDefaults.write(bytes.as_span())
+
+    var withRuntimeSeeds = DefaultHasher.new(std.runtime.hashSeed0(), std.runtime.hashSeed1())
+    withRuntimeSeeds.write(bytes.as_span())
+
+    std.testing.assertEqual(
+        withDefaults.finish(),
+        withRuntimeSeeds.finish(),
+        "DefaultHasher.new() must use runtime hash seeds",
+    )
+}
+
+@test
+func testRuntimeHashSeedApiAndProcessStability() {
+    let a0 = std.runtime.hashSeed0()
+    let a1 = std.runtime.hashSeed1()
+    let b0 = std.runtime.hashSeed0()
+    let b1 = std.runtime.hashSeed1()
+
+    std.testing.assertEqual(a0, b0, "hashSeed0 must be stable within the same process")
+    std.testing.assertEqual(a1, b1, "hashSeed1 must be stable within the same process")
+
+    let folded: uint64 = a0 ^ a1
+    std.testing.assertEqual(folded, (a0 ^ a1), "runtime hash seed API must provide uint64 values")
+}
+
+@test
+func testHasherContractByteIngestAndCombine() {
+    var hasher = DummyHasher {}
+    std.testing.assertEqual(useHasher(&mut hasher), 0, "Hasher default combine should be callable")
 }

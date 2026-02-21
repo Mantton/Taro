@@ -1,8 +1,0 @@
-error: type 'Wrapper' does not satisfy requirements for interface 'Clone'
- -> language_tests/source_files/invalid/clone_non_clone_field.tr:11:16
-	struct Wrapper: Clone {
-	                ^^^^^
-info: missing required method 'clone' with signature '(&Self) -> Self'
- -> language_tests/source_files/invalid/clone_non_clone_field.tr:11:16
-	struct Wrapper: Clone {
-	                ^^^^^

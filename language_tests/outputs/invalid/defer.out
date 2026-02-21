@@ -1,0 +1,12 @@
+error: `break` is not allowed inside a defer block
+ -> language_tests/source_files/invalid/defer.tr:2:12
+	    defer { break }
+	            ^^^^^
+error: `continue` is not allowed inside a defer block
+ -> language_tests/source_files/invalid/defer.tr:3:12
+	    defer { continue }
+	            ^^^^^^^^
+error: `return` is not allowed inside a defer block
+ -> language_tests/source_files/invalid/defer.tr:4:12
+	    defer { return }
+	            ^^^^^^

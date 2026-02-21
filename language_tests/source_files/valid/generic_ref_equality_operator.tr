@@ -1,9 +1,0 @@
-func same[T: std.ops.PartialEq](_ a: &T, _ b: &T) -> bool {
-    a == b
-}
-
-func main() {
-    if same(&1, &1) {
-        std.print("ok\n")
-    }
-}

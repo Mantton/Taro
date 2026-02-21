@@ -1,4 +1,0 @@
-error: use of moved value 'x'
- -> language_tests/source_files/invalid/use_after_move_function_call.tr:15:15
-	    consume(n: x)  // ERROR: use of moved value 'x'
-	               ^

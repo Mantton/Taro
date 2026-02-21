@@ -1,0 +1,17 @@
+Checking – opaque_types
+error: field `handle` of struct `BadStruct` does not have a sized type
+ -> language_tests/source_files/invalid/opaque_types.tr:9:7
+	struct BadStruct {
+	       ^^^^^^^^^
+error: opaque type `Handle` can only be used behind a pointer
+ -> language_tests/source_files/invalid/opaque_types.tr:9:7
+	struct BadStruct {
+	       ^^^^^^^^^
+error: opaque type `Handle` can only be used behind a pointer
+ -> language_tests/source_files/invalid/opaque_types.tr:14:5
+	func bad_param(_ h: Handle) {
+	     ^^^^^^^^^
+error: opaque type `Handle` can only be used behind a pointer
+ -> language_tests/source_files/invalid/opaque_types.tr:18:5
+	func bad_return() -> Handle {
+	     ^^^^^^^^^^

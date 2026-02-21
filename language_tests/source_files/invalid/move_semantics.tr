@@ -1,0 +1,78 @@
+// Test: move-semantics diagnostics.
+
+struct BorrowContainer {
+    data: int32
+}
+
+func invalidMoveOutOfBorrowAssign() {
+    var c = BorrowContainer { data: 42 }
+    var borrow = &c
+
+    // ERROR: cannot move out of borrowed content.
+    let _moved = *borrow
+}
+
+import std.iter.Iterable
+import std.iter.Iterator
+
+struct BorrowIterContainer {
+    data: int32
+}
+
+struct BorrowIter {
+    idx: int32
+}
+
+impl Iterator for BorrowIter {
+    type Element = int32
+    func next(&mut self) -> Optional[int32] {
+        return .none
+    }
+}
+
+impl Iterable for BorrowIterContainer {
+    type Iterator = BorrowIter
+    type Element = int32
+    func makeIterator(self) -> Self.Iterator {
+        return BorrowIter { idx: 0 }
+    }
+}
+
+func invalidMoveOutOfBorrowMethod() {
+    var c = BorrowIterContainer { data: 42 }
+    var borrow = &c
+
+    // ERROR: cannot move out of borrowed content.
+    let _iter = borrow.makeIterator()
+}
+
+struct NonCopyMoved {
+    value: int32
+}
+
+func invalidUseAfterMove() {
+    let x = NonCopyMoved { value: 42 }
+    let _y = x
+
+    // ERROR: use of moved value.
+    let _z = x
+}
+
+func consume(n: NonCopyMoved) {
+    std.print("Consumed\n")
+}
+
+func invalidUseAfterMoveFunctionCall() {
+    let x = NonCopyMoved { value: 42 }
+    consume(n: x)
+
+    // ERROR: use of moved value.
+    consume(n: x)
+}
+
+func main() {
+    invalidMoveOutOfBorrowAssign()
+    invalidMoveOutOfBorrowMethod()
+    invalidUseAfterMove()
+    invalidUseAfterMoveFunctionCall()
+}

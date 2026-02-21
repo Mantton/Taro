@@ -1,0 +1,39 @@
+// Test: invalid optional chaining/default usage.
+
+struct ChainName {
+    value: string
+}
+
+struct ChainProfile {
+    name: ChainName
+}
+
+func invalidOptionalChainingOnNonOptional() {
+    let profile = ChainProfile { name: ChainName { value: "Ana" } }
+    let _ = profile?.name
+}
+
+func make_profile() -> ChainProfile {
+    ChainProfile { name: ChainName { value: "Ana" } }
+}
+
+func invalidOptionalChainingOnNonOptionalCallResult() {
+    let _ = make_profile()?.name
+}
+
+func invalidOptionalChainingNestedNonOptional() {
+    let profile = ChainProfile { name: ChainName { value: "Ana" } }
+    let _ = profile.name?.value
+}
+
+func invalidOptionalDefaultOnNonOptional() {
+    let x = 10
+    let _ = x ?? 100
+}
+
+func main() {
+    invalidOptionalChainingOnNonOptional()
+    invalidOptionalChainingOnNonOptionalCallResult()
+    invalidOptionalChainingNestedNonOptional()
+    invalidOptionalDefaultOnNonOptional()
+}

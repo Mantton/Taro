@@ -1,0 +1,556 @@
+import std.collections.List
+import std.hash.{Hashable, DefaultHasher}
+import std.optional.Optional
+import std.cmp.{Ord, PartialOrd, Ordering}
+
+const GROUP_WIDTH_G: usize = 8
+const CTRL_EMPTY_G: uint8 = 0x80
+
+struct PairDCF[const N: usize, const M: usize = N] { }
+struct BufDCF[const N: usize = 8] { }
+
+func testGenericDefaultConstFallback() {
+    let a = PairDCF[3] { }
+    let _a_ok: PairDCF[3, 3] = a
+
+    let b = BufDCF { }
+    let _b_ok: BufDCF[8] = b
+}
+
+struct BoxDF[T = int32] { val: T }
+struct WrapperDF[T = int32] { }
+
+func testGenericDefaultFallback() {
+    let a = BoxDF { val: true }
+    let _a_ok: BoxDF[bool] = a
+
+    let _b: BoxDF[bool] = BoxDF { val: true }
+
+    let w = WrapperDF {}
+    let _w_ok: WrapperDF[int32] = w
+
+    let _w2: WrapperDF[bool] = WrapperDF {}
+}
+
+struct SDMF { }
+
+impl SDMF {
+    func ping[T = int32](&self) { }
+}
+
+func testGenericDefaultMethodFallback() {
+    let s = SDMF { }
+    s.ping()
+}
+
+struct MarkerDVP {}
+
+impl MarkerDVP {
+    func wrap[T = int32](_ x: T) -> T { x }
+}
+
+func idDVP[T = int32](_ x: T) -> T { x }
+func pairFirstDVP[T, U = T](_ x: T, _ y: U) -> U { y }
+
+func testGenericDefaultValuePaths() {
+    let a = idDVP(true)
+    let _a_ok: bool = a
+
+    let b = MarkerDVP.wrap(true)
+    let _b_ok: bool = b
+
+    let c = pairFirstDVP[int32](1, 2)
+    let _c_ok: int32 = c
+}
+
+enum CustomGEM[T] {
+    case empty
+    case value(T)
+}
+
+func testGenericEnumMatch() {
+    let a = CustomGEM.value("Hello, World.\n")
+
+    match a {
+        case CustomGEM.empty => {
+            assert(false, "Should not match empty")
+        }
+        case CustomGEM.value(_) => {
+            assert(true, "Matched value variant")
+        }
+    }
+
+    let b: CustomGEM[int32] = CustomGEM.empty
+    match b {
+        case CustomGEM.empty => {
+            assert(true, "Generic enum empty variant")
+        }
+        case CustomGEM.value(_) => {
+            assert(false, "Should match empty")
+        }
+    }
+}
+
+func fingerprintGFMD(_ hash: uint64) -> uint8 {
+    ((hash >> 57) as uint8) & (0x7f as uint8)
+}
+
+func hashKeyGFMD[Key: Hashable](_ key: &Key) -> uint64 {
+    var hasher = DefaultHasher.new()
+    key.hash(into: &mut hasher)
+    hasher.finish()
+}
+
+struct ProbeMapGFMD[Key: Hashable, Value] {
+    capacity: usize
+    controls: List[uint8]
+    hashes: List[uint64]
+    keys: List[Key?]
+    values: List[Value?]
+}
+
+impl[Key: Hashable, Value] ProbeMapGFMD[Key, Value] {
+    func new() -> Self {
+        var controls: List[uint8] = List()
+        var hashes: List[uint64] = List()
+        var keys: List[Key?] = List()
+        var values: List[Value?] = List()
+
+        var idx: usize = 0
+        while idx < (16 as usize) {
+            controls.append(CTRL_EMPTY_G)
+            hashes.append(0 as uint64)
+            keys.append(.none)
+            values.append(.none)
+            idx += 1
+        }
+
+        ProbeMapGFMD[Key, Value] {
+            capacity: 16 as usize,
+            controls,
+            hashes,
+            keys,
+            values,
+        }
+    }
+
+    func get(&self, _ key: Key) -> Optional[&Value] {
+        let _ = key
+        return .none
+    }
+
+    func get(&mut self, _ key: Key) -> Optional[&mut Value] {
+        if self.capacity == 0 {
+            return .none
+        }
+
+        let hash = hashKeyGFMD(&key)
+        let fp = fingerprintGFMD(hash)
+        let mask = self.capacity - (1 as usize)
+        let base = (hash as usize) & mask
+
+        var groupOffset: usize = 0
+        while groupOffset < self.capacity {
+            let groupStart = (base + groupOffset) & mask
+
+            var slotOffset: usize = 0
+            while slotOffset < GROUP_WIDTH_G {
+                let slot = (groupStart + slotOffset) & mask
+                let ctrl = *self.controls.at(slot)
+
+                if ctrl == CTRL_EMPTY_G {
+                    return .none
+                }
+
+                if ctrl < CTRL_EMPTY_G && ctrl == fp {
+                    let slotHash = *self.hashes.at(slot)
+                    if slotHash == hash {
+                        let keySlot = self.keys.at(slot)
+                        match keySlot {
+                            case .some(existingKey) => {
+                                if key.eq(existingKey) {
+                                    let valueSlot: &mut Value? = self.values.at(slot)
+                                    match valueSlot {
+                                        case .some(existingValue) => {
+                                            return .some(existingValue)
+                                        }
+                                        case .none => {
+                                            return .none
+                                        }
+                                    }
+                                }
+                            }
+                            case .none => {}
+                        }
+                    }
+                }
+
+                slotOffset += 1
+            }
+
+            groupOffset += GROUP_WIDTH_G
+        }
+
+        return .none
+    }
+}
+
+func testGenericEqFalseMoveDictionaryShapeCheck() {
+    var map = ProbeMapGFMD[int32, int32].new()
+    let _ = map.get(10)
+}
+
+func hashKeyGEMC[Key: Hashable](_ key: &Key) -> uint64 {
+    var hasher = DefaultHasher.new()
+    key.hash(into: &mut hasher)
+    hasher.finish()
+}
+
+struct EqReproGEMC[Key: Hashable, Value] {
+    keys: List[Key?]
+    values: List[Value?]
+}
+
+impl[Key: Hashable, Value] EqReproGEMC[Key, Value] {
+    func new(_ key: Key, _ value: Value) -> Self {
+        var keys: List[Key?] = List()
+        var values: List[Value?] = List()
+        let entry: Key? = .some(key)
+        let valueEntry: Value? = .some(value)
+        keys.append(entry)
+        values.append(valueEntry)
+        EqReproGEMC[Key, Value] { keys, values }
+    }
+
+    func get(&self, _ key: Key) -> Optional[&Value] {
+        let _ = key
+        return .none
+    }
+
+    func get(&mut self, _ key: Key) -> Optional[&mut Value] {
+        let hash = hashKeyGEMC(&key)
+        var idx: usize = 0
+        while idx < (1 as usize) {
+            let keySlot: &mut Key? = self.keys.at(idx)
+            match keySlot {
+                case .some(existingKey) => {
+                    let _ = hash
+                    if key.eq(existingKey) {
+                        let valueSlot: &mut Value? = self.values.at(idx)
+                        match valueSlot {
+                            case .some(existingValue) => {
+                                return .some(existingValue)
+                            }
+                            case .none => {
+                                return .none
+                            }
+                        }
+                    }
+                }
+                case .none => {}
+            }
+            idx += 1
+        }
+        return .none
+    }
+}
+
+func testGenericEqMutContextNoMoveCheck() {
+    var repro = EqReproGEMC[int32, int32].new(10, 11)
+    let _ = repro.get(10)
+}
+
+func useGI[V](value: V) -> V { value }
+public func exposeGI[T](_ value: T) -> T { value }
+
+func fibonacciGI(_ n: uint32) -> uint32 {
+    if n <= 1 {
+        return n
+    }
+    return fibonacciGI(n - 1) + fibonacciGI(n - 2)
+}
+
+func testGenericInference() {
+    let a: uint32 = 10
+    let b = useGI(value: a)
+    let c = exposeGI(b)
+
+    assert(c == 10, "Inference chain 1 failed")
+
+    let x = "Hello, World.\n"
+    let y = useGI(value: x)
+    let z = exposeGI(y)
+    let _ = z
+
+    let a1 = fibonacciGI(4)
+    assert(a1 == 3, "Fibonacci call failed")
+}
+
+struct KeyGM {
+    id: int32
+}
+
+func testGenericMangleOptionalCustomRuntime() {
+    var xs: List[KeyGM?] = List()
+    xs.append(.none)
+    xs.append(.some(KeyGM { id: 1 }))
+
+    let first = xs.at(0)
+    let second = xs.at(1)
+
+    std.assert(first.isNone(), "first optional entry should be none")
+    std.assert(second.isSome(), "second optional entry should be some")
+    match second {
+        case .some(value) => {
+            std.assert(value.id == 1, "second optional payload mismatch")
+        }
+        case .none => {
+            std.assert(false, "second optional payload unexpectedly missing")
+        }
+    }
+}
+
+func geqGOB[T: Ord](_ a: T, _ b: T) -> bool {
+    a >= b
+}
+
+func lessGOB[T: Ord](_ a: T, _ b: T) -> bool {
+    a < b
+}
+
+func equalsGOB[T: PartialEq](_ a: T, _ b: T) -> bool {
+    a == b
+}
+
+func testGenericOperatorBoundsBasic() {
+    assert(geqGOB(10, 5), "10 >= 5")
+    assert(!geqGOB(2, 7), "2 >= 7 should be false")
+
+    assert(lessGOB(1, 4), "1 < 4")
+    assert(!lessGOB(9, 3), "9 < 3 should be false")
+
+    assert(equalsGOB(true, true), "true == true")
+    assert(!equalsGOB(false, true), "false == true should be false")
+}
+
+struct ScoreGOC {
+    value: int32
+}
+
+impl PartialEq for ScoreGOC {
+    func eq(&self, _ other: &ScoreGOC) -> bool {
+        self.value == other.value
+    }
+}
+
+impl PartialOrd for ScoreGOC {
+    func partialCmp(&self, _ other: &ScoreGOC) -> Optional[Ordering] {
+        .some(self.cmp(other))
+    }
+}
+
+impl Ord for ScoreGOC {
+    func cmp(&self, _ other: &ScoreGOC) -> Ordering {
+        if self.value < other.value {
+            .less
+        } else if self.value == other.value {
+            .equal
+        } else {
+            .greater
+        }
+    }
+}
+
+func geqGOC[T: Ord](_ a: T, _ b: T) -> bool {
+    a >= b
+}
+
+func eqvGOC[T: PartialEq](_ a: T, _ b: T) -> bool {
+    a == b
+}
+
+func testGenericOperatorBoundsCustomCheck() {
+    let a = ScoreGOC { value: 10 }
+    let b = ScoreGOC { value: 7 }
+
+    let _ = geqGOC(a, b)
+
+    let a2 = ScoreGOC { value: 10 }
+    let b2 = ScoreGOC { value: 7 }
+    let _ = eqvGOC(a2, b2)
+}
+
+func pickGO[V](value: V) -> V { value }
+func pickGO(value: uint32) -> uint32 { value }
+
+func testGenericOverload() {
+    let a: uint32 = 10
+    let b = pickGO(value: a)
+    assert(b == 10, "Value mismatch")
+}
+
+func sameGREO[T: std.ops.PartialEq](_ a: &T, _ b: &T) -> bool {
+    a == b
+}
+
+func testGenericRefEqualityOperator() {
+    assert(sameGREO(&1, &1), "generic ref equality")
+}
+
+struct PairGSM[T] {
+    fst: T
+    snd: T
+}
+
+impl[T] PairGSM[T] {
+    func new(fst: T, snd: T) -> PairGSM[T] {
+        PairGSM { fst, snd }
+    }
+
+    func use(&self) -> &T {
+        &self.snd
+    }
+}
+
+struct DictionaryGSM[T, V] {
+    key: T
+    value: V
+}
+
+func testGenericStructsMethods() {
+    let a = 10
+    let x = PairGSM[int32].new(fst: a, snd: a)
+    let y = PairGSM[int32] { fst: 10, snd: 10 }
+
+    let z = *y.use()
+    assert(z == 10, "Method call on generic struct failed")
+    assert(x.fst == 10, "Field access on generic struct failed")
+
+    let res = x.fst + z
+    assert(res == 20, "Result calculation failed")
+
+    let d = DictionaryGSM { key: 'A', value: 10 }
+    assert(d.value == 10, "Dictionary value check")
+}
+
+interface ContainerGCC {
+    type Item
+    func get(&self) -> Self.Item
+}
+
+struct BoxUGCC: Copy { value: usize }
+impl ContainerGCC for BoxUGCC {
+    type Item = usize
+    func get(&self) -> usize { self.value }
+}
+
+struct BoxSGCC: Copy { value: string }
+impl ContainerGCC for BoxSGCC {
+    type Item = string
+    func get(&self) -> string { self.value }
+}
+
+func takeItemGCC[T: ContainerGCC](_ c: T) -> T.Item {
+    let v: T.Item = c.get()
+    v
+}
+
+func printStringContainerGCC[T](_ c: T) where T: ContainerGCC, T.Item == string {
+    let s: string = c.get()
+    assert(s == "Hello", "String container value")
+}
+
+interface Container2GCC[T] {
+    func get(&self) -> T
+}
+
+struct BoxU2GCC: Copy { value: usize }
+impl Container2GCC[usize] for BoxU2GCC {
+    func get(&self) -> usize { self.value }
+}
+
+func takeU2GCC[T: Container2GCC[usize]](_ c: T) -> usize {
+    c.get()
+}
+
+interface NamedGCC {
+    func name(&self) -> string
+}
+
+interface EntityGCC: NamedGCC {
+    func id(&self) -> usize
+}
+
+struct UserGCC: Copy {
+    id: usize
+    name: string
+}
+
+impl NamedGCC for UserGCC {
+    func name(&self) -> string { self.name }
+}
+
+impl EntityGCC for UserGCC {
+    func id(&self) -> usize { self.id }
+}
+
+func showEntityGCC(_ value: any EntityGCC) {
+    assert(value.name() == "Alice", "Entity name check")
+}
+
+func testGenericsConstraintsComplex() {
+    let user = UserGCC { id: 42, name: "Alice" }
+    let boxU = BoxUGCC { value: 99 }
+    let boxS = BoxSGCC { value: "Hello" }
+
+    let _u: usize = takeItemGCC(boxU)
+    let _s: string = takeItemGCC(boxS)
+
+    printStringContainerGCC(boxS)
+
+    let _u2: usize = takeU2GCC(BoxU2GCC { value: 123 })
+
+    showEntityGCC(user)
+}
+
+interface CarrierPN {
+    type Item
+}
+
+struct WrapPN[Element] {}
+
+impl[Element] CarrierPN for &WrapPN[Element] {
+    type Item = Element
+}
+
+func takesCarrierItemPN[C: CarrierPN](_ carrier: C, _ item: C.Item) -> C.Item {
+    item
+}
+
+func testProjectionNormalizeImplGenericCheck() {
+    let wrap = WrapPN[int32] {}
+    let result = takesCarrierItemPN(&wrap, 7 as int32)
+    let typed: int32 = result
+    let _ = typed
+}
+
+func main() {
+    testGenericDefaultConstFallback()
+    testGenericDefaultFallback()
+    testGenericDefaultMethodFallback()
+    testGenericDefaultValuePaths()
+    testGenericEnumMatch()
+    testGenericEqFalseMoveDictionaryShapeCheck()
+    testGenericEqMutContextNoMoveCheck()
+    testGenericInference()
+    testGenericMangleOptionalCustomRuntime()
+    testGenericOperatorBoundsBasic()
+    testGenericOperatorBoundsCustomCheck()
+    testGenericOverload()
+    testGenericRefEqualityOperator()
+    testGenericStructsMethods()
+    testGenericsConstraintsComplex()
+    testProjectionNormalizeImplGenericCheck()
+
+    std.print("PASS: generics\n")
+}

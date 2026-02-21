@@ -246,18 +246,18 @@ impl<'state> Compiler<'state> {
         timings.push_elapsed("sema.resolve", phase_started_at);
 
         let phase_started_at = Instant::now();
-        let package = ast_lowering::lower_package(package, self.context, &resolution_output)?;
-        timings.push_elapsed("hir.lower", phase_started_at);
+        let output = self
+            .context
+            .store
+            .arenas
+            .resolution_outputs
+            .alloc(resolution_output);
         {
             let mut table = self.context.store.resolution_outputs.borrow_mut();
-            let output = self
-                .context
-                .store
-                .arenas
-                .resolution_outputs
-                .alloc(resolution_output);
             table.insert(self.context.config.index, output);
         }
+        let package = ast_lowering::lower_package(package, self.context, output)?;
+        timings.push_elapsed("hir.lower", phase_started_at);
 
         let phase_started_at = Instant::now();
         sema::validate::validate_package(&package, self.context)?;

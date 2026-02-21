@@ -1,0 +1,37 @@
+// Result API diagnostics requiring Copy bounds on carried value/error types.
+
+struct NonCopyError {
+    code: int32
+}
+
+struct NonCopyValue {
+    value: int32
+}
+
+func invalidAndRequiresErrorCopy() {
+    let left: Result[int32, NonCopyError] = .err(NonCopyError { code: 7 })
+    let right: Result[uint8, NonCopyError] = .ok(1)
+    let _ = left.and(right)
+}
+
+func invalidMapRequiresErrorCopy() {
+    let r: Result[int32, NonCopyError] = .err(NonCopyError { code: 1 })
+    let _ = r.map(|x| -> int32 { x + 1 })
+}
+
+func invalidMapErrRequiresValueCopy() {
+    let r: Result[NonCopyValue, int32] = .ok(NonCopyValue { value: 1 })
+    let _ = r.mapErr(|e| -> int32 { e + 1 })
+}
+
+func invalidOrElseRequiresErrorCopy() {
+    let left: Result[int32, NonCopyError] = .err(NonCopyError { code: 3 })
+    let _ = left.orElse(|e| -> Result[int32, NonCopyError] { .ok(e.code) })
+}
+
+func main() {
+    invalidAndRequiresErrorCopy()
+    invalidMapRequiresErrorCopy()
+    invalidMapErrRequiresValueCopy()
+    invalidOrElseRequiresErrorCopy()
+}

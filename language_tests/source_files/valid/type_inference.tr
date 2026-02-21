@@ -1,0 +1,219 @@
+import std.collections.List
+
+enum IntOutcome {
+    case success(int32)
+    case failure
+}
+
+func make_success(_ val: int32) -> IntOutcome {
+    IntOutcome.success(val)
+}
+
+struct RangeIterator {
+    current: int32
+    end: int32
+}
+
+impl Iterator for RangeIterator {
+    type Element = int32
+
+    func next(&mut self) -> Optional[int32] {
+        if self.current < self.end {
+            let value = self.current
+            self.current = self.current + 1
+            return Optional.some(value)
+        }
+        return Optional.none
+    }
+}
+
+struct SimpleRange {
+    start: int32
+    end: int32
+}
+
+impl Iterable for SimpleRange {
+    type Iterator = RangeIterator
+    type Element = int32
+
+    func makeIterator(self) -> RangeIterator {
+        RangeIterator { current: self.start, end: self.end }
+    }
+}
+
+func test_match_inference() {
+    var x = make_success(10)
+    match x {
+        case .success(val) => { let _: int32 = val + 1 }
+        case .failure => {}
+    }
+}
+
+func test_nested_blocks() {
+    var x = IntOutcome.failure
+    if true {
+        if true {
+            x = make_success(42)
+        }
+    }
+    match x {
+        case .success(val) => { let _: int32 = val }
+        case .failure => {}
+    }
+}
+
+func test_ifelse_inference() {
+    let x = if true { make_success(1) } else { IntOutcome.failure }
+    match x {
+        case .success(v) => { let _: int32 = v }
+        case .failure => {}
+    }
+}
+
+func test_nested_match() {
+    var x = make_success(100)
+    match x {
+        case .success(val) => {
+            var y = make_success(val)
+            match y {
+                case .success(inner) => { let _: int32 = inner }
+                case .failure => {}
+            }
+        }
+        case .failure => {}
+    }
+}
+
+func test_match_on_call_nested() {
+    match make_success(200) {
+        case .success(val) => {
+            match make_success(val + 1) {
+                case .success(inner) => { let _: int32 = inner }
+                case .failure => {}
+            }
+        }
+        case .failure => {}
+    }
+}
+
+func test_loop_match_nesting() {
+    let range = SimpleRange { start: 0, end: 3 }
+    for i in range {
+        match make_success(i) {
+            case .success(val) => {
+                let _ = val * 2
+            }
+            case .failure => {}
+        }
+    }
+}
+
+func test_match_loop_nesting() {
+    let result = make_success(5)
+    match result {
+        case .success(count) => {
+            let r = SimpleRange { start: 0, end: count }
+            for k in r {
+                let _ = k
+            }
+        }
+        case .failure => {}
+    }
+}
+
+func test_inferred_members_main() {
+    let a: int32? = .none
+    let b: int32? = .some(1)
+
+    match a {
+        case .some(_) => assert(false, "a is none")
+        case .none => assert(true, "a match none")
+    }
+
+    match b {
+        case .some(_) => assert(true, "b match some")
+        case .none => assert(false, "b is some")
+    }
+
+    test_inferred_expr_contexts()
+    test_call_context()
+    test_asi_newline_continuation()
+    test_nested_generic()
+    test_expected_from_call()
+}
+
+func f() -> int32? {
+    .none
+}
+
+func g() -> int32? {
+    .some(42)
+}
+
+func test_inferred_expr_contexts() {
+    let _x: int32? = .some(7)
+    let _y: int32? = .none
+
+    let _z: int32? = if true { .some(1) } else { .none }
+
+    let _m: int32? = match true {
+        case true => .some(9)
+        case false => .none
+    }
+}
+
+func test_call_context() {
+    func makeOpt() -> int32? {
+        .some(5)
+    }
+    let _v: int32? = makeOpt()
+}
+
+func test_asi_newline_continuation() {
+    let _a: int32? =
+        .none
+
+    let _b: int32? =
+        .some(3)
+
+    let c: int32? = .some(4)
+    c
+        .isSome()
+}
+
+func test_nested_generic() {
+    let _a: int32?? = .some(.none)
+    let _b: int32?? = .some(.some(1))
+}
+
+func takesOpt(_ v: int32?) {}
+
+func test_expected_from_call() {
+    takesOpt(.none)
+    takesOpt(.some(11))
+}
+
+func pushSome[Key](_ values: &mut List[Key?], _ key: Key) {
+    values.append(.some(key))
+}
+
+func test_inferred_some_method_arg_expectation() {
+    var values: List[int32?] = List()
+    pushSome(&mut values, 10)
+    assert(values.len() == 1, "pushSome should append one value")
+}
+
+func main() {
+    test_match_inference()
+    test_nested_blocks()
+    test_ifelse_inference()
+    test_nested_match()
+    test_match_on_call_nested()
+    test_loop_match_nesting()
+    test_match_loop_nesting()
+
+    test_inferred_members_main()
+    test_inferred_some_method_arg_expectation()
+
+    std.print("PASS: Type inference\n")
+}

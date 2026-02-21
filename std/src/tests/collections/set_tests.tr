@@ -1,5 +1,15 @@
 import std.hash.{Hashable, Hasher}
 
+@test
+func testSetBasicStringOperations() {
+    var set: std.collections.Set[string] = std.collections.Set()
+    std.testing.assertTrue(set.isEmpty(), "new set should start empty")
+
+    set.insert("Hello, World")
+    std.testing.assertTrue(set.contains("Hello, World"), "set should contain inserted value")
+    std.testing.assertFalse(set.contains("Hello"), "set should not contain partial/missing value")
+}
+
 struct SetCollisionKey {
     id: int32
 }

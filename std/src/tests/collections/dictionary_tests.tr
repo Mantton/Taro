@@ -1,5 +1,20 @@
 import std.hash.{Hashable, Hasher}
 
+@test
+func testDictionaryLiteralAndConstructorInference() {
+    let values: [int32: string] = [1: "one", 2: "two"]
+    std.testing.assertEqual(values.len(), 2 as usize, "non-empty literal should infer destination type")
+    std.testing.assertTrue(values.contains(1), "literal-inferred dictionary should contain inserted key")
+
+    var fromLiteral: [int32: string] = [:]
+    let _ = fromLiteral.insert(key: 10, value: "Hello, World")
+    std.testing.assertTrue(fromLiteral.contains(10), "literal dictionary should support insert/contains")
+
+    var fromTypedLiteral: [uint32: string] = [:]
+    let _ = fromTypedLiteral.insert(key: 10, value: "Hello, World")
+    std.testing.assertTrue(fromTypedLiteral.contains(10), "typed literal dictionary should support insert/contains")
+}
+
 struct CollisionKey {
     id: int32
 }

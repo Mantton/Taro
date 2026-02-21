@@ -1,8 +1,0 @@
-error: expected bool, found {integer(0)}
- -> language_tests/source_files/invalid/guard_invalid.tr:2:10
-	    guard 1 else { return }
-	          ^
-error: optional binding requires an Optional value, found '{integer(0)}'
- -> language_tests/source_files/invalid/guard_invalid.tr:3:22
-	    guard let value = 123 else { return }
-	                      ^^^

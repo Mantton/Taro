@@ -1,4 +1,0 @@
-error: type 'NonCopyError' does not conform to interface 'Copy'
- -> language_tests/source_files/invalid/result_map_requires_error_copy.tr:7:14
-	    let _ = r.map(|x| -> int32 { x + 1 })
-	              ^^^

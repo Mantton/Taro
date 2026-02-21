@@ -1,0 +1,146 @@
+// Tests: language primitives, numeric literal bases, and cast edge cases.
+
+func use() -> rune { 'A' }
+func raise(value: rune) -> rune { value }
+func raise(value: rune) -> int32 { 0 }
+
+func take() -> uint8 { 0 }
+func take(value: uint8) -> uint8 { value }
+
+func isGreaterThanZero(value: int32) -> bool {
+    value > 0
+}
+
+func usePlain() {
+    let a = 10
+    assert(a == 10, "int literal")
+
+    let b: int32 = 10
+    assert(b == 10, "explicit int32")
+
+    let c = true
+    assert(c, "bool literal")
+
+    let d = 'A'
+    assert(d == 'A', "rune literal")
+
+    let _ = 1.0
+    let _e: double = 1.0
+}
+
+func useLocalIdentifier() {
+    let a = true
+    let b = a
+    assert(b == true, "local identifier assignment")
+}
+
+func useNonOverloadCall() {
+    let a = use()
+    assert(a == 'A', "simple call")
+
+    let b: int32 = raise(value: a)
+    assert(b == 0, "call with param -> int32")
+
+    let c: rune = raise(value: a)
+    assert(c == 'A', "call with param -> rune")
+}
+
+func useOverloadCall() {
+    let x: uint8 = 10
+    let a = take(value: x)
+    assert(a == 10, "overload by param")
+
+    let b = take()
+    assert(b == 0, "overload no-arg")
+}
+
+func useUnaryOperator() {
+    let a = true
+    let b = !a
+    assert(b == false, "unary !")
+
+    let n = 10
+    let neg = -10
+    let pos = -neg
+    assert(pos == n, "unary -")
+}
+
+func useBinaryOperator() {
+    let a: usize = 1 + 1
+    assert(a == 2, "binary +")
+}
+
+func useIfElse() {
+    let a = 10
+    let b = isGreaterThanZero(value: a)
+    assert(b == true, "params check")
+
+    let c = if b {
+        'A'
+    } else if a == 0 {
+        'B'
+    } else {
+        'C'
+    }
+    assert(c == 'A', "if-else taken branch")
+
+    let d = if false { 'A' } else { 'B' }
+    assert(d == 'B', "if-else else branch")
+}
+
+func testNonDecimalIntegerLiterals() {
+    let hex: uint64 = 0xDEADBEEF
+    assert(hex == 3735928559, "hex literal")
+
+    let hex_sep: uint64 = 0xFF_FF
+    assert(hex_sep == 65535, "hex literal separators")
+
+    let max_u64_hex: uint64 = 0xffff_ffff_ffff_ffff
+    assert(max_u64_hex == 18446744073709551615, "max uint64 hex")
+
+    let bin: uint32 = 0b10101010
+    assert(bin == 170, "binary literal")
+
+    let bin_sep: uint32 = 0b1010_0101
+    assert(bin_sep == 165, "binary literal separators")
+
+    let oct: uint32 = 0o755
+    assert(oct == 493, "octal literal")
+
+    let oct_sep: uint32 = 0o7_5_5
+    assert(oct_sep == 493, "octal literal separators")
+}
+
+func testFloatCastToFloat() {
+    let a: float = (-0.0) as float
+    let b: float = (1.25) as float
+    let c: float = ((1.0 as double) / (2.0 as double)) as float
+
+    assert(a == (0.0 as float), "-0.0 cast to float")
+    assert(b == (1.25 as float), "double literal cast to float")
+    assert(c == (0.5 as float), "double expression cast to float")
+}
+
+func testLargeIntegerLiteralCasts() {
+    let a: uint64 = 3931806377309739662 as uint64
+    assert(a == 3931806377309739662, "large uint64 cast")
+
+    let b: uint64 = 18446744073709551615 as uint64
+    assert(b == 18446744073709551615, "max uint64 cast")
+}
+
+func main() {
+    usePlain()
+    useLocalIdentifier()
+    useNonOverloadCall()
+    useOverloadCall()
+    useUnaryOperator()
+    useBinaryOperator()
+    useIfElse()
+
+    testNonDecimalIntegerLiterals()
+    testFloatCastToFloat()
+    testLargeIntegerLiteralCasts()
+
+    print("PASS: Primitives\n")
+}

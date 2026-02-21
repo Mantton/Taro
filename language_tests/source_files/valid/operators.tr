@@ -1,0 +1,84 @@
+// Test: operator semantics matrix.
+
+func mustNotCall() -> bool {
+    panic("short-circuit failed: RHS was evaluated")
+}
+
+func identity(_ v: bool) -> bool { v }
+
+func testBitwiseIntegerMatrix() {
+    let x: uint8 = 10
+
+    assert((x | 4) == 14, "bitwise or")
+    assert((x ^ 15) == 5, "bitwise xor")
+    assert((x & 3) == 2, "bitwise and")
+    assert((x << 1) == 20, "left shift")
+    assert((x >> 1) == 5, "right shift")
+    assert((~x) == 245, "bitwise not on uint8")
+}
+
+func testCompoundAssignmentMatrix() {
+    var x: int32 = 16
+    x -= 1
+    assert(x == 15, "-=")
+
+    x /= 3
+    assert(x == 5, "/=")
+
+    x %= 3
+    assert(x == 2, "%=")
+
+    x |= 4
+    assert(x == 6, "|=")
+
+    x ^= 3
+    assert(x == 5, "^=")
+
+    x &= 3
+    assert(x == 1, "&=")
+
+    x <<= 2
+    assert(x == 4, "<<=")
+
+    x >>= 1
+    assert(x == 2, ">>=")
+}
+
+func testShortCircuitSideEffects() {
+    let a = false && mustNotCall()
+    assert(a == false, "&& with false lhs should be false")
+
+    let b = true || mustNotCall()
+    assert(b == true, "|| with true lhs should be true")
+
+    let c = true && identity(false)
+    assert(c == false, "&& true,false should be false")
+
+    let d = true && identity(true)
+    assert(d == true, "&& true,true should be true")
+
+    let e = false || identity(true)
+    assert(e == true, "|| false,true should be true")
+
+    let f = false || identity(false)
+    assert(f == false, "|| false,false should be false")
+}
+
+func testTernaryPrecedenceBasic() {
+    let a = true ? 1 : 2
+    let b = false ? 10 : 20
+    assert(a == 1, "true branch should be selected")
+    assert(b == 20, "false branch should be selected")
+
+    let c = false ? 1 : 2 + 3
+    assert(c == 5, "ternary else expression should evaluate fully")
+}
+
+func main() {
+    testBitwiseIntegerMatrix()
+    testCompoundAssignmentMatrix()
+    testShortCircuitSideEffects()
+    testTernaryPrecedenceBasic()
+
+    std.print("PASS: operators\n")
+}

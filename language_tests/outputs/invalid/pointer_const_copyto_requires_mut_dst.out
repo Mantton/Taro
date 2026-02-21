@@ -1,4 +1,0 @@
-error: mutability mismatch: expected uint8, found uint8 (reference mutabilities differ)
- -> language_tests/source_files/invalid/pointer_const_copyto_requires_mut_dst.tr:5:15
-	    src.copyTo(dst, 1)
-	               ^^^

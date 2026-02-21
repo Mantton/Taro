@@ -1,4 +1,0 @@
-error: 'Copy' cannot be implemented via impl block; use inline syntax on the struct/enum definition instead (e.g., `struct Foo: Copy { ... }`)
- -> language_tests/source_files/invalid/copy_via_extension.tr:13:5
-	impl Copy for AnotherType {
-	     ^^^^

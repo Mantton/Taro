@@ -1,0 +1,9 @@
+// Missing bound should still fail (guard against over-permissive fallback).
+
+func geqMissingBound[T](_ a: T, _ b: T) -> bool {
+    a >= b
+}
+
+func main() {
+    let _ = geqMissingBound(1, 2)
+}

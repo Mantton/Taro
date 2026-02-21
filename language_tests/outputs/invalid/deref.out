@@ -1,0 +1,4 @@
+error: cannot move out of borrowed content
+ -> language_tests/source_files/invalid/deref.tr:12:4
+	    *x
+	    ^^

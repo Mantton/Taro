@@ -1,5 +1,0 @@
-func main() {
-    let s = "abc"
-    let p: *const uint8 = std.string.stringData(s)
-    p.write(65)
-}

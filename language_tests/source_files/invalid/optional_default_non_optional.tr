@@ -1,7 +1,0 @@
-// Test: Using ?? on a non-Optional type should produce a clear error
-func main() {
-    let x = 10
-    let y = x ?? 100
-}
-
-// EXPECTED: error: '??' operator requires an Optional type on the left-hand side, found 'int32'

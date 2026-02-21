@@ -1,0 +1,122 @@
+import std.collections.List
+import std.optional.Optional
+
+func sumRef(_ list: &List[int32]) -> int32 {
+    var sum: int32 = 0
+    for x in list {
+        sum = sum + *x
+    }
+    return sum
+}
+
+func doubleViaMutIter(_ list: &mut List[int32]) {
+    for x in list {
+        *x = *x * 2
+    }
+}
+
+func sumByValue(_ list: List[int32]) -> int32 {
+    var sum: int32 = 0
+    for x in list {
+        sum = sum + x
+    }
+    return sum
+}
+
+func firstMutable(_ values: &mut List[int32?]) -> Optional[&mut int32] {
+    let slot = values.at(0 as usize)
+    return match slot {
+        case .some(v) => .some(v)
+        case .none => .none
+    }
+}
+
+@test
+func testListBasicCreationAndAppend() {
+    var list: List[string] = List()
+    list.append("Foo")
+    list.append("Bar")
+    list.append("Baz")
+    std.testing.assertEqual(list.len(), 3 as usize, "list append should update length")
+
+    var withCapacity: List[string] = List(withCapacity: 10)
+    withCapacity.append("x")
+    std.testing.assertEqual(withCapacity.len(), 1 as usize, "capacity constructor should create usable list")
+}
+
+@test
+func testListIteratorModes() {
+    var list: List[int32] = List()
+    list.append(1)
+    list.append(2)
+    list.append(3)
+
+    std.testing.assertEqual(sumRef(&list), 6, "ref iterator sum mismatch")
+    doubleViaMutIter(&mut list)
+    std.testing.assertEqual(sumByValue(list), 12, "value iterator sum mismatch after mutation")
+}
+
+@test
+func testListMutableIteratorNext() {
+    var list: List[int32] = List()
+    list.append(1)
+    list.append(2)
+    list.append(3)
+
+    var iter = (&mut list).makeIterator()
+    loop {
+        match iter.next() {
+            case .some(elem) => {
+                *elem *= 2
+            }
+            case .none => {
+                break
+            }
+        }
+    }
+
+    std.testing.assertEqual(*list.at(0), 2, "mutable iterator should update first element")
+    std.testing.assertEqual(*list.at(1), 4, "mutable iterator should update second element")
+    std.testing.assertEqual(*list.at(2), 6, "mutable iterator should update third element")
+}
+
+@test
+func testListStaticConstructorInference() {
+    var fromCtor = List[rune]()
+    fromCtor.append('a')
+    fromCtor.append('b')
+    std.testing.assertEqual(fromCtor.len(), 2 as usize, "ctor length mismatch")
+    std.testing.assertEqual(*fromCtor.at(0), 'a', "ctor element 0 mismatch")
+    std.testing.assertEqual(*fromCtor.at(1), 'b', "ctor element 1 mismatch")
+
+    var fromStatic = List[rune].new()
+    fromStatic.append('c')
+    std.testing.assertEqual(fromStatic.len(), 1 as usize, "static new length mismatch")
+    std.testing.assertEqual(*fromStatic.at(0), 'c', "static new element mismatch")
+
+    var withCap: List[rune] = List[rune].new(withCapacity: 4)
+    withCap.append('d')
+    withCap.append('e')
+    std.testing.assertEqual(withCap.len(), 2 as usize, "capacity new length mismatch")
+    std.testing.assertEqual(*withCap.at(0), 'd', "capacity new element 0 mismatch")
+    std.testing.assertEqual(*withCap.at(1), 'e', "capacity new element 1 mismatch")
+}
+
+@test
+func testListAtMutOverloadInference() {
+    var values: List[int32?] = List()
+    let entry: int32? = .some(1)
+    values.append(entry)
+
+    let maybeRef = firstMutable(&mut values)
+    std.testing.assertTrue(maybeRef.isSome(), "firstMutable should produce mutable reference for populated list")
+    *maybeRef.unwrap() = 7
+
+    let readBack = values.at(0 as usize)
+    std.testing.assertTrue(readBack.isSome(), "list entry should remain present after mutable update")
+    std.testing.assertEqual(
+        readBack.unwrap(),
+        7,
+        "mutable overload inference should allow updating nested optional value",
+    )
+}

@@ -1,9 +1,0 @@
-// Missing bound should still fail (guard against over-permissive fallback).
-
-func geq[T](_ a: T, _ b: T) -> bool {
-    a >= b
-}
-
-func main() {
-    let _ = geq(1, 2)
-}

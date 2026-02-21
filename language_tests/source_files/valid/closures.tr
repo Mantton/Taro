@@ -1,0 +1,426 @@
+// Consolidated closure language tests.
+
+func applyIntExplicit[F: Fn[int32, int32]](_ f: F, _ x: int32) -> int32 {
+    f(x)
+}
+
+func mapValueExplicit[T, F: Fn[T, T]](_ value: T, _ f: F) -> T {
+    f(value)
+}
+
+struct IntBoxExplicit: Copy {
+    value: int32
+}
+
+impl IntBoxExplicit {
+    func map[F: Fn[int32, int32]](&self, _ f: F) -> int32 {
+        f(self.value)
+    }
+}
+
+func applyFnPtr(_ f: (int32) -> int32, _ x: int32) -> int32 {
+    f(x)
+}
+
+func applyFnSimple[F: Fn[int32, int32]](_ f: F, _ x: int32) -> int32 {
+    f(x)
+}
+
+func applyOnceHierarchy[F: FnOnce[int32, int32]](_ f: F, _ x: int32) -> int32 {
+    f(x)
+}
+
+func applyMutHierarchy[F: FnMut[int32, int32]](_ f: F, _ x: int32) -> int32 {
+    f(x)
+}
+
+func applyFnHierarchy[F: Fn[int32, int32]](_ f: F, _ x: int32) -> int32 {
+    f(x)
+}
+
+func applyHigher[F: Fn[int32, int32]](_ f: F, _ x: int32) -> int32 {
+    f(x)
+}
+
+func apply2Higher[F: Fn[(int32, int32), int32]](_ f: F, _ a: int32, _ b: int32) -> int32 {
+    f(a, b)
+}
+
+func mapValHigher[F: Fn[int32, int32]](_ value: int32, _ transform: F) -> int32 {
+    transform(value)
+}
+
+func applyInferred[F: Fn[int32, int32]](_ f: F, _ x: int32) -> int32 {
+    f(x)
+}
+
+func apply2Inferred[F: Fn[(int32, int32), int32]](_ f: F, _ a: int32, _ b: int32) -> int32 {
+    f(a, b)
+}
+
+func mapValInferred[T, F: Fn[T, T]](_ value: T, _ f: F) -> T {
+    f(value)
+}
+
+struct ContainerInferred {
+    value: int32
+}
+
+impl ContainerInferred {
+    func map[F: Fn[int32, int32]](&self, _ f: F) -> int32 {
+        f(self.value)
+    }
+
+    func transform[F: Fn[int32, int32], G: Fn[int32, int32]](&self, _ f: F, _ g: G) -> int32 {
+        g(f(self.value))
+    }
+}
+
+struct ContainerMethod {
+    value: int32
+}
+
+impl ContainerMethod {
+    func map[F: Fn[int32, int32]](&self, _ f: F) -> int32 {
+        f(self.value)
+    }
+
+    func map_once[F: FnOnce[int32, int32]](&self, _ f: F) -> int32 {
+        f(self.value)
+    }
+
+    func transform[F: Fn[int32, int32], G: Fn[int32, int32]](&self, _ f: F, _ g: G) -> int32 {
+        g(f(self.value))
+    }
+}
+
+struct PairMethod {
+    a: int32
+    b: int32
+}
+
+impl PairMethod {
+    func combine[F: Fn[(int32, int32), int32]](&self, _ f: F) -> int32 {
+        f(self.a, self.b)
+    }
+}
+
+struct ContainerMethodGeneric[T: Copy]: Copy {
+    value: T
+}
+
+impl[T: Copy] ContainerMethodGeneric[T] {
+    func map[F: Fn[T, T]](self, _ f: F) -> T {
+        f(self.value)
+    }
+
+    func map_once[F: FnOnce[T, T]](self, _ f: F) -> T {
+        f(self.value)
+    }
+}
+
+struct PairMethodGeneric[T: Copy]: Copy {
+    first: T
+    second: T
+}
+
+impl[T: Copy] PairMethodGeneric[T] {
+    func combine[F: Fn[(T, T), T]](self, _ f: F) -> T {
+        f(self.first, self.second)
+    }
+
+    func map_both[F: Fn[T, T]](self, _ f: F) -> PairMethodGeneric[T] {
+        PairMethodGeneric[T] { first: f(self.first), second: f(self.second) }
+    }
+}
+
+func applyGenericMethod[T, F: Fn[T, T]](_ f: F, _ x: T) -> T {
+    f(x)
+}
+
+func composeGenericMethod[T, F: Fn[T, T], G: Fn[T, T]](_ f: F, _ g: G, _ x: T) -> T {
+    let intermediate = f(x)
+    g(intermediate)
+}
+
+func consumeListMove(_ list: List[int32]) {
+}
+
+func testClosureBasic() {
+    let add = |a: int32, b: int32| -> int32 { a + b }
+    let result = add(2, 3)
+    std.assert(result == 5, "add(2, 3) should be 5")
+
+    let square = |x: int32| -> int32 { x * x }
+    std.assert(square(4) == 16, "square(4) should be 16")
+
+    let get_five = || -> int32 { 5 }
+    std.assert(get_five() == 5, "get_five() should be 5")
+
+    let x: int32 = 10
+    let add_x = |y: int32| -> int32 { x + y }
+    std.assert(add_x(5) == 15, "add_x(5) should be 15")
+
+    let a: int32 = 3
+    let b: int32 = 4
+    let sum_ab = || -> int32 { a + b }
+    std.assert(sum_ab() == 7, "sum_ab() should be 7")
+}
+
+func testClosureByRef() {
+    var list = List[int32]()
+    list.append(1)
+    list.append(2)
+
+    let get_len = || -> int32 { list.len() as int32 }
+    std.assert(get_len() == 2, "list length should be 2")
+}
+
+func testClosureDeep() {
+    let a: int32 = 1
+    let deep = || -> int32 {
+        let b: int32 = 2
+        let mid = || -> int32 {
+            let c: int32 = 3
+            let inner = || -> int32 { a + b + c }
+            inner()
+        }
+        mid()
+    }
+    std.assert(deep() == 6, "deeply nested should compute 1+2+3 = 6")
+}
+
+func testClosureExplicitParams() {
+    let result1 = applyIntExplicit(|x: int32| -> int32 { x * 2 }, 5)
+    std.assert(result1 == 10, "apply_int should work")
+
+    let result2 = mapValueExplicit(10, |x: int32| -> int32 { x + 5 })
+    std.assert(result2 == 15, "map_value should work")
+
+    let box = IntBoxExplicit { value: 20 }
+    let result3 = box.map(|x: int32| -> int32 { x / 2 })
+    std.assert(result3 == 10, "IntBox.map should work")
+
+    let outer = |a: int32| -> int32 {
+        let inner = |b: int32| -> int32 { b * 2 }
+        inner(a) + 1
+    }
+    let result4 = outer(5)
+    std.assert(result4 == 11, "nested closure should work")
+
+    let base: int32 = 100
+    let add_base = |x: int32| -> int32 { x + base }
+    let result5 = applyIntExplicit(add_base, 50)
+    std.assert(result5 == 150, "capturing closure inference")
+
+    let double = |x: int32| -> int32 { x * 2 }
+    let triple = |x: int32| -> int32 { x * 3 }
+    let r6a = applyIntExplicit(double, 5)
+    let r6b = applyIntExplicit(triple, 5)
+    std.assert(r6a == 10, "double should work")
+    std.assert(r6b == 15, "triple should work")
+}
+
+func testClosureFnPtr() {
+    let double: (int32) -> int32 = |x: int32| -> int32 { x * 2 }
+
+    let result = applyFnPtr(double, 5)
+    std.assert(result == 10, "double(5) should be 10")
+
+    let result2 = applyFnPtr(|x: int32| -> int32 { x + 100 }, 7)
+    std.assert(result2 == 107, "closure(7) should be 107")
+
+    let get_42: () -> int32 = || -> int32 { 42 }
+    std.assert(get_42() == 42, "get_42() should be 42")
+}
+
+func testClosureFnSimple() {
+    let result = applyFnSimple(|x: int32| -> int32 { x * 2 }, 5)
+    std.assert(result == 10, "should be 10")
+}
+
+func testClosureFnMut() {
+    var counter: int32 = 0
+    var inc = || { counter = counter + 1 }
+    inc()
+    inc()
+    std.assert(counter == 2, "counter should be 2")
+}
+
+func testClosureHierarchy() {
+    let multiplier: int32 = 2
+
+    let r1 = applyFnHierarchy(|x: int32| -> int32 { x * multiplier }, 5)
+    std.assert(r1 == 10, "apply_fn should work with Fn closure")
+
+    let r2 = applyMutHierarchy(|x: int32| -> int32 { x * multiplier }, 5)
+    std.assert(r2 == 10, "apply_mut should accept Fn closure via hierarchy")
+
+    let r3 = applyOnceHierarchy(|x: int32| -> int32 { x * multiplier }, 5)
+    std.assert(r3 == 10, "apply_once should accept Fn closure via hierarchy")
+
+    let r4 = applyOnceHierarchy(|x: int32| -> int32 { x + 1 }, 5)
+    std.assert(r4 == 6, "non-capturing Fn closure in apply_once")
+
+    let r5 = applyMutHierarchy(|x: int32| -> int32 { x * 3 }, 4)
+    std.assert(r5 == 12, "non-capturing Fn closure in apply_mut")
+}
+
+func testClosureHigherOrder() {
+    let doubled = applyHigher(|x: int32| -> int32 { x * 2 }, 5)
+    std.assert(doubled == 10, "apply double(5) should be 10")
+
+    let multiplier: int32 = 3
+    let tripled = applyHigher(|x: int32| -> int32 { x * multiplier }, 4)
+    std.assert(tripled == 12, "apply triple(4) should be 12")
+
+    let sum = apply2Higher(|a: int32, b: int32| -> int32 { a + b }, 10, 20)
+    std.assert(sum == 30, "apply2 sum(10, 20) should be 30")
+
+    let result = mapValHigher(5, |x: int32| -> int32 { x + 10 })
+    let result2 = mapValHigher(result, |x: int32| -> int32 { x * 2 })
+    std.assert(result2 == 30, "chained map should be 30")
+}
+
+func testClosureInferred() {
+    let doubled = applyInferred(|x| { x * 2 }, 5)
+    std.assert(doubled == 10, "apply with inferred param should work")
+
+    let multiplier: int32 = 3
+    let tripled = applyInferred(|x| { x * multiplier }, 4)
+    std.assert(tripled == 12, "capturing closure with inferred param")
+
+    let sum = apply2Inferred(|a, b| { a + b }, 10, 20)
+    std.assert(sum == 30, "two-arg closure with inferred params")
+
+    let container = ContainerInferred { value: 10 }
+    let result = container.map(|x| { x + 5 })
+    std.assert(result == 15, "method with inferred closure param")
+
+    let chained = container.transform(|x| { x * 2 }, |x| { x + 1 })
+    std.assert(chained == 21, "chained closures with inferred params")
+
+    let mixed = applyInferred(|x| -> int32 { x * 10 }, 5)
+    std.assert(mixed == 50, "explicit return type, inferred param")
+
+    let outer_val: int32 = 100
+    let nested = applyInferred(|x| {
+        let inner = applyInferred(|y| { y + outer_val }, x)
+        inner * 2
+    }, 5)
+    std.assert(nested == 210, "nested closures with inferred params")
+}
+
+func testClosureMethod() {
+    let container = ContainerMethod { value: 10 }
+
+    let doubled = container.map(|x: int32| -> int32 { x * 2 })
+    std.assert(doubled == 20, "map double should be 20")
+
+    let multiplier: int32 = 3
+    let tripled = container.map(|x: int32| -> int32 { x * multiplier })
+    std.assert(tripled == 30, "map triple should be 30")
+
+    let offset: int32 = 5
+    let result_once = container.map_once(|x: int32| -> int32 { x + offset })
+    std.assert(result_once == 15, "map_once should be 15")
+
+    let chained = container.transform(
+        |x: int32| -> int32 { x + 5 },
+        |x: int32| -> int32 { x * 2 },
+    )
+    std.assert(chained == 30, "transform (10+5)*2 should be 30")
+
+    let pair = PairMethod { a: 10, b: 20 }
+    let sum = pair.combine(|a: int32, b: int32| -> int32 { a + b })
+    std.assert(sum == 30, "combine sum should be 30")
+}
+
+func testClosureMethodGeneric() {
+    let int_container = ContainerMethodGeneric[int32] { value: 10 }
+
+    let doubled = int_container.map(|x: int32| -> int32 { x * 2 })
+    std.assert(doubled == 20, "int map should work")
+
+    let container2 = ContainerMethodGeneric[int32] { value: 10 }
+    let incremented = container2.map_once(|x: int32| -> int32 { x + 1 })
+    std.assert(incremented == 11, "map_once should work")
+
+    let container3 = ContainerMethodGeneric[int32] { value: 10 }
+    let multiplier: int32 = 5
+    let result = container3.map(|x: int32| -> int32 { x * multiplier })
+    std.assert(result == 50, "capturing closure with generic method")
+
+    let int_pair = PairMethodGeneric[int32] { first: 3, second: 7 }
+
+    let sum = int_pair.combine(|a: int32, b: int32| -> int32 { a + b })
+    std.assert(sum == 10, "pair combine should work")
+
+    let pair2 = PairMethodGeneric[int32] { first: 3, second: 7 }
+    let product = pair2.combine(|a: int32, b: int32| -> int32 { a * b })
+    std.assert(product == 21, "pair combine product")
+
+    let pair3 = PairMethodGeneric[int32] { first: 3, second: 7 }
+    let doubled_pair = pair3.map_both(|x: int32| -> int32 { x * 2 })
+    std.assert(doubled_pair.first == 6, "map_both first")
+    std.assert(doubled_pair.second == 14, "map_both second")
+
+    let applied = applyGenericMethod(|x: int32| -> int32 { x + 100 }, 5)
+    std.assert(applied == 105, "apply_generic should work")
+
+    let composed = composeGenericMethod(
+        |x: int32| -> int32 { x * 2 },
+        |x: int32| -> int32 { x + 1 },
+        5,
+    )
+    std.assert(composed == 11, "compose (5*2)+1 = 11")
+}
+
+func testClosureMove() {
+    var list = List[int32]()
+    list.append(1)
+
+    let consume = || { consumeListMove(list) }
+    consume()
+}
+
+func testClosureNested() {
+    let x: int32 = 10
+
+    let outer = || -> int32 {
+        let inner = || -> int32 { x }
+        inner()
+    }
+    std.assert(outer() == 10, "simple nested should return 10")
+
+    let y: int32 = 20
+    let outer2 = || -> int32 {
+        let inner = || -> int32 { x + y }
+        inner() + 5
+    }
+    std.assert(outer2() == 35, "nested with computation should return 35")
+
+    let result = (|| -> int32 {
+        (|| -> int32 { x * 2 })()
+    })()
+    std.assert(result == 20, "immediate call nested should return 20")
+}
+
+func main() {
+    testClosureBasic()
+    testClosureByRef()
+    testClosureDeep()
+    testClosureExplicitParams()
+    testClosureFnPtr()
+    testClosureFnSimple()
+    testClosureFnMut()
+    testClosureHierarchy()
+    testClosureHigherOrder()
+    testClosureInferred()
+    testClosureMethod()
+    testClosureMethodGeneric()
+    testClosureMove()
+    testClosureNested()
+
+    std.print("PASS: closures\n")
+}

@@ -1,0 +1,4 @@
+error: unknown symbol `a`
+ -> language_tests/source_files/invalid/default_params.tr:2:30
+	func bad(a: int32, b: int32 = a) -> int32 {
+	                              ^

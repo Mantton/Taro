@@ -1123,7 +1123,7 @@ impl Actor<'_, '_> {
         // 1. Lower the iterator expression
         let collection = self.lower_expression(node.iterator);
 
-        // 2. Create local binding: var __for_iter = Iterable.makeIterator(collection)
+        // 2. Create local binding: var __for_iter = collection.makeIterator()
         let iter_ident = Identifier::new(self.context.intern_symbol("__for_iter"), span);
         let iter_pattern_id = self.next_index();
         let iter_pattern = hir::Pattern {
@@ -1135,67 +1135,75 @@ impl Actor<'_, '_> {
             },
         };
 
-        // Create Iterable.makeIterator(collection) call as UFCS call
-        let iterable_id = self
-            .context
-            .find_std_type("Iterable")
-            .expect("std.Iterable not found");
-        let iterable_path = hir::ResolvedPath::Resolved(hir::Path {
-            span,
-            resolution: Resolution::Definition(iterable_id, DefinitionKind::Interface),
-            segments: vec![hir::PathSegment {
-                id: self.next_index(),
-                identifier: Identifier::new(self.context.intern_symbol("Iterable"), span),
-                arguments: None,
-                span,
-                resolution: Resolution::Definition(iterable_id, DefinitionKind::Interface),
-            }],
-        });
+        let make_iterator_call = {
+            let ufcs_call = (|| {
+                let iterable_id = self.context.find_std_type("Iterable")?;
+                let iterable_reqs = self.context.get_interface_requirements(iterable_id)?;
+                let make_iter_def = iterable_reqs
+                    .methods
+                    .iter()
+                    .find(|m| self.context.symbol_eq(m.name.clone(), "makeIterator"))?;
 
-        let iterable_ty = hir::Type {
-            id: self.next_index(),
-            span,
-            kind: hir::TypeKind::Nominal(iterable_path),
-        };
-
-        // Resolve 'makeIterator' within Iterable
-        let iterable_reqs = self
-            .context
-            .get_interface_requirements(iterable_id)
-            .expect("Iterable interface requirements not found");
-        let make_iter_def = iterable_reqs
-            .methods
-            .iter()
-            .find(|m| self.context.symbol_eq(m.name.clone(), "makeIterator"))
-            .expect("makeIterator method not found in Iterable");
-
-        let make_iter_id = make_iter_def.id;
-        let make_iter_kind = self.context.definition_kind(make_iter_id);
-
-        let make_iter_segment = hir::PathSegment {
-            id: self.next_index(),
-            identifier: Identifier::new(self.context.intern_symbol("makeIterator"), span),
-            arguments: None,
-            span,
-            resolution: Resolution::Definition(make_iter_id, make_iter_kind),
-        };
-
-        let make_iter_fn_path =
-            hir::ResolvedPath::Relative(Box::new(iterable_ty), make_iter_segment);
-        let make_iter_fn_expr =
-            self.mk_expression(hir::ExpressionKind::Path(make_iter_fn_path), span);
-
-        let make_iterator_call = self.mk_expression(
-            hir::ExpressionKind::Call {
-                callee: make_iter_fn_expr,
-                arguments: vec![hir::ExpressionArgument {
-                    label: None,
-                    expression: collection,
+                let iterable_path = hir::ResolvedPath::Resolved(hir::Path {
                     span,
-                }],
-            },
-            span,
-        );
+                    resolution: Resolution::Definition(iterable_id, DefinitionKind::Interface),
+                    segments: vec![hir::PathSegment {
+                        id: self.next_index(),
+                        identifier: Identifier::new(self.context.intern_symbol("Iterable"), span),
+                        arguments: None,
+                        span,
+                        resolution: Resolution::Definition(iterable_id, DefinitionKind::Interface),
+                    }],
+                });
+
+                let iterable_ty = hir::Type {
+                    id: self.next_index(),
+                    span,
+                    kind: hir::TypeKind::Nominal(iterable_path),
+                };
+
+                let make_iter_segment = hir::PathSegment {
+                    id: self.next_index(),
+                    identifier: Identifier::new(self.context.intern_symbol("makeIterator"), span),
+                    arguments: None,
+                    span,
+                    resolution: Resolution::Definition(
+                        make_iter_def.id,
+                        self.context.definition_kind(make_iter_def.id),
+                    ),
+                };
+
+                let make_iter_fn_path =
+                    hir::ResolvedPath::Relative(Box::new(iterable_ty), make_iter_segment);
+                let make_iter_fn_expr =
+                    self.mk_expression(hir::ExpressionKind::Path(make_iter_fn_path), span);
+
+                Some(self.mk_expression(
+                    hir::ExpressionKind::Call {
+                        callee: make_iter_fn_expr,
+                        arguments: vec![hir::ExpressionArgument {
+                            label: None,
+                            expression: collection.clone(),
+                            span,
+                        }],
+                    },
+                    span,
+                ))
+            })();
+
+            if let Some(call) = ufcs_call {
+                call
+            } else {
+                self.mk_expression(
+                    hir::ExpressionKind::MethodCall {
+                        receiver: collection,
+                        name: Identifier::new(self.context.intern_symbol("makeIterator"), span),
+                        arguments: vec![],
+                    },
+                    span,
+                )
+            }
+        };
 
         let iter_local = hir::Local {
             id: self.next_index(),
@@ -1205,77 +1213,86 @@ impl Actor<'_, '_> {
             initializer: Some(make_iterator_call),
         };
 
-        // 3. Create Iterator.next(&mut __for_iter) call
+        // 3. Create __for_iter.next() call
         let iter_ref_path = self.mk_single_segment_resolved_path(
             iter_ident,
             Resolution::LocalVariable(iter_pattern_id),
         );
         let iter_ref_expr = self.mk_expression(hir::ExpressionKind::Path(iter_ref_path), span);
-        let iter_mut_borrow = self.mk_expression(
-            hir::ExpressionKind::Reference(iter_ref_expr, hir::Mutability::Mutable),
-            span,
-        );
 
-        // Resolve Iterator.next path
-        let iterator_id = self
-            .context
-            .find_std_type("Iterator")
-            .expect("std.Iterator not found");
-        let iterator_path = hir::ResolvedPath::Resolved(hir::Path {
-            span,
-            resolution: Resolution::Definition(iterator_id, DefinitionKind::Interface),
-            segments: vec![hir::PathSegment {
-                id: self.next_index(),
-                identifier: Identifier::new(self.context.intern_symbol("Iterator"), span),
-                arguments: None,
-                span,
-                resolution: Resolution::Definition(iterator_id, DefinitionKind::Interface),
-            }],
-        });
+        let next_call = {
+            let ufcs_call = (|| {
+                let iterator_id = self.context.find_std_type("Iterator")?;
+                let iterator_reqs = self.context.get_interface_requirements(iterator_id)?;
+                let next_def = iterator_reqs
+                    .methods
+                    .iter()
+                    .find(|m| self.context.symbol_eq(m.name.clone(), "next"))?;
 
-        let iterator_ty = hir::Type {
-            id: self.next_index(),
-            span,
-            kind: hir::TypeKind::Nominal(iterator_path),
-        };
-
-        let iterator_reqs = self
-            .context
-            .get_interface_requirements(iterator_id)
-            .expect("Iterator interface requirements not found");
-        let next_def = iterator_reqs
-            .methods
-            .iter()
-            .find(|m| self.context.symbol_eq(m.name.clone(), "next"))
-            .expect("next method not found in Iterator");
-
-        let next_id = next_def.id;
-        let next_kind = self.context.definition_kind(next_id);
-
-        let next_segment = hir::PathSegment {
-            id: self.next_index(),
-            identifier: Identifier::new(self.context.intern_symbol("next"), span),
-            arguments: None,
-            span,
-            resolution: Resolution::Definition(next_id, next_kind),
-        };
-
-        let next_fn_path = hir::ResolvedPath::Relative(Box::new(iterator_ty), next_segment);
-        let next_fn_expr = self.mk_expression(hir::ExpressionKind::Path(next_fn_path), span);
-
-        let next_call = self.mk_expression(
-            hir::ExpressionKind::Call {
-                callee: next_fn_expr,
-                arguments: vec![hir::ExpressionArgument {
-                    label: None,
-                    expression: iter_mut_borrow,
+                let iterator_path = hir::ResolvedPath::Resolved(hir::Path {
                     span,
-                }],
-            },
-            span,
-        );
+                    resolution: Resolution::Definition(iterator_id, DefinitionKind::Interface),
+                    segments: vec![hir::PathSegment {
+                        id: self.next_index(),
+                        identifier: Identifier::new(self.context.intern_symbol("Iterator"), span),
+                        arguments: None,
+                        span,
+                        resolution: Resolution::Definition(iterator_id, DefinitionKind::Interface),
+                    }],
+                });
 
-        // var element = Iterator.next(&mut __for_iter);
+                let iterator_ty = hir::Type {
+                    id: self.next_index(),
+                    span,
+                    kind: hir::TypeKind::Nominal(iterator_path),
+                };
+
+                let next_segment = hir::PathSegment {
+                    id: self.next_index(),
+                    identifier: Identifier::new(self.context.intern_symbol("next"), span),
+                    arguments: None,
+                    span,
+                    resolution: Resolution::Definition(
+                        next_def.id,
+                        self.context.definition_kind(next_def.id),
+                    ),
+                };
+
+                let next_fn_path = hir::ResolvedPath::Relative(Box::new(iterator_ty), next_segment);
+                let next_fn_expr = self.mk_expression(hir::ExpressionKind::Path(next_fn_path), span);
+                let iter_mut_borrow = self.mk_expression(
+                    hir::ExpressionKind::Reference(iter_ref_expr.clone(), hir::Mutability::Mutable),
+                    span,
+                );
+
+                Some(self.mk_expression(
+                    hir::ExpressionKind::Call {
+                        callee: next_fn_expr,
+                        arguments: vec![hir::ExpressionArgument {
+                            label: None,
+                            expression: iter_mut_borrow,
+                            span,
+                        }],
+                    },
+                    span,
+                ))
+            })();
+
+            if let Some(call) = ufcs_call {
+                call
+            } else {
+                self.mk_expression(
+                    hir::ExpressionKind::MethodCall {
+                        receiver: iter_ref_expr,
+                        name: Identifier::new(self.context.intern_symbol("next"), span),
+                        arguments: vec![],
+                    },
+                    span,
+                )
+            }
+        };
+
+        // var element = __for_iter.next();
         let element_ident = Identifier::new(self.context.intern_symbol("element"), span);
         let element_pattern_id = self.next_index();
         let element_pattern = hir::Pattern {
@@ -1298,13 +1315,20 @@ impl Actor<'_, '_> {
         // 5. Lower the user's pattern from the for loop
         let user_pattern = self.lower_pattern(node.pattern);
 
-        // 6. Create Optional.some(user_pattern) - FULLY QUALIFIED
-        let some_path = self.mk_optional_variant_path("some", span);
+        // 6. Create Optional.some(user_pattern); use inferred path when std metadata is unavailable.
+        let some_path = self.try_optional_variant_path("some", span);
         let some_pattern = hir::Pattern {
             id: self.next_index(),
             span,
             kind: hir::PatternKind::PathTuple {
-                path: hir::PatternPath::Qualified { path: some_path },
+                path: if let Some(path) = some_path {
+                    hir::PatternPath::Qualified { path }
+                } else {
+                    hir::PatternPath::Inferred {
+                        name: Identifier::new(self.context.intern_symbol("some"), span),
+                        span,
+                    }
+                },
                 fields: vec![user_pattern],
                 field_span: span,
             },
@@ -1354,12 +1378,19 @@ impl Actor<'_, '_> {
             span,
         };
 
-        // 8. Create Optional.none pattern - FULLY QUALIFIED
-        let none_path = self.mk_optional_variant_path("none", span);
+        // 8. Create Optional.none pattern; use inferred path when std metadata is unavailable.
+        let none_path = self.try_optional_variant_path("none", span);
         let none_pattern = hir::Pattern {
             id: self.next_index(),
             span,
-            kind: hir::PatternKind::Member(hir::PatternPath::Qualified { path: none_path }),
+            kind: hir::PatternKind::Member(if let Some(path) = none_path {
+                hir::PatternPath::Qualified { path }
+            } else {
+                hir::PatternPath::Inferred {
+                    name: Identifier::new(self.context.intern_symbol("none"), span),
+                    span,
+                }
+            }),
         };
 
         // Arm 2: case Optional.none => break
@@ -2297,32 +2328,28 @@ impl Actor<'_, '_> {
         }
     }
 
-    /// Creates a fully resolved path for an Optional variant (e.g., `Optional.some` or `Optional.none`).
-    /// Looks up the Optional enum and its variants from the global context to get actual DefinitionIDs.
-    fn mk_optional_variant_path(&mut self, variant_name: &str, span: Span) -> hir::ResolvedPath {
+    /// Attempts to build a fully resolved path for an Optional variant (e.g., `Optional.some`).
+    fn try_optional_variant_path(
+        &mut self,
+        variant_name: &str,
+        span: Span,
+    ) -> Option<hir::ResolvedPath> {
         use crate::sema::resolve::models::{DefinitionKind, VariantCtorKind};
 
         let optional_ident = Identifier::new(self.context.intern_symbol("Optional"), span);
         let variant_ident = Identifier::new(self.context.intern_symbol(variant_name), span);
 
         // Look up the Optional enum from std library
-        let optional_def_id = self
-            .context
-            .find_std_type("Optional")
-            .expect("Optional type must be available from std library");
+        let optional_def_id = self.context.find_std_type("Optional")?;
 
         // Get the enum definition to find the variant
-        let enum_def = self
-            .context
-            .try_get_enum_definition(optional_def_id)
-            .expect("Optional must be an enum");
+        let enum_def = self.context.try_get_enum_definition(optional_def_id)?;
 
         // Find the variant by name
         let variant = enum_def
             .variants
             .iter()
-            .find(|v| self.context.symbol_eq(v.name.clone(), variant_name))
-            .expect("Optional must have this variant");
+            .find(|v| self.context.symbol_eq(v.name.clone(), variant_name))?;
 
         // Determine the constructor kind based on variant fields
         let ctor_kind = match variant.kind {
@@ -2351,7 +2378,7 @@ impl Actor<'_, '_> {
             ),
         };
 
-        hir::ResolvedPath::Resolved(hir::Path {
+        Some(hir::ResolvedPath::Resolved(hir::Path {
             span,
             // The path resolution is the final segment's resolution (the variant constructor)
             resolution: hir::Resolution::Definition(
@@ -2359,7 +2386,14 @@ impl Actor<'_, '_> {
                 DefinitionKind::VariantConstructor(ctor_kind),
             ),
             segments: vec![base_segment, variant_segment],
-        })
+        }))
+    }
+
+    /// Creates a fully resolved path for an Optional variant (e.g., `Optional.some` or `Optional.none`).
+    /// Looks up the Optional enum and its variants from the global context to get actual DefinitionIDs.
+    fn mk_optional_variant_path(&mut self, variant_name: &str, span: Span) -> hir::ResolvedPath {
+        self.try_optional_variant_path(variant_name, span)
+            .expect("Optional variant must be available from std library")
     }
 
     fn lower_optional_evaluation(

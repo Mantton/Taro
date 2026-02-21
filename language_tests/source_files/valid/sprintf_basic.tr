@@ -1,6 +1,0 @@
-func main() {
-    let text = sprintf("x=%d y=%s z=%v pct=100%%", 7, "ok", true)
-    assert(text == "x=7 y=ok z=true pct=100%", "sprintf should return rendered string")
-
-    print("PASS: sprintf basic\n")
-}

@@ -1,0 +1,49 @@
+const N: usize = 2 + 2
+const FILL: uint8 = 7
+
+struct Buf[const Size: usize = 8] {
+    data: [uint8; Size]
+}
+
+func arrayLen[T, const Size: usize](_ arr: &[T; Size]) -> usize {
+    Size
+}
+
+func checkConstGenericDefaults() {
+    let b1: Buf = Buf { data: [1, 2, 3, 4, 5, 6, 7, 8] }
+    assert(*b1.data.at(0) == 1, "Buf default N=8 should work")
+    assert(*b1.data.at(7) == 8, "Buf should have 8 elements by default")
+
+    let b2: Buf[4] = Buf { data: [10, 20, 30, 40] }
+    assert(*b2.data.at(0) == 10, "Buf explicit N=4 should work")
+    assert(*b2.data.at(3) == 40, "Buf explicit size should be respected")
+}
+
+func checkConstGenericArrayLenInference() {
+    let a: [bool; 10] = [true; 10]
+    let b = a.len()
+    let c = arrayLen(&a)
+    assert(b == c, "length should match const-generic inference")
+    assert(c == 10, "correct length extracted")
+}
+
+func checkNamedArrayLenConsts() {
+    let arr: [uint8; N] = [FILL; N]
+    assert(arr.len() == N, "array length should use named const")
+    assert(*arr.at(0) == FILL, "repeat count should use named const")
+    assert(*arr.at(3) == FILL, "repeat count should fill full array")
+
+    let x: [uint8; N + 1] = [1; N + 1]
+    assert(x.len() == 5, "binary const expressions should be accepted")
+    assert(*x.at(4) == 1, "binary const expressions should evaluate")
+}
+
+func main() {
+    checkConstGenericDefaults()
+    std.print("PASS: const-generic defaults\n")
+
+    checkConstGenericArrayLenInference()
+    std.print("PASS: Const generic array len\n")
+
+    checkNamedArrayLenConsts()
+}

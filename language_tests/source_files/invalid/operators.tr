@@ -1,0 +1,16 @@
+func invalidBitAndFloat() {
+    // ERROR: bitand does not accept float operands.
+    let _ = 1.0 & 2.0
+}
+
+func invalidBitwiseFloatMatrix() {
+    // ERROR: bitwise operators do not accept float operands.
+    let _ = 1.0 | 2.0
+    let _ = 1.0 ^ 2.0
+    let _ = 1.0 << 1
+}
+
+func main() {
+    invalidBitAndFloat()
+    invalidBitwiseFloatMatrix()
+}

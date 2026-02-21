@@ -1,0 +1,251 @@
+import std.collections.List
+import std.hash.Hashable
+
+struct Point: Copy {
+    x: int32
+    y: int32
+}
+
+struct Line: Copy {
+    start: Point
+    end: Point
+}
+
+enum Status: Copy {
+    case Active
+    case Inactive
+}
+
+enum MyResult: Copy {
+    case Ok(int32)
+    case Error(int32)
+}
+
+struct RefPayload {
+    value: int32
+}
+
+struct NoCopy {
+    value: int32
+}
+
+func testPrimitiveCopy() {
+    let x = 42
+    let y = x
+    let z = x
+    assert(x == 42, "Primitive copy - original")
+    assert(y == 42, "Primitive copy - first copy")
+    assert(z == 42, "Primitive copy - second copy")
+}
+
+func testStructCopy() {
+    let p1 = Point { x: 10, y: 20 }
+    let p2 = p1
+    let p3 = p1
+
+    assert(p1.x == 10, "Struct copy - original.x")
+    assert(p1.y == 20, "Struct copy - original.y")
+    assert(p2.x == 10, "Struct copy - first copy.x")
+    assert(p3.y == 20, "Struct copy - second copy.y")
+}
+
+func testNestedCopy() {
+    let line = Line {
+        start: Point { x: 0, y: 0 },
+        end: Point { x: 100, y: 100 },
+    }
+
+    let line2 = line
+    let line3 = line
+
+    assert(line.start.x == 0, "Nested copy - original")
+    assert(line2.end.x == 100, "Nested copy - first copy")
+    assert(line3.end.y == 100, "Nested copy - second copy")
+}
+
+func testTupleCopy() {
+    let t = (1, 2, 3)
+    let t2 = t
+    let t3 = t
+
+    assert(t.0 == 1, "Tuple copy - original")
+    assert(t2.1 == 2, "Tuple copy - first copy")
+    assert(t3.2 == 3, "Tuple copy - second copy")
+}
+
+func testSimpleEnumCopy() {
+    let s1 = Status.Active
+    let s2 = s1
+    let s3 = s1
+
+    match s1 {
+        case .Active => assert(true, "s1 is Active")
+        case .Inactive => assert(false, "s1 should be Active")
+    }
+    match s2 {
+        case .Active => assert(true, "s2 is Active")
+        case .Inactive => assert(false, "s2 should be Active")
+    }
+    match s3 {
+        case .Active => assert(true, "s3 is Active")
+        case .Inactive => assert(false, "s3 should be Active")
+    }
+}
+
+func testEnumWithDataCopy() {
+    let r1 = MyResult.Ok(42)
+    let r2 = r1
+    let r3 = r1
+
+    match r1 {
+        case .Ok(v) => assert(v == 42, "r1 Ok value")
+        case .Error(_) => assert(false, "r1 should be Ok")
+    }
+    match r2 {
+        case .Ok(v) => assert(v == 42, "r2 Ok value")
+        case .Error(_) => assert(false, "r2 should be Ok")
+    }
+    match r3 {
+        case .Ok(v) => assert(v == 42, "r3 Ok value")
+        case .Error(_) => assert(false, "r3 should be Ok")
+    }
+}
+
+func testRefCopy() {
+    let x = RefPayload { value: 42 }
+    let r1 = &x
+    let r2 = r1
+    let r3 = r1
+
+    assert(r1.value == 42, "r1 reference")
+    assert(r2.value == 42, "r2 reference")
+    assert(r3.value == 42, "r3 reference")
+}
+
+func testMutRefWrite() {
+    var x = RefPayload { value: 42 }
+    let r = &mut x
+    r.value = 100
+    assert(x.value == 100, "Mutated through reference")
+}
+
+func testReinitializeAfterMove() {
+    var x = NoCopy { value: 42 }
+    let y = x
+
+    x = NoCopy { value: 100 }
+
+    assert(x.value == 100, "Reinitialized value should be 100")
+    assert(y.value == 42, "Moved value should be 42")
+}
+
+func testMoveInIfElse() {
+    var x = NoCopy { value: 1 }
+    let condition = true
+
+    if condition {
+        x = NoCopy { value: 2 }
+    } else {
+        x = NoCopy { value: 3 }
+    }
+
+    assert(x.value == 2, "Value after conditional assignment")
+}
+
+func probeWithOperator[Key: Hashable](_ keys: &mut List[Key?], _ key: Key) -> bool {
+    var idx: usize = 0
+    while idx < (1 as usize) {
+        let keySlot: &mut Key? = keys.at(idx)
+        match keySlot {
+            case .some(existingKey) => {
+                if key == *existingKey {
+                    return true
+                }
+            }
+            case .none => {}
+        }
+        idx += 1
+    }
+    return false
+}
+
+func probeWithEqMethod[Key: Hashable](_ keys: &mut List[Key?], _ key: Key) -> bool {
+    var idx: usize = 0
+    while idx < (1 as usize) {
+        let keySlot: &mut Key? = keys.at(idx)
+        match keySlot {
+            case .some(existingKey) => {
+                if key.eq(existingKey) {
+                    return true
+                }
+            }
+            case .none => {}
+        }
+        idx += 1
+    }
+    return false
+}
+
+func testCallDestinationReinitLoop() {
+    var keys: List[int32?] = List()
+    keys.append(.some(10))
+    let a = probeWithOperator(&mut keys, 10)
+    let b = probeWithEqMethod(&mut keys, 10)
+    assert(a, "probeWithOperator")
+    assert(b, "probeWithEqMethod")
+}
+
+func check(_ cond: bool, _ msg: string) {
+    if !cond {
+        std.panic.panic(msg)
+    }
+}
+
+struct Raw {
+    value: int32
+}
+
+struct Wrap {
+    inner: Raw
+}
+
+func makeFromLocal() -> Wrap {
+    let raw = Raw { value: 7 }
+    Wrap { inner: raw }
+}
+
+func makeFromResult() -> Wrap {
+    let res: Result[Raw, int32] = .ok(Raw { value: 9 })
+    match res {
+        case .ok(raw) => Wrap { inner: raw }
+        case .err(_) => Wrap { inner: Raw { value: -1 } }
+    }
+}
+
+func testStructMoveIntoField() {
+    let a = makeFromLocal()
+    check(a.inner.value == 7, "move from local into struct field failed")
+
+    let b = makeFromResult()
+    check(b.inner.value == 9, "move from result binding into struct field failed")
+}
+
+func main() {
+    testPrimitiveCopy()
+    testStructCopy()
+    testNestedCopy()
+    testTupleCopy()
+
+    testSimpleEnumCopy()
+    testEnumWithDataCopy()
+
+    testRefCopy()
+    testMutRefWrite()
+
+    testReinitializeAfterMove()
+    testMoveInIfElse()
+    testCallDestinationReinitLoop()
+    testStructMoveIntoField()
+
+    std.print("PASS: move semantics\n")
+}

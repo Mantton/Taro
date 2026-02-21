@@ -1,0 +1,59 @@
+func checkArrayLiterals() {
+    let empty: [isize; 0] = []
+    let _ = empty
+
+    let numbers: [isize; 3] = [1, 2, 3]
+    assert(*numbers.at(0) == 1 && *numbers.at(1) == 2 && *numbers.at(2) == 3, "array values check")
+
+    let names: [string; 2] = ["Alice", "Bob"]
+    let _ = names
+
+    let zeros: [isize; 10] = [0; 10]
+    assert(*zeros.at(9) == 0, "repeat zero check")
+
+    let trues: [bool; 5] = [true; 5]
+    assert(*trues.at(4), "repeat bool check")
+
+    let greeting: [string; 3] = ["hello"; 3]
+    assert(*greeting.at(1) == "hello", "repeat string check")
+
+    let doubled: [isize; 4] = [2 * 3; 4]
+    assert(*doubled.at(3) == 6, "repeat expr check")
+}
+
+func checkArrayMethodsAccess() {
+    let values: [bool; 10] = [true; 10]
+    let lenA = values.len()
+    let lenB = arrayLen(&values)
+    assert(lenA == lenB, "len check")
+
+    var i: usize = 0
+    while i < values.len() {
+        let element = values.at(i)
+        assert(*element == true, "element value check")
+        i += 1
+    }
+
+    let oor = values.get(20)
+    match oor {
+        case .some(value) => {
+            let _ = value
+            assert(false, "should be out of range")
+        }
+        case .none => {
+            assert(true, "out of range correctly detected")
+        }
+    }
+}
+
+func arrayLen[T, const N: usize](_ arr: &[T; N]) -> usize {
+    N
+}
+
+func main() {
+    checkArrayLiterals()
+    std.print("PASS: Array literals and repeats\n")
+
+    checkArrayMethodsAccess()
+    std.print("PASS: Array methods access\n")
+}

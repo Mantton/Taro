@@ -47,3 +47,69 @@ func testSpansAreCopy() {
     std.testing.assertEqual(*data.at(1), 20, "MutableSpan copy should alias backing storage")
     std.testing.assertEqual(*data.at(2), 30, "MutableSpan original should remain usable after copy")
 }
+
+func first(_ view: std.mem.Span[int32]) -> int32 {
+    *view.at(0)
+}
+
+func writeFirst(_ view: std.mem.MutableSpan[int32], _ value: int32) {
+    var local = view
+    *local.at(0) = value
+}
+
+func sumSpan(_ view: std.mem.Span[int32]) -> int32 {
+    var sum: int32 = 0
+    for value in view {
+        sum = sum + *value
+    }
+    return sum
+}
+
+func doubleMutableSpan(_ view: std.mem.MutableSpan[int32]) {
+    for value in view {
+        *value = *value * 2
+    }
+}
+
+@test
+func testSpanAsBytesAndPassByValue() {
+    var values: [int32; 3] = [10, 20, 30]
+
+    let baseConst = unsafe { (&values as *const [int32; 3]) as *const int32 }
+    let view = std.mem.Span[int32].from(baseConst, 3)
+    let bytes = view.asBytes()
+    std.testing.assertEqual(
+        bytes.len(),
+        (3 as usize) * std.mem.sizeOf[int32](),
+        "Span.asBytes should scale by element size",
+    )
+
+    std.testing.assertEqual(first(view), 10, "Span pass-by-value should read first element")
+    std.testing.assertEqual(*view.at(0), 10, "Span should remain usable after by-value call")
+
+    let baseMut = unsafe { (&mut values as *mut [int32; 3]) as *mut int32 }
+    var mutView = std.mem.MutableSpan[int32].from(baseMut, 3)
+    writeFirst(mutView, 111)
+    std.testing.assertEqual(*mutView.at(0), 111, "MutableSpan should remain usable after by-value call")
+}
+
+@test
+func testSpanAndMutableSpanIteration() {
+    var values: [int32; 4] = [1, 2, 3, 4]
+
+    let baseConst = unsafe { (&values as *const [int32; 4]) as *const int32 }
+    let view = std.mem.Span[int32].from(baseConst, 4)
+    std.testing.assertEqual(sumSpan(view), 10, "Span iteration should sum elements")
+
+    let baseMut = unsafe { (&mut values as *mut [int32; 4]) as *mut int32 }
+    var mutView = std.mem.MutableSpan[int32].from(baseMut, 4)
+
+    let immutable = mutView.asConst()
+    std.testing.assertEqual(sumSpan(immutable), 10, "MutableSpan.asConst iteration should sum elements")
+
+    doubleMutableSpan(mutView)
+    std.testing.assertEqual(*values.at(0), 2, "MutableSpan iteration should update first element")
+    std.testing.assertEqual(*values.at(1), 4, "MutableSpan iteration should update second element")
+    std.testing.assertEqual(*values.at(2), 6, "MutableSpan iteration should update third element")
+    std.testing.assertEqual(*values.at(3), 8, "MutableSpan iteration should update fourth element")
+}

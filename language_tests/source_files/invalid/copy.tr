@@ -1,0 +1,29 @@
+// Test: Copy semantic failures.
+
+// ERROR: generic parameter is not constrained to Copy.
+struct UnboundedContainer[T]: Copy {
+    value: T
+}
+
+struct ExtensionTarget {
+    value: int32
+}
+
+// ERROR: Copy cannot be implemented via extension.
+impl Copy for ExtensionTarget {
+}
+
+struct NonCopyPayload {
+    value: int32
+}
+
+// ERROR: cannot derive Copy when a field is not Copy.
+struct DerivedCopyWrapper: Copy {
+    inner: NonCopyPayload
+}
+
+func main() {
+    let _ = UnboundedContainer[int32] { value: 1 }
+    let _ = ExtensionTarget { value: 2 }
+    let _ = DerivedCopyWrapper { inner: NonCopyPayload { value: 3 } }
+}

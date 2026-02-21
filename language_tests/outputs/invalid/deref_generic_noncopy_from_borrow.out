@@ -1,4 +1,0 @@
-error: cannot move out of borrowed content
- -> language_tests/source_files/invalid/deref_generic_noncopy_from_borrow.tr:6:4
-	    *x
-	    ^^

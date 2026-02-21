@@ -1,0 +1,39 @@
+// Test: Dereference pipe and member mutation through deref.
+
+struct Boxed {
+    value: int32
+}
+
+func use[V](value: V) -> V { expose(value) }
+func expose[T](_ value: T) -> T { value }
+
+func increment[T](_ value: T) -> &T {
+    value |> use(value:_) |> make
+}
+
+func testDerefPipe() {
+    let x = "One\n"
+    let y = make("Two\n")
+    let z = increment("Three\n")
+
+    let _ = y
+    let _ = z
+    assert(x == "One\n", "x value check")
+}
+
+func poke(_ b: &mut Boxed) {
+    var r = b
+    unsafe { (&mut (*r).value as *mut int32).write(7) }
+}
+
+func testBorrowMemberViaDerefMutRef() {
+    var b = Boxed { value: 1 }
+    poke(&mut b)
+    assert(b.value == 7, "mut member write through deref")
+}
+
+func main() {
+    testDerefPipe()
+    testBorrowMemberViaDerefMutRef()
+    std.print("PASS: Deref checks\n")
+}
