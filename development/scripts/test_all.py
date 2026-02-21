@@ -54,7 +54,6 @@ def main() -> int:
     taro_bin = dist_dir / "bin" / "taro"
     std_path = repo_root / "std"
     hello_example = repo_root / "examples" / "hello.tr"
-    std_tests_root = repo_root / "std" / "src" / "tests"
 
     stage_count = 5
     current_stage = "startup"
@@ -110,34 +109,22 @@ def main() -> int:
                 )
                 return 1
 
-            if not std_tests_root.exists():
-                print(
-                    f"SKIPPED: std package tests directory not found at {std_tests_root}"
-                )
+            if not std_path.exists():
+                print(f"SKIPPED: std package directory not found at {std_path}")
             else:
-                test_files = sorted(
-                    path for path in std_tests_root.rglob("*.tr") if path.is_file()
+                env = os.environ.copy()
+                env["TARO_HOME"] = str(dist_dir)
+                run_command(
+                    [
+                        str(taro_bin),
+                        "test",
+                        "std",
+                        "--std-path",
+                        "std",
+                    ],
+                    cwd=repo_root,
+                    env=env,
                 )
-                if not test_files:
-                    print(
-                        f"SKIPPED: no std package test files found under {std_tests_root}"
-                    )
-                else:
-                    env = os.environ.copy()
-                    env["TARO_HOME"] = str(dist_dir)
-                    print(f"Discovered {len(test_files)} std package test file(s)")
-                    for test_file in test_files:
-                        run_command(
-                            [
-                                str(taro_bin),
-                                "test",
-                                str(test_file),
-                                "--std-path",
-                                str(std_path),
-                            ],
-                            cwd=repo_root,
-                            env=env,
-                        )
 
         current_stage = "language tests"
         print_stage(5, stage_count, "Language tests")
