@@ -85,6 +85,7 @@ fn run_single_file(
         target_root.join("objects"),
         &dcx,
         arguments.target.clone(),
+        compile_options.profile,
     )?;
     let icx = CompilerContext::new(dcx, store);
 
@@ -156,7 +157,13 @@ fn run_package(
         ReportedError
     })?;
     let target_root = project_root.join("target").join(profile_dir).join("objects");
-    let store = CompilerStore::new(&arenas, target_root, &dcx, arguments.target.clone())?;
+    let store = CompilerStore::new(
+        &arenas,
+        target_root,
+        &dcx,
+        arguments.target.clone(),
+        compile_options.profile,
+    )?;
     let icx = CompilerContext::new(dcx, store);
 
     let graph = sync_dependencies(arguments.path)?;
@@ -570,6 +577,7 @@ fn run_single_file_test(
         target_root.join("objects"),
         &dcx,
         arguments.target.clone(),
+        compile_options.profile,
     )?;
     let icx = CompilerContext::new(dcx, store);
 
@@ -627,7 +635,13 @@ fn run_package_test(
         ReportedError
     })?;
     let target_root = project_root.join("target").join(profile_dir).join("objects");
-    let store = CompilerStore::new(&arenas, target_root, &dcx, arguments.target.clone())?;
+    let store = CompilerStore::new(
+        &arenas,
+        target_root,
+        &dcx,
+        arguments.target.clone(),
+        compile_options.profile,
+    )?;
     let icx = CompilerContext::new(dcx, store);
 
     let graph = sync_dependencies(arguments.path)?;

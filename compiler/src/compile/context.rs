@@ -1,7 +1,7 @@
 use crate::{
     PackageIndex,
     codegen::target::TargetLayout,
-    compile::config::{Config, StdMode},
+    compile::config::{BuildProfile, Config, StdMode},
     diagnostics::DiagCtx,
     error::CompileResult,
     hir::{self, DefinitionID, StdInterface},
@@ -967,8 +967,9 @@ impl<'arena> CompilerStore<'arena> {
         output_root: PathBuf,
         dcx: &DiagCtx,
         target_override: Option<String>,
+        profile: BuildProfile,
     ) -> CompileResult<CompilerStore<'arena>> {
-        let target_layout = TargetLayout::new(dcx, target_override.as_deref())?;
+        let target_layout = TargetLayout::new(dcx, target_override.as_deref(), profile)?;
         Ok(CompilerStore {
             arenas,
             interners: CompilerInterners::new(arenas),

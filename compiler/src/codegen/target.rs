@@ -3,7 +3,11 @@
 //! This module wraps LLVM's target data and exposes it for use in MIR
 //! layout computation and codegen.
 
-use crate::{diagnostics::DiagCtx, error::CompileResult};
+use crate::{
+    compile::config::BuildProfile,
+    diagnostics::DiagCtx,
+    error::CompileResult,
+};
 use inkwell::OptimizationLevel;
 use inkwell::targets::{
     CodeModel, InitializationConfig, RelocMode, Target, TargetData, TargetMachine, TargetTriple,
@@ -20,7 +24,11 @@ pub struct TargetLayout {
 
 impl TargetLayout {
     /// Initialize for a specific target, or host if None.
-    pub fn new(dcx: &DiagCtx, target_override: Option<&str>) -> CompileResult<Self> {
+    pub fn new(
+        dcx: &DiagCtx,
+        target_override: Option<&str>,
+        profile: BuildProfile,
+    ) -> CompileResult<Self> {
         // Initialize all targets if cross-compiling, otherwise just native
         if target_override.is_some() {
             Target::initialize_all(&InitializationConfig::default());
@@ -59,12 +67,18 @@ impl TargetLayout {
             )
         };
 
+        // Debug builds prioritize compile speed; release builds keep the default LLVM level.
+        let optimization = match profile {
+            BuildProfile::Debug => OptimizationLevel::None,
+            BuildProfile::Release => OptimizationLevel::Default,
+        };
+
         let target_machine = target
             .create_target_machine(
                 &triple,
                 &cpu,
                 &features,
-                OptimizationLevel::Default,
+                optimization,
                 RelocMode::Default,
                 CodeModel::Default,
             )
@@ -90,7 +104,7 @@ impl TargetLayout {
 
     /// Initialize for the host machine.
     pub fn for_host(dcx: &DiagCtx) -> CompileResult<Self> {
-        Self::new(dcx, None)
+        Self::new(dcx, None, BuildProfile::Debug)
     }
 
     /// Get the underlying LLVM TargetData for precise layout queries.

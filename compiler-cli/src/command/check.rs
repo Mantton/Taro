@@ -79,6 +79,7 @@ fn run_single_file(arguments: CommandLineArguments) -> Result<(), ReportedError>
         target_root.join("objects"),
         &dcx,
         arguments.target.clone(),
+        compile_options.profile,
     )?;
     let icx = CompilerContext::new(dcx, store);
 
@@ -147,7 +148,13 @@ fn run_package(arguments: CommandLineArguments) -> Result<(), ReportedError> {
         ReportedError
     })?;
     let target_root = project_root.join("target").join(profile_dir).join("objects");
-    let store = CompilerStore::new(&arenas, target_root, &dcx, arguments.target.clone())?;
+    let store = CompilerStore::new(
+        &arenas,
+        target_root,
+        &dcx,
+        arguments.target.clone(),
+        compile_options.profile,
+    )?;
     let icx = CompilerContext::new(dcx, store);
 
     let graph = sync_dependencies(arguments.path)?;
