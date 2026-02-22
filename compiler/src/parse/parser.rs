@@ -1224,10 +1224,7 @@ impl Parser {
         // Expect "cfg" identifier
         let ident = self.parse_identifier()?;
         if !self.symbol_eq(ident.symbol, "cfg") {
-            return Err(Spanned::new(
-                ParserError::ExpectedCfgIdentifier,
-                ident.span,
-            ));
+            return Err(Spanned::new(ParserError::ExpectedCfgIdentifier, ident.span));
         }
 
         self.expect(Token::LParen)?;
@@ -2571,12 +2568,7 @@ impl Parser {
 
         while matches!(
             self.current_token(),
-            Token::LChevron
-                | Token::RChevron
-                | Token::Geq
-                | Token::Leq
-                | Token::Neq
-                | Token::Eql
+            Token::LChevron | Token::RChevron | Token::Geq | Token::Leq | Token::Neq | Token::Eql
         ) {
             expr = self.build_binary_expr(expr, |p| p.parse_bit_or_expr())?;
         }
@@ -2911,7 +2903,10 @@ impl Parser {
         let expression = if self.eat(Token::Assign) {
             self.parse_expression()?
         } else {
-            self.build_expr(ExpressionKind::Identifier(identifier.clone()), identifier.span)
+            self.build_expr(
+                ExpressionKind::Identifier(identifier.clone()),
+                identifier.span,
+            )
         };
 
         let span = lo.to(self.hi_span());
@@ -3869,7 +3864,9 @@ impl Display for ParserError {
                 write!(f, "expected token {:?}, found {:?}", expected, found)
             }
             ExpectedIdentifier => f.write_str("expected identifier"),
-            ExpectedCfgIdentifier => f.write_str("expected 'cfg' following '#' in configuration expression"),
+            ExpectedCfgIdentifier => {
+                f.write_str("expected 'cfg' following '#' in configuration expression")
+            }
             ExpectedSemiColon => f.write_str("expected ';'"),
             ExpectedDeclaration => f.write_str("expected declaration"),
             ExpectedTopLevelDeclaration => f.write_str("expected top-level declaration"),
@@ -5584,7 +5581,10 @@ mod tests {
                     symbol_text(&symbols, func.abi.as_ref().expect("Expected ABI").clone()),
                     "C"
                 );
-                assert_eq!(symbol_text(&symbols, decl.identifier.symbol.clone()), "malloc");
+                assert_eq!(
+                    symbol_text(&symbols, decl.identifier.symbol.clone()),
+                    "malloc"
+                );
             }
             _ => panic!("Expected function"),
         }

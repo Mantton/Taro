@@ -54,7 +54,6 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
 }
 
 impl<'ctx> Actor<'ctx> {
-
     fn check_function(
         &mut self,
         id: DefinitionID,

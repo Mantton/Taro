@@ -61,6 +61,7 @@ pub fn run_global_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> Compile
         Box::new(inline::Inline::default()),
         Box::new(passes::SimplifyCfg), // Clean up after inlining (merges blocks, removes unreachable)
         Box::new(passes::LowerAggregates),
+        Box::new(coalesce::CallDestinationCoalescing),
         // Note: LowerAggregates only expands statements, doesn't change CFG structure
         // DeadLocalElimination runs after LowerAggregates to also clean up temps it creates
         Box::new(propagate::CopyPropagation),

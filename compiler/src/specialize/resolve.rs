@@ -10,8 +10,8 @@ use crate::{
         tycheck::{
             constraints::canonical_constraints_of,
             resolve_conformance_witness,
-            utils::instantiate::{instantiate_const_with_args, instantiate_ty_with_args},
             utils::instantiate::instantiate_constraint_with_args,
+            utils::instantiate::{instantiate_const_with_args, instantiate_ty_with_args},
             utils::normalize::normalize_ty,
             utils::param_env::ParamEnv,
             utils::type_head_from_value_ty,
@@ -338,9 +338,7 @@ fn const_contains_infer(c: Const<'_>) -> bool {
 fn ty_contains_infer(ty: Ty<'_>) -> bool {
     match ty.kind() {
         TyKind::Infer(InferTy::TyVar(_)) => true,
-        TyKind::Array { element, len } => {
-            ty_contains_infer(element) || const_contains_infer(len)
-        }
+        TyKind::Array { element, len } => ty_contains_infer(element) || const_contains_infer(len),
         TyKind::Adt(_, args) | TyKind::Alias { args, .. } => {
             args.iter().any(generic_arg_contains_infer)
         }
@@ -351,7 +349,10 @@ fn ty_contains_infer(ty: Ty<'_>) -> bool {
         }
         TyKind::BoxedExistential { interfaces } => interfaces.iter().any(|iface| {
             iface.arguments.iter().any(generic_arg_contains_infer)
-                || iface.bindings.iter().any(|binding| ty_contains_infer(binding.ty))
+                || iface
+                    .bindings
+                    .iter()
+                    .any(|binding| ty_contains_infer(binding.ty))
         }),
         TyKind::Closure {
             captured_generics,

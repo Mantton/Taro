@@ -16,9 +16,8 @@ use crate::{
             utils::{
                 const_eval::eval_const_expression,
                 instantiate::{
-                    instantiate_constraint_with_args,
-                    instantiate_const_with_args, instantiate_interface_ref_with_args,
-                    instantiate_ty_with_args,
+                    instantiate_const_with_args, instantiate_constraint_with_args,
+                    instantiate_interface_ref_with_args, instantiate_ty_with_args,
                 },
                 type_head_from_value_ty,
             },
@@ -378,14 +377,12 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                                 let infer_ty = self.ty_infer(Some(param), span);
                                 let mut default_ty = self.lower_type(&d);
                                 if let Some(self_ty) = self_ty {
-                                    default_ty = self
-                                        .substitute_interface_self_default(default_ty, self_ty);
+                                    default_ty =
+                                        self.substitute_interface_self_default(default_ty, self_ty);
                                 }
 
-                                let current_args = gcx
-                                    .store
-                                    .interners
-                                    .intern_generic_args(output.clone());
+                                let current_args =
+                                    gcx.store.interners.intern_generic_args(output.clone());
                                 default_ty =
                                     instantiate_ty_with_args(gcx, default_ty, current_args);
 
@@ -399,8 +396,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                             } else {
                                 let mut ty = self.lower_type(&d);
                                 if let Some(self_ty) = self_ty {
-                                    ty = self
-                                        .substitute_interface_self_default(ty, self_ty);
+                                    ty = self.substitute_interface_self_default(ty, self_ty);
                                 }
                                 output.push(GenericArgument::Type(ty));
                             }
@@ -421,12 +417,13 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                                         self.const_infer(expected_ty, Some(param), span);
                                     let mut default_const =
                                         self.lower_const_argument(expected_ty, default);
-                                    let current_args = gcx
-                                        .store
-                                        .interners
-                                        .intern_generic_args(output.clone());
-                                    default_const =
-                                        instantiate_const_with_args(gcx, default_const, current_args);
+                                    let current_args =
+                                        gcx.store.interners.intern_generic_args(output.clone());
+                                    default_const = instantiate_const_with_args(
+                                        gcx,
+                                        default_const,
+                                        current_args,
+                                    );
                                     self.register_default_fallback(DefaultFallbackGoalData {
                                         infer_var: GenericArgument::Const(infer_const.clone()),
                                         default: GenericArgument::Const(default_const),
@@ -941,7 +938,8 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
     ) -> Ty<'ctx> {
         let gcx = self.gcx();
         let name = segment.identifier.symbol.clone();
-        let constraints = crate::sema::tycheck::constraints::canonical_constraints_of(gcx, base_assoc_id);
+        let constraints =
+            crate::sema::tycheck::constraints::canonical_constraints_of(gcx, base_assoc_id);
 
         let mut candidates: Vec<(DefinitionID, InterfaceReference<'ctx>)> = Vec::new();
         let mut has_bounds = false;

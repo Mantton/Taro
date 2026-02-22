@@ -362,12 +362,18 @@ impl ResolutionError {
             ),
 
             ResolutionError::AlreadyInScope(ident) => Diagnostic::error(
-                format!("`{}` is already in scope", gcx.symbol_text(ident.symbol.clone())),
+                format!(
+                    "`{}` is already in scope",
+                    gcx.symbol_text(ident.symbol.clone())
+                ),
                 Some(ident.span),
             ),
 
             ResolutionError::AmbiguousUsage(ident) => Diagnostic::error(
-                format!("ambiguous usage of `{}`", gcx.symbol_text(ident.symbol.clone())),
+                format!(
+                    "ambiguous usage of `{}`",
+                    gcx.symbol_text(ident.symbol.clone())
+                ),
                 Some(ident.span),
             ),
 

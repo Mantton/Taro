@@ -186,11 +186,11 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return SolverResult::Error(vec![error]);
         };
 
-        let resolution = match self.resolve_static_member_resolution(head, base_ty, name.clone(), span)
-        {
-            Ok(resolution) => resolution,
-            Err(errors) => return SolverResult::Error(errors),
-        };
+        let resolution =
+            match self.resolve_static_member_resolution(head, base_ty, name.clone(), span) {
+                Ok(resolution) => resolution,
+                Err(errors) => return SolverResult::Error(errors),
+            };
 
         self.record_value_resolution(node_id, resolution.clone());
 
@@ -200,8 +200,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 let generics = self.gcx().generics_of(def_id);
                 let mut obligations = Vec::new();
                 let final_ty = if !generics.is_empty() && ty.needs_instantiation() {
-                    let args =
-                        self.instantiate_generic_args_with_defaults(def_id, base_args, span);
+                    let args = self.instantiate_generic_args_with_defaults(def_id, base_args, span);
                     let instantiated = instantiate_ty_with_args(self.gcx(), ty, args);
                     self.record_instantiation(node_id, args);
                     obligations.extend(self.constraints_for_def(def_id, Some(args), span));

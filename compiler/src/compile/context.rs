@@ -1,3 +1,4 @@
+use crate::span::Symbol;
 use crate::{
     PackageIndex,
     codegen::target::TargetLayout,
@@ -22,7 +23,6 @@ use crate::{
     thir::VariantIndex,
     utils::intern::{Interned, InternedInSet, InternedSet},
 };
-use crate::span::Symbol;
 use bumpalo::Bump;
 use ecow::EcoString;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -517,7 +517,10 @@ impl<'arena> GlobalContext<'arena> {
         *outputs.get(&pkg).expect("resolution output")
     }
 
-    pub fn try_resolution_output(self, pkg: PackageIndex) -> Option<&'arena ResolutionOutput<'arena>> {
+    pub fn try_resolution_output(
+        self,
+        pkg: PackageIndex,
+    ) -> Option<&'arena ResolutionOutput<'arena>> {
         let outputs = self.context.store.resolution_outputs.borrow();
         outputs.get(&pkg).copied()
     }
@@ -643,7 +646,9 @@ impl<'arena> GlobalContext<'arena> {
     }
 
     pub fn visible_traits(self, def_id: DefinitionID) -> Rc<FxHashSet<DefinitionID>> {
-        if let Some(cached) = self.with_type_database(def_id.package(), |db| db.visible_traits.get(&def_id).cloned()) {
+        if let Some(cached) = self.with_type_database(def_id.package(), |db| {
+            db.visible_traits.get(&def_id).cloned()
+        }) {
             return cached;
         }
 
@@ -684,8 +689,7 @@ impl<'arena> GlobalContext<'arena> {
             }
 
             let glob_imports = scope.glob_imports.borrow();
-            for _usage in glob_imports.iter() {
-            }
+            for _usage in glob_imports.iter() {}
 
             drop(table);
             drop(glob_imports);

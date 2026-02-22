@@ -14,12 +14,12 @@ use crate::{
             fold::{TypeFoldable, TypeFolder, TypeSuperFoldable},
             infer::InferCtx,
             lower::{DefTyLoweringCtx, TypeLowerer},
-            utils::{
-                ParamEnv, instantiate::instantiate_constraint_with_args,
-                instantiate::instantiate_const_with_args, instantiate::instantiate_ty_with_args,
-                normalize_ty,
-            },
             utils::generics::GenericsBuilder,
+            utils::{
+                ParamEnv, instantiate::instantiate_const_with_args,
+                instantiate::instantiate_constraint_with_args,
+                instantiate::instantiate_ty_with_args, normalize_ty,
+            },
         },
     },
     span::{Span, Spanned},
@@ -41,8 +41,6 @@ mod op;
 mod overload;
 mod tuple;
 mod unify;
-
-
 
 pub struct ConstraintSystem<'ctx> {
     pub infer_cx: Rc<InferCtx<'ctx>>,
@@ -456,10 +454,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             .collect()
     }
 
-    fn associated_bounds_for_projection(
-        &self,
-        ty: Ty<'ctx>,
-    ) -> Vec<InterfaceReference<'ctx>> {
+    fn associated_bounds_for_projection(&self, ty: Ty<'ctx>) -> Vec<InterfaceReference<'ctx>> {
         let TyKind::Alias {
             kind: AliasKind::Projection,
             def_id,
@@ -577,7 +572,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
             .intern_generic_args(current_args.to_vec());
 
         match &param.kind {
-            GenericParameterDefinitionKind::Type { default: Some(default) } => {
+            GenericParameterDefinitionKind::Type {
+                default: Some(default),
+            } => {
                 let infer_var = self.icx.var_for_generic_param(param, span);
                 let mut default_ty = lower_ctx.lowerer().lower_type(default);
                 default_ty = self.substitute_interface_self_default(default_ty, current_args);
@@ -592,10 +589,15 @@ impl<'ctx> ConstraintSolver<'ctx> {
             GenericParameterDefinitionKind::Type { default: None } => {
                 self.icx.var_for_generic_param(param, span)
             }
-            GenericParameterDefinitionKind::Const { ty, default: Some(default) } => {
+            GenericParameterDefinitionKind::Const {
+                ty,
+                default: Some(default),
+            } => {
                 let expected_ty = lower_ctx.lowerer().lower_type(ty);
                 let infer_var = self.icx.var_for_generic_param(param, span);
-                let mut default_const = lower_ctx.lowerer().lower_const_argument(expected_ty, default);
+                let mut default_const = lower_ctx
+                    .lowerer()
+                    .lower_const_argument(expected_ty, default);
                 default_const = instantiate_const_with_args(gcx, default_const, current_args);
                 self.push_default_fallback_goal(
                     infer_var.clone(),

@@ -15,9 +15,7 @@ use crate::{
             solve::{
                 Adjustment, ApplyArgument, ApplyGoalData, BindOverloadGoalData, DisjunctionBranch,
             },
-            utils::{
-                AutoReference, instantiate::instantiate_ty_with_args,
-            },
+            utils::{AutoReference, instantiate::instantiate_ty_with_args},
         },
     },
     span::{Span, Spanned, Symbol},
@@ -474,7 +472,13 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return None;
         }
 
-        Some(self.gcx().store.arenas.global.alloc_slice_clone(&interfaces))
+        Some(
+            self.gcx()
+                .store
+                .arenas
+                .global
+                .alloc_slice_clone(&interfaces),
+        )
     }
 
     fn solve_interface_method_call(

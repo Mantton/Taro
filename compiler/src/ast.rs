@@ -397,17 +397,11 @@ pub enum ExpressionKind {
     /// }`
     Match(MatchExpression),
     /// `return` | `return expr`
-    Return {
-        value: Option<Box<Expression>>,
-    },
+    Return { value: Option<Box<Expression>> },
     /// `break` | `break label`
-    Break {
-        label: Option<Identifier>,
-    },
+    Break { label: Option<Identifier> },
     /// `continue` | `continue label`
-    Continue {
-        label: Option<Identifier>,
-    },
+    Continue { label: Option<Identifier> },
     /// `main()`
     Call(Box<Expression>, Vec<ExpressionArgument>),
     /// &a | &const T

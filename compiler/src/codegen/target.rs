@@ -3,11 +3,7 @@
 //! This module wraps LLVM's target data and exposes it for use in MIR
 //! layout computation and codegen.
 
-use crate::{
-    compile::config::BuildProfile,
-    diagnostics::DiagCtx,
-    error::CompileResult,
-};
+use crate::{compile::config::BuildProfile, diagnostics::DiagCtx, error::CompileResult};
 use inkwell::OptimizationLevel;
 use inkwell::targets::{
     CodeModel, InitializationConfig, RelocMode, Target, TargetData, TargetMachine, TargetTriple,

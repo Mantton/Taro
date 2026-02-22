@@ -22,7 +22,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             .into_block();
         let dest_ty = self.place_ty(&destination);
 
-
         if let Some(expr) = self.thir.blocks[thir_block].expr {
             block = if dest_ty == self.gcx.types.void {
                 self.lower_statement_expression(block, expr).into_block()

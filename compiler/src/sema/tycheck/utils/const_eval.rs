@@ -77,9 +77,7 @@ fn eval_const_unary<'ctx>(
             })
         }
         (hir::UnaryOperator::Negate, ConstValue::Float(f)) => Some(ConstValue::Float(-f)),
-        (hir::UnaryOperator::BitwiseNot, ConstValue::Integer(i)) => {
-            Some(ConstValue::Integer(!i))
-        }
+        (hir::UnaryOperator::BitwiseNot, ConstValue::Integer(i)) => Some(ConstValue::Integer(!i)),
         _ => {
             gcx.dcx().emit_error(
                 "constant initializer must be a literal or unary operator".into(),
@@ -97,13 +95,19 @@ fn eval_const_path<'ctx>(
 ) -> Option<ConstValue> {
     match path.resolution {
         hir::Resolution::Definition(def_id, kind)
-            if matches!(kind, DefinitionKind::Constant | DefinitionKind::AssociatedConstant) =>
+            if matches!(
+                kind,
+                DefinitionKind::Constant | DefinitionKind::AssociatedConstant
+            ) =>
         {
             let Some(value) = gcx.try_get_const(def_id) else {
                 let ident = gcx.definition_ident(def_id);
                 let name = gcx.symbol_text(ident.symbol);
                 gcx.dcx().emit_error(
-                    format!("constant '{}' is not yet available for const evaluation", name),
+                    format!(
+                        "constant '{}' is not yet available for const evaluation",
+                        name
+                    ),
                     Some(span),
                 );
                 return None;
@@ -140,8 +144,10 @@ fn eval_const_binary<'ctx>(
     use crate::hir::BinaryOperator as BinOp;
 
     let type_error = || {
-        gcx.dcx()
-            .emit_error("unsupported binary operator in constant expression".into(), Some(span));
+        gcx.dcx().emit_error(
+            "unsupported binary operator in constant expression".into(),
+            Some(span),
+        );
         None
     };
 
@@ -158,40 +164,45 @@ fn eval_const_binary<'ctx>(
 
     match op {
         BinOp::Add => match (lhs, rhs) {
-            (ConstValue::Integer(a), ConstValue::Integer(b)) => {
-                a.checked_add(b).map(ConstValue::Integer).or_else(overflow_error)
-            }
+            (ConstValue::Integer(a), ConstValue::Integer(b)) => a
+                .checked_add(b)
+                .map(ConstValue::Integer)
+                .or_else(overflow_error),
             (ConstValue::Float(a), ConstValue::Float(b)) => Some(ConstValue::Float(a + b)),
             _ => type_error(),
         },
         BinOp::Sub => match (lhs, rhs) {
-            (ConstValue::Integer(a), ConstValue::Integer(b)) => {
-                a.checked_sub(b).map(ConstValue::Integer).or_else(overflow_error)
-            }
+            (ConstValue::Integer(a), ConstValue::Integer(b)) => a
+                .checked_sub(b)
+                .map(ConstValue::Integer)
+                .or_else(overflow_error),
             (ConstValue::Float(a), ConstValue::Float(b)) => Some(ConstValue::Float(a - b)),
             _ => type_error(),
         },
         BinOp::Mul => match (lhs, rhs) {
-            (ConstValue::Integer(a), ConstValue::Integer(b)) => {
-                a.checked_mul(b).map(ConstValue::Integer).or_else(overflow_error)
-            }
+            (ConstValue::Integer(a), ConstValue::Integer(b)) => a
+                .checked_mul(b)
+                .map(ConstValue::Integer)
+                .or_else(overflow_error),
             (ConstValue::Float(a), ConstValue::Float(b)) => Some(ConstValue::Float(a * b)),
             _ => type_error(),
         },
         BinOp::Div => match (lhs, rhs) {
             (ConstValue::Integer(_), ConstValue::Integer(0)) => div_zero_error(),
-            (ConstValue::Integer(a), ConstValue::Integer(b)) => {
-                a.checked_div(b).map(ConstValue::Integer).or_else(overflow_error)
-            }
+            (ConstValue::Integer(a), ConstValue::Integer(b)) => a
+                .checked_div(b)
+                .map(ConstValue::Integer)
+                .or_else(overflow_error),
             (ConstValue::Float(_), ConstValue::Float(b)) if b == 0.0 => div_zero_error(),
             (ConstValue::Float(a), ConstValue::Float(b)) => Some(ConstValue::Float(a / b)),
             _ => type_error(),
         },
         BinOp::Rem => match (lhs, rhs) {
             (ConstValue::Integer(_), ConstValue::Integer(0)) => div_zero_error(),
-            (ConstValue::Integer(a), ConstValue::Integer(b)) => {
-                a.checked_rem(b).map(ConstValue::Integer).or_else(overflow_error)
-            }
+            (ConstValue::Integer(a), ConstValue::Integer(b)) => a
+                .checked_rem(b)
+                .map(ConstValue::Integer)
+                .or_else(overflow_error),
             _ => type_error(),
         },
         BinOp::BoolAnd => match (lhs, rhs) {

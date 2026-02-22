@@ -7,8 +7,8 @@ use crate::compile::context::Gcx;
 use crate::error::CompileResult;
 use crate::hir::DefinitionKind;
 use crate::mir::{
-    BasicBlockData, BasicBlockId, Body, CallUnwindAction, LocalDecl, LocalId, LocalKind,
-    MirPhase, Operand, Place, PlaceElem, Rvalue, Statement, StatementKind, TerminatorKind,
+    BasicBlockData, BasicBlockId, Body, CallUnwindAction, LocalDecl, LocalId, LocalKind, MirPhase,
+    Operand, Place, PlaceElem, Rvalue, Statement, StatementKind, TerminatorKind,
 };
 use crate::sema::models::{AdtKind, EnumVariantKind, StructDefinition, Ty, TyKind};
 use crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args;

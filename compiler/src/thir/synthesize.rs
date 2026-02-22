@@ -796,7 +796,11 @@ fn clone_adt_field<'ctx>(
         return field_access;
     };
 
-    let Some(clone_method) = reqs.methods.iter().find(|m| gcx.symbol_eq(m.name.clone(), "clone")) else {
+    let Some(clone_method) = reqs
+        .methods
+        .iter()
+        .find(|m| gcx.symbol_eq(m.name.clone(), "clone"))
+    else {
         return field_access;
     };
 

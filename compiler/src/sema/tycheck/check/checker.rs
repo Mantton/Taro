@@ -4,9 +4,7 @@ use crate::{
     sema::{
         models::Ty,
         tycheck::{
-            infer::InferCtx,
-            lower::TypeLowerer,
-            results::TypeCheckResults,
+            infer::InferCtx, lower::TypeLowerer, results::TypeCheckResults,
             solve::DefaultFallbackGoalData,
         },
     },

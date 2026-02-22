@@ -12,6 +12,7 @@ use index_vec::IndexVec;
 use super::MirPass;
 
 pub struct TempCoalescing;
+pub struct CallDestinationCoalescing;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum OperandKind {
@@ -198,6 +199,124 @@ impl<'ctx> MirPass<'ctx> for TempCoalescing {
     }
 }
 
+impl<'ctx> MirPass<'ctx> for CallDestinationCoalescing {
+    fn name(&self) -> &'static str {
+        "CallDestinationCoalescing"
+    }
+
+    fn run(&mut self, _gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
+        let num_locals = body.locals.len();
+        let mut use_counts = vec![0usize; num_locals];
+        let mut address_taken = vec![false; num_locals];
+        let mut pred_counts = vec![0usize; body.basic_blocks.len()];
+
+        for (_bb, block) in body.basic_blocks.iter_enumerated() {
+            for stmt in &block.statements {
+                match &stmt.kind {
+                    StatementKind::Assign(_, rv) => {
+                        if let Rvalue::Ref { place, .. } = rv {
+                            address_taken[place.local.index()] = true;
+                        }
+                        record_rvalue_use_counts(rv, &mut use_counts);
+                    }
+                    StatementKind::SetDiscriminant { place, .. } => {
+                        if place.projection.is_empty() {
+                            use_counts[place.local.index()] += 1;
+                        }
+                    }
+                    StatementKind::GcSafepoint | StatementKind::Nop => {}
+                }
+            }
+
+            if let Some(term) = &block.terminator {
+                record_terminator_use_counts(&term.kind, &mut use_counts);
+                for succ in terminator_successors(&term.kind) {
+                    pred_counts[succ.index()] += 1;
+                }
+            }
+        }
+
+        let mut rewrites: Vec<(BasicBlockId, Place<'ctx>)> = Vec::new();
+        let mut remove_first_stmt = vec![false; body.basic_blocks.len()];
+
+        for (bb, block) in body.basic_blocks.iter_enumerated() {
+            let Some(term) = &block.terminator else {
+                continue;
+            };
+            let TerminatorKind::Call {
+                destination,
+                target,
+                ..
+            } = &term.kind
+            else {
+                continue;
+            };
+            if !destination.projection.is_empty() {
+                continue;
+            }
+            if pred_counts[target.index()] != 1 {
+                continue;
+            }
+
+            let tmp_local = destination.local;
+            if address_taken[tmp_local.index()] {
+                continue;
+            }
+            if use_counts[tmp_local.index()] != 1 {
+                continue;
+            }
+
+            let target_block = &body.basic_blocks[target.index()];
+            let Some(first_stmt) = target_block.statements.first() else {
+                continue;
+            };
+            let StatementKind::Assign(new_dest, Rvalue::Use(op)) = &first_stmt.kind else {
+                continue;
+            };
+            if !new_dest.projection.is_empty() {
+                continue;
+            }
+
+            let local_from_operand = match op {
+                Operand::Copy(place) | Operand::Move(place) if place.projection.is_empty() => {
+                    Some(place.local)
+                }
+                _ => None,
+            };
+            if local_from_operand != Some(tmp_local) {
+                continue;
+            }
+
+            rewrites.push((bb, new_dest.clone()));
+            remove_first_stmt[target.index()] = true;
+        }
+
+        if rewrites.is_empty() {
+            return Ok(());
+        }
+
+        for (bb, new_dest) in rewrites {
+            if let Some(term) = body.basic_blocks[bb].terminator.as_mut() {
+                if let TerminatorKind::Call { destination, .. } = &mut term.kind {
+                    *destination = new_dest;
+                }
+            }
+        }
+
+        for (bb, should_remove) in remove_first_stmt.into_iter().enumerate() {
+            if !should_remove {
+                continue;
+            }
+            let block = &mut body.basic_blocks[BasicBlockId::from_raw(bb as u32)];
+            if !block.statements.is_empty() {
+                block.statements.remove(0);
+            }
+        }
+
+        Ok(())
+    }
+}
+
 fn def_dominates_use(def: &DefSite<'_>, use_site: &UseSite, dominators: &Dominators) -> bool {
     if def.block == use_site.block {
         def.stmt_index < use_site.stmt_index
@@ -328,6 +447,83 @@ fn record_operand_use(
             place_used,
         ),
         Operand::Constant(_) => {}
+    }
+}
+
+fn record_operand_use_count(op: &Operand<'_>, use_counts: &mut [usize]) {
+    match op {
+        Operand::Copy(place) | Operand::Move(place) if place.projection.is_empty() => {
+            use_counts[place.local.index()] += 1;
+        }
+        Operand::Copy(_) | Operand::Move(_) | Operand::Constant(_) => {}
+    }
+}
+
+fn record_rvalue_use_counts(rv: &Rvalue<'_>, use_counts: &mut [usize]) {
+    match rv {
+        Rvalue::Use(op)
+        | Rvalue::UnaryOp { operand: op, .. }
+        | Rvalue::Cast { operand: op, .. }
+        | Rvalue::Repeat { operand: op, .. } => record_operand_use_count(op, use_counts),
+        Rvalue::BinaryOp { lhs, rhs, .. } => {
+            record_operand_use_count(lhs, use_counts);
+            record_operand_use_count(rhs, use_counts);
+        }
+        Rvalue::Aggregate { fields, .. } => {
+            for f in fields {
+                record_operand_use_count(f, use_counts);
+            }
+        }
+        Rvalue::Ref { place, .. } | Rvalue::Discriminant { place } => {
+            if place.projection.is_empty() {
+                use_counts[place.local.index()] += 1;
+            }
+        }
+        Rvalue::Alloc { .. } => {}
+    }
+}
+
+fn record_terminator_use_counts(term: &TerminatorKind<'_>, use_counts: &mut [usize]) {
+    match term {
+        TerminatorKind::Call { func, args, .. } => {
+            record_operand_use_count(func, use_counts);
+            for arg in args {
+                record_operand_use_count(arg, use_counts);
+            }
+        }
+        TerminatorKind::SwitchInt { discr, .. } => record_operand_use_count(discr, use_counts),
+        TerminatorKind::Return
+        | TerminatorKind::Goto { .. }
+        | TerminatorKind::UnresolvedGoto
+        | TerminatorKind::ResumeUnwind
+        | TerminatorKind::Unreachable => {}
+    }
+}
+
+fn terminator_successors(term: &TerminatorKind<'_>) -> Vec<BasicBlockId> {
+    match term {
+        TerminatorKind::Goto { target } => vec![*target],
+        TerminatorKind::SwitchInt {
+            targets, otherwise, ..
+        } => {
+            let mut out = Vec::with_capacity(targets.len() + 1);
+            for (_, target) in targets {
+                out.push(*target);
+            }
+            out.push(*otherwise);
+            out
+        }
+        TerminatorKind::Call { target, unwind, .. } => {
+            let mut out = vec![*target];
+            if let crate::mir::CallUnwindAction::Cleanup(bb) = unwind {
+                out.push(*bb);
+            }
+            out
+        }
+        TerminatorKind::Return
+        | TerminatorKind::ResumeUnwind
+        | TerminatorKind::Unreachable
+        | TerminatorKind::UnresolvedGoto => Vec::new(),
     }
 }
 

@@ -112,7 +112,8 @@ pub fn should_include_attrs(
     gcx: GlobalContext<'_>,
 ) -> bool {
     for attr in attrs {
-        if gcx.symbol_eq(attr.identifier.symbol.clone(), "cfg") && !eval_cfg_attr(attr, target, gcx) {
+        if gcx.symbol_eq(attr.identifier.symbol.clone(), "cfg") && !eval_cfg_attr(attr, target, gcx)
+        {
             return false;
         }
     }

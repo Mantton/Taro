@@ -37,14 +37,10 @@ impl<'ctx> Actor<'ctx> {
 impl HirVisitor for Actor<'_> {
     fn visit_declaration(&mut self, d: &hir::Declaration) -> Self::Result {
         match &d.kind {
-            DeclarationKind::Interface(node) => {
-                self.collect_definition(d.id, &node.generics, None)
-            }
+            DeclarationKind::Interface(node) => self.collect_definition(d.id, &node.generics, None),
             DeclarationKind::Struct(node) => self.collect_definition(d.id, &node.generics, None),
             DeclarationKind::Enum(node) => self.collect_definition(d.id, &node.generics, None),
-            DeclarationKind::Function(node) => {
-                self.collect_definition(d.id, &node.generics, None)
-            }
+            DeclarationKind::Function(node) => self.collect_definition(d.id, &node.generics, None),
             DeclarationKind::Impl(node) => self.collect_definition(d.id, &node.generics, None),
             DeclarationKind::TypeAlias(node) => {
                 self.collect_definition(d.id, &node.generics, node.bounds.as_ref())
@@ -195,8 +191,16 @@ impl<'ctx> Actor<'ctx> {
         if let Some(bounds) = alias_bounds {
             let bounded_ty = self.alias_bounded_ty(def_id, gcx);
             for bound in bounds.iter() {
-                let interface = icx.lowerer().lower_interface_reference(bounded_ty, &bound.path);
-                add_interface_constraints(gcx, &mut constraints, bounded_ty, interface, bound.path.span);
+                let interface = icx
+                    .lowerer()
+                    .lower_interface_reference(bounded_ty, &bound.path);
+                add_interface_constraints(
+                    gcx,
+                    &mut constraints,
+                    bounded_ty,
+                    interface,
+                    bound.path.span,
+                );
             }
         }
 
@@ -245,7 +249,11 @@ impl<'ctx> Actor<'ctx> {
         constraints
     }
 
-    fn alias_bounded_ty(&self, def_id: DefinitionID, gcx: GlobalContext<'ctx>) -> crate::sema::models::Ty<'ctx> {
+    fn alias_bounded_ty(
+        &self,
+        def_id: DefinitionID,
+        gcx: GlobalContext<'ctx>,
+    ) -> crate::sema::models::Ty<'ctx> {
         use crate::sema::models::{AliasKind, Ty, TyKind};
         use crate::sema::resolve::models::DefinitionKind;
 

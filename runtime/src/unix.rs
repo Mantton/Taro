@@ -37,10 +37,7 @@ unsafe fn errno_ptr() -> *mut c_int {
 }
 
 #[inline]
-#[cfg(all(
-    unix,
-    not(any(target_os = "linux", target_os = "macos"))
-))]
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
 unsafe fn errno_ptr() -> *mut c_int {
     core::ptr::null_mut()
 }

@@ -421,7 +421,8 @@ impl<'ctx> Actor<'ctx> {
                     if !self.is_type_copyable_in_context(field.ty, enum_id) {
                         let type_name = field.ty.format(self.context);
                         let field_name = field
-                            .label.clone()
+                            .label
+                            .clone()
                             .map(|s| self.context.symbol_text(s).to_string())
                             .unwrap_or_else(|| format!("{}", idx));
                         self.context.dcx().emit_error(

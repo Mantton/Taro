@@ -427,9 +427,19 @@ impl<'ctx> Checker<'ctx> {
 
     fn new_cs(&self) -> Cs<'ctx> {
         if let Some(infer_cx) = self.infer_ctx() {
-            Cs::with_infer_ctx(self.context, self.current_def, infer_cx, self.visible_traits.clone())
+            Cs::with_infer_ctx(
+                self.context,
+                self.current_def,
+                infer_cx,
+                self.visible_traits.clone(),
+            )
         } else {
-            Cs::with_infer_ctx(self.context, self.current_def, Rc::new(InferCtx::new(self.context)), self.visible_traits.clone())
+            Cs::with_infer_ctx(
+                self.context,
+                self.current_def,
+                Rc::new(InferCtx::new(self.context)),
+                self.visible_traits.clone(),
+            )
         }
     }
 
@@ -723,7 +733,10 @@ impl<'ctx> Checker<'ctx> {
         );
 
         if let Some(expectation) = expectation {
-            cs.add_goal(Goal::ConstraintEqual(expectation, target_ty), expression.span);
+            cs.add_goal(
+                Goal::ConstraintEqual(expectation, target_ty),
+                expression.span,
+            );
         }
 
         target_ty
@@ -876,7 +889,10 @@ impl<'ctx> Checker<'ctx> {
 
                 let Some(field) = field else {
                     self.gcx().dcx().emit_error(
-                        format!("unknown field '{}'", self.gcx().symbol_text(name.symbol.clone())),
+                        format!(
+                            "unknown field '{}'",
+                            self.gcx().symbol_text(name.symbol.clone())
+                        ),
                         Some(expr.span),
                     );
                     return false;
@@ -1074,7 +1090,10 @@ impl<'ctx> Checker<'ctx> {
 
                 let Some(field) = field else {
                     self.gcx().dcx().emit_error(
-                        format!("unknown field '{}'", self.gcx().symbol_text(name.symbol.clone())),
+                        format!(
+                            "unknown field '{}'",
+                            self.gcx().symbol_text(name.symbol.clone())
+                        ),
                         Some(expr.span),
                     );
                     return false;
@@ -2120,7 +2139,8 @@ impl<'ctx> Checker<'ctx> {
                 signature.clone()
             };
 
-            let mut input_tys: Vec<Ty<'ctx>> = signature.inputs.iter().map(|input| input.ty).collect();
+            let mut input_tys: Vec<Ty<'ctx>> =
+                signature.inputs.iter().map(|input| input.ty).collect();
             if input_tys.is_empty() {
                 continue;
             }
@@ -2271,8 +2291,8 @@ impl<'ctx> Checker<'ctx> {
 
         match else_ty {
             Some(else_ty) => {
-                let result_ty = expectation
-                    .unwrap_or_else(|| cs.infer_cx.next_ty_var(expression.span));
+                let result_ty =
+                    expectation.unwrap_or_else(|| cs.infer_cx.next_ty_var(expression.span));
 
                 let resolved_then = cs.infer_cx.resolve_vars_if_possible(then_ty);
                 if matches!(resolved_then.kind(), TyKind::Never) {
@@ -3106,7 +3126,10 @@ impl<'ctx> Checker<'ctx> {
         let mut explicit_iter = explicit_args.iter();
 
         let args = GenericsBuilder::for_item(gcx, def_id, |param, current_args| {
-            let current_args = gcx.store.interners.intern_generic_args(current_args.to_vec());
+            let current_args = gcx
+                .store
+                .interners
+                .intern_generic_args(current_args.to_vec());
             if param.index < parent_count {
                 if let Some(arg) = base_args.get(param.index) {
                     return arg.clone();
@@ -3255,8 +3278,10 @@ impl<'ctx> Checker<'ctx> {
                 if let Some(default) = default {
                     if self.can_infer() {
                         let infer_const = self.const_infer(expected_ty, Some(param), span);
-                        let mut default_const = self.lowerer().lower_const_argument(expected_ty, default);
-                        default_const = instantiate_const_with_args(gcx, default_const, current_args);
+                        let mut default_const =
+                            self.lowerer().lower_const_argument(expected_ty, default);
+                        default_const =
+                            instantiate_const_with_args(gcx, default_const, current_args);
                         self.register_default_fallback(
                             crate::sema::tycheck::solve::DefaultFallbackGoalData {
                                 infer_var: GenericArgument::Const(infer_const.clone()),

@@ -18,8 +18,8 @@ use crate::{
         tycheck::fold::{TypeFoldable, TypeFolder, TypeSuperFoldable},
     },
 };
-use std::rc::Rc;
 use rustc_hash::FxHashSet;
+use std::rc::Rc;
 
 /// Normalize a type using the given inference context and parameter environment.
 /// The inference context is used to resolve inference variables before normalizing.
@@ -67,7 +67,9 @@ struct NormalizeFolder<'a, 'ctx> {
     in_progress: FxHashSet<Ty<'ctx>>,
 }
 
-fn collect_fresh_impl_var_ids<'ctx>(args: GenericArguments<'ctx>) -> (Vec<TyVarID>, Vec<ConstVarID>) {
+fn collect_fresh_impl_var_ids<'ctx>(
+    args: GenericArguments<'ctx>,
+) -> (Vec<TyVarID>, Vec<ConstVarID>) {
     let mut ty_vars = Vec::new();
     let mut const_vars = Vec::new();
     for arg in args {
@@ -146,10 +148,9 @@ fn ty_contains_any_fresh_var<'ctx>(
                 .arguments
                 .iter()
                 .any(|arg| arg_contains_any_fresh_var(arg, fresh_ty_vars, fresh_const_vars))
-                || iface
-                    .bindings
-                    .iter()
-                    .any(|binding| ty_contains_any_fresh_var(binding.ty, fresh_ty_vars, fresh_const_vars))
+                || iface.bindings.iter().any(|binding| {
+                    ty_contains_any_fresh_var(binding.ty, fresh_ty_vars, fresh_const_vars)
+                })
         }),
         TyKind::Closure {
             captured_generics,
@@ -250,13 +251,9 @@ impl<'a, 'ctx> TypeFolder<'ctx> for NormalizeFolder<'a, 'ctx> {
 
                 // Prefer non-alias equalities first (including parameters).
                 // Cycle prevention is handled by `in_progress`.
-                if let Some(&resolved) = equiv_types
-                    .iter()
-                    .find(|&&t| {
-                        t != ty
-                            && !matches!(t.kind(), TyKind::Alias { .. } | TyKind::Infer(_))
-                    })
-                {
+                if let Some(&resolved) = equiv_types.iter().find(|&&t| {
+                    t != ty && !matches!(t.kind(), TyKind::Alias { .. } | TyKind::Infer(_))
+                }) {
                     resolved.fold_with(self)
                 } else if let Some(resolved) = self.resolve_projection(def_id, args) {
                     resolved.fold_with(self)
@@ -362,14 +359,17 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
                 let impl_generics = gcx.generics_of(impl_id);
                 if !impl_generics.is_empty() {
                     let span = gcx.definition_ident(assoc_id).span;
-                    let target_ty = gcx.get_impl_target_ty(impl_id).unwrap_or_else(|| gcx.get_type(impl_id));
+                    let target_ty = gcx
+                        .get_impl_target_ty(impl_id)
+                        .unwrap_or_else(|| gcx.get_type(impl_id));
                     if self_ty.contains_inference() {
                         // Self may include inference vars owned by the caller context.
                         // Solve in a probe on the caller InferCtx so those vars can participate,
                         // while avoiding leakage of fresh impl vars when this path is speculative.
                         let solved = self.icx.probe(|_| {
                             let impl_args = self.icx.fresh_args_for_def(impl_id, span);
-                            let (fresh_ty_vars, fresh_const_vars) = collect_fresh_impl_var_ids(impl_args);
+                            let (fresh_ty_vars, fresh_const_vars) =
+                                collect_fresh_impl_var_ids(impl_args);
                             let instantiated_target =
                                 instantiate_ty_with_args(gcx, target_ty, impl_args);
 
@@ -377,18 +377,20 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
                                 self.icx.clone(),
                             );
                             if unifier.unify(self_ty, instantiated_target).is_ok() {
-                                self.refine_impl_args_from_constraints(self.icx.clone(), impl_id, impl_args);
+                                self.refine_impl_args_from_constraints(
+                                    self.icx.clone(),
+                                    impl_id,
+                                    impl_args,
+                                );
                                 let resolved_args: Vec<_> = impl_args
                                     .iter()
                                     .map(|arg| match arg {
-                                        GenericArgument::Type(ty) => {
-                                            GenericArgument::Type(self.icx.resolve_vars_if_possible(*ty))
-                                        }
-                                        GenericArgument::Const(c) => {
-                                            GenericArgument::Const(
-                                                self.icx.resolve_const_if_possible(c.clone()),
-                                            )
-                                        }
+                                        GenericArgument::Type(ty) => GenericArgument::Type(
+                                            self.icx.resolve_vars_if_possible(*ty),
+                                        ),
+                                        GenericArgument::Const(c) => GenericArgument::Const(
+                                            self.icx.resolve_const_if_possible(c.clone()),
+                                        ),
                                     })
                                     .collect();
 
@@ -402,7 +404,11 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
                                 if !unresolved_fresh {
                                     let resolved_args =
                                         gcx.store.interners.intern_generic_args(resolved_args);
-                                    return Some(instantiate_ty_with_args(gcx, *witness_ty, resolved_args));
+                                    return Some(instantiate_ty_with_args(
+                                        gcx,
+                                        *witness_ty,
+                                        resolved_args,
+                                    ));
                                 }
                             }
                             None
@@ -415,37 +421,44 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
                         // cannot leak fresh vars into the caller's inference state.
                         let local_icx = Rc::new(InferCtx::new(gcx));
                         let impl_args = local_icx.fresh_args_for_def(impl_id, span);
-                        let (fresh_ty_vars, fresh_const_vars) = collect_fresh_impl_var_ids(impl_args);
-                        let instantiated_target = instantiate_ty_with_args(gcx, target_ty, impl_args);
+                        let (fresh_ty_vars, fresh_const_vars) =
+                            collect_fresh_impl_var_ids(impl_args);
+                        let instantiated_target =
+                            instantiate_ty_with_args(gcx, target_ty, impl_args);
 
                         let unifier =
                             crate::sema::tycheck::utils::unify::TypeUnifier::new(local_icx.clone());
                         if unifier.unify(self_ty, instantiated_target).is_ok() {
-                            self.refine_impl_args_from_constraints(local_icx.clone(), impl_id, impl_args);
+                            self.refine_impl_args_from_constraints(
+                                local_icx.clone(),
+                                impl_id,
+                                impl_args,
+                            );
                             let resolved_args: Vec<_> = impl_args
                                 .iter()
                                 .map(|arg| match arg {
-                                    GenericArgument::Type(ty) => {
-                                        GenericArgument::Type(local_icx.resolve_vars_if_possible(*ty))
-                                    }
-                                    GenericArgument::Const(c) => {
-                                        GenericArgument::Const(local_icx.resolve_const_if_possible(c.clone()))
-                                    }
+                                    GenericArgument::Type(ty) => GenericArgument::Type(
+                                        local_icx.resolve_vars_if_possible(*ty),
+                                    ),
+                                    GenericArgument::Const(c) => GenericArgument::Const(
+                                        local_icx.resolve_const_if_possible(c.clone()),
+                                    ),
                                 })
                                 .collect();
-                            let resolved_args = gcx.store.interners.intern_generic_args(resolved_args);
+                            let resolved_args =
+                                gcx.store.interners.intern_generic_args(resolved_args);
 
                             // If impl args still mention fresh local vars, do not materialize
                             // those locals into the outer type context.
                             let unresolved = resolved_args.iter().any(|arg| {
-                                arg_contains_any_fresh_var(
-                                    arg,
-                                    &fresh_ty_vars,
-                                    &fresh_const_vars,
-                                )
+                                arg_contains_any_fresh_var(arg, &fresh_ty_vars, &fresh_const_vars)
                             });
                             if !unresolved {
-                                return Some(instantiate_ty_with_args(gcx, *witness_ty, resolved_args));
+                                return Some(instantiate_ty_with_args(
+                                    gcx,
+                                    *witness_ty,
+                                    resolved_args,
+                                ));
                             }
                         }
                     }

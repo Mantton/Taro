@@ -56,9 +56,10 @@ fn collect_from_declaration(
     path: &mut Vec<String>,
     tests: &mut Vec<TestCase>,
 ) -> crate::error::CompileResult<()> {
-    let has_test = decl.attributes.iter().any(|a| {
-        a.as_known(gcx) == Some(KnownAttribute::Test)
-    });
+    let has_test = decl
+        .attributes
+        .iter()
+        .any(|a| a.as_known(gcx) == Some(KnownAttribute::Test));
 
     match &decl.kind {
         DeclarationKind::Function(func) if has_test => {
@@ -73,10 +74,8 @@ fn collect_from_declaration(
 
             // Validate: test functions must return void (no return type annotation)
             if func.signature.prototype.output.is_some() {
-                gcx.dcx().emit_error(
-                    "@test functions must return void".into(),
-                    Some(decl.span),
-                );
+                gcx.dcx()
+                    .emit_error("@test functions must return void".into(), Some(decl.span));
                 return Err(crate::error::ReportedError);
             }
 

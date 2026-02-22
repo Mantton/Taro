@@ -88,7 +88,12 @@ impl<'ctx> Actor<'ctx> {
             });
         }
 
-        let variants = self.context.store.arenas.global.alloc_slice_clone(&variants);
+        let variants = self
+            .context
+            .store
+            .arenas
+            .global
+            .alloc_slice_clone(&variants);
         let def = EnumDefinition { adt_def, variants };
         self.cache_variant_constructors(id, &def);
         self.context.cache_enum_definition(id, def);
@@ -109,7 +114,8 @@ impl<'ctx> Actor<'ctx> {
 
                     for (idx, field) in fields.iter().enumerate() {
                         let name = field
-                            .label.clone()
+                            .label
+                            .clone()
                             .unwrap_or_else(|| self.context.intern_symbol(&format!("arg{}", idx)));
                         inputs.push(LabeledFunctionParameter {
                             label: field.label.clone(),

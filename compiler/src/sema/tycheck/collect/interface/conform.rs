@@ -566,7 +566,9 @@ impl<'ctx> Actor<'ctx> {
             return Ok(default_ty);
         }
 
-        Err(ConformanceError::MissingAssociatedType { name: assoc.name.clone() })
+        Err(ConformanceError::MissingAssociatedType {
+            name: assoc.name.clone(),
+        })
     }
 }
 

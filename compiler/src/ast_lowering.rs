@@ -211,7 +211,10 @@ impl Actor<'_, '_> {
         }
 
         for attr in attributes {
-            if self.context.symbol_eq(attr.identifier.symbol.clone(), "cfg") {
+            if self
+                .context
+                .symbol_eq(attr.identifier.symbol.clone(), "cfg")
+            {
                 if !self.evaluate_cfg(attr) {
                     return false;
                 }
@@ -1060,10 +1063,8 @@ impl Actor<'_, '_> {
                 */
                 let condition = self.lower_expression(condition);
                 let then_block = self.lower_block(block);
-                let break_expr = self.mk_expression(
-                    hir::ExpressionKind::Break { label: None },
-                    node.span,
-                );
+                let break_expr =
+                    self.mk_expression(hir::ExpressionKind::Break { label: None }, node.span);
                 let break_statement =
                     self.mk_statement(hir::StatementKind::Expression(break_expr), node.span);
                 let else_block = self.mk_block(vec![break_statement], node.span);
@@ -1259,7 +1260,8 @@ impl Actor<'_, '_> {
                 };
 
                 let next_fn_path = hir::ResolvedPath::Relative(Box::new(iterator_ty), next_segment);
-                let next_fn_expr = self.mk_expression(hir::ExpressionKind::Path(next_fn_path), span);
+                let next_fn_expr =
+                    self.mk_expression(hir::ExpressionKind::Path(next_fn_path), span);
                 let iter_mut_borrow = self.mk_expression(
                     hir::ExpressionKind::Reference(iter_ref_expr.clone(), hir::Mutability::Mutable),
                     span,
@@ -2022,13 +2024,18 @@ impl Actor<'_, '_> {
                 {
                     Some(ExpressionResolutionState::Resolved(_)) => {
                         let path = self.try_lower_resolved_member_chain_as_path(
-                            expr.id, target, name.clone(), expr.span,
+                            expr.id,
+                            target,
+                            name.clone(),
+                            expr.span,
                         )?;
                         Some(hir::ResolvedPath::Resolved(path))
                     }
                     Some(ExpressionResolutionState::DeferredAssociatedType) => {
-                        let path =
-                            self.lower_deferred_associated_type_member_chain(target.clone(), name.clone());
+                        let path = self.lower_deferred_associated_type_member_chain(
+                            target.clone(),
+                            name.clone(),
+                        );
                         Some(path)
                     }
                     // DeferredAssociatedValue and None cannot be converted to paths for specialization
@@ -2960,7 +2967,9 @@ fn convert_ast_literal(
             let content = value.replace("_", "");
             let digits = match base {
                 crate::parse::Base::Decimal => content.as_str(),
-                crate::parse::Base::Binary => content.strip_prefix("0b").unwrap_or(content.as_str()),
+                crate::parse::Base::Binary => {
+                    content.strip_prefix("0b").unwrap_or(content.as_str())
+                }
                 crate::parse::Base::Octal => content.strip_prefix("0o").unwrap_or(content.as_str()),
                 crate::parse::Base::Hexadecimal => {
                     content.strip_prefix("0x").unwrap_or(content.as_str())

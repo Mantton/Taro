@@ -35,11 +35,29 @@ func profileName() -> string {
 
 @test
 func testDebugAssertProfileCfg() {
-    std.testing.assertTrue(#cfg(profile("debug")), "expected debug profile")
-    std.testing.assertFalse(#cfg(profile("release")), "release cfg should be false in debug profile")
+    let isDebug = #cfg(profile("debug"))
+    let isRelease = #cfg(profile("release"))
+
     std.testing.assertTrue(
-        std.string.stringEq(profileName(), "debug"),
-        "profile-selected declaration should be debug variant",
+        isDebug || isRelease,
+        "expected either debug or release profile cfg to be true",
     )
+    std.testing.assertFalse(
+        isDebug && isRelease,
+        "debug and release profile cfg cannot both be true",
+    )
+
+    if isDebug {
+        std.testing.assertTrue(
+            std.string.stringEq(profileName(), "debug"),
+            "profile-selected declaration should be debug variant",
+        )
+    } else {
+        std.testing.assertTrue(
+            std.string.stringEq(profileName(), "release"),
+            "profile-selected declaration should be release variant",
+        )
+    }
+
     std.debugAssert(true, "debug assert should not panic")
 }

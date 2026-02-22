@@ -83,15 +83,30 @@ pub fn typecheck_package_with_timings<'ctx>(
         }};
     }
 
-    run_timed!("sema.typecheck.collect.attributes", collect::attributes::run(package, context))?; // Collect Attributes
-    run_timed!("sema.typecheck.collect.generics", collect::generics::run(package, context))?; // Collect Generics Headers
-    run_timed!("sema.typecheck.collect.adt", collect::adt::run(package, context))?; // Collect ADT Definitions
+    run_timed!(
+        "sema.typecheck.collect.attributes",
+        collect::attributes::run(package, context)
+    )?; // Collect Attributes
+    run_timed!(
+        "sema.typecheck.collect.generics",
+        collect::generics::run(package, context)
+    )?; // Collect Generics Headers
+    run_timed!(
+        "sema.typecheck.collect.adt",
+        collect::adt::run(package, context)
+    )?; // Collect ADT Definitions
     run_timed!(
         "sema.typecheck.collect.interface.collect",
         collect::interface::collect::run(package, context)
     )?; // Collect Interface Definition
-    run_timed!("sema.typecheck.impls.identify", impls::identify::run(package, context))?; // Resolve Impl Block Identities
-    run_timed!("sema.typecheck.collect.alias", collect::alias::run(package, context))?; // Collect Type Aliases
+    run_timed!(
+        "sema.typecheck.impls.identify",
+        impls::identify::run(package, context)
+    )?; // Resolve Impl Block Identities
+    run_timed!(
+        "sema.typecheck.collect.alias",
+        collect::alias::run(package, context)
+    )?; // Collect Type Aliases
     run_timed!(
         "sema.typecheck.collect.constant",
         collect::constant::run(package, context)
@@ -100,7 +115,10 @@ pub fn typecheck_package_with_timings<'ctx>(
         "sema.typecheck.collect.constraints",
         collect::constraints::run(package, context)
     )?; // Collect Generic Constraints
-    run_timed!("sema.typecheck.impls.target", impls::target::run(package, context))?; // Cache Impl Target Types
+    run_timed!(
+        "sema.typecheck.impls.target",
+        impls::target::run(package, context)
+    )?; // Cache Impl Target Types
     run_timed!(
         "sema.typecheck.collect.function",
         collect::function::run(package, context)
@@ -109,12 +127,18 @@ pub fn typecheck_package_with_timings<'ctx>(
         "sema.typecheck.collect.variant",
         collect::variant::run(package, context)
     )?; // Collect Enum Variant Definitions
-    run_timed!("sema.typecheck.collect.field", collect::field::run(package, context))?; // Collect ADT Type Definitions
+    run_timed!(
+        "sema.typecheck.collect.field",
+        collect::field::run(package, context)
+    )?; // Collect ADT Type Definitions
     run_timed!(
         "sema.typecheck.collect.interface.requirements",
         collect::interface::requirements::run(package, context)
     )?; // Collect Interface Requirements
-    run_timed!("sema.typecheck.impls.member", impls::member::run(package, context))?; // Collect Impl Block Members
+    run_timed!(
+        "sema.typecheck.impls.member",
+        impls::member::run(package, context)
+    )?; // Collect Impl Block Members
     run_timed!(
         "sema.typecheck.collect.conformances",
         collect::conformances::run(package, context)

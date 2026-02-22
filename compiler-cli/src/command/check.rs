@@ -147,7 +147,10 @@ fn run_package(arguments: CommandLineArguments) -> Result<(), ReportedError> {
         );
         ReportedError
     })?;
-    let target_root = project_root.join("target").join(profile_dir).join("objects");
+    let target_root = project_root
+        .join("target")
+        .join(profile_dir)
+        .join("objects");
     let store = CompilerStore::new(
         &arenas,
         target_root,
@@ -332,8 +335,10 @@ fn is_root_std_package(
     ctx: &CompilerContext<'_>,
 ) -> Result<bool, ReportedError> {
     let std_root = resolve_std_path(std_path).map_err(|e| {
-        ctx.dcx
-            .emit_error(format!("failed to resolve standard library location – {}", e), None);
+        ctx.dcx.emit_error(
+            format!("failed to resolve standard library location – {}", e),
+            None,
+        );
         ReportedError
     })?;
 

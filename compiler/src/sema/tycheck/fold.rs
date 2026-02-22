@@ -126,7 +126,12 @@ impl<'ctx> TypeSuperFoldable<'ctx> for TyKind<'ctx> {
                         InterfaceReference {
                             id: iface.id,
                             arguments: fold_generic_args(folder.gcx(), iface.arguments, folder),
-                            bindings: folder.gcx().store.arenas.global.alloc_slice_clone(&bindings),
+                            bindings: folder
+                                .gcx()
+                                .store
+                                .arenas
+                                .global
+                                .alloc_slice_clone(&bindings),
                         }
                     })
                     .collect();
@@ -234,8 +239,10 @@ impl<'ctx> TypeFoldable<'ctx> for EnumVariantKind<'ctx> {
         match self {
             EnumVariantKind::Unit => self,
             EnumVariantKind::Tuple(fields) => {
-                let folded_fields: Vec<_> =
-                    fields.iter().map(|field| field.clone().fold_with(folder)).collect();
+                let folded_fields: Vec<_> = fields
+                    .iter()
+                    .map(|field| field.clone().fold_with(folder))
+                    .collect();
 
                 let folded_fields = folder
                     .gcx()
@@ -266,7 +273,12 @@ impl<'ctx> TypeFoldable<'ctx> for EnumDefinition<'ctx> {
             .map(|variant| variant.clone().fold_with(folder))
             .collect();
 
-        let variants = folder.gcx().store.arenas.global.alloc_slice_clone(&variants);
+        let variants = folder
+            .gcx()
+            .store
+            .arenas
+            .global
+            .alloc_slice_clone(&variants);
         EnumDefinition {
             adt_def: self.adt_def,
             variants,

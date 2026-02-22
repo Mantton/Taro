@@ -1313,7 +1313,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
     ) {
         for (idx, var) in args.iter().enumerate() {
             let mut proj = base_place.projection.clone();
-            proj.push(PlaceElem::VariantDowncast { name: name.clone(), index });
+            proj.push(PlaceElem::VariantDowncast {
+                name: name.clone(),
+                index,
+            });
             proj.push(PlaceElem::Field(FieldIndex::from_usize(idx), var.ty));
             places.insert(
                 var.id,

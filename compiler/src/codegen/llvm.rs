@@ -1,5 +1,5 @@
 use crate::{
-    codegen::mangle::mangle_instance,
+    codegen::{abi, mangle::mangle_instance},
     compile::context::{Gcx, GlobalContext},
     error::CompileResult,
     hir,
@@ -38,6 +38,15 @@ use inkwell::{
 };
 use rustc_hash::FxHashMap;
 use std::{fs, path::PathBuf};
+
+const NON_AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES: u64 = 256;
+const AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES: u64 = 24;
+const DEFAULT_INDIRECT_ARG_THRESHOLD_BYTES: u64 = 2048;
+const LARGE_AGGREGATE_MOVE_MEMMOVE_THRESHOLD_BYTES: u64 = 1024;
+
+fn target_is_aarch64(triple: &str) -> bool {
+    matches!(triple.split('-').next(), Some("aarch64" | "arm64"))
+}
 
 /// Lower MIR for a package into a single LLVM module and cache its IR.
 pub fn emit_package<'gcx>(
@@ -120,6 +129,7 @@ struct Emitter<'llvm, 'gcx> {
     builder: Builder<'llvm>,
     gcx: GlobalContext<'gcx>,
     functions: FxHashMap<Instance<'gcx>, FunctionValue<'llvm>>,
+    fn_abis: FxHashMap<Instance<'gcx>, abi::FnAbi<'gcx>>,
     strings: FxHashMap<Symbol, PointerValue<'llvm>>,
     target_data: inkwell::targets::TargetData,
     gc_descs: FxHashMap<Ty<'gcx>, PointerValue<'llvm>>,
@@ -133,6 +143,12 @@ struct Emitter<'llvm, 'gcx> {
     eh_personality: Option<FunctionValue<'llvm>>,
     eh_slot: Option<PointerValue<'llvm>>,
     current_fn: Option<FunctionValue<'llvm>>,
+    current_fn_abi: Option<abi::FnAbi<'gcx>>,
+    current_sret_ptr: Option<PointerValue<'llvm>>,
+    indirect_return_threshold_bytes: u64,
+    indirect_arg_threshold_bytes: u64,
+    repeat_memset_enabled: bool,
+    repeat_memset_min_bytes: u64,
     /// Current substitution context for monomorphization
     current_subst: GenericArguments<'gcx>,
 }
@@ -178,6 +194,15 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         gcx: GlobalContext<'gcx>,
     ) -> Self {
         let target_data = gcx.store.target_layout.target_data();
+        let target_triple = gcx.store.target_layout.triple();
+        let target_triple_str = target_triple.as_str().to_str().unwrap_or("");
+        let default_indirect_return_threshold = if target_is_aarch64(target_triple_str) {
+            AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES
+        } else {
+            NON_AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES
+        };
+        let indirect_return_threshold_bytes = default_indirect_return_threshold;
+        let indirect_arg_threshold_bytes = DEFAULT_INDIRECT_ARG_THRESHOLD_BYTES;
         let usize_ty = context.ptr_sized_int_type(&target_data, None);
         let opaque_ptr = context.ptr_type(AddressSpace::default());
         let gc_desc_ty = context.struct_type(
@@ -189,12 +214,24 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             ],
             false,
         );
+        let repeat_memset_enabled = std::env::var("TARO_EXPERIMENTAL_REPEAT_MEMSET")
+            .ok()
+            .map(|v| {
+                let v = v.trim();
+                !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false")
+            })
+            .unwrap_or(false);
+        let repeat_memset_min_bytes = std::env::var("TARO_EXPERIMENTAL_REPEAT_MEMSET_MIN_BYTES")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(0);
         Emitter {
             context,
             module,
             builder,
             gcx,
             functions: FxHashMap::default(),
+            fn_abis: FxHashMap::default(),
             strings: FxHashMap::default(),
             target_data,
             gc_descs: FxHashMap::default(),
@@ -206,6 +243,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             eh_personality: None,
             eh_slot: None,
             current_fn: None,
+            current_fn_abi: None,
+            current_sret_ptr: None,
+            indirect_return_threshold_bytes,
+            indirect_arg_threshold_bytes,
+            repeat_memset_enabled,
+            repeat_memset_min_bytes,
             current_subst: &[],
         }
     }
@@ -227,7 +270,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     GenericArgument::Type(normalized)
                 }
                 GenericArgument::Const(c) => {
-                    let substituted = instantiate_const_with_args(self.gcx, c.clone(), self.current_subst);
+                    let substituted =
+                        instantiate_const_with_args(self.gcx, c.clone(), self.current_subst);
                     GenericArgument::Const(substituted)
                 }
             })
@@ -256,19 +300,90 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         )
     }
 
-    /// Lower a function signature with substitution context applied.
-    fn lower_fn_sig(
+    fn abi_policy_for_signature(
         &self,
         sig: &crate::sema::models::LabeledFunctionSignature<'gcx>,
-    ) -> FunctionType<'llvm> {
-        let params: Vec<BasicMetadataTypeEnum<'llvm>> = sig
-            .inputs
-            .iter()
-            .filter_map(|p| self.lower_ty(p.ty).map(|t| t.into()))
-            .collect();
-        match self.lower_ty(sig.output) {
-            Some(ret) => ret.fn_type(&params, sig.is_variadic),
-            None => self.context.void_type().fn_type(&params, sig.is_variadic),
+    ) -> abi::AbiPolicy {
+        let is_taro_abi = sig.abi.is_none();
+        abi::AbiPolicy {
+            enable_indirect_returns: is_taro_abi,
+            indirect_return_threshold_bytes: self.indirect_return_threshold_bytes,
+            enable_indirect_args: is_taro_abi,
+            indirect_arg_threshold_bytes: self.indirect_arg_threshold_bytes,
+        }
+    }
+
+    fn compute_fn_abi(
+        &self,
+        sig: &crate::sema::models::LabeledFunctionSignature<'gcx>,
+    ) -> abi::FnAbi<'gcx> {
+        abi::compute_fn_abi(
+            sig,
+            |ty| {
+                let llvm_ty = self.lower_ty(ty)?;
+                Some(abi::TypeLayout {
+                    size: self.target_data.get_store_size(&llvm_ty),
+                    align: self.target_data.get_abi_alignment(&llvm_ty),
+                })
+            },
+            self.abi_policy_for_signature(sig),
+        )
+    }
+
+    fn compute_fn_pointer_abi(
+        &self,
+        inputs: &'gcx [Ty<'gcx>],
+        output: Ty<'gcx>,
+    ) -> abi::FnAbi<'gcx> {
+        abi::compute_fn_abi_from_tys(
+            inputs,
+            output,
+            false,
+            |ty| {
+                let llvm_ty = self.lower_ty(ty)?;
+                Some(abi::TypeLayout {
+                    size: self.target_data.get_store_size(&llvm_ty),
+                    align: self.target_data.get_abi_alignment(&llvm_ty),
+                })
+            },
+            abi::AbiPolicy {
+                enable_indirect_returns: true,
+                indirect_return_threshold_bytes: self.indirect_return_threshold_bytes,
+                enable_indirect_args: true,
+                indirect_arg_threshold_bytes: self.indirect_arg_threshold_bytes,
+            },
+        )
+    }
+
+    fn lower_fn_abi(&self, fn_abi: &abi::FnAbi<'gcx>) -> FunctionType<'llvm> {
+        let mut params: Vec<BasicMetadataTypeEnum<'llvm>> =
+            Vec::with_capacity(fn_abi.args.len() + 1);
+        if matches!(fn_abi.ret.mode, abi::PassMode::Indirect { .. }) {
+            params.push(self.context.ptr_type(AddressSpace::default()).into());
+        }
+        for arg in &fn_abi.args {
+            match arg.mode {
+                abi::PassMode::Ignore => {}
+                abi::PassMode::Direct => {
+                    if let Some(ty) = self.lower_ty(arg.ty) {
+                        params.push(ty.into());
+                    }
+                }
+                abi::PassMode::Indirect { .. } => {
+                    params.push(self.context.ptr_type(AddressSpace::default()).into());
+                }
+            }
+        }
+
+        match fn_abi.ret.mode {
+            abi::PassMode::Ignore => self.context.void_type().fn_type(&params, fn_abi.c_variadic),
+            abi::PassMode::Direct => match self.lower_ty(fn_abi.ret.ty) {
+                Some(ret) => ret.fn_type(&params, fn_abi.c_variadic),
+                None => self.context.void_type().fn_type(&params, fn_abi.c_variadic),
+            },
+            abi::PassMode::Indirect { .. } => {
+                self.context.void_type().fn_type(&params, fn_abi.c_variadic)
+            }
         }
     }
 
@@ -294,11 +409,13 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             self.current_subst = instance.args();
 
             let sig = self.gcx.get_signature(def_id);
-            let fn_ty = self.lower_fn_sig(sig);
+            let fn_abi = self.compute_fn_abi(sig);
+            let fn_ty = self.lower_fn_abi(&fn_abi);
             let name = mangle_instance(self.gcx, instance);
 
             let f = self.module.add_function(&name, fn_ty, None);
             self.functions.insert(instance, f);
+            self.fn_abis.insert(instance, fn_abi);
         }
     }
 
@@ -478,10 +595,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     /// `IN_TEST_HARNESS` thread-local (set by `__rt__test_call_fn`) and uses
     /// `panic_any` instead of `_Unwind_ForcedUnwind` when running inside a test,
     /// making the panic catchable by `catch_unwind`.
-    fn emit_test_harness(
-        &mut self,
-        tests: &[crate::compile::test_collector::TestCase],
-    ) {
+    fn emit_test_harness(&mut self, tests: &[crate::compile::test_collector::TestCase]) {
         let i32_ty = self.context.i32_type();
 
         // Declare runtime/libc helpers
@@ -502,9 +616,15 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let passed_ptr = builder.build_alloca(i32_ty, "passed").unwrap();
         let failed_ptr = builder.build_alloca(i32_ty, "failed").unwrap();
         let skipped_ptr = builder.build_alloca(i32_ty, "skipped").unwrap();
-        builder.build_store(passed_ptr, i32_ty.const_zero()).unwrap();
-        builder.build_store(failed_ptr, i32_ty.const_zero()).unwrap();
-        builder.build_store(skipped_ptr, i32_ty.const_zero()).unwrap();
+        builder
+            .build_store(passed_ptr, i32_ty.const_zero())
+            .unwrap();
+        builder
+            .build_store(failed_ptr, i32_ty.const_zero())
+            .unwrap();
+        builder
+            .build_store(skipped_ptr, i32_ty.const_zero())
+            .unwrap();
 
         // Print header
         let header = format!(
@@ -528,14 +648,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
             // Print "test <name> ... "
             let prefix = format!("test {} ... ", test.display_name);
-            let prefix_global =
-                self.build_global_cstring(&prefix, &format!("test_prefix_{}", idx));
+            let prefix_global = self.build_global_cstring(&prefix, &format!("test_prefix_{}", idx));
             builder
-                .build_call(
-                    printf_fn,
-                    &[prefix_global.into()],
-                    "",
-                )
+                .build_call(printf_fn, &[prefix_global.into()], "")
                 .unwrap();
 
             if test.skipped {
@@ -544,8 +659,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     Some(r) => format!("SKIPPED ({})\n", r),
                     None => "SKIPPED\n".to_string(),
                 };
-                let msg_global =
-                    self.build_global_cstring(&msg, &format!("skipped_msg_{}", idx));
+                let msg_global = self.build_global_cstring(&msg, &format!("skipped_msg_{}", idx));
                 builder
                     .build_call(printf_fn, &[msg_global.into()], "")
                     .unwrap();
@@ -593,9 +707,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             } else {
                 // Normal test passed
                 let ok_msg = self.build_global_cstring("ok\n", &format!("ok_msg_{}", idx));
-                builder
-                    .build_call(printf_fn, &[ok_msg.into()], "")
-                    .unwrap();
+                builder.build_call(printf_fn, &[ok_msg.into()], "").unwrap();
                 self.increment_counter(&builder, passed_ptr, i32_ty);
             }
             builder.build_unconditional_branch(bb_after).unwrap();
@@ -604,26 +716,17 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             builder.position_at_end(bb_panicked);
 
             // Reset panic state so the next test starts clean.
-            builder
-                .build_call(panic_clear_fn, &[], "")
-                .unwrap();
+            builder.build_call(panic_clear_fn, &[], "").unwrap();
 
             if test.expect_panic {
                 // Panic is expected → PASS
-                let ok_msg = self.build_global_cstring(
-                    "ok\n",
-                    &format!("sp_ok_{}", idx),
-                );
-                builder
-                    .build_call(printf_fn, &[ok_msg.into()], "")
-                    .unwrap();
+                let ok_msg = self.build_global_cstring("ok\n", &format!("sp_ok_{}", idx));
+                builder.build_call(printf_fn, &[ok_msg.into()], "").unwrap();
                 self.increment_counter(&builder, passed_ptr, i32_ty);
             } else {
                 // Unexpected panic → FAIL
-                let fail_msg = self.build_global_cstring(
-                    "FAILED (panicked)\n",
-                    &format!("fail_panic_{}", idx),
-                );
+                let fail_msg = self
+                    .build_global_cstring("FAILED (panicked)\n", &format!("fail_panic_{}", idx));
                 builder
                     .build_call(printf_fn, &[fail_msg.into()], "")
                     .unwrap();
@@ -640,15 +743,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         builder.build_unconditional_branch(result_bb).unwrap();
         builder.position_at_end(result_bb);
 
-        let passed = builder
-            .build_load(i32_ty, passed_ptr, "p_final")
-            .unwrap();
-        let failed = builder
-            .build_load(i32_ty, failed_ptr, "f_final")
-            .unwrap();
-        let skipped = builder
-            .build_load(i32_ty, skipped_ptr, "s_final")
-            .unwrap();
+        let passed = builder.build_load(i32_ty, passed_ptr, "p_final").unwrap();
+        let failed = builder.build_load(i32_ty, failed_ptr, "f_final").unwrap();
+        let skipped = builder.build_load(i32_ty, skipped_ptr, "s_final").unwrap();
 
         let failed_int = failed.into_int_value();
         let has_failures = builder
@@ -731,18 +828,20 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     fn declare_puts_fn(&self) -> FunctionValue<'llvm> {
         let ptr_ty = self.context.ptr_type(AddressSpace::default());
         let ty = self.context.i32_type().fn_type(&[ptr_ty.into()], false);
-        self.module
-            .get_function("puts")
-            .unwrap_or_else(|| self.module.add_function("puts", ty, Some(Linkage::External)))
+        self.module.get_function("puts").unwrap_or_else(|| {
+            self.module
+                .add_function("puts", ty, Some(Linkage::External))
+        })
     }
 
     /// Helper: declare C printf (variadic)
     fn declare_printf_fn(&self) -> FunctionValue<'llvm> {
         let ptr_ty = self.context.ptr_type(AddressSpace::default());
         let ty = self.context.i32_type().fn_type(&[ptr_ty.into()], true);
-        self.module
-            .get_function("printf")
-            .unwrap_or_else(|| self.module.add_function("printf", ty, Some(Linkage::External)))
+        self.module.get_function("printf").unwrap_or_else(|| {
+            self.module
+                .add_function("printf", ty, Some(Linkage::External))
+        })
     }
 
     /// Helper: declare __rt__panic_clear() -> void
@@ -779,11 +878,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     }
 
     /// Helper: create a null-terminated global string constant, return pointer
-    fn build_global_cstring(
-        &self,
-        value: &str,
-        name: &str,
-    ) -> PointerValue<'llvm> {
+    fn build_global_cstring(&self, value: &str, name: &str) -> PointerValue<'llvm> {
         let bytes: Vec<u8> = value.bytes().chain(std::iter::once(0)).collect();
         let vals: Vec<_> = bytes
             .iter()
@@ -977,7 +1072,20 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .functions
             .get(&instance)
             .expect("function must be declared");
+        let fn_abi = self
+            .fn_abis
+            .get(&instance)
+            .cloned()
+            .expect("function ABI must be declared");
         self.current_fn = Some(function);
+        self.current_fn_abi = Some(fn_abi.clone());
+        self.current_sret_ptr = if matches!(fn_abi.ret.mode, abi::PassMode::Indirect { .. }) {
+            function
+                .get_nth_param(0)
+                .map(|param| param.into_pointer_value())
+        } else {
+            None
+        };
 
         let llvm_blocks = self.create_blocks(function, body);
         let entry_block = llvm_blocks[body.start_block.index()];
@@ -987,7 +1095,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         } else {
             self.eh_slot = None;
         }
-        let mut locals = self.allocate_locals(body, entry_block, function);
+        let mut locals = self.allocate_locals(body, entry_block, function, &fn_abi);
         self.builder.position_at_end(entry_block);
         self.setup_shadow_stack(body, entry_block, &locals)?;
 
@@ -1009,6 +1117,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         self.shadow = None;
         self.eh_slot = None;
         self.current_fn = None;
+        self.current_fn_abi = None;
+        self.current_sret_ptr = None;
         Ok(())
     }
 
@@ -1099,6 +1209,108 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             }
         }
         Ok(lowered)
+    }
+
+    fn lower_indirect_call_arg(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &[LocalStorage<'llvm>],
+        arg: &Operand<'gcx>,
+        arg_ty: Ty<'gcx>,
+    ) -> CompileResult<Option<PointerValue<'llvm>>> {
+        if let Operand::Copy(place) | Operand::Move(place) = arg {
+            if let Some(ptr) = self.place_address(body, locals, place)? {
+                return Ok(Some(ptr));
+            }
+        }
+
+        let Some(value) = self.eval_operand(body, locals, arg)? else {
+            return Ok(None);
+        };
+        let Some(spill_ty) = self.lower_ty(arg_ty) else {
+            return Ok(None);
+        };
+        let spill = self.builder.build_alloca(spill_ty, "indirect_arg").unwrap();
+        let _ = self.builder.build_store(spill, value).unwrap();
+        Ok(Some(spill))
+    }
+
+    fn place_address(
+        &self,
+        body: &mir::Body<'gcx>,
+        locals: &[LocalStorage<'llvm>],
+        place: &Place<'gcx>,
+    ) -> CompileResult<Option<PointerValue<'llvm>>> {
+        if self.lower_ty(self.place_ty(body, place)).is_none() {
+            return Ok(None);
+        }
+        if place.projection.is_empty() {
+            return Ok(match locals[place.local.index()] {
+                LocalStorage::Stack(ptr) => Some(ptr),
+                LocalStorage::Value(_) => None,
+            });
+        }
+        Ok(Some(self.project_place(place, body, locals)?))
+    }
+
+    fn lower_call_args_with_fn_abi(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &[LocalStorage<'llvm>],
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+        fn_abi: &abi::FnAbi<'gcx>,
+    ) -> CompileResult<Vec<BasicValueEnum<'llvm>>> {
+        let mut lowered = Vec::with_capacity(args.len() + 1);
+        if matches!(fn_abi.ret.mode, abi::PassMode::Indirect { .. }) {
+            let Some(sret_dest) = self.place_address(body, locals, destination)? else {
+                self.gcx.dcx().emit_error(
+                    "indirect return call requires an addressable destination".into(),
+                    None,
+                );
+                return Err(crate::error::ReportedError);
+            };
+            lowered.push(sret_dest.as_basic_value_enum());
+        }
+
+        for (index, arg) in args.iter().enumerate() {
+            let abi_arg = fn_abi.args.get(index);
+            let mode = abi_arg.map(|a| a.mode).unwrap_or(abi::PassMode::Direct);
+            match mode {
+                abi::PassMode::Ignore => {}
+                abi::PassMode::Direct => {
+                    if let Some(val) = self.eval_operand(body, locals, arg)? {
+                        lowered.push(val);
+                    }
+                }
+                abi::PassMode::Indirect { .. } => {
+                    let arg_ty = abi_arg
+                        .map(|a| a.ty)
+                        .unwrap_or_else(|| self.operand_ty(body, arg));
+                    if let Some(ptr) = self.lower_indirect_call_arg(body, locals, arg, arg_ty)? {
+                        lowered.push(ptr.as_basic_value_enum());
+                    }
+                }
+            }
+        }
+        Ok(lowered)
+    }
+
+    fn store_direct_call_result(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        destination: &Place<'gcx>,
+        fn_abi: &abi::FnAbi<'gcx>,
+        call_site: CallSiteValue<'llvm>,
+    ) -> CompileResult<()> {
+        if matches!(fn_abi.ret.mode, abi::PassMode::Indirect { .. }) {
+            return Ok(());
+        }
+        if let Some(ret) = call_site.try_as_basic_value().basic() {
+            self.store_place(destination, body, locals, ret)?;
+        }
+        Ok(())
     }
 
     fn emit_direct_call_maybe_unwind(
@@ -1194,14 +1406,33 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         body: &mir::Body<'gcx>,
         entry_block: inkwell::basic_block::BasicBlock<'llvm>,
         function: FunctionValue<'llvm>,
+        fn_abi: &abi::FnAbi<'gcx>,
     ) -> Vec<LocalStorage<'llvm>> {
         let alloc_builder = self.context.create_builder();
         alloc_builder.position_at_end(entry_block);
+        let indirect_ret_ptr = match fn_abi.ret.mode {
+            abi::PassMode::Indirect { .. } => Some(
+                function
+                    .get_nth_param(0)
+                    .expect("sret param")
+                    .into_pointer_value(),
+            ),
+            _ => None,
+        };
 
         let mut locals = Vec::with_capacity(body.locals.len());
         for (idx, decl) in body.locals.iter().enumerate() {
+            // For indirect returns, write the MIR return local directly into the hidden
+            // sret destination to avoid a giant aggregate load/store at function exit.
+            if idx == body.return_local.index() {
+                if let Some(sret_ptr) = indirect_ret_ptr {
+                    locals.push(LocalStorage::Stack(sret_ptr));
+                    continue;
+                }
+            }
             let name = decl
-                .name.clone()
+                .name
+                .clone()
                 .map(|s| self.gcx.symbol_text(s).to_string())
                 .unwrap_or_else(|| format!("tmp{idx}"));
             // Use stack slots for all locals with a representable LLVM type.
@@ -1219,17 +1450,47 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         // Seed parameters with incoming SSA arguments.
         let mut params = function.get_param_iter();
-        for (idx, decl) in body.locals.iter().enumerate() {
-            if let mir::LocalKind::Param = decl.kind {
-                if let Some(arg) = params.next() {
-                    match locals[idx] {
+        if matches!(fn_abi.ret.mode, abi::PassMode::Indirect { .. }) {
+            let _ = params.next();
+        }
+        let param_local_indices: Vec<usize> = body
+            .locals
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, decl)| {
+                if matches!(decl.kind, mir::LocalKind::Param) {
+                    Some(idx)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for (param_index, local_index) in param_local_indices.into_iter().enumerate() {
+            let Some(arg_abi) = fn_abi.args.get(param_index) else {
+                continue;
+            };
+
+            match arg_abi.mode {
+                abi::PassMode::Ignore => {}
+                abi::PassMode::Direct => {
+                    let Some(arg) = params.next() else {
+                        continue;
+                    };
+                    match locals[local_index] {
                         LocalStorage::Value(_) => {
-                            locals[idx] = LocalStorage::Value(Some(arg));
+                            locals[local_index] = LocalStorage::Value(Some(arg));
                         }
                         LocalStorage::Stack(slot) => {
                             let _ = alloc_builder.build_store(slot, arg).unwrap();
                         }
                     }
+                }
+                abi::PassMode::Indirect { .. } => {
+                    let Some(arg) = params.next() else {
+                        continue;
+                    };
+                    locals[local_index] = LocalStorage::Stack(arg.into_pointer_value());
                 }
             }
         }
@@ -1561,6 +1822,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     ) -> CompileResult<()> {
         match &stmt.kind {
             mir::StatementKind::Assign(place, rvalue) => {
+                if self.try_lower_large_place_move(body, locals, place, rvalue)? {
+                    return Ok(());
+                }
+                if self.try_lower_repeat_memset(body, locals, place, rvalue)? {
+                    return Ok(());
+                }
                 let dest_ty = body.locals[place.local].ty;
                 if let Some(value) = self.lower_rvalue(body, locals, dest_ty, rvalue)? {
                     self.store_place(place, body, locals, value)?;
@@ -1595,6 +1862,65 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             mir::StatementKind::Nop => {}
         }
         Ok(())
+    }
+
+    fn try_lower_large_place_move(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        destination: &Place<'gcx>,
+        rvalue: &mir::Rvalue<'gcx>,
+    ) -> CompileResult<bool> {
+        let mir::Rvalue::Use(Operand::Copy(source) | Operand::Move(source)) = rvalue else {
+            return Ok(false);
+        };
+
+        let dest_ty = self.place_ty(body, destination);
+        let src_ty = self.place_ty(body, source);
+        let Some(dest_llvm_ty) = self.lower_ty(dest_ty) else {
+            return Ok(false);
+        };
+        let Some(src_llvm_ty) = self.lower_ty(src_ty) else {
+            return Ok(false);
+        };
+
+        let dest_size = self.target_data.get_store_size(&dest_llvm_ty);
+        if dest_size == 0 || dest_size < LARGE_AGGREGATE_MOVE_MEMMOVE_THRESHOLD_BYTES {
+            return Ok(false);
+        }
+
+        let src_size = self.target_data.get_store_size(&src_llvm_ty);
+        if src_size != dest_size {
+            return Ok(false);
+        }
+
+        let Some(dest_ptr) = self.place_address(body, locals, destination)? else {
+            return Ok(false);
+        };
+        let Some(src_ptr) = self.place_address(body, locals, source)? else {
+            return Ok(false);
+        };
+
+        let dest_align = self.target_data.get_abi_alignment(&dest_llvm_ty).max(1);
+        let src_align = self.target_data.get_abi_alignment(&src_llvm_ty).max(1);
+        let count = self.usize_ty.const_int(dest_size, false);
+
+        // Use memmove for large aggregate assignments so we avoid materializing
+        // giant by-value load/store chains in the backend.
+        let _ = self
+            .builder
+            .build_memmove(dest_ptr, dest_align, src_ptr, src_align, count)
+            .unwrap();
+
+        if !destination
+            .projection
+            .iter()
+            .any(|proj| matches!(proj, mir::PlaceElem::Deref))
+        {
+            let _ = self.update_shadow_for_local(body, locals, destination.local);
+        }
+
+        Ok(true)
     }
 
     fn lower_rvalue(
@@ -1703,6 +2029,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     Some(ty) => ty.into_array_type(),
                     None => return Ok(None),
                 };
+                if self.repeat_operand_is_zero(operand) {
+                    return Ok(Some(arr_ty.const_zero().as_basic_value_enum()));
+                }
                 let Some(val) = self.eval_operand(body, locals, operand)? else {
                     return Ok(None);
                 };
@@ -1758,6 +2087,109 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             }
         };
         Ok(value)
+    }
+
+    fn repeat_operand_is_zero(&self, operand: &Operand<'gcx>) -> bool {
+        let Operand::Constant(c) = operand else {
+            return false;
+        };
+        matches!(
+            c.value,
+            mir::ConstantKind::Integer(0)
+                | mir::ConstantKind::Bool(false)
+                | mir::ConstantKind::Unit
+        )
+    }
+
+    fn repeat_memset_byte_value(&self, operand: &Operand<'gcx>, elem_size: u64) -> Option<u8> {
+        let Operand::Constant(c) = operand else {
+            return None;
+        };
+        match c.value {
+            mir::ConstantKind::Integer(i) => {
+                if elem_size == 0 || elem_size > 8 {
+                    return None;
+                }
+                let bytes = i.to_le_bytes();
+                let fill = bytes[0];
+                if bytes[..elem_size as usize].iter().all(|b| *b == fill) {
+                    Some(fill)
+                } else {
+                    None
+                }
+            }
+            mir::ConstantKind::Bool(b) => {
+                if elem_size == 1 || !b {
+                    Some(if b { 1 } else { 0 })
+                } else {
+                    None
+                }
+            }
+            mir::ConstantKind::Unit => Some(0),
+            _ => None,
+        }
+    }
+
+    fn try_lower_repeat_memset(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        place: &Place<'gcx>,
+        rvalue: &mir::Rvalue<'gcx>,
+    ) -> CompileResult<bool> {
+        if !self.repeat_memset_enabled {
+            return Ok(false);
+        }
+        let mir::Rvalue::Repeat {
+            operand,
+            count,
+            element,
+        } = rvalue
+        else {
+            return Ok(false);
+        };
+        if *count == 0 {
+            return Ok(false);
+        }
+
+        let Some(dest_ptr) = self.place_address(body, locals, place)? else {
+            return Ok(false);
+        };
+        let Some(llvm_elem_ty) = self.lower_ty(*element) else {
+            return Ok(false);
+        };
+        let elem_size = self.target_data.get_store_size(&llvm_elem_ty);
+        if elem_size == 0 {
+            return Ok(false);
+        }
+        let byte_count = (*count as u64)
+            .checked_mul(elem_size)
+            .expect("repeat byte count should fit in u64");
+        if byte_count < self.repeat_memset_min_bytes {
+            return Ok(false);
+        }
+
+        let Some(fill_byte) = self.repeat_memset_byte_value(operand, elem_size) else {
+            return Ok(false);
+        };
+
+        let fill_val = self.context.i8_type().const_int(fill_byte as u64, false);
+        let count_val = self.usize_ty.const_int(byte_count, false);
+        // Keep alignment conservative for projected destinations.
+        let _ = self
+            .builder
+            .build_memset(dest_ptr, 1, fill_val, count_val)
+            .unwrap();
+
+        if !place
+            .projection
+            .iter()
+            .any(|proj| matches!(proj, mir::PlaceElem::Deref))
+        {
+            let _ = self.update_shadow_for_local(body, locals, place.local);
+        }
+
+        Ok(true)
     }
 
     fn lower_unary(
@@ -2303,35 +2735,40 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         // Get the closure body function
         let closure_instance = Instance::item(closure_def_id, &[]);
-        let closure_fn = if let Some(&f) = self.functions.get(&closure_instance) {
-            f
+        let (closure_fn, closure_fn_abi) = if let Some(&f) = self.functions.get(&closure_instance) {
+            let fn_abi = self
+                .fn_abis
+                .get(&closure_instance)
+                .cloned()
+                .unwrap_or_else(|| {
+                    let prev_subst = self.current_subst;
+                    self.current_subst = &[];
+                    let sig = self.gcx.get_signature(closure_def_id);
+                    let abi = self.compute_fn_abi(sig);
+                    self.current_subst = prev_subst;
+                    abi
+                });
+            (f, fn_abi)
         } else {
             // Declare the closure body function
             let prev_subst = self.current_subst;
             self.current_subst = &[];
             let sig = self.gcx.get_signature(closure_def_id);
-            let fn_ty = self.lower_fn_sig(sig);
+            let fn_abi = self.compute_fn_abi(sig);
+            let fn_ty = self.lower_fn_abi(&fn_abi);
             let name = mangle_instance(self.gcx, closure_instance);
             let f = self
                 .module
                 .add_function(&name, fn_ty, Some(Linkage::External));
             self.functions.insert(closure_instance, f);
+            self.fn_abis.insert(closure_instance, fn_abi.clone());
             self.current_subst = prev_subst;
-            f
+            (f, fn_abi)
         };
 
-        // Build the shim function type (without self parameter)
-        let mut param_types: Vec<BasicMetadataTypeEnum> = Vec::new();
-        for &input_ty in inputs.iter() {
-            if let Some(llvm_ty) = self.lower_ty(input_ty) {
-                param_types.push(llvm_ty.into());
-            }
-        }
-        let ret_ty = self.lower_ty(output);
-        let shim_fn_ty = match ret_ty {
-            Some(ret) => ret.fn_type(&param_types, false),
-            None => self.context.void_type().fn_type(&param_types, false),
-        };
+        // Build the shim function type (without self parameter).
+        let shim_fn_abi = self.compute_fn_pointer_abi(inputs, output);
+        let shim_fn_ty = self.lower_fn_abi(&shim_fn_abi);
 
         // Create the shim function
         let shim_fn = self
@@ -2353,9 +2790,16 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         };
 
         // Build arguments: null self + forwarded params
-        let mut call_args: Vec<BasicMetadataValueEnum> = vec![null_self.into()];
-        for (i, _) in inputs.iter().enumerate() {
-            call_args.push(shim_fn.get_nth_param(i as u32).unwrap().into());
+        let mut call_args: Vec<BasicMetadataValueEnum> = Vec::new();
+        let mut shim_param_index = 0u32;
+        if matches!(closure_fn_abi.ret.mode, abi::PassMode::Indirect { .. }) {
+            call_args.push(shim_fn.get_nth_param(shim_param_index).unwrap().into());
+            shim_param_index += 1;
+        }
+        call_args.push(null_self.into());
+        while shim_param_index < shim_fn.count_params() {
+            call_args.push(shim_fn.get_nth_param(shim_param_index).unwrap().into());
+            shim_param_index += 1;
         }
 
         // Call the closure body
@@ -2365,11 +2809,17 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .unwrap();
 
         // Return the result
-        if ret_ty.is_some() {
-            let ret_val = call.try_as_basic_value().basic().unwrap();
-            self.builder.build_return(Some(&ret_val)).unwrap();
-        } else {
-            self.builder.build_return(None).unwrap();
+        match closure_fn_abi.ret.mode {
+            abi::PassMode::Ignore | abi::PassMode::Indirect { .. } => {
+                self.builder.build_return(None).unwrap();
+            }
+            abi::PassMode::Direct => {
+                if let Some(ret_val) = call.try_as_basic_value().basic() {
+                    self.builder.build_return(Some(&ret_val)).unwrap();
+                } else {
+                    self.builder.build_return(None).unwrap();
+                }
+            }
         }
 
         // Restore builder position
@@ -2537,21 +2987,28 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             return f.as_global_value().as_pointer_value();
         }
 
+        let sig = self.gcx.get_signature(def_id);
+        let prev_subst = self.current_subst;
+        self.current_subst = instance.args();
+        let fn_abi = self.compute_fn_abi(sig);
+        self.current_subst = prev_subst;
+
         if self.is_foreign_function(def_id) {
             let f = self.declare_foreign_function(def_id);
             self.functions.insert(instance, f);
+            self.fn_abis.insert(instance, fn_abi);
             return f.as_global_value().as_pointer_value();
         }
 
         let prev_subst = self.current_subst;
         self.current_subst = instance.args();
-        let sig = self.gcx.get_signature(def_id);
-        let fn_ty = self.lower_fn_sig(sig);
+        let fn_ty = self.lower_fn_abi(&fn_abi);
         let name = mangle_instance(self.gcx, instance);
         let f = self
             .module
             .add_function(&name, fn_ty, Some(Linkage::External));
         self.functions.insert(instance, f);
+        self.fn_abis.insert(instance, fn_abi);
         self.current_subst = prev_subst;
         f.as_global_value().as_pointer_value()
     }
@@ -2580,21 +3037,40 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let prev_subst = self.current_subst;
         self.current_subst = args;
         let sig = self.gcx.get_signature(impl_def_id);
+        let impl_fn_abi = self.compute_fn_abi(sig);
 
-        // Build thunk parameter types: first param is raw ptr (data pointer from existential)
-        // Rest are the same as the implementation
+        // Build thunk parameter types: first param is raw ptr (data pointer from existential),
+        // then map remaining implementation arguments according to ABI mode.
         let opaque_ptr = self.context.ptr_type(AddressSpace::default());
-        let mut thunk_param_types: Vec<BasicMetadataTypeEnum<'llvm>> = vec![opaque_ptr.into()];
-        for param in sig.inputs.iter().skip(1) {
-            if let Some(ty) = self.lower_ty(param.ty) {
-                thunk_param_types.push(ty.into());
+        let mut thunk_param_types: Vec<BasicMetadataTypeEnum<'llvm>> =
+            Vec::with_capacity(sig.inputs.len() + 1);
+        if matches!(impl_fn_abi.ret.mode, abi::PassMode::Indirect { .. }) {
+            thunk_param_types.push(opaque_ptr.into());
+        }
+        thunk_param_types.push(opaque_ptr.into());
+        for arg_abi in impl_fn_abi.args.iter().skip(1) {
+            match arg_abi.mode {
+                abi::PassMode::Ignore => {}
+                abi::PassMode::Direct => {
+                    if let Some(ty) = self.lower_ty(arg_abi.ty) {
+                        thunk_param_types.push(ty.into());
+                    }
+                }
+                abi::PassMode::Indirect { .. } => {
+                    thunk_param_types.push(opaque_ptr.into());
+                }
             }
         }
 
         // Build thunk return type
-        let thunk_fn_ty = match self.lower_ty(sig.output) {
-            Some(ret) => ret.fn_type(&thunk_param_types, false),
-            None => self.context.void_type().fn_type(&thunk_param_types, false),
+        let thunk_fn_ty = match impl_fn_abi.ret.mode {
+            abi::PassMode::Ignore | abi::PassMode::Indirect { .. } => {
+                self.context.void_type().fn_type(&thunk_param_types, false)
+            }
+            abi::PassMode::Direct => match self.lower_ty(sig.output) {
+                Some(ret) => ret.fn_type(&thunk_param_types, false),
+                None => self.context.void_type().fn_type(&thunk_param_types, false),
+            },
         };
 
         // Create thunk function
@@ -2614,17 +3090,28 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let mut call_args: Vec<BasicMetadataValueEnum<'llvm>> =
             Vec::with_capacity(thunk_param_types.len());
 
-        // First argument is the raw data pointer - pass it directly to impl
-        // (the impl expects a reference/pointer to the concrete type, which is what data_ptr points to)
-        call_args.push(thunk_fn.get_nth_param(0).unwrap().into());
+        let mut param_index = 0u32;
+        if matches!(impl_fn_abi.ret.mode, abi::PassMode::Indirect { .. }) {
+            call_args.push(thunk_fn.get_nth_param(param_index).unwrap().into());
+            param_index += 1;
+        }
 
-        // Forward remaining arguments
-        for i in 1..thunk_fn.count_params() {
-            call_args.push(thunk_fn.get_nth_param(i).unwrap().into());
+        // Next argument is the raw data pointer - pass it directly to impl
+        // (the impl expects a reference/pointer to the concrete type, which is what data_ptr points to)
+        call_args.push(thunk_fn.get_nth_param(param_index).unwrap().into());
+        param_index += 1;
+
+        // Forward remaining arguments according to implementation ABI.
+        for arg_abi in impl_fn_abi.args.iter().skip(1) {
+            if matches!(arg_abi.mode, abi::PassMode::Ignore) {
+                continue;
+            }
+            call_args.push(thunk_fn.get_nth_param(param_index).unwrap().into());
+            param_index += 1;
         }
 
         // Get the implementation function type for indirect call
-        let impl_fn_ty = self.lower_fn_sig(sig);
+        let impl_fn_ty = self.lower_fn_abi(&impl_fn_abi);
 
         // Call the implementation
         let call = self
@@ -2633,12 +3120,17 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .unwrap();
 
         // Return the result
-        if sig.output == self.gcx.types.void {
-            self.builder.build_return(None).unwrap();
-        } else if let Some(ret_val) = call.try_as_basic_value().basic() {
-            self.builder.build_return(Some(&ret_val)).unwrap();
-        } else {
-            self.builder.build_return(None).unwrap();
+        match impl_fn_abi.ret.mode {
+            abi::PassMode::Ignore | abi::PassMode::Indirect { .. } => {
+                self.builder.build_return(None).unwrap();
+            }
+            abi::PassMode::Direct => {
+                if let Some(ret_val) = call.try_as_basic_value().basic() {
+                    self.builder.build_return(Some(&ret_val)).unwrap();
+                } else {
+                    self.builder.build_return(None).unwrap();
+                }
+            }
         }
 
         // Restore builder position
@@ -2797,7 +3289,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         InterfaceReference {
             id: template.id,
             arguments: interned,
-            bindings: self.gcx.store.arenas.global.alloc_slice_clone(&new_bindings),
+            bindings: self
+                .gcx
+                .store
+                .arenas
+                .global
+                .alloc_slice_clone(&new_bindings),
         }
     }
 
@@ -2942,16 +3439,24 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             }
             mir::TerminatorKind::Return => {
                 self.emit_shadow_pop();
-                let ret_place = mir::Place {
-                    local: body.return_local,
-                    projection: vec![],
-                };
-                match self.load_place(body, locals, &ret_place) {
-                    Some(val) => {
-                        let _ = self.builder.build_return(Some(&val)).unwrap();
-                    }
-                    None => {
-                        let _ = self.builder.build_return(None).unwrap();
+                let fn_abi = self
+                    .current_fn_abi
+                    .as_ref()
+                    .expect("current function ABI must be set");
+                if matches!(fn_abi.ret.mode, abi::PassMode::Indirect { .. }) {
+                    let _ = self.builder.build_return(None).unwrap();
+                } else {
+                    let ret_place = mir::Place {
+                        local: body.return_local,
+                        projection: vec![],
+                    };
+                    match self.load_place(body, locals, &ret_place) {
+                        Some(val) => {
+                            let _ = self.builder.build_return(Some(&val)).unwrap();
+                        }
+                        None => {
+                            let _ = self.builder.build_return(None).unwrap();
+                        }
                     }
                 }
             }
@@ -3015,8 +3520,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         normal_bb,
                         unwind_bb,
                     )?;
-                } else if let Some(closure_fn) = self.closure_callable(body, func) {
-                    let lowered_args = self.lower_call_args(body, locals, args)?;
+                } else if let Some((closure_fn, fn_abi)) = self.closure_callable(body, func) {
+                    let lowered_args =
+                        self.lower_call_args_with_fn_abi(body, locals, args, destination, &fn_abi)?;
                     let call_site = self.emit_direct_call_maybe_unwind(
                         closure_fn,
                         &lowered_args,
@@ -3024,15 +3530,14 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         unwind_bb,
                         "call",
                     )?;
-
-                    if let Some(ret) = call_site.try_as_basic_value().basic() {
-                        self.store_place(&destination, body, locals, ret)?;
-                    }
+                    self.store_direct_call_result(body, locals, destination, &fn_abi, call_site)?;
                 } else if matches!(self.operand_ty(body, func).kind(), TyKind::FnPointer { .. })
                     && !matches!(func, Operand::Constant(_))
                 {
-                    let (fn_ty, fn_ptr) = self.lower_fn_pointer_call_target(body, locals, func)?;
-                    let lowered_args = self.lower_call_args(body, locals, args)?;
+                    let (fn_ty, fn_ptr, fn_abi) =
+                        self.lower_fn_pointer_call_target(body, locals, func)?;
+                    let lowered_args =
+                        self.lower_call_args_with_fn_abi(body, locals, args, destination, &fn_abi)?;
                     let call_site = self.emit_indirect_call_maybe_unwind(
                         fn_ty,
                         fn_ptr,
@@ -3041,13 +3546,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         unwind_bb,
                         "call",
                     )?;
-
-                    if let Some(ret) = call_site.try_as_basic_value().basic() {
-                        self.store_place(&destination, body, locals, ret)?;
-                    }
+                    self.store_direct_call_result(body, locals, destination, &fn_abi, call_site)?;
                 } else {
-                    let callable = self.lower_callable(func);
-                    let lowered_args = self.lower_call_args(body, locals, args)?;
+                    let (callable, fn_abi) = self.lower_callable_with_abi(func);
+                    let lowered_args =
+                        self.lower_call_args_with_fn_abi(body, locals, args, destination, &fn_abi)?;
                     let call_site = self.emit_direct_call_maybe_unwind(
                         callable,
                         &lowered_args,
@@ -3055,10 +3558,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         unwind_bb,
                         "call",
                     )?;
-
-                    if let Some(ret) = call_site.try_as_basic_value().basic() {
-                        self.store_place(&destination, body, locals, ret)?;
-                    }
+                    self.store_direct_call_result(body, locals, destination, &fn_abi, call_site)?;
                 }
                 if virtual_instance.is_none() {
                     let _ = self.builder.build_unconditional_branch(normal_bb).unwrap();
@@ -4700,7 +5200,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         self.store_place(destination, body, locals, cast.into())
     }
 
-    fn lower_callable(&mut self, func: &Operand<'gcx>) -> FunctionValue<'llvm> {
+    fn lower_callable_with_abi(
+        &mut self,
+        func: &Operand<'gcx>,
+    ) -> (FunctionValue<'llvm>, abi::FnAbi<'gcx>) {
         if let Operand::Constant(c) = func {
             if let mir::ConstantKind::Function(def_id, args, _) = c.value {
                 let instance = self.instance_for_call(def_id, args);
@@ -4708,28 +5211,43 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     todo!("virtual call codegen for boxed existentials");
                 }
 
+                let existing_fn = self.functions.get(&instance).copied();
                 if let Some(&f) = self.functions.get(&instance) {
-                    return f;
+                    if let Some(fn_abi) = self.fn_abis.get(&instance).cloned() {
+                        return (f, fn_abi);
+                    }
+                }
+
+                let sig = self.gcx.get_signature(def_id);
+                let prev_subst = self.current_subst;
+                self.current_subst = instance.args();
+                let fn_abi = self.compute_fn_abi(sig);
+                let name = mangle_instance(self.gcx, instance);
+                self.current_subst = prev_subst;
+
+                if let Some(f) = existing_fn {
+                    self.fn_abis.insert(instance, fn_abi.clone());
+                    return (f, fn_abi);
                 }
 
                 if self.is_foreign_function(def_id) {
                     let f = self.declare_foreign_function(def_id);
                     self.functions.insert(instance, f);
-                    return f;
+                    self.fn_abis.insert(instance, fn_abi.clone());
+                    return (f, fn_abi);
                 }
 
                 // Not declared yet (likely from another package); declare as external.
-                // Set substitution context for signature lowering
                 let prev_subst = self.current_subst;
                 self.current_subst = instance.args();
-                let sig = self.gcx.get_signature(def_id);
-                let fn_ty = self.lower_fn_sig(sig);
-                let name = mangle_instance(self.gcx, instance);
-                let linkage = Some(Linkage::External);
-                let f = self.module.add_function(&name, fn_ty, linkage);
-                self.functions.insert(instance, f);
+                let fn_ty = self.lower_fn_abi(&fn_abi);
+                let f = self
+                    .module
+                    .add_function(&name, fn_ty, Some(Linkage::External));
                 self.current_subst = prev_subst;
-                return f;
+                self.functions.insert(instance, f);
+                self.fn_abis.insert(instance, fn_abi.clone());
+                return (f, fn_abi);
             }
         }
 
@@ -4740,15 +5258,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         &self,
         inputs: &'gcx [Ty<'gcx>],
         output: Ty<'gcx>,
-    ) -> FunctionType<'llvm> {
-        let params: Vec<BasicMetadataTypeEnum<'llvm>> = inputs
-            .iter()
-            .filter_map(|&ty| self.lower_ty(ty).map(|t| t.into()))
-            .collect();
-        match self.lower_ty(output) {
-            Some(ret) => ret.fn_type(&params, false),
-            None => self.context.void_type().fn_type(&params, false),
-        }
+    ) -> (FunctionType<'llvm>, abi::FnAbi<'gcx>) {
+        let fn_abi = self.compute_fn_pointer_abi(inputs, output);
+        (self.lower_fn_abi(&fn_abi), fn_abi)
     }
 
     fn lower_fn_pointer_call_target(
@@ -4756,7 +5268,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         body: &mir::Body<'gcx>,
         locals: &mut [LocalStorage<'llvm>],
         func: &Operand<'gcx>,
-    ) -> CompileResult<(FunctionType<'llvm>, PointerValue<'llvm>)> {
+    ) -> CompileResult<(FunctionType<'llvm>, PointerValue<'llvm>, abi::FnAbi<'gcx>)> {
         let TyKind::FnPointer { inputs, output } = self.operand_ty(body, func).kind() else {
             self.gcx
                 .dcx()
@@ -4776,14 +5288,14 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             return Err(crate::error::ReportedError);
         };
 
-        let fn_ty = self.lower_fn_pointer_sig(inputs, output);
+        let (fn_ty, fn_abi) = self.lower_fn_pointer_sig(inputs, output);
         let fn_ptr_ty = self.context.ptr_type(AddressSpace::default());
         let cast_ptr = self
             .builder
             .build_bit_cast(ptr, fn_ptr_ty, "fn_ptr_cast")
             .unwrap()
             .into_pointer_value();
-        Ok((fn_ty, cast_ptr))
+        Ok((fn_ty, cast_ptr, fn_abi))
     }
 
     /// Check if the func operand is a closure and return the closure body function
@@ -4791,7 +5303,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         &mut self,
         body: &mir::Body<'gcx>,
         func: &Operand<'gcx>,
-    ) -> Option<FunctionValue<'llvm>> {
+    ) -> Option<(FunctionValue<'llvm>, abi::FnAbi<'gcx>)> {
         // Get the type of the operand
         let ty = match func {
             Operand::Copy(place) | Operand::Move(place) => {
@@ -4822,20 +5334,24 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         // Look up or declare the closure body function
         if let Some(&f) = self.functions.get(&instance) {
-            return Some(f);
+            if let Some(fn_abi) = self.fn_abis.get(&instance).cloned() {
+                return Some((f, fn_abi));
+            }
         }
 
         // Need to declare it as external
         let prev_subst = self.current_subst;
         self.current_subst = &[];
         let sig = self.gcx.get_signature(closure_def_id);
-        let fn_ty = self.lower_fn_sig(sig);
+        let fn_abi = self.compute_fn_abi(sig);
+        let fn_ty = self.lower_fn_abi(&fn_abi);
         let name = mangle_instance(self.gcx, instance);
         let linkage = Some(Linkage::External);
         let f = self.module.add_function(&name, fn_ty, linkage);
         self.functions.insert(instance, f);
+        self.fn_abis.insert(instance, fn_abi.clone());
         self.current_subst = prev_subst;
-        Some(f)
+        Some((f, fn_abi))
     }
 
     fn virtual_instance_for_call(
@@ -4946,7 +5462,21 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .unwrap()
             .into_pointer_value();
 
-        let mut lowered_args: Vec<BasicValueEnum<'llvm>> = Vec::with_capacity(args.len());
+        let mut lowered_args: Vec<BasicValueEnum<'llvm>> = Vec::with_capacity(args.len() + 1);
+        let ret_mode = self
+            .compute_fn_pointer_abi(&[], self.place_ty(body, destination))
+            .ret
+            .mode;
+        if matches!(ret_mode, abi::PassMode::Indirect { .. }) {
+            let Some(sret_dest) = self.place_address(body, locals, destination)? else {
+                self.gcx.dcx().emit_error(
+                    "virtual call with indirect return requires an addressable destination".into(),
+                    None,
+                );
+                return Err(crate::error::ReportedError);
+            };
+            lowered_args.push(sret_dest.as_basic_value_enum());
+        }
         lowered_args.push(data_ptr.as_basic_value_enum());
         for arg in args.iter().skip(1) {
             if let Some(val) = self.eval_operand(body, locals, arg)? {
@@ -4966,10 +5496,17 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 BasicValueEnum::ScalableVectorValue(v) => v.get_type().into(),
             })
             .collect();
-        let ret_ty = self.place_ty(body, destination);
-        let fn_ty = match self.lower_ty(ret_ty) {
-            Some(ret) => ret.fn_type(&param_types, false),
-            None => self.context.void_type().fn_type(&param_types, false),
+        let fn_ty = match ret_mode {
+            abi::PassMode::Indirect { .. } | abi::PassMode::Ignore => {
+                self.context.void_type().fn_type(&param_types, false)
+            }
+            abi::PassMode::Direct => {
+                let ret_ty = self.place_ty(body, destination);
+                match self.lower_ty(ret_ty) {
+                    Some(ret) => ret.fn_type(&param_types, false),
+                    None => self.context.void_type().fn_type(&param_types, false),
+                }
+            }
         };
 
         let fn_ptr_cast = self
@@ -4990,8 +5527,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             "virt_call",
         )?;
 
-        if let Some(ret) = call_site.try_as_basic_value().basic() {
-            self.store_place(destination, body, locals, ret)?;
+        if !matches!(ret_mode, abi::PassMode::Indirect { .. }) {
+            if let Some(ret) = call_site.try_as_basic_value().basic() {
+                self.store_place(destination, body, locals, ret)?;
+            }
         }
         let _ = self.builder.build_unconditional_branch(normal_bb).unwrap();
 
@@ -5223,10 +5762,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     match agg_ty {
                         BasicTypeEnum::StructType(st) => {
                             let field_index = idx.index() as u32;
-                            let gep = match self
-                                .builder
-                                .build_struct_gep(st, ptr, field_index, "field_ptr")
-                            {
+                            let gep = match self.builder.build_struct_gep(
+                                st,
+                                ptr,
+                                field_index,
+                                "field_ptr",
+                            ) {
                                 Ok(gep) => gep,
                                 Err(err) => {
                                     panic!(
