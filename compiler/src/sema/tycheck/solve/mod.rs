@@ -299,6 +299,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
 
         let mut driver = SolverDriver::new(solver);
         let result = driver.solve_to_fixpoint();
+
         // Pull adjustments back out of the solver/driver.
         let (
             adjustments,
@@ -662,34 +663,37 @@ impl<'ctx> ConstraintSolver<'ctx> {
         ty.fold_with(&mut substitutor)
     }
 
-    fn solve(&mut self, obligation: Obligation<'ctx>) -> SolverResult<'ctx> {
+    fn solve(&mut self, obligation: &Obligation<'ctx>) -> SolverResult<'ctx> {
         let location = obligation.location;
-        let goal = obligation.goal;
-        match goal {
-            Goal::Equal(lhs, rhs) => self.solve_equality(location, lhs, rhs),
-            Goal::ConstraintEqual(lhs, rhs) => self.solve_constraint_equality(location, lhs, rhs),
-            Goal::Conforms { ty, interface } => self.solve_conforms(location, ty, interface),
-            Goal::Apply(data) => self.solve_apply(data),
-            Goal::BindOverload(data) => self.solve_bind_overload(location, data),
-            Goal::BindInterfaceMethod(data) => self.solve_bind_interface_method(location, data),
-            Goal::BindMethodOverload(data) => self.solve_bind_method_overload(location, data),
-            Goal::Disjunction(branches) => self.solve_disjunction(location, branches),
-            Goal::UnaryOp(data) => self.solve_unary(data),
-            Goal::BinaryOp(data) => self.solve_binary(data),
-            Goal::AssignOp(data) => self.solve_assign_op(data),
-            Goal::Coerce { node_id, from, to } => self.solve_coerce(location, node_id, from, to),
+        match &obligation.goal {
+            Goal::Equal(lhs, rhs) => self.solve_equality(location, *lhs, *rhs),
+            Goal::ConstraintEqual(lhs, rhs) => self.solve_constraint_equality(location, *lhs, *rhs),
+            Goal::Conforms { ty, interface } => self.solve_conforms(location, *ty, *interface),
+            Goal::Apply(data) => self.solve_apply(data.clone()),
+            Goal::BindOverload(data) => self.solve_bind_overload(location, data.clone()),
+            Goal::BindInterfaceMethod(data) => {
+                self.solve_bind_interface_method(location, data.clone())
+            }
+            Goal::BindMethodOverload(data) => self.solve_bind_method_overload(location, data.clone()),
+            Goal::Disjunction(branches) => self.solve_disjunction(location, branches.clone()),
+            Goal::UnaryOp(data) => self.solve_unary(*data),
+            Goal::BinaryOp(data) => self.solve_binary(*data),
+            Goal::AssignOp(data) => self.solve_assign_op(*data),
+            Goal::Coerce { node_id, from, to } => {
+                self.solve_coerce(location, *node_id, *from, *to)
+            }
             Goal::Cast {
                 node_id,
                 from,
                 to,
                 is_unsafe,
-            } => self.solve_cast(location, node_id, from, to, is_unsafe),
-            Goal::Member(data) => self.solve_member(data),
-            Goal::InferredStaticMember(data) => self.solve_inferred_static_member(data),
-            Goal::MethodCall(data) => self.solve_method_call(data),
-            Goal::StructLiteral(data) => self.solve_struct_literal(data),
-            Goal::TupleAccess(data) => self.solve_tuple_access(data),
-            Goal::Deref(data) => self.solve_deref(data),
+            } => self.solve_cast(location, *node_id, *from, *to, *is_unsafe),
+            Goal::Member(data) => self.solve_member(data.clone()),
+            Goal::InferredStaticMember(data) => self.solve_inferred_static_member(data.clone()),
+            Goal::MethodCall(data) => self.solve_method_call(data.clone()),
+            Goal::StructLiteral(data) => self.solve_struct_literal(data.clone()),
+            Goal::TupleAccess(data) => self.solve_tuple_access(data.clone()),
+            Goal::Deref(data) => self.solve_deref(data.clone()),
             Goal::DefaultFallback(_) => SolverResult::Deferred,
         }
     }
@@ -731,16 +735,17 @@ impl<'ctx> ConstraintSolver<'ctx> {
         self.solve_equality(location, lhs, rhs)
     }
 
-    fn fork(&self) -> ConstraintSolver<'ctx> {
+    fn fork_for_probe(&self) -> ConstraintSolver<'ctx> {
         ConstraintSolver {
             icx: self.icx.clone(),
             obligations: self.obligations.clone(),
-            adjustments: self.adjustments.clone(),
-            interface_calls: self.interface_calls.clone(),
-            field_indices: self.field_indices.clone(),
-            overload_sources: self.overload_sources.clone(),
-            value_resolutions: self.value_resolutions.clone(),
-            instantiation_args: self.instantiation_args.clone(),
+            // Probe branches only need satisfiability, not collected outputs.
+            adjustments: FxHashMap::default(),
+            interface_calls: FxHashMap::default(),
+            field_indices: FxHashMap::default(),
+            overload_sources: FxHashMap::default(),
+            value_resolutions: FxHashMap::default(),
+            instantiation_args: FxHashMap::default(),
             current_def: self.current_def,
             param_env: self.param_env.clone(),
             visible_traits: self.visible_traits.clone(),
@@ -885,7 +890,7 @@ impl<'ctx> SolverDriver<'ctx> {
     fn drain_queue(&mut self) -> bool {
         let mut made_progress = false;
         while let Some(obligation) = self.solver.obligations.pop_front() {
-            match self.solver.solve(obligation.clone()) {
+            match self.solver.solve(&obligation) {
                 SolverResult::Deferred => self.deferred.push_back(obligation),
                 SolverResult::Solved(mut obligations) => {
                     made_progress = true;
