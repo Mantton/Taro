@@ -1053,6 +1053,16 @@ impl<'arena> CompilerInterners<'arena> {
         ik
     }
 
+    pub fn intern_ty_list_slice(&self, items: &[Ty<'arena>]) -> &'arena [Ty<'arena>] {
+        self.type_lists
+            .intern_ref(items, || {
+                let owned = items.to_vec();
+                let stored = self.arenas.type_lists.alloc(owned);
+                InternedInSet(stored)
+            })
+            .0
+    }
+
     pub fn intern_generic_args(
         &self,
         items: Vec<GenericArgument<'arena>>,
@@ -1065,6 +1075,19 @@ impl<'arena> CompilerInterners<'arena> {
             })
             .0;
         ik
+    }
+
+    pub fn intern_generic_args_slice(
+        &self,
+        items: &[GenericArgument<'arena>],
+    ) -> &'arena [GenericArgument<'arena>] {
+        self.generic_arguments
+            .intern_ref(items, || {
+                let owned = items.to_vec();
+                let stored = self.arenas.generic_arguments.alloc(owned);
+                InternedInSet(stored)
+            })
+            .0
     }
 }
 

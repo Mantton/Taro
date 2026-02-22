@@ -128,28 +128,29 @@ impl Parser {
 }
 
 impl Parser {
-    fn current(&self) -> Option<Spanned<Token>> {
+    fn current(&self) -> Option<&Spanned<Token>> {
         if self.cursor >= self.file.tokens.len() {
             return None;
         }
-        Some(self.file.tokens[self.cursor].clone())
+        Some(&self.file.tokens[self.cursor])
     }
 
-    fn previous(&self) -> Option<Spanned<Token>> {
+    fn previous(&self) -> Option<&Spanned<Token>> {
         if self.cursor == 0 {
             return self.current();
         }
         if self.cursor - 1 >= self.file.tokens.len() {
             return None;
         }
-        Some(self.file.tokens[self.cursor - 1].clone())
+        Some(&self.file.tokens[self.cursor - 1])
     }
 
-    fn current_token(&self) -> Token {
+    fn current_token(&self) -> &Token {
+        static EOF_TOKEN: Token = Token::EOF;
         if let Some(token) = self.current() {
-            return token.value;
+            return &token.value;
         }
-        Token::EOF
+        &EOF_TOKEN
     }
 
     fn is_at_end(&self) -> bool {
@@ -171,12 +172,12 @@ impl Parser {
     }
 
     fn matches(&self, token: Token) -> bool {
-        self.current_token() == token
+        self.current_token() == &token
     }
 
     fn matches_any(&self, tokens: &[Token]) -> bool {
         for token in tokens {
-            if self.matches(token.clone()) {
+            if self.current_token() == token {
                 return true;
             }
         }
@@ -186,7 +187,7 @@ impl Parser {
     fn matches_question(&self) -> bool {
         matches!(
             self.current_token(),
-            Token::Question | Token::QuestionQuestion
+            &Token::Question | &Token::QuestionQuestion
         )
     }
 
@@ -194,7 +195,7 @@ impl Parser {
         let Some(current) = self.current() else {
             return;
         };
-        if current.value != Token::QuestionQuestion {
+        if !matches!(current.value, Token::QuestionQuestion) {
             return;
         }
         let span = current.span;
@@ -223,7 +224,7 @@ impl Parser {
         let Some(current) = self.current() else {
             return;
         };
-        if current.value != Token::AmpAmp {
+        if !matches!(current.value, Token::AmpAmp) {
             return;
         }
         let span = current.span;
@@ -250,11 +251,11 @@ impl Parser {
 
     fn eat_question(&mut self) -> bool {
         match self.current_token() {
-            Token::Question => {
+            &Token::Question => {
                 self.bump();
                 true
             }
-            Token::QuestionQuestion => {
+            &Token::QuestionQuestion => {
                 self.split_question_token();
                 self.bump();
                 true
@@ -265,11 +266,11 @@ impl Parser {
 
     fn eat_amp(&mut self) -> bool {
         match self.current_token() {
-            Token::Amp => {
+            &Token::Amp => {
                 self.bump();
                 true
             }
-            Token::AmpAmp => {
+            &Token::AmpAmp => {
                 self.split_amp_token();
                 self.bump();
                 true
@@ -282,7 +283,10 @@ impl Parser {
         if self.eat_question() {
             Ok(())
         } else {
-            Err(self.err_at_current(ParserError::Expected(Token::Question, self.current_token())))
+            Err(self.err_at_current(ParserError::Expected(
+                Token::Question,
+                self.current_token().clone(),
+            )))
         }
     }
 
@@ -290,12 +294,15 @@ impl Parser {
         if self.eat_amp() {
             Ok(())
         } else {
-            Err(self.err_at_current(ParserError::Expected(Token::Amp, self.current_token())))
+            Err(self.err_at_current(ParserError::Expected(
+                Token::Amp,
+                self.current_token().clone(),
+            )))
         }
     }
 
     fn eat(&mut self, token: Token) -> bool {
-        if self.matches(token) {
+        if self.current_token() == &token {
             self.bump();
             return true;
         }
@@ -303,27 +310,31 @@ impl Parser {
         false
     }
 
-    fn next(&mut self, index: usize) -> Option<Token> {
+    fn next(&self, index: usize) -> Option<&Token> {
         let k = self.cursor + index;
         if k >= self.file.tokens.len() {
             return None;
         }
 
-        return Some(self.file.tokens[k].value.clone());
+        Some(&self.file.tokens[k].value)
     }
 
-    fn next_matches(&mut self, index: usize, token: Token) -> bool {
+    fn next_matches(&self, index: usize, token: Token) -> bool {
         let Some(tok) = self.next(index) else {
             return false;
         };
 
-        tok == token
+        tok == &token
     }
     fn expect(&mut self, token: Token) -> R<()> {
-        if self.eat(token.clone()) {
+        if self.current_token() == &token {
+            self.bump();
             Ok(())
         } else {
-            return Err(self.err_at_current(ParserError::Expected(token, self.current_token())));
+            Err(self.err_at_current(ParserError::Expected(
+                token,
+                self.current_token().clone(),
+            )))
         }
     }
 
@@ -343,7 +354,7 @@ impl Parser {
 }
 
 impl Parser {
-    fn intern_symbol(&mut self, text: &str) -> Symbol {
+    fn intern_symbol(&self, text: &str) -> Symbol {
         Symbol::new(text)
     }
 
@@ -583,8 +594,9 @@ impl Parser {
         self.expect(Token::Extern)?;
         let abi = match self.current_token() {
             Token::String { value } => {
+                let abi = self.intern_symbol(value);
                 self.bump();
-                self.intern_symbol(&value)
+                abi
             }
             _ => return Err(self.err_at_current(ParserError::ExpectedExternAbiString)),
         };
@@ -1022,16 +1034,12 @@ impl Parser {
 
 impl Parser {
     fn parse_identifier(&mut self) -> R<Identifier> {
-        let Some(current) = self.current() else {
-            return Err(self.err_at_current(ParserError::ExpectedIdentifier));
-        };
-
-        let span = current.span;
-        match current.value {
+        let span = self.lo_span();
+        match self.current_token() {
             Token::Identifier { value: symbol } => {
                 let v = Identifier {
                     span,
-                    symbol: self.intern_symbol(&symbol),
+                    symbol: self.intern_symbol(symbol),
                 };
                 self.bump();
                 return Ok(v);
@@ -1043,16 +1051,12 @@ impl Parser {
     }
 
     fn parse_member_identifier(&mut self) -> R<Identifier> {
-        let Some(current) = self.current() else {
-            return Err(self.err_at_current(ParserError::ExpectedIdentifier));
-        };
-
-        let span = current.span;
-        match current.value {
+        let span = self.lo_span();
+        match self.current_token() {
             Token::Identifier { value: symbol } => {
                 let v = Identifier {
                     span,
-                    symbol: self.intern_symbol(&symbol),
+                    symbol: self.intern_symbol(symbol),
                 };
                 self.bump();
                 Ok(v)
@@ -1202,10 +1206,19 @@ impl Parser {
     /// Parse a literal value for use in attributes (returns ast::Literal directly)
     fn parse_attribute_literal_value(&mut self) -> R<Literal> {
         let literal = match self.current_token() {
-            Token::Integer { value, base } => Literal::Integer { value, base },
-            Token::Float { value, .. } => Literal::Float { value },
-            Token::String { value } => Literal::String { value },
-            Token::Rune { value } => Literal::Rune { value },
+            Token::Integer { value, base } => Literal::Integer {
+                value: value.clone(),
+                base: *base,
+            },
+            Token::Float { value, .. } => Literal::Float {
+                value: value.clone(),
+            },
+            Token::String { value } => Literal::String {
+                value: value.clone(),
+            },
+            Token::Rune { value } => Literal::Rune {
+                value: value.clone(),
+            },
             Token::True => Literal::Bool(true),
             Token::False => Literal::Bool(false),
             Token::Nil => Literal::Nil,
@@ -1311,8 +1324,9 @@ impl Parser {
         // Parse string value
         let value = match self.current_token() {
             Token::String { value } => {
+                let value = self.intern_symbol(value);
                 self.bump();
-                self.intern_symbol(&value)
+                value
             }
             _ => return Err(self.err_at_current(ParserError::ExpectedExpression)),
         };
@@ -3335,10 +3349,19 @@ impl Parser {
 impl Parser {
     fn parse_literal(&mut self) -> R<Box<Expression>> {
         let literal = match self.current_token() {
-            Token::Integer { value, base } => Literal::Integer { value, base },
-            Token::Float { value, .. } => Literal::Float { value },
-            Token::String { value } => Literal::String { value },
-            Token::Rune { value } => Literal::Rune { value },
+            Token::Integer { value, base } => Literal::Integer {
+                value: value.clone(),
+                base: *base,
+            },
+            Token::Float { value, .. } => Literal::Float {
+                value: value.clone(),
+            },
+            Token::String { value } => Literal::String {
+                value: value.clone(),
+            },
+            Token::Rune { value } => Literal::Rune {
+                value: value.clone(),
+            },
             Token::True => Literal::Bool(true),
             Token::False => Literal::Bool(false),
             Token::Nil => Literal::Nil,
@@ -3766,7 +3789,7 @@ impl Parser {
 }
 
 impl Parser {
-    fn bin_op_non_assign(k: Token) -> Option<BinaryOperator> {
+    fn bin_op_non_assign(k: &Token) -> Option<BinaryOperator> {
         match k {
             Token::Plus => Some(BinaryOperator::Add),
             Token::Minus => Some(BinaryOperator::Sub),
@@ -3795,7 +3818,7 @@ impl Parser {
         }
     }
 
-    fn bin_op_assign(k: Token) -> Option<BinaryOperator> {
+    fn bin_op_assign(k: &Token) -> Option<BinaryOperator> {
         match k {
             Token::PlusEq => Some(BinaryOperator::Add),
             Token::MinusEq => Some(BinaryOperator::Sub),
@@ -3942,27 +3965,27 @@ impl Delimiter {
     }
 }
 
-fn is_generic_type_disambiguating_token(token: Token) -> bool {
+fn is_generic_type_disambiguating_token(token: &Token) -> bool {
     use Token::*;
 
     if matches!(
         token,
-        RParen
-            | RBracket
-            | LBrace
-            | RBrace
-            | Dot
-            | Comma
-            | Semicolon
-            | EOF
-            | QuestionDot
-            | Bang
-            | Colon
-            | Question
-            | Assign
-            | As
-            | RChevron
-            | For // For `impl Interface[T] for Type` syntax
+        &RParen
+            | &RBracket
+            | &LBrace
+            | &RBrace
+            | &Dot
+            | &Comma
+            | &Semicolon
+            | &EOF
+            | &QuestionDot
+            | &Bang
+            | &Colon
+            | &Question
+            | &Assign
+            | &As
+            | &RChevron
+            | &For // For `impl Interface[T] for Type` syntax
     ) {
         return true;
     }

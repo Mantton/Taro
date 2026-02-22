@@ -24,10 +24,12 @@ use std::rc::Rc;
 /// Normalize a type using the given inference context and parameter environment.
 /// The inference context is used to resolve inference variables before normalizing.
 pub fn normalize_ty<'ctx>(icx: Rc<InferCtx<'ctx>>, ty: Ty<'ctx>, env: &ParamEnv<'ctx>) -> Ty<'ctx> {
+    let mut in_progress = FxHashSet::default();
+    in_progress.reserve(env.normalization_set_capacity_hint());
     let mut folder = NormalizeFolder {
         icx,
         env,
-        in_progress: FxHashSet::default(),
+        in_progress,
     };
     ty.fold_with(&mut folder)
 }
@@ -228,14 +230,13 @@ impl<'a, 'ctx> TypeFolder<'ctx> for NormalizeFolder<'a, 'ctx> {
     }
 
     fn fold_ty(&mut self, ty: Ty<'ctx>) -> Ty<'ctx> {
+        // Resolve one level of inference first; recursive folding handles nested structure.
+        let ty = self.icx.shallow_resolve(ty);
+
         // Break normalization cycles such as `T.Item == U` and `U == T.Item`.
         if !self.in_progress.insert(ty) {
             return ty;
         }
-        let original_ty = ty;
-
-        // First resolve any inference variables
-        let ty = self.icx.resolve_vars_if_possible(ty);
 
         let normalized = match ty.kind() {
             TyKind::Alias {
@@ -247,14 +248,20 @@ impl<'a, 'ctx> TypeFolder<'ctx> for NormalizeFolder<'a, 'ctx> {
                 // This handles parametric normalization like `T: Container[Item=int]`
                 // where we want `T.Item` to normalize to `int`.
 
-                let equiv_types = self.env.equivalent_types(ty);
+                if self.env.has_type_equalities() {
+                    let equiv_types = self.env.equivalent_types(ty);
 
-                // Prefer non-alias equalities first (including parameters).
-                // Cycle prevention is handled by `in_progress`.
-                if let Some(&resolved) = equiv_types.iter().find(|&&t| {
-                    t != ty && !matches!(t.kind(), TyKind::Alias { .. } | TyKind::Infer(_))
-                }) {
-                    resolved.fold_with(self)
+                    // Prefer non-alias equalities first (including parameters).
+                    // Cycle prevention is handled by `in_progress`.
+                    if let Some(&resolved) = equiv_types.iter().find(|&&t| {
+                        t != ty && !matches!(t.kind(), TyKind::Alias { .. } | TyKind::Infer(_))
+                    }) {
+                        resolved.fold_with(self)
+                    } else if let Some(resolved) = self.resolve_projection(def_id, args) {
+                        resolved.fold_with(self)
+                    } else {
+                        ty.super_fold_with(self)
+                    }
                 } else if let Some(resolved) = self.resolve_projection(def_id, args) {
                     resolved.fold_with(self)
                 } else {
@@ -269,42 +276,46 @@ impl<'a, 'ctx> TypeFolder<'ctx> for NormalizeFolder<'a, 'ctx> {
             // Handle type parameters with equality constraints
             // e.g., for `where T == string`, normalize T to string
             TyKind::Parameter(_) => {
-                let equiv_types = self.env.equivalent_types(ty);
-                // Find a concrete type equivalent to this parameter
-                // Prefer non-parameter, non-alias types
-                if let Some(&resolved) = equiv_types.iter().find(|&&t| {
-                    !matches!(
-                        t.kind(),
-                        TyKind::Parameter(_) | TyKind::Alias { .. } | TyKind::Infer(_)
-                    )
-                }) {
-                    resolved.fold_with(self)
-                } else if let Some(&resolved) = equiv_types.iter().find(|&&t| {
-                    if t == ty || matches!(t.kind(), TyKind::Parameter(_) | TyKind::Infer(_)) {
-                        return false;
-                    }
-                    // Avoid selecting a projection currently being normalized.
-                    if matches!(
-                        t.kind(),
-                        TyKind::Alias {
-                            kind: AliasKind::Projection,
-                            ..
-                        }
-                    ) && self.in_progress.contains(&t)
-                    {
-                        return false;
-                    }
-                    true
-                }) {
-                    resolved.fold_with(self)
-                } else {
+                if !self.env.has_type_equalities() {
                     ty
+                } else {
+                    let equiv_types = self.env.equivalent_types(ty);
+                    // Find a concrete type equivalent to this parameter
+                    // Prefer non-parameter, non-alias types
+                    if let Some(&resolved) = equiv_types.iter().find(|&&t| {
+                        !matches!(
+                            t.kind(),
+                            TyKind::Parameter(_) | TyKind::Alias { .. } | TyKind::Infer(_)
+                        )
+                    }) {
+                        resolved.fold_with(self)
+                    } else if let Some(&resolved) = equiv_types.iter().find(|&&t| {
+                        if t == ty || matches!(t.kind(), TyKind::Parameter(_) | TyKind::Infer(_)) {
+                            return false;
+                        }
+                        // Avoid selecting a projection currently being normalized.
+                        if matches!(
+                            t.kind(),
+                            TyKind::Alias {
+                                kind: AliasKind::Projection,
+                                ..
+                            }
+                        ) && self.in_progress.contains(&t)
+                        {
+                            return false;
+                        }
+                        true
+                    }) {
+                        resolved.fold_with(self)
+                    } else {
+                        ty
+                    }
                 }
             }
             _ => ty.super_fold_with(self),
         };
 
-        self.in_progress.remove(&original_ty);
+        self.in_progress.remove(&ty);
         normalized
     }
 }

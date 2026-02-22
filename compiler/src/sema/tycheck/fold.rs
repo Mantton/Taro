@@ -240,32 +240,35 @@ fn fold_generic_args<'ctx, F: TypeFolder<'ctx> + ?Sized>(
         return args;
     }
 
-    let mut changed = false;
-    let mut folded_args = Vec::with_capacity(args.len());
-    for arg in args.iter() {
+    let mut folded_args: Option<Vec<GenericArgument<'ctx>>> = None;
+    for (idx, arg) in args.iter().enumerate() {
         let folded = match arg {
             GenericArgument::Type(ty) => {
                 let folded_ty = ty.fold_with(folder);
-                if folded_ty != *ty {
-                    changed = true;
-                }
                 GenericArgument::Type(folded_ty)
             }
             GenericArgument::Const(c) => {
                 let folded_const = fold_const(*c, folder);
-                if folded_const != *c {
-                    changed = true;
-                }
                 GenericArgument::Const(folded_const)
             }
         };
-        folded_args.push(folded);
+
+        if let Some(buf) = folded_args.as_mut() {
+            buf.push(folded);
+            continue;
+        }
+
+        if folded != *arg {
+            let mut buf = Vec::with_capacity(args.len());
+            buf.extend_from_slice(&args[..idx]);
+            buf.push(folded);
+            folded_args = Some(buf);
+        }
     }
 
-    if changed {
-        gcx.store.interners.intern_generic_args(folded_args)
-    } else {
-        args
+    match folded_args {
+        Some(folded_args) => gcx.store.interners.intern_generic_args(folded_args),
+        None => args,
     }
 }
 
@@ -278,20 +281,26 @@ fn fold_ty_list<'ctx, F: TypeFolder<'ctx> + ?Sized>(
         return items;
     }
 
-    let mut changed = false;
-    let mut folded = Vec::with_capacity(items.len());
-    for ty in items.iter() {
+    let mut folded: Option<Vec<Ty<'ctx>>> = None;
+    for (idx, ty) in items.iter().enumerate() {
         let folded_ty = ty.fold_with(folder);
-        if folded_ty != *ty {
-            changed = true;
+
+        if let Some(buf) = folded.as_mut() {
+            buf.push(folded_ty);
+            continue;
         }
-        folded.push(folded_ty);
+
+        if folded_ty != *ty {
+            let mut buf = Vec::with_capacity(items.len());
+            buf.extend_from_slice(&items[..idx]);
+            buf.push(folded_ty);
+            folded = Some(buf);
+        }
     }
 
-    if changed {
-        gcx.store.interners.intern_ty_list(folded)
-    } else {
-        items
+    match folded {
+        Some(folded) => gcx.store.interners.intern_ty_list(folded),
+        None => items,
     }
 }
 

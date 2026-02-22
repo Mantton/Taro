@@ -137,6 +137,12 @@ impl<'a, T: ?Sized> Borrow<T> for InternedInSet<'a, T> {
     }
 }
 
+impl<'a, T> Borrow<[T]> for InternedInSet<'a, Vec<T>> {
+    fn borrow(&self) -> &[T] {
+        self.0.as_slice()
+    }
+}
+
 impl<'tcx, T> PartialEq for InternedInSet<'tcx, T>
 where
     T: ?Sized + PartialEq,
@@ -169,6 +175,22 @@ impl<K: Eq + Hash + Copy> WrappedHashSet<K> {
             return *v;
         } else {
             let v = make(value);
+            set.insert(v);
+            v
+        }
+    }
+
+    #[inline]
+    pub fn intern_ref<Q>(&self, value: &Q, make: impl FnOnce() -> K) -> K
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Hash + Eq,
+    {
+        let mut set = self.wrapped.borrow_mut();
+        if let Some(v) = set.get(value) {
+            *v
+        } else {
+            let v = make();
             set.insert(v);
             v
         }

@@ -10,6 +10,7 @@ use crate::sema::{
 type UnificationResult<'ctx> = Result<(), TypeError<'ctx>>;
 
 impl<'ctx> ConstraintSolver<'ctx> {
+    #[inline(always)]
     pub fn unify(&self, a: Ty<'ctx>, b: Ty<'ctx>) -> UnificationResult<'ctx> {
         if a == b {
             return Ok(());

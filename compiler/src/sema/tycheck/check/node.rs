@@ -3129,7 +3129,7 @@ impl<'ctx> Checker<'ctx> {
             let current_args = gcx
                 .store
                 .interners
-                .intern_generic_args(current_args.to_vec());
+                .intern_generic_args_slice(current_args);
             if param.index < parent_count {
                 if let Some(arg) = base_args.get(param.index) {
                     return *arg;

@@ -306,11 +306,16 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let gcx = self.gcx();
         let mut members = Vec::new();
         let mut seen: FxHashSet<DefinitionID> = FxHashSet::default();
+        members.reserve(8);
+        seen.reserve(8);
 
         // First: Look up inherent instance methods (always available)
         let mut collect_inherent = |db: &crate::compile::context::TypeDatabase<'ctx>| {
             if let Some(idx) = db.type_head_to_members.get(&head) {
                 if let Some(set) = idx.inherent_instance.get(&name) {
+                    let extra = set.members.len();
+                    members.reserve(extra);
+                    seen.reserve(extra);
                     for &id in &set.members {
                         if seen.insert(id) {
                             members.push(id);
@@ -333,6 +338,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 // This matches the previous behavior and keeps tests passing
                 for ((_, method_name), set) in idx.trait_methods.iter() {
                     if *method_name == name {
+                        let extra = set.members.len();
+                        members.reserve(extra);
+                        seen.reserve(extra);
                         for &id in &set.members {
                             if seen.insert(id) {
                                 members.push(id);

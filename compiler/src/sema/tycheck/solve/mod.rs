@@ -570,7 +570,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let current_args = gcx
             .store
             .interners
-            .intern_generic_args(current_args.to_vec());
+            .intern_generic_args_slice(current_args);
 
         match &param.kind {
             GenericParameterDefinitionKind::Type {
