@@ -237,7 +237,7 @@ fn instantiate_generic_args_with_args<'ctx>(
                 out.push(GenericArgument::Type(normalized));
             }
             GenericArgument::Const(c) => {
-                let instantiated = instantiate_const_with_args(gcx, c.clone(), args);
+                let instantiated = instantiate_const_with_args(gcx, *c, args);
                 out.push(GenericArgument::Const(instantiated));
             }
         }
@@ -327,7 +327,7 @@ fn generic_args_contain_infer(args: GenericArguments<'_>) -> bool {
 fn generic_arg_contains_infer(arg: &GenericArgument<'_>) -> bool {
     match arg {
         GenericArgument::Type(ty) => ty_contains_infer(*ty),
-        GenericArgument::Const(c) => const_contains_infer(c.clone()),
+        GenericArgument::Const(c) => const_contains_infer(*c),
     }
 }
 

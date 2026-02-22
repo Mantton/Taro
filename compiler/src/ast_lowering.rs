@@ -164,7 +164,7 @@ impl Actor<'_, '_> {
                 return node
                     .declarations
                     .into_iter()
-                    .map(|decl| self.lower_extern_declaration(decl, node.abi.clone()))
+                    .map(|decl| self.lower_extern_declaration(decl, node.abi))
                     .collect();
             }
             ast::DeclarationKind::Constant(node) => {
@@ -200,9 +200,9 @@ impl Actor<'_, '_> {
         // In normal builds, test declarations are ignored unless test mode is active.
         if !self.context.config.test_mode {
             for attr in attributes {
-                let sym = attr.identifier.symbol.clone();
-                if self.context.symbol_eq(sym.clone(), "test")
-                    || self.context.symbol_eq(sym.clone(), "skip")
+                let sym = attr.identifier.symbol;
+                if self.context.symbol_eq(sym, "test")
+                    || self.context.symbol_eq(sym, "skip")
                     || self.context.symbol_eq(sym, "expectPanic")
                 {
                     return false;
@@ -213,7 +213,7 @@ impl Actor<'_, '_> {
         for attr in attributes {
             if self
                 .context
-                .symbol_eq(attr.identifier.symbol.clone(), "cfg")
+                .symbol_eq(attr.identifier.symbol, "cfg")
             {
                 if !self.evaluate_cfg(attr) {
                     return false;
@@ -249,7 +249,7 @@ impl Actor<'_, '_> {
         for arg in &args.items {
             match arg {
                 ast::AttributeArg::KeyValue { key, value, .. } => {
-                    let key_text = self.context.symbol_text(key.symbol.clone());
+                    let key_text = self.context.symbol_text(key.symbol);
                     let key_str = key_text.as_str();
                     let value_str = match value {
                         ast::Literal::String { value } => value.as_str(),
@@ -302,7 +302,7 @@ impl Actor<'_, '_> {
                 }
                 ast::AttributeArg::Flag { key, .. } => {
                     // @cfg(debug)
-                    let key_text = self.context.symbol_text(key.symbol.clone());
+                    let key_text = self.context.symbol_text(key.symbol);
                     let key_str = key_text.as_str();
                     match key_str {
                         "debug" => {
@@ -341,9 +341,9 @@ impl Actor<'_, '_> {
     fn eval_cfg_expr_inner(&self, expr: &ast::CfgExpr, target: &TargetInfo) -> bool {
         match expr {
             ast::CfgExpr::Predicate { name, value, .. } => {
-                let name_text = self.context.symbol_text(name.symbol.clone());
+                let name_text = self.context.symbol_text(name.symbol);
                 let name_str = name_text.as_str();
-                let value_text = self.context.symbol_text(value.clone());
+                let value_text = self.context.symbol_text(*value);
                 let value_str = value_text.as_str();
 
                 match name_str {
@@ -1131,7 +1131,7 @@ impl Actor<'_, '_> {
             id: iter_pattern_id,
             span,
             kind: hir::PatternKind::Binding {
-                name: iter_ident.clone(),
+                name: iter_ident,
                 mode: hir::BindingMode::ByValue,
             },
         };
@@ -1143,7 +1143,7 @@ impl Actor<'_, '_> {
                 let make_iter_def = iterable_reqs
                     .methods
                     .iter()
-                    .find(|m| self.context.symbol_eq(m.name.clone(), "makeIterator"))?;
+                    .find(|m| self.context.symbol_eq(m.name, "makeIterator"))?;
 
                 let iterable_path = hir::ResolvedPath::Resolved(hir::Path {
                     span,
@@ -1228,7 +1228,7 @@ impl Actor<'_, '_> {
                 let next_def = iterator_reqs
                     .methods
                     .iter()
-                    .find(|m| self.context.symbol_eq(m.name.clone(), "next"))?;
+                    .find(|m| self.context.symbol_eq(m.name, "next"))?;
 
                 let iterator_path = hir::ResolvedPath::Resolved(hir::Path {
                     span,
@@ -1301,7 +1301,7 @@ impl Actor<'_, '_> {
             id: element_pattern_id,
             span,
             kind: hir::PatternKind::Binding {
-                name: element_ident.clone(),
+                name: element_ident,
                 mode: hir::BindingMode::ByValue,
             },
         };
@@ -1700,7 +1700,7 @@ impl Actor<'_, '_> {
                     id: self.next_index(),
                     span: node.span,
                     kind: hir::PatternKind::Binding {
-                        name: dictionary_ident.clone(),
+                        name: dictionary_ident,
                         mode: hir::BindingMode::ByValue,
                     },
                 };
@@ -1742,7 +1742,7 @@ impl Actor<'_, '_> {
                     let value = self.lower_expression(pair.value);
 
                     let dictionary_path = self.mk_single_segment_resolved_path(
-                        dictionary_ident.clone(),
+                        dictionary_ident,
                         Resolution::LocalVariable(local_id),
                     );
                     let target =
@@ -1771,7 +1771,7 @@ impl Actor<'_, '_> {
                     let call = self.mk_expression(
                         hir::ExpressionKind::MethodCall {
                             receiver: target,
-                            name: insert_ident.clone(),
+                            name: insert_ident,
                             arguments,
                         },
                         node.span,
@@ -1844,7 +1844,7 @@ impl Actor<'_, '_> {
                     .fields
                     .iter()
                     .map(|f| hir::ExpressionField {
-                        label: f.label.clone(),
+                        label: f.label,
                         expression: self.lower_expression(f.expression.clone()),
                         span: f.span,
                     })
@@ -1885,7 +1885,7 @@ impl Actor<'_, '_> {
         let mut segments = Vec::with_capacity(parts.len());
         segments.push(hir::PathSegment {
             id: self.next_index(),
-            identifier: base_ident.clone(),
+            identifier: *base_ident,
             arguments: None,
             span: base_ident.span,
             resolution: last_resolution.clone(),
@@ -1902,7 +1902,7 @@ impl Actor<'_, '_> {
                     last_resolution = self.lower_resolution(res);
                     segments.push(hir::PathSegment {
                         id: self.next_index(),
-                        identifier: ident.clone(),
+                        identifier: ident,
                         arguments: None,
                         span: ident.span,
                         resolution: last_resolution.clone(),
@@ -1951,7 +1951,7 @@ impl Actor<'_, '_> {
                 break;
             };
 
-            segs.push(seg_name.clone());
+            segs.push(*seg_name);
             base_expr = inner.clone();
         }
 
@@ -1969,7 +1969,7 @@ impl Actor<'_, '_> {
         for (idx, ident) in segs.into_iter().enumerate() {
             let seg = hir::PathSegment {
                 id: self.next_index(),
-                identifier: ident.clone(),
+                identifier: ident,
                 arguments: None,
                 span: ident.span,
                 resolution: Resolution::Error,
@@ -1994,12 +1994,12 @@ impl Actor<'_, '_> {
     ) -> Option<()> {
         match &expr.kind {
             ast::ExpressionKind::Identifier(ident) => {
-                out.push((expr.id, ident.clone()));
+                out.push((expr.id, *ident));
                 Some(())
             }
             ast::ExpressionKind::Member { target, name } => {
                 self.collect_member_chain_parts(target, out)?;
-                out.push((expr.id, name.clone()));
+                out.push((expr.id, *name));
                 Some(())
             }
             _ => None,
@@ -2011,7 +2011,7 @@ impl Actor<'_, '_> {
     fn try_expr_as_resolved_path(&mut self, expr: &ast::Expression) -> Option<hir::ResolvedPath> {
         match &expr.kind {
             ast::ExpressionKind::Identifier(ident) => {
-                let resolved_path = self.lower_identifier_expression_path(expr.id, ident.clone());
+                let resolved_path = self.lower_identifier_expression_path(expr.id, *ident);
                 Some(resolved_path)
             }
             ast::ExpressionKind::Member { target, name } => {
@@ -2026,7 +2026,7 @@ impl Actor<'_, '_> {
                         let path = self.try_lower_resolved_member_chain_as_path(
                             expr.id,
                             target,
-                            name.clone(),
+                            *name,
                             expr.span,
                         )?;
                         Some(hir::ResolvedPath::Resolved(path))
@@ -2034,7 +2034,7 @@ impl Actor<'_, '_> {
                     Some(ExpressionResolutionState::DeferredAssociatedType) => {
                         let path = self.lower_deferred_associated_type_member_chain(
                             target.clone(),
-                            name.clone(),
+                            *name,
                         );
                         Some(path)
                     }
@@ -2281,7 +2281,7 @@ impl Actor<'_, '_> {
             id: val_pattern_id,
             span: lhs_span,
             kind: hir::PatternKind::Binding {
-                name: val_ident.clone(),
+                name: val_ident,
                 mode: hir::BindingMode::ByValue,
             },
         };
@@ -2356,7 +2356,7 @@ impl Actor<'_, '_> {
         let variant = enum_def
             .variants
             .iter()
-            .find(|v| self.context.symbol_eq(v.name.clone(), variant_name))?;
+            .find(|v| self.context.symbol_eq(v.name, variant_name))?;
 
         // Determine the constructor kind based on variant fields
         let ctor_kind = match variant.kind {
@@ -2665,7 +2665,7 @@ impl Actor<'_, '_> {
     ) -> hir::ResolvedPath {
         let segment = hir::PathSegment {
             id: self.next_index(),
-            identifier: identifier.clone(),
+            identifier: identifier,
             arguments: None,
             span: identifier.span,
             resolution: resolution.clone(),
@@ -2685,7 +2685,7 @@ impl Actor<'_, '_> {
         let resolution = self.get_resolution(id);
         let segment = hir::PathSegment {
             id: self.next_index(),
-            identifier: identifier.clone(),
+            identifier: identifier,
             arguments: None,
             span: identifier.span,
             resolution: resolution.clone(),
@@ -2793,7 +2793,7 @@ impl Actor<'_, '_> {
                 id: binding_id,
                 span: expr.span,
                 kind: hir::PatternKind::Binding {
-                    name: binding_ident.clone(),
+                    name: binding_ident,
                     mode: hir::BindingMode::ByValue,
                 },
             };

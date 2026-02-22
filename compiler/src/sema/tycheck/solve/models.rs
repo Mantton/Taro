@@ -207,7 +207,7 @@ pub struct MethodCallData<'ctx> {
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct ApplyArgument<'ctx> {
     pub id: NodeID,
     pub label: Option<Identifier>,
@@ -262,7 +262,7 @@ pub struct StructLiteralGoalData<'ctx> {
     pub fields: Vec<StructLiteralField<'ctx>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct StructLiteralField<'ctx> {
     pub name: crate::span::Symbol,
     pub node_id: NodeID,

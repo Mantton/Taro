@@ -1,10 +1,12 @@
 use crate::{
     compile::context::GlobalContext,
     sema::models::{
-        Const, EnumDefinition, EnumVariant, EnumVariantField, EnumVariantKind, GenericArgument,
-        InterfaceReference, StructDefinition, StructField, Ty, TyKind,
+        AssociatedTypeBinding, Const, EnumDefinition, EnumVariant, EnumVariantField,
+        EnumVariantKind, GenericArgument, InterfaceReference, StructDefinition, StructField, Ty,
+        TyKind,
     },
 };
+use std::ptr;
 
 /// The transformer – you implement this once per pass.
 pub trait TypeFolder<'ctx> {
@@ -60,7 +62,11 @@ pub trait TypeSuperFoldable<'ctx>: TypeFoldable<'ctx> {
 impl<'ctx> TypeSuperFoldable<'ctx> for Ty<'ctx> {
     fn super_fold_with<F: TypeFolder<'ctx> + ?Sized>(self, folder: &mut F) -> Self {
         let folded_kind = self.kind().super_fold_with(folder);
-        Ty::new(folded_kind, folder.gcx())
+        if self.kind_ref() == &folded_kind {
+            self
+        } else {
+            Ty::new(folded_kind, folder.gcx())
+        }
     }
 }
 
@@ -76,78 +82,110 @@ impl<'ctx> TypeSuperFoldable<'ctx> for TyKind<'ctx> {
                 let new_element = element.fold_with(folder);
                 let new_len = fold_const(len, folder);
 
-                Array {
-                    element: new_element,
-                    len: new_len,
+                if new_element == element && new_len == len {
+                    Array { element, len }
+                } else {
+                    Array {
+                        element: new_element,
+                        len: new_len,
+                    }
                 }
             }
-            Pointer(t, m) => Pointer(t.fold_with(folder), m),
-            Reference(t, m) => Reference(t.fold_with(folder), m),
+            Pointer(t, m) => {
+                let new_t = t.fold_with(folder);
+                if new_t == t {
+                    Pointer(t, m)
+                } else {
+                    Pointer(new_t, m)
+                }
+            }
+            Reference(t, m) => {
+                let new_t = t.fold_with(folder);
+                if new_t == t {
+                    Reference(t, m)
+                } else {
+                    Reference(new_t, m)
+                }
+            }
 
             Adt(def, args) => {
-                let args = fold_generic_args(folder.gcx(), args, folder);
-                Adt(def, args)
+                let folded_args = fold_generic_args(folder.gcx(), args, folder);
+                if ptr::eq(args, folded_args) {
+                    Adt(def, args)
+                } else {
+                    Adt(def, folded_args)
+                }
             }
 
             // Tuple - fold each element
             Tuple(ts) => {
-                let folded = ts.iter().map(|t| t.fold_with(folder)).collect::<Vec<_>>();
-                let folded = folder.gcx().store.interners.intern_ty_list(folded);
-                Tuple(folded)
+                let folded = fold_ty_list(folder.gcx(), ts, folder);
+                if ptr::eq(ts, folded) {
+                    Tuple(ts)
+                } else {
+                    Tuple(folded)
+                }
             }
 
             // Function type - fold inputs and output
             FnPointer { inputs, output } => {
-                let folded_inputs = inputs
-                    .iter()
-                    .map(|t| t.fold_with(folder))
-                    .collect::<Vec<_>>();
-                let folded_inputs = folder.gcx().store.interners.intern_ty_list(folded_inputs);
+                let folded_inputs = fold_ty_list(folder.gcx(), inputs, folder);
                 let folded_output = output.fold_with(folder);
 
-                FnPointer {
-                    inputs: folded_inputs,
-                    output: folded_output,
+                if ptr::eq(inputs, folded_inputs) && folded_output == output {
+                    FnPointer { inputs, output }
+                } else {
+                    FnPointer {
+                        inputs: folded_inputs,
+                        output: folded_output,
+                    }
                 }
             }
 
             BoxedExistential { interfaces } => {
-                let folded_refs: Vec<_> = interfaces
-                    .iter()
-                    .map(|iface| {
-                        let bindings: Vec<_> = iface
-                            .bindings
-                            .iter()
-                            .map(|b| crate::sema::models::AssociatedTypeBinding {
-                                name: b.name.clone(),
-                                ty: b.ty.fold_with(folder),
-                            })
-                            .collect();
-                        InterfaceReference {
+                let gcx = folder.gcx();
+                let mut changed = false;
+                let mut folded_refs = Vec::with_capacity(interfaces.len());
+
+                for iface in interfaces.iter() {
+                    let folded_arguments = fold_generic_args(gcx, iface.arguments, folder);
+                    let (folded_bindings, bindings_changed) =
+                        fold_associated_type_bindings(gcx, iface.bindings, folder);
+                    let iface_changed =
+                        !ptr::eq(iface.arguments, folded_arguments) || bindings_changed;
+                    changed |= iface_changed;
+
+                    if iface_changed {
+                        folded_refs.push(InterfaceReference {
                             id: iface.id,
-                            arguments: fold_generic_args(folder.gcx(), iface.arguments, folder),
-                            bindings: folder
-                                .gcx()
-                                .store
-                                .arenas
-                                .global
-                                .alloc_slice_clone(&bindings),
-                        }
-                    })
-                    .collect();
-                let list = folder
-                    .gcx()
-                    .store
-                    .arenas
-                    .global
-                    .alloc_slice_clone(&folded_refs);
-                BoxedExistential { interfaces: list }
+                            arguments: folded_arguments,
+                            bindings: folded_bindings,
+                        });
+                    } else {
+                        folded_refs.push(*iface);
+                    }
+                }
+
+                if changed {
+                    let list = gcx.store.arenas.global.alloc_slice_clone(&folded_refs);
+                    BoxedExistential { interfaces: list }
+                } else {
+                    BoxedExistential { interfaces }
+                }
             }
 
             // Alias type - fold generic args
             Alias { kind, def_id, args } => {
-                let args = fold_generic_args(folder.gcx(), args, folder);
-                Alias { kind, def_id, args }
+                let folded_args = fold_generic_args(folder.gcx(), args, folder);
+                if ptr::eq(args, folded_args) {
+                    Alias { kind, def_id, args }
+                } else {
+                    Alias {
+                        kind,
+                        def_id,
+                        args: folded_args,
+                    }
+                }
             }
 
             Closure {
@@ -159,19 +197,28 @@ impl<'ctx> TypeSuperFoldable<'ctx> for TyKind<'ctx> {
             } => {
                 // Determine implicit closure types must be deeply resolved to eliminate inference variables.
                 let folded_generics = fold_generic_args(folder.gcx(), captured_generics, folder);
-                let folded_inputs = inputs
-                    .iter()
-                    .map(|t| t.fold_with(folder))
-                    .collect::<Vec<_>>();
-                let folded_inputs = folder.gcx().store.interners.intern_ty_list(folded_inputs);
+                let folded_inputs = fold_ty_list(folder.gcx(), inputs, folder);
                 let folded_output = output.fold_with(folder);
 
-                Closure {
-                    closure_def_id,
-                    captured_generics: folded_generics,
-                    inputs: folded_inputs,
-                    output: folded_output,
-                    kind,
+                if ptr::eq(captured_generics, folded_generics)
+                    && ptr::eq(inputs, folded_inputs)
+                    && folded_output == output
+                {
+                    Closure {
+                        closure_def_id,
+                        captured_generics,
+                        inputs,
+                        output,
+                        kind,
+                    }
+                } else {
+                    Closure {
+                        closure_def_id,
+                        captured_generics: folded_generics,
+                        inputs: folded_inputs,
+                        output: folded_output,
+                        kind,
+                    }
                 }
             }
 
@@ -189,15 +236,93 @@ fn fold_generic_args<'ctx, F: TypeFolder<'ctx> + ?Sized>(
     args: &'ctx [GenericArgument<'ctx>],
     folder: &mut F,
 ) -> &'ctx [GenericArgument<'ctx>] {
-    let folded_args: Vec<_> = args
-        .iter()
-        .map(|arg| match arg {
-            GenericArgument::Type(ty) => GenericArgument::Type(ty.fold_with(folder)),
-            GenericArgument::Const(c) => GenericArgument::Const(fold_const(c.clone(), folder)),
-        })
-        .collect();
+    if args.is_empty() {
+        return args;
+    }
 
-    gcx.store.interners.intern_generic_args(folded_args)
+    let mut changed = false;
+    let mut folded_args = Vec::with_capacity(args.len());
+    for arg in args.iter() {
+        let folded = match arg {
+            GenericArgument::Type(ty) => {
+                let folded_ty = ty.fold_with(folder);
+                if folded_ty != *ty {
+                    changed = true;
+                }
+                GenericArgument::Type(folded_ty)
+            }
+            GenericArgument::Const(c) => {
+                let folded_const = fold_const(*c, folder);
+                if folded_const != *c {
+                    changed = true;
+                }
+                GenericArgument::Const(folded_const)
+            }
+        };
+        folded_args.push(folded);
+    }
+
+    if changed {
+        gcx.store.interners.intern_generic_args(folded_args)
+    } else {
+        args
+    }
+}
+
+fn fold_ty_list<'ctx, F: TypeFolder<'ctx> + ?Sized>(
+    gcx: GlobalContext<'ctx>,
+    items: &'ctx [Ty<'ctx>],
+    folder: &mut F,
+) -> &'ctx [Ty<'ctx>] {
+    if items.is_empty() {
+        return items;
+    }
+
+    let mut changed = false;
+    let mut folded = Vec::with_capacity(items.len());
+    for ty in items.iter() {
+        let folded_ty = ty.fold_with(folder);
+        if folded_ty != *ty {
+            changed = true;
+        }
+        folded.push(folded_ty);
+    }
+
+    if changed {
+        gcx.store.interners.intern_ty_list(folded)
+    } else {
+        items
+    }
+}
+
+fn fold_associated_type_bindings<'ctx, F: TypeFolder<'ctx> + ?Sized>(
+    gcx: GlobalContext<'ctx>,
+    bindings: &'ctx [AssociatedTypeBinding<'ctx>],
+    folder: &mut F,
+) -> (&'ctx [AssociatedTypeBinding<'ctx>], bool) {
+    if bindings.is_empty() {
+        return (bindings, false);
+    }
+
+    let mut changed = false;
+    let mut folded_bindings = Vec::with_capacity(bindings.len());
+    for binding in bindings.iter() {
+        let folded_ty = binding.ty.fold_with(folder);
+        if folded_ty != binding.ty {
+            changed = true;
+        }
+        folded_bindings.push(AssociatedTypeBinding {
+            name: binding.name,
+            ty: folded_ty,
+        });
+    }
+
+    if changed {
+        let folded_bindings = gcx.store.arenas.global.alloc_slice_clone(&folded_bindings);
+        (folded_bindings, true)
+    } else {
+        (bindings, false)
+    }
 }
 
 impl<'ctx> TypeFoldable<'ctx> for StructField<'ctx> {
@@ -214,7 +339,7 @@ impl<'ctx> TypeFoldable<'ctx> for StructDefinition<'ctx> {
         let fields: Vec<_> = self
             .fields
             .iter()
-            .map(|field| field.clone().fold_with(folder))
+            .map(|field| (*field).fold_with(folder))
             .collect();
 
         let fields = folder.gcx().store.arenas.global.alloc_slice_clone(&fields);
@@ -241,7 +366,7 @@ impl<'ctx> TypeFoldable<'ctx> for EnumVariantKind<'ctx> {
             EnumVariantKind::Tuple(fields) => {
                 let folded_fields: Vec<_> = fields
                     .iter()
-                    .map(|field| field.clone().fold_with(folder))
+                    .map(|field| (*field).fold_with(folder))
                     .collect();
 
                 let folded_fields = folder
@@ -270,7 +395,7 @@ impl<'ctx> TypeFoldable<'ctx> for EnumDefinition<'ctx> {
         let variants: Vec<_> = self
             .variants
             .iter()
-            .map(|variant| variant.clone().fold_with(folder))
+            .map(|variant| (*variant).fold_with(folder))
             .collect();
 
         let variants = folder

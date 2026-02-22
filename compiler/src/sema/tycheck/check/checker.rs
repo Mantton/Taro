@@ -98,7 +98,7 @@ impl<'arena> TypeLowerer<'arena> for Checker<'arena> {
 
         let origin = crate::sema::tycheck::infer::keys::ConstVariableOrigin {
             location: span,
-            param_name: param.map(|p| p.name.clone()),
+            param_name: param.map(|p| p.name),
         };
         infer_cx.new_const_var(ty, origin)
     }

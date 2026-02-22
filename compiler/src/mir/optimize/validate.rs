@@ -76,7 +76,6 @@ pub fn validate_mutability<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileRe
                     let local_decl = &body.locals[place.local];
                     let name_str = local_decl
                         .name
-                        .clone()
                         .map(|s| format!("'{}'", s))
                         .unwrap_or_else(|| "<temporary>".to_string());
                     gcx.dcx().emit_error(
@@ -541,7 +540,6 @@ fn check_place_not_moved<'ctx>(
     if state.is_moved(place.local) {
         let name = local_decl
             .name
-            .clone()
             .map(|s| format!("'{}'", s))
             .unwrap_or_else(|| "<temporary>".to_string());
         gcx.dcx()
@@ -554,7 +552,6 @@ fn check_place_not_moved<'ctx>(
         if state.is_field_moved(place.local, *idx) {
             let name = local_decl
                 .name
-                .clone()
                 .map(|s| format!("'{}'", s))
                 .unwrap_or_else(|| "<temporary>".to_string());
             gcx.dcx().emit_error(
@@ -573,7 +570,6 @@ fn check_place_not_moved<'ctx>(
     if place.projection.is_empty() && state.partial_moves.contains_key(&place.local) {
         let name = local_decl
             .name
-            .clone()
             .map(|s| format!("'{}'", s))
             .unwrap_or_else(|| "<temporary>".to_string());
         gcx.dcx().emit_error(

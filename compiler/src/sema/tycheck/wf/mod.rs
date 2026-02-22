@@ -188,8 +188,8 @@ impl<'ctx> Actor<'ctx> {
                 self.context.dcx().emit_error(
                     format!(
                         "field `{}` of struct `{}` does not have a sized type",
-                        self.context.symbol_text(field.name.clone()),
-                        self.context.symbol_text(ident.symbol.clone())
+                        self.context.symbol_text(field.name),
+                        self.context.symbol_text(ident.symbol)
                     ),
                     Some(ident.span),
                 );
@@ -228,8 +228,8 @@ impl<'ctx> Actor<'ctx> {
                         format!(
                             "field {} of enum variant '{}' in '{}' does not have a sized type",
                             idx,
-                            self.context.symbol_text(variant.name.clone()),
-                            self.context.symbol_text(ident.symbol.clone())
+                            self.context.symbol_text(variant.name),
+                            self.context.symbol_text(ident.symbol)
                         ),
                         Some(ident.span),
                     );

@@ -38,12 +38,12 @@ impl<'ctx> Actor<'ctx> {
                     .prototype
                     .inputs
                     .first()
-                    .is_some_and(|param| self.context.symbol_eq(param.name.symbol.clone(), "self"));
+                    .is_some_and(|param| self.context.symbol_eq(param.name.symbol, "self"));
                 self.collect_function(
                     head,
                     impl_id,
                     decl.id,
-                    decl.identifier.clone(),
+                    decl.identifier,
                     has_self,
                     interface_id,
                 );
@@ -67,19 +67,19 @@ impl<'ctx> Actor<'ctx> {
 
             let set: &mut MemberSet = if let Some(interface_id) = interface_id {
                 // Trait impl: store in trait_methods with (interface_id, name) key
-                let key = (interface_id, ident.symbol.clone());
+                let key = (interface_id, ident.symbol);
                 index.trait_methods.entry(key).or_default()
             } else {
                 // Inherent impl: store in inherent_static or inherent_instance
                 if has_self {
                     index
                         .inherent_instance
-                        .entry(ident.symbol.clone())
+                        .entry(ident.symbol)
                         .or_default()
                 } else {
                     index
                         .inherent_static
-                        .entry(ident.symbol.clone())
+                        .entry(ident.symbol)
                         .or_default()
                 }
             };
@@ -87,14 +87,14 @@ impl<'ctx> Actor<'ctx> {
             if let Some(previous) = set.fingerprints.insert(fingerprint, def_id) {
                 let msg = format!(
                     "invalid redeclaration of '{}'",
-                    self.context.symbol_text(ident.symbol.clone())
+                    self.context.symbol_text(ident.symbol)
                 );
                 self.context.dcx().emit_error(msg, Some(ident.span));
 
                 let prev_ident = self.context.definition_ident(previous);
                 let msg = format!(
                     "'{}' is initially defined here",
-                    self.context.symbol_text(ident.symbol.clone())
+                    self.context.symbol_text(ident.symbol)
                 );
                 self.context.dcx().emit_info(msg, Some(prev_ident.span));
                 return;

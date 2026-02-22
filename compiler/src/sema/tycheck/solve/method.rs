@@ -147,7 +147,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 let candidates = self.lookup_instance_candidates_method(
                     candidate_ty,
                     receiver_ty,
-                    name.symbol.clone(),
+                    name.symbol,
                     *span,
                 );
                 let candidates = candidates.unwrap_or_default();
@@ -376,7 +376,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         return SolverResult::Error(vec![Spanned::new(
             TypeError::NoSuchMember {
-                name: name.symbol.clone(),
+                name: name.symbol,
                 on: final_on,
             },
             name.span,
@@ -493,7 +493,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             candidate_ty,
             reciever_ty,
             interfaces,
-            data.name.symbol.clone(),
+            data.name.symbol,
         );
         if candidates.is_empty() {
             return None;

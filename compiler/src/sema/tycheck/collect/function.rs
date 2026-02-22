@@ -140,8 +140,8 @@ impl<'ctx> Actor<'ctx> {
             };
 
             inputs.push(LabeledFunctionParameter {
-                label: param.label.clone().map(|n| n.identifier.symbol),
-                name: param.name.symbol.clone(),
+                label: param.label.map(|n| n.identifier.symbol),
+                name: param.name.symbol,
                 ty,
                 default_provider,
             });

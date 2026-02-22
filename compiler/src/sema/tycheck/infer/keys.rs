@@ -186,7 +186,7 @@ impl UnifyKey for ConstVarEqID {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ConstVarValue {
     Unknown,
     Known(ConstValue),
@@ -202,13 +202,13 @@ impl UnifyValue for ConstVarValue {
             (ConstVarValue::Unknown, known @ ConstVarValue::Known(_))
             | (ConstVarValue::Unknown, known @ ConstVarValue::Param(_))
             | (known @ ConstVarValue::Known(_), ConstVarValue::Unknown)
-            | (known @ ConstVarValue::Param(_), ConstVarValue::Unknown) => Ok(known.clone()),
+            | (known @ ConstVarValue::Param(_), ConstVarValue::Unknown) => Ok(*known),
             (ConstVarValue::Known(_), ConstVarValue::Known(_)) => {
                 panic!("differing consts should have been resolved first")
             }
             (ConstVarValue::Param(a), ConstVarValue::Param(b)) => {
                 if a == b {
-                    Ok(ConstVarValue::Param(a.clone()))
+                    Ok(ConstVarValue::Param(*a))
                 } else {
                     panic!("differing const params should have been resolved first")
                 }
@@ -302,14 +302,14 @@ impl<'ctx> UnifyValue for TyVarValue<'ctx> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct TypeVariableOrigin {
     pub location: Span,
     /// When this type variable was created for a generic parameter, stores its name.
     pub param_name: Option<Symbol>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct ConstVariableOrigin {
     pub location: Span,
     /// When this const variable was created for a generic parameter, stores its name.

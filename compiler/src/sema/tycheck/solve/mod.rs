@@ -238,7 +238,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
                             GenericArgument::Type(resolved)
                         }
                         GenericArgument::Const(c) => GenericArgument::Const(
-                            self.infer_cx.resolve_const_if_possible(c.clone()),
+                            self.infer_cx.resolve_const_if_possible(*c),
                         ),
                     })
                     .collect();
@@ -550,7 +550,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let provided = provided.unwrap_or(&[]);
         GenericsBuilder::for_item(gcx, def_id, |param, current_args| {
             if let Some(arg) = provided.get(param.index) {
-                return arg.clone();
+                return *arg;
             }
             self.instantiate_missing_generic_arg(def_id, param, current_args, span)
         })
@@ -580,7 +580,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 default_ty = self.substitute_interface_self_default(default_ty, current_args);
                 default_ty = instantiate_ty_with_args(gcx, default_ty, current_args);
                 self.push_default_fallback_goal(
-                    infer_var.clone(),
+                    infer_var,
                     GenericArgument::Type(default_ty),
                     span,
                 );
@@ -600,7 +600,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     .lower_const_argument(expected_ty, default);
                 default_const = instantiate_const_with_args(gcx, default_const, current_args);
                 self.push_default_fallback_goal(
-                    infer_var.clone(),
+                    infer_var,
                     GenericArgument::Const(default_const),
                     span,
                 );
@@ -923,7 +923,7 @@ impl<'ctx> SolverDriver<'ctx> {
                 }
             }
             (GenericArgument::Const(var), GenericArgument::Const(default)) => {
-                let resolved = self.solver.icx.resolve_const_if_possible(var.clone());
+                let resolved = self.solver.icx.resolve_const_if_possible(var);
                 if matches!(resolved.kind, ConstKind::Infer(_)) {
                     let _ = self.solver.unify_const(var, default);
                 }

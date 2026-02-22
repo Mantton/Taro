@@ -1,5 +1,5 @@
-use ecow::EcoString;
 use index_vec::define_index_type;
+use internment::Intern;
 use std::fmt;
 
 index_vec::define_index_type! {
@@ -57,16 +57,22 @@ impl<T> Spanned<T> {
     }
 }
 
-#[derive(Default, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Symbol(EcoString);
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Symbol(Intern<String>);
+
+impl Default for Symbol {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
 
 impl Symbol {
     pub fn empty() -> Symbol {
-        Symbol(EcoString::new())
+        Symbol(Intern::new(String::new()))
     }
 
     pub fn new(value: &str) -> Symbol {
-        Symbol(value.into())
+        Symbol(Intern::new(value.to_owned()))
     }
 
     pub fn as_str(&self) -> &str {
@@ -76,13 +82,13 @@ impl Symbol {
 
 impl fmt::Debug for Symbol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        fmt::Debug::fmt(self.as_str(), f)
     }
 }
 
 impl fmt::Display for Symbol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        fmt::Display::fmt(self.as_str(), f)
     }
 }
 
@@ -98,7 +104,7 @@ impl From<&str> for Symbol {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Identifier {
     pub symbol: Symbol,
     pub span: Span,

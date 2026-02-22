@@ -327,7 +327,7 @@ fn normalize_interface_ref<'ctx>(
                 let normalized = crate::sema::tycheck::utils::normalize_aliases(gcx, *ty);
                 new_args.push(GenericArgument::Type(normalized));
             }
-            GenericArgument::Const(c) => new_args.push(GenericArgument::Const(c.clone())),
+            GenericArgument::Const(c) => new_args.push(GenericArgument::Const(*c)),
         }
     }
 
@@ -335,7 +335,7 @@ fn normalize_interface_ref<'ctx>(
     for binding in interface.bindings {
         let normalized = crate::sema::tycheck::utils::normalize_aliases(gcx, binding.ty);
         new_bindings.push(crate::sema::models::AssociatedTypeBinding {
-            name: binding.name.clone(),
+            name: binding.name,
             ty: normalized,
         });
     }

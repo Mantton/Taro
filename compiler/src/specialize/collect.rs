@@ -210,7 +210,7 @@ impl<'ctx> Collector<'ctx> {
                     let new_c =
                         crate::sema::tycheck::utils::instantiate::instantiate_const_with_args(
                             self.gcx,
-                            c.clone(),
+                            *c,
                             subst,
                         );
                     GenericArgument::Const(new_c)

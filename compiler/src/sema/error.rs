@@ -217,7 +217,7 @@ impl<'ctx> TypeError<'ctx> {
 }
 
 // Validation errors
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum ApplyValidationError {
     ArityMismatch {
         expected_min: usize,
@@ -331,7 +331,7 @@ impl ApplyValidationError {
 
 impl std::fmt::Display for ApplyValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.clone().format_with_symbol(|sym| sym.to_string()))
+        f.write_str(&(*self).format_with_symbol(|sym| sym.to_string()))
     }
 }
 

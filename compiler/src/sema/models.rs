@@ -79,7 +79,12 @@ impl<'arena> Ty<'arena> {
 
     #[inline]
     pub fn kind(self) -> TyKind<'arena> {
-        self.0.0.clone()
+        *self.0.0
+    }
+
+    #[inline]
+    pub fn kind_ref(self) -> &'arena TyKind<'arena> {
+        self.0.0
     }
 
     pub fn is_error(self) -> bool {
@@ -162,7 +167,8 @@ impl<'arena> Ty<'arena> {
                 format!("[{}; {}]", element.format(gcx), len_str)
             }
             TyKind::Adt(adt, args) => {
-                let mut out = String::from(gcx.symbol_text(adt.name).as_ref());
+                let ident = gcx.definition_ident(adt.id);
+                let mut out = String::from(gcx.symbol_text(ident.symbol).as_ref());
                 out.push_str(&format_generic_args(args, gcx));
                 out
             }
@@ -283,7 +289,7 @@ impl<'ctx> Ty<'ctx> {
                 TyKind::Parameter(_) => true,
                 TyKind::Adt(_, args) => args.iter().any(|arg| match arg {
                     GenericArgument::Type(ty) => visit(*ty),
-                    GenericArgument::Const(c) => const_needs_instantiation(c.clone()),
+                    GenericArgument::Const(c) => const_needs_instantiation(*c),
                 }),
                 // Walk composite types
                 TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => visit(inner),
@@ -296,12 +302,12 @@ impl<'ctx> Ty<'ctx> {
                 TyKind::BoxedExistential { interfaces } => interfaces.iter().any(|iface| {
                     iface.arguments.iter().any(|arg| match arg {
                         GenericArgument::Type(ty) => visit(*ty),
-                        GenericArgument::Const(c) => const_needs_instantiation(c.clone()),
+                        GenericArgument::Const(c) => const_needs_instantiation(*c),
                     })
                 }),
                 TyKind::Alias { args, .. } => args.iter().any(|arg| match arg {
                     GenericArgument::Type(ty) => visit(*ty),
-                    GenericArgument::Const(c) => const_needs_instantiation(c.clone()),
+                    GenericArgument::Const(c) => const_needs_instantiation(*c),
                 }),
                 _ => false,
             }
@@ -310,7 +316,7 @@ impl<'ctx> Ty<'ctx> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TyKind<'arena> {
     Array {
         element: Ty<'arena>,
@@ -393,7 +399,7 @@ pub enum CaptureKind {
 }
 
 /// A variable captured by a closure
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct CapturedVar<'arena> {
     /// The NodeID of the captured variable in the enclosing scope
     pub source_id: hir::NodeID,
@@ -422,14 +428,13 @@ pub enum AdtKind {
     Enum,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AdtDef {
-    pub name: Symbol,
     pub kind: AdtKind,
     pub id: DefinitionID,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StructField<'arena> {
     pub name: Symbol,
     pub ty: Ty<'arena>,
@@ -444,7 +449,7 @@ pub struct StructDefinition<'arena> {
     pub fields: &'arena [StructField<'arena>],
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EnumVariantField<'arena> {
     pub label: Option<Symbol>,
     pub ty: Ty<'arena>,
@@ -456,7 +461,7 @@ pub enum EnumVariantKind<'arena> {
     Tuple(&'arena [EnumVariantField<'arena>]),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EnumVariant<'arena> {
     pub name: Symbol,
     pub def_id: DefinitionID,
@@ -567,7 +572,7 @@ impl LabeledFunctionSignature<'_> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct LabeledFunctionParameter<'ctx> {
     pub label: Option<Symbol>,
     pub name: Symbol,
@@ -608,26 +613,26 @@ pub enum InferTy {
 }
 
 // MARK: Generics
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GenericParameter {
     pub index: usize,
     pub name: Symbol,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Const<'arena> {
     pub ty: Ty<'arena>,
     pub kind: ConstKind,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConstKind {
     Value(ConstValue),
     Param(GenericParameter),
     Infer(ConstVarID),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum ConstValue {
     Integer(i128),
     Bool(bool),
@@ -683,7 +688,7 @@ impl Hash for ConstValue {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GenericArgument<'arena> {
     Type(Ty<'arena>),
     Const(Const<'arena>),
@@ -823,7 +828,7 @@ pub struct InterfaceReference<'ctx> {
     pub bindings: &'ctx [AssociatedTypeBinding<'ctx>],
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AssociatedTypeBinding<'ctx> {
     pub name: Symbol,
     pub ty: Ty<'ctx>,
@@ -852,7 +857,7 @@ impl<'ctx> InterfaceReference<'ctx> {
             let bindings: Vec<_> = self
                 .bindings
                 .iter()
-                .map(|b| format!("{} = {}", gcx.symbol_text(b.name.clone()), b.ty.format(gcx)))
+                .map(|b| format!("{} = {}", gcx.symbol_text(b.name), b.ty.format(gcx)))
                 .collect();
             out.push_str(&bindings.join(", "));
 

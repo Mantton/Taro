@@ -84,8 +84,8 @@ impl<'r, 'a> Actor<'r, 'a> {
         for param in &type_parameters.parameters {
             let def_id = self.resolver.definition_id(param.id);
             let def_kind = self.resolver.definition_kind(def_id);
-            let name = param.identifier.symbol.clone();
-            let entry = seen_bindings.entry(name.clone());
+            let name = param.identifier.symbol;
+            let entry = seen_bindings.entry(name);
 
             match entry {
                 std::collections::hash_map::Entry::Occupied(_) => {
@@ -479,7 +479,7 @@ fn explicit_self_param_position(
         .prototype
         .inputs
         .iter()
-        .position(|param| gcx.symbol_eq(param.name.symbol.clone(), "self"))
+        .position(|param| gcx.symbol_eq(param.name.symbol, "self"))
 }
 
 #[derive(Debug, Clone)]
@@ -714,7 +714,7 @@ impl<'r, 'a> Actor<'r, 'a> {
 
         let path = vec![PathSegment {
             id,
-            identifier: name.clone(),
+            identifier: *name,
             arguments: None,
             span: name.span,
         }];
@@ -753,7 +753,7 @@ impl<'r, 'a> Actor<'r, 'a> {
         }
 
         let Some(entity) = entity else {
-            return Err(ResolutionError::UnknownSymbol(name.clone()));
+            return Err(ResolutionError::UnknownSymbol(*name));
         };
 
         return Ok(entity);
@@ -807,10 +807,10 @@ impl<'r, 'a> Actor<'r, 'a> {
                         return Ok(ResolvedEntity::DeferredAssociatedValue);
                     }
                     DefinitionKind::ConstParameter => {
-                        return Err(ResolutionError::UnknownMember(name.clone()));
+                        return Err(ResolutionError::UnknownMember(*name));
                     }
                     DefinitionKind::Function | DefinitionKind::VariantConstructor(..) => {
-                        return Err(ResolutionError::UnknownMember(name.clone()));
+                        return Err(ResolutionError::UnknownMember(*name));
                     }
                     _ => unreachable!(),
                 },
@@ -822,7 +822,7 @@ impl<'r, 'a> Actor<'r, 'a> {
                 }
                 Resolution::LocalVariable(_) => return Ok(ResolvedEntity::DeferredAssociatedValue),
                 Resolution::FunctionSet(..) | Resolution::SelfConstructor(..) => {
-                    return Err(ResolutionError::UnknownMember(name.clone()));
+                    return Err(ResolutionError::UnknownMember(*name));
                 }
                 // Variants Not Created By Resolver Step
                 Resolution::Foundation(_) | Resolution::Error => unreachable!(),
@@ -835,7 +835,7 @@ impl<'r, 'a> Actor<'r, 'a> {
             }
         }
 
-        return Err(ResolutionError::UnknownSymbol(name.clone()));
+        return Err(ResolutionError::UnknownSymbol(*name));
     }
 
     fn apply_specialization(
@@ -927,7 +927,7 @@ impl<'r, 'a> Actor<'r, 'a> {
             let pat = ast::Pattern {
                 id: param.id,
                 span: param.span,
-                kind: ast::PatternKind::Identifier(param.name.clone()),
+                kind: ast::PatternKind::Identifier(param.name),
             };
 
             self.resolve_pattern_inner(&pat, PatternSource::FunctionParameter, &mut bindings);
@@ -1059,9 +1059,9 @@ impl<'r, 'a> Actor<'r, 'a> {
         if already_bound_and {
             let err = match source {
                 PatternSource::FunctionParameter => {
-                    ResolutionError::IdentifierBoundMoreThanOnceInParameterList(ident.clone())
+                    ResolutionError::IdentifierBoundMoreThanOnceInParameterList(*ident)
                 }
-                _ => ResolutionError::IdentifierBoundMoreThanOnceInSamePattern(ident.clone()),
+                _ => ResolutionError::IdentifierBoundMoreThanOnceInSamePattern(*ident),
             };
 
             self.report_error(err);
@@ -1087,7 +1087,7 @@ impl<'r, 'a> Actor<'r, 'a> {
             .last_mut()
             .unwrap()
             .1
-            .insert(ident.symbol.clone(), res.clone());
+            .insert(ident.symbol, res.clone());
 
         res
     }
@@ -1123,7 +1123,7 @@ impl<'r, 'a> Actor<'r, 'a> {
         pat.walk(&mut |pat| {
             match &pat.kind {
                 ast::PatternKind::Identifier(ident) if self.is_base_res_local(pat.id) => {
-                    map.insert(ident.symbol.clone(), ident.span);
+                    map.insert(ident.symbol, ident.span);
                 }
                 ast::PatternKind::Or(sub_patterns, _) => {
                     let res = self.compute_and_check_or_match_pattern_binding_map(sub_patterns);
@@ -1164,9 +1164,9 @@ impl<'r, 'a> Actor<'r, 'a> {
                     None => {
                         let err =
                             missing_vars
-                                .entry(name.clone())
+                                .entry(*name)
                                 .or_insert_with(|| BindingError {
-                                    name: name.clone(),
+                                    name: *name,
                                     origin: Default::default(),
                                     target: Default::default(),
                                 });

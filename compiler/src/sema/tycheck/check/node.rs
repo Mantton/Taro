@@ -97,7 +97,7 @@ impl<'ctx> Checker<'ctx> {
             .prototype
             .inputs
             .iter()
-            .map(|param| param.name.symbol.clone())
+            .map(|param| param.name.symbol)
             .collect();
 
         // Add Parameters To Locals Map
@@ -882,7 +882,7 @@ impl<'ctx> Checker<'ctx> {
                 let mut field = None;
                 for f in struct_def.fields {
                     if f.name == name.symbol {
-                        field = Some(f.clone());
+                        field = Some(*f);
                         break;
                     }
                 }
@@ -891,7 +891,7 @@ impl<'ctx> Checker<'ctx> {
                     self.gcx().dcx().emit_error(
                         format!(
                             "unknown field '{}'",
-                            self.gcx().symbol_text(name.symbol.clone())
+                            self.gcx().symbol_text(name.symbol)
                         ),
                         Some(expr.span),
                     );
@@ -1083,7 +1083,7 @@ impl<'ctx> Checker<'ctx> {
                 let mut field = None;
                 for f in struct_def.fields {
                     if f.name == name.symbol {
-                        field = Some(f.clone());
+                        field = Some(*f);
                         break;
                     }
                 }
@@ -1092,7 +1092,7 @@ impl<'ctx> Checker<'ctx> {
                     self.gcx().dcx().emit_error(
                         format!(
                             "unknown field '{}'",
-                            self.gcx().symbol_text(name.symbol.clone())
+                            self.gcx().symbol_text(name.symbol)
                         ),
                         Some(expr.span),
                     );
@@ -1317,7 +1317,7 @@ impl<'ctx> Checker<'ctx> {
 
             captures.push(crate::sema::models::CapturedVar {
                 source_id: *node_id,
-                name: info.name.clone(),
+                name: info.name,
                 ty,
                 capture_kind,
                 field_index: crate::thir::FieldIndex::from_raw(field_index as u32),
@@ -1392,7 +1392,7 @@ impl<'ctx> Checker<'ctx> {
                 .zip(param_tys.iter())
                 .map(|(param, &ty)| {
                     let name = match &param.pattern.kind {
-                        hir::PatternKind::Binding { name, .. } => name.symbol.clone(),
+                        hir::PatternKind::Binding { name, .. } => name.symbol,
                         _ => gcx.intern_symbol("_"),
                     };
                     crate::sema::models::LabeledFunctionParameter {
@@ -1687,7 +1687,7 @@ impl<'ctx> Checker<'ctx> {
                 cs.add_goal(
                     Goal::InferredStaticMember(InferredStaticMemberGoalData {
                         node_id: callee.id,
-                        name: name.clone(),
+                        name: *name,
                         expr_ty: result_ty,
                         base_hint: expect_ty,
                         span: callee.span,
@@ -1723,7 +1723,7 @@ impl<'ctx> Checker<'ctx> {
                 };
                 ApplyArgument {
                     id: n.expression.id,
-                    label: n.label.clone().map(|n| n.identifier),
+                    label: n.label.map(|n| n.identifier),
                     ty,
                     span: n.expression.span,
                 }
@@ -1849,10 +1849,10 @@ impl<'ctx> Checker<'ctx> {
                     continue;
                 }
 
-                let Some(args_ty) = interface.arguments[1].clone().ty() else {
+                let Some(args_ty) = interface.arguments[1].ty() else {
                     continue;
                 };
-                let Some(output_ty) = interface.arguments[2].clone().ty() else {
+                let Some(output_ty) = interface.arguments[2].ty() else {
                     continue;
                 };
 
@@ -1971,7 +1971,7 @@ impl<'ctx> Checker<'ctx> {
 
                         let segment = hir::PathSegment {
                             id: receiver.id,
-                            identifier: name.clone(),
+                            identifier: *name,
                             arguments: None,
                             span: name.span,
                             resolution: resolution.clone(),
@@ -1994,7 +1994,7 @@ impl<'ctx> Checker<'ctx> {
                             .iter()
                             .map(|n| ApplyArgument {
                                 id: n.expression.id,
-                                label: n.label.clone().map(|n| n.identifier),
+                                label: n.label.map(|n| n.identifier),
                                 ty: self.synth(&n.expression, cs),
                                 span: n.expression.span,
                             })
@@ -2049,7 +2049,7 @@ impl<'ctx> Checker<'ctx> {
                 };
                 ApplyArgument {
                     id: n.expression.id,
-                    label: n.label.clone().map(|n| n.identifier),
+                    label: n.label.map(|n| n.identifier),
                     ty,
                     span: n.expression.span,
                 }
@@ -2071,7 +2071,7 @@ impl<'ctx> Checker<'ctx> {
                 reciever_span: receiver.span,
                 method_ty: method_ty,
                 expect_ty,
-                name: name.clone(),
+                name: *name,
                 arguments: args,
                 result: result_ty,
                 span: expression.span,
@@ -2120,7 +2120,7 @@ impl<'ctx> Checker<'ctx> {
             _ => None,
         };
 
-        let candidates = self.collect_inherent_instance_candidates(head, name.symbol.clone());
+        let candidates = self.collect_inherent_instance_candidates(head, name.symbol);
         if candidates.is_empty() {
             return None;
         }
@@ -2926,13 +2926,13 @@ impl<'ctx> Checker<'ctx> {
             }
         }
 
-        let candidates = self.collect_static_member_candidates(head, name.symbol.clone());
+        let candidates = self.collect_static_member_candidates(head, name.symbol);
 
         if candidates.is_empty() {
             if emit_errors {
                 let msg = format!(
                     "unknown associated symbol named '{}' on type '{}'",
-                    gcx.symbol_text(name.symbol.clone()),
+                    gcx.symbol_text(name.symbol),
                     base_ty.format(gcx)
                 );
                 gcx.dcx().emit_error(msg.into(), Some(span));
@@ -2951,7 +2951,7 @@ impl<'ctx> Checker<'ctx> {
                 gcx.dcx().emit_error(
                     format!(
                         "static member '{}' is not visible here",
-                        gcx.symbol_text(name.symbol.clone())
+                        gcx.symbol_text(name.symbol)
                     )
                     .into(),
                     Some(span),
@@ -3132,7 +3132,7 @@ impl<'ctx> Checker<'ctx> {
                 .intern_generic_args(current_args.to_vec());
             if param.index < parent_count {
                 if let Some(arg) = base_args.get(param.index) {
-                    return arg.clone();
+                    return *arg;
                 }
                 return self.lower_value_path_missing_arg(param, span, current_args);
             }
@@ -3235,7 +3235,7 @@ impl<'ctx> Checker<'ctx> {
 
         let param = GenericParameter {
             index: def.index,
-            name: def.name.clone(),
+            name: def.name,
         };
 
         Some(Const {
@@ -3284,7 +3284,7 @@ impl<'ctx> Checker<'ctx> {
                             instantiate_const_with_args(gcx, default_const, current_args);
                         self.register_default_fallback(
                             crate::sema::tycheck::solve::DefaultFallbackGoalData {
-                                infer_var: GenericArgument::Const(infer_const.clone()),
+                                infer_var: GenericArgument::Const(infer_const),
                                 default: GenericArgument::Const(default_const),
                                 span,
                             },
@@ -3407,7 +3407,7 @@ impl<'ctx> Checker<'ctx> {
                 node_id: expression.id,
                 receiver_node: target.id,
                 receiver: receiver_ty,
-                name: name.clone(),
+                name: *name,
                 result: result_ty,
                 span: expression.span,
             }),
@@ -3431,7 +3431,7 @@ impl<'ctx> Checker<'ctx> {
         cs.add_goal(
             Goal::InferredStaticMember(InferredStaticMemberGoalData {
                 node_id: expression.id,
-                name: name.clone(),
+                name: *name,
                 expr_ty: result_ty,
                 base_hint: expectation,
                 span: expression.span,
@@ -3494,13 +3494,13 @@ impl<'ctx> Checker<'ctx> {
             }
 
             let (name, label_span) = if let Some(label) = &field.label {
-                (label.identifier.symbol.clone(), label.span)
+                (label.identifier.symbol, label.span)
             } else {
                 // Shorthand: extract name from expression
                 match &field.expression.kind {
                     hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => {
                         let seg = path.segments.last().expect("path must have segments");
-                        (seg.identifier.symbol.clone(), seg.identifier.span)
+                        (seg.identifier.symbol, seg.identifier.span)
                     }
                     _ => unreachable!(),
                 }
@@ -4267,7 +4267,7 @@ impl<'ctx> Checker<'ctx> {
             }
         };
 
-        let enum_ty = Ty::new(TyKind::Adt(def.adt_def.clone(), args), gcx);
+        let enum_ty = Ty::new(TyKind::Adt(def.adt_def, args), gcx);
         cs.add_constraints_for_def(enum_id, Some(args), span);
         let def = crate::sema::tycheck::utils::instantiate::instantiate_enum_definition_with_args(
             gcx, &def, args,
@@ -4314,7 +4314,7 @@ impl<'ctx> Checker<'ctx> {
             gcx.dcx().emit_error(
                 format!(
                     "inferred pattern '.{}' requires an enum type, found '{}'",
-                    gcx.symbol_text(name.symbol.clone()),
+                    gcx.symbol_text(name.symbol),
                     scrutinee.format(gcx)
                 )
                 .into(),
@@ -4330,7 +4330,7 @@ impl<'ctx> Checker<'ctx> {
             gcx.dcx().emit_error(
                 format!(
                     "inferred pattern '.{}' can only be used with enum types, found struct '{}'",
-                    gcx.symbol_text(name.symbol.clone()),
+                    gcx.symbol_text(name.symbol),
                     scrutinee.format(gcx)
                 )
                 .into(),
@@ -4350,7 +4350,7 @@ impl<'ctx> Checker<'ctx> {
                 format!(
                     "enum '{}' has no variant named '{}'",
                     gcx.symbol_text(gcx.definition_ident(enum_id).symbol),
-                    gcx.symbol_text(name.symbol.clone())
+                    gcx.symbol_text(name.symbol)
                 )
                 .into(),
                 Some(span),
@@ -4420,7 +4420,7 @@ impl<'ctx> Checker<'ctx> {
         if def.id != opt_id {
             return None;
         }
-        let inner = args.first()?.clone().ty()?;
+        let inner = (*args.first()?).ty()?;
         Some((args, inner))
     }
 
@@ -4437,7 +4437,7 @@ impl<'ctx> Checker<'ctx> {
         let opt_ty = gcx
             .store
             .interners
-            .intern_ty(TyKind::Adt(enum_def.adt_def.clone(), args));
+            .intern_ty(TyKind::Adt(enum_def.adt_def, args));
         (opt_ty, args)
     }
 
@@ -4539,7 +4539,7 @@ impl<'ctx> Checker<'ctx> {
             let old_self = &old_sig.inputs[0];
             new_inputs.push(LabeledFunctionParameter {
                 ty: self_ty,
-                ..old_self.clone()
+                ..*old_self
             });
         }
 
@@ -4551,7 +4551,7 @@ impl<'ctx> Checker<'ctx> {
                 let old_param = &old_sig.inputs[i + 1];
                 new_inputs.push(LabeledFunctionParameter {
                     ty: *param_ty,
-                    ..old_param.clone()
+                    ..*old_param
                 });
             }
         }
@@ -4723,7 +4723,7 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
         let name = path
             .segments
             .last()
-            .map(|s| s.identifier.symbol.clone())
+            .map(|s| s.identifier.symbol)
             .unwrap_or_else(|| self.checker.gcx().intern_symbol("_"));
         let usage = self.capture_usage(expr, ctx, binding.ty);
         self.record_capture(id, name, usage);
@@ -4805,7 +4805,7 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                                 crate::sema::models::CaptureKind::ByRef { mutable: true }
                             ),
                         };
-                        self.record_capture(cap.source_id, cap.name.clone(), usage);
+                        self.record_capture(cap.source_id, cap.name, usage);
                     }
                 }
             }

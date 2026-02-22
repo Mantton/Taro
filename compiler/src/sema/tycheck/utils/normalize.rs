@@ -99,7 +99,7 @@ fn arg_contains_any_fresh_var<'ctx>(
             ty_contains_any_fresh_var(*ty, fresh_ty_vars, fresh_const_vars)
         }
         GenericArgument::Const(c) => {
-            const_contains_any_fresh_var(c.clone(), fresh_ty_vars, fresh_const_vars)
+            const_contains_any_fresh_var(*c, fresh_ty_vars, fresh_const_vars)
         }
     }
 }
@@ -389,7 +389,7 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
                                             self.icx.resolve_vars_if_possible(*ty),
                                         ),
                                         GenericArgument::Const(c) => GenericArgument::Const(
-                                            self.icx.resolve_const_if_possible(c.clone()),
+                                            self.icx.resolve_const_if_possible(*c),
                                         ),
                                     })
                                     .collect();
@@ -441,7 +441,7 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
                                         local_icx.resolve_vars_if_possible(*ty),
                                     ),
                                     GenericArgument::Const(c) => GenericArgument::Const(
-                                        local_icx.resolve_const_if_possible(c.clone()),
+                                        local_icx.resolve_const_if_possible(*c),
                                     ),
                                 })
                                 .collect();

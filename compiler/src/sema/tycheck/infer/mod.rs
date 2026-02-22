@@ -111,7 +111,7 @@ impl<'ctx> InferCtx<'ctx> {
                         .type_variables()
                         .new_var(TypeVariableOrigin {
                             location: span,
-                            param_name: Some(param.name.clone()),
+                            param_name: Some(param.name),
                         });
 
                 let ty = Ty::new(TyKind::Infer(InferTy::TyVar(ty_var_id)), self.gcx);
@@ -120,7 +120,7 @@ impl<'ctx> InferCtx<'ctx> {
             GenericParameterDefinitionKind::Const { .. } => {
                 let origin = ConstVariableOrigin {
                     location: span,
-                    param_name: Some(param.name.clone()),
+                    param_name: Some(param.name),
                 };
                 let owner = self.gcx.definition_parent(param.id).unwrap_or(param.id);
                 let lower_ctx = DefTyLoweringCtx::new(owner, self.gcx);
@@ -231,7 +231,7 @@ impl<'ctx> InferCtx<'ctx> {
                     GenericArgument::Type(self.resolve_vars_if_possible(*ty))
                 }
                 GenericArgument::Const(c) => {
-                    GenericArgument::Const(self.resolve_const_if_possible(c.clone()))
+                    GenericArgument::Const(self.resolve_const_if_possible(*c))
                 }
             })
             .collect();
@@ -448,7 +448,7 @@ impl<'ctx> InferCtx<'ctx> {
         inner
             .type_storage
             .iter_origins()
-            .map(|(id, origin)| (id, origin.clone()))
+            .map(|(id, origin)| (id, *origin))
             .collect()
     }
 
@@ -457,7 +457,7 @@ impl<'ctx> InferCtx<'ctx> {
         inner
             .const_storage
             .iter_origins()
-            .map(|(id, origin)| (id, origin.clone()))
+            .map(|(id, origin)| (id, *origin))
             .collect()
     }
 }

@@ -45,7 +45,7 @@ impl Mutability {
 
 pub use crate::span::Identifier;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Label {
     pub identifier: Identifier,
     pub span: Span,

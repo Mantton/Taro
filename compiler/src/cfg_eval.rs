@@ -112,7 +112,7 @@ pub fn should_include_attrs(
     gcx: GlobalContext<'_>,
 ) -> bool {
     for attr in attrs {
-        if gcx.symbol_eq(attr.identifier.symbol.clone(), "cfg") && !eval_cfg_attr(attr, target, gcx)
+        if gcx.symbol_eq(attr.identifier.symbol, "cfg") && !eval_cfg_attr(attr, target, gcx)
         {
             return false;
         }
@@ -132,7 +132,7 @@ fn eval_cfg_attr(attr: &ast::Attribute, target: &TargetInfo, gcx: GlobalContext<
     for arg in &args.items {
         match arg {
             ast::AttributeArg::KeyValue { key, value, .. } => {
-                let key_text = gcx.symbol_text(key.symbol.clone());
+                let key_text = gcx.symbol_text(key.symbol);
                 let key_str = key_text.as_str();
                 let value_str = match value {
                     ast::Literal::String { value } => value.as_str(),
@@ -159,7 +159,7 @@ fn eval_cfg_attr(attr: &ast::Attribute, target: &TargetInfo, gcx: GlobalContext<
                 }
             }
             ast::AttributeArg::Flag { key, .. } => {
-                let key_text = gcx.symbol_text(key.symbol.clone());
+                let key_text = gcx.symbol_text(key.symbol);
                 let key_str = key_text.as_str();
                 match key_str {
                     "debug" => {
@@ -184,9 +184,9 @@ fn eval_cfg_attr(attr: &ast::Attribute, target: &TargetInfo, gcx: GlobalContext<
 fn eval_cfg_expr(expr: &ast::CfgExpr, target: &TargetInfo, gcx: GlobalContext<'_>) -> bool {
     match expr {
         ast::CfgExpr::Predicate { name, value, .. } => {
-            let name_text = gcx.symbol_text(name.symbol.clone());
+            let name_text = gcx.symbol_text(name.symbol);
             let name_str = name_text.as_str();
-            let value_text = gcx.symbol_text(value.clone());
+            let value_text = gcx.symbol_text(*value);
             let value_str = value_text.as_str();
 
             match name_str {

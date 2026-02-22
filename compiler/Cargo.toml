@@ -13,6 +13,7 @@ index_vec = "0.1.4"
 rustc-hash = "2.1.1"
 colored = "3.0.0"
 indexmap = "2.8.0"
+internment = { version = "0.8.6", features = ["arena", "serde"] }
 typed-arena = "2.0.2"
 ena = "0.14.3"
 bumpalo = "3.17.0"

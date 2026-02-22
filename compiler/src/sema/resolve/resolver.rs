@@ -218,7 +218,7 @@ impl<'a> Resolver<'a> {
             span: identifier.span,
         });
 
-        self.define_in_scope_internal(scope, identifier.symbol.clone(), entry, namespace)
+        self.define_in_scope_internal(scope, identifier.symbol, entry, namespace)
     }
 
     fn define_in_scope_internal(
@@ -296,7 +296,7 @@ impl<'a> Resolver<'a> {
                             Some(scope)
                         }
                         Holder::Overloaded(..) => {
-                            return Err(ResolutionError::AmbiguousUsage(identifier.clone()));
+                            return Err(ResolutionError::AmbiguousUsage(*identifier));
                         }
                     },
                     Err(e) => return Err(e),
@@ -308,7 +308,7 @@ impl<'a> Resolver<'a> {
             };
 
             let Some(next_scope) = next_scope else {
-                return Err(ResolutionError::UnknownSymbol(identifier.clone()));
+                return Err(ResolutionError::UnknownSymbol(*identifier));
             };
             scope = Some(next_scope);
         }
@@ -320,7 +320,7 @@ impl<'a> Resolver<'a> {
     }
 
     fn resolve_package(&self, identifier: &Identifier) -> Option<Scope<'a>> {
-        let identifier_text = self.context.symbol_text(identifier.symbol.clone());
+        let identifier_text = self.context.symbol_text(identifier.symbol);
         if identifier_text == self.context.config.name {
             return self.root_module_scope;
         }
@@ -338,7 +338,7 @@ impl<'a> Resolver<'a> {
                 .get(identifier.as_str())
         {
             let mapping = self.context.store.resolution_outputs.borrow();
-            return mapping.get(index).map(|table| table.root_scope).clone();
+            return mapping.get(index).map(|table| table.root_scope);
         };
 
         None
@@ -418,7 +418,7 @@ impl<'a> Resolver<'a> {
                 });
             } else {
                 return PathResult::Failed {
-                    error: ResolutionError::UnknownSymbol(segment.identifier.clone()),
+                    error: ResolutionError::UnknownSymbol(segment.identifier),
                 };
             }
         }
@@ -448,7 +448,7 @@ impl<'a> Resolver<'a> {
             ScopeKind::Definition(_, DefinitionKind::Module | DefinitionKind::Namespace) => {
                 &scope.glob_exports
             }
-            _ => return Err(ResolutionError::UnknownSymbol(name.clone())),
+            _ => return Err(ResolutionError::UnknownSymbol(*name)),
         };
 
         let mut candidates = vec![];
@@ -468,12 +468,12 @@ impl<'a> Resolver<'a> {
         }
 
         match candidates.len() {
-            0 => Err(ResolutionError::UnknownSymbol(name.clone())),
+            0 => Err(ResolutionError::UnknownSymbol(*name)),
             1 => Ok(candidates.into_iter().next().unwrap()),
             _ => {
                 match namespace {
                     ScopeNamespace::Type => {
-                        return Err(ResolutionError::UnknownSymbol(name.clone()));
+                        return Err(ResolutionError::UnknownSymbol(*name));
                     }
                     ScopeNamespace::Value => {
                         // Collect all entries from all candidates
@@ -493,7 +493,7 @@ impl<'a> Resolver<'a> {
                         if all_are_functions {
                             return Ok(Holder::Overloaded(all_entries));
                         } else {
-                            return Err(ResolutionError::AmbiguousUsage(name.clone()));
+                            return Err(ResolutionError::AmbiguousUsage(*name));
                         }
                     }
                 }
@@ -574,7 +574,7 @@ impl<'a> Resolver<'a> {
         if let Some(value) = implicit_value {
             return Ok(LexicalScopeBinding::Declaration(value));
         }
-        Err(ResolutionError::UnknownSymbol(name.clone()))
+        Err(ResolutionError::UnknownSymbol(*name))
     }
 }
 
@@ -718,7 +718,7 @@ impl<'a> Resolver<'a> {
                 | ScopeKind::Definition(_, DefinitionKind::Namespace)
         ));
 
-        let result = self.define_in_scope_internal(scope, name.symbol.clone(), entry, ns);
+        let result = self.define_in_scope_internal(scope, name.symbol, entry, ns);
         match result {
             Ok(_) => Ok(()),
             Err(_) => Err(ResolutionError::AlreadyInScope(name)),
@@ -737,7 +737,7 @@ impl<'a> Resolver<'a> {
             ScopeKind::Definition(_, DefinitionKind::Namespace | DefinitionKind::Module)
         ));
 
-        let result = self.define_in_scope_internal(scope, name.symbol.clone(), entry, ns);
+        let result = self.define_in_scope_internal(scope, name.symbol, entry, ns);
         match result {
             Ok(_) => Ok(()),
             Err(_) => Err(ResolutionError::AlreadyInScope(name)),

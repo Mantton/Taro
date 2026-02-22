@@ -3,7 +3,6 @@ use crate::{
     error::CompileResult,
     hir::{self, HirVisitor},
     sema::models::{AdtDef, AdtKind, Ty, TyKind},
-    span::Symbol,
 };
 
 pub fn run(package: &hir::Package, context: GlobalContext) -> CompileResult<()> {
@@ -20,10 +19,10 @@ impl HirVisitor for Actor<'_> {
     fn visit_declaration(&mut self, node: &hir::Declaration) -> Self::Result {
         match &node.kind {
             hir::DeclarationKind::Struct(_) => {
-                self.cache_adt_type(node.id, node.identifier.symbol.clone(), AdtKind::Struct);
+                self.cache_adt_type(node.id, AdtKind::Struct);
             }
             hir::DeclarationKind::Enum(_) => {
-                self.cache_adt_type(node.id, node.identifier.symbol.clone(), AdtKind::Enum);
+                self.cache_adt_type(node.id, AdtKind::Enum);
             }
             hir::DeclarationKind::OpaqueType => {
                 self.cache_opaque_type(node.id);
@@ -35,8 +34,8 @@ impl HirVisitor for Actor<'_> {
 }
 
 impl<'ctx> Actor<'ctx> {
-    fn cache_adt_type(&self, id: hir::DefinitionID, name: Symbol, kind: AdtKind) {
-        let adt_def = AdtDef { name, kind, id };
+    fn cache_adt_type(&self, id: hir::DefinitionID, kind: AdtKind) {
+        let adt_def = AdtDef { kind, id };
         let args = crate::sema::tycheck::utils::generics::GenericsBuilder::identity_for_item(
             self.context,
             id,

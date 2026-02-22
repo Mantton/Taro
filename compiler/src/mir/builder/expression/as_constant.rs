@@ -13,7 +13,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 ty: expr.ty,
                 value: mir::ConstantKind::Function(
                     *id,
-                    generic_args.clone().unwrap_or(&[]),
+                    (*generic_args).unwrap_or(&[]),
                     expr.ty,
                 ),
             },
@@ -25,11 +25,11 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let value = match &lit.value {
             thir::ConstantKind::Bool(b) => ConstantKind::Bool(*b),
             thir::ConstantKind::Rune(r) => ConstantKind::Rune(*r),
-            thir::ConstantKind::String(s) => ConstantKind::String(s.clone()),
+            thir::ConstantKind::String(s) => ConstantKind::String(*s),
             thir::ConstantKind::Integer(i) => ConstantKind::Integer(*i),
             thir::ConstantKind::Float(f) => ConstantKind::Float(*f),
             thir::ConstantKind::Unit => ConstantKind::Unit,
-            thir::ConstantKind::ConstParam(param) => ConstantKind::ConstParam(param.clone()),
+            thir::ConstantKind::ConstParam(param) => ConstantKind::ConstParam(*param),
         };
         Constant { ty: lit.ty, value }
     }

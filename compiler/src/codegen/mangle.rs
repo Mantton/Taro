@@ -35,13 +35,13 @@ fn const_symbol_with(gcx: GlobalContext, c: &crate::sema::models::Const) -> Stri
         }
         ConstKind::Value(ConstValue::Rune(ch)) => format!("r{}", *ch as u32),
         ConstKind::Value(ConstValue::String(sym)) => {
-            let text = gcx.symbol_text(sym.clone());
+            let text = gcx.symbol_text(*sym);
             format!("s{}", sanitize(text.as_ref()))
         }
         ConstKind::Value(ConstValue::Float(f)) => format!("f{:x}", f.to_bits()),
         ConstKind::Value(ConstValue::Unit) => "unit".into(),
         ConstKind::Param(p) => {
-            format!("cp{}", sanitize(gcx.symbol_text(p.name.clone()).as_ref()))
+            format!("cp{}", sanitize(gcx.symbol_text(p.name).as_ref()))
         }
         ConstKind::Infer(_) => "cinfer".into(),
     }
@@ -83,7 +83,7 @@ fn ty_symbol_with(gcx: GlobalContext, ty: Ty) -> String {
                 out.push_str(
                     &args
                         .iter()
-                        .map(|arg| generic_arg_symbol_with(gcx, arg.clone()))
+                        .map(|arg| generic_arg_symbol_with(gcx, *arg))
                         .collect::<Vec<_>>()
                         .join("_"),
                 );
@@ -130,7 +130,7 @@ fn ty_symbol_with(gcx: GlobalContext, ty: Ty) -> String {
                 out.push_str(
                     &args
                         .iter()
-                        .map(|arg| generic_arg_symbol_with(gcx, arg.clone()))
+                        .map(|arg| generic_arg_symbol_with(gcx, *arg))
                         .collect::<Vec<_>>()
                         .join("_"),
                 );
@@ -193,7 +193,7 @@ pub fn mangle(gcx: GlobalContext, id: hir::DefinitionID) -> String {
 
     // Check if this is a closure (synthetic definition)
     let leaf_ident = if let Some(ident) = output.definition_to_ident.get(&id) {
-        sanitize(gcx.symbol_text(ident.symbol.clone()).as_ref())
+        sanitize(gcx.symbol_text(ident.symbol).as_ref())
     } else if gcx.get_closure_captures(id).is_some() {
         // This is a closure - generate a unique name based on def_id
         let mut hasher = DefaultHasher::new();
@@ -202,7 +202,7 @@ pub fn mangle(gcx: GlobalContext, id: hir::DefinitionID) -> String {
     } else {
         // Try to get from synthetic definitions, or use anonymous fallback
         if let Some(def) = gcx.store.synthetic_definitions.borrow().get(&id) {
-            sanitize(gcx.symbol_text(def.name.clone()).as_ref())
+            sanitize(gcx.symbol_text(def.name).as_ref())
         } else {
             let mut hasher = DefaultHasher::new();
             id.hash(&mut hasher);
@@ -224,7 +224,7 @@ pub fn mangle(gcx: GlobalContext, id: hir::DefinitionID) -> String {
             Some(DefinitionKind::Module)
         ) {
             if let Some(ident) = output.definition_to_ident.get(&current) {
-                let name = gcx.symbol_text(ident.symbol.clone());
+                let name = gcx.symbol_text(ident.symbol);
                 if !name.is_empty() {
                     modules.push(sanitize(name.as_ref()));
                 }

@@ -261,7 +261,7 @@ impl<'ctx> MatchReport<'ctx> {
                         Constructor::Variant { name, .. } => {
                             terms.push(Term::new(
                                 *var,
-                                gcx.symbol_text(name.clone()).to_string(),
+                                gcx.symbol_text(*name).to_string(),
                                 case.arguments.clone(),
                             ));
                         }
@@ -434,9 +434,9 @@ impl<'ctx> Compiler<'ctx> {
                     .iter()
                     .enumerate()
                     .map(|(idx, variant)| {
-                        let vars = self.new_variables(&variant_field_types(variant.clone()));
+                        let vars = self.new_variables(&variant_field_types(*variant));
                         let cons = Constructor::Variant {
-                            name: variant.name.clone(),
+                            name: variant.name,
                             index: idx,
                         };
                         (cons, vars, Vec::new())
@@ -518,7 +518,7 @@ impl<'ctx> Compiler<'ctx> {
                         variant,
                         subpatterns,
                     } => {
-                        let idx = self.variant_index(definition.clone(), variant.clone());
+                        let idx = self.variant_index(*definition, *variant);
                         let mut cols = row.columns;
                         let vars = cases[idx].1.clone();
                         self.apply_field_patterns(&mut cols, &vars, subpatterns, col.pattern.span);
@@ -595,7 +595,7 @@ impl<'ctx> Compiler<'ctx> {
                     mode,
                 } => {
                     row.bindings.push(Binding {
-                        name: name.clone(),
+                        name: *name,
                         local: *local,
                         ty: *ty,
                         mode: *mode,
@@ -776,7 +776,7 @@ fn literal_key(pattern: &Pattern<'_>) -> LiteralKey {
             ConstantKind::Integer(i) => LiteralKey::Integer(*i),
             ConstantKind::Float(f) => LiteralKey::Float(f.to_bits()),
             ConstantKind::Rune(r) => LiteralKey::Rune(*r),
-            ConstantKind::String(s) => LiteralKey::String(s.clone()),
+            ConstantKind::String(s) => LiteralKey::String(*s),
             ConstantKind::Bool(_) | ConstantKind::Unit => {
                 unreachable!("boolean or unit literal used as infinite constructor")
             }
@@ -870,8 +870,8 @@ fn expand_pattern_or<'ctx>(pattern: &Pattern<'ctx>) -> Vec<Pattern<'ctx>> {
                 ty: pattern.ty,
                 span: pattern.span,
                 kind: PatternKind::Variant {
-                    definition: definition.clone(),
-                    variant: variant.clone(),
+                    definition: *definition,
+                    variant: *variant,
                     subpatterns: fields,
                 },
             })

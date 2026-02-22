@@ -21,7 +21,7 @@ pub fn validate_entry_point(
                 .root
                 .submodules
                 .iter()
-                .find(|m| gcx.symbol_eq(m.name.clone(), ROOT_MODULE_NAME));
+                .find(|m| gcx.symbol_eq(m.name, ROOT_MODULE_NAME));
             let Some(main_mod) = main_mod else {
                 gcx.dcx().emit_error(
                     "expected a `main` module containing an entry-point function".into(),

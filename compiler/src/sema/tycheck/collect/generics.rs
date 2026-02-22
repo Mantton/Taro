@@ -145,11 +145,11 @@ impl<'ctx> Actor<'ctx> {
         if let Some(hir_parameters) = hir_parameters {
             for (index, param) in hir_parameters.iter().enumerate() {
                 let id = param.id;
-                let name = param.identifier.symbol.clone();
+                let name = param.identifier.symbol;
                 let index = start + index;
                 // Definition
                 let def = GenericParameterDefinition {
-                    name: name.clone(),
+                    name: name,
                     id,
                     index,
                     kind: match &param.kind {

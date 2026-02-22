@@ -37,7 +37,7 @@ impl<'ctx, 'r> PatternLoweringContext<'ctx, 'r> {
                 let actual_mode = self.results.binding_mode(pattern.id).unwrap_or(*mode);
 
                 PatternKind::Binding {
-                    name: name.symbol.clone(),
+                    name: name.symbol,
                     local: pattern.id,
                     ty,
                     mode: actual_mode,
@@ -218,14 +218,14 @@ impl<'ctx, 'r> PatternLoweringContext<'ctx, 'r> {
             unreachable!()
         };
 
-        (def.adt_def.clone(), variant.clone())
+        (def.adt_def, *variant)
     }
 
     fn lower_literal(&self, lit: &hir::Literal) -> ConstantKind {
         match lit {
             hir::Literal::Bool(b) => ConstantKind::Bool(*b),
             hir::Literal::Rune(r) => ConstantKind::Rune(*r),
-            hir::Literal::String(s) => ConstantKind::String(s.clone()),
+            hir::Literal::String(s) => ConstantKind::String(*s),
             hir::Literal::Integer(i) => ConstantKind::Integer(*i),
             hir::Literal::Float(f) => ConstantKind::Float(*f),
             hir::Literal::Nil => ConstantKind::Unit,

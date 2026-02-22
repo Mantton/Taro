@@ -149,7 +149,7 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                 write!(f, "fn {}", ident.symbol)
             }
             ConstantKind::ConstParam(param) => {
-                write!(f, "const {}", self.gcx.symbol_text(param.name.clone()))
+                write!(f, "const {}", self.gcx.symbol_text(param.name))
             }
         }
     }
@@ -250,7 +250,7 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                 enum_def
                     .variants
                     .get(variant_index.index())
-                    .map(|variant| variant.name.clone())
+                    .map(|variant| variant.name)
             }
             _ => None,
         }

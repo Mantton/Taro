@@ -349,7 +349,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 }
                 GenericArgument::Const(c) => {
                     let substituted =
-                        instantiate_const_with_args(self.gcx, c.clone(), self.current_subst);
+                        instantiate_const_with_args(self.gcx, *c, self.current_subst);
                     GenericArgument::Const(substituted)
                 }
             })
@@ -1698,7 +1698,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             }
             let name = decl
                 .name
-                .clone()
                 .map(|s| self.gcx.symbol_text(s).to_string())
                 .unwrap_or_else(|| format!("tmp{idx}"));
             // Use stack slots for all locals with a representable LLVM type.
@@ -3508,7 +3507,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     out.push(GenericArgument::Type(instantiated));
                 }
                 GenericArgument::Const(c) => {
-                    let instantiated = instantiate_const_with_args(self.gcx, c.clone(), args);
+                    let instantiated = instantiate_const_with_args(self.gcx, *c, args);
                     out.push(GenericArgument::Const(instantiated));
                 }
             }
@@ -3534,7 +3533,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     new_args.push(GenericArgument::Type(substituted));
                 }
                 GenericArgument::Const(c) => {
-                    let substituted = instantiate_const_with_args(self.gcx, c.clone(), args);
+                    let substituted = instantiate_const_with_args(self.gcx, *c, args);
                     new_args.push(GenericArgument::Const(substituted));
                 }
             }
@@ -3547,7 +3546,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         for binding in template.bindings {
             let substituted_ty = instantiate_ty_with_args(self.gcx, binding.ty, args);
             new_bindings.push(crate::sema::models::AssociatedTypeBinding {
-                name: binding.name.clone(),
+                name: binding.name,
                 ty: substituted_ty,
             });
         }
@@ -6173,7 +6172,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     .as_basic_value_enum(),
             ),
             mir::ConstantKind::String(sym) => {
-                let ptr = self.lower_string(sym.clone());
+                let ptr = self.lower_string(*sym);
                 let len = self
                     .usize_ty
                     .const_int(self.gcx.symbol_text(sym).len() as u64, false);
@@ -6195,7 +6194,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             mir::ConstantKind::ConstParam(param) => {
                 let konst = crate::sema::models::Const {
                     ty: constant.ty,
-                    kind: ConstKind::Param(param.clone()),
+                    kind: ConstKind::Param(*param),
                 };
                 let instantiated = instantiate_const_with_args(self.gcx, konst, self.current_subst);
                 let ConstKind::Value(value) = instantiated.kind else {
@@ -6218,7 +6217,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                             .as_basic_value_enum(),
                     ),
                     ConstValue::String(sym) => {
-                        let ptr = self.lower_string(sym.clone());
+                        let ptr = self.lower_string(sym);
                         let len = self
                             .usize_ty
                             .const_int(self.gcx.symbol_text(sym).len() as u64, false);

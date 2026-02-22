@@ -591,7 +591,7 @@ impl Parser {
 
         if self.matches(Token::LBrace) {
             let declarations: Vec<Declaration<ast::ExternDeclarationKind>> =
-                self.parse_declaration_list(|p| p.parse_extern_block_declaration(abi.clone()))?;
+                self.parse_declaration_list(|p| p.parse_extern_block_declaration(abi))?;
             return Ok((
                 Identifier::emtpy(self.file.id),
                 DeclarationKind::ExternBlock(ast::ExternBlock { abi, declarations }),
@@ -805,7 +805,7 @@ impl Parser {
 
         let pattern = self.parse_pattern()?;
         let ident = match &pattern.kind {
-            PatternKind::Identifier(identifier) => identifier.clone(),
+            PatternKind::Identifier(identifier) => *identifier,
             _ => {
                 return Err(Spanned::new(
                     ParserError::RequiredIdentifierPattern,
@@ -851,7 +851,7 @@ impl Parser {
         };
 
         let decl = Constant {
-            identifier: identifier.clone(),
+            identifier: identifier,
             ty,
             expr,
         };
@@ -1131,7 +1131,7 @@ impl Parser {
         // - legacy key/value syntax: `@cfg(target_os = "macos")`
         let mut cfg_expr = None;
         let args = if self.matches(Token::LParen) {
-            if self.symbol_eq(identifier.symbol.clone(), "cfg") {
+            if self.symbol_eq(identifier.symbol, "cfg") {
                 let checkpoint = self.checkpoint();
                 self.bump(); // consume `(`
                 let parsed_cfg = self.parse_cfg_expr().and_then(|expr| {
@@ -2045,7 +2045,7 @@ impl Parser {
     fn parse_statement_kind(&mut self, label: Option<Label>) -> R<StatementKind> {
         match self.current_token() {
             Token::Loop | Token::While | Token::For => {}
-            _ => self.warn_improper_label_position(label.clone()),
+            _ => self.warn_improper_label_position(label),
         };
 
         match self.current_token() {
@@ -2657,7 +2657,7 @@ impl Parser {
         self.bump(); // eat operator
 
         let rhs = action(self)?;
-        let span = lhs.span.clone().to(rhs.span.clone());
+        let span = lhs.span.clone().to(rhs.span);
         let kind = ExpressionKind::Binary(op, lhs, rhs);
         let expr = self.build_expr(kind, span);
 
@@ -2672,7 +2672,7 @@ impl Parser {
         while self.eat(Token::As) {
             let ty = self.parse_type()?;
 
-            let span = expr.span.clone().to(ty.span.clone());
+            let span = expr.span.clone().to(ty.span);
             let kind = ExpressionKind::CastAs(expr, ty);
             expr = self.build_expr(kind, span)
         }
@@ -2844,7 +2844,7 @@ impl Parser {
         expr = self.parse_postfix_expr_suffix(expr, &mut has_optional_chain)?;
 
         if has_optional_chain {
-            let span = expr.span.clone();
+            let span = expr.span;
             let node = ExpressionKind::OptionalEvaluation(expr);
             expr = self.build_expr(node, span);
         }
@@ -2897,14 +2897,14 @@ impl Parser {
         let pattern = Pattern {
             id: self.next_id(),
             span: identifier.span,
-            kind: PatternKind::Identifier(identifier.clone()),
+            kind: PatternKind::Identifier(identifier),
         };
 
         let expression = if self.eat(Token::Assign) {
             self.parse_expression()?
         } else {
             self.build_expr(
-                ExpressionKind::Identifier(identifier.clone()),
+                ExpressionKind::Identifier(identifier),
                 identifier.span,
             )
         };
@@ -2926,7 +2926,7 @@ impl Parser {
 impl Parser {
     fn parse_call_expr(&mut self, expr: Box<Expression>) -> R<Box<Expression>> {
         let args = self.parse_expression_argument_list(Delimiter::Parenthesis)?;
-        let s = expr.span.clone();
+        let s = expr.span;
         let k = ExpressionKind::Call(expr, args);
         return Ok(self.build_expr(k, s.to(self.hi_span())));
     }
@@ -2986,7 +2986,7 @@ impl Parser {
         } else {
             Box::new(Type {
                 id: self.next_id(),
-                span: ident.span.clone(),
+                span: ident.span,
                 kind: TypeKind::InferedClosureParameter,
             })
         };
@@ -3441,7 +3441,7 @@ impl Parser {
         let name = if matches!(self.current_token(), Token::Identifier { .. }) {
             self.parse_identifier()?
         } else if let Some(label) = label.as_ref() {
-            label.clone()
+            *label
         } else if underscore_label {
             Identifier::emtpy(self.file.id)
         } else {
@@ -3492,7 +3492,7 @@ impl Parser {
                 let anchor = self.cursor;
                 let ident = self.parse_identifier()?;
 
-                if self.symbol_eq(ident.symbol.clone(), "self") {
+                if self.symbol_eq(ident.symbol, "self") {
                     (SelfKind::Copy, Mutability::Immutable, ident)
                 } else {
                     self.cursor = anchor;
@@ -3537,7 +3537,7 @@ impl Parser {
     fn parse_self(&mut self) -> R<Identifier> {
         let ident = self.parse_identifier()?;
 
-        if !self.symbol_eq(ident.symbol.clone(), "self") {
+        if !self.symbol_eq(ident.symbol, "self") {
             return Err(self.err_at_current(ParserError::ExpectedSelf));
         }
 
@@ -3604,7 +3604,7 @@ impl Parser {
             ExpressionKind::Identifier(identifier) => {
                 let segment = PathSegment {
                     id: expr.id,
-                    identifier: identifier.clone(),
+                    identifier: *identifier,
                     arguments: None,
                     span: expr.span,
                 };
@@ -3617,7 +3617,7 @@ impl Parser {
                 let mut path = self.expr_to_path(target)?;
                 let segment = PathSegment {
                     id: self.next_index.borrow_mut().next(),
-                    identifier: name.clone(),
+                    identifier: *name,
                     arguments: None,
                     span: name.span,
                 };
@@ -3986,7 +3986,7 @@ bitflags::bitflags! {
 
 impl Parser {
     fn with_restrictions<T>(&mut self, res: Restrictions, f: impl FnOnce(&mut Self) -> T) -> T {
-        let old = self.restrictions.clone();
+        let old = self.restrictions;
         self.restrictions = res;
         let res = f(self);
         self.restrictions = old;

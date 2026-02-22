@@ -790,7 +790,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                                     self.add_variant_case_places(
                                         &mut case_places,
                                         branch_place,
-                                        name.clone(),
+                                        *name,
                                         variant_index,
                                         &case.arguments,
                                     );
@@ -1201,7 +1201,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     Some(DefinitionKind::Module)
                 ) {
                     if let Some(ident) = output.definition_to_ident.get(&current) {
-                        if self.gcx.symbol_eq(ident.symbol.clone(), module) {
+                        if self.gcx.symbol_eq(ident.symbol, module) {
                             return true;
                         }
                     }
@@ -1213,7 +1213,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         // Linear scan for now (slow but works)
         let mut fallback = None;
         for (id, ident) in output.definition_to_ident.iter() {
-            if self.gcx.symbol_eq(ident.symbol.clone(), name) {
+            if self.gcx.symbol_eq(ident.symbol, name) {
                 if !matches!(
                     output.definition_to_kind.get(id),
                     Some(DefinitionKind::Function)
@@ -1314,7 +1314,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         for (idx, var) in args.iter().enumerate() {
             let mut proj = base_place.projection.clone();
             proj.push(PlaceElem::VariantDowncast {
-                name: name.clone(),
+                name: name,
                 index,
             });
             proj.push(PlaceElem::Field(FieldIndex::from_usize(idx), var.ty));
@@ -1352,7 +1352,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             // Get or create the MIR local for this binding.
             // For or-patterns, all alternatives with the same binding name share
             // the same local so the body can reference it consistently.
-            let key = (arm_id, binding.name.clone());
+            let key = (arm_id, binding.name);
             let local = if let Some(&existing) = self.arm_binding_locals.get(&key) {
                 existing
             } else {
@@ -1360,7 +1360,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     binding.ty,
                     mir::LocalKind::User,
                     true, // Match bindings are mutable for now to allow pattern binding operations
-                    Some(binding.name.clone()),
+                    Some(binding.name),
                     binding.span,
                 );
                 self.arm_binding_locals.insert(key, new_local);

@@ -143,7 +143,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             Resolution::PrimaryType(k) => {
                 let message = format!(
                     "'{}' does not accept generic arguments",
-                    gcx.symbol_text(segment.identifier.symbol.clone())
+                    gcx.symbol_text(segment.identifier.symbol)
                 );
                 let _ = check_no_type_arguments(segment, gcx, message);
                 match k {
@@ -162,7 +162,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             Resolution::Definition(id, DefinitionKind::TypeParameter) => {
                 let message = format!(
                     "'{}' does not accept generic arguments",
-                    gcx.symbol_text(segment.identifier.symbol.clone())
+                    gcx.symbol_text(segment.identifier.symbol)
                 );
                 let _ = check_no_type_arguments(segment, gcx, message);
                 gcx.get_type(id)
@@ -183,9 +183,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 match kind {
                     crate::sema::resolve::models::DefinitionKind::Struct
                     | crate::sema::resolve::models::DefinitionKind::Enum => {
-                        let ident = gcx.definition_ident(id);
                         let def = AdtDef {
-                            name: ident.symbol,
                             kind: match kind {
                                 crate::sema::resolve::models::DefinitionKind::Enum => AdtKind::Enum,
                                 _ => AdtKind::Struct,
@@ -292,7 +290,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             if let Some(hir::TypeArgument::AssociatedType(ident, ty)) = args_iter.peek() {
                 let lowered_ty = self.lower_type(ty);
                 bindings.push(AssociatedTypeBinding {
-                    name: ident.symbol.clone(),
+                    name: ident.symbol,
                     ty: lowered_ty,
                 });
                 args_iter.next();
@@ -425,7 +423,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                                         current_args,
                                     );
                                     self.register_default_fallback(DefaultFallbackGoalData {
-                                        infer_var: GenericArgument::Const(infer_const.clone()),
+                                        infer_var: GenericArgument::Const(infer_const),
                                         default: GenericArgument::Const(default_const),
                                         span,
                                     });
@@ -514,7 +512,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             return self.error_const();
         };
 
-        if !const_value_matches_type(value.clone(), expected_ty) {
+        if !const_value_matches_type(value, expected_ty) {
             let message = format!(
                 "const argument does not match parameter type '{}'",
                 expected_ty.format(gcx)
@@ -591,7 +589,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             return gcx.types.error;
         };
 
-        let name = segment.identifier.symbol.clone();
+        let name = segment.identifier.symbol;
         let mut candidates: Vec<(DefinitionID, Span)> = Vec::new();
 
         // For reference/pointer types, we need to filter by the actual inner type
@@ -805,7 +803,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             gcx.dcx().emit_error(
                 format!(
                     "no associated type '{}' in interface '{}'",
-                    gcx.symbol_text(member.symbol.clone()),
+                    gcx.symbol_text(member.symbol),
                     interface_name_text
                 ),
                 Some(member.span),
@@ -834,7 +832,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             gcx.dcx().emit_error(
                 format!(
                     "associated type '{}' not satisfied in conformance",
-                    gcx.symbol_text(member.symbol.clone())
+                    gcx.symbol_text(member.symbol)
                 ),
                 Some(member.span),
             );
@@ -850,7 +848,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         segment: &hir::PathSegment,
     ) -> Ty<'ctx> {
         let gcx = self.gcx();
-        let name = segment.identifier.symbol.clone();
+        let name = segment.identifier.symbol;
 
         let Some(def_id) = self.current_definition() else {
             gcx.dcx().emit_error(
@@ -873,7 +871,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             };
             if matches!(ty.kind(), TyKind::Parameter(param) if param == base_param) {
                 has_bounds = true;
-                self.collect_projection_candidates(interface, name.clone(), &mut candidates);
+                self.collect_projection_candidates(interface, name, &mut candidates);
             }
         }
 
@@ -937,7 +935,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         segment: &hir::PathSegment,
     ) -> Ty<'ctx> {
         let gcx = self.gcx();
-        let name = segment.identifier.symbol.clone();
+        let name = segment.identifier.symbol;
         let constraints =
             crate::sema::tycheck::constraints::canonical_constraints_of(gcx, base_assoc_id);
 
@@ -951,7 +949,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             };
             if ty == base_projection {
                 has_bounds = true;
-                self.collect_projection_candidates(interface, name.clone(), &mut candidates);
+                self.collect_projection_candidates(interface, name, &mut candidates);
             }
         }
 
@@ -1167,7 +1165,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
 
         let param = GenericParameter {
             index: def.index,
-            name: def.name.clone(),
+            name: def.name,
         };
 
         Some(Const {
@@ -1197,7 +1195,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
 
         let param = GenericParameter {
             index: def.index,
-            name: def.name.clone(),
+            name: def.name,
         };
 
         Some(Const {
@@ -1328,7 +1326,7 @@ pub fn check_generic_arg_count(
         if total_count == 0 {
             let message = format!(
                 "'{}' does not accept generic arguments",
-                context.symbol_text(segment.identifier.symbol.clone())
+                context.symbol_text(segment.identifier.symbol)
             );
             context
                 .dcx()

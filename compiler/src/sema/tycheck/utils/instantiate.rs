@@ -24,7 +24,7 @@ impl<'ctx> TypeFolder<'ctx> for InstantiateFolder<'ctx> {
         match ty.kind() {
             TyKind::Parameter(p) => {
                 if let Some(ty) = self.args.get(p.index) {
-                    ty.clone().ty().expect("Argument is not a Type")
+                    (*ty).ty().expect("Argument is not a Type")
                 } else {
                     ty
                 }
@@ -75,7 +75,7 @@ pub fn instantiate_const_with_args<'ctx>(
     let ty = instantiate_ty_with_args(gcx, c.ty, args);
     let kind = match c.kind {
         ConstKind::Param(p) => match args.get(p.index) {
-            Some(GenericArgument::Const(arg)) => return arg.clone(),
+            Some(GenericArgument::Const(arg)) => return *arg,
             _ => ConstKind::Param(p),
         },
         ConstKind::Infer(_) => c.kind,
@@ -110,7 +110,7 @@ pub fn instantiate_interface_ref_with_args<'ctx>(
                 new_args.push(GenericArgument::Type(substituted));
             }
             GenericArgument::Const(c) => {
-                let substituted = instantiate_const_with_args(gcx, c.clone(), args);
+                let substituted = instantiate_const_with_args(gcx, *c, args);
                 new_args.push(GenericArgument::Const(substituted));
             }
         }
@@ -120,7 +120,7 @@ pub fn instantiate_interface_ref_with_args<'ctx>(
     for binding in interface.bindings {
         let substituted = instantiate_ty_with_args(gcx, binding.ty, args);
         new_bindings.push(crate::sema::models::AssociatedTypeBinding {
-            name: binding.name.clone(),
+            name: binding.name,
             ty: substituted,
         });
     }
@@ -151,8 +151,8 @@ pub fn instantiate_signature_with_args<'ctx>(
         .inputs
         .iter()
         .map(|param| LabeledFunctionParameter {
-            label: param.label.clone(),
-            name: param.name.clone(),
+            label: param.label,
+            name: param.name,
             ty: instantiate_ty_with_args(gcx, param.ty, args),
             default_provider: param.default_provider,
         })

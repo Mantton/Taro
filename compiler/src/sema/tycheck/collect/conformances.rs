@@ -390,6 +390,7 @@ impl<'ctx> Actor<'ctx> {
 
     fn validate_struct_copy(&self, struct_id: DefinitionID, span: Span) -> bool {
         let def = self.context.get_struct_definition(struct_id);
+        let struct_name = self.context.definition_ident(struct_id).symbol;
         let mut all_copy = true;
 
         for field in def.fields.iter() {
@@ -398,8 +399,8 @@ impl<'ctx> Actor<'ctx> {
                 self.context.dcx().emit_error(
                     format!(
                         "cannot derive Copy for '{}': field '{}' of type '{}' is not Copy",
-                        self.context.symbol_text(def.adt_def.name.clone()),
-                        self.context.symbol_text(field.name.clone()),
+                        self.context.symbol_text(struct_name),
+                        self.context.symbol_text(field.name),
                         type_name
                     ),
                     Some(span),
@@ -413,6 +414,7 @@ impl<'ctx> Actor<'ctx> {
 
     fn validate_enum_copy(&self, enum_id: DefinitionID, span: Span) -> bool {
         let def = self.context.get_enum_definition(enum_id);
+        let enum_name = self.context.definition_ident(enum_id).symbol;
         let mut all_copy = true;
 
         for variant in def.variants.iter() {
@@ -422,15 +424,14 @@ impl<'ctx> Actor<'ctx> {
                         let type_name = field.ty.format(self.context);
                         let field_name = field
                             .label
-                            .clone()
                             .map(|s| self.context.symbol_text(s).to_string())
                             .unwrap_or_else(|| format!("{}", idx));
                         self.context.dcx().emit_error(
                             format!(
                                 "cannot derive Copy for '{}': field '{}' in variant '{}' of type '{}' is not Copy",
-                                self.context.symbol_text(def.adt_def.name.clone()),
+                                self.context.symbol_text(enum_name),
                                 field_name,
-                                self.context.symbol_text(variant.name.clone()),
+                                self.context.symbol_text(variant.name),
                                 type_name
                             ),
                             Some(span),

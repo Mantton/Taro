@@ -76,7 +76,7 @@ pub enum KnownAttribute {
 impl Attribute {
     /// Try to parse this attribute as a known compiler attribute.
     pub fn as_known(&self, gcx: GlobalContext<'_>) -> Option<KnownAttribute> {
-        let name = gcx.symbol_text(self.identifier.symbol.clone());
+        let name = gcx.symbol_text(self.identifier.symbol);
         match name.as_str() {
             "inline" => Some(KnownAttribute::Inline),
             "noinline" => Some(KnownAttribute::NoInline),
@@ -95,11 +95,11 @@ impl Attribute {
         for arg in &args.items {
             match arg {
                 AttributeArg::Flag { key, .. } => {
-                    return Some(gcx.symbol_text(key.symbol.clone()).to_string());
+                    return Some(gcx.symbol_text(key.symbol).to_string());
                 }
                 AttributeArg::KeyValue { value, .. } => {
                     if let Literal::String(s) = value {
-                        return Some(gcx.symbol_text(s.clone()).to_string());
+                        return Some(gcx.symbol_text(*s).to_string());
                     }
                 }
             }

@@ -233,7 +233,7 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                         {
                                             let mut proj = dest.projection.clone();
                                             proj.push(PlaceElem::VariantDowncast {
-                                                name: variant_data.name.clone(),
+                                                name: variant_data.name,
                                                 index: variant_index,
                                             });
                                             proj.push(PlaceElem::Field(idx, *ty));

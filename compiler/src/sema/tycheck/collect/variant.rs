@@ -71,7 +71,7 @@ impl<'ctx> Actor<'ctx> {
                     let mut out: Vec<EnumVariantField<'ctx>> = Vec::with_capacity(fields.len());
                     for field in fields {
                         let ty = ctx.lowerer().lower_type(&field.ty);
-                        let label = field.label.clone().map(|l| l.identifier.symbol);
+                        let label = field.label.map(|l| l.identifier.symbol);
                         out.push(EnumVariantField { label, ty });
                     }
                     let fields = self.context.store.arenas.global.alloc_slice_clone(&out);
@@ -80,7 +80,7 @@ impl<'ctx> Actor<'ctx> {
             };
 
             variants.push(EnumVariant {
-                name: variant.identifier.symbol.clone(),
+                name: variant.identifier.symbol,
                 def_id: variant.def_id,
                 ctor_def_id: variant.ctor_def_id,
                 kind,
@@ -115,10 +115,9 @@ impl<'ctx> Actor<'ctx> {
                     for (idx, field) in fields.iter().enumerate() {
                         let name = field
                             .label
-                            .clone()
                             .unwrap_or_else(|| self.context.intern_symbol(&format!("arg{}", idx)));
                         inputs.push(LabeledFunctionParameter {
-                            label: field.label.clone(),
+                            label: field.label,
                             name,
                             ty: field.ty,
                             default_provider: None,

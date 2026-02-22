@@ -28,7 +28,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     new_args.push(GenericArgument::Type(resolved));
                 }
                 GenericArgument::Const(c) => {
-                    let resolved = self.icx.resolve_const_if_possible(c.clone());
+                    let resolved = self.icx.resolve_const_if_possible(*c);
                     if matches!(resolved.kind, crate::sema::models::ConstKind::Infer(_)) {
                         has_infer = true;
                     }
@@ -44,7 +44,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 has_infer = true;
             }
             new_bindings.push(crate::sema::models::AssociatedTypeBinding {
-                name: binding.name.clone(),
+                name: binding.name,
                 ty: resolved_ty,
             });
         }
@@ -143,7 +143,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     new_args.push(GenericArgument::Type(substituted));
                 }
                 GenericArgument::Const(c) => {
-                    let substituted = instantiate_const_with_args(gcx, c.clone(), args);
+                    let substituted = instantiate_const_with_args(gcx, *c, args);
                     new_args.push(GenericArgument::Const(substituted));
                 }
             }
@@ -153,7 +153,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         for binding in template.bindings {
             let substituted = instantiate_ty_with_args(gcx, binding.ty, args);
             new_bindings.push(crate::sema::models::AssociatedTypeBinding {
-                name: binding.name.clone(),
+                name: binding.name,
                 ty: substituted,
             });
         }

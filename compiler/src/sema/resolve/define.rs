@@ -53,7 +53,7 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
             self.define(
                 &Identifier {
                     span: Span::empty(FileID::new(0)),
-                    symbol: node.name.clone(),
+                    symbol: node.name,
                 },
                 ScopeNamespace::Type,
                 Resolution::Definition(id, DefinitionKind::Module),
@@ -424,9 +424,9 @@ impl<'r, 'a> Actor<'r, 'a> {
                 let mut module_path = tree.path.nodes.clone();
                 assert!(!module_path.is_empty(), "non-empty module path");
                 let target = if let Some(alias) = alias {
-                    alias.clone()
+                    *alias
                 } else {
-                    module_path.last().expect("non-empty module path").clone()
+                    *module_path.last().expect("non-empty module path")
                 };
                 let source = module_path.pop().expect("non-empty module path");
                 let binding = UsageBinding {
@@ -446,11 +446,11 @@ impl<'r, 'a> Actor<'r, 'a> {
                 for node in nodes {
                     let module_path = tree.path.nodes.clone();
                     let target = if let Some(alias) = &node.alias {
-                        alias.clone()
+                        *alias
                     } else {
-                        node.name.clone()
+                        node.name
                     };
-                    let source = node.name.clone();
+                    let source = node.name;
                     let binding = UsageBinding {
                         node_id: node.id,
                         source,

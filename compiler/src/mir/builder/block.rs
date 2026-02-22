@@ -158,7 +158,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     *ty,
                     mir::LocalKind::User,
                     mutable,
-                    Some(name.clone()),
+                    Some(*name),
                     pattern.span,
                 );
                 self.locals.insert(*pat_id, local);
@@ -218,7 +218,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 for field in subpatterns {
                     let mut proj = base_place.projection.clone();
                     proj.push(PlaceElem::VariantDowncast {
-                        name: variant.name.clone(),
+                        name: variant.name,
                         index: variant_index,
                     });
                     proj.push(PlaceElem::Field(field.index, field.pattern.ty));

@@ -190,7 +190,7 @@ impl Inline {
                     ty: substituted_ty,
                     kind: inlined_kind,
                     mutable: local_decl.mutable,
-                    name: local_decl.name.clone(),
+                    name: local_decl.name,
                     span: local_decl.span,
                 };
                 let new_local = caller.locals.push(new_decl);
@@ -459,7 +459,7 @@ fn remap_place_elem<'ctx>(
         // Other projections don't contain types that need substitution
         PlaceElem::Deref => PlaceElem::Deref,
         PlaceElem::VariantDowncast { name, index } => PlaceElem::VariantDowncast {
-            name: name.clone(),
+            name: *name,
             index: *index,
         },
     }
@@ -500,11 +500,11 @@ fn remap_constant<'ctx>(
                         // Convert sema Const to MIR ConstantKind
                         match &sema_const.kind {
                             crate::sema::models::ConstKind::Value(val) => {
-                                sema_const_value_to_mir(val.clone())
+                                sema_const_value_to_mir(*val)
                             }
                             crate::sema::models::ConstKind::Param(inner_param) => {
                                 // Still a param - pass it through (shouldn't happen with valid gen_args)
-                                ConstantKind::ConstParam(inner_param.clone())
+                                ConstantKind::ConstParam(*inner_param)
                             }
                             crate::sema::models::ConstKind::Infer(_) => {
                                 // Inference should be resolved by now
@@ -560,7 +560,7 @@ fn substitute_gen_args<'ctx>(
                 GenericArgument::Type(instantiate_ty_with_args(gcx, *ty, substitution))
             }
             GenericArgument::Const(c) => {
-                GenericArgument::Const(instantiate_const_with_args(gcx, c.clone(), substitution))
+                GenericArgument::Const(instantiate_const_with_args(gcx, *c, substitution))
             }
         })
         .collect();

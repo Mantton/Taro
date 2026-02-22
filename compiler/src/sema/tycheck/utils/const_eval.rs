@@ -51,7 +51,7 @@ fn eval_const_literal<'ctx>(
     Some(match lit {
         hir::Literal::Bool(b) => ConstValue::Bool(*b),
         hir::Literal::Rune(r) => ConstValue::Rune(*r),
-        hir::Literal::String(s) => ConstValue::String(s.clone()),
+        hir::Literal::String(s) => ConstValue::String(*s),
         hir::Literal::Integer(i) => ConstValue::Integer(*i as i128),
         hir::Literal::Float(f) => ConstValue::Float(*f),
         hir::Literal::Nil => {

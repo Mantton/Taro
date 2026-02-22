@@ -134,8 +134,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 continue;
             }
 
-            let args_ty = bound.arguments[1].clone().ty()?;
-            let output_ty = bound.arguments[2].clone().ty()?;
+            let args_ty = bound.arguments[1].ty()?;
+            let output_ty = bound.arguments[2].ty()?;
 
             // Unpack tuple Args into individual parameters (rust-call ABI style).
             // For Fn[int32, int32] -> one int32 argument
@@ -218,8 +218,8 @@ pub fn match_arguments_to_parameters(
                             return Err(Spanned::new(
                                 ApplyValidationError::LabelMismatch {
                                     param_index: param_idx,
-                                    expected: param.label.clone(),
-                                    provided: arg.label.clone().map(|f| f.symbol),
+                                    expected: param.label,
+                                    provided: arg.label.map(|f| f.symbol),
                                 },
                                 arg.span,
                             ));
@@ -235,7 +235,7 @@ pub fn match_arguments_to_parameters(
                         ApplyValidationError::LabelMismatch {
                             param_index: 0, // We don't know which parameter this was meant for
                             expected: None,
-                            provided: arg.label.clone().map(|f| f.symbol),
+                            provided: arg.label.map(|f| f.symbol),
                         },
                         arg.span,
                     ));
@@ -283,7 +283,7 @@ pub fn match_arguments_to_parameters(
             return Err(Spanned::new(
                 ApplyValidationError::LabelMismatch {
                     param_index: param_idx,
-                    expected: param.label.clone(),
+                    expected: param.label,
                     provided: None,
                 },
                 arg.span,
@@ -333,7 +333,7 @@ fn produce_application_subobligations<'c>(
             };
 
             for &arg_idx in arg_indices {
-                let argument = arguments[arg_idx].clone();
+                let argument = arguments[arg_idx];
                 let arg_ty = argument.ty;
                 let constraint = Goal::Coerce {
                     node_id: argument.id,
@@ -354,7 +354,7 @@ fn produce_application_subobligations<'c>(
             if !is_variadic_param {
                 let err = ApplyValidationError::MissingRequiredParameter {
                     param_index: param_idx,
-                    param_name: signature.inputs[param_idx].name.clone(),
+                    param_name: signature.inputs[param_idx].name,
                 };
                 return Err(err);
             }

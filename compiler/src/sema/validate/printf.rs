@@ -32,7 +32,7 @@ fn find_std_format_function(gcx: GlobalContext<'_>, name: &str) -> Option<Defini
     let output = gcx.resolution_output(std_pkg);
     output.definition_to_ident.iter().find_map(|(id, ident)| {
         let kind = output.definition_to_kind.get(id)?;
-        if *kind == DefinitionKind::Function && gcx.symbol_eq(ident.symbol.clone(), name) {
+        if *kind == DefinitionKind::Function && gcx.symbol_eq(ident.symbol, name) {
             Some(*id)
         } else {
             None
@@ -103,7 +103,7 @@ impl<'ctx> Actor<'ctx, '_> {
             return;
         };
 
-        let format_text = self.gcx.symbol_text(format_literal.clone());
+        let format_text = self.gcx.symbol_text(*format_literal);
         let format_text = format_text.as_ref();
         let specs = match parse_specs(format_text) {
             Ok(specs) => specs,

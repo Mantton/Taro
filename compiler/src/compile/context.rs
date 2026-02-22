@@ -195,7 +195,7 @@ impl<'arena> GlobalContext<'arena> {
 
     pub fn cache_impl_type_head(self, impl_id: DefinitionID, head: TypeHead) {
         self.with_type_database(impl_id.package(), |db| {
-            db.impl_to_type_head.insert(impl_id, head.clone());
+            db.impl_to_type_head.insert(impl_id, head);
             db.type_head_to_impls.entry(head).or_default().push(impl_id);
         });
     }
@@ -349,7 +349,7 @@ impl<'arena> GlobalContext<'arena> {
     #[inline]
     pub fn get_const(self, id: DefinitionID) -> Const<'arena> {
         self.with_type_database(id.package(), |db| {
-            db.def_to_const.get(&id).expect("const value").clone()
+            *db.def_to_const.get(&id).expect("const value")
         })
     }
 
@@ -438,10 +438,9 @@ impl<'arena> GlobalContext<'arena> {
         index: VariantIndex,
     ) -> EnumVariant<'arena> {
         let def = self.get_enum_definition(enum_id);
-        def.variants
+        *def.variants
             .get(index.index())
             .expect("enum variant index")
-            .clone()
     }
 
     pub fn get_interface_requirements(
@@ -528,17 +527,16 @@ impl<'arena> GlobalContext<'arena> {
     pub fn definition_ident(self, id: DefinitionID) -> crate::span::Identifier {
         if let Some(def) = self.context.store.synthetic_definitions.borrow().get(&id) {
             return crate::span::Identifier {
-                symbol: def.name.clone(),
+                symbol: def.name,
                 span: def.span,
             };
         }
 
         let output = self.resolution_output(id.package());
-        output
+        *output
             .definition_to_ident
             .get(&id)
             .expect("identifier for definition")
-            .clone()
     }
 
     pub fn definition_kind(self, id: DefinitionID) -> DefinitionKind {
@@ -610,7 +608,7 @@ impl<'arena> GlobalContext<'arena> {
                     | DefinitionKind::Enum
                     | DefinitionKind::TypeAlias
             ) {
-                definitions.insert(ident.symbol.clone(), *id);
+                definitions.insert(ident.symbol, *id);
             }
         }
 
@@ -1274,7 +1272,7 @@ impl<'arena> GlobalContext<'arena> {
         self.with_session_type_database(|db| {
             db.synthetic_methods
                 .iter()
-                .map(|(k, v)| (*k, v.clone()))
+                .map(|(k, v)| (*k, *v))
                 .collect()
         })
     }

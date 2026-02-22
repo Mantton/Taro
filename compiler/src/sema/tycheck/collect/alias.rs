@@ -42,7 +42,7 @@ impl<'ctx> Actor<'ctx> {
 
         if let Some(extension_id) = entry.extension_id {
             if let Some(head) = self.context.get_impl_type_head(extension_id) {
-                self.register_in_bucket(head, entry.name.clone(), id, entry.span);
+                self.register_in_bucket(head, entry.name, id, entry.span);
             }
         }
 
@@ -88,7 +88,7 @@ impl HirVisitor for Actor<'_> {
 
         let entry = AliasDefinition {
             id: node.id,
-            name: node.identifier.symbol.clone(),
+            name: node.identifier.symbol,
             span: node.span,
             ast_ty: ty.clone(),
             extension_id: None,
@@ -117,7 +117,7 @@ impl HirVisitor for Actor<'_> {
 
         let entry = AliasDefinition {
             id: node.id,
-            name: node.identifier.symbol.clone(),
+            name: node.identifier.symbol,
             span: node.span,
             ast_ty: ty.clone(),
             extension_id: Some(impl_id),

@@ -78,7 +78,7 @@ pub fn synthesize_all<'ctx>(gcx: GlobalContext<'ctx>) -> Vec<ThirFunction<'ctx>>
         });
 
         // 2. Register Definition (Generics, Signature)
-        register_definition(gcx, syn_id, type_head, info.clone());
+        register_definition(gcx, syn_id, type_head, info);
 
         // 3. Synthesize Body
         if let Some(func) = synthesize_method(gcx, type_head, method_id, info, syn_id) {
@@ -371,7 +371,7 @@ fn synthesize_memberwise_clone<'ctx>(
 
     if let Some(struct_def) = struct_def {
         // Struct: create Self { field1: self.field1.clone(), ... }
-        let adt_def = struct_def.adt_def.clone();
+        let adt_def = struct_def.adt_def;
         let mut field_exprs = Vec::new();
 
         // Get generic args from self_ty if it's an ADT
@@ -594,7 +594,7 @@ fn synthesize_enum_clone<'ctx>(
     use crate::sema::models::EnumVariantKind;
 
     let span = synthetic_span();
-    let adt_def = enum_def.adt_def.clone();
+    let adt_def = enum_def.adt_def;
 
     // Get generic args from self_ty
     let generic_args = match info.self_ty.kind() {
@@ -620,8 +620,8 @@ fn synthesize_enum_clone<'ctx>(
                     ty: info.self_ty,
                     span,
                     kind: PatternKind::Variant {
-                        definition: adt_def.clone(),
-                        variant: variant.clone(),
+                        definition: adt_def,
+                        variant: *variant,
                         subpatterns: vec![],
                     },
                 };
@@ -629,7 +629,7 @@ fn synthesize_enum_clone<'ctx>(
                 // Body: Self.Variant (unit variant constructor)
                 let body_expr = builder.push_expr(
                     ExprKind::Adt(AdtExpression {
-                        definition: adt_def.clone(),
+                        definition: adt_def,
                         variant_index: Some(variant_index),
                         generic_args,
                         fields: vec![],
@@ -701,8 +701,8 @@ fn synthesize_enum_clone<'ctx>(
                     ty: info.self_ty,
                     span,
                     kind: PatternKind::Variant {
-                        definition: adt_def.clone(),
-                        variant: variant.clone(),
+                        definition: adt_def,
+                        variant: *variant,
                         subpatterns,
                     },
                 };
@@ -710,7 +710,7 @@ fn synthesize_enum_clone<'ctx>(
                 // Body: Self.Variant(cloned_fields...)
                 let body_expr = builder.push_expr(
                     ExprKind::Adt(AdtExpression {
-                        definition: adt_def.clone(),
+                        definition: adt_def,
                         variant_index: Some(variant_index),
                         generic_args,
                         fields: field_exprs,
@@ -799,7 +799,7 @@ fn clone_adt_field<'ctx>(
     let Some(clone_method) = reqs
         .methods
         .iter()
-        .find(|m| gcx.symbol_eq(m.name.clone(), "clone"))
+        .find(|m| gcx.symbol_eq(m.name, "clone"))
     else {
         return field_access;
     };

@@ -42,7 +42,7 @@ fn collect_from_module(
         collect_from_declaration(decl, gcx, path, tests)?;
     }
     for sub in &module.submodules {
-        let name = gcx.symbol_text(sub.name.clone()).to_string();
+        let name = gcx.symbol_text(sub.name).to_string();
         path.push(name);
         collect_from_module(sub, gcx, path, tests)?;
         path.pop();
@@ -88,7 +88,7 @@ fn collect_from_declaration(
                 return Err(crate::error::ReportedError);
             }
 
-            let fn_name = gcx.symbol_text(decl.identifier.symbol.clone()).to_string();
+            let fn_name = gcx.symbol_text(decl.identifier.symbol).to_string();
             let display_name = if path.is_empty() {
                 fn_name
             } else {
@@ -125,7 +125,7 @@ fn collect_from_declaration(
         }
         DeclarationKind::Namespace(ns) => {
             // Recurse into namespaces for hierarchical test naming
-            let ns_name = gcx.symbol_text(decl.identifier.symbol.clone()).to_string();
+            let ns_name = gcx.symbol_text(decl.identifier.symbol).to_string();
             path.push(ns_name);
             for inner_decl in &ns.declarations {
                 collect_from_declaration(inner_decl, gcx, path, tests)?;
