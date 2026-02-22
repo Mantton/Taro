@@ -6,7 +6,7 @@ use crate::{
     hir::{NodeID, OperatorKind, Resolution, StdInterface},
     sema::{
         error::TypeError,
-        models::{InterfaceReference, StructField, Ty, TyKind},
+        models::{GenericArguments, InterfaceReference, StructField, Ty, TyKind},
         resolve::models::{DefinitionID, DefinitionKind, PrimaryType, TypeHead, VariantCtorKind},
         tycheck::{
             resolve_conformance_witness,
@@ -96,8 +96,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
             }
 
             // Instance methods.
-            let candidates = self.lookup_instance_candidates(ty, name.symbol);
-            let candidates = self.filter_extension_candidates(candidates, ty, span);
+            let mut candidates = self.lookup_instance_candidates(ty, name.symbol);
+            self.filter_extension_candidates_in_place(&mut candidates, ty, span);
             if !candidates.is_empty() {
                 self.record_adjustments(receiver_node, adjustments);
                 let mut branches = Vec::with_capacity(candidates.len());
@@ -334,17 +334,13 @@ impl<'ctx> ConstraintSolver<'ctx> {
         // TODO: Implement proper trait scoping - for now, make all trait methods available
         let mut collect_trait_methods = |db: &crate::compile::context::TypeDatabase<'ctx>| {
             if let Some(idx) = db.type_head_to_members.get(&head) {
-                // For now, collect from ALL traits (not just visible ones)
-                // This matches the previous behavior and keeps tests passing
-                for ((_, method_name), set) in idx.trait_methods.iter() {
-                    if *method_name == name {
-                        let extra = set.members.len();
-                        members.reserve(extra);
-                        seen.reserve(extra);
-                        for &id in &set.members {
-                            if seen.insert(id) {
-                                members.push(id);
-                            }
+                if let Some(methods) = idx.trait_methods_by_name.get(&name) {
+                    let extra = methods.len();
+                    members.reserve(extra);
+                    seen.reserve(extra);
+                    for &id in methods {
+                        if seen.insert(id) {
+                            members.push(id);
                         }
                     }
                 }
@@ -356,10 +352,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
             gcx.with_type_database(index, |db| collect_trait_methods(db));
         }
 
+        members.retain(|id| gcx.is_definition_visible(*id, self.current_def));
         members
-            .into_iter()
-            .filter(|id| self.gcx().is_definition_visible(*id, self.current_def))
-            .collect()
     }
 
     pub fn type_head_from_type(&self, ty: Ty<'ctx>) -> Option<TypeHead> {
@@ -559,14 +553,12 @@ impl<'ctx> ConstraintSolver<'ctx> {
         // TODO: Implement proper trait scoping - for now, make all trait methods available
         let mut collect_trait_methods = |db: &crate::compile::context::TypeDatabase<'ctx>| {
             if let Some(idx) = db.type_head_to_members.get(&head) {
-                // For now, collect from ALL traits (not just visible ones)
-                // This matches the previous behavior and keeps tests passing
-                for ((_, method_name), set) in idx.trait_methods.iter() {
-                    if *method_name == name {
-                        for &id in &set.members {
-                            if seen.insert(id) {
-                                members.push(id);
-                            }
+                if let Some(methods) = idx.trait_methods_by_name.get(&name) {
+                    members.reserve(methods.len());
+                    seen.reserve(methods.len());
+                    for &id in methods {
+                        if seen.insert(id) {
+                            members.push(id);
                         }
                     }
                 }
@@ -725,7 +717,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         // Create an interface reference with empty arguments (we'll match later)
         let interface_ref = InterfaceReference {
             id: interface_id,
-            arguments: &[],
+            arguments: GenericArguments::empty(),
             bindings: &[],
         };
 

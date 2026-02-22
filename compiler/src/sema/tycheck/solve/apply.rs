@@ -2,7 +2,7 @@ use crate::{
     hir::StdInterface,
     sema::{
         error::{ApplyValidationError, TypeError},
-        models::{LabeledFunctionParameter, LabeledFunctionSignature, Ty, TyKind},
+        models::{LabeledFunctionParameter, LabeledFunctionSignature, Ty, TyKind, TyList},
         tycheck::solve::{
             ApplyArgument, ApplyGoalData, ConstraintSolver, Goal, Obligation, SolverResult,
         },
@@ -85,7 +85,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         };
 
         let result =
-            produce_application_subobligations(positions, signature, inputs, &data.arguments);
+            produce_application_subobligations(positions, signature, &inputs, &data.arguments);
         let mut obligations = match result {
             Ok(v) => v,
             Err(e) => {
@@ -110,7 +110,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
     /// Extract (inputs, output) from Fn/FnMut/FnOnce bounds on a type parameter.
     /// Returns None if the type has no such bounds.
-    fn extract_fn_bound_signature(&self, ty: Ty<'ctx>) -> Option<(&'ctx [Ty<'ctx>], Ty<'ctx>)> {
+    fn extract_fn_bound_signature(&self, ty: Ty<'ctx>) -> Option<(TyList<'ctx>, Ty<'ctx>)> {
         let gcx = self.gcx();
         let fn_def = gcx.std_interface_def(StdInterface::Fn);
         let fn_mut_def = gcx.std_interface_def(StdInterface::FnMut);
@@ -141,7 +141,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             // For Fn[int32, int32] -> one int32 argument
             // For Fn[(int32, int32), int32] -> two int32 arguments (unpacked)
             // This allows users to write f(a, b) instead of f((a, b))
-            let inputs: &'ctx [Ty<'ctx>] = if let TyKind::Tuple(elem_tys) = args_ty.kind() {
+            let inputs: TyList<'ctx> = if let TyKind::Tuple(elem_tys) = args_ty.kind() {
                 // Tuple Args - unpack into individual parameters
                 elem_tys
             } else {

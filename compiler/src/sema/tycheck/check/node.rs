@@ -1355,7 +1355,7 @@ impl<'ctx> Checker<'ctx> {
         let closure_ty = Ty::new(
             TyKind::Closure {
                 closure_def_id: closure.def_id,
-                captured_generics: &[],
+                captured_generics: GenericArguments::empty(),
                 inputs,
                 output: return_ty,
                 kind,
@@ -3112,7 +3112,7 @@ impl<'ctx> Checker<'ctx> {
             }
         }
 
-        let base_args = base_args.unwrap_or(&[]);
+        let base_args = base_args.unwrap_or(GenericArguments::empty());
         let parent_count = if base_args.is_empty() {
             generics.parent_count
         } else {

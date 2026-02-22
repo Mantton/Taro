@@ -327,7 +327,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             indirect_arg_threshold_bytes,
             repeat_memset_enabled,
             repeat_memset_min_bytes,
-            current_subst: &[],
+            current_subst: GenericArguments::empty(),
         }
     }
 
@@ -543,7 +543,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             return;
         };
         // Entry point is always a concrete instance with no generic args
-        let entry_instance = Instance::item(entry, &[]);
+        let entry_instance = Instance::item(entry, GenericArguments::empty());
         let Some(&user_fn) = self.functions.get(&entry_instance) else {
             return;
         };
@@ -713,7 +713,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let mut skipped_flags: Vec<u8> = Vec::new();
 
         for (idx, test) in tests.iter().enumerate() {
-            let test_instance = Instance::item(test.id, &[]);
+            let test_instance = Instance::item(test.id, GenericArguments::empty());
             let test_fn = match self.functions.get(&test_instance) {
                 Some(f) => *f,
                 None => continue,
@@ -2990,7 +2990,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         // Generate a unique name for the shim
         let shim_name = format!(
             "{}_fn_shim",
-            mangle_instance(self.gcx, Instance::item(closure_def_id, &[]))
+            mangle_instance(
+                self.gcx,
+                Instance::item(closure_def_id, GenericArguments::empty()),
+            )
         );
 
         // Check if we've already generated this shim
@@ -2999,7 +3002,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         }
 
         // Get the closure body function
-        let closure_instance = Instance::item(closure_def_id, &[]);
+        let closure_instance = Instance::item(closure_def_id, GenericArguments::empty());
         let (closure_fn, closure_fn_abi) = if let Some(&f) = self.functions.get(&closure_instance) {
             let fn_abi = self
                 .fn_abis
@@ -3007,7 +3010,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 .cloned()
                 .unwrap_or_else(|| {
                     let prev_subst = self.current_subst;
-                    self.current_subst = &[];
+                    self.current_subst = GenericArguments::empty();
                     let sig = self.gcx.get_signature(closure_def_id);
                     let abi = self.compute_fn_abi(sig);
                     self.current_subst = prev_subst;
@@ -3017,7 +3020,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         } else {
             // Declare the closure body function
             let prev_subst = self.current_subst;
-            self.current_subst = &[];
+            self.current_subst = GenericArguments::empty();
             let sig = self.gcx.get_signature(closure_def_id);
             let fn_abi = self.compute_fn_abi(sig);
             let fn_ty = self.lower_fn_abi(&fn_abi);
@@ -3032,7 +3035,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         };
 
         // Build the shim function type (without self parameter).
-        let shim_fn_abi = self.compute_fn_pointer_abi(inputs, output);
+        let shim_fn_abi = self.compute_fn_pointer_abi(inputs.as_slice(), output);
         let shim_fn_ty = self.lower_fn_abi(&shim_fn_abi);
 
         // Create the shim function
@@ -5553,7 +5556,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             return Err(crate::error::ReportedError);
         };
 
-        let (fn_ty, fn_abi) = self.lower_fn_pointer_sig(inputs, output);
+        let (fn_ty, fn_abi) = self.lower_fn_pointer_sig(inputs.as_slice(), output);
         let fn_ptr_ty = self.context.ptr_type(AddressSpace::default());
         let cast_ptr = self
             .builder
@@ -5595,7 +5598,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         };
 
         // Create an instance for the closure body function
-        let instance = Instance::item(closure_def_id, &[]);
+        let instance = Instance::item(closure_def_id, GenericArguments::empty());
 
         // Look up or declare the closure body function
         if let Some(&f) = self.functions.get(&instance) {
@@ -5606,7 +5609,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         // Need to declare it as external
         let prev_subst = self.current_subst;
-        self.current_subst = &[];
+        self.current_subst = GenericArguments::empty();
         let sig = self.gcx.get_signature(closure_def_id);
         let fn_abi = self.compute_fn_abi(sig);
         let fn_ty = self.lower_fn_abi(&fn_abi);
@@ -6609,9 +6612,24 @@ fn lower_fn_sig<'llvm, 'gcx>(
     let params: Vec<BasicMetadataTypeEnum<'llvm>> = sig
         .inputs
         .iter()
-        .filter_map(|p| lower_type(context, gcx, target_data, p.ty, &[]).map(|t| t.into()))
+        .filter_map(|p| {
+            lower_type(
+                context,
+                gcx,
+                target_data,
+                p.ty,
+                GenericArguments::empty(),
+            )
+            .map(|t| t.into())
+        })
         .collect();
-    match lower_type(context, gcx, target_data, sig.output, &[]) {
+    match lower_type(
+        context,
+        gcx,
+        target_data,
+        sig.output,
+        GenericArguments::empty(),
+    ) {
         Some(ret) => ret.fn_type(&params, sig.is_variadic),
         None => context.void_type().fn_type(&params, sig.is_variadic),
     }

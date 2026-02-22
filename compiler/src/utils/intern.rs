@@ -104,6 +104,79 @@ where
     }
 }
 
+/// Interned list wrapper with pointer-identity semantics.
+///
+/// Values of this type must only be created from compiler interners that
+/// guarantee uniqueness by content.
+#[derive(Debug, Clone, Copy)]
+pub struct List<'a, T>(&'a [T]);
+
+impl<'a, T> List<'a, T> {
+    #[inline]
+    pub(crate) fn from_interned_slice(slice: &'a [T]) -> Self {
+        List(slice)
+    }
+
+    #[inline]
+    pub const fn empty() -> Self {
+        List(&[])
+    }
+
+    #[inline]
+    pub fn as_slice(self) -> &'a [T] {
+        self.0
+    }
+}
+
+impl<'a, T> Deref for List<'a, T> {
+    type Target = [T];
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+
+impl<'a, T> PartialEq for List<'a, T> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        if self.0.is_empty() && other.0.is_empty() {
+            return true;
+        }
+
+        self.0.len() == other.0.len() && ptr::eq(self.0.as_ptr(), other.0.as_ptr())
+    }
+}
+
+impl<'a, T> Eq for List<'a, T> {}
+
+impl<'a, T> Hash for List<'a, T> {
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.len().hash(state);
+        if !self.0.is_empty() {
+            self.0.as_ptr().hash(state);
+        }
+    }
+}
+
+impl<'a, T> Default for List<'a, T> {
+    #[inline]
+    fn default() -> Self {
+        List::empty()
+    }
+}
+
+impl<'a, T> IntoIterator for List<'a, T> {
+    type Item = &'a T;
+    type IntoIter = std::slice::Iter<'a, T>;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
 pub struct WrappedHashSet<K> {
     wrapped: RefCell<FxHashSet<K>>,
 }

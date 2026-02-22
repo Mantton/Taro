@@ -232,6 +232,34 @@ impl<'a, 'ctx> TypeFolder<'ctx> for NormalizeFolder<'a, 'ctx> {
     fn fold_ty(&mut self, ty: Ty<'ctx>) -> Ty<'ctx> {
         // Resolve one level of inference first; recursive folding handles nested structure.
         let ty = self.icx.shallow_resolve(ty);
+        let has_type_equalities = self.env.has_type_equalities();
+
+        match ty.kind() {
+            // These forms are terminal under normalization.
+            TyKind::Bool
+            | TyKind::Rune
+            | TyKind::String
+            | TyKind::Int(_)
+            | TyKind::UInt(_)
+            | TyKind::Float(_)
+            | TyKind::Infer(_)
+            | TyKind::Opaque(_)
+            | TyKind::Error
+            | TyKind::Never => return ty,
+            // Non-generic concrete ADTs cannot change under normalization.
+            TyKind::Adt(_, args) if args.is_empty() => return ty,
+            // Unit tuple cannot change under normalization.
+            TyKind::Tuple(items) if items.is_empty() => return ty,
+            // Parameters only normalize via explicit equality constraints.
+            TyKind::Parameter(_) if !has_type_equalities => return ty,
+            _ => {}
+        }
+
+        // Without equality constraints, types that contain no alias/inference content
+        // cannot be changed by normalization.
+        if !has_type_equalities && !ty.contains_inference() {
+            return ty;
+        }
 
         // Break normalization cycles such as `T.Item == U` and `U == T.Item`.
         if !self.in_progress.insert(ty) {
@@ -248,7 +276,7 @@ impl<'a, 'ctx> TypeFolder<'ctx> for NormalizeFolder<'a, 'ctx> {
                 // This handles parametric normalization like `T: Container[Item=int]`
                 // where we want `T.Item` to normalize to `int`.
 
-                if self.env.has_type_equalities() {
+                if has_type_equalities {
                     let equiv_types = self.env.equivalent_types(ty);
 
                     // Prefer non-alias equalities first (including parameters).
@@ -276,7 +304,7 @@ impl<'a, 'ctx> TypeFolder<'ctx> for NormalizeFolder<'a, 'ctx> {
             // Handle type parameters with equality constraints
             // e.g., for `where T == string`, normalize T to string
             TyKind::Parameter(_) => {
-                if !self.env.has_type_equalities() {
+                if !has_type_equalities {
                     ty
                 } else {
                     let equiv_types = self.env.equivalent_types(ty);
@@ -485,14 +513,11 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
         };
 
         // Strategy 1: Check ParamEnv bounds for the matching interface
-        let bounds = self.env.bounds_for(self_ty);
-        for bound_iface in &bounds {
-            if bound_iface.id == interface_id {
-                // Found matching bound - look up type witness from conformance
-                let head = type_head_from_value_ty(self_ty)?;
-                let witness = resolve_conformance_witness(gcx, head, *bound_iface)?;
-                return instantiate_witness(witness);
-            }
+        if let Some(bound_iface) = self.env.first_bound_for_interface(self_ty, interface_id) {
+            // Found matching bound - look up type witness from conformance
+            let head = type_head_from_value_ty(self_ty)?;
+            let witness = resolve_conformance_witness(gcx, head, bound_iface)?;
+            return instantiate_witness(witness);
         }
 
         // Strategy 2: For concrete types without explicit bounds, try direct lookup

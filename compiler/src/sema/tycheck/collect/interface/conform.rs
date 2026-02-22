@@ -435,7 +435,7 @@ impl<'ctx> Actor<'ctx> {
         let closure_ty = Ty::new(
             TyKind::Closure {
                 closure_def_id,
-                captured_generics: &[],
+                captured_generics: GenericArguments::empty(),
                 inputs: inputs_list,
                 output,
                 kind: closure_kind,

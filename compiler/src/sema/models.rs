@@ -10,11 +10,13 @@ use crate::{
         tycheck::infer::keys::{FloatVarID, IntVarID, NilVarID},
     },
     span::{Span, Spanned, Symbol},
-    utils::intern::Interned,
+    utils::intern::{Interned, List},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Ty<'arena>(Interned<'arena, TyKind<'arena>>);
+
+pub type TyList<'arena> = List<'arena, Ty<'arena>>;
 
 impl<'arena> Ty<'arena> {
     pub fn with_kind(k: Interned<'arena, TyKind<'arena>>) -> Ty<'arena> {
@@ -169,7 +171,7 @@ impl<'arena> Ty<'arena> {
             TyKind::Adt(adt, args) => {
                 let ident = gcx.definition_ident(adt.id);
                 let mut out = String::from(gcx.symbol_text(ident.symbol).as_ref());
-                out.push_str(&format_generic_args(args, gcx));
+                out.push_str(&format_generic_args(&args, gcx));
                 out
             }
             TyKind::Pointer(inner, mt) => {
@@ -235,12 +237,12 @@ impl<'arena> Ty<'arena> {
                     } else {
                         // Fallback/Should not happen for valid projections
                         let mut out = String::from(gcx.symbol_text(ident.symbol).as_ref());
-                        out.push_str(&format_generic_args(args, gcx));
+                        out.push_str(&format_generic_args(&args, gcx));
                         out
                     }
                 } else {
                     let mut out = String::from(gcx.symbol_text(ident.symbol).as_ref());
-                    out.push_str(&format_generic_args(args, gcx));
+                    out.push_str(&format_generic_args(&args, gcx));
                     out
                 }
             }
@@ -331,9 +333,9 @@ pub enum TyKind<'arena> {
     Adt(AdtDef, GenericArguments<'arena>),
     Pointer(Ty<'arena>, Mutability),
     Reference(Ty<'arena>, Mutability),
-    Tuple(&'arena [Ty<'arena>]),
+    Tuple(TyList<'arena>),
     FnPointer {
-        inputs: &'arena [Ty<'arena>],
+        inputs: TyList<'arena>,
         output: Ty<'arena>,
     },
     BoxedExistential {
@@ -353,7 +355,7 @@ pub enum TyKind<'arena> {
         /// Generic arguments captured from enclosing scope
         captured_generics: GenericArguments<'arena>,
         /// Input parameter types
-        inputs: &'arena [Ty<'arena>],
+        inputs: TyList<'arena>,
         /// Output type
         output: Ty<'arena>,
         /// Callable kind
@@ -703,11 +705,11 @@ impl<'arena> GenericArgument<'arena> {
     }
 }
 
-pub type GenericArguments<'arena> = &'arena [GenericArgument<'arena>];
+pub type GenericArguments<'arena> = List<'arena, GenericArgument<'arena>>;
 
 /// Format generic arguments as a bracketed list, e.g., "[Int, String]"
 /// Returns empty string if args is empty.
-pub fn format_generic_args<'ctx>(args: GenericArguments<'ctx>, gcx: Gcx<'ctx>) -> String {
+pub fn format_generic_args<'ctx>(args: &[GenericArgument<'ctx>], gcx: Gcx<'ctx>) -> String {
     if args.is_empty() {
         return String::new();
     }

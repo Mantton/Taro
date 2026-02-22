@@ -10,9 +10,10 @@ use crate::{
     sema::{
         models::{
             ClosureCaptures, ConformanceRecord, ConformanceWitness, Const, Constraint,
-            EnumDefinition, EnumVariant, FloatTy, GenericArgument, GenericParameter, Generics,
-            IntTy, InterfaceDefinition, InterfaceReference, InterfaceRequirements,
-            LabeledFunctionSignature, StructDefinition, Ty, TyKind, UIntTy,
+            EnumDefinition, EnumVariant, FloatTy, GenericArgument, GenericArguments,
+            GenericParameter, Generics, IntTy, InterfaceDefinition, InterfaceReference,
+            InterfaceRequirements, LabeledFunctionSignature, StructDefinition, Ty, TyKind, TyList,
+            UIntTy,
         },
         resolve::models::{
             DefinitionKind, PrimaryType, ResolutionOutput, ScopeData, ScopeEntryData, TypeHead,
@@ -21,7 +22,7 @@ use crate::{
     },
     specialize::Instance,
     thir::VariantIndex,
-    utils::intern::{Interned, InternedInSet, InternedSet},
+    utils::intern::{Interned, InternedInSet, InternedSet, List},
 };
 use bumpalo::Bump;
 use ecow::EcoString;
@@ -92,14 +93,18 @@ impl<'arena> GlobalContext<'arena> {
     pub fn cache_type(self, id: DefinitionID, ty: Ty<'arena>) {
         let mut cache = self.context.store.type_databases.borrow_mut();
         let package_index = id.package();
-        let database = cache.entry(package_index).or_insert(Default::default());
+        let database = cache
+            .entry(package_index)
+            .or_insert_with(Default::default);
         database.def_to_ty.insert(id, ty);
     }
 
     pub fn cache_const(self, id: DefinitionID, value: Const<'arena>) {
         let mut cache = self.context.store.type_databases.borrow_mut();
         let package_index = id.package();
-        let database = cache.entry(package_index).or_insert(Default::default());
+        let database = cache
+            .entry(package_index)
+            .or_insert_with(Default::default);
         database.def_to_const.insert(id, value);
     }
 
@@ -117,7 +122,9 @@ impl<'arena> GlobalContext<'arena> {
     ) {
         let mut cache = self.context.store.type_databases.borrow_mut();
         let package_index = id.package();
-        let database = cache.entry(package_index).or_insert(Default::default());
+        let database = cache
+            .entry(package_index)
+            .or_insert_with(Default::default);
         database.def_to_constraints.insert(id, constraints);
         // Invalidate canonical constraints cache to ensure re-computation
         database.def_to_canon_constraints.remove(&id);
@@ -130,7 +137,9 @@ impl<'arena> GlobalContext<'arena> {
     ) {
         let mut cache = self.context.store.type_databases.borrow_mut();
         let package_index = id.package();
-        let database = cache.entry(package_index).or_insert(Default::default());
+        let database = cache
+            .entry(package_index)
+            .or_insert_with(Default::default);
         database.def_to_constraints.insert(id, constraints);
     }
 
@@ -147,7 +156,9 @@ impl<'arena> GlobalContext<'arena> {
     ) {
         let mut cache = self.context.store.type_databases.borrow_mut();
         let package_index = id.package();
-        let database = cache.entry(package_index).or_insert(Default::default());
+        let database = cache
+            .entry(package_index)
+            .or_insert_with(Default::default);
         database.def_to_canon_constraints.insert(id, constraints);
     }
 
@@ -172,7 +183,9 @@ impl<'arena> GlobalContext<'arena> {
     pub fn cache_signature(self, id: DefinitionID, sig: LabeledFunctionSignature<'arena>) {
         let mut cache = self.context.store.type_databases.borrow_mut();
         let package_index = id.package();
-        let database = cache.entry(package_index).or_insert(Default::default());
+        let database = cache
+            .entry(package_index)
+            .or_insert_with(Default::default);
         let alloc = self.context.store.arenas.function_signatures.alloc(sig);
         database.def_to_fn_sig.insert(id, alloc);
     }
@@ -180,7 +193,9 @@ impl<'arena> GlobalContext<'arena> {
     pub fn cache_struct_definition(self, id: DefinitionID, def: StructDefinition<'arena>) {
         let mut cache = self.context.store.type_databases.borrow_mut();
         let package_index = id.package();
-        let database = cache.entry(package_index).or_insert(Default::default());
+        let database = cache
+            .entry(package_index)
+            .or_insert_with(Default::default);
         let alloc = self.context.store.arenas.struct_definitions.alloc(def);
         database.def_to_struct_def.insert(id, alloc);
     }
@@ -188,7 +203,9 @@ impl<'arena> GlobalContext<'arena> {
     pub fn cache_enum_definition(self, id: DefinitionID, def: EnumDefinition<'arena>) {
         let mut cache = self.context.store.type_databases.borrow_mut();
         let package_index = id.package();
-        let database = cache.entry(package_index).or_insert(Default::default());
+        let database = cache
+            .entry(package_index)
+            .or_insert_with(Default::default);
         let alloc = self.context.store.arenas.enum_definitions.alloc(def);
         database.def_to_enum_def.insert(id, alloc);
     }
@@ -209,7 +226,9 @@ impl<'arena> GlobalContext<'arena> {
     pub fn cache_generics(self, id: DefinitionID, generics: Generics) {
         let mut cache = self.context.store.type_databases.borrow_mut();
         let package_index = id.package();
-        let database = cache.entry(package_index).or_insert(Default::default());
+        let database = cache
+            .entry(package_index)
+            .or_insert_with(Default::default);
         let generics = self.context.store.arenas.generics.alloc(generics);
         let ok = database.def_to_generics.insert(id, generics).is_none();
         debug_assert!(ok, "duplicated generic information")
@@ -218,7 +237,9 @@ impl<'arena> GlobalContext<'arena> {
     pub fn cache_attributes(self, id: DefinitionID, attributes: hir::AttributeList) {
         let mut cache = self.context.store.type_databases.borrow_mut();
         let package_index = id.package();
-        let database = cache.entry(package_index).or_insert(Default::default());
+        let database = cache
+            .entry(package_index)
+            .or_insert_with(Default::default);
         let attributes = self.context.store.arenas.global.alloc(attributes);
         let ok = database.def_to_attributes.insert(id, attributes).is_none();
         debug_assert!(ok, "duplicated attribute information")
@@ -265,7 +286,7 @@ impl<'arena> GlobalContext<'arena> {
         F: FnOnce(&mut TypeDatabase<'arena>) -> T,
     {
         let mut cache = self.context.store.type_databases.borrow_mut();
-        let database = cache.entry(index).or_insert(Default::default());
+        let database = cache.entry(index).or_insert_with(Default::default);
         func(database)
     }
 
@@ -737,7 +758,7 @@ impl<'arena> GlobalContext<'arena> {
                 // Create InterfaceReference with empty arguments (marker interface)
                 let copy_ref = InterfaceReference {
                     id: copy_def,
-                    arguments: &[],
+                    arguments: GenericArguments::empty(),
                     bindings: &[],
                 };
                 crate::sema::tycheck::resolve_conformance_witness(self, type_head, copy_ref)
@@ -1041,7 +1062,7 @@ impl<'arena> CompilerInterners<'arena> {
         Ty::with_kind(Interned::new_unchecked(ptr))
     }
 
-    pub fn intern_ty_list(&self, items: Vec<Ty<'arena>>) -> &'arena [Ty<'arena>] {
+    pub fn intern_ty_list(&self, items: Vec<Ty<'arena>>) -> TyList<'arena> {
         let ik = self
             .type_lists
             .intern(items, |k| {
@@ -1050,23 +1071,26 @@ impl<'arena> CompilerInterners<'arena> {
             })
             .0;
 
-        ik
+        List::from_interned_slice(ik)
     }
 
-    pub fn intern_ty_list_slice(&self, items: &[Ty<'arena>]) -> &'arena [Ty<'arena>] {
-        self.type_lists
+    pub fn intern_ty_list_slice(&self, items: &[Ty<'arena>]) -> TyList<'arena> {
+        let list = self
+            .type_lists
             .intern_ref(items, || {
                 let owned = items.to_vec();
                 let stored = self.arenas.type_lists.alloc(owned);
                 InternedInSet(stored)
             })
-            .0
+            .0;
+
+        List::from_interned_slice(list)
     }
 
     pub fn intern_generic_args(
         &self,
         items: Vec<GenericArgument<'arena>>,
-    ) -> &'arena [GenericArgument<'arena>] {
+    ) -> GenericArguments<'arena> {
         let ik = self
             .generic_arguments
             .intern(items, |k| {
@@ -1074,20 +1098,23 @@ impl<'arena> CompilerInterners<'arena> {
                 return InternedInSet(k);
             })
             .0;
-        ik
+        List::from_interned_slice(ik)
     }
 
     pub fn intern_generic_args_slice(
         &self,
         items: &[GenericArgument<'arena>],
-    ) -> &'arena [GenericArgument<'arena>] {
-        self.generic_arguments
+    ) -> GenericArguments<'arena> {
+        let list = self
+            .generic_arguments
             .intern_ref(items, || {
                 let owned = items.to_vec();
                 let stored = self.arenas.generic_arguments.alloc(owned);
                 InternedInSet(stored)
             })
-            .0
+            .0;
+
+        List::from_interned_slice(list)
     }
 }
 
@@ -1260,6 +1287,8 @@ pub struct TypeMemberIndex {
     // Trait methods from `impl Trait for Type {}`
     // Key: (trait_id, method_name) to group overloads per trait
     pub trait_methods: FxHashMap<(DefinitionID, Symbol), MemberSet>,
+    // Fast lookup for all trait methods by symbol, regardless of trait.
+    pub trait_methods_by_name: FxHashMap<Symbol, Vec<DefinitionID>>,
 
     pub operators: FxHashMap<hir::OperatorKind, MemberSet>,
 }

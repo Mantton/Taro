@@ -66,6 +66,36 @@ impl<'ctx> ParamEnv<'ctx> {
         out.into_iter().collect()
     }
 
+    /// Return the first bound for a specific interface ID, if one exists for `ty`.
+    /// This avoids materializing the full bounds vector in hot lookup paths.
+    pub fn first_bound_for_interface(
+        &self,
+        ty: Ty<'ctx>,
+        interface_id: crate::hir::DefinitionID,
+    ) -> Option<InterfaceReference<'ctx>> {
+        if self.bounds.is_empty() {
+            return None;
+        }
+
+        if self.type_equalities.is_empty() {
+            for (bound_ty, interface) in &self.bounds {
+                if *bound_ty == ty && interface.id == interface_id {
+                    return Some(*interface);
+                }
+            }
+            return None;
+        }
+
+        let eq_set = self.equivalent_types(ty);
+        for (bound_ty, interface) in &self.bounds {
+            if interface.id == interface_id && eq_set.contains(bound_ty) {
+                return Some(*interface);
+            }
+        }
+
+        None
+    }
+
     /// Build transitive closure of type equalities for a type.
     pub fn equivalent_types(&self, ty: Ty<'ctx>) -> FxHashSet<Ty<'ctx>> {
         let mut seen: FxHashSet<Ty<'ctx>> = FxHashSet::default();

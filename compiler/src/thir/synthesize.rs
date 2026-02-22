@@ -7,7 +7,10 @@ use crate::{
     compile::context::GlobalContext,
     hir::{DefinitionID, StdInterface},
     sema::{
-        models::{GenericArgument, InterfaceReference, SyntheticMethodKind, Ty, TyKind},
+        models::{
+            GenericArgument, GenericArguments, InterfaceReference, SyntheticMethodKind, Ty, TyKind,
+            TyList,
+        },
         resolve::models::TypeHead,
         tycheck::derive::SyntheticMethodInfo,
     },
@@ -377,7 +380,7 @@ fn synthesize_memberwise_clone<'ctx>(
         // Get generic args from self_ty if it's an ADT
         let generic_args = match info.self_ty.kind() {
             TyKind::Adt(_, args) => args,
-            _ => &[],
+            _ => GenericArguments::empty(),
         };
 
         for (idx, field) in struct_def.fields.iter().enumerate() {
@@ -562,7 +565,7 @@ fn synthesize_closure_call<'ctx>(
     })
 }
 
-fn closure_args_ty<'ctx>(gcx: GlobalContext<'ctx>, inputs: &'ctx [Ty<'ctx>]) -> Ty<'ctx> {
+fn closure_args_ty<'ctx>(gcx: GlobalContext<'ctx>, inputs: TyList<'ctx>) -> Ty<'ctx> {
     match inputs.len() {
         0 => gcx.types.void,
         1 => inputs[0],
@@ -599,7 +602,7 @@ fn synthesize_enum_clone<'ctx>(
     // Get generic args from self_ty
     let generic_args = match info.self_ty.kind() {
         TyKind::Adt(_, args) => args,
-        _ => &[],
+        _ => GenericArguments::empty(),
     };
 
     // Build: *self (the scrutinee)
@@ -780,7 +783,7 @@ fn clone_adt_field<'ctx>(
 
     let clone_ref = InterfaceReference {
         id: clone_def,
-        arguments: &[],
+        arguments: GenericArguments::empty(),
         bindings: &[],
     };
 

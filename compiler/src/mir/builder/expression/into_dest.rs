@@ -5,6 +5,7 @@ use crate::{
         Category, Constant, Operand, Place, PlaceElem, Rvalue, RvalueFunc, TerminatorKind,
         builder::MirBuilder,
     },
+    sema::models::GenericArguments,
     sema::resolve::models::DefinitionKind,
     span::Span,
     thir::{self, ExprId, ExprKind, FieldIndex},
@@ -505,13 +506,13 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 let fields: IndexVec<FieldIndex, Operand<'ctx>> =
                     IndexVec::from_vec(capture_operands);
 
-                let rvalue = Rvalue::Aggregate {
-                    kind: AggregateKind::Closure {
-                        def_id: *def_id,
-                        captured_generics: &[], // TODO: get from closure type
-                    },
-                    fields,
-                };
+                    let rvalue = Rvalue::Aggregate {
+                        kind: AggregateKind::Closure {
+                            def_id: *def_id,
+                            captured_generics: GenericArguments::empty(), // TODO: get from closure type
+                        },
+                        fields,
+                    };
 
                 self.push_assign(block, destination, rvalue, expr.span);
                 block.unit()

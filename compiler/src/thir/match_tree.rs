@@ -417,7 +417,7 @@ impl<'ctx> Compiler<'ctx> {
                 )
             }
             TyKind::Tuple(items) => {
-                let vars = self.new_variables(items);
+                let vars = self.new_variables(&items);
                 let cases = vec![(Constructor::Tuple(items.len()), vars, Vec::new())];
 
                 Decision::Switch(

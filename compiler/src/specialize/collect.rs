@@ -65,7 +65,7 @@ impl<'ctx> Collector<'ctx> {
         if let Some(entry_id) = package.entry {
             let generics = self.gcx.generics_of(entry_id);
             if generics.is_empty() {
-                let root = Instance::item(entry_id, &[]);
+                let root = Instance::item(entry_id, GenericArguments::empty());
                 self.worklist.push(root);
             }
         }
@@ -74,7 +74,7 @@ impl<'ctx> Collector<'ctx> {
         for (&def_id, _) in &package.functions {
             let generics = self.gcx.generics_of(def_id);
             if generics.is_empty() {
-                let root = Instance::item(def_id, &[]);
+                let root = Instance::item(def_id, GenericArguments::empty());
                 if !self.items.contains(&root) {
                     self.worklist.push(root);
                 }

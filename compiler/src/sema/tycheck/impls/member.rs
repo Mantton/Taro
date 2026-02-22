@@ -64,43 +64,54 @@ impl<'ctx> Actor<'ctx> {
         let fingerprint = self.fingerprint_for(def_id);
         self.context.with_session_type_database(|db| {
             let index: &mut TypeMemberIndex = db.type_head_to_members.entry(head).or_default();
+            let is_trait_method = interface_id.is_some();
 
-            let set: &mut MemberSet = if let Some(interface_id) = interface_id {
-                // Trait impl: store in trait_methods with (interface_id, name) key
-                let key = (interface_id, ident.symbol);
-                index.trait_methods.entry(key).or_default()
-            } else {
-                // Inherent impl: store in inherent_static or inherent_instance
-                if has_self {
-                    index
-                        .inherent_instance
-                        .entry(ident.symbol)
-                        .or_default()
+            {
+                let set: &mut MemberSet = if let Some(interface_id) = interface_id {
+                    // Trait impl: store in trait_methods with (interface_id, name) key
+                    let key = (interface_id, ident.symbol);
+                    index.trait_methods.entry(key).or_default()
                 } else {
-                    index
-                        .inherent_static
-                        .entry(ident.symbol)
-                        .or_default()
+                    // Inherent impl: store in inherent_static or inherent_instance
+                    if has_self {
+                        index
+                            .inherent_instance
+                            .entry(ident.symbol)
+                            .or_default()
+                    } else {
+                        index
+                            .inherent_static
+                            .entry(ident.symbol)
+                            .or_default()
+                    }
+                };
+
+                if let Some(previous) = set.fingerprints.insert(fingerprint, def_id) {
+                    let msg = format!(
+                        "invalid redeclaration of '{}'",
+                        self.context.symbol_text(ident.symbol)
+                    );
+                    self.context.dcx().emit_error(msg, Some(ident.span));
+
+                    let prev_ident = self.context.definition_ident(previous);
+                    let msg = format!(
+                        "'{}' is initially defined here",
+                        self.context.symbol_text(ident.symbol)
+                    );
+                    self.context.dcx().emit_info(msg, Some(prev_ident.span));
+                    return;
                 }
-            };
 
-            if let Some(previous) = set.fingerprints.insert(fingerprint, def_id) {
-                let msg = format!(
-                    "invalid redeclaration of '{}'",
-                    self.context.symbol_text(ident.symbol)
-                );
-                self.context.dcx().emit_error(msg, Some(ident.span));
-
-                let prev_ident = self.context.definition_ident(previous);
-                let msg = format!(
-                    "'{}' is initially defined here",
-                    self.context.symbol_text(ident.symbol)
-                );
-                self.context.dcx().emit_info(msg, Some(prev_ident.span));
-                return;
+                set.members.push(def_id);
             }
 
-            set.members.push(def_id);
+            if is_trait_method {
+                index
+                    .trait_methods_by_name
+                    .entry(ident.symbol)
+                    .or_default()
+                    .push(def_id);
+            }
         });
     }
 

@@ -1,5 +1,6 @@
 use crate::{
     mir::{self, Constant, ConstantKind, builder::MirBuilder},
+    sema::models::GenericArguments,
     thir::{self, ExprId, ExprKind},
 };
 
@@ -13,7 +14,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 ty: expr.ty,
                 value: mir::ConstantKind::Function(
                     *id,
-                    (*generic_args).unwrap_or(&[]),
+                    (*generic_args).unwrap_or(GenericArguments::empty()),
                     expr.ty,
                 ),
             },

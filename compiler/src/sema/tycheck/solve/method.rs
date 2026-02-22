@@ -33,7 +33,6 @@ struct InterfaceMethodCandidate<'ctx> {
 struct MethodCandidate<'ctx> {
     def_id: DefinitionID,
     receiver_ty: Ty<'ctx>,
-    adjustments: Vec<Adjustment<'ctx>>,
     /// Cost of auto-reference: None=0, Immutable=1, Mutable=2
     autoref_cost: u8,
     matches_expectation: bool,
@@ -42,6 +41,28 @@ struct MethodCandidate<'ctx> {
 }
 
 impl<'ctx> ConstraintSolver<'ctx> {
+    fn build_adjustments(deref_steps: usize, autoref_cost: u8) -> Vec<Adjustment<'ctx>> {
+        let mut adjustments = Vec::with_capacity(deref_steps + usize::from(autoref_cost > 0));
+        adjustments.extend((0..deref_steps).map(|_| Adjustment::Dereference));
+        match autoref_cost {
+            1 => adjustments.push(Adjustment::BorrowImmutable),
+            2 => adjustments.push(Adjustment::BorrowMutable),
+            _ => {}
+        }
+        adjustments
+    }
+
+    #[inline]
+    fn with_receiver_argument(
+        arguments: &[ApplyArgument<'ctx>],
+        receiver: ApplyArgument<'ctx>,
+    ) -> Vec<ApplyArgument<'ctx>> {
+        let mut out = Vec::with_capacity(arguments.len() + 1);
+        out.push(receiver);
+        out.extend_from_slice(arguments);
+        out
+    }
+
     pub fn solve_method_call(&mut self, data: MethodCallData<'ctx>) -> SolverResult<'ctx> {
         let MethodCallData {
             node_id,
@@ -66,10 +87,32 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return SolverResult::Solved(vec![obligation]);
         }
 
-        // Collect ALL candidates from ALL auto-reference modes
-        let mut all_candidates: Vec<MethodCandidate<'ctx>> = vec![];
+        let has_unresolved_expectation = match data.expect_ty {
+            None => true,
+            Some(expect) => {
+                let expect = self.structurally_resolve(expect);
+                expect.is_infer() || expect.contains_inference()
+            }
+        };
+        let receiver_is_mut_ref = matches!(
+            resolved_receiver.kind(),
+            TyKind::Reference(_, Mutability::Mutable)
+        );
+        let needs_output_ref_mutability = has_unresolved_expectation && receiver_is_mut_ref;
+        let expect_requires_mut_ref_output = matches!(
+            data.expect_ty.map(|expect| expect.kind()),
+            Some(TyKind::Reference(_, Mutability::Mutable))
+        );
+        let must_read_signature = needs_output_ref_mutability || expect_requires_mut_ref_output;
+        let mut signature_output_cache: Vec<(DefinitionID, Option<Mutability>)> = Vec::new();
+        if must_read_signature {
+            signature_output_cache.reserve(8);
+        }
 
         let rec_candidates = self.reciever_candidates(*receiver);
+        // Collect ALL candidates from ALL auto-reference modes.
+        let mut all_candidates: Vec<MethodCandidate<'ctx>> =
+            Vec::with_capacity(rec_candidates.len() * 3);
         for (candidate_ty, deref_steps) in rec_candidates {
             let candidate_ty = self.structurally_resolve(candidate_ty);
             for r in [
@@ -88,20 +131,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         self.gcx(),
                     ),
                 };
-                let mut adjustments = vec![];
-                for _ in 0..deref_steps {
-                    adjustments.push(Adjustment::Dereference);
-                }
                 let autoref_cost = match r {
                     AutoReference::None => 0,
-                    AutoReference::Immutable => {
-                        adjustments.push(Adjustment::BorrowImmutable);
-                        1
-                    }
-                    AutoReference::Mutable => {
-                        adjustments.push(Adjustment::BorrowMutable);
-                        2
-                    }
+                    AutoReference::Immutable => 1,
+                    AutoReference::Mutable => 2,
                 };
 
                 // Handle interface method calls on abstract receivers:
@@ -123,7 +156,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
                             candidate_ty,
                             receiver_ty,
                             list,
-                            adjustments.clone(),
+                            deref_steps,
+                            autoref_cost,
                         ) {
                             return result;
                         }
@@ -137,7 +171,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         candidate_ty,
                         receiver_ty,
                         interfaces,
-                        adjustments.clone(),
+                        deref_steps,
+                        autoref_cost,
                     ) {
                         return result;
                     }
@@ -161,7 +196,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
                             candidate_ty,
                             receiver_ty,
                             interfaces,
-                            adjustments.clone(),
+                            deref_steps,
+                            autoref_cost,
                         ) {
                             return result;
                         }
@@ -171,27 +207,30 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
                 // Add all candidates with their receiver info
                 for def_id in candidates {
-                    // Check if signature matches expectation (mutability)
-                    let signature = self.gcx().get_signature(def_id);
-                    let output_ref_mutability = match signature.output.kind() {
-                        TyKind::Reference(_, mutability) => Some(mutability),
-                        _ => None,
-                    };
-                    let mut matches_expectation = true;
-                    if let Some(expect) = data.expect_ty {
-                        if let TyKind::Reference(_, Mutability::Mutable) = expect.kind() {
-                            if let TyKind::Reference(_, Mutability::Immutable) =
-                                signature.output.kind()
-                            {
-                                matches_expectation = false;
-                            }
+                    let output_ref_mutability = if must_read_signature {
+                        if let Some((_, cached)) = signature_output_cache
+                            .iter()
+                            .find(|(cached_id, _)| *cached_id == def_id)
+                        {
+                            *cached
+                        } else {
+                            let signature = self.gcx().get_signature(def_id);
+                            let output_ref_mutability = match signature.output.kind() {
+                                TyKind::Reference(_, mutability) => Some(mutability),
+                                _ => None,
+                            };
+                            signature_output_cache.push((def_id, output_ref_mutability));
+                            output_ref_mutability
                         }
-                    }
+                    } else {
+                        None
+                    };
+                    let matches_expectation = !expect_requires_mut_ref_output
+                        || output_ref_mutability != Some(Mutability::Immutable);
 
                     all_candidates.push(MethodCandidate {
                         def_id,
                         receiver_ty,
-                        adjustments: adjustments.clone(),
                         autoref_cost,
                         matches_expectation,
                         output_ref_mutability,
@@ -206,19 +245,6 @@ impl<'ctx> ConstraintSolver<'ctx> {
         //
         // This prevents early commitment to immutable overloads in contexts where
         // downstream constraints later require `&mut`.
-        let has_unresolved_expectation = match data.expect_ty {
-            None => true,
-            Some(expect) => {
-                let expect = self.structurally_resolve(expect);
-                expect.is_infer() || expect.contains_inference()
-            }
-        };
-
-        let receiver_is_mut_ref = matches!(
-            resolved_receiver.kind(),
-            TyKind::Reference(_, Mutability::Mutable)
-        );
-
         if has_unresolved_expectation && receiver_is_mut_ref {
             let has_mut_ref_output = all_candidates
                 .iter()
@@ -249,9 +275,12 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 // Simple case: all candidates use the same receiver type
                 // Use the original approach with BindOverload (not BindMethodOverload)
                 // and record adjustments immediately
-                let first_adjustments = all_candidates[0].adjustments.clone();
+                let first_adjustments = Self::build_adjustments(
+                    all_candidates[0].deref_steps,
+                    all_candidates[0].autoref_cost,
+                );
 
-                let mut branches = vec![];
+                let mut branches = Vec::with_capacity(all_candidates.len());
                 for candidate in &all_candidates {
                     let branch = DisjunctionBranch {
                         goal: Goal::BindOverload(BindOverloadGoalData {
@@ -274,9 +303,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     goal: Goal::Disjunction(branches),
                 };
 
-                let mut args = arguments.clone();
-                args.insert(
-                    0,
+                let args = Self::with_receiver_argument(
+                    arguments,
                     ApplyArgument {
                         id: *reciever_node,
                         label: None,
@@ -309,7 +337,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 // by the selected BindMethodOverload branch.
                 let receiver_ty_var = self.icx.next_ty_var(*reciever_span);
 
-                let mut branches = vec![];
+                let mut branches = Vec::with_capacity(all_candidates.len());
                 for candidate in &all_candidates {
                     let branch = DisjunctionBranch {
                         goal: Goal::BindMethodOverload(BindMethodOverloadGoalData {
@@ -321,7 +349,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
                             receiver_ty_var, // Pass the type variable to be constrained
                             source: candidate.def_id,
                             instantiation_args: None,
-                            adjustments: candidate.adjustments.clone(),
+                            adjustments: Self::build_adjustments(
+                                candidate.deref_steps,
+                                candidate.autoref_cost,
+                            ),
                         }),
                         source: Some(candidate.def_id),
                         autoref_cost: candidate.autoref_cost,
@@ -337,9 +368,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 };
 
                 // Build the Apply goal using the receiver type variable
-                let mut args = arguments.clone();
-                args.insert(
-                    0,
+                let args = Self::with_receiver_argument(
+                    arguments,
                     ApplyArgument {
                         id: *reciever_node,
                         label: None,
@@ -384,7 +414,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
     }
 
     fn reciever_candidates(&self, base_ty: Ty<'ctx>) -> Vec<(Ty<'ctx>, usize)> {
-        let mut base = vec![];
+        let mut base = Vec::with_capacity(4);
         let mut derefs = 0;
 
         let mut autoderef = self.autoderef(base_ty);
@@ -409,7 +439,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return None;
         }
 
-        let mut matching = vec![];
+        let mut matching = Vec::with_capacity(all_candidates.len());
         for candidate in all_candidates.into_iter() {
             let ty = self.gcx().get_type(candidate);
             let fn_reciever = match ty.kind() {
@@ -434,7 +464,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             }
         }
 
-        let matching = self.filter_extension_candidates(matching, candidate, span);
+        self.filter_extension_candidates_in_place(&mut matching, candidate, span);
         return Some(matching);
     }
 
@@ -451,8 +481,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return None;
         }
 
-        let mut interfaces = Vec::new();
+        let mut interfaces = Vec::with_capacity(records.len());
         let mut seen: FxHashSet<InterfaceReference<'ctx>> = FxHashSet::default();
+        seen.reserve(records.len());
 
         for record in records {
             if !self.extension_target_matches(record.extension, self_ty, span) {
@@ -487,7 +518,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
         candidate_ty: Ty<'ctx>,
         reciever_ty: Ty<'ctx>,
         interfaces: &'ctx [InterfaceReference<'ctx>],
-        adjustments: Vec<Adjustment<'ctx>>,
+        deref_steps: usize,
+        autoref_cost: u8,
     ) -> Option<SolverResult<'ctx>> {
         let candidates = self.interface_method_candidates(
             candidate_ty,
@@ -521,9 +553,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
             goal: Goal::Disjunction(branches),
         };
 
-        let mut args = data.arguments.clone();
-        args.insert(
-            0,
+        let args = Self::with_receiver_argument(
+            &data.arguments,
             ApplyArgument {
                 id: data.reciever_node,
                 label: None,
@@ -546,7 +577,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
             }),
         };
 
-        self.record_adjustments(data.reciever_node, adjustments);
+        self.record_adjustments(
+            data.reciever_node,
+            Self::build_adjustments(deref_steps, autoref_cost),
+        );
         Some(SolverResult::Solved(vec![disjunction_goal, apply_goal]))
     }
 
@@ -557,7 +591,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         interfaces: &'ctx [InterfaceReference<'ctx>],
         name: Symbol,
     ) -> Vec<InterfaceMethodCandidate<'ctx>> {
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(interfaces.len().saturating_mul(2));
 
         for (table_index, iface) in interfaces.iter().enumerate() {
             let iface_args = self.interface_args_with_self(*iface, self_ty);
@@ -640,10 +674,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return iface.arguments;
         }
 
-        let mut args: Vec<GenericArgument<'ctx>> = iface.arguments.iter().cloned().collect();
-        if let Some(first) = args.get_mut(0) {
-            *first = GenericArgument::Type(self_ty);
-        }
+        let mut args: Vec<GenericArgument<'ctx>> = Vec::with_capacity(iface.arguments.len());
+        args.push(GenericArgument::Type(self_ty));
+        args.extend_from_slice(&iface.arguments[1..]);
 
         self.gcx().store.interners.intern_generic_args(args)
     }

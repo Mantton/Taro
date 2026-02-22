@@ -496,28 +496,23 @@ impl<'ctx> ConstraintSolver<'ctx> {
         out.into_iter().collect()
     }
 
-    pub(crate) fn filter_extension_candidates(
+    pub(crate) fn filter_extension_candidates_in_place(
         &self,
-        candidates: Vec<crate::sema::resolve::models::DefinitionID>,
+        candidates: &mut Vec<crate::sema::resolve::models::DefinitionID>,
         receiver: Ty<'ctx>,
         span: Span,
-    ) -> Vec<crate::sema::resolve::models::DefinitionID> {
-        candidates
-            .into_iter()
-            .filter(|candidate| {
-                let Some(parent) = self.gcx().definition_parent(*candidate) else {
-                    return true;
-                };
+    ) {
+        candidates.retain(|candidate| {
+            let Some(parent) = self.gcx().definition_parent(*candidate) else {
+                return true;
+            };
 
-                if self.gcx().definition_kind(parent)
-                    != crate::sema::resolve::models::DefinitionKind::Impl
-                {
-                    return true;
-                }
+            if self.gcx().definition_kind(parent) != crate::sema::resolve::models::DefinitionKind::Impl {
+                return true;
+            }
 
-                self.extension_target_matches(parent, receiver, span)
-            })
-            .collect()
+            self.extension_target_matches(parent, receiver, span)
+        });
     }
 
     pub(crate) fn extension_target_matches(
@@ -548,7 +543,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         span: Span,
     ) -> GenericArguments<'ctx> {
         let gcx = self.gcx();
-        let provided = provided.unwrap_or(&[]);
+        let provided = provided.unwrap_or(GenericArguments::empty());
         GenericsBuilder::for_item(gcx, def_id, |param, current_args| {
             if let Some(arg) = provided.get(param.index) {
                 return *arg;

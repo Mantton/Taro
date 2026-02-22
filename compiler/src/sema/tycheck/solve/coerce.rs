@@ -303,12 +303,12 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let expected_args = if expected.arguments.len() > 0 {
             &expected.arguments[1..]
         } else {
-            expected.arguments
+            &expected.arguments
         };
         let actual_args = if actual.arguments.len() > 0 {
             &actual.arguments[1..]
         } else {
-            actual.arguments
+            &actual.arguments
         };
 
         if expected_args.len() != actual_args.len() {
