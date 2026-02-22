@@ -92,8 +92,28 @@ impl<'state> Compiler<'state> {
             timings.push_elapsed("specialize.collect_instances", phase_started_at);
 
             let phase_started_at = Instant::now();
-            let _ = codegen::llvm::emit_package(package, self.context)?;
+            let (_, codegen_timings) =
+                codegen::llvm::emit_package_with_timings(package, self.context)?;
             timings.push_elapsed("codegen.llvm", phase_started_at);
+            timings.push_duration("codegen.llvm.setup", codegen_timings.module_setup);
+            timings.push_duration(
+                "codegen.llvm.declare_instances",
+                codegen_timings.declare_instances,
+            );
+            timings.push_duration(
+                "codegen.llvm.lower_instances",
+                codegen_timings.lower_instances,
+            );
+            timings.push_duration(
+                "codegen.llvm.emit_entry",
+                codegen_timings.emit_entry_or_harness,
+            );
+            timings.push_duration("codegen.llvm.verify", codegen_timings.verify);
+            timings.push_duration(
+                "codegen.llvm.function_passes",
+                codegen_timings.function_passes,
+            );
+            timings.push_duration("codegen.llvm.emit_object", codegen_timings.emit_object);
 
             let phase_started_at = Instant::now();
             let exe = codegen::link::link_executable(self.context)?;
@@ -141,8 +161,28 @@ impl<'state> Compiler<'state> {
             timings.push_elapsed("specialize.collect_instances", phase_started_at);
 
             let phase_started_at = Instant::now();
-            let _ = codegen::llvm::emit_test_package(package, self.context, &tests)?;
+            let (_, codegen_timings) =
+                codegen::llvm::emit_test_package_with_timings(package, self.context, &tests)?;
             timings.push_elapsed("codegen.llvm_test", phase_started_at);
+            timings.push_duration("codegen.llvm_test.setup", codegen_timings.module_setup);
+            timings.push_duration(
+                "codegen.llvm_test.declare_instances",
+                codegen_timings.declare_instances,
+            );
+            timings.push_duration(
+                "codegen.llvm_test.lower_instances",
+                codegen_timings.lower_instances,
+            );
+            timings.push_duration(
+                "codegen.llvm_test.emit_harness",
+                codegen_timings.emit_entry_or_harness,
+            );
+            timings.push_duration("codegen.llvm_test.verify", codegen_timings.verify);
+            timings.push_duration(
+                "codegen.llvm_test.function_passes",
+                codegen_timings.function_passes,
+            );
+            timings.push_duration("codegen.llvm_test.emit_object", codegen_timings.emit_object);
 
             let phase_started_at = Instant::now();
             let exe = codegen::link::link_executable(self.context)?;

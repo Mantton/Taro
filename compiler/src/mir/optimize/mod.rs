@@ -66,6 +66,7 @@ pub fn run_global_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> Compile
         // DeadLocalElimination runs after LowerAggregates to also clean up temps it creates
         Box::new(propagate::CopyPropagation),
         Box::new(coalesce::TempCoalescing),
+        Box::new(coalesce::RepeatFieldForwarding),
         Box::new(dse::DeadStoreElimination),
         Box::new(passes::DeadLocalElimination),
         // Interprocedural escape analysis (uses precomputed summaries)

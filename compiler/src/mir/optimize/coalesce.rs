@@ -13,6 +13,7 @@ use super::MirPass;
 
 pub struct TempCoalescing;
 pub struct CallDestinationCoalescing;
+pub struct RepeatFieldForwarding;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum OperandKind {
@@ -144,7 +145,7 @@ impl<'ctx> MirPass<'ctx> for TempCoalescing {
             let Some(use_site) = use_sites[local.index()] else {
                 continue;
             };
-            if def_site.kind != use_site.kind {
+            if !operand_kinds_compatible(def_site.kind, use_site.kind) {
                 continue;
             }
             if !def_dominates_use(def_site, &use_site, &dominators) {
@@ -317,12 +318,149 @@ impl<'ctx> MirPass<'ctx> for CallDestinationCoalescing {
     }
 }
 
+#[derive(Clone)]
+struct RepeatDefSite<'ctx> {
+    block: BasicBlockId,
+    stmt_index: usize,
+    rvalue: Rvalue<'ctx>,
+}
+
+impl<'ctx> MirPass<'ctx> for RepeatFieldForwarding {
+    fn name(&self) -> &'static str {
+        "RepeatFieldForwarding"
+    }
+
+    fn run(&mut self, _gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
+        let num_locals = body.locals.len();
+        let mut assignment_count = vec![0usize; num_locals];
+        let mut use_counts = vec![0usize; num_locals];
+        let mut address_taken = vec![false; num_locals];
+        let mut defs: Vec<Option<RepeatDefSite<'ctx>>> = vec![None; num_locals];
+
+        for (bb, block) in body.basic_blocks.iter_enumerated() {
+            for (stmt_index, stmt) in block.statements.iter().enumerate() {
+                match &stmt.kind {
+                    StatementKind::Assign(dest, rv) => {
+                        if dest.projection.is_empty() {
+                            assignment_count[dest.local.index()] += 1;
+                            if matches!(body.locals[dest.local].kind, LocalKind::Temp)
+                                && matches!(
+                                    body.locals[dest.local].ty.kind(),
+                                    crate::sema::models::TyKind::Array { .. }
+                                )
+                                && matches!(rv, Rvalue::Repeat { operand, .. } if repeat_operand_is_zero(operand))
+                            {
+                                defs[dest.local.index()] = Some(RepeatDefSite {
+                                    block: bb,
+                                    stmt_index,
+                                    rvalue: rv.clone(),
+                                });
+                            }
+                        }
+
+                        if let Rvalue::Ref { place, .. } = rv {
+                            address_taken[place.local.index()] = true;
+                        }
+                        record_rvalue_use_counts(rv, &mut use_counts);
+                    }
+                    StatementKind::SetDiscriminant { place, .. } => {
+                        if place.projection.is_empty() {
+                            use_counts[place.local.index()] += 1;
+                        }
+                    }
+                    StatementKind::GcSafepoint | StatementKind::Nop => {}
+                }
+            }
+
+            if let Some(term) = &block.terminator {
+                record_terminator_use_counts(&term.kind, &mut use_counts);
+            }
+        }
+
+        let mut rewrites: Vec<(BasicBlockId, usize, Rvalue<'ctx>)> = Vec::new();
+        let mut remove_defs: IndexVec<BasicBlockId, Vec<bool>> =
+            IndexVec::from(vec![Vec::new(); body.basic_blocks.len()]);
+        for (bb, block) in body.basic_blocks.iter_enumerated() {
+            remove_defs[bb] = vec![false; block.statements.len()];
+        }
+
+        for (bb, block) in body.basic_blocks.iter_enumerated() {
+            for (stmt_index, stmt) in block.statements.iter().enumerate() {
+                let StatementKind::Assign(dest, Rvalue::Use(op)) = &stmt.kind else {
+                    continue;
+                };
+
+                // Keep this rewrite narrowly scoped to aggregate field writes.
+                if dest.projection.is_empty() {
+                    continue;
+                }
+
+                let local = match op {
+                    Operand::Copy(place) | Operand::Move(place) if place.projection.is_empty() => {
+                        place.local
+                    }
+                    _ => continue,
+                };
+
+                if !matches!(body.locals[local].kind, LocalKind::Temp) {
+                    continue;
+                }
+                if assignment_count[local.index()] != 1 || use_counts[local.index()] != 1 {
+                    continue;
+                }
+                if address_taken[local.index()] {
+                    continue;
+                }
+
+                let Some(def) = defs[local.index()].as_ref() else {
+                    continue;
+                };
+                if def.block != bb || def.stmt_index >= stmt_index {
+                    continue;
+                }
+
+                rewrites.push((bb, stmt_index, def.rvalue.clone()));
+                remove_defs[def.block][def.stmt_index] = true;
+            }
+        }
+
+        if rewrites.is_empty() {
+            return Ok(());
+        }
+
+        for (bb, stmt_index, new_rvalue) in rewrites {
+            if let Some(stmt) = body.basic_blocks[bb].statements.get_mut(stmt_index) {
+                if let StatementKind::Assign(dest, _) = &stmt.kind {
+                    stmt.kind = StatementKind::Assign(dest.clone(), new_rvalue);
+                }
+            }
+        }
+
+        for (bb, block) in body.basic_blocks.iter_mut_enumerated() {
+            let mut idx = 0;
+            block.statements.retain(|_| {
+                let keep = !remove_defs[bb][idx];
+                idx += 1;
+                keep
+            });
+        }
+
+        Ok(())
+    }
+}
+
 fn def_dominates_use(def: &DefSite<'_>, use_site: &UseSite, dominators: &Dominators) -> bool {
     if def.block == use_site.block {
         def.stmt_index < use_site.stmt_index
     } else {
         dominators.dominates(def.block, use_site.block)
     }
+}
+
+fn operand_kinds_compatible(def_kind: OperandKind, use_kind: OperandKind) -> bool {
+    // `_tmp = copy x; ...; move _tmp` is semantically equivalent to `copy x` at the use.
+    // We can fold this safely for single-use temps and eliminate one aggregate hop.
+    def_kind == use_kind || matches!((def_kind, use_kind), (OperandKind::Copy, OperandKind::Move))
 }
 
 fn replacement_is_safe<'ctx>(
@@ -417,6 +555,18 @@ fn replacement_from_operand<'ctx>(op: &Operand<'ctx>) -> Option<(OperandKind, Re
         Operand::Constant(c) => Some((OperandKind::Copy, Replacement::Constant(c.clone()))),
         _ => None,
     }
+}
+
+fn repeat_operand_is_zero(op: &Operand<'_>) -> bool {
+    let Operand::Constant(c) = op else {
+        return false;
+    };
+    matches!(
+        c.value,
+        crate::mir::ConstantKind::Integer(0)
+            | crate::mir::ConstantKind::Bool(false)
+            | crate::mir::ConstantKind::Unit
+    )
 }
 
 fn record_operand_use(

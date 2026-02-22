@@ -37,7 +37,11 @@ use inkwell::{
     },
 };
 use rustc_hash::FxHashMap;
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 const NON_AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES: u64 = 256;
 const AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES: u64 = 24;
@@ -53,6 +57,30 @@ pub fn emit_package<'gcx>(
     package: &'gcx mir::MirPackage<'gcx>,
     gcx: GlobalContext<'gcx>,
 ) -> CompileResult<PathBuf> {
+    let (obj, _) = emit_package_with_timings(package, gcx)?;
+    Ok(obj)
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CodegenPhaseTimings {
+    pub module_setup: Duration,
+    pub declare_instances: Duration,
+    pub lower_instances: Duration,
+    pub emit_entry_or_harness: Duration,
+    pub verify: Duration,
+    pub function_passes: Duration,
+    pub emit_object: Duration,
+}
+
+/// Lower MIR for a package into a single LLVM module and cache its IR,
+/// returning fine-grained LLVM codegen phase timings.
+pub fn emit_package_with_timings<'gcx>(
+    package: &'gcx mir::MirPackage<'gcx>,
+    gcx: GlobalContext<'gcx>,
+) -> CompileResult<(PathBuf, CodegenPhaseTimings)> {
+    let mut timings = CodegenPhaseTimings::default();
+
+    let phase_started_at = Instant::now();
     let context = Context::create();
     let module = context.create_module(&gcx.config.identifier);
     let builder = context.create_builder();
@@ -61,17 +89,32 @@ pub fn emit_package<'gcx>(
     let target_layout = &gcx.store.target_layout;
     module.set_data_layout(&target_layout.data_layout());
     module.set_triple(&target_layout.triple());
+    timings.module_setup = phase_started_at.elapsed();
 
     let mut emitter = Emitter::new(&context, module, builder, gcx);
+    let phase_started_at = Instant::now();
     emitter.declare_instances();
+    timings.declare_instances = phase_started_at.elapsed();
+
+    let phase_started_at = Instant::now();
     emitter.lower_instances(package)?;
+    timings.lower_instances = phase_started_at.elapsed();
+
+    let phase_started_at = Instant::now();
     emitter.emit_start_shim(package);
+    timings.emit_entry_or_harness = phase_started_at.elapsed();
+
+    let phase_started_at = Instant::now();
     if let Err(e) = emitter.module.verify() {
         let msg = format!("invalid LLVM module: {}", e.to_string());
         gcx.dcx().emit_error(msg, None);
         return Err(crate::error::ReportedError);
     }
+    timings.verify = phase_started_at.elapsed();
+
+    let phase_started_at = Instant::now();
     emitter.run_function_passes();
+    timings.function_passes = phase_started_at.elapsed();
 
     // Dump LLVM IR if requested
     if gcx.config.debug.dump_llvm {
@@ -81,9 +124,12 @@ pub fn emit_package<'gcx>(
         eprintln!("=== End LLVM Dump ===\n");
     }
 
+    let phase_started_at = Instant::now();
     let obj = emitter.emit_object_file()?;
+    timings.emit_object = phase_started_at.elapsed();
+
     gcx.cache_object_file(obj.clone());
-    Ok(obj)
+    Ok((obj, timings))
 }
 
 /// Lower MIR for a package and generate a test harness instead of a normal entry shim.
@@ -92,6 +138,20 @@ pub fn emit_test_package<'gcx>(
     gcx: GlobalContext<'gcx>,
     tests: &[crate::compile::test_collector::TestCase],
 ) -> CompileResult<PathBuf> {
+    let (obj, _) = emit_test_package_with_timings(package, gcx, tests)?;
+    Ok(obj)
+}
+
+/// Lower MIR for a package and generate a test harness instead of a normal entry shim,
+/// returning fine-grained LLVM codegen phase timings.
+pub fn emit_test_package_with_timings<'gcx>(
+    package: &'gcx mir::MirPackage<'gcx>,
+    gcx: GlobalContext<'gcx>,
+    tests: &[crate::compile::test_collector::TestCase],
+) -> CompileResult<(PathBuf, CodegenPhaseTimings)> {
+    let mut timings = CodegenPhaseTimings::default();
+
+    let phase_started_at = Instant::now();
     let context = Context::create();
     let module = context.create_module(&gcx.config.identifier);
     let builder = context.create_builder();
@@ -99,17 +159,32 @@ pub fn emit_test_package<'gcx>(
     let target_layout = &gcx.store.target_layout;
     module.set_data_layout(&target_layout.data_layout());
     module.set_triple(&target_layout.triple());
+    timings.module_setup = phase_started_at.elapsed();
 
     let mut emitter = Emitter::new(&context, module, builder, gcx);
+    let phase_started_at = Instant::now();
     emitter.declare_instances();
+    timings.declare_instances = phase_started_at.elapsed();
+
+    let phase_started_at = Instant::now();
     emitter.lower_instances(package)?;
+    timings.lower_instances = phase_started_at.elapsed();
+
+    let phase_started_at = Instant::now();
     emitter.emit_test_harness(tests);
+    timings.emit_entry_or_harness = phase_started_at.elapsed();
+
+    let phase_started_at = Instant::now();
     if let Err(e) = emitter.module.verify() {
         let msg = format!("invalid LLVM module: {}", e.to_string());
         gcx.dcx().emit_error(msg, None);
         return Err(crate::error::ReportedError);
     }
+    timings.verify = phase_started_at.elapsed();
+
+    let phase_started_at = Instant::now();
     emitter.run_function_passes();
+    timings.function_passes = phase_started_at.elapsed();
 
     if gcx.config.debug.dump_llvm {
         eprintln!("\n=== LLVM IR for {} ===", gcx.config.name);
@@ -118,9 +193,12 @@ pub fn emit_test_package<'gcx>(
         eprintln!("=== End LLVM Dump ===\n");
     }
 
+    let phase_started_at = Instant::now();
     let obj = emitter.emit_object_file()?;
+    timings.emit_object = phase_started_at.elapsed();
+
     gcx.cache_object_file(obj.clone());
-    Ok(obj)
+    Ok((obj, timings))
 }
 
 struct Emitter<'llvm, 'gcx> {
@@ -597,6 +675,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     /// making the panic catchable by `catch_unwind`.
     fn emit_test_harness(&mut self, tests: &[crate::compile::test_collector::TestCase]) {
         let i32_ty = self.context.i32_type();
+        let i8_ty = self.context.i8_type();
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
 
         // Declare runtime/libc helpers
         let puts_fn = self.declare_puts_fn();
@@ -626,123 +706,279 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .build_store(skipped_ptr, i32_ty.const_zero())
             .unwrap();
 
+        let mut fn_ptrs: Vec<PointerValue<'llvm>> = Vec::new();
+        let mut prefix_ptrs: Vec<PointerValue<'llvm>> = Vec::new();
+        let mut skipped_msg_ptrs: Vec<PointerValue<'llvm>> = Vec::new();
+        let mut expect_flags: Vec<u8> = Vec::new();
+        let mut skipped_flags: Vec<u8> = Vec::new();
+
+        for (idx, test) in tests.iter().enumerate() {
+            let test_instance = Instance::item(test.id, &[]);
+            let test_fn = match self.functions.get(&test_instance) {
+                Some(f) => *f,
+                None => continue,
+            };
+
+            let prefix = format!("test {} ... ", test.display_name);
+            let prefix_global = self.build_global_cstring(&prefix, &format!("test_prefix_{}", idx));
+            prefix_ptrs.push(prefix_global);
+
+            let skipped_msg = match &test.skip_reason {
+                Some(r) => format!("SKIPPED ({})\n", r),
+                None => "SKIPPED\n".to_string(),
+            };
+            let skipped_global =
+                self.build_global_cstring(&skipped_msg, &format!("skipped_msg_{}", idx));
+            skipped_msg_ptrs.push(skipped_global);
+
+            fn_ptrs.push(test_fn.as_global_value().as_pointer_value());
+            expect_flags.push(if test.expect_panic { 1 } else { 0 });
+            skipped_flags.push(if test.skipped { 1 } else { 0 });
+        }
+
+        let test_count = fn_ptrs.len() as u64;
+
         // Print header
         let header = format!(
             "\nrunning {} test{}\n",
-            tests.len(),
-            if tests.len() == 1 { "" } else { "s" }
+            test_count,
+            if test_count == 1 { "" } else { "s" }
         );
         let header_global = self.build_global_cstring(&header, "test_header");
         builder
             .build_call(puts_fn, &[header_global.into()], "")
             .unwrap();
 
-        // For each test, generate invoke + handling
-        for (idx, test) in tests.iter().enumerate() {
-            let test_instance = Instance::item(test.id, &[]);
+        let ok_msg = self.build_global_cstring("ok\n", "test_ok_msg");
+        let fail_panic_msg =
+            self.build_global_cstring("FAILED (panicked)\n", "test_fail_panic_msg");
+        let fail_expected_msg = self.build_global_cstring(
+            "FAILED (expected panic but test completed normally)\n",
+            "test_fail_expected_msg",
+        );
 
-            let test_fn = match self.functions.get(&test_instance) {
-                Some(f) => *f,
-                None => continue,
-            };
+        if test_count > 0 {
+            let fn_table = self.build_global_ptr_array(&fn_ptrs, "test_fn_table");
+            let prefix_table = self.build_global_ptr_array(&prefix_ptrs, "test_prefix_table");
+            let skipped_msg_table =
+                self.build_global_ptr_array(&skipped_msg_ptrs, "test_skipped_msg_table");
+            let expect_table = self.build_global_i8_array(&expect_flags, "test_expect_table");
+            let skipped_table = self.build_global_i8_array(&skipped_flags, "test_skipped_table");
 
-            // Print "test <name> ... "
-            let prefix = format!("test {} ... ", test.display_name);
-            let prefix_global = self.build_global_cstring(&prefix, &format!("test_prefix_{}", idx));
+            let idx_ptr = builder.build_alloca(self.usize_ty, "test_idx").unwrap();
             builder
-                .build_call(printf_fn, &[prefix_global.into()], "")
+                .build_store(idx_ptr, self.usize_ty.const_zero())
                 .unwrap();
 
-            if test.skipped {
-                // Print "SKIPPED\n" (with optional reason), increment skipped counter
-                let msg = match &test.skip_reason {
-                    Some(r) => format!("SKIPPED ({})\n", r),
-                    None => "SKIPPED\n".to_string(),
-                };
-                let msg_global = self.build_global_cstring(&msg, &format!("skipped_msg_{}", idx));
-                builder
-                    .build_call(printf_fn, &[msg_global.into()], "")
-                    .unwrap();
-                self.increment_counter(&builder, skipped_ptr, i32_ty);
-                continue;
-            }
+            let fn_table_ty = ptr_ty.array_type(test_count as u32);
+            let prefix_table_ty = ptr_ty.array_type(test_count as u32);
+            let skipped_msg_table_ty = ptr_ty.array_type(test_count as u32);
+            let expect_table_ty = i8_ty.array_type(test_count as u32);
+            let skipped_table_ty = i8_ty.array_type(test_count as u32);
 
-            // Call __rt__test_call_fn(test_fn) -> bool (true = panicked)
-            let fn_ptr = test_fn.as_global_value().as_pointer_value();
-            let call_result = builder
-                .build_call(test_call_fn, &[fn_ptr.into()], &format!("panicked_{}", idx))
+            let loop_cond = self.context.append_basic_block(start_fn, "test_loop_cond");
+            let loop_body = self.context.append_basic_block(start_fn, "test_loop_body");
+            let loop_skipped = self
+                .context
+                .append_basic_block(start_fn, "test_loop_skipped");
+            let loop_run = self.context.append_basic_block(start_fn, "test_loop_run");
+            let loop_next = self.context.append_basic_block(start_fn, "test_loop_next");
+            let result_bb = self.context.append_basic_block(start_fn, "result");
+
+            builder.build_unconditional_branch(loop_cond).unwrap();
+
+            builder.position_at_end(loop_cond);
+            let idx = builder
+                .build_load(self.usize_ty, idx_ptr, "test_idx")
+                .unwrap()
+                .into_int_value();
+            let in_range = builder
+                .build_int_compare(
+                    IntPredicate::ULT,
+                    idx,
+                    self.usize_ty.const_int(test_count, false),
+                    "test_idx_in_range",
+                )
+                .unwrap();
+            builder
+                .build_conditional_branch(in_range, loop_body, result_bb)
+                .unwrap();
+
+            builder.position_at_end(loop_body);
+            let zero = self.usize_ty.const_zero();
+
+            let prefix_ptr_ptr = unsafe {
+                builder
+                    .build_gep(
+                        prefix_table_ty,
+                        prefix_table,
+                        &[zero, idx],
+                        "test_prefix_ptr_ptr",
+                    )
+                    .unwrap()
+            };
+            let prefix_ptr = builder
+                .build_load(ptr_ty, prefix_ptr_ptr, "test_prefix_ptr")
+                .unwrap()
+                .into_pointer_value();
+            builder
+                .build_call(printf_fn, &[prefix_ptr.into()], "test_prefix_print")
+                .unwrap();
+
+            let skipped_flag_ptr = unsafe {
+                builder
+                    .build_gep(
+                        skipped_table_ty,
+                        skipped_table,
+                        &[zero, idx],
+                        "test_skipped_flag_ptr",
+                    )
+                    .unwrap()
+            };
+            let skipped_flag = builder
+                .build_load(i8_ty, skipped_flag_ptr, "test_skipped_flag")
+                .unwrap()
+                .into_int_value();
+            let is_skipped = builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    skipped_flag,
+                    i8_ty.const_zero(),
+                    "test_is_skipped",
+                )
+                .unwrap();
+            builder
+                .build_conditional_branch(is_skipped, loop_skipped, loop_run)
+                .unwrap();
+
+            builder.position_at_end(loop_skipped);
+            let skipped_msg_ptr_ptr = unsafe {
+                builder
+                    .build_gep(
+                        skipped_msg_table_ty,
+                        skipped_msg_table,
+                        &[zero, idx],
+                        "test_skipped_msg_ptr_ptr",
+                    )
+                    .unwrap()
+            };
+            let skipped_msg_ptr = builder
+                .build_load(ptr_ty, skipped_msg_ptr_ptr, "test_skipped_msg_ptr")
+                .unwrap()
+                .into_pointer_value();
+            builder
+                .build_call(printf_fn, &[skipped_msg_ptr.into()], "test_skipped_print")
+                .unwrap();
+            self.increment_counter(&builder, skipped_ptr, i32_ty);
+            builder.build_unconditional_branch(loop_next).unwrap();
+
+            builder.position_at_end(loop_run);
+            let fn_ptr_ptr = unsafe {
+                builder
+                    .build_gep(fn_table_ty, fn_table, &[zero, idx], "test_fn_ptr_ptr")
+                    .unwrap()
+            };
+            let fn_ptr = builder
+                .build_load(ptr_ty, fn_ptr_ptr, "test_fn_ptr")
+                .unwrap()
+                .into_pointer_value();
+            let panicked = builder
+                .build_call(test_call_fn, &[fn_ptr.into()], "test_panicked")
                 .unwrap()
                 .try_as_basic_value()
                 .basic()
                 .unwrap()
                 .into_int_value();
 
-            // Branch on whether the test panicked
-            let bb_panicked = self
-                .context
-                .append_basic_block(start_fn, &format!("test_{}_panicked", idx));
-            let bb_normal = self
-                .context
-                .append_basic_block(start_fn, &format!("test_{}_normal", idx));
-            let bb_after = self
-                .context
-                .append_basic_block(start_fn, &format!("test_{}_after", idx));
-
+            // Reset panic state for next iteration; this is harmless in non-panicked cases.
             builder
-                .build_conditional_branch(call_result, bb_panicked, bb_normal)
+                .build_call(panic_clear_fn, &[], "test_panic_clear")
                 .unwrap();
 
-            // --- bb_normal: test didn't panic ---
-            builder.position_at_end(bb_normal);
-            if test.expect_panic {
-                // Expected panic but got none → FAIL
-                let fail_msg = self.build_global_cstring(
-                    "FAILED (expected panic but test completed normally)\n",
-                    &format!("sp_fail_{}", idx),
-                );
+            let expect_flag_ptr = unsafe {
                 builder
-                    .build_call(printf_fn, &[fail_msg.into()], "")
-                    .unwrap();
-                self.increment_counter(&builder, failed_ptr, i32_ty);
-            } else {
-                // Normal test passed
-                let ok_msg = self.build_global_cstring("ok\n", &format!("ok_msg_{}", idx));
-                builder.build_call(printf_fn, &[ok_msg.into()], "").unwrap();
-                self.increment_counter(&builder, passed_ptr, i32_ty);
-            }
-            builder.build_unconditional_branch(bb_after).unwrap();
+                    .build_gep(
+                        expect_table_ty,
+                        expect_table,
+                        &[zero, idx],
+                        "test_expect_flag_ptr",
+                    )
+                    .unwrap()
+            };
+            let expect_flag = builder
+                .build_load(i8_ty, expect_flag_ptr, "test_expect_flag")
+                .unwrap()
+                .into_int_value();
+            let expect_panic = builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    expect_flag,
+                    i8_ty.const_zero(),
+                    "test_expect_panic",
+                )
+                .unwrap();
 
-            // --- bb_panicked: test panicked ---
-            builder.position_at_end(bb_panicked);
+            let passed_case = builder
+                .build_int_compare(IntPredicate::EQ, panicked, expect_panic, "test_passed")
+                .unwrap();
+            let fail_msg = builder
+                .build_select(
+                    expect_panic,
+                    fail_expected_msg,
+                    fail_panic_msg,
+                    "test_fail_msg",
+                )
+                .unwrap()
+                .into_pointer_value();
+            let result_msg = builder
+                .build_select(passed_case, ok_msg, fail_msg, "test_result_msg")
+                .unwrap();
+            builder
+                .build_call(printf_fn, &[result_msg.into()], "test_result_print")
+                .unwrap();
 
-            // Reset panic state so the next test starts clean.
-            builder.build_call(panic_clear_fn, &[], "").unwrap();
+            let pass_inc = builder
+                .build_int_z_extend(passed_case, i32_ty, "test_pass_inc")
+                .unwrap();
+            let failed_case = builder.build_not(passed_case, "test_failed_case").unwrap();
+            let fail_inc = builder
+                .build_int_z_extend(failed_case, i32_ty, "test_fail_inc")
+                .unwrap();
 
-            if test.expect_panic {
-                // Panic is expected → PASS
-                let ok_msg = self.build_global_cstring("ok\n", &format!("sp_ok_{}", idx));
-                builder.build_call(printf_fn, &[ok_msg.into()], "").unwrap();
-                self.increment_counter(&builder, passed_ptr, i32_ty);
-            } else {
-                // Unexpected panic → FAIL
-                let fail_msg = self
-                    .build_global_cstring("FAILED (panicked)\n", &format!("fail_panic_{}", idx));
-                builder
-                    .build_call(printf_fn, &[fail_msg.into()], "")
-                    .unwrap();
-                self.increment_counter(&builder, failed_ptr, i32_ty);
-            }
-            builder.build_unconditional_branch(bb_after).unwrap();
+            let cur_passed = builder
+                .build_load(i32_ty, passed_ptr, "test_cur_passed")
+                .unwrap()
+                .into_int_value();
+            let next_passed = builder
+                .build_int_add(cur_passed, pass_inc, "test_next_passed")
+                .unwrap();
+            builder.build_store(passed_ptr, next_passed).unwrap();
 
-            // Continue to next test
-            builder.position_at_end(bb_after);
+            let cur_failed = builder
+                .build_load(i32_ty, failed_ptr, "test_cur_failed")
+                .unwrap()
+                .into_int_value();
+            let next_failed = builder
+                .build_int_add(cur_failed, fail_inc, "test_next_failed")
+                .unwrap();
+            builder.build_store(failed_ptr, next_failed).unwrap();
+            builder.build_unconditional_branch(loop_next).unwrap();
+
+            builder.position_at_end(loop_next);
+            let next_idx = builder
+                .build_int_add(idx, self.usize_ty.const_int(1, false), "test_idx_next")
+                .unwrap();
+            builder.build_store(idx_ptr, next_idx).unwrap();
+            builder.build_unconditional_branch(loop_cond).unwrap();
+
+            builder.position_at_end(result_bb);
+        } else {
+            let result_bb = self.context.append_basic_block(start_fn, "result");
+            builder.build_unconditional_branch(result_bb).unwrap();
+            builder.position_at_end(result_bb);
         }
 
         // --- Summary ---
-        let result_bb = self.context.append_basic_block(start_fn, "result");
-        builder.build_unconditional_branch(result_bb).unwrap();
-        builder.position_at_end(result_bb);
-
         let passed = builder.build_load(i32_ty, passed_ptr, "p_final").unwrap();
         let failed = builder.build_load(i32_ty, failed_ptr, "f_final").unwrap();
         let skipped = builder.build_load(i32_ty, skipped_ptr, "s_final").unwrap();
@@ -805,6 +1041,36 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .map(|v| v.into_int_value())
             .unwrap_or_else(|| i32_ty.const_int(0, false));
         mb.build_return(Some(&ret)).unwrap();
+    }
+
+    fn build_global_ptr_array(
+        &self,
+        values: &[PointerValue<'llvm>],
+        name: &str,
+    ) -> PointerValue<'llvm> {
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let arr_ty = ptr_ty.array_type(values.len() as u32);
+        let global = self.module.add_global(arr_ty, None, name);
+        global.set_initializer(&ptr_ty.const_array(values));
+        global.set_constant(true);
+        global.set_linkage(Linkage::Private);
+        global.set_unnamed_addr(true);
+        global.as_pointer_value()
+    }
+
+    fn build_global_i8_array(&self, values: &[u8], name: &str) -> PointerValue<'llvm> {
+        let i8_ty = self.context.i8_type();
+        let arr_ty = i8_ty.array_type(values.len() as u32);
+        let vals: Vec<_> = values
+            .iter()
+            .map(|v| i8_ty.const_int(*v as u64, false))
+            .collect();
+        let global = self.module.add_global(arr_ty, None, name);
+        global.set_initializer(&i8_ty.const_array(&vals));
+        global.set_constant(true);
+        global.set_linkage(Linkage::Private);
+        global.set_unnamed_addr(true);
+        global.as_pointer_value()
     }
 
     /// Helper: Increment an i32 counter via load-add-store
@@ -1828,7 +2094,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 if self.try_lower_repeat_memset(body, locals, place, rvalue)? {
                     return Ok(());
                 }
-                let dest_ty = body.locals[place.local].ty;
+                let dest_ty = self.place_ty(body, place);
                 if let Some(value) = self.lower_rvalue(body, locals, dest_ty, rvalue)? {
                     self.store_place(place, body, locals, value)?;
                 }
