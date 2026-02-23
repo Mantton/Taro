@@ -78,6 +78,9 @@ pub enum TypeError<'ctx> {
 
     LayoutIncompatibleCast(ExpectedFound<Ty<'ctx>>),
     UnsafePtrCastNeedsUnsafeBlock,
+    InvalidIntegerToRuneCast {
+        from: Ty<'ctx>,
+    },
 }
 
 pub type SpannedError<'ctx> = Spanned<TypeError<'ctx>>;
@@ -211,6 +214,12 @@ impl<'ctx> TypeError<'ctx> {
             TypeError::UnsafePtrCastNeedsUnsafeBlock => {
                 "cast involves pointers and is unsafe; must be inside an unsafe { ... } block"
                     .into()
+            }
+            TypeError::InvalidIntegerToRuneCast { from } => {
+                format!(
+                    "cannot cast '{}' to rune; use checked conversion functions",
+                    from.format(gcx)
+                )
             }
         }
     }

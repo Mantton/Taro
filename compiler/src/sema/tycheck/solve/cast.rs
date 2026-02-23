@@ -2,7 +2,7 @@ use crate::{
     hir::NodeID,
     sema::{
         error::{ExpectedFound, TypeError},
-        models::{InferTy, IntTy, Ty, TyKind},
+        models::{InferTy, Ty, TyKind, UIntTy},
         tycheck::infer::keys::{FloatVarValue, IntVarValue},
         tycheck::utils::is_type_layout_compatible,
     },
@@ -32,13 +32,12 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return SolverResult::Deferred;
         }
 
-        // Helper for numeric integer casts (includes rune and IntVars).
+        // Helper for numeric integer casts (excludes rune to keep cast rules explicit).
         let is_numeric_int_like = |ty: Ty<'ctx>| {
             matches!(
                 ty.kind(),
                 TyKind::Int(_)
                     | TyKind::UInt(_)
-                    | TyKind::Rune
                     | TyKind::Infer(crate::sema::models::InferTy::IntVar(_))
             )
         };
@@ -56,15 +55,34 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     self.icx
                         .instantiate_int_var_raw(id, IntVarValue::Unsigned(kind));
                 }
-                TyKind::Rune => {
-                    self.icx
-                        .instantiate_int_var_raw(id, IntVarValue::Signed(IntTy::I32));
-                }
+                // Keep unresolved integer->rune casts deferred until the integer kind resolves.
+                TyKind::Rune => return SolverResult::Deferred,
                 _ => {}
             }
         }
 
-        // 1. Integer <-> Integer
+        // Rune cast rules (Rust-style):
+        // - rune -> integer is allowed
+        // - u8 -> rune is allowed
+        // - all other integer -> rune casts are rejected
+        match (from.kind(), to.kind()) {
+            (TyKind::Rune, TyKind::Int(_) | TyKind::UInt(_) | TyKind::Infer(InferTy::IntVar(_))) => {
+                return SolverResult::Solved(vec![]);
+            }
+            (TyKind::UInt(UIntTy::U8), TyKind::Rune) => {
+                return SolverResult::Solved(vec![]);
+            }
+            (TyKind::Infer(InferTy::IntVar(_)), TyKind::Rune) => {
+                return SolverResult::Deferred;
+            }
+            (TyKind::Int(_) | TyKind::UInt(_), TyKind::Rune) => {
+                let error = Spanned::new(TypeError::InvalidIntegerToRuneCast { from }, location);
+                return SolverResult::Error(vec![error]);
+            }
+            _ => {}
+        }
+
+        // 1. Integer <-> Integer (non-rune)
         if is_numeric_int_like(from) && is_numeric_int_like(to) {
             return SolverResult::Solved(vec![]);
         }

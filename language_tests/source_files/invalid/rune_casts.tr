@@ -1,0 +1,5 @@
+func main() {
+    let _a: rune = 65 as rune
+    let _b: rune = (65 as uint32) as rune
+    let _c: rune = (-1 as int32) as rune
+}

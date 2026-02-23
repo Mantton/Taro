@@ -1,0 +1,12 @@
+error: cannot cast 'int32' to rune; use checked conversion functions
+ -> language_tests/source_files/invalid/rune_casts.tr:2:19
+	    let _a: rune = 65 as rune
+	                   ^^^^^^^^^^
+error: cannot cast 'uint32' to rune; use checked conversion functions
+ -> language_tests/source_files/invalid/rune_casts.tr:3:19
+	    let _b: rune = (65 as uint32) as rune
+	                   ^^^^^^^^^^^^^^^^^^^^^^
+error: cannot cast 'int32' to rune; use checked conversion functions
+ -> language_tests/source_files/invalid/rune_casts.tr:4:19
+	    let _c: rune = (-1 as int32) as rune
+	                   ^^^^^^^^^^^^^^^^^^^^^

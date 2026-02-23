@@ -4146,6 +4146,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 self.lower_intrinsic_string_len(body, locals, args, destination)?;
                 Ok(true)
             }
+            "__intrinsic_rune_from_u32_unchecked" => {
+                self.lower_intrinsic_rune_from_u32_unchecked(body, locals, args, destination)?;
+                Ok(true)
+            }
             _ => {
                 self.gcx
                     .dcx()
@@ -5045,6 +5049,43 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .unwrap()
             .into_int_value();
         self.store_place(destination, body, locals, len.as_basic_value_enum())
+    }
+
+    fn lower_intrinsic_rune_from_u32_unchecked(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+    ) -> CompileResult<()> {
+        let value = args
+            .first()
+            .expect("rune_from_u32_unchecked missing source value");
+        let Some(value) = self.eval_operand(body, locals, value)? else {
+            let _ = self.builder.build_unreachable().unwrap();
+            return Ok(());
+        };
+
+        let value = match value {
+            BasicValueEnum::IntValue(int_val) => int_val,
+            _ => {
+                self.gcx.dcx().emit_error(
+                    "rune_from_u32_unchecked expects an integer argument".into(),
+                    None,
+                );
+                return Ok(());
+            }
+        };
+
+        let rune = if value.get_type() == self.context.i32_type() {
+            value
+        } else {
+            self.builder
+                .build_int_cast(value, self.context.i32_type(), "rune_from_u32")
+                .unwrap()
+        };
+
+        self.store_place(destination, body, locals, rune.as_basic_value_enum())
     }
 
     fn lower_intrinsic_unary_float(
@@ -6285,7 +6326,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     fn int_type(&self, ty: Ty<'gcx>) -> Option<(IntType<'llvm>, bool)> {
         match ty.kind() {
             TyKind::Bool => Some((self.context.bool_type(), false)),
-            TyKind::Rune => Some((self.context.i32_type(), true)),
+            TyKind::Rune => Some((self.context.i32_type(), false)),
             TyKind::Int(i) => Some((int_from_kind(self.context, &self.target_data, i), true)),
             TyKind::UInt(u) => Some((uint_from_kind(self.context, &self.target_data, u), false)),
             _ => None,
@@ -6855,5 +6896,5 @@ fn uint_from_kind<'llvm>(
 }
 
 fn is_signed(ty: Ty) -> bool {
-    matches!(ty.kind(), TyKind::Int(_) | TyKind::Rune)
+    matches!(ty.kind(), TyKind::Int(_))
 }

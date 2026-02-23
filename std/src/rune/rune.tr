@@ -1,0 +1,18 @@
+import std.intrinsic.__intrinsic_rune_from_u32_unchecked
+import std.optional.Optional
+
+const UNICODE_MAX_SCALAR: uint32 = 0x10FFFF
+const UNICODE_SURROGATE_START: uint32 = 0xD800
+const UNICODE_SURROGATE_END: uint32 = 0xDFFF
+
+public func fromU32(_ value: uint32) -> Optional[rune] {
+    if value > UNICODE_MAX_SCALAR {
+        return .none
+    }
+
+    if value >= UNICODE_SURROGATE_START && value <= UNICODE_SURROGATE_END {
+        return .none
+    }
+
+    return .some(__intrinsic_rune_from_u32_unchecked(value))
+}

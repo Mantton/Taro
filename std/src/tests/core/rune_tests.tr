@@ -1,0 +1,30 @@
+@test
+func testRuneFromU32Valid() {
+    let zero = std.rune.fromU32(0)
+    std.testing.assertTrue(zero.isSome(), "U+0000 should be a valid scalar value")
+    std.testing.assertEqual(zero.unwrap(), '\0', "U+0000 should decode correctly")
+
+    let ascii = std.rune.fromU32(65)
+    std.testing.assertTrue(ascii.isSome(), "ASCII code points should be valid")
+    std.testing.assertEqual(ascii.unwrap(), 'A', "U+0041 should decode to 'A'")
+
+    let maxScalar = std.rune.fromU32(0x10FFFF)
+    std.testing.assertTrue(maxScalar.isSome(), "U+10FFFF should be a valid scalar value")
+    std.testing.assertEqual(maxScalar.unwrap(), '\u{10FFFF}', "max scalar value mismatch")
+}
+
+@test
+func testRuneFromU32RejectsInvalidScalars() {
+    std.testing.assertTrue(
+        std.rune.fromU32(0xD800).isNone(),
+        "U+D800 surrogate start should be rejected",
+    )
+    std.testing.assertTrue(
+        std.rune.fromU32(0xDFFF).isNone(),
+        "U+DFFF surrogate end should be rejected",
+    )
+    std.testing.assertTrue(
+        std.rune.fromU32(0x110000).isNone(),
+        "code points above U+10FFFF should be rejected",
+    )
+}

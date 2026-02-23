@@ -88,5 +88,6 @@ extern "taro_intrinsic" {
     func __intrinsic_string_from_parts(_ data: *const uint8, _ len: usize) -> string
     func __intrinsic_string_data(_ s: string) -> *const uint8
     func __intrinsic_string_len(_ s: string) -> usize
+    func __intrinsic_rune_from_u32_unchecked(_ value: uint32) -> rune
     func __intrinsic_gc_desc[T]() -> *const GcDesc
 }

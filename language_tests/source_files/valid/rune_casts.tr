@@ -1,0 +1,7 @@
+func main() {
+    let codepoint: uint32 = 'A' as uint32
+    assert(codepoint == (65 as uint32), "rune -> uint32 cast should yield Unicode codepoint")
+
+    let value: rune = (255 as uint8) as rune
+    assert(value == '\u{00FF}', "u8 -> rune cast should preserve value")
+}
