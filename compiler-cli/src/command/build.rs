@@ -12,6 +12,7 @@ use compiler::{
         Compiler,
         config::{BuildProfile, Config, DebugOptions, PackageKind, StdMode},
         context::{CompilerArenas, CompilerContext, CompilerStore},
+        test_collector::TestSelection,
     },
     constants::STD_PREFIX,
     diagnostics::DiagCtx,
@@ -528,15 +529,21 @@ fn is_root_std_package(
 pub fn run_test_mode(
     arguments: CommandLineArguments,
 ) -> Result<Option<std::path::PathBuf>, ReportedError> {
+    let selection = TestSelection::new(
+        arguments.normalized_test_filter(),
+        arguments.normalized_test_tags(),
+    );
+
     if arguments.is_single_file() {
-        run_single_file_test(arguments)
+        run_single_file_test(arguments, &selection)
     } else {
-        run_package_test(arguments)
+        run_package_test(arguments, &selection)
     }
 }
 
 fn run_single_file_test(
     arguments: CommandLineArguments,
+    selection: &TestSelection,
 ) -> Result<Option<std::path::PathBuf>, ReportedError> {
     let compile_options = arguments.compile_mode_options();
     let profile_dir = profile_dir_name(compile_options.profile);
@@ -617,11 +624,12 @@ fn run_single_file_test(
 
     eprintln!("Compiling tests – {}", file_stem);
     let mut compiler = Compiler::new(&icx, config);
-    compiler.test()
+    compiler.test(selection)
 }
 
 fn run_package_test(
     arguments: CommandLineArguments,
+    selection: &TestSelection,
 ) -> Result<Option<std::path::PathBuf>, ReportedError> {
     let compile_options = arguments.compile_mode_options();
     let profile_dir = profile_dir_name(compile_options.profile);
@@ -775,7 +783,7 @@ fn run_package_test(
         let mut compiler = Compiler::new(&icx, config);
         if is_root {
             eprintln!("Compiling tests – {}", package.package.0);
-            let exe_path = compiler.test()?;
+            let exe_path = compiler.test(selection)?;
             if exe_path.is_some() {
                 return Ok(exe_path);
             }

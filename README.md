@@ -203,8 +203,28 @@ taro test my-package/
 | Attribute | Description |
 |-----------|-------------|
 | `@test` | Marks a function as a test case. Must be `() -> void`. |
+| `@tag` | Adds tags for test selection. Valid on `@test` functions and `namespace` declarations. Uses string literals: `@tag("smoke", "slow")`. |
 | `@skip` | Skips the test. Accepts an optional reason string: `@skip("not yet implemented")`. |
 | `@expectPanic` | Passes if the function panics, fails if it returns normally. Accepts an optional expected message: `@expectPanic("out of bounds")`. |
+
+### Filtering Tests
+
+Use `--filter` to match qualified test names and `--tag` to select tagged tests:
+
+```bash
+taro test std --filter testing.testing_tests
+taro test std --filter TESTING.TESTS
+taro test std --tag smoke --tag slow
+taro test std --filter testing --tag smoke
+```
+
+Rules:
+
+- `--filter` is a case-insensitive substring match against the qualified name.
+- `.` and `::` are treated as equivalent separators when matching names.
+- `--tag` is case-insensitive and repeatable; multiple tags use OR semantics (any tag).
+- Combining `--filter` and `--tag` uses AND semantics (must satisfy both).
+- If nothing matches, the run succeeds with `running 0 tests`.
 
 ### Test Example
 
@@ -225,18 +245,34 @@ func testDivisionByZero() {
 func testNotYetReady() {
     fail("not implemented")
 }
+
+@tag("smoke")
+namespace CoreTests {
+    @test
+    func testNamespaceTagInheritance() {
+        assertTrue(true, "namespace tags are inherited")
+    }
+}
+
+@test
+@tag("slow")
+func testTaggedFunction() {
+    assertTrue(true, "function tags are supported")
+}
 ```
 
 Running `taro test` on the above produces:
 
 ```
-running 3 tests
+running 5 tests
 
 test testAddition ... ok
 test testDivisionByZero ... ok
 test testNotYetReady ... SKIPPED (pending implementation)
+test CoreTests::testNamespaceTagInheritance ... ok
+test testTaggedFunction ... ok
 
-test result: ok. 2 passed; 0 failed; 1 skipped
+test result: ok. 4 passed; 0 failed; 1 skipped
 ```
 
 ### Assertion Helpers
@@ -355,7 +391,7 @@ Taro uses a custom **non-moving, mark-and-sweep garbage collector** inspired by 
 - **Diagnostics**: Rich, clear error messages to guide developers.
 - **Optimizations**: Sophisticated MIR passes including inlining, escape analysis, and simplify-cfg.
 - **Interoperability**: C ABI compatibility for easy FFI.
-- **Built-in Testing**: First-class test support via `taro test` with `@test`, `@skip`, and `@expectPanic` attributes.
+- **Built-in Testing**: First-class test support via `taro test` with `@test`, `@tag`, `@skip`, `@expectPanic`, plus `--filter` / `--tag` selection.
 
 ## Repository Structure
 
@@ -372,7 +408,7 @@ Taro is currently **experimental**.
 - [x] Basic Compiler Pipeline (Parse -> Codegen)
 - [x] Garbage Collection (Stop-the-world)
 - [x] Generics and Monomorphization
-- [x] Built-in Test Framework (`taro test`, `@test`, `@skip`, `@expectPanic`)
+- [x] Built-in Test Framework (`taro test`, `@test`, `@tag`, `@skip`, `@expectPanic`, `--filter`, `--tag`)
 - [ ] Concurrency and garbage collection improvements
 - [ ] LSP support and editor integration
 - [ ] Package manager polish and registry

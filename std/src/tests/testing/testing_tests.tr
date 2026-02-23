@@ -61,3 +61,26 @@ func testDebugAssertProfileCfg() {
 
     std.debugAssert(true, "debug assert should not panic")
 }
+
+@tag("smoke")
+namespace TaggedNamespace {
+    @test
+    func testNamespaceTagInheritance() {
+        std.testing.assertTrue(true, "namespace tag smoke should be inherited")
+    }
+
+    @tag("slow")
+    namespace Nested {
+        @test
+        @tag("unit")
+        func testNestedNamespaceTagInheritance() {
+            std.testing.assertTrue(true, "nested namespace tags should be inherited")
+        }
+    }
+}
+
+@test
+@tag("SMOKE")
+func testFunctionTagSyntax() {
+    std.testing.assertTrue(true, "function-level @tag(\"...\") should be accepted")
+}

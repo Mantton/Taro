@@ -112,8 +112,7 @@ pub fn should_include_attrs(
     gcx: GlobalContext<'_>,
 ) -> bool {
     for attr in attrs {
-        if gcx.symbol_eq(attr.identifier.symbol, "cfg") && !eval_cfg_attr(attr, target, gcx)
-        {
+        if gcx.symbol_eq(attr.identifier.symbol, "cfg") && !eval_cfg_attr(attr, target, gcx) {
             return false;
         }
     }
@@ -175,6 +174,7 @@ fn eval_cfg_attr(attr: &ast::Attribute, target: &TargetInfo, gcx: GlobalContext<
                     _ => return false,
                 }
             }
+            ast::AttributeArg::Literal { .. } => return false,
         }
     }
 

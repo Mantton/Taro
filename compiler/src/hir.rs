@@ -54,6 +54,8 @@ pub enum AttributeArg {
     },
     /// `ident` (boolean flag)
     Flag { key: Identifier, span: Span },
+    /// Positional literal argument, e.g. `"smoke"` in `@tag("smoke")`
+    Literal { value: Literal, span: Span },
 }
 
 /// Well-known attributes recognized by the compiler.
@@ -67,25 +69,34 @@ pub enum KnownAttribute {
     Cfg,
     /// `@test` - marks a function as a test case
     Test,
+    /// `@tag(...)` - test tag metadata on namespaces and test functions
+    Tag,
     /// `@skip` or `@skip("reason")` - skip this test
     Skip,
     /// `@expectPanic` or `@expectPanic("expected message")` - test expects a panic
     ExpectPanic,
 }
 
-impl Attribute {
-    /// Try to parse this attribute as a known compiler attribute.
-    pub fn as_known(&self, gcx: GlobalContext<'_>) -> Option<KnownAttribute> {
-        let name = gcx.symbol_text(self.identifier.symbol);
-        match name.as_str() {
+impl KnownAttribute {
+    pub fn from_name(name: &str) -> Option<KnownAttribute> {
+        match name {
             "inline" => Some(KnownAttribute::Inline),
             "noinline" => Some(KnownAttribute::NoInline),
             "cfg" => Some(KnownAttribute::Cfg),
             "test" => Some(KnownAttribute::Test),
+            "tag" => Some(KnownAttribute::Tag),
             "skip" => Some(KnownAttribute::Skip),
             "expectPanic" => Some(KnownAttribute::ExpectPanic),
             _ => None,
         }
+    }
+}
+
+impl Attribute {
+    /// Try to parse this attribute as a known compiler attribute.
+    pub fn as_known(&self, gcx: GlobalContext<'_>) -> Option<KnownAttribute> {
+        let name = gcx.symbol_text(self.identifier.symbol);
+        KnownAttribute::from_name(name.as_str())
     }
 
     /// Extract the first string argument from the attribute, if present.
@@ -102,9 +113,24 @@ impl Attribute {
                         return Some(gcx.symbol_text(*s).to_string());
                     }
                 }
+                AttributeArg::Literal { value, .. } => {
+                    if let Literal::String(s) = value {
+                        return Some(gcx.symbol_text(*s).to_string());
+                    }
+                }
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::KnownAttribute;
+
+    #[test]
+    fn known_attribute_recognizes_tag() {
+        assert_eq!(KnownAttribute::from_name("tag"), Some(KnownAttribute::Tag));
     }
 }
 

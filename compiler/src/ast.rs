@@ -91,6 +91,8 @@ pub enum AttributeArg {
     },
     /// `ident` (boolean flag)
     Flag { key: Identifier, span: Span },
+    /// Positional literal argument, e.g. `"smoke"` in `@tag("smoke")`
+    Literal { value: Literal, span: Span },
 }
 
 /// Configuration predicate expression for `@cfg(...)` and `#cfg(...)`

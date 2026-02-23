@@ -16,6 +16,12 @@ pub struct CompileModeOptions {
 pub struct CommandLineArguments {
     pub command: String,
     pub path: PathBuf,
+    /// Case-insensitive substring filter against qualified test names.
+    #[arg(long = "filter")]
+    pub filter: Option<String>,
+    /// Case-insensitive test tag filter. Repeat to match any requested tag.
+    #[arg(long = "tag")]
+    pub tag: Vec<String>,
     #[arg(short = 'o', long = "output")]
     pub output: Option<PathBuf>,
     #[arg(long = "std-path")]
@@ -80,6 +86,23 @@ impl CommandLineArguments {
             timings: self.timings,
         }
     }
+
+    pub fn normalized_test_filter(&self) -> Option<String> {
+        self.filter
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(ToOwned::to_owned)
+    }
+
+    pub fn normalized_test_tags(&self) -> Vec<String> {
+        self.tag
+            .iter()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    }
 }
 
 pub fn run() {
@@ -88,5 +111,48 @@ pub fn run() {
     match result {
         Ok(_) => exit(0),
         Err(_) => exit(1),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CommandLineArguments;
+    use clap::Parser;
+
+    #[test]
+    fn parses_test_filter_and_tags() {
+        let args = CommandLineArguments::parse_from([
+            "taro",
+            "test",
+            "std",
+            "--filter",
+            "Core.Tests",
+            "--tag",
+            "Smoke",
+            "--tag",
+            "slow",
+        ]);
+
+        assert_eq!(args.command, "test");
+        assert_eq!(args.normalized_test_filter().as_deref(), Some("Core.Tests"));
+        assert_eq!(args.normalized_test_tags(), vec!["Smoke", "slow"]);
+    }
+
+    #[test]
+    fn normalized_filter_and_tags_trim_and_drop_empty() {
+        let args = CommandLineArguments::parse_from([
+            "taro",
+            "test",
+            "std",
+            "--filter",
+            "  core.tests  ",
+            "--tag",
+            " Smoke ",
+            "--tag",
+            "   ",
+        ]);
+
+        assert_eq!(args.normalized_test_filter().as_deref(), Some("core.tests"));
+        assert_eq!(args.normalized_test_tags(), vec!["Smoke"]);
     }
 }

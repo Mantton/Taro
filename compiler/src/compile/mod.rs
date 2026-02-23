@@ -131,7 +131,10 @@ impl<'state> Compiler<'state> {
 
     /// Build in test mode: compile all code, discover tests, and generate
     /// a test harness as the entry point instead of the normal main.
-    pub fn test(&mut self) -> CompileResult<Option<std::path::PathBuf>> {
+    pub fn test(
+        &mut self,
+        selection: &test_collector::TestSelection,
+    ) -> CompileResult<Option<std::path::PathBuf>> {
         let total_started_at = Instant::now();
         let package_name = self.context.config.name.to_string();
         let mut timings = TimingReport::default();
@@ -141,12 +144,9 @@ impl<'state> Compiler<'state> {
 
             // Collect tests from HIR (needs type info from analysis)
             let phase_started_at = Instant::now();
-            let tests = test_collector::collect_tests(&package, self.context)?;
+            let discovered_tests = test_collector::collect_tests(&package, self.context)?;
+            let tests = test_collector::filter_tests(discovered_tests, selection);
             timings.push_elapsed("test.collect", phase_started_at);
-            if tests.is_empty() {
-                eprintln!("warning: no test functions found");
-                return Ok(None);
-            }
 
             let phase_started_at = Instant::now();
             let thir = thir::package::build_package(&package, self.context, results)?;

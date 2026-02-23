@@ -125,6 +125,19 @@ impl Actor<'_, '_> {
                 }
             }
             ast::AttributeArg::Flag { key, span } => hir::AttributeArg::Flag { key, span },
+            ast::AttributeArg::Literal { value, span } => {
+                let hir_lit = match convert_ast_literal(self.context, value) {
+                    Ok(lit) => lit,
+                    Err(err) => {
+                        self.context.dcx.emit_error(err.into(), Some(span));
+                        hir::Literal::Nil
+                    }
+                };
+                hir::AttributeArg::Literal {
+                    value: hir_lit,
+                    span,
+                }
+            }
         }
     }
 }
@@ -211,10 +224,7 @@ impl Actor<'_, '_> {
         }
 
         for attr in attributes {
-            if self
-                .context
-                .symbol_eq(attr.identifier.symbol, "cfg")
-            {
+            if self.context.symbol_eq(attr.identifier.symbol, "cfg") {
                 if !self.evaluate_cfg(attr) {
                     return false;
                 }
@@ -318,6 +328,10 @@ impl Actor<'_, '_> {
                             return false;
                         }
                     }
+                }
+                ast::AttributeArg::Literal { .. } => {
+                    // `@cfg(...)` only supports known key/value and flag forms.
+                    return false;
                 }
             }
         }
@@ -2024,18 +2038,13 @@ impl Actor<'_, '_> {
                 {
                     Some(ExpressionResolutionState::Resolved(_)) => {
                         let path = self.try_lower_resolved_member_chain_as_path(
-                            expr.id,
-                            target,
-                            *name,
-                            expr.span,
+                            expr.id, target, *name, expr.span,
                         )?;
                         Some(hir::ResolvedPath::Resolved(path))
                     }
                     Some(ExpressionResolutionState::DeferredAssociatedType) => {
-                        let path = self.lower_deferred_associated_type_member_chain(
-                            target.clone(),
-                            *name,
-                        );
+                        let path =
+                            self.lower_deferred_associated_type_member_chain(target.clone(), *name);
                         Some(path)
                     }
                     // DeferredAssociatedValue and None cannot be converted to paths for specialization

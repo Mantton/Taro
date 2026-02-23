@@ -331,10 +331,7 @@ impl Parser {
             self.bump();
             Ok(())
         } else {
-            Err(self.err_at_current(ParserError::Expected(
-                token,
-                self.current_token().clone(),
-            )))
+            Err(self.err_at_current(ParserError::Expected(token, self.current_token().clone())))
         }
     }
 
@@ -1184,23 +1181,30 @@ impl Parser {
 
     fn parse_attribute_arg(&mut self) -> R<AttributeArg> {
         let lo = self.lo_span();
-        let key = self.parse_identifier()?;
-
-        if self.eat(Token::Assign) {
-            // key = value - parse a literal value directly
+        if Self::is_attribute_literal_token(self.current_token()) {
             let value = self.parse_attribute_literal_value()?;
-            Ok(AttributeArg::KeyValue {
+            return Ok(AttributeArg::Literal {
+                value,
+                span: lo.to(self.hi_span()),
+            });
+        }
+
+        let key = self.parse_identifier()?;
+        if self.eat(Token::Assign) {
+            // key = value
+            let value = self.parse_attribute_literal_value()?;
+            return Ok(AttributeArg::KeyValue {
                 key,
                 value,
                 span: lo.to(self.hi_span()),
-            })
-        } else {
-            // flag
-            Ok(AttributeArg::Flag {
-                key,
-                span: lo.to(self.hi_span()),
-            })
+            });
         }
+
+        // flag
+        Ok(AttributeArg::Flag {
+            key,
+            span: lo.to(self.hi_span()),
+        })
     }
 
     /// Parse a literal value for use in attributes (returns ast::Literal directly)
@@ -1227,6 +1231,19 @@ impl Parser {
 
         self.bump(); // consume token
         Ok(literal)
+    }
+
+    fn is_attribute_literal_token(token: &Token) -> bool {
+        matches!(
+            token,
+            Token::Integer { .. }
+                | Token::Float { .. }
+                | Token::String { .. }
+                | Token::Rune { .. }
+                | Token::True
+                | Token::False
+                | Token::Nil
+        )
     }
 
     /// Parse `#cfg(...)` compile-time configuration check expression
@@ -2917,10 +2934,7 @@ impl Parser {
         let expression = if self.eat(Token::Assign) {
             self.parse_expression()?
         } else {
-            self.build_expr(
-                ExpressionKind::Identifier(identifier),
-                identifier.span,
-            )
+            self.build_expr(ExpressionKind::Identifier(identifier), identifier.span)
         };
 
         let span = lo.to(self.hi_span());
@@ -5713,6 +5727,54 @@ mod tests {
                 assert!(matches!(value, Literal::Integer { .. }));
             }
             _ => panic!("Expected key-value"),
+        }
+    }
+
+    #[test]
+    fn test_attribute_with_positional_literal_arg() {
+        let (decl, symbols) = parse_one_decl_with_symbols(r#"@doc("hello") func foo() {}"#);
+        assert_eq!(decl.attributes.len(), 1);
+        assert_eq!(
+            symbol_text(&symbols, decl.attributes[0].identifier.symbol.clone()),
+            "doc"
+        );
+
+        let args = decl.attributes[0].args.as_ref().expect("Expected args");
+        assert_eq!(args.items.len(), 1);
+
+        match &args.items[0] {
+            AttributeArg::Literal { value, .. } => match value {
+                Literal::String { value } => assert_eq!(value, "hello"),
+                _ => panic!("Expected string literal"),
+            },
+            _ => panic!("Expected literal"),
+        }
+    }
+
+    #[test]
+    fn test_tag_attribute_with_string_literals() {
+        let (decl, symbols) = parse_one_decl_with_symbols(r#"@tag("smoke", "slow") func foo() {}"#);
+        assert_eq!(decl.attributes.len(), 1);
+        assert_eq!(
+            symbol_text(&symbols, decl.attributes[0].identifier.symbol.clone()),
+            "tag"
+        );
+
+        let args = decl.attributes[0].args.as_ref().expect("Expected args");
+        assert_eq!(args.items.len(), 2);
+        match &args.items[0] {
+            AttributeArg::Literal { value, .. } => match value {
+                Literal::String { value } => assert_eq!(value, "smoke"),
+                _ => panic!("Expected string literal"),
+            },
+            _ => panic!("Expected literal"),
+        }
+        match &args.items[1] {
+            AttributeArg::Literal { value, .. } => match value {
+                Literal::String { value } => assert_eq!(value, "slow"),
+                _ => panic!("Expected string literal"),
+            },
+            _ => panic!("Expected literal"),
         }
     }
 }
