@@ -29,7 +29,7 @@ impl Hashable for CollisionKey {
     public func hash[H: Hasher](&self, into hasher: &mut H) {
         // Constant marker forces all keys into the same hash stream.
         let marker: [uint8; 1] = [1]
-        hasher.write(marker.as_span())
+        hasher.write(marker.asSpan())
     }
 }
 

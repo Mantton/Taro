@@ -7,7 +7,7 @@ import std.optional.Optional
 // Hash integers as little-endian bytes for stable, explicit byte feeds.
 func hashU8[H: Hasher](_ hasher: &mut H, _ value: uint8) {
     let bytes: [uint8; 1] = [value]
-    hasher.write(bytes.as_span())
+    hasher.write(bytes.asSpan())
 }
 
 func hashU16[H: Hasher](_ hasher: &mut H, _ value: uint16) {
@@ -15,7 +15,7 @@ func hashU16[H: Hasher](_ hasher: &mut H, _ value: uint16) {
         (value & (0xff as uint16)) as uint8,
         ((value >> 8) & (0xff as uint16)) as uint8,
     ]
-    hasher.write(bytes.as_span())
+    hasher.write(bytes.asSpan())
 }
 
 func hashU32[H: Hasher](_ hasher: &mut H, _ value: uint32) {
@@ -25,7 +25,7 @@ func hashU32[H: Hasher](_ hasher: &mut H, _ value: uint32) {
         ((value >> 16) & (0xff as uint32)) as uint8,
         ((value >> 24) & (0xff as uint32)) as uint8,
     ]
-    hasher.write(bytes.as_span())
+    hasher.write(bytes.asSpan())
 }
 
 func hashU64[H: Hasher](_ hasher: &mut H, _ value: uint64) {
@@ -39,7 +39,7 @@ func hashU64[H: Hasher](_ hasher: &mut H, _ value: uint64) {
         ((value >> 48) & (0xff as uint64)) as uint8,
         ((value >> 56) & (0xff as uint64)) as uint8,
     ]
-    hasher.write(bytes.as_span())
+    hasher.write(bytes.asSpan())
 }
 
 // int8

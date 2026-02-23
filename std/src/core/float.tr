@@ -74,7 +74,7 @@ func hashU32[H: Hasher](_ hasher: &mut H, _ value: uint32) {
         ((value >> 16) & (0xff as uint32)) as uint8,
         ((value >> 24) & (0xff as uint32)) as uint8,
     ]
-    hasher.write(bytes.as_span())
+    hasher.write(bytes.asSpan())
 }
 
 func hashU64[H: Hasher](_ hasher: &mut H, _ value: uint64) {
@@ -88,7 +88,7 @@ func hashU64[H: Hasher](_ hasher: &mut H, _ value: uint64) {
         ((value >> 48) & (0xff as uint64)) as uint8,
         ((value >> 56) & (0xff as uint64)) as uint8,
     ]
-    hasher.write(bytes.as_span())
+    hasher.write(bytes.asSpan())
 }
 
 func floatToBits(_ value: float) -> uint32 {

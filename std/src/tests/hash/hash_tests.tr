@@ -30,7 +30,7 @@ impl Hasher for DummyHasher {
 
 func useHasher[H: Hasher](_ hasher: &mut H) -> uint64 {
     let bytes: [uint8; 4] = [1, 2, 3, 4]
-    hasher.write(bytes.as_span())
+    hasher.write(bytes.asSpan())
     hasher.combine(42 as int32)
     return hasher.finish()
 }
@@ -38,7 +38,7 @@ func useHasher[H: Hasher](_ hasher: &mut H) -> uint64 {
 @test
 func testSipHash13KnownVectorsUpTo16() {
     let data: [uint8; 17] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
-    let all = data.as_span()
+    let all = data.asSpan()
     let expected: [uint64; 17] = [
         0xabac0158050fc4dc,
         0xc9f49bf37d57ca93,
@@ -76,7 +76,7 @@ func testSipHash13KnownVectorsUpTo16() {
 @test
 func testSipHash13ChunkedWriteMatchesSingleWrite() {
     let data: [uint8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
-    let all = data.as_span()
+    let all = data.asSpan()
 
     var oneShot = DefaultHasher.new(KEY0, KEY1)
     let full = all.slice(0, 16)
@@ -242,10 +242,10 @@ func testDefaultHasherUsesRuntimeSeeds() {
     let bytes: [uint8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
 
     var withDefaults = DefaultHasher.new()
-    withDefaults.write(bytes.as_span())
+    withDefaults.write(bytes.asSpan())
 
     var withRuntimeSeeds = DefaultHasher.new(std.runtime.hashSeed0(), std.runtime.hashSeed1())
-    withRuntimeSeeds.write(bytes.as_span())
+    withRuntimeSeeds.write(bytes.asSpan())
 
     std.testing.assertEqual(
         withDefaults.finish(),

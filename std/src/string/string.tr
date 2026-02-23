@@ -54,7 +54,7 @@ impl Hashable for string {
         // Rust-style str hashing: append 0xff delimiter so sequential string
         // hashing remains prefix-safe ("ab","c" != "a","bc").
         let delimiter: [uint8; 1] = [0xff]
-        hasher.write(delimiter.as_span())
+        hasher.write(delimiter.asSpan())
     }
 }
 

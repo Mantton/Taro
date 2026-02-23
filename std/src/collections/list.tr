@@ -2,6 +2,7 @@ import std.mem.{TrackedPointer, GcDesc, __gc__makebuf, __gc__grow_buf, Span, Mut
 import std.intrinsic.__intrinsic_gc_desc
 import std.optional.Optional
 import std.iter.{Iterator, Iterable}
+import std.panic.panic
 
 
 /// A dynamically-sized list (dynamic array).
@@ -55,12 +56,12 @@ impl[Element] List[Element] {
         self.len == 0
     }
 
-    public func as_span(&self) -> Span[Element] {
+    public func asSpan(&self) -> Span[Element] {
         let ptr = unsafe { self.buffer as *const Element }
         return Span[Element].from(ptr, self.len)
     }
 
-    public func as_span(&mut self) -> MutableSpan[Element] {
+    public func asSpan(&mut self) -> MutableSpan[Element] {
         let ptr = unsafe { self.buffer as *mut Element }
         return MutableSpan[Element].from(ptr, self.len)
     }
@@ -110,8 +111,7 @@ impl[Element] List[Element] {
     /// Get a reference to the element at the given index, panicking if out of bounds.
     public func at(&self, _ index: usize) -> &Element {
         if index >= self.len {
-            std.print("list index out of range\n")
-            std.process.exit(1)
+            panic("list index out of range")
         }
 
         // Read the element from the buffer using the intrinsic
@@ -131,8 +131,7 @@ impl[Element] List[Element] {
     /// Get a mutable reference to the element at the given index, panicking if out of bounds.
     public func at(&mut self, _ index: usize) -> &mut Element {
         if index >= self.len {
-            std.print("list index out of range\n")
-            std.process.exit(1)
+            panic("list index out of range")
         }
 
         return unsafe { (self.buffer as *mut Element).add(index) as &mut Element }
@@ -143,8 +142,7 @@ impl[Element] List[Element] {
     /// Set an element at the given index. Panics if out of bounds.
     public func set(&mut self, _ index: usize, _ value: Element) {
         if index >= self.len {
-            std.print("list index out of range\n")
-            std.process.exit(1)
+            panic("list index out of range")
         }
 
         unsafe {
