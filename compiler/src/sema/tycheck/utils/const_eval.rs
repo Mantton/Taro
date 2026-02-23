@@ -52,7 +52,7 @@ fn eval_const_literal<'ctx>(
         hir::Literal::Bool(b) => ConstValue::Bool(*b),
         hir::Literal::Rune(r) => ConstValue::Rune(*r),
         hir::Literal::String(s) => ConstValue::String(*s),
-        hir::Literal::Integer(i) => ConstValue::Integer(*i as i128),
+        hir::Literal::Integer { value, .. } => ConstValue::Integer(*value as i128),
         hir::Literal::Float(f) => ConstValue::Float(*f),
         hir::Literal::Nil => {
             gcx.dcx()

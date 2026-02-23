@@ -151,7 +151,7 @@ impl<'ctx> Actor<'ctx> {
 
     fn eval_discriminant(&self, disc: &hir::AnonConst) -> Option<u64> {
         match disc.value.kind {
-            hir::ExpressionKind::Literal(hir::Literal::Integer(value)) => Some(value),
+            hir::ExpressionKind::Literal(hir::Literal::Integer { value, .. }) => Some(value),
             _ => {
                 self.context.dcx().emit_error(
                     "enum discriminant must be an integer literal".into(),

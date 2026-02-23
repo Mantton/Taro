@@ -159,6 +159,11 @@ func process(msg: Message) {
 - **Automatic Semicolon Insertion (ASI)**: Semicolons are optional at the end of statements.
 - **Leading `.` on a New Line**: A line that starts with `.` is parsed as postfix continuation of the previous expression unless the previous statement is explicitly terminated.
 - **Trailing Commas**: In multi-line sequences (like struct instantiation or lists), ensure you use explicit commas for the last element to prevent ASI from interpreting the newline as the end of the statement.
+- **Integer Type Suffixes**: Integer literals support suffixes in `D_TY` form:
+  - Signed: `_i8`, `_i16`, `_i32`, `_i64`
+  - Unsigned: `_u8`, `_u16`, `_u32`, `_u64`
+  - Uppercase sign specifiers are accepted (`_I32`, `_U64`)
+  - Examples: `1_u32`, `200_i64`, `0xFF_u16`
 
 ```rust
 let out = value
@@ -292,6 +297,7 @@ To verify the compiler implementation, use the command that matches the test sur
 
 - `cargo test --workspace`: Rust unit/integration/doctests for workspace crates.
 - `python3 development/scripts/language_tests.py`: Taro language E2E tests in `language_tests/source_files`. Runs in parallel by default using `min(selected_tests, CPU core count)` workers; `--jobs` is only needed to override (for example, `--jobs 1` for serial mode). Uses release compiler/runtime binaries by default; pass `--debug` when you need debug compiler behavior.
+- `make std-tests`: Runs std package tests only (`taro test std`) via the `test_all.py` std stage.
 - `python3 development/scripts/test_all.py`: Unified fail-fast pipeline (cargo tests, dist build, std compile smoke, std package tests, language tests).
 - `make all-tests`: Shorthand for the unified pipeline.
 

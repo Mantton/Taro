@@ -1443,7 +1443,20 @@ impl<'ctx> Checker<'ctx> {
             hir::Literal::Bool(_) => gcx.types.bool,
             hir::Literal::Rune(_) => gcx.types.rune,
             hir::Literal::String(_) => gcx.types.string,
-            hir::Literal::Integer(_) => {
+            hir::Literal::Integer { suffix, .. } => {
+                if let Some(suffix) = suffix {
+                    return match suffix {
+                        crate::parse::IntegerTypeSuffix::I8 => gcx.types.int8,
+                        crate::parse::IntegerTypeSuffix::I16 => gcx.types.int16,
+                        crate::parse::IntegerTypeSuffix::I32 => gcx.types.int32,
+                        crate::parse::IntegerTypeSuffix::I64 => gcx.types.int64,
+                        crate::parse::IntegerTypeSuffix::U8 => gcx.types.uint8,
+                        crate::parse::IntegerTypeSuffix::U16 => gcx.types.uint16,
+                        crate::parse::IntegerTypeSuffix::U32 => gcx.types.uint32,
+                        crate::parse::IntegerTypeSuffix::U64 => gcx.types.uint64,
+                    };
+                }
+
                 let opt_ty = expectation.and_then(|ty| match ty.kind() {
                     TyKind::Int(_) | TyKind::UInt(_) => Some(ty),
                     _ => None,
@@ -3698,12 +3711,13 @@ impl<'ctx> Checker<'ctx> {
         expectation: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
-        let idx_val =
-            if let hir::ExpressionKind::Literal(hir::Literal::Integer(val)) = &index.value.kind {
-                *val as usize
-            } else {
-                unreachable!()
-            };
+        let idx_val = if let hir::ExpressionKind::Literal(hir::Literal::Integer { value, .. }) =
+            &index.value.kind
+        {
+            *value as usize
+        } else {
+            unreachable!()
+        };
 
         let receiver_ty = self.synth(receiver, cs);
         if receiver_ty.is_error() {

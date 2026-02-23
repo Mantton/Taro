@@ -5,6 +5,7 @@ pub use crate::ast::OperatorKind;
 pub use crate::ast::UnaryOperator;
 use crate::ast::VisitorResult;
 use crate::compile::context::GlobalContext;
+use crate::parse::IntegerTypeSuffix;
 use crate::span::{Identifier, Span, Symbol};
 use crate::try_visit;
 use crate::visit_optional;
@@ -626,7 +627,10 @@ pub enum Literal {
     Bool(bool),
     Rune(char),
     String(Symbol),
-    Integer(u64),
+    Integer {
+        value: u64,
+        suffix: Option<IntegerTypeSuffix>,
+    },
     Float(f64),
     Nil,
 }

@@ -2972,7 +2972,11 @@ fn convert_ast_literal(
                 .map_err(|err| format!("malformed string, {:?}", err))?;
             Ok(hir::Literal::String(gcx.intern_symbol(&value)))
         }
-        ast::Literal::Integer { value, base } => {
+        ast::Literal::Integer {
+            value,
+            base,
+            suffix,
+        } => {
             let content = value.replace("_", "");
             let digits = match base {
                 crate::parse::Base::Decimal => content.as_str(),
@@ -2985,7 +2989,7 @@ fn convert_ast_literal(
                 }
             };
             u64::from_str_radix(digits, base.radix())
-                .map(|i| hir::Literal::Integer(i))
+                .map(|value| hir::Literal::Integer { value, suffix })
                 .map_err(|err| format!("malformed integer literal: {}", err))
         }
         ast::Literal::Float { value } => {

@@ -1210,9 +1210,14 @@ impl Parser {
     /// Parse a literal value for use in attributes (returns ast::Literal directly)
     fn parse_attribute_literal_value(&mut self) -> R<Literal> {
         let literal = match self.current_token() {
-            Token::Integer { value, base } => Literal::Integer {
+            Token::Integer {
+                value,
+                base,
+                suffix,
+            } => Literal::Integer {
                 value: value.clone(),
                 base: *base,
+                suffix: *suffix,
             },
             Token::Float { value, .. } => Literal::Float {
                 value: value.clone(),
@@ -3363,9 +3368,14 @@ impl Parser {
 impl Parser {
     fn parse_literal(&mut self) -> R<Box<Expression>> {
         let literal = match self.current_token() {
-            Token::Integer { value, base } => Literal::Integer {
+            Token::Integer {
+                value,
+                base,
+                suffix,
+            } => Literal::Integer {
                 value: value.clone(),
                 base: *base,
+                suffix: *suffix,
             },
             Token::Float { value, .. } => Literal::Float {
                 value: value.clone(),
@@ -4036,6 +4046,7 @@ mod tests {
     use super::*;
     use crate::diagnostics::DiagCtx;
     use crate::parse::lexer::Lexer;
+    use crate::parse::IntegerTypeSuffix;
     use std::path::PathBuf;
 
     #[derive(Default)]
@@ -4865,6 +4876,18 @@ mod tests {
         assert!(matches!(
             &expr.kind,
             ExpressionKind::Literal(Literal::Integer { .. })
+        ));
+    }
+
+    #[test]
+    fn test_literal_integer_with_type_suffix() {
+        let expr = parse_expr_str("1_u32");
+        assert!(matches!(
+            &expr.kind,
+            ExpressionKind::Literal(Literal::Integer {
+                suffix: Some(IntegerTypeSuffix::U32),
+                ..
+            })
         ));
     }
 
@@ -5725,6 +5748,27 @@ mod tests {
             AttributeArg::KeyValue { key, value, .. } => {
                 assert_eq!(symbol_text(&symbols, key.symbol.clone()), "major");
                 assert!(matches!(value, Literal::Integer { .. }));
+            }
+            _ => panic!("Expected key-value"),
+        }
+    }
+
+    #[test]
+    fn test_attribute_with_integer_suffix_value() {
+        let (decl, symbols) = parse_one_decl_with_symbols("@version(major = 1_i64) func foo() {}");
+        assert_eq!(decl.attributes.len(), 1);
+        let args = decl.attributes[0].args.as_ref().expect("Expected args");
+        assert_eq!(args.items.len(), 1);
+        match &args.items[0] {
+            AttributeArg::KeyValue { key, value, .. } => {
+                assert_eq!(symbol_text(&symbols, key.symbol.clone()), "major");
+                assert!(matches!(
+                    value,
+                    Literal::Integer {
+                        suffix: Some(IntegerTypeSuffix::I64),
+                        ..
+                    }
+                ));
             }
             _ => panic!("Expected key-value"),
         }

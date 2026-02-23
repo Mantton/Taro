@@ -8,7 +8,11 @@ pub enum Token {
     Identifier { value: String },
     String { value: String },
     Rune { value: String },
-    Integer { value: String, base: Base },
+    Integer {
+        value: String,
+        base: Base,
+        suffix: Option<IntegerTypeSuffix>,
+    },
     Float { value: String, base: Base },
 
     Assign,   // =, Variable Assignment
@@ -123,6 +127,40 @@ pub enum Token {
     Await,
     Ref,
     Init,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IntegerTypeSuffix {
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+}
+
+impl IntegerTypeSuffix {
+    pub fn parse(sign: char, bits: &str) -> Option<Self> {
+        let signed = match sign {
+            'i' | 'I' => true,
+            'u' | 'U' => false,
+            _ => return None,
+        };
+
+        match (signed, bits) {
+            (true, "8") => Some(Self::I8),
+            (true, "16") => Some(Self::I16),
+            (true, "32") => Some(Self::I32),
+            (true, "64") => Some(Self::I64),
+            (false, "8") => Some(Self::U8),
+            (false, "16") => Some(Self::U16),
+            (false, "32") => Some(Self::U32),
+            (false, "64") => Some(Self::U64),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

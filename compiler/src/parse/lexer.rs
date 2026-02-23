@@ -3,13 +3,13 @@ use crate::{
     constants::{FILE_EXTENSION, ROOT_MODULE_NAME, SOURCE_DIRECTORY},
     diagnostics::DiagCtx,
     error::ReportedError,
-    parse::token::{Base, Token},
+    parse::token::{Base, IntegerTypeSuffix, Token},
     span::{FileID, Position, Span, Spanned},
 };
 use std::{
     ffi::OsStr,
     fs::{read_dir, read_to_string},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 pub struct Pacakge {
@@ -25,6 +25,17 @@ pub struct Module {
 pub struct File {
     pub id: FileID,
     pub tokens: Vec<Spanned<Token>>,
+}
+
+fn display_path(path: &Path) -> String {
+    let Ok(cwd) = std::env::current_dir() else {
+        return path.display().to_string();
+    };
+
+    match path.strip_prefix(cwd) {
+        Ok(relative) => relative.display().to_string(),
+        Err(_) => path.display().to_string(),
+    }
 }
 
 pub fn tokenize_package(
@@ -77,7 +88,7 @@ pub fn tokenize_single_file(
     let file = match tokenize_file(id, file_path.clone(), dcx, target_triple) {
         Ok(file) => file,
         Err(e) => {
-            let message = format!("lexer error in file '{}': {}", file_path.display(), e);
+            let message = format!("lexer error in file '{}': {}", display_path(&file_path), e);
             dcx.emit_error(message, None);
             return Err(ReportedError);
         }
@@ -172,7 +183,7 @@ pub fn tokenize_module(
             let file = match tokenize_file(id, path.clone(), dcx, target_triple) {
                 Ok(file) => file,
                 Err(e) => {
-                    let message = format!("lexer error in file '{}': {}", path.display(), e);
+                    let message = format!("lexer error in file '{}': {}", display_path(&path), e);
                     dcx.emit_error(message, None);
                     return Err(ReportedError);
                 }
@@ -778,6 +789,7 @@ impl Lexer {
                         return Ok(Token::Integer {
                             value: content(self).into(),
                             base,
+                            suffix: None,
                         });
                     }
                 },
@@ -835,14 +847,48 @@ impl Lexer {
             _ => {}
         }
 
+        let integer_value = content(self);
+        let suffix = self.parse_integer_suffix(integer_value.as_str())?;
         return Ok(Token::Integer {
-            value: content(self).into(),
+            value: integer_value.into(),
             base,
+            suffix,
         });
     }
 }
 
 impl Lexer {
+    fn parse_integer_suffix(
+        &mut self,
+        current_content: &str,
+    ) -> Result<Option<IntegerTypeSuffix>, LexerError> {
+        if !current_content.ends_with('_') {
+            return Ok(None);
+        }
+
+        let sign = match self.first() {
+            Some(c @ ('i' | 'I' | 'u' | 'U')) => c,
+            _ => return Ok(None),
+        };
+        self.next_char();
+
+        let bits_lo = self.cursor;
+        while matches!(self.first(), Some(c) if Lexer::is_digit(c)) {
+            self.next_char();
+        }
+        let bits = self.read(bits_lo, self.cursor);
+
+        let Some(suffix) = IntegerTypeSuffix::parse(sign, &bits) else {
+            return Err(LexerError::InvalidIntegerLiteral);
+        };
+
+        if matches!(self.first(), Some(c) if Lexer::is_alphanumeric(c) || c == '_') {
+            return Err(LexerError::InvalidIntegerLiteral);
+        }
+
+        Ok(Some(suffix))
+    }
+
     fn eat_decimal_digits(&mut self) -> bool {
         let mut has_digits = false;
 
@@ -1162,14 +1208,18 @@ mod tests {
     use super::*;
     use crate::parse::token::Token;
 
-    fn tokenize(input: &str) -> Vec<Token> {
+    fn tokenize_result(input: &str) -> Result<Vec<Token>, LexerError> {
         let dcx = DiagCtx::new(PathBuf::from("."));
         // We use a dummy file ID, effectively ignoring it for these unit tests.
         let file_id = dcx.add_file_mapping(PathBuf::from("test.taro"));
         let lexer = Lexer::new(input, file_id);
 
-        let file = lexer.tokenize().expect("Lexing failed");
-        file.tokens.into_iter().map(|s| s.value).collect()
+        let file = lexer.tokenize()?;
+        Ok(file.tokens.into_iter().map(|s| s.value).collect())
+    }
+
+    fn tokenize(input: &str) -> Vec<Token> {
+        tokenize_result(input).expect("Lexing failed")
     }
 
     #[test]
@@ -1234,24 +1284,67 @@ mod tests {
             vec![
                 Token::Integer {
                     value: "123".into(),
-                    base: Base::Decimal
+                    base: Base::Decimal,
+                    suffix: None,
                 },
                 Token::Integer {
                     value: "0xFF".into(),
-                    base: Base::Hexadecimal
+                    base: Base::Hexadecimal,
+                    suffix: None,
                 },
                 Token::Integer {
                     value: "0b101".into(),
-                    base: Base::Binary
+                    base: Base::Binary,
+                    suffix: None,
                 },
                 Token::Integer {
                     value: "0o77".into(),
-                    base: Base::Octal
+                    base: Base::Octal,
+                    suffix: None,
                 },
                 Token::Semicolon,
                 Token::EOF,
             ]
         );
+    }
+
+    #[test]
+    fn test_literals_integers_with_type_suffixes() {
+        let input = "1_u32 200_i64 7_U8 9_I16";
+        let tokens = tokenize(input);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Integer {
+                    value: "1_".into(),
+                    base: Base::Decimal,
+                    suffix: Some(IntegerTypeSuffix::U32),
+                },
+                Token::Integer {
+                    value: "200_".into(),
+                    base: Base::Decimal,
+                    suffix: Some(IntegerTypeSuffix::I64),
+                },
+                Token::Integer {
+                    value: "7_".into(),
+                    base: Base::Decimal,
+                    suffix: Some(IntegerTypeSuffix::U8),
+                },
+                Token::Integer {
+                    value: "9_".into(),
+                    base: Base::Decimal,
+                    suffix: Some(IntegerTypeSuffix::I16),
+                },
+                Token::Semicolon,
+                Token::EOF,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_invalid_integer_suffix() {
+        let error = tokenize_result("1_i128").expect_err("expected lexing to fail");
+        assert!(matches!(error, LexerError::InvalidIntegerLiteral));
     }
 
     #[test]
@@ -1331,6 +1424,7 @@ mod tests {
             Token::Integer {
                 value: "123".into(),
                 base: Base::Decimal,
+                suffix: None,
             },
             Token::Semicolon,
             Token::EOF,

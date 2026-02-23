@@ -1,5 +1,5 @@
 use crate::{
-    parse::Base,
+    parse::{Base, IntegerTypeSuffix},
     span::{FileID, Span, Symbol},
 };
 use index_vec::define_index_type;
@@ -470,7 +470,11 @@ pub enum Literal {
     Bool(bool),
     Rune { value: String },
     String { value: String },
-    Integer { value: String, base: Base },
+    Integer {
+        value: String,
+        base: Base,
+        suffix: Option<IntegerTypeSuffix>,
+    },
     Float { value: String },
     Nil,
 }

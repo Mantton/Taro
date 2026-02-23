@@ -1231,7 +1231,7 @@ impl<'ctx> FunctionLower<'ctx> {
             hir::Literal::Bool(b) => ConstantKind::Bool(*b),
             hir::Literal::Rune(r) => ConstantKind::Rune(*r),
             hir::Literal::String(s) => ConstantKind::String(*s),
-            hir::Literal::Integer(i) => ConstantKind::Integer(*i),
+            hir::Literal::Integer { value, .. } => ConstantKind::Integer(*value),
             hir::Literal::Float(f) => ConstantKind::Float(*f),
             hir::Literal::Nil => ConstantKind::Unit,
         }
