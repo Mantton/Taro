@@ -155,9 +155,9 @@ func testMetadataForFileAndDir() {
     std.assert(!fileMeta.isSymlink(), "file metadata should not report symlink")
     std.assert(fileMeta.len() == std.string.stringLen(content), "file metadata size mismatch")
     let _ = fileMeta.isReadonly()
-    std.assert(fileMeta.modifiedSeconds() >= (-1 as int64), "modifiedSeconds should be populated or -1")
-    std.assert(fileMeta.accessedSeconds() >= (-1 as int64), "accessedSeconds should be populated or -1")
-    std.assert(fileMeta.createdSeconds() >= (-1 as int64), "createdSeconds should be populated or -1")
+    std.assert(fileMeta.modifiedSeconds() >= (-1_i64), "modifiedSeconds should be populated or -1")
+    std.assert(fileMeta.accessedSeconds() >= (-1_i64), "accessedSeconds should be populated or -1")
+    std.assert(fileMeta.createdSeconds() >= (-1_i64), "createdSeconds should be populated or -1")
 
     let statRes = std.fs.stat(filePath)
     let statMeta = match statRes {

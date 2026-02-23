@@ -9,7 +9,7 @@ const SWISS_CTRL_DELETED: uint8 = 0xfe
 const SWISS_INITIAL_CAPACITY: usize = 16
 
 func swissFingerprint(_ hash: uint64) -> uint8 {
-    ((hash >> 57) as uint8) & (0x7f as uint8)
+    ((hash >> 57) as uint8) & 0x7f_u8
 }
 
 func swissCtrlIsFull(_ ctrl: uint8) -> bool {
@@ -51,7 +51,7 @@ impl[Key: Hashable, Value] Dictionary[Key, Value] {
         var idx: usize = 0
         while idx < SWISS_INITIAL_CAPACITY {
             controls.append(SWISS_CTRL_EMPTY)
-            hashes.append(0 as uint64)
+            hashes.append(0_u64)
             keys.append(.none)
             values.append(.none)
             idx += 1
@@ -122,7 +122,7 @@ impl[Key: Hashable, Value] Dictionary[Key, Value] {
                                     let keysWrite: &mut List[Key?] = &mut self.keys
                                     *keysWrite.at(slot) = .none
                                     *self.controls.at(slot) = SWISS_CTRL_DELETED
-                                    *self.hashes.at(slot) = 0 as uint64
+                                    *self.hashes.at(slot) = 0_u64
 
                                     if removed.isSome() {
                                         self.len -= 1
@@ -356,7 +356,7 @@ impl[Key: Hashable, Value] Dictionary[Key, Value] {
         var initIdx: usize = 0
         while initIdx < newCapacity {
             newControls.append(SWISS_CTRL_EMPTY)
-            newHashes.append(0 as uint64)
+            newHashes.append(0_u64)
             newKeys.append(.none)
             newValues.append(.none)
             initIdx += 1

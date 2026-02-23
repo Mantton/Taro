@@ -31,7 +31,7 @@ impl Hasher for DummyHasher {
 func useHasher[H: Hasher](_ hasher: &mut H) -> uint64 {
     let bytes: [uint8; 4] = [1, 2, 3, 4]
     hasher.write(bytes.asSpan())
-    hasher.combine(42 as int32)
+    hasher.combine(42_i32)
     return hasher.finish()
 }
 
@@ -110,20 +110,20 @@ func testPrimitiveEqualValuesHashEqual() {
         "bool equal values must hash equally",
     )
 
-    let i8a: int8 = -5 as int8
-    let i8b: int8 = -5 as int8
+    let i8a: int8 = -5_i8
+    let i8b: int8 = -5_i8
     std.testing.assertEqual(hashWithFixedSeeds(i8a), hashWithFixedSeeds(i8b), "int8 equal values must hash equally")
 
-    let i16a: int16 = -1024 as int16
-    let i16b: int16 = -1024 as int16
+    let i16a: int16 = -1024_i16
+    let i16b: int16 = -1024_i16
     std.testing.assertEqual(hashWithFixedSeeds(i16a), hashWithFixedSeeds(i16b), "int16 equal values must hash equally")
 
     let i32a: int32 = -123456
     let i32b: int32 = -123456
     std.testing.assertEqual(hashWithFixedSeeds(i32a), hashWithFixedSeeds(i32b), "int32 equal values must hash equally")
 
-    let i64a: int64 = -(0x1234_5678_9abc_def as int64)
-    let i64b: int64 = -(0x1234_5678_9abc_def as int64)
+    let i64a: int64 = -0x1234_5678_9abc_def_i64
+    let i64b: int64 = -0x1234_5678_9abc_def_i64
     std.testing.assertEqual(hashWithFixedSeeds(i64a), hashWithFixedSeeds(i64b), "int64 equal values must hash equally")
 
     let u8a: uint8 = 200

@@ -105,12 +105,12 @@ impl Hasher for SipHasher13 {
         var v2 = self.v2
         var v3 = self.v3
 
-        let b = (((self.length as uint64) & (0xff as uint64)) << 56) | self.tail
+        let b = (((self.length as uint64) & 0xff_u64) << 56) | self.tail
         v3 ^= b
         sipRound(&mut v0, &mut v1, &mut v2, &mut v3)
         v0 ^= b
 
-        v2 ^= 0xff as uint64
+        v2 ^= 0xff_u64
         sipRound(&mut v0, &mut v1, &mut v2, &mut v3)
         sipRound(&mut v0, &mut v1, &mut v2, &mut v3)
         sipRound(&mut v0, &mut v1, &mut v2, &mut v3)

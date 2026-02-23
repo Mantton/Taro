@@ -25,9 +25,9 @@ func testPrintfBasic() {
     std.printf("100%%\n")
 
     let runeAsByte: uint8 = 'A' as uint8
-    std.testing.assertEqual(runeAsByte, 65 as uint8, "rune -> uint8 cast should preserve ASCII codepoint")
+    std.testing.assertEqual(runeAsByte, 65_u8, "rune -> uint8 cast should preserve ASCII codepoint")
 
-    let byteAsRune: rune = (66 as uint8) as rune
+    let byteAsRune: rune = 66_u8 as rune
     std.testing.assertEqual(byteAsRune, 'B', "int literal -> rune cast should preserve ASCII codepoint")
 
     let tagged = TaggedValue { text: "custom" }

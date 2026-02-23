@@ -127,9 +127,9 @@ func impMetadata(_ path: string) -> Result[Metadata, Error] {
     var rawKind: int32 = 0
     var size: usize = 0
     var rawReadonly: int32 = 0
-    var modifiedSecs: int64 = -1 as int64
-    var accessedSecs: int64 = -1 as int64
-    var createdSecs: int64 = -1 as int64
+    var modifiedSecs: int64 = -1_i64
+    var accessedSecs: int64 = -1_i64
+    var createdSecs: int64 = -1_i64
     let kindPtr = unsafe { (&mut rawKind as *mut int32) }
     let sizePtr = unsafe { (&mut size as *mut usize) }
     let readonlyPtr = unsafe { (&mut rawReadonly as *mut int32) }
@@ -166,9 +166,9 @@ func impSymlinkMetadata(_ path: string) -> Result[Metadata, Error] {
     var rawKind: int32 = 0
     var size: usize = 0
     var rawReadonly: int32 = 0
-    var modifiedSecs: int64 = -1 as int64
-    var accessedSecs: int64 = -1 as int64
-    var createdSecs: int64 = -1 as int64
+    var modifiedSecs: int64 = -1_i64
+    var accessedSecs: int64 = -1_i64
+    var createdSecs: int64 = -1_i64
     let kindPtr = unsafe { (&mut rawKind as *mut int32) }
     let sizePtr = unsafe { (&mut size as *mut usize) }
     let readonlyPtr = unsafe { (&mut rawReadonly as *mut int32) }
@@ -222,7 +222,7 @@ func impReadDir(_ path: string) -> Result[std.collections.List[DirEntry], Error]
     }
 
     if required < 4 {
-        return .err(Error.unexpected(0 as int32))
+        return .err(Error.unexpected(0_i32))
     }
 
     let readPtr = unsafe { data as *const uint8 }
@@ -233,7 +233,7 @@ func impReadDir(_ path: string) -> Result[std.collections.List[DirEntry], Error]
     var current: usize = 0
     while current < count {
         if index + 5 > required {
-            return .err(Error.unexpected(0 as int32))
+            return .err(Error.unexpected(0_i32))
         }
 
         let rawKind = readPtr.add(index).read() as int32
@@ -242,7 +242,7 @@ func impReadDir(_ path: string) -> Result[std.collections.List[DirEntry], Error]
         let nameLen = decodeU32LE(readPtr, index)
         index += 4
         if index + nameLen > required {
-            return .err(Error.unexpected(0 as int32))
+            return .err(Error.unexpected(0_i32))
         }
 
         let nameData = std.mem.allocBytes(nameLen)
