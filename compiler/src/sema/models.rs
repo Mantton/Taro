@@ -954,7 +954,7 @@ pub enum SyntheticMethodKind {
     MemberwiseClone,
     /// Hashable.hash: hash each field
     MemberwiseHash,
-    /// Equatable.==: compare each field for equality
+    /// PartialEq.eq: compare each field for equality
     MemberwiseEquality,
     /// Fn.call: invoke closure with shared access.
     ClosureCall,

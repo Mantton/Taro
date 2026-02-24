@@ -2,14 +2,14 @@ use crate::{
     hir::{Mutability, NodeID},
     sema::{
         error::{ExpectedFound, TypeError},
-        models::{AliasKind, InferTy, InterfaceReference, Ty, TyKind},
+        models::{AliasKind, GenericArgument, InferTy, InterfaceReference, Ty, TyKind},
         resolve::models::TypeHead,
         tycheck::{resolve_conformance_witness, utils::type_head_from_value_ty},
     },
     span::{Span, Spanned},
 };
 
-use super::{Adjustment, ConstraintSolver, SolverResult};
+use super::{Adjustment, ConstraintSolver, Goal, Obligation, SolverResult};
 
 impl<'ctx> ConstraintSolver<'ctx> {
     pub fn solve_coerce(
@@ -104,15 +104,16 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return Some(SolverResult::Error(vec![error]));
         };
 
-        let missing = self.missing_conformances(head, interfaces);
-        if missing.is_empty() {
+        if let Some(matches) = self.collect_head_conformance_matches(head, interfaces, true) {
+            let obligations = self.interface_match_obligations(location, &matches);
             self.record_adjustments(
                 node_id,
                 vec![Adjustment::BoxExistential { from, interfaces }],
             );
-            return Some(SolverResult::Solved(vec![]));
+            return Some(SolverResult::Solved(obligations));
         }
 
+        let missing = self.missing_conformances(head, interfaces);
         let errors = missing
             .into_iter()
             .map(|interface| {
@@ -153,14 +154,18 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return Some(SolverResult::Solved(vec![]));
         }
 
-        if self.interface_subset(from_ifaces, to_ifaces) {
+        if let Some(matches) = self.collect_existential_matches(from_ifaces, to_ifaces, false, true)
+        {
+            let obligations = self.interface_match_obligations(location, &matches);
             self.record_adjustments(node_id, vec![Adjustment::ExistentialUpcast { from, to }]);
-            return Some(SolverResult::Solved(vec![]));
+            return Some(SolverResult::Solved(obligations));
         }
 
-        if self.interface_superface_upcast(from_ifaces, to_ifaces) {
+        if let Some(matches) = self.collect_existential_matches(from_ifaces, to_ifaces, true, true)
+        {
+            let obligations = self.interface_match_obligations(location, &matches);
             self.record_adjustments(node_id, vec![Adjustment::ExistentialUpcast { from, to }]);
-            return Some(SolverResult::Solved(vec![]));
+            return Some(SolverResult::Solved(obligations));
         }
 
         Some(self.solve_equality(location, to, from))
@@ -273,7 +278,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         for iface in interfaces {
             let mut satisfied = false;
             for record in &records {
-                if self.interface_ref_matches(*iface, record.interface) {
+                if self.interface_ref_matches_with_mode(*iface, record.interface, true, false) {
                     satisfied = true;
                     break;
                 }
@@ -281,7 +286,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 let mut supers = self.collect_interface_with_supers(record.interface);
                 if supers
                     .drain(1..)
-                    .any(|candidate| self.interface_ref_matches(*iface, candidate))
+                    .any(|candidate| {
+                        self.interface_ref_matches_with_mode(*iface, candidate, true, false)
+                    })
                 {
                     satisfied = true;
                     break;
@@ -295,10 +302,143 @@ impl<'ctx> ConstraintSolver<'ctx> {
         missing
     }
 
+    fn collect_head_conformance_matches(
+        &self,
+        head: TypeHead,
+        interfaces: &'ctx [InterfaceReference<'ctx>],
+        infer: bool,
+    ) -> Option<Vec<(InterfaceReference<'ctx>, InterfaceReference<'ctx>)>> {
+        let gcx = self.gcx();
+        let records = gcx
+            .collect_from_databases(|db| db.conformances.get(&head).cloned().unwrap_or_default());
+
+        let mut matches_out = Vec::with_capacity(interfaces.len());
+        for iface in interfaces {
+            let mut matched = None;
+            for record in &records {
+                if self.interface_ref_matches_with_mode(*iface, record.interface, infer, false) {
+                    matched = Some(record.interface);
+                    break;
+                }
+
+                for candidate in self.collect_interface_with_supers(record.interface).into_iter().skip(1)
+                {
+                    if self.interface_ref_matches_with_mode(*iface, candidate, infer, false) {
+                        matched = Some(candidate);
+                        break;
+                    }
+                }
+                if matched.is_some() {
+                    break;
+                }
+            }
+
+            let actual = matched?;
+            matches_out.push((*iface, actual));
+        }
+
+        Some(matches_out)
+    }
+
+    fn collect_existential_matches(
+        &self,
+        from_ifaces: &'ctx [InterfaceReference<'ctx>],
+        to_ifaces: &'ctx [InterfaceReference<'ctx>],
+        include_supers: bool,
+        infer: bool,
+    ) -> Option<Vec<(InterfaceReference<'ctx>, InterfaceReference<'ctx>)>> {
+        let mut matches_out = Vec::with_capacity(to_ifaces.len());
+
+        for target in to_ifaces {
+            let mut matched = None;
+
+            for source in from_ifaces {
+                if self.interface_ref_matches_with_mode(*target, *source, infer, false) {
+                    matched = Some(*source);
+                    break;
+                }
+
+                if include_supers {
+                    for candidate in self.collect_interface_with_supers(*source).into_iter().skip(1)
+                    {
+                        if self.interface_ref_matches_with_mode(*target, candidate, infer, false) {
+                            matched = Some(candidate);
+                            break;
+                        }
+                    }
+                }
+
+                if matched.is_some() {
+                    break;
+                }
+            }
+
+            let actual = matched?;
+            matches_out.push((*target, actual));
+        }
+
+        Some(matches_out)
+    }
+
+    fn interface_match_obligations(
+        &self,
+        location: Span,
+        matches: &[(InterfaceReference<'ctx>, InterfaceReference<'ctx>)],
+    ) -> Vec<Obligation<'ctx>> {
+        let mut obligations = Vec::new();
+
+        for (expected, actual) in matches {
+            let expected_args = if expected.arguments.len() > 0 {
+                &expected.arguments[1..]
+            } else {
+                &expected.arguments
+            };
+            let actual_args = if actual.arguments.len() > 0 {
+                &actual.arguments[1..]
+            } else {
+                &actual.arguments
+            };
+
+            for (expected_arg, actual_arg) in expected_args.iter().zip(actual_args.iter()) {
+                match (expected_arg, actual_arg) {
+                    (GenericArgument::Type(expected_ty), GenericArgument::Type(actual_ty)) => {
+                        obligations.push(Obligation {
+                            location,
+                            goal: Goal::ConstraintEqual(*expected_ty, *actual_ty),
+                        });
+                    }
+                    (GenericArgument::Const(expected_const), GenericArgument::Const(actual_const)) => {
+                        let _ = self.unify_const(*expected_const, *actual_const);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        obligations
+    }
+
     fn interface_args_match(
         &self,
         expected: InterfaceReference<'ctx>,
         actual: InterfaceReference<'ctx>,
+    ) -> bool {
+        self.interface_args_match_inner(expected, actual, false)
+    }
+
+    fn interface_args_match_with_inference(
+        &self,
+        expected: InterfaceReference<'ctx>,
+        actual: InterfaceReference<'ctx>,
+    ) -> bool {
+        self.interface_args_match_inner(expected, actual, true)
+    }
+
+    fn interface_args_match_inner(
+        &self,
+        expected: InterfaceReference<'ctx>,
+        actual: InterfaceReference<'ctx>,
+        infer: bool,
     ) -> bool {
         let expected_args = if expected.arguments.len() > 0 {
             &expected.arguments[1..]
@@ -315,42 +455,66 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return false;
         }
 
-        // TODO: Unify/infer interface arguments instead of strict equality.
+        if !infer {
+            return expected_args
+                .iter()
+                .zip(actual_args.iter())
+                .all(|(a, b)| a == b);
+        }
+
         expected_args
             .iter()
             .zip(actual_args.iter())
-            .all(|(a, b)| a == b)
-    }
-
-    fn interface_subset(
-        &self,
-        from_ifaces: &'ctx [InterfaceReference<'ctx>],
-        to_ifaces: &'ctx [InterfaceReference<'ctx>],
-    ) -> bool {
-        to_ifaces.iter().all(|target| {
-            from_ifaces
-                .iter()
-                .any(|source| self.interface_ref_matches(*target, *source))
-        })
-    }
-
-    fn interface_superface_upcast(
-        &self,
-        from_ifaces: &'ctx [InterfaceReference<'ctx>],
-        to_ifaces: &'ctx [InterfaceReference<'ctx>],
-    ) -> bool {
-        to_ifaces.iter().all(|target| {
-            from_ifaces.iter().any(|source| {
-                if self.interface_ref_matches(*target, *source) {
-                    return true;
-                }
-
-                self.collect_interface_with_supers(*source)
-                    .into_iter()
-                    .skip(1)
-                    .any(|candidate| self.interface_ref_matches(*target, candidate))
+            .all(|(expected_arg, actual_arg)| {
+                self.unify_interface_args_with_inference(*expected_arg, *actual_arg)
             })
-        })
+    }
+
+    fn unify_interface_args_with_inference(
+        &self,
+        expected: GenericArgument<'ctx>,
+        actual: GenericArgument<'ctx>,
+    ) -> bool {
+        match (expected, actual) {
+            (GenericArgument::Type(expected_ty), GenericArgument::Type(actual_ty)) => {
+                self.unify(expected_ty, actual_ty).is_ok()
+            }
+            (GenericArgument::Const(expected_const), GenericArgument::Const(actual_const)) => {
+                self.unify_const(expected_const, actual_const).is_ok()
+            }
+            _ => false,
+        }
+    }
+
+    fn interface_ref_matches_with_mode(
+        &self,
+        expected: InterfaceReference<'ctx>,
+        actual: InterfaceReference<'ctx>,
+        infer: bool,
+        commit: bool,
+    ) -> bool {
+        if !infer {
+            return self.interface_ref_matches(expected, actual);
+        }
+
+        let matches = self.icx.probe(|_| self.interface_ref_matches_with_inference(expected, actual));
+        if !matches {
+            return false;
+        }
+
+        if commit {
+            return self.interface_ref_matches_with_inference(expected, actual);
+        }
+
+        true
+    }
+
+    fn interface_ref_matches_with_inference(
+        &self,
+        expected: InterfaceReference<'ctx>,
+        actual: InterfaceReference<'ctx>,
+    ) -> bool {
+        expected.id == actual.id && self.interface_args_match_with_inference(expected, actual)
     }
 
     fn interface_ref_matches(

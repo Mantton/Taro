@@ -10,8 +10,8 @@ use crate::{
     hir::{DefinitionID, StdInterface},
     sema::{
         models::{
-            GenericArguments, InterfaceReference, MethodImplementation, MethodWitness,
-            SyntheticMethodKind, Ty, TyKind,
+            GenericArgument, GenericArguments, InterfaceReference, MethodImplementation,
+            MethodWitness, SyntheticMethodKind, Ty, TyKind,
         },
         resolve::models::TypeHead,
     },
@@ -71,11 +71,26 @@ pub fn try_synthesize_method<'ctx>(
             method_id,
             args_template,
         ),
-
-        StdInterface::Hashable | StdInterface::Equatable => {
-            // TODO: Implement Hashable and Equatable synthesis
-            None
-        }
+        StdInterface::Hashable => try_synthesize_hash(
+            gcx,
+            type_head,
+            self_ty,
+            interface_id,
+            interface_args,
+            method_name,
+            method_id,
+            args_template,
+        ),
+        StdInterface::PartialEq | StdInterface::Equatable => try_synthesize_partial_eq(
+            gcx,
+            type_head,
+            self_ty,
+            interface_id,
+            interface_args,
+            method_name,
+            method_id,
+            args_template,
+        ),
         StdInterface::Copy | StdInterface::Tuple => {
             // Copy and Tuple are marker interfaces, no methods to synthesize
             None
@@ -101,7 +116,6 @@ pub fn try_synthesize_method<'ctx>(
         | StdInterface::Shl
         | StdInterface::Shr
         | StdInterface::BitNot
-        | StdInterface::PartialEq
         | StdInterface::PartialOrd => None,
     }
 }
@@ -168,6 +182,93 @@ fn try_synthesize_clone<'ctx>(
     Some(SynthesizedMethod {
         witness: MethodWitness {
             implementation: MethodImplementation::Synthetic(kind, syn_id),
+            args_template,
+        },
+    })
+}
+
+/// Try to synthesize Hashable.hash method.
+fn try_synthesize_hash<'ctx>(
+    gcx: Gcx<'ctx>,
+    type_head: TypeHead,
+    self_ty: Ty<'ctx>,
+    interface_id: DefinitionID,
+    interface_args: GenericArguments<'ctx>,
+    method_name: Symbol,
+    method_id: DefinitionID,
+    args_template: GenericArguments<'ctx>,
+) -> Option<SynthesizedMethod<'ctx>> {
+    if !gcx.symbol_eq(&method_name, "hash") {
+        return None;
+    }
+
+    let mut syn_id = None;
+    if let Some(existing) = gcx.get_synthetic_method(type_head, method_id) {
+        syn_id = existing.syn_id;
+    }
+
+    let info = SyntheticMethodInfo {
+        kind: SyntheticMethodKind::MemberwiseHash,
+        self_ty,
+        interface_id,
+        interface_args,
+        interface_bindings: &[],
+        method_id,
+        method_name,
+        syn_id,
+    };
+    gcx.register_synthetic_method(type_head, method_id, method_name, info);
+
+    Some(SynthesizedMethod {
+        witness: MethodWitness {
+            implementation: MethodImplementation::Synthetic(SyntheticMethodKind::MemberwiseHash, syn_id),
+            args_template,
+        },
+    })
+}
+
+/// Try to synthesize PartialEq.eq method.
+fn try_synthesize_partial_eq<'ctx>(
+    gcx: Gcx<'ctx>,
+    type_head: TypeHead,
+    self_ty: Ty<'ctx>,
+    interface_id: DefinitionID,
+    interface_args: GenericArguments<'ctx>,
+    method_name: Symbol,
+    method_id: DefinitionID,
+    args_template: GenericArguments<'ctx>,
+) -> Option<SynthesizedMethod<'ctx>> {
+    if !gcx.symbol_eq(&method_name, "eq") {
+        return None;
+    }
+
+    if let Some(GenericArgument::Const(_)) = interface_args.get(1) {
+        return None;
+    }
+
+    let mut syn_id = None;
+    if let Some(existing) = gcx.get_synthetic_method(type_head, method_id) {
+        syn_id = existing.syn_id;
+    }
+
+    let info = SyntheticMethodInfo {
+        kind: SyntheticMethodKind::MemberwiseEquality,
+        self_ty,
+        interface_id,
+        interface_args,
+        interface_bindings: &[],
+        method_id,
+        method_name,
+        syn_id,
+    };
+    gcx.register_synthetic_method(type_head, method_id, method_name, info);
+
+    Some(SynthesizedMethod {
+        witness: MethodWitness {
+            implementation: MethodImplementation::Synthetic(
+                SyntheticMethodKind::MemberwiseEquality,
+                syn_id,
+            ),
             args_template,
         },
     })

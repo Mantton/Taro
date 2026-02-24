@@ -9,7 +9,7 @@ use crate::{
     mir::{self, Body, EscapeSummary},
     sema::{
         models::{
-            ClosureCaptures, ConformanceRecord, ConformanceWitness, Const, Constraint,
+            AliasKind, ClosureCaptures, ConformanceRecord, ConformanceWitness, Const, Constraint,
             EnumDefinition, EnumVariant, FloatTy, GenericArgument, GenericArguments,
             GenericParameter, Generics, IntTy, InterfaceDefinition, InterfaceReference,
             InterfaceRequirements, LabeledFunctionSignature, StructDefinition, Ty, TyKind, TyList,
@@ -677,43 +677,115 @@ impl<'arena> GlobalContext<'arena> {
         let pkg = def_id.package();
         let resolution_output = self.resolution_output(pkg);
 
-        let mut current_scope = resolution_output
-            .definition_scope_mapping
-            .get(&def_id)
-            .cloned();
+        let mut collect_entry = |entry: crate::sema::resolve::models::ScopeEntry<'arena>| {
+            match &entry.kind {
+                ScopeEntryKind::Resolution(Resolution::Definition(id, kind)) => {
+                    if *kind == DefinitionKind::Interface {
+                        visible.insert(*id);
+                    }
+                }
+                ScopeEntryKind::Usage { used_entry, .. } => {
+                    if let ScopeEntryKind::Resolution(Resolution::Definition(id, kind)) =
+                        &used_entry.kind
+                        && *kind == DefinitionKind::Interface
+                    {
+                        visible.insert(*id);
+                    }
+                }
+                _ => {}
+            }
+        };
 
-        while let Some(scope) = current_scope {
+        let mut collect_scope = |scope: crate::sema::resolve::models::Scope<'arena>| {
             let table = scope.table.borrow();
-
             for name_entry in table.values() {
-                if let Some(type_entry) = &name_entry.ty {
-                    match &type_entry.kind {
-                        ScopeEntryKind::Resolution(Resolution::Definition(id, kind)) => {
-                            if *kind == DefinitionKind::Interface {
-                                visible.insert(*id);
-                            }
-                        }
-                        ScopeEntryKind::Usage { used_entry, .. } => {
-                            if let ScopeEntryKind::Resolution(Resolution::Definition(id, kind)) =
-                                &used_entry.kind
-                            {
-                                if *kind == DefinitionKind::Interface {
-                                    visible.insert(*id);
-                                }
-                            }
-                        }
-                        _ => {}
+                if let Some(type_entry) = name_entry.ty {
+                    collect_entry(type_entry);
+                }
+                for value_entry in &name_entry.values {
+                    collect_entry(*value_entry);
+                }
+            }
+        };
+
+        let mut collect_scope_tree = |root: crate::sema::resolve::models::Scope<'arena>| {
+            let mut queue = std::collections::VecDeque::new();
+            let mut seen_scopes: FxHashSet<
+                *const crate::sema::resolve::models::ScopeData<'arena>,
+            > = FxHashSet::default();
+            queue.push_back(root);
+
+            while let Some(scope) = queue.pop_front() {
+                let scope_ptr = scope.0 as *const crate::sema::resolve::models::ScopeData<'arena>;
+                if !seen_scopes.insert(scope_ptr) {
+                    continue;
+                }
+
+                collect_scope(scope);
+
+                for usage in scope.glob_imports.borrow().iter() {
+                    if let Some(module_scope) = usage.module_scope.get() {
+                        queue.push_back(module_scope);
+                    }
+                }
+
+                for usage in scope.glob_exports.borrow().iter() {
+                    if let Some(module_scope) = usage.module_scope.get() {
+                        queue.push_back(module_scope);
                     }
                 }
             }
+        };
 
-            let glob_imports = scope.glob_imports.borrow();
-            for _usage in glob_imports.iter() {}
+        // Some nested definitions (especially associated declarations) are not
+        // mapped directly. Walk parents until we find the nearest mapped scope.
+        let mut scope_owner = Some(def_id);
+        let mut current_scope = None;
+        while let Some(owner) = scope_owner {
+            if let Some(scope) = resolution_output.definition_scope_mapping.get(&owner).cloned() {
+                current_scope = Some(scope);
+                break;
+            }
 
-            drop(table);
-            drop(glob_imports);
+            scope_owner = resolution_output.definition_to_parent.get(&owner).cloned();
+        }
 
+        if current_scope.is_none() {
+            current_scope = Some(resolution_output.root_scope);
+        }
+
+        while let Some(scope) = current_scope {
+            collect_scope_tree(scope);
             current_scope = scope.parent;
+        }
+
+        let file_id = self.definition_ident(def_id).span.file;
+        if let Some(file_scope) = resolution_output.file_scope_mapping.get(&file_id).cloned() {
+            collect_scope_tree(file_scope);
+        }
+
+        // The std prelude is implicitly in scope for user packages.
+        // Pull interface exports from `std.prelude` so prelude traits are treated as visible.
+        if let Some(std_pkg) = self.std_package_index()
+            && let Some(std_output) = self.try_resolution_output(std_pkg)
+        {
+            let prelude_scope = {
+                let prelude_symbol = self.intern_symbol("prelude");
+                let table = std_output.root_scope.table.borrow();
+                table
+                    .get(&prelude_symbol)
+                    .and_then(|entry| entry.ty)
+                    .and_then(|scope_entry| match scope_entry.resolution() {
+                        Resolution::Definition(id, DefinitionKind::Module) => {
+                            std_output.definition_scope_mapping.get(&id).cloned()
+                        }
+                        _ => None,
+                    })
+            };
+
+            if let Some(prelude_scope) = prelude_scope {
+                collect_scope_tree(prelude_scope);
+            }
         }
 
         let rc_visible = Rc::new(visible);
@@ -776,8 +848,18 @@ impl<'arena> GlobalContext<'arena> {
             // has already enforced the Copy bound, so we can safely allow the copy.
             TyKind::Parameter(_) => true,
 
-            // Aliases - resolve and check
-            TyKind::Alias { .. } => false, // TODO: resolve alias and check
+            // Aliases - normalize weak/inherent aliases and recurse.
+            // Projection aliases (`T.Item`) remain conservative here because
+            // resolving them requires inference/parameter environment context.
+            TyKind::Alias { kind, .. } if kind != AliasKind::Projection => {
+                let normalized = crate::sema::tycheck::utils::normalize_aliases(self, ty);
+                if normalized == ty {
+                    false
+                } else {
+                    self.is_type_copyable(normalized)
+                }
+            }
+            TyKind::Alias { .. } => false,
 
             // Closures - not copyable by default (may capture non-copyable values)
             TyKind::Closure { .. } => false,

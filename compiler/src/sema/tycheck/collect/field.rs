@@ -31,7 +31,10 @@ impl<'ctx> Actor<'ctx> {
     fn collect_struct_fields(&self, id: hir::DefinitionID, node: &hir::Struct) {
         let adt_ty = self.context.get_type(id);
         let crate::sema::models::TyKind::Adt(adt_def, _) = adt_ty.kind() else {
-            todo!("expected cached ADT type for struct")
+            unreachable!(
+                "ICE: expected cached ADT type for struct {id:?}, got {:?}",
+                adt_ty.kind()
+            )
         };
 
         let ctx = DefTyLoweringCtx::new(id, self.context);

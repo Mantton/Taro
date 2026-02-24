@@ -204,7 +204,21 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                         // Opaque types have no generic parameters
                         gcx.get_type(id)
                     }
-                    _ => todo!("nominal type lowering for {kind:?}"),
+                    _ => {
+                        let name = gcx.symbol_text(segment.identifier.symbol);
+                        let message = if matches!(kind, DefinitionKind::Interface) {
+                            format!(
+                                "'{name}' resolves to an interface; use 'any {name}' for existential types"
+                            )
+                        } else {
+                            format!(
+                                "'{name}' resolves to a {}, which cannot be used as a concrete type",
+                                kind.description()
+                            )
+                        };
+                        gcx.dcx().emit_error(message.into(), Some(path.span));
+                        gcx.types.error
+                    }
                 }
             }
             Resolution::SelfTypeAlias(id) => {
@@ -220,12 +234,14 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                             let Some(head) = gcx.get_impl_type_head(id) else {
                                 return gcx.types.error;
                             };
-                            match head {
-                                _ => todo!("Self type alias lowering for {head:?}"),
-                            }
+                            unreachable!(
+                                "ICE: impl Self type should be cached for impl {id:?}; head={head:?}"
+                            )
                         }
                     }
-                    other => todo!("Self type alias lowering for {other:?}"),
+                    other => unreachable!(
+                        "ICE: unexpected definition kind for SelfTypeAlias resolution: {other:?}"
+                    ),
                 }
             }
             Resolution::InterfaceSelfTypeParameter(_interface_id) => {

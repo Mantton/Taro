@@ -36,7 +36,7 @@ use inkwell::{
         PointerValue,
     },
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::{
     fs,
     path::PathBuf,
@@ -498,9 +498,14 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     }
 
     fn lower_instances(&mut self, _package: &mir::MirPackage<'gcx>) -> CompileResult<()> {
-        let current_pkg = self.gcx.package_index();
-        let instances = self.gcx.specializations_of(current_pkg);
-        for instance in instances {
+        let mut pending = self.gcx.specializations_of(self.gcx.package_index());
+        let mut queued: FxHashSet<Instance<'gcx>> = pending.iter().copied().collect();
+        let mut cursor = 0usize;
+
+        while cursor < pending.len() {
+            let instance = pending[cursor];
+            cursor += 1;
+
             // Skip if already compiled by another package
             if self.gcx.is_instance_compiled(instance) {
                 continue;
@@ -520,13 +525,45 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 continue;
             }
 
+            if !self.instance_has_mir_body(instance) {
+                continue;
+            }
+
             let body = self.gcx.get_mir_body(def_id);
             self.lower_body(instance, body)?;
 
             // Mark as compiled so other packages don't duplicate work
             self.gcx.mark_instance_compiled(instance);
+
+            // New instances can be discovered while lowering (e.g., witness table thunks
+            // materializing synthetic methods). Enqueue any item instances that have MIR
+            // bodies available in their owning package.
+            let discovered: Vec<_> = self
+                .functions
+                .keys()
+                .copied()
+                .filter(|instance| {
+                    matches!(instance.kind(), InstanceKind::Item(_))
+                        && self.instance_has_mir_body(*instance)
+                })
+                .filter(|instance| !queued.contains(instance))
+                .collect();
+            for instance in discovered {
+                queued.insert(instance);
+                pending.push(instance);
+            }
         }
         Ok(())
+    }
+
+    fn instance_has_mir_body(&self, instance: Instance<'gcx>) -> bool {
+        let InstanceKind::Item(def_id) = instance.kind() else {
+            return false;
+        };
+        let packages = self.gcx.store.mir_packages.borrow();
+        packages
+            .get(&def_id.package())
+            .is_some_and(|pkg| pkg.functions.contains_key(&def_id))
     }
 
     /// Emit the `taro_start` / `main` entry shim for a normal (non-test) binary.
@@ -3199,25 +3236,42 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .count();
         let mut entries: Vec<BasicValueEnum<'llvm>> = Vec::with_capacity(method_count);
         for method in requirements.methods.iter().filter(|method| method.has_self) {
-            let (impl_def_id, args) = if let Some(method_witness) = witness
-                .as_ref()
-                .and_then(|w| w.method_witnesses.get(&method.id))
+            let method_target = if let Some(method_witness) =
+                witness.as_ref().and_then(|w| w.method_witnesses.get(&method.id))
             {
-                // TODO: Handle synthetic implementations (generated code)
-                let impl_id = method_witness
-                    .implementation
-                    .impl_id()
-                    .expect("synthetic methods not yet supported in vtable generation");
-                let args = self.instantiate_generic_args_with_args(
-                    method_witness.args_template,
-                    iface.arguments,
-                );
-                (impl_id, args)
+                let args = self
+                    .instantiate_generic_args_with_args(method_witness.args_template, iface.arguments);
+                match method_witness.implementation {
+                    crate::sema::models::MethodImplementation::Concrete(impl_id)
+                    | crate::sema::models::MethodImplementation::Default(impl_id) => {
+                        Some((impl_id, args))
+                    }
+                    crate::sema::models::MethodImplementation::Synthetic(_, Some(syn_id)) => {
+                        Some((syn_id, args))
+                    }
+                    crate::sema::models::MethodImplementation::Synthetic(_, None) => {
+                        let iface_name = self.gcx.symbol_text(self.gcx.definition_ident(iface.id).symbol);
+                        let method_name = self.gcx.symbol_text(method.name);
+                        self.gcx.dcx().emit_error(
+                            format!(
+                                "unable to materialize synthetic method '{}.{}' for witness table generation",
+                                iface_name, method_name
+                            ),
+                            None,
+                        );
+                        None
+                    }
+                }
             } else {
-                (method.id, iface.arguments)
+                Some((method.id, iface.arguments))
             };
-            // Use a thunk to bridge virtual call signature (ptr self) to concrete impl
-            let thunk_ptr = self.witness_method_thunk(type_head, iface, impl_def_id, args);
+
+            // Use a thunk to bridge virtual call signature (ptr self) to concrete impl.
+            let thunk_ptr = if let Some((impl_def_id, args)) = method_target {
+                self.witness_method_thunk(type_head, iface, impl_def_id, args)
+            } else {
+                self.context.ptr_type(AddressSpace::default()).const_null()
+            };
             entries.push(thunk_ptr.as_basic_value_enum());
         }
 
@@ -3437,15 +3491,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         type_head: TypeHead,
         interface: InterfaceReference<'gcx>,
     ) -> Option<crate::sema::models::ConformanceWitness<'gcx>> {
-        // Check cached witnesses across all packages
-        if let Some(cached) = self.gcx.find_in_databases(|db| {
-            db.conformance_witnesses
-                .get(&(type_head, interface))
-                .cloned()
-        }) {
-            return Some(cached);
-        }
-
+        // Route through the resolver so stale synthetic method IDs can be patched.
         resolve_conformance_witness(self.gcx, type_head, interface)
     }
 
@@ -5517,7 +5563,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             if let mir::ConstantKind::Function(def_id, args, _) = c.value {
                 let instance = self.instance_for_call(def_id, args);
                 if let InstanceKind::Virtual(_) = instance.kind() {
-                    todo!("virtual call codegen for boxed existentials");
+                    unreachable!(
+                        "ICE: virtual call instance reached lower_callable_with_abi; \
+                         Call terminators should route virtual calls through lower_virtual_call"
+                    );
                 }
 
                 let existing_fn = self.functions.get(&instance).copied();
@@ -6287,7 +6336,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             mir::ConstantKind::Function(def_id, args, _) => {
                 let instance = self.instance_for_call(*def_id, *args);
                 if let InstanceKind::Virtual(_) = instance.kind() {
-                    todo!("function pointers to virtual interface methods are not supported");
+                    unreachable!(
+                        "ICE: virtual interface method reached lower_constant as a function value; \
+                         frontend/typecheck should reject or lower this before codegen"
+                    );
                 }
                 self.functions
                     .get(&instance)

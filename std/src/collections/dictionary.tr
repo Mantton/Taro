@@ -1,5 +1,5 @@
 import std.optional.Optional
-import std.hash.{Hashable, DefaultHasher}
+import std.hash.{Hashable, DefaultHasher, Hasher}
 import std.collections.List
 import std.panic.panic
 

@@ -15,7 +15,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
     pub fn solve_cast(
         &mut self,
         location: Span,
-        _node_id: NodeID,
+        node_id: NodeID,
         from: Ty<'ctx>,
         to: Ty<'ctx>,
         is_unsafe: bool,
@@ -146,8 +146,15 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return SolverResult::Solved(vec![]);
         }
 
+        // Interface casts are lowered through coercion so existential boxing/upcast
+        // adjustments are recorded consistently for THIR/MIR lowering.
+        if matches!(from.kind(), TyKind::BoxedExistential { .. })
+            || matches!(to.kind(), TyKind::BoxedExistential { .. })
+        {
+            return self.solve_coerce(location, node_id, from, to);
+        }
+
         // Fallback: type equality (identity cast)
-        // TODO: Interface Casts
         self.solve_equality(location, to, from)
     }
 }

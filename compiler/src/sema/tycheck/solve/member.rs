@@ -331,19 +331,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
         }
 
         // Second: Look up trait methods
-        // TODO: Implement proper trait scoping - for now, make all trait methods available
         let mut collect_trait_methods = |db: &crate::compile::context::TypeDatabase<'ctx>| {
             if let Some(idx) = db.type_head_to_members.get(&head) {
-                if let Some(methods) = idx.trait_methods_by_name.get(&name) {
-                    let extra = methods.len();
-                    members.reserve(extra);
-                    seen.reserve(extra);
-                    for &id in methods {
-                        if seen.insert(id) {
-                            members.push(id);
-                        }
-                    }
-                }
+                self.collect_visible_trait_methods_for_name(idx, name, &mut members, &mut seen);
             }
         };
 
@@ -354,6 +344,46 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         members.retain(|id| gcx.is_definition_visible(*id, self.current_def));
         members
+    }
+
+    fn collect_visible_trait_methods_for_name(
+        &self,
+        index: &crate::compile::context::TypeMemberIndex,
+        name: Symbol,
+        members: &mut Vec<DefinitionID>,
+        seen: &mut FxHashSet<DefinitionID>,
+    ) {
+        // Some dependency/package contexts do not currently populate visible trait scope.
+        // Preserve previous behavior there so we don't regress trait lookup.
+        if self.visible_traits.is_empty() {
+            if let Some(methods) = index.trait_methods_by_name.get(&name) {
+                let extra = methods.len();
+                members.reserve(extra);
+                seen.reserve(extra);
+                for &id in methods {
+                    if seen.insert(id) {
+                        members.push(id);
+                    }
+                }
+            }
+            return;
+        }
+
+        for &interface_id in self.visible_traits.iter() {
+            let key = (interface_id, name);
+            let Some(set) = index.trait_methods.get(&key) else {
+                continue;
+            };
+
+            let extra = set.members.len();
+            members.reserve(extra);
+            seen.reserve(extra);
+            for &id in &set.members {
+                if seen.insert(id) {
+                    members.push(id);
+                }
+            }
+        }
     }
 
     pub fn type_head_from_type(&self, ty: Ty<'ctx>) -> Option<TypeHead> {
@@ -550,18 +580,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
         }
 
         // Second: Look up trait methods
-        // TODO: Implement proper trait scoping - for now, make all trait methods available
         let mut collect_trait_methods = |db: &crate::compile::context::TypeDatabase<'ctx>| {
             if let Some(idx) = db.type_head_to_members.get(&head) {
-                if let Some(methods) = idx.trait_methods_by_name.get(&name) {
-                    members.reserve(methods.len());
-                    seen.reserve(methods.len());
-                    for &id in methods {
-                        if seen.insert(id) {
-                            members.push(id);
-                        }
-                    }
-                }
+                self.collect_visible_trait_methods_for_name(idx, name, &mut members, &mut seen);
             }
         };
 
@@ -734,8 +755,18 @@ impl<'ctx> ConstraintSolver<'ctx> {
         for method_req in &requirements.methods {
             if method_req.name == method_symbol {
                 if let Some(method_witness) = witness.method_witnesses.get(&method_req.id) {
-                    if let Some(impl_id) = method_witness.implementation.impl_id() {
-                        return Some(vec![impl_id]);
+                    match method_witness.implementation {
+                        crate::sema::models::MethodImplementation::Concrete(impl_id)
+                        | crate::sema::models::MethodImplementation::Default(impl_id) => {
+                            return Some(vec![impl_id]);
+                        }
+                        // Synthetic implementations may not have a concrete DefinitionID yet
+                        // during type checking. Use the interface requirement method ID as the
+                        // overload source; it is resolved to the synthetic impl during
+                        // specialization once synthetic IDs are materialized.
+                        crate::sema::models::MethodImplementation::Synthetic(_, _) => {
+                            return Some(vec![method_req.id]);
+                        }
                     }
                 }
             }

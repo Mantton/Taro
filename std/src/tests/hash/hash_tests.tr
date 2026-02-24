@@ -1,5 +1,6 @@
 import std.hash.DefaultHasher
 import std.hash.Hasher
+import std.cmp.PartialOrd
 import std.mem.Span
 
 const KEY0: uint64 = 0x0706050403020100

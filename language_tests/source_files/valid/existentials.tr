@@ -25,6 +25,12 @@ interface Identifiable {
     func identifier(&self) -> usize
 }
 
+interface ReaderEx[T] {
+    func read(&self) -> T
+}
+
+interface FancyReaderEx[T]: ReaderEx[T] {}
+
 struct User {
     id: usize
     name: string
@@ -41,6 +47,16 @@ impl Identifiable for User {
         self.id
     }
 }
+
+struct IntReaderEx {}
+
+impl ReaderEx[int32] for IntReaderEx {
+    func read(&self) -> int32 {
+        7
+    }
+}
+
+impl FancyReaderEx[int32] for IntReaderEx {}
 
 type IdentifiableEntity = any Identifiable & Entity
 
@@ -73,9 +89,25 @@ func testExistentialIntersection() {
     printEntity(root)
 }
 
+func consumeReaderEx[T](_ reader: any ReaderEx[T]) {
+    let _ = reader
+}
+
+func testExistentialSuperfaceCastAndInference() {
+    let fancy_for_upcast: any FancyReaderEx[int32] = IntReaderEx {}
+    let _upcast: any ReaderEx[int32] = fancy_for_upcast
+
+    let fancy_for_cast: any FancyReaderEx[int32] = IntReaderEx {}
+    let _by_cast = fancy_for_cast as any ReaderEx[int32]
+
+    let fancy_for_infer: any FancyReaderEx[int32] = IntReaderEx {}
+    consumeReaderEx(fancy_for_infer)
+}
+
 func main() {
     testExistentialBoxing()
     testExistentialReturn()
     testExistentialIntersection()
+    testExistentialSuperfaceCastAndInference()
     std.print("PASS: Existential tests\n")
 }

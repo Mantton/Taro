@@ -46,6 +46,7 @@ pub struct ConstraintSystem<'ctx> {
     pub infer_cx: Rc<InferCtx<'ctx>>,
     obligations: VecDeque<Obligation<'ctx>>,
     expr_tys: FxHashMap<NodeID, Ty<'ctx>>,
+    integer_literals: FxHashMap<NodeID, u64>,
     adjustments: FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
     interface_calls: FxHashMap<NodeID, InterfaceCallInfo>,
     pub locals: RefCell<FxHashMap<NodeID, Ty<'ctx>>>,
@@ -85,6 +86,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
             infer_cx,
             obligations: Default::default(),
             expr_tys: Default::default(),
+            integer_literals: Default::default(),
             locals: Default::default(),
             adjustments: Default::default(),
             interface_calls: Default::default(),
@@ -151,6 +153,10 @@ impl<'ctx> ConstraintSystem<'ctx> {
 
     pub fn record_expr_ty(&mut self, id: NodeID, ty: Ty<'ctx>) {
         self.expr_tys.insert(id, ty);
+    }
+
+    pub fn record_integer_literal(&mut self, id: NodeID, value: u64) {
+        self.integer_literals.insert(id, value);
     }
 
     pub fn record_adjustments(&mut self, node_id: NodeID, adjustments: Vec<Adjustment<'ctx>>) {
@@ -256,6 +262,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
     pub fn merge(&mut self, other: ConstraintSystem<'ctx>) {
         self.obligations.extend(other.obligations);
         self.expr_tys.extend(other.expr_tys);
+        self.integer_literals.extend(other.integer_literals);
         self.adjustments.extend(other.adjustments);
         self.interface_calls.extend(other.interface_calls);
         self.locals.borrow_mut().extend(other.locals.into_inner());
@@ -288,6 +295,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
             obligations: std::mem::take(&mut self.obligations),
             adjustments: std::mem::take(&mut self.adjustments),
             interface_calls: std::mem::take(&mut self.interface_calls),
+            integer_literals: self.integer_literals.clone(),
             field_indices: std::mem::take(&mut self.field_indices),
             overload_sources: std::mem::take(&mut self.overload_sources),
             value_resolutions: std::mem::take(&mut self.value_resolutions),
@@ -379,6 +387,7 @@ struct ConstraintSolver<'ctx> {
     obligations: VecDeque<Obligation<'ctx>>,
     adjustments: FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
     interface_calls: FxHashMap<NodeID, InterfaceCallInfo>,
+    integer_literals: FxHashMap<NodeID, u64>,
     pub field_indices: FxHashMap<NodeID, usize>,
     overload_sources: FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
     value_resolutions: FxHashMap<NodeID, Resolution>,
@@ -415,6 +424,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
     pub fn record_interface_call(&mut self, node_id: NodeID, info: InterfaceCallInfo) {
         self.interface_calls.insert(node_id, info);
+    }
+
+    pub fn integer_literal_value(&self, id: NodeID) -> Option<u64> {
+        self.integer_literals.get(&id).copied()
     }
 }
 
@@ -737,6 +750,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             // Probe branches only need satisfiability, not collected outputs.
             adjustments: FxHashMap::default(),
             interface_calls: FxHashMap::default(),
+            integer_literals: self.integer_literals.clone(),
             field_indices: FxHashMap::default(),
             overload_sources: FxHashMap::default(),
             value_resolutions: FxHashMap::default(),

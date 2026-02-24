@@ -186,7 +186,7 @@ impl<'ctx> Actor<'ctx> {
 
         // 4. Check constants
         for constant in &requirements.constants {
-            match self.find_constant_witness(type_head, constant, record) {
+            match self.find_constant_witness(type_head, constant, record, &witness.type_witnesses) {
                 Ok(id) => {
                     witness.constant_witnesses.insert(constant.id, id);
                 }
@@ -682,23 +682,55 @@ impl<'ctx> Actor<'ctx> {
     }
 }
 
-// Constant witness lookup (stub)
 impl<'ctx> Actor<'ctx> {
     fn find_constant_witness(
         &self,
         _type_head: TypeHead,
         requirement: &InterfaceConstantRequirement<'ctx>,
-        _record: &crate::sema::models::ConformanceRecord<'ctx>,
+        record: &crate::sema::models::ConformanceRecord<'ctx>,
+        type_witnesses: &FxHashMap<DefinitionID, Ty<'ctx>>,
     ) -> Result<DefinitionID, ConformanceError<'ctx>> {
-        // TODO: Implement constant lookup
-        // For now, check if there's a default
+        let gcx = self.context;
+        let impl_id = record.extension;
+        let extension_pkg = impl_id.package();
+
+        let expected_ty = self.substitute_projection_witnesses(
+            self.substitute_with_args(requirement.ty, record.interface.arguments),
+            type_witnesses,
+        );
+
+        let candidates: Vec<DefinitionID> = gcx.with_type_database(extension_pkg, |db| {
+            db.def_to_ty
+                .keys()
+                .copied()
+                .filter(|candidate| {
+                    gcx.definition_kind(*candidate) == crate::sema::resolve::models::DefinitionKind::AssociatedConstant
+                        && gcx.definition_parent(*candidate) == Some(impl_id)
+                        && gcx.definition_ident(*candidate).symbol == requirement.name
+                })
+                .collect()
+        });
+
+        for candidate in &candidates {
+            if gcx.get_type(*candidate) == expected_ty {
+                return Ok(*candidate);
+            }
+        }
+
+        if !candidates.is_empty() {
+            return Err(ConformanceError::MissingConstant {
+                name: requirement.name,
+                ty: expected_ty,
+            });
+        }
+
         if requirement.default.is_some() {
             return Ok(requirement.id);
         }
 
         Err(ConformanceError::MissingConstant {
             name: requirement.name,
-            ty: requirement.ty,
+            ty: expected_ty,
         })
     }
 }

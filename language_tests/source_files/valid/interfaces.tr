@@ -317,6 +317,36 @@ func testDefaultMethodsUfcs() {
     assert(v == 42, "default method should return 42")
 }
 
+interface HasMagicDefault {
+    const MAGIC: int32 = 11
+}
+
+interface HasMagicRequired {
+    const MAGIC: int32
+}
+
+struct MagicBox {}
+
+impl HasMagicDefault for MagicBox {}
+
+impl HasMagicRequired for MagicBox {
+    const MAGIC: int32 = 7
+}
+
+func acceptMagicDefault[T: HasMagicDefault](_ value: &T) {
+    let _ = value
+}
+
+func acceptMagicRequired[T: HasMagicRequired](_ value: &T) {
+    let _ = value
+}
+
+func testAssociatedConstantsInConformance() {
+    let box = MagicBox {}
+    acceptMagicDefault(&box)
+    acceptMagicRequired(&box)
+}
+
 func main() {
     testInterfaceConstGenerics()
     testDefaultGenericSelfSubstitution()
@@ -327,6 +357,7 @@ func main() {
     testInterfaceStress()
     testDefaultMethodsGenericBound()
     testDefaultMethodsUfcs()
+    testAssociatedConstantsInConformance()
 
     std.print("PASS: interfaces\n")
 }

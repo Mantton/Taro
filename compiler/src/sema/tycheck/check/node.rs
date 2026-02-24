@@ -4,7 +4,8 @@ use crate::{
     sema::{
         models::{
             Const, ConstKind, ConstValue, GenericArgument, GenericArguments, GenericParameter,
-            GenericParameterDefinition, GenericParameterDefinitionKind, Ty, TyKind,
+            GenericParameterDefinition, GenericParameterDefinitionKind, InterfaceReference, IntTy,
+            Ty, TyKind, UIntTy,
         },
         resolve::models::{DefinitionKind, TypeHead, VariantCtorKind},
         tycheck::{
@@ -456,6 +457,10 @@ impl<'ctx> Checker<'ctx> {
             }
         }
         for (id, adjustments) in cs.resolved_adjustments() {
+            let adjustments: Vec<_> = adjustments
+                .into_iter()
+                .map(|adjustment| self.resolve_adjustment(cs, adjustment))
+                .collect();
             self.results
                 .borrow_mut()
                 .record_node_adjustments(id, adjustments);
@@ -485,6 +490,85 @@ impl<'ctx> Checker<'ctx> {
             self.finalize_local(id, ty);
             self.results.borrow_mut().record_node_type(id, ty);
         }
+    }
+
+    fn resolve_adjustment(&self, cs: &Cs<'ctx>, adjustment: Adjustment<'ctx>) -> Adjustment<'ctx> {
+        match adjustment {
+            Adjustment::BoxExistential { from, interfaces } => Adjustment::BoxExistential {
+                from: cs.infer_cx.resolve_vars_or_error(from),
+                interfaces: self.resolve_interface_refs_for_adjustment(cs, interfaces),
+            },
+            Adjustment::ExistentialUpcast { from, to } => Adjustment::ExistentialUpcast {
+                from: cs.infer_cx.resolve_vars_or_error(from),
+                to: cs.infer_cx.resolve_vars_or_error(to),
+            },
+            Adjustment::OptionalWrap {
+                is_some,
+                generic_args,
+            } => Adjustment::OptionalWrap {
+                is_some,
+                generic_args: self.resolve_generic_args_or_error(cs, generic_args),
+            },
+            other => other,
+        }
+    }
+
+    fn resolve_interface_refs_for_adjustment(
+        &self,
+        cs: &Cs<'ctx>,
+        interfaces: &'ctx [InterfaceReference<'ctx>],
+    ) -> &'ctx [InterfaceReference<'ctx>] {
+        if interfaces.is_empty() {
+            return interfaces;
+        }
+
+        let resolved: Vec<_> = interfaces
+            .iter()
+            .map(|iface| {
+                let arguments = self.resolve_generic_args_or_error(cs, iface.arguments);
+                let bindings: Vec<_> = iface
+                    .bindings
+                    .iter()
+                    .map(|binding| crate::sema::models::AssociatedTypeBinding {
+                        name: binding.name,
+                        ty: cs.infer_cx.resolve_vars_or_error(binding.ty),
+                    })
+                    .collect();
+                let bindings = self.gcx().store.arenas.global.alloc_slice_clone(&bindings);
+
+                InterfaceReference {
+                    id: iface.id,
+                    arguments,
+                    bindings,
+                }
+            })
+            .collect();
+
+        self.gcx().store.arenas.global.alloc_slice_clone(&resolved)
+    }
+
+    fn resolve_generic_args_or_error(
+        &self,
+        cs: &Cs<'ctx>,
+        args: GenericArguments<'ctx>,
+    ) -> GenericArguments<'ctx> {
+        if args.is_empty() {
+            return args;
+        }
+
+        let resolved: Vec<_> = args
+            .iter()
+            .map(|arg| match arg {
+                GenericArgument::Type(ty) => {
+                    GenericArgument::Type(cs.infer_cx.resolve_vars_or_error(*ty))
+                }
+                GenericArgument::Const(c) => {
+                    GenericArgument::Const(cs.infer_cx.resolve_const_if_possible(*c))
+                }
+            })
+            .collect();
+
+        self.gcx().store.interners.intern_generic_args(resolved)
     }
 }
 
@@ -574,7 +658,10 @@ impl<'ctx> Checker<'ctx> {
     ) -> Ty<'ctx> {
         match &expression.kind {
             hir::ExpressionKind::Literal(node) => {
-                self.synth_expression_literal(node, expectation, cs)
+                if let hir::Literal::Integer { value, .. } = node {
+                    cs.record_integer_literal(expression.id, *value);
+                }
+                self.synth_expression_literal(node, expression.span, expectation, cs)
             }
             hir::ExpressionKind::Path(path) => {
                 self.synth_path_expression(expression, path, expectation, cs)
@@ -1435,6 +1522,7 @@ impl<'ctx> Checker<'ctx> {
     fn synth_expression_literal(
         &self,
         literal: &hir::Literal,
+        span: Span,
         expectation: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
@@ -1443,9 +1531,9 @@ impl<'ctx> Checker<'ctx> {
             hir::Literal::Bool(_) => gcx.types.bool,
             hir::Literal::Rune(_) => gcx.types.rune,
             hir::Literal::String(_) => gcx.types.string,
-            hir::Literal::Integer { suffix, .. } => {
+            hir::Literal::Integer { value, suffix } => {
                 if let Some(suffix) = suffix {
-                    return match suffix {
+                    let ty = match suffix {
                         crate::parse::IntegerTypeSuffix::I8 => gcx.types.int8,
                         crate::parse::IntegerTypeSuffix::I16 => gcx.types.int16,
                         crate::parse::IntegerTypeSuffix::I32 => gcx.types.int32,
@@ -1455,6 +1543,21 @@ impl<'ctx> Checker<'ctx> {
                         crate::parse::IntegerTypeSuffix::U32 => gcx.types.uint32,
                         crate::parse::IntegerTypeSuffix::U64 => gcx.types.uint64,
                     };
+
+                    if !integer_literal_fits(*value, ty) {
+                        gcx.dcx().emit_error(
+                            format!(
+                                "integer literal '{}' is out of range for type '{}'",
+                                value,
+                                ty.format(gcx)
+                            )
+                            .into(),
+                            Some(span),
+                        );
+                        return Ty::error(gcx);
+                    }
+
+                    return ty;
                 }
 
                 let opt_ty = expectation.and_then(|ty| match ty.kind() {
@@ -1462,7 +1565,23 @@ impl<'ctx> Checker<'ctx> {
                     _ => None,
                 });
 
-                opt_ty.unwrap_or_else(|| cs.infer_cx.next_int_var())
+                if let Some(ty) = opt_ty {
+                    if !integer_literal_fits(*value, ty) {
+                        gcx.dcx().emit_error(
+                            format!(
+                                "integer literal '{}' is out of range for type '{}'",
+                                value,
+                                ty.format(gcx)
+                            )
+                            .into(),
+                            Some(span),
+                        );
+                        return Ty::error(gcx);
+                    }
+                    ty
+                } else {
+                    cs.infer_cx.next_int_var()
+                }
             }
             hir::Literal::Float(_) => {
                 let opt_ty = expectation.and_then(|ty| match ty.kind() {
@@ -4037,7 +4156,7 @@ impl<'ctx> Checker<'ctx> {
                 }
             }
             hir::PatternKind::Literal(literal) => {
-                let lit_ty = self.synth_expression_literal(literal, None, cs);
+                let lit_ty = self.synth_expression_literal(literal, pattern.span, None, cs);
                 cs.equal(ctx.adjusted_ty, lit_ty, pattern.span);
             }
             hir::PatternKind::Reference { pattern, mutable } => {
@@ -4577,6 +4696,42 @@ impl<'ctx> Checker<'ctx> {
         };
 
         gcx.cache_signature(closure_def_id, new_sig);
+    }
+}
+
+fn integer_literal_fits<'ctx>(value: u64, ty: Ty<'ctx>) -> bool {
+    let value = value as u128;
+    match ty.kind() {
+        TyKind::UInt(kind) => value <= unsigned_max_u128(kind),
+        TyKind::Int(kind) => value <= signed_nonnegative_max_u128(kind),
+        _ => true,
+    }
+}
+
+fn signed_nonnegative_max_u128(kind: IntTy) -> u128 {
+    let bits = match kind {
+        IntTy::ISize => isize::BITS,
+        IntTy::I8 => 8,
+        IntTy::I16 => 16,
+        IntTy::I32 => 32,
+        IntTy::I64 => 64,
+    };
+    (1u128 << (bits - 1)) - 1
+}
+
+fn unsigned_max_u128(kind: UIntTy) -> u128 {
+    let bits = match kind {
+        UIntTy::USize => usize::BITS,
+        UIntTy::U8 => 8,
+        UIntTy::U16 => 16,
+        UIntTy::U32 => 32,
+        UIntTy::U64 => 64,
+    };
+
+    if bits == 128 {
+        u128::MAX
+    } else {
+        (1u128 << bits) - 1
     }
 }
 

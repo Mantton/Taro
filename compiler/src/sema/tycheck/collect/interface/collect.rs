@@ -5,8 +5,11 @@ use crate::{
     error::CompileResult,
     hir::{self, AssociatedDeclarationKind, DefinitionID, Interface},
     sema::{
-        models::{InterfaceDefinition, InterfaceReference},
-        tycheck::lower::{DefTyLoweringCtx, TypeLowerer},
+        models::{AliasKind, InterfaceDefinition, InterfaceReference, TyKind},
+        tycheck::{
+            lower::{DefTyLoweringCtx, TypeLowerer},
+            utils::generics::GenericsBuilder,
+        },
     },
     span::{Spanned, Symbol},
 };
@@ -33,7 +36,7 @@ impl hir::HirVisitor for Actor<'_> {
 impl<'ctx> Actor<'ctx> {
     fn collect(&mut self, id: DefinitionID, definition: &Interface) {
         let superfaces = self.collect_superfaces(id, definition);
-        let assoc_types = self.collect_associated_types(definition);
+        let assoc_types = self.collect_associated_types(id, definition);
 
         let definition = InterfaceDefinition {
             id,
@@ -72,8 +75,11 @@ impl<'ctx> Actor<'ctx> {
 
     fn collect_associated_types(
         &mut self,
+        interface_id: DefinitionID,
         definition: &Interface,
     ) -> FxHashMap<Symbol, DefinitionID> {
+        let gcx = self.context;
+        let interface_args = GenericsBuilder::identity_for_item(gcx, interface_id);
         let mut assoc_types = FxHashMap::default();
 
         for declaration in &definition.declarations {
@@ -81,8 +87,12 @@ impl<'ctx> Actor<'ctx> {
                 AssociatedDeclarationKind::Type(_) => {
                     let assoc_id = declaration.id;
                     assoc_types.insert(declaration.identifier.symbol, assoc_id);
-
-                    // TODO: Record Type for ID
+                    let projection_ty = gcx.store.interners.intern_ty(TyKind::Alias {
+                        kind: AliasKind::Projection,
+                        def_id: assoc_id,
+                        args: interface_args,
+                    });
+                    gcx.cache_type(assoc_id, projection_ty);
                 }
                 _ => continue,
             }

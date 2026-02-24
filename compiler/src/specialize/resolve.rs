@@ -1,6 +1,6 @@
 use crate::{
     compile::context::GlobalContext,
-    hir::DefinitionID,
+    hir::{DefinitionID, StdInterface},
     sema::{
         models::{
             Const, ConstKind, GenericArgument, GenericArguments, InferTy, InterfaceReference, Ty,
@@ -93,6 +93,25 @@ fn resolve_interface_method_for_concrete<'ctx>(
             }
 
             let impl_func_id = method.implementation.impl_id()?;
+
+            // Synthetic impls are generated as associated functions on the concrete type.
+            // Their generic layout is `[self type generics..., method generics...]`, while
+            // call_args are `[Self, ...interface/method generics...]`. Build the synthetic
+            // instance args directly from the concrete Self type plus call-site generics.
+            if matches!(
+                method.implementation,
+                crate::sema::models::MethodImplementation::Synthetic(..)
+            ) {
+                let mut final_args = Vec::new();
+                if let TyKind::Adt(_, adt_args) = self_ty.kind() {
+                    final_args.extend(adt_args.iter().cloned());
+                }
+                if call_args.len() > 1 {
+                    final_args.extend_from_slice(&call_args[1..]);
+                }
+                let final_args = gcx.store.interners.intern_generic_args(final_args);
+                return Some(Instance::item(impl_func_id, final_args));
+            }
 
             // Strategy 1: Deduction (Preferred for concrete types)
             // If this is a method from an impl block, we try to deduce the impl's generic arguments
@@ -212,6 +231,18 @@ fn interface_args_from_call<'ctx>(
         return Some(gcx.store.interners.intern_generic_args(Vec::new()));
     }
     if args.len() < count {
+        // PartialEq has default `Rhs = Self`; calls often materialize only `Self`.
+        if let Some(partial_eq_id) = gcx.std_interface_def(StdInterface::PartialEq) {
+            if interface_id == partial_eq_id && args.len() == 1 {
+                let self_arg = args.get(0).copied()?;
+                if let GenericArgument::Type(self_ty) = self_arg {
+                    return Some(gcx.store.interners.intern_generic_args(vec![
+                        GenericArgument::Type(self_ty),
+                        GenericArgument::Type(self_ty),
+                    ]));
+                }
+            }
+        }
         return None;
     }
     let slice: Vec<_> = args.iter().take(count).cloned().collect();

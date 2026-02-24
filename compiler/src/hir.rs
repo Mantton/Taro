@@ -978,7 +978,7 @@ impl StdInterface {
     pub fn is_derivable(self) -> bool {
         matches!(
             self,
-            Self::Copy | Self::Clone | Self::Hashable | Self::Equatable
+            Self::Copy | Self::Clone | Self::Hashable | Self::Equatable | Self::PartialEq
         )
     }
 

@@ -486,6 +486,11 @@ impl<'ctx> ConstraintSolver<'ctx> {
         seen.reserve(records.len());
 
         for record in records {
+            if !self.visible_traits.is_empty() && !self.visible_traits.contains(&record.interface.id)
+            {
+                continue;
+            }
+
             if !self.extension_target_matches(record.extension, self_ty, span) {
                 continue;
             }

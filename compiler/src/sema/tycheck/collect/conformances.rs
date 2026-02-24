@@ -123,7 +123,7 @@ impl<'ctx> Actor<'ctx> {
     }
 
     /// Collect conformances from inline syntax on struct/enum definitions.
-    /// This allows auto-derivation of derivable interfaces like Copy, Clone, Hashable, Equatable.
+    /// This allows auto-derivation of derivable interfaces like Copy, Clone, Hashable, PartialEq.
     fn collect_inline_conformance(
         &mut self,
         type_id: DefinitionID,

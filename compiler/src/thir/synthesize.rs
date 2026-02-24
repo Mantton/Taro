@@ -8,17 +8,17 @@ use crate::{
     hir::{DefinitionID, StdInterface},
     sema::{
         models::{
-            GenericArgument, GenericArguments, InterfaceReference, SyntheticMethodKind, Ty, TyKind,
-            TyList,
+            GenericArgument, GenericArguments, GenericParameter, InterfaceReference,
+            SyntheticMethodKind, Ty, TyKind, TyList,
         },
         resolve::models::TypeHead,
         tycheck::derive::SyntheticMethodInfo,
     },
     span::{FileID, Span},
     thir::{
-        AdtExpression, Arm, ArmId, BindingMode, Block, BlockId, Expr, ExprId, ExprKind,
-        FieldExpression, FieldIndex, FieldPattern, Param, Pattern, PatternKind, Stmt, StmtId,
-        ThirFunction, VariantIndex,
+        AdtExpression, Arm, ArmId, BindingMode, Block, BlockId, Constant, ConstantKind, Expr,
+        ExprId, ExprKind, FieldExpression, FieldIndex, FieldPattern, Param, Pattern, PatternKind,
+        Stmt, StmtId, StmtKind, ThirFunction, VariantIndex,
     },
 };
 use index_vec::IndexVec;
@@ -146,28 +146,12 @@ fn register_definition<'ctx>(
             };
             (generics, signature)
         }
-        _ => {
-            // Construct Generics
-            // For Clone, we usually inherit generics from the Self type.
-            // If Self is `Foo[T]`, generics are `[T]`.
-            let generics = match info.self_ty.kind() {
-                TyKind::Adt(def, _) => gcx.generics_of(def.id).clone(),
-                _ => crate::sema::models::Generics {
-                    parameters: vec![],
-                    has_self: false,
-                    parent: None,
-                    parent_count: 0,
-                },
-            };
-
-            // Construct Signature
-            // func clone(&self) -> Self
-            let self_ty = info.self_ty;
+        SyntheticMethodKind::CopyClone | SyntheticMethodKind::MemberwiseClone => {
+            let generics = self_type_generics(gcx, info.self_ty);
             let self_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
-                self_ty,
+                info.self_ty,
                 crate::hir::Mutability::Immutable,
             ));
-
             let signature = crate::sema::models::LabeledFunctionSignature {
                 inputs: vec![crate::sema::models::LabeledFunctionParameter {
                     name: gcx.intern_symbol("self"),
@@ -175,7 +159,93 @@ fn register_definition<'ctx>(
                     label: None,
                     default_provider: None,
                 }],
-                output: self_ty,
+                output: info.self_ty,
+                is_variadic: false,
+                abi: None,
+            };
+            (generics, signature)
+        }
+        SyntheticMethodKind::MemberwiseEquality => {
+            let rhs_ty = match partial_eq_rhs_ty(info.interface_args, info.self_ty) {
+                Some(rhs) => rhs,
+                None => return,
+            };
+            let generics = self_type_generics(gcx, info.self_ty);
+            let self_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
+                info.self_ty,
+                crate::hir::Mutability::Immutable,
+            ));
+            let rhs_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
+                rhs_ty,
+                crate::hir::Mutability::Immutable,
+            ));
+            let signature = crate::sema::models::LabeledFunctionSignature {
+                inputs: vec![
+                    crate::sema::models::LabeledFunctionParameter {
+                        name: gcx.intern_symbol("self"),
+                        ty: self_ref_ty,
+                        label: None,
+                        default_provider: None,
+                    },
+                    crate::sema::models::LabeledFunctionParameter {
+                        name: gcx.intern_symbol("other"),
+                        ty: rhs_ref_ty,
+                        label: None,
+                        default_provider: None,
+                    },
+                ],
+                output: gcx.types.bool,
+                is_variadic: false,
+                abi: None,
+            };
+            (generics, signature)
+        }
+        SyntheticMethodKind::MemberwiseHash => {
+            let mut generics = self_type_generics(gcx, info.self_ty);
+            let method_generics = gcx.generics_of(info.method_id);
+            if method_generics.parameters.is_empty() {
+                return;
+            }
+
+            let mut hasher_param = None;
+            for param in &method_generics.parameters {
+                let mut cloned = param.clone();
+                cloned.index = generics.parent_count + generics.parameters.len();
+                if hasher_param.is_none() {
+                    hasher_param = Some(GenericParameter {
+                        index: cloned.index,
+                        name: cloned.name,
+                    });
+                }
+                generics.parameters.push(cloned);
+            }
+
+            let hasher_param = hasher_param.expect("hash synthesis requires method generic");
+            let hasher_ty = Ty::new(TyKind::Parameter(hasher_param), gcx);
+            let self_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
+                info.self_ty,
+                crate::hir::Mutability::Immutable,
+            ));
+            let hasher_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
+                hasher_ty,
+                crate::hir::Mutability::Mutable,
+            ));
+            let signature = crate::sema::models::LabeledFunctionSignature {
+                inputs: vec![
+                    crate::sema::models::LabeledFunctionParameter {
+                        name: gcx.intern_symbol("self"),
+                        ty: self_ref_ty,
+                        label: None,
+                        default_provider: None,
+                    },
+                    crate::sema::models::LabeledFunctionParameter {
+                        name: gcx.intern_symbol("hasher"),
+                        ty: hasher_ref_ty,
+                        label: Some(gcx.intern_symbol("into")),
+                        default_provider: None,
+                    },
+                ],
+                output: gcx.types.void,
                 is_variadic: false,
                 abi: None,
             };
@@ -212,13 +282,15 @@ fn synthesize_method<'ctx>(
         SyntheticMethodKind::MemberwiseClone => {
             synthesize_memberwise_clone(gcx, type_head, method_id, info, syn_id)
         }
+        SyntheticMethodKind::MemberwiseHash => {
+            synthesize_memberwise_hash(gcx, type_head, method_id, info, syn_id)
+        }
+        SyntheticMethodKind::MemberwiseEquality => {
+            synthesize_memberwise_equality(gcx, type_head, method_id, info, syn_id)
+        }
         SyntheticMethodKind::ClosureCall
         | SyntheticMethodKind::ClosureCallMut
         | SyntheticMethodKind::ClosureCallOnce => synthesize_closure_call(gcx, info, syn_id),
-        SyntheticMethodKind::MemberwiseHash | SyntheticMethodKind::MemberwiseEquality => {
-            // TODO: Implement these
-            None
-        }
     }
 }
 
@@ -276,6 +348,163 @@ impl<'ctx> ThirBuilder<'ctx> {
         self.blocks.push(Block { id, stmts, expr });
         id
     }
+
+    fn push_stmt(&mut self, kind: StmtKind<'ctx>) -> StmtId {
+        let id = StmtId::from_raw(self.stmts.len() as u32);
+        self.stmts.push(Stmt {
+            kind,
+            span: self.span,
+        });
+        id
+    }
+
+    fn push_stmt_expr(&mut self, expr: ExprId) -> StmtId {
+        self.push_stmt(StmtKind::Expr(expr))
+    }
+}
+
+fn self_type_generics<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    self_ty: Ty<'ctx>,
+) -> crate::sema::models::Generics {
+    match self_ty.kind() {
+        TyKind::Adt(def, _) => gcx.generics_of(def.id).clone(),
+        _ => crate::sema::models::Generics {
+            parameters: vec![],
+            has_self: false,
+            parent: None,
+            parent_count: 0,
+        },
+    }
+}
+
+fn partial_eq_rhs_ty<'ctx>(
+    interface_args: GenericArguments<'ctx>,
+    self_ty: Ty<'ctx>,
+) -> Option<Ty<'ctx>> {
+    match interface_args.get(1) {
+        Some(GenericArgument::Type(ty)) => match ty.kind() {
+            TyKind::Infer(_) | TyKind::Parameter(_) => Some(self_ty),
+            _ => Some(*ty),
+        },
+        Some(GenericArgument::Const(_)) => None,
+        None => Some(self_ty),
+    }
+}
+
+fn bool_literal<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    builder: &mut ThirBuilder<'ctx>,
+    value: bool,
+) -> ExprId {
+    builder.push_expr(
+        ExprKind::Literal(Constant {
+            ty: gcx.types.bool,
+            value: ConstantKind::Bool(value),
+        }),
+        gcx.types.bool,
+    )
+}
+
+fn make_zst_callee<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    builder: &mut ThirBuilder<'ctx>,
+    callee_id: DefinitionID,
+    generic_args: GenericArguments<'ctx>,
+) -> ExprId {
+    let sig = gcx.get_signature(callee_id);
+    let inputs: Vec<_> = sig.inputs.iter().map(|p| p.ty).collect();
+    let inputs = gcx.store.interners.intern_ty_list(inputs);
+    let callee_ty = gcx.store.interners.intern_ty(TyKind::FnPointer {
+        inputs,
+        output: sig.output,
+    });
+    builder.push_expr(
+        ExprKind::Zst {
+            id: callee_id,
+            generic_args: Some(generic_args),
+        },
+        callee_ty,
+    )
+}
+
+fn emit_hash_call<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    builder: &mut ThirBuilder<'ctx>,
+    hash_method_id: DefinitionID,
+    value_expr: ExprId,
+    value_ty: Ty<'ctx>,
+    hasher_param_id: crate::hir::NodeID,
+    hasher_ref_ty: Ty<'ctx>,
+    hasher_ty: Ty<'ctx>,
+) -> ExprId {
+    let value_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
+        value_ty,
+        crate::hir::Mutability::Immutable,
+    ));
+    let value_ref = builder.push_expr(
+        ExprKind::Reference {
+            mutable: false,
+            expr: value_expr,
+        },
+        value_ref_ty,
+    );
+    let hasher_local = builder.push_expr(ExprKind::Local(hasher_param_id), hasher_ref_ty);
+
+    let generic_args = gcx.store.interners.intern_generic_args(vec![
+        GenericArgument::Type(value_ty),
+        GenericArgument::Type(hasher_ty),
+    ]);
+    let callee = make_zst_callee(gcx, builder, hash_method_id, generic_args);
+
+    builder.push_expr(
+        ExprKind::Call {
+            callee,
+            args: vec![value_ref, hasher_local],
+        },
+        gcx.types.void,
+    )
+}
+
+fn emit_eq_call<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    builder: &mut ThirBuilder<'ctx>,
+    eq_method_id: DefinitionID,
+    lhs_expr: ExprId,
+    rhs_expr: ExprId,
+    value_ty: Ty<'ctx>,
+) -> ExprId {
+    let value_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
+        value_ty,
+        crate::hir::Mutability::Immutable,
+    ));
+    let lhs_ref = builder.push_expr(
+        ExprKind::Reference {
+            mutable: false,
+            expr: lhs_expr,
+        },
+        value_ref_ty,
+    );
+    let rhs_ref = builder.push_expr(
+        ExprKind::Reference {
+            mutable: false,
+            expr: rhs_expr,
+        },
+        value_ref_ty,
+    );
+
+    let generic_args = gcx.store.interners.intern_generic_args(vec![
+        GenericArgument::Type(value_ty),
+        GenericArgument::Type(value_ty),
+    ]);
+    let callee = make_zst_callee(gcx, builder, eq_method_id, generic_args);
+    builder.push_expr(
+        ExprKind::Call {
+            callee,
+            args: vec![lhs_ref, rhs_ref],
+        },
+        gcx.types.bool,
+    )
 }
 
 /// Synthesize `clone` for Copy types: just dereference self.
@@ -462,6 +691,544 @@ fn synthesize_memberwise_clone<'ctx>(
         enum_def,
         clone_def,
     )
+}
+
+fn synthesize_memberwise_hash<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    type_head: TypeHead,
+    method_id: DefinitionID,
+    info: SyntheticMethodInfo<'ctx>,
+    syn_id: DefinitionID,
+) -> Option<ThirFunction<'ctx>> {
+    let TypeHead::Nominal(def_id) = type_head else {
+        return None;
+    };
+
+    let method_generics = gcx.generics_of(method_id);
+    let hasher_name = method_generics
+        .parameters
+        .first()
+        .map(|param| param.name)
+        .unwrap_or_else(|| gcx.intern_symbol("H"));
+
+    let self_generics = self_type_generics(gcx, info.self_ty);
+    let hasher_index = self_generics.parent_count + self_generics.parameters.len();
+    let hasher_ty = Ty::new(
+        TyKind::Parameter(GenericParameter {
+            index: hasher_index,
+            name: hasher_name,
+        }),
+        gcx,
+    );
+
+    let span = synthetic_span();
+    let mut builder = ThirBuilder::new(gcx, span);
+
+    let self_node_id = synthetic_node_id(syn_id, 0);
+    let hasher_node_id = synthetic_node_id(syn_id, 1);
+
+    let self_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
+        info.self_ty,
+        crate::hir::Mutability::Immutable,
+    ));
+    let hasher_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
+        hasher_ty,
+        crate::hir::Mutability::Mutable,
+    ));
+
+    let self_param = Param {
+        id: self_node_id,
+        name: gcx.intern_symbol("self"),
+        ty: self_ref_ty,
+        span,
+    };
+    let hasher_param = Param {
+        id: hasher_node_id,
+        name: gcx.intern_symbol("hasher"),
+        ty: hasher_ref_ty,
+        span,
+    };
+
+    if let Some(struct_def) = gcx.try_get_struct_definition(def_id) {
+        let mut stmts = Vec::new();
+        for (idx, field) in struct_def.fields.iter().enumerate() {
+            let self_local = builder.push_expr(ExprKind::Local(self_node_id), self_ref_ty);
+            let deref_self = builder.push_expr(ExprKind::Deref(self_local), info.self_ty);
+            let field_value = builder.push_expr(
+                ExprKind::Field {
+                    lhs: deref_self,
+                    index: FieldIndex::from_usize(idx),
+                },
+                field.ty,
+            );
+            let call = emit_hash_call(
+                gcx,
+                &mut builder,
+                method_id,
+                field_value,
+                field.ty,
+                hasher_node_id,
+                hasher_ref_ty,
+                hasher_ty,
+            );
+            stmts.push(builder.push_stmt_expr(call));
+        }
+
+        let body_block = builder.push_block(stmts, None);
+        return Some(ThirFunction {
+            id: syn_id,
+            body: Some(body_block),
+            span,
+            params: vec![self_param, hasher_param],
+            stmts: builder.stmts,
+            blocks: builder.blocks,
+            exprs: builder.exprs,
+            arms: IndexVec::new(),
+            match_trees: FxHashMap::default(),
+        });
+    }
+
+    let enum_def = gcx.try_get_enum_definition(def_id)?;
+    synthesize_enum_hash(
+        gcx,
+        builder,
+        self_param,
+        self_node_id,
+        self_ref_ty,
+        hasher_param,
+        hasher_node_id,
+        hasher_ref_ty,
+        hasher_ty,
+        info,
+        syn_id,
+        enum_def,
+        method_id,
+    )
+}
+
+fn synthesize_memberwise_equality<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    type_head: TypeHead,
+    method_id: DefinitionID,
+    info: SyntheticMethodInfo<'ctx>,
+    syn_id: DefinitionID,
+) -> Option<ThirFunction<'ctx>> {
+    let TypeHead::Nominal(def_id) = type_head else {
+        return None;
+    };
+    let rhs_ty = partial_eq_rhs_ty(info.interface_args, info.self_ty)?;
+    if rhs_ty != info.self_ty {
+        return None;
+    }
+
+    let span = synthetic_span();
+    let mut builder = ThirBuilder::new(gcx, span);
+
+    let self_node_id = synthetic_node_id(syn_id, 0);
+    let other_node_id = synthetic_node_id(syn_id, 1);
+
+    let self_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
+        info.self_ty,
+        crate::hir::Mutability::Immutable,
+    ));
+    let other_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
+        rhs_ty,
+        crate::hir::Mutability::Immutable,
+    ));
+
+    let self_param = Param {
+        id: self_node_id,
+        name: gcx.intern_symbol("self"),
+        ty: self_ref_ty,
+        span,
+    };
+    let other_param = Param {
+        id: other_node_id,
+        name: gcx.intern_symbol("other"),
+        ty: other_ref_ty,
+        span,
+    };
+
+    if let Some(struct_def) = gcx.try_get_struct_definition(def_id) {
+        let mut result = bool_literal(gcx, &mut builder, true);
+        for (idx, field) in struct_def.fields.iter().enumerate() {
+            let self_local = builder.push_expr(ExprKind::Local(self_node_id), self_ref_ty);
+            let self_deref = builder.push_expr(ExprKind::Deref(self_local), info.self_ty);
+            let lhs = builder.push_expr(
+                ExprKind::Field {
+                    lhs: self_deref,
+                    index: FieldIndex::from_usize(idx),
+                },
+                field.ty,
+            );
+
+            let other_local = builder.push_expr(ExprKind::Local(other_node_id), other_ref_ty);
+            let other_deref = builder.push_expr(ExprKind::Deref(other_local), rhs_ty);
+            let rhs = builder.push_expr(
+                ExprKind::Field {
+                    lhs: other_deref,
+                    index: FieldIndex::from_usize(idx),
+                },
+                field.ty,
+            );
+
+            let field_eq = emit_eq_call(gcx, &mut builder, method_id, lhs, rhs, field.ty);
+            result = builder.push_expr(
+                ExprKind::Logical {
+                    op: crate::mir::LogicalOperator::And,
+                    lhs: result,
+                    rhs: field_eq,
+                },
+                gcx.types.bool,
+            );
+        }
+
+        let body_block = builder.push_block(vec![], Some(result));
+        return Some(ThirFunction {
+            id: syn_id,
+            body: Some(body_block),
+            span,
+            params: vec![self_param, other_param],
+            stmts: builder.stmts,
+            blocks: builder.blocks,
+            exprs: builder.exprs,
+            arms: IndexVec::new(),
+            match_trees: FxHashMap::default(),
+        });
+    }
+
+    let enum_def = gcx.try_get_enum_definition(def_id)?;
+    synthesize_enum_equality(
+        gcx,
+        builder,
+        self_param,
+        self_node_id,
+        self_ref_ty,
+        other_param,
+        other_node_id,
+        other_ref_ty,
+        info,
+        syn_id,
+        enum_def,
+        method_id,
+    )
+}
+
+fn synthesize_enum_hash<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    mut builder: ThirBuilder<'ctx>,
+    self_param: Param<'ctx>,
+    self_node_id: crate::hir::NodeID,
+    self_ref_ty: Ty<'ctx>,
+    hasher_param: Param<'ctx>,
+    hasher_node_id: crate::hir::NodeID,
+    hasher_ref_ty: Ty<'ctx>,
+    hasher_ty: Ty<'ctx>,
+    info: SyntheticMethodInfo<'ctx>,
+    syn_id: DefinitionID,
+    enum_def: &crate::sema::models::EnumDefinition<'ctx>,
+    hash_method_id: DefinitionID,
+) -> Option<ThirFunction<'ctx>> {
+    use crate::sema::models::EnumVariantKind;
+
+    let span = synthetic_span();
+    let adt_def = enum_def.adt_def;
+    let self_local = builder.push_expr(ExprKind::Local(self_node_id), self_ref_ty);
+    let scrutinee = builder.push_expr(ExprKind::Deref(self_local), info.self_ty);
+
+    let mut node_offset = 2u32;
+    let mut arm_ids = Vec::new();
+
+    for (variant_idx, variant) in enum_def.variants.iter().enumerate() {
+        let mut subpatterns = Vec::new();
+        let mut field_binding_ids = Vec::new();
+        let mut field_tys = Vec::new();
+
+        if let EnumVariantKind::Tuple(fields) = &variant.kind {
+            for (field_idx, field) in fields.iter().enumerate() {
+                let binding_node_id = synthetic_node_id(syn_id, node_offset);
+                node_offset += 1;
+                let binding_name = gcx.intern_symbol(&format!("_f{}", field_idx));
+                subpatterns.push(FieldPattern {
+                    index: FieldIndex::from_usize(field_idx),
+                    pattern: Pattern {
+                        ty: field.ty,
+                        span,
+                        kind: PatternKind::Binding {
+                            name: binding_name,
+                            local: binding_node_id,
+                            ty: field.ty,
+                            mode: BindingMode::ByValue,
+                        },
+                    },
+                });
+                field_binding_ids.push(binding_node_id);
+                field_tys.push(field.ty);
+            }
+        }
+
+        let pattern = Pattern {
+            ty: info.self_ty,
+            span,
+            kind: PatternKind::Variant {
+                definition: adt_def,
+                variant: *variant,
+                subpatterns,
+            },
+        };
+
+        let tag_ty = gcx.types.uint32;
+        let tag_expr = builder.push_expr(
+            ExprKind::Literal(Constant {
+                ty: tag_ty,
+                value: ConstantKind::Integer(variant_idx as u64),
+            }),
+            tag_ty,
+        );
+
+        let mut stmts = Vec::new();
+        let tag_hash = emit_hash_call(
+            gcx,
+            &mut builder,
+            hash_method_id,
+            tag_expr,
+            tag_ty,
+            hasher_node_id,
+            hasher_ref_ty,
+            hasher_ty,
+        );
+        stmts.push(builder.push_stmt_expr(tag_hash));
+
+        for (binding_id, field_ty) in field_binding_ids.into_iter().zip(field_tys.into_iter()) {
+            let field_local = builder.push_expr(ExprKind::Local(binding_id), field_ty);
+            let field_hash = emit_hash_call(
+                gcx,
+                &mut builder,
+                hash_method_id,
+                field_local,
+                field_ty,
+                hasher_node_id,
+                hasher_ref_ty,
+                hasher_ty,
+            );
+            stmts.push(builder.push_stmt_expr(field_hash));
+        }
+
+        let block = builder.push_block(stmts, None);
+        let body = builder.push_expr(ExprKind::Block(block), gcx.types.void);
+
+        let arm_id = ArmId::from_raw(builder.arms.len() as u32);
+        builder.arms.push(Arm {
+            pattern: Box::new(pattern),
+            guard: None,
+            body,
+            span,
+        });
+        arm_ids.push(arm_id);
+    }
+
+    let match_expr = builder.push_expr(
+        ExprKind::Match {
+            scrutinee,
+            arms: arm_ids,
+        },
+        gcx.types.void,
+    );
+    let body_block = builder.push_block(vec![], Some(match_expr));
+
+    Some(ThirFunction {
+        id: syn_id,
+        body: Some(body_block),
+        span,
+        params: vec![self_param, hasher_param],
+        stmts: builder.stmts,
+        blocks: builder.blocks,
+        exprs: builder.exprs,
+        arms: builder.arms,
+        match_trees: FxHashMap::default(),
+    })
+}
+
+fn synthesize_enum_equality<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    mut builder: ThirBuilder<'ctx>,
+    self_param: Param<'ctx>,
+    self_node_id: crate::hir::NodeID,
+    self_ref_ty: Ty<'ctx>,
+    other_param: Param<'ctx>,
+    other_node_id: crate::hir::NodeID,
+    other_ref_ty: Ty<'ctx>,
+    info: SyntheticMethodInfo<'ctx>,
+    syn_id: DefinitionID,
+    enum_def: &crate::sema::models::EnumDefinition<'ctx>,
+    eq_method_id: DefinitionID,
+) -> Option<ThirFunction<'ctx>> {
+    use crate::sema::models::EnumVariantKind;
+
+    let span = synthetic_span();
+    let adt_def = enum_def.adt_def;
+    let self_local = builder.push_expr(ExprKind::Local(self_node_id), self_ref_ty);
+    let self_scrutinee = builder.push_expr(ExprKind::Deref(self_local), info.self_ty);
+
+    let mut node_offset = 2u32;
+    let mut outer_arms = Vec::new();
+
+    for variant in enum_def.variants.iter() {
+        let mut self_subpatterns = Vec::new();
+        let mut self_binding_ids = Vec::new();
+        let mut field_tys = Vec::new();
+
+        if let EnumVariantKind::Tuple(fields) = &variant.kind {
+            for (field_idx, field) in fields.iter().enumerate() {
+                let binding_node_id = synthetic_node_id(syn_id, node_offset);
+                node_offset += 1;
+                let binding_name = gcx.intern_symbol(&format!("_lhs{}", field_idx));
+                self_subpatterns.push(FieldPattern {
+                    index: FieldIndex::from_usize(field_idx),
+                    pattern: Pattern {
+                        ty: field.ty,
+                        span,
+                        kind: PatternKind::Binding {
+                            name: binding_name,
+                            local: binding_node_id,
+                            ty: field.ty,
+                            mode: BindingMode::ByValue,
+                        },
+                    },
+                });
+                self_binding_ids.push(binding_node_id);
+                field_tys.push(field.ty);
+            }
+        }
+
+        let outer_pattern = Pattern {
+            ty: info.self_ty,
+            span,
+            kind: PatternKind::Variant {
+                definition: adt_def,
+                variant: *variant,
+                subpatterns: self_subpatterns,
+            },
+        };
+
+        let other_local = builder.push_expr(ExprKind::Local(other_node_id), other_ref_ty);
+        let other_scrutinee = builder.push_expr(ExprKind::Deref(other_local), info.self_ty);
+
+        let mut inner_arms = Vec::new();
+        let mut other_subpatterns = Vec::new();
+        let mut other_binding_ids = Vec::new();
+
+        if let EnumVariantKind::Tuple(fields) = &variant.kind {
+            for (field_idx, field) in fields.iter().enumerate() {
+                let binding_node_id = synthetic_node_id(syn_id, node_offset);
+                node_offset += 1;
+                let binding_name = gcx.intern_symbol(&format!("_rhs{}", field_idx));
+                other_subpatterns.push(FieldPattern {
+                    index: FieldIndex::from_usize(field_idx),
+                    pattern: Pattern {
+                        ty: field.ty,
+                        span,
+                        kind: PatternKind::Binding {
+                            name: binding_name,
+                            local: binding_node_id,
+                            ty: field.ty,
+                            mode: BindingMode::ByValue,
+                        },
+                    },
+                });
+                other_binding_ids.push(binding_node_id);
+            }
+        }
+
+        let mut same_variant_result = bool_literal(gcx, &mut builder, true);
+        for ((lhs_id, rhs_id), field_ty) in self_binding_ids
+            .iter()
+            .zip(other_binding_ids.iter())
+            .zip(field_tys.iter())
+        {
+            let lhs = builder.push_expr(ExprKind::Local(*lhs_id), *field_ty);
+            let rhs = builder.push_expr(ExprKind::Local(*rhs_id), *field_ty);
+            let field_eq = emit_eq_call(gcx, &mut builder, eq_method_id, lhs, rhs, *field_ty);
+            same_variant_result = builder.push_expr(
+                ExprKind::Logical {
+                    op: crate::mir::LogicalOperator::And,
+                    lhs: same_variant_result,
+                    rhs: field_eq,
+                },
+                gcx.types.bool,
+            );
+        }
+
+        let same_pattern = Pattern {
+            ty: info.self_ty,
+            span,
+            kind: PatternKind::Variant {
+                definition: adt_def,
+                variant: *variant,
+                subpatterns: other_subpatterns,
+            },
+        };
+        let same_arm_id = ArmId::from_raw(builder.arms.len() as u32);
+        builder.arms.push(Arm {
+            pattern: Box::new(same_pattern),
+            guard: None,
+            body: same_variant_result,
+            span,
+        });
+        inner_arms.push(same_arm_id);
+
+        let false_expr = bool_literal(gcx, &mut builder, false);
+        let fallback_arm_id = ArmId::from_raw(builder.arms.len() as u32);
+        builder.arms.push(Arm {
+            pattern: Box::new(Pattern {
+                ty: info.self_ty,
+                span,
+                kind: PatternKind::Wild,
+            }),
+            guard: None,
+            body: false_expr,
+            span,
+        });
+        inner_arms.push(fallback_arm_id);
+
+        let inner_match = builder.push_expr(
+            ExprKind::Match {
+                scrutinee: other_scrutinee,
+                arms: inner_arms,
+            },
+            gcx.types.bool,
+        );
+
+        let outer_arm_id = ArmId::from_raw(builder.arms.len() as u32);
+        builder.arms.push(Arm {
+            pattern: Box::new(outer_pattern),
+            guard: None,
+            body: inner_match,
+            span,
+        });
+        outer_arms.push(outer_arm_id);
+    }
+
+    let outer_match = builder.push_expr(
+        ExprKind::Match {
+            scrutinee: self_scrutinee,
+            arms: outer_arms,
+        },
+        gcx.types.bool,
+    );
+    let body_block = builder.push_block(vec![], Some(outer_match));
+
+    Some(ThirFunction {
+        id: syn_id,
+        body: Some(body_block),
+        span,
+        params: vec![self_param, other_param],
+        stmts: builder.stmts,
+        blocks: builder.blocks,
+        exprs: builder.exprs,
+        arms: builder.arms,
+        match_trees: FxHashMap::default(),
+    })
 }
 
 fn synthesize_closure_call<'ctx>(

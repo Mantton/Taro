@@ -1,4 +1,6 @@
 // Test: derived Clone for structs and enums.
+import std.hash.{DefaultHasher, Hashable, Hasher}
+import std.ops.PartialEq
 
 struct Point: Clone, Copy {
     x: int32
@@ -29,6 +31,17 @@ enum ResultValue: Clone {
 enum MaybeInt: Clone {
     case Some(int32)
     case None
+}
+
+struct PointEqHash: Hashable, PartialEq, Copy {
+    x: int32
+    y: int32
+}
+
+enum MaybeIntEqHash: Hashable, PartialEq, Copy {
+    case None
+    case Some(int32)
+    case Pair(int32, int32)
 }
 
 func testStructClone() {
@@ -78,8 +91,41 @@ func testEnumClone() {
     }
 }
 
+func digestEqHash[T: Hashable](_ value: T) -> uint64 {
+    var hasher = DefaultHasher.new()
+    value.hash(into: &mut hasher)
+    hasher.finish()
+}
+
+func testDerivedHashableAndPartialEq() {
+    let a = PointEqHash { x: 1, y: 2 }
+    let b = PointEqHash { x: 1, y: 2 }
+    let c = PointEqHash { x: 1, y: 3 }
+
+    assert(a == b, "derived PartialEq for struct")
+    assert(a != c, "derived PartialEq should detect struct field mismatch")
+    assert(
+        digestEqHash(a) == digestEqHash(b),
+        "equal struct values should hash equally under derived Hashable",
+    )
+
+    let e1 = MaybeIntEqHash.Some(7)
+    let e2 = MaybeIntEqHash.Some(7)
+    let e3 = MaybeIntEqHash.Pair(7, 0)
+    let e4 = MaybeIntEqHash.None
+
+    assert(e1 == e2, "derived PartialEq for enum payload")
+    assert(e1 != e3, "derived PartialEq should include enum variant")
+    assert(e1 != e4, "derived PartialEq should distinguish empty variant")
+    assert(
+        digestEqHash(e1) == digestEqHash(e2),
+        "equal enum values should hash equally under derived Hashable",
+    )
+}
+
 func main() {
     testStructClone()
     testEnumClone()
+    testDerivedHashableAndPartialEq()
     print("Success")
 }

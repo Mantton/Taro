@@ -170,7 +170,9 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
 
         match &node.kind {
             ast::UseTreeKind::Glob => {
-                // TODO: Do we want to tag glob nodes?
+                // Intentional no-op: glob imports/exports do not introduce a
+                // named definition entry to tag. They are tracked via usage
+                // records in the define/import-export passes.
             }
             ast::UseTreeKind::Simple { alias } => {
                 let name = if let Some(name) = alias {
