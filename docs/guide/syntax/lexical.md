@@ -111,7 +111,7 @@ Runes represent single Unicode code points and are enclosed in single quotes.
 ### Reserved Keywords
 
 ```
-any         as          break       case        const       continue
+any         as          is          break       case        const       continue
 defer       else        enum        export      extern      false
 for         func        guard       if          impl        import
 in          init        interface   let         loop        match
@@ -204,6 +204,8 @@ async       await       ref
 | `??` | Nil coalescing |
 | `\|>` | Pipe operator |
 | `as` | Type cast |
+| `as?` | Conditional existential cast |
+| `is` | Existential type assertion |
 
 ---
 

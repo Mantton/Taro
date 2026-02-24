@@ -210,7 +210,7 @@ pub enum Rvalue<'ctx> {
     Cast {
         operand: Operand<'ctx>,
         ty: Ty<'ctx>,
-        kind: CastKind,
+        kind: CastKind<'ctx>,
     },
     Ref {
         mutable: bool,
@@ -235,10 +235,18 @@ pub enum Rvalue<'ctx> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum CastKind {
+pub enum CastKind<'ctx> {
     Numeric,
     BoxExistential,
     ExistentialUpcast,
+    /// Runtime type test: `value is Target`.
+    ExistentialTypeIs {
+        target: Ty<'ctx>,
+    },
+    /// Runtime assertion cast: `value as? Target`.
+    ExistentialTryCast {
+        target: Ty<'ctx>,
+    },
     Pointer,
     /// Coerce a non-capturing closure to a function pointer
     ClosureToFnPointer,
@@ -427,6 +435,8 @@ impl Category {
             | thir::ExprKind::Logical { .. }
             | thir::ExprKind::Unary { .. }
             | thir::ExprKind::Cast { .. }
+            | thir::ExprKind::ExistentialTryCast { .. }
+            | thir::ExprKind::ExistentialTypeIs { .. }
             | thir::ExprKind::ClosureToFnPointer { .. }
             | thir::ExprKind::Tuple { .. }
             | thir::ExprKind::Array { .. }

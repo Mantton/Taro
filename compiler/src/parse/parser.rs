@@ -2710,12 +2710,29 @@ impl Parser {
     fn parse_cast_expr(&mut self) -> R<Box<Expression>> {
         let mut expr = self.parse_kw_prefix_expr()?;
 
-        while self.eat(Token::As) {
-            let ty = self.parse_type()?;
+        loop {
+            if self.eat(Token::As) {
+                let is_try_cast = self.eat_question();
+                let ty = self.parse_type()?;
 
-            let span = expr.span.clone().to(ty.span);
-            let kind = ExpressionKind::CastAs(expr, ty);
-            expr = self.build_expr(kind, span)
+                let span = expr.span.clone().to(ty.span);
+                let kind = if is_try_cast {
+                    ExpressionKind::CastAsTry(expr, ty)
+                } else {
+                    ExpressionKind::CastAs(expr, ty)
+                };
+                expr = self.build_expr(kind, span);
+                continue;
+            }
+
+            if self.eat(Token::Is) {
+                let ty = self.parse_type()?;
+                let span = expr.span.clone().to(ty.span);
+                expr = self.build_expr(ExpressionKind::TypeIs(expr, ty), span);
+                continue;
+            }
+
+            break;
         }
 
         return Ok(expr);
@@ -4624,6 +4641,18 @@ mod tests {
     fn test_cast_expr() {
         let expr = parse_expr_str("x as int64");
         assert!(matches!(expr.kind, ExpressionKind::CastAs(_, _)));
+    }
+
+    #[test]
+    fn test_try_cast_expr() {
+        let expr = parse_expr_str("x as? any Printable");
+        assert!(matches!(expr.kind, ExpressionKind::CastAsTry(_, _)));
+    }
+
+    #[test]
+    fn test_type_is_expr() {
+        let expr = parse_expr_str("x is any Printable");
+        assert!(matches!(expr.kind, ExpressionKind::TypeIs(_, _)));
     }
 
     #[test]

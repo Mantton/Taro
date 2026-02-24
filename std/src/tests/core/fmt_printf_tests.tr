@@ -19,6 +19,37 @@ impl std.fmt.Formattable for TaggedValue {
     }
 }
 
+struct DisplayOnlyValue {
+    text: string
+}
+
+impl std.fmt.Display for DisplayOnlyValue {
+    func display(&self, _ into: &mut std.fmt.Formatter) {
+        into.writeString(self.text)
+    }
+}
+
+struct PreferFormatValue {
+    displayText: string
+    formatText: string
+}
+
+impl std.fmt.Display for PreferFormatValue {
+    func display(&self, _ into: &mut std.fmt.Formatter) {
+        into.writeString(self.displayText)
+    }
+}
+
+impl std.fmt.Formattable for PreferFormatValue {
+    func format(&self, _ into: &mut std.fmt.Formatter, _ spec: rune, _ state: &std.fmt.FormatState) {
+        if spec == 'v' {
+            into.writeString(self.formatText)
+            return
+        }
+        std.panic.panic("PreferFormatValue only supports %v")
+    }
+}
+
 @test
 func testPrintfBasic() {
     std.printf("x=%d y=%s z=%v\n", 7, "ok", true)
@@ -40,6 +71,28 @@ func testPrintfBasic() {
 func testSprintfBasic() {
     let text = std.sprintf("x=%d y=%s z=%v pct=100%%", 7, "ok", true)
     std.testing.assertEqual(text, "x=7 y=ok z=true pct=100%", "sprintf should return rendered string")
+}
+
+@test
+func testDisplayFallbackAndFormattablePreference() {
+    let display_only = DisplayOnlyValue { text: "display-only" }
+    let display_only_text = std.sprintf("%v", display_only)
+    std.testing.assertEqual(
+        display_only_text,
+        "display-only",
+        "display-only values should format via Display fallback",
+    )
+
+    let prefer_format = PreferFormatValue {
+        displayText: "display",
+        formatText: "format",
+    }
+    let prefer_format_text = std.sprintf("%v", prefer_format)
+    std.testing.assertEqual(
+        prefer_format_text,
+        "format",
+        "Formattable should be preferred over Display fallback",
+    )
 }
 
 @test

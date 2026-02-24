@@ -11,7 +11,7 @@ use crate::mir::{
     LocalDecl, LocalId, LocalKind, MirPhase, Operand, Place, PlaceElem, Rvalue, Statement,
     StatementKind, Terminator, TerminatorKind,
 };
-use crate::sema::models::GenericArguments;
+use crate::sema::models::{GenericArguments, Ty};
 use crate::sema::tycheck::utils::instantiate::{
     instantiate_const_with_args, instantiate_ty_with_args,
 };
@@ -133,7 +133,7 @@ impl Inline {
                 return false;
             }
             for local in callee_body.locals.iter() {
-                let substituted = instantiate_ty_with_args(gcx, local.ty, gen_args);
+                let substituted = instantiate_mono_ty(gcx, local.ty, gen_args);
                 if substituted.needs_instantiation() {
                     return false;
                 }
@@ -179,7 +179,7 @@ impl Inline {
                 local_map.push(site.destination.local);
             } else {
                 // Substitute types in the local declaration
-                let substituted_ty = instantiate_ty_with_args(gcx, local_decl.ty, gen_args);
+                let substituted_ty = instantiate_mono_ty(gcx, local_decl.ty, gen_args);
                 // After inlining, Param and Return locals become Temp in the caller.
                 // They're no longer actual function parameters/returns.
                 let inlined_kind = match local_decl.kind {
@@ -454,7 +454,7 @@ fn remap_place_elem<'ctx>(
     match elem {
         PlaceElem::Field(idx, ty) => {
             // Substitute the type in field projections
-            PlaceElem::Field(*idx, instantiate_ty_with_args(gcx, *ty, gen_args))
+            PlaceElem::Field(*idx, instantiate_mono_ty(gcx, *ty, gen_args))
         }
         // Other projections don't contain types that need substitution
         PlaceElem::Deref => PlaceElem::Deref,
@@ -483,13 +483,13 @@ fn remap_constant<'ctx>(
     c: &Constant<'ctx>,
     gen_args: GenericArguments<'ctx>,
 ) -> Constant<'ctx> {
-    let ty = instantiate_ty_with_args(gcx, c.ty, gen_args);
+    let ty = instantiate_mono_ty(gcx, c.ty, gen_args);
     let value = match &c.value {
         // Function constants keep their def_id but substitute their generic args
         ConstantKind::Function(def_id, fn_gen_args, sig) => {
             // Substitute the function's generic args with the inlined generic args
             let substituted_args = substitute_gen_args(gcx, *fn_gen_args, gen_args);
-            let substituted_sig = instantiate_ty_with_args(gcx, *sig, gen_args);
+            let substituted_sig = instantiate_mono_ty(gcx, *sig, gen_args);
             ConstantKind::Function(*def_id, substituted_args, substituted_sig)
         }
         // Const parameters need to be substituted with their concrete values
@@ -557,7 +557,7 @@ fn substitute_gen_args<'ctx>(
         .iter()
         .map(|arg| match arg {
             GenericArgument::Type(ty) => {
-                GenericArgument::Type(instantiate_ty_with_args(gcx, *ty, substitution))
+                GenericArgument::Type(instantiate_mono_ty(gcx, *ty, substitution))
             }
             GenericArgument::Const(c) => {
                 GenericArgument::Const(instantiate_const_with_args(gcx, *c, substitution))
@@ -587,7 +587,7 @@ fn remap_rvalue<'ctx>(
         },
         Rvalue::Cast { operand, ty, kind } => Rvalue::Cast {
             operand: remap_operand(gcx, operand, local_map, gen_args),
-            ty: instantiate_ty_with_args(gcx, *ty, gen_args),
+            ty: instantiate_mono_ty(gcx, *ty, gen_args),
             kind: *kind,
         },
         Rvalue::Ref { mutable, place } => Rvalue::Ref {
@@ -598,7 +598,7 @@ fn remap_rvalue<'ctx>(
             place: remap_place(gcx, place, local_map, gen_args),
         },
         Rvalue::Alloc { ty } => Rvalue::Alloc {
-            ty: instantiate_ty_with_args(gcx, *ty, gen_args),
+            ty: instantiate_mono_ty(gcx, *ty, gen_args),
         },
         Rvalue::Aggregate { kind, fields } => Rvalue::Aggregate {
             kind: remap_aggregate_kind(gcx, kind, gen_args),
@@ -614,7 +614,7 @@ fn remap_rvalue<'ctx>(
         } => Rvalue::Repeat {
             operand: remap_operand(gcx, operand, local_map, gen_args),
             count: *count,
-            element: instantiate_ty_with_args(gcx, *element, gen_args),
+            element: instantiate_mono_ty(gcx, *element, gen_args),
         },
     }
 }
@@ -628,7 +628,7 @@ fn remap_aggregate_kind<'ctx>(
         AggregateKind::Tuple => AggregateKind::Tuple,
         AggregateKind::Array { len, element } => AggregateKind::Array {
             len: *len,
-            element: instantiate_ty_with_args(gcx, *element, gen_args),
+            element: instantiate_mono_ty(gcx, *element, gen_args),
         },
         AggregateKind::Adt {
             def_id,
@@ -647,4 +647,14 @@ fn remap_aggregate_kind<'ctx>(
             captured_generics: substitute_gen_args(gcx, *captured_generics, gen_args),
         },
     }
+}
+
+#[inline]
+fn instantiate_mono_ty<'ctx>(
+    gcx: Gcx<'ctx>,
+    ty: Ty<'ctx>,
+    args: GenericArguments<'ctx>,
+) -> Ty<'ctx> {
+    let substituted = instantiate_ty_with_args(gcx, ty, args);
+    crate::sema::tycheck::utils::normalize_post_monomorphization(gcx, substituted)
 }

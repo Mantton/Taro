@@ -7,7 +7,9 @@ use crate::{
         models::{AdtKind, ConstKind, ConstValue, Ty, TyKind},
         resolve::models::VariantCtorKind,
         tycheck::{
-            results::TypeCheckResults, solve::Adjustment,
+            lower::{TypeLowerer, item::DefTyLoweringCtx},
+            results::TypeCheckResults,
+            solve::Adjustment,
             utils::instantiate::instantiate_signature_with_args,
         },
     },
@@ -900,6 +902,18 @@ impl<'ctx> FunctionLower<'ctx> {
             hir::ExpressionKind::CastAs(value, _) => {
                 let value = self.lower_expr(value);
                 ExprKind::Cast { value }
+            }
+            hir::ExpressionKind::CastAsTry(value, target) => {
+                let value = self.lower_expr(value);
+                let lowerer = DefTyLoweringCtx::new(self.func.id, self.gcx);
+                let target = lowerer.lowerer().lower_type(target);
+                ExprKind::ExistentialTryCast { value, target }
+            }
+            hir::ExpressionKind::TypeIs(value, target) => {
+                let value = self.lower_expr(value);
+                let lowerer = DefTyLoweringCtx::new(self.func.id, self.gcx);
+                let target = lowerer.lowerer().lower_type(target);
+                ExprKind::ExistentialTypeIs { value, target }
             }
             hir::ExpressionKind::Assign(lhs, rhs) => {
                 let target = self.lower_expr(lhs);

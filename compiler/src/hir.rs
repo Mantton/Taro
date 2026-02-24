@@ -603,6 +603,10 @@ pub enum ExpressionKind {
     Assign(Box<Expression>, Box<Expression>),
     /// `a as int`
     CastAs(Box<Expression>, Box<Type>),
+    /// `a as? any Interface`
+    CastAsTry(Box<Expression>, Box<Type>),
+    /// `a is any Interface`
+    TypeIs(Box<Expression>, Box<Type>),
     /// A Binding Condition used for Tagged Unions
     ///
     /// `if let .some(value) = foo {}`
@@ -1846,6 +1850,14 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, node: &Expression) -> V::
             try_visit!(visitor.visit_expression(rhs));
         }
         ExpressionKind::CastAs(expression, ty) => {
+            try_visit!(visitor.visit_expression(expression));
+            try_visit!(visitor.visit_type(ty));
+        }
+        ExpressionKind::CastAsTry(expression, ty) => {
+            try_visit!(visitor.visit_expression(expression));
+            try_visit!(visitor.visit_type(ty));
+        }
+        ExpressionKind::TypeIs(expression, ty) => {
             try_visit!(visitor.visit_expression(expression));
             try_visit!(visitor.visit_type(ty));
         }

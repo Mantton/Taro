@@ -108,6 +108,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             | ExprKind::Unary { .. }
             | ExprKind::Binary { .. }
             | ExprKind::Cast { .. }
+            | ExprKind::ExistentialTryCast { .. }
+            | ExprKind::ExistentialTypeIs { .. }
             | ExprKind::ClosureToFnPointer { .. }
             | ExprKind::Logical { .. }
             | ExprKind::Call { .. }

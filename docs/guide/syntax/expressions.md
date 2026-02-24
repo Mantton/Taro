@@ -20,7 +20,7 @@ From lowest to highest precedence:
 12. Bit shift: `<<`, `>>`
 13. Term: `+`, `-`
 14. Factor: `*`, `/`, `%`
-15. Cast: `as`
+15. Cast / Type Assertion: `as`, `as?`, `is`
 16. Prefix: `!`, `-`, `~`, `&`, `*`
 17. Postfix: `.`, `()`, `[]`, `?`, `?.`
 18. Primary

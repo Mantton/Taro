@@ -127,6 +127,16 @@ pub enum ExprKind<'a> {
     Cast {
         value: ExprId,
     },
+    /// `value as? Target`
+    ExistentialTryCast {
+        value: ExprId,
+        target: Ty<'a>,
+    },
+    /// `value is Target`
+    ExistentialTypeIs {
+        value: ExprId,
+        target: Ty<'a>,
+    },
     /// Binary op
     Binary {
         op: BinaryOperator,

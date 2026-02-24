@@ -64,7 +64,7 @@ This document describes the formal grammar of the Taro programming language in E
 ### Keywords
 
 ```
-any         as          break       case        const       continue
+any         as          is          break       case        const       continue
 defer       else        enum        export      extern      false
 for         func        guard       if          impl        import
 in          init        interface   let         loop        match
@@ -517,7 +517,7 @@ async       await       ref
 
 <factor_expression>    ::= <cast_expression> { ( '*' | '/' | '%' ) <cast_expression> }
 
-<cast_expression>      ::= <prefix_expression> { 'as' <type> }
+<cast_expression>      ::= <prefix_expression> { ( 'as' [ '?' ] | 'is' ) <type> }
 
 <prefix_expression>    ::= <prefix_op> <prefix_expression>
                          | <postfix_expression>
@@ -657,7 +657,7 @@ Taro uses automatic semicolon insertion (ASI). Semicolons are automatically inse
 - Assignment operators
 - Member/range/optional: `.`, `..`, `...`, `?.`, `??`
 - Pipe and arrows: `|>`, `->`, `=>`
-- Keywords: `as`, `in`
+- Keywords: `as`, `is`, `in`
 
 ---
 

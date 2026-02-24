@@ -79,6 +79,7 @@ pub enum Token {
     // Keywords
     Any,
     As,
+    Is,
     Break,
     Case,
     Const,

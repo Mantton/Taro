@@ -957,6 +957,7 @@ fn str_to_keyword(word: &str) -> Option<Token> {
     let token = match word {
         "any" => Token::Any,
         "as" => Token::As,
+        "is" => Token::Is,
         "break" => Token::Break,
         "case" => Token::Case,
         "const" => Token::Const,
@@ -1199,7 +1200,7 @@ fn is_line_continuation_starter(tok: &Token) -> bool {
         // arrows can lead a continuation (e.g., in patterns or lambdas)
         | RArrow | EqArrow
         // casting / infix-like keywords that glue to the previous expr
-        | As | In
+        | As | Is | In
     )
 }
 
@@ -1565,7 +1566,7 @@ mod tests {
 
     #[test]
     fn test_asi_keywords_continuation() {
-        // `as` and `in` ARE continuation starters
+        // `as`, `as?`, `is`, and `in` ARE continuation starters
         let input = "
         a
         as b
@@ -1576,6 +1577,39 @@ mod tests {
             vec![
                 Token::Identifier { value: "a".into() },
                 Token::As,
+                Token::Identifier { value: "b".into() },
+                Token::Semicolon,
+                Token::EOF,
+            ]
+        );
+
+        let input = "
+        a
+        as? b
+        ";
+        let tokens = tokenize(input);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Identifier { value: "a".into() },
+                Token::As,
+                Token::Question,
+                Token::Identifier { value: "b".into() },
+                Token::Semicolon,
+                Token::EOF,
+            ]
+        );
+
+        let input = "
+        a
+        is b
+        ";
+        let tokens = tokenize(input);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Identifier { value: "a".into() },
+                Token::Is,
                 Token::Identifier { value: "b".into() },
                 Token::Semicolon,
                 Token::EOF,
@@ -1644,6 +1678,7 @@ mod tests {
         let keywords = vec![
             ("any", Token::Any),
             ("as", Token::As),
+            ("is", Token::Is),
             ("break", Token::Break),
             ("case", Token::Case),
             ("const", Token::Const),

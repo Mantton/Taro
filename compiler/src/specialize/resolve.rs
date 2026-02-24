@@ -89,7 +89,11 @@ fn resolve_interface_method_for_concrete<'ctx>(
             ) {
                 let default_args =
                     instantiate_generic_args_with_args(gcx, method.args_template, call_args);
-                return Some(Instance::item(method_id, default_args));
+                let final_args =
+                    complete_instance_args_for_def(gcx, method_id, default_args, call_args);
+                let final_args =
+                    ensure_monomorphized_instance_args(gcx, method_id, final_args, call_args);
+                return Some(Instance::item(method_id, final_args));
             }
 
             let impl_func_id = method.implementation.impl_id()?;
@@ -110,6 +114,14 @@ fn resolve_interface_method_for_concrete<'ctx>(
                     final_args.extend_from_slice(&call_args[1..]);
                 }
                 let final_args = gcx.store.interners.intern_generic_args(final_args);
+                let final_args =
+                    complete_instance_args_for_def(gcx, impl_func_id, final_args, call_args);
+                let final_args = ensure_monomorphized_instance_args(
+                    gcx,
+                    impl_func_id,
+                    final_args,
+                    call_args,
+                );
                 return Some(Instance::item(impl_func_id, final_args));
             }
 
@@ -130,6 +142,14 @@ fn resolve_interface_method_for_concrete<'ctx>(
                     let mut final_args = deduced_args.to_vec();
                     final_args.extend_from_slice(method_generics);
                     let final_args = gcx.store.interners.intern_generic_args(final_args);
+                    let final_args =
+                        complete_instance_args_for_def(gcx, impl_func_id, final_args, call_args);
+                    let final_args = ensure_monomorphized_instance_args(
+                        gcx,
+                        impl_func_id,
+                        final_args,
+                        call_args,
+                    );
 
                     return Some(Instance::item(impl_func_id, final_args));
                 }
@@ -140,6 +160,9 @@ fn resolve_interface_method_for_concrete<'ctx>(
             // This works when no deduction is needed or for simple substitutions.
             let impl_args =
                 instantiate_generic_args_with_args(gcx, method.args_template, call_args);
+            let impl_args = complete_instance_args_for_def(gcx, impl_func_id, impl_args, call_args);
+            let impl_args =
+                ensure_monomorphized_instance_args(gcx, impl_func_id, impl_args, call_args);
             Some(Instance::item(impl_func_id, impl_args))
         }
         _ => None,
@@ -247,6 +270,124 @@ fn interface_args_from_call<'ctx>(
     }
     let slice: Vec<_> = args.iter().take(count).cloned().collect();
     Some(gcx.store.interners.intern_generic_args(slice))
+}
+
+fn complete_instance_args_for_def<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    def_id: DefinitionID,
+    candidate: GenericArguments<'ctx>,
+    call_args: GenericArguments<'ctx>,
+) -> GenericArguments<'ctx> {
+    let generics = gcx.generics_of(def_id);
+    let expected = generics.parent_count + generics.total_count();
+    if candidate.len() >= expected {
+        return candidate;
+    }
+
+    let mut out: Vec<_> = candidate.iter().copied().collect();
+
+    if generics.has_self && out.len() < expected {
+        if let Some(self_arg) = call_args.get(0) {
+            if out.first().copied() != Some(*self_arg) {
+                out.insert(0, *self_arg);
+            }
+        }
+    }
+
+    while out.len() < expected {
+        let next_index = out.len();
+        let Some(arg) = call_args.get(next_index) else {
+            break;
+        };
+        out.push(*arg);
+    }
+
+    gcx.store.interners.intern_generic_args(out)
+}
+
+fn ensure_monomorphized_instance_args<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    def_id: DefinitionID,
+    candidate: GenericArguments<'ctx>,
+    call_args: GenericArguments<'ctx>,
+) -> GenericArguments<'ctx> {
+    if !signature_has_unresolved_generics(gcx, def_id, candidate) {
+        return candidate;
+    }
+
+    if call_args.len() > candidate.len() {
+        let mut merged: Vec<_> = candidate.iter().copied().collect();
+        for index in merged.len()..call_args.len() {
+            if let Some(arg) = call_args.get(index) {
+                merged.push(*arg);
+            }
+        }
+        let merged = gcx.store.interners.intern_generic_args(merged);
+        if !signature_has_unresolved_generics(gcx, def_id, merged) {
+            return merged;
+        }
+    }
+
+    if !signature_has_unresolved_generics(gcx, def_id, call_args) {
+        return call_args;
+    }
+
+    candidate
+}
+
+fn signature_has_unresolved_generics<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    def_id: DefinitionID,
+    args: GenericArguments<'ctx>,
+) -> bool {
+    let sig = gcx.get_signature(def_id);
+    sig.inputs.iter().any(|param| {
+        let instantiated = instantiate_ty_with_args(gcx, param.ty, args);
+        ty_has_unresolved_generics(instantiated)
+    }) || ty_has_unresolved_generics(instantiate_ty_with_args(gcx, sig.output, args))
+}
+
+fn ty_has_unresolved_generics<'ctx>(ty: Ty<'ctx>) -> bool {
+    match ty.kind() {
+        TyKind::Parameter(_) | TyKind::Infer(_) | TyKind::Alias { .. } => true,
+        TyKind::Adt(_, args) => args.iter().any(|arg| match arg {
+            GenericArgument::Type(ty) => ty_has_unresolved_generics(*ty),
+            GenericArgument::Const(c) => {
+                matches!(c.kind, ConstKind::Param(_) | ConstKind::Infer(_))
+                    || ty_has_unresolved_generics(c.ty)
+            }
+        }),
+        TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => {
+            ty_has_unresolved_generics(inner)
+        }
+        TyKind::Array { element, len } => {
+            ty_has_unresolved_generics(element)
+                || matches!(len.kind, ConstKind::Param(_) | ConstKind::Infer(_))
+                || ty_has_unresolved_generics(len.ty)
+        }
+        TyKind::Tuple(items) => items
+            .iter()
+            .any(|item| ty_has_unresolved_generics(*item)),
+        TyKind::FnPointer { inputs, output } => {
+            inputs
+                .iter()
+                .any(|input| ty_has_unresolved_generics(*input))
+                || ty_has_unresolved_generics(output)
+        }
+        TyKind::BoxedExistential { interfaces } => interfaces.iter().any(|iface| {
+            iface.arguments.iter().any(|arg| match arg {
+                GenericArgument::Type(ty) => ty_has_unresolved_generics(*ty),
+                GenericArgument::Const(c) => {
+                    matches!(c.kind, ConstKind::Param(_) | ConstKind::Infer(_))
+                        || ty_has_unresolved_generics(c.ty)
+                }
+            }) || iface
+                .bindings
+                .iter()
+                .any(|binding| ty_has_unresolved_generics(binding.ty))
+        }),
+        _ => false,
+    }
 }
 
 fn instantiate_generic_args_with_args<'ctx>(

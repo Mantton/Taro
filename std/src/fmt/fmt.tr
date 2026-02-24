@@ -163,7 +163,7 @@ func formatUnsignedInteger(_ into: &mut Formatter, _ value: uint64, _ spec: rune
     writeUnsignedInteger(into, value)
 }
 
-public func formatPrintf(_ format: string, _ args: List[any Formattable]) -> string {
+public func formatPrintf(_ format: string, _ args: List[any Display]) -> string {
     let format_len = std.string.stringLen(format)
     let format_data = std.string.stringData(format)
 
@@ -208,7 +208,19 @@ public func formatPrintf(_ format: string, _ args: List[any Formattable]) -> str
             'v'
         }
 
-        (*args.at(arg_index)).format(&mut writer, spec, &state)
+        let value = args.at(arg_index)
+        let maybe_formattable = (*value) as? any Formattable
+        match maybe_formattable {
+            case .some(formattable) => formattable.format(&mut writer, spec, &state)
+            case .none => {
+                if spec == 'v' {
+                    (*value).display(&mut writer)
+                } else {
+                    std.panic.panic("printf: argument does not support requested format specifier")
+                    writer.writeString("")
+                }
+            }
+        }
         arg_index += 1
         index += 1
     }

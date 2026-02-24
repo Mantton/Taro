@@ -762,6 +762,12 @@ impl<'ctx> Checker<'ctx> {
             hir::ExpressionKind::CastAs(value, ty) => {
                 self.synth_cast_expression(expression, value, ty, expectation, cs)
             }
+            hir::ExpressionKind::CastAsTry(value, ty) => {
+                self.synth_try_cast_expression(expression, value, ty, expectation, cs)
+            }
+            hir::ExpressionKind::TypeIs(value, ty) => {
+                self.synth_type_is_expression(expression, value, ty, expectation, cs)
+            }
             hir::ExpressionKind::PatternBinding(condition) => {
                 self.synth_pattern_binding_expression(expression, condition, cs)
             }
@@ -827,6 +833,60 @@ impl<'ctx> Checker<'ctx> {
         }
 
         target_ty
+    }
+
+    fn synth_try_cast_expression(
+        &self,
+        expression: &hir::Expression,
+        value: &hir::Expression,
+        target: &hir::Type,
+        expectation: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        let gcx = self.gcx();
+        let target_ty = self.lower_type(target);
+        self.add_type_constraints(target_ty, target.span, cs);
+        let value_ty = self.synth(value, cs);
+
+        if target_ty.is_error() || value_ty.is_error() {
+            return Ty::error(gcx);
+        }
+
+        let (optional_ty, _) = self.mk_optional_type(target_ty);
+        if let Some(expectation) = expectation {
+            cs.add_goal(
+                Goal::ConstraintEqual(expectation, optional_ty),
+                expression.span,
+            );
+        }
+        optional_ty
+    }
+
+    fn synth_type_is_expression(
+        &self,
+        expression: &hir::Expression,
+        value: &hir::Expression,
+        target: &hir::Type,
+        expectation: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        let gcx = self.gcx();
+        let target_ty = self.lower_type(target);
+        self.add_type_constraints(target_ty, target.span, cs);
+        let value_ty = self.synth(value, cs);
+
+        if target_ty.is_error() || value_ty.is_error() {
+            return Ty::error(gcx);
+        }
+
+        if let Some(expectation) = expectation {
+            cs.add_goal(
+                Goal::ConstraintEqual(expectation, gcx.types.bool),
+                expression.span,
+            );
+        }
+
+        gcx.types.bool
     }
 
     fn require_mut_place(&self, expr: &hir::Expression, cs: &Cs<'ctx>) -> bool {
@@ -5046,7 +5106,10 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                 self.collect_expr(lhs, UseContext::Place);
                 self.collect_expr(rhs, UseContext::Value);
             }
-            hir::ExpressionKind::Unary(_, value) | hir::ExpressionKind::CastAs(value, _) => {
+            hir::ExpressionKind::Unary(_, value)
+            | hir::ExpressionKind::CastAs(value, _)
+            | hir::ExpressionKind::CastAsTry(value, _)
+            | hir::ExpressionKind::TypeIs(value, _) => {
                 self.collect_expr(value, UseContext::Value);
             }
             hir::ExpressionKind::TupleAccess(value, _) => {

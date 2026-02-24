@@ -3,6 +3,7 @@ use crate::{
         AggregateKind, BasicBlockId, BinaryOperator, BlockAnd, BlockAndExtension, CastKind,
         Category, Constant, ConstantKind, Operand, Place, Rvalue, RvalueFunc, builder::MirBuilder,
     },
+    sema::models::TyKind,
     thir::{ExprId, ExprKind, FieldIndex},
     unpack,
 };
@@ -33,10 +34,41 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             }
             ExprKind::Cast { value } => {
                 let operand = unpack!(block = self.as_operand(block, *value));
+                if self.thir.exprs[*value].ty == expr.ty {
+                    return block.and(Rvalue::Use(operand));
+                }
                 block.and(Rvalue::Cast {
                     operand,
                     ty: expr.ty,
                     kind: CastKind::Numeric,
+                })
+            }
+            ExprKind::ExistentialTryCast { value, target } => {
+                let value_ty = self.thir.exprs[*value].ty;
+                let consuming_existential_downcast = matches!(value_ty.kind(), TyKind::BoxedExistential { .. })
+                    && !matches!(target.kind(), TyKind::BoxedExistential { .. });
+                let operand = if consuming_existential_downcast {
+                    // `existential as? Concrete` is consuming.
+                    unpack!(block = self.as_operand(block, *value))
+                } else {
+                    // Other assertions remain non-consuming reads.
+                    let place = unpack!(block = self.as_place(block, *value));
+                    Operand::Copy(place)
+                };
+                block.and(Rvalue::Cast {
+                    operand,
+                    ty: expr.ty,
+                    kind: CastKind::ExistentialTryCast { target: *target },
+                })
+            }
+            ExprKind::ExistentialTypeIs { value, target } => {
+                // Type assertions are non-consuming reads; always copy the source place.
+                let place = unpack!(block = self.as_place(block, *value));
+                let operand = Operand::Copy(place);
+                block.and(Rvalue::Cast {
+                    operand,
+                    ty: expr.ty,
+                    kind: CastKind::ExistentialTypeIs { target: *target },
                 })
             }
             ExprKind::ClosureToFnPointer { closure, .. } => {

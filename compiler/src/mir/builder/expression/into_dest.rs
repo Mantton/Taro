@@ -524,6 +524,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             | ExprKind::Unary { .. }
             | ExprKind::Binary { .. }
             | ExprKind::Cast { .. }
+            | ExprKind::ExistentialTryCast { .. }
+            | ExprKind::ExistentialTypeIs { .. }
             | ExprKind::ClosureToFnPointer { .. }
             | ExprKind::Zst { .. } => {
                 debug_assert!(match Category::of(&expr.kind) {

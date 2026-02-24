@@ -1,0 +1,23 @@
+// Test: existential -> concrete `as?` is consuming.
+
+interface Moveable {
+    func move(&self)
+}
+
+struct Foo {}
+
+impl Moveable for Foo {
+    func move(&self) {}
+}
+
+func invalidUseAfterExistentialConcreteTryCast() {
+    let value: any Moveable = Foo {}
+    let _maybe = value as? Foo
+
+    // ERROR: use of moved value.
+    let _again = value
+}
+
+func main() {
+    invalidUseAfterExistentialConcreteTryCast()
+}

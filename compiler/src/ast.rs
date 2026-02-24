@@ -424,6 +424,10 @@ pub enum ExpressionKind {
     Parenthesis(Box<Expression>),
     /// `a as int`
     CastAs(Box<Expression>, Box<Type>),
+    /// `a as? any Interface`
+    CastAsTry(Box<Expression>, Box<Type>),
+    /// `a is any Interface`
+    TypeIs(Box<Expression>, Box<Type>),
     /// `a ? b : c`
     Ternary(Box<Expression>, Box<Expression>, Box<Expression>),
 
@@ -1636,6 +1640,14 @@ pub fn walk_expression<V: AstVisitor>(visitor: &mut V, node: &Expression) -> V::
             try_visit!(visitor.visit_expression(expression));
         }
         ExpressionKind::CastAs(expression, ty) => {
+            try_visit!(visitor.visit_expression(expression));
+            try_visit!(visitor.visit_type(ty));
+        }
+        ExpressionKind::CastAsTry(expression, ty) => {
+            try_visit!(visitor.visit_expression(expression));
+            try_visit!(visitor.visit_type(ty));
+        }
+        ExpressionKind::TypeIs(expression, ty) => {
             try_visit!(visitor.visit_expression(expression));
             try_visit!(visitor.visit_type(ty));
         }

@@ -6,15 +6,11 @@ use crate::{
     mir::{self, Operand, Place},
     sema::{
         models::{
-            ConstKind, ConstValue, FloatTy, GenericArgument, GenericArguments, IntTy,
-            InterfaceDefinition, InterfaceReference, InterfaceRequirements, Ty, TyKind, UIntTy,
+            ConstKind, ConstValue, FloatTy, GenericArguments, IntTy, InterfaceReference, Ty,
+            TyKind, UIntTy,
         },
-        resolve::models::TypeHead,
-        tycheck::resolve_conformance_witness,
-        tycheck::utils::{
-            instantiate::{instantiate_const_with_args, instantiate_ty_with_args},
-            type_head_from_value_ty,
-        },
+        resolve::models::{DefinitionKind, TypeHead},
+        tycheck::utils::instantiate::instantiate_ty_with_args,
     },
     span::Symbol,
     specialize::{Instance, InstanceKind, resolve_instance},
@@ -42,6 +38,11 @@ use std::{
     path::PathBuf,
     time::{Duration, Instant},
 };
+
+mod normalize;
+mod intrinsics;
+mod existentials;
+mod witness;
 
 const NON_AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES: u64 = 256;
 const AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES: u64 = 24;
@@ -212,10 +213,14 @@ struct Emitter<'llvm, 'gcx> {
     target_data: inkwell::targets::TargetData,
     gc_descs: FxHashMap<Ty<'gcx>, PointerValue<'llvm>>,
     witness_tables: FxHashMap<(TypeHead, InterfaceReference<'gcx>), PointerValue<'llvm>>,
+    interface_descriptors: FxHashMap<InterfaceReference<'gcx>, PointerValue<'llvm>>,
+    type_metadata: FxHashMap<Ty<'gcx>, PointerValue<'llvm>>,
     /// Cache for witness table thunks: (type_head, interface, impl_method_id) -> thunk_fn_ptr
     witness_thunks:
         FxHashMap<(TypeHead, InterfaceReference<'gcx>, hir::DefinitionID), PointerValue<'llvm>>,
     gc_desc_ty: inkwell::types::StructType<'llvm>,
+    rt_conformance_entry_ty: inkwell::types::StructType<'llvm>,
+    rt_type_metadata_ty: inkwell::types::StructType<'llvm>,
     usize_ty: inkwell::types::IntType<'llvm>,
     shadow: Option<ShadowStackInfo<'llvm, 'gcx>>,
     eh_personality: Option<FunctionValue<'llvm>>,
@@ -292,6 +297,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             ],
             false,
         );
+        let rt_conformance_entry_ty = context.struct_type(&[opaque_ptr.into(), opaque_ptr.into()], false);
+        let rt_type_metadata_ty =
+            context.struct_type(&[opaque_ptr.into(), usize_ty.into()], false);
         let repeat_memset_enabled = std::env::var("TARO_EXPERIMENTAL_REPEAT_MEMSET")
             .ok()
             .map(|v| {
@@ -314,8 +322,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             target_data,
             gc_descs: FxHashMap::default(),
             witness_tables: FxHashMap::default(),
+            interface_descriptors: FxHashMap::default(),
+            type_metadata: FxHashMap::default(),
             witness_thunks: FxHashMap::default(),
             gc_desc_ty,
+            rt_conformance_entry_ty,
+            rt_type_metadata_ty,
             usize_ty,
             shadow: None,
             eh_personality: None,
@@ -329,32 +341,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             repeat_memset_min_bytes,
             current_subst: GenericArguments::empty(),
         }
-    }
-
-    fn resolve_generic_args(&self, args: GenericArguments<'gcx>) -> GenericArguments<'gcx> {
-        if self.current_subst.is_empty() || args.is_empty() {
-            return args;
-        }
-
-        let resolved: Vec<_> = args
-            .iter()
-            .map(|arg| match arg {
-                GenericArgument::Type(ty) => {
-                    let instantiated = instantiate_ty_with_args(self.gcx, *ty, self.current_subst);
-                    let normalized = crate::sema::tycheck::utils::normalize_post_monomorphization(
-                        self.gcx,
-                        instantiated,
-                    );
-                    GenericArgument::Type(normalized)
-                }
-                GenericArgument::Const(c) => {
-                    let substituted =
-                        instantiate_const_with_args(self.gcx, *c, self.current_subst);
-                    GenericArgument::Const(substituted)
-                }
-            })
-            .collect();
-        self.gcx.store.interners.intern_generic_args(resolved)
     }
 
     fn instance_for_call(
@@ -391,6 +377,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         }
     }
 
+    #[track_caller]
     fn compute_fn_abi(
         &self,
         sig: &crate::sema::models::LabeledFunctionSignature<'gcx>,
@@ -2260,13 +2247,28 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     None => return Ok(None),
                 };
                 match kind {
-                    mir::CastKind::Numeric => return Ok(self.lower_cast(from_ty, *ty, val)),
+                    mir::CastKind::Numeric => {
+                        if matches!(ty.kind(), TyKind::BoxedExistential { .. }) {
+                            let value = self.lower_boxed_existential(from_ty, *ty, val)?;
+                            return Ok(Some(value));
+                        }
+                        return Ok(self.lower_cast(from_ty, *ty, val).or(Some(val)));
+                    }
                     mir::CastKind::BoxExistential => {
                         let value = self.lower_boxed_existential(from_ty, *ty, val)?;
                         return Ok(Some(value));
                     }
                     mir::CastKind::ExistentialUpcast => {
                         let value = self.lower_existential_upcast(from_ty, *ty, val)?;
+                        return Ok(Some(value));
+                    }
+                    mir::CastKind::ExistentialTypeIs { target } => {
+                        let value = self.lower_existential_type_is(from_ty, *target, val)?;
+                        return Ok(Some(value));
+                    }
+                    mir::CastKind::ExistentialTryCast { target } => {
+                        let value =
+                            self.lower_existential_try_cast(from_ty, *target, *ty, val)?;
                         return Ok(Some(value));
                     }
                     mir::CastKind::Pointer => return Ok(self.lower_cast(from_ty, *ty, val)),
@@ -2910,105 +2912,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         None
     }
 
-    fn lower_boxed_existential(
-        &mut self,
-        from_ty: Ty<'gcx>,
-        to_ty: Ty<'gcx>,
-        value: BasicValueEnum<'llvm>,
-    ) -> CompileResult<BasicValueEnum<'llvm>> {
-        let TyKind::BoxedExistential { interfaces } = to_ty.kind() else {
-            return Ok(value);
-        };
-
-        let data_ptr = self.box_value(from_ty, value)?;
-        let mut table_ptrs = Vec::with_capacity(interfaces.len());
-        for iface in interfaces.iter().cloned() {
-            let ptr = self.witness_table_ptr(from_ty, iface);
-            table_ptrs.push(ptr);
-        }
-
-        Ok(self.build_existential_value(to_ty, data_ptr, &table_ptrs))
-    }
-
-    fn lower_existential_upcast(
-        &mut self,
-        from_ty: Ty<'gcx>,
-        to_ty: Ty<'gcx>,
-        value: BasicValueEnum<'llvm>,
-    ) -> CompileResult<BasicValueEnum<'llvm>> {
-        let TyKind::BoxedExistential {
-            interfaces: from_ifaces,
-        } = from_ty.kind()
-        else {
-            return Ok(value);
-        };
-        let TyKind::BoxedExistential {
-            interfaces: to_ifaces,
-        } = to_ty.kind()
-        else {
-            return Ok(value);
-        };
-
-        let src = value.into_struct_value();
-        let data_ptr = self
-            .builder
-            .build_extract_value(src, 0, "exist_data")
-            .unwrap()
-            .into_pointer_value();
-
-        let mut table_ptrs = Vec::with_capacity(to_ifaces.len());
-        for target in to_ifaces.iter().cloned() {
-            if let Some(index) = self.interface_index(from_ifaces, target.id) {
-                let ptr = self
-                    .builder
-                    .build_extract_value(src, (index + 1) as u32, "exist_table")
-                    .unwrap()
-                    .into_pointer_value();
-                table_ptrs.push(ptr);
-                continue;
-            }
-
-            if let Some((root_index, chain)) =
-                self.superface_chain_from_root(from_ifaces, target.id)
-            {
-                let mut current_ptr = self
-                    .builder
-                    .build_extract_value(src, (root_index + 1) as u32, "exist_root_table")
-                    .unwrap()
-                    .into_pointer_value();
-                for (current_iface, super_index) in chain {
-                    let table_ty = self.witness_table_struct_ty(current_iface);
-                    let table_ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let typed_ptr = self
-                        .builder
-                        .build_bit_cast(current_ptr, table_ptr_ty, "wt_cast")
-                        .unwrap()
-                        .into_pointer_value();
-                    let field_index = self.interface_method_count(current_iface) + super_index;
-                    let field_ptr = self
-                        .builder
-                        .build_struct_gep(table_ty, typed_ptr, field_index as u32, "wt_super_ptr")
-                        .unwrap();
-                    current_ptr = self
-                        .builder
-                        .build_load(
-                            self.context.ptr_type(AddressSpace::default()),
-                            field_ptr,
-                            "wt_super_load",
-                        )
-                        .unwrap()
-                        .into_pointer_value();
-                }
-                table_ptrs.push(current_ptr);
-                continue;
-            }
-
-            table_ptrs.push(self.context.ptr_type(AddressSpace::default()).const_null());
-        }
-
-        Ok(self.build_existential_value(to_ty, data_ptr, &table_ptrs))
-    }
-
     /// Coerce a non-capturing closure to a function pointer.
     /// This generates a shim function that calls the closure body with a null self pointer.
     fn lower_closure_to_fn_pointer(
@@ -3180,6 +3083,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         &self,
         ty: Ty<'gcx>,
         data_ptr: PointerValue<'llvm>,
+        metadata_ptr: PointerValue<'llvm>,
         tables: &[PointerValue<'llvm>],
     ) -> BasicValueEnum<'llvm> {
         let Some(BasicTypeEnum::StructType(struct_ty)) = self.lower_ty(ty) else {
@@ -3190,6 +3094,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         value = self
             .builder
             .build_insert_value(value, data_ptr, 0, "exist_data")
+                .unwrap()
+                .into_struct_value();
+        value = self
+            .builder
+            .build_insert_value(value, metadata_ptr, 1, "exist_meta")
             .unwrap()
             .into_struct_value();
         for (index, table) in tables.iter().enumerate() {
@@ -3198,7 +3107,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 .build_insert_value(
                     value,
                     (*table).as_basic_value_enum(),
-                    (index + 1) as u32,
+                    (index + 2) as u32,
                     "exist_table",
                 )
                 .unwrap()
@@ -3206,506 +3115,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         }
 
         value.as_basic_value_enum()
-    }
-
-    fn witness_table_ptr(
-        &mut self,
-        concrete_ty: Ty<'gcx>,
-        iface: InterfaceReference<'gcx>,
-    ) -> PointerValue<'llvm> {
-        let Some(type_head) = type_head_from_value_ty(concrete_ty) else {
-            return self.context.ptr_type(AddressSpace::default()).const_null();
-        };
-
-        let iface = self.interface_args_with_self(concrete_ty, iface);
-
-        if let Some(ptr) = self.witness_tables.get(&(type_head, iface)) {
-            return *ptr;
-        }
-
-        let requirements = match self.interface_requirements(iface.id) {
-            Some(req) => req,
-            None => return self.context.ptr_type(AddressSpace::default()).const_null(),
-        };
-        let witness = self.conformance_witness(type_head, iface);
-
-        let method_count = requirements
-            .methods
-            .iter()
-            .filter(|method| method.has_self)
-            .count();
-        let mut entries: Vec<BasicValueEnum<'llvm>> = Vec::with_capacity(method_count);
-        for method in requirements.methods.iter().filter(|method| method.has_self) {
-            let method_target = if let Some(method_witness) =
-                witness.as_ref().and_then(|w| w.method_witnesses.get(&method.id))
-            {
-                let args = self
-                    .instantiate_generic_args_with_args(method_witness.args_template, iface.arguments);
-                match method_witness.implementation {
-                    crate::sema::models::MethodImplementation::Concrete(impl_id)
-                    | crate::sema::models::MethodImplementation::Default(impl_id) => {
-                        Some((impl_id, args))
-                    }
-                    crate::sema::models::MethodImplementation::Synthetic(_, Some(syn_id)) => {
-                        Some((syn_id, args))
-                    }
-                    crate::sema::models::MethodImplementation::Synthetic(_, None) => {
-                        let iface_name = self.gcx.symbol_text(self.gcx.definition_ident(iface.id).symbol);
-                        let method_name = self.gcx.symbol_text(method.name);
-                        self.gcx.dcx().emit_error(
-                            format!(
-                                "unable to materialize synthetic method '{}.{}' for witness table generation",
-                                iface_name, method_name
-                            ),
-                            None,
-                        );
-                        None
-                    }
-                }
-            } else {
-                Some((method.id, iface.arguments))
-            };
-
-            // Use a thunk to bridge virtual call signature (ptr self) to concrete impl.
-            let thunk_ptr = if let Some((impl_def_id, args)) = method_target {
-                self.witness_method_thunk(type_head, iface, impl_def_id, args)
-            } else {
-                self.context.ptr_type(AddressSpace::default()).const_null()
-            };
-            entries.push(thunk_ptr.as_basic_value_enum());
-        }
-
-        let superfaces = self.interface_superfaces(iface);
-        for superface in superfaces {
-            let ptr = self.witness_table_ptr(concrete_ty, superface);
-            entries.push(ptr.as_basic_value_enum());
-        }
-
-        let table_ty = self.witness_table_struct_ty(iface.id);
-        let const_struct = table_ty.const_named_struct(&entries);
-        let gv = self.module.add_global(
-            table_ty,
-            None,
-            &format!("__wt_{}", self.witness_tables.len()),
-        );
-        gv.set_initializer(&const_struct);
-        gv.set_constant(true);
-        gv.set_linkage(Linkage::Internal);
-        let ptr = gv.as_pointer_value();
-        let opaque_ptr = ptr.const_cast(self.context.ptr_type(AddressSpace::default()));
-        self.witness_tables.insert((type_head, iface), opaque_ptr);
-        opaque_ptr
-    }
-
-    fn function_ptr_for_instance(&mut self, instance: Instance<'gcx>) -> PointerValue<'llvm> {
-        let def_id = match instance.kind() {
-            InstanceKind::Item(def_id) => def_id,
-            InstanceKind::Virtual(_) => {
-                return self.context.ptr_type(AddressSpace::default()).const_null();
-            }
-        };
-
-        if let Some(&f) = self.functions.get(&instance) {
-            return f.as_global_value().as_pointer_value();
-        }
-
-        let sig = self.gcx.get_signature(def_id);
-        let prev_subst = self.current_subst;
-        self.current_subst = instance.args();
-        let fn_abi = self.compute_fn_abi(sig);
-        self.current_subst = prev_subst;
-
-        if self.is_foreign_function(def_id) {
-            let f = self.declare_foreign_function(def_id);
-            self.functions.insert(instance, f);
-            self.fn_abis.insert(instance, fn_abi);
-            return f.as_global_value().as_pointer_value();
-        }
-
-        let prev_subst = self.current_subst;
-        self.current_subst = instance.args();
-        let fn_ty = self.lower_fn_abi(&fn_abi);
-        let name = mangle_instance(self.gcx, instance);
-        let f = self
-            .module
-            .add_function(&name, fn_ty, Some(Linkage::External));
-        self.functions.insert(instance, f);
-        self.fn_abis.insert(instance, fn_abi);
-        self.current_subst = prev_subst;
-        f.as_global_value().as_pointer_value()
-    }
-
-    /// Generate a thunk for witness table entries.
-    /// The thunk takes a raw ptr as self (from existential data pointer) and forwards
-    /// to the concrete implementation with the correct signature.
-    fn witness_method_thunk(
-        &mut self,
-        type_head: TypeHead,
-        iface: InterfaceReference<'gcx>,
-        impl_def_id: hir::DefinitionID,
-        args: GenericArguments<'gcx>,
-    ) -> PointerValue<'llvm> {
-        // Check cache first
-        let cache_key = (type_head, iface, impl_def_id);
-        if let Some(&ptr) = self.witness_thunks.get(&cache_key) {
-            return ptr;
-        }
-
-        // Get the concrete implementation function
-        let impl_instance = Instance::item(impl_def_id, args);
-        let impl_fn = self.function_ptr_for_instance(impl_instance);
-
-        // Get the implementation signature
-        let prev_subst = self.current_subst;
-        self.current_subst = args;
-        let sig = self.gcx.get_signature(impl_def_id);
-        let impl_fn_abi = self.compute_fn_abi(sig);
-
-        // Build thunk parameter types: first param is raw ptr (data pointer from existential),
-        // then map remaining implementation arguments according to ABI mode.
-        let opaque_ptr = self.context.ptr_type(AddressSpace::default());
-        let mut thunk_param_types: Vec<BasicMetadataTypeEnum<'llvm>> =
-            Vec::with_capacity(sig.inputs.len() + 1);
-        if matches!(impl_fn_abi.ret.mode, abi::PassMode::Indirect { .. }) {
-            thunk_param_types.push(opaque_ptr.into());
-        }
-        thunk_param_types.push(opaque_ptr.into());
-        for arg_abi in impl_fn_abi.args.iter().skip(1) {
-            match arg_abi.mode {
-                abi::PassMode::Ignore => {}
-                abi::PassMode::Direct => {
-                    if let Some(ty) = self.lower_ty(arg_abi.ty) {
-                        thunk_param_types.push(ty.into());
-                    }
-                }
-                abi::PassMode::Indirect { .. } => {
-                    thunk_param_types.push(opaque_ptr.into());
-                }
-            }
-        }
-
-        // Build thunk return type
-        let thunk_fn_ty = match impl_fn_abi.ret.mode {
-            abi::PassMode::Ignore | abi::PassMode::Indirect { .. } => {
-                self.context.void_type().fn_type(&thunk_param_types, false)
-            }
-            abi::PassMode::Direct => match self.lower_ty(sig.output) {
-                Some(ret) => ret.fn_type(&thunk_param_types, false),
-                None => self.context.void_type().fn_type(&thunk_param_types, false),
-            },
-        };
-
-        // Create thunk function
-        let thunk_name = format!(
-            "__wt_thunk_{}_{}",
-            self.witness_thunks.len(),
-            self.gcx.definition_ident(impl_def_id).symbol,
-        );
-        let thunk_fn = self.module.add_function(&thunk_name, thunk_fn_ty, None);
-
-        // Save current position and build thunk body
-        let current_block = self.builder.get_insert_block();
-        let entry = self.context.append_basic_block(thunk_fn, "entry");
-        self.builder.position_at_end(entry);
-
-        // Gather arguments: first is the data pointer, rest are passed through
-        let mut call_args: Vec<BasicMetadataValueEnum<'llvm>> =
-            Vec::with_capacity(thunk_param_types.len());
-
-        let mut param_index = 0u32;
-        if matches!(impl_fn_abi.ret.mode, abi::PassMode::Indirect { .. }) {
-            call_args.push(thunk_fn.get_nth_param(param_index).unwrap().into());
-            param_index += 1;
-        }
-
-        // Next argument is the raw data pointer - pass it directly to impl
-        // (the impl expects a reference/pointer to the concrete type, which is what data_ptr points to)
-        call_args.push(thunk_fn.get_nth_param(param_index).unwrap().into());
-        param_index += 1;
-
-        // Forward remaining arguments according to implementation ABI.
-        for arg_abi in impl_fn_abi.args.iter().skip(1) {
-            if matches!(arg_abi.mode, abi::PassMode::Ignore) {
-                continue;
-            }
-            call_args.push(thunk_fn.get_nth_param(param_index).unwrap().into());
-            param_index += 1;
-        }
-
-        // Get the implementation function type for indirect call
-        let impl_fn_ty = self.lower_fn_abi(&impl_fn_abi);
-
-        // Call the implementation
-        let call = self
-            .builder
-            .build_indirect_call(impl_fn_ty, impl_fn, &call_args, "thunk_call")
-            .unwrap();
-
-        // Return the result
-        match impl_fn_abi.ret.mode {
-            abi::PassMode::Ignore | abi::PassMode::Indirect { .. } => {
-                self.builder.build_return(None).unwrap();
-            }
-            abi::PassMode::Direct => {
-                if let Some(ret_val) = call.try_as_basic_value().basic() {
-                    self.builder.build_return(Some(&ret_val)).unwrap();
-                } else {
-                    self.builder.build_return(None).unwrap();
-                }
-            }
-        }
-
-        // Restore builder position
-        if let Some(block) = current_block {
-            self.builder.position_at_end(block);
-        }
-
-        self.current_subst = prev_subst;
-
-        // Cache and return
-        let thunk_ptr = thunk_fn.as_global_value().as_pointer_value();
-        self.witness_thunks.insert(cache_key, thunk_ptr);
-        thunk_ptr
-    }
-
-    fn interface_requirements(
-        &self,
-        interface_id: hir::DefinitionID,
-    ) -> Option<&'gcx InterfaceRequirements<'gcx>> {
-        self.gcx.with_type_database(interface_id.package(), |db| {
-            db.interface_requirements.get(&interface_id).cloned()
-        })
-    }
-
-    fn interface_definition(
-        &self,
-        interface_id: hir::DefinitionID,
-    ) -> Option<&'gcx InterfaceDefinition<'gcx>> {
-        self.gcx.with_type_database(interface_id.package(), |db| {
-            db.def_to_iface_def.get(&interface_id).cloned()
-        })
-    }
-
-    fn conformance_witness(
-        &self,
-        type_head: TypeHead,
-        interface: InterfaceReference<'gcx>,
-    ) -> Option<crate::sema::models::ConformanceWitness<'gcx>> {
-        // Route through the resolver so stale synthetic method IDs can be patched.
-        resolve_conformance_witness(self.gcx, type_head, interface)
-    }
-
-    fn interface_method_count(&self, interface_id: hir::DefinitionID) -> usize {
-        self.interface_requirements(interface_id)
-            .map(|req| req.methods.len())
-            .unwrap_or(0)
-    }
-
-    fn interface_superfaces(
-        &self,
-        iface: InterfaceReference<'gcx>,
-    ) -> Vec<InterfaceReference<'gcx>> {
-        let Some(def) = self.interface_definition(iface.id) else {
-            return Vec::new();
-        };
-
-        let mut out = Vec::with_capacity(def.superfaces.len());
-        for superface in &def.superfaces {
-            let substituted = self.substitute_interface_ref(superface.value, iface.arguments);
-            out.push(substituted);
-        }
-        out
-    }
-
-    fn interface_args_with_self(
-        &self,
-        self_ty: Ty<'gcx>,
-        iface: InterfaceReference<'gcx>,
-    ) -> InterfaceReference<'gcx> {
-        if iface.arguments.is_empty() {
-            return iface;
-        }
-
-        let mut args: Vec<_> = iface.arguments.iter().cloned().collect();
-        if let Some(first) = args.get_mut(0) {
-            *first = GenericArgument::Type(self_ty);
-        }
-
-        let interned = self.gcx.store.interners.intern_generic_args(args);
-        InterfaceReference {
-            id: iface.id,
-            arguments: interned,
-            bindings: &[],
-        }
-    }
-
-    fn instantiate_generic_args_with_args(
-        &self,
-        template: GenericArguments<'gcx>,
-        args: GenericArguments<'gcx>,
-    ) -> GenericArguments<'gcx> {
-        if template.is_empty() {
-            return template;
-        }
-
-        let mut out = Vec::with_capacity(template.len());
-        for arg in template.iter() {
-            match arg {
-                GenericArgument::Type(ty) => {
-                    let instantiated = instantiate_ty_with_args(self.gcx, *ty, args);
-                    out.push(GenericArgument::Type(instantiated));
-                }
-                GenericArgument::Const(c) => {
-                    let instantiated = instantiate_const_with_args(self.gcx, *c, args);
-                    out.push(GenericArgument::Const(instantiated));
-                }
-            }
-        }
-
-        self.gcx.store.interners.intern_generic_args(out)
-    }
-
-    fn substitute_interface_ref(
-        &self,
-        template: InterfaceReference<'gcx>,
-        args: GenericArguments<'gcx>,
-    ) -> InterfaceReference<'gcx> {
-        if args.is_empty() {
-            return template;
-        }
-
-        let mut new_args = Vec::with_capacity(template.arguments.len());
-        for arg in template.arguments.iter() {
-            match arg {
-                GenericArgument::Type(ty) => {
-                    let substituted = instantiate_ty_with_args(self.gcx, *ty, args);
-                    new_args.push(GenericArgument::Type(substituted));
-                }
-                GenericArgument::Const(c) => {
-                    let substituted = instantiate_const_with_args(self.gcx, *c, args);
-                    new_args.push(GenericArgument::Const(substituted));
-                }
-            }
-        }
-
-        let interned = self.gcx.store.interners.intern_generic_args(new_args);
-
-        // Also substitute bindings
-        let mut new_bindings = Vec::with_capacity(template.bindings.len());
-        for binding in template.bindings {
-            let substituted_ty = instantiate_ty_with_args(self.gcx, binding.ty, args);
-            new_bindings.push(crate::sema::models::AssociatedTypeBinding {
-                name: binding.name,
-                ty: substituted_ty,
-            });
-        }
-
-        InterfaceReference {
-            id: template.id,
-            arguments: interned,
-            bindings: self
-                .gcx
-                .store
-                .arenas
-                .global
-                .alloc_slice_clone(&new_bindings),
-        }
-    }
-
-    fn witness_table_struct_ty(&self, interface_id: hir::DefinitionID) -> StructType<'llvm> {
-        let method_count = self.interface_method_count(interface_id);
-        let super_count = self
-            .interface_definition(interface_id)
-            .map(|def| def.superfaces.len())
-            .unwrap_or(0);
-        let total = method_count + super_count;
-        let ptr_ty = self.context.ptr_type(AddressSpace::default());
-        let fields: Vec<_> = (0..total).map(|_| ptr_ty.into()).collect();
-        self.context.struct_type(&fields, false)
-    }
-
-    fn interface_index(
-        &self,
-        interfaces: &[InterfaceReference<'gcx>],
-        interface_id: hir::DefinitionID,
-    ) -> Option<usize> {
-        interfaces.iter().position(|iface| iface.id == interface_id)
-    }
-
-    fn superface_chain_from_root(
-        &self,
-        interfaces: &[InterfaceReference<'gcx>],
-        target_id: hir::DefinitionID,
-    ) -> Option<(usize, Vec<(hir::DefinitionID, usize)>)> {
-        for (index, iface) in interfaces.iter().enumerate() {
-            if iface.id == target_id {
-                return Some((index, Vec::new()));
-            }
-            if !self.interface_has_superface(iface.id, target_id) {
-                continue;
-            }
-            let chain = self.superface_chain_indices(iface.id, target_id)?;
-            return Some((index, chain));
-        }
-        None
-    }
-
-    fn interface_has_superface(
-        &self,
-        interface_id: hir::DefinitionID,
-        target_id: hir::DefinitionID,
-    ) -> bool {
-        self.gcx.with_type_database(interface_id.package(), |db| {
-            db.interface_to_supers
-                .get(&interface_id)
-                .map_or(false, |supers| supers.contains(&target_id))
-        })
-    }
-
-    fn superface_chain_indices(
-        &self,
-        root_id: hir::DefinitionID,
-        target_id: hir::DefinitionID,
-    ) -> Option<Vec<(hir::DefinitionID, usize)>> {
-        use std::collections::{HashMap, VecDeque};
-
-        let mut queue = VecDeque::new();
-        let mut parents: HashMap<hir::DefinitionID, (hir::DefinitionID, usize)> = HashMap::new();
-        queue.push_back(root_id);
-        parents.insert(root_id, (root_id, 0));
-
-        while let Some(current) = queue.pop_front() {
-            if current == target_id {
-                break;
-            }
-            let Some(def) = self.interface_definition(current) else {
-                continue;
-            };
-            for (index, superface) in def.superfaces.iter().enumerate() {
-                let next = superface.value.id;
-                if parents.contains_key(&next) {
-                    continue;
-                }
-                parents.insert(next, (current, index));
-                queue.push_back(next);
-            }
-        }
-
-        if !parents.contains_key(&target_id) {
-            return None;
-        }
-
-        let mut chain = Vec::new();
-        let mut current = target_id;
-        while current != root_id {
-            let Some((parent, index)) = parents.get(&current).cloned() else {
-                return None;
-            };
-            chain.push((parent, index));
-            current = parent;
-        }
-        chain.reverse();
-        Some(chain)
     }
 
     fn lower_terminator(
@@ -4331,639 +3740,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         }
     }
 
-    fn lower_intrinsic_array_read(
-        &mut self,
-        body: &mir::Body<'gcx>,
-        locals: &mut [LocalStorage<'llvm>],
-        args: &[Operand<'gcx>],
-        destination: &Place<'gcx>,
-    ) -> CompileResult<()> {
-        let arr = args.first().expect("array intrinsic missing array");
-        let idx = args.get(1).expect("array intrinsic missing index");
-
-        let Some(arr_val) = self.eval_operand(body, locals, arr)? else {
-            let _ = self.builder.build_unreachable().unwrap();
-            return Ok(());
-        };
-        let Some(idx_val) = self.eval_operand(body, locals, idx)? else {
-            let _ = self.builder.build_unreachable().unwrap();
-            return Ok(());
-        };
-
-        // Get operand type, substitute generic parameters, then normalize
-        let mut arr_ty = self.operand_ty(body, arr);
-        arr_ty = instantiate_ty_with_args(self.gcx, arr_ty, self.current_subst);
-        arr_ty = crate::sema::tycheck::utils::normalize_post_monomorphization(self.gcx, arr_ty);
-        let arr_ty = match arr_ty.kind() {
-            TyKind::Reference(inner, _) | TyKind::Pointer(inner, _) => inner,
-            _ => arr_ty,
-        };
-        // Normalize again after unwrapping reference (already substituted so just normalize)
-        let arr_ty = crate::sema::tycheck::utils::normalize_post_monomorphization(self.gcx, arr_ty);
-        let TyKind::Array { .. } = arr_ty.kind() else {
-            self.gcx
-                .dcx()
-                .emit_error("array intrinsic used with non-array type".into(), None);
-            return Ok(());
-        };
-
-        let arr_llvm = self
-            .lower_ty(arr_ty)
-            .expect("array type lowered")
-            .into_array_type();
-        let arr_ptr = arr_val.into_pointer_value();
-
-        let mut idx_val = idx_val.into_int_value();
-        if idx_val.get_type() != self.usize_ty {
-            idx_val = self
-                .builder
-                .build_int_cast(idx_val, self.usize_ty, "idx_cast")
-                .unwrap();
-        }
-
-        let zero = self.usize_ty.const_zero();
-        let elem_ptr = unsafe {
-            self.builder
-                .build_gep(arr_llvm, arr_ptr, &[zero, idx_val], "array_elem_ptr")
-                .unwrap()
-        };
-
-        self.store_place(destination, body, locals, elem_ptr.into())
-    }
-
-    fn lower_intrinsic_array_write(
-        &mut self,
-        body: &mir::Body<'gcx>,
-        locals: &mut [LocalStorage<'llvm>],
-        args: &[Operand<'gcx>],
-    ) -> CompileResult<()> {
-        let arr = args.first().expect("array intrinsic missing array");
-        let idx = args.get(1).expect("array intrinsic missing index");
-        let value = args.get(2).expect("array intrinsic missing value");
-
-        let Some(arr_val) = self.eval_operand(body, locals, arr)? else {
-            let _ = self.builder.build_unreachable().unwrap();
-            return Ok(());
-        };
-        let Some(idx_val) = self.eval_operand(body, locals, idx)? else {
-            let _ = self.builder.build_unreachable().unwrap();
-            return Ok(());
-        };
-        let Some(value_val) = self.eval_operand(body, locals, value)? else {
-            let _ = self.builder.build_unreachable().unwrap();
-            return Ok(());
-        };
-
-        // Get operand type, substitute generic parameters, then normalize
-        let mut arr_ty = self.operand_ty(body, arr);
-        arr_ty = instantiate_ty_with_args(self.gcx, arr_ty, self.current_subst);
-        arr_ty = crate::sema::tycheck::utils::normalize_post_monomorphization(self.gcx, arr_ty);
-        let arr_ty = match arr_ty.kind() {
-            TyKind::Reference(inner, _) | TyKind::Pointer(inner, _) => inner,
-            _ => arr_ty,
-        };
-        // Normalize again after unwrapping reference (already substituted so just normalize)
-        let arr_ty = crate::sema::tycheck::utils::normalize_post_monomorphization(self.gcx, arr_ty);
-        let TyKind::Array { .. } = arr_ty.kind() else {
-            self.gcx
-                .dcx()
-                .emit_error("array intrinsic used with non-array type".into(), None);
-            return Ok(());
-        };
-
-        let arr_llvm = self
-            .lower_ty(arr_ty)
-            .expect("array type lowered")
-            .into_array_type();
-        let arr_ptr = arr_val.into_pointer_value();
-
-        let mut idx_val = idx_val.into_int_value();
-        if idx_val.get_type() != self.usize_ty {
-            idx_val = self
-                .builder
-                .build_int_cast(idx_val, self.usize_ty, "idx_cast")
-                .unwrap();
-        }
-
-        let zero = self.usize_ty.const_zero();
-        let elem_ptr = unsafe {
-            self.builder
-                .build_gep(arr_llvm, arr_ptr, &[zero, idx_val], "array_elem_ptr")
-                .unwrap()
-        };
-
-        let _ = self.builder.build_store(elem_ptr, value_val).unwrap();
-        Ok(())
-    }
-
-    /// Intrinsic: __intrinsic_gc_desc[T]() -> *const GcDesc
-    /// Returns a pointer to the GC descriptor for type T.
-    fn lower_intrinsic_gc_desc(
-        &mut self,
-        body: &mir::Body<'gcx>,
-        locals: &mut [LocalStorage<'llvm>],
-        call_args: GenericArguments<'gcx>,
-        destination: &Place<'gcx>,
-    ) -> CompileResult<()> {
-        // Get the type from the generic arguments
-        let Some(crate::sema::models::GenericArgument::Type(ty)) = call_args.get(0) else {
-            self.gcx
-                .dcx()
-                .emit_error("gc_desc intrinsic requires a type argument".into(), None);
-            return Ok(());
-        };
-
-        // Substitute with current generic context and normalize
-        let ty = instantiate_ty_with_args(self.gcx, *ty, self.current_subst);
-        let ty = crate::sema::tycheck::utils::normalize_post_monomorphization(self.gcx, ty);
-
-        // Get or create the GC descriptor for this type
-        let desc_ptr = self.gc_desc_for(ty);
-
-        self.store_place(destination, body, locals, desc_ptr.into())
-    }
-
-    /// Intrinsic: __intrinsic_list_write[T](buffer: GcPtr, index: usize, value: T)
-    /// Writes a value to the buffer at the given element index.
-    fn lower_intrinsic_list_write(
-        &mut self,
-        body: &mir::Body<'gcx>,
-        locals: &mut [LocalStorage<'llvm>],
-        call_args: GenericArguments<'gcx>,
-        args: &[Operand<'gcx>],
-    ) -> CompileResult<()> {
-        // Get the element type from generic arguments
-        let Some(crate::sema::models::GenericArgument::Type(elem_ty)) = call_args.get(0) else {
-            self.gcx
-                .dcx()
-                .emit_error("list_write intrinsic requires a type argument".into(), None);
-            return Ok(());
-        };
-
-        let elem_ty = instantiate_ty_with_args(self.gcx, *elem_ty, self.current_subst);
-        let elem_ty =
-            crate::sema::tycheck::utils::normalize_post_monomorphization(self.gcx, elem_ty);
-
-        let Some(llvm_elem_ty) = self.lower_ty(elem_ty) else {
-            return Ok(()); // ZST - nothing to write
-        };
-
-        // Get arguments: buffer, index, value
-        let buffer = args.get(0).expect("list_write missing buffer");
-        let index = args.get(1).expect("list_write missing index");
-        let value = args.get(2).expect("list_write missing value");
-
-        let Some(buffer_val) = self.eval_operand(body, locals, buffer)? else {
-            let _ = self.builder.build_unreachable().unwrap();
-            return Ok(());
-        };
-        let Some(index_val) = self.eval_operand(body, locals, index)? else {
-            let _ = self.builder.build_unreachable().unwrap();
-            return Ok(());
-        };
-        let Some(value_val) = self.eval_operand(body, locals, value)? else {
-            return Ok(());
-        };
-
-        let mut index_val = index_val.into_int_value();
-        if index_val.get_type() != self.usize_ty {
-            index_val = self
-                .builder
-                .build_int_cast(index_val, self.usize_ty, "idx_cast")
-                .unwrap();
-        }
-
-        let buffer_ptr = buffer_val.into_pointer_value();
-        let elem_ptr = self
-            .builder
-            .build_bit_cast(
-                buffer_ptr,
-                self.context.ptr_type(AddressSpace::default()),
-                "list_buf_cast",
-            )
-            .unwrap()
-            .into_pointer_value();
-        let elem_ptr = unsafe {
-            self.builder
-                .build_gep(llvm_elem_ty, elem_ptr, &[index_val], "list_elem_ptr")
-                .unwrap()
-        };
-
-        let _ = self.builder.build_store(elem_ptr, value_val).unwrap();
-
-        Ok(())
-    }
-
-    /// Intrinsic: __intrinsic_list_read_unchecked[T](buffer: GcPtr, index: usize) -> &T
-    /// Intrinsic: __intrinsic_list_read_mut_unchecked[T](buffer: GcPtr, index: usize) -> &mut T
-    /// Returns a pointer to the element at the given index.
-    fn lower_intrinsic_list_read_ref(
-        &mut self,
-        body: &mir::Body<'gcx>,
-        locals: &mut [LocalStorage<'llvm>],
-        call_args: GenericArguments<'gcx>,
-        args: &[Operand<'gcx>],
-        destination: &Place<'gcx>,
-    ) -> CompileResult<()> {
-        let Some(crate::sema::models::GenericArgument::Type(elem_ty)) = call_args.get(0) else {
-            self.gcx
-                .dcx()
-                .emit_error("list_read intrinsic requires a type argument".into(), None);
-            return Ok(());
-        };
-
-        let elem_ty = instantiate_ty_with_args(self.gcx, *elem_ty, self.current_subst);
-        let elem_ty =
-            crate::sema::tycheck::utils::normalize_post_monomorphization(self.gcx, elem_ty);
-
-        let Some(llvm_elem_ty) = self.lower_ty(elem_ty) else {
-            return Ok(());
-        };
-
-        let buffer = args.get(0).expect("list_read missing buffer");
-        let index = args.get(1).expect("list_read missing index");
-
-        let Some(buffer_val) = self.eval_operand(body, locals, buffer)? else {
-            let _ = self.builder.build_unreachable().unwrap();
-            return Ok(());
-        };
-        let Some(index_val) = self.eval_operand(body, locals, index)? else {
-            let _ = self.builder.build_unreachable().unwrap();
-            return Ok(());
-        };
-
-        let mut index_val = index_val.into_int_value();
-        if index_val.get_type() != self.usize_ty {
-            index_val = self
-                .builder
-                .build_int_cast(index_val, self.usize_ty, "idx_cast")
-                .unwrap();
-        }
-
-        let buffer_ptr = buffer_val.into_pointer_value();
-        let elem_ptr = self
-            .builder
-            .build_bit_cast(
-                buffer_ptr,
-                self.context.ptr_type(AddressSpace::default()),
-                "list_buf_cast",
-            )
-            .unwrap()
-            .into_pointer_value();
-        let elem_ptr = unsafe {
-            self.builder
-                .build_gep(llvm_elem_ty, elem_ptr, &[index_val], "list_elem_ptr")
-                .unwrap()
-        };
-
-        self.store_place(destination, body, locals, elem_ptr.into())
-    }
-
-    /// Intrinsic: __intrinsic_ref_to_ptr[T](&T) -> *const T
-    /// Intrinsic: __intrinsic_mut_ref_to_ptr[T](&mut T) -> *mut T
-    /// Reinterprets a reference value as a raw pointer.
-    fn lower_intrinsic_ref_to_ptr(
-        &mut self,
-        body: &mir::Body<'gcx>,
-        locals: &mut [LocalStorage<'llvm>],
-        args: &[Operand<'gcx>],
-        destination: &Place<'gcx>,
-    ) -> CompileResult<()> {
-        let value = args.first().expect("ref_to_ptr missing value");
-        let Some(val) = self.eval_operand(body, locals, value)? else {
-            let _ = self.builder.build_unreachable().unwrap();
-            return Ok(());
-        };
-
-        self.store_place(destination, body, locals, val)
-    }
-
-    /// Intrinsic: __intrinsic_ptr_add[T](ptr: *T, count: usize) -> *T
-    fn lower_intrinsic_ptr_add(
-        &mut self,
-        body: &mir::Body<'gcx>,
-        locals: &mut [LocalStorage<'llvm>],
-        call_args: GenericArguments<'gcx>,
-        args: &[Operand<'gcx>],
-        destination: &Place<'gcx>,
-    ) -> CompileResult<()> {
-        self.lower_intrinsic_ptr_op(body, locals, call_args, args, destination, false)
-    }
-
-    /// Intrinsic: __intrinsic_ptr_sub[T](ptr: *T, count: usize) -> *T
-    fn lower_intrinsic_ptr_sub(
-        &mut self,
-        body: &mir::Body<'gcx>,
-        locals: &mut [LocalStorage<'llvm>],
-        call_args: GenericArguments<'gcx>,
-        args: &[Operand<'gcx>],
-        destination: &Place<'gcx>,
-    ) -> CompileResult<()> {
-        self.lower_intrinsic_ptr_op(body, locals, call_args, args, destination, true)
-    }
-
-    /// Intrinsic: __intrinsic_ptr_offset[T](ptr: *T, count: isize) -> *T
-    fn lower_intrinsic_ptr_offset(
-        &mut self,
-        body: &mir::Body<'gcx>,
-        locals: &mut [LocalStorage<'llvm>],
-        call_args: GenericArguments<'gcx>,
-        args: &[Operand<'gcx>],
-        destination: &Place<'gcx>,
-    ) -> CompileResult<()> {
-        // Offset is same as Add but with signed/isize count.
-        // For now sharing logic if possible or duplicating.
-        // The underlying GEP works same for signed offset.
-        self.lower_intrinsic_ptr_op(body, locals, call_args, args, destination, false)
-    }
-
-    fn lower_intrinsic_ptr_op(
-        &mut self,
-        body: &mir::Body<'gcx>,
-        locals: &mut [LocalStorage<'llvm>],
-        call_args: GenericArguments<'gcx>,
-        args: &[Operand<'gcx>],
-        destination: &Place<'gcx>,
-        negate: bool,
-    ) -> CompileResult<()> {
-        let Some(crate::sema::models::GenericArgument::Type(elem_ty)) = call_args.get(0) else {
-            // Error handling ignored for brevity/ICE
-            return Ok(());
-        };
-        let elem_ty = instantiate_ty_with_args(self.gcx, *elem_ty, self.current_subst);
-        let Some(llvm_elem_ty) = self.lower_ty(elem_ty) else {
-            return Ok(());
-        };
-
-        let ptr_op = args.get(0).unwrap();
-        let count_op = args.get(1).unwrap();
-
-        let ptr_val = self
-            .eval_operand(body, locals, ptr_op)?
-            .unwrap()
-            .into_pointer_value();
-        let mut count_val = self
-            .eval_operand(body, locals, count_op)?
-            .unwrap()
-            .into_int_value();
-
-        if negate {
-            count_val = self.builder.build_int_neg(count_val, "neg_count").unwrap();
-        }
-
-        let new_ptr = unsafe {
-            self.builder
-                .build_gep(llvm_elem_ty, ptr_val, &[count_val], "ptr_op")
-                .unwrap()
-        };
-
-        self.store_place(destination, body, locals, new_ptr.into())
-    }
-
-    fn lower_intrinsic_ptr_byte_add(
-        &mut self,
-        body: &mir::Body<'gcx>,
-        locals: &mut [LocalStorage<'llvm>],
-        call_args: GenericArguments<'gcx>,
-        args: &[Operand<'gcx>],
-        destination: &Place<'gcx>,
-    ) -> CompileResult<()> {
-        self.lower_intrinsic_ptr_byte_op(body, locals, call_args, args, destination, false)
-    }
-
-    fn lower_intrinsic_ptr_byte_sub(
-        &mut self,
-        body: &mir::Body<'gcx>,
-        locals: &mut [LocalStorage<'llvm>],
-        call_args: GenericArguments<'gcx>,
-        args: &[Operand<'gcx>],
-        destination: &Place<'gcx>,
-    ) -> CompileResult<()> {
-        self.lower_intrinsic_ptr_byte_op(body, locals, call_args, args, destination, true)
-    }
-
-    fn lower_intrinsic_ptr_byte_op(
-        &mut self,
-        body: &mir::Body<'gcx>,
-        locals: &mut [LocalStorage<'llvm>],
-        _: GenericArguments<'gcx>,
-        args: &[Operand<'gcx>],
-        destination: &Place<'gcx>,
-        negate: bool,
-    ) -> CompileResult<()> {
-        let ptr_op = args.get(0).unwrap();
-        let count_op = args.get(1).unwrap();
-
-        let ptr_val = self
-            .eval_operand(body, locals, ptr_op)?
-            .unwrap()
-            .into_pointer_value();
-        let mut count_val = self
-            .eval_operand(body, locals, count_op)?
-            .unwrap()
-            .into_int_value();
-
-        if negate {
-            count_val = self.builder.build_int_neg(count_val, "neg_count").unwrap();
-        }
-
-        let i8_ty = self.context.i8_type();
-        let i8_ptr_ty = self.context.ptr_type(AddressSpace::default());
-
-        let raw_ptr = self
-            .builder
-            .build_bit_cast(ptr_val, i8_ptr_ty, "raw_ptr")
-            .unwrap()
-            .into_pointer_value();
-        let new_raw_ptr = unsafe {
-            self.builder
-                .build_gep(i8_ty, raw_ptr, &[count_val], "byte_op")
-                .unwrap()
-        };
-
-        // Cast back to original pointer type
-        let new_ptr = self
-            .builder
-            .build_bit_cast(new_raw_ptr, ptr_val.get_type(), "new_ptr")
-            .unwrap();
-
-        self.store_place(destination, body, locals, new_ptr.into())
-    }
-
-    fn lower_intrinsic_ptr_read(
-        &mut self,
-        body: &mir::Body<'gcx>,
-        locals: &mut [LocalStorage<'llvm>],
-        call_args: GenericArguments<'gcx>,
-        args: &[Operand<'gcx>],
-        destination: &Place<'gcx>,
-    ) -> CompileResult<()> {
-        let Some(crate::sema::models::GenericArgument::Type(elem_ty)) = call_args.get(0) else {
-            return Ok(());
-        };
-        let elem_ty = instantiate_ty_with_args(self.gcx, *elem_ty, self.current_subst);
-        let Some(llvm_elem_ty) = self.lower_ty(elem_ty) else {
-            return Ok(());
-        };
-
-        let ptr_op = args.get(0).unwrap();
-        let ptr_val = self
-            .eval_operand(body, locals, ptr_op)?
-            .unwrap()
-            .into_pointer_value();
-
-        let val = self
-            .builder
-            .build_load(llvm_elem_ty, ptr_val, "read_val")
-            .unwrap();
-        self.store_place(destination, body, locals, val.into())
-    }
-
-    fn lower_intrinsic_ptr_write(
-        &mut self,
-        body: &mir::Body<'gcx>,
-        locals: &mut [LocalStorage<'llvm>],
-        _: GenericArguments<'gcx>,
-        args: &[Operand<'gcx>],
-        _destination: &Place<'gcx>, // returns void
-    ) -> CompileResult<()> {
-        let ptr_op = args.get(0).unwrap();
-        let val_op = args.get(1).unwrap();
-
-        let ptr_val = self
-            .eval_operand(body, locals, ptr_op)?
-            .unwrap()
-            .into_pointer_value();
-        let val_val = self.eval_operand(body, locals, val_op)?.unwrap();
-
-        let _ = self.builder.build_store(ptr_val, val_val).unwrap();
-        Ok(())
-    }
-
-    fn lower_intrinsic_memcpy(
-        &mut self,
-        body: &mir::Body<'gcx>,
-        locals: &mut [LocalStorage<'llvm>],
-        _call_args: GenericArguments<'gcx>,
-        args: &[Operand<'gcx>],
-    ) -> CompileResult<()> {
-        // args: src, dst, count (bytes)
-        let src = self
-            .eval_operand(body, locals, args.get(0).unwrap())?
-            .unwrap()
-            .into_pointer_value();
-        let dst = self
-            .eval_operand(body, locals, args.get(1).unwrap())?
-            .unwrap()
-            .into_pointer_value();
-        let count = self
-            .eval_operand(body, locals, args.get(2).unwrap())?
-            .unwrap()
-            .into_int_value();
-
-        // alignments? assuming 1 for now or reading from type if available?
-        // intrinsics usually just take pointers.
-        let _ = self.builder.build_memcpy(dst, 1, src, 1, count).unwrap();
-        Ok(())
-    }
-
-    fn lower_intrinsic_memmove(
-        &mut self,
-        body: &mir::Body<'gcx>,
-        locals: &mut [LocalStorage<'llvm>],
-        _call_args: GenericArguments<'gcx>,
-        args: &[Operand<'gcx>],
-    ) -> CompileResult<()> {
-        let src = self
-            .eval_operand(body, locals, args.get(0).unwrap())?
-            .unwrap()
-            .into_pointer_value();
-        let dst = self
-            .eval_operand(body, locals, args.get(1).unwrap())?
-            .unwrap()
-            .into_pointer_value();
-        let count = self
-            .eval_operand(body, locals, args.get(2).unwrap())?
-            .unwrap()
-            .into_int_value();
-
-        let _ = self.builder.build_memmove(dst, 1, src, 1, count).unwrap();
-        Ok(())
-    }
-
-    fn lower_intrinsic_memset(
-        &mut self,
-        body: &mir::Body<'gcx>,
-        locals: &mut [LocalStorage<'llvm>],
-        _call_args: GenericArguments<'gcx>,
-        args: &[Operand<'gcx>],
-    ) -> CompileResult<()> {
-        // args: dst, val (u8), count
-        let dst = self
-            .eval_operand(body, locals, args.get(0).unwrap())?
-            .unwrap()
-            .into_pointer_value();
-        let val = self
-            .eval_operand(body, locals, args.get(1).unwrap())?
-            .unwrap()
-            .into_int_value();
-        let count = self
-            .eval_operand(body, locals, args.get(2).unwrap())?
-            .unwrap()
-            .into_int_value();
-
-        let _ = self.builder.build_memset(dst, 1, val, count).unwrap();
-        Ok(())
-    }
-
-    fn lower_intrinsic_size_of(
-        &mut self,
-        body: &mir::Body<'gcx>,
-        locals: &mut [LocalStorage<'llvm>],
-        call_args: GenericArguments<'gcx>,
-        _args: &[Operand<'gcx>],
-        destination: &Place<'gcx>,
-    ) -> CompileResult<()> {
-        let Some(crate::sema::models::GenericArgument::Type(elem_ty)) = call_args.get(0) else {
-            return Ok(());
-        };
-        let elem_ty = instantiate_ty_with_args(self.gcx, *elem_ty, self.current_subst);
-        let Some(llvm_elem_ty) = self.lower_ty(elem_ty) else {
-            return Ok(());
-        };
-
-        let size = llvm_elem_ty.size_of().unwrap();
-        // size_of returns an IntValue (i64 usually on 64bit). Cast to usize (which is pointer sized int).
-        let size = self
-            .builder
-            .build_int_cast(size, self.usize_ty, "size_of_cast")
-            .unwrap();
-
-        self.store_place(destination, body, locals, size.into())
-    }
-
-    fn lower_intrinsic_align_of(
-        &mut self,
-        body: &mir::Body<'gcx>,
-        locals: &mut [LocalStorage<'llvm>],
-        call_args: GenericArguments<'gcx>,
-        _args: &[Operand<'gcx>],
-        destination: &Place<'gcx>,
-    ) -> CompileResult<()> {
-        let Some(crate::sema::models::GenericArgument::Type(elem_ty)) = call_args.get(0) else {
-            return Ok(());
-        };
-        let elem_ty = instantiate_ty_with_args(self.gcx, *elem_ty, self.current_subst);
-        let Some(llvm_elem_ty) = self.lower_ty(elem_ty) else {
-            return Ok(());
-        };
-
-        let align = self.target_data.get_abi_alignment(&llvm_elem_ty);
-        let align = self.usize_ty.const_int(align as u64, false);
-
-        self.store_place(destination, body, locals, align.into())
-    }
-
     fn lower_intrinsic_string_from_parts(
         &mut self,
         body: &mir::Body<'gcx>,
@@ -5562,12 +4338,15 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         if let Operand::Constant(c) = func {
             if let mir::ConstantKind::Function(def_id, args, _) = c.value {
                 let instance = self.instance_for_call(def_id, args);
-                if let InstanceKind::Virtual(_) = instance.kind() {
+                let resolved_def_id = match instance.kind() {
+                    InstanceKind::Item(def_id) => def_id,
+                    InstanceKind::Virtual(_) => {
                     unreachable!(
                         "ICE: virtual call instance reached lower_callable_with_abi; \
                          Call terminators should route virtual calls through lower_virtual_call"
                     );
-                }
+                    }
+                };
 
                 let existing_fn = self.functions.get(&instance).copied();
                 if let Some(&f) = self.functions.get(&instance) {
@@ -5576,7 +4355,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     }
                 }
 
-                let sig = self.gcx.get_signature(def_id);
+                let sig = self.gcx.get_signature(resolved_def_id);
                 let prev_subst = self.current_subst;
                 self.current_subst = instance.args();
                 let fn_abi = self.compute_fn_abi(sig);
@@ -5588,8 +4367,21 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     return (f, fn_abi);
                 }
 
-                if self.is_foreign_function(def_id) {
-                    let f = self.declare_foreign_function(def_id);
+                if self.is_foreign_function(resolved_def_id) {
+                    let f = self.declare_foreign_function(resolved_def_id);
+                    self.functions.insert(instance, f);
+                    self.fn_abis.insert(instance, fn_abi.clone());
+                    return (f, fn_abi);
+                }
+
+                if !self.instance_has_mir_body(instance)
+                    && self.is_interface_requirement_method(resolved_def_id)
+                {
+                    let prev_subst = self.current_subst;
+                    self.current_subst = instance.args();
+                    let fn_ty = self.lower_fn_abi(&fn_abi);
+                    self.current_subst = prev_subst;
+                    let f = self.declare_unreachable_stub(&name, fn_ty);
                     self.functions.insert(instance, f);
                     self.fn_abis.insert(instance, fn_abi.clone());
                     return (f, fn_abi);
@@ -5610,6 +4402,32 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         }
 
         panic!("ICE: unable to lower callable operand: {:?}", func);
+    }
+
+    fn is_interface_requirement_method(&self, def_id: hir::DefinitionID) -> bool {
+        if self.gcx.definition_kind(def_id) != DefinitionKind::AssociatedFunction {
+            return false;
+        }
+        let Some(parent) = self.gcx.definition_parent(def_id) else {
+            return false;
+        };
+        self.gcx.definition_kind(parent) == DefinitionKind::Interface
+    }
+
+    fn declare_unreachable_stub(
+        &mut self,
+        name: &str,
+        fn_ty: FunctionType<'llvm>,
+    ) -> FunctionValue<'llvm> {
+        if let Some(existing) = self.module.get_function(name) {
+            return existing;
+        }
+        let f = self.module.add_function(name, fn_ty, Some(Linkage::Internal));
+        let builder = self.context.create_builder();
+        let entry = self.context.append_basic_block(f, "entry");
+        builder.position_at_end(entry);
+        let _ = builder.build_unreachable().unwrap();
+        f
     }
 
     fn lower_fn_pointer_sig(
@@ -5679,8 +4497,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             }
             Operand::Constant(_) => return None, // Constants handled by lower_callable
         };
-        let ty = instantiate_ty_with_args(self.gcx, ty, self.current_subst);
-        let ty = crate::sema::tycheck::utils::normalize_post_monomorphization(self.gcx, ty);
+        let ty = self.mono_ty(ty);
 
         // Check if it's a closure type
         let TyKind::Closure { closure_def_id, .. } = ty.kind() else {
@@ -5710,265 +4527,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         self.fn_abis.insert(instance, fn_abi.clone());
         self.current_subst = prev_subst;
         Some((f, fn_abi))
-    }
-
-    fn virtual_instance_for_call(
-        &self,
-        func: &Operand<'gcx>,
-    ) -> Option<crate::specialize::VirtualInstance> {
-        let Operand::Constant(c) = func else {
-            return None;
-        };
-        let mir::ConstantKind::Function(def_id, args, _) = c.value else {
-            return None;
-        };
-        let instance = resolve_instance(self.gcx, def_id, args);
-        match instance.kind() {
-            InstanceKind::Virtual(instance) => Some(instance),
-            InstanceKind::Item(_) => None,
-        }
-    }
-
-    fn lower_virtual_call(
-        &mut self,
-        body: &mir::Body<'gcx>,
-        locals: &mut [LocalStorage<'llvm>],
-        instance: &crate::specialize::VirtualInstance,
-        args: &[Operand<'gcx>],
-        destination: &Place<'gcx>,
-        normal_bb: BasicBlock<'llvm>,
-        unwind_target: Option<BasicBlock<'llvm>>,
-    ) -> CompileResult<()> {
-        let receiver = args.first().expect("virtual call missing receiver");
-        let receiver_ty = self.operand_ty(body, receiver);
-        let Some(receiver_val) = self.eval_operand(body, locals, receiver)? else {
-            return Ok(());
-        };
-
-        let self_ty = match receiver_ty.kind() {
-            TyKind::Reference(inner, _) | TyKind::Pointer(inner, _) => inner,
-            _ => receiver_ty,
-        };
-
-        let TyKind::BoxedExistential { interfaces } = self_ty.kind() else {
-            return Ok(());
-        };
-        let Some(root_iface) = interfaces.get(instance.table_index).cloned() else {
-            return Ok(());
-        };
-
-        let (data_ptr, root_table_ptr) =
-            self.extract_existential_parts(receiver_ty, receiver_val, instance.table_index)?;
-
-        let method_table_ptr = if root_iface.id == instance.method_interface {
-            root_table_ptr
-        } else if let Some(chain) =
-            self.superface_chain_indices(root_iface.id, instance.method_interface)
-        {
-            let mut current_ptr = root_table_ptr;
-            for (current_iface, super_index) in chain {
-                let table_ty = self.witness_table_struct_ty(current_iface);
-                let table_ptr_ty = self.context.ptr_type(AddressSpace::default());
-                let typed_ptr = self
-                    .builder
-                    .build_bit_cast(current_ptr, table_ptr_ty, "wt_cast")
-                    .unwrap()
-                    .into_pointer_value();
-                let field_index = self.interface_method_count(current_iface) + super_index;
-                let field_ptr = self
-                    .builder
-                    .build_struct_gep(table_ty, typed_ptr, field_index as u32, "wt_super_ptr")
-                    .unwrap();
-                current_ptr = self
-                    .builder
-                    .build_load(
-                        self.context.ptr_type(AddressSpace::default()),
-                        field_ptr,
-                        "wt_super_load",
-                    )
-                    .unwrap()
-                    .into_pointer_value();
-            }
-            current_ptr
-        } else {
-            root_table_ptr
-        };
-
-        let method_table_ty = self.witness_table_struct_ty(instance.method_interface);
-        let method_table_ptr_ty = self.context.ptr_type(AddressSpace::default());
-        let typed_method_table = self
-            .builder
-            .build_bit_cast(method_table_ptr, method_table_ptr_ty, "wt_method_cast")
-            .unwrap()
-            .into_pointer_value();
-        let slot_ptr = self
-            .builder
-            .build_struct_gep(
-                method_table_ty,
-                typed_method_table,
-                instance.slot as u32,
-                "wt_method_ptr",
-            )
-            .unwrap();
-        let fn_ptr = self
-            .builder
-            .build_load(
-                self.context.ptr_type(AddressSpace::default()),
-                slot_ptr,
-                "wt_method_load",
-            )
-            .unwrap()
-            .into_pointer_value();
-
-        let mut lowered_args: Vec<BasicValueEnum<'llvm>> = Vec::with_capacity(args.len() + 1);
-        let ret_mode = self
-            .compute_fn_pointer_abi(&[], self.place_ty(body, destination))
-            .ret
-            .mode;
-        if matches!(ret_mode, abi::PassMode::Indirect { .. }) {
-            let Some(sret_dest) = self.place_address(body, locals, destination)? else {
-                self.gcx.dcx().emit_error(
-                    "virtual call with indirect return requires an addressable destination".into(),
-                    None,
-                );
-                return Err(crate::error::ReportedError);
-            };
-            lowered_args.push(sret_dest.as_basic_value_enum());
-        }
-        lowered_args.push(data_ptr.as_basic_value_enum());
-        for arg in args.iter().skip(1) {
-            if let Some(val) = self.eval_operand(body, locals, arg)? {
-                lowered_args.push(val);
-            }
-        }
-
-        let param_types: Vec<BasicMetadataTypeEnum<'llvm>> = lowered_args
-            .iter()
-            .map(|arg| match arg {
-                BasicValueEnum::ArrayValue(v) => v.get_type().into(),
-                BasicValueEnum::IntValue(v) => v.get_type().into(),
-                BasicValueEnum::FloatValue(v) => v.get_type().into(),
-                BasicValueEnum::PointerValue(v) => v.get_type().into(),
-                BasicValueEnum::StructValue(v) => v.get_type().into(),
-                BasicValueEnum::VectorValue(v) => v.get_type().into(),
-                BasicValueEnum::ScalableVectorValue(v) => v.get_type().into(),
-            })
-            .collect();
-        let fn_ty = match ret_mode {
-            abi::PassMode::Indirect { .. } | abi::PassMode::Ignore => {
-                self.context.void_type().fn_type(&param_types, false)
-            }
-            abi::PassMode::Direct => {
-                let ret_ty = self.place_ty(body, destination);
-                match self.lower_ty(ret_ty) {
-                    Some(ret) => ret.fn_type(&param_types, false),
-                    None => self.context.void_type().fn_type(&param_types, false),
-                }
-            }
-        };
-
-        let fn_ptr_cast = self
-            .builder
-            .build_bit_cast(
-                fn_ptr,
-                self.context.ptr_type(AddressSpace::default()),
-                "virt_fn_ptr",
-            )
-            .unwrap()
-            .into_pointer_value();
-        let call_site = self.emit_indirect_call_maybe_unwind(
-            fn_ty,
-            fn_ptr_cast,
-            &lowered_args,
-            normal_bb,
-            unwind_target,
-            "virt_call",
-        )?;
-
-        if !matches!(ret_mode, abi::PassMode::Indirect { .. }) {
-            if let Some(ret) = call_site.try_as_basic_value().basic() {
-                self.store_place(destination, body, locals, ret)?;
-            }
-        }
-        let _ = self.builder.build_unconditional_branch(normal_bb).unwrap();
-
-        Ok(())
-    }
-
-    fn extract_existential_parts(
-        &self,
-        receiver_ty: Ty<'gcx>,
-        receiver_val: BasicValueEnum<'llvm>,
-        table_index: usize,
-    ) -> CompileResult<(PointerValue<'llvm>, PointerValue<'llvm>)> {
-        let (existential_ty, struct_ptr, struct_val) = match receiver_ty.kind() {
-            TyKind::Reference(inner, _) | TyKind::Pointer(inner, _) => {
-                (inner, Some(receiver_val.into_pointer_value()), None)
-            }
-            TyKind::BoxedExistential { .. } => {
-                (receiver_ty, None, Some(receiver_val.into_struct_value()))
-            }
-            _ => (receiver_ty, None, Some(receiver_val.into_struct_value())),
-        };
-
-        let TyKind::BoxedExistential { interfaces } = existential_ty.kind() else {
-            let null_ptr = self.context.ptr_type(AddressSpace::default()).const_null();
-            return Ok((null_ptr, null_ptr));
-        };
-        if table_index >= interfaces.len() {
-            let null_ptr = self.context.ptr_type(AddressSpace::default()).const_null();
-            return Ok((null_ptr, null_ptr));
-        }
-
-        let table_field = table_index + 1;
-        let Some(BasicTypeEnum::StructType(struct_ty)) = self.lower_ty(existential_ty) else {
-            let null_ptr = self.context.ptr_type(AddressSpace::default()).const_null();
-            return Ok((null_ptr, null_ptr));
-        };
-
-        if let Some(struct_val) = struct_val {
-            let data_ptr = self
-                .builder
-                .build_extract_value(struct_val, 0, "exist_data")
-                .unwrap()
-                .into_pointer_value();
-            let table_ptr = self
-                .builder
-                .build_extract_value(struct_val, table_field as u32, "exist_table")
-                .unwrap()
-                .into_pointer_value();
-            return Ok((data_ptr, table_ptr));
-        }
-
-        let struct_ptr = struct_ptr.expect("existential pointer");
-        let data_ptr_gep = self
-            .builder
-            .build_struct_gep(struct_ty, struct_ptr, 0, "exist_data_ptr")
-            .unwrap();
-        let data_ptr = self
-            .builder
-            .build_load(
-                self.context.ptr_type(AddressSpace::default()),
-                data_ptr_gep,
-                "exist_data_load",
-            )
-            .unwrap()
-            .into_pointer_value();
-        let table_ptr_gep = self
-            .builder
-            .build_struct_gep(struct_ty, struct_ptr, table_field as u32, "exist_table_ptr")
-            .unwrap();
-        let table_ptr = self
-            .builder
-            .build_load(
-                self.context.ptr_type(AddressSpace::default()),
-                table_ptr_gep,
-                "exist_table_load",
-            )
-            .unwrap()
-            .into_pointer_value();
-
-        Ok((data_ptr, table_ptr))
     }
 
     fn is_foreign_function(&self, id: hir::DefinitionID) -> bool {
@@ -6243,11 +4801,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 }
             }
         }
-        if self.current_subst.is_empty() {
-            return ty;
-        }
-
-        instantiate_ty_with_args(self.gcx, ty, self.current_subst)
+        self.substitute_ty_current(ty)
     }
 
     fn lower_constant(&mut self, constant: &mir::Constant<'gcx>) -> Option<BasicValueEnum<'llvm>> {
@@ -6289,7 +4843,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     ty: constant.ty,
                     kind: ConstKind::Param(*param),
                 };
-                let instantiated = instantiate_const_with_args(self.gcx, konst, self.current_subst);
+                let instantiated = self.substitute_const_current(konst);
                 let ConstKind::Value(value) = instantiated.kind else {
                     self.gcx
                         .dcx()
@@ -6368,11 +4922,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             mir::Operand::Constant(c) => c.ty,
         };
 
-        if self.current_subst.is_empty() {
-            return ty;
-        }
-
-        instantiate_ty_with_args(self.gcx, ty, self.current_subst)
+        self.substitute_ty_current(ty)
     }
 
     fn int_type(&self, ty: Ty<'gcx>) -> Option<(IntType<'llvm>, bool)> {
@@ -6414,6 +4964,19 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let fn_ty = self.context.void_type().fn_type(&[], false);
         self.module
             .add_function("__gc__poll", fn_ty, Some(Linkage::External))
+    }
+
+    fn get_rt_existential_lookup_conformance(&self) -> FunctionValue<'llvm> {
+        if let Some(f) = self.module.get_function("__rt__existential_lookup_conformance") {
+            return f;
+        }
+        let opaque_ptr = self.context.ptr_type(AddressSpace::default());
+        let fn_ty = opaque_ptr.fn_type(&[opaque_ptr.into(), opaque_ptr.into()], false);
+        self.module.add_function(
+            "__rt__existential_lookup_conformance",
+            fn_ty,
+            Some(Linkage::External),
+        )
     }
 
     fn gc_desc_for(&mut self, ty: Ty<'gcx>) -> PointerValue<'llvm> {
@@ -6828,7 +5391,8 @@ fn lower_type<'llvm, 'gcx>(
         ),
         TyKind::BoxedExistential { interfaces } => {
             let ptr_ty = context.ptr_type(AddressSpace::default());
-            let mut fields: Vec<BasicTypeEnum<'llvm>> = Vec::with_capacity(1 + interfaces.len());
+            let mut fields: Vec<BasicTypeEnum<'llvm>> = Vec::with_capacity(2 + interfaces.len());
+            fields.push(ptr_ty.into());
             fields.push(ptr_ty.into());
             for _ in interfaces.iter() {
                 fields.push(ptr_ty.into());

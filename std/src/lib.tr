@@ -38,15 +38,15 @@ public func println(_ s: string) {
     print("\n")
 }
 
-func renderFormat(_ format: string, _ args: std.collections.List[any std.fmt.Formattable]) -> string {
+func renderFormat(_ format: string, _ args: std.collections.List[any std.fmt.Display]) -> string {
     std.fmt.formatPrintf(format, args)
 }
 
-public func sprintf(_ format: string, _ args: any std.fmt.Formattable...) -> string {
+public func sprintf(_ format: string, _ args: any std.fmt.Display...) -> string {
     renderFormat(format, args)
 }
 
-public func printf(_ format: string, _ args: any std.fmt.Formattable...) {
+public func printf(_ format: string, _ args: any std.fmt.Display...) {
     let rendered = renderFormat(format, args)
     print(rendered)
 }

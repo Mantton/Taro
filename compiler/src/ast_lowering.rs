@@ -1609,6 +1609,12 @@ impl Actor<'_, '_> {
             ast::ExpressionKind::CastAs(node, ty) => {
                 hir::ExpressionKind::CastAs(self.lower_expression(node), self.lower_type(ty))
             }
+            ast::ExpressionKind::CastAsTry(node, ty) => {
+                hir::ExpressionKind::CastAsTry(self.lower_expression(node), self.lower_type(ty))
+            }
+            ast::ExpressionKind::TypeIs(node, ty) => {
+                hir::ExpressionKind::TypeIs(self.lower_expression(node), self.lower_type(ty))
+            }
             ast::ExpressionKind::Pipe(lhs, rhs) => {
                 return self.lower_pipe_expression(lhs, rhs, node.span);
             }
