@@ -128,6 +128,11 @@ impl Parser {
 }
 
 impl Parser {
+    #[inline]
+    fn token_kind_eq(lhs: &Token, rhs: &Token) -> bool {
+        std::mem::discriminant(lhs) == std::mem::discriminant(rhs)
+    }
+
     fn current(&self) -> Option<&Spanned<Token>> {
         if self.cursor >= self.file.tokens.len() {
             return None;
@@ -172,12 +177,13 @@ impl Parser {
     }
 
     fn matches(&self, token: Token) -> bool {
-        self.current_token() == &token
+        Self::token_kind_eq(self.current_token(), &token)
     }
 
     fn matches_any(&self, tokens: &[Token]) -> bool {
+        let current = self.current_token();
         for token in tokens {
-            if self.current_token() == token {
+            if Self::token_kind_eq(current, token) {
                 return true;
             }
         }
@@ -302,7 +308,7 @@ impl Parser {
     }
 
     fn eat(&mut self, token: Token) -> bool {
-        if self.current_token() == &token {
+        if Self::token_kind_eq(self.current_token(), &token) {
             self.bump();
             return true;
         }
@@ -324,10 +330,10 @@ impl Parser {
             return false;
         };
 
-        tok == &token
+        Self::token_kind_eq(tok, &token)
     }
     fn expect(&mut self, token: Token) -> R<()> {
-        if self.current_token() == &token {
+        if Self::token_kind_eq(self.current_token(), &token) {
             self.bump();
             Ok(())
         } else {
@@ -2543,8 +2549,7 @@ impl Parser {
         let mut expr = self.parse_range_expr()?;
         // Right-associative: use recursion instead of loop
         // This makes `a ?? b ?? c` parse as `a ?? (b ?? c)`
-        if matches!(self.current_token(), Token::QuestionQuestion) {
-            self.bump();
+        if self.eat(Token::QuestionQuestion) {
             // Recursively parse the rest (right-associative)
             let right = self.parse_optional_default_expr()?;
 
