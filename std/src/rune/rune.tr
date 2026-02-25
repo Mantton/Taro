@@ -16,3 +16,53 @@ public func fromU32(_ value: uint32) -> Optional[rune] {
 
     return .some(__intrinsic_rune_from_u32_unchecked(value))
 }
+
+public func replacementCharacter() -> rune {
+    std.intrinsic.__intrinsic_rune_from_u32_unchecked(0xFFFD_u32)
+}
+
+/// Returns the number of bytes required to encode the rune in UTF-8.
+public func runeLenUtf8(_ r: rune) -> usize {
+    let val = r as uint32
+    if val < 0x80 {
+        return 1
+    }
+    if val < 0x800 {
+        return 2
+    }
+    if val < 0x10000 {
+        return 3
+    }
+    return 4
+}
+
+/// Encodes the rune as UTF-8 into the given buffer.
+/// Returns the number of bytes written.
+/// Panics if the buffer does not have enough capacity.
+public func runeEncode(_ r: rune, _ buffer: &mut std.mem.MutableSpan[uint8]) -> usize {
+    let val = r as uint32
+    let len = runeLenUtf8(r)
+
+    if buffer.len() < len {
+        std.panic.panic("runeEncode: buffer too small")
+    }
+
+    let ptr = buffer.ptr
+    if len == 1 {
+        ptr.write(val as uint8)
+    } else if len == 2 {
+        ptr.write((0xC0_u32 | (val >> 6)) as uint8)
+        ptr.add(1).write((0x80_u32 | (val & 0x3F_u32)) as uint8)
+    } else if len == 3 {
+        ptr.write((0xE0_u32 | (val >> 12)) as uint8)
+        ptr.add(1).write((0x80_u32 | ((val >> 6) & 0x3F_u32)) as uint8)
+        ptr.add(2).write((0x80_u32 | (val & 0x3F_u32)) as uint8)
+    } else {
+        ptr.write((0xF0_u32 | (val >> 18)) as uint8)
+        ptr.add(1).write((0x80_u32 | ((val >> 12) & 0x3F_u32)) as uint8)
+        ptr.add(2).write((0x80_u32 | ((val >> 6) & 0x3F_u32)) as uint8)
+        ptr.add(3).write((0x80_u32 | (val & 0x3F_u32)) as uint8)
+    }
+
+    return len
+}

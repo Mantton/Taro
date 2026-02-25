@@ -1,0 +1,235 @@
+// Tests for std.string helper methods and Add operator overloading.
+
+// ─── isEmpty ──────────────────────────────────────────────────────────────────
+
+@test
+func testIsEmptyOnEmptyString() {
+    let s = ""
+    std.testing.assertTrue(s.isEmpty(), "empty string should be isEmpty")
+}
+
+@test
+func testIsEmptyOnNonEmptyString() {
+    let s = "hello"
+    std.testing.assertFalse(s.isEmpty(), "non-empty string should not be isEmpty")
+}
+
+// ─── concat ───────────────────────────────────────────────────────────────────
+
+@test
+func testConcatTwoStrings() {
+    let a = "hello"
+    let b = " world"
+    let result = a.concat(b)
+    std.testing.assertEqual(result, "hello world", "concat should join strings")
+}
+
+@test
+func testConcatWithEmptyLeft() {
+    let a = ""
+    let b = "world"
+    let result = a.concat(b)
+    std.testing.assertEqual(result, "world", "concat with empty lhs should return rhs")
+}
+
+@test
+func testConcatWithEmptyRight() {
+    let a = "hello"
+    let b = ""
+    let result = a.concat(b)
+    std.testing.assertEqual(result, "hello", "concat with empty rhs should return lhs")
+}
+
+@test
+func testConcatBothEmpty() {
+    let a = ""
+    let b = ""
+    let result = a.concat(b)
+    std.testing.assertEqual(result, "", "concat of two empties should be empty")
+}
+
+// ─── Add operator (+) ─────────────────────────────────────────────────────────
+
+@test
+func testAddOperator() {
+    let result = "foo" + "bar"
+    std.testing.assertEqual(result, "foobar", "string + string should concatenate")
+}
+
+@test
+func testAddOperatorWithEmpty() {
+    let result = "" + "abc"
+    std.testing.assertEqual(result, "abc", "empty + string should return string")
+}
+
+// ─── contains ─────────────────────────────────────────────────────────────────
+
+@test
+func testContainsPresent() {
+    let s = "hello world"
+    std.testing.assertTrue(s.contains("world"), "should contain 'world'")
+}
+
+@test
+func testContainsAbsent() {
+    let s = "hello world"
+    std.testing.assertFalse(s.contains("xyz"), "should not contain 'xyz'")
+}
+
+@test
+func testContainsEmptyNeedle() {
+    let s = "hello"
+    std.testing.assertTrue(s.contains(""), "any string contains empty string")
+}
+
+@test
+func testContainsSelf() {
+    let s = "hello"
+    std.testing.assertTrue(s.contains("hello"), "string contains itself")
+}
+
+@test
+func testContainsNeedleLongerThanHaystack() {
+    let s = "hi"
+    std.testing.assertFalse(s.contains("hello"), "short string should not contain longer needle")
+}
+
+@test
+func testContainsAtStart() {
+    let s = "abcdef"
+    std.testing.assertTrue(s.contains("abc"), "should find needle at start")
+}
+
+@test
+func testContainsAtEnd() {
+    let s = "abcdef"
+    std.testing.assertTrue(s.contains("def"), "should find needle at end")
+}
+
+// ─── startsWith ───────────────────────────────────────────────────────────────
+
+@test
+func testStartsWithMatch() {
+    let s = "hello world"
+    std.testing.assertTrue(s.startsWith("hello"), "should start with 'hello'")
+}
+
+@test
+func testStartsWithNoMatch() {
+    let s = "hello world"
+    std.testing.assertFalse(s.startsWith("world"), "should not start with 'world'")
+}
+
+@test
+func testStartsWithEmptyPrefix() {
+    let s = "hello"
+    std.testing.assertTrue(s.startsWith(""), "any string starts with empty prefix")
+}
+
+@test
+func testStartsWithFullMatch() {
+    let s = "hello"
+    std.testing.assertTrue(s.startsWith("hello"), "string starts with itself")
+}
+
+@test
+func testStartsWithPrefixLongerThanString() {
+    let s = "hi"
+    std.testing.assertFalse(s.startsWith("hello"), "short string should not start with longer prefix")
+}
+
+// ─── endsWith ─────────────────────────────────────────────────────────────────
+
+@test
+func testEndsWithMatch() {
+    let s = "hello world"
+    std.testing.assertTrue(s.endsWith("world"), "should end with 'world'")
+}
+
+@test
+func testEndsWithNoMatch() {
+    let s = "hello world"
+    std.testing.assertFalse(s.endsWith("hello"), "should not end with 'hello'")
+}
+
+@test
+func testEndsWithEmptySuffix() {
+    let s = "hello"
+    std.testing.assertTrue(s.endsWith(""), "any string ends with empty suffix")
+}
+
+@test
+func testEndsWithFullMatch() {
+    let s = "hello"
+    std.testing.assertTrue(s.endsWith("hello"), "string ends with itself")
+}
+
+@test
+func testEndsWithSuffixLongerThanString() {
+    let s = "hi"
+    std.testing.assertFalse(s.endsWith("hello"), "short string should not end with longer suffix")
+}
+
+// ─── substring ────────────────────────────────────────────────────────────────
+
+@test
+func testSubstringMiddle() {
+    let s = "hello world"
+    let result = s.substring(6, 5)
+    std.testing.assertEqual(result, "world", "substring(6, 5) of 'hello world' should be 'world'")
+}
+
+@test
+func testSubstringFromStart() {
+    let s = "hello world"
+    let result = s.substring(0, 5)
+    std.testing.assertEqual(result, "hello", "substring(0, 5) should be 'hello'")
+}
+
+@test
+func testSubstringZeroCount() {
+    let s = "hello"
+    let result = s.substring(2, 0)
+    std.testing.assertEqual(result, "", "substring with count 0 should be empty")
+}
+
+@test
+func testSubstringFullString() {
+    let s = "hello"
+    let result = s.substring(0, 5)
+    std.testing.assertEqual(result, "hello", "substring of entire string should equal original")
+}
+
+@test
+@expectPanic
+func testSubstringOutOfBounds() {
+    let s = "hello"
+    let _ = s.substring(3, 5)
+}
+
+// ─── byteAt ──────────────────────────────────────────────────────────────────
+
+@test
+func testByteAtFirst() {
+    let s = "ABC"
+    std.testing.assertEqual(s.byteAt(0), 65_u8, "byteAt(0) of 'ABC' should be 65 (A)")
+}
+
+@test
+func testByteAtMiddle() {
+    let s = "ABC"
+    std.testing.assertEqual(s.byteAt(1), 66_u8, "byteAt(1) of 'ABC' should be 66 (B)")
+}
+
+@test
+func testByteAtLast() {
+    let s = "ABC"
+    std.testing.assertEqual(s.byteAt(2), 67_u8, "byteAt(2) of 'ABC' should be 67 (C)")
+}
+
+@test
+@expectPanic
+func testByteAtOutOfBounds() {
+    let s = "ABC"
+    let _ = s.byteAt(3)
+}

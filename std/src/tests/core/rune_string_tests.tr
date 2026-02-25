@@ -1,0 +1,111 @@
+import std.testing.assertEqual
+import std.testing.assertTrue
+import std.rune.replacementCharacter
+
+@test
+func testStringBytesIterable() {
+    let s = "hello"
+    var iter = s.bytes()
+
+    assertEqual(iter.next().unwrap(), 'h' as uint8, "should match byte")
+    assertEqual(iter.next().unwrap(), 'e' as uint8, "should match byte")
+    assertEqual(iter.next().unwrap(), 'l' as uint8, "should match byte")
+    assertEqual(iter.next().unwrap(), 'l' as uint8, "should match byte")
+    assertEqual(iter.next().unwrap(), 'o' as uint8, "should match byte")
+    assertTrue(iter.next().isNone(), "should be none after last char")
+
+    // Loop without syntax sugar
+    var count = 0
+    var iter2 = s.bytes()
+    loop {
+        let opt = iter2.next()
+        if opt.isNone() {
+            break
+        }
+        count += 1
+    }
+    assertEqual(count, 5, "should iterate 5 times")
+}
+
+@test
+func testStringCharactersIterable() {
+    // "hello" + " world" + " ✨" + " 🚀"
+    let s = "hello world ✨ 🚀"
+    var iter = s.characters()
+
+    assertEqual(iter.next().unwrap(), 'h', "should match char")
+    assertEqual(iter.next().unwrap(), 'e', "should match char")
+    assertEqual(iter.next().unwrap(), 'l', "should match char")
+    assertEqual(iter.next().unwrap(), 'l', "should match char")
+    assertEqual(iter.next().unwrap(), 'o', "should match char")
+    assertEqual(iter.next().unwrap(), ' ', "should match char")
+    assertEqual(iter.next().unwrap(), 'w', "should match char")
+    assertEqual(iter.next().unwrap(), 'o', "should match char")
+    assertEqual(iter.next().unwrap(), 'r', "should match char")
+    assertEqual(iter.next().unwrap(), 'l', "should match char")
+    assertEqual(iter.next().unwrap(), 'd', "should match char")
+    assertEqual(iter.next().unwrap(), ' ', "should match char")
+    // '✨' is U+2728 -> 0x2728_u32 as rune
+    assertEqual(iter.next().unwrap(), std.intrinsic.__intrinsic_rune_from_u32_unchecked(0x2728_u32), "should match sparkle")
+    assertEqual(iter.next().unwrap(), ' ', "should match char")
+    // '🚀' is U+1F680 -> 0x1F680_u32 as rune
+    assertEqual(iter.next().unwrap(), std.intrinsic.__intrinsic_rune_from_u32_unchecked(0x1F680_u32), "should match rocket")
+    assertTrue(iter.next().isNone(), "should be none after last char")
+}
+
+@test
+func testDecodeRuneValid() {
+    let s = "aπ🚀"
+
+    let (r1, w1) = s.decodeRune(0)
+    assertEqual(r1, 'a', "should decode ascii char")
+    assertEqual(w1, 1, "width should be 1")
+
+    // 'π' is encoded as 2 bytes: CF 80
+    let (r2, w2) = s.decodeRune(1)
+    assertEqual(r2, std.intrinsic.__intrinsic_rune_from_u32_unchecked(0x03C0_u32), "should decode pi char")
+    assertEqual(w2, 2, "width should be 2")
+
+    // '🚀' is encoded as 4 bytes: F0 9F 9A 80
+    let (r3, w3) = s.decodeRune(3)
+    assertEqual(r3, std.intrinsic.__intrinsic_rune_from_u32_unchecked(0x1F680_u32), "should decode rocket char")
+    assertEqual(w3, 4, "width should be 4")
+}
+
+@test
+func testDecodeRuneInvalid() {
+    // Array of bytes containing invalid UTF-8 sequences.
+    // [0xFF] is invalid (0xFF is not a valid UTF-8 lead byte)
+    // [0xC0, 0x80] is overlong encoding for U+0000
+    // [0xED, 0xA0, 0x80] is surrogate U+D800
+    var bytes: [uint8; 6] = [0xFF, 0xC0, 0x80, 0xED, 0xA0, 0x80]
+    let s = std.string.stringFromParts(bytes.asSpan().ptr, 6)
+
+    // First sequence: 0xFF
+    let (r1, w1) = s.decodeRune(0)
+    assertEqual(r1, replacementCharacter(), "should yield replacement on invalid lead byte")
+    assertEqual(w1, 1, "width should be 1 on invalid lead")
+
+    // Second sequence: 0xC0 0x80 (overlong)
+    let (r2, w2) = s.decodeRune(1)
+    assertEqual(r2, replacementCharacter(), "should yield replacement on overlong")
+    assertEqual(w2, 1, "width should be 1 on overlong")
+
+    // The remaining 0x80 is an unexpected continuation byte
+    let (r3, w3) = s.decodeRune(2)
+    assertEqual(r3, replacementCharacter(), "should yield replacement on bad continuation")
+    assertEqual(w3, 1, "width should be 1 on bad continuation")
+
+    // Third sequence: 0xED 0xA0 0x80 (surrogate)
+    let (r4, w4) = s.decodeRune(3)
+    assertEqual(r4, replacementCharacter(), "should yield replacement on surrogate")
+    assertEqual(w4, 1, "width should be 1 on surrogate")
+}
+
+@test
+func testDecodeRuneOutOfBounds() {
+    let s = "abc"
+    let (r, w) = s.decodeRune(3)
+    assertEqual(r, replacementCharacter(), "OOB gives replacement rune")
+    assertEqual(w, 0, "OOB width is 0")
+}
