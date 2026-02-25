@@ -39,9 +39,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-mod normalize;
-mod intrinsics;
 mod existentials;
+mod intrinsics;
+mod normalize;
 mod witness;
 
 const NON_AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES: u64 = 256;
@@ -297,9 +297,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             ],
             false,
         );
-        let rt_conformance_entry_ty = context.struct_type(&[opaque_ptr.into(), opaque_ptr.into()], false);
-        let rt_type_metadata_ty =
-            context.struct_type(&[opaque_ptr.into(), usize_ty.into()], false);
+        let rt_conformance_entry_ty =
+            context.struct_type(&[opaque_ptr.into(), opaque_ptr.into()], false);
+        let rt_type_metadata_ty = context.struct_type(&[opaque_ptr.into(), usize_ty.into()], false);
         let repeat_memset_enabled = std::env::var("TARO_EXPERIMENTAL_REPEAT_MEMSET")
             .ok()
             .map(|v| {
@@ -1724,6 +1724,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 .name
                 .map(|s| self.gcx.symbol_text(s).to_string())
                 .unwrap_or_else(|| format!("tmp{idx}"));
+
             // Use stack slots for all locals with a representable LLVM type.
             // This avoids incorrect behavior at control-flow joins when "locals"
             // are tracked purely in the emitter (would require PHI construction).
@@ -1894,9 +1895,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     crate::sema::models::AdtKind::Struct => {
                         let defn = self.gcx.get_struct_definition(def.id);
                         for (idx, field) in defn.fields.iter().enumerate() {
-                            if is_pointer_ty(field.ty) {
+                            let field_ty = instantiate_ty_with_args(self.gcx, field.ty, adt_args);
+                            if is_pointer_ty(field_ty) {
                                 let field_idx = crate::thir::FieldIndex::new(idx);
-                                local_slots.push(ShadowSlotKind::Field(field_idx, field.ty));
+                                local_slots.push(ShadowSlotKind::Field(field_idx, field_ty));
                             }
                         }
                     }
@@ -2267,8 +2269,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         return Ok(Some(value));
                     }
                     mir::CastKind::ExistentialTryCast { target } => {
-                        let value =
-                            self.lower_existential_try_cast(from_ty, *target, *ty, val)?;
+                        let value = self.lower_existential_try_cast(from_ty, *target, *ty, val)?;
                         return Ok(Some(value));
                     }
                     mir::CastKind::Pointer => return Ok(self.lower_cast(from_ty, *ty, val)),
@@ -3094,8 +3095,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         value = self
             .builder
             .build_insert_value(value, data_ptr, 0, "exist_data")
-                .unwrap()
-                .into_struct_value();
+            .unwrap()
+            .into_struct_value();
         value = self
             .builder
             .build_insert_value(value, metadata_ptr, 1, "exist_meta")
@@ -4341,10 +4342,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 let resolved_def_id = match instance.kind() {
                     InstanceKind::Item(def_id) => def_id,
                     InstanceKind::Virtual(_) => {
-                    unreachable!(
-                        "ICE: virtual call instance reached lower_callable_with_abi; \
+                        unreachable!(
+                            "ICE: virtual call instance reached lower_callable_with_abi; \
                          Call terminators should route virtual calls through lower_virtual_call"
-                    );
+                        );
                     }
                 };
 
@@ -4422,7 +4423,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         if let Some(existing) = self.module.get_function(name) {
             return existing;
         }
-        let f = self.module.add_function(name, fn_ty, Some(Linkage::Internal));
+        let f = self
+            .module
+            .add_function(name, fn_ty, Some(Linkage::Internal));
         let builder = self.context.create_builder();
         let entry = self.context.append_basic_block(f, "entry");
         builder.position_at_end(entry);
@@ -4967,7 +4970,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     }
 
     fn get_rt_existential_lookup_conformance(&self) -> FunctionValue<'llvm> {
-        if let Some(f) = self.module.get_function("__rt__existential_lookup_conformance") {
+        if let Some(f) = self
+            .module
+            .get_function("__rt__existential_lookup_conformance")
+        {
             return f;
         }
         let opaque_ptr = self.context.ptr_type(AddressSpace::default());
@@ -5269,14 +5275,7 @@ fn lower_fn_sig<'llvm, 'gcx>(
         .inputs
         .iter()
         .filter_map(|p| {
-            lower_type(
-                context,
-                gcx,
-                target_data,
-                p.ty,
-                GenericArguments::empty(),
-            )
-            .map(|t| t.into())
+            lower_type(context, gcx, target_data, p.ty, GenericArguments::empty()).map(|t| t.into())
         })
         .collect();
     match lower_type(

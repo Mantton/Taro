@@ -1,4 +1,5 @@
 import std.hash.{Hashable, Hasher}
+import std.iter.{Iterator, Iterable}
 
 @test
 func testDictionaryLiteralAndConstructorInference() {
@@ -109,4 +110,78 @@ func testGrowthThresholdAndOverwrite() {
     std.testing.assertTrue(overwrite.isSome(), "overwrite should return previous value after threshold growth")
     std.testing.assertEqual(overwrite.unwrap(), 105, "overwrite previous value mismatch after threshold growth")
     std.testing.assertEqual(dict.len(), 13 as usize, "overwrite should not change len")
+}
+
+@test
+func testDictionaryIterators() {
+    var dict: [int32: string] = [:]
+    let _ = dict.insert(key: 1, value: "one")
+    let _ = dict.insert(key: 2, value: "two")
+    let _ = dict.insert(key: 3, value: "three")
+
+    // keys()
+    var keysIter = dict.keys()
+    var keyCount: usize = 0
+    loop {
+        match keysIter.next() {
+            case .some(k) => {
+                let keyVal = *k
+                std.testing.assertTrue(keyVal == 1 || keyVal == 2 || keyVal == 3, "keys() yields invalid key")
+                keyCount += 1
+            }
+            case .none => break
+        }
+    }
+    std.testing.assertEqual(keyCount, 3 as usize, "keys() yields wrong number of elements")
+
+/*
+    // values()
+    var valuesIter = dict.values()
+    var valCount: usize = 0
+    loop {
+        match valuesIter.next() {
+            case .some(v) => {
+                let s = *v
+                std.testing.assertTrue(s == "one" || s == "two" || s == "three", "values() yields invalid value")
+                valCount += 1
+            }
+            case .none => break
+        }
+    }
+    std.testing.assertEqual(valCount, 3 as usize, "values() yields wrong number of elements")
+*/
+    // entries() via Iterable implementation (&dict)
+    var entryCount: usize = 0
+    for entry in &dict {
+        let (k, v) = entry
+        let keyVal = *k
+        std.testing.assertTrue(keyVal == 1 || keyVal == 2 || keyVal == 3, "entries() yields invalid key")
+        let s = *v
+        std.testing.assertTrue(s == "one" || s == "two" || s == "three", "entries() yields invalid value")
+        entryCount += 1
+    }
+    std.testing.assertEqual(entryCount, 3 as usize, "entries() yields wrong number of elements")
+
+}
+
+@test
+func testDictionaryClear() {
+    var dict: [int32: string] = [:]
+    let _ = dict.insert(key: 1, value: "one")
+    let _ = dict.insert(key: 2, value: "two")
+
+    std.testing.assertEqual(dict.len(), 2 as usize, "dictionary should have 2 elements")
+    std.testing.assertTrue(dict.contains(1), "should contain key 1")
+
+    dict.clear()
+
+    std.testing.assertEqual(dict.len(), 0 as usize, "dictionary should be empty after clear")
+    std.testing.assertTrue(dict.isEmpty(), "isEmpty should be true")
+    std.testing.assertTrue(dict.get(1).isNone(), "cleared dict shouldn't contain previous keys")
+    std.testing.assertTrue(dict.get(2).isNone(), "cleared dict shouldn't contain previous keys")
+
+    // Should be able to insert again
+    let _ = dict.insert(key: 3, value: "three")
+    std.testing.assertEqual(dict.len(), 1 as usize, "dictionary should have 1 element after insert")
+    std.testing.assertTrue(dict.contains(3), "should contain new key")
 }

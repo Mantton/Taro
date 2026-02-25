@@ -1,0 +1,133 @@
+import std.collections.List
+import std.iter.{map, filter, take, skip, zip}
+
+@test
+func testMapDoublesRange() {
+    var doubled = map((1 as int32)..(4 as int32), |x: int32| { x * 2 })
+    var results = List[int32].new()
+    for v in doubled {
+        results.append(v)
+    }
+
+    std.testing.assertEqual(results.len(), 3 as usize, "map: should yield 3 elements")
+    std.testing.assertEqual(*results.at(0), 2, "map: first element")
+    std.testing.assertEqual(*results.at(1), 4, "map: second element")
+    std.testing.assertEqual(*results.at(2), 6, "map: third element")
+}
+
+@test
+func testFilterEvens() {
+    var evens = filter((1 as int32)..(7 as int32), |x: &int32| { *x % 2 == 0 })
+    var results = List[int32].new()
+    for v in evens {
+        results.append(v)
+    }
+
+    std.testing.assertEqual(results.len(), 3 as usize, "filter: should yield 3 elements")
+    std.testing.assertEqual(*results.at(0), 2, "filter: first even")
+    std.testing.assertEqual(*results.at(1), 4, "filter: second even")
+    std.testing.assertEqual(*results.at(2), 6, "filter: third even")
+}
+
+@test
+func testTakeThree() {
+    var taken = take((1 as int32)..(10 as int32), 3 as usize)
+    var results = List[int32].new()
+    for v in taken {
+        results.append(v)
+    }
+
+    std.testing.assertEqual(results.len(), 3 as usize, "take: should yield 3 elements")
+    std.testing.assertEqual(*results.at(0), 1, "take: first")
+    std.testing.assertEqual(*results.at(1), 2, "take: second")
+    std.testing.assertEqual(*results.at(2), 3, "take: third")
+}
+
+@test
+func testSkipTwo() {
+    var skipped = skip((1 as int32)..(6 as int32), 2 as usize)
+    var results = List[int32].new()
+    for v in skipped {
+        results.append(v)
+    }
+
+    std.testing.assertEqual(results.len(), 3 as usize, "skip: should yield 3 elements")
+    std.testing.assertEqual(*results.at(0), 3, "skip: first after skip")
+    std.testing.assertEqual(*results.at(1), 4, "skip: second after skip")
+    std.testing.assertEqual(*results.at(2), 5, "skip: third after skip")
+}
+
+@test
+func testZipPairsTwo() {
+    var zipped = zip((1 as int32)..(4 as int32), (10 as int32)..(13 as int32))
+    var resultsA = List[int32].new()
+    var resultsB = List[int32].new()
+
+    for pair in zipped {
+        let (a, b) = pair
+        resultsA.append(a)
+        resultsB.append(b)
+    }
+
+    std.testing.assertEqual(resultsA.len(), 3 as usize, "zip: should yield 3 pairs")
+    std.testing.assertEqual(*resultsA.at(0), 1, "zip: first a")
+    std.testing.assertEqual(*resultsB.at(0), 10, "zip: first b")
+
+    std.testing.assertEqual(*resultsA.at(1), 2, "zip: second a")
+    std.testing.assertEqual(*resultsB.at(1), 11, "zip: second b")
+
+    std.testing.assertEqual(*resultsA.at(2), 3, "zip: third a")
+    std.testing.assertEqual(*resultsB.at(2), 12, "zip: third b")
+}
+
+@test
+func testTakeDefaultMethod() {
+    var taken = ((1 as int32)..(10 as int32)).take(2 as usize)
+    var results = List[int32].new()
+    for v in taken {
+        results.append(v)
+    }
+
+    std.testing.assertEqual(results.len(), 2 as usize, "take method: should yield 2 elements")
+    std.testing.assertEqual(*results.at(0), 1, "take method: first")
+    std.testing.assertEqual(*results.at(1), 2, "take method: second")
+}
+
+@test
+func testSkipDefaultMethod() {
+    var skipped = ((1 as int32)..(5 as int32)).skip(3 as usize)
+    var results = List[int32].new()
+    for v in skipped {
+        results.append(v)
+    }
+
+    std.testing.assertEqual(results.len(), 1 as usize, "skip method: should yield 1 element")
+    std.testing.assertEqual(*results.at(0), 4, "skip method: first after skip")
+}
+
+@test
+func testTakeSkipComposition() {
+    // skip 2, then take 2 from range 1..8
+    var composed = skip((1 as int32)..(8 as int32), 2 as usize)
+    var taken = take(composed, 2 as usize)
+    var results = List[int32].new()
+    for v in taken {
+        results.append(v)
+    }
+
+    std.testing.assertEqual(results.len(), 2 as usize, "composition: should yield exactly 2 elements")
+    std.testing.assertEqual(*results.at(0), 3, "composition: first")
+    std.testing.assertEqual(*results.at(1), 4, "composition: second")
+}
+
+@test
+func testCollectMapIntoList() {
+    var mapped = map((1 as int32)..(4 as int32), |x: int32| { x * 10 })
+    var iter = mapped.makeIterator() // Keeping one makeIterator() as requested
+    var list = List[int32].from(&mut iter)
+
+    std.testing.assertEqual(list.len(), 3 as usize, "collect map: length")
+    std.testing.assertEqual(*list.at(0), 10, "collect map: element 0")
+    std.testing.assertEqual(*list.at(1), 20, "collect map: element 1")
+    std.testing.assertEqual(*list.at(2), 30, "collect map: element 2")
+}

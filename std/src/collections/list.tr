@@ -3,6 +3,7 @@ import std.intrinsic.__intrinsic_gc_desc
 import std.optional.Optional
 import std.iter.{Iterator, Iterable}
 import std.panic.panic
+import std.cmp.{Ord, Ordering}
 
 
 /// A dynamically-sized list (dynamic array).
@@ -174,6 +175,154 @@ impl[Element] List[Element] {
     /// Clear all elements from the list.
     public func clear(&mut self) {
         self.len = 0
+    }
+}
+
+impl[Element] List[Element] {
+    /// Ensure capacity is at least `minCapacity`. No-op if already sufficient.
+    public func reserve(&mut self, _ minCapacity: usize) {
+        if minCapacity <= self.cap {
+            return
+        }
+
+        var newCap = if self.cap == 0 { 4 } else { self.cap }
+        while newCap < minCapacity {
+            newCap = newCap * 2
+        }
+
+        let desc = __intrinsic_gc_desc[Element]()
+        let newBuffer = __gc__grow_buf(self.buffer, desc, self.len, newCap)
+        self.buffer = newBuffer
+        self.cap = newCap
+    }
+
+    /// Insert `item` at `index`, shifting elements right.
+    /// Returns false if index > len (out of bounds).
+    public func insert(&mut self, at index: usize, _ item: Element) -> bool {
+        if index > self.len {
+            return false
+        }
+
+        if self.len >= self.cap {
+            self.grow()
+        }
+
+        // Shift elements [index..len] one slot to the right
+        if index < self.len {
+            let count = self.len - index
+            unsafe {
+                let base = self.buffer as *mut Element
+                let src = base.add(index)
+                let dst = base.add(index + (1 as usize))
+                (src as *const Element).copyTo(dst, count)
+            }
+        }
+
+        // Write the new element
+        unsafe {
+            (self.buffer as *mut Element)
+                .add(index)
+                .write(item)
+        }
+
+        self.len += 1
+        return true
+    }
+
+    /// Remove and return the element at `index`, shifting elements left.
+    /// Returns .none if index >= len (out of bounds).
+    public func removeAt(&mut self, _ index: usize) -> Optional[Element] {
+        if index >= self.len {
+            return .none
+        }
+
+        // Read out the element
+        let desc = __intrinsic_gc_desc[Element]()
+        let elemSize = desc.size
+        let offset = index * elemSize
+        var elem: Element
+        unsafe {
+            let elemPtr = &mut elem as *mut Element
+            let dst = elemPtr as *mut uint8
+            self.buffer.byteAdd(offset).readBytes(dst, elemSize)
+        }
+
+        // Shift elements [index+1..len] one slot to the left
+        let remaining = self.len - index - (1 as usize)
+        if remaining > 0 {
+            unsafe {
+                let base = self.buffer as *mut Element
+                let src = base.add(index + (1 as usize))
+                let dst = base.add(index)
+                (src as *const Element).copyTo(dst, remaining)
+            }
+        }
+
+        self.len -= 1
+        return .some(elem)
+    }
+}
+
+impl[Element] List[Element] {
+    /// Collect elements from an iterator into a new list.
+    public func from[I: Iterator[Element = Element]](_ iter: &mut I) -> Self {
+        var list = List[Element]()
+        loop {
+            match iter.next() {
+                case .some(item) => list.append(item)
+                case .none => break
+            }
+        }
+        return list
+    }
+}
+
+impl[Element: Ord] List[Element] {
+    /// Sort the list in-place in ascending order (insertion sort).
+    public func sort(&mut self) {
+        if self.len <= 1 {
+            return
+        }
+
+        let desc = __intrinsic_gc_desc[Element]()
+        let elemSize = desc.size
+
+        var i: usize = 1
+        while i < self.len {
+            // Read element at i into a temporary
+            var key: Element
+            unsafe {
+                let keyPtr = &mut key as *mut Element
+                let src = (self.buffer as *const Element).add(i)
+                (src as *const uint8).readBytes(keyPtr as *mut uint8, elemSize)
+            }
+
+            var j = i
+            while j > 0 {
+                let prev = unsafe { (self.buffer as *const Element).add(j - (1 as usize)) as &Element }
+                match key.cmp(prev) {
+                    case .less => {
+                        // Shift element at j-1 to j
+                        unsafe {
+                            let src = (self.buffer as *const Element).add(j - (1 as usize))
+                            let dst = (self.buffer as *mut Element).add(j)
+                            (src as *const uint8).readBytes(dst as *mut uint8, elemSize)
+                        }
+                        j -= 1
+                    }
+                    case _ => break
+                }
+            }
+
+            // Write key into position j
+            unsafe {
+                let keyPtr = &key as *const Element
+                let dst = (self.buffer as *mut Element).add(j)
+                (keyPtr as *const uint8).readBytes(dst as *mut uint8, elemSize)
+            }
+
+            i += 1
+        }
     }
 }
 

@@ -1,49 +1,39 @@
 @test
 func testEnumerateHelperProducesIndexValuePairs() {
-    var iter = std.iter.enumerate((2 as usize)..(5 as usize)).makeIterator()
+    let elems = std.iter.enumerate((2 as usize)..(5 as usize))
+    var indices = std.collections.List[usize].new()
+    var values = std.collections.List[usize].new()
 
-    match iter.next() {
-        case .some(pair) => {
-            let (index, value) = pair
-            std.testing.assertEqual(index, 0 as usize, "first enumerate index should be 0")
-            std.testing.assertEqual(value, 2 as usize, "first enumerate value mismatch")
-        }
-        case .none => std.testing.fail("first enumerate element missing")
+    for pair in elems {
+        let (index, value) = pair
+        indices.append(index)
+        values.append(value)
     }
 
-    match iter.next() {
-        case .some(pair) => {
-            let (index, value) = pair
-            std.testing.assertEqual(index, 1 as usize, "second enumerate index should be 1")
-            std.testing.assertEqual(value, 3 as usize, "second enumerate value mismatch")
-        }
-        case .none => std.testing.fail("second enumerate element missing")
-    }
-
-    match iter.next() {
-        case .some(pair) => {
-            let (index, value) = pair
-            std.testing.assertEqual(index, 2 as usize, "third enumerate index should be 2")
-            std.testing.assertEqual(value, 4 as usize, "third enumerate value mismatch")
-        }
-        case .none => std.testing.fail("third enumerate element missing")
-    }
-
-    std.testing.assertTrue(iter.next().isNone(), "enumerate iterator should be exhausted")
+    std.testing.assertEqual(indices.len(), 3 as usize, "enumerate length")
+    std.testing.assertEqual(*indices.at(0), 0 as usize, "first index")
+    std.testing.assertEqual(*values.at(0), 2 as usize, "first value")
+    std.testing.assertEqual(*indices.at(1), 1 as usize, "second index")
+    std.testing.assertEqual(*values.at(1), 3 as usize, "second value")
+    std.testing.assertEqual(*indices.at(2), 2 as usize, "third index")
+    std.testing.assertEqual(*values.at(2), 4 as usize, "third value")
 }
 
 @test
 func testIterableEnumerateDefaultMethod() {
-    var iter = ((7 as usize)..(10 as usize)).enumerate().makeIterator()
+    let elems = ((7 as usize)..(10 as usize)).enumerate()
+    var indices = std.collections.List[usize].new()
+    var values = std.collections.List[usize].new()
 
-    match iter.next() {
-        case .some(pair) => {
-            let (index, value) = pair
-            std.testing.assertEqual(index, 0 as usize, "default method enumerate index mismatch")
-            std.testing.assertEqual(value, 7 as usize, "default method enumerate value mismatch")
-        }
-        case .none => std.testing.fail("default method enumerate should yield first element")
+    for pair in elems {
+        let (index, value) = pair
+        indices.append(index)
+        values.append(value)
     }
+
+    std.testing.assertEqual(indices.len(), 3 as usize, "enumerate length")
+    std.testing.assertEqual(*indices.at(0), 0 as usize, "first index")
+    std.testing.assertEqual(*values.at(0), 7 as usize, "first value")
 }
 
 @test

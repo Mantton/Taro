@@ -116,12 +116,8 @@ fn resolve_interface_method_for_concrete<'ctx>(
                 let final_args = gcx.store.interners.intern_generic_args(final_args);
                 let final_args =
                     complete_instance_args_for_def(gcx, impl_func_id, final_args, call_args);
-                let final_args = ensure_monomorphized_instance_args(
-                    gcx,
-                    impl_func_id,
-                    final_args,
-                    call_args,
-                );
+                let final_args =
+                    ensure_monomorphized_instance_args(gcx, impl_func_id, final_args, call_args);
                 return Some(Instance::item(impl_func_id, final_args));
             }
 
@@ -365,9 +361,7 @@ fn ty_has_unresolved_generics<'ctx>(ty: Ty<'ctx>) -> bool {
                 || matches!(len.kind, ConstKind::Param(_) | ConstKind::Infer(_))
                 || ty_has_unresolved_generics(len.ty)
         }
-        TyKind::Tuple(items) => items
-            .iter()
-            .any(|item| ty_has_unresolved_generics(*item)),
+        TyKind::Tuple(items) => items.iter().any(|item| ty_has_unresolved_generics(*item)),
         TyKind::FnPointer { inputs, output } => {
             inputs
                 .iter()

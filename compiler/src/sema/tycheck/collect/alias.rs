@@ -42,7 +42,7 @@ impl<'ctx> Actor<'ctx> {
 
         if let Some(extension_id) = entry.extension_id {
             if let Some(head) = self.context.get_impl_type_head(extension_id) {
-                self.register_in_bucket(head, entry.name, id, entry.span);
+                self.register_in_bucket(head, entry.name, id, entry.span, extension_id);
             }
         }
 
@@ -53,12 +53,29 @@ impl<'ctx> Actor<'ctx> {
         self.alias_ids.push(id);
     }
 
-    fn register_in_bucket(&self, head: TypeHead, name: Symbol, id: DefinitionID, span: Span) {
+    fn register_in_bucket(
+        &self,
+        head: TypeHead,
+        name: Symbol,
+        id: DefinitionID,
+        span: Span,
+        extension_id: DefinitionID,
+    ) {
         self.context.with_session_type_database(|db| {
             let bucket = db.alias_table.by_type.entry(head).or_default();
+            let existing = bucket.aliases.get(&name).cloned().unwrap_or_default();
 
-            if let Some((existing_id, _)) = bucket.aliases.get(&name) {
-                if *existing_id != id {
+            for (existing_id, _) in existing {
+                if existing_id == id {
+                    return;
+                }
+                let same_impl = db
+                    .alias_table
+                    .aliases
+                    .get(&existing_id)
+                    .and_then(|entry| entry.extension_id)
+                    == Some(extension_id);
+                if same_impl {
                     self.context.dcx().emit_error(
                         format!(
                             "conflicting associated type '{}' on '{}'",
@@ -71,7 +88,7 @@ impl<'ctx> Actor<'ctx> {
                 }
             }
 
-            bucket.aliases.insert(name, (id, span));
+            bucket.aliases.entry(name).or_default().push((id, span));
         });
     }
 }

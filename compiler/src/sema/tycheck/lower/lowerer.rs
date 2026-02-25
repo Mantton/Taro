@@ -617,16 +617,16 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
 
         let mut collect = |db: &mut crate::compile::context::TypeDatabase<'ctx>| {
             if let Some(bucket) = db.alias_table.by_type.get(&head) {
-                if let Some(entry) = bucket.aliases.get(&name) {
-                    let alias_id = entry.0;
-                    let span = entry.1;
-                    let mut extension_id = None;
+                if let Some(entries) = bucket.aliases.get(&name) {
+                    for &(alias_id, span) in entries {
+                        let mut extension_id = None;
 
-                    if let Some(alias_def) = db.alias_table.aliases.get(&alias_id) {
-                        extension_id = alias_def.extension_id;
+                        if let Some(alias_def) = db.alias_table.aliases.get(&alias_id) {
+                            extension_id = alias_def.extension_id;
+                        }
+
+                        raw_candidates.push((alias_id, span, extension_id));
                     }
-
-                    raw_candidates.push((alias_id, span, extension_id));
                 }
             }
         };

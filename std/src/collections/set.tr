@@ -1,11 +1,12 @@
-import std.hash.Hashable
+import std.hash.{Hashable, Hasher}
+import std.marker.Copy
 
 public struct Set[Element: Hashable] {
     storage: Dictionary[Element, ()]
 }
 
 
-impl[Element] Set[Element] {
+impl[Element: Hashable] Set[Element] {
     public func new() -> Self {
         Set[Element] {
             storage: Dictionary[Element, ()](),
@@ -22,7 +23,7 @@ impl[Element] Set[Element] {
 }
 
 
-impl[Element] Set[Element] {
+impl[Element: Hashable] Set[Element] {
     public func insert(&mut self, _ value: Element) {
         let _ = self.storage.insert(key: value, value: ())
     }
@@ -33,5 +34,75 @@ impl[Element] Set[Element] {
 
     public func remove(&mut self, _ value: Element) -> bool {
         self.storage.remove(value).isSome()
+    }
+
+    public func clear(&mut self) {
+        self.storage.clear()
+    }
+}
+
+impl[Element: Hashable] std.iter.Iterable for &Set[Element] {
+    type Iterator = DictKeysIterator[Element, ()]
+    type Element = &Element
+
+    public func makeIterator(self) -> Self.Iterator {
+        self.storage.keys()
+    }
+}
+
+impl[Element: Copy] Set[Element] {
+    public func union(&self, _ other: &Set[Element]) -> Set[Element] {
+        var result = Set[Element].new()
+        for x in self {
+            result.insert(*x)
+        }
+        for x in other {
+            result.insert(*x)
+        }
+        result
+    }
+
+    public func intersection(&self, _ other: &Set[Element]) -> Set[Element] {
+        var result = Set[Element].new()
+        if self.len() <= other.len() {
+            for x in self {
+                if other.contains(*x) {
+                    result.insert(*x)
+                }
+            }
+        } else {
+            for x in other {
+                if self.contains(*x) {
+                    result.insert(*x)
+                }
+            }
+        }
+        result
+    }
+
+    public func difference(&self, _ other: &Set[Element]) -> Set[Element] {
+        var result = Set[Element].new()
+        for x in self {
+            if !other.contains(*x) {
+                result.insert(*x)
+            }
+        }
+        result
+    }
+
+    public func isSubset(&self, of other: &Set[Element]) -> bool {
+        if self.len() > other.len() {
+            return false
+        }
+        for x in self {
+            if !other.contains(*x) {
+                return false
+            }
+        }
+        return true
+    }
+
+    public func isSuperset(&self, of other: &Set[Element]) -> bool {
+        other.isSubset(of: self)
     }
 }

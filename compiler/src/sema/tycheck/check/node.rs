@@ -22,7 +22,8 @@ use crate::{
                 const_eval::eval_const_expression,
                 generics::GenericsBuilder,
                 instantiate::{
-                    instantiate_const_with_args, instantiate_signature_with_args,
+                    instantiate_const_with_args, instantiate_interface_ref_with_args,
+                    instantiate_signature_with_args,
                     instantiate_ty_with_args,
                 },
                 type_head_from_value_ty,
@@ -1375,7 +1376,13 @@ impl<'ctx> Checker<'ctx> {
             // Use explicit type annotation, or infer from expectation, or create infer var
             let param_ty = if has_explicit_type {
                 // Explicit type annotation - lower it
-                self.lower_type(param.ty.as_ref().unwrap())
+                let explicit_ty = self.lower_type(param.ty.as_ref().unwrap());
+                if let Some(ref inputs) = expected_inputs {
+                    if let Some(&expected_ty) = inputs.get(index) {
+                        cs.equal(expected_ty, explicit_ty, param.span);
+                    }
+                }
+                explicit_ty
             } else if let Some(ref inputs) = expected_inputs {
                 // Infer from expected type (e.g., from Fn bound)
                 if let Some(&expected_ty) = inputs.get(index) {
@@ -1964,8 +1971,8 @@ impl<'ctx> Checker<'ctx> {
 
         // Get the callee type (may still have type params if not yet instantiated)
         let callee_ty = cs.infer_cx.resolve_vars_if_possible(callee_ty);
-        let instantiated_inputs = match callee_ty.kind() {
-            TyKind::FnPointer { inputs, .. } => inputs.to_vec(),
+        let (instantiated_inputs, instantiated_output) = match callee_ty.kind() {
+            TyKind::FnPointer { inputs, output } => (inputs.to_vec(), output),
             _ => return None,
         };
 
@@ -1974,13 +1981,22 @@ impl<'ctx> Checker<'ctx> {
         if let Some(def_id) = callee_def {
             let signature = self.gcx().get_signature(def_id);
             let original_inputs: Vec<Ty<'ctx>> = signature.inputs.iter().map(|p| p.ty).collect();
+            let bound_instantiation_args = self.infer_call_generic_args(
+                def_id,
+                &original_inputs,
+                &instantiated_inputs,
+                signature.output,
+                instantiated_output,
+            );
 
             let resolved: Vec<Ty<'ctx>> = original_inputs
                 .iter()
                 .zip(instantiated_inputs.iter())
                 .map(|(&original_ty, &instantiated_ty)| {
                     // Try to resolve Fn bound if the original param is a type parameter
-                    if let Some(fn_ptr) = self.try_resolve_fn_bound(original_ty, def_id) {
+                    if let Some(fn_ptr) =
+                        self.try_resolve_fn_bound(original_ty, def_id, bound_instantiation_args)
+                    {
                         fn_ptr
                     } else {
                         // Fall back to instantiated type from callee
@@ -1997,7 +2013,12 @@ impl<'ctx> Checker<'ctx> {
     /// If the type is a type parameter with an Fn/FnMut/FnOnce bound,
     /// create a synthetic FnPointer type with the expected inputs/output.
     /// Returns None if the type is not a type parameter or has no Fn bound.
-    fn try_resolve_fn_bound(&self, ty: Ty<'ctx>, def_id: DefinitionID) -> Option<Ty<'ctx>> {
+    fn try_resolve_fn_bound(
+        &self,
+        ty: Ty<'ctx>,
+        def_id: DefinitionID,
+        instantiation_args: GenericArguments<'ctx>,
+    ) -> Option<Ty<'ctx>> {
         let TyKind::Parameter(param) = ty.kind() else {
             return None;
         };
@@ -2013,7 +2034,7 @@ impl<'ctx> Checker<'ctx> {
         for constraint in constraints {
             if let crate::sema::models::Constraint::Bound {
                 ty: bound_ty,
-                interface,
+                mut interface,
             } = constraint.value
             {
                 // Check if this constraint applies to our parameter
@@ -2034,6 +2055,8 @@ impl<'ctx> Checker<'ctx> {
                 if !is_fn_trait {
                     continue;
                 }
+
+                interface = instantiate_interface_ref_with_args(gcx, interface, instantiation_args);
 
                 // Extract Args and Output from Fn[Args, Output]
                 // Interface arguments are: [Self, Args, Output]
@@ -2066,6 +2089,182 @@ impl<'ctx> Checker<'ctx> {
         }
 
         None
+    }
+
+    /// Infer call-site generic arguments by matching a definition's signature types
+    /// against the instantiated callee signature types.
+    ///
+    /// This lets us instantiate `Fn/FnMut/FnOnce` bounds with inference variables
+    /// (for example, infer `Out` from closure return type).
+    fn infer_call_generic_args(
+        &self,
+        def_id: DefinitionID,
+        original_inputs: &[Ty<'ctx>],
+        instantiated_inputs: &[Ty<'ctx>],
+        original_output: Ty<'ctx>,
+        instantiated_output: Ty<'ctx>,
+    ) -> GenericArguments<'ctx> {
+        let gcx = self.gcx();
+        let identity_args = GenericsBuilder::identity_for_item(gcx, def_id);
+        let mut inferred: Vec<Option<GenericArgument<'ctx>>> = vec![None; identity_args.len()];
+
+        for (&original, &instantiated) in original_inputs.iter().zip(instantiated_inputs.iter()) {
+            Self::record_generic_bindings_from_ty(original, instantiated, &mut inferred);
+        }
+        Self::record_generic_bindings_from_ty(original_output, instantiated_output, &mut inferred);
+
+        let resolved: Vec<GenericArgument<'ctx>> = identity_args
+            .iter()
+            .enumerate()
+            .map(|(index, identity)| inferred[index].unwrap_or(*identity))
+            .collect();
+        gcx.store.interners.intern_generic_args(resolved)
+    }
+
+    fn record_generic_bindings_from_ty(
+        pattern: Ty<'ctx>,
+        actual: Ty<'ctx>,
+        inferred: &mut [Option<GenericArgument<'ctx>>],
+    ) {
+        match pattern.kind() {
+            TyKind::Parameter(param) => {
+                Self::record_generic_binding(
+                    param.index,
+                    GenericArgument::Type(actual),
+                    inferred,
+                );
+            }
+            TyKind::Reference(pattern_inner, _) | TyKind::Pointer(pattern_inner, _) => {
+                if let TyKind::Reference(actual_inner, _) | TyKind::Pointer(actual_inner, _) =
+                    actual.kind()
+                {
+                    Self::record_generic_bindings_from_ty(pattern_inner, actual_inner, inferred);
+                }
+            }
+            TyKind::Tuple(pattern_items) => {
+                let TyKind::Tuple(actual_items) = actual.kind() else {
+                    return;
+                };
+                for (&pattern_item, &actual_item) in
+                    pattern_items.iter().zip(actual_items.iter())
+                {
+                    Self::record_generic_bindings_from_ty(pattern_item, actual_item, inferred);
+                }
+            }
+            TyKind::FnPointer {
+                inputs: pattern_inputs,
+                output: pattern_output,
+            } => {
+                let TyKind::FnPointer {
+                    inputs: actual_inputs,
+                    output: actual_output,
+                } = actual.kind()
+                else {
+                    return;
+                };
+                for (&pattern_input, &actual_input) in
+                    pattern_inputs.iter().zip(actual_inputs.iter())
+                {
+                    Self::record_generic_bindings_from_ty(pattern_input, actual_input, inferred);
+                }
+                Self::record_generic_bindings_from_ty(pattern_output, actual_output, inferred);
+            }
+            TyKind::Adt(pattern_def, pattern_args) => {
+                let TyKind::Adt(actual_def, actual_args) = actual.kind() else {
+                    return;
+                };
+                if pattern_def.id != actual_def.id || pattern_args.len() != actual_args.len() {
+                    return;
+                }
+                for (&pattern_arg, &actual_arg) in pattern_args.iter().zip(actual_args.iter()) {
+                    Self::record_generic_bindings_from_arg(pattern_arg, actual_arg, inferred);
+                }
+            }
+            TyKind::Alias {
+                kind: pattern_kind,
+                def_id: pattern_def_id,
+                args: pattern_args,
+            } => {
+                let TyKind::Alias {
+                    kind: actual_kind,
+                    def_id: actual_def_id,
+                    args: actual_args,
+                } = actual.kind()
+                else {
+                    return;
+                };
+                if pattern_kind != actual_kind
+                    || pattern_def_id != actual_def_id
+                    || pattern_args.len() != actual_args.len()
+                {
+                    return;
+                }
+                for (&pattern_arg, &actual_arg) in pattern_args.iter().zip(actual_args.iter()) {
+                    Self::record_generic_bindings_from_arg(pattern_arg, actual_arg, inferred);
+                }
+            }
+            TyKind::Closure {
+                inputs: pattern_inputs,
+                output: pattern_output,
+                ..
+            } => {
+                let TyKind::Closure {
+                    inputs: actual_inputs,
+                    output: actual_output,
+                    ..
+                } = actual.kind()
+                else {
+                    return;
+                };
+                for (&pattern_input, &actual_input) in
+                    pattern_inputs.iter().zip(actual_inputs.iter())
+                {
+                    Self::record_generic_bindings_from_ty(pattern_input, actual_input, inferred);
+                }
+                Self::record_generic_bindings_from_ty(pattern_output, actual_output, inferred);
+            }
+            _ => {}
+        }
+    }
+
+    fn record_generic_bindings_from_arg(
+        pattern: GenericArgument<'ctx>,
+        actual: GenericArgument<'ctx>,
+        inferred: &mut [Option<GenericArgument<'ctx>>],
+    ) {
+        match (pattern, actual) {
+            (GenericArgument::Type(pattern_ty), GenericArgument::Type(actual_ty)) => {
+                Self::record_generic_bindings_from_ty(pattern_ty, actual_ty, inferred);
+            }
+            (GenericArgument::Const(pattern_const), GenericArgument::Const(actual_const)) => {
+                Self::record_generic_bindings_from_const(pattern_const, actual_const, inferred);
+            }
+            _ => {}
+        }
+    }
+
+    fn record_generic_bindings_from_const(
+        pattern: Const<'ctx>,
+        actual: Const<'ctx>,
+        inferred: &mut [Option<GenericArgument<'ctx>>],
+    ) {
+        if let ConstKind::Param(param) = pattern.kind {
+            Self::record_generic_binding(param.index, GenericArgument::Const(actual), inferred);
+        }
+        Self::record_generic_bindings_from_ty(pattern.ty, actual.ty, inferred);
+    }
+
+    fn record_generic_binding(
+        index: usize,
+        argument: GenericArgument<'ctx>,
+        inferred: &mut [Option<GenericArgument<'ctx>>],
+    ) {
+        let Some(slot) = inferred.get_mut(index) else {
+            return;
+        };
+        if slot.is_none() {
+            *slot = Some(argument);
+        }
     }
 
     fn inferred_member_argument_expectations(

@@ -62,6 +62,18 @@ func mapValInferred[T, F: Fn[T, T]](_ value: T, _ f: F) -> T {
     f(value)
 }
 
+func applyOutFn[T, Out, F: Fn[T, Out]](_ x: T, _ f: F) -> Out {
+    f(x)
+}
+
+func applyOutMut[T, Out, F: FnMut[T, Out]](_ x: T, _ f: F) -> Out {
+    f(x)
+}
+
+func applyOutOnce[T, Out, F: FnOnce[T, Out]](_ x: T, _ f: F) -> Out {
+    f(x)
+}
+
 struct ContainerInferred {
     value: int32
 }
@@ -131,6 +143,16 @@ impl[T: Copy] PairMethodGeneric[T] {
 
     func map_both[F: Fn[T, T]](self, _ f: F) -> PairMethodGeneric[T] {
         PairMethodGeneric[T] { first: f(self.first), second: f(self.second) }
+    }
+}
+
+struct CallableField[F: FnMut[int32, int32]] {
+    f: F
+}
+
+impl[F: FnMut[int32, int32]] CallableField[F] {
+    func apply(&mut self, _ x: int32) -> int32 {
+        self.f(x)
     }
 }
 
@@ -311,6 +333,25 @@ func testClosureInferred() {
     std.assert(nested == 210, "nested closures with inferred params")
 }
 
+func testClosureGenericOutInference() {
+    let doubled = applyOutFn(5 as int32, |x: int32| { x * 2 })
+    std.assert(doubled == 10, "Out should infer to int32")
+
+    let is_even = applyOutFn(6 as int32, |x: int32| { x % 2 == 0 })
+    std.assert(is_even, "Out should infer to bool")
+
+    var running_total: int32 = 0
+    let running = applyOutMut(3 as int32, |x: int32| {
+        running_total = running_total + x
+        running_total
+    })
+    std.assert(running == 3, "FnMut Out inference should work")
+    std.assert(running_total == 3, "FnMut closure should mutate captures")
+
+    let once_result = applyOutOnce(9 as int32, |x: int32| { x + 1 })
+    std.assert(once_result == 10, "FnOnce Out inference should work")
+}
+
 func testClosureMethod() {
     let container = ContainerMethod { value: 10 }
 
@@ -376,6 +417,25 @@ func testClosureMethodGeneric() {
     std.assert(composed == 11, "compose (5*2)+1 = 11")
 }
 
+func testCallableFieldDispatch() {
+    var add_one = CallableField { f: |x: int32| -> int32 { x + 1 } }
+    std.assert(add_one.apply(10) == 11, "self.f(x) should dispatch callable field")
+
+    var total: int32 = 0
+    var accumulator = CallableField {
+        f: |x: int32| -> int32 {
+            total = total + x
+            total
+        },
+    }
+
+    let first = accumulator.apply(3)
+    let second = accumulator.apply(4)
+    std.assert(first == 3, "first call should return running total 3")
+    std.assert(second == 7, "second call should return running total 7")
+    std.assert(total == 7, "callable field should preserve FnMut capture state")
+}
+
 func testClosureMove() {
     var list = List[int32]()
     list.append(1)
@@ -417,8 +477,10 @@ func main() {
     testClosureHierarchy()
     testClosureHigherOrder()
     testClosureInferred()
+    testClosureGenericOutInference()
     testClosureMethod()
     testClosureMethodGeneric()
+    testCallableFieldDispatch()
     testClosureMove()
     testClosureNested()
 

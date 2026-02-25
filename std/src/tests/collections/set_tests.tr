@@ -49,3 +49,99 @@ func testSetCollisionInsertContainsRemove() {
     let removedMissing = set.remove(SetCollisionKey { id: 2 })
     std.testing.assertFalse(removedMissing, "remove should fail for missing key")
 }
+
+@test
+func testSetIteration() {
+    var set: std.collections.Set[int32] = std.collections.Set()
+    set.insert(1)
+    set.insert(2)
+    set.insert(3)
+
+    var sum = 0
+    for x in &set {
+        sum += *x
+    }
+    std.testing.assertEqual(sum, 6, "set iteration should visit all elements")
+}
+
+@test
+func testSetClear() {
+    var set: std.collections.Set[int32] = std.collections.Set()
+    set.insert(1)
+    set.insert(2)
+    set.clear()
+    std.testing.assertTrue(set.isEmpty(), "set should be empty after clear")
+    std.testing.assertEqual(set.len(), 0 as usize, "set len should be 0 after clear")
+}
+
+@test
+func testSetUnion() {
+    var a: std.collections.Set[int32] = std.collections.Set()
+    a.insert(1)
+    a.insert(2)
+    
+    var b: std.collections.Set[int32] = std.collections.Set()
+    b.insert(2)
+    b.insert(3)
+
+    let c = a.union(&b)
+    std.testing.assertEqual(c.len(), 3 as usize, "union should contain distinct elements")
+    std.testing.assertTrue(c.contains(1), "union contains 1")
+    std.testing.assertTrue(c.contains(2), "union contains 2")
+    std.testing.assertTrue(c.contains(3), "union contains 3")
+}
+
+@test
+func testSetIntersection() {
+    var a: std.collections.Set[int32] = std.collections.Set()
+    a.insert(1)
+    a.insert(2)
+    a.insert(3)
+    
+    var b: std.collections.Set[int32] = std.collections.Set()
+    b.insert(2)
+    b.insert(3)
+    b.insert(4)
+
+    let c = a.intersection(&b)
+    std.testing.assertEqual(c.len(), 2 as usize, "intersection should contain shared elements")
+    std.testing.assertTrue(c.contains(2), "intersection contains 2")
+    std.testing.assertTrue(c.contains(3), "intersection contains 3")
+    std.testing.assertFalse(c.contains(1), "intersection should not contain 1")
+}
+
+@test
+func testSetDifference() {
+    var a: std.collections.Set[int32] = std.collections.Set()
+    a.insert(1)
+    a.insert(2)
+    a.insert(3)
+    
+    var b: std.collections.Set[int32] = std.collections.Set()
+    b.insert(2)
+    b.insert(4)
+
+    let c = a.difference(&b)
+    std.testing.assertEqual(c.len(), 2 as usize, "difference should contain elements only in A")
+    std.testing.assertTrue(c.contains(1), "difference contains 1")
+    std.testing.assertTrue(c.contains(3), "difference contains 3")
+    std.testing.assertFalse(c.contains(2), "difference should not contain 2")
+}
+
+@test
+func testSetSubsets() {
+    var a: std.collections.Set[int32] = std.collections.Set()
+    a.insert(1)
+    a.insert(2)
+    
+    var b: std.collections.Set[int32] = std.collections.Set()
+    b.insert(1)
+    b.insert(2)
+    b.insert(3)
+
+    std.testing.assertTrue(a.isSubset(of: &b), "A should be subset of B")
+    std.testing.assertFalse(b.isSubset(of: &a), "B should not be subset of A")
+
+    std.testing.assertTrue(b.isSuperset(of: &a), "B should be superset of A")
+    std.testing.assertFalse(a.isSuperset(of: &b), "A should not be superset of B")
+}

@@ -202,6 +202,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                             return result;
                         }
                     }
+
                     continue;
                 }
 
@@ -396,6 +397,62 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 // The BindMethodOverload goal will record the correct adjustments
                 // when the disjunction selects a branch.
                 return SolverResult::Solved(vec![disjunction_goal, apply_goal]);
+            }
+        }
+
+        // ── Callable field fallback ──────────────────────────────────
+        // If no method named `f` was found, check if `f` is a struct field
+        // whose type is callable (e.g., `F: FnMut[T, T]`).
+        // Resolve `self.f(args)` as `(self.f)(args)`.
+        {
+            let mut adjustments = Vec::new();
+            let mut prev: Option<Ty<'ctx>> = None;
+            for ty in self.autoderef(*receiver) {
+                let ty = self.structurally_resolve(ty);
+                if prev.is_some() {
+                    adjustments.push(Adjustment::Dereference);
+                }
+                prev = Some(ty);
+
+                if let Some((field, index)) = self.lookup_field(ty, name.symbol) {
+                    if !self
+                        .gcx()
+                        .is_visibility_allowed(field.visibility, self.current_def)
+                    {
+                        // Field exists but is not visible; fall through to error.
+                        break;
+                    }
+
+                    // Record field index and receiver adjustments.
+                    self.record_adjustments(*reciever_node, adjustments);
+                    self.record_field_index(*node_id, index);
+
+                    // Create a Member goal: resolves `self.f` to the field type.
+                    let field_ty = field.ty;
+
+                    // Create an Apply goal: calls the field value with the arguments.
+                    let apply_goal = Obligation {
+                        location: *span,
+                        goal: Goal::Apply(ApplyGoalData {
+                            call_node_id: *node_id,
+                            call_span: *span,
+                            callee_ty: field_ty,
+                            callee_source: None,
+                            result_ty: *result,
+                            _expect_ty: *expect_ty,
+                            arguments: arguments.clone(),
+                            skip_labels: false,
+                        }),
+                    };
+
+                    // Equate method_ty with the field type so downstream sees the right type.
+                    let eq_goal = Obligation {
+                        location: name.span,
+                        goal: Goal::Equal(*method_ty, field_ty),
+                    };
+
+                    return SolverResult::Solved(vec![eq_goal, apply_goal]);
+                }
             }
         }
 

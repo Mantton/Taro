@@ -555,7 +555,12 @@ impl<'ctx> Actor<'ctx> {
                 .by_type
                 .get(&type_head)
                 .and_then(|bucket| bucket.aliases.get(&assoc.name))
-                .map(|(id, _)| *id)
+                .and_then(|vec| {
+                    vec.iter().map(|(id, _)| *id).find(|&id| {
+                        db.alias_table.aliases.get(&id).map(|def| def.extension_id)
+                            == Some(Some(record.extension))
+                    })
+                })
         });
 
         if let Some(alias_id) = alias_id {
@@ -566,9 +571,7 @@ impl<'ctx> Actor<'ctx> {
             return Ok(default_ty);
         }
 
-        Err(ConformanceError::MissingAssociatedType {
-            name: assoc.name,
-        })
+        Err(ConformanceError::MissingAssociatedType { name: assoc.name })
     }
 }
 
@@ -704,7 +707,8 @@ impl<'ctx> Actor<'ctx> {
                 .keys()
                 .copied()
                 .filter(|candidate| {
-                    gcx.definition_kind(*candidate) == crate::sema::resolve::models::DefinitionKind::AssociatedConstant
+                    gcx.definition_kind(*candidate)
+                        == crate::sema::resolve::models::DefinitionKind::AssociatedConstant
                         && gcx.definition_parent(*candidate) == Some(impl_id)
                         && gcx.definition_ident(*candidate).symbol == requirement.name
                 })

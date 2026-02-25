@@ -271,7 +271,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         self.adjustments.insert(node_id, adjustments);
     }
 
-    fn lookup_field(&self, ty: Ty<'ctx>, name: Symbol) -> Option<(StructField<'ctx>, usize)> {
+    pub(crate) fn lookup_field(&self, ty: Ty<'ctx>, name: Symbol) -> Option<(StructField<'ctx>, usize)> {
         let TyKind::Adt(def, args) = ty.kind() else {
             return None;
         };

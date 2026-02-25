@@ -982,8 +982,9 @@ pub struct PackageAliasTable {
 
 #[derive(Default, Debug, Clone)]
 pub struct AliasBucket {
-    /// All aliases visible on this nominal type, regardless of where‑clauses.
-    pub aliases: FxHashMap<Symbol, (DefinitionID, Span)>,
+    /// All aliases visible on this type head, grouped by name.
+    /// Multiple entries are allowed per name (for different impl blocks).
+    pub aliases: FxHashMap<Symbol, Vec<(DefinitionID, Span)>>,
 }
 
 #[derive(Debug, Clone)]

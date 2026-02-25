@@ -10,7 +10,9 @@ use crate::{
             lower::{TypeLowerer, item::DefTyLoweringCtx},
             results::TypeCheckResults,
             solve::Adjustment,
-            utils::instantiate::instantiate_signature_with_args,
+            utils::instantiate::{
+                instantiate_signature_with_args, instantiate_struct_definition_with_args,
+            },
         },
     },
     thir::{
@@ -997,7 +999,75 @@ impl<'ctx> FunctionLower<'ctx> {
                 name: _,
                 arguments,
             } => {
-                let Some(def_id) = self.results.overload_source(expr.id) else {
+                if let Some(def_id) = self.results.overload_source(expr.id) {
+                    let recv = self.lower_expr(receiver);
+                    let receiver_args = [recv];
+                    let signature = self.gcx.get_signature(def_id);
+                    let final_args = self
+                        .lower_call_args_with_defaults(
+                            signature,
+                            expr.id,
+                            arguments,
+                            &receiver_args,
+                            expr.span,
+                        )
+                        .unwrap_or_else(|| {
+                            debug_assert!(
+                                false,
+                                "failed to match method call arguments for default values"
+                            );
+                            self.lower_call_args(arguments, &receiver_args)
+                        });
+
+                    let callee_ty = self.gcx.get_type(def_id);
+                    let generic_args = self.results.instantiation(expr.id);
+                    let callee = self.push_expr(
+                        ExprKind::Zst {
+                            id: def_id,
+                            generic_args,
+                        },
+                        callee_ty,
+                        expr.span,
+                    );
+                    ExprKind::Call {
+                        callee,
+                        args: final_args,
+                    }
+                } else if let Some(field_index) = self.results.field_index(expr.id) {
+                    // Callable-field fallback from method resolution:
+                    // lower `receiver.f(args)` as `(receiver.f)(args)`.
+                    let recv = self.lower_expr(receiver);
+                    let recv_ty = self.func.exprs[recv].ty;
+
+                    let callee_ty = match recv_ty.kind() {
+                        TyKind::Adt(def, args) => {
+                            let struct_def = self.gcx.get_struct_definition(def.id);
+                            let struct_def =
+                                instantiate_struct_definition_with_args(self.gcx, struct_def, args);
+                            struct_def
+                                .fields
+                                .get(field_index)
+                                .map(|field| field.ty)
+                                .unwrap_or(self.gcx.types.error)
+                        }
+                        _ => self.gcx.types.error,
+                    };
+
+                    let callee = self.push_expr(
+                        ExprKind::Field {
+                            lhs: recv,
+                            index: FieldIndex::from_usize(field_index),
+                        },
+                        callee_ty,
+                        expr.span,
+                    );
+
+                    let final_args = self.lower_call_args(arguments, &[]);
+                    ExprKind::Call {
+                        callee,
+                        args: final_args,
+                    }
+                } else {
                     self.gcx.dcx().emit_error(
                         "failed to lower method call (no resolved target)".into(),
                         Some(expr.span),
@@ -1010,40 +1080,6 @@ impl<'ctx> FunctionLower<'ctx> {
                         ty: self.gcx.types.error,
                         span: expr.span,
                     };
-                };
-
-                let recv = self.lower_expr(receiver);
-                let receiver_args = [recv];
-                let signature = self.gcx.get_signature(def_id);
-                let final_args = self
-                    .lower_call_args_with_defaults(
-                        signature,
-                        expr.id,
-                        arguments,
-                        &receiver_args,
-                        expr.span,
-                    )
-                    .unwrap_or_else(|| {
-                        debug_assert!(
-                            false,
-                            "failed to match method call arguments for default values"
-                        );
-                        self.lower_call_args(arguments, &receiver_args)
-                    });
-
-                let callee_ty = self.gcx.get_type(def_id);
-                let generic_args = self.results.instantiation(expr.id);
-                let callee = self.push_expr(
-                    ExprKind::Zst {
-                        id: def_id,
-                        generic_args,
-                    },
-                    callee_ty,
-                    expr.span,
-                );
-                ExprKind::Call {
-                    callee,
-                    args: final_args,
                 }
             }
 
