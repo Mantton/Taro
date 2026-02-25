@@ -58,12 +58,15 @@ impl<'ctx> TypeFolder<'ctx> for PostMonoNormalizeFolder<'ctx> {
                         // For nested projections like `Range[int32].Iterator.Element`,
                         // the Self arg may itself be an alias (e.g. `Range[int32].Iterator`).
                         // We need to resolve it to its concrete type first.
-                        let folded_args: Vec<_> = args.iter().map(|arg| {
-                            match arg {
-                                GenericArgument::Type(ty) => GenericArgument::Type(ty.fold_with(self)),
+                        let folded_args: Vec<_> = args
+                            .iter()
+                            .map(|arg| match arg {
+                                GenericArgument::Type(ty) => {
+                                    GenericArgument::Type(ty.fold_with(self))
+                                }
                                 GenericArgument::Const(c) => GenericArgument::Const(*c),
-                            }
-                        }).collect();
+                            })
+                            .collect();
                         let folded_args = self.gcx.store.interners.intern_generic_args(folded_args);
 
                         // Resolve projection: T.Item where T is concrete
@@ -167,7 +170,12 @@ impl<'ctx> PostMonoNormalizeFolder<'ctx> {
             gcx.store.interners.intern_generic_args(Vec::new())
         } else {
             // Skip the Self arg (index 0), take the interface's own generics
-            let slice: Vec<_> = args.iter().skip(1).take(interface_generic_count).cloned().collect();
+            let slice: Vec<_> = args
+                .iter()
+                .skip(1)
+                .take(interface_generic_count)
+                .cloned()
+                .collect();
             gcx.store.interners.intern_generic_args(slice)
         };
 
@@ -209,9 +217,7 @@ impl<'ctx> PostMonoNormalizeFolder<'ctx> {
         let impl_self_ty = gcx.get_impl_self_ty(impl_id)?;
 
         // Create inference context for unification
-        let icx = std::rc::Rc::new(
-            crate::sema::tycheck::infer::InferCtx::new(gcx),
-        );
+        let icx = std::rc::Rc::new(crate::sema::tycheck::infer::InferCtx::new(gcx));
 
         // Create fresh inference vars for the impl's generic parameters
         let span = crate::span::Span::empty(crate::span::FileID::from_usize(0));

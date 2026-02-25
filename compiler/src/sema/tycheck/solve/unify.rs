@@ -21,7 +21,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return Ok(());
         }
 
-        let mut unifier = TypeUnifier::with_env(self.icx.clone(), &self.param_env);
+        let unifier = TypeUnifier::with_env(self.icx.clone(), &self.param_env);
         unifier.unify(a, b)?;
         Ok(())
     }

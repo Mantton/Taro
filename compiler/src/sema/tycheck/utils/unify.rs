@@ -24,7 +24,10 @@ impl<'ctx, 'env> TypeUnifier<'ctx, 'env> {
     }
 
     pub fn with_env(icx: Rc<InferCtx<'ctx>>, env: &'env ParamEnv<'ctx>) -> TypeUnifier<'ctx, 'env> {
-        TypeUnifier { icx, env: Some(env) }
+        TypeUnifier {
+            icx,
+            env: Some(env),
+        }
     }
 
     pub fn unify(&self, a: Ty<'ctx>, b: Ty<'ctx>) -> UnificationResult<'ctx> {

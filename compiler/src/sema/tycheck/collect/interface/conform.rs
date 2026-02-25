@@ -340,7 +340,6 @@ impl<'ctx> Actor<'ctx> {
             db.conformances.get(&type_head).cloned().unwrap_or_default()
         });
 
-
         // Auto-implement Tuple for tuple types
         if let Some(witness) = self.build_tuple_witness(type_head, interface) {
             self.store_witness(type_head, interface, witness.clone());
