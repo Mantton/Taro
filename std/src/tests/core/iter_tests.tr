@@ -55,19 +55,19 @@ func testEnumerateInForLoop() {
 
 @test
 func testCountRange() {
-    let c = ((1 as int32)..(6 as int32)).count()
+    let c = (1_i32..6_i32).count()
     std.testing.assertEqual(c, 5 as usize, "count of 1..6 should be 5")
 }
 
 @test
 func testCountEmpty() {
-    let c = ((0 as int32)..(0 as int32)).count()
+    let c = (0_i32..0_i32).count()
     std.testing.assertEqual(c, 0 as usize, "count of empty range should be 0")
 }
 
 @test
 func testCountAfterFilter() {
-    let c = std.iter.filter((1 as int32)..(11 as int32), |x: &int32| { *x % 2 == 0 }).count()
+    let c = std.iter.filter(1_i32..11_i32, |x: &int32| { *x % 2 == 0 }).count()
     std.testing.assertEqual(c, 5 as usize, "count of evens in 1..11 should be 5")
 }
 
