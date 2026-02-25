@@ -186,11 +186,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return SolverResult::Error(vec![error]);
         };
 
-        let resolution =
-            match self.resolve_static_member_resolution(head, base_ty, name, span) {
-                Ok(resolution) => resolution,
-                Err(errors) => return SolverResult::Error(errors),
-            };
+        let resolution = match self.resolve_static_member_resolution(head, base_ty, name, span) {
+            Ok(resolution) => resolution,
+            Err(errors) => return SolverResult::Error(errors),
+        };
 
         self.record_value_resolution(node_id, resolution.clone());
 
@@ -271,7 +270,11 @@ impl<'ctx> ConstraintSolver<'ctx> {
         self.adjustments.insert(node_id, adjustments);
     }
 
-    pub(crate) fn lookup_field(&self, ty: Ty<'ctx>, name: Symbol) -> Option<(StructField<'ctx>, usize)> {
+    pub(crate) fn lookup_field(
+        &self,
+        ty: Ty<'ctx>,
+        name: Symbol,
+    ) -> Option<(StructField<'ctx>, usize)> {
         let TyKind::Adt(def, args) = ty.kind() else {
             return None;
         };

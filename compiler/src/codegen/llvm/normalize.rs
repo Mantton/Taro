@@ -34,7 +34,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         self.normalize_post_mono_ty(self.substitute_ty_current(ty))
     }
 
-    pub(super) fn resolve_generic_args(&self, args: GenericArguments<'gcx>) -> GenericArguments<'gcx> {
+    pub(super) fn resolve_generic_args(
+        &self,
+        args: GenericArguments<'gcx>,
+    ) -> GenericArguments<'gcx> {
         if args.is_empty() {
             return args;
         }

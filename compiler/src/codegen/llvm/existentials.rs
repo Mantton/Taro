@@ -124,12 +124,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             table_ptrs.push(self.context.ptr_type(AddressSpace::default()).const_null());
         }
 
-        Ok(self.build_existential_value(
-            to_ty,
-            data_ptr,
-            metadata_ptr,
-            &table_ptrs,
-        ))
+        Ok(self.build_existential_value(to_ty, data_ptr, metadata_ptr, &table_ptrs))
     }
 
     fn interface_ref_matches_for_assert(
@@ -387,7 +382,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 } else {
                     all = false;
                 }
-                self.context.bool_type().const_int(if all { 1 } else { 0 }, false)
+                self.context
+                    .bool_type()
+                    .const_int(if all { 1 } else { 0 }, false)
             }
             _ => self
                 .context
@@ -427,7 +424,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     fn optional_variant_indices(
         &self,
         optional_ty: Ty<'gcx>,
-    ) -> Option<(usize, usize, crate::sema::models::AdtDef, GenericArguments<'gcx>)> {
+    ) -> Option<(
+        usize,
+        usize,
+        crate::sema::models::AdtDef,
+        GenericArguments<'gcx>,
+    )> {
         let TyKind::Adt(def, args) = optional_ty.kind() else {
             return None;
         };
@@ -473,7 +475,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             );
         };
 
-        let enum_ptr = self.builder.build_alloca(enum_struct_ty, "opt_tmp").unwrap();
+        let enum_ptr = self
+            .builder
+            .build_alloca(enum_struct_ty, "opt_tmp")
+            .unwrap();
         let _ = self
             .builder
             .build_store(enum_ptr, enum_struct_ty.const_zero())
@@ -638,9 +643,15 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 let parent = self
                     .current_fn
                     .expect("active function for existential try cast");
-                let then_bb = self.context.append_basic_block(parent, "exist_try_cast_some");
-                let else_bb = self.context.append_basic_block(parent, "exist_try_cast_none");
-                let merge_bb = self.context.append_basic_block(parent, "exist_try_cast_merge");
+                let then_bb = self
+                    .context
+                    .append_basic_block(parent, "exist_try_cast_some");
+                let else_bb = self
+                    .context
+                    .append_basic_block(parent, "exist_try_cast_none");
+                let merge_bb = self
+                    .context
+                    .append_basic_block(parent, "exist_try_cast_merge");
 
                 let _ = self
                     .builder

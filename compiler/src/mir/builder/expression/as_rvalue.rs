@@ -45,8 +45,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             }
             ExprKind::ExistentialTryCast { value, target } => {
                 let value_ty = self.thir.exprs[*value].ty;
-                let consuming_existential_downcast = matches!(value_ty.kind(), TyKind::BoxedExistential { .. })
-                    && !matches!(target.kind(), TyKind::BoxedExistential { .. });
+                let consuming_existential_downcast =
+                    matches!(value_ty.kind(), TyKind::BoxedExistential { .. })
+                        && !matches!(target.kind(), TyKind::BoxedExistential { .. });
                 let operand = if consuming_existential_downcast {
                     // `existential as? Concrete` is consuming.
                     unpack!(block = self.as_operand(block, *value))

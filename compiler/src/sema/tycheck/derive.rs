@@ -221,7 +221,10 @@ fn try_synthesize_hash<'ctx>(
 
     Some(SynthesizedMethod {
         witness: MethodWitness {
-            implementation: MethodImplementation::Synthetic(SyntheticMethodKind::MemberwiseHash, syn_id),
+            implementation: MethodImplementation::Synthetic(
+                SyntheticMethodKind::MemberwiseHash,
+                syn_id,
+            ),
             args_template,
         },
     })

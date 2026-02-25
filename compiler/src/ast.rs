@@ -472,14 +472,20 @@ pub enum ExpressionKind {
 #[derive(Debug, Clone)]
 pub enum Literal {
     Bool(bool),
-    Rune { value: String },
-    String { value: String },
+    Rune {
+        value: String,
+    },
+    String {
+        value: String,
+    },
     Integer {
         value: String,
         base: Base,
         suffix: Option<IntegerTypeSuffix>,
     },
-    Float { value: String },
+    Float {
+        value: String,
+    },
     Nil,
 }
 

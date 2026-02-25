@@ -284,12 +284,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 }
 
                 let mut supers = self.collect_interface_with_supers(record.interface);
-                if supers
-                    .drain(1..)
-                    .any(|candidate| {
-                        self.interface_ref_matches_with_mode(*iface, candidate, true, false)
-                    })
-                {
+                if supers.drain(1..).any(|candidate| {
+                    self.interface_ref_matches_with_mode(*iface, candidate, true, false)
+                }) {
                     satisfied = true;
                     break;
                 }
@@ -321,7 +318,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     break;
                 }
 
-                for candidate in self.collect_interface_with_supers(record.interface).into_iter().skip(1)
+                for candidate in self
+                    .collect_interface_with_supers(record.interface)
+                    .into_iter()
+                    .skip(1)
                 {
                     if self.interface_ref_matches_with_mode(*iface, candidate, infer, false) {
                         matched = Some(candidate);
@@ -359,7 +359,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 }
 
                 if include_supers {
-                    for candidate in self.collect_interface_with_supers(*source).into_iter().skip(1)
+                    for candidate in self
+                        .collect_interface_with_supers(*source)
+                        .into_iter()
+                        .skip(1)
                     {
                         if self.interface_ref_matches_with_mode(*target, candidate, infer, false) {
                             matched = Some(candidate);
@@ -407,7 +410,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
                             goal: Goal::ConstraintEqual(*expected_ty, *actual_ty),
                         });
                     }
-                    (GenericArgument::Const(expected_const), GenericArgument::Const(actual_const)) => {
+                    (
+                        GenericArgument::Const(expected_const),
+                        GenericArgument::Const(actual_const),
+                    ) => {
                         let _ = self.unify_const(*expected_const, *actual_const);
                     }
                     _ => {}
@@ -497,7 +503,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return self.interface_ref_matches(expected, actual);
         }
 
-        let matches = self.icx.probe(|_| self.interface_ref_matches_with_inference(expected, actual));
+        let matches = self
+            .icx
+            .probe(|_| self.interface_ref_matches_with_inference(expected, actual));
         if !matches {
             return false;
         }

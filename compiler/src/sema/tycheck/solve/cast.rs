@@ -66,7 +66,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
         // - u8 -> rune is allowed
         // - all other integer -> rune casts are rejected
         match (from.kind(), to.kind()) {
-            (TyKind::Rune, TyKind::Int(_) | TyKind::UInt(_) | TyKind::Infer(InferTy::IntVar(_))) => {
+            (
+                TyKind::Rune,
+                TyKind::Int(_) | TyKind::UInt(_) | TyKind::Infer(InferTy::IntVar(_)),
+            ) => {
                 return SolverResult::Solved(vec![]);
             }
             (TyKind::UInt(UIntTy::U8), TyKind::Rune) => {

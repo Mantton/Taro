@@ -243,9 +243,9 @@ impl<'ctx> ConstraintSystem<'ctx> {
                             let resolved = self.structurally_resolve(*ty);
                             GenericArgument::Type(resolved)
                         }
-                        GenericArgument::Const(c) => GenericArgument::Const(
-                            self.infer_cx.resolve_const_if_possible(*c),
-                        ),
+                        GenericArgument::Const(c) => {
+                            GenericArgument::Const(self.infer_cx.resolve_const_if_possible(*c))
+                        }
                     })
                     .collect();
                 let interned = gcx.store.interners.intern_generic_args(resolved);
@@ -520,7 +520,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 return true;
             };
 
-            if self.gcx().definition_kind(parent) != crate::sema::resolve::models::DefinitionKind::Impl {
+            if self.gcx().definition_kind(parent)
+                != crate::sema::resolve::models::DefinitionKind::Impl
+            {
                 return true;
             }
 
@@ -575,10 +577,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let gcx = self.gcx();
         let owner = gcx.definition_parent(param.id).unwrap_or(def_id);
         let lower_ctx = DefTyLoweringCtx::new(owner, gcx);
-        let current_args = gcx
-            .store
-            .interners
-            .intern_generic_args_slice(current_args);
+        let current_args = gcx.store.interners.intern_generic_args_slice(current_args);
 
         match &param.kind {
             GenericParameterDefinitionKind::Type {
@@ -588,11 +587,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 let mut default_ty = lower_ctx.lowerer().lower_type(default);
                 default_ty = self.substitute_interface_self_default(default_ty, current_args);
                 default_ty = instantiate_ty_with_args(gcx, default_ty, current_args);
-                self.push_default_fallback_goal(
-                    infer_var,
-                    GenericArgument::Type(default_ty),
-                    span,
-                );
+                self.push_default_fallback_goal(infer_var, GenericArgument::Type(default_ty), span);
                 infer_var
             }
             GenericParameterDefinitionKind::Type { default: None } => {
@@ -682,14 +677,14 @@ impl<'ctx> ConstraintSolver<'ctx> {
             Goal::BindInterfaceMethod(data) => {
                 self.solve_bind_interface_method(location, data.clone())
             }
-            Goal::BindMethodOverload(data) => self.solve_bind_method_overload(location, data.clone()),
+            Goal::BindMethodOverload(data) => {
+                self.solve_bind_method_overload(location, data.clone())
+            }
             Goal::Disjunction(branches) => self.solve_disjunction(location, branches.clone()),
             Goal::UnaryOp(data) => self.solve_unary(*data),
             Goal::BinaryOp(data) => self.solve_binary(*data),
             Goal::AssignOp(data) => self.solve_assign_op(*data),
-            Goal::Coerce { node_id, from, to } => {
-                self.solve_coerce(location, *node_id, *from, *to)
-            }
+            Goal::Coerce { node_id, from, to } => self.solve_coerce(location, *node_id, *from, *to),
             Goal::Cast {
                 node_id,
                 from,

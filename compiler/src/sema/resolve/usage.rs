@@ -135,11 +135,9 @@ impl<'r, 'a> Actor<'r, 'a> {
                 .create_scope_entry_from_usage(entry, module, usage);
 
             let result = if usage.is_import {
-                self.resolver
-                    .import(usage.scope, binding.target, entry, ns)
+                self.resolver.import(usage.scope, binding.target, entry, ns)
             } else {
-                self.resolver
-                    .export(usage.scope, binding.target, entry, ns)
+                self.resolver.export(usage.scope, binding.target, entry, ns)
             };
 
             match result {

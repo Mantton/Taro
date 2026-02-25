@@ -74,15 +74,9 @@ impl<'ctx> Actor<'ctx> {
                 } else {
                     // Inherent impl: store in inherent_static or inherent_instance
                     if has_self {
-                        index
-                            .inherent_instance
-                            .entry(ident.symbol)
-                            .or_default()
+                        index.inherent_instance.entry(ident.symbol).or_default()
                     } else {
-                        index
-                            .inherent_static
-                            .entry(ident.symbol)
-                            .or_default()
+                        index.inherent_static.entry(ident.symbol).or_default()
                     }
                 };
 

@@ -93,18 +93,14 @@ impl<'arena> GlobalContext<'arena> {
     pub fn cache_type(self, id: DefinitionID, ty: Ty<'arena>) {
         let mut cache = self.context.store.type_databases.borrow_mut();
         let package_index = id.package();
-        let database = cache
-            .entry(package_index)
-            .or_insert_with(Default::default);
+        let database = cache.entry(package_index).or_insert_with(Default::default);
         database.def_to_ty.insert(id, ty);
     }
 
     pub fn cache_const(self, id: DefinitionID, value: Const<'arena>) {
         let mut cache = self.context.store.type_databases.borrow_mut();
         let package_index = id.package();
-        let database = cache
-            .entry(package_index)
-            .or_insert_with(Default::default);
+        let database = cache.entry(package_index).or_insert_with(Default::default);
         database.def_to_const.insert(id, value);
     }
 
@@ -122,9 +118,7 @@ impl<'arena> GlobalContext<'arena> {
     ) {
         let mut cache = self.context.store.type_databases.borrow_mut();
         let package_index = id.package();
-        let database = cache
-            .entry(package_index)
-            .or_insert_with(Default::default);
+        let database = cache.entry(package_index).or_insert_with(Default::default);
         database.def_to_constraints.insert(id, constraints);
         // Invalidate canonical constraints cache to ensure re-computation
         database.def_to_canon_constraints.remove(&id);
@@ -137,9 +131,7 @@ impl<'arena> GlobalContext<'arena> {
     ) {
         let mut cache = self.context.store.type_databases.borrow_mut();
         let package_index = id.package();
-        let database = cache
-            .entry(package_index)
-            .or_insert_with(Default::default);
+        let database = cache.entry(package_index).or_insert_with(Default::default);
         database.def_to_constraints.insert(id, constraints);
     }
 
@@ -156,9 +148,7 @@ impl<'arena> GlobalContext<'arena> {
     ) {
         let mut cache = self.context.store.type_databases.borrow_mut();
         let package_index = id.package();
-        let database = cache
-            .entry(package_index)
-            .or_insert_with(Default::default);
+        let database = cache.entry(package_index).or_insert_with(Default::default);
         database.def_to_canon_constraints.insert(id, constraints);
     }
 
@@ -183,9 +173,7 @@ impl<'arena> GlobalContext<'arena> {
     pub fn cache_signature(self, id: DefinitionID, sig: LabeledFunctionSignature<'arena>) {
         let mut cache = self.context.store.type_databases.borrow_mut();
         let package_index = id.package();
-        let database = cache
-            .entry(package_index)
-            .or_insert_with(Default::default);
+        let database = cache.entry(package_index).or_insert_with(Default::default);
         let alloc = self.context.store.arenas.function_signatures.alloc(sig);
         database.def_to_fn_sig.insert(id, alloc);
     }
@@ -193,9 +181,7 @@ impl<'arena> GlobalContext<'arena> {
     pub fn cache_struct_definition(self, id: DefinitionID, def: StructDefinition<'arena>) {
         let mut cache = self.context.store.type_databases.borrow_mut();
         let package_index = id.package();
-        let database = cache
-            .entry(package_index)
-            .or_insert_with(Default::default);
+        let database = cache.entry(package_index).or_insert_with(Default::default);
         let alloc = self.context.store.arenas.struct_definitions.alloc(def);
         database.def_to_struct_def.insert(id, alloc);
     }
@@ -203,9 +189,7 @@ impl<'arena> GlobalContext<'arena> {
     pub fn cache_enum_definition(self, id: DefinitionID, def: EnumDefinition<'arena>) {
         let mut cache = self.context.store.type_databases.borrow_mut();
         let package_index = id.package();
-        let database = cache
-            .entry(package_index)
-            .or_insert_with(Default::default);
+        let database = cache.entry(package_index).or_insert_with(Default::default);
         let alloc = self.context.store.arenas.enum_definitions.alloc(def);
         database.def_to_enum_def.insert(id, alloc);
     }
@@ -226,9 +210,7 @@ impl<'arena> GlobalContext<'arena> {
     pub fn cache_generics(self, id: DefinitionID, generics: Generics) {
         let mut cache = self.context.store.type_databases.borrow_mut();
         let package_index = id.package();
-        let database = cache
-            .entry(package_index)
-            .or_insert_with(Default::default);
+        let database = cache.entry(package_index).or_insert_with(Default::default);
         let generics = self.context.store.arenas.generics.alloc(generics);
         let ok = database.def_to_generics.insert(id, generics).is_none();
         debug_assert!(ok, "duplicated generic information")
@@ -237,9 +219,7 @@ impl<'arena> GlobalContext<'arena> {
     pub fn cache_attributes(self, id: DefinitionID, attributes: hir::AttributeList) {
         let mut cache = self.context.store.type_databases.borrow_mut();
         let package_index = id.package();
-        let database = cache
-            .entry(package_index)
-            .or_insert_with(Default::default);
+        let database = cache.entry(package_index).or_insert_with(Default::default);
         let attributes = self.context.store.arenas.global.alloc(attributes);
         let ok = database.def_to_attributes.insert(id, attributes).is_none();
         debug_assert!(ok, "duplicated attribute information")
@@ -459,9 +439,7 @@ impl<'arena> GlobalContext<'arena> {
         index: VariantIndex,
     ) -> EnumVariant<'arena> {
         let def = self.get_enum_definition(enum_id);
-        *def.variants
-            .get(index.index())
-            .expect("enum variant index")
+        *def.variants.get(index.index()).expect("enum variant index")
     }
 
     pub fn get_interface_requirements(
@@ -677,8 +655,8 @@ impl<'arena> GlobalContext<'arena> {
         let pkg = def_id.package();
         let resolution_output = self.resolution_output(pkg);
 
-        let mut collect_entry = |entry: crate::sema::resolve::models::ScopeEntry<'arena>| {
-            match &entry.kind {
+        let mut collect_entry =
+            |entry: crate::sema::resolve::models::ScopeEntry<'arena>| match &entry.kind {
                 ScopeEntryKind::Resolution(Resolution::Definition(id, kind)) => {
                     if *kind == DefinitionKind::Interface {
                         visible.insert(*id);
@@ -693,8 +671,7 @@ impl<'arena> GlobalContext<'arena> {
                     }
                 }
                 _ => {}
-            }
-        };
+            };
 
         let mut collect_scope = |scope: crate::sema::resolve::models::Scope<'arena>| {
             let table = scope.table.borrow();
@@ -710,9 +687,8 @@ impl<'arena> GlobalContext<'arena> {
 
         let mut collect_scope_tree = |root: crate::sema::resolve::models::Scope<'arena>| {
             let mut queue = std::collections::VecDeque::new();
-            let mut seen_scopes: FxHashSet<
-                *const crate::sema::resolve::models::ScopeData<'arena>,
-            > = FxHashSet::default();
+            let mut seen_scopes: FxHashSet<*const crate::sema::resolve::models::ScopeData<'arena>> =
+                FxHashSet::default();
             queue.push_back(root);
 
             while let Some(scope) = queue.pop_front() {
@@ -742,7 +718,11 @@ impl<'arena> GlobalContext<'arena> {
         let mut scope_owner = Some(def_id);
         let mut current_scope = None;
         while let Some(owner) = scope_owner {
-            if let Some(scope) = resolution_output.definition_scope_mapping.get(&owner).cloned() {
+            if let Some(scope) = resolution_output
+                .definition_scope_mapping
+                .get(&owner)
+                .cloned()
+            {
                 current_scope = Some(scope);
                 break;
             }
@@ -1404,10 +1384,7 @@ impl<'arena> GlobalContext<'arena> {
         crate::sema::tycheck::derive::SyntheticMethodInfo<'arena>,
     )> {
         self.with_session_type_database(|db| {
-            db.synthetic_methods
-                .iter()
-                .map(|(k, v)| (*k, *v))
-                .collect()
+            db.synthetic_methods.iter().map(|(k, v)| (*k, *v)).collect()
         })
     }
 

@@ -3,17 +3,28 @@ pub enum Token {
     EOF,
     Semicolon,
 
-    CommentDoc { value: String },
+    CommentDoc {
+        value: String,
+    },
 
-    Identifier { value: String },
-    String { value: String },
-    Rune { value: String },
+    Identifier {
+        value: String,
+    },
+    String {
+        value: String,
+    },
+    Rune {
+        value: String,
+    },
     Integer {
         value: String,
         base: Base,
         suffix: Option<IntegerTypeSuffix>,
     },
-    Float { value: String, base: Base },
+    Float {
+        value: String,
+        base: Base,
+    },
 
     Assign,   // =, Variable Assignment
     Plus,     // +, Arithmetic Add

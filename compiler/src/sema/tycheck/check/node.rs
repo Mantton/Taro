@@ -4,7 +4,7 @@ use crate::{
     sema::{
         models::{
             Const, ConstKind, ConstValue, GenericArgument, GenericArguments, GenericParameter,
-            GenericParameterDefinition, GenericParameterDefinitionKind, InterfaceReference, IntTy,
+            GenericParameterDefinition, GenericParameterDefinitionKind, IntTy, InterfaceReference,
             Ty, TyKind, UIntTy,
         },
         resolve::models::{DefinitionKind, TypeHead, VariantCtorKind},
@@ -23,8 +23,7 @@ use crate::{
                 generics::GenericsBuilder,
                 instantiate::{
                     instantiate_const_with_args, instantiate_interface_ref_with_args,
-                    instantiate_signature_with_args,
-                    instantiate_ty_with_args,
+                    instantiate_signature_with_args, instantiate_ty_with_args,
                 },
                 type_head_from_value_ty,
             },
@@ -1037,10 +1036,7 @@ impl<'ctx> Checker<'ctx> {
 
                 let Some(field) = field else {
                     self.gcx().dcx().emit_error(
-                        format!(
-                            "unknown field '{}'",
-                            self.gcx().symbol_text(name.symbol)
-                        ),
+                        format!("unknown field '{}'", self.gcx().symbol_text(name.symbol)),
                         Some(expr.span),
                     );
                     return false;
@@ -1238,10 +1234,7 @@ impl<'ctx> Checker<'ctx> {
 
                 let Some(field) = field else {
                     self.gcx().dcx().emit_error(
-                        format!(
-                            "unknown field '{}'",
-                            self.gcx().symbol_text(name.symbol)
-                        ),
+                        format!("unknown field '{}'", self.gcx().symbol_text(name.symbol)),
                         Some(expr.span),
                     );
                     return false;
@@ -2128,11 +2121,7 @@ impl<'ctx> Checker<'ctx> {
     ) {
         match pattern.kind() {
             TyKind::Parameter(param) => {
-                Self::record_generic_binding(
-                    param.index,
-                    GenericArgument::Type(actual),
-                    inferred,
-                );
+                Self::record_generic_binding(param.index, GenericArgument::Type(actual), inferred);
             }
             TyKind::Reference(pattern_inner, _) | TyKind::Pointer(pattern_inner, _) => {
                 if let TyKind::Reference(actual_inner, _) | TyKind::Pointer(actual_inner, _) =
@@ -2145,9 +2134,7 @@ impl<'ctx> Checker<'ctx> {
                 let TyKind::Tuple(actual_items) = actual.kind() else {
                     return;
                 };
-                for (&pattern_item, &actual_item) in
-                    pattern_items.iter().zip(actual_items.iter())
-                {
+                for (&pattern_item, &actual_item) in pattern_items.iter().zip(actual_items.iter()) {
                     Self::record_generic_bindings_from_ty(pattern_item, actual_item, inferred);
                 }
             }
@@ -3517,10 +3504,7 @@ impl<'ctx> Checker<'ctx> {
         let mut explicit_iter = explicit_args.iter();
 
         let args = GenericsBuilder::for_item(gcx, def_id, |param, current_args| {
-            let current_args = gcx
-                .store
-                .interners
-                .intern_generic_args_slice(current_args);
+            let current_args = gcx.store.interners.intern_generic_args_slice(current_args);
             if param.index < parent_count {
                 if let Some(arg) = base_args.get(param.index) {
                     return *arg;

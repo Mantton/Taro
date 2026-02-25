@@ -157,20 +157,16 @@ impl<'ctx> Collector<'ctx> {
         let package = *packages
             .get(&def_id.package())
             .expect("mir package for definition");
-        package
-            .functions
-            .get(&def_id)
-            .cloned()
-            .unwrap_or_else(|| {
-                let ident = self.gcx.definition_ident(def_id).symbol;
-                let kind = self.gcx.definition_kind(def_id);
-                panic!(
-                    "mir body for definition {:?} ({:?} {})",
-                    def_id,
-                    kind,
-                    self.gcx.symbol_text(ident)
-                )
-            })
+        package.functions.get(&def_id).cloned().unwrap_or_else(|| {
+            let ident = self.gcx.definition_ident(def_id).symbol;
+            let kind = self.gcx.definition_kind(def_id);
+            panic!(
+                "mir body for definition {:?} ({:?} {})",
+                def_id,
+                kind,
+                self.gcx.symbol_text(ident)
+            )
+        })
     }
 
     /// Check if a function is an intrinsic (has no MIR body).
@@ -220,9 +216,7 @@ impl<'ctx> Collector<'ctx> {
                 GenericArgument::Const(c) => {
                     let new_c =
                         crate::sema::tycheck::utils::instantiate::instantiate_const_with_args(
-                            self.gcx,
-                            *c,
-                            subst,
+                            self.gcx, *c, subst,
                         );
                     GenericArgument::Const(new_c)
                 }

@@ -123,10 +123,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         }
     }
 
-    fn const_contains_unresolved_generics(
-        &self,
-        c: crate::sema::models::Const<'gcx>,
-    ) -> bool {
+    fn const_contains_unresolved_generics(&self, c: crate::sema::models::Const<'gcx>) -> bool {
         matches!(c.kind, ConstKind::Param(_) | ConstKind::Infer(_))
             || self.ty_contains_unresolved_generics(c.ty)
     }
@@ -154,10 +151,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         type_head: TypeHead,
     ) -> Vec<InterfaceReference<'gcx>> {
         let records = self.gcx.collect_from_databases(|db| {
-            db.conformances
-                .get(&type_head)
-                .cloned()
-                .unwrap_or_default()
+            db.conformances.get(&type_head).cloned().unwrap_or_default()
         });
         let mut seen = FxHashSet::default();
         let mut out = Vec::new();
@@ -276,8 +270,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .count();
         let mut entries: Vec<BasicValueEnum<'llvm>> = Vec::with_capacity(method_count);
         for method in requirements.methods.iter().filter(|method| method.has_self) {
-            let method_target = if let Some(method_witness) =
-                witness.as_ref().and_then(|w| w.method_witnesses.get(&method.id))
+            let method_target = if let Some(method_witness) = witness
+                .as_ref()
+                .and_then(|w| w.method_witnesses.get(&method.id))
             {
                 let args = self.instantiate_generic_args_with_args(
                     method_witness.args_template,
@@ -295,8 +290,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                             Some((syn_id, args))
                         }
                         crate::sema::models::MethodImplementation::Synthetic(_, None) => {
-                            let iface_name =
-                                self.gcx.symbol_text(self.gcx.definition_ident(iface.id).symbol);
+                            let iface_name = self
+                                .gcx
+                                .symbol_text(self.gcx.definition_ident(iface.id).symbol);
                             let method_name = self.gcx.symbol_text(method.name);
                             self.gcx.dcx().emit_error(
                                 format!(
@@ -696,11 +692,19 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         InterfaceReference {
             id: template.id,
             arguments: interned,
-            bindings: self.gcx.store.arenas.global.alloc_slice_clone(&new_bindings),
+            bindings: self
+                .gcx
+                .store
+                .arenas
+                .global
+                .alloc_slice_clone(&new_bindings),
         }
     }
 
-    pub(super) fn witness_table_struct_ty(&self, interface_id: hir::DefinitionID) -> StructType<'llvm> {
+    pub(super) fn witness_table_struct_ty(
+        &self,
+        interface_id: hir::DefinitionID,
+    ) -> StructType<'llvm> {
         let method_count = self.interface_method_count(interface_id);
         let super_count = self
             .interface_definition(interface_id)

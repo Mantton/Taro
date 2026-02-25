@@ -506,13 +506,13 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 let fields: IndexVec<FieldIndex, Operand<'ctx>> =
                     IndexVec::from_vec(capture_operands);
 
-                    let rvalue = Rvalue::Aggregate {
-                        kind: AggregateKind::Closure {
-                            def_id: *def_id,
-                            captured_generics: GenericArguments::empty(), // TODO: get from closure type
-                        },
-                        fields,
-                    };
+                let rvalue = Rvalue::Aggregate {
+                    kind: AggregateKind::Closure {
+                        def_id: *def_id,
+                        captured_generics: GenericArguments::empty(), // TODO: get from closure type
+                    },
+                    fields,
+                };
 
                 self.push_assign(block, destination, rvalue, expr.span);
                 block.unit()
@@ -1316,10 +1316,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
     ) {
         for (idx, var) in args.iter().enumerate() {
             let mut proj = base_place.projection.clone();
-            proj.push(PlaceElem::VariantDowncast {
-                name: name,
-                index,
-            });
+            proj.push(PlaceElem::VariantDowncast { name: name, index });
             proj.push(PlaceElem::Field(FieldIndex::from_usize(idx), var.ty));
             places.insert(
                 var.id,

@@ -175,10 +175,10 @@ fn register_definition<'ctx>(
                 info.self_ty,
                 crate::hir::Mutability::Immutable,
             ));
-            let rhs_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
-                rhs_ty,
-                crate::hir::Mutability::Immutable,
-            ));
+            let rhs_ref_ty = gcx
+                .store
+                .interners
+                .intern_ty(TyKind::Reference(rhs_ty, crate::hir::Mutability::Immutable));
             let signature = crate::sema::models::LabeledFunctionSignature {
                 inputs: vec![
                     crate::sema::models::LabeledFunctionParameter {
@@ -831,10 +831,10 @@ fn synthesize_memberwise_equality<'ctx>(
         info.self_ty,
         crate::hir::Mutability::Immutable,
     ));
-    let other_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
-        rhs_ty,
-        crate::hir::Mutability::Immutable,
-    ));
+    let other_ref_ty = gcx
+        .store
+        .interners
+        .intern_ty(TyKind::Reference(rhs_ty, crate::hir::Mutability::Immutable));
 
     let self_param = Param {
         id: self_node_id,
@@ -1566,11 +1566,7 @@ fn clone_adt_field<'ctx>(
         return field_access;
     };
 
-    let Some(clone_method) = reqs
-        .methods
-        .iter()
-        .find(|m| gcx.symbol_eq(m.name, "clone"))
-    else {
+    let Some(clone_method) = reqs.methods.iter().find(|m| gcx.symbol_eq(m.name, "clone")) else {
         return field_access;
     };
 

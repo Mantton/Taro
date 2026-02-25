@@ -1162,14 +1162,11 @@ impl<'r, 'a> Actor<'r, 'a> {
             for (name, &span) in others {
                 match map_outer.get(&name) {
                     None => {
-                        let err =
-                            missing_vars
-                                .entry(*name)
-                                .or_insert_with(|| BindingError {
-                                    name: *name,
-                                    origin: Default::default(),
-                                    target: Default::default(),
-                                });
+                        let err = missing_vars.entry(*name).or_insert_with(|| BindingError {
+                            name: *name,
+                            origin: Default::default(),
+                            target: Default::default(),
+                        });
 
                         err.origin.insert(span);
                         err.target.insert(pat_outer.span);

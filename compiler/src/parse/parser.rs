@@ -4067,8 +4067,8 @@ impl Parser {
 mod tests {
     use super::*;
     use crate::diagnostics::DiagCtx;
-    use crate::parse::lexer::Lexer;
     use crate::parse::IntegerTypeSuffix;
+    use crate::parse::lexer::Lexer;
     use std::path::PathBuf;
 
     #[derive(Default)]
