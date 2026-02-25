@@ -95,15 +95,49 @@ impl<'ctx> ConstraintSystem<'ctx> {
             value_resolutions: Default::default(),
             instantiation_args: Default::default(),
             current_def,
-            env: ParamEnv::new(
-                canonical_constraints_of(context, current_def)
-                    .into_iter()
-                    .map(|c| c.value)
-                    .collect(),
-            ),
+            env: Self::build_param_env(context, current_def),
             visible_traits,
             error_count_at_start,
         }
+    }
+
+    /// Build the parameter environment for typechecking a definition.
+    ///
+    /// For methods inside interfaces, also includes constraints from sibling
+    /// associated types. This ensures type equalities arising from associated
+    /// type bindings (e.g., `type Iterator: Iterator[Element = Self.Element]`
+    /// producing `TypeEquality(Self.Iterator.Element, Self.Element)`) are
+    /// visible when typechecking default method bodies.
+    fn build_param_env(
+        context: Gcx<'ctx>,
+        current_def: crate::sema::resolve::models::DefinitionID,
+    ) -> ParamEnv<'ctx> {
+        let mut constraints: Vec<_> = canonical_constraints_of(context, current_def)
+            .into_iter()
+            .map(|c| c.value)
+            .collect();
+
+        // Include sibling associated type constraints for interface methods.
+        use crate::sema::resolve::models::DefinitionKind;
+        if let Some(parent) = context.definition_parent(current_def) {
+            if context.definition_kind(current_def) == DefinitionKind::AssociatedFunction
+                && context.definition_kind(parent) == DefinitionKind::Interface
+            {
+                if let Some(assoc_types) = context.with_type_database(parent.package(), |db| {
+                    db.def_to_iface_def
+                        .get(&parent)
+                        .map(|def| def.assoc_types.clone())
+                }) {
+                    for (_, assoc_id) in &assoc_types {
+                        for c in context.constraints_of(*assoc_id) {
+                            constraints.push(c.value);
+                        }
+                    }
+                }
+            }
+        }
+
+        ParamEnv::new(constraints)
     }
 }
 
@@ -283,12 +317,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
     }
 
     fn solve_internal(&mut self, check_unresolved: bool) {
-        let param_env = ParamEnv::new(
-            canonical_constraints_of(self.infer_cx.gcx, self.current_def)
-                .into_iter()
-                .map(|c| c.value)
-                .collect(),
-        );
+        let param_env = Self::build_param_env(self.infer_cx.gcx, self.current_def);
 
         let solver = ConstraintSolver {
             icx: self.infer_cx.clone(),

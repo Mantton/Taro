@@ -1,27 +1,45 @@
 use crate::sema::{
     error::{ExpectedFound, TypeError},
     models::{Const, ConstKind, GenericArgument, GenericArguments, InferTy, Ty, TyKind},
-    tycheck::infer::{
-        InferCtx,
-        keys::{ConstVarValue, FloatVarValue, IntVarValue},
+    tycheck::{
+        infer::{
+            InferCtx,
+            keys::{ConstVarValue, FloatVarValue, IntVarValue},
+        },
+        utils::ParamEnv,
     },
 };
 use std::rc::Rc;
 
 type UnificationResult<'ctx> = Result<(), TypeError<'ctx>>;
 
-pub struct TypeUnifier<'ctx> {
+pub struct TypeUnifier<'ctx, 'env> {
     icx: Rc<InferCtx<'ctx>>,
+    env: Option<&'env ParamEnv<'ctx>>,
 }
 
-impl<'ctx> TypeUnifier<'ctx> {
-    pub fn new(icx: Rc<InferCtx<'ctx>>) -> TypeUnifier<'ctx> {
-        TypeUnifier { icx }
+impl<'ctx, 'env> TypeUnifier<'ctx, 'env> {
+    pub fn new(icx: Rc<InferCtx<'ctx>>) -> TypeUnifier<'ctx, 'env> {
+        TypeUnifier { icx, env: None }
+    }
+
+    pub fn with_env(icx: Rc<InferCtx<'ctx>>, env: &'env ParamEnv<'ctx>) -> TypeUnifier<'ctx, 'env> {
+        TypeUnifier { icx, env: Some(env) }
     }
 
     pub fn unify(&self, a: Ty<'ctx>, b: Ty<'ctx>) -> UnificationResult<'ctx> {
         let a = self.structurally_resolve(a);
         let b = self.structurally_resolve(b);
+
+        if a == b {
+            return Ok(());
+        }
+
+        if let Some(env) = self.env {
+            if env.has_type_equalities() && env.equivalent_types(a).contains(&b) {
+                return Ok(());
+            }
+        }
 
         use InferTy::*;
         match (a.kind(), b.kind()) {

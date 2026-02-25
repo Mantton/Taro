@@ -42,7 +42,12 @@ pub fn collect_instances<'ctx>(package: &crate::mir::MirPackage<'ctx>, gcx: Glob
             continue;
         }
 
-        let body = collector.mir_body(def_id);
+        // Skip abstract interface methods that couldn't be devirtualized.
+        // This happens when default interface method bodies reference other
+        // interface methods with still-generic Self types.
+        let Some(body) = collector.mir_body(def_id) else {
+            continue;
+        };
         collector.visit_body(instance, body);
     }
 
@@ -152,21 +157,12 @@ impl<'ctx> Collector<'ctx> {
         }
     }
 
-    fn mir_body(&self, def_id: DefinitionID) -> &'ctx Body<'ctx> {
+    fn mir_body(&self, def_id: DefinitionID) -> Option<&'ctx Body<'ctx>> {
         let packages = self.gcx.store.mir_packages.borrow();
         let package = *packages
             .get(&def_id.package())
             .expect("mir package for definition");
-        package.functions.get(&def_id).cloned().unwrap_or_else(|| {
-            let ident = self.gcx.definition_ident(def_id).symbol;
-            let kind = self.gcx.definition_kind(def_id);
-            panic!(
-                "mir body for definition {:?} ({:?} {})",
-                def_id,
-                kind,
-                self.gcx.symbol_text(ident)
-            )
-        })
+        package.functions.get(&def_id).cloned()
     }
 
     /// Check if a function is an intrinsic (has no MIR body).

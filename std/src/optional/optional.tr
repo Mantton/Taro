@@ -38,6 +38,16 @@ impl[Wrapped] Optional[Wrapped] {
             case .some(_) => false
         }
     }
+    /// Takes the value out of the optional, leaving a `.none` in its place.
+    public func take(&mut self) -> Optional[Wrapped] {
+        var result: Optional[Wrapped] = .none
+        unsafe {
+            let ptr = self as *mut Optional[Wrapped]
+            result = ptr.read()
+            ptr.write(.none)
+        }
+        return result
+    }
 }
 
 // Unwrapping methods - require Copy since we take &self but return Wrapped

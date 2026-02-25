@@ -4032,6 +4032,7 @@ fn is_generic_type_disambiguating_token(token: &Token) -> bool {
             | &As
             | &RChevron
             | &For // For `impl Interface[T] for Type` syntax
+            | &Where // For `func foo() -> T[U] where ...` syntax
     ) {
         return true;
     }

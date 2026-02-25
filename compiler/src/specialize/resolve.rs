@@ -454,7 +454,7 @@ fn deduce_impl_args<'ctx>(
     Some(resolved_args)
 }
 
-fn refine_impl_args_from_constraints<'ctx>(
+pub(crate) fn refine_impl_args_from_constraints<'ctx>(
     gcx: GlobalContext<'ctx>,
     icx: Rc<InferCtx<'ctx>>,
     impl_id: DefinitionID,

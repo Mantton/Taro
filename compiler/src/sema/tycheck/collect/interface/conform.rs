@@ -340,6 +340,7 @@ impl<'ctx> Actor<'ctx> {
             db.conformances.get(&type_head).cloned().unwrap_or_default()
         });
 
+
         // Auto-implement Tuple for tuple types
         if let Some(witness) = self.build_tuple_witness(type_head, interface) {
             self.store_witness(type_head, interface, witness.clone());
@@ -353,11 +354,15 @@ impl<'ctx> Actor<'ctx> {
 
         for record in records {
             if record.interface.id == interface.id {
-                if let Ok(witness) = self.build_witness(type_head, &record) {
-                    self.store_witness(type_head, interface, witness.clone());
-                    return Some(witness);
+                match self.build_witness(type_head, &record) {
+                    Ok(witness) => {
+                        self.store_witness(type_head, interface, witness.clone());
+                        return Some(witness);
+                    }
+                    Err(_errors) => {
+                        return None;
+                    }
                 }
-                return None;
             }
 
             for iface in self

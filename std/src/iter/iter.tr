@@ -1,5 +1,6 @@
 import std.optional.Optional
 import std.ops.FnMut
+import std.cmp.Ord
 
 /// Interface for types that can yield a sequence of values.
 ///
@@ -38,7 +39,7 @@ public interface Iterator {
 /// }
 /// ```
 public interface Iterable {
-    type Iterator: Iterator
+    type Iterator: Iterator[Element = Self.Element]
     type Element
     func makeIterator(self) -> Self.Iterator
 
@@ -52,6 +53,244 @@ public interface Iterable {
 
     func skip(self, _ n: usize) -> SkipIterable[Self] {
         return skip(self, n)
+    }
+
+    /// Consumes the iterator, counting the number of elements.
+    func count(self) -> usize {
+        var iter = self.makeIterator()
+        var n: usize = 0
+        loop {
+            match iter.next() {
+                case .some(_) => n += 1
+                case .none => return n
+            }
+        }
+
+        return n
+    }
+
+    /// Consumes the iterator, returning the last element.
+    func last(self) -> Optional[Self.Element] {
+        var iter = self.makeIterator()
+        var result: Optional[Self.Element] = .none
+        loop {
+            match iter.next() {
+                case .some(v) => result = .some(v)
+                case .none => return result
+            }
+        }
+    }
+
+    /// Returns the nth element (0-indexed), consuming all preceding elements.
+    func nth(self, _ n: usize) -> Optional[Self.Element] {
+        var iter = self.makeIterator()
+        var i: usize = 0
+        loop {
+            match iter.next() {
+                case .some(v) => {
+                    if i == n {
+                        return .some(v)
+                    }
+                    i += 1
+                }
+                case .none => return .none
+            }
+        }
+    }
+    /// Tests if every element of the iterator matches a predicate.
+    func allSatisfy[F: FnMut[&Self.Element, bool]](self, _ predicate: F) -> bool {
+        var iter = self.makeIterator()
+        var predicate = predicate
+        loop {
+            match iter.next() {
+                case .some(v) => {
+                    if !predicate(&v) {
+                        return false
+                    }
+                }
+                case .none => return true
+            }
+        }
+    }
+
+    /// Tests if any element of the iterator matches a predicate.
+    func anySatisfy[F: FnMut[&Self.Element, bool]](self, _ predicate: F) -> bool {
+        var iter = self.makeIterator()
+        var predicate = predicate
+        loop {
+            match iter.next() {
+                case .some(v) => {
+                    if predicate(&v) {
+                        return true
+                    }
+                }
+                case .none => return false
+            }
+        }
+    }
+
+    /// Searches for an element satisfying the predicate, returning the first match.
+    func find[F: FnMut[&Self.Element, bool]](self, _ predicate: F) -> Optional[Self.Element] {
+        var iter = self.makeIterator()
+        var predicate = predicate
+        loop {
+            match iter.next() {
+                case .some(v) => {
+                    if predicate(&v) {
+                        return .some(v)
+                    }
+                }
+                case .none => return .none
+            }
+        }
+    }
+
+    /// Searches for the index of the first element satisfying the predicate.
+    func position[F: FnMut[&Self.Element, bool]](self, _ predicate: F) -> Optional[usize] {
+        var iter = self.makeIterator()
+        var predicate = predicate
+        var i: usize = 0
+        loop {
+            match iter.next() {
+                case .some(v) => {
+                    if predicate(&v) {
+                        return .some(i)
+                    }
+                    i += 1
+                }
+                case .none => return .none
+            }
+        }
+    }
+
+    /// Folds every element into an accumulator by applying a closure.
+    func fold[B, F: FnMut[(B, Self.Element), B]](self, _ initial: B, _ f: F) -> B {
+        var iter = self.makeIterator()
+        var f = f
+        var acc = initial
+        loop {
+            match iter.next() {
+                case .some(v) => {
+                    acc = f(acc, v)
+                }
+                case .none => return acc
+            }
+        }
+    }
+
+    /// Calls a closure on each element of the iterator.
+    func forEach[F: FnMut[Self.Element, ()]](self, _ f: F) {
+        var iter = self.makeIterator()
+        var f = f
+        loop {
+            match iter.next() {
+                case .some(v) => f(v)
+                case .none => return
+            }
+        }
+    }
+
+    /// Reduces the elements to a single one, by repeatedly applying a reducing operation.
+    func reduce[F: FnMut[(Self.Element, Self.Element), Self.Element]](self, _ f: F) -> Optional[Self.Element] {
+        var iter = self.makeIterator()
+        var f = f
+        match iter.next() {
+            case .none => return .none
+            case .some(first) => {
+                var acc = first
+                loop {
+                    match iter.next() {
+                        case .some(v) => acc = f(acc, v)
+                        case .none => return .some(acc)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Returns the minimum element of an iterator.
+    func min(self) -> Optional[Self.Element] where Self.Element: Ord {
+        var iter = self.makeIterator()
+        match iter.next() {
+            case .none => return .none
+            case .some(first) => {
+                var min_val = first
+                loop {
+                    match iter.next() {
+                        case .some(v) => {
+                            if v.lt(&min_val) {
+                                min_val = v
+                            }
+                        }
+                        case .none => return .some(min_val)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Returns the maximum element of an iterator.
+    func max(self) -> Optional[Self.Element] where Self.Element: Ord {
+        var iter = self.makeIterator()
+        match iter.next() {
+            case .none => return .none
+            case .some(first) => {
+                var max_val = first
+                loop {
+                    match iter.next() {
+                        case .some(v) => {
+                            if v.gt(&max_val) {
+                                max_val = v
+                            }
+                        }
+                        case .none => return .some(max_val)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Creates an iterator that yields elements from this iterator, and then from another iterator.
+    func chain[Other: Iterable[Element = Self.Element]](self, _ other: Other) -> ChainIterable[Self.Element, Self, Other] {
+        return ChainIterable[Self.Element, Self, Other] {
+            a: self,
+            b: other,
+        }
+    }
+
+    /// Creates an iterator that flattens an iterator of iterables.
+    func flatten[
+        Item,
+        InnerIter: Iterator[Element = Item],
+        InnerIterable: Iterable[Element = Item, Iterator = InnerIter],
+    ](self) -> FlattenIterable[Item, InnerIter, InnerIterable, Self.Iterator, Self] where Self.Element == InnerIterable {
+        return FlattenIterable[Item, InnerIter, InnerIterable, Self.Iterator, Self] { source: self }
+    }
+
+    /// Creates an iterator that skips early elements, yielding only every `step` elements.
+    func stepBy(self, _ step: usize) -> StepByIterable[Self.Element, Self.Iterator, Self] {
+        return StepByIterable[Self.Element, Self.Iterator, Self] { source: self, step: step }
+    }
+
+    /// Creates an iterator that yields elements based on a predicate until it returns false.
+    func takeWhile[F: FnMut[&Self.Element, bool]](self, _ predicate: F) -> TakeWhileIterable[Self.Element, F, Self.Iterator, Self] {
+        return TakeWhileIterable[Self.Element, F, Self.Iterator, Self] {
+            source: self,
+            predicate: predicate,
+        }
+    }
+
+    /// Creates an iterator that skips elements based on a predicate until it returns false, then yields the rest.
+    func skipWhile[F: FnMut[&Self.Element, bool]](self, _ predicate: F) -> SkipWhileIterable[Self.Element, F, Self.Iterator, Self] {
+        return SkipWhileIterable[Self.Element, F, Self.Iterator, Self] {
+            source: self,
+            predicate: predicate,
+        }
+    }
+
+    /// Creates an iterator that can peek ahead at the next element without consuming it.
+    func peekable(self) -> PeekableIterable[Self.Element, Self.Iterator, Self] {
+        return PeekableIterable[Self.Element, Self.Iterator, Self] { source: self }
     }
 }
 
@@ -313,4 +552,361 @@ impl[A, B, IA: Iterator[Element = A], IB: Iterator[Element = B], SA: Iterable[It
 /// Create an iterable adapter that pairs elements from two iterables.
 public func zip[SA: Iterable, SB: Iterable](_ a: SA, _ b: SB) -> ZipIterable[SA, SB] {
     return ZipIterable[SA, SB] { a: a, b: b }
+}
+
+// ─── Chain ────────────────────────────────────────────────────────────
+
+/// Iterator that yields elements from two iterators sequentially.
+public struct ChainIterator[Item, A: Iterator[Element = Item], B: Iterator[Element = Item]] {
+    a: A
+    b: B
+    state: bool
+}
+
+impl[Item, A: Iterator[Element = Item], B: Iterator[Element = Item]] Iterator for ChainIterator[Item, A, B] {
+    type Element = Item
+
+    func next(&mut self) -> Optional[Item] {
+        if !self.state {
+            match self.a.next() {
+                case .some(v) => return .some(v)
+                case .none => {
+                    self.state = true
+                }
+            }
+        }
+        return self.b.next()
+    }
+}
+
+/// Iterable adapter that yields elements from two iterables sequentially.
+public struct ChainIterable[Item, A: Iterable[Element = Item], B: Iterable[Element = Item]] {
+    a: A
+    b: B
+}
+
+impl[
+    Item,
+    AIter: Iterator[Element = Item],
+    BIter: Iterator[Element = Item],
+    A: Iterable[Iterator = AIter, Element = Item],
+    B: Iterable[Iterator = BIter, Element = Item],
+] Iterable for ChainIterable[Item, A, B] {
+    type Element = Item
+    type Iterator = ChainIterator[Item, AIter, BIter]
+
+    public func makeIterator(self) -> Self.Iterator {
+        return ChainIterator[Item, AIter, BIter] {
+            a: self.a.makeIterator(),
+            b: self.b.makeIterator(),
+            state: false,
+        }
+    }
+}
+
+// ─── Flatten ────────────────────────────────────────────────────────────
+
+/// Iterator that flattens an iterator of iterables.
+public struct FlattenIterator[
+    Item,
+    InnerIter: Iterator[Element = Item],
+    InnerIterable: Iterable[Element = Item, Iterator = InnerIter],
+    OuterIter: Iterator[Element = InnerIterable],
+] {
+    outer: OuterIter
+    inner: Optional[InnerIter]
+}
+
+impl[
+    Item,
+    InnerIter: Iterator[Element = Item],
+    InnerIterable: Iterable[Element = Item, Iterator = InnerIter],
+    OuterIter: Iterator[Element = InnerIterable],
+] Iterator for FlattenIterator[Item, InnerIter, InnerIterable, OuterIter] {
+    type Element = Item
+
+    func next(&mut self) -> Optional[Item] {
+        loop {
+            match self.inner.take() {
+                case .some(inner_iter) => {
+                    var inner_iter = inner_iter
+                    match inner_iter.next() {
+                        case .some(v) => {
+                            self.inner = .some(inner_iter)
+                            return .some(v)
+                        }
+                        case .none => {
+                            // inner_iter is exhausted, leave self.inner as .none to fetch the next outer
+                        }
+                    }
+                }
+                case .none => {
+                    match self.outer.next() {
+                        case .some(new_inner_iterable) => {
+                            self.inner = .some(new_inner_iterable.makeIterator())
+                        }
+                        case .none => return .none
+                    }
+                }
+            }
+        }
+    }
+}
+
+public struct FlattenIterable[
+    Item,
+    InnerIter: Iterator[Element = Item],
+    InnerIterable: Iterable[Element = Item, Iterator = InnerIter],
+    OuterIter: Iterator[Element = InnerIterable],
+    Source: Iterable[Element = InnerIterable, Iterator = OuterIter],
+] {
+    source: Source
+}
+
+impl[
+    Item,
+    InnerIter: Iterator[Element = Item],
+    InnerIterable: Iterable[Element = Item, Iterator = InnerIter],
+    OuterIter: Iterator[Element = InnerIterable],
+    Source: Iterable[Element = InnerIterable, Iterator = OuterIter],
+] Iterable for FlattenIterable[Item, InnerIter, InnerIterable, OuterIter, Source] {
+    type Element = Item
+    type Iterator = FlattenIterator[Item, InnerIter, InnerIterable, OuterIter]
+
+    public func makeIterator(self) -> Self.Iterator {
+        return FlattenIterator[Item, InnerIter, InnerIterable, OuterIter] {
+            outer: self.source.makeIterator(),
+            inner: .none,
+        }
+    }
+}
+
+// ─── StepBy ────────────────────────────────────────────────────────────
+
+/// Iterator that skips elements, yielding every `step` elements.
+public struct StepByIterator[Item, Inner: Iterator[Element = Item]] {
+    inner: Inner
+    step: usize
+    first_take: bool
+}
+
+impl[Item, Inner: Iterator[Element = Item]] Iterator for StepByIterator[Item, Inner] {
+    type Element = Item
+
+    func next(&mut self) -> Optional[Item] {
+        if self.first_take {
+            self.first_take = false
+            return self.inner.next()
+        }
+
+        var i: usize = 0
+        loop {
+            if i >= self.step {
+                return self.inner.next()
+            }
+            match self.inner.next() {
+                case .some(_) => {}
+                case .none => return .none
+            }
+            i = i + 1
+        }
+    }
+}
+
+/// Iterable adapter that skips elements, yielding every `step` elements.
+public struct StepByIterable[Item, InnerIter: Iterator[Element = Item], Source: Iterable[Element = Item, Iterator = InnerIter]] {
+    source: Source
+    step: usize
+}
+
+impl[
+    Item,
+    InnerIter: Iterator[Element = Item],
+    Source: Iterable[Element = Item, Iterator = InnerIter],
+] Iterable for StepByIterable[Item, InnerIter, Source] {
+    type Element = Item
+    type Iterator = StepByIterator[Item, InnerIter]
+
+    public func makeIterator(self) -> Self.Iterator {
+        return StepByIterator[Item, InnerIter] {
+            inner: self.source.makeIterator(),
+            step: self.step - 1, // Store step - 1 because we want to skip `step-1` items between yields
+            first_take: true,
+        }
+    }
+}
+
+// ─── TakeWhile ────────────────────────────────────────────────────────────
+
+/// Iterator that yields elements while a predicate returns true.
+public struct TakeWhileIterator[Item, F: FnMut[&Item, bool], Inner: Iterator[Element = Item]] {
+    inner: Inner
+    predicate: F
+    is_done: bool
+}
+
+impl[Item, F: FnMut[&Item, bool], Inner: Iterator[Element = Item]] Iterator for TakeWhileIterator[Item, F, Inner] {
+    type Element = Item
+
+    func next(&mut self) -> Optional[Item] {
+        if self.is_done {
+            return .none
+        }
+
+        var result: Optional[Item] = .none
+        match self.inner.next() {
+            case .some(v) => {
+                if self.predicate(&v) {
+                    result = .some(v)
+                } else {
+                    self.is_done = true
+                }
+            }
+            case .none => {
+                self.is_done = true
+            }
+        }
+        return result
+    }
+}
+
+/// Iterable adapter that yields elements from an iterable while a predicate returns true.
+public struct TakeWhileIterable[Item, F: FnMut[&Item, bool], InnerIter: Iterator[Element = Item], Source: Iterable[Element = Item, Iterator = InnerIter]] {
+    source: Source
+    predicate: F
+}
+
+impl[
+    Item,
+    F: FnMut[&Item, bool],
+    InnerIter: Iterator[Element = Item],
+    Source: Iterable[Element = Item, Iterator = InnerIter],
+] Iterable for TakeWhileIterable[Item, F, InnerIter, Source] {
+    type Element = Item
+    type Iterator = TakeWhileIterator[Item, F, InnerIter]
+
+    public func makeIterator(self) -> Self.Iterator {
+        return TakeWhileIterator[Item, F, InnerIter] {
+            inner: self.source.makeIterator(),
+            predicate: self.predicate,
+            is_done: false,
+        }
+    }
+}
+
+// ─── SkipWhile ────────────────────────────────────────────────────────────
+
+/// Iterator that skips elements based on a predicate, yielding the rest.
+public struct SkipWhileIterator[Item, F: FnMut[&Item, bool], Inner: Iterator[Element = Item]] {
+    inner: Inner
+    predicate: F
+    is_done_skipping: bool
+}
+
+impl[Item, F: FnMut[&Item, bool], Inner: Iterator[Element = Item]] Iterator for SkipWhileIterator[Item, F, Inner] {
+    type Element = Item
+
+    func next(&mut self) -> Optional[Item] {
+        if self.is_done_skipping {
+            return self.inner.next()
+        }
+
+        loop {
+            match self.inner.next() {
+                case .some(v) => {
+                    if !self.predicate(&v) {
+                        self.is_done_skipping = true
+                        return .some(v)
+                    }
+                }
+                case .none => {
+                    self.is_done_skipping = true
+                    return .none
+                }
+            }
+        }
+    }
+}
+
+/// Iterable adapter that skips elements based on a predicate, yielding the rest.
+public struct SkipWhileIterable[Item, F: FnMut[&Item, bool], InnerIter: Iterator[Element = Item], Source: Iterable[Element = Item, Iterator = InnerIter]] {
+    source: Source
+    predicate: F
+}
+
+impl[
+    Item,
+    F: FnMut[&Item, bool],
+    InnerIter: Iterator[Element = Item],
+    Source: Iterable[Element = Item, Iterator = InnerIter],
+] Iterable for SkipWhileIterable[Item, F, InnerIter, Source] {
+    type Element = Item
+    type Iterator = SkipWhileIterator[Item, F, InnerIter]
+
+    public func makeIterator(self) -> Self.Iterator {
+        return SkipWhileIterator[Item, F, InnerIter] {
+            inner: self.source.makeIterator(),
+            predicate: self.predicate,
+            is_done_skipping: false,
+        }
+    }
+}
+
+// ─── Peekable ────────────────────────────────────────────────────────────
+
+/// Iterator that can peek ahead at the next element without consuming it.
+public struct PeekableIterator[Item, Inner: Iterator[Element = Item]] {
+    inner: Inner
+    peeked: Optional[Item]
+}
+
+impl[Item, Inner: Iterator[Element = Item]] Iterator for PeekableIterator[Item, Inner] {
+    type Element = Item
+
+    func next(&mut self) -> Optional[Item] {
+        match self.peeked.take() {
+            case .some(v) => return .some(v)
+            case .none => return self.inner.next()
+        }
+    }
+}
+
+impl[Item, Inner: Iterator[Element = Item]] PeekableIterator[Item, Inner] {
+    /// Returns a reference to the next element without consuming it.
+    public func peek(&mut self) -> Optional[&Item] {
+        if self.peeked.isNone() {
+            self.peeked = self.inner.next()
+        }
+
+        var result: Optional[&Item] = .none
+        let peek_ref = &self.peeked
+        match peek_ref {
+            case .some(v) => {
+                result = .some(v)
+            }
+            case .none => {}
+        }
+        return result
+    }
+}
+
+/// Iterable adapter that can peek ahead at the next element without consuming it.
+public struct PeekableIterable[Item, InnerIter: Iterator[Element = Item], Source: Iterable[Element = Item, Iterator = InnerIter]] {
+    source: Source
+}
+
+impl[
+    Item,
+    InnerIter: Iterator[Element = Item],
+    Source: Iterable[Element = Item, Iterator = InnerIter],
+] Iterable for PeekableIterable[Item, InnerIter, Source] {
+    type Element = Item
+    type Iterator = PeekableIterator[Item, InnerIter]
+
+    public func makeIterator(self) -> Self.Iterator {
+        return PeekableIterator[Item, InnerIter] {
+            inner: self.source.makeIterator(),
+            peeked: .none,
+        }
+    }
 }

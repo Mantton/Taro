@@ -17,7 +17,13 @@ impl<'ctx> ConstraintSolver<'ctx> {
         }
         let a = self.structurally_resolve(a);
         let b = self.structurally_resolve(b);
-        TypeUnifier::new(self.icx.clone()).unify(a, b)
+        if a == b {
+            return Ok(());
+        }
+
+        let mut unifier = TypeUnifier::with_env(self.icx.clone(), &self.param_env);
+        unifier.unify(a, b)?;
+        Ok(())
     }
 
     pub fn unify_const(
@@ -25,7 +31,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         a: crate::sema::models::Const<'ctx>,
         b: crate::sema::models::Const<'ctx>,
     ) -> Result<(), ()> {
-        TypeUnifier::new(self.icx.clone()).unify_const(a, b)
+        TypeUnifier::with_env(self.icx.clone(), &self.param_env).unify_const(a, b)
     }
 
     /// Resolve inference variables AND normalize using param env.

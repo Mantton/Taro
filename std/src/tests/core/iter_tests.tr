@@ -50,3 +50,25 @@ func testEnumerateInForLoop() {
     std.testing.assertEqual(indexSum, 3 as usize, "for-loop enumerate index sum mismatch")
     std.testing.assertEqual(valueSum, 6 as usize, "for-loop enumerate value sum mismatch")
 }
+
+// ─── count ──────────────────────────────────────────────────────────
+
+@test
+func testCountRange() {
+    let c = ((1 as int32)..(6 as int32)).count()
+    std.testing.assertEqual(c, 5 as usize, "count of 1..6 should be 5")
+}
+
+@test
+func testCountEmpty() {
+    let c = ((0 as int32)..(0 as int32)).count()
+    std.testing.assertEqual(c, 0 as usize, "count of empty range should be 0")
+}
+
+@test
+func testCountAfterFilter() {
+    let c = std.iter.filter((1 as int32)..(11 as int32), |x: &int32| { *x % 2 == 0 }).count()
+    std.testing.assertEqual(c, 5 as usize, "count of evens in 1..11 should be 5")
+}
+
+

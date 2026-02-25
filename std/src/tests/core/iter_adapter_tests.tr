@@ -131,3 +131,91 @@ func testCollectMapIntoList() {
     std.testing.assertEqual(*list.at(1), 20, "collect map: element 1")
     std.testing.assertEqual(*list.at(2), 30, "collect map: element 2")
 }
+
+@test
+func testChain() {
+    var chained = ((1 as int32)..(3 as int32)).chain((10 as int32)..(12 as int32))
+    var results = List[int32].new()
+    for v in chained { results.append(v) }
+    
+    std.testing.assertEqual(results.len(), 4 as usize, "chain length")
+    std.testing.assertEqual(*results.at(0), 1, "chain 0")
+    std.testing.assertEqual(*results.at(1), 2, "chain 1")
+    std.testing.assertEqual(*results.at(2), 10, "chain 2")
+    std.testing.assertEqual(*results.at(3), 11, "chain 3")
+}
+
+@test
+func testFlatten() {
+    var a = (1 as int32)..(3 as int32)
+    var b = (5 as int32)..(7 as int32)
+    // Create a list of iterables
+    var iterables = List[std.range.Range[int32]].new()
+    iterables.append(a)
+    iterables.append(b)
+
+    var flattened = iterables.flatten()
+    var results = List[int32].new()
+    for v in flattened { results.append(v) }
+    
+    std.testing.assertEqual(results.len(), 4 as usize, "flatten length")
+    std.testing.assertEqual(*results.at(0), 1, "flatten 0")
+    std.testing.assertEqual(*results.at(1), 2, "flatten 1")
+    std.testing.assertEqual(*results.at(2), 5, "flatten 2")
+    std.testing.assertEqual(*results.at(3), 6, "flatten 3")
+}
+
+@test
+func testStepBy() {
+    var stepped = ((0 as int32)..(10 as int32)).stepBy(3 as usize)
+    var results = List[int32].new()
+    for v in stepped { results.append(v) }
+    
+    std.testing.assertEqual(results.len(), 4 as usize, "stepBy length")
+    std.testing.assertEqual(*results.at(0), 0, "stepBy 0")
+    std.testing.assertEqual(*results.at(1), 3, "stepBy 1")
+    std.testing.assertEqual(*results.at(2), 6, "stepBy 2")
+    std.testing.assertEqual(*results.at(3), 9, "stepBy 3")
+}
+
+@test
+func testTakeWhile() {
+    var taken = ((1 as int32)..(10 as int32)).takeWhile(|x: &int32| { *x < 5 })
+    var results = List[int32].new()
+    for v in taken { results.append(v) }
+    
+    std.testing.assertEqual(results.len(), 4 as usize, "takeWhile length")
+    std.testing.assertEqual(*results.at(3), 4, "takeWhile last")
+}
+
+@test
+func testSkipWhile() {
+    var skipped = ((1 as int32)..(10 as int32)).skipWhile(|x: &int32| { *x < 7 })
+    var results = List[int32].new()
+    for v in skipped { results.append(v) }
+    
+    std.testing.assertEqual(results.len(), 3 as usize, "skipWhile length")
+    std.testing.assertEqual(*results.at(0), 7, "skipWhile first")
+    std.testing.assertEqual(*results.at(2), 9, "skipWhile last")
+}
+
+@test
+func testPeekable() {
+    var peekable = ((1 as int32)..(5 as int32)).peekable()
+    var iter = peekable.makeIterator()
+    
+    var peek1 = iter.peek().unwrap()
+    std.testing.assertEqual(*peek1, 1, "peek 1") // Hasn't consumed yet
+    
+    std.testing.assertEqual(iter.next().unwrap(), 1, "next 1")
+    
+    var peek2 = iter.peek().unwrap()
+    std.testing.assertEqual(*peek2, 2, "peek 2") // Advanced peek
+    
+    std.testing.assertEqual(iter.next().unwrap(), 2, "next 2")
+    std.testing.assertEqual(iter.next().unwrap(), 3, "next 3")
+    std.testing.assertEqual(iter.next().unwrap(), 4, "next 4")
+    
+    std.testing.assertTrue(iter.peek().isNone(), "peek EOF")
+    std.testing.assertTrue(iter.next().isNone(), "next EOF")
+}
