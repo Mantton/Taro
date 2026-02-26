@@ -7,19 +7,14 @@ use crate::{
     sema::{
         models::{
             ConstKind, GenericArgument, GenericArguments, InterfaceDefinition, InterfaceReference,
-            InterfaceRequirements, Ty, TyKind,
+            InterfaceRequirements, SelectionMode, Ty, TyKind,
         },
         resolve::models::TypeHead,
         tycheck::{
-            infer::InferCtx,
-            resolve_conformance_witness,
+            resolve_conformance_witness_with_mode,
             utils::{
-                instantiate::{
-                    instantiate_const_with_args, instantiate_constraint_with_args,
-                    instantiate_ty_with_args,
-                },
+                instantiate::{instantiate_const_with_args, instantiate_ty_with_args},
                 type_head_from_value_ty,
-                unify::TypeUnifier,
             },
         },
     },
@@ -33,7 +28,6 @@ use inkwell::{
     values::{BasicMetadataValueEnum, BasicValue, BasicValueEnum, PointerValue},
 };
 use rustc_hash::FxHashSet;
-use std::rc::Rc;
 
 impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     fn debug_witness_subst_enabled(&self) -> bool {
@@ -189,7 +183,13 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         type_head: TypeHead,
     ) -> Vec<InterfaceReference<'gcx>> {
         let records = self.gcx.collect_from_databases(|db| {
-            db.conformances.get(&type_head).cloned().unwrap_or_default()
+            db.conformance_by_head
+                .get(&type_head)
+                .map_or_else(Vec::new, |ids| {
+                    ids.iter()
+                        .filter_map(|id| db.conformance_records.get(id).copied())
+                        .collect()
+                })
         });
         let mut seen = FxHashSet::default();
         let mut out = Vec::new();
@@ -208,109 +208,21 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         concrete_ty: Ty<'gcx>,
         iface: InterfaceReference<'gcx>,
     ) -> Option<InterfaceReference<'gcx>> {
-        let extension_args = self.deduce_extension_args(extension_id, concrete_ty)?;
-        if !self.extension_bounds_satisfied(extension_id, extension_args) {
-            return None;
-        }
+        let extension_args =
+            crate::sema::impl_engine::deduce_impl_subst(self.gcx, extension_id, concrete_ty, &[])?;
 
         let instantiated = if extension_args.is_empty() {
             iface
         } else {
             self.substitute_interface_ref(iface, extension_args)
         };
+        let instantiated = self.interface_args_with_self(concrete_ty, instantiated);
 
-        Some(self.interface_args_with_self(concrete_ty, instantiated))
-    }
-
-    fn deduce_extension_args(
-        &self,
-        extension_id: hir::DefinitionID,
-        concrete_ty: Ty<'gcx>,
-    ) -> Option<GenericArguments<'gcx>> {
-        let generics = self.gcx.generics_of(extension_id);
-        if generics.is_empty() {
-            return Some(GenericArguments::empty());
-        }
-
-        let extension_self = self.extension_self_ty(extension_id)?;
-        let icx = Rc::new(InferCtx::new(self.gcx));
-        let span = crate::span::Span::empty(crate::span::FileID::from_usize(0));
-        let fresh_args = icx.fresh_args_for_def(extension_id, span);
-        let instantiated = instantiate_ty_with_args(self.gcx, extension_self, fresh_args);
-        let unifier = TypeUnifier::new(icx.clone());
-        if unifier.unify(instantiated, concrete_ty).is_err() {
+        if self.conformance_witness(instantiated).is_none() {
             return None;
         }
 
-        crate::specialize::resolve::refine_impl_args_from_constraints(
-            self.gcx,
-            icx.clone(),
-            extension_id,
-            fresh_args,
-        );
-
-        let resolved = icx.resolve_args_if_possible(fresh_args);
-        if !self.generic_args_are_runtime_materializable(resolved) {
-            return None;
-        }
-
-        Some(resolved)
-    }
-
-    fn extension_self_ty(&self, extension_id: hir::DefinitionID) -> Option<Ty<'gcx>> {
-        if let Some(ty) = self.gcx.get_impl_self_ty(extension_id) {
-            return Some(ty);
-        }
-
-        match self.gcx.definition_kind(extension_id) {
-            crate::sema::resolve::models::DefinitionKind::Struct
-            | crate::sema::resolve::models::DefinitionKind::Enum => {
-                Some(self.gcx.get_type(extension_id))
-            }
-            _ => None,
-        }
-    }
-
-    fn extension_bounds_satisfied(
-        &self,
-        extension_id: hir::DefinitionID,
-        extension_args: GenericArguments<'gcx>,
-    ) -> bool {
-        let constraints = self.gcx.canonical_constraints_of(extension_id);
-        if constraints.is_empty() {
-            return true;
-        }
-
-        for constraint in constraints {
-            let instantiated =
-                instantiate_constraint_with_args(self.gcx, constraint.value, extension_args);
-            let crate::sema::models::Constraint::Bound { ty, interface } = instantiated else {
-                continue;
-            };
-
-            let ty = self.normalize_post_mono_ty(ty);
-            if self.ty_contains_unresolved_generics(ty) {
-                return false;
-            }
-
-            let Some(head) = type_head_from_value_ty(ty) else {
-                return false;
-            };
-
-            if resolve_conformance_witness(self.gcx, head, interface).is_some() {
-                continue;
-            }
-
-            if let Some(copy_def) = self.gcx.std_item_def(hir::StdItem::Copy) {
-                if interface.id == copy_def && self.gcx.is_type_copyable(ty) {
-                    continue;
-                }
-            }
-
-            return false;
-        }
-
-        true
+        Some(instantiated)
     }
 
     pub(super) fn type_metadata_ptr(&mut self, concrete_ty: Ty<'gcx>) -> PointerValue<'llvm> {
@@ -335,7 +247,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             if !self.interface_ref_is_runtime_materializable(iface) {
                 continue;
             }
-            let Some(_) = self.conformance_witness(type_head, iface) else {
+            let Some(_) = self.conformance_witness(iface) else {
                 continue;
             };
             let iface_desc_ptr = self.interface_descriptor_ptr(iface);
@@ -409,7 +321,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             Some(req) => req,
             None => return self.context.ptr_type(AddressSpace::default()).const_null(),
         };
-        let witness = self.conformance_witness(type_head, iface);
+        let witness = self.conformance_witness(iface);
         if witness.is_none() {
             return self.context.ptr_type(AddressSpace::default()).const_null();
         }
@@ -715,11 +627,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
     pub(super) fn conformance_witness(
         &self,
-        type_head: TypeHead,
         interface: InterfaceReference<'gcx>,
     ) -> Option<crate::sema::models::ConformanceWitness<'gcx>> {
-        // Route through the resolver so stale synthetic method IDs can be patched.
-        resolve_conformance_witness(self.gcx, type_head, interface)
+        resolve_conformance_witness_with_mode(self.gcx, interface, SelectionMode::Codegen)
     }
 
     pub(super) fn interface_method_count(&self, interface_id: hir::DefinitionID) -> usize {

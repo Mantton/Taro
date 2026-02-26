@@ -1,0 +1,20 @@
+interface AmbA {}
+interface AmbB {}
+interface AmbMarker {}
+
+struct AmbBox[T] {
+    value: T
+}
+
+impl AmbA for int32 {}
+impl AmbB for int32 {}
+
+impl[T: AmbA] AmbMarker for AmbBox[T] {}
+impl[T: AmbB] AmbMarker for AmbBox[T] {}
+
+func requireAmbMarker[T: AmbMarker](_ value: T) {}
+
+func main() {
+    let value = AmbBox[int32] { value: 1 }
+    requireAmbMarker(value)
+}

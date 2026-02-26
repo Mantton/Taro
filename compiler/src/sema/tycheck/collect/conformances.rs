@@ -4,12 +4,24 @@ use crate::{
     error::CompileResult,
     hir::{self, DefinitionID, DefinitionKind, HirVisitor, StdItem},
     sema::{
-        models::{ConformanceRecord, EnumVariantKind, InterfaceReference, Ty, TyKind},
+        models::{
+            ConformanceRecord, Constraint, ConstKind, EnumVariantKind, GenericArgument, GoalResult,
+            InterfaceGoal, InterfaceReference, SelectionMode, Ty, TyKind,
+        },
         resolve::models::TypeHead,
-        tycheck::lower::{DefTyLoweringCtx, TypeLowerer},
+        tycheck::{
+            infer::InferCtx,
+            lower::{DefTyLoweringCtx, TypeLowerer},
+            utils::{
+                instantiate::{instantiate_constraint_with_args, instantiate_interface_ref_with_args},
+                normalize_ty, ParamEnv,
+                unify::TypeUnifier,
+            },
+        },
     },
     span::Span,
 };
+use std::rc::Rc;
 
 pub fn run(package: &hir::Package, context: Gcx) -> CompileResult<()> {
     Actor::run(package, context)
@@ -28,6 +40,15 @@ impl<'ctx> Actor<'ctx> {
         let mut actor = Actor::new(context);
         hir::walk_package(&mut actor, package);
         context.dcx().ok()
+    }
+}
+
+fn generic_arg_has_inference(arg: GenericArgument<'_>) -> bool {
+    match arg {
+        GenericArgument::Type(ty) => ty.contains_inference(),
+        GenericArgument::Const(c) => {
+            matches!(c.kind, ConstKind::Infer(_)) || c.ty.contains_inference()
+        }
     }
 }
 
@@ -101,7 +122,7 @@ impl<'ctx> Actor<'ctx> {
         }
 
         // Check for duplicate conformances
-        if let Some(prev) = self.find_conflicting_conformance(ty_key, reference) {
+        if let Some(prev) = self.find_conflicting_conformance(ty_key, reference, impl_id) {
             self.emit_redundant(interface_ty.span, &prev);
             return;
         }
@@ -117,9 +138,7 @@ impl<'ctx> Actor<'ctx> {
             is_inline: false, // Impl-based conformance
         };
 
-        self.context.with_session_type_database(|db| {
-            db.conformances.entry(ty_key).or_default().push(record)
-        });
+        self.context.insert_conformance_record(record);
     }
 
     /// Collect conformances from inline syntax on struct/enum definitions.
@@ -144,7 +163,7 @@ impl<'ctx> Actor<'ctx> {
             let reference = icx.lowerer().lower_interface_reference(self_ty, interface);
 
             // Check for duplicate conformances
-            if let Some(prev) = self.find_conflicting_conformance(ty_key, reference) {
+            if let Some(prev) = self.find_conflicting_conformance(ty_key, reference, type_id) {
                 self.emit_redundant(interface.span, &prev);
                 continue;
             }
@@ -171,9 +190,7 @@ impl<'ctx> Actor<'ctx> {
                 is_inline: true, // Inline conformance allows auto-synthesis
             };
 
-            self.context.with_session_type_database(|db| {
-                db.conformances.entry(ty_key).or_default().push(record)
-            });
+            self.context.insert_conformance_record(record);
         }
     }
 
@@ -284,6 +301,7 @@ impl<'ctx> Actor<'ctx> {
         &self,
         ty_key: TypeHead,
         interface: InterfaceReference<'ctx>,
+        new_extension_id: DefinitionID,
     ) -> Option<ConformanceRecord<'ctx>> {
         // Get the package that owns the type (if nominal)
         let type_pkg = match ty_key {
@@ -294,7 +312,9 @@ impl<'ctx> Actor<'ctx> {
 
         // Check the type's home package first (if different from current)
         if let Some(pkg) = type_pkg {
-            if let Some(prev) = self.find_conformance_in_package(pkg, ty_key, interface) {
+            if let Some(prev) =
+                self.find_conformance_in_package(pkg, ty_key, interface, new_extension_id)
+            {
                 return Some(prev);
             }
         }
@@ -302,7 +322,12 @@ impl<'ctx> Actor<'ctx> {
         // Check the interface's home package
         let interface_pkg = interface.id.package();
         if Some(interface_pkg) != type_pkg {
-            if let Some(prev) = self.find_conformance_in_package(interface_pkg, ty_key, interface) {
+            if let Some(prev) = self.find_conformance_in_package(
+                interface_pkg,
+                ty_key,
+                interface,
+                new_extension_id,
+            ) {
                 return Some(prev);
             }
         }
@@ -310,7 +335,9 @@ impl<'ctx> Actor<'ctx> {
         // Check the current session package
         let current_pkg = self.context.package_index();
         if Some(current_pkg) != type_pkg && current_pkg != interface_pkg {
-            if let Some(prev) = self.find_conformance_in_package(current_pkg, ty_key, interface) {
+            if let Some(prev) =
+                self.find_conformance_in_package(current_pkg, ty_key, interface, new_extension_id)
+            {
                 return Some(prev);
             }
         }
@@ -323,15 +350,221 @@ impl<'ctx> Actor<'ctx> {
         package_id: PackageIndex,
         ty_key: TypeHead,
         interface: InterfaceReference<'ctx>,
+        new_extension_id: DefinitionID,
     ) -> Option<ConformanceRecord<'ctx>> {
-        self.context.with_type_database(package_id, |db| {
-            db.conformances
-                .get(&ty_key)
-                .into_iter()
-                .flat_map(|v| v.iter())
-                .find(|rec| rec.interface == interface)
-                .cloned()
-        })
+        let candidates = self
+            .context
+            .conformance_records_for_interface_head(package_id, interface.id, ty_key);
+
+        for candidate in candidates {
+            if candidate.interface == interface {
+                return Some(candidate);
+            }
+
+            if !self.overlaps(candidate, interface, new_extension_id) {
+                continue;
+            }
+
+            return Some(candidate);
+        }
+
+        None
+    }
+
+    fn overlaps(
+        &self,
+        existing: ConformanceRecord<'ctx>,
+        new_interface: InterfaceReference<'ctx>,
+        new_extension_id: DefinitionID,
+    ) -> bool {
+        if existing.interface.id != new_interface.id {
+            return false;
+        }
+
+        let icx = Rc::new(InferCtx::new(self.context));
+        let span = Span::empty(crate::span::FileID::from_usize(0));
+        let unifier = TypeUnifier::new(icx.clone());
+
+        let (existing_iface, existing_extension_args) =
+            match self.instantiate_interface_for_overlap(existing, icx.clone(), span) {
+                Some(args) => args,
+                None => return false,
+            };
+        let (new_iface, new_extension_args) = match self.instantiate_interface_for_new_overlap(
+            new_interface,
+            new_extension_id,
+            icx.clone(),
+            span,
+        ) {
+            Some(args) => args,
+            None => return false,
+        };
+
+        if existing_iface.id != new_iface.id
+            || existing_iface.arguments.len() != new_iface.arguments.len()
+        {
+            return false;
+        }
+
+        for (lhs, rhs) in existing_iface
+            .arguments
+            .iter()
+            .zip(new_iface.arguments.iter())
+        {
+            match (lhs, rhs) {
+                (GenericArgument::Type(lhs_ty), GenericArgument::Type(rhs_ty)) => {
+                    if unifier.unify(*lhs_ty, *rhs_ty).is_err() {
+                        return false;
+                    }
+                }
+                (GenericArgument::Const(lhs_c), GenericArgument::Const(rhs_c)) => {
+                    if unifier.unify_const(*lhs_c, *rhs_c).is_err() {
+                        return false;
+                    }
+                }
+                _ => return false,
+            }
+        }
+
+        // If headers overlap, they only remain overlapping when the combined
+        // obligations of both impls are jointly satisfiable.
+        if !self.combined_constraints_potentially_satisfiable(
+            &[
+                (existing.extension, existing_extension_args),
+                (new_extension_id, new_extension_args),
+            ],
+            icx,
+        ) {
+            return false;
+        }
+
+        true
+    }
+
+    fn instantiate_interface_for_overlap(
+        &self,
+        record: ConformanceRecord<'ctx>,
+        icx: Rc<InferCtx<'ctx>>,
+        span: Span,
+    ) -> Option<(InterfaceReference<'ctx>, crate::sema::models::GenericArguments<'ctx>)> {
+        let args = icx.fresh_args_for_def(record.extension, span);
+        let instantiated = instantiate_interface_ref_with_args(self.context, record.interface, args);
+        Some((instantiated, args))
+    }
+
+    fn instantiate_interface_for_new_overlap(
+        &self,
+        interface: InterfaceReference<'ctx>,
+        extension_id: DefinitionID,
+        icx: Rc<InferCtx<'ctx>>,
+        span: Span,
+    ) -> Option<(InterfaceReference<'ctx>, crate::sema::models::GenericArguments<'ctx>)> {
+        let args = icx.fresh_args_for_def(extension_id, span);
+        let instantiated = instantiate_interface_ref_with_args(self.context, interface, args);
+        Some((instantiated, args))
+    }
+
+    fn combined_constraints_potentially_satisfiable(
+        &self,
+        entries: &[(DefinitionID, crate::sema::models::GenericArguments<'ctx>)],
+        icx: Rc<InferCtx<'ctx>>,
+    ) -> bool {
+        if entries.is_empty() {
+            return true;
+        }
+
+        let mut instantiated = Vec::new();
+        for (extension_id, extension_args) in entries {
+            let constraints = self.context.canonical_constraints_of(*extension_id);
+            instantiated.extend(
+                constraints
+                    .into_iter()
+                    .map(|constraint| {
+                        instantiate_constraint_with_args(self.context, constraint.value, *extension_args)
+                    }),
+            );
+        }
+        if instantiated.is_empty() {
+            return true;
+        }
+
+        let env = ParamEnv::new(instantiated.clone());
+        let unifier = TypeUnifier::new(icx.clone());
+
+        let passes = instantiated.len().max(1) * 2;
+        for _ in 0..passes {
+            for constraint in &instantiated {
+                let Constraint::TypeEquality(lhs, rhs) = *constraint else {
+                    continue;
+                };
+                let lhs = normalize_ty(icx.clone(), lhs, &env);
+                let rhs = normalize_ty(icx.clone(), rhs, &env);
+                if unifier.unify(lhs, rhs).is_err() {
+                    return false;
+                }
+            }
+        }
+
+        let param_env = self
+            .context
+            .store
+            .arenas
+            .global
+            .alloc_slice_clone(instantiated.as_slice());
+
+        for constraint in instantiated {
+            let Constraint::Bound { ty, interface } = constraint else {
+                continue;
+            };
+
+            let ty = normalize_ty(icx.clone(), ty, &env);
+            let mut interface = interface;
+            interface.arguments = icx.resolve_args_if_possible(interface.arguments);
+
+            if ty.contains_inference()
+                || interface
+                    .arguments
+                    .iter()
+                    .any(|arg| generic_arg_has_inference(*arg))
+                || interface
+                    .bindings
+                    .iter()
+                    .any(|binding| binding.ty.contains_inference())
+            {
+                // Conservatively treat unresolved obligations as potentially satisfiable.
+                continue;
+            }
+
+            let self_ty = match interface.arguments.get(0).copied() {
+                Some(GenericArgument::Type(self_ty)) => self_ty,
+                _ => ty,
+            };
+            let interface_args = if interface.arguments.len() > 1 {
+                self.context
+                    .store
+                    .interners
+                    .intern_generic_args_slice(&interface.arguments[1..])
+            } else {
+                crate::sema::models::GenericArguments::empty()
+            };
+
+            let goal = InterfaceGoal {
+                interface_id: interface.id,
+                self_ty,
+                interface_args,
+                bindings: interface.bindings,
+                param_env,
+            };
+
+            if matches!(
+                self.context.prove_interface_goal(goal, SelectionMode::Coherence),
+                GoalResult::NoSolution
+            ) {
+                return false;
+            }
+        }
+
+        true
     }
 
     fn emit_orphan_error(&self, span: Span, ty: TypeHead, interface: InterfaceReference<'ctx>) {
@@ -350,9 +583,9 @@ impl<'ctx> Actor<'ctx> {
         let name = prev.interface.format(self.context);
         self.context
             .dcx()
-            .emit_warning(format!("redundant conformance to '{}'", name), Some(span));
+            .emit_error(format!("conflicting conformance to '{}'", name), Some(span));
         self.context.dcx().emit_info(
-            "initial conformance is defined here".into(),
+            "existing conformance is defined here".into(),
             Some(prev.location),
         );
     }

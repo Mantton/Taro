@@ -317,6 +317,8 @@ impl<'ctx> ConstraintSystem<'ctx> {
     }
 
     fn solve_internal(&mut self, check_unresolved: bool) {
+        let gcx = self.infer_cx.gcx;
+
         let param_env = Self::build_param_env(self.infer_cx.gcx, self.current_def);
 
         let solver = ConstraintSolver {
@@ -352,8 +354,6 @@ impl<'ctx> ConstraintSystem<'ctx> {
         self.overload_sources = overload_sources;
         self.value_resolutions = value_resolutions;
         self.instantiation_args = instantiation_args;
-
-        let gcx = self.infer_cx.gcx;
 
         if result.is_ok() {
             if check_unresolved && gcx.dcx().error_count() == self.error_count_at_start {

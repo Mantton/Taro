@@ -1,0 +1,16 @@
+interface GenericMethod {
+    func id[T](&self, value: T) -> T
+}
+
+struct GenericMethodImpl {}
+
+impl GenericMethod for GenericMethodImpl {
+    func id[T](&self, value: T) -> T {
+        value
+    }
+}
+
+func main() {
+    let value: any GenericMethod = GenericMethodImpl {}
+    let _ = value.id(1)
+}

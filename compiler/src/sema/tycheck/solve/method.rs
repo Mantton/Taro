@@ -531,9 +531,15 @@ impl<'ctx> ConstraintSolver<'ctx> {
         span: Span,
     ) -> Option<&'ctx [InterfaceReference<'ctx>]> {
         let head = self.type_head_from_type(self_ty)?;
-        let records = self
-            .gcx()
-            .collect_from_databases(|db| db.conformances.get(&head).cloned().unwrap_or_default());
+        let records = self.gcx().collect_from_databases(|db| {
+            db.conformance_by_head
+                .get(&head)
+                .map_or_else(Vec::new, |ids| {
+                    ids.iter()
+                        .filter_map(|id| db.conformance_records.get(id).copied())
+                        .collect()
+                })
+        });
         if records.is_empty() {
             return None;
         }
@@ -584,13 +590,24 @@ impl<'ctx> ConstraintSolver<'ctx> {
         deref_steps: usize,
         autoref_cost: u8,
     ) -> Option<SolverResult<'ctx>> {
-        let candidates = self.interface_method_candidates(
+        let (candidates, object_safety_violation) = self.interface_method_candidates(
             candidate_ty,
             reciever_ty,
             interfaces,
             data.name.symbol,
+            data.name.span,
         );
         if candidates.is_empty() {
+            if object_safety_violation {
+                let error = Spanned::new(
+                    TypeError::NoSuchMember {
+                        name: data.name.symbol,
+                        on: candidate_ty,
+                    },
+                    data.name.span,
+                );
+                return Some(SolverResult::Error(vec![error]));
+            }
             return None;
         }
 
@@ -653,8 +670,11 @@ impl<'ctx> ConstraintSolver<'ctx> {
         reciever_ty: Ty<'ctx>,
         interfaces: &'ctx [InterfaceReference<'ctx>],
         name: Symbol,
-    ) -> Vec<InterfaceMethodCandidate<'ctx>> {
+        name_span: Span,
+    ) -> (Vec<InterfaceMethodCandidate<'ctx>>, bool) {
         let mut out = Vec::with_capacity(interfaces.len().saturating_mul(2));
+        let mut object_safety_violation = false;
+        let is_existential_dispatch = matches!(self_ty.kind(), TyKind::BoxedExistential { .. });
 
         for (table_index, iface) in interfaces.iter().enumerate() {
             let iface_args = self.interface_args_with_self(*iface, self_ty);
@@ -674,6 +694,24 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         continue;
                     }
                     if !method.has_self {
+                        continue;
+                    }
+                    if is_existential_dispatch && self.gcx().generics_of(method.id).total_count() > 0
+                    {
+                        if !object_safety_violation {
+                            self.gcx().dcx().emit_error(
+                                format!(
+                                    "cannot call generic interface method '{}' on an existential value",
+                                    self.gcx().symbol_text(method.name)
+                                ),
+                                Some(name_span),
+                            );
+                            self.gcx().dcx().emit_info(
+                                "methods with their own generic parameters are not object-safe".into(),
+                                Some(name_span),
+                            );
+                        }
+                        object_safety_violation = true;
                         continue;
                     }
 
@@ -709,7 +747,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             }
         }
 
-        out
+        (out, object_safety_violation)
     }
 
     fn receiver_matches_method(&self, receiver: Ty<'ctx>, method_ty: Ty<'ctx>) -> bool {

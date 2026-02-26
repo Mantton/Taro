@@ -6,7 +6,7 @@ use crate::{
     hir::{NodeID, OperatorKind, Resolution, StdItem},
     sema::{
         error::TypeError,
-        models::{GenericArguments, InterfaceReference, StructField, Ty, TyKind},
+        models::{InterfaceReference, StructField, Ty, TyKind},
         resolve::models::{DefinitionID, DefinitionKind, PrimaryType, TypeHead, VariantCtorKind},
         tycheck::{
             resolve_conformance_witness,
@@ -738,43 +738,51 @@ impl<'ctx> ConstraintSolver<'ctx> {
         // Get the interface definition ID
         let interface_id = gcx.std_item_def(std_interface)?;
 
-        // Create an interface reference with empty arguments (we'll match later)
-        let interface_ref = InterfaceReference {
-            id: interface_id,
-            arguments: GenericArguments::empty(),
-            bindings: &[],
-        };
-
-        // Check if the type conforms to this interface
-        let witness = resolve_conformance_witness(gcx, head, interface_ref)?;
-
         // Get the requirement method for this concrete operator kind
         let method_name = Self::operator_method_name_for_kind(kind)?;
         let method_symbol = gcx.intern_symbol(method_name);
 
-        // Look up the method witness
-        // We need to find the method requirement ID first
         let requirements = gcx.get_interface_requirements(interface_id)?;
-        for method_req in &requirements.methods {
-            if method_req.name == method_symbol {
-                if let Some(method_witness) = witness.method_witnesses.get(&method_req.id) {
-                    match method_witness.implementation {
-                        crate::sema::models::MethodImplementation::Concrete(impl_id)
-                        | crate::sema::models::MethodImplementation::Default(impl_id) => {
-                            return Some(vec![impl_id]);
-                        }
-                        // Synthetic implementations may not have a concrete DefinitionID yet
-                        // during type checking. Use the interface requirement method ID as the
-                        // overload source; it is resolved to the synthetic impl during
-                        // specialization once synthetic IDs are materialized.
-                        crate::sema::models::MethodImplementation::Synthetic(_, _) => {
-                            return Some(vec![method_req.id]);
-                        }
-                    }
+        let method_req = requirements.methods.iter().find(|method| method.name == method_symbol)?;
+
+        let records = gcx.collect_from_databases(|db| {
+            db.conformance_by_interface_head
+                .get(&(interface_id, head))
+                .map_or_else(Vec::new, |ids| {
+                    ids.iter()
+                        .filter_map(|id| db.conformance_records.get(id).copied())
+                        .collect()
+                })
+        });
+
+        let mut out = Vec::new();
+        let mut seen = FxHashSet::default();
+
+        for record in records {
+            if !seen.insert(record.interface) {
+                continue;
+            }
+            let Some(witness) = resolve_conformance_witness(gcx, record.interface) else {
+                continue;
+            };
+            let Some(method_witness) = witness.method_witnesses.get(&method_req.id) else {
+                continue;
+            };
+            match method_witness.implementation {
+                crate::sema::models::MethodImplementation::Concrete(impl_id)
+                | crate::sema::models::MethodImplementation::Default(impl_id) => {
+                    out.push(impl_id);
+                }
+                crate::sema::models::MethodImplementation::Synthetic(_, _) => {
+                    out.push(method_req.id);
                 }
             }
         }
 
-        None
+        if out.is_empty() {
+            None
+        } else {
+            Some(out)
+        }
     }
 }

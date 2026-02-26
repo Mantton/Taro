@@ -3,6 +3,7 @@ use rustc_hash::FxHashMap;
 use std::hash::{Hash, Hasher};
 
 use crate::{
+    PackageIndex,
     compile::context::Gcx,
     hir::{self, DefinitionID, Mutability},
     sema::{
@@ -892,6 +893,115 @@ pub struct ConformanceRecord<'ctx> {
     /// True if the conformance was declared inline on the type definition (struct Foo: T {}),
     /// false if declared via impl block (impl T for Foo {}). Inline conformances allow auto-synthesis.
     pub is_inline: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ConformanceRecordId {
+    pub package: PackageIndex,
+    pub index: u32,
+}
+
+impl ConformanceRecordId {
+    pub fn new(package: PackageIndex, index: u32) -> Self {
+        Self { package, index }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SelectionMode {
+    Typecheck,
+    Coherence,
+    Codegen,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CandidateSource {
+    Impl(ConformanceRecordId),
+    ParamEnv,
+    BuiltinTuple,
+    BuiltinClosure,
+    BuiltinCopy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct InterfaceGoal<'ctx> {
+    pub interface_id: DefinitionID,
+    pub self_ty: Ty<'ctx>,
+    /// Interface arguments excluding the implicit Self argument.
+    pub interface_args: GenericArguments<'ctx>,
+    pub bindings: &'ctx [AssociatedTypeBinding<'ctx>],
+    pub param_env: &'ctx [Constraint<'ctx>],
+}
+
+impl<'ctx> InterfaceGoal<'ctx> {
+    pub fn to_interface_ref(self, gcx: Gcx<'ctx>) -> InterfaceReference<'ctx> {
+        let mut args = Vec::with_capacity(self.interface_args.len() + 1);
+        args.push(GenericArgument::Type(self.self_ty));
+        args.extend(self.interface_args.iter().copied());
+        InterfaceReference {
+            id: self.interface_id,
+            arguments: gcx.store.interners.intern_generic_args(args),
+            bindings: self.bindings,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CanonicalGoalKey<'ctx> {
+    pub package: PackageIndex,
+    pub mode: SelectionMode,
+    pub interface_id: DefinitionID,
+    pub self_ty: Ty<'ctx>,
+    pub interface_args: GenericArguments<'ctx>,
+    pub bindings: &'ctx [AssociatedTypeBinding<'ctx>],
+    pub param_env: &'ctx [Constraint<'ctx>],
+}
+
+impl<'ctx> CanonicalGoalKey<'ctx> {
+    pub fn from_goal(package: PackageIndex, mode: SelectionMode, goal: InterfaceGoal<'ctx>) -> Self {
+        Self {
+            package,
+            mode,
+            interface_id: goal.interface_id,
+            self_ty: goal.self_ty,
+            interface_args: goal.interface_args,
+            bindings: goal.bindings,
+            param_env: goal.param_env,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GoalResult {
+    Proven,
+    NoSolution,
+    Ambiguous,
+}
+
+#[derive(Debug, Clone)]
+pub struct SelectedImpl<'ctx> {
+    pub source: CandidateSource,
+    pub extension_id: Option<DefinitionID>,
+    pub record_id: Option<ConformanceRecordId>,
+    pub subst: GenericArguments<'ctx>,
+    pub obligations: Vec<InterfaceGoal<'ctx>>,
+}
+
+#[derive(Debug, Clone)]
+pub enum SelectionResult<'ctx> {
+    Selected(SelectedImpl<'ctx>),
+    Ambiguous(Vec<SelectedImpl<'ctx>>),
+    NoSolution(Vec<SelectionError<'ctx>>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SelectionError<'ctx> {
+    NoCandidates(InterfaceGoal<'ctx>),
+    Ambiguous(InterfaceGoal<'ctx>),
+    ObligationFailed {
+        candidate: CandidateSource,
+        obligation: InterfaceGoal<'ctx>,
+    },
 }
 
 /// Witness mappings for a conformance - maps interface requirements to implementations

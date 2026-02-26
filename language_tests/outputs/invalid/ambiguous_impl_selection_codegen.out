@@ -1,0 +1,8 @@
+error: conflicting conformance to 'CgMarker'
+ -> language_tests/source_files/invalid/ambiguous_impl_selection_codegen.tr:22:13
+	impl[T: CgB] CgMarker for CgBox[T] {}
+	             ^^^^^^^^
+info: existing conformance is defined here
+ -> language_tests/source_files/invalid/ambiguous_impl_selection_codegen.tr:21:13
+	impl[T: CgA] CgMarker for CgBox[T] {}
+	             ^^^^^^^^

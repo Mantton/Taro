@@ -182,8 +182,6 @@ impl<'ctx> Checker<'ctx> {
                 self.check_guard(condition, else_block, cs.as_deref_mut());
             }
         }
-
-        return;
     }
 
     fn check_local_declaration(&self, decl: &hir::Declaration) {
@@ -401,7 +399,7 @@ impl<'ctx> Checker<'ctx> {
         expectation: Option<Ty<'ctx>>,
     ) -> Ty<'ctx> {
         let mut cs = self.new_cs();
-        self.with_infer_ctx(cs.infer_cx.clone(), || {
+        let result = self.with_infer_ctx(cs.infer_cx.clone(), || {
             let provided = self.synth_with_expectation(expression, expectation, &mut cs);
             if let Some(expectation) = expectation {
                 self.add_type_constraints(expectation, expression.span, &mut cs);
@@ -423,7 +421,8 @@ impl<'ctx> Checker<'ctx> {
                 return Ty::error(self.gcx());
             }
             provided
-        })
+        });
+        result
     }
 
     fn new_cs(&self) -> Cs<'ctx> {

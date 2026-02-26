@@ -12,15 +12,13 @@ pub fn check_conformance_implied_bounds<'ctx>(
     cs: &mut ConstraintSystem<'ctx>,
 ) {
     let type_head = TypeHead::Nominal(def_id);
-    let conformances = context.with_session_type_database(|db| {
-        db.conformances.get(&type_head).cloned().unwrap_or_default()
-    });
 
-    // We only check conformances that are declared on THIS definition (struct, enum, impl block)
-    // to avoid checking conformances defined elsewhere (e.g. in another package or impl block).
-    let local_conformances = conformances.iter().filter(|rec| rec.extension == def_id);
-
-    for record in local_conformances {
+    // We only check conformances declared on THIS definition (struct/enum/impl block).
+    for record in context
+        .conformance_records_for_extension(context.package_index(), def_id)
+        .into_iter()
+        .filter(|record| record.target == type_head)
+    {
         let interface_id = record.interface.id;
 
         // 1. Check Interface Generic Arguments WF
@@ -36,11 +34,8 @@ pub fn check_conformance_implied_bounds<'ctx>(
         });
 
         if let Some(reqs) = requirements {
-            let witness = context.find_in_databases(|db| {
-                db.conformance_witnesses
-                    .get(&(type_head, record.interface))
-                    .cloned()
-            });
+            let witness =
+                crate::sema::tycheck::resolve_conformance_witness(context, record.interface);
 
             if let Some(_) = witness {
                 // Construct the full argument list for the associated type: [Self, ...InterfaceArgs]

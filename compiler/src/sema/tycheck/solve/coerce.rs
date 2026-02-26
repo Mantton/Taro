@@ -2,9 +2,12 @@ use crate::{
     hir::{Mutability, NodeID},
     sema::{
         error::{ExpectedFound, TypeError},
-        models::{AliasKind, GenericArgument, InferTy, InterfaceReference, Ty, TyKind},
+        models::{
+            AliasKind, GenericArgument, GenericArguments, InferTy, InterfaceGoal,
+            InterfaceReference, SelectionError, SelectionMode, Ty, TyKind,
+        },
         resolve::models::TypeHead,
-        tycheck::{resolve_conformance_witness, utils::type_head_from_value_ty},
+        tycheck::utils::type_head_from_value_ty,
     },
     span::{Span, Spanned},
 };
@@ -271,8 +274,15 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let gcx = self.gcx();
 
         // Collect conformance records from all visible packages
-        let records = gcx
-            .collect_from_databases(|db| db.conformances.get(&head).cloned().unwrap_or_default());
+        let records = gcx.collect_from_databases(|db| {
+            db.conformance_by_head
+                .get(&head)
+                .map_or_else(Vec::new, |ids| {
+                    ids.iter()
+                        .filter_map(|id| db.conformance_records.get(id).copied())
+                        .collect()
+                })
+        });
 
         let mut missing = Vec::new();
         for iface in interfaces {
@@ -306,8 +316,15 @@ impl<'ctx> ConstraintSolver<'ctx> {
         infer: bool,
     ) -> Option<Vec<(InterfaceReference<'ctx>, InterfaceReference<'ctx>)>> {
         let gcx = self.gcx();
-        let records = gcx
-            .collect_from_databases(|db| db.conformances.get(&head).cloned().unwrap_or_default());
+        let records = gcx.collect_from_databases(|db| {
+            db.conformance_by_head
+                .get(&head)
+                .map_or_else(Vec::new, |ids| {
+                    ids.iter()
+                        .filter_map(|id| db.conformance_records.get(id).copied())
+                        .collect()
+                })
+        });
 
         let mut matches_out = Vec::with_capacity(interfaces.len());
         for iface in interfaces {
@@ -562,6 +579,48 @@ impl<'ctx> ConstraintSolver<'ctx> {
         match ty.kind() {
             TyKind::Infer(_) => return SolverResult::Deferred,
             TyKind::Parameter(_) => return SolverResult::Solved(vec![]),
+            TyKind::Adt(def, _)
+                if self
+                    .gcx()
+                    .std_item_def(crate::hir::StdItem::Iterable)
+                    .is_some_and(|iterable_id| interface.id == iterable_id)
+                    && self
+                        .gcx()
+                        .std_item_def(crate::hir::StdItem::Range)
+                        .is_some_and(|range_id| def.id == range_id)
+                    || self
+                        .gcx()
+                        .std_item_def(crate::hir::StdItem::Iterable)
+                        .is_some_and(|iterable_id| interface.id == iterable_id)
+                        && self
+                            .gcx()
+                            .std_item_def(crate::hir::StdItem::ClosedRange)
+                            .is_some_and(|range_id| def.id == range_id) =>
+            {
+                // Range syntax diagnostics already report element Step issues; avoid emitting
+                // a second cascading "not Iterable" diagnostic for the same source expression.
+                return SolverResult::Solved(vec![]);
+            }
+            TyKind::Adt(def, args)
+                if args.is_empty() && !self.gcx().generics_of(def.id).is_empty() =>
+            {
+                // During declaration-time checks we can see generic ADTs without explicit
+                // substitution args (e.g. `Foo[T]` represented as `Foo`). This malformed
+                // representation is validated elsewhere (conformance collection/derive checks).
+                // Defer instead of reporting solved so we do not drop conformance obligations.
+                return SolverResult::Deferred;
+            }
+            TyKind::Adt(def, args)
+                if def.id == self.current_def
+                    && args.iter().any(generic_arg_needs_instantiation) =>
+            {
+                // Declaration-time self conformance checks for generic nominal types
+                // (e.g. `struct S[T: Copy]: Copy`) can carry unresolved declaration
+                // parameters that are validated via the type's own generic bounds.
+                // Defer instead of marking solved so use-site obligations are still
+                // forced through concrete proof once instantiations are known.
+                return SolverResult::Deferred;
+            }
             TyKind::Alias {
                 kind: AliasKind::Projection,
                 ..
@@ -612,13 +671,42 @@ impl<'ctx> ConstraintSolver<'ctx> {
             _ => {}
         }
 
-        let Some(head) = type_head_from_value_ty(ty) else {
-            let error = Spanned::new(TypeError::NonConformance { ty, interface }, location);
-            return SolverResult::Error(vec![error]);
+        let interface_args = if interface.arguments.len() > 1 {
+            self.gcx()
+                .store
+                .interners
+                .intern_generic_args_slice(&interface.arguments[1..])
+        } else {
+            GenericArguments::empty()
         };
-
-        if resolve_conformance_witness(self.gcx(), head, interface).is_some() {
-            return SolverResult::Solved(vec![]);
+        let self_ty = match interface.arguments.get(0).copied() {
+            Some(GenericArgument::Type(self_ty)) => self_ty,
+            _ => ty,
+        };
+        let goal = InterfaceGoal {
+            interface_id: interface.id,
+            self_ty,
+            interface_args,
+            bindings: interface.bindings,
+            param_env: &[],
+        };
+        match self
+            .gcx()
+            .build_conformance_witness(goal, SelectionMode::Typecheck)
+        {
+            Ok(_) => return SolverResult::Solved(vec![]),
+            Err(SelectionError::Ambiguous(_)) => {
+                self.gcx().dcx().emit_error(
+                    format!(
+                        "ambiguous conformance: multiple impls satisfy '{}' for '{}'",
+                        interface.format(self.gcx()),
+                        ty.format(self.gcx())
+                    ),
+                    None,
+                );
+            }
+            Err(SelectionError::NoCandidates(_))
+            | Err(SelectionError::ObligationFailed { .. }) => {}
         }
 
         // Special case: primitives implicitly satisfy Copy (no explicit conformance record)
@@ -901,5 +989,17 @@ impl<'ctx> ConstraintSolver<'ctx> {
         }
 
         None
+    }
+}
+
+fn generic_arg_needs_instantiation(arg: &crate::sema::models::GenericArgument<'_>) -> bool {
+    match arg {
+        crate::sema::models::GenericArgument::Type(ty) => ty.needs_instantiation(),
+        crate::sema::models::GenericArgument::Const(c) => {
+            matches!(
+                c.kind,
+                crate::sema::models::ConstKind::Param(_) | crate::sema::models::ConstKind::Infer(_)
+            ) || c.ty.needs_instantiation()
+        }
     }
 }

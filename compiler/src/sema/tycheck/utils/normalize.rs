@@ -4,7 +4,6 @@ use crate::sema::tycheck::{
     utils::{
         instantiate::{instantiate_constraint_with_args, instantiate_ty_with_args},
         param_env::ParamEnv,
-        type_head_from_value_ty,
     },
 };
 use crate::{
@@ -515,19 +514,17 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
         // Strategy 1: Check ParamEnv bounds for the matching interface
         if let Some(bound_iface) = self.env.first_bound_for_interface(self_ty, interface_id) {
             // Found matching bound - look up type witness from conformance
-            let head = type_head_from_value_ty(self_ty)?;
-            let witness = resolve_conformance_witness(gcx, head, bound_iface)?;
+            let witness = resolve_conformance_witness(gcx, bound_iface)?;
             return instantiate_witness(witness);
         }
 
         // Strategy 2: For concrete types without explicit bounds, try direct lookup
-        let head = type_head_from_value_ty(self_ty)?;
         let interface = InterfaceReference {
             id: interface_id,
             arguments: args,
             bindings: &[],
         };
-        let witness = resolve_conformance_witness(gcx, head, interface)?;
+        let witness = resolve_conformance_witness(gcx, interface)?;
         instantiate_witness(witness)
     }
 }

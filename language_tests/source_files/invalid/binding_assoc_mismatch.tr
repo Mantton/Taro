@@ -1,0 +1,16 @@
+interface Carrier {
+    type Item
+}
+
+struct IntCarrier {}
+
+impl Carrier for IntCarrier {
+    type Item = int32
+}
+
+func needBool[T: Carrier[Item = bool]](_ value: T) {}
+
+func main() {
+    let c = IntCarrier {}
+    needBool(c)
+}

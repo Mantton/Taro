@@ -1,0 +1,5 @@
+error: ambiguous conformance: multiple impls satisfy 'CycleA' for 'CycleLeaf[int32]'
+error: type 'CycleLeaf[int32]' does not conform to interface 'CycleA'
+ -> language_tests/source_files/invalid/recursive_conformance_cycle.tr:15:4
+	    requireCycleA(value)
+	    ^^^^^^^^^^^^^

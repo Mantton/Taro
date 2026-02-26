@@ -1,0 +1,16 @@
+interface Marker {}
+
+struct Box[T] {
+    value: T
+}
+
+func requireMarker[T: Marker](_ value: T) {}
+
+func bad[U](_ value: Box[U]) {
+    requireMarker(value)
+}
+
+func main() {
+    let boxed = Box[int32] { value: 1 }
+    bad(boxed)
+}

@@ -10,11 +10,12 @@ use crate::{
     sema::std_items::{StdItemEntry, StdItemRegistry},
     sema::{
         models::{
-            AliasKind, ClosureCaptures, ConformanceRecord, ConformanceWitness, Const, Constraint,
-            EnumDefinition, EnumVariant, FloatTy, GenericArgument, GenericArguments,
-            GenericParameter, Generics, IntTy, InterfaceDefinition, InterfaceReference,
-            InterfaceRequirements, LabeledFunctionSignature, StructDefinition, Ty, TyKind, TyList,
-            UIntTy,
+            AliasKind, CanonicalGoalKey, ClosureCaptures, ConformanceRecord, ConformanceRecordId,
+            ConformanceWitness, Const, Constraint, EnumDefinition, EnumVariant, FloatTy,
+            GenericArgument, GenericArguments, GenericParameter, Generics, GoalResult, IntTy,
+            InterfaceDefinition, InterfaceGoal, InterfaceRequirements,
+            LabeledFunctionSignature, SelectionMode, SelectionResult, StructDefinition, Ty, TyKind,
+            TyList, UIntTy,
         },
         resolve::models::{
             DefinitionKind, PrimaryType, ResolutionOutput, ScopeData, ScopeEntryData, TypeHead,
@@ -205,6 +206,181 @@ impl<'arena> GlobalContext<'arena> {
         self.with_type_database(impl_id.package(), |db| {
             db.impl_to_target_ty.insert(impl_id, ty);
         });
+    }
+
+    pub fn insert_conformance_record(
+        self,
+        record: ConformanceRecord<'arena>,
+    ) -> ConformanceRecordId {
+        let package = self.package_index();
+        self.with_session_type_database(|db| {
+            let id = ConformanceRecordId::new(package, db.next_conformance_record_index);
+            db.next_conformance_record_index += 1;
+            db.conformance_records.insert(id, record);
+            db.conformance_by_interface_head
+                .entry((record.interface.id, record.target))
+                .or_default()
+                .push(id);
+            db.conformance_by_interface
+                .entry(record.interface.id)
+                .or_default()
+                .push(id);
+            db.conformance_by_head
+                .entry(record.target)
+                .or_default()
+                .push(id);
+            db.conformance_by_extension
+                .entry(record.extension)
+                .or_default()
+                .push(id);
+            // New impls can change selection/witness answers for already-cached goals.
+            db.selection_cache.clear();
+            db.witness_cache.clear();
+            id
+        })
+    }
+
+    pub fn conformance_record(self, id: ConformanceRecordId) -> Option<ConformanceRecord<'arena>> {
+        self.with_type_database(id.package, |db| db.conformance_records.get(&id).cloned())
+    }
+
+    pub fn conformance_records_for_interface_head(
+        self,
+        package: PackageIndex,
+        interface_id: DefinitionID,
+        head: TypeHead,
+    ) -> Vec<ConformanceRecord<'arena>> {
+        self.with_type_database(package, |db| {
+            db.conformance_by_interface_head
+                .get(&(interface_id, head))
+                .into_iter()
+                .flat_map(|ids| ids.iter())
+                .filter_map(|id| db.conformance_records.get(id).cloned())
+                .collect()
+        })
+    }
+
+    pub fn conformance_record_entries_for_interface_head(
+        self,
+        package: PackageIndex,
+        interface_id: DefinitionID,
+        head: TypeHead,
+    ) -> Vec<(ConformanceRecordId, ConformanceRecord<'arena>)> {
+        self.with_type_database(package, |db| {
+            db.conformance_by_interface_head
+                .get(&(interface_id, head))
+                .into_iter()
+                .flat_map(|ids| ids.iter())
+                .filter_map(|id| db.conformance_records.get(id).map(|record| (*id, *record)))
+                .collect()
+        })
+    }
+
+    pub fn conformance_records_for_interface(
+        self,
+        package: PackageIndex,
+        interface_id: DefinitionID,
+    ) -> Vec<ConformanceRecord<'arena>> {
+        self.with_type_database(package, |db| {
+            db.conformance_by_interface
+                .get(&interface_id)
+                .into_iter()
+                .flat_map(|ids| ids.iter())
+                .filter_map(|id| db.conformance_records.get(id).cloned())
+                .collect()
+        })
+    }
+
+    pub fn conformance_records_for_head(
+        self,
+        package: PackageIndex,
+        head: TypeHead,
+    ) -> Vec<ConformanceRecord<'arena>> {
+        self.with_type_database(package, |db| {
+            db.conformance_by_head
+                .get(&head)
+                .into_iter()
+                .flat_map(|ids| ids.iter())
+                .filter_map(|id| db.conformance_records.get(id).cloned())
+                .collect()
+        })
+    }
+
+    pub fn conformance_records_for_extension(
+        self,
+        package: PackageIndex,
+        extension: DefinitionID,
+    ) -> Vec<ConformanceRecord<'arena>> {
+        self.with_type_database(package, |db| {
+            db.conformance_by_extension
+                .get(&extension)
+                .into_iter()
+                .flat_map(|ids| ids.iter())
+                .filter_map(|id| db.conformance_records.get(id).cloned())
+                .collect()
+        })
+    }
+
+    pub fn all_conformance_records(self, package: PackageIndex) -> Vec<ConformanceRecord<'arena>> {
+        self.with_type_database(package, |db| db.conformance_records.values().copied().collect())
+    }
+
+    pub fn get_selection_cache(
+        self,
+        package: PackageIndex,
+        key: CanonicalGoalKey<'arena>,
+    ) -> Option<SelectionResult<'arena>> {
+        self.with_type_database(package, |db| db.selection_cache.get(&key).cloned())
+    }
+
+    pub fn put_selection_cache(
+        self,
+        package: PackageIndex,
+        key: CanonicalGoalKey<'arena>,
+        value: SelectionResult<'arena>,
+    ) {
+        self.with_type_database(package, |db| {
+            db.selection_cache.insert(key, value);
+        });
+    }
+
+    pub fn get_witness_cache(
+        self,
+        package: PackageIndex,
+        key: CanonicalGoalKey<'arena>,
+    ) -> Option<ConformanceWitness<'arena>> {
+        self.with_type_database(package, |db| db.witness_cache.get(&key).cloned())
+    }
+
+    pub fn put_witness_cache(
+        self,
+        package: PackageIndex,
+        key: CanonicalGoalKey<'arena>,
+        value: ConformanceWitness<'arena>,
+    ) {
+        self.with_type_database(package, |db| {
+            db.witness_cache.insert(key, value);
+        });
+    }
+
+    pub fn select_interface_impl(
+        self,
+        goal: InterfaceGoal<'arena>,
+        mode: SelectionMode,
+    ) -> SelectionResult<'arena> {
+        crate::sema::impl_engine::select_interface_impl(self, goal, mode)
+    }
+
+    pub fn prove_interface_goal(self, goal: InterfaceGoal<'arena>, mode: SelectionMode) -> GoalResult {
+        crate::sema::impl_engine::prove_interface_goal(self, goal, mode)
+    }
+
+    pub fn build_conformance_witness(
+        self,
+        goal: InterfaceGoal<'arena>,
+        mode: SelectionMode,
+    ) -> Result<ConformanceWitness<'arena>, crate::sema::models::SelectionError<'arena>> {
+        crate::sema::impl_engine::build_conformance_witness(self, goal, mode)
     }
 
     pub fn cache_generics(self, id: DefinitionID, generics: Generics) {
@@ -795,15 +971,18 @@ impl<'arena> GlobalContext<'arena> {
                 let Some(copy_def) = self.std_item_def(StdItem::Copy) else {
                     return false; // No Copy interface defined
                 };
-                let type_head = TypeHead::Nominal(def.id);
-                // Create InterfaceReference with empty arguments (marker interface)
-                let copy_ref = InterfaceReference {
-                    id: copy_def,
-                    arguments: GenericArguments::empty(),
+                let _ = def;
+                let goal = InterfaceGoal {
+                    interface_id: copy_def,
+                    self_ty: ty,
+                    interface_args: GenericArguments::empty(),
                     bindings: &[],
+                    param_env: &[],
                 };
-                crate::sema::tycheck::resolve_conformance_witness(self, type_head, copy_ref)
-                    .is_some()
+                matches!(
+                    self.prove_interface_goal(goal, SelectionMode::Typecheck),
+                    GoalResult::Proven
+                )
             }
 
             // Function pointers - copyable
@@ -1298,10 +1477,15 @@ pub struct TypeDatabase<'arena> {
     pub def_to_attributes: FxHashMap<DefinitionID, &'arena hir::AttributeList>,
     pub def_to_iface_def: FxHashMap<DefinitionID, &'arena InterfaceDefinition<'arena>>,
     pub interface_to_supers: FxHashMap<DefinitionID, FxHashSet<DefinitionID>>,
-    pub conformances: FxHashMap<TypeHead, Vec<ConformanceRecord<'arena>>>,
+    pub conformance_records: FxHashMap<ConformanceRecordId, ConformanceRecord<'arena>>,
+    pub conformance_by_interface_head: FxHashMap<(DefinitionID, TypeHead), Vec<ConformanceRecordId>>,
+    pub conformance_by_interface: FxHashMap<DefinitionID, Vec<ConformanceRecordId>>,
+    pub conformance_by_head: FxHashMap<TypeHead, Vec<ConformanceRecordId>>,
+    pub conformance_by_extension: FxHashMap<DefinitionID, Vec<ConformanceRecordId>>,
+    pub next_conformance_record_index: u32,
     pub interface_requirements: FxHashMap<DefinitionID, &'arena InterfaceRequirements<'arena>>,
-    pub conformance_witnesses:
-        FxHashMap<(TypeHead, InterfaceReference<'arena>), ConformanceWitness<'arena>>,
+    pub selection_cache: FxHashMap<CanonicalGoalKey<'arena>, SelectionResult<'arena>>,
+    pub witness_cache: FxHashMap<CanonicalGoalKey<'arena>, ConformanceWitness<'arena>>,
     /// Revised alias table
     pub alias_table: crate::sema::models::PackageAliasTable,
     /// Resolved alias types (cached after lowering)

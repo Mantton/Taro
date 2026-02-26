@@ -1,0 +1,12 @@
+interface Marker {}
+
+struct Widget {
+    value: int32
+}
+
+impl Marker for Widget {}
+impl Marker for Widget {}
+
+func main() {
+    let _ = Widget { value: 1 }
+}

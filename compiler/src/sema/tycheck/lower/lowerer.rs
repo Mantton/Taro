@@ -780,19 +780,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             }
         };
 
-        // 3. Get type head for target type
-        let Some(type_head) = type_head_from_value_ty(target_ty) else {
-            gcx.dcx().emit_error(
-                format!(
-                    "cannot use qualified access on type '{}'",
-                    target_ty.format(gcx)
-                ),
-                Some(target.span),
-            );
-            return gcx.types.error;
-        };
-
-        // 4. Build interface reference with proper arguments
+        // 3. Build interface reference with proper arguments
         let segment = path.segments.last().expect("path must have segments");
         let (interface_args, bindings) =
             self.lower_generic_args(interface_id, segment, Some(target_ty));
@@ -828,8 +816,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         };
 
         // 6. Resolve conformance witness
-        let witness =
-            crate::sema::tycheck::resolve_conformance_witness(gcx, type_head, interface_ref);
+        let witness = crate::sema::tycheck::resolve_conformance_witness(gcx, interface_ref);
 
         let Some(witness) = witness else {
             gcx.dcx().emit_error(

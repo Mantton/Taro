@@ -33,45 +33,10 @@ pub fn synthesize_all<'ctx>(gcx: GlobalContext<'ctx>) -> Vec<ThirFunction<'ctx>>
     let methods: Vec<_> = synthetic_methods.into_iter().collect();
 
     for ((type_head, method_id), info) in methods {
-        // 1. Resolve and validate the conformance witness.
-        // We must ensure the witness ID is consistent across compiler phases.
-        let syn_id = gcx.with_session_type_database(|db| {
-            // Reconstruct the interface reference used to build the witness
-            let interface_ref = crate::sema::models::InterfaceReference {
-                id: info.interface_id,
-                arguments: info.interface_args,
-                bindings: info.interface_bindings,
-            };
-            let key = (type_head, interface_ref);
-
-            if !db.conformance_witnesses.contains_key(&key) {
-                panic!("Key missing: unable to find conformance witness for synthetic method synthesis. Key: {:?}", key);
-            }
-
-            let witness = db
-                .conformance_witnesses
-                .get_mut(&key)
-                .expect("conformance witness must exist for synthetic method");
-
-            let method_witness = witness
-                .method_witnesses
-                .get_mut(&method_id)
-                .expect("method witness must exist");
-
-            match &mut method_witness.implementation {
-                crate::sema::models::MethodImplementation::Synthetic(_, id_opt) => {
-                    if let Some(id) = id_opt {
-                        *id
-                    } else {
-                        // Allocate new ID
-                        let new_id = gcx.allocate_synthetic_id(gcx.package_index());
-                        *id_opt = Some(new_id);
-                        new_id
-                    }
-                }
-                _ => panic!("expected synthetic implementation"),
-            }
-        });
+        // Allocate a stable synthetic ID for this synthesized method.
+        let syn_id = info
+            .syn_id
+            .unwrap_or_else(|| gcx.allocate_synthetic_id(gcx.package_index()));
 
         // Update the info in the database with the allocated ID
         gcx.with_session_type_database(|db| {
@@ -630,13 +595,12 @@ fn synthesize_memberwise_clone<'ctx>(
             } else {
                 // If it's an ADT, we can try to clone it
                 match field.ty.kind() {
-                    TyKind::Adt(field_def, _) => clone_adt_field(
+                    TyKind::Adt(_, _) => clone_adt_field(
                         gcx,
                         &mut builder,
                         field_access,
                         field.ty,
                         clone_def,
-                        field_def.id,
                     ),
                     _ => {
                         // For non-ADT non-Copy types, just use the field access (shouldn't happen if type checking passed)
@@ -1449,13 +1413,12 @@ fn synthesize_enum_clone<'ctx>(
                         field_local
                     } else {
                         match field.ty.kind() {
-                            TyKind::Adt(field_def, _) => clone_adt_field(
+                            TyKind::Adt(_, _) => clone_adt_field(
                                 gcx,
                                 &mut builder,
                                 field_local,
                                 field.ty,
                                 clone_def,
-                                field_def.id,
                             ),
                             _ => field_local,
                         }
@@ -1531,10 +1494,7 @@ fn clone_adt_field<'ctx>(
     field_access: ExprId,
     field_ty: Ty<'ctx>,
     clone_def: DefinitionID,
-    field_def_id: DefinitionID,
 ) -> ExprId {
-    let field_type_head = TypeHead::Nominal(field_def_id);
-
     // Build: field.clone()
     let field_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
         field_ty,
@@ -1550,14 +1510,15 @@ fn clone_adt_field<'ctx>(
 
     let clone_ref = InterfaceReference {
         id: clone_def,
-        arguments: GenericArguments::empty(),
+        arguments: gcx
+            .store
+            .interners
+            .intern_generic_args(vec![GenericArgument::Type(field_ty)]),
         bindings: &[],
     };
 
     // Get the clone method from conformance witness
-    let Some(witness) =
-        crate::sema::tycheck::resolve_conformance_witness(gcx, field_type_head, clone_ref)
-    else {
+    let Some(witness) = crate::sema::tycheck::resolve_conformance_witness(gcx, clone_ref) else {
         return field_access;
     };
 

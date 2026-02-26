@@ -4,7 +4,6 @@ use crate::{
     hir,
     sema::{
         models::{GenericArguments, InterfaceReference, Ty, TyKind},
-        tycheck::utils::type_head_from_value_ty,
     },
 };
 use inkwell::{
@@ -371,16 +370,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 },
             ) => {
                 let mut all = true;
-                if let Some(type_head) = type_head_from_value_ty(from_ty) {
-                    for target in target_ifaces.iter().cloned() {
-                        let iface = self.interface_args_with_self(from_ty, target);
-                        if self.conformance_witness(type_head, iface).is_none() {
-                            all = false;
-                            break;
-                        }
+                for target in target_ifaces.iter().cloned() {
+                    let iface = self.interface_args_with_self(from_ty, target);
+                    if self.conformance_witness(iface).is_none() {
+                        all = false;
+                        break;
                     }
-                } else {
-                    all = false;
                 }
                 self.context
                     .bool_type()
@@ -599,14 +594,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     interfaces: target_ifaces,
                 },
             ) => {
-                let Some(type_head) = type_head_from_value_ty(from_ty) else {
-                    return self.build_optional_variant_value(result_ty, none_index, None);
-                };
-
                 let mut table_ptrs = Vec::with_capacity(target_ifaces.len());
                 for target in target_ifaces.iter().cloned() {
                     let iface = self.interface_args_with_self(from_ty, target);
-                    if self.conformance_witness(type_head, iface).is_none() {
+                    if self.conformance_witness(iface).is_none() {
                         return self.build_optional_variant_value(result_ty, none_index, None);
                     }
                     let ptr = self.witness_table_ptr(from_ty, target);

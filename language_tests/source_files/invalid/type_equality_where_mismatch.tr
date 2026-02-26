@@ -1,0 +1,25 @@
+interface CarrierEq {
+    type Item
+    func get(&self) -> Self.Item
+}
+
+struct NumberBoxEq {
+    value: int32
+}
+
+impl CarrierEq for NumberBoxEq {
+    type Item = int32
+
+    func get(&self) -> int32 {
+        self.value
+    }
+}
+
+func requireStringItemEq[T](_ value: T) where T: CarrierEq, T.Item == string {
+    let _ = value
+}
+
+func main() {
+    let value = NumberBoxEq { value: 1 }
+    requireStringItemEq(value)
+}

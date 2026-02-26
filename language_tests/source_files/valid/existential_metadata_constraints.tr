@@ -1,0 +1,51 @@
+interface MetaBase {
+    func id(&self) -> int32
+}
+
+interface MetaGate {}
+interface MetaConditional {}
+
+struct MetaWrap[T] {
+    value: T
+}
+
+impl[T] MetaBase for MetaWrap[T] {
+    func id(&self) -> int32 {
+        1
+    }
+}
+
+struct MetaAllowed {}
+
+impl MetaGate for MetaAllowed {}
+impl[T: MetaGate] MetaConditional for MetaWrap[T] {}
+
+func main() {
+    let plain = MetaWrap[int32] { value: 1 }
+    let plainBase: any MetaBase = plain
+    assert(
+        !(plainBase is any MetaConditional),
+        "metadata should exclude conditional interfaces when bounds fail",
+    )
+
+    let allowed = MetaWrap[MetaAllowed] { value: MetaAllowed {} }
+    let allowedBase: any MetaBase = allowed
+    assert(
+        allowedBase is any MetaConditional,
+        "metadata should include conditional interfaces when bounds hold",
+    )
+
+    let maybePlain = plainBase as? any MetaConditional
+    match maybePlain {
+        case .some(_) => assert(false, "downcast should fail when conditional interface is absent")
+        case .none => {}
+    }
+
+    let maybeAllowed = allowedBase as? any MetaConditional
+    match maybeAllowed {
+        case .some(_) => {}
+        case .none => assert(false, "downcast should succeed when conditional interface is present")
+    }
+
+    std.print("PASS: existential metadata constraints\n")
+}

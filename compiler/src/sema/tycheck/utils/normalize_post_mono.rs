@@ -9,7 +9,7 @@ use crate::{
         tycheck::{
             fold::{TypeFoldable, TypeFolder, TypeSuperFoldable},
             resolve_conformance_witness,
-            utils::{instantiate::instantiate_ty_with_args, type_head_from_value_ty},
+            utils::instantiate::instantiate_ty_with_args,
         },
     },
 };
@@ -157,22 +157,13 @@ impl<'ctx> PostMonoNormalizeFolder<'ctx> {
             );
         }
 
-        // Get the type head for witness lookup
-        let head = type_head_from_value_ty(*self_ty)?;
-
-        // Build the interface arguments.
-        // Projection args are [Self, ...interface_generics...].
-        // The InterfaceReference.arguments should contain only the interface's
-        // own generics (same count as generics_of(interface_id).total_count()),
-        // because that's how the conformance witness was keyed during collection.
+        // Build the full interface arguments [Self, ...interface generics...].
         let interface_generic_count = gcx.generics_of(interface_id).total_count();
         let interface_args = if interface_generic_count == 0 {
             gcx.store.interners.intern_generic_args(Vec::new())
         } else {
-            // Skip the Self arg (index 0), take the interface's own generics
             let slice: Vec<_> = args
                 .iter()
-                .skip(1)
                 .take(interface_generic_count)
                 .cloned()
                 .collect();
@@ -186,7 +177,7 @@ impl<'ctx> PostMonoNormalizeFolder<'ctx> {
         };
 
         // Resolve the witness and get the associated type
-        let witness = resolve_conformance_witness(gcx, head, interface)?;
+        let witness = resolve_conformance_witness(gcx, interface)?;
         let witness_ty = witness.type_witnesses.get(&assoc_id)?;
 
         // The witness type may contain impl-block generic parameters
@@ -194,7 +185,9 @@ impl<'ctx> PostMonoNormalizeFolder<'ctx> {
         // We need to deduce the concrete impl args from the concrete Self type
         // and use those for substitution, not just the projection args.
         if let Some(extension_id) = witness.extension_id {
-            if let Some(deduced_args) = self.deduce_impl_args(extension_id, *self_ty) {
+            if let Some(deduced_args) =
+                crate::sema::impl_engine::deduce_impl_subst(gcx, extension_id, *self_ty, &[])
+            {
                 return Some(instantiate_ty_with_args(gcx, *witness_ty, deduced_args));
             }
         }
@@ -203,50 +196,4 @@ impl<'ctx> PostMonoNormalizeFolder<'ctx> {
         Some(instantiate_ty_with_args(gcx, *witness_ty, args))
     }
 
-    /// Deduce the concrete generic arguments of an impl block from a concrete Self type.
-    ///
-    /// This mirrors `specialize::resolve::deduce_impl_args` — it creates fresh inference
-    /// variables for the impl's generics, unifies the impl's Self type pattern against
-    /// the concrete type, and resolves the inferred values.
-    fn deduce_impl_args(
-        &self,
-        impl_id: DefinitionID,
-        concrete_self_ty: Ty<'ctx>,
-    ) -> Option<GenericArguments<'ctx>> {
-        let gcx = self.gcx;
-        let impl_self_ty = gcx.get_impl_self_ty(impl_id)?;
-
-        // Create inference context for unification
-        let icx = std::rc::Rc::new(crate::sema::tycheck::infer::InferCtx::new(gcx));
-
-        // Create fresh inference vars for the impl's generic parameters
-        let span = crate::span::Span::empty(crate::span::FileID::from_usize(0));
-        let fresh_args = icx.fresh_args_for_def(impl_id, span);
-
-        // Instantiate the impl's Self type with fresh variables
-        // e.g. FilterIterable[?0, ?1, ?2]
-        let instantiated_impl_ty = instantiate_ty_with_args(gcx, impl_self_ty, fresh_args);
-
-        // Unify the instantiated impl type with the concrete type
-        // e.g. Unify FilterIterable[?0, ?1, ?2] with FilterIterable[int32, Range[int32], closure]
-        let unifier = crate::sema::tycheck::utils::unify::TypeUnifier::new(icx.clone());
-        if unifier
-            .unify(instantiated_impl_ty, concrete_self_ty)
-            .is_err()
-        {
-            return None;
-        }
-
-        // Refine from constraints (handles associated type bindings like Iterator = Inner)
-        crate::specialize::resolve::refine_impl_args_from_constraints(
-            gcx,
-            icx.clone(),
-            impl_id,
-            fresh_args,
-        );
-
-        // Resolve the inference variables to their concrete values
-        let resolved_args = icx.resolve_args_if_possible(fresh_args);
-        Some(resolved_args)
-    }
 }

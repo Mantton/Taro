@@ -3,26 +3,17 @@ use crate::{
     hir::{DefinitionID, StdItem},
     sema::{
         models::{
-            Const, ConstKind, GenericArgument, GenericArguments, InferTy, InterfaceReference, Ty,
-            TyKind,
+            ConstKind, GenericArgument, GenericArguments, InterfaceReference, Ty, TyKind,
         },
         resolve::models::DefinitionKind,
         tycheck::{
-            constraints::canonical_constraints_of,
             resolve_conformance_witness,
-            utils::instantiate::instantiate_constraint_with_args,
             utils::instantiate::{instantiate_const_with_args, instantiate_ty_with_args},
-            utils::normalize::normalize_ty,
-            utils::param_env::ParamEnv,
             utils::type_head_from_value_ty,
         },
     },
     specialize::Instance,
 };
-
-use crate::sema::tycheck::infer::InferCtx;
-use crate::sema::tycheck::utils::unify::TypeUnifier;
-use std::rc::Rc;
 
 pub fn resolve_instance<'ctx>(
     gcx: GlobalContext<'ctx>,
@@ -72,7 +63,7 @@ fn resolve_interface_method_for_concrete<'ctx>(
         arguments: interface_args,
         bindings: &[],
     };
-    let witness = resolve_conformance_witness(gcx, type_head, interface)?;
+    let witness = resolve_conformance_witness(gcx, interface)?;
 
     //  Check if this is a method or operator
     let def_kind = gcx.definition_kind(method_id);
@@ -96,8 +87,6 @@ fn resolve_interface_method_for_concrete<'ctx>(
                 return Some(Instance::item(method_id, final_args));
             }
 
-            let impl_func_id = method.implementation.impl_id()?;
-
             // Synthetic impls are generated as associated functions on the concrete type.
             // Their generic layout is `[self type generics..., method generics...]`, while
             // call_args are `[Self, ...interface/method generics...]`. Build the synthetic
@@ -106,6 +95,10 @@ fn resolve_interface_method_for_concrete<'ctx>(
                 method.implementation,
                 crate::sema::models::MethodImplementation::Synthetic(..)
             ) {
+                let impl_func_id = method.implementation.impl_id().or_else(|| {
+                    gcx.get_synthetic_method(type_head, method_id)
+                        .and_then(|info| info.syn_id)
+                })?;
                 let mut final_args = Vec::new();
                 if let TyKind::Adt(_, adt_args) = self_ty.kind() {
                     final_args.extend(adt_args.iter().cloned());
@@ -121,12 +114,16 @@ fn resolve_interface_method_for_concrete<'ctx>(
                 return Some(Instance::item(impl_func_id, final_args));
             }
 
+            let impl_func_id = method.implementation.impl_id()?;
+
             // Strategy 1: Deduction (Preferred for concrete types)
             // If this is a method from an impl block, we try to deduce the impl's generic arguments
             // by structurally matching the concrete Self type (from call) against the impl's Self type.
             // This handles cases where we need to extract inner types (e.g. List[int32] -> int32).
             if let Some(impl_id) = witness.extension_id {
-                if let Some(deduced_args) = deduce_impl_args(gcx, impl_id, self_ty) {
+                if let Some(deduced_args) =
+                    crate::sema::impl_engine::deduce_impl_subst(gcx, impl_id, self_ty, &[])
+                {
                     // call_args are [Self, ...method_generics]
                     // We want [deduced_impl_args..., ...method_generics]
                     let method_generics = if call_args.len() > 0 {
@@ -410,136 +407,4 @@ fn instantiate_generic_args_with_args<'ctx>(
     }
 
     gcx.store.interners.intern_generic_args(out)
-}
-
-fn deduce_impl_args<'ctx>(
-    gcx: GlobalContext<'ctx>,
-    impl_id: DefinitionID,
-    concrete_self_ty: Ty<'ctx>,
-) -> Option<GenericArguments<'ctx>> {
-    let impl_self_ty = gcx.get_impl_self_ty(impl_id)?;
-
-    // Create inference context
-    let icx = Rc::new(InferCtx::new(gcx));
-
-    // Create fresh inference vars for the impl's generic parameters
-    // We pass a dummy span since we don't have a real call site span readily available here,
-    // but we could thread one through if needed for error reporting (though we swallow errors here).
-    let span = crate::span::Span::empty(crate::span::FileID::from_usize(0));
-    let fresh_args = icx.fresh_args_for_def(impl_id, span);
-
-    // Instantiate the impl's Self type with these fresh variables
-    // e.g. ListRefIterator[?0]
-    let instantiated_impl_ty = instantiate_ty_with_args(gcx, impl_self_ty, fresh_args);
-
-    // Unify the instantiated impl type with the concrete type
-    // e.g. Unify ListRefIterator[?0] with ListRefIterator[int32] -> ?0 = int32
-    let unifier = TypeUnifier::new(icx.clone());
-
-    if unifier
-        .unify(instantiated_impl_ty, concrete_self_ty)
-        .is_err()
-    {
-        return None;
-    }
-
-    refine_impl_args_from_constraints(gcx, icx.clone(), impl_id, fresh_args);
-
-    // Resolve the inference variables to their concrete values
-    let resolved_args = icx.resolve_args_if_possible(fresh_args);
-    if generic_args_contain_infer(resolved_args) {
-        return None;
-    }
-
-    Some(resolved_args)
-}
-
-pub(crate) fn refine_impl_args_from_constraints<'ctx>(
-    gcx: GlobalContext<'ctx>,
-    icx: Rc<InferCtx<'ctx>>,
-    impl_id: DefinitionID,
-    impl_args: GenericArguments<'ctx>,
-) {
-    let constraints = canonical_constraints_of(gcx, impl_id);
-    if constraints.is_empty() {
-        return;
-    }
-
-    let instantiated: Vec<_> = constraints
-        .into_iter()
-        .map(|constraint| instantiate_constraint_with_args(gcx, constraint.value, impl_args))
-        .collect();
-
-    let env = ParamEnv::new(instantiated.clone());
-    let unifier = TypeUnifier::new(icx.clone());
-    let passes = instantiated.len().max(1) * 2;
-    for _ in 0..passes {
-        for constraint in &instantiated {
-            let crate::sema::models::Constraint::TypeEquality(lhs, rhs) = *constraint else {
-                continue;
-            };
-
-            let lhs = normalize_ty(icx.clone(), lhs, &env);
-            let rhs = normalize_ty(icx.clone(), rhs, &env);
-            let _ = unifier.unify(lhs, rhs);
-        }
-    }
-}
-
-fn generic_args_contain_infer(args: GenericArguments<'_>) -> bool {
-    args.iter().any(generic_arg_contains_infer)
-}
-
-fn generic_arg_contains_infer(arg: &GenericArgument<'_>) -> bool {
-    match arg {
-        GenericArgument::Type(ty) => ty_contains_infer(*ty),
-        GenericArgument::Const(c) => const_contains_infer(*c),
-    }
-}
-
-fn const_contains_infer(c: Const<'_>) -> bool {
-    ty_contains_infer(c.ty) || matches!(c.kind, ConstKind::Infer(_))
-}
-
-fn ty_contains_infer(ty: Ty<'_>) -> bool {
-    match ty.kind() {
-        TyKind::Infer(InferTy::TyVar(_)) => true,
-        TyKind::Array { element, len } => ty_contains_infer(element) || const_contains_infer(len),
-        TyKind::Adt(_, args) | TyKind::Alias { args, .. } => {
-            args.iter().any(generic_arg_contains_infer)
-        }
-        TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => ty_contains_infer(inner),
-        TyKind::Tuple(items) => items.iter().any(|t| ty_contains_infer(*t)),
-        TyKind::FnPointer { inputs, output } => {
-            inputs.iter().any(|t| ty_contains_infer(*t)) || ty_contains_infer(output)
-        }
-        TyKind::BoxedExistential { interfaces } => interfaces.iter().any(|iface| {
-            iface.arguments.iter().any(generic_arg_contains_infer)
-                || iface
-                    .bindings
-                    .iter()
-                    .any(|binding| ty_contains_infer(binding.ty))
-        }),
-        TyKind::Closure {
-            captured_generics,
-            inputs,
-            output,
-            ..
-        } => {
-            captured_generics.iter().any(generic_arg_contains_infer)
-                || inputs.iter().any(|t| ty_contains_infer(*t))
-                || ty_contains_infer(output)
-        }
-        TyKind::Bool
-        | TyKind::Rune
-        | TyKind::String
-        | TyKind::Int(_)
-        | TyKind::UInt(_)
-        | TyKind::Float(_)
-        | TyKind::Infer(_)
-        | TyKind::Parameter(_)
-        | TyKind::Opaque(_)
-        | TyKind::Error
-        | TyKind::Never => false,
-    }
 }

@@ -2,10 +2,7 @@ use crate::{
     compile::context::GlobalContext,
     error::CompileResult,
     hir,
-    sema::{
-        models::{ConformanceWitness, InterfaceReference},
-        resolve::models::TypeHead,
-    },
+    sema::models::{ConformanceWitness, InterfaceReference, SelectionMode},
 };
 use std::time::{Duration, Instant};
 
@@ -13,8 +10,7 @@ mod check;
 mod collect;
 pub mod constraints;
 pub mod derive;
-mod fold;
-pub mod freshen;
+pub(crate) mod fold;
 mod impls;
 pub mod infer;
 pub mod lower;
@@ -31,10 +27,19 @@ pub struct TypecheckPhaseTiming {
 
 pub fn resolve_conformance_witness<'ctx>(
     context: GlobalContext<'ctx>,
-    type_head: TypeHead,
     interface: InterfaceReference<'ctx>,
 ) -> Option<ConformanceWitness<'ctx>> {
-    collect::interface::conform::resolve_conformance_witness(context, type_head, interface)
+    collect::interface::conform::resolve_conformance_witness(context, interface)
+}
+
+pub fn resolve_conformance_witness_with_mode<'ctx>(
+    context: GlobalContext<'ctx>,
+    interface: InterfaceReference<'ctx>,
+    mode: SelectionMode,
+) -> Option<ConformanceWitness<'ctx>> {
+    collect::interface::conform::resolve_conformance_witness_with_mode(
+        context, interface, mode,
+    )
 }
 
 pub fn typecheck_package<'ctx>(

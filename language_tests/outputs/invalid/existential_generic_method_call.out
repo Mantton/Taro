@@ -1,0 +1,12 @@
+error: cannot call generic interface method 'id' on an existential value
+ -> language_tests/source_files/invalid/existential_generic_method_call.tr:15:18
+	    let _ = value.id(1)
+	                  ^^
+info: methods with their own generic parameters are not object-safe
+ -> language_tests/source_files/invalid/existential_generic_method_call.tr:15:18
+	    let _ = value.id(1)
+	                  ^^
+error: no member named 'id' found on type any GenericMethod
+ -> language_tests/source_files/invalid/existential_generic_method_call.tr:15:18
+	    let _ = value.id(1)
+	                  ^^

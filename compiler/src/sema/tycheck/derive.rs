@@ -4,7 +4,6 @@
 //! for types that declare conformance inline (e.g., `struct Foo: Clone {}`).
 
 use crate::sema::tycheck::resolve_conformance_witness;
-use crate::sema::tycheck::utils::generics::GenericsBuilder;
 use crate::{
     compile::context::Gcx,
     hir::{DefinitionID, StdItem},
@@ -326,14 +325,16 @@ fn type_conforms_to_clone<'ctx>(gcx: Gcx<'ctx>, ty: Ty<'ctx>, clone_def: Definit
     }
 
     // For ADTs, check conformance
-    if let TyKind::Adt(def, _) = ty.kind() {
-        let type_head = TypeHead::Nominal(def.id);
+    if let TyKind::Adt(_, _) = ty.kind() {
         let clone_ref = InterfaceReference {
             id: clone_def,
-            arguments: GenericsBuilder::identity_for_item(gcx, clone_def),
+            arguments: gcx
+                .store
+                .interners
+                .intern_generic_args(vec![crate::sema::models::GenericArgument::Type(ty)]),
             bindings: &[],
         };
-        return resolve_conformance_witness(gcx, type_head, clone_ref).is_some();
+        return resolve_conformance_witness(gcx, clone_ref).is_some();
     }
 
     false

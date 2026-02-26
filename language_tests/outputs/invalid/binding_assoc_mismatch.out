@@ -1,0 +1,8 @@
+error: type 'IntCarrier' does not conform to interface 'Carrier<Item = bool>'
+ -> language_tests/source_files/invalid/binding_assoc_mismatch.tr:15:4
+	    needBool(c)
+	    ^^^^^^^^
+error: expected int32, found bool
+ -> language_tests/source_files/invalid/binding_assoc_mismatch.tr:15:4
+	    needBool(c)
+	    ^^^^^^^^

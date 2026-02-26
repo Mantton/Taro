@@ -1,0 +1,4 @@
+error: expected int32, found string
+ -> language_tests/source_files/invalid/type_equality_where_mismatch.tr:24:4
+	    requireStringItemEq(value)
+	    ^^^^^^^^^^^^^^^^^^^

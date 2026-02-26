@@ -1,0 +1,4 @@
+error: type 'Box[U]' does not conform to interface 'Marker'
+ -> language_tests/source_files/invalid/generic_adt_conformance.tr:10:4
+	    requireMarker(value)
+	    ^^^^^^^^^^^^^

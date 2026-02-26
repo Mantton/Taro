@@ -1,0 +1,8 @@
+error: conflicting conformance to 'Marker'
+ -> language_tests/source_files/invalid/overlapping_marker_impls.tr:8:5
+	impl Marker for Widget {}
+	     ^^^^^^
+info: existing conformance is defined here
+ -> language_tests/source_files/invalid/overlapping_marker_impls.tr:7:5
+	impl Marker for Widget {}
+	     ^^^^^^
