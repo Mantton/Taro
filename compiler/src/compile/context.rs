@@ -538,6 +538,24 @@ impl<'arena> GlobalContext<'arena> {
             .expect("identifier for definition")
     }
 
+    pub fn try_definition_ident(self, id: DefinitionID) -> Option<crate::span::Identifier> {
+        if let Some(def) = self.context.store.synthetic_definitions.borrow().get(&id) {
+            return Some(crate::span::Identifier {
+                symbol: def.name,
+                span: def.span,
+            });
+        }
+
+        let output = self.try_resolution_output(id.package())?;
+        output.definition_to_ident.get(&id).copied()
+    }
+
+    pub fn definition_symbol_or_fallback(self, id: DefinitionID) -> Symbol {
+        self.try_definition_ident(id)
+            .map(|ident| ident.symbol)
+            .unwrap_or_else(|| self.intern_symbol(&format!("<missing:{id:?}>")))
+    }
+
     pub fn definition_kind(self, id: DefinitionID) -> DefinitionKind {
         if self
             .context
@@ -552,6 +570,21 @@ impl<'arena> GlobalContext<'arena> {
 
         let output = self.resolution_output(id.package());
         *output.definition_to_kind.get(&id).expect("definition kind")
+    }
+
+    pub fn try_definition_kind(self, id: DefinitionID) -> Option<DefinitionKind> {
+        if self
+            .context
+            .store
+            .synthetic_definitions
+            .borrow()
+            .contains_key(&id)
+        {
+            return Some(DefinitionKind::AssociatedFunction);
+        }
+
+        let output = self.try_resolution_output(id.package())?;
+        output.definition_to_kind.get(&id).copied()
     }
 
     fn is_current_package_std(self) -> bool {

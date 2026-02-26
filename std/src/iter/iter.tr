@@ -20,6 +20,12 @@ public interface Iterator {
     func next(&mut self) -> Optional[Self.Element]
 }
 
+/// Interface for types that can be constructed from an iterator.
+public interface FromIterator {
+    type Element
+    func fromIter[I: Iterator[Element = Self.Element]](_ iter: &mut I) -> Self
+}
+
 /// Interface for types that can be converted into an Iterator.
 ///
 /// Types that implement Iterable can be used in for loops:
@@ -55,6 +61,12 @@ public interface Iterable {
 
     func skip(self, _ n: usize) -> SkipIterable[Self] {
         return skip(self, n)
+    }
+
+    /// Consumes this iterable and collects items into a destination type.
+    func collect[B: FromIterator[Element = Self.Element]](self) -> B {
+        var iter = self.makeIterator()
+        return B.fromIter(&mut iter)
     }
 
     /// Consumes the iterator, counting the number of elements.

@@ -145,8 +145,8 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
             ConstantKind::Float(fl) => write!(f, "const {}", fl),
             ConstantKind::Unit => write!(f, "()"),
             ConstantKind::Function(def_id, _, _) => {
-                let ident = self.gcx.definition_ident(*def_id);
-                write!(f, "fn {}", ident.symbol)
+                let symbol = self.gcx.definition_symbol_or_fallback(*def_id);
+                write!(f, "fn {}", symbol)
             }
             ConstantKind::ConstParam(param) => {
                 write!(f, "const {}", self.gcx.symbol_text(param.name))
@@ -190,12 +190,12 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                         variant_index,
                         ..
                     } => {
-                        let ident = self.gcx.definition_ident(*def_id);
-                        write!(f, "{}", ident.symbol)?;
+                        let symbol = self.gcx.definition_symbol_or_fallback(*def_id);
+                        write!(f, "{}", symbol)?;
                         if let Some(variant_index) = variant_index {
                             if matches!(
-                                self.gcx.definition_kind(*def_id),
-                                crate::sema::resolve::models::DefinitionKind::Enum
+                                self.gcx.try_definition_kind(*def_id),
+                                Some(crate::sema::resolve::models::DefinitionKind::Enum)
                             ) {
                                 let variant =
                                     self.gcx.enum_variant_by_index(*def_id, *variant_index);

@@ -181,6 +181,8 @@ impl<'ctx> Actor<'ctx> {
                         interface,
                         bound.path.span,
                     );
+                    // Keep newly-added bounds visible while we lower subsequent bounds.
+                    gcx.update_constraints(def_id, constraints.clone());
                 }
             }
         }
@@ -219,6 +221,8 @@ impl<'ctx> Actor<'ctx> {
                                 interface,
                                 node.span,
                             );
+                            // Make where-clause bounds available to later requirements.
+                            gcx.update_constraints(def_id, constraints.clone());
                         }
                     }
                     _ => {} // Skip equalities in Pass 1

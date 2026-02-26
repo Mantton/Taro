@@ -1,3 +1,5 @@
+import std.collections.List
+
 struct TaggedValue {
     text: string
 }
@@ -93,6 +95,44 @@ func testDisplayFallbackAndFormattablePreference() {
         "format",
         "Formattable should be preferred over Display fallback",
     )
+}
+
+@test
+func testListDisplayFormatting() {
+    var values = List[int32]()
+    values.append(1)
+    values.append(2)
+    values.append(3)
+
+    let rendered = std.sprintf("%v", values)
+    std.testing.assertEqual(rendered, "[1, 2, 3]", "list should render with brackets and comma separators")
+}
+
+@test
+func testListDisplayFallbackForDisplayOnlyElements() {
+    var values = List[DisplayOnlyValue]()
+    values.append(DisplayOnlyValue { text: "a" })
+    values.append(DisplayOnlyValue { text: "b" })
+
+    let rendered = std.sprintf("%v", values)
+    std.testing.assertEqual(rendered, "[a, b]", "list should use Display when elements are display-only")
+}
+
+@test
+func testListFormattableElementsPreferFormat() {
+    var values = List[PreferFormatValue]()
+    values.append(PreferFormatValue { displayText: "display-a", formatText: "format-a" })
+    values.append(PreferFormatValue { displayText: "display-b", formatText: "format-b" })
+
+    let rendered = std.sprintf("%v", values)
+    std.testing.assertEqual(rendered, "[format-a, format-b]", "list should format elements via Formattable")
+}
+
+@test
+func testListDisplayEmpty() {
+    let values = List[int32]()
+    let rendered = std.sprintf("%v", values)
+    std.testing.assertEqual(rendered, "[]", "empty list should render as []")
 }
 
 @test

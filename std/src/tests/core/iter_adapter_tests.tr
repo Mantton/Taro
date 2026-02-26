@@ -123,8 +123,7 @@ func testTakeSkipComposition() {
 @test
 func testCollectMapIntoList() {
     var mapped = map(1_i32..4_i32, |x: int32| { x * 10 })
-    var iter = mapped.makeIterator() // Keeping one makeIterator() as requested
-    var list = List[int32].from(&mut iter)
+    let list: List[int32] = mapped.collect()
 
     std.testing.assertEqual(list.len(), 3 as usize, "collect map: length")
     std.testing.assertEqual(*list.at(0), 10, "collect map: element 0")

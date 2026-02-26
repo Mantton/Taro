@@ -3242,13 +3242,13 @@ impl<'ctx> Checker<'ctx> {
                 };
 
                 let Some(head) = type_head_from_value_ty(base_ty) else {
-                    if emit_errors {
-                        self.gcx().dcx().emit_error(
-                            "cannot resolve members on this type receiver".into(),
-                            Some(span),
-                        );
-                    }
-                    return (hir::Resolution::Error, None);
+                    let resolution = self.resolve_bounded_static_member_resolution(
+                        base_ty,
+                        &segment.identifier,
+                        segment.identifier.span,
+                        emit_errors,
+                    );
+                    return (resolution, base_args);
                 };
 
                 let resolution = self.resolve_static_member_resolution(
@@ -3361,6 +3361,122 @@ impl<'ctx> Checker<'ctx> {
         }
 
         members
+    }
+
+    fn resolve_bounded_static_member_resolution(
+        &self,
+        base_ty: Ty<'ctx>,
+        name: &crate::span::Identifier,
+        span: Span,
+        emit_errors: bool,
+    ) -> hir::Resolution {
+        let gcx = self.gcx();
+        let candidates = self.collect_bounded_static_member_candidates(base_ty, name.symbol);
+
+        if candidates.is_empty() {
+            if emit_errors {
+                let msg = format!(
+                    "unknown associated symbol named '{}' on type '{}'",
+                    gcx.symbol_text(name.symbol),
+                    base_ty.format(gcx)
+                );
+                gcx.dcx().emit_error(msg.into(), Some(span));
+            }
+            return hir::Resolution::Error;
+        }
+
+        let visible: Vec<_> = candidates
+            .into_iter()
+            .filter(|id| gcx.is_definition_visible(*id, self.current_def))
+            .collect();
+        if visible.is_empty() {
+            if emit_errors {
+                gcx.dcx().emit_error(
+                    format!(
+                        "static member '{}' is not visible here",
+                        gcx.symbol_text(name.symbol)
+                    )
+                    .into(),
+                    Some(span),
+                );
+            }
+            return hir::Resolution::Error;
+        }
+
+        if visible.len() == 1 {
+            let id = visible[0];
+            let kind = gcx.definition_kind(id);
+            return hir::Resolution::Definition(id, kind);
+        }
+
+        hir::Resolution::FunctionSet(visible)
+    }
+
+    fn collect_bounded_static_member_candidates(
+        &self,
+        base_ty: Ty<'ctx>,
+        name: Symbol,
+    ) -> Vec<DefinitionID> {
+        let gcx = self.gcx();
+        let mut roots: Vec<InterfaceReference<'ctx>> = Vec::new();
+
+        match base_ty.kind() {
+            TyKind::Parameter(_) => {
+                let constraints = crate::sema::tycheck::constraints::canonical_constraints_of(
+                    gcx,
+                    self.current_def,
+                );
+                for constraint in constraints {
+                    if let crate::sema::models::Constraint::Bound { ty, interface } =
+                        constraint.value
+                    {
+                        if ty == base_ty {
+                            roots.push(interface);
+                        }
+                    }
+                }
+            }
+            TyKind::BoxedExistential { interfaces } => roots.extend_from_slice(interfaces),
+            _ => return Vec::new(),
+        }
+
+        let mut out = Vec::new();
+        let mut seen_defs: FxHashSet<DefinitionID> = FxHashSet::default();
+        let mut seen_ifaces: FxHashSet<InterfaceReference<'ctx>> = FxHashSet::default();
+        let mut queue = std::collections::VecDeque::new();
+
+        for root in roots {
+            if seen_ifaces.insert(root) {
+                queue.push_back(root);
+            }
+        }
+
+        while let Some(interface_ref) = queue.pop_front() {
+            if let Some(requirements) = gcx.get_interface_requirements(interface_ref.id) {
+                for method in &requirements.methods {
+                    if method.name == name && !method.has_self && seen_defs.insert(method.id) {
+                        out.push(method.id);
+                    }
+                }
+            }
+
+            let Some(interface_def) = gcx.get_interface_definition(interface_ref.id) else {
+                continue;
+            };
+
+            for superface in &interface_def.superfaces {
+                let instantiated = instantiate_interface_ref_with_args(
+                    gcx,
+                    superface.value,
+                    interface_ref.arguments,
+                );
+                if seen_ifaces.insert(instantiated) {
+                    queue.push_back(instantiated);
+                }
+            }
+        }
+
+        out
     }
 
     fn value_path_def_id(&self, resolution: &hir::Resolution) -> Option<DefinitionID> {

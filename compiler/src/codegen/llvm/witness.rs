@@ -11,10 +11,15 @@ use crate::{
         },
         resolve::models::TypeHead,
         tycheck::{
+            infer::InferCtx,
             resolve_conformance_witness,
             utils::{
-                instantiate::{instantiate_const_with_args, instantiate_ty_with_args},
+                instantiate::{
+                    instantiate_const_with_args, instantiate_constraint_with_args,
+                    instantiate_ty_with_args,
+                },
                 type_head_from_value_ty,
+                unify::TypeUnifier,
             },
         },
     },
@@ -28,8 +33,41 @@ use inkwell::{
     values::{BasicMetadataValueEnum, BasicValue, BasicValueEnum, PointerValue},
 };
 use rustc_hash::FxHashSet;
+use std::rc::Rc;
 
 impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
+    fn debug_witness_subst_enabled(&self) -> bool {
+        std::env::var_os("TARO_DEBUG_WITNESS_SUBST").is_some()
+    }
+
+    fn debug_format_generic_args(&self, args: GenericArguments<'gcx>) -> String {
+        let mut parts = Vec::with_capacity(args.len());
+        for arg in args {
+            let piece = match arg {
+                GenericArgument::Type(ty) => format!("type {}", ty.format(self.gcx)),
+                GenericArgument::Const(c) => format!("const {}", c.ty.format(self.gcx)),
+            };
+            parts.push(piece);
+        }
+        format!("[{}]", parts.join(", "))
+    }
+
+    fn debug_witness_subst(&self, msg: impl AsRef<str>) {
+        if self.debug_witness_subst_enabled() {
+            eprintln!("[witness-subst] {}", msg.as_ref());
+        }
+    }
+
+    fn debug_virtual_dispatch_enabled(&self) -> bool {
+        std::env::var_os("TARO_DEBUG_VIRTUAL_CALL").is_some()
+    }
+
+    fn debug_virtual_dispatch(&self, msg: impl AsRef<str>) {
+        if self.debug_virtual_dispatch_enabled() {
+            eprintln!("[virtual-call] {}", msg.as_ref());
+        }
+    }
+
     fn canonical_interface_ref_for_assert(
         &self,
         iface: InterfaceReference<'gcx>,
@@ -156,10 +194,123 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let mut seen = FxHashSet::default();
         let mut out = Vec::new();
         for record in records {
-            let iface = self.interface_args_with_self(concrete_ty, record.interface);
+            let Some(iface) = self.materialized_interface_for_record(record.extension, concrete_ty, record.interface) else {
+                continue;
+            };
             self.collect_interface_and_superfaces_for_metadata(iface, &mut seen, &mut out);
         }
         out
+    }
+
+    fn materialized_interface_for_record(
+        &self,
+        extension_id: hir::DefinitionID,
+        concrete_ty: Ty<'gcx>,
+        iface: InterfaceReference<'gcx>,
+    ) -> Option<InterfaceReference<'gcx>> {
+        let extension_args = self.deduce_extension_args(extension_id, concrete_ty)?;
+        if !self.extension_bounds_satisfied(extension_id, extension_args) {
+            return None;
+        }
+
+        let instantiated = if extension_args.is_empty() {
+            iface
+        } else {
+            self.substitute_interface_ref(iface, extension_args)
+        };
+
+        Some(self.interface_args_with_self(concrete_ty, instantiated))
+    }
+
+    fn deduce_extension_args(
+        &self,
+        extension_id: hir::DefinitionID,
+        concrete_ty: Ty<'gcx>,
+    ) -> Option<GenericArguments<'gcx>> {
+        let generics = self.gcx.generics_of(extension_id);
+        if generics.is_empty() {
+            return Some(GenericArguments::empty());
+        }
+
+        let extension_self = self.extension_self_ty(extension_id)?;
+        let icx = Rc::new(InferCtx::new(self.gcx));
+        let span = crate::span::Span::empty(crate::span::FileID::from_usize(0));
+        let fresh_args = icx.fresh_args_for_def(extension_id, span);
+        let instantiated = instantiate_ty_with_args(self.gcx, extension_self, fresh_args);
+        let unifier = TypeUnifier::new(icx.clone());
+        if unifier.unify(instantiated, concrete_ty).is_err() {
+            return None;
+        }
+
+        crate::specialize::resolve::refine_impl_args_from_constraints(
+            self.gcx,
+            icx.clone(),
+            extension_id,
+            fresh_args,
+        );
+
+        let resolved = icx.resolve_args_if_possible(fresh_args);
+        if !self.generic_args_are_runtime_materializable(resolved) {
+            return None;
+        }
+
+        Some(resolved)
+    }
+
+    fn extension_self_ty(&self, extension_id: hir::DefinitionID) -> Option<Ty<'gcx>> {
+        if let Some(ty) = self.gcx.get_impl_self_ty(extension_id) {
+            return Some(ty);
+        }
+
+        match self.gcx.definition_kind(extension_id) {
+            crate::sema::resolve::models::DefinitionKind::Struct
+            | crate::sema::resolve::models::DefinitionKind::Enum => {
+                Some(self.gcx.get_type(extension_id))
+            }
+            _ => None,
+        }
+    }
+
+    fn extension_bounds_satisfied(
+        &self,
+        extension_id: hir::DefinitionID,
+        extension_args: GenericArguments<'gcx>,
+    ) -> bool {
+        let constraints = self.gcx.canonical_constraints_of(extension_id);
+        if constraints.is_empty() {
+            return true;
+        }
+
+        for constraint in constraints {
+            let instantiated =
+                instantiate_constraint_with_args(self.gcx, constraint.value, extension_args);
+            let crate::sema::models::Constraint::Bound { ty, interface } = instantiated else {
+                continue;
+            };
+
+            let ty = self.normalize_post_mono_ty(ty);
+            if self.ty_contains_unresolved_generics(ty) {
+                return false;
+            }
+
+            let Some(head) = type_head_from_value_ty(ty) else {
+                return false;
+            };
+
+            if resolve_conformance_witness(self.gcx, head, interface).is_some() {
+                continue;
+            }
+
+            if let Some(copy_def) = self.gcx.std_item_def(hir::StdItem::Copy) {
+                if interface.id == copy_def && self.gcx.is_type_copyable(ty) {
+                    continue;
+                }
+            }
+
+            return false;
+        }
+
+        true
     }
 
     pub(super) fn type_metadata_ptr(&mut self, concrete_ty: Ty<'gcx>) -> PointerValue<'llvm> {
@@ -270,40 +421,41 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .count();
         let mut entries: Vec<BasicValueEnum<'llvm>> = Vec::with_capacity(method_count);
         for method in requirements.methods.iter().filter(|method| method.has_self) {
-            let method_target = if let Some(method_witness) = witness
+            // Generic interface methods are not materializable in runtime witness
+            // tables because method-level type/const arguments are unknown at
+            // metadata construction time.
+            if self.gcx.generics_of(method.id).total_count() > 0 {
+                self.debug_witness_subst(format!(
+                    "iface method {} has method-level generics; emitting null witness slot",
+                    self.gcx.symbol_text(method.name)
+                ));
+                entries.push(self.context.ptr_type(AddressSpace::default()).const_null().into());
+                continue;
+            }
+
+            let method_target = if witness
                 .as_ref()
                 .and_then(|w| w.method_witnesses.get(&method.id))
+                .is_some()
             {
-                let args = self.instantiate_generic_args_with_args(
-                    method_witness.args_template,
-                    iface.arguments,
-                );
+                // Build thunk targets in terms of the requirement method and interface call args
+                // (`[Self, ...iface generics]`). `resolve_instance` then computes the concrete
+                // impl/synthetic/default target with the correct impl substitutions.
+                let args = self.complete_interface_call_args(method.id, iface.arguments);
+                if self.debug_witness_subst_enabled() {
+                    let iface_name = self.gcx.symbol_text(self.gcx.definition_ident(iface.id).symbol);
+                    let method_name = self.gcx.symbol_text(method.name);
+                    self.debug_witness_subst(format!(
+                        "iface {} method {}: call_args={}",
+                        iface_name,
+                        method_name,
+                        self.debug_format_generic_args(args),
+                    ));
+                }
                 if !self.generic_args_are_runtime_materializable(args) {
                     None
                 } else {
-                    match method_witness.implementation {
-                        crate::sema::models::MethodImplementation::Concrete(impl_id)
-                        | crate::sema::models::MethodImplementation::Default(impl_id) => {
-                            Some((impl_id, args))
-                        }
-                        crate::sema::models::MethodImplementation::Synthetic(_, Some(syn_id)) => {
-                            Some((syn_id, args))
-                        }
-                        crate::sema::models::MethodImplementation::Synthetic(_, None) => {
-                            let iface_name = self
-                                .gcx
-                                .symbol_text(self.gcx.definition_ident(iface.id).symbol);
-                            let method_name = self.gcx.symbol_text(method.name);
-                            self.gcx.dcx().emit_error(
-                                format!(
-                                    "unable to materialize synthetic method '{}.{}' for witness table generation",
-                                    iface_name, method_name
-                                ),
-                                None,
-                            );
-                            None
-                        }
-                    }
+                    Some((method.id, args))
                 }
             } else {
                 None
@@ -399,12 +551,13 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         // Get the concrete implementation function
         let impl_instance = resolve_instance(self.gcx, impl_def_id, args);
+        let impl_target_def_id = impl_instance.def_id();
         let impl_fn = self.function_ptr_for_instance(impl_instance);
 
         // Get the implementation signature
         let prev_subst = self.current_subst;
         self.current_subst = impl_instance.args();
-        let sig = self.gcx.get_signature(impl_def_id);
+        let sig = self.gcx.get_signature(impl_target_def_id);
         let impl_fn_abi = self.compute_fn_abi(sig);
 
         // Build thunk parameter types: first param is raw ptr (data pointer from existential),
@@ -445,7 +598,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let thunk_name = format!(
             "__wt_thunk_{}_{}",
             self.witness_thunks.len(),
-            self.gcx.definition_ident(impl_def_id).symbol,
+            self.gcx.definition_ident(impl_target_def_id).symbol,
         );
         let thunk_fn = self.module.add_function(&thunk_name, thunk_fn_ty, None);
 
@@ -613,35 +766,37 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         }
     }
 
-    fn instantiate_generic_args_with_args(
+    fn complete_interface_call_args(
         &self,
-        template: GenericArguments<'gcx>,
+        method_id: hir::DefinitionID,
         args: GenericArguments<'gcx>,
     ) -> GenericArguments<'gcx> {
-        let mut out = Vec::with_capacity(template.len());
-        for arg in template.iter() {
-            match arg {
-                GenericArgument::Type(ty) => {
-                    let instantiated = if args.is_empty() {
-                        *ty
-                    } else {
-                        instantiate_ty_with_args(self.gcx, *ty, args)
-                    };
-                    let normalized = self.normalize_post_mono_ty(instantiated);
-                    out.push(GenericArgument::Type(normalized));
-                }
-                GenericArgument::Const(c) => {
-                    let instantiated = if args.is_empty() {
-                        *c
-                    } else {
-                        instantiate_const_with_args(self.gcx, *c, args)
-                    };
-                    out.push(GenericArgument::Const(instantiated));
+        let Some(parent) = self.gcx.definition_parent(method_id) else {
+            return args;
+        };
+        if self.gcx.definition_kind(parent) != crate::sema::resolve::models::DefinitionKind::Interface
+        {
+            return args;
+        }
+
+        let expected = self.gcx.generics_of(parent).total_count();
+        if args.len() >= expected {
+            return args;
+        }
+
+        // PartialEq has default `Rhs = Self`; callers often materialize only `Self`.
+        if let Some(partial_eq_id) = self.gcx.std_item_def(hir::StdItem::PartialEq) {
+            if parent == partial_eq_id && args.len() == 1 && expected == 2 {
+                if let Some(GenericArgument::Type(self_ty)) = args.get(0).copied() {
+                    return self.gcx.store.interners.intern_generic_args(vec![
+                        GenericArgument::Type(self_ty),
+                        GenericArgument::Type(self_ty),
+                    ]);
                 }
             }
         }
 
-        self.gcx.store.interners.intern_generic_args(out)
+        args
     }
 
     fn substitute_interface_ref(
@@ -829,6 +984,20 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     ) -> CompileResult<()> {
         let receiver = args.first().expect("virtual call missing receiver");
         let receiver_ty = self.operand_ty(body, receiver);
+        let method_name = self.gcx.definition_symbol_or_fallback(instance.method_id);
+        let iface_name = self
+            .gcx
+            .definition_symbol_or_fallback(instance.method_interface);
+        self.debug_virtual_dispatch(format!(
+            "method={:?} ({}) iface={:?} ({}) slot={} table_index={} receiver_ty={}",
+            instance.method_id,
+            self.gcx.symbol_text(method_name),
+            instance.method_interface,
+            self.gcx.symbol_text(iface_name),
+            instance.slot,
+            instance.table_index,
+            receiver_ty.format(self.gcx)
+        ));
         let Some(receiver_val) = self.eval_operand(body, locals, receiver)? else {
             return Ok(());
         };

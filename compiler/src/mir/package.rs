@@ -74,8 +74,8 @@ pub fn build_package<'ctx>(
     if gcx.config.debug.dump_mir {
         eprintln!("\n=== MIR Dump for {} ===", gcx.config.name);
         for (def_id, body) in final_pkg.functions.iter() {
-            let ident = gcx.definition_ident(*def_id);
-            eprintln!("\nfn {}() {{", ident.symbol);
+            let symbol = gcx.definition_symbol_or_fallback(*def_id);
+            eprintln!("\nfn {}() {{", symbol);
             let pretty = PrettyPrintMir { body, gcx };
             eprintln!("{}", pretty);
             eprintln!("}}");

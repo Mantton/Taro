@@ -5001,7 +5001,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 crate::sema::models::AdtKind::Struct => {
                     let defn = self.gcx.get_struct_definition(def.id);
                     for (idx, field) in defn.fields.iter().enumerate() {
-                        if is_pointer_ty(field.ty) {
+                        let resolved =
+                            crate::sema::tycheck::utils::normalize_post_monomorphization(
+                                self.gcx,
+                                instantiate_ty_with_args(self.gcx, field.ty, adt_args),
+                            );
+                        if is_pointer_ty(resolved) {
                             let struct_ty = llvm_ty.into_struct_type();
                             if let Some(off) =
                                 self.target_data.offset_of_element(&struct_ty, idx as u32)
@@ -5025,7 +5030,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             TyKind::Tuple(items) => {
                 let struct_ty = llvm_ty.into_struct_type();
                 for (idx, item) in items.iter().enumerate() {
-                    if is_pointer_ty(*item) {
+                    let item =
+                        crate::sema::tycheck::utils::normalize_post_monomorphization(
+                            self.gcx,
+                            *item,
+                        );
+                    if is_pointer_ty(item) {
                         if let Some(off) =
                             self.target_data.offset_of_element(&struct_ty, idx as u32)
                         {
@@ -5035,6 +5045,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 }
             }
             TyKind::Array { element, len } => {
+                let element = crate::sema::tycheck::utils::normalize_post_monomorphization(
+                    self.gcx, element,
+                );
                 if !is_pointer_ty(element) {
                     // Only track direct pointer-like elements for now.
                 } else if let ConstKind::Value(ConstValue::Integer(n)) = len.kind {
@@ -5261,7 +5274,7 @@ fn enum_pointer_offsets<'llvm, 'gcx>(
 fn is_pointer_ty(ty: Ty) -> bool {
     matches!(
         ty.kind(),
-        TyKind::Reference(..) | TyKind::String | TyKind::BoxedExistential { .. }
+        TyKind::Pointer(..) | TyKind::Reference(..) | TyKind::String | TyKind::BoxedExistential { .. }
     )
 }
 

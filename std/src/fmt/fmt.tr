@@ -400,3 +400,45 @@ impl Formattable for usize {
         formatUnsignedInteger(into, *self as uint64, spec)
     }
 }
+
+impl[Element: Display] Display for List[Element] {
+    public func display(&self, _ into: &mut Formatter) {
+        into.writeByte('[' as uint8)
+
+        var idx: usize = 0
+        let count = self.len()
+        while idx < count {
+            if idx > 0 {
+                into.writeString(", ")
+            }
+            let value = self.at(idx)
+            value.display(into)
+            idx += 1
+        }
+
+        into.writeByte(']' as uint8)
+    }
+}
+
+impl[Element: Formattable] Formattable for List[Element] {
+    public func format(&self, _ into: &mut Formatter, _ spec: rune, _ state: &FormatState) {
+        if spec != 'v' {
+            std.panic.panic("printf: invalid format specifier for list argument")
+        }
+
+        into.writeByte('[' as uint8)
+
+        var idx: usize = 0
+        let count = self.len()
+        while idx < count {
+            if idx > 0 {
+                into.writeString(", ")
+            }
+            let value = self.at(idx)
+            value.format(into, spec, state)
+            idx += 1
+        }
+
+        into.writeByte(']' as uint8)
+    }
+}
