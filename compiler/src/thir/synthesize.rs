@@ -5,7 +5,7 @@
 
 use crate::{
     compile::context::GlobalContext,
-    hir::{DefinitionID, StdInterface},
+    hir::{DefinitionID, StdItem},
     sema::{
         models::{
             GenericArgument, GenericArguments, GenericParameter, InterfaceReference,
@@ -596,7 +596,7 @@ fn synthesize_memberwise_clone<'ctx>(
     };
 
     // Get Clone interface for method calls
-    let clone_def = gcx.std_interface_def(StdInterface::Clone)?;
+    let clone_def = gcx.std_item_def(StdItem::Clone)?;
 
     // Build the body based on whether this is a struct or enum
     let struct_def = gcx.try_get_struct_definition(def_id);

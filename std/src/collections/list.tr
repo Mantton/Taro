@@ -11,6 +11,7 @@ import std.cmp.{Ord, Ordering}
 /// List provides an automatically growing buffer that stores elements
 /// contiguously in memory. Elements can be added with `append` and
 /// accessed by index.
+@lang("List")
 public struct List[Element] {
     buffer: TrackedPointer
     len: usize

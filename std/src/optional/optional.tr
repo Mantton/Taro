@@ -8,6 +8,7 @@ import std.ops.FnOnce
 /// or `.none` representing the absence of a value.
 ///
 /// The shorthand syntax `T?` is equivalent to `Optional[T]`.
+@lang("Optional")
 public enum Optional[Wrapped] {
     case some(Wrapped)
     case none

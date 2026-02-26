@@ -17,6 +17,7 @@
 ///
 /// Any closure that captures values by move and consumes them in its body
 /// will only implement `FnOnce`, not `Fn` or `FnMut`.
+@lang("FnOnce")
 public interface FnOnce[Args: Tuple, Output] {
     func callOnce(self, args: Args) -> Output
 }
@@ -27,6 +28,7 @@ public interface FnOnce[Args: Tuple, Output] {
 /// allowing mutation of captured values.
 ///
 /// All `FnMut` closures also implement `FnOnce`.
+@lang("FnMut")
 public interface FnMut[Args: Tuple, Output]: FnOnce[Args, Output] {
     func callMut(&mut self, args: Args) -> Output
 }
@@ -38,6 +40,7 @@ public interface FnMut[Args: Tuple, Output]: FnOnce[Args, Output] {
 /// interior-mutable or Copy).
 ///
 /// All `Fn` closures also implement `FnMut` and `FnOnce`.
+@lang("Fn")
 public interface Fn[Args: Tuple, Output]: FnMut[Args, Output] {
     func call(&self, args: Args) -> Output
 }

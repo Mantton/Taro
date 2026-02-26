@@ -7,7 +7,7 @@ use crate::sema::tycheck::resolve_conformance_witness;
 use crate::sema::tycheck::utils::generics::GenericsBuilder;
 use crate::{
     compile::context::Gcx,
-    hir::{DefinitionID, StdInterface},
+    hir::{DefinitionID, StdItem},
     sema::{
         models::{
             GenericArgument, GenericArguments, InterfaceReference, MethodImplementation,
@@ -61,7 +61,7 @@ pub fn try_synthesize_method<'ctx>(
     }
 
     match std_interface {
-        StdInterface::Clone => try_synthesize_clone(
+        StdItem::Clone => try_synthesize_clone(
             gcx,
             type_head,
             self_ty,
@@ -71,7 +71,7 @@ pub fn try_synthesize_method<'ctx>(
             method_id,
             args_template,
         ),
-        StdInterface::Hashable => try_synthesize_hash(
+        StdItem::Hashable => try_synthesize_hash(
             gcx,
             type_head,
             self_ty,
@@ -81,7 +81,7 @@ pub fn try_synthesize_method<'ctx>(
             method_id,
             args_template,
         ),
-        StdInterface::PartialEq | StdInterface::Equatable => try_synthesize_partial_eq(
+        StdItem::PartialEq | StdItem::Equatable => try_synthesize_partial_eq(
             gcx,
             type_head,
             self_ty,
@@ -91,39 +91,40 @@ pub fn try_synthesize_method<'ctx>(
             method_id,
             args_template,
         ),
-        StdInterface::Copy | StdInterface::Tuple => {
+        StdItem::Copy | StdItem::Tuple => {
             // Copy and Tuple are marker interfaces, no methods to synthesize
             None
         }
-        StdInterface::Iterator | StdInterface::Iterable => {
+        StdItem::Iterator | StdItem::Iterable => {
             // Iterator and Iterable are not auto-derivable
             None
         }
         // Operator interfaces are not auto-synthesized; they require explicit impl blocks
-        StdInterface::Fn
-        | StdInterface::FnMut
-        | StdInterface::FnOnce
-        | StdInterface::Add
-        | StdInterface::Sub
-        | StdInterface::Mul
-        | StdInterface::Div
-        | StdInterface::Rem
-        | StdInterface::Neg
-        | StdInterface::Not
-        | StdInterface::BitAnd
-        | StdInterface::BitOr
-        | StdInterface::BitXor
-        | StdInterface::Shl
-        | StdInterface::Shr
-        | StdInterface::BitNot
-        | StdInterface::PartialOrd => None,
+        StdItem::Fn
+        | StdItem::FnMut
+        | StdItem::FnOnce
+        | StdItem::Add
+        | StdItem::Sub
+        | StdItem::Mul
+        | StdItem::Div
+        | StdItem::Rem
+        | StdItem::Neg
+        | StdItem::Not
+        | StdItem::BitAnd
+        | StdItem::BitOr
+        | StdItem::BitXor
+        | StdItem::Shl
+        | StdItem::Shr
+        | StdItem::BitNot
+        | StdItem::PartialOrd => None,
+        _ => None,
     }
 }
 
-/// Get the StdInterface variant for a given interface definition ID.
-fn get_std_interface(gcx: Gcx<'_>, interface_id: DefinitionID) -> Option<StdInterface> {
-    for iface in StdInterface::ALL {
-        if gcx.std_interface_def(iface) == Some(interface_id) {
+/// Get the StdItem variant for a given interface definition ID.
+fn get_std_interface(gcx: Gcx<'_>, interface_id: DefinitionID) -> Option<StdItem> {
+    for iface in StdItem::ALL_INTERFACES {
+        if gcx.std_item_def(iface) == Some(interface_id) {
             return Some(iface);
         }
     }
@@ -283,7 +284,7 @@ fn all_fields_implement_clone(gcx: Gcx<'_>, type_head: TypeHead) -> bool {
         return false;
     };
 
-    let Some(clone_def) = gcx.std_interface_def(StdInterface::Clone) else {
+    let Some(clone_def) = gcx.std_item_def(StdItem::Clone) else {
         return false;
     };
 

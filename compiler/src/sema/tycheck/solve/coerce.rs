@@ -622,7 +622,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         }
 
         // Special case: primitives implicitly satisfy Copy (no explicit conformance record)
-        if let Some(copy_def) = self.gcx().std_interface_def(crate::hir::StdInterface::Copy) {
+        if let Some(copy_def) = self.gcx().std_item_def(crate::hir::StdItem::Copy) {
             if interface.id == copy_def && self.gcx().is_type_copyable(ty) {
                 return SolverResult::Solved(vec![]);
             }
@@ -724,7 +724,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let TyKind::Adt(def, args) = ty.kind() else {
             return None;
         };
-        let opt_id = self.gcx().find_std_type("Optional")?;
+        let opt_id = self.gcx().std_item_def(crate::hir::StdItem::Optional)?;
         if def.id != opt_id {
             return None;
         }
@@ -740,7 +740,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         ty: Ty<'ctx>,
         interface: InterfaceReference<'ctx>,
     ) -> Option<SolverResult<'ctx>> {
-        use crate::hir::StdInterface;
+        use crate::hir::StdItem;
         use crate::sema::models::ClosureKind;
 
         // Check if ty is a closure
@@ -757,9 +757,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let gcx = self.gcx();
 
         // Check which Fn trait is being requested
-        let fn_def = gcx.std_interface_def(StdInterface::Fn);
-        let fn_mut_def = gcx.std_interface_def(StdInterface::FnMut);
-        let fn_once_def = gcx.std_interface_def(StdInterface::FnOnce);
+        let fn_def = gcx.std_item_def(StdItem::Fn);
+        let fn_mut_def = gcx.std_item_def(StdItem::FnMut);
+        let fn_once_def = gcx.std_item_def(StdItem::FnOnce);
 
         let required_kind = if fn_def == Some(interface.id) {
             ClosureKind::Fn
@@ -830,7 +830,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         from: Ty<'ctx>,
         to: Ty<'ctx>,
     ) -> Option<SolverResult<'ctx>> {
-        use crate::hir::StdInterface;
+        use crate::hir::StdItem;
 
         // Check if from is a closure
         let TyKind::Closure {
@@ -851,9 +851,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let bounds = self.param_env.bounds_for(to);
 
         let gcx = self.gcx();
-        let fn_def = gcx.std_interface_def(StdInterface::Fn);
-        let fn_mut_def = gcx.std_interface_def(StdInterface::FnMut);
-        let fn_once_def = gcx.std_interface_def(StdInterface::FnOnce);
+        let fn_def = gcx.std_item_def(StdItem::Fn);
+        let fn_mut_def = gcx.std_item_def(StdItem::FnMut);
+        let fn_once_def = gcx.std_item_def(StdItem::FnOnce);
 
         for bound in bounds {
             // Check if this is an Fn trait bound

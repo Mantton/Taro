@@ -1,20 +1,25 @@
 
+@lang("Add")
 public interface Add[Rhs=Self, Output=Self] {
     func add(self, rhs: Rhs) -> Output
 }
 
+@lang("Sub")
 public interface Sub[Rhs=Self, Output=Self] {
     func sub(self, rhs: Rhs) -> Output
 }
 
+@lang("Mul")
 public interface Mul[Rhs=Self, Output=Self] {
     func mul(self, rhs: Rhs) -> Output
 }
 
+@lang("Div")
 public interface Div[Rhs=Self, Output=Self] {
     func div(self, rhs: Rhs) -> Output
 }
 
+@lang("Rem")
 public interface Rem[Rhs=Self, Output=Self] {
     func rem(self, rhs: Rhs) -> Output
 }

@@ -76,6 +76,8 @@ pub enum KnownAttribute {
     Skip,
     /// `@expectPanic` or `@expectPanic("expected message")` - test expects a panic
     ExpectPanic,
+    /// `@lang("Item")` - marks a std declaration as a language item
+    Lang,
 }
 
 impl KnownAttribute {
@@ -88,6 +90,7 @@ impl KnownAttribute {
             "tag" => Some(KnownAttribute::Tag),
             "skip" => Some(KnownAttribute::Skip),
             "expectPanic" => Some(KnownAttribute::ExpectPanic),
+            "lang" => Some(KnownAttribute::Lang),
             _ => None,
         }
     }
@@ -122,6 +125,42 @@ impl Attribute {
             }
         }
         None
+    }
+
+    /// Extracts `@lang("Name")` item name.
+    /// Emits diagnostics for invalid `@lang` argument shape.
+    pub fn lang_item_name(&self, gcx: GlobalContext<'_>) -> Option<String> {
+        if self.as_known(gcx) != Some(KnownAttribute::Lang) {
+            return None;
+        }
+
+        let Some(args) = self.args.as_ref() else {
+            gcx.dcx().emit_error(
+                "@lang expects exactly one string literal argument".into(),
+                Some(self.span),
+            );
+            return None;
+        };
+
+        if args.items.len() != 1 {
+            gcx.dcx().emit_error(
+                "@lang expects exactly one string literal argument".into(),
+                Some(self.span),
+            );
+            return None;
+        }
+
+        match &args.items[0] {
+            AttributeArg::Literal {
+                value: Literal::String(value),
+                ..
+            } => Some(gcx.symbol_text(*value).to_string()),
+            _ => {
+                gcx.dcx()
+                    .emit_error("@lang expects a string literal".into(), Some(self.span));
+                None
+            }
+        }
     }
 }
 
@@ -816,166 +855,282 @@ pub enum PatternPath {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum StdType {
-    /// Option Type
-    Option,
-    /// List Type
+pub enum StdItem {
+    // Nominal types
+    Optional,
     List,
-    /// Set Type
     Set,
-    /// Dictionary Type
     Dictionary,
-    /// Range Type
     Range,
-    /// Closed Range Type (Inclusive Range)
     ClosedRange,
-    /// Builtin `make` heap allocation
+
+    // Interfaces
+    Copy,
+    Clone,
+    Hashable,
+    Equatable,
+    Iterator,
+    Iterable,
+    Fn,
+    FnMut,
+    FnOnce,
+    Tuple,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    Neg,
+    Not,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+    BitNot,
+    PartialEq,
+    PartialOrd,
+
+    // Optional variants/constructors
+    OptionalSomeVariant,
+    OptionalSomeCtor,
+    OptionalNoneVariant,
+    OptionalNoneCtor,
+
+    // Builtin
     Make,
 }
 
-impl StdType {
+impl StdItem {
     pub fn name_str(self) -> Option<&'static str> {
         match self {
-            StdType::Option => Some("Optional"),
-            StdType::List => Some("List"),
-            StdType::Set => Some("Set"),
-            StdType::Dictionary => Some("Dictionary"),
-            StdType::Range => Some("Range"),
-            StdType::ClosedRange => Some("ClosedRange"),
-            StdType::Make => None,
+            StdItem::Optional => Some("Optional"),
+            StdItem::List => Some("List"),
+            StdItem::Set => Some("Set"),
+            StdItem::Dictionary => Some("Dictionary"),
+            StdItem::Range => Some("Range"),
+            StdItem::ClosedRange => Some("ClosedRange"),
+            StdItem::Copy => Some("Copy"),
+            StdItem::Clone => Some("Clone"),
+            StdItem::Hashable => Some("Hashable"),
+            StdItem::Equatable => Some("Equatable"),
+            StdItem::Iterator => Some("Iterator"),
+            StdItem::Iterable => Some("Iterable"),
+            StdItem::Fn => Some("Fn"),
+            StdItem::FnMut => Some("FnMut"),
+            StdItem::FnOnce => Some("FnOnce"),
+            StdItem::Tuple => Some("Tuple"),
+            StdItem::Add => Some("Add"),
+            StdItem::Sub => Some("Sub"),
+            StdItem::Mul => Some("Mul"),
+            StdItem::Div => Some("Div"),
+            StdItem::Rem => Some("Rem"),
+            StdItem::Neg => Some("Neg"),
+            StdItem::Not => Some("Not"),
+            StdItem::BitAnd => Some("BitAnd"),
+            StdItem::BitOr => Some("BitOr"),
+            StdItem::BitXor => Some("BitXor"),
+            StdItem::Shl => Some("Shl"),
+            StdItem::Shr => Some("Shr"),
+            StdItem::BitNot => Some("BitNot"),
+            StdItem::PartialEq => Some("PartialEq"),
+            StdItem::PartialOrd => Some("PartialOrd"),
+            StdItem::OptionalSomeVariant => Some("OptionalSomeVariant"),
+            StdItem::OptionalSomeCtor => Some("OptionalSomeCtor"),
+            StdItem::OptionalNoneVariant => Some("OptionalNoneVariant"),
+            StdItem::OptionalNoneCtor => Some("OptionalNoneCtor"),
+            StdItem::Make => None,
         }
     }
-}
 
-/// Well-known standard library interfaces for move semantics and derivable protocols.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum StdInterface {
-    /// Marker interface for types that can be copied by value.
-    Copy,
-    /// Interface for types that can be explicitly cloned.
-    Clone,
-    /// Interface for types that can be hashed.
-    Hashable,
-    /// Interface for types that can be compared for equality.
-    Equatable,
-    /// Interface for types that can yield a sequence of values.
-    Iterator,
-    /// Interface for types that can be converted into an Iterator.
-    Iterable,
-    /// Callable interface for shared closures.
-    Fn,
-    /// Callable interface for mutable closures.
-    FnMut,
-    /// Callable interface for consuming closures.
-    FnOnce,
-    /// Marker interface for tuple types (compiler-implemented only).
-    Tuple,
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "Optional" => Some(Self::Optional),
+            "List" => Some(Self::List),
+            "Set" => Some(Self::Set),
+            "Dictionary" => Some(Self::Dictionary),
+            "Range" => Some(Self::Range),
+            "ClosedRange" => Some(Self::ClosedRange),
+            "Copy" => Some(Self::Copy),
+            "Clone" => Some(Self::Clone),
+            "Hashable" => Some(Self::Hashable),
+            "Equatable" => Some(Self::Equatable),
+            "Iterator" => Some(Self::Iterator),
+            "Iterable" => Some(Self::Iterable),
+            "Fn" => Some(Self::Fn),
+            "FnMut" => Some(Self::FnMut),
+            "FnOnce" => Some(Self::FnOnce),
+            "Tuple" => Some(Self::Tuple),
+            "Add" => Some(Self::Add),
+            "Sub" => Some(Self::Sub),
+            "Mul" => Some(Self::Mul),
+            "Div" => Some(Self::Div),
+            "Rem" => Some(Self::Rem),
+            "Neg" => Some(Self::Neg),
+            "Not" => Some(Self::Not),
+            "BitAnd" => Some(Self::BitAnd),
+            "BitOr" => Some(Self::BitOr),
+            "BitXor" => Some(Self::BitXor),
+            "Shl" => Some(Self::Shl),
+            "Shr" => Some(Self::Shr),
+            "BitNot" => Some(Self::BitNot),
+            "PartialEq" => Some(Self::PartialEq),
+            "PartialOrd" => Some(Self::PartialOrd),
+            _ => None,
+        }
+    }
 
-    // Arithmetic operator interfaces
-    /// `+` operator: `fn add(self, rhs: Rhs) -> Output`
-    Add,
-    /// `-` operator: `fn sub(self, rhs: Rhs) -> Output`
-    Sub,
-    /// `*` operator: `fn mul(self, rhs: Rhs) -> Output`
-    Mul,
-    /// `/` operator: `fn div(self, rhs: Rhs) -> Output`
-    Div,
-    /// `%` operator: `fn rem(self, rhs: Rhs) -> Output`
-    Rem,
-
-    // Unary operator interfaces
-    /// Unary `-` operator: `fn neg(self) -> Output`
-    Neg,
-    /// Unary `!` operator: `fn not(self) -> Output`
-    Not,
-
-    // Bitwise operator interfaces
-    /// `&` operator: `fn bitand(self, rhs: Rhs) -> Output`
-    BitAnd,
-    /// `|` operator: `fn bitor(self, rhs: Rhs) -> Output`
-    BitOr,
-    /// `^` operator: `fn bitxor(self, rhs: Rhs) -> Output`
-    BitXor,
-    /// `<<` operator: `fn shl(self, rhs: Rhs) -> Output`
-    Shl,
-    /// `>>` operator: `fn shr(self, rhs: Rhs) -> Output`
-    Shr,
-    /// `~` operator: `fn bitnot(self) -> Output`
-    BitNot,
-
-    // Comparison interfaces
-    /// Partial equality: `fn eq(self, other: &Self) -> bool`
-    PartialEq,
-    /// Ordering comparison: `fn cmp(self, other: &Self) -> Ordering`
-    PartialOrd,
-}
-
-impl StdInterface {
-    pub fn name_str(self) -> &'static str {
+    pub fn expected_def_kind(self) -> Option<DefinitionKind> {
         match self {
-            StdInterface::Copy => "Copy",
-            StdInterface::Clone => "Clone",
-            StdInterface::Hashable => "Hashable",
-            StdInterface::Equatable => "Equatable",
-            StdInterface::Iterator => "Iterator",
-            StdInterface::Iterable => "Iterable",
-            StdInterface::Fn => "Fn",
-            StdInterface::FnMut => "FnMut",
-            StdInterface::FnOnce => "FnOnce",
-            StdInterface::Tuple => "Tuple",
-            // Arithmetic operators
-            StdInterface::Add => "Add",
-            StdInterface::Sub => "Sub",
-            StdInterface::Mul => "Mul",
-            StdInterface::Div => "Div",
-            StdInterface::Rem => "Rem",
-            // Unary operators
-            StdInterface::Neg => "Neg",
-            StdInterface::Not => "Not",
-            // Bitwise operators
-            StdInterface::BitAnd => "BitAnd",
-            StdInterface::BitOr => "BitOr",
-            StdInterface::BitXor => "BitXor",
-            StdInterface::Shl => "Shl",
-            StdInterface::Shr => "Shr",
-            StdInterface::BitNot => "BitNot",
-            // Comparison
-            StdInterface::PartialEq => "PartialEq",
-            StdInterface::PartialOrd => "PartialOrd",
+            StdItem::Optional => Some(DefinitionKind::Enum),
+            StdItem::List
+            | StdItem::Set
+            | StdItem::Dictionary
+            | StdItem::Range
+            | StdItem::ClosedRange => Some(DefinitionKind::Struct),
+            StdItem::Copy
+            | StdItem::Clone
+            | StdItem::Hashable
+            | StdItem::Equatable
+            | StdItem::Iterator
+            | StdItem::Iterable
+            | StdItem::Fn
+            | StdItem::FnMut
+            | StdItem::FnOnce
+            | StdItem::Tuple
+            | StdItem::Add
+            | StdItem::Sub
+            | StdItem::Mul
+            | StdItem::Div
+            | StdItem::Rem
+            | StdItem::Neg
+            | StdItem::Not
+            | StdItem::BitAnd
+            | StdItem::BitOr
+            | StdItem::BitXor
+            | StdItem::Shl
+            | StdItem::Shr
+            | StdItem::BitNot
+            | StdItem::PartialEq
+            | StdItem::PartialOrd => Some(DefinitionKind::Interface),
+            StdItem::OptionalSomeVariant | StdItem::OptionalNoneVariant => {
+                Some(DefinitionKind::Variant)
+            }
+            StdItem::OptionalSomeCtor => Some(DefinitionKind::VariantConstructor(
+                crate::sema::resolve::models::VariantCtorKind::Function,
+            )),
+            StdItem::OptionalNoneCtor => Some(DefinitionKind::VariantConstructor(
+                crate::sema::resolve::models::VariantCtorKind::Constant,
+            )),
+            StdItem::Make => None,
         }
     }
 
-    /// Returns all standard interfaces for iteration.
-    pub const ALL: [StdInterface; 25] = [
-        StdInterface::Copy,
-        StdInterface::Clone,
-        StdInterface::Hashable,
-        StdInterface::Equatable,
-        StdInterface::Iterator,
-        StdInterface::Iterable,
-        StdInterface::Fn,
-        StdInterface::FnMut,
-        StdInterface::FnOnce,
-        StdInterface::Tuple,
-        // Arithmetic operators
-        StdInterface::Add,
-        StdInterface::Sub,
-        StdInterface::Mul,
-        StdInterface::Div,
-        StdInterface::Rem,
-        // Unary operators
-        StdInterface::Neg,
-        StdInterface::Not,
-        // Bitwise operators
-        StdInterface::BitAnd,
-        StdInterface::BitOr,
-        StdInterface::BitXor,
-        StdInterface::Shl,
-        StdInterface::Shr,
-        StdInterface::BitNot,
-        // Comparison
-        StdInterface::PartialEq,
-        StdInterface::PartialOrd,
+    pub fn is_required(self) -> bool {
+        matches!(
+            self,
+            StdItem::Optional
+                | StdItem::List
+                | StdItem::Set
+                | StdItem::Dictionary
+                | StdItem::Range
+                | StdItem::ClosedRange
+                | StdItem::Copy
+                | StdItem::Clone
+                | StdItem::Hashable
+                | StdItem::Equatable
+                | StdItem::Iterator
+                | StdItem::Iterable
+                | StdItem::Fn
+                | StdItem::FnMut
+                | StdItem::FnOnce
+                | StdItem::Tuple
+                | StdItem::Add
+                | StdItem::Sub
+                | StdItem::Mul
+                | StdItem::Div
+                | StdItem::Rem
+                | StdItem::Neg
+                | StdItem::Not
+                | StdItem::BitAnd
+                | StdItem::BitOr
+                | StdItem::BitXor
+                | StdItem::Shl
+                | StdItem::Shr
+                | StdItem::BitNot
+                | StdItem::PartialEq
+                | StdItem::PartialOrd
+                | StdItem::OptionalSomeVariant
+                | StdItem::OptionalSomeCtor
+                | StdItem::OptionalNoneVariant
+                | StdItem::OptionalNoneCtor
+        )
+    }
+
+    pub const ALL_REQUIRED: [StdItem; 35] = [
+        StdItem::Optional,
+        StdItem::List,
+        StdItem::Set,
+        StdItem::Dictionary,
+        StdItem::Range,
+        StdItem::ClosedRange,
+        StdItem::Copy,
+        StdItem::Clone,
+        StdItem::Hashable,
+        StdItem::Equatable,
+        StdItem::Iterator,
+        StdItem::Iterable,
+        StdItem::Fn,
+        StdItem::FnMut,
+        StdItem::FnOnce,
+        StdItem::Tuple,
+        StdItem::Add,
+        StdItem::Sub,
+        StdItem::Mul,
+        StdItem::Div,
+        StdItem::Rem,
+        StdItem::Neg,
+        StdItem::Not,
+        StdItem::BitAnd,
+        StdItem::BitOr,
+        StdItem::BitXor,
+        StdItem::Shl,
+        StdItem::Shr,
+        StdItem::BitNot,
+        StdItem::PartialEq,
+        StdItem::PartialOrd,
+        StdItem::OptionalSomeVariant,
+        StdItem::OptionalSomeCtor,
+        StdItem::OptionalNoneVariant,
+        StdItem::OptionalNoneCtor,
+    ];
+
+    pub const ALL_INTERFACES: [StdItem; 25] = [
+        StdItem::Copy,
+        StdItem::Clone,
+        StdItem::Hashable,
+        StdItem::Equatable,
+        StdItem::Iterator,
+        StdItem::Iterable,
+        StdItem::Fn,
+        StdItem::FnMut,
+        StdItem::FnOnce,
+        StdItem::Tuple,
+        StdItem::Add,
+        StdItem::Sub,
+        StdItem::Mul,
+        StdItem::Div,
+        StdItem::Rem,
+        StdItem::Neg,
+        StdItem::Not,
+        StdItem::BitAnd,
+        StdItem::BitOr,
+        StdItem::BitXor,
+        StdItem::Shl,
+        StdItem::Shr,
+        StdItem::BitNot,
+        StdItem::PartialEq,
+        StdItem::PartialOrd,
     ];
 
     /// Whether this interface can be auto-derived when declared inline.
@@ -1031,7 +1186,6 @@ impl StdInterface {
             Self::BitNot => Some("bitnot"),
             Self::PartialEq => Some("eq"),
             Self::PartialOrd => Some("cmp"),
-
             _ => None,
         }
     }

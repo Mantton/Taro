@@ -2,7 +2,7 @@ use crate::{
     PackageIndex,
     compile::context::Gcx,
     error::CompileResult,
-    hir::{self, DefinitionID, DefinitionKind, HirVisitor, StdInterface},
+    hir::{self, DefinitionID, DefinitionKind, HirVisitor, StdItem},
     sema::{
         models::{ConformanceRecord, EnumVariantKind, InterfaceReference, Ty, TyKind},
         resolve::models::TypeHead,
@@ -178,10 +178,10 @@ impl<'ctx> Actor<'ctx> {
     }
 
     /// Check if the given interface is a derivable interface that requires inline syntax.
-    /// Returns the StdInterface variant if it's derivable, None otherwise.
-    fn get_derivable_interface(&self, interface_id: DefinitionID) -> Option<StdInterface> {
-        for iface in StdInterface::ALL {
-            if let Some(def_id) = self.context.std_interface_def(iface) {
+    /// Returns the StdItem variant if it's derivable, None otherwise.
+    fn get_derivable_interface(&self, interface_id: DefinitionID) -> Option<StdItem> {
+        for iface in StdItem::ALL_INTERFACES {
+            if let Some(def_id) = self.context.std_item_def(iface) {
                 if interface_id == def_id && iface.is_derivable() {
                     return Some(iface);
                 }
@@ -211,7 +211,7 @@ impl<'ctx> Actor<'ctx> {
     /// Check if an interface is compiler-only (cannot be implemented by user code).
     fn is_compiler_only_interface(&self, interface_id: DefinitionID) -> bool {
         // Tuple is a compiler-only interface
-        if let Some(tuple_def) = self.context.std_interface_def(StdInterface::Tuple) {
+        if let Some(tuple_def) = self.context.std_item_def(StdItem::Tuple) {
             if interface_id == tuple_def {
                 return true;
             }
@@ -367,7 +367,7 @@ impl<'ctx> Actor<'ctx> {
         kind: DefinitionKind,
     ) -> bool {
         // Check if this is Copy
-        let Some(copy_def) = self.context.std_interface_def(StdInterface::Copy) else {
+        let Some(copy_def) = self.context.std_item_def(StdItem::Copy) else {
             return true; // No Copy interface defined, skip validation
         };
 
@@ -457,7 +457,7 @@ impl<'ctx> Actor<'ctx> {
         match ty.kind() {
             TyKind::Parameter(param) => {
                 // For type parameters, check if there's a Copy bound in the constraints
-                let Some(copy_def) = self.context.std_interface_def(StdInterface::Copy) else {
+                let Some(copy_def) = self.context.std_item_def(StdItem::Copy) else {
                     return false;
                 };
 

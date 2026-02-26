@@ -1,5 +1,5 @@
 use crate::{
-    hir::StdInterface,
+    hir::StdItem,
     sema::{
         error::{ApplyValidationError, TypeError},
         models::{LabeledFunctionParameter, LabeledFunctionSignature, Ty, TyKind, TyList},
@@ -112,9 +112,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
     /// Returns None if the type has no such bounds.
     fn extract_fn_bound_signature(&self, ty: Ty<'ctx>) -> Option<(TyList<'ctx>, Ty<'ctx>)> {
         let gcx = self.gcx();
-        let fn_def = gcx.std_interface_def(StdInterface::Fn);
-        let fn_mut_def = gcx.std_interface_def(StdInterface::FnMut);
-        let fn_once_def = gcx.std_interface_def(StdInterface::FnOnce);
+        let fn_def = gcx.std_item_def(StdItem::Fn);
+        let fn_mut_def = gcx.std_item_def(StdItem::FnMut);
+        let fn_once_def = gcx.std_item_def(StdItem::FnOnce);
 
         // Get bounds for this type from the parameter environment
         let bounds = self.param_env.bounds_for(ty);

@@ -1,8 +1,10 @@
 
+@lang("Neg")
 public interface Neg[Output=Self] {
     func neg(self) -> Output
 }
 
+@lang("Not")
 public interface Not[Output=Self] {
     func not(self) -> Output
 }

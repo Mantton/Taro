@@ -5,4 +5,5 @@
 ///
 /// Used to constrain the Args parameter in Fn/FnMut/FnOnce traits,
 /// ensuring that callable arguments are always represented as tuples.
+@lang("Tuple")
 public interface Tuple {}

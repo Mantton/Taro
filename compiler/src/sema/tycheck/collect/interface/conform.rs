@@ -399,9 +399,7 @@ impl<'ctx> Actor<'ctx> {
         };
 
         // Check if this is the Tuple interface
-        let tuple_def = self
-            .context
-            .std_interface_def(crate::hir::StdInterface::Tuple)?;
+        let tuple_def = self.context.std_item_def(crate::hir::StdItem::Tuple)?;
         if interface.id != tuple_def {
             return None;
         }
@@ -510,9 +508,9 @@ impl<'ctx> Actor<'ctx> {
         interface_id: DefinitionID,
     ) -> Option<(ClosureKind, SyntheticMethodKind)> {
         let gcx = self.context;
-        let fn_id = gcx.std_interface_def(hir::StdInterface::Fn)?;
-        let fn_mut_id = gcx.std_interface_def(hir::StdInterface::FnMut)?;
-        let fn_once_id = gcx.std_interface_def(hir::StdInterface::FnOnce)?;
+        let fn_id = gcx.std_item_def(hir::StdItem::Fn)?;
+        let fn_mut_id = gcx.std_item_def(hir::StdItem::FnMut)?;
+        let fn_once_id = gcx.std_item_def(hir::StdItem::FnOnce)?;
 
         if interface_id == fn_id {
             Some((ClosureKind::Fn, SyntheticMethodKind::ClosureCall))

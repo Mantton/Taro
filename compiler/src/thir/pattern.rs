@@ -190,9 +190,20 @@ impl<'ctx, 'r> PatternLoweringContext<'ctx, 'r> {
         crate::sema::models::AdtDef,
         crate::sema::models::EnumVariant<'ctx>,
     ) {
-        let hir::Resolution::Definition(ctor_id, hir::DefinitionKind::VariantConstructor(..)) =
-            resolution
-        else {
+        let (ctor_id, ctor_kind) = match resolution {
+            hir::Resolution::Definition(ctor_id, kind) => (ctor_id, kind),
+            hir::Resolution::StdItem(item) => {
+                let ctor_id = self
+                    .gcx
+                    .std_item_def(item)
+                    .expect("std item used in pattern must resolve to a definition");
+                let kind = self.gcx.definition_kind(ctor_id);
+                (ctor_id, kind)
+            }
+            _ => unreachable!(),
+        };
+
+        if !matches!(ctor_kind, hir::DefinitionKind::VariantConstructor(..)) {
             unreachable!()
         };
 

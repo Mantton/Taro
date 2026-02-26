@@ -1,6 +1,6 @@
 use crate::{
     compile::context::GlobalContext,
-    hir::{DefinitionID, StdInterface},
+    hir::{DefinitionID, StdItem},
     sema::{
         models::{
             Const, ConstKind, GenericArgument, GenericArguments, InferTy, InterfaceReference, Ty,
@@ -251,7 +251,7 @@ fn interface_args_from_call<'ctx>(
     }
     if args.len() < count {
         // PartialEq has default `Rhs = Self`; calls often materialize only `Self`.
-        if let Some(partial_eq_id) = gcx.std_interface_def(StdInterface::PartialEq) {
+        if let Some(partial_eq_id) = gcx.std_item_def(StdItem::PartialEq) {
             if interface_id == partial_eq_id && args.len() == 1 {
                 let self_arg = args.get(0).copied()?;
                 if let GenericArgument::Type(self_ty) = self_arg {

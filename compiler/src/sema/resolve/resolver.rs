@@ -1,4 +1,4 @@
-use crate::hir::StdType;
+use crate::hir::StdItem;
 use crate::sema::resolve::models::LexicalScopeBinding;
 use crate::{
     PackageIndex,
@@ -76,7 +76,7 @@ impl<'a> Resolver<'a> {
                 let mut map = FxHashMap::default();
                 map.insert(
                     context.intern_symbol("make"),
-                    Resolution::Foundation(StdType::Make),
+                    Resolution::StdItem(StdItem::Make),
                 );
                 map
             },

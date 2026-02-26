@@ -5,8 +5,9 @@ use crate::{
     compile::config::{BuildProfile, Config, StdMode},
     diagnostics::DiagCtx,
     error::CompileResult,
-    hir::{self, DefinitionID, StdInterface},
+    hir::{self, DefinitionID, StdItem},
     mir::{self, Body, EscapeSummary},
+    sema::std_items::{StdItemEntry, StdItemRegistry},
     sema::{
         models::{
             AliasKind, ClosureCaptures, ConformanceRecord, ConformanceWitness, Const, Constraint,
@@ -27,7 +28,6 @@ use crate::{
 use bumpalo::Bump;
 use ecow::EcoString;
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::cell::OnceCell;
 use std::rc::Rc;
 use std::{cell::RefCell, ops::Deref, path::PathBuf};
 
@@ -582,64 +582,20 @@ impl<'arena> GlobalContext<'arena> {
         None
     }
 
-    pub fn find_std_type(self, name: &str) -> Option<DefinitionID> {
-        let pkg = self.std_package_index()?;
-        let query_symbol = self.intern_symbol(name);
-
-        if let Some((cached_pkg, definitions)) =
-            self.context.store.std_type_definitions.borrow().as_ref()
-        {
-            if *cached_pkg == pkg {
-                return definitions.get(&query_symbol).copied();
-            }
-        }
-
-        let output = self.try_resolution_output(pkg)?;
-        let mut definitions = FxHashMap::default();
-        for (id, ident) in &output.definition_to_ident {
-            let Some(kind) = output.definition_to_kind.get(id) else {
-                continue;
-            };
-            if matches!(
-                kind,
-                DefinitionKind::Interface
-                    | DefinitionKind::Struct
-                    | DefinitionKind::Enum
-                    | DefinitionKind::TypeAlias
-            ) {
-                definitions.insert(ident.symbol, *id);
-            }
-        }
-
-        let result = definitions.get(&query_symbol).copied();
-        *self.context.store.std_type_definitions.borrow_mut() = Some((pkg, definitions));
-        result
-    }
-
-    /// Returns the DefinitionID for a well-known standard library interface.
-    /// Uses a cached lookup that's initialized on first access.
-    pub fn std_interface_def(self, iface: StdInterface) -> Option<DefinitionID> {
+    /// Returns the stored language item entry for the active std provider.
+    pub fn std_item_entry(self, item: StdItem) -> Option<StdItemEntry> {
         let std_pkg = self.std_package_index()?;
-        if self.try_resolution_output(std_pkg).is_none() {
+        let std_items = self.context.store.std_items.borrow();
+        let (cached_pkg, registry) = std_items.as_ref()?;
+        if *cached_pkg != std_pkg {
             return None;
         }
-
-        self.context
-            .store
-            .std_interfaces
-            .get_or_init(|| self.collect_std_interfaces())
-            .get(&iface)
-            .cloned()
+        registry.get(item)
     }
 
-    fn collect_std_interfaces(self) -> FxHashMap<StdInterface, DefinitionID> {
-        let mut map = FxHashMap::default();
-        for iface in StdInterface::ALL {
-            if let Some(id) = self.find_std_type(iface.name_str()) {
-                map.insert(iface, id);
-            }
-        }
-        map
+    /// Returns the DefinitionID for a well-known language item, if available.
+    pub fn std_item_def(self, item: StdItem) -> Option<DefinitionID> {
+        self.std_item_entry(item).map(|entry| entry.def_id)
     }
 
     pub fn visible_traits(self, def_id: DefinitionID) -> Rc<FxHashSet<DefinitionID>> {
@@ -803,7 +759,7 @@ impl<'arena> GlobalContext<'arena> {
 
             // ADTs (struct/enum) - check conformance to Copy interface
             TyKind::Adt(def, _) => {
-                let Some(copy_def) = self.std_interface_def(StdInterface::Copy) else {
+                let Some(copy_def) = self.std_item_def(StdItem::Copy) else {
                     return false; // No Copy interface defined
                 };
                 let type_head = TypeHead::Nominal(def.id);
@@ -1030,12 +986,10 @@ pub struct CompilerStore<'arena> {
     pub compiled_instances: RefCell<FxHashSet<Instance<'arena>>>,
     /// Target-specific layout information (shared between MIR and codegen).
     pub target_layout: TargetLayout,
-    /// Cached lookup of well-known standard library interfaces (Copy, Clone).
-    pub std_interfaces: OnceCell<FxHashMap<StdInterface, DefinitionID>>,
     /// The std provider package index selected by the driver.
     pub std_provider_index: std::cell::Cell<Option<PackageIndex>>,
-    /// Cached std nominal type definitions (Interface/Struct/Enum/TypeAlias) by symbol.
-    pub std_type_definitions: RefCell<Option<(PackageIndex, FxHashMap<Symbol, DefinitionID>)>>,
+    /// Cached standard library language items collected from std.
+    pub std_items: RefCell<Option<(PackageIndex, StdItemRegistry)>>,
 
     // Synthetic definitions (for method synthesis linkage)
     pub synthetic_definitions:
@@ -1070,9 +1024,8 @@ impl<'arena> CompilerStore<'arena> {
             specialization_instances: Default::default(),
             compiled_instances: Default::default(),
             target_layout,
-            std_interfaces: OnceCell::new(),
             std_provider_index: std::cell::Cell::new(None),
-            std_type_definitions: Default::default(),
+            std_items: Default::default(),
             synthetic_definitions: Default::default(),
             next_synthetic_id: std::cell::Cell::new(0),
             default_value_exprs: Default::default(),

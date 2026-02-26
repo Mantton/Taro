@@ -1,7 +1,11 @@
 
+@lang("PartialEq")
 public interface PartialEq[Rhs = Self] {
     func eq(&self, _ other: &Rhs) -> bool
     func neq(&self, _ other: &Rhs) -> bool {
         !(self.eq(other))
     }
 }
+
+@lang("Equatable")
+public interface Equatable[Rhs = Self]: PartialEq[Rhs] {}

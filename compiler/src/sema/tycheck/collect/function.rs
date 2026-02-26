@@ -1,7 +1,7 @@
 use crate::{
     compile::context::GlobalContext,
     error::CompileResult,
-    hir::{self, DefinitionID, HirVisitor},
+    hir::{self, DefinitionID, HirVisitor, StdItem},
     sema::{
         models::{LabeledFunctionParameter, LabeledFunctionSignature, Ty},
         tycheck::{
@@ -71,7 +71,7 @@ impl<'ctx> Actor<'ctx> {
 
                 // Desugar T... to List[T]
                 // We need to look up the List type definition
-                if let Some(list_id) = self.context.find_std_type("List") {
+                if let Some(list_id) = self.context.std_item_def(StdItem::List) {
                     let list_ty = self.context.get_type(list_id);
                     let args = vec![crate::sema::models::GenericArgument::Type(ty)];
                     let args = self.context.store.interners.intern_generic_args(args);

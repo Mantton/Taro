@@ -437,7 +437,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             return None;
         }
 
-        let optional_id = self.gcx.find_std_type("Optional")?;
+        let optional_id = self.gcx.std_item_def(hir::StdItem::Optional)?;
         if def.id != optional_id {
             return None;
         }

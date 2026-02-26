@@ -13,6 +13,7 @@
 ///     y: int32
 /// }
 /// ```
+@lang("Copy")
 public interface Copy {}
 
 /// A marker interface indicating that a type can be explicitly cloned.
@@ -28,6 +29,7 @@ public interface Copy {}
 ///     }
 /// }
 /// ```
+@lang("Clone")
 public interface Clone {
     func clone(&self) -> Self
 }

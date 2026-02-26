@@ -62,6 +62,7 @@ impl Ordering {
 ///
 /// A partial ordering means some values may not be comparable.
 /// For example, floating-point NaN values are not comparable.
+@lang("PartialOrd")
 public interface PartialOrd[Rhs = Self]: PartialEq[Rhs] {
     /// Compare two values, returning None if they cannot be compared.
     func partialCmp(&self, _ other: &Rhs) -> Optional[Ordering]

@@ -602,7 +602,7 @@ impl<'ctx> FunctionLower<'ctx> {
             } => {
                 let opt_id = self
                     .gcx
-                    .find_std_type("Optional")
+                    .std_item_def(hir::StdItem::Optional)
                     .expect("Optional type must exist");
                 let enum_def = self.gcx.get_enum_definition(opt_id);
                 let adt_def = enum_def.adt_def;
@@ -751,7 +751,7 @@ impl<'ctx> FunctionLower<'ctx> {
                 if let hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) = &callee.kind
                     && matches!(
                         path.resolution,
-                        hir::Resolution::Foundation(hir::StdType::Make)
+                        hir::Resolution::StdItem(hir::StdItem::Make)
                     )
                 {
                     if arguments.len() != 1 {
@@ -1378,6 +1378,21 @@ impl<'ctx> FunctionLower<'ctx> {
         expr: &hir::Expression,
         resolution: Resolution,
     ) -> thir::ExprKind<'ctx> {
+        if let Resolution::StdItem(item) = resolution {
+            let Some(def_id) = self.gcx.std_item_def(item) else {
+                self.gcx.dcx().emit_error(
+                    "unresolvable std item used as value".into(),
+                    Some(expr.span),
+                );
+                return ExprKind::Literal(Constant {
+                    ty: self.gcx.types.error,
+                    value: ConstantKind::Unit,
+                });
+            };
+            let kind = self.gcx.definition_kind(def_id);
+            return self.lower_path_expression(expr, Resolution::Definition(def_id, kind));
+        }
+
         match resolution {
             Resolution::Definition(
                 id,

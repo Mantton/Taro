@@ -6,7 +6,7 @@
 use crate::{
     compile::context::Gcx,
     error::CompileResult,
-    hir::StdInterface,
+    hir::StdItem,
     mir::{
         BasicBlockId, Body, CallUnwindAction, LocalId, Operand, Place, PlaceElem, Rvalue,
         StatementKind, TerminatorKind,
@@ -488,7 +488,7 @@ fn is_type_copyable_in_body_context<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>, ty:
         return gcx.is_type_copyable(ty);
     };
 
-    let Some(copy_def) = gcx.std_interface_def(StdInterface::Copy) else {
+    let Some(copy_def) = gcx.std_item_def(StdItem::Copy) else {
         return false;
     };
 

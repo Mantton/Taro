@@ -33,6 +33,7 @@ func hashKey[Key: Hashable](_ key: &Key) -> uint64 {
 /// - `insert` remembers the first deleted slot and prefers it once an empty slot is found.
 /// - growth uses capacity doubling and rehashes all full slots.
 /// - removals mark tombstones (`SWISS_CTRL_DELETED`) so probe chains remain intact.
+@lang("Dictionary")
 public struct Dictionary[Key: Hashable, Value] {
     len: usize
     capacity: usize

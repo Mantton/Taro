@@ -3,7 +3,7 @@ use super::{
     InferredStaticMemberGoalData, MemberGoalData, Obligation, SolverResult,
 };
 use crate::{
-    hir::{NodeID, OperatorKind, Resolution, StdInterface},
+    hir::{NodeID, OperatorKind, Resolution, StdItem},
     sema::{
         error::TypeError,
         models::{GenericArguments, InterfaceReference, StructField, Ty, TyKind},
@@ -623,10 +623,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
         kind: OperatorKind,
     ) -> Vec<DefinitionID> {
         let gcx = self.gcx();
-        let Some(std_interface) = StdInterface::from_operator_kind(kind) else {
+        let Some(std_interface) = StdItem::from_operator_kind(kind) else {
             return Vec::new();
         };
-        let Some(interface_id) = gcx.std_interface_def(std_interface) else {
+        let Some(interface_id) = gcx.std_item_def(std_interface) else {
             return Vec::new();
         };
         let Some(method_name) = Self::operator_method_name_for_kind(kind) else {
@@ -732,11 +732,11 @@ impl<'ctx> ConstraintSolver<'ctx> {
     ) -> Option<Vec<DefinitionID>> {
         let gcx = self.gcx();
 
-        // Convert OperatorKind to StdInterface
-        let std_interface = StdInterface::from_operator_kind(kind)?;
+        // Convert OperatorKind to StdItem
+        let std_interface = StdItem::from_operator_kind(kind)?;
 
         // Get the interface definition ID
-        let interface_id = gcx.std_interface_def(std_interface)?;
+        let interface_id = gcx.std_item_def(std_interface)?;
 
         // Create an interface reference with empty arguments (we'll match later)
         let interface_ref = InterfaceReference {

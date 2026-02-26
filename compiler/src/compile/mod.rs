@@ -302,6 +302,13 @@ impl<'state> Compiler<'state> {
             let mut table = self.context.store.resolution_outputs.borrow_mut();
             table.insert(self.context.config.index, output);
         }
+        if let Some(items) = sema::std_items::collect_std_items(&package, self.context, output)? {
+            self.context
+                .store
+                .std_items
+                .borrow_mut()
+                .replace((self.context.package_index(), items));
+        }
         let package = ast_lowering::lower_package(package, self.context, output)?;
         timings.push_elapsed("hir.lower", phase_started_at);
 

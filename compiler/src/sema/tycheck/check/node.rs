@@ -1785,7 +1785,7 @@ impl<'ctx> Checker<'ctx> {
                 );
                 Ty::error(self.gcx())
             }
-            hir::Resolution::Foundation(std_type) => {
+            hir::Resolution::StdItem(std_type) => {
                 // Resolve to the actual std library type (e.g., Dictionary, Optional, List)
                 let Some(name) = std_type.name_str() else {
                     self.gcx().dcx().emit_error(
@@ -1794,7 +1794,7 @@ impl<'ctx> Checker<'ctx> {
                     );
                     return Ty::error(self.gcx());
                 };
-                let Some(def_id) = self.gcx().find_std_type(name) else {
+                let Some(def_id) = self.gcx().std_item_def(*std_type) else {
                     self.gcx().dcx().emit_error(
                         format!("unable to resolve standard library type '{}'", name).into(),
                         Some(span),
@@ -1854,7 +1854,7 @@ impl<'ctx> Checker<'ctx> {
         if let hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) = &callee.kind
             && matches!(
                 path.resolution,
-                hir::Resolution::Foundation(hir::StdType::Make)
+                hir::Resolution::StdItem(hir::StdItem::Make)
             )
         {
             if arguments.len() != 1 {
@@ -2020,9 +2020,9 @@ impl<'ctx> Checker<'ctx> {
         let constraints = crate::sema::tycheck::constraints::canonical_constraints_of(gcx, def_id);
 
         // Look for Fn/FnMut/FnOnce bounds on this parameter
-        let fn_def = gcx.std_interface_def(hir::StdInterface::Fn);
-        let fn_mut_def = gcx.std_interface_def(hir::StdInterface::FnMut);
-        let fn_once_def = gcx.std_interface_def(hir::StdInterface::FnOnce);
+        let fn_def = gcx.std_item_def(hir::StdItem::Fn);
+        let fn_mut_def = gcx.std_item_def(hir::StdItem::FnMut);
+        let fn_once_def = gcx.std_item_def(hir::StdItem::FnOnce);
 
         for constraint in constraints {
             if let crate::sema::models::Constraint::Bound {
@@ -3267,7 +3267,7 @@ impl<'ctx> Checker<'ctx> {
         match resolution {
             hir::Resolution::Definition(..)
             | hir::Resolution::LocalVariable(..)
-            | hir::Resolution::Foundation(..) => {
+            | hir::Resolution::StdItem(..) => {
                 self.results
                     .borrow_mut()
                     .record_value_resolution(node_id, resolution.clone());
@@ -3365,10 +3365,7 @@ impl<'ctx> Checker<'ctx> {
 
     fn value_path_def_id(&self, resolution: &hir::Resolution) -> Option<DefinitionID> {
         match resolution {
-            hir::Resolution::Foundation(std_type) => {
-                let name = std_type.name_str()?;
-                self.gcx().find_std_type(name)
-            }
+            hir::Resolution::StdItem(std_type) => self.gcx().std_item_def(*std_type),
             _ => resolution.definition_id(),
         }
     }
@@ -3392,7 +3389,7 @@ impl<'ctx> Checker<'ctx> {
             .map(|args| args.span)
             .unwrap_or(segment.span);
 
-        if let hir::Resolution::Foundation(std_type) = resolution {
+        if let hir::Resolution::StdItem(std_type) = resolution {
             if std_type.name_str().is_none() {
                 if has_explicit {
                     gcx.dcx().emit_error(
@@ -4582,12 +4579,22 @@ impl<'ctx> Checker<'ctx> {
         base_args: Option<crate::sema::models::GenericArguments<'ctx>>,
     ) -> Option<(crate::sema::models::EnumVariant<'ctx>, Ty<'ctx>)> {
         let gcx = self.gcx();
-        let hir::Resolution::Definition(ctor_id, kind) = resolution else {
-            if !matches!(resolution, hir::Resolution::Error) {
+        let (ctor_id, kind) = match resolution {
+            hir::Resolution::Definition(ctor_id, kind) => (ctor_id, kind),
+            hir::Resolution::StdItem(item) => {
+                let Some(ctor_id) = gcx.std_item_def(item) else {
+                    gcx.dcx()
+                        .emit_error("expected enum variant pattern".into(), Some(span));
+                    return None;
+                };
+                (ctor_id, gcx.definition_kind(ctor_id))
+            }
+            hir::Resolution::Error => return None,
+            _ => {
                 gcx.dcx()
                     .emit_error("expected enum variant pattern".into(), Some(span));
+                return None;
             }
-            return None;
         };
 
         if !matches!(kind, DefinitionKind::VariantConstructor(..)) {
@@ -4780,7 +4787,7 @@ impl<'ctx> Checker<'ctx> {
         let TyKind::Adt(def, _) = ty.kind() else {
             return false;
         };
-        let Some(opt_id) = self.gcx().find_std_type("Optional") else {
+        let Some(opt_id) = self.gcx().std_item_def(hir::StdItem::Optional) else {
             return false;
         };
         def.id == opt_id
@@ -4790,7 +4797,7 @@ impl<'ctx> Checker<'ctx> {
         let TyKind::Adt(def, args) = ty.kind() else {
             return None;
         };
-        let Some(opt_id) = self.gcx().find_std_type("Optional") else {
+        let Some(opt_id) = self.gcx().std_item_def(hir::StdItem::Optional) else {
             return None;
         };
         if def.id != opt_id {
@@ -4803,7 +4810,7 @@ impl<'ctx> Checker<'ctx> {
     fn mk_optional_type(&self, inner: Ty<'ctx>) -> (Ty<'ctx>, GenericArguments<'ctx>) {
         let gcx = self.gcx();
         let opt_id = gcx
-            .find_std_type("Optional")
+            .std_item_def(hir::StdItem::Optional)
             .expect("Optional type must exist");
         let enum_def = gcx.get_enum_definition(opt_id);
         let args = gcx

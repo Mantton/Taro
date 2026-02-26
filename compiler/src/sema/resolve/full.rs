@@ -825,7 +825,7 @@ impl<'r, 'a> Actor<'r, 'a> {
                     return Err(ResolutionError::UnknownMember(*name));
                 }
                 // Variants Not Created By Resolver Step
-                Resolution::Foundation(_) | Resolution::Error => unreachable!(),
+                Resolution::StdItem(_) | Resolution::Error => unreachable!(),
             },
             ResolvedEntity::DeferredAssociatedValue => {
                 return Ok(ResolvedEntity::DeferredAssociatedValue);
@@ -867,7 +867,7 @@ impl<'r, 'a> Actor<'r, 'a> {
             | Resolution::FunctionSet(..)
             | Resolution::SelfConstructor(..) => {}
             // Variants Not Created By Resolver Step
-            Resolution::Foundation(_) | Resolution::Error => unreachable!(),
+            Resolution::StdItem(_) | Resolution::Error => unreachable!(),
         }
 
         return Ok(());

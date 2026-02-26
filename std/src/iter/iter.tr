@@ -14,6 +14,7 @@ import std.cmp.Ord
 ///     print(value)
 /// }
 /// ```
+@lang("Iterator")
 public interface Iterator {
     type Element
     func next(&mut self) -> Optional[Self.Element]
@@ -38,6 +39,7 @@ public interface Iterator {
 ///     }
 /// }
 /// ```
+@lang("Iterable")
 public interface Iterable {
     type Iterator: Iterator[Element = Self.Element]
     type Element

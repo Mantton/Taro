@@ -50,6 +50,7 @@ impl Step for usize {
 
 /// A half-open range from `start` to `end` (exclusive).
 /// Created with the `..` operator: `start..end`
+@lang("Range")
 public struct Range[Bound: Step] {
     start: Bound
     end: Bound
@@ -91,6 +92,7 @@ impl[Bound: Step] Iterable for Range[Bound] {
 
 /// A closed range from `start` to `end` (inclusive).
 /// Created with the `..=` operator: `start..=end`
+@lang("ClosedRange")
 public struct ClosedRange[Bound: Step] {
     start: Bound
     end: Bound

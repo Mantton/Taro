@@ -3,7 +3,7 @@ use crate::{
     cfg::TargetInfo,
     compile::context::GlobalContext,
     error::CompileResult,
-    hir::{self, DefinitionKind, StdType},
+    hir::{self, DefinitionKind, StdItem},
     sema::resolve::models::{
         ExpressionResolutionState, Resolution, ResolutionOutput, ResolutionState,
     },
@@ -838,7 +838,7 @@ impl Actor<'_, '_> {
                 let inner = self.lower_type(element);
                 self.mk_foundation_type(
                     node.span,
-                    hir::StdType::Option,
+                    hir::StdItem::Optional,
                     vec![hir::TypeArgument::Type(inner)],
                 )
             }
@@ -846,7 +846,7 @@ impl Actor<'_, '_> {
                 let inner = self.lower_type(element);
                 self.mk_foundation_type(
                     node.span,
-                    hir::StdType::List,
+                    hir::StdItem::List,
                     vec![hir::TypeArgument::Type(inner)],
                 )
             }
@@ -855,7 +855,7 @@ impl Actor<'_, '_> {
                 let value_ty = self.lower_type(value);
                 self.mk_foundation_type(
                     node.span,
-                    hir::StdType::Dictionary,
+                    hir::StdItem::Dictionary,
                     vec![
                         hir::TypeArgument::Type(key_ty),
                         hir::TypeArgument::Type(value_ty),
@@ -917,20 +917,20 @@ impl Actor<'_, '_> {
     fn mk_foundation_type(
         &mut self,
         span: Span,
-        kind: StdType,
+        kind: StdItem,
         arguments: Vec<hir::TypeArgument>,
     ) -> hir::TypeKind {
         let name = kind.name_str().expect("foundation type must have a name");
 
         let path = hir::Path {
             span,
-            resolution: Resolution::Foundation(kind),
+            resolution: Resolution::StdItem(kind),
             segments: vec![hir::PathSegment {
                 id: self.next_index(),
                 identifier: Identifier::new(self.context.intern_symbol(name), span),
                 arguments: Some(hir::TypeArguments { span, arguments }),
                 span,
-                resolution: Resolution::Foundation(kind),
+                resolution: Resolution::StdItem(kind),
             }],
         };
 
@@ -1152,7 +1152,7 @@ impl Actor<'_, '_> {
 
         let make_iterator_call = {
             let ufcs_call = (|| {
-                let iterable_id = self.context.find_std_type("Iterable")?;
+                let iterable_id = self.context.std_item_def(StdItem::Iterable)?;
                 let iterable_reqs = self.context.get_interface_requirements(iterable_id)?;
                 let make_iter_def = iterable_reqs
                     .methods
@@ -1237,7 +1237,7 @@ impl Actor<'_, '_> {
 
         let next_call = {
             let ufcs_call = (|| {
-                let iterator_id = self.context.find_std_type("Iterator")?;
+                let iterator_id = self.context.std_item_def(StdItem::Iterator)?;
                 let iterator_reqs = self.context.get_interface_requirements(iterator_id)?;
                 let next_def = iterator_reqs
                     .methods
@@ -1331,20 +1331,13 @@ impl Actor<'_, '_> {
         // 5. Lower the user's pattern from the for loop
         let user_pattern = self.lower_pattern(node.pattern);
 
-        // 6. Create Optional.some(user_pattern); use inferred path when std metadata is unavailable.
-        let some_path = self.try_optional_variant_path("some", span);
+        // 6. Create Optional.some(user_pattern)
+        let some_path = self.mk_optional_variant_path("some", span);
         let some_pattern = hir::Pattern {
             id: self.next_index(),
             span,
             kind: hir::PatternKind::PathTuple {
-                path: if let Some(path) = some_path {
-                    hir::PatternPath::Qualified { path }
-                } else {
-                    hir::PatternPath::Inferred {
-                        name: Identifier::new(self.context.intern_symbol("some"), span),
-                        span,
-                    }
-                },
+                path: hir::PatternPath::Qualified { path: some_path },
                 fields: vec![user_pattern],
                 field_span: span,
             },
@@ -1394,19 +1387,12 @@ impl Actor<'_, '_> {
             span,
         };
 
-        // 8. Create Optional.none pattern; use inferred path when std metadata is unavailable.
-        let none_path = self.try_optional_variant_path("none", span);
+        // 8. Create Optional.none pattern
+        let none_path = self.mk_optional_variant_path("none", span);
         let none_pattern = hir::Pattern {
             id: self.next_index(),
             span,
-            kind: hir::PatternKind::Member(if let Some(path) = none_path {
-                hir::PatternPath::Qualified { path }
-            } else {
-                hir::PatternPath::Inferred {
-                    name: Identifier::new(self.context.intern_symbol("none"), span),
-                    span,
-                }
-            }),
+            kind: hir::PatternKind::Member(hir::PatternPath::Qualified { path: none_path }),
         };
 
         // Arm 2: case Optional.none => break
@@ -1663,18 +1649,16 @@ impl Actor<'_, '_> {
             ast::ExpressionKind::Range(lhs, rhs, inclusive) => {
                 // `1..10`
                 let foundational = if inclusive {
-                    StdType::ClosedRange
+                    StdItem::ClosedRange
                 } else {
-                    StdType::Range
+                    StdItem::Range
                 };
 
                 let lhs = self.lower_expression(lhs);
                 let rhs = self.lower_expression(rhs);
                 let identiier = Identifier::new(self.context.intern_symbol("Range"), node.span);
-                let range_path = self.mk_single_segment_resolved_path(
-                    identiier,
-                    Resolution::Foundation(foundational),
-                );
+                let range_path = self
+                    .mk_single_segment_resolved_path(identiier, Resolution::StdItem(foundational));
                 let foo = self.mk_expression(hir::ExpressionKind::Path(range_path), node.span);
 
                 let arguments = vec![lhs, rhs]
@@ -1702,7 +1686,7 @@ impl Actor<'_, '_> {
                     Identifier::new(self.context.intern_symbol("Dictionary"), node.span);
                 let ctor_path = self.mk_single_segment_resolved_path(
                     ctor_ident,
-                    Resolution::Foundation(hir::StdType::Dictionary),
+                    Resolution::StdItem(hir::StdItem::Dictionary),
                 );
                 let ctor = self.mk_expression(hir::ExpressionKind::Path(ctor_path), node.span);
                 let initializer = self.mk_expression(
@@ -1734,7 +1718,7 @@ impl Actor<'_, '_> {
                 let inferred_value_ty = self.mk_ty(hir::TypeKind::Infer, node.span);
                 let dictionary_local_ty_kind = self.mk_foundation_type(
                     node.span,
-                    hir::StdType::Dictionary,
+                    hir::StdItem::Dictionary,
                     vec![
                         hir::TypeArgument::Type(inferred_key_ty),
                         hir::TypeArgument::Type(inferred_value_ty),
@@ -2350,72 +2334,41 @@ impl Actor<'_, '_> {
         }
     }
 
-    /// Attempts to build a fully resolved path for an Optional variant (e.g., `Optional.some`).
-    fn try_optional_variant_path(
-        &mut self,
-        variant_name: &str,
-        span: Span,
-    ) -> Option<hir::ResolvedPath> {
-        use crate::sema::resolve::models::{DefinitionKind, VariantCtorKind};
-
+    /// Creates a resolved path for an Optional variant (e.g., `Optional.some` or `Optional.none`)
+    /// using std-item resolution.
+    fn mk_optional_variant_path(&mut self, variant_name: &str, span: Span) -> hir::ResolvedPath {
+        let ctor_item = match variant_name {
+            "some" => StdItem::OptionalSomeCtor,
+            "none" => StdItem::OptionalNoneCtor,
+            _ => {
+                self.context.dcx().emit_error(
+                    format!("unknown Optional variant '{}' in lowering", variant_name),
+                    Some(span),
+                );
+                StdItem::OptionalNoneCtor
+            }
+        };
         let optional_ident = Identifier::new(self.context.intern_symbol("Optional"), span);
         let variant_ident = Identifier::new(self.context.intern_symbol(variant_name), span);
-
-        // Look up the Optional enum from std library
-        let optional_def_id = self.context.find_std_type("Optional")?;
-
-        // Get the enum definition to find the variant
-        let enum_def = self.context.try_get_enum_definition(optional_def_id)?;
-
-        // Find the variant by name
-        let variant = enum_def
-            .variants
-            .iter()
-            .find(|v| self.context.symbol_eq(v.name, variant_name))?;
-
-        // Determine the constructor kind based on variant fields
-        let ctor_kind = match variant.kind {
-            crate::sema::models::EnumVariantKind::Unit => VariantCtorKind::Constant,
-            crate::sema::models::EnumVariantKind::Tuple(_) => VariantCtorKind::Function,
-        };
-
-        // Create base segment: Optional (with Definition resolution to the enum)
         let base_segment = hir::PathSegment {
             id: self.next_index(),
             identifier: optional_ident,
             arguments: None,
             span,
-            resolution: hir::Resolution::Definition(optional_def_id, DefinitionKind::Enum),
+            resolution: hir::Resolution::StdItem(StdItem::Optional),
         };
-
-        // Create variant segment with fully resolved DefinitionID
         let variant_segment = hir::PathSegment {
             id: self.next_index(),
             identifier: variant_ident,
             arguments: None,
             span,
-            resolution: hir::Resolution::Definition(
-                variant.ctor_def_id,
-                DefinitionKind::VariantConstructor(ctor_kind),
-            ),
+            resolution: hir::Resolution::StdItem(ctor_item),
         };
-
-        Some(hir::ResolvedPath::Resolved(hir::Path {
+        hir::ResolvedPath::Resolved(hir::Path {
             span,
-            // The path resolution is the final segment's resolution (the variant constructor)
-            resolution: hir::Resolution::Definition(
-                variant.ctor_def_id,
-                DefinitionKind::VariantConstructor(ctor_kind),
-            ),
+            resolution: hir::Resolution::StdItem(ctor_item),
             segments: vec![base_segment, variant_segment],
-        }))
-    }
-
-    /// Creates a fully resolved path for an Optional variant (e.g., `Optional.some` or `Optional.none`).
-    /// Looks up the Optional enum and its variants from the global context to get actual DefinitionIDs.
-    fn mk_optional_variant_path(&mut self, variant_name: &str, span: Span) -> hir::ResolvedPath {
-        self.try_optional_variant_path(variant_name, span)
-            .expect("Optional variant must be available from std library")
+        })
     }
 
     fn lower_optional_evaluation(
@@ -2661,7 +2614,7 @@ impl Actor<'_, '_> {
                 hir::Resolution::LocalVariable(*id)
             }
             Resolution::SelfConstructor(n) => hir::Resolution::SelfConstructor(n),
-            Resolution::Foundation(n) => hir::Resolution::Foundation(n),
+            Resolution::StdItem(n) => hir::Resolution::StdItem(n),
             Resolution::Error => hir::Resolution::Error,
         };
     }

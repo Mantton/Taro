@@ -1,6 +1,7 @@
 import std.ops.PartialEq
 import std.mem.Span
 
+@lang("Hashable")
 public interface Hashable: PartialEq {
     func hash[H: Hasher](&self, into hasher: &mut H)
 }

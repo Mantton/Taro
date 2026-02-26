@@ -155,7 +155,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                     PrimaryType::Rune => gcx.types.rune,
                 }
             }
-            Resolution::Foundation(decl) => match self.lower_foundation_type(path, decl) {
+            Resolution::StdItem(decl) => match self.lower_foundation_type(path, decl) {
                 Some(ty) => ty,
                 None => gcx.types.error,
             },
@@ -1220,10 +1220,10 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         })
     }
 
-    fn lower_foundation_type(&self, path: &hir::Path, decl: hir::StdType) -> Option<Ty<'ctx>> {
+    fn lower_foundation_type(&self, path: &hir::Path, decl: hir::StdItem) -> Option<Ty<'ctx>> {
         let gcx = self.gcx();
         let name = decl.name_str()?;
-        let def_id = match gcx.find_std_type(name) {
+        let def_id = match gcx.std_item_def(decl) {
             Some(id) => id,
             None => {
                 gcx.dcx().emit_error(

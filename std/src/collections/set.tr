@@ -1,6 +1,7 @@
 import std.hash.{Hashable, Hasher}
 import std.marker.Copy
 
+@lang("Set")
 public struct Set[Element: Hashable] {
     storage: Dictionary[Element, ()]
 }

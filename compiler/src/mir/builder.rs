@@ -1,6 +1,6 @@
 use crate::{
     compile::context::Gcx,
-    hir::{self, StdInterface},
+    hir::{self, StdItem},
     mir::{
         self, BasicBlockData, BasicBlockId, BlockAnd, BlockAndExtension, Body, LocalDecl, LocalId,
         LocalKind, Place, Rvalue, Statement, StatementKind, Terminator, TerminatorKind,
@@ -142,7 +142,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             return self.gcx.is_type_copyable(ty);
         };
 
-        let Some(copy_def) = self.gcx.std_interface_def(StdInterface::Copy) else {
+        let Some(copy_def) = self.gcx.std_item_def(StdItem::Copy) else {
             return false;
         };
 
@@ -376,9 +376,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
     /// Get the Args type from a Fn/FnMut/FnOnce bound on a type parameter.
     /// Returns Some(args_ty) if the type has a Fn trait bound, None otherwise.
     pub fn get_fn_trait_args_type(&self, ty: Ty<'ctx>) -> Option<Ty<'ctx>> {
-        let fn_def = self.gcx.std_interface_def(StdInterface::Fn);
-        let fn_mut_def = self.gcx.std_interface_def(StdInterface::FnMut);
-        let fn_once_def = self.gcx.std_interface_def(StdInterface::FnOnce);
+        let fn_def = self.gcx.std_item_def(StdItem::Fn);
+        let fn_mut_def = self.gcx.std_item_def(StdItem::FnMut);
+        let fn_once_def = self.gcx.std_item_def(StdItem::FnOnce);
 
         let constraints = self.gcx.canonical_constraints_of(self.thir.id);
         for constraint in constraints {
