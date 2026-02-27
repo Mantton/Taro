@@ -5,11 +5,14 @@ use crate::{
         Category, Constant, Operand, Place, PlaceElem, Rvalue, RvalueFunc, TerminatorKind,
         builder::MirBuilder,
     },
-    sema::models::GenericArguments,
-    sema::resolve::models::DefinitionKind,
+    sema::{
+        models::{GenericArguments, TyKind},
+        resolve::models::DefinitionKind,
+    },
     span::Span,
     thir::{self, ExprId, ExprKind, FieldIndex},
     unpack,
+    utils::intern::List,
 };
 use index_vec::IndexVec;
 use rustc_hash::FxHashMap;
@@ -522,10 +525,25 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 let fields: IndexVec<FieldIndex, Operand<'ctx>> =
                     IndexVec::from_vec(capture_operands);
 
+                let captured_generics = match expr.ty.kind() {
+                    TyKind::Closure {
+                        closure_def_id,
+                        captured_generics,
+                        ..
+                    } => {
+                        debug_assert!(
+                            closure_def_id == *def_id,
+                            "closure expression def_id should match closure type def_id"
+                        );
+                        captured_generics
+                    }
+                    _ => GenericArguments::empty(),
+                };
+
                 let rvalue = Rvalue::Aggregate {
                     kind: AggregateKind::Closure {
                         def_id: *def_id,
-                        captured_generics: GenericArguments::empty(), // TODO: get from closure type
+                        captured_generics,
                     },
                     fields,
                 };
@@ -974,7 +992,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
     fn build_literal_eq_operand(
         &mut self,
-        block: BasicBlockId,
+        mut block: BasicBlockId,
         branch_place: &Place<'ctx>,
         branch_ty: crate::sema::models::Ty<'ctx>,
         constructor: &thir::match_tree::Constructor,
@@ -990,15 +1008,47 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             }
         };
 
+        if let thir::match_tree::LiteralKey::String(s) = literal {
+            let string_eq_id = self.find_function_in_std("string", "stringEq", span);
+            let string_eq_ty = self.gcx.get_type(string_eq_id);
+            let bool_ty = match string_eq_ty.kind() {
+                crate::sema::models::TyKind::FnPointer { output, .. } => output,
+                _ => panic!("stringEq must be a function"),
+            };
+            let string_eq_func = Operand::Constant(Constant {
+                ty: string_eq_ty,
+                value: mir::ConstantKind::Function(string_eq_id, List::empty(), string_eq_ty),
+            });
+            let rhs = Operand::Constant(Constant {
+                ty: branch_ty,
+                value: mir::ConstantKind::String(*s),
+            });
+            let temp = self.new_temp_with_ty(bool_ty, span);
+            let destination = Place::from_local(temp);
+            let next_block = self.new_block();
+            let unwind = self.call_unwind_for_callee(&string_eq_func, span);
+            self.terminate(
+                block,
+                span,
+                TerminatorKind::Call {
+                    func: string_eq_func,
+                    args: vec![Operand::Copy(branch_place.clone()), rhs],
+                    destination: destination.clone(),
+                    target: next_block,
+                    unwind,
+                },
+            );
+            block = next_block;
+            return block.and(Operand::Move(destination));
+        }
+
         let value = match literal {
             thir::match_tree::LiteralKey::Integer(i) => mir::ConstantKind::Integer(*i),
             thir::match_tree::LiteralKey::Float(bits) => {
                 mir::ConstantKind::Float(f64::from_bits(*bits))
             }
             thir::match_tree::LiteralKey::Rune(r) => mir::ConstantKind::Rune(*r),
-            thir::match_tree::LiteralKey::String(_) => {
-                panic!("string literal match lowering is not implemented yet");
-            }
+            thir::match_tree::LiteralKey::String(_) => unreachable!(),
         };
 
         let constant = Constant {

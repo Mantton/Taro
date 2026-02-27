@@ -64,6 +64,16 @@ func testMatchReferenceGuard() {
     std.print("PASS: Match reference guards\n")
 }
 
+func testMatchStringLiteral() {
+    let greeting = "hello"
+    let code = match greeting {
+        case "hello" => 1
+        case "world" => 2
+        case _ => 3
+    }
+    assert(code == 1, "string literal match should choose the matching arm")
+}
+
 func main() {
     let wrapped = wrap(.some(1))
     match wrapped {
@@ -76,4 +86,5 @@ func main() {
 
     testMatchReference()
     testMatchReferenceGuard()
+    testMatchStringLiteral()
 }
