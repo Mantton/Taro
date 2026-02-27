@@ -1,8 +1,8 @@
 use crate::{
     compile::context::Gcx,
     sema::models::{
-        AssociatedTypeBinding, GenericArgument, GenericArguments, InterfaceGoal, InterfaceReference,
-        Ty,
+        AssociatedTypeBinding, GenericArgument, GenericArguments, InterfaceGoal,
+        InterfaceReference, Ty,
     },
 };
 

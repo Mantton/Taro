@@ -705,8 +705,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     None,
                 );
             }
-            Err(SelectionError::NoCandidates(_))
-            | Err(SelectionError::ObligationFailed { .. }) => {}
+            Err(SelectionError::NoCandidates(_)) | Err(SelectionError::ObligationFailed { .. }) => {
+            }
         }
 
         // Special case: primitives implicitly satisfy Copy (no explicit conformance record)

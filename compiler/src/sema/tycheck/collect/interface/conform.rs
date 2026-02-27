@@ -32,7 +32,9 @@ impl<'ctx> Actor<'ctx> {
     }
 
     fn validate_all_conformances(&self) {
-        let mut records = self.context.all_conformance_records(self.context.package_index());
+        let mut records = self
+            .context
+            .all_conformance_records(self.context.package_index());
         records.sort_by_key(|record| {
             (
                 std::cmp::Reverse(record.location.start.line),
@@ -118,7 +120,10 @@ impl<'ctx> Actor<'ctx> {
             return;
         }
 
-        match self.context.build_conformance_witness(goal, SelectionMode::Typecheck) {
+        match self
+            .context
+            .build_conformance_witness(goal, SelectionMode::Typecheck)
+        {
             Ok(_) => {}
             Err(err) => self.emit_selection_error(err, span, record),
         }
@@ -235,22 +240,23 @@ impl<'ctx> Actor<'ctx> {
 
         let empty_type_witnesses: FxHashMap<DefinitionID, Ty<'ctx>> = FxHashMap::default();
 
-        self.context.with_type_database(record.extension.package(), |db| {
-            db.def_to_fn_sig.keys().copied().any(|candidate| {
-                self.context.definition_parent(candidate) == Some(record.extension)
-                    && self.context.definition_kind(candidate)
-                        == crate::sema::resolve::models::DefinitionKind::AssociatedFunction
-                    && self.context.definition_ident(candidate).symbol == requirement.name
-                    && method_signature_matches(
-                        self.context,
-                        requirement.id,
-                        candidate,
-                        &record,
-                        GenericArguments::empty(),
-                        &empty_type_witnesses,
-                    )
+        self.context
+            .with_type_database(record.extension.package(), |db| {
+                db.def_to_fn_sig.keys().copied().any(|candidate| {
+                    self.context.definition_parent(candidate) == Some(record.extension)
+                        && self.context.definition_kind(candidate)
+                            == crate::sema::resolve::models::DefinitionKind::AssociatedFunction
+                        && self.context.definition_ident(candidate).symbol == requirement.name
+                        && method_signature_matches(
+                            self.context,
+                            requirement.id,
+                            candidate,
+                            &record,
+                            GenericArguments::empty(),
+                            &empty_type_witnesses,
+                        )
+                })
             })
-        })
     }
 
     fn collect_interface_with_supers(
@@ -286,7 +292,10 @@ impl<'ctx> Actor<'ctx> {
         out
     }
 
-    fn goal_from_interface(&self, interface: InterfaceReference<'ctx>) -> Option<InterfaceGoal<'ctx>> {
+    fn goal_from_interface(
+        &self,
+        interface: InterfaceReference<'ctx>,
+    ) -> Option<InterfaceGoal<'ctx>> {
         let self_ty = match interface.arguments.get(0).copied() {
             Some(GenericArgument::Type(ty)) => ty,
             _ => return None,
@@ -399,14 +408,12 @@ fn ty_has_infer_types(ty: crate::sema::models::Ty<'_>) -> bool {
 
     match ty.kind() {
         TyKind::Infer(_) => true,
-        TyKind::Adt(_, args) | TyKind::Alias { args, .. } => {
-            args.iter().any(|arg| match arg {
-                GenericArgument::Type(ty) => ty_has_infer_types(*ty),
-                GenericArgument::Const(c) => {
-                    matches!(c.kind, ConstKind::Infer(_)) || ty_has_infer_types(c.ty)
-                }
-            })
-        }
+        TyKind::Adt(_, args) | TyKind::Alias { args, .. } => args.iter().any(|arg| match arg {
+            GenericArgument::Type(ty) => ty_has_infer_types(*ty),
+            GenericArgument::Const(c) => {
+                matches!(c.kind, ConstKind::Infer(_)) || ty_has_infer_types(c.ty)
+            }
+        }),
         TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => ty_has_infer_types(inner),
         TyKind::Array { element, len } => {
             ty_has_infer_types(element)

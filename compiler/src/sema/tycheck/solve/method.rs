@@ -696,7 +696,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     if !method.has_self {
                         continue;
                     }
-                    if is_existential_dispatch && self.gcx().generics_of(method.id).total_count() > 0
+                    if is_existential_dispatch
+                        && self.gcx().generics_of(method.id).total_count() > 0
                     {
                         if !object_safety_violation {
                             self.gcx().dcx().emit_error(
@@ -707,7 +708,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
                                 Some(name_span),
                             );
                             self.gcx().dcx().emit_info(
-                                "methods with their own generic parameters are not object-safe".into(),
+                                "methods with their own generic parameters are not object-safe"
+                                    .into(),
                                 Some(name_span),
                             );
                         }

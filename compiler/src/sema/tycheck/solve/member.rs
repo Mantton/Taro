@@ -743,7 +743,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let method_symbol = gcx.intern_symbol(method_name);
 
         let requirements = gcx.get_interface_requirements(interface_id)?;
-        let method_req = requirements.methods.iter().find(|method| method.name == method_symbol)?;
+        let method_req = requirements
+            .methods
+            .iter()
+            .find(|method| method.name == method_symbol)?;
 
         let records = gcx.collect_from_databases(|db| {
             db.conformance_by_interface_head
@@ -779,10 +782,6 @@ impl<'ctx> ConstraintSolver<'ctx> {
             }
         }
 
-        if out.is_empty() {
-            None
-        } else {
-            Some(out)
-        }
+        if out.is_empty() { None } else { Some(out) }
     }
 }

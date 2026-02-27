@@ -13,9 +13,8 @@ use crate::{
             AliasKind, CanonicalGoalKey, ClosureCaptures, ConformanceRecord, ConformanceRecordId,
             ConformanceWitness, Const, Constraint, EnumDefinition, EnumVariant, FloatTy,
             GenericArgument, GenericArguments, GenericParameter, Generics, GoalResult, IntTy,
-            InterfaceDefinition, InterfaceGoal, InterfaceRequirements,
-            LabeledFunctionSignature, SelectionMode, SelectionResult, StructDefinition, Ty, TyKind,
-            TyList, UIntTy,
+            InterfaceDefinition, InterfaceGoal, InterfaceRequirements, LabeledFunctionSignature,
+            SelectionMode, SelectionResult, StructDefinition, Ty, TyKind, TyList, UIntTy,
         },
         resolve::models::{
             DefinitionKind, PrimaryType, ResolutionOutput, ScopeData, ScopeEntryData, TypeHead,
@@ -322,7 +321,9 @@ impl<'arena> GlobalContext<'arena> {
     }
 
     pub fn all_conformance_records(self, package: PackageIndex) -> Vec<ConformanceRecord<'arena>> {
-        self.with_type_database(package, |db| db.conformance_records.values().copied().collect())
+        self.with_type_database(package, |db| {
+            db.conformance_records.values().copied().collect()
+        })
     }
 
     pub fn get_selection_cache(
@@ -371,7 +372,11 @@ impl<'arena> GlobalContext<'arena> {
         crate::sema::impl_engine::select_interface_impl(self, goal, mode)
     }
 
-    pub fn prove_interface_goal(self, goal: InterfaceGoal<'arena>, mode: SelectionMode) -> GoalResult {
+    pub fn prove_interface_goal(
+        self,
+        goal: InterfaceGoal<'arena>,
+        mode: SelectionMode,
+    ) -> GoalResult {
         crate::sema::impl_engine::prove_interface_goal(self, goal, mode)
     }
 
@@ -1478,7 +1483,8 @@ pub struct TypeDatabase<'arena> {
     pub def_to_iface_def: FxHashMap<DefinitionID, &'arena InterfaceDefinition<'arena>>,
     pub interface_to_supers: FxHashMap<DefinitionID, FxHashSet<DefinitionID>>,
     pub conformance_records: FxHashMap<ConformanceRecordId, ConformanceRecord<'arena>>,
-    pub conformance_by_interface_head: FxHashMap<(DefinitionID, TypeHead), Vec<ConformanceRecordId>>,
+    pub conformance_by_interface_head:
+        FxHashMap<(DefinitionID, TypeHead), Vec<ConformanceRecordId>>,
     pub conformance_by_interface: FxHashMap<DefinitionID, Vec<ConformanceRecordId>>,
     pub conformance_by_head: FxHashMap<TypeHead, Vec<ConformanceRecordId>>,
     pub conformance_by_extension: FxHashMap<DefinitionID, Vec<ConformanceRecordId>>,

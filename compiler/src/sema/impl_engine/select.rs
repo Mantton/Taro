@@ -5,17 +5,18 @@ use crate::{
         models::{
             AliasKind, CandidateSource, ConformanceRecord, ConformanceRecordId, Constraint,
             GenericArgument, GenericArguments, GoalResult, InterfaceGoal, InterfaceReference,
-            SelectionError, SelectionMode, SelectionResult, SelectedImpl, Ty, TyKind,
+            SelectedImpl, SelectionError, SelectionMode, SelectionResult, Ty, TyKind,
         },
         resolve::models::TypeHead,
         tycheck::{
             infer::InferCtx,
             utils::{
+                ParamEnv,
                 instantiate::{
                     instantiate_constraint_with_args, instantiate_interface_ref_with_args,
                     instantiate_ty_with_args,
                 },
-                normalize_aliases, normalize_ty, ParamEnv, type_head_from_value_ty,
+                normalize_aliases, normalize_ty, type_head_from_value_ty,
                 unify::TypeUnifier,
             },
         },
@@ -244,7 +245,10 @@ impl<'ctx> Selector<'ctx> {
         None
     }
 
-    fn builtin_tuple_candidate(&self, goal: InterfaceGoal<'ctx>) -> Option<ConfirmedCandidate<'ctx>> {
+    fn builtin_tuple_candidate(
+        &self,
+        goal: InterfaceGoal<'ctx>,
+    ) -> Option<ConfirmedCandidate<'ctx>> {
         let TypeHead::Tuple(_) = type_head_from_value_ty(goal.self_ty)? else {
             return None;
         };
@@ -261,7 +265,10 @@ impl<'ctx> Selector<'ctx> {
         })
     }
 
-    fn builtin_copy_candidate(&self, goal: InterfaceGoal<'ctx>) -> Option<ConfirmedCandidate<'ctx>> {
+    fn builtin_copy_candidate(
+        &self,
+        goal: InterfaceGoal<'ctx>,
+    ) -> Option<ConfirmedCandidate<'ctx>> {
         let copy_id = self.gcx.std_item_def(StdItem::Copy)?;
         if goal.interface_id != copy_id {
             return None;
@@ -307,9 +314,14 @@ impl<'ctx> Selector<'ctx> {
         };
 
         let allowed = match required {
-            crate::sema::models::ClosureKind::Fn => matches!(kind, crate::sema::models::ClosureKind::Fn),
+            crate::sema::models::ClosureKind::Fn => {
+                matches!(kind, crate::sema::models::ClosureKind::Fn)
+            }
             crate::sema::models::ClosureKind::FnMut => {
-                matches!(kind, crate::sema::models::ClosureKind::Fn | crate::sema::models::ClosureKind::FnMut)
+                matches!(
+                    kind,
+                    crate::sema::models::ClosureKind::Fn | crate::sema::models::ClosureKind::FnMut
+                )
             }
             crate::sema::models::ClosureKind::FnOnce => true,
         };
@@ -327,10 +339,12 @@ impl<'ctx> Selector<'ctx> {
             _ => Ty::new(TyKind::Tuple(inputs), self.gcx),
         };
 
-        let Some(GenericArgument::Type(actual_args_ty)) = goal.interface_args.get(0).copied() else {
+        let Some(GenericArgument::Type(actual_args_ty)) = goal.interface_args.get(0).copied()
+        else {
             return None;
         };
-        let Some(GenericArgument::Type(actual_output_ty)) = goal.interface_args.get(1).copied() else {
+        let Some(GenericArgument::Type(actual_output_ty)) = goal.interface_args.get(1).copied()
+        else {
             return None;
         };
 
@@ -431,11 +445,15 @@ impl<'ctx> Selector<'ctx> {
 
         let instantiated_self = instantiate_ty_with_args(self.gcx, pattern_self, fresh_args);
         let normalized_goal_self = normalize_aliases(self.gcx, goal.self_ty);
-        if unifier.unify(instantiated_self, normalized_goal_self).is_err() {
+        if unifier
+            .unify(instantiated_self, normalized_goal_self)
+            .is_err()
+        {
             return None;
         }
 
-        let instantiated_iface = instantiate_interface_ref_with_args(self.gcx, record.interface, fresh_args);
+        let instantiated_iface =
+            instantiate_interface_ref_with_args(self.gcx, record.interface, fresh_args);
         let expected_iface = expand_goal_interface_ref(self.gcx, goal);
         if instantiated_iface.id != expected_iface.id
             || instantiated_iface.arguments.len() != expected_iface.arguments.len()
@@ -455,7 +473,11 @@ impl<'ctx> Selector<'ctx> {
 
         if !instantiated_iface.bindings.is_empty() {
             for rhs in goal.bindings {
-                let Some(lhs) = instantiated_iface.bindings.iter().find(|lhs| lhs.name == rhs.name) else {
+                let Some(lhs) = instantiated_iface
+                    .bindings
+                    .iter()
+                    .find(|lhs| lhs.name == rhs.name)
+                else {
                     return None;
                 };
                 if unifier.unify(lhs.ty, rhs.ty).is_err() {
@@ -526,7 +548,11 @@ impl<'ctx> Selector<'ctx> {
         let unifier = TypeUnifier::new(icx.clone());
 
         for binding in goal.bindings {
-            let Some(assoc) = requirements.types.iter().find(|assoc| assoc.name == binding.name) else {
+            let Some(assoc) = requirements
+                .types
+                .iter()
+                .find(|assoc| assoc.name == binding.name)
+            else {
                 return false;
             };
 
@@ -637,8 +663,10 @@ fn refine_impl_args_from_constraints<'ctx>(
                     };
 
                     for binding in interface.bindings {
-                        let Some(req) =
-                            requirements.types.iter().find(|req| req.name == binding.name)
+                        let Some(req) = requirements
+                            .types
+                            .iter()
+                            .find(|req| req.name == binding.name)
                         else {
                             continue;
                         };
@@ -655,7 +683,10 @@ fn refine_impl_args_from_constraints<'ctx>(
     }
 }
 
-fn extension_self_ty<'ctx>(gcx: Gcx<'ctx>, extension_id: crate::hir::DefinitionID) -> Option<Ty<'ctx>> {
+fn extension_self_ty<'ctx>(
+    gcx: Gcx<'ctx>,
+    extension_id: crate::hir::DefinitionID,
+) -> Option<Ty<'ctx>> {
     if let Some(ty) = gcx.get_impl_self_ty(extension_id) {
         return Some(ty);
     }
@@ -719,15 +750,13 @@ fn generic_arg_has_unresolved_types(arg: &GenericArgument<'_>) -> bool {
 fn ty_contains_infer(ty: Ty<'_>) -> bool {
     match ty.kind() {
         TyKind::Infer(_) => true,
-        TyKind::Adt(_, args) | TyKind::Alias { args, .. } => {
-            args.iter().any(|arg| match arg {
-                GenericArgument::Type(ty) => ty_contains_infer(*ty),
-                GenericArgument::Const(c) => {
-                    matches!(c.kind, crate::sema::models::ConstKind::Infer(_))
-                        || ty_contains_infer(c.ty)
-                }
-            })
-        }
+        TyKind::Adt(_, args) | TyKind::Alias { args, .. } => args.iter().any(|arg| match arg {
+            GenericArgument::Type(ty) => ty_contains_infer(*ty),
+            GenericArgument::Const(c) => {
+                matches!(c.kind, crate::sema::models::ConstKind::Infer(_))
+                    || ty_contains_infer(c.ty)
+            }
+        }),
         TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => ty_contains_infer(inner),
         TyKind::Array { element, len } => {
             ty_contains_infer(element)
@@ -794,7 +823,10 @@ fn unify_generic_argument<'ctx>(
     }
 }
 
-fn expand_goal_interface_ref<'ctx>(gcx: Gcx<'ctx>, goal: InterfaceGoal<'ctx>) -> crate::sema::models::InterfaceReference<'ctx> {
+fn expand_goal_interface_ref<'ctx>(
+    gcx: Gcx<'ctx>,
+    goal: InterfaceGoal<'ctx>,
+) -> crate::sema::models::InterfaceReference<'ctx> {
     let mut iface = goal.to_interface_ref(gcx);
     let expected = gcx.generics_of(goal.interface_id).total_count();
     if iface.arguments.len() < expected {

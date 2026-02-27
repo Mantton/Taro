@@ -2,9 +2,7 @@ use super::{Emitter, enum_layout, enum_variant_tuple_ty};
 use crate::{
     error::CompileResult,
     hir,
-    sema::{
-        models::{GenericArguments, InterfaceReference, Ty, TyKind},
-    },
+    sema::models::{GenericArguments, InterfaceReference, Ty, TyKind},
 };
 use inkwell::{
     AddressSpace, IntPredicate,

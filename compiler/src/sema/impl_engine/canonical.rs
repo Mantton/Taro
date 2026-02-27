@@ -65,7 +65,10 @@ fn canonicalize_ty<'ctx>(gcx: Gcx<'ctx>, ty: Ty<'ctx>) -> Ty<'ctx> {
     normalize_aliases(gcx, ty)
 }
 
-fn canonicalize_generic_arg<'ctx>(gcx: Gcx<'ctx>, arg: GenericArgument<'ctx>) -> GenericArgument<'ctx> {
+fn canonicalize_generic_arg<'ctx>(
+    gcx: Gcx<'ctx>,
+    arg: GenericArgument<'ctx>,
+) -> GenericArgument<'ctx> {
     match arg {
         GenericArgument::Type(ty) => GenericArgument::Type(canonicalize_ty(gcx, ty)),
         GenericArgument::Const(c) => GenericArgument::Const(crate::sema::models::Const {

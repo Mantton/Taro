@@ -194,7 +194,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let mut seen = FxHashSet::default();
         let mut out = Vec::new();
         for record in records {
-            let Some(iface) = self.materialized_interface_for_record(record.extension, concrete_ty, record.interface) else {
+            let Some(iface) = self.materialized_interface_for_record(
+                record.extension,
+                concrete_ty,
+                record.interface,
+            ) else {
                 continue;
             };
             self.collect_interface_and_superfaces_for_metadata(iface, &mut seen, &mut out);
@@ -341,7 +345,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     "iface method {} has method-level generics; emitting null witness slot",
                     self.gcx.symbol_text(method.name)
                 ));
-                entries.push(self.context.ptr_type(AddressSpace::default()).const_null().into());
+                entries.push(
+                    self.context
+                        .ptr_type(AddressSpace::default())
+                        .const_null()
+                        .into(),
+                );
                 continue;
             }
 
@@ -355,7 +364,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 // impl/synthetic/default target with the correct impl substitutions.
                 let args = self.complete_interface_call_args(method.id, iface.arguments);
                 if self.debug_witness_subst_enabled() {
-                    let iface_name = self.gcx.symbol_text(self.gcx.definition_ident(iface.id).symbol);
+                    let iface_name = self
+                        .gcx
+                        .symbol_text(self.gcx.definition_ident(iface.id).symbol);
                     let method_name = self.gcx.symbol_text(method.name);
                     self.debug_witness_subst(format!(
                         "iface {} method {}: call_args={}",
@@ -684,7 +695,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let Some(parent) = self.gcx.definition_parent(method_id) else {
             return args;
         };
-        if self.gcx.definition_kind(parent) != crate::sema::resolve::models::DefinitionKind::Interface
+        if self.gcx.definition_kind(parent)
+            != crate::sema::resolve::models::DefinitionKind::Interface
         {
             return args;
         }

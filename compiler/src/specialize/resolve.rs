@@ -2,9 +2,7 @@ use crate::{
     compile::context::GlobalContext,
     hir::{DefinitionID, StdItem},
     sema::{
-        models::{
-            ConstKind, GenericArgument, GenericArguments, InterfaceReference, Ty, TyKind,
-        },
+        models::{ConstKind, GenericArgument, GenericArguments, InterfaceReference, Ty, TyKind},
         resolve::models::DefinitionKind,
         tycheck::{
             resolve_conformance_witness,

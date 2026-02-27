@@ -595,13 +595,9 @@ fn synthesize_memberwise_clone<'ctx>(
             } else {
                 // If it's an ADT, we can try to clone it
                 match field.ty.kind() {
-                    TyKind::Adt(_, _) => clone_adt_field(
-                        gcx,
-                        &mut builder,
-                        field_access,
-                        field.ty,
-                        clone_def,
-                    ),
+                    TyKind::Adt(_, _) => {
+                        clone_adt_field(gcx, &mut builder, field_access, field.ty, clone_def)
+                    }
                     _ => {
                         // For non-ADT non-Copy types, just use the field access (shouldn't happen if type checking passed)
                         field_access
@@ -1413,13 +1409,9 @@ fn synthesize_enum_clone<'ctx>(
                         field_local
                     } else {
                         match field.ty.kind() {
-                            TyKind::Adt(_, _) => clone_adt_field(
-                                gcx,
-                                &mut builder,
-                                field_local,
-                                field.ty,
-                                clone_def,
-                            ),
+                            TyKind::Adt(_, _) => {
+                                clone_adt_field(gcx, &mut builder, field_local, field.ty, clone_def)
+                            }
                             _ => field_local,
                         }
                     };

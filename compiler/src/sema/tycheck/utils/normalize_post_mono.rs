@@ -162,11 +162,7 @@ impl<'ctx> PostMonoNormalizeFolder<'ctx> {
         let interface_args = if interface_generic_count == 0 {
             gcx.store.interners.intern_generic_args(Vec::new())
         } else {
-            let slice: Vec<_> = args
-                .iter()
-                .take(interface_generic_count)
-                .cloned()
-                .collect();
+            let slice: Vec<_> = args.iter().take(interface_generic_count).cloned().collect();
             gcx.store.interners.intern_generic_args(slice)
         };
 
@@ -195,5 +191,4 @@ impl<'ctx> PostMonoNormalizeFolder<'ctx> {
         // Fallback: instantiate with the projection's args (works for simple cases)
         Some(instantiate_ty_with_args(gcx, *witness_ty, args))
     }
-
 }

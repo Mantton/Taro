@@ -37,9 +37,7 @@ pub fn resolve_conformance_witness_with_mode<'ctx>(
     interface: InterfaceReference<'ctx>,
     mode: SelectionMode,
 ) -> Option<ConformanceWitness<'ctx>> {
-    collect::interface::conform::resolve_conformance_witness_with_mode(
-        context, interface, mode,
-    )
+    collect::interface::conform::resolve_conformance_witness_with_mode(context, interface, mode)
 }
 
 pub fn typecheck_package<'ctx>(

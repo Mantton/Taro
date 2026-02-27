@@ -5,7 +5,7 @@ use crate::{
     hir::{self, DefinitionID, DefinitionKind, HirVisitor, StdItem},
     sema::{
         models::{
-            ConformanceRecord, Constraint, ConstKind, EnumVariantKind, GenericArgument, GoalResult,
+            ConformanceRecord, ConstKind, Constraint, EnumVariantKind, GenericArgument, GoalResult,
             InterfaceGoal, InterfaceReference, SelectionMode, Ty, TyKind,
         },
         resolve::models::TypeHead,
@@ -13,8 +13,11 @@ use crate::{
             infer::InferCtx,
             lower::{DefTyLoweringCtx, TypeLowerer},
             utils::{
-                instantiate::{instantiate_constraint_with_args, instantiate_interface_ref_with_args},
-                normalize_ty, ParamEnv,
+                ParamEnv,
+                instantiate::{
+                    instantiate_constraint_with_args, instantiate_interface_ref_with_args,
+                },
+                normalize_ty,
                 unify::TypeUnifier,
             },
         },
@@ -322,12 +325,9 @@ impl<'ctx> Actor<'ctx> {
         // Check the interface's home package
         let interface_pkg = interface.id.package();
         if Some(interface_pkg) != type_pkg {
-            if let Some(prev) = self.find_conformance_in_package(
-                interface_pkg,
-                ty_key,
-                interface,
-                new_extension_id,
-            ) {
+            if let Some(prev) =
+                self.find_conformance_in_package(interface_pkg, ty_key, interface, new_extension_id)
+            {
                 return Some(prev);
             }
         }
@@ -352,9 +352,9 @@ impl<'ctx> Actor<'ctx> {
         interface: InterfaceReference<'ctx>,
         new_extension_id: DefinitionID,
     ) -> Option<ConformanceRecord<'ctx>> {
-        let candidates = self
-            .context
-            .conformance_records_for_interface_head(package_id, interface.id, ty_key);
+        let candidates =
+            self.context
+                .conformance_records_for_interface_head(package_id, interface.id, ty_key);
 
         for candidate in candidates {
             if candidate.interface == interface {
@@ -446,9 +446,13 @@ impl<'ctx> Actor<'ctx> {
         record: ConformanceRecord<'ctx>,
         icx: Rc<InferCtx<'ctx>>,
         span: Span,
-    ) -> Option<(InterfaceReference<'ctx>, crate::sema::models::GenericArguments<'ctx>)> {
+    ) -> Option<(
+        InterfaceReference<'ctx>,
+        crate::sema::models::GenericArguments<'ctx>,
+    )> {
         let args = icx.fresh_args_for_def(record.extension, span);
-        let instantiated = instantiate_interface_ref_with_args(self.context, record.interface, args);
+        let instantiated =
+            instantiate_interface_ref_with_args(self.context, record.interface, args);
         Some((instantiated, args))
     }
 
@@ -458,7 +462,10 @@ impl<'ctx> Actor<'ctx> {
         extension_id: DefinitionID,
         icx: Rc<InferCtx<'ctx>>,
         span: Span,
-    ) -> Option<(InterfaceReference<'ctx>, crate::sema::models::GenericArguments<'ctx>)> {
+    ) -> Option<(
+        InterfaceReference<'ctx>,
+        crate::sema::models::GenericArguments<'ctx>,
+    )> {
         let args = icx.fresh_args_for_def(extension_id, span);
         let instantiated = instantiate_interface_ref_with_args(self.context, interface, args);
         Some((instantiated, args))
@@ -476,13 +483,9 @@ impl<'ctx> Actor<'ctx> {
         let mut instantiated = Vec::new();
         for (extension_id, extension_args) in entries {
             let constraints = self.context.canonical_constraints_of(*extension_id);
-            instantiated.extend(
-                constraints
-                    .into_iter()
-                    .map(|constraint| {
-                        instantiate_constraint_with_args(self.context, constraint.value, *extension_args)
-                    }),
-            );
+            instantiated.extend(constraints.into_iter().map(|constraint| {
+                instantiate_constraint_with_args(self.context, constraint.value, *extension_args)
+            }));
         }
         if instantiated.is_empty() {
             return true;
@@ -557,7 +560,8 @@ impl<'ctx> Actor<'ctx> {
             };
 
             if matches!(
-                self.context.prove_interface_goal(goal, SelectionMode::Coherence),
+                self.context
+                    .prove_interface_goal(goal, SelectionMode::Coherence),
                 GoalResult::NoSolution
             ) {
                 return false;

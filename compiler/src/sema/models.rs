@@ -958,7 +958,11 @@ pub struct CanonicalGoalKey<'ctx> {
 }
 
 impl<'ctx> CanonicalGoalKey<'ctx> {
-    pub fn from_goal(package: PackageIndex, mode: SelectionMode, goal: InterfaceGoal<'ctx>) -> Self {
+    pub fn from_goal(
+        package: PackageIndex,
+        mode: SelectionMode,
+        goal: InterfaceGoal<'ctx>,
+    ) -> Self {
         Self {
             package,
             mode,
