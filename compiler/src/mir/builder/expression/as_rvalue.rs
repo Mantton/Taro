@@ -156,6 +156,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             | ExprKind::Upvar { .. }
             | ExprKind::Logical { .. }
             | ExprKind::Call { .. }
+            | ExprKind::ListLiteral { .. }
             | ExprKind::BoxExistential { .. }
             | ExprKind::ExistentialUpcast { .. }
             | ExprKind::Block(..)

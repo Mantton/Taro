@@ -427,7 +427,8 @@ impl Category {
             | thir::ExprKind::ExistentialUpcast { .. }
             | thir::ExprKind::Block(..)
             | thir::ExprKind::Adt(..)
-            | thir::ExprKind::Closure { .. } => Category::Rvalue(RvalueFunc::Into),
+            | thir::ExprKind::Closure { .. }
+            | thir::ExprKind::ListLiteral { .. } => Category::Rvalue(RvalueFunc::Into),
 
             thir::ExprKind::Assign { .. }
             | thir::ExprKind::AssignOp { .. }

@@ -118,6 +118,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             | ExprKind::Block { .. }
             | ExprKind::Tuple { .. }
             | ExprKind::Array { .. }
+            | ExprKind::ListLiteral { .. }
             | ExprKind::Repeat { .. }
             | ExprKind::Adt { .. }
             | ExprKind::Zst { .. }

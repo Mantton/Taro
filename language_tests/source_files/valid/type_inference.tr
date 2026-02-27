@@ -203,6 +203,29 @@ func test_inferred_some_method_arg_expectation() {
     assert(values.len() == 1, "pushSome should append one value")
 }
 
+func takesList(_ xs: [int32]) -> usize {
+    xs.len()
+}
+
+func makeList() -> [int32] {
+    [4, 5, 6]
+}
+
+func test_contextual_list_literals() {
+    let values: [_] = [1, 2, 3]
+    assert(values.len() == 3, "annotated list literal should infer element type")
+    assert(*values.at(2) == 3, "annotated list literal value check")
+
+    let from_arg_len = takesList([7, 8, 9])
+    assert(from_arg_len == 3, "list literal should typecheck against call argument context")
+
+    let from_return = makeList()
+    assert(*from_return.at(1) == 5, "list literal should typecheck against return context")
+
+    let empty: [int32] = []
+    assert(empty.len() == 0, "empty list literal should typecheck against annotation context")
+}
+
 func main() {
     test_match_inference()
     test_nested_blocks()
@@ -214,6 +237,7 @@ func main() {
 
     test_inferred_members_main()
     test_inferred_some_method_arg_expectation()
+    test_contextual_list_literals()
 
     std.print("PASS: Type inference\n")
 }

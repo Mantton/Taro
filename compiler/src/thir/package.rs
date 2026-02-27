@@ -4,7 +4,7 @@ use crate::{
     hir::{self, DefinitionID, DefinitionKind, HirVisitor, Mutability, Resolution},
     mir::{self, LogicalOperator},
     sema::{
-        models::{AdtKind, ConstKind, ConstValue, Ty, TyKind},
+        models::{AdtKind, ConstKind, ConstValue, GenericArgument, Ty, TyKind},
         resolve::models::VariantCtorKind,
         tycheck::{
             lower::{TypeLowerer, item::DefTyLoweringCtx},
@@ -681,7 +681,21 @@ impl<'ctx> FunctionLower<'ctx> {
             }
             hir::ExpressionKind::Array(items) => {
                 let elements: Vec<_> = items.iter().map(|e| self.lower_expr(e)).collect();
-                ExprKind::Array { elements }
+                let list_def_id = self.gcx.std_item_def(hir::StdItem::List);
+                if let TyKind::Adt(def, args) = ty.kind()
+                    && Some(def.id) == list_def_id
+                {
+                    let element_ty = match args.get(0) {
+                        Some(GenericArgument::Type(elem)) => *elem,
+                        _ => self.gcx.types.error,
+                    };
+                    ExprKind::ListLiteral {
+                        elements,
+                        element_ty,
+                    }
+                } else {
+                    ExprKind::Array { elements }
+                }
             }
             hir::ExpressionKind::Repeat { value, count: _ } => {
                 let element = self.lower_expr(value);

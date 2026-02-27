@@ -4064,13 +4064,22 @@ impl<'ctx> Checker<'ctx> {
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         let gcx = self.gcx();
-        let (expected_elem, expected_array) = if let Some(expectation) = expectation {
+        let list_def_id = gcx.std_item_def(hir::StdItem::List);
+        let (expected_elem, expected_array, expected_list) = if let Some(expectation) = expectation
+        {
             match expectation.kind() {
-                TyKind::Array { element, .. } => (Some(element), Some(expectation)),
-                _ => (None, None),
+                TyKind::Array { element, .. } => (Some(element), Some(expectation), None),
+                TyKind::Adt(def, args) if Some(def.id) == list_def_id => {
+                    let elem = match args.get(0) {
+                        Some(GenericArgument::Type(ty)) => Some(*ty),
+                        _ => None,
+                    };
+                    (elem, None, Some(expectation))
+                }
+                _ => (None, None, None),
             }
         } else {
-            (None, None)
+            (None, None, None)
         };
 
         if expected_elem.map(|ty| ty.is_error()).unwrap_or(false) {
@@ -4091,6 +4100,10 @@ impl<'ctx> Checker<'ctx> {
 
         if had_error {
             return Ty::error(gcx);
+        }
+
+        if let Some(expect) = expected_list {
+            return expect;
         }
 
         let len_const = Const {

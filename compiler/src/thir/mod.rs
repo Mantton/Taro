@@ -113,6 +113,11 @@ pub enum ExprKind<'a> {
     Array {
         elements: Vec<ExprId>,
     },
+    /// List literal in list-typed context, e.g. `[1, 2, 3]` where expected type is `List[T]`
+    ListLiteral {
+        elements: Vec<ExprId>,
+        element_ty: Ty<'a>,
+    },
     /// Repeat literal `[expr; len]`
     Repeat {
         element: ExprId,

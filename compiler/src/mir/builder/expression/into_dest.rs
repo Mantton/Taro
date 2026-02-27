@@ -385,6 +385,22 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 self.terminate(block, expr.span, terminator);
                 next.unit()
             }
+            ExprKind::ListLiteral {
+                elements,
+                element_ty,
+            } => {
+                let list_operand = unpack!(
+                    block = self.lower_variadic_sequence(
+                        block,
+                        elements,
+                        expr.ty,
+                        *element_ty,
+                        expr.span,
+                    )
+                );
+                self.push_assign(block, destination, Rvalue::Use(list_operand), expr.span);
+                block.unit()
+            }
             ExprKind::BoxExistential { value, .. } => {
                 let operand = unpack!(block = self.as_operand(block, *value));
                 let rvalue = Rvalue::Cast {
