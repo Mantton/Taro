@@ -211,6 +211,12 @@ func makeList() -> [int32] {
     [4, 5, 6]
 }
 
+func twoSumLike(_ nums: [int32], target: int32) -> [int32] {
+    let _ = nums
+    let _ = target
+    return []
+}
+
 func test_contextual_list_literals() {
     let values: [_] = [1, 2, 3]
     assert(values.len() == 3, "annotated list literal should infer element type")
@@ -224,6 +230,9 @@ func test_contextual_list_literals() {
 
     let empty: [int32] = []
     assert(empty.len() == 0, "empty list literal should typecheck against annotation context")
+
+    let labeled = twoSumLike([1, 2], target: 3)
+    assert(labeled.len() == 0, "list literal should typecheck with labeled call arguments")
 }
 
 func main() {

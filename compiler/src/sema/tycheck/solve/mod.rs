@@ -41,6 +41,7 @@ mod op;
 mod overload;
 mod tuple;
 mod unify;
+pub(crate) use apply::{match_arguments_to_parameters, validate_arity};
 
 pub struct ConstraintSystem<'ctx> {
     pub infer_cx: Rc<InferCtx<'ctx>>,

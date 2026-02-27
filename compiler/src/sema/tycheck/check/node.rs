@@ -17,6 +17,7 @@ use crate::{
                 BindOverloadGoalData, ConstraintSystem, DerefGoalData, DisjunctionBranch, Goal,
                 InferredStaticMemberGoalData, MemberGoalData, MethodCallData, StructLiteralField,
                 StructLiteralGoalData, TupleAccessGoalData, UnOpGoalData,
+                match_arguments_to_parameters, validate_arity,
             },
             utils::{
                 const_eval::eval_const_expression,
@@ -1891,10 +1892,16 @@ impl<'ctx> Checker<'ctx> {
             _ => self.synth(callee, cs),
         };
 
-        let positional_args = arguments.iter().all(|arg| arg.label.is_none());
         let callee_def = self.resolve_callee(callee, cs);
-        let arg_expectations = if positional_args && !callee_ty.is_error() {
-            self.argument_expectations_for_call(callee, callee_ty, expect_ty, callee_def, cs)
+        let arg_expectations = if !callee_ty.is_error() {
+            self.argument_expectations_for_call(
+                callee,
+                arguments,
+                callee_ty,
+                expect_ty,
+                callee_def,
+                cs,
+            )
         } else {
             None
         };
@@ -1906,7 +1913,7 @@ impl<'ctx> Checker<'ctx> {
                 let expected = arg_expectations
                     .as_ref()
                     .and_then(|items| items.get(index))
-                    .cloned();
+                    .and_then(|item| *item);
                 let ty = if let Some(expected) = expected {
                     self.synth_with_expectation(&n.expression, Some(expected), cs)
                 } else {
@@ -1946,17 +1953,18 @@ impl<'ctx> Checker<'ctx> {
     fn argument_expectations_for_call(
         &self,
         callee: &hir::Expression,
+        arguments: &[hir::ExpressionArgument],
         callee_ty: Ty<'ctx>,
         expect_ty: Option<Ty<'ctx>>,
         callee_def: Option<DefinitionID>,
         cs: &mut Cs<'ctx>,
-    ) -> Option<Vec<Ty<'ctx>>> {
+    ) -> Option<Vec<Option<Ty<'ctx>>>> {
         if let hir::ExpressionKind::InferredMember { name } = &callee.kind {
             if let Some(expect_ty) = expect_ty {
                 if let Some(args) =
                     self.inferred_member_argument_expectations(name, expect_ty, callee.span, cs)
                 {
-                    return Some(args);
+                    return Some(args.into_iter().map(Some).collect());
                 }
             }
         }
@@ -1996,10 +2004,87 @@ impl<'ctx> Checker<'ctx> {
                     }
                 })
                 .collect();
-            return Some(resolved);
+            return self.map_argument_expectations(callee_def, &resolved, arguments);
         }
 
-        Some(instantiated_inputs)
+        self.map_argument_expectations(callee_def, &instantiated_inputs, arguments)
+    }
+
+    fn map_argument_expectations(
+        &self,
+        callee_def: Option<DefinitionID>,
+        parameter_tys: &[Ty<'ctx>],
+        arguments: &[hir::ExpressionArgument],
+    ) -> Option<Vec<Option<Ty<'ctx>>>> {
+        if arguments.is_empty() {
+            return Some(vec![]);
+        }
+
+        let signature = if let Some(def_id) = callee_def {
+            self.gcx().get_signature(def_id).clone()
+        } else {
+            crate::sema::models::LabeledFunctionSignature {
+                inputs: parameter_tys
+                    .iter()
+                    .map(|&ty| crate::sema::models::LabeledFunctionParameter {
+                        label: None,
+                        name: self.gcx().intern_symbol(""),
+                        ty,
+                        default_provider: None,
+                    })
+                    .collect(),
+                output: self.gcx().types.error,
+                is_variadic: false,
+                abi: None,
+            }
+        };
+
+        let apply_args: Vec<ApplyArgument<'ctx>> = arguments
+            .iter()
+            .map(|arg| ApplyArgument {
+                id: arg.expression.id,
+                label: arg.label.map(|l| l.identifier),
+                ty: self.gcx().types.error,
+                span: arg.expression.span,
+            })
+            .collect();
+
+        if validate_arity(&signature, &apply_args).is_err() {
+            return None;
+        }
+
+        let positions = match match_arguments_to_parameters(&signature, &apply_args, false) {
+            Ok(p) => p,
+            Err(_) => return None,
+        };
+
+        let mut expectations = vec![None; arguments.len()];
+        for (param_idx, arg_indices) in positions.iter().enumerate() {
+            let Some(&param_ty) = parameter_tys.get(param_idx) else {
+                continue;
+            };
+
+            let expected_ty =
+                if signature.is_variadic && param_idx == signature.inputs.len().saturating_sub(1) {
+                    match param_ty.kind() {
+                        TyKind::Adt(_, args) => match args.get(0) {
+                            Some(GenericArgument::Type(inner)) => *inner,
+                            _ => param_ty,
+                        },
+                        _ => param_ty,
+                    }
+                } else {
+                    param_ty
+                };
+
+            for &arg_idx in arg_indices {
+                if let Some(slot) = expectations.get_mut(arg_idx) {
+                    *slot = Some(expected_ty);
+                }
+            }
+        }
+
+        Some(expectations)
     }
 
     /// If the type is a type parameter with an Fn/FnMut/FnOnce bound,
