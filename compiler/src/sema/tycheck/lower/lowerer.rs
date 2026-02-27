@@ -606,7 +606,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         };
 
         let name = segment.identifier.symbol;
-        let mut candidates: Vec<(DefinitionID, Span)> = Vec::new();
+        let mut candidates: Vec<(DefinitionID, Span, Option<DefinitionID>)> = Vec::new();
 
         // For reference/pointer types, we need to filter by the actual inner type
         // since TypeHead::Reference only contains mutability, not the inner type
@@ -644,15 +644,15 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                     if let Some(ext_self_ty) = gcx.get_impl_self_ty(ext_id) {
                         // Only include if the impl's self type matches our base_ty
                         if self.types_match_for_assoc_lookup(base_ty, ext_self_ty) {
-                            candidates.push((alias_id, span));
+                            candidates.push((alias_id, span, Some(ext_id)));
                         }
                         continue;
                     }
                 }
                 // If we can't verify, include the candidate (fallback)
-                candidates.push((alias_id, span));
+                candidates.push((alias_id, span, ext_id));
             } else {
-                candidates.push((alias_id, span));
+                candidates.push((alias_id, span, ext_id));
             }
         }
 
@@ -668,10 +668,10 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             return gcx.types.error;
         }
 
-        let visible: Vec<_> = if let Some(from) = self.current_definition() {
+        let mut visible: Vec<_> = if let Some(from) = self.current_definition() {
             candidates
                 .into_iter()
-                .filter(|(id, _)| gcx.is_definition_visible(*id, from))
+                .filter(|(id, _, _)| gcx.is_definition_visible(*id, from))
                 .collect()
         } else {
             candidates
@@ -680,9 +680,9 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         // Deduplicate by definition ID - the same alias may appear in both
         // session database and package databases
         let mut seen_ids = FxHashSet::default();
-        let visible: Vec<_> = visible
+        visible = visible
             .into_iter()
-            .filter(|(id, _)| seen_ids.insert(*id))
+            .filter(|(id, _, _)| seen_ids.insert(*id))
             .collect();
 
         if visible.is_empty() {
@@ -694,6 +694,21 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 Some(segment.span),
             );
             return gcx.types.error;
+        }
+
+        // If multiple associated types share the same name on the same self type,
+        // prefer the one declared in the currently-enclosing impl block.
+        if visible.len() > 1
+            && let Some(current_impl) = self.current_impl_definition()
+        {
+            let in_current_impl: Vec<_> = visible
+                .iter()
+                .copied()
+                .filter(|(_, _, extension_id)| *extension_id == Some(current_impl))
+                .collect();
+            if in_current_impl.len() == 1 {
+                visible = in_current_impl;
+            }
         }
 
         if visible.len() > 1 {
@@ -708,7 +723,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             return gcx.types.error;
         }
 
-        let (alias_id, _) = visible[0];
+        let (alias_id, _, _) = visible[0];
         let _ = check_generics_prohibited(alias_id, segment, gcx);
         let args = self.lower_type_arguments(alias_id, segment);
         let ty = self.resolve_alias(alias_id);
@@ -1060,6 +1075,18 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             constraints.extend(self.constraints_in_scope(parent));
         }
         constraints
+    }
+
+    /// Find the nearest enclosing impl block for the current definition, if any.
+    fn current_impl_definition(&self) -> Option<DefinitionID> {
+        let gcx = self.gcx();
+        let mut current = self.current_definition()?;
+        loop {
+            if gcx.definition_kind(current) == DefinitionKind::Impl {
+                return Some(current);
+            }
+            current = gcx.definition_parent(current)?;
+        }
     }
 
     /// Resolve a type alias with cycle detection (no instantiation).

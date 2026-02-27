@@ -345,7 +345,7 @@ public struct EnumerateIterator[Item, Inner: Iterator[Element = Item]] {
 impl[Item, Inner: Iterator[Element = Item]] Iterator for EnumerateIterator[Item, Inner] {
     type Element = (usize, Item)
 
-    public func next(&mut self) -> Optional[(usize, Item)] {
+    public func next(&mut self) -> Optional[Self.Element] {
         match self.inner.next() {
             case .some(item) => {
                 let i = self.index
@@ -397,7 +397,7 @@ public struct MapIterator[Item, Out, Inner: Iterator[Element = Item], F: FnMut[I
 impl[Item, Out, Inner: Iterator[Element = Item], F: FnMut[Item, Out]] Iterator for MapIterator[Item, Out, Inner, F] {
     type Element = Out
 
-    public func next(&mut self) -> Optional[Out] {
+    public func next(&mut self) -> Optional[Self.Element] {
         match self.inner.next() {
             case .some(item) => return .some(self.f(item))
             case .none => return .none
@@ -446,7 +446,7 @@ public struct FilterIterator[Item, Inner: Iterator[Element = Item], F: FnMut[&It
 impl[Item, Inner: Iterator[Element = Item], F: FnMut[&Item, bool]] Iterator for FilterIterator[Item, Inner, F] {
     type Element = Item
 
-    public func next(&mut self) -> Optional[Item] {
+    public func next(&mut self) -> Optional[Self.Element] {
         loop {
             match self.inner.next() {
                 case .some(item) => {
@@ -501,7 +501,7 @@ public struct TakeIterator[Item, Inner: Iterator[Element = Item]] {
 impl[Item, Inner: Iterator[Element = Item]] Iterator for TakeIterator[Item, Inner] {
     type Element = Item
 
-    public func next(&mut self) -> Optional[Item] {
+    public func next(&mut self) -> Optional[Self.Element] {
         if self.remaining == 0 {
             return .none
         }
@@ -551,7 +551,7 @@ public struct SkipIterator[Item, Inner: Iterator[Element = Item]] {
 impl[Item, Inner: Iterator[Element = Item]] Iterator for SkipIterator[Item, Inner] {
     type Element = Item
 
-    public func next(&mut self) -> Optional[Item] {
+    public func next(&mut self) -> Optional[Self.Element] {
         while self.remaining > 0 {
             self.remaining -= 1
             match self.inner.next() {
@@ -604,7 +604,7 @@ public struct ZipIterator[A, B, IA: Iterator[Element = A], IB: Iterator[Element 
 impl[A, B, IA: Iterator[Element = A], IB: Iterator[Element = B]] Iterator for ZipIterator[A, B, IA, IB] {
     type Element = (A, B)
 
-    public func next(&mut self) -> Optional[(A, B)] {
+    public func next(&mut self) -> Optional[Self.Element] {
         match self.a.next() {
             case .some(va) => {
                 match self.b.next() {
@@ -660,7 +660,7 @@ public struct ChainIterator[Item, A: Iterator[Element = Item], B: Iterator[Eleme
 impl[Item, A: Iterator[Element = Item], B: Iterator[Element = Item]] Iterator for ChainIterator[Item, A, B] {
     type Element = Item
 
-    func next(&mut self) -> Optional[Item] {
+    func next(&mut self) -> Optional[Self.Element] {
         if !self.state {
             match self.a.next() {
                 case .some(v) => return .some(v)
@@ -728,7 +728,7 @@ impl[
 ] Iterator for FlattenIterator[Item, InnerIter, InnerIterable, OuterIter] {
     type Element = Item
 
-    func next(&mut self) -> Optional[Item] {
+    func next(&mut self) -> Optional[Self.Element] {
         loop {
             match self.inner.take() {
                 case .some(inner_iter) => {
@@ -810,7 +810,7 @@ public struct StepByIterator[Item, Inner: Iterator[Element = Item]] {
 impl[Item, Inner: Iterator[Element = Item]] Iterator for StepByIterator[Item, Inner] {
     type Element = Item
 
-    func next(&mut self) -> Optional[Item] {
+    func next(&mut self) -> Optional[Self.Element] {
         if self.first_take {
             self.first_take = false
             return self.inner.next()
@@ -874,7 +874,7 @@ public struct TakeWhileIterator[Item, F: FnMut[&Item, bool], Inner: Iterator[Ele
 impl[Item, F: FnMut[&Item, bool], Inner: Iterator[Element = Item]] Iterator for TakeWhileIterator[Item, F, Inner] {
     type Element = Item
 
-    func next(&mut self) -> Optional[Item] {
+    func next(&mut self) -> Optional[Self.Element] {
         if self.is_done {
             return .none
         }
@@ -941,7 +941,7 @@ public struct SkipWhileIterator[Item, F: FnMut[&Item, bool], Inner: Iterator[Ele
 impl[Item, F: FnMut[&Item, bool], Inner: Iterator[Element = Item]] Iterator for SkipWhileIterator[Item, F, Inner] {
     type Element = Item
 
-    func next(&mut self) -> Optional[Item] {
+    func next(&mut self) -> Optional[Self.Element] {
         if self.is_done_skipping {
             return self.inner.next()
         }
@@ -1007,7 +1007,7 @@ public struct PeekableIterator[Item, Inner: Iterator[Element = Item]] {
 impl[Item, Inner: Iterator[Element = Item]] Iterator for PeekableIterator[Item, Inner] {
     type Element = Item
 
-    func next(&mut self) -> Optional[Item] {
+    func next(&mut self) -> Optional[Self.Element] {
         match self.peeked.take() {
             case .some(v) => return .some(v)
             case .none => return self.inner.next()

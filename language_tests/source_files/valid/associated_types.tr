@@ -37,6 +37,16 @@ interface CollectionLike {
     func len(&self) -> usize
 }
 
+interface AssocA {
+    type Element
+    func first(self) -> Self.Element
+}
+
+interface AssocB {
+    type Element
+    func second(self) -> Self.Element
+}
+
 struct MyData {
     id: usize
     name: string
@@ -60,6 +70,24 @@ impl CollectionLike for AssocContainer {
     type Item = Folder.Section.Side
     func len(&self) -> usize {
         self.len
+    }
+}
+
+struct AmbiguousSelf {}
+
+impl AssocA for AmbiguousSelf {
+    type Element = int32
+
+    func first(self) -> Self.Element {
+        1
+    }
+}
+
+impl AssocB for AmbiguousSelf {
+    type Element = bool
+
+    func second(self) -> Self.Element {
+        true
     }
 }
 
@@ -101,5 +129,11 @@ func main() {
 
     let maybeName: OptionalString = .some("ok")
     assert(maybeName.isSome(), "type alias over associated-type file should typecheck")
+
+    let ambiguousA = AmbiguousSelf {}
+    assert(ambiguousA.first() == 1, "impl-local Self.Element should resolve to AssocA.Element")
+    let ambiguousB = AmbiguousSelf {}
+    assert(ambiguousB.second(), "impl-local Self.Element should resolve to AssocB.Element")
+
     std.print("PASS: Associated types\n")
 }
