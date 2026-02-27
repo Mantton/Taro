@@ -85,7 +85,7 @@ impl[Bound: Step] Iterable for Range[Bound] {
     type Iterator = RangeIterator[Bound]
     type Element = Bound
 
-    public func makeIterator(self) -> Self.Iterator {
+    public func iter(self) -> Self.Iterator {
         RangeIterator[Bound] { current: self.start, end: self.end }
     }
 }
@@ -138,7 +138,7 @@ impl[Bound: Step] Iterable for ClosedRange[Bound] {
     type Iterator = ClosedRangeIterator[Bound]
     type Element = Bound
 
-    public func makeIterator(self) -> Self.Iterator {
+    public func iter(self) -> Self.Iterator {
         ClosedRangeIterator[Bound] {
             current: self.start,
             end: self.end,

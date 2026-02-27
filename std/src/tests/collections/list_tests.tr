@@ -253,7 +253,7 @@ func testListSortEmpty() {
 @test
 func testListFrom() {
     var iter = 1_i32..4_i32
-    var list = List[int32].from(&mut iter.makeIterator())
+    var list = List[int32].from(&mut iter.iter())
 
     std.testing.assertEqual(list.len(), 3 as usize, "from should collect 3 elements")
     std.testing.assertEqual(*list.at(0), 1, "from: element 0")

@@ -46,7 +46,7 @@ impl[Element: Hashable] std.iter.Iterable for &Set[Element] {
     type Iterator = DictKeysIterator[Element, ()]
     type Element = &Element
 
-    public func makeIterator(self) -> Self.Iterator {
+    public func iter(self) -> Self.Iterator {
         self.storage.keys()
     }
 }

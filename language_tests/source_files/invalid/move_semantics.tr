@@ -33,7 +33,7 @@ impl Iterator for BorrowIter {
 impl Iterable for BorrowIterContainer {
     type Iterator = BorrowIter
     type Element = int32
-    func makeIterator(self) -> Self.Iterator {
+    func iter(self) -> Self.Iterator {
         return BorrowIter { idx: 0 }
     }
 }
@@ -43,7 +43,7 @@ func invalidMoveOutOfBorrowMethod() {
     var borrow = &c
 
     // ERROR: cannot move out of borrowed content.
-    let _iter = borrow.makeIterator()
+    let _iter = borrow.iter()
 }
 
 struct NonCopyMoved {

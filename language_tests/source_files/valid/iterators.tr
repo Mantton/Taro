@@ -16,7 +16,7 @@ func usingMove() {
     l.append("Bar!\n")
     l.append("Baz!\n")
 
-    var iter = l.makeIterator()
+    var iter = l.iter()
     loop {
         let res = iter.next()
         match res {
@@ -40,7 +40,7 @@ func usingBorrow() {
     l.append("Baz!\n")
 
     var borrow = &l
-    var iter = borrow.makeIterator()
+    var iter = borrow.iter()
     loop {
         let res = iter.next()
         match res {

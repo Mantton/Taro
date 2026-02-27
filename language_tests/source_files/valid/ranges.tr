@@ -81,7 +81,7 @@ func testRangeIterationBasic() {
 
 func testRangeIteratorNextMatch() {
     let closed = 3..=5
-    var iter = closed.makeIterator()
+    var iter = closed.iter()
 
     expectSome(iter.next(), 3, "first value should be 3")
     expectSome(iter.next(), 4, "second value should be 4")
@@ -95,7 +95,7 @@ func testRangeIteratorNextMatch() {
     }
 
     let empty = 7..7
-    var empty_iter = empty.makeIterator()
+    var empty_iter = empty.iter()
     match empty_iter.next() {
         case .none => {}
         case .some(_) => {

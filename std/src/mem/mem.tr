@@ -167,7 +167,7 @@ impl[Element] Iterable for Span[Element] {
     type Iterator = SpanIterator[Element]
     type Element = &Element
 
-    public func makeIterator(self) -> Self.Iterator {
+    public func iter(self) -> Self.Iterator {
         return SpanIterator[Element] {
             ptr: self.ptr,
             len: self.len,
@@ -200,7 +200,7 @@ impl[Element] Iterable for MutableSpan[Element] {
     type Iterator = MutableSpanMutIterator[Element]
     type Element = &mut Element
 
-    public func makeIterator(self) -> Self.Iterator {
+    public func iter(self) -> Self.Iterator {
         return MutableSpanMutIterator[Element] {
             ptr: self.ptr,
             len: self.len,

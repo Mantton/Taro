@@ -1125,7 +1125,7 @@ impl Actor<'_, '_> {
             for pattern in collection { body }
         to:
             {
-                var __for_iter = collection.makeIterator();
+                var __for_iter = collection.iter();
                 loop {
                     var element = __for_iter.next()
                     match element {
@@ -1138,7 +1138,7 @@ impl Actor<'_, '_> {
         // 1. Lower the iterator expression
         let collection = self.lower_expression(node.iterator);
 
-        // 2. Create local binding: var __for_iter = collection.makeIterator()
+        // 2. Create local binding: var __for_iter = collection.iter()
         let iter_ident = Identifier::new(self.context.intern_symbol("__for_iter"), span);
         let iter_pattern_id = self.next_index();
         let iter_pattern = hir::Pattern {
@@ -1157,7 +1157,7 @@ impl Actor<'_, '_> {
                 let make_iter_def = iterable_reqs
                     .methods
                     .iter()
-                    .find(|m| self.context.symbol_eq(m.name, "makeIterator"))?;
+                    .find(|m| self.context.symbol_eq(m.name, "iter"))?;
 
                 let iterable_path = hir::ResolvedPath::Resolved(hir::Path {
                     span,
@@ -1179,7 +1179,7 @@ impl Actor<'_, '_> {
 
                 let make_iter_segment = hir::PathSegment {
                     id: self.next_index(),
-                    identifier: Identifier::new(self.context.intern_symbol("makeIterator"), span),
+                    identifier: Identifier::new(self.context.intern_symbol("iter"), span),
                     arguments: None,
                     span,
                     resolution: Resolution::Definition(
@@ -1212,7 +1212,7 @@ impl Actor<'_, '_> {
                 self.mk_expression(
                     hir::ExpressionKind::MethodCall {
                         receiver: collection,
-                        name: Identifier::new(self.context.intern_symbol("makeIterator"), span),
+                        name: Identifier::new(self.context.intern_symbol("iter"), span),
                         arguments: vec![],
                     },
                     span,

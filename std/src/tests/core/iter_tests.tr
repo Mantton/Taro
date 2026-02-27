@@ -21,7 +21,7 @@ func testEnumerateHelperProducesIndexValuePairs() {
 
 @test
 func testIterableEnumerateDefaultMethod() {
-    let elems = ((7 as usize)..(10 as usize)).enumerate()
+    let elems = ((7 as usize)..(10 as usize)).iter().enumerate()
     var indices = std.collections.List[usize].new()
     var values = std.collections.List[usize].new()
 
@@ -70,5 +70,4 @@ func testCountAfterFilter() {
     let c = std.iter.filter(1_i32..11_i32, |x: &int32| { *x % 2 == 0 }).count()
     std.testing.assertEqual(c, 5 as usize, "count of evens in 1..11 should be 5")
 }
-
 

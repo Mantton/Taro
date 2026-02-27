@@ -82,7 +82,7 @@ func testZipPairsTwo() {
 
 @test
 func testTakeDefaultMethod() {
-    var taken = (1_i32..10_i32).take(2 as usize)
+    var taken = (1_i32..10_i32).iter().take(2 as usize)
     var results = List[int32].new()
     for v in taken {
         results.append(v)
@@ -95,7 +95,7 @@ func testTakeDefaultMethod() {
 
 @test
 func testSkipDefaultMethod() {
-    var skipped = (1_i32..5_i32).skip(3 as usize)
+    var skipped = (1_i32..5_i32).iter().skip(3 as usize)
     var results = List[int32].new()
     for v in skipped {
         results.append(v)
@@ -133,7 +133,7 @@ func testCollectMapIntoList() {
 
 @test
 func testChain() {
-    var chained = (1_i32..3_i32).chain(10_i32..12_i32)
+    var chained = (1_i32..3_i32).iter().chain((10_i32..12_i32).iter())
     var results = List[int32].new()
     for v in chained { results.append(v) }
     
@@ -153,7 +153,7 @@ func testFlatten() {
     iterables.append(a)
     iterables.append(b)
 
-    var flattened = iterables.flatten()
+    var flattened = iterables.iter().flatten()
     var results = List[int32].new()
     for v in flattened { results.append(v) }
     
@@ -166,7 +166,7 @@ func testFlatten() {
 
 @test
 func testStepBy() {
-    var stepped = (0_i32..10_i32).stepBy(3 as usize)
+    var stepped = (0_i32..10_i32).iter().stepBy(3 as usize)
     var results = List[int32].new()
     for v in stepped { results.append(v) }
     
@@ -179,7 +179,7 @@ func testStepBy() {
 
 @test
 func testTakeWhile() {
-    var taken = (1_i32..10_i32).takeWhile(|x: &int32| { *x < 5 })
+    var taken = (1_i32..10_i32).iter().takeWhile(|x: &int32| { *x < 5 })
     var results = List[int32].new()
     for v in taken { results.append(v) }
     
@@ -189,7 +189,7 @@ func testTakeWhile() {
 
 @test
 func testSkipWhile() {
-    var skipped = (1_i32..10_i32).skipWhile(|x: &int32| { *x < 7 })
+    var skipped = (1_i32..10_i32).iter().skipWhile(|x: &int32| { *x < 7 })
     var results = List[int32].new()
     for v in skipped { results.append(v) }
     
@@ -200,8 +200,7 @@ func testSkipWhile() {
 
 @test
 func testPeekable() {
-    var peekable = (1_i32..5_i32).peekable()
-    var iter = peekable.makeIterator()
+    var iter = (1_i32..5_i32).iter().peekable()
     
     var peek1 = iter.peek().unwrap()
     std.testing.assertEqual(*peek1, 1, "peek 1") // Hasn't consumed yet

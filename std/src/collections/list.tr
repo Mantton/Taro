@@ -384,7 +384,7 @@ impl[Element] Iterator for ListRefIterator[Element] {
 impl[Element] Iterable for List[Element] {
     type Iterator = ListIterator[Element]
     type Element = Element
-    public func makeIterator(self) -> Self.Iterator {
+    public func iter(self) -> Self.Iterator {
         ListIterator[Element] {
             buffer: self.buffer,
             len: self.len,
@@ -396,7 +396,7 @@ impl[Element] Iterable for List[Element] {
 impl[Element] Iterable for &List[Element] {
     type Iterator = ListRefIterator[Element]
     type Element = &Element
-    public func makeIterator(self) -> Self.Iterator {
+    public func iter(self) -> Self.Iterator {
         ListRefIterator[Element] {
             buffer: self.buffer,
             len: self.len,
@@ -428,7 +428,7 @@ impl[Element] Iterable for &mut List[Element] {
     type Iterator = ListMutIterator[Element]
     type Element = &mut Element
 
-    public func makeIterator(self) -> Self.Iterator {
+    public func iter(self) -> Self.Iterator {
         ListMutIterator[Element] {
             buffer: self.buffer,
             len: self.len,

@@ -595,7 +595,7 @@ impl[Key: Hashable, Value] Iterable for Dictionary[Key, Value] {
     type Element = (&Key, &Value)
     type Iterator = DictOwnedEntriesIterator[Key, Value]
 
-    public func makeIterator(self) -> Self.Iterator {
+    public func iter(self) -> Self.Iterator {
         DictOwnedEntriesIterator[Key, Value] {
             dict: self,
             currentSlot: 0,
@@ -607,7 +607,7 @@ impl[Key: Hashable, Value] Iterable for &Dictionary[Key, Value] {
     type Element = (&Key, &Value)
     type Iterator = DictEntriesIterator[Key, Value]
 
-    public func makeIterator(self) -> Self.Iterator {
+    public func iter(self) -> Self.Iterator {
         self.entries()
     }
 }

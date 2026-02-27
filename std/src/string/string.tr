@@ -317,7 +317,7 @@ impl Iterator for ByteIterator {
 impl Iterable for ByteIterator {
     type Element = uint8
     type Iterator = ByteIterator
-    public func makeIterator(self) -> ByteIterator { self }
+    public func iter(self) -> ByteIterator { self }
 }
 
 /// An iterator over the individual UTF-8 characters (runes) of a string.
@@ -342,5 +342,5 @@ impl Iterator for CharacterIterator {
 impl Iterable for CharacterIterator {
     type Element = rune
     type Iterator = CharacterIterator
-    public func makeIterator(self) -> CharacterIterator { self }
+    public func iter(self) -> CharacterIterator { self }
 }
