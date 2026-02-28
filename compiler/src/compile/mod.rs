@@ -7,6 +7,7 @@ use crate::{
     error::CompileResult,
     hir, mir, parse, sema, specialize, thir,
 };
+use rustc_hash::FxHashSet;
 use std::time::{Duration, Instant};
 
 pub mod config;
@@ -91,6 +92,8 @@ impl<'state> Compiler<'state> {
             specialize::collect::collect_instances(package, self.context);
             timings.push_elapsed("specialize.collect_instances", phase_started_at);
 
+            let compiled_before_codegen = self.context.store.compiled_instances.borrow().clone();
+
             let phase_started_at = Instant::now();
             let (_, codegen_timings) =
                 codegen::llvm::emit_package_with_timings(package, self.context)?;
@@ -114,6 +117,14 @@ impl<'state> Compiler<'state> {
                 codegen_timings.function_passes,
             );
             timings.push_duration("codegen.llvm.emit_object", codegen_timings.emit_object);
+
+            let compiled_after_codegen = self.context.store.compiled_instances.borrow().clone();
+            let emitted_instances = compiled_after_codegen
+                .difference(&compiled_before_codegen)
+                .cloned()
+                .collect();
+            self.context
+                .cache_emitted_instances(self.context.package_index(), emitted_instances);
 
             let phase_started_at = Instant::now();
             let exe = codegen::link::link_executable(self.context)?;
@@ -160,6 +171,8 @@ impl<'state> Compiler<'state> {
             specialize::collect::collect_instances(package, self.context);
             timings.push_elapsed("specialize.collect_instances", phase_started_at);
 
+            let compiled_before_codegen = self.context.store.compiled_instances.borrow().clone();
+
             let phase_started_at = Instant::now();
             let (_, codegen_timings) =
                 codegen::llvm::emit_test_package_with_timings(package, self.context, &tests)?;
@@ -183,6 +196,14 @@ impl<'state> Compiler<'state> {
                 codegen_timings.function_passes,
             );
             timings.push_duration("codegen.llvm_test.emit_object", codegen_timings.emit_object);
+
+            let compiled_after_codegen = self.context.store.compiled_instances.borrow().clone();
+            let emitted_instances = compiled_after_codegen
+                .difference(&compiled_before_codegen)
+                .cloned()
+                .collect();
+            self.context
+                .cache_emitted_instances(self.context.package_index(), emitted_instances);
 
             let phase_started_at = Instant::now();
             let exe = codegen::link::link_executable(self.context)?;
@@ -215,6 +236,51 @@ impl<'state> Compiler<'state> {
         result
     }
 
+    /// Compile dependency semantic state (HIR/THIR/MIR/specializations) without
+    /// producing a new object file. This is used to reuse cached dependency
+    /// objects while still making dependency semantics available to downstream
+    /// packages in the current session.
+    pub fn prepare_dependency_reuse(&mut self) -> CompileResult<()> {
+        let total_started_at = Instant::now();
+        let package_name = self.context.config.name.to_string();
+        let mut timings = TimingReport::default();
+
+        let result = (|| -> CompileResult<()> {
+            let (package, results) = self.analyze_with_timings(&mut timings)?;
+
+            let phase_started_at = Instant::now();
+            let thir = thir::package::build_package(&package, self.context, results)?;
+            timings.push_elapsed("thir.build", phase_started_at);
+
+            let phase_started_at = Instant::now();
+            let package = mir::package::build_package(thir, self.context)?;
+            timings.push_elapsed("mir.build", phase_started_at);
+
+            let phase_started_at = Instant::now();
+            specialize::collect::collect_instances(package, self.context);
+            timings.push_elapsed("specialize.collect_instances", phase_started_at);
+
+            let emitted_instances = self.predicted_emitted_instances();
+            for instance in emitted_instances.iter().copied() {
+                self.context.mark_instance_compiled(instance);
+            }
+            self.context
+                .cache_emitted_instances(self.context.package_index(), emitted_instances);
+
+            Ok(())
+        })();
+
+        if self.context.config.debug.timings {
+            timings.emit(
+                &package_name,
+                "prepare_dependency_reuse",
+                total_started_at.elapsed(),
+            );
+        }
+
+        result
+    }
+
     pub fn analyze(
         &mut self,
     ) -> CompileResult<(
@@ -223,6 +289,37 @@ impl<'state> Compiler<'state> {
     )> {
         let mut timings = TimingReport::default();
         self.analyze_with_timings(&mut timings)
+    }
+
+    fn predicted_emitted_instances(&self) -> FxHashSet<specialize::Instance<'state>> {
+        let mut emitted = FxHashSet::default();
+        let current_pkg = self.context.package_index();
+
+        for instance in self.context.specializations_of(current_pkg) {
+            let specialize::InstanceKind::Item(def_id) = instance.kind() else {
+                continue;
+            };
+
+            if matches!(
+                self.context.get_signature(def_id).abi,
+                Some(hir::Abi::Intrinsic | hir::Abi::C)
+            ) {
+                continue;
+            }
+
+            let has_mir_body = {
+                let packages = self.context.store.mir_packages.borrow();
+                packages
+                    .get(&def_id.package())
+                    .is_some_and(|pkg| pkg.functions.contains_key(&def_id))
+            };
+
+            if has_mir_body {
+                emitted.insert(instance);
+            }
+        }
+
+        emitted
     }
 
     fn analyze_with_timings(

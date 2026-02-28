@@ -49,6 +49,9 @@ pub struct CommandLineArguments {
     /// Print compiler phase timings (parse -> link) to stderr.
     #[arg(long = "timings")]
     pub timings: bool,
+    /// Disable incremental dependency reuse and force cold compilation.
+    #[arg(long = "no-incremental")]
+    pub no_incremental: bool,
 }
 
 impl CommandLineArguments {

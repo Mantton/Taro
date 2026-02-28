@@ -1,3 +1,4 @@
+use super::incremental;
 use crate::{
     CommandLineArguments, CompileModeOptions,
     package::{
@@ -17,6 +18,7 @@ use compiler::{
     constants::STD_PREFIX,
     diagnostics::DiagCtx,
     error::ReportedError,
+    metadata::{self, MetadataLoadStatus},
 };
 use rustc_hash::FxHashMap;
 use std::{
@@ -89,9 +91,17 @@ fn run_single_file(
         compile_options.profile,
     )?;
     let icx = CompilerContext::new(dcx, store);
+    let mut package_fingerprints = FxHashMap::default();
+    let incremental_enabled = !arguments.no_incremental;
 
     // Compile std (index 0)
-    compile_std(&icx, arguments.std_path.clone(), compile_options)?;
+    compile_std(
+        &icx,
+        arguments.std_path.clone(),
+        compile_options,
+        incremental_enabled,
+        &mut package_fingerprints,
+    )?;
     build_runtime(&icx, &target_root, arguments.runtime_path.clone())?;
 
     // Create virtual config for single file
@@ -169,13 +179,21 @@ fn run_package(
         compile_options.profile,
     )?;
     let icx = CompilerContext::new(dcx, store);
+    let mut package_fingerprints = FxHashMap::default();
+    let incremental_enabled = !arguments.no_incremental;
 
     let graph = sync_dependencies(arguments.path)?;
 
     let root_is_std = is_root_std_package(&graph, arguments.std_path.clone(), &icx)?;
 
     if !root_is_std {
-        let _ = compile_std(&icx, arguments.std_path.clone(), compile_options)?;
+        let _ = compile_std(
+            &icx,
+            arguments.std_path.clone(),
+            compile_options,
+            incremental_enabled,
+            &mut package_fingerprints,
+        )?;
         build_runtime(&icx, &project_root, arguments.runtime_path.clone())?;
     }
 
@@ -205,7 +223,6 @@ fn run_package(
         }
 
         let package_index = PackageIndex::new(index + 1);
-        eprintln!("Compiling – {}", package.package.0);
         let name = get_package_name(&package.package.0).map_err(|e| {
             icx.dcx.emit_error(
                 format!(
@@ -288,8 +305,61 @@ fn run_package(
             is_std_provider: is_std_package,
         });
 
+        let fingerprint_input =
+            incremental::compute_package_fingerprint_input(&icx, config, &package_fingerprints)
+                .map_err(|e| {
+                    icx.dcx.emit_error(
+                        format!(
+                            "failed to compute fingerprint for package '{}': {}",
+                            package.package.0, e
+                        ),
+                        None,
+                    );
+                    ReportedError
+                })?;
+
         let mut compiler = Compiler::new(&icx, config);
-        let exe_path = compiler.build()?;
+        let can_attempt_reuse = incremental_enabled && !is_root;
+        let reused = if can_attempt_reuse {
+            match metadata::try_load_package_metadata(compiler.context, &fingerprint_input) {
+                MetadataLoadStatus::Hit(hit) => {
+                    eprintln!("Reusing – {}", package.package.0);
+                    compiler.prepare_dependency_reuse()?;
+                    compiler.context.cache_object_file(hit.object_path);
+                    true
+                }
+                MetadataLoadStatus::Miss(_) => {
+                    eprintln!("Compiling – {}", package.package.0);
+                    false
+                }
+            }
+        } else {
+            eprintln!("Compiling – {}", package.package.0);
+            false
+        };
+
+        let exe_path = if reused {
+            None
+        } else {
+            let exe_path = compiler.build()?;
+            if !is_root {
+                if let Err(e) =
+                    metadata::write_package_metadata(compiler.context, &fingerprint_input)
+                {
+                    eprintln!(
+                        "warning: failed to write metadata for '{}': {}",
+                        package.package.0, e
+                    );
+                }
+            }
+            exe_path
+        };
+
+        package_fingerprints.insert(
+            config.identifier.to_string(),
+            fingerprint_input.package_fingerprint,
+        );
+
         if exe_path.is_some() {
             return Ok(exe_path);
         }
@@ -433,9 +503,9 @@ fn compile_std<'a>(
     ctx: &'a CompilerContext<'a>,
     std_path: Option<PathBuf>,
     compile_options: CompileModeOptions,
+    incremental_enabled: bool,
+    package_fingerprints: &mut FxHashMap<String, String>,
 ) -> Result<(), ReportedError> {
-    eprintln!("Compiling – std");
-
     let src = resolve_std_path(std_path).map_err(|e| {
         let message = format!("failed to resolve standard library location – {}", e);
         ctx.dcx.emit_error(message, None);
@@ -465,8 +535,49 @@ fn compile_std<'a>(
         std_mode: StdMode::BootstrapStd,
         is_std_provider: true,
     });
+
+    let fingerprint_input =
+        incremental::compute_package_fingerprint_input(ctx, config, package_fingerprints).map_err(
+            |e| {
+                ctx.dcx.emit_error(
+                    format!("failed to compute fingerprint for package 'std': {}", e),
+                    None,
+                );
+                ReportedError
+            },
+        )?;
+
     let mut compiler = Compiler::new(ctx, config);
-    let _ = compiler.build()?;
+    let reused = if incremental_enabled {
+        match metadata::try_load_package_metadata(compiler.context, &fingerprint_input) {
+            MetadataLoadStatus::Hit(hit) => {
+                eprintln!("Reusing – std");
+                compiler.prepare_dependency_reuse()?;
+                compiler.context.cache_object_file(hit.object_path);
+                true
+            }
+            MetadataLoadStatus::Miss(_) => {
+                eprintln!("Compiling – std");
+                false
+            }
+        }
+    } else {
+        eprintln!("Compiling – std");
+        false
+    };
+
+    if !reused {
+        let _ = compiler.build()?;
+        if let Err(e) = metadata::write_package_metadata(compiler.context, &fingerprint_input) {
+            eprintln!("warning: failed to write metadata for 'std': {}", e);
+        }
+    }
+
+    package_fingerprints.insert(
+        config.identifier.to_string(),
+        fingerprint_input.package_fingerprint,
+    );
+
     Ok(())
 }
 
@@ -592,8 +703,16 @@ fn run_single_file_test(
         compile_options.profile,
     )?;
     let icx = CompilerContext::new(dcx, store);
+    let mut package_fingerprints = FxHashMap::default();
+    let incremental_enabled = !arguments.no_incremental;
 
-    compile_std(&icx, arguments.std_path.clone(), compile_options)?;
+    compile_std(
+        &icx,
+        arguments.std_path.clone(),
+        compile_options,
+        incremental_enabled,
+        &mut package_fingerprints,
+    )?;
     build_runtime(&icx, &target_root, arguments.runtime_path.clone())?;
 
     let package_index = PackageIndex::new(1);
@@ -659,13 +778,21 @@ fn run_package_test(
         compile_options.profile,
     )?;
     let icx = CompilerContext::new(dcx, store);
+    let mut package_fingerprints = FxHashMap::default();
+    let incremental_enabled = !arguments.no_incremental;
 
     let graph = sync_dependencies(arguments.path)?;
 
     let root_is_std = is_root_std_package(&graph, arguments.std_path.clone(), &icx)?;
 
     if !root_is_std {
-        let _ = compile_std(&icx, arguments.std_path.clone(), compile_options)?;
+        let _ = compile_std(
+            &icx,
+            arguments.std_path.clone(),
+            compile_options,
+            incremental_enabled,
+            &mut package_fingerprints,
+        )?;
     }
     build_runtime(&icx, &project_root, arguments.runtime_path.clone())?;
 
@@ -780,16 +907,69 @@ fn run_package_test(
             is_std_provider: is_std_package,
         });
 
+        let fingerprint_input =
+            incremental::compute_package_fingerprint_input(&icx, config, &package_fingerprints)
+                .map_err(|e| {
+                    icx.dcx.emit_error(
+                        format!(
+                            "failed to compute fingerprint for package '{}': {}",
+                            package.package.0, e
+                        ),
+                        None,
+                    );
+                    ReportedError
+                })?;
+
         let mut compiler = Compiler::new(&icx, config);
         if is_root {
             eprintln!("Compiling tests – {}", package.package.0);
             let exe_path = compiler.test(selection)?;
+            package_fingerprints.insert(
+                config.identifier.to_string(),
+                fingerprint_input.package_fingerprint,
+            );
             if exe_path.is_some() {
                 return Ok(exe_path);
             }
         } else {
-            eprintln!("Compiling – {}", package.package.0);
-            let exe_path = compiler.build()?;
+            let reused = if incremental_enabled {
+                match metadata::try_load_package_metadata(compiler.context, &fingerprint_input) {
+                    MetadataLoadStatus::Hit(hit) => {
+                        eprintln!("Reusing – {}", package.package.0);
+                        compiler.prepare_dependency_reuse()?;
+                        compiler.context.cache_object_file(hit.object_path);
+                        true
+                    }
+                    MetadataLoadStatus::Miss(_) => {
+                        eprintln!("Compiling – {}", package.package.0);
+                        false
+                    }
+                }
+            } else {
+                eprintln!("Compiling – {}", package.package.0);
+                false
+            };
+
+            let exe_path = if reused {
+                None
+            } else {
+                let exe_path = compiler.build()?;
+                if let Err(e) =
+                    metadata::write_package_metadata(compiler.context, &fingerprint_input)
+                {
+                    eprintln!(
+                        "warning: failed to write metadata for '{}': {}",
+                        package.package.0, e
+                    );
+                }
+                exe_path
+            };
+
+            package_fingerprints.insert(
+                config.identifier.to_string(),
+                fingerprint_input.package_fingerprint,
+            );
+
             if exe_path.is_some() {
                 return Ok(exe_path);
             }

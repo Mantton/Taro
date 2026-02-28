@@ -18,5 +18,6 @@ typed-arena = "2.0.2"
 ena = "0.14.3"
 bumpalo = "3.17.0"
 serde = { version = "1.0.219", features = ["derive"] }
+blake3 = "1.8.2"
 inkwell = { version = "0.7.0", default-features = false, features = ["llvm16-0"] }
 petgraph = "0.8.3"

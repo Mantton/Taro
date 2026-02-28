@@ -11,6 +11,7 @@ pub mod constants;
 pub mod diagnostics;
 pub mod error;
 mod hir;
+pub mod metadata;
 pub mod mir;
 mod parse;
 mod sema;

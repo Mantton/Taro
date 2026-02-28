@@ -1085,6 +1085,26 @@ impl<'arena> GlobalContext<'arena> {
             .insert(pkg, instances);
     }
 
+    pub fn cache_emitted_instances(
+        self,
+        pkg: PackageIndex,
+        instances: FxHashSet<Instance<'arena>>,
+    ) {
+        self.context
+            .store
+            .emitted_instances
+            .borrow_mut()
+            .insert(pkg, instances);
+    }
+
+    pub fn emitted_instances_of(self, pkg: PackageIndex) -> Vec<Instance<'arena>> {
+        let cache = self.context.store.emitted_instances.borrow();
+        match cache.get(&pkg) {
+            Some(instances) => instances.iter().cloned().collect(),
+            None => Vec::new(),
+        }
+    }
+
     pub fn specializations_of(self, pkg: PackageIndex) -> Vec<Instance<'arena>> {
         let cache = self.context.store.specialization_instances.borrow();
         match cache.get(&pkg) {
@@ -1199,6 +1219,8 @@ pub struct CompilerStore<'arena> {
     pub link_inputs: RefCell<Vec<PathBuf>>,
     pub output_root: PathBuf,
     pub specialization_instances: RefCell<FxHashMap<PackageIndex, FxHashSet<Instance<'arena>>>>,
+    /// Per-package set of instances emitted into that package object file.
+    pub emitted_instances: RefCell<FxHashMap<PackageIndex, FxHashSet<Instance<'arena>>>>,
     /// Global set of instances that have been compiled (to avoid duplicate work)
     pub compiled_instances: RefCell<FxHashSet<Instance<'arena>>>,
     /// Target-specific layout information (shared between MIR and codegen).
@@ -1239,6 +1261,7 @@ impl<'arena> CompilerStore<'arena> {
             link_inputs: Default::default(),
             output_root,
             specialization_instances: Default::default(),
+            emitted_instances: Default::default(),
             compiled_instances: Default::default(),
             target_layout,
             std_provider_index: std::cell::Cell::new(None),

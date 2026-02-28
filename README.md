@@ -85,6 +85,29 @@ python3 development/scripts/benchmark_timings.py examples/hello.tr --runs 10
 python3 development/scripts/benchmark_timings.py examples/hello.tr --command run --runs 5
 ```
 
+### Incremental Compilation
+
+Incremental dependency reuse is enabled by default for `taro build`, `taro run`, and `taro test`.
+
+Per dependency package, the compiler now emits:
+
+- `target/<profile>/objects/<package-identifier>.o`
+- `target/<profile>/metadata/<package-identifier>.taro_meta`
+
+On repeated builds, unchanged dependency packages can reuse cached object artifacts after metadata validation (format/version/compiler stamp/target/options/fingerprint checks).
+
+The root package is still cold-compiled in v0.
+
+Use `--no-incremental` to force a cold compile path:
+
+```bash
+taro build my-package --no-incremental
+taro run my-package --no-incremental
+taro test my-package --no-incremental
+```
+
+Metadata files use the `.taro_meta` extension and a binary internal format (not JSON).
+
 ### Makefile Commands
 
 For day-to-day development, you can use the root `Makefile`:

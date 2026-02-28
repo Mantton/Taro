@@ -4,6 +4,7 @@ use crate::CommandLineArguments;
 
 mod build;
 mod check;
+mod incremental;
 mod new;
 mod run;
 mod test;
