@@ -52,6 +52,9 @@ pub struct CommandLineArguments {
     /// Disable incremental dependency reuse and force cold compilation.
     #[arg(long = "no-incremental")]
     pub no_incremental: bool,
+    /// Rebuild and publish attached std artifacts from source.
+    #[arg(long = "build-std")]
+    pub build_std: bool,
 }
 
 impl CommandLineArguments {

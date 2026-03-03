@@ -124,12 +124,15 @@ impl<'ctx> InferCtx<'ctx> {
                 };
                 let owner = self.gcx.definition_parent(param.id).unwrap_or(param.id);
                 let lower_ctx = DefTyLoweringCtx::new(owner, self.gcx);
-                let expected_ty = match &param.kind {
-                    GenericParameterDefinitionKind::Const { ty, .. } => {
-                        lower_ctx.lowerer().lower_type(ty)
-                    }
-                    _ => self.gcx.types.error,
-                };
+                let expected_ty = self
+                    .gcx
+                    .try_generic_const_param_ty(param.id)
+                    .unwrap_or_else(|| match &param.kind {
+                        GenericParameterDefinitionKind::Const { ty, .. } => {
+                            lower_ctx.lowerer().lower_type(ty)
+                        }
+                        _ => self.gcx.types.error,
+                    });
                 GenericArgument::Const(self.new_const_var(expected_ty, origin))
             }
         }

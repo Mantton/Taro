@@ -25,6 +25,18 @@ impl StdItemRegistry {
         self.items.get(&item).copied()
     }
 
+    pub fn entries(&self) -> impl Iterator<Item = (StdItem, StdItemEntry)> + '_ {
+        self.items.iter().map(|(item, entry)| (*item, *entry))
+    }
+
+    pub fn from_entries(entries: impl IntoIterator<Item = (StdItem, StdItemEntry)>) -> Self {
+        let mut items = FxHashMap::default();
+        for (item, entry) in entries {
+            items.insert(item, entry);
+        }
+        StdItemRegistry { items }
+    }
+
     fn insert(&mut self, gcx: GlobalContext<'_>, item: StdItem, entry: StdItemEntry) -> bool {
         if let Some(existing) = self.items.get(&item) {
             let name = item.name_str().unwrap_or("<unknown>");

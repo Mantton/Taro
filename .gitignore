@@ -5,6 +5,8 @@
 /.claude
 /dist
 flamegraph.svg
+__pycache__/
+*.py[cod]
 
 # Created by https://www.toptal.com/developers/gitignore/api/rust,macos
 # Edit at https://www.toptal.com/developers/gitignore?templates=rust,macos

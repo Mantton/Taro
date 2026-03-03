@@ -32,6 +32,15 @@ impl DiagCtx {
         self.inner.borrow().file_mappings.get(id).cloned()
     }
 
+    pub fn all_file_mappings(&self) -> Vec<(FileID, PathBuf)> {
+        self.inner
+            .borrow()
+            .file_mappings
+            .iter_enumerated()
+            .map(|(id, path)| (id, path.clone()))
+            .collect()
+    }
+
     pub fn has_error(&self) -> bool {
         self.inner.borrow().has_error.get()
     }

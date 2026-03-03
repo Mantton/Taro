@@ -9,6 +9,7 @@ use crate::{
         GenericParameter, GenericParameterDefinition, GenericParameterDefinitionKind, Generics, Ty,
         TyKind,
     },
+    sema::tycheck::lower::{DefTyLoweringCtx, TypeLowerer},
 };
 
 pub fn run(package: &hir::Package, context: GlobalContext) -> CompileResult<()> {
@@ -89,6 +90,45 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
 }
 
 impl<'ctx> Actor<'ctx> {
+    fn cache_lowered_generic_metadata(&self, owner: DefinitionID) {
+        let gcx = self.context;
+        let params = gcx.generics_of(owner).parameters.clone();
+        let lowering_ctx = DefTyLoweringCtx::new(owner, gcx);
+        let lowerer: &dyn TypeLowerer<'ctx> = &lowering_ctx;
+
+        for param in &params {
+            match &param.kind {
+                GenericParameterDefinitionKind::Type { default } => {
+                    let Some(default) = default.as_ref() else {
+                        continue;
+                    };
+                    if gcx.try_generic_type_default(param.id).is_none() {
+                        let ty = lowerer.lower_type(default);
+                        gcx.cache_generic_type_default(param.id, ty);
+                    }
+                }
+                GenericParameterDefinitionKind::Const { ty, default } => {
+                    if gcx.try_generic_const_param_ty(param.id).is_none() {
+                        let lowered = lowerer.lower_type(ty);
+                        gcx.cache_generic_const_param_ty(param.id, lowered);
+                    }
+
+                    let Some(default) = default.as_ref() else {
+                        continue;
+                    };
+
+                    if gcx.try_generic_const_default(param.id).is_none() {
+                        let expected_ty = gcx
+                            .try_generic_const_param_ty(param.id)
+                            .unwrap_or_else(|| lowerer.lower_type(ty));
+                        let value = lowerer.lower_const_argument(expected_ty, default);
+                        gcx.cache_generic_const_default(param.id, value);
+                    }
+                }
+            }
+        }
+    }
+
     fn collect(&mut self, id: DefinitionID, generics: &hir::Generics) {
         let gcx = self.context;
 
@@ -183,5 +223,6 @@ impl<'ctx> Actor<'ctx> {
             parent_count,
         };
         gcx.cache_generics(id, generics);
+        self.cache_lowered_generic_metadata(id);
     }
 }

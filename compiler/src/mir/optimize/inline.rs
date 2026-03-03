@@ -316,7 +316,7 @@ fn resolve_callee_body<'ctx>(gcx: Gcx<'ctx>, callee_id: DefinitionID) -> Option<
 }
 
 /// Check if a function body is small enough to inline heuristically.
-fn is_body_small(body: &Body<'_>) -> bool {
+pub(crate) fn is_body_small(body: &Body<'_>) -> bool {
     if body_has_unwind(body) {
         return false;
     }

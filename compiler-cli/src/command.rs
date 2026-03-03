@@ -7,6 +7,7 @@ mod check;
 mod incremental;
 mod new;
 mod run;
+mod std_attached;
 mod test;
 
 pub fn handle(arguments: CommandLineArguments) -> CompileResult<()> {

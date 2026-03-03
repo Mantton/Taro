@@ -39,7 +39,7 @@ Taro is an experimental programming language that draws inspiration from Rust, S
 
 ### Build Distribution
 
-To build the compiler, runtime, and standard library from source, use `build_dist.py`. This creates a `dist/` directory with a sysroot-like structure.
+To build the compiler, runtime, and standard library from source, use `build_dist.py`. This creates a distribution directory with a sysroot-like structure (`dist/` by default). For automation/bench workflows, `build_dist.py` also supports `--profile` and `--dist-dir`.
 
 ```bash
 python3 development/scripts/build_dist.py
@@ -77,7 +77,7 @@ taro build examples/hello.tr --timings
 taro check examples/hello.tr --timings
 ```
 
-To benchmark timings across both debug and release profiles (including `std`) and print comparison tables:
+`benchmark_timings.py` bootstraps per-profile distributions via `build_dist.py` and then reports timing comparison tables:
 
 ```bash
 python3 development/scripts/benchmark_timings.py examples/hello.tr
@@ -87,26 +87,55 @@ python3 development/scripts/benchmark_timings.py examples/hello.tr --command run
 
 ### Incremental Compilation
 
-Incremental dependency reuse is enabled by default for `taro build`, `taro run`, and `taro test`.
+Incremental dependency reuse is enabled by default for:
 
-Per dependency package, the compiler now emits:
+- `taro build`
+- `taro run`
+- `taro test`
+- `taro check`
 
-- `target/<profile>/objects/<package-identifier>.o`
+Per dependency package, the compiler emits:
+
 - `target/<profile>/metadata/<package-identifier>.taro_meta`
+- `target/<profile>/objects/<package-identifier>.o` (build/run/test paths)
 
-On repeated builds, unchanged dependency packages can reuse cached object artifacts after metadata validation (format/version/compiler stamp/target/options/fingerprint checks).
+Reuse is mode-aware:
 
-The root package is still cold-compiled in v0.
+- `build`/`run`/`test` reuse dependency metadata + object artifacts.
+- `check` reuses dependency semantic metadata only (no object requirement).
 
-Use `--no-incremental` to force a cold compile path:
+### Attached Std Artifacts (Strict)
+
+`std` is treated as an attached toolchain artifact by default. The compiler expects prebuilt std artifacts in `TARO_HOME` and does not silently rebuild std on cache misses.
+
+Expected attached std artifact layout:
+
+- `TARO_HOME/lib/taro/std/<target-triple>/std.taro_meta`
+- `TARO_HOME/lib/taro/std/<target-triple>/std.o`
+
+On missing/invalid std artifacts, the compiler errors with guidance to rebuild std explicitly.
+
+Use `--build-std` to rebuild and publish attached std artifacts from source.
+Attached std is built in a canonical release-like configuration per target (shared across debug/release user builds):
+
+```bash
+taro check examples/hello.tr --build-std
+```
+
+Metadata reuse is guarded by format/version/compiler stamp/target/options/fingerprint/checksum validation for normal dependency caches.
+
+The root package is still cold-compiled/rechecked in v0.
+
+Use `--no-incremental` to force a cold path:
 
 ```bash
 taro build my-package --no-incremental
 taro run my-package --no-incremental
 taro test my-package --no-incremental
+taro check my-package --no-incremental
 ```
 
-Metadata files use the `.taro_meta` extension and a binary internal format (not JSON).
+Metadata files use the `.taro_meta` extension and a binary internal ABI (not JSON).
 
 ### Makefile Commands
 
@@ -319,7 +348,7 @@ The standard library provides assertion helpers in `std/testing`:
 To verify the compiler implementation, use the command that matches the test surface you want:
 
 - `cargo test --workspace`: Rust unit/integration/doctests for workspace crates.
-- `python3 development/scripts/language_tests.py`: Taro language E2E tests in `language_tests/source_files`. Runs in parallel by default using `min(selected_tests, CPU core count)` workers; `--jobs` is only needed to override (for example, `--jobs 1` for serial mode). Uses release compiler/runtime binaries by default; pass `--debug` when you need debug compiler behavior.
+- `python3 development/scripts/language_tests.py`: Taro language E2E tests in `language_tests/source_files`. Runs in parallel by default using `min(selected_tests, CPU core count)` workers; `--jobs` is only needed to override (for example, `--jobs 1` for serial mode). Bootstraps an isolated distribution via `build_dist.py` (release by default; pass `--debug` for debug bootstrap).
 - `make std-tests`: Runs std package tests only (`taro test std`) via the `test_all.py` std stage.
 - `python3 development/scripts/test_all.py`: Unified fail-fast pipeline (cargo tests, dist build, std compile smoke, std package tests, language tests).
 - `make all-tests`: Shorthand for the unified pipeline.

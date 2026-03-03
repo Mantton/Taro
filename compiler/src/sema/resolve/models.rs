@@ -106,6 +106,10 @@ impl DefinitionID {
     pub fn package(&self) -> PackageIndex {
         self.package_index
     }
+
+    pub fn index(&self) -> DefinitionIndex {
+        self.definition_index
+    }
 }
 
 pub type Scope<'arena> = Interned<'arena, ScopeData<'arena>>;

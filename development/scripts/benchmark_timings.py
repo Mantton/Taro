@@ -2,7 +2,6 @@
 import argparse
 import os
 import re
-import shutil
 import statistics
 import subprocess
 import sys
@@ -13,7 +12,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 STD_PATH_DEFAULT = PROJECT_ROOT / "std"
-TARO_BIN_NAME = "taro-bin"
+BUILD_DIST_SCRIPT = PROJECT_ROOT / "development" / "scripts" / "build_dist.py"
 
 HEADER_RE = re.compile(r"^Timings – (?P<package>.+) \((?P<mode>.+)\)$")
 ROW_RE = re.compile(r"^\s{2}(?P<phase>.+?)\s+(?P<ms>\d+\.\d+)\s+ms$")
@@ -24,6 +23,7 @@ class ProfileEnvironment:
     profile: str
     compiler: Path
     taro_home: Path
+    dist_dir: Path
 
 
 def parse_args() -> tuple[argparse.Namespace, list[str]]:
@@ -67,31 +67,36 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     return args, extra
 
 
-def build_profile(profile: str):
-    print(f"Building compiler/runtime ({profile})...")
-    cmd = ["cargo", "build", "-p", "taro-bin", "-p", "taro-runtime"]
-    if profile == "release":
-        cmd.append("--release")
-    result = subprocess.run(
-        cmd,
-        cwd=PROJECT_ROOT,
-        capture_output=True,
-        text=True,
+def setup_profile_env(profile: str, temp_root: Path, std_path: Path) -> ProfileEnvironment:
+    dist_dir = temp_root / profile / "dist"
+    build_cmd = [
+        sys.executable,
+        str(BUILD_DIST_SCRIPT),
+        "--profile",
+        profile,
+        "--dist-dir",
+        str(dist_dir),
+        "--std-path",
+        str(std_path),
+    ]
+    try:
+        subprocess.run(
+            build_cmd,
+            cwd=PROJECT_ROOT,
+            check=True,
+        )
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(f"build_dist bootstrap failed for profile={profile}") from error
+
+    compiler = dist_dir / "bin" / "taro"
+    if not compiler.exists():
+        raise RuntimeError(f"compiler binary missing after dist bootstrap: {compiler}")
+    return ProfileEnvironment(
+        profile=profile,
+        compiler=compiler,
+        taro_home=dist_dir,
+        dist_dir=dist_dir,
     )
-    if result.returncode != 0:
-        print(result.stdout)
-        print(result.stderr, file=sys.stderr)
-        raise RuntimeError(f"build failed for profile={profile}")
-
-
-def setup_profile_env(profile: str, temp_root: Path) -> ProfileEnvironment:
-    compiler = PROJECT_ROOT / "target" / profile / TARO_BIN_NAME
-    runtime_src = PROJECT_ROOT / "target" / profile / "libtaro_runtime.a"
-    taro_home = temp_root / profile / "taro_home"
-    taro_home_lib = taro_home / "lib"
-    taro_home_lib.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(runtime_src, taro_home_lib / "libtaro_runtime.a")
-    return ProfileEnvironment(profile=profile, compiler=compiler, taro_home=taro_home)
 
 
 def parse_timings(output: str) -> dict[tuple[str, str, str], float]:
@@ -231,9 +236,6 @@ def main():
         print(f"std path does not exist: {std_path}", file=sys.stderr)
         sys.exit(1)
 
-    for profile in ("debug", "release"):
-        build_profile(profile)
-
     samples_by_profile: dict[str, list[dict[tuple[str, str, str], float]]] = {
         "debug": [],
         "release": [],
@@ -241,9 +243,10 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="taro_bench_timings_") as temp_dir:
         temp_root = Path(temp_dir)
+        print("Bootstrapping benchmark distributions via build_dist.py...")
         envs = {
-            "debug": setup_profile_env("debug", temp_root),
-            "release": setup_profile_env("release", temp_root),
+            "debug": setup_profile_env("debug", temp_root, std_path),
+            "release": setup_profile_env("release", temp_root, std_path),
         }
 
         for profile in ("debug", "release"):

@@ -1,7 +1,7 @@
 use crate::{
     compile::context::GlobalContext,
     hir::{self, DefinitionID},
-    mir::{Body, Constant, ConstantKind, Operand, Rvalue, StatementKind, TerminatorKind},
+    mir::Body,
     sema::models::{GenericArgument, GenericArguments},
     specialize::{Instance, resolve_instance},
 };
@@ -89,40 +89,7 @@ impl<'ctx> Collector<'ctx> {
 
     /// Visit a body and discover generic calls.
     fn visit_body(&mut self, parent: Instance<'ctx>, body: &Body<'ctx>) {
-        // Walk all blocks
-        for block in &body.basic_blocks {
-            // Check statements
-            for stmt in &block.statements {
-                if let StatementKind::Assign(_, rvalue) = &stmt.kind {
-                    self.visit_rvalue(parent, rvalue);
-                }
-            }
-
-            // Check terminator
-            if let Some(terminator) = &block.terminator {
-                match &terminator.kind {
-                    TerminatorKind::Call { func, args, .. } => {
-                        self.visit_operand(parent, func);
-                        for arg in args {
-                            self.visit_operand(parent, arg);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    /// Visit an operand, looking for function constants.
-    fn visit_operand(&mut self, parent: Instance<'ctx>, operand: &Operand<'ctx>) {
-        if let Operand::Constant(constant) = operand {
-            self.visit_constant(parent, constant);
-        }
-    }
-
-    /// Visit a constant, extracting generic function calls.
-    fn visit_constant(&mut self, parent: Instance<'ctx>, constant: &Constant<'ctx>) {
-        if let ConstantKind::Function(callee_id, call_args, _) = constant.value {
+        crate::mir::for_each_function_constant_in_body(body, |callee_id, call_args| {
             // Only process if there are generic arguments
             if !call_args.is_empty() {
                 // Substitute parent's types into the call's arguments
@@ -134,27 +101,7 @@ impl<'ctx> Collector<'ctx> {
                     self.worklist.push(instance);
                 }
             }
-        }
-    }
-
-    /// Visit an rvalue, looking for nested operands.
-    fn visit_rvalue(&mut self, parent: Instance<'ctx>, rvalue: &Rvalue<'ctx>) {
-        match rvalue {
-            Rvalue::Use(op) => self.visit_operand(parent, op),
-            Rvalue::UnaryOp { operand, .. } => self.visit_operand(parent, operand),
-            Rvalue::BinaryOp { lhs, rhs, .. } => {
-                self.visit_operand(parent, lhs);
-                self.visit_operand(parent, rhs);
-            }
-            Rvalue::Cast { operand, .. } => self.visit_operand(parent, operand),
-            Rvalue::Aggregate { fields, .. } => {
-                for field in fields {
-                    self.visit_operand(parent, field);
-                }
-            }
-            Rvalue::Repeat { operand, .. } => self.visit_operand(parent, operand),
-            _ => {}
-        }
+        });
     }
 
     fn mir_body(&self, def_id: DefinitionID) -> Option<&'ctx Body<'ctx>> {

@@ -1,9 +1,8 @@
+use super::{incremental, std_attached};
 use crate::{
     CommandLineArguments, CompileModeOptions,
     package::{
-        manifest::ValidatedDependencyGraph,
-        sync::sync_dependencies,
-        utils::{get_package_name, language_home},
+        manifest::ValidatedDependencyGraph, sync::sync_dependencies, utils::get_package_name,
     },
 };
 use compiler::{
@@ -16,6 +15,7 @@ use compiler::{
     constants::STD_PREFIX,
     diagnostics::DiagCtx,
     error::ReportedError,
+    metadata::{self, MetadataLoadStatus, ReuseMode},
 };
 use rustc_hash::FxHashMap;
 use std::{
@@ -82,9 +82,16 @@ fn run_single_file(arguments: CommandLineArguments) -> Result<(), ReportedError>
         compile_options.profile,
     )?;
     let icx = CompilerContext::new(dcx, store);
+    let mut package_fingerprints = FxHashMap::default();
 
     // Compile std (index 0)
-    compile_std(&icx, arguments.std_path.clone(), compile_options)?;
+    compile_std(
+        &icx,
+        arguments.std_path.clone(),
+        compile_options,
+        arguments.build_std,
+        &mut package_fingerprints,
+    )?;
 
     // Create virtual config for single file
     let package_index = PackageIndex::new(1);
@@ -159,13 +166,21 @@ fn run_package(arguments: CommandLineArguments) -> Result<(), ReportedError> {
         compile_options.profile,
     )?;
     let icx = CompilerContext::new(dcx, store);
+    let mut package_fingerprints = FxHashMap::default();
+    let incremental_enabled = !arguments.no_incremental;
 
     let graph = sync_dependencies(arguments.path)?;
 
     let root_is_std = is_root_std_package(&graph, arguments.std_path.clone(), &icx)?;
 
     if !root_is_std {
-        compile_std(&icx, arguments.std_path.clone(), compile_options)?;
+        compile_std(
+            &icx,
+            arguments.std_path.clone(),
+            compile_options,
+            arguments.build_std,
+            &mut package_fingerprints,
+        )?;
     }
 
     let total = graph.ordered.len();
@@ -183,7 +198,6 @@ fn run_package(arguments: CommandLineArguments) -> Result<(), ReportedError> {
         }
 
         let package_index = PackageIndex::new(index + 1);
-        println!("Checking – {}", package.package.0);
         let name = get_package_name(&package.package.0).map_err(|e| {
             icx.dcx.emit_error(
                 format!(
@@ -267,8 +281,84 @@ fn run_package(arguments: CommandLineArguments) -> Result<(), ReportedError> {
             is_std_provider: is_std_package,
         });
 
+        let fingerprint_input =
+            incremental::compute_package_fingerprint_input(&icx, config, &package_fingerprints)
+                .map_err(|e| {
+                    icx.dcx.emit_error(
+                        format!(
+                            "failed to compute fingerprint for package '{}': {}",
+                            package.package.0, e
+                        ),
+                        None,
+                    );
+                    ReportedError
+                })?;
+
         let mut compiler = Compiler::new(&icx, config);
-        let _ = compiler.check()?;
+        let reused = if incremental_enabled && !is_root {
+            match metadata::try_load_package_metadata(
+                compiler.context,
+                &fingerprint_input,
+                ReuseMode::SemanticDependency,
+            ) {
+                MetadataLoadStatus::Hit(hit) => {
+                    match metadata::hydrate_loaded_metadata(
+                        compiler.context,
+                        &hit,
+                        ReuseMode::SemanticDependency,
+                    ) {
+                        Ok(()) => {
+                            if compiler.context.config.debug.timings {
+                                eprintln!("Reusing (metadata) – {}", package.package.0);
+                            }
+                            true
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "Checking – {} (metadata hydrate miss: {})",
+                                package.package.0, e
+                            );
+                            false
+                        }
+                    }
+                }
+                MetadataLoadStatus::Miss(reason) => {
+                    if compiler.context.config.debug.timings {
+                        eprintln!(
+                            "Checking – {} (metadata miss: {})",
+                            package.package.0, reason
+                        );
+                    } else {
+                        eprintln!("Checking – {}", package.package.0);
+                    }
+                    false
+                }
+            }
+        } else {
+            eprintln!("Checking – {}", package.package.0);
+            false
+        };
+
+        if !reused {
+            let _ = compiler.check()?;
+            if !is_root {
+                if let Err(e) = metadata::write_package_metadata(
+                    compiler.context,
+                    &fingerprint_input,
+                    ReuseMode::SemanticDependency,
+                ) {
+                    eprintln!(
+                        "warning: failed to write metadata for '{}': {}",
+                        package.package.0, e
+                    );
+                }
+            }
+        }
+
+        package_fingerprints.insert(
+            config.identifier.to_string(),
+            fingerprint_input.package_fingerprint,
+        );
     }
 
     Ok(())
@@ -278,55 +368,17 @@ fn compile_std<'a>(
     ctx: &'a CompilerContext<'a>,
     std_path: Option<PathBuf>,
     compile_options: CompileModeOptions,
+    build_std: bool,
+    package_fingerprints: &mut FxHashMap<String, String>,
 ) -> Result<(), ReportedError> {
-    println!("Checking – std");
-
-    let src = resolve_std_path(std_path).map_err(|e| {
-        let message = format!("failed to resolve standard library location – {}", e);
-        ctx.dcx.emit_error(message, None);
-        ReportedError
-    })?;
-
-    let index = PackageIndex::new(0);
-
-    let config = ctx.store.arenas.configs.alloc(Config {
-        index,
-        name: "std".into(),
-        identifier: "std".into(),
-        src,
-        dependencies: Default::default(),
-        kind: PackageKind::Library,
-        executable_out: None,
-        no_std_prelude: true,
-        is_script: false,
-        profile: compile_options.profile,
-        overflow_checks: compile_options.overflow_checks,
-        debug: DebugOptions {
-            dump_mir: false,
-            dump_llvm: false,
-            timings: compile_options.timings,
-        },
-        test_mode: false,
-        std_mode: StdMode::BootstrapStd,
-        is_std_provider: true,
-    });
-
-    let mut compiler = Compiler::new(ctx, config);
-    let _ = compiler.check()?;
-    Ok(())
-}
-
-fn resolve_std_path(std_path: Option<PathBuf>) -> Result<PathBuf, String> {
-    if let Some(path) = std_path {
-        return path
-            .canonicalize()
-            .map_err(|e| format!("--std-path {} is invalid: {}", path.display(), e));
-    }
-
-    let std_root = language_home()?.join(STD_PREFIX);
-    std_root
-        .canonicalize()
-        .map_err(|e| format!("{} is invalid: {}", std_root.display(), e))
+    std_attached::compile_std(
+        ctx,
+        std_path,
+        compile_options,
+        build_std,
+        package_fingerprints,
+        ReuseMode::SemanticDependency,
+    )
 }
 
 fn is_root_std_package(
@@ -334,40 +386,7 @@ fn is_root_std_package(
     std_path: Option<PathBuf>,
     ctx: &CompilerContext<'_>,
 ) -> Result<bool, ReportedError> {
-    let std_root = resolve_std_path(std_path).map_err(|e| {
-        ctx.dcx.emit_error(
-            format!("failed to resolve standard library location – {}", e),
-            None,
-        );
-        ReportedError
-    })?;
-
-    let Some(root_pkg) = graph.ordered.last() else {
-        return Ok(false);
-    };
-
-    let root_src = root_pkg.path().map_err(|e| {
-        ctx.dcx.emit_error(
-            format!(
-                "failed to resolve source path for '{}': {}",
-                root_pkg.package.0, e
-            ),
-            None,
-        );
-        ReportedError
-    })?;
-    let root_src = root_src.canonicalize().map_err(|e| {
-        ctx.dcx.emit_error(
-            format!(
-                "failed to canonicalize source path for '{}': {}",
-                root_pkg.package.0, e
-            ),
-            None,
-        );
-        ReportedError
-    })?;
-
-    Ok(root_src == std_root)
+    std_attached::is_root_std_package(graph, std_path, ctx)
 }
 
 fn profile_dir_name(profile: BuildProfile) -> &'static str {

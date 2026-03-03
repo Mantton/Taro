@@ -234,6 +234,61 @@ pub enum Rvalue<'ctx> {
     },
 }
 
+pub fn for_each_function_constant_in_body<'ctx>(
+    body: &Body<'ctx>,
+    mut visit: impl FnMut(DefinitionID, GenericArguments<'ctx>),
+) {
+    for block in &body.basic_blocks {
+        for statement in &block.statements {
+            if let StatementKind::Assign(_, rvalue) = &statement.kind {
+                for_each_function_constant_in_rvalue(rvalue, &mut visit);
+            }
+        }
+
+        if let Some(terminator) = &block.terminator {
+            if let TerminatorKind::Call { func, args, .. } = &terminator.kind {
+                for_each_function_constant_in_operand(func, &mut visit);
+                for argument in args {
+                    for_each_function_constant_in_operand(argument, &mut visit);
+                }
+            }
+        }
+    }
+}
+
+fn for_each_function_constant_in_rvalue<'ctx>(
+    rvalue: &Rvalue<'ctx>,
+    visit: &mut impl FnMut(DefinitionID, GenericArguments<'ctx>),
+) {
+    match rvalue {
+        Rvalue::Use(operand) => for_each_function_constant_in_operand(operand, visit),
+        Rvalue::UnaryOp { operand, .. } => for_each_function_constant_in_operand(operand, visit),
+        Rvalue::BinaryOp { lhs, rhs, .. } => {
+            for_each_function_constant_in_operand(lhs, visit);
+            for_each_function_constant_in_operand(rhs, visit);
+        }
+        Rvalue::Cast { operand, .. } => for_each_function_constant_in_operand(operand, visit),
+        Rvalue::Aggregate { fields, .. } => {
+            for field in fields.iter() {
+                for_each_function_constant_in_operand(field, visit);
+            }
+        }
+        Rvalue::Repeat { operand, .. } => for_each_function_constant_in_operand(operand, visit),
+        Rvalue::Ref { .. } | Rvalue::Discriminant { .. } | Rvalue::Alloc { .. } => {}
+    }
+}
+
+fn for_each_function_constant_in_operand<'ctx>(
+    operand: &Operand<'ctx>,
+    visit: &mut impl FnMut(DefinitionID, GenericArguments<'ctx>),
+) {
+    if let Operand::Constant(constant) = operand {
+        if let ConstantKind::Function(def_id, args, _) = constant.value {
+            visit(def_id, args);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum CastKind<'ctx> {
     Numeric,

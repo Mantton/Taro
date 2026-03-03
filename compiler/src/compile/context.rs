@@ -397,6 +397,42 @@ impl<'arena> GlobalContext<'arena> {
         debug_assert!(ok, "duplicated generic information")
     }
 
+    pub fn cache_generic_type_default(self, param_id: DefinitionID, ty: Ty<'arena>) {
+        self.with_type_database(param_id.package(), |db| {
+            db.generic_type_defaults.insert(param_id, ty);
+        });
+    }
+
+    pub fn try_generic_type_default(self, param_id: DefinitionID) -> Option<Ty<'arena>> {
+        self.with_type_database(param_id.package(), |db| {
+            db.generic_type_defaults.get(&param_id).copied()
+        })
+    }
+
+    pub fn cache_generic_const_param_ty(self, param_id: DefinitionID, ty: Ty<'arena>) {
+        self.with_type_database(param_id.package(), |db| {
+            db.generic_const_param_tys.insert(param_id, ty);
+        });
+    }
+
+    pub fn try_generic_const_param_ty(self, param_id: DefinitionID) -> Option<Ty<'arena>> {
+        self.with_type_database(param_id.package(), |db| {
+            db.generic_const_param_tys.get(&param_id).copied()
+        })
+    }
+
+    pub fn cache_generic_const_default(self, param_id: DefinitionID, value: Const<'arena>) {
+        self.with_type_database(param_id.package(), |db| {
+            db.generic_const_defaults.insert(param_id, value);
+        });
+    }
+
+    pub fn try_generic_const_default(self, param_id: DefinitionID) -> Option<Const<'arena>> {
+        self.with_type_database(param_id.package(), |db| {
+            db.generic_const_defaults.get(&param_id).copied()
+        })
+    }
+
     pub fn cache_attributes(self, id: DefinitionID, attributes: hir::AttributeList) {
         let mut cache = self.context.store.type_databases.borrow_mut();
         let package_index = id.package();
@@ -1502,6 +1538,12 @@ pub struct TypeDatabase<'arena> {
     pub type_head_to_impls: FxHashMap<TypeHead, Vec<DefinitionID>>,
     pub type_head_to_members: FxHashMap<TypeHead, TypeMemberIndex>,
     pub def_to_generics: FxHashMap<DefinitionID, &'arena Generics>,
+    /// Lowered default type for a generic type parameter (keyed by parameter DefinitionID).
+    pub generic_type_defaults: FxHashMap<DefinitionID, Ty<'arena>>,
+    /// Lowered expected type of a generic const parameter (keyed by parameter DefinitionID).
+    pub generic_const_param_tys: FxHashMap<DefinitionID, Ty<'arena>>,
+    /// Lowered default value of a generic const parameter (keyed by parameter DefinitionID).
+    pub generic_const_defaults: FxHashMap<DefinitionID, Const<'arena>>,
     pub def_to_attributes: FxHashMap<DefinitionID, &'arena hir::AttributeList>,
     pub def_to_iface_def: FxHashMap<DefinitionID, &'arena InterfaceDefinition<'arena>>,
     pub interface_to_supers: FxHashMap<DefinitionID, FxHashSet<DefinitionID>>,

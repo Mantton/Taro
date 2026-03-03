@@ -1,4 +1,4 @@
-use super::incremental;
+use super::{incremental, std_attached};
 use crate::{
     CommandLineArguments, CompileModeOptions,
     package::{
@@ -18,7 +18,7 @@ use compiler::{
     constants::STD_PREFIX,
     diagnostics::DiagCtx,
     error::ReportedError,
-    metadata::{self, MetadataLoadStatus},
+    metadata::{self, MetadataLoadStatus, ReuseMode},
 };
 use rustc_hash::FxHashMap;
 use std::{
@@ -92,14 +92,13 @@ fn run_single_file(
     )?;
     let icx = CompilerContext::new(dcx, store);
     let mut package_fingerprints = FxHashMap::default();
-    let incremental_enabled = !arguments.no_incremental;
 
     // Compile std (index 0)
     compile_std(
         &icx,
         arguments.std_path.clone(),
         compile_options,
-        incremental_enabled,
+        arguments.build_std,
         &mut package_fingerprints,
     )?;
     build_runtime(&icx, &target_root, arguments.runtime_path.clone())?;
@@ -191,7 +190,7 @@ fn run_package(
             &icx,
             arguments.std_path.clone(),
             compile_options,
-            incremental_enabled,
+            arguments.build_std,
             &mut package_fingerprints,
         )?;
         build_runtime(&icx, &project_root, arguments.runtime_path.clone())?;
@@ -321,15 +320,41 @@ fn run_package(
         let mut compiler = Compiler::new(&icx, config);
         let can_attempt_reuse = incremental_enabled && !is_root;
         let reused = if can_attempt_reuse {
-            match metadata::try_load_package_metadata(compiler.context, &fingerprint_input) {
+            match metadata::try_load_package_metadata(
+                compiler.context,
+                &fingerprint_input,
+                ReuseMode::CodegenDependency,
+            ) {
                 MetadataLoadStatus::Hit(hit) => {
-                    eprintln!("Reusing – {}", package.package.0);
-                    compiler.prepare_dependency_reuse()?;
-                    compiler.context.cache_object_file(hit.object_path);
-                    true
+                    match metadata::hydrate_loaded_metadata(
+                        compiler.context,
+                        &hit,
+                        ReuseMode::CodegenDependency,
+                    ) {
+                        Ok(()) => {
+                            if compiler.context.config.debug.timings {
+                                eprintln!("Reusing (metadata+object) – {}", package.package.0);
+                            }
+                            true
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "Compiling – {} (metadata hydrate miss: {})",
+                                package.package.0, e
+                            );
+                            false
+                        }
+                    }
                 }
-                MetadataLoadStatus::Miss(_) => {
-                    eprintln!("Compiling – {}", package.package.0);
+                MetadataLoadStatus::Miss(reason) => {
+                    if compiler.context.config.debug.timings {
+                        eprintln!(
+                            "Compiling – {} (metadata miss: {})",
+                            package.package.0, reason
+                        );
+                    } else {
+                        eprintln!("Compiling – {}", package.package.0);
+                    }
                     false
                 }
             }
@@ -343,9 +368,11 @@ fn run_package(
         } else {
             let exe_path = compiler.build()?;
             if !is_root {
-                if let Err(e) =
-                    metadata::write_package_metadata(compiler.context, &fingerprint_input)
-                {
+                if let Err(e) = metadata::write_package_metadata(
+                    compiler.context,
+                    &fingerprint_input,
+                    ReuseMode::CodegenDependency,
+                ) {
                     eprintln!(
                         "warning: failed to write metadata for '{}': {}",
                         package.package.0, e
@@ -503,95 +530,17 @@ fn compile_std<'a>(
     ctx: &'a CompilerContext<'a>,
     std_path: Option<PathBuf>,
     compile_options: CompileModeOptions,
-    incremental_enabled: bool,
+    build_std: bool,
     package_fingerprints: &mut FxHashMap<String, String>,
 ) -> Result<(), ReportedError> {
-    let src = resolve_std_path(std_path).map_err(|e| {
-        let message = format!("failed to resolve standard library location – {}", e);
-        ctx.dcx.emit_error(message, None);
-        ReportedError
-    })?;
-
-    let index = PackageIndex::new(0);
-
-    let config = ctx.store.arenas.configs.alloc(Config {
-        index,
-        name: "std".into(),
-        identifier: "std".into(),
-        src,
-        dependencies: Default::default(),
-        kind: PackageKind::Library,
-        executable_out: None,
-        no_std_prelude: true,
-        is_script: false,
-        profile: compile_options.profile,
-        overflow_checks: compile_options.overflow_checks,
-        debug: DebugOptions {
-            dump_mir: false,
-            dump_llvm: false,
-            timings: compile_options.timings,
-        },
-        test_mode: false,
-        std_mode: StdMode::BootstrapStd,
-        is_std_provider: true,
-    });
-
-    let fingerprint_input =
-        incremental::compute_package_fingerprint_input(ctx, config, package_fingerprints).map_err(
-            |e| {
-                ctx.dcx.emit_error(
-                    format!("failed to compute fingerprint for package 'std': {}", e),
-                    None,
-                );
-                ReportedError
-            },
-        )?;
-
-    let mut compiler = Compiler::new(ctx, config);
-    let reused = if incremental_enabled {
-        match metadata::try_load_package_metadata(compiler.context, &fingerprint_input) {
-            MetadataLoadStatus::Hit(hit) => {
-                eprintln!("Reusing – std");
-                compiler.prepare_dependency_reuse()?;
-                compiler.context.cache_object_file(hit.object_path);
-                true
-            }
-            MetadataLoadStatus::Miss(_) => {
-                eprintln!("Compiling – std");
-                false
-            }
-        }
-    } else {
-        eprintln!("Compiling – std");
-        false
-    };
-
-    if !reused {
-        let _ = compiler.build()?;
-        if let Err(e) = metadata::write_package_metadata(compiler.context, &fingerprint_input) {
-            eprintln!("warning: failed to write metadata for 'std': {}", e);
-        }
-    }
-
-    package_fingerprints.insert(
-        config.identifier.to_string(),
-        fingerprint_input.package_fingerprint,
-    );
-
-    Ok(())
-}
-
-fn resolve_std_path(std_path: Option<PathBuf>) -> Result<PathBuf, String> {
-    if let Some(path) = std_path {
-        return path
-            .canonicalize()
-            .map_err(|e| format!("--std-path {} is invalid: {}", path.display(), e));
-    }
-
-    let std_root = language_home()?.join(STD_PREFIX);
-    std_root
-        .canonicalize()
-        .map_err(|e| format!("{} is invalid: {}", std_root.display(), e))
+    std_attached::compile_std(
+        ctx,
+        std_path,
+        compile_options,
+        build_std,
+        package_fingerprints,
+        ReuseMode::CodegenDependency,
+    )
 }
 
 fn is_root_std_package(
@@ -599,40 +548,7 @@ fn is_root_std_package(
     std_path: Option<PathBuf>,
     ctx: &CompilerContext<'_>,
 ) -> Result<bool, ReportedError> {
-    let std_root = resolve_std_path(std_path).map_err(|e| {
-        ctx.dcx.emit_error(
-            format!("failed to resolve standard library location – {}", e),
-            None,
-        );
-        ReportedError
-    })?;
-
-    let Some(root_pkg) = graph.ordered.last() else {
-        return Ok(false);
-    };
-
-    let root_src = root_pkg.path().map_err(|e| {
-        ctx.dcx.emit_error(
-            format!(
-                "failed to resolve source path for '{}': {}",
-                root_pkg.package.0, e
-            ),
-            None,
-        );
-        ReportedError
-    })?;
-    let root_src = root_src.canonicalize().map_err(|e| {
-        ctx.dcx.emit_error(
-            format!(
-                "failed to canonicalize source path for '{}': {}",
-                root_pkg.package.0, e
-            ),
-            None,
-        );
-        ReportedError
-    })?;
-
-    Ok(root_src == std_root)
+    std_attached::is_root_std_package(graph, std_path, ctx)
 }
 
 // ─── Test mode build ──────────────────────────────────────────────────
@@ -704,13 +620,12 @@ fn run_single_file_test(
     )?;
     let icx = CompilerContext::new(dcx, store);
     let mut package_fingerprints = FxHashMap::default();
-    let incremental_enabled = !arguments.no_incremental;
 
     compile_std(
         &icx,
         arguments.std_path.clone(),
         compile_options,
-        incremental_enabled,
+        arguments.build_std,
         &mut package_fingerprints,
     )?;
     build_runtime(&icx, &target_root, arguments.runtime_path.clone())?;
@@ -790,7 +705,7 @@ fn run_package_test(
             &icx,
             arguments.std_path.clone(),
             compile_options,
-            incremental_enabled,
+            arguments.build_std,
             &mut package_fingerprints,
         )?;
     }
@@ -933,15 +848,41 @@ fn run_package_test(
             }
         } else {
             let reused = if incremental_enabled {
-                match metadata::try_load_package_metadata(compiler.context, &fingerprint_input) {
+                match metadata::try_load_package_metadata(
+                    compiler.context,
+                    &fingerprint_input,
+                    ReuseMode::CodegenDependency,
+                ) {
                     MetadataLoadStatus::Hit(hit) => {
-                        eprintln!("Reusing – {}", package.package.0);
-                        compiler.prepare_dependency_reuse()?;
-                        compiler.context.cache_object_file(hit.object_path);
-                        true
+                        match metadata::hydrate_loaded_metadata(
+                            compiler.context,
+                            &hit,
+                            ReuseMode::CodegenDependency,
+                        ) {
+                            Ok(()) => {
+                                if compiler.context.config.debug.timings {
+                                    eprintln!("Reusing (metadata+object) – {}", package.package.0);
+                                }
+                                true
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "Compiling – {} (metadata hydrate miss: {})",
+                                    package.package.0, e
+                                );
+                                false
+                            }
+                        }
                     }
-                    MetadataLoadStatus::Miss(_) => {
-                        eprintln!("Compiling – {}", package.package.0);
+                    MetadataLoadStatus::Miss(reason) => {
+                        if compiler.context.config.debug.timings {
+                            eprintln!(
+                                "Compiling – {} (metadata miss: {})",
+                                package.package.0, reason
+                            );
+                        } else {
+                            eprintln!("Compiling – {}", package.package.0);
+                        }
                         false
                     }
                 }
@@ -954,9 +895,11 @@ fn run_package_test(
                 None
             } else {
                 let exe_path = compiler.build()?;
-                if let Err(e) =
-                    metadata::write_package_metadata(compiler.context, &fingerprint_input)
-                {
+                if let Err(e) = metadata::write_package_metadata(
+                    compiler.context,
+                    &fingerprint_input,
+                    ReuseMode::CodegenDependency,
+                ) {
                     eprintln!(
                         "warning: failed to write metadata for '{}': {}",
                         package.package.0, e

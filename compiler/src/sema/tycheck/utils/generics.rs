@@ -30,7 +30,9 @@ impl<'ctx> GenericsBuilder<'ctx> {
                     index: param.index,
                     name: param.name,
                 };
-                let ty = lower_ctx.lowerer().lower_type(ty);
+                let ty = gcx
+                    .try_generic_const_param_ty(param.id)
+                    .unwrap_or_else(|| lower_ctx.lowerer().lower_type(ty));
                 GenericArgument::Const(Const {
                     ty,
                     kind: ConstKind::Param(p),

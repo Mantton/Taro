@@ -614,7 +614,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 default: Some(default),
             } => {
                 let infer_var = self.icx.var_for_generic_param(param, span);
-                let mut default_ty = lower_ctx.lowerer().lower_type(default);
+                let mut default_ty = gcx
+                    .try_generic_type_default(param.id)
+                    .unwrap_or_else(|| lower_ctx.lowerer().lower_type(default));
                 default_ty = self.substitute_interface_self_default(default_ty, current_args);
                 default_ty = instantiate_ty_with_args(gcx, default_ty, current_args);
                 self.push_default_fallback_goal(infer_var, GenericArgument::Type(default_ty), span);
@@ -627,11 +629,16 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 ty,
                 default: Some(default),
             } => {
-                let expected_ty = lower_ctx.lowerer().lower_type(ty);
+                let expected_ty = gcx
+                    .try_generic_const_param_ty(param.id)
+                    .unwrap_or_else(|| lower_ctx.lowerer().lower_type(ty));
                 let infer_var = self.icx.var_for_generic_param(param, span);
-                let mut default_const = lower_ctx
-                    .lowerer()
-                    .lower_const_argument(expected_ty, default);
+                let mut default_const =
+                    gcx.try_generic_const_default(param.id).unwrap_or_else(|| {
+                        lower_ctx
+                            .lowerer()
+                            .lower_const_argument(expected_ty, default)
+                    });
                 default_const = instantiate_const_with_args(gcx, default_const, current_args);
                 self.push_default_fallback_goal(
                     infer_var,

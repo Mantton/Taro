@@ -331,7 +331,9 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                             GenericParameterDefinitionKind::Const { ty, .. },
                             hir::TypeArgument::Const(c),
                         ) => {
-                            let expected_ty = self.lower_type(ty);
+                            let expected_ty = gcx
+                                .try_generic_const_param_ty(param.id)
+                                .unwrap_or_else(|| self.lower_type(ty));
                             GenericArgument::Const(self.lower_const_argument(expected_ty, c))
                         }
                         (
@@ -346,7 +348,9 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                             GenericParameterDefinitionKind::Const { ty: param_ty, .. },
                             hir::TypeArgument::Type(ty_arg),
                         ) => {
-                            let expected_ty = self.lower_type(param_ty);
+                            let expected_ty = gcx
+                                .try_generic_const_param_ty(param.id)
+                                .unwrap_or_else(|| self.lower_type(param_ty));
                             if let Some(param) = self.const_param_from_type_arg(ty_arg) {
                                 if param.ty != expected_ty
                                     && param.ty != gcx.types.error
@@ -389,7 +393,9 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                         GenericParameterDefinitionKind::Type { default: Some(d) } => {
                             if self.can_infer() {
                                 let infer_ty = self.ty_infer(Some(param), span);
-                                let mut default_ty = self.lower_type(&d);
+                                let mut default_ty = gcx
+                                    .try_generic_type_default(param.id)
+                                    .unwrap_or_else(|| self.lower_type(d));
                                 if let Some(self_ty) = self_ty {
                                     default_ty =
                                         self.substitute_interface_self_default(default_ty, self_ty);
@@ -408,7 +414,9 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
 
                                 output.push(GenericArgument::Type(infer_ty));
                             } else {
-                                let mut ty = self.lower_type(&d);
+                                let mut ty = gcx
+                                    .try_generic_type_default(param.id)
+                                    .unwrap_or_else(|| self.lower_type(d));
                                 if let Some(self_ty) = self_ty {
                                     ty = self.substitute_interface_self_default(ty, self_ty);
                                 }
@@ -424,13 +432,17 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
 
                         // ---- const param ----
                         GenericParameterDefinitionKind::Const { ty, default } => {
-                            let expected_ty = self.lower_type(ty);
+                            let expected_ty = gcx
+                                .try_generic_const_param_ty(param.id)
+                                .unwrap_or_else(|| self.lower_type(ty));
                             if let Some(default) = default {
                                 if self.can_infer() {
                                     let infer_const =
                                         self.const_infer(expected_ty, Some(param), span);
                                     let mut default_const =
-                                        self.lower_const_argument(expected_ty, default);
+                                        gcx.try_generic_const_default(param.id).unwrap_or_else(
+                                            || self.lower_const_argument(expected_ty, default),
+                                        );
                                     let current_args =
                                         gcx.store.interners.intern_generic_args(output.clone());
                                     default_const = instantiate_const_with_args(
@@ -445,7 +457,10 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                                     });
                                     output.push(GenericArgument::Const(infer_const));
                                 } else {
-                                    let konst = self.lower_const_argument(expected_ty, default);
+                                    let konst =
+                                        gcx.try_generic_const_default(param.id).unwrap_or_else(
+                                            || self.lower_const_argument(expected_ty, default),
+                                        );
                                     output.push(GenericArgument::Const(konst));
                                 }
                             } else {
@@ -1188,10 +1203,12 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         let generics = gcx.generics_of(owner);
         let def = generics.parameters.iter().find(|p| p.id == param_id)?;
 
-        let ty = match &def.kind {
-            GenericParameterDefinitionKind::Const { ty, .. } => self.lower_type(ty),
-            _ => return None,
-        };
+        let ty = gcx
+            .try_generic_const_param_ty(param_id)
+            .or_else(|| match &def.kind {
+                GenericParameterDefinitionKind::Const { ty, .. } => Some(self.lower_type(ty)),
+                _ => None,
+            })?;
 
         let param = GenericParameter {
             index: def.index,
@@ -1219,17 +1236,18 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         let generics = gcx.generics_of(owner);
         let def = generics.parameters.iter().find(|p| p.id == param_id)?;
 
-        let GenericParameterDefinitionKind::Const { ty, .. } = &def.kind else {
-            return None;
-        };
-
         let param = GenericParameter {
             index: def.index,
             name: def.name,
         };
 
         Some(Const {
-            ty: self.lower_type(ty),
+            ty: gcx
+                .try_generic_const_param_ty(param_id)
+                .or_else(|| match &def.kind {
+                    GenericParameterDefinitionKind::Const { ty, .. } => Some(self.lower_type(ty)),
+                    _ => None,
+                })?,
             kind: ConstKind::Param(param),
         })
     }

@@ -1693,6 +1693,9 @@ impl<'ctx> Checker<'ctx> {
                         let Some(owner) = self.gcx().definition_parent(*id) else {
                             return Ty::error(self.gcx());
                         };
+                        if let Some(ty) = self.gcx().try_generic_const_param_ty(*id) {
+                            return ty;
+                        }
                         let generics = self.gcx().generics_of(owner);
                         let Some(param) = generics.parameters.iter().find(|p| p.id == *id) else {
                             return Ty::error(self.gcx());
@@ -1895,12 +1898,7 @@ impl<'ctx> Checker<'ctx> {
         let callee_def = self.resolve_callee(callee, cs);
         let arg_expectations = if !callee_ty.is_error() {
             self.argument_expectations_for_call(
-                callee,
-                arguments,
-                callee_ty,
-                expect_ty,
-                callee_def,
-                cs,
+                callee, arguments, callee_ty, expect_ty, callee_def, cs,
             )
         } else {
             None
@@ -3730,7 +3728,9 @@ impl<'ctx> Checker<'ctx> {
                 GenericArgument::Type(self.lower_type(ty))
             }
             (GenericParameterDefinitionKind::Const { ty, .. }, hir::TypeArgument::Const(c)) => {
-                let expected_ty = self.lower_type(ty);
+                let expected_ty = gcx
+                    .try_generic_const_param_ty(param.id)
+                    .unwrap_or_else(|| self.lower_type(ty));
                 GenericArgument::Const(self.lowerer().lower_const_argument(expected_ty, c))
             }
             (
@@ -3760,7 +3760,9 @@ impl<'ctx> Checker<'ctx> {
                 GenericArgument::Type(gcx.types.error)
             }
             (GenericParameterDefinitionKind::Const { ty, .. }, hir::TypeArgument::Type(ty_arg)) => {
-                let expected_ty = self.lower_type(ty);
+                let expected_ty = gcx
+                    .try_generic_const_param_ty(param.id)
+                    .unwrap_or_else(|| self.lower_type(ty));
                 if let Some(param) = self.const_param_from_type_arg(ty_arg) {
                     if param.ty != expected_ty
                         && param.ty != gcx.types.error
@@ -3801,17 +3803,18 @@ impl<'ctx> Checker<'ctx> {
         let generics = gcx.generics_of(owner);
         let def = generics.parameters.iter().find(|p| p.id == param_id)?;
 
-        let GenericParameterDefinitionKind::Const { ty, .. } = &def.kind else {
-            return None;
-        };
-
         let param = GenericParameter {
             index: def.index,
             name: def.name,
         };
 
         Some(Const {
-            ty: self.lower_type(ty),
+            ty: gcx
+                .try_generic_const_param_ty(param_id)
+                .or_else(|| match &def.kind {
+                    GenericParameterDefinitionKind::Const { ty, .. } => Some(self.lower_type(ty)),
+                    _ => None,
+                })?,
             kind: ConstKind::Param(param),
         })
     }
@@ -3828,7 +3831,9 @@ impl<'ctx> Checker<'ctx> {
                 if let Some(default) = default {
                     if self.can_infer() {
                         let infer_ty = self.ty_infer(Some(param), span);
-                        let mut default_ty = self.lower_type(default);
+                        let mut default_ty = gcx
+                            .try_generic_type_default(param.id)
+                            .unwrap_or_else(|| self.lower_type(default));
                         default_ty = instantiate_ty_with_args(gcx, default_ty, current_args);
                         self.register_default_fallback(
                             crate::sema::tycheck::solve::DefaultFallbackGoalData {
@@ -3839,19 +3844,26 @@ impl<'ctx> Checker<'ctx> {
                         );
                         GenericArgument::Type(infer_ty)
                     } else {
-                        GenericArgument::Type(self.lower_type(default))
+                        GenericArgument::Type(
+                            gcx.try_generic_type_default(param.id)
+                                .unwrap_or_else(|| self.lower_type(default)),
+                        )
                     }
                 } else {
                     GenericArgument::Type(self.ty_infer(Some(param), span))
                 }
             }
             GenericParameterDefinitionKind::Const { ty, default } => {
-                let expected_ty = self.lower_type(ty);
+                let expected_ty = gcx
+                    .try_generic_const_param_ty(param.id)
+                    .unwrap_or_else(|| self.lower_type(ty));
                 if let Some(default) = default {
                     if self.can_infer() {
                         let infer_const = self.const_infer(expected_ty, Some(param), span);
                         let mut default_const =
-                            self.lowerer().lower_const_argument(expected_ty, default);
+                            gcx.try_generic_const_default(param.id).unwrap_or_else(|| {
+                                self.lowerer().lower_const_argument(expected_ty, default)
+                            });
                         default_const =
                             instantiate_const_with_args(gcx, default_const, current_args);
                         self.register_default_fallback(
@@ -3864,7 +3876,9 @@ impl<'ctx> Checker<'ctx> {
                         GenericArgument::Const(infer_const)
                     } else {
                         GenericArgument::Const(
-                            self.lowerer().lower_const_argument(expected_ty, default),
+                            gcx.try_generic_const_default(param.id).unwrap_or_else(|| {
+                                self.lowerer().lower_const_argument(expected_ty, default)
+                            }),
                         )
                     }
                 } else {

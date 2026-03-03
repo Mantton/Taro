@@ -16,7 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 LANGUAGE_TESTS_DIR = PROJECT_ROOT / "language_tests"
 SOURCE_FILES_DIR = LANGUAGE_TESTS_DIR / "source_files"
 OUTPUTS_DIR = LANGUAGE_TESTS_DIR / "outputs"
-TARO_BIN_CRATE = "taro-bin"
+BUILD_DIST_SCRIPT = PROJECT_ROOT / "development" / "scripts" / "build_dist.py"
 
 
 @dataclass(frozen=True)
@@ -32,64 +32,41 @@ TestRunResult = tuple[bool, str, TestDetails | None]
 
 
 def setup_test_environment(use_release: bool) -> TestEnvironment:
-    """Build the compiler and setup temporary directories."""
+    """Bootstrap a distribution and setup temporary directories."""
     profile = "release" if use_release else "debug"
-    print(f"Building compiler ({profile})...")
-
-    compiler_build_cmd = ["cargo", "build", "-p", TARO_BIN_CRATE]
-    if use_release:
-        compiler_build_cmd.append("--release")
-    build_result = subprocess.run(
-        compiler_build_cmd,
-        capture_output=True,
-        text=True,
-        cwd=PROJECT_ROOT,
-    )
-
-    if build_result.returncode != 0:
-        print("Failed to build compiler:")
-        print(build_result.stderr)
-        sys.exit(1)
-
-    print(f"Building runtime ({profile})...")
-    runtime_build_cmd = ["cargo", "build", "-p", "taro-runtime"]
-    if use_release:
-        runtime_build_cmd.append("--release")
-    runtime_build_result = subprocess.run(
-        runtime_build_cmd,
-        capture_output=True,
-        text=True,
-        cwd=PROJECT_ROOT,
-    )
-
-    if runtime_build_result.returncode != 0:
-        print("Failed to build runtime:")
-        print(runtime_build_result.stderr)
-        sys.exit(1)
-
-    print("Compiler built successfully.")
+    print(f"Bootstrapping distribution via build_dist.py ({profile})...")
 
     # Create temporary directory
     temp_dir = Path(tempfile.mkdtemp(prefix="taro_tests_"))
     print(f"Created temp directory: {temp_dir}")
 
-    # Copy the compiler executable to temp directory
-    source_bin = PROJECT_ROOT / "target" / profile / TARO_BIN_CRATE
-    compiler_path = temp_dir / "taro"
-    shutil.copy2(source_bin, compiler_path)
+    dist_dir = temp_dir / "dist"
+    bootstrap_cmd = [
+        sys.executable,
+        str(BUILD_DIST_SCRIPT),
+        "--profile",
+        profile,
+        "--dist-dir",
+        str(dist_dir),
+        "--std-path",
+        str(PROJECT_ROOT / "std"),
+    ]
+    try:
+        subprocess.run(
+            bootstrap_cmd,
+            cwd=PROJECT_ROOT,
+            check=True,
+        )
+    except subprocess.CalledProcessError as error:
+        print("Failed to bootstrap distribution for language tests:")
+        sys.exit(error.returncode or 1)
 
-    # Setup TARO_HOME in temp directory
-    taro_home = temp_dir / "taro_home"
-    taro_home_lib = taro_home / "lib"
-    taro_home_lib.mkdir(parents=True, exist_ok=True)
-
-    # Copy runtime to TARO_HOME/lib
-    runtime_lib_src = PROJECT_ROOT / "target" / profile / "libtaro_runtime.a"
-    runtime_lib_dst = taro_home_lib / "libtaro_runtime.a"
-    shutil.copy2(runtime_lib_src, runtime_lib_dst)
-
-    # Standard library path
-    std_path = PROJECT_ROOT / "std"
+    compiler_path = dist_dir / "bin" / "taro"
+    taro_home = dist_dir
+    std_path = dist_dir / "std"
+    if not compiler_path.exists():
+        print(f"Compiler binary missing at {compiler_path}")
+        sys.exit(1)
 
     print(f"Compiler path: {compiler_path}")
     print(f"TARO_HOME: {taro_home}")
