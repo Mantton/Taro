@@ -148,6 +148,10 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                 let symbol = self.gcx.definition_symbol_or_fallback(*def_id);
                 write!(f, "fn {}", symbol)
             }
+            ConstantKind::GlobalVariableAddress(def_id) => {
+                let symbol = self.gcx.definition_symbol_or_fallback(*def_id);
+                write!(f, "global {}", symbol)
+            }
             ConstantKind::ConstParam(param) => {
                 write!(f, "const {}", self.gcx.symbol_text(param.name))
             }

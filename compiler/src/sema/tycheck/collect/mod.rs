@@ -8,4 +8,5 @@ pub mod field;
 pub mod function;
 pub mod generics;
 pub mod interface;
+pub mod static_variable;
 pub mod variant;

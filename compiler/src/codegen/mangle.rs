@@ -40,6 +40,9 @@ fn const_symbol_with(gcx: GlobalContext, c: &crate::sema::models::Const) -> Stri
         }
         ConstKind::Value(ConstValue::Float(f)) => format!("f{:x}", f.to_bits()),
         ConstKind::Value(ConstValue::Unit) => "unit".into(),
+        ConstKind::Value(ConstValue::EnumUnitVariant(def_id)) => {
+            format!("euv{}_{}", def_id.package().raw(), def_id.index().raw())
+        }
         ConstKind::Param(p) => {
             format!("cp{}", sanitize(gcx.symbol_text(p.name).as_ref()))
         }

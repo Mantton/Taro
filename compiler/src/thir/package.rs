@@ -1415,6 +1415,23 @@ impl<'ctx> FunctionLower<'ctx> {
                 id,
                 generic_args: self.results.instantiation(expr.id),
             },
+            Resolution::Definition(id, DefinitionKind::ModuleVariable) => {
+                let static_ty = self.gcx.get_type(id);
+                let ptr_mutability = self
+                    .gcx
+                    .try_get_static_mutability(id)
+                    .unwrap_or(Mutability::Immutable);
+                let ptr_ty = Ty::new(TyKind::Pointer(static_ty, ptr_mutability), self.gcx);
+                let zst = self.push_expr(
+                    ExprKind::Zst {
+                        id,
+                        generic_args: None,
+                    },
+                    ptr_ty,
+                    expr.span,
+                );
+                ExprKind::Deref(zst)
+            }
             Resolution::Definition(
                 id,
                 DefinitionKind::Constant | DefinitionKind::AssociatedConstant,
@@ -1428,6 +1445,25 @@ impl<'ctx> FunctionLower<'ctx> {
                         value: ConstantKind::Unit,
                     });
                 };
+                if let ConstKind::Value(ConstValue::EnumUnitVariant(ctor_id)) = constant.kind {
+                    let (definition, variant_index) = self.enum_variant_from_ctor(ctor_id);
+                    let TyKind::Adt(_, generic_args) = constant.ty.kind() else {
+                        self.gcx.dcx().emit_error(
+                            "constant enum unit variant has an invalid type".into(),
+                            Some(expr.span),
+                        );
+                        return ExprKind::Literal(Constant {
+                            ty: self.gcx.types.error,
+                            value: ConstantKind::Unit,
+                        });
+                    };
+                    return ExprKind::Adt(thir::AdtExpression {
+                        definition,
+                        variant_index: Some(variant_index),
+                        generic_args,
+                        fields: Vec::new(),
+                    });
+                }
                 let Some(value) = self.const_kind_to_thir(constant.kind) else {
                     self.gcx.dcx().emit_error(
                         "const parameter values are not supported here".into(),
@@ -1517,6 +1553,7 @@ impl<'ctx> FunctionLower<'ctx> {
                 ConstValue::Integer(i) => ConstantKind::Integer(i as u64),
                 ConstValue::Float(f) => ConstantKind::Float(f),
                 ConstValue::Unit => ConstantKind::Unit,
+                ConstValue::EnumUnitVariant(_) => return None,
             }),
             ConstKind::Param(p) => Some(ConstantKind::ConstParam(p)),
             ConstKind::Infer(_) => None,

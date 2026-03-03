@@ -3,7 +3,7 @@ use crate::{
     hir,
     sema::{
         models::{ConstKind, ConstValue},
-        resolve::models::DefinitionKind,
+        resolve::models::{DefinitionKind, VariantCtorKind},
     },
     span::Span,
 };
@@ -35,7 +35,7 @@ pub fn eval_const_expression<'ctx>(
         }
         _ => {
             gcx.dcx().emit_error(
-                "constant initializer must be a literal or unary operator".into(),
+                "initializer must be a constant expression".into(),
                 Some(expression.span),
             );
             None
@@ -80,7 +80,7 @@ fn eval_const_unary<'ctx>(
         (hir::UnaryOperator::BitwiseNot, ConstValue::Integer(i)) => Some(ConstValue::Integer(!i)),
         _ => {
             gcx.dcx().emit_error(
-                "constant initializer must be a literal or unary operator".into(),
+                "initializer must be a constant expression".into(),
                 Some(span),
             );
             None
@@ -94,6 +94,17 @@ fn eval_const_path<'ctx>(
     span: Span,
 ) -> Option<ConstValue> {
     match path.resolution {
+        hir::Resolution::StdItem(hir::StdItem::OptionalNoneCtor)
+        | hir::Resolution::StdItem(hir::StdItem::OptionalNoneVariant) => {
+            let Some(ctor_id) = gcx.std_item_def(hir::StdItem::OptionalNoneCtor) else {
+                gcx.dcx().emit_error(
+                    "unable to resolve Optional.none for constant evaluation".into(),
+                    Some(span),
+                );
+                return None;
+            };
+            Some(ConstValue::EnumUnitVariant(ctor_id))
+        }
         hir::Resolution::Definition(def_id, kind)
             if matches!(
                 kind,
@@ -124,9 +135,20 @@ fn eval_const_path<'ctx>(
                 }
             }
         }
+        hir::Resolution::Definition(_, DefinitionKind::ModuleVariable) => {
+            gcx.dcx().emit_error(
+                "static initializers cannot reference static variables".into(),
+                Some(span),
+            );
+            None
+        }
+        hir::Resolution::Definition(
+            ctor_id,
+            DefinitionKind::VariantConstructor(VariantCtorKind::Constant),
+        ) => Some(ConstValue::EnumUnitVariant(ctor_id)),
         _ => {
             gcx.dcx().emit_error(
-                "constant initializer must be a literal or unary operator".into(),
+                "initializer must be a constant expression".into(),
                 Some(span),
             );
             None

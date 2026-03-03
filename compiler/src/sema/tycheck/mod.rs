@@ -50,6 +50,7 @@ pub fn typecheck_package<'ctx>(
     collect::interface::collect::run(package, context)?; // Collect Interface Definition
     impls::identify::run(package, context)?; // Resolve Impl Block Identities
     collect::alias::run(package, context)?; // Collect Type Aliases
+    collect::static_variable::run(package, context)?; // Collect Static Variable Types
     collect::constant::run(package, context)?; // Collect Constant Types
     collect::constraints::run(package, context)?; // Collect Generic Constraints
     impls::target::run(package, context)?; // Cache Impl Target Types
@@ -110,6 +111,10 @@ pub fn typecheck_package_with_timings<'ctx>(
         "sema.typecheck.collect.alias",
         collect::alias::run(package, context)
     )?; // Collect Type Aliases
+    run_timed!(
+        "sema.typecheck.collect.static_variable",
+        collect::static_variable::run(package, context)
+    )?; // Collect Static Variable Types
     run_timed!(
         "sema.typecheck.collect.constant",
         collect::constant::run(package, context)

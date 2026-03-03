@@ -69,6 +69,35 @@ impl<'ctx> Checker<'ctx> {
         );
     }
 
+    pub fn check_static_variable(&mut self, id: DefinitionID, node: &hir::StaticVariable) {
+        let gcx = self.gcx();
+        let expected = gcx.get_type(id);
+
+        let provided = self.top_level_check(&node.initializer, Some(expected));
+        if provided.is_error() {
+            return;
+        }
+
+        let value = match self.results.borrow().value_resolution(node.initializer.id) {
+            Some(hir::Resolution::Definition(
+                ctor_id,
+                DefinitionKind::VariantConstructor(VariantCtorKind::Constant),
+            )) => Some(ConstValue::EnumUnitVariant(ctor_id)),
+            _ => eval_const_expression(gcx, &node.initializer),
+        };
+        let Some(value) = value else {
+            return;
+        };
+
+        gcx.cache_static_initializer(
+            id,
+            Const {
+                ty: expected,
+                kind: ConstKind::Value(value),
+            },
+        );
+    }
+
     pub fn check_function(
         &mut self,
         id: DefinitionID,
@@ -889,17 +918,36 @@ impl<'ctx> Checker<'ctx> {
         gcx.types.bool
     }
 
+    fn mutable_binding_for_resolution(&self, resolution: &hir::Resolution) -> Option<bool> {
+        match resolution {
+            hir::Resolution::LocalVariable(id) => Some(self.get_local(*id).mutable),
+            hir::Resolution::Definition(id, DefinitionKind::ModuleVariable) => self
+                .gcx()
+                .try_get_static_mutability(*id)
+                .map(|m| m == hir::Mutability::Mutable),
+            _ => None,
+        }
+    }
+
     fn require_mut_place(&self, expr: &hir::Expression, cs: &Cs<'ctx>) -> bool {
         match &expr.kind {
             hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => {
                 match &path.resolution {
-                    hir::Resolution::LocalVariable(id) => {
-                        let binding = self.get_local(*id);
-                        if !binding.mutable {
-                            self.gcx().dcx().emit_error(
-                                "cannot assign to an immutable binding".into(),
-                                Some(expr.span),
-                            );
+                    hir::Resolution::LocalVariable(_)
+                    | hir::Resolution::Definition(_, DefinitionKind::ModuleVariable) => {
+                        let mutable = self
+                            .mutable_binding_for_resolution(&path.resolution)
+                            .unwrap_or(false);
+                        if !mutable {
+                            let message = if matches!(
+                                &path.resolution,
+                                hir::Resolution::Definition(_, DefinitionKind::ModuleVariable)
+                            ) {
+                                "cannot assign to an immutable static variable"
+                            } else {
+                                "cannot assign to an immutable binding"
+                            };
+                            self.gcx().dcx().emit_error(message.into(), Some(expr.span));
                         }
                         true
                     }
@@ -977,17 +1025,27 @@ impl<'ctx> Checker<'ctx> {
                 // Ensure the receiver expression is an assignable place (e.g. `self`, local var).
                 let receiver_is_place = match &target.kind {
                     hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path))
-                        if matches!(&path.resolution, hir::Resolution::LocalVariable(_)) =>
+                        if matches!(
+                            &path.resolution,
+                            hir::Resolution::LocalVariable(_)
+                                | hir::Resolution::Definition(_, DefinitionKind::ModuleVariable)
+                        ) =>
                     {
-                        let hir::Resolution::LocalVariable(id) = &path.resolution else {
-                            unreachable!()
-                        };
-                        let binding = self.get_local(*id);
-                        if !binding.mutable && !via_ptr_mut {
-                            self.gcx().dcx().emit_error(
-                                "cannot assign through an immutable binding".into(),
-                                Some(target.span),
-                            );
+                        let binding_mutable = self
+                            .mutable_binding_for_resolution(&path.resolution)
+                            .unwrap_or(false);
+                        if !binding_mutable && !via_ptr_mut {
+                            let message = if matches!(
+                                &path.resolution,
+                                hir::Resolution::Definition(_, DefinitionKind::ModuleVariable)
+                            ) {
+                                "cannot assign through an immutable static variable"
+                            } else {
+                                "cannot assign through an immutable binding"
+                            };
+                            self.gcx()
+                                .dcx()
+                                .emit_error(message.into(), Some(target.span));
                             false
                         } else {
                             true
@@ -1082,16 +1140,27 @@ impl<'ctx> Checker<'ctx> {
     fn require_mut_borrow(&self, expr: &hir::Expression, cs: &Cs<'ctx>) -> bool {
         match &expr.kind {
             hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => {
-                if let hir::Resolution::LocalVariable(id) = &path.resolution {
-                    let binding = self.get_local(*id);
-                    if binding.ty.is_error() {
+                if let hir::Resolution::LocalVariable(_)
+                | hir::Resolution::Definition(_, DefinitionKind::ModuleVariable) =
+                    &path.resolution
+                {
+                    if matches!(&path.resolution, hir::Resolution::LocalVariable(id) if self.get_local(*id).ty.is_error())
+                    {
                         return true;
                     }
-                    if !binding.mutable {
-                        self.gcx().dcx().emit_error(
-                            "cannot take a mutable reference to an immutable binding".into(),
-                            Some(expr.span),
-                        );
+                    let mutable = self
+                        .mutable_binding_for_resolution(&path.resolution)
+                        .unwrap_or(false);
+                    if !mutable {
+                        let message = if matches!(
+                            &path.resolution,
+                            hir::Resolution::Definition(_, DefinitionKind::ModuleVariable)
+                        ) {
+                            "cannot take a mutable reference to an immutable static variable"
+                        } else {
+                            "cannot take a mutable reference to an immutable binding"
+                        };
+                        self.gcx().dcx().emit_error(message.into(), Some(expr.span));
                         return false;
                     }
                 }
@@ -1192,14 +1261,26 @@ impl<'ctx> Checker<'ctx> {
                     if let hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) =
                         &target.kind
                     {
-                        if let hir::Resolution::LocalVariable(id) = &path.resolution {
-                            let binding = self.get_local(*id);
-                            if !binding.mutable {
-                                self.gcx().dcx().emit_error(
+                        if matches!(
+                            &path.resolution,
+                            hir::Resolution::LocalVariable(_)
+                                | hir::Resolution::Definition(_, DefinitionKind::ModuleVariable)
+                        ) {
+                            let mutable = self
+                                .mutable_binding_for_resolution(&path.resolution)
+                                .unwrap_or(false);
+                            if !mutable {
+                                let message = if matches!(
+                                    &path.resolution,
+                                    hir::Resolution::Definition(_, DefinitionKind::ModuleVariable)
+                                ) {
+                                    "cannot take a mutable reference to an immutable static variable"
+                                } else {
                                     "cannot take a mutable reference to an immutable binding"
-                                        .into(),
-                                    Some(target.span),
-                                );
+                                };
+                                self.gcx()
+                                    .dcx()
+                                    .emit_error(message.into(), Some(target.span));
                                 return false;
                             }
                         }
@@ -1270,14 +1351,32 @@ impl<'ctx> Checker<'ctx> {
                         if let hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) =
                             &target.kind
                         {
-                            if let hir::Resolution::LocalVariable(id) = &path.resolution {
-                                let binding = self.get_local(*id);
-                                if !binding.mutable {
-                                    self.gcx().dcx().emit_error(
+                            if matches!(
+                                &path.resolution,
+                                hir::Resolution::LocalVariable(_)
+                                    | hir::Resolution::Definition(
+                                        _,
+                                        DefinitionKind::ModuleVariable
+                                    )
+                            ) {
+                                let mutable = self
+                                    .mutable_binding_for_resolution(&path.resolution)
+                                    .unwrap_or(false);
+                                if !mutable {
+                                    let message = if matches!(
+                                        &path.resolution,
+                                        hir::Resolution::Definition(
+                                            _,
+                                            DefinitionKind::ModuleVariable
+                                        )
+                                    ) {
+                                        "cannot take a mutable reference to an immutable static variable"
+                                    } else {
                                         "cannot take a mutable reference to an immutable binding"
-                                            .into(),
-                                        Some(target.span),
-                                    );
+                                    };
+                                    self.gcx()
+                                        .dcx()
+                                        .emit_error(message.into(), Some(target.span));
                                     return false;
                                 }
                             }

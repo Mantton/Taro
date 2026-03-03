@@ -192,6 +192,7 @@ pub enum ConstantKind<'ctx> {
     Float(f64),
     Unit,
     Function(DefinitionID, GenericArguments<'ctx>, Ty<'ctx>),
+    GlobalVariableAddress(DefinitionID),
     ConstParam(GenericParameter),
 }
 

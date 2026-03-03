@@ -192,8 +192,8 @@ impl Actor<'_, '_> {
             ast::DeclarationKind::Namespace(node) => {
                 hir::DeclarationKind::Namespace(self.lower_namespace(node))
             }
-            ast::DeclarationKind::Variable(node) => {
-                hir::DeclarationKind::Variable(self.lower_local(node))
+            ast::DeclarationKind::StaticVariable(node) => {
+                hir::DeclarationKind::StaticVariable(self.lower_static_variable(node))
             }
             ast::DeclarationKind::Impl(node) => hir::DeclarationKind::Impl(self.lower_impl(node)),
         };
@@ -485,6 +485,9 @@ impl Actor<'_, '_> {
             ast::NamespaceDeclarationKind::Function(node) => {
                 let span = node.signature.span;
                 hir::DeclarationKind::Function(self.lower_function(node, span))
+            }
+            ast::NamespaceDeclarationKind::StaticVariable(node) => {
+                hir::DeclarationKind::StaticVariable(self.lower_static_variable(node))
             }
             ast::NamespaceDeclarationKind::Constant(node) => {
                 hir::DeclarationKind::Constant(self.lower_constant(node))
@@ -2582,6 +2585,15 @@ impl Actor<'_, '_> {
             pattern: self.lower_pattern(node.pattern),
             ty: node.ty.map(|n| self.lower_type(n)),
             initializer: node.initializer.map(|n| self.lower_expression(n)),
+        }
+    }
+
+    fn lower_static_variable(&mut self, node: ast::StaticVariable) -> hir::StaticVariable {
+        hir::StaticVariable {
+            identifier: node.identifier,
+            mutability: node.mutability,
+            ty: self.lower_type(node.ty),
+            initializer: self.lower_expression(node.initializer),
         }
     }
 }

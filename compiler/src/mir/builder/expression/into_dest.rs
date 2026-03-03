@@ -146,7 +146,16 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 let mut variadic_split_idx = None;
                 let callee_expr = &self.thir.exprs[*callee];
                 let is_known_variadic = match callee_expr.kind {
-                    ExprKind::Zst { id, .. } => self.gcx.get_signature(id).is_variadic,
+                    ExprKind::Zst { id, .. } => {
+                        matches!(
+                            self.gcx.try_definition_kind(id),
+                            Some(
+                                DefinitionKind::Function
+                                    | DefinitionKind::AssociatedFunction
+                                    | DefinitionKind::AssociatedOperator
+                            )
+                        ) && self.gcx.get_signature(id).is_variadic
+                    }
                     _ => false,
                 };
 

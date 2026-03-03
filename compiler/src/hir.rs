@@ -193,7 +193,7 @@ pub enum DeclarationKind {
     Function(Function),
     TypeAlias(TypeAlias),
     Constant(Constant),
-    Variable(Local),
+    StaticVariable(StaticVariable),
     Import(UseTree),
     Export(UseTree),
     Namespace(Namespace),
@@ -550,6 +550,14 @@ pub struct Local {
     pub pattern: Pattern,
     pub ty: Option<Box<Type>>,
     pub initializer: Option<Box<Expression>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StaticVariable {
+    pub identifier: Identifier,
+    pub mutability: Mutability,
+    pub ty: Box<Type>,
+    pub initializer: Box<Expression>,
 }
 
 #[derive(Debug, Clone)]
@@ -1456,6 +1464,10 @@ pub trait HirVisitor: Sized {
         walk_local(self, node)
     }
 
+    fn visit_static_variable(&mut self, node: &StaticVariable) -> Self::Result {
+        walk_static_variable(self, node)
+    }
+
     fn visit_expression(&mut self, node: &Expression) -> Self::Result {
         walk_expression(self, node)
     }
@@ -1539,7 +1551,9 @@ pub fn walk_declaration<V: HirVisitor>(visitor: &mut V, declaration: &Declaratio
         DeclarationKind::Constant(node) => {
             try_visit!(visitor.visit_constant(node));
         }
-        DeclarationKind::Variable(..) => {}
+        DeclarationKind::StaticVariable(node) => {
+            try_visit!(visitor.visit_static_variable(node));
+        }
         DeclarationKind::Import(node) => {
             try_visit!(visitor.visit_use_tree(node, UseTreeContext::Import(declaration.id)));
         }
@@ -1928,6 +1942,13 @@ pub fn walk_local<V: HirVisitor>(visitor: &mut V, node: &Local) -> V::Result {
     try_visit!(visitor.visit_pattern(&node.pattern));
     visit_optional!(visitor, visit_type, &node.ty);
     visit_optional!(visitor, visit_expression, &node.initializer);
+    V::Result::output()
+}
+
+pub fn walk_static_variable<V: HirVisitor>(visitor: &mut V, node: &StaticVariable) -> V::Result {
+    try_visit!(visitor.visit_identifier(&node.identifier));
+    try_visit!(visitor.visit_type(&node.ty));
+    try_visit!(visitor.visit_expression(&node.initializer));
     V::Result::output()
 }
 

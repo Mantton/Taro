@@ -1,0 +1,43 @@
+const TEN: int32 = 10
+const TWO: int32 = 2
+
+struct MyStructure {}
+
+static let GLOBAL: int32 = TEN * TWO + 1
+static var COUNTER: int32 = TEN + TWO
+static var USABLE_REF: Optional[&MyStructure] = .none
+
+namespace Metrics {
+    static let STEP: int32 = 2
+    static var SUM: int32 = 12
+}
+
+func bumpGlobalCounter() {
+    COUNTER += 1
+}
+
+func bumpMetrics() {
+    Metrics.SUM += Metrics.STEP
+}
+
+func main() {
+    assert(GLOBAL == 21, "static let value mismatch")
+    assert(COUNTER == 12, "static var initial mismatch")
+    assert(USABLE_REF.isNone(), "static optional none mismatch")
+    assert(Metrics.STEP == 2, "namespace static let mismatch")
+    assert(Metrics.SUM == 12, "namespace static var initial mismatch")
+
+    let local = MyStructure {}
+    USABLE_REF = .some(&local)
+    assert(USABLE_REF.isSome(), "static optional some mismatch")
+
+    bumpGlobalCounter()
+    bumpGlobalCounter()
+    bumpMetrics()
+    bumpMetrics()
+
+    assert(COUNTER == 14, "static var mutation mismatch")
+    assert(Metrics.SUM == 16, "namespace static var mutation mismatch")
+
+    std.print("PASS: static variables\n")
+}

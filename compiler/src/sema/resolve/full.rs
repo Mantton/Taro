@@ -318,7 +318,7 @@ impl<'r, 'a> Actor<'r, 'a> {
                     });
                 })
             }
-            ast::DeclarationKind::Variable(..)
+            ast::DeclarationKind::StaticVariable(..)
             | ast::DeclarationKind::Constant(..)
             | ast::DeclarationKind::Import(..)
             | ast::DeclarationKind::Export(..) => ast::walk_declaration(self, declaration),
@@ -419,7 +419,8 @@ impl<'r, 'a> Actor<'r, 'a> {
                     ast::walk_namespace_declaration(this, declaration)
                 })
             }
-            ast::NamespaceDeclarationKind::Constant(..)
+            ast::NamespaceDeclarationKind::StaticVariable(..)
+            | ast::NamespaceDeclarationKind::Constant(..)
             | ast::NamespaceDeclarationKind::Import(..)
             | ast::NamespaceDeclarationKind::Export(..) => {
                 ast::walk_namespace_declaration(self, declaration)

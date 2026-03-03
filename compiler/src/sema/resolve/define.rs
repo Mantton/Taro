@@ -207,7 +207,7 @@ impl<'r, 'a> Actor<'r, 'a> {
                 self.define(identifier, ScopeNamespace::Type, resolution, visibility);
             }
             ast::DeclarationKind::Function(..)
-            | ast::DeclarationKind::Variable(..)
+            | ast::DeclarationKind::StaticVariable(..)
             | ast::DeclarationKind::Constant(..) => {
                 self.define(identifier, ScopeNamespace::Value, resolution, visibility);
             }
@@ -261,6 +261,7 @@ impl<'r, 'a> Actor<'r, 'a> {
             }
 
             ast::NamespaceDeclarationKind::Function(..)
+            | ast::NamespaceDeclarationKind::StaticVariable(..)
             | ast::NamespaceDeclarationKind::Constant(..) => {
                 self.define(identifier, ScopeNamespace::Value, resolution, visibility);
             }

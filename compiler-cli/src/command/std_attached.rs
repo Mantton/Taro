@@ -118,7 +118,10 @@ pub fn compile_std<'a>(
     } else {
         let attached_object_for_load = match reuse_mode {
             ReuseMode::CodegenDependency => Some(attached.object.as_path()),
-            ReuseMode::SemanticDependency => attached.object.exists().then_some(attached.object.as_path()),
+            ReuseMode::SemanticDependency => attached
+                .object
+                .exists()
+                .then_some(attached.object.as_path()),
         };
         match metadata::try_load_package_metadata_from_paths(
             compiler.context,
@@ -169,13 +172,14 @@ pub fn compile_std<'a>(
         }
     }
 
-    let std_fingerprint = fingerprint_attached_std_artifacts(&attached, reuse_mode).map_err(|e| {
-        ctx.dcx.emit_error(
-            format!("failed to fingerprint attached std artifacts: {}", e),
-            None,
-        );
-        ReportedError
-    })?;
+    let std_fingerprint =
+        fingerprint_attached_std_artifacts(&attached, reuse_mode).map_err(|e| {
+            ctx.dcx.emit_error(
+                format!("failed to fingerprint attached std artifacts: {}", e),
+                None,
+            );
+            ReportedError
+        })?;
     package_fingerprints.insert(config.identifier.to_string(), std_fingerprint);
 
     Ok(())
@@ -368,12 +372,9 @@ fn hash_file_into_hasher(path: &Path, hasher: &mut blake3::Hasher) -> Result<(),
 }
 
 fn atomic_copy_file(src: &Path, dst: &Path) -> Result<(), String> {
-    let parent = dst.parent().ok_or_else(|| {
-        format!(
-            "destination '{}' has no parent directory",
-            dst.display()
-        )
-    })?;
+    let parent = dst
+        .parent()
+        .ok_or_else(|| format!("destination '{}' has no parent directory", dst.display()))?;
 
     let dst_name = dst
         .file_name()

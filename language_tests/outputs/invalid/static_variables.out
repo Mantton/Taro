@@ -1,0 +1,16 @@
+error: initializer must be a constant expression
+ -> language_tests/source_files/invalid/static_variables.tr:7:30
+	static let NON_CONST: int32 = runtimeValue()
+	                              ^^^^^^^^^^^^^^
+error: static initializers cannot reference static variables
+ -> language_tests/source_files/invalid/static_variables.tr:10:27
+	static let SECOND: int32 = FIRST + 1
+	                           ^^^^^
+error: cannot assign to an immutable static variable
+ -> language_tests/source_files/invalid/static_variables.tr:17:4
+	    IMMUTABLE = 2
+	    ^^^^^^^^^
+error: cannot take a mutable reference to an immutable static variable
+ -> language_tests/source_files/invalid/static_variables.tr:21:15
+	    touch(&mut IMMUTABLE)
+	               ^^^^^^^^^

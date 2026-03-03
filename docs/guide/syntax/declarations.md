@@ -339,13 +339,13 @@ const NAME: string = "Taro"
 
 ---
 
-## Variable Declaration (Top-Level)
+## Static Variable Declaration
 
-Top-level variables are module-level state.
+Module and namespace state must use explicit static declarations.
 
 ```taro
-let globalConfig: Config = Config { }
-var counter: int32 = 0
+static let globalConfig: Config = Config { }
+static var counter: int32 = 0
 ```
 
 ---

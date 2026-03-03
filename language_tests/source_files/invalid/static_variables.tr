@@ -1,0 +1,30 @@
+static let IMMUTABLE: int32 = 1
+
+func runtimeValue() -> int32 {
+    return 1
+}
+
+static let NON_CONST: int32 = runtimeValue()
+
+static let FIRST: int32 = 1
+static let SECOND: int32 = FIRST + 1
+
+func touch(value: &mut int32) {
+    let _ = value
+}
+
+func assignImmutable() {
+    IMMUTABLE = 2
+}
+
+func borrowImmutableMutably() {
+    touch(&mut IMMUTABLE)
+}
+
+func main() {
+    assignImmutable()
+    borrowImmutableMutably()
+
+    let _ = NON_CONST
+    let _ = SECOND
+}

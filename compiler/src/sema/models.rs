@@ -643,6 +643,7 @@ pub enum ConstValue {
     String(crate::span::Symbol),
     Float(f64),
     Unit,
+    EnumUnitVariant(DefinitionID),
 }
 
 impl PartialEq for ConstValue {
@@ -654,6 +655,7 @@ impl PartialEq for ConstValue {
             (ConstValue::String(a), ConstValue::String(b)) => a == b,
             (ConstValue::Float(a), ConstValue::Float(b)) => a.to_bits() == b.to_bits(),
             (ConstValue::Unit, ConstValue::Unit) => true,
+            (ConstValue::EnumUnitVariant(a), ConstValue::EnumUnitVariant(b)) => a == b,
             _ => false,
         }
     }
@@ -686,6 +688,10 @@ impl Hash for ConstValue {
             }
             ConstValue::Unit => {
                 5u8.hash(state);
+            }
+            ConstValue::EnumUnitVariant(v) => {
+                6u8.hash(state);
+                v.hash(state);
             }
         }
     }

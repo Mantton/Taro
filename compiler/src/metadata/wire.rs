@@ -293,6 +293,10 @@ pub struct ResolutionOutputWire {
 pub struct TypeDatabaseWire {
     pub def_to_ty: Vec<(DefIdWire, TyWire)>,
     pub def_to_const: Vec<(DefIdWire, ConstWire)>,
+    #[serde(default)]
+    pub def_to_static_mutability: Vec<(DefIdWire, MutabilityWire)>,
+    #[serde(default)]
+    pub def_to_static_init: Vec<(DefIdWire, ConstWire)>,
     pub def_to_fn_sig: Vec<(DefIdWire, LabeledFunctionSignatureWire)>,
     pub def_to_struct_def: Vec<(DefIdWire, StructDefinitionWire)>,
     pub def_to_enum_def: Vec<(DefIdWire, EnumDefinitionWire)>,
@@ -471,6 +475,7 @@ pub enum ConstValueWire {
     String(String),
     Float(f64),
     Unit,
+    EnumUnitVariant(DefIdWire),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1035,6 +1040,7 @@ pub enum ConstantKindWire {
     Float(f64),
     Unit,
     Function(DefIdWire, Vec<GenericArgumentWire>, TyWire),
+    GlobalVariableAddress(DefIdWire),
     ConstParam(GenericParameterWire),
 }
 
@@ -1725,6 +1731,7 @@ pub fn const_value_to_wire(v: ConstValue) -> ConstValueWire {
         ConstValue::String(v) => ConstValueWire::String(v.as_str().to_string()),
         ConstValue::Float(v) => ConstValueWire::Float(v),
         ConstValue::Unit => ConstValueWire::Unit,
+        ConstValue::EnumUnitVariant(v) => ConstValueWire::EnumUnitVariant(def_to_wire(v)),
     }
 }
 
@@ -1737,6 +1744,7 @@ pub fn const_value_from_wire(v: &ConstValueWire) -> ConstValue {
         ConstValueWire::String(v) => ConstValue::String(Symbol::new(v)),
         ConstValueWire::Float(v) => ConstValue::Float(*v),
         ConstValueWire::Unit => ConstValue::Unit,
+        ConstValueWire::EnumUnitVariant(v) => ConstValue::EnumUnitVariant(def_from_wire(v)),
     }
 }
 
@@ -3349,6 +3357,9 @@ pub fn mir_constant_to_wire(v: &mir::Constant<'_>) -> ConstantWire {
                 args.iter().copied().map(generic_arg_to_wire).collect(),
                 ty_to_wire(*ty),
             ),
+            mir::ConstantKind::GlobalVariableAddress(id) => {
+                ConstantKindWire::GlobalVariableAddress(def_to_wire(*id))
+            }
             mir::ConstantKind::ConstParam(param) => {
                 ConstantKindWire::ConstParam(generic_param_to_wire(*param))
             }
@@ -3376,6 +3387,9 @@ pub fn mir_constant_from_wire<'a>(gcx: GlobalContext<'a>, v: &ConstantWire) -> m
                     gcx.store.interners.intern_generic_args(args),
                     ty_from_wire(gcx, ty),
                 )
+            }
+            ConstantKindWire::GlobalVariableAddress(id) => {
+                mir::ConstantKind::GlobalVariableAddress(def_from_wire(id))
             }
             ConstantKindWire::ConstParam(param) => {
                 mir::ConstantKind::ConstParam(generic_param_from_wire(param))
@@ -4459,6 +4473,16 @@ pub fn type_database_to_wire(
             .iter()
             .map(|(def, value)| (def_to_wire(*def), const_to_wire(*value)))
             .collect(),
+        def_to_static_mutability: db
+            .def_to_static_mutability
+            .iter()
+            .map(|(def, mutability)| (def_to_wire(*def), mutability_to_wire(*mutability)))
+            .collect(),
+        def_to_static_init: db
+            .def_to_static_init
+            .iter()
+            .map(|(def, value)| (def_to_wire(*def), const_to_wire(*value)))
+            .collect(),
         def_to_fn_sig: db
             .def_to_fn_sig
             .iter()
@@ -4701,6 +4725,16 @@ pub fn type_database_from_wire<'a>(
             .collect(),
         def_to_const: wire
             .def_to_const
+            .iter()
+            .map(|(def, value)| (def_from_wire(def), const_from_wire(gcx, value)))
+            .collect(),
+        def_to_static_mutability: wire
+            .def_to_static_mutability
+            .iter()
+            .map(|(def, mutability)| (def_from_wire(def), mutability_from_wire(mutability)))
+            .collect(),
+        def_to_static_init: wire
+            .def_to_static_init
             .iter()
             .map(|(def, value)| (def_from_wire(def), const_from_wire(gcx, value)))
             .collect(),

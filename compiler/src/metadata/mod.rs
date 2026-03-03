@@ -485,8 +485,10 @@ pub fn hydrate_loaded_metadata<'ctx>(
 
     let invalid_symbol_id = Cell::new(None);
     let symbol_table = wire::SymbolTableRef::new(&semantic.symbol_table, &invalid_symbol_id);
-    let resolution_output = wire::resolution_output_from_wire(gcx, &semantic.resolution, remap, symbol_table)
-        .map_err(|e| HydrationError::new(format!("failed to decode resolution payload: {e}")))?;
+    let resolution_output =
+        wire::resolution_output_from_wire(gcx, &semantic.resolution, remap, symbol_table).map_err(
+            |e| HydrationError::new(format!("failed to decode resolution payload: {e}")),
+        )?;
     let type_db = wire::type_database_from_wire(gcx, &semantic.type_db, remap, symbol_table);
     let decoded_mir = if matches!(mode, ReuseMode::CodegenDependency) {
         let Some(mir_payload) = loaded.payload.mir_payload.as_deref() else {

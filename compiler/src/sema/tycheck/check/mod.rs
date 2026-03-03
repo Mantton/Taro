@@ -36,9 +36,16 @@ impl<'ctx> Actor<'ctx> {
 
 impl<'ctx> HirVisitor for Actor<'ctx> {
     fn visit_declaration(&mut self, declaration: &hir::Declaration) -> Self::Result {
-        if let hir::DeclarationKind::Constant(node) = &declaration.kind {
-            self.check_constant(declaration.id, node);
-            return;
+        match &declaration.kind {
+            hir::DeclarationKind::Constant(node) => {
+                self.check_constant(declaration.id, node);
+                return;
+            }
+            hir::DeclarationKind::StaticVariable(node) => {
+                self.check_static_variable(declaration.id, node);
+                return;
+            }
+            _ => {}
         }
         hir::walk_declaration(self, declaration);
     }
@@ -67,5 +74,10 @@ impl<'ctx> Actor<'ctx> {
     fn check_constant(&mut self, id: DefinitionID, node: &hir::Constant) {
         let mut checker = checker::Checker::new(self.context, id, self.results.clone());
         checker.check_constant(id, node);
+    }
+
+    fn check_static_variable(&mut self, id: DefinitionID, node: &hir::StaticVariable) {
+        let mut checker = checker::Checker::new(self.context, id, self.results.clone());
+        checker.check_static_variable(id, node);
     }
 }

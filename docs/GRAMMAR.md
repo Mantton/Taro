@@ -124,7 +124,7 @@ async       await       ref
                          | <enum_declaration>
                          | <interface_declaration>
                          | <function_declaration>
-                         | <variable_declaration>
+                         | <static_variable_declaration>
                          | <constant_declaration>
                          | <type_alias_declaration>
                          | <impl_declaration>
@@ -240,10 +240,13 @@ async       await       ref
                          | '[' ']' | '[' ']' '='   /* index, index_assign */
 ```
 
-### Variable and Constant Declarations
+### Static Variable and Constant Declarations
 
 ```ebnf
-<variable_declaration> ::= ( 'let' | 'var' ) <pattern> [ ':' <type> ] [ '=' <expression> ]
+<static_variable_declaration>
+                       ::= 'static' ( 'let' | 'var' ) <identifier> ':' <type> '=' <expression>
+
+<variable_declaration> ::= ( 'let' | 'var' ) <pattern> [ ':' <type> ] [ '=' <expression> ] /* local-only */
 
 <constant_declaration> ::= 'const' <identifier> ':' <type> [ '=' <expression> ]
 ```
@@ -265,6 +268,7 @@ async       await       ref
                           | <struct_declaration>
                           | <enum_declaration>
                           | <interface_declaration>
+                          | <static_variable_declaration>
                           | <constant_declaration>
                           | <type_alias_declaration>
                           | <namespace_declaration>

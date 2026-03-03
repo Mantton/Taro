@@ -132,7 +132,7 @@ pub enum DeclarationKind {
     Enum(Enum),
     Function(Function),
     ExternBlock(ExternBlock),
-    Variable(Local),
+    StaticVariable(StaticVariable),
     Constant(Constant),
     Import(UseTree),
     Export(UseTree),
@@ -160,6 +160,7 @@ pub enum NamespaceDeclarationKind {
     Struct(Struct),
     Enum(Enum),
     Function(Function),
+    StaticVariable(StaticVariable),
     Constant(Constant),
     TypeAlias(TypeAlias),
     Namespace(Namespace),
@@ -214,6 +215,14 @@ pub struct Local {
     pub ty: Option<Box<Type>>,
     pub initializer: Option<Box<Expression>>,
     pub is_shorthand: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct StaticVariable {
+    pub identifier: Identifier,
+    pub mutability: Mutability,
+    pub ty: Box<Type>,
+    pub initializer: Box<Expression>,
 }
 
 #[derive(Debug, Clone)]
@@ -996,6 +1005,7 @@ impl TryFrom<DeclarationKind> for NamespaceDeclarationKind {
             DeclarationKind::Function(node) => NamespaceDeclarationKind::Function(node),
             DeclarationKind::Struct(node) => NamespaceDeclarationKind::Struct(node),
             DeclarationKind::Enum(node) => NamespaceDeclarationKind::Enum(node),
+            DeclarationKind::StaticVariable(node) => NamespaceDeclarationKind::StaticVariable(node),
             DeclarationKind::Constant(node) => NamespaceDeclarationKind::Constant(node),
             DeclarationKind::TypeAlias(node) => NamespaceDeclarationKind::TypeAlias(node),
             DeclarationKind::Namespace(node) => NamespaceDeclarationKind::Namespace(node),
@@ -1213,6 +1223,10 @@ pub trait AstVisitor: Sized {
         walk_local(self, node)
     }
 
+    fn visit_static_variable(&mut self, node: &StaticVariable) -> Self::Result {
+        walk_static_variable(self, node)
+    }
+
     fn visit_function(&mut self, id: NodeID, node: &Function, c: FunctionContext) -> Self::Result {
         walk_function(self, id, node, c)
     }
@@ -1365,8 +1379,8 @@ pub fn walk_declaration<V: AstVisitor>(visitor: &mut V, declaration: &Declaratio
         DeclarationKind::ExternBlock(node) => {
             walk_list!(visitor, visit_extern_declaration, &node.declarations);
         }
-        DeclarationKind::Variable(node) => {
-            try_visit!(visitor.visit_local(&node));
+        DeclarationKind::StaticVariable(node) => {
+            try_visit!(visitor.visit_static_variable(&node));
         }
         DeclarationKind::Constant(node) => {
             try_visit!(visitor.visit_constant(&node));
@@ -1492,6 +1506,9 @@ pub fn walk_namespace_declaration<V: AstVisitor>(
         }
         NamespaceDeclarationKind::Function(node) => {
             try_visit!(visitor.visit_function(declaration.id, node, FunctionContext::Free))
+        }
+        NamespaceDeclarationKind::StaticVariable(node) => {
+            try_visit!(visitor.visit_static_variable(node))
         }
         NamespaceDeclarationKind::Constant(node) => {
             try_visit!(visitor.visit_constant(node))
@@ -1837,6 +1854,12 @@ pub fn walk_local<V: AstVisitor>(visitor: &mut V, node: &Local) -> V::Result {
     try_visit!(visitor.visit_pattern(&node.pattern));
     visit_optional!(visitor, visit_type, &node.ty);
     visit_optional!(visitor, visit_expression, &node.initializer);
+    V::Result::output()
+}
+
+pub fn walk_static_variable<V: AstVisitor>(visitor: &mut V, node: &StaticVariable) -> V::Result {
+    try_visit!(visitor.visit_type(&node.ty));
+    try_visit!(visitor.visit_expression(&node.initializer));
     V::Result::output()
 }
 

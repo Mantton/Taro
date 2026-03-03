@@ -1,5 +1,8 @@
 use crate::{
-    codegen::{abi, mangle::mangle_instance},
+    codegen::{
+        abi,
+        mangle::{mangle, mangle_instance},
+    },
     compile::context::{Gcx, GlobalContext},
     error::CompileResult,
     hir,
@@ -209,6 +212,7 @@ struct Emitter<'llvm, 'gcx> {
     gcx: GlobalContext<'gcx>,
     functions: FxHashMap<Instance<'gcx>, FunctionValue<'llvm>>,
     fn_abis: FxHashMap<Instance<'gcx>, abi::FnAbi<'gcx>>,
+    globals: FxHashMap<hir::DefinitionID, PointerValue<'llvm>>,
     strings: FxHashMap<Symbol, PointerValue<'llvm>>,
     target_data: inkwell::targets::TargetData,
     gc_descs: FxHashMap<Ty<'gcx>, PointerValue<'llvm>>,
@@ -318,6 +322,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             gcx,
             functions: FxHashMap::default(),
             fn_abis: FxHashMap::default(),
+            globals: FxHashMap::default(),
             strings: FxHashMap::default(),
             target_data,
             gc_descs: FxHashMap::default(),
@@ -484,7 +489,194 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         }
     }
 
+    fn static_storage_type(&self, ty: Ty<'gcx>) -> BasicTypeEnum<'llvm> {
+        lower_type(
+            self.context,
+            self.gcx,
+            &self.target_data,
+            ty,
+            GenericArguments::empty(),
+        )
+        .unwrap_or_else(|| self.context.i8_type().array_type(0).into())
+    }
+
+    fn lower_enum_unit_variant_const(
+        &mut self,
+        ty: Ty<'gcx>,
+        ctor_id: hir::DefinitionID,
+    ) -> Option<BasicValueEnum<'llvm>> {
+        let TyKind::Adt(def, adt_args) = ty.kind() else {
+            return None;
+        };
+        if def.kind != crate::sema::models::AdtKind::Enum {
+            return None;
+        }
+
+        let enum_def = self.gcx.get_enum_definition(def.id);
+        let (variant_index, variant) = enum_def
+            .variants
+            .iter()
+            .enumerate()
+            .find(|(_, variant)| variant.ctor_def_id == ctor_id)?;
+        if !matches!(variant.kind, crate::sema::models::EnumVariantKind::Unit) {
+            return None;
+        }
+
+        let layout = enum_layout(
+            self.context,
+            self.gcx,
+            &self.target_data,
+            def.id,
+            adt_args,
+            self.current_subst,
+        );
+        let enum_ty = self.lower_ty(ty)?.into_struct_type();
+        let mut fields = Vec::with_capacity(if layout.payload_size == 0 {
+            1
+        } else if layout.payload_offset > layout.discr_size {
+            3
+        } else {
+            2
+        });
+        fields.push(
+            self.usize_ty
+                .const_int(variant_index as u64, false)
+                .as_basic_value_enum(),
+        );
+
+        if layout.payload_size > 0 {
+            let pad = layout.payload_offset.saturating_sub(layout.discr_size);
+            if pad > 0 {
+                fields.push(
+                    self.context
+                        .i8_type()
+                        .array_type(u32::try_from(pad).expect("enum padding fits u32"))
+                        .const_zero()
+                        .as_basic_value_enum(),
+                );
+            }
+            fields.push(
+                self.context
+                    .i8_type()
+                    .array_type(
+                        u32::try_from(layout.payload_size).expect("enum payload size fits u32"),
+                    )
+                    .const_zero()
+                    .as_basic_value_enum(),
+            );
+        }
+
+        Some(enum_ty.const_named_struct(&fields).as_basic_value_enum())
+    }
+
+    fn lower_const_value_with_ty(
+        &mut self,
+        ty: Ty<'gcx>,
+        value: ConstValue,
+    ) -> Option<BasicValueEnum<'llvm>> {
+        match value {
+            ConstValue::Bool(v) => Some(
+                self.context
+                    .bool_type()
+                    .const_int(v as u64, false)
+                    .as_basic_value_enum(),
+            ),
+            ConstValue::Rune(v) => Some(
+                self.context
+                    .i32_type()
+                    .const_int(v as u64, false)
+                    .as_basic_value_enum(),
+            ),
+            ConstValue::String(sym) => {
+                let ptr = self.lower_string(sym);
+                let len = self
+                    .usize_ty
+                    .const_int(self.gcx.symbol_text(sym).len() as u64, false);
+                let struct_ty = self.lower_ty(ty)?.into_struct_type();
+                Some(
+                    struct_ty
+                        .const_named_struct(&[ptr.as_basic_value_enum(), len.as_basic_value_enum()])
+                        .as_basic_value_enum(),
+                )
+            }
+            ConstValue::Integer(v) => self
+                .int_type(ty)
+                .map(|(int_ty, _)| int_ty.const_int(v as u64, false).as_basic_value_enum()),
+            ConstValue::Float(v) => self
+                .float_type(ty)
+                .map(|float_ty| float_ty.const_float(v).as_basic_value_enum()),
+            ConstValue::Unit => None,
+            ConstValue::EnumUnitVariant(ctor_id) => self.lower_enum_unit_variant_const(ty, ctor_id),
+        }
+    }
+
+    fn define_local_static_global(&mut self, def_id: hir::DefinitionID) -> PointerValue<'llvm> {
+        if let Some(ptr) = self.globals.get(&def_id) {
+            return *ptr;
+        }
+
+        let ty = self.gcx.get_type(def_id);
+        let llvm_ty = self.static_storage_type(ty);
+        let name = mangle(self.gcx, def_id);
+        let global = self.module.add_global(llvm_ty, None, &name);
+
+        let mutability = self
+            .gcx
+            .try_get_static_mutability(def_id)
+            .unwrap_or(hir::Mutability::Immutable);
+        let is_immutable = matches!(mutability, hir::Mutability::Immutable);
+        global.set_constant(is_immutable);
+        global.set_linkage(Linkage::External);
+
+        let initializer = self
+            .gcx
+            .try_get_static_initializer(def_id)
+            .and_then(|konst| match konst.kind {
+                ConstKind::Value(value) => self.lower_const_value_with_ty(ty, value),
+                _ => None,
+            })
+            .unwrap_or_else(|| llvm_ty.const_zero().as_basic_value_enum());
+        global.set_initializer(&initializer);
+
+        let ptr = global.as_pointer_value();
+        self.globals.insert(def_id, ptr);
+        ptr
+    }
+
+    fn declare_external_static_global(&mut self, def_id: hir::DefinitionID) -> PointerValue<'llvm> {
+        if let Some(ptr) = self.globals.get(&def_id) {
+            return *ptr;
+        }
+
+        let ty = self.gcx.get_type(def_id);
+        let llvm_ty = self.static_storage_type(ty);
+        let name = mangle(self.gcx, def_id);
+        let global = self.module.add_global(llvm_ty, None, &name);
+        global.set_linkage(Linkage::External);
+        let ptr = global.as_pointer_value();
+        self.globals.insert(def_id, ptr);
+        ptr
+    }
+
+    fn global_variable_address(&mut self, def_id: hir::DefinitionID) -> PointerValue<'llvm> {
+        if def_id.package() == self.gcx.package_index() {
+            self.define_local_static_global(def_id)
+        } else {
+            self.declare_external_static_global(def_id)
+        }
+    }
+
+    fn declare_local_static_globals(&mut self) {
+        let output = self.gcx.resolution_output(self.gcx.package_index());
+        for (def_id, kind) in output.definition_to_kind.iter() {
+            if *kind == DefinitionKind::ModuleVariable {
+                self.define_local_static_global(*def_id);
+            }
+        }
+    }
+
     fn lower_instances(&mut self, _package: &mir::MirPackage<'gcx>) -> CompileResult<()> {
+        self.declare_local_static_globals();
         let mut pending = self.gcx.specializations_of(self.gcx.package_index());
         let mut queued: FxHashSet<Instance<'gcx>> = pending.iter().copied().collect();
         let mut cursor = 0usize;
@@ -4853,42 +5045,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         .emit_error("const parameter could not be resolved".into(), None);
                     return None;
                 };
-                match value {
-                    ConstValue::Bool(b) => Some(
-                        self.context
-                            .bool_type()
-                            .const_int(b as u64, false)
-                            .as_basic_value_enum(),
-                    ),
-                    ConstValue::Rune(r) => Some(
-                        self.context
-                            .i32_type()
-                            .const_int(r as u64, false)
-                            .as_basic_value_enum(),
-                    ),
-                    ConstValue::String(sym) => {
-                        let ptr = self.lower_string(sym);
-                        let len = self
-                            .usize_ty
-                            .const_int(self.gcx.symbol_text(sym).len() as u64, false);
-                        let Some(ty) = self.lower_ty(constant.ty) else {
-                            return None;
-                        };
-                        let string_ty = ty.into_struct_type();
-                        let value = string_ty.const_named_struct(&[
-                            ptr.as_basic_value_enum(),
-                            len.as_basic_value_enum(),
-                        ]);
-                        Some(value.as_basic_value_enum())
-                    }
-                    ConstValue::Integer(i) => self
-                        .int_type(constant.ty)
-                        .map(|(ty, _)| ty.const_int(i as u64, false).as_basic_value_enum()),
-                    ConstValue::Float(f) => self
-                        .float_type(constant.ty)
-                        .map(|ty| ty.const_float(f).as_basic_value_enum()),
-                    ConstValue::Unit => None,
-                }
+                self.lower_const_value_with_ty(constant.ty, value)
             }
             mir::ConstantKind::Function(def_id, args, _) => {
                 let instance = self.instance_for_call(*def_id, *args);
@@ -4901,6 +5058,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 self.functions
                     .get(&instance)
                     .map(|f| f.as_global_value().as_pointer_value().as_basic_value_enum())
+            }
+            mir::ConstantKind::GlobalVariableAddress(def_id) => {
+                Some(self.global_variable_address(*def_id).as_basic_value_enum())
             }
         }
     }

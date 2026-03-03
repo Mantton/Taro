@@ -104,6 +104,20 @@ impl<'arena> GlobalContext<'arena> {
         database.def_to_const.insert(id, value);
     }
 
+    pub fn cache_static_mutability(self, id: DefinitionID, mutability: hir::Mutability) {
+        let mut cache = self.context.store.type_databases.borrow_mut();
+        let package_index = id.package();
+        let database = cache.entry(package_index).or_insert_with(Default::default);
+        database.def_to_static_mutability.insert(id, mutability);
+    }
+
+    pub fn cache_static_initializer(self, id: DefinitionID, value: Const<'arena>) {
+        let mut cache = self.context.store.type_databases.borrow_mut();
+        let package_index = id.package();
+        let database = cache.entry(package_index).or_insert_with(Default::default);
+        database.def_to_static_init.insert(id, value);
+    }
+
     /// Updates the constraints for a definition, overwriting any existing entry.
     ///
     /// This is used during multi-pass constraint collection where bounds are collected first
@@ -562,6 +576,30 @@ impl<'arena> GlobalContext<'arena> {
 
     pub fn try_get_const(self, id: DefinitionID) -> Option<Const<'arena>> {
         self.with_type_database(id.package(), |db| db.def_to_const.get(&id).cloned())
+    }
+
+    pub fn try_get_static_mutability(self, id: DefinitionID) -> Option<hir::Mutability> {
+        self.with_type_database(id.package(), |db| {
+            db.def_to_static_mutability.get(&id).copied()
+        })
+    }
+
+    pub fn get_static_mutability(self, id: DefinitionID) -> hir::Mutability {
+        self.with_type_database(id.package(), |db| {
+            *db.def_to_static_mutability
+                .get(&id)
+                .expect("static mutability")
+        })
+    }
+
+    pub fn try_get_static_initializer(self, id: DefinitionID) -> Option<Const<'arena>> {
+        self.with_type_database(id.package(), |db| db.def_to_static_init.get(&id).cloned())
+    }
+
+    pub fn get_static_initializer(self, id: DefinitionID) -> Const<'arena> {
+        self.with_type_database(id.package(), |db| {
+            *db.def_to_static_init.get(&id).expect("static initializer")
+        })
     }
 
     #[inline]
@@ -1527,6 +1565,8 @@ impl<'a> CommonTypes<'a> {
 pub struct TypeDatabase<'arena> {
     pub def_to_ty: FxHashMap<DefinitionID, Ty<'arena>>,
     pub def_to_const: FxHashMap<DefinitionID, Const<'arena>>,
+    pub def_to_static_mutability: FxHashMap<DefinitionID, hir::Mutability>,
+    pub def_to_static_init: FxHashMap<DefinitionID, Const<'arena>>,
     pub def_to_fn_sig: FxHashMap<DefinitionID, &'arena LabeledFunctionSignature<'arena>>,
     pub def_to_struct_def: FxHashMap<DefinitionID, &'arena StructDefinition<'arena>>,
     pub def_to_enum_def: FxHashMap<DefinitionID, &'arena EnumDefinition<'arena>>,

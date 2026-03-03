@@ -500,7 +500,7 @@ fn remap_constant<'ctx>(
                         // Convert sema Const to MIR ConstantKind
                         match &sema_const.kind {
                             crate::sema::models::ConstKind::Value(val) => {
-                                sema_const_value_to_mir(*val)
+                                sema_const_value_to_mir(*val).unwrap_or_else(|| c.value.clone())
                             }
                             crate::sema::models::ConstKind::Param(inner_param) => {
                                 // Still a param - pass it through (shouldn't happen with valid gen_args)
@@ -529,16 +529,17 @@ fn remap_constant<'ctx>(
 }
 
 /// Convert a sema ConstValue to MIR ConstantKind
-fn sema_const_value_to_mir(val: crate::sema::models::ConstValue) -> ConstantKind<'static> {
+fn sema_const_value_to_mir(val: crate::sema::models::ConstValue) -> Option<ConstantKind<'static>> {
     use crate::sema::models::ConstValue;
-    match val {
+    Some(match val {
         ConstValue::Integer(i) => ConstantKind::Integer(i as u64),
         ConstValue::Bool(b) => ConstantKind::Bool(b),
         ConstValue::Rune(r) => ConstantKind::Rune(r),
         ConstValue::String(s) => ConstantKind::String(s),
         ConstValue::Float(f) => ConstantKind::Float(f),
         ConstValue::Unit => ConstantKind::Unit,
-    }
+        ConstValue::EnumUnitVariant(_) => return None,
+    })
 }
 
 /// Substitute generic arguments within another set of generic arguments.

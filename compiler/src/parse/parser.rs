@@ -10,10 +10,10 @@ use crate::{
         Interface, Label, Literal, Local, MapPair, MatchArm, MatchExpression, Mutability,
         Namespace, NamespaceDeclaration, NamespaceDeclarationKind, NodeID, Path, PathNode,
         PathSegment, Pattern, PatternBindingCondition, PatternKind, PatternPath,
-        RequiredTypeConstraint, SelfKind, Statement, StatementKind, Struct, StructLiteral, Type,
-        TypeAlias, TypeArgument, TypeArguments, TypeKind, TypeParameter, TypeParameterKind,
-        TypeParameters, UnaryOperator, UseTree, UseTreeKind, UseTreeNestedItem, UseTreePath,
-        Variant, VariantKind, Visibility, VisibilityLevel,
+        RequiredTypeConstraint, SelfKind, Statement, StatementKind, StaticVariable, Struct,
+        StructLiteral, Type, TypeAlias, TypeArgument, TypeArguments, TypeKind, TypeParameter,
+        TypeParameterKind, TypeParameters, UnaryOperator, UseTree, UseTreeKind, UseTreeNestedItem,
+        UseTreePath, Variant, VariantKind, Visibility, VisibilityLevel,
     },
     diagnostics::DiagCtx,
     error::ReportedError,
@@ -569,7 +569,10 @@ impl Parser {
             Token::Struct => self.parse_struct_declaration()?,
             Token::Enum => self.parse_enum_declaration()?,
             Token::Interface => self.parse_interface()?,
-            Token::Var | Token::Let => self.parse_variable_decl()?,
+            Token::Var | Token::Let => {
+                return Err(self.err_at_current(ParserError::TopLevelVariableMustBeStatic));
+            }
+            Token::Static => self.parse_static_variable_decl()?,
             Token::Const => self.parse_const_decl()?,
             Token::Import => (
                 Identifier::emtpy(self.file.id),
@@ -809,48 +812,41 @@ impl Parser {
 }
 
 impl Parser {
-    fn parse_variable_decl(&mut self) -> R<(Identifier, DeclarationKind)> {
+    fn parse_static_variable_decl(&mut self) -> R<(Identifier, DeclarationKind)> {
+        self.expect(Token::Static)?;
         let mutability = if self.eat(Token::Let) {
             Mutability::Immutable
         } else if self.eat(Token::Var) {
             Mutability::Mutable
         } else {
-            unreachable!()
+            return Err(self.err_at_current(ParserError::ExpectedStaticLetOrVar));
         };
 
-        let pattern = self.parse_pattern()?;
-        let ident = match &pattern.kind {
-            PatternKind::Identifier(identifier) => *identifier,
-            _ => {
-                return Err(Spanned::new(
-                    ParserError::RequiredIdentifierPattern,
-                    pattern.span,
-                ));
-            }
-        };
+        let identifier = self.parse_identifier()?;
+        if !self.eat(Token::Colon) {
+            return Err(Spanned::new(
+                ParserError::MissingStaticTypeAnnotation,
+                identifier.span,
+            ));
+        }
+        let ty = self.parse_type()?;
 
-        let ty = if self.eat(Token::Colon) {
-            Some(self.parse_type()?)
-        } else {
-            None
-        };
+        if !self.eat(Token::Assign) {
+            return Err(Spanned::new(
+                ParserError::MissingStaticInitializer,
+                identifier.span,
+            ));
+        }
+        let initializer = self.parse_expression()?;
 
-        let initializer = if self.eat(Token::Assign) {
-            Some(self.parse_expression()?)
-        } else {
-            None
-        };
-
-        let local = Local {
-            id: self.next_id(),
+        let decl = StaticVariable {
+            identifier,
             mutability,
-            pattern,
             ty,
             initializer,
-            is_shorthand: false,
         };
 
-        return Ok((ident, DeclarationKind::Variable(local)));
+        Ok((identifier, DeclarationKind::StaticVariable(decl)))
     }
 
     fn parse_const_decl(&mut self) -> R<(Identifier, DeclarationKind)> {
@@ -3892,13 +3888,16 @@ enum ParserError {
     ExpectedSemiColon,
     ExpectedDeclaration,
     ExpectedTopLevelDeclaration,
+    TopLevelVariableMustBeStatic,
     ExpectedType,
     ExpectedGenericRequirement,
     ExpectedMatchingPattern,
     ExpectedElseBlock,
     ExpectedExpression,
     InvalidCollectionType,
-    RequiredIdentifierPattern,
+    ExpectedStaticLetOrVar,
+    MissingStaticTypeAnnotation,
+    MissingStaticInitializer,
     DissallowedAssociatedDeclaration,
     DissallowedFunctionDeclaration,
     DissallowedNamespaceDeclaration,
@@ -3939,13 +3938,20 @@ impl Display for ParserError {
             ExpectedSemiColon => f.write_str("expected ';'"),
             ExpectedDeclaration => f.write_str("expected declaration"),
             ExpectedTopLevelDeclaration => f.write_str("expected top-level declaration"),
+            TopLevelVariableMustBeStatic => f.write_str(
+                "top-level and namespace variables must use `static let` or `static var`",
+            ),
             ExpectedType => f.write_str("expected type"),
             ExpectedGenericRequirement => f.write_str("expected generic requirement"),
             ExpectedMatchingPattern => f.write_str("expected a matching pattern"),
             ExpectedElseBlock => f.write_str("expected 'else' block"),
             ExpectedExpression => f.write_str("expected expression"),
             InvalidCollectionType => f.write_str("invalid collection type"),
-            RequiredIdentifierPattern => f.write_str("identifier pattern required"),
+            ExpectedStaticLetOrVar => f.write_str("expected `let` or `var` after `static`"),
+            MissingStaticTypeAnnotation => {
+                f.write_str("static declarations require an explicit type annotation")
+            }
+            MissingStaticInitializer => f.write_str("static declarations require an initializer"),
             DissallowedAssociatedDeclaration => f.write_str("disallowed associated declaration"),
             DissallowedFunctionDeclaration => f.write_str("disallowed function declaration"),
             DissallowedNamespaceDeclaration => f.write_str("disallowed namespace declaration"),
@@ -5159,9 +5165,53 @@ mod tests {
     }
 
     #[test]
-    fn test_variable_declaration_top_level() {
-        let decl = parse_one_decl("let GLOBAL: int32 = 100");
-        assert!(matches!(decl.kind, DeclarationKind::Variable(_)));
+    fn test_static_variable_declaration_top_level() {
+        let decl = parse_one_decl("static let GLOBAL: int32 = 100");
+        assert!(matches!(decl.kind, DeclarationKind::StaticVariable(_)));
+    }
+
+    #[test]
+    fn test_static_variable_declaration_namespace() {
+        let decl = parse_one_decl("namespace Config { static var COUNT: int32 = 0; }");
+        match &decl.kind {
+            DeclarationKind::Namespace(namespace) => {
+                assert!(matches!(
+                    namespace.declarations[0].kind,
+                    NamespaceDeclarationKind::StaticVariable(_)
+                ));
+            }
+            _ => panic!("Expected namespace declaration"),
+        }
+    }
+
+    #[test]
+    fn test_top_level_variable_requires_static() {
+        let errors = parse_decls("let GLOBAL: int32 = 100").expect_err("expected parse failure");
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err.value, ParserError::TopLevelVariableMustBeStatic))
+        );
+    }
+
+    #[test]
+    fn test_static_variable_missing_type() {
+        let errors = parse_decls("static let GLOBAL = 100").expect_err("expected parse failure");
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err.value, ParserError::MissingStaticTypeAnnotation))
+        );
+    }
+
+    #[test]
+    fn test_static_variable_missing_initializer() {
+        let errors = parse_decls("static let GLOBAL: int32").expect_err("expected parse failure");
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err.value, ParserError::MissingStaticInitializer))
+        );
     }
 
     #[test]
