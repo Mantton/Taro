@@ -1,0 +1,15 @@
+//+cfg family("windows")
+
+func impMonotonicNow() -> MonotonicTime {
+    std.panic.todo("std.sys.time.monotonicNow not implemented on windows yet")
+}
+
+func impRealtimeNow() -> RealtimeTime {
+    std.panic.todo("std.sys.time.realtimeNow not implemented on windows yet")
+}
+
+func impSleep(_ secs: uint64, _ nanos: uint32) {
+    let _ = secs
+    let _ = nanos
+    std.panic.todo("std.sys.time.sleep not implemented on windows yet")
+}

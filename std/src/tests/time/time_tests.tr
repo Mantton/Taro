@@ -1,0 +1,183 @@
+import std.time
+
+func durationToNanos(_ d: std.time.Duration) -> uint64 {
+    return (d.seconds() * 1000000000_u64) + (d.subsecNanos() as uint64)
+}
+
+@test
+func testDurationConstructorsAndNormalization() {
+    let d0 = std.time.Duration.new(2_u64, 500000000_u32)
+    std.testing.assertEqual(d0.seconds(), 2_u64, "Duration.new should preserve seconds")
+    std.testing.assertEqual(d0.subsecNanos(), 500000000_u32, "Duration.new should preserve nanos")
+
+    let d1 = std.time.Duration.fromMillis(1500_u64)
+    std.testing.assertEqual(d1.seconds(), 1_u64, "fromMillis should normalize seconds")
+    std.testing.assertEqual(d1.subsecNanos(), 500000000_u32, "fromMillis should normalize nanos")
+
+    let d2 = std.time.Duration.fromMicros(2500001_u64)
+    std.testing.assertEqual(d2.seconds(), 2_u64, "fromMicros should normalize seconds")
+    std.testing.assertEqual(d2.subsecNanos(), 500001000_u32, "fromMicros should normalize nanos")
+
+    let d3 = std.time.Duration.fromNanos(3000000001_u64)
+    std.testing.assertEqual(d3.seconds(), 3_u64, "fromNanos should normalize seconds")
+    std.testing.assertEqual(d3.subsecNanos(), 1_u32, "fromNanos should normalize nanos")
+}
+
+@test
+func testDurationCheckedAddAndSub() {
+    let sum = std.time.Duration.new(1_u64, 900000000_u32).checkedAdd(std.time.Duration.new(2_u64, 200000000_u32))
+    std.testing.assertTrue(sum.isSome(), "checkedAdd should succeed for in-range values")
+    let sumValue = sum.unwrap()
+    std.testing.assertEqual(sumValue.seconds(), 4_u64, "checkedAdd should carry into seconds")
+    std.testing.assertEqual(sumValue.subsecNanos(), 100000000_u32, "checkedAdd should normalize nanos")
+
+    let diff = std.time.Duration.new(10_u64, 100_u32).checkedSub(std.time.Duration.new(1_u64, 200_u32))
+    std.testing.assertTrue(diff.isSome(), "checkedSub should succeed for in-range values")
+    let diffValue = diff.unwrap()
+    std.testing.assertEqual(diffValue.seconds(), 8_u64, "checkedSub should borrow from seconds")
+    std.testing.assertEqual(diffValue.subsecNanos(), 999999900_u32, "checkedSub should normalize nanos")
+}
+
+@test
+func testDurationCheckedOverflowAndUnderflow() {
+    let addOverflow = std.time.Duration.new(0xffffffffffffffff_u64, 0_u32).checkedAdd(std.time.Duration.fromSeconds(1_u64))
+    std.testing.assertTrue(addOverflow.isNone(), "checkedAdd should return none on second overflow")
+
+    let carryOverflow = std.time.Duration.new(0xffffffffffffffff_u64, 999999999_u32)
+        .checkedAdd(std.time.Duration.new(0_u64, 1_u32))
+    std.testing.assertTrue(carryOverflow.isNone(), "checkedAdd should return none on carry overflow")
+
+    let subUnderflow = std.time.Duration.new(1_u64, 0_u32).checkedSub(std.time.Duration.new(1_u64, 1_u32))
+    std.testing.assertTrue(subUnderflow.isNone(), "checkedSub should return none when result is negative")
+}
+
+@test
+@expectPanic
+func testDurationNewRejectsInvalidNanoseconds() {
+    let _ = std.time.Duration.new(0_u64, 1000000000_u32)
+}
+
+@test
+func testInstantDurationSinceAndSaturating() {
+    let before = std.time.Instant.now()
+    std.time.sleep(std.time.Duration.fromMillis(2_u64))
+    let after = std.time.Instant.now()
+
+    let forward = after.durationSince(before)
+    std.testing.assertTrue(durationToNanos(forward) > 0_u64, "forward durationSince should be positive")
+
+    let checkedForward = after.checkedDurationSince(before)
+    std.testing.assertTrue(checkedForward.isSome(), "checkedDurationSince should succeed when ordered")
+
+    let backward = before.durationSince(after)
+    std.testing.assertEqual(backward.seconds(), 0_u64, "durationSince should saturate to zero on reverse order")
+    std.testing.assertEqual(backward.subsecNanos(), 0_u32, "durationSince should saturate nanos to zero")
+
+    let checkedBackward = before.checkedDurationSince(after)
+    std.testing.assertTrue(checkedBackward.isNone(), "checkedDurationSince should be none on reverse order")
+}
+
+@test
+func testSleepMeasurableLowerBound() {
+    let start = std.time.Instant.now()
+    std.time.sleep(std.time.Duration.fromMillis(10_u64))
+    let elapsed = start.elapsed()
+
+    std.testing.assertTrue(
+        durationToNanos(elapsed) >= 5000000_u64,
+        "sleep(10ms) should measure at least 5ms elapsed",
+    )
+}
+
+@test
+func testSleepZeroReturnsQuickly() {
+    let start = std.time.Instant.now()
+    std.time.sleep(std.time.Duration.new(0_u64, 0_u32))
+    let elapsed = start.elapsed()
+
+    std.testing.assertTrue(
+        durationToNanos(elapsed) < 200000000_u64,
+        "sleep(0) should return quickly",
+    )
+}
+
+@test
+func testSystemTimeRoundTrip() {
+    let ts = std.time.SystemTime.fromUnixTimestamp(123_i64, 456_u32)
+    std.testing.assertEqual(ts.unixSeconds(), 123_i64, "fromUnixTimestamp should preserve unix seconds")
+    std.testing.assertEqual(ts.subsecNanos(), 456_u32, "fromUnixTimestamp should preserve nanos")
+}
+
+@test
+func testSystemTimeCheckedDurationSince() {
+    let earlier = std.time.SystemTime.fromUnixTimestamp(-2_i64, 100_u32)
+    let later = std.time.SystemTime.fromUnixTimestamp(3_i64, 50_u32)
+
+    let delta = later.checkedDurationSince(earlier)
+    std.testing.assertTrue(delta.isSome(), "checkedDurationSince should succeed when ordered")
+    let value = delta.unwrap()
+    std.testing.assertEqual(value.seconds(), 4_u64, "checkedDurationSince seconds should include borrow")
+    std.testing.assertEqual(value.subsecNanos(), 999999950_u32, "checkedDurationSince nanos should include borrow")
+
+    let reverse = earlier.checkedDurationSince(later)
+    std.testing.assertTrue(reverse.isNone(), "checkedDurationSince should return none when negative")
+}
+
+@test
+func testSystemTimeDurationSinceUnixEpoch() {
+    let beforeEpoch = std.time.SystemTime.fromUnixTimestamp(-1_i64, 500000000_u32)
+    let beforeRes = beforeEpoch.durationSinceUnixEpoch()
+    std.testing.assertTrue(beforeRes.isNone(), "pre-epoch time should return none")
+
+    let afterEpoch = std.time.SystemTime.fromUnixTimestamp(2_i64, 3_u32)
+    let afterRes = afterEpoch.durationSinceUnixEpoch()
+    std.testing.assertTrue(afterRes.isSome(), "post-epoch time should return some")
+    let after = afterRes.unwrap()
+    std.testing.assertEqual(after.seconds(), 2_u64, "durationSinceUnixEpoch should preserve seconds")
+    std.testing.assertEqual(after.subsecNanos(), 3_u32, "durationSinceUnixEpoch should preserve nanos")
+}
+
+@test
+func testSystemTimeCheckedAddAndSubDuration() {
+    let base = std.time.SystemTime.fromUnixTimestamp(10_i64, 900000000_u32)
+
+    let added = base.checkedAddDuration(std.time.Duration.fromMillis(250_u64))
+    std.testing.assertTrue(added.isSome(), "checkedAddDuration should succeed in-range")
+    let addedValue = added.unwrap()
+    std.testing.assertEqual(addedValue.unixSeconds(), 11_i64, "checkedAddDuration should carry into seconds")
+    std.testing.assertEqual(addedValue.subsecNanos(), 150000000_u32, "checkedAddDuration should normalize nanos")
+
+    let subbed = base.checkedSubDuration(std.time.Duration.fromMillis(1100_u64))
+    std.testing.assertTrue(subbed.isSome(), "checkedSubDuration should succeed in-range")
+    let subbedValue = subbed.unwrap()
+    std.testing.assertEqual(subbedValue.unixSeconds(), 9_i64, "checkedSubDuration should borrow from seconds")
+    std.testing.assertEqual(subbedValue.subsecNanos(), 800000000_u32, "checkedSubDuration should normalize nanos")
+
+    let overflowAdd = std.time.SystemTime.fromUnixTimestamp(9223372036854775807_i64, 0_u32)
+        .checkedAddDuration(std.time.Duration.fromSeconds(1_u64))
+    std.testing.assertTrue(overflowAdd.isNone(), "checkedAddDuration should return none on overflow")
+
+    let underflowSub = std.time.SystemTime.fromUnixTimestamp(-9223372036854775807_i64, 0_u32)
+        .checkedSubDuration(std.time.Duration.fromSeconds(2_u64))
+    std.testing.assertTrue(underflowSub.isNone(), "checkedSubDuration should return none on underflow")
+}
+
+@test
+@expectPanic
+func testSystemTimeRejectsInvalidNanoseconds() {
+    let _ = std.time.SystemTime.fromUnixTimestamp(0_i64, 1000000000_u32)
+}
+
+@test
+@cfg(family("unix"))
+func testUnixClockConstants() {
+    std.testing.assertEqual(std.libc.CLOCK_REALTIME, 0_i32, "CLOCK_REALTIME should be 0")
+
+    if #cfg(os("linux")) {
+        std.testing.assertEqual(std.libc.CLOCK_MONOTONIC, 1_i32, "linux CLOCK_MONOTONIC should be 1")
+    }
+
+    if #cfg(os("macos")) {
+        std.testing.assertEqual(std.libc.CLOCK_MONOTONIC, 6_i32, "macos CLOCK_MONOTONIC should be 6")
+    }
+}

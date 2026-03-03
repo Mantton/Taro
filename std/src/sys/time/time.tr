@@ -1,0 +1,43 @@
+import std.marker.Copy
+
+public struct MonotonicTime: Copy {
+    secs: uint64
+    nanos: uint32
+}
+
+impl MonotonicTime {
+    public func seconds(&self) -> uint64 {
+        return self.secs
+    }
+
+    public func subsecNanos(&self) -> uint32 {
+        return self.nanos
+    }
+}
+
+public struct RealtimeTime: Copy {
+    secs: int64
+    nanos: uint32
+}
+
+impl RealtimeTime {
+    public func seconds(&self) -> int64 {
+        return self.secs
+    }
+
+    public func subsecNanos(&self) -> uint32 {
+        return self.nanos
+    }
+}
+
+public func monotonicNow() -> MonotonicTime {
+    return impMonotonicNow()
+}
+
+public func realtimeNow() -> RealtimeTime {
+    return impRealtimeNow()
+}
+
+public func sleep(_ secs: uint64, _ nanos: uint32) {
+    impSleep(secs, nanos)
+}

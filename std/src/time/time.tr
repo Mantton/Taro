@@ -1,0 +1,331 @@
+import std.marker.Copy
+
+const NANOS_PER_SEC_U32: uint32 = 1000000000_u32
+const NANOS_PER_SEC_U64: uint64 = 1000000000_u64
+const MICROS_PER_SEC: uint64 = 1000000_u64
+const MILLIS_PER_SEC: uint64 = 1000_u64
+const U64_MAX: uint64 = 0xffffffffffffffff_u64
+const I64_SIGN_BIT: uint64 = 0x8000000000000000_u64
+
+func zeroDuration() -> Duration {
+    return Duration {
+        secs: 0_u64,
+        nanos: 0_u32,
+    }
+}
+
+func signedToBiased(_ value: int64) -> uint64 {
+    return (value as uint64) ^ I64_SIGN_BIT
+}
+
+func biasedToSigned(_ value: uint64) -> int64 {
+    return (value ^ I64_SIGN_BIT) as int64
+}
+
+func checkedUnsignedDiff(
+    _ laterSecs: uint64,
+    _ laterNanos: uint32,
+    _ earlierSecs: uint64,
+    _ earlierNanos: uint32,
+) -> Duration {
+    var outSecs = laterSecs - earlierSecs
+    var outNanos: uint32 = 0_u32
+
+    if laterNanos >= earlierNanos {
+        outNanos = laterNanos - earlierNanos
+    } else {
+        outSecs -= 1_u64
+        outNanos = (laterNanos + NANOS_PER_SEC_U32) - earlierNanos
+    }
+
+    return Duration {
+        secs: outSecs,
+        nanos: outNanos,
+    }
+}
+
+public struct Duration: Copy {
+    secs: uint64
+    nanos: uint32
+}
+
+impl Duration {
+    public func new(_ secs: uint64, _ nanos: uint32) -> Duration {
+        if nanos >= NANOS_PER_SEC_U32 {
+            std.panic.panic("std.time.Duration.new: nanos must be < 1_000_000_000")
+        }
+
+        return Duration {
+            secs,
+            nanos,
+        }
+    }
+
+    public func fromSeconds(_ secs: uint64) -> Duration {
+        return Duration {
+            secs,
+            nanos: 0_u32,
+        }
+    }
+
+    public func fromMillis(_ millis: uint64) -> Duration {
+        let secs = millis / MILLIS_PER_SEC
+        let remMillis = millis % MILLIS_PER_SEC
+        return Duration {
+            secs,
+            nanos: (remMillis * 1000000_u64) as uint32,
+        }
+    }
+
+    public func fromMicros(_ micros: uint64) -> Duration {
+        let secs = micros / MICROS_PER_SEC
+        let remMicros = micros % MICROS_PER_SEC
+        return Duration {
+            secs,
+            nanos: (remMicros * 1000_u64) as uint32,
+        }
+    }
+
+    public func fromNanos(_ nanos: uint64) -> Duration {
+        return Duration {
+            secs: nanos / NANOS_PER_SEC_U64,
+            nanos: (nanos % NANOS_PER_SEC_U64) as uint32,
+        }
+    }
+
+    public func seconds(&self) -> uint64 {
+        return self.secs
+    }
+
+    public func subsecNanos(&self) -> uint32 {
+        return self.nanos
+    }
+
+    public func checkedAdd(&self, _ other: Duration) -> Duration? {
+        var nanos = self.nanos + other.nanos
+        var carry: uint64 = 0_u64
+
+        if nanos >= NANOS_PER_SEC_U32 {
+            nanos -= NANOS_PER_SEC_U32
+            carry = 1_u64
+        }
+
+        if self.secs > U64_MAX - other.secs {
+            return .none
+        }
+
+        var secs = self.secs + other.secs
+        if carry == 1_u64 {
+            if secs == U64_MAX {
+                return .none
+            }
+            secs += 1_u64
+        }
+
+        return .some(Duration {
+            secs,
+            nanos,
+        })
+    }
+
+    public func checkedSub(&self, _ other: Duration) -> Duration? {
+        if self.secs < other.secs {
+            return .none
+        }
+        if self.secs == other.secs && self.nanos < other.nanos {
+            return .none
+        }
+
+        var secs = self.secs - other.secs
+        var nanos: uint32 = 0_u32
+
+        if self.nanos >= other.nanos {
+            nanos = self.nanos - other.nanos
+        } else {
+            secs -= 1_u64
+            nanos = (self.nanos + NANOS_PER_SEC_U32) - other.nanos
+        }
+
+        return .some(Duration {
+            secs,
+            nanos,
+        })
+    }
+}
+
+public struct Instant: Copy {
+    secs: uint64
+    nanos: uint32
+}
+
+impl Instant {
+    public func now() -> Instant {
+        let raw = std.sys.time.monotonicNow()
+        return Instant {
+            secs: raw.seconds(),
+            nanos: raw.subsecNanos(),
+        }
+    }
+
+    public func elapsed(&self) -> Duration {
+        let now = Instant.now()
+        return now.durationSince(*self)
+    }
+
+    public func durationSince(&self, _ earlier: Instant) -> Duration {
+        let checked = self.checkedDurationSince(earlier)
+        match checked {
+            case .some(value) => return value
+            case .none => return zeroDuration()
+        }
+    }
+
+    public func checkedDurationSince(&self, _ earlier: Instant) -> Duration? {
+        if self.secs < earlier.secs {
+            return .none
+        }
+        if self.secs == earlier.secs && self.nanos < earlier.nanos {
+            return .none
+        }
+
+        return .some(checkedUnsignedDiff(self.secs, self.nanos, earlier.secs, earlier.nanos))
+    }
+}
+
+public struct SystemTime: Copy {
+    secs: int64
+    nanos: uint32
+}
+
+impl SystemTime {
+    public func now() -> SystemTime {
+        let raw = std.sys.time.realtimeNow()
+        return SystemTime {
+            secs: raw.seconds(),
+            nanos: raw.subsecNanos(),
+        }
+    }
+
+    public func fromUnixTimestamp(_ secs: int64, _ nanos: uint32) -> SystemTime {
+        if nanos >= NANOS_PER_SEC_U32 {
+            std.panic.panic("std.time.SystemTime.fromUnixTimestamp: nanos must be < 1_000_000_000")
+        }
+
+        return SystemTime {
+            secs,
+            nanos,
+        }
+    }
+
+    public func unixSeconds(&self) -> int64 {
+        return self.secs
+    }
+
+    public func subsecNanos(&self) -> uint32 {
+        return self.nanos
+    }
+
+    public func checkedDurationSince(&self, _ earlier: SystemTime) -> Duration? {
+        if self.secs < earlier.secs {
+            return .none
+        }
+        if self.secs == earlier.secs && self.nanos < earlier.nanos {
+            return .none
+        }
+
+        let laterBiased = signedToBiased(self.secs)
+        let earlierBiased = signedToBiased(earlier.secs)
+
+        var outSecs = laterBiased - earlierBiased
+        var outNanos: uint32 = 0_u32
+
+        if self.nanos >= earlier.nanos {
+            outNanos = self.nanos - earlier.nanos
+        } else {
+            if outSecs == 0_u64 {
+                return .none
+            }
+            outSecs -= 1_u64
+            outNanos = (self.nanos + NANOS_PER_SEC_U32) - earlier.nanos
+        }
+
+        return .some(Duration {
+            secs: outSecs,
+            nanos: outNanos,
+        })
+    }
+
+    public func durationSinceUnixEpoch(&self) -> Duration? {
+        if self.secs < 0_i64 {
+            return .none
+        }
+
+        return .some(Duration {
+            secs: self.secs as uint64,
+            nanos: self.nanos,
+        })
+    }
+
+    public func checkedAddDuration(&self, _ d: Duration) -> SystemTime? {
+        var nanos = self.nanos + d.nanos
+        var carry: uint64 = 0_u64
+        if nanos >= NANOS_PER_SEC_U32 {
+            nanos -= NANOS_PER_SEC_U32
+            carry = 1_u64
+        }
+
+        var addSecs = d.secs
+        if carry == 1_u64 {
+            if addSecs == U64_MAX {
+                return .none
+            }
+            addSecs += 1_u64
+        }
+
+        let biased = signedToBiased(self.secs)
+        if biased > U64_MAX - addSecs {
+            return .none
+        }
+
+        let outBiased = biased + addSecs
+        return .some(SystemTime {
+            secs: biasedToSigned(outBiased),
+            nanos,
+        })
+    }
+
+    public func checkedSubDuration(&self, _ d: Duration) -> SystemTime? {
+        var nanos: uint32 = 0_u32
+        var borrow: uint64 = 0_u64
+
+        if self.nanos >= d.nanos {
+            nanos = self.nanos - d.nanos
+        } else {
+            borrow = 1_u64
+            nanos = (self.nanos + NANOS_PER_SEC_U32) - d.nanos
+        }
+
+        var subSecs = d.secs
+        if borrow == 1_u64 {
+            if subSecs == U64_MAX {
+                return .none
+            }
+            subSecs += 1_u64
+        }
+
+        let biased = signedToBiased(self.secs)
+        if biased < subSecs {
+            return .none
+        }
+
+        let outBiased = biased - subSecs
+        return .some(SystemTime {
+            secs: biasedToSigned(outBiased),
+            nanos,
+        })
+    }
+}
+
+public func sleep(_ duration: Duration) {
+    std.sys.time.sleep(duration.secs, duration.nanos)
+}

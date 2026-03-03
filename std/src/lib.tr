@@ -1,6 +1,7 @@
 public import std.ffi
 public import std.io
 public import std.fs
+public import std.time
 import std.fmt
 
 @cfg(family("unix"))

@@ -1,0 +1,20 @@
+// CHECK_ONLY
+
+namespace Outer {
+    public namespace Inner {
+        public struct Value {
+            n: int32
+        }
+    }
+}
+
+func makeValue() -> Outer.Inner.Value {
+    // Regression: qualified struct literals must resolve using the expression's path resolution.
+    return Outer.Inner.Value { n: 7 }
+}
+
+func main() {
+    let v = Outer.Inner.Value { n: 11 }
+    let _ = v
+    let _ = makeValue()
+}

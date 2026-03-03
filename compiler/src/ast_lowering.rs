@@ -1843,10 +1843,9 @@ impl Actor<'_, '_> {
                 hir::ExpressionKind::Malformed
             }
             ast::ExpressionKind::StructLiteral(struct_literal) => {
-                let path = self.lower_path(
-                    struct_literal.path.segments[0].id,
-                    struct_literal.path.clone(),
-                );
+                // Use the struct-literal expression node id, which is the key used by
+                // resolver.resolve_path_with_source(...) for this path.
+                let path = self.lower_path(node.id, struct_literal.path.clone());
                 let fields = struct_literal
                     .fields
                     .iter()

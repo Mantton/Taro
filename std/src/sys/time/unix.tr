@@ -1,0 +1,104 @@
+//+cfg family("unix")
+
+import std.libc
+
+const NANOS_PER_SEC_U32: uint32 = 1000000000_u32
+const NANOS_PER_SEC_I64: int64 = 1000000000_i64
+const I64_MAX_U64: uint64 = 9223372036854775807_u64
+
+func validateNanos(_ nanos: int64) -> uint32 {
+    if nanos < 0_i64 || nanos >= NANOS_PER_SEC_I64 {
+        std.panic.panic("std.sys.time: invalid timespec nanoseconds")
+    }
+    return nanos as uint32
+}
+
+func convertMonotonic(_ ts: std.libc.Timespec) -> MonotonicTime {
+    if ts.tv_sec < 0_i64 {
+        std.panic.panic("std.sys.time.monotonicNow: negative seconds")
+    }
+
+    let nanos = validateNanos(ts.tv_nsec)
+    return MonotonicTime {
+        secs: ts.tv_sec as uint64,
+        nanos,
+    }
+}
+
+func convertRealtime(_ ts: std.libc.Timespec) -> RealtimeTime {
+    let nanos = validateNanos(ts.tv_nsec)
+    return RealtimeTime {
+        secs: ts.tv_sec,
+        nanos,
+    }
+}
+
+func impMonotonicNow() -> MonotonicTime {
+    var ts = std.libc.Timespec {
+        tv_sec: 0_i64,
+        tv_nsec: 0_i64,
+    }
+    let tsPtr = unsafe { (&mut ts as *mut std.libc.Timespec) }
+    let rc = std.libc.clock_gettime(std.libc.CLOCK_MONOTONIC, tsPtr)
+    if rc != 0 {
+        std.panic.panic("std.sys.time.monotonicNow: clock_gettime failed")
+    }
+    return convertMonotonic(ts)
+}
+
+func impRealtimeNow() -> RealtimeTime {
+    var ts = std.libc.Timespec {
+        tv_sec: 0_i64,
+        tv_nsec: 0_i64,
+    }
+    let tsPtr = unsafe { (&mut ts as *mut std.libc.Timespec) }
+    let rc = std.libc.clock_gettime(std.libc.CLOCK_REALTIME, tsPtr)
+    if rc != 0 {
+        std.panic.panic("std.sys.time.realtimeNow: clock_gettime failed")
+    }
+    return convertRealtime(ts)
+}
+
+func impSleep(_ secs: uint64, _ nanos: uint32) {
+    if nanos >= NANOS_PER_SEC_U32 {
+        std.panic.panic("std.sys.time.sleep: invalid nanoseconds")
+    }
+    if secs > I64_MAX_U64 {
+        std.panic.panic("std.sys.time.sleep: duration too large")
+    }
+
+    var req = std.libc.Timespec {
+        tv_sec: secs as int64,
+        tv_nsec: nanos as int64,
+    }
+    var rem = std.libc.Timespec {
+        tv_sec: 0_i64,
+        tv_nsec: 0_i64,
+    }
+    let remPtr = unsafe { (&mut rem as *mut std.libc.Timespec) }
+
+    while true {
+        let reqPtr = unsafe { (&req as *const std.libc.Timespec) }
+        let rc = std.libc.nanosleep(reqPtr, remPtr)
+        if rc == 0 {
+            return
+        }
+
+        let err = std.libc.errno()
+        if err != std.libc.EINTR {
+            std.panic.panic("std.sys.time.sleep: nanosleep failed")
+        }
+
+        if rem.tv_sec < 0_i64 {
+            std.panic.panic("std.sys.time.sleep: invalid remainder seconds")
+        }
+        if rem.tv_nsec < 0_i64 || rem.tv_nsec >= NANOS_PER_SEC_I64 {
+            std.panic.panic("std.sys.time.sleep: invalid remainder nanoseconds")
+        }
+
+        req = std.libc.Timespec {
+            tv_sec: rem.tv_sec,
+            tv_nsec: rem.tv_nsec,
+        }
+    }
+}

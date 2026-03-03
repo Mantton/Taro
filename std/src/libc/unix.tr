@@ -2,6 +2,12 @@
 
 public type size_t = usize
 public type ssize_t = isize
+public type clockid_t = int32
+
+public struct Timespec {
+    tv_sec: int64
+    tv_nsec: int64
+}
 
 public const STDIN_FILENO: int32 = 0
 public const STDOUT_FILENO: int32 = 1
@@ -13,6 +19,8 @@ extern "C" {
     public func exit(_ code: int32) -> !
     public func close(_ fd: int32) -> int32
     public func lseek(_ fd: int32, _ offset: isize, _ whence: int32) -> isize
+    public func clock_gettime(_ clock_id: clockid_t, _ tp: *mut Timespec) -> int32
+    public func nanosleep(_ req: *const Timespec, _ rem: *mut Timespec) -> int32
     
     // File system utilities
     public func mkdir(_ path: *const uint8, _ mode: int32) -> int32
@@ -131,3 +139,12 @@ public const O_TRUNC: int32 = 1024
 public const O_APPEND: int32 = 1024
 @cfg(os("macos"))
 public const O_APPEND: int32 = 8
+
+public const CLOCK_REALTIME: int32 = 0
+@cfg(os("linux"))
+public const CLOCK_MONOTONIC: int32 = 1
+@cfg(os("macos"))
+public const CLOCK_MONOTONIC: int32 = 6
+
+public const EINTR: int32 = 4
+public const EINVAL: int32 = 22
