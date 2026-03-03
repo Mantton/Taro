@@ -73,6 +73,25 @@ pub enum RefSpec {
     DefaultBranch,
 }
 
+impl RefSpec {
+    pub fn request_string(&self) -> EcoString {
+        match self {
+            RefSpec::Commit(revision) => format!("commit:{}", revision).into(),
+            RefSpec::Tag(tag) => format!("tag:{}", tag).into(),
+            RefSpec::Branch(branch) => format!("branch:{}", branch).into(),
+            RefSpec::Version(version_req) => format!("version:{}", version_req).into(),
+            RefSpec::DefaultBranch => "default-branch".into(),
+        }
+    }
+
+    pub fn is_mutable(&self) -> bool {
+        matches!(
+            self,
+            RefSpec::Branch(_) | RefSpec::DefaultBranch | RefSpec::Version(_)
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SourceSpec {
     Path { abs: std::path::PathBuf },
@@ -247,11 +266,7 @@ impl ResolvedPackage {
             ResolvedSource::Git { revision, .. } => {
                 let name = self.package.0.clone();
                 let path = format!("{name}-{revision}");
-                let package_source = language_home()?.join(PACKAGE_SOURCE).join(&path);
-                let package_source = package_source
-                    .canonicalize()
-                    .map_err(|e| format!("failed to resolve path – {}", e))?;
-                Ok(package_source)
+                Ok(language_home()?.join(PACKAGE_SOURCE).join(&path))
             }
         }
     }
@@ -284,6 +299,7 @@ pub enum ResolvedSource {
         url: EcoString,
         revision: git2::Oid,
         selector: Selector,
+        requested: EcoString,
     },
 }
 

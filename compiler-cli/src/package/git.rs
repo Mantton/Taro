@@ -1,6 +1,7 @@
 use crate::package::{
+    lockfile::canonical_git_cache_key,
     manifest::{RefSpec, ResolvedPackage, Selector},
-    utils::language_home,
+    utils::{canonicalize_git_url, language_home},
 };
 use compiler::constants::{PACKAGE_STORE, VCS_REMOTE_NAME};
 use ecow::EcoString;
@@ -42,9 +43,7 @@ pub fn branch_exists(repo: &git2::Repository, name: &str) -> bool {
 
 /// Reference: https://github.com/rust-lang/git2-rs/blob/master/examples/fetch.rs
 pub fn fetch_repo(repo: &git2::Repository) -> Result<(), git2::Error> {
-    let mut remote = repo
-        .find_remote(VCS_REMOTE_NAME)
-        .or_else(|_| repo.remote_anonymous(VCS_REMOTE_NAME))?;
+    let mut remote = repo.find_remote(VCS_REMOTE_NAME)?;
     let mut callbacks = git2::RemoteCallbacks::new();
     callbacks.credentials(|_url, _username_from_url, _allowed_types| git2::Cred::default());
 
@@ -72,6 +71,38 @@ pub fn fetch_repo(repo: &git2::Repository) -> Result<(), git2::Error> {
     )?;
 
     Ok(())
+}
+
+pub fn repo_origin_url(repo: &Repository) -> Result<String, String> {
+    let remote = repo
+        .find_remote(VCS_REMOTE_NAME)
+        .map_err(|e| format!("failed to lookup '{}': {}", VCS_REMOTE_NAME, e))?;
+    let Some(url) = remote.url() else {
+        return Err(format!("'{}' remote does not have a URL", VCS_REMOTE_NAME));
+    };
+
+    canonicalize_git_url(url)
+}
+
+pub fn ensure_repo_origin(repo: &Repository, expected_canonical_url: &str) -> Result<(), String> {
+    let actual = repo_origin_url(repo)?;
+    if actual == expected_canonical_url {
+        Ok(())
+    } else {
+        Err(format!(
+            "repository origin mismatch (expected '{}', found '{}')",
+            expected_canonical_url, actual
+        ))
+    }
+}
+
+pub fn checkout_revision(repo: &Repository, revision: Oid) -> Result<(), String> {
+    let commit = repo
+        .find_commit(revision)
+        .map_err(|_| format!("unable to locate locked revision {}", revision))?;
+    checkout_detached(repo, &commit)
+        .map(|_| ())
+        .map_err(|e| format!("failed to checkout locked revision {}: {}", revision, e))
 }
 
 pub fn checkout_refspec(
@@ -178,9 +209,18 @@ pub fn parse_tag_version(tag: &str) -> Option<semver::Version> {
 }
 
 pub fn install_revision(package: ResolvedPackage, revision: Oid) -> Result<PathBuf, String> {
+    let canonical_url = match &package.source {
+        crate::package::manifest::ResolvedSource::Git { url, .. } => canonicalize_git_url(url)?,
+        _ => {
+            return Err(format!(
+                "install_revision only supports git packages (got '{}')",
+                package.package.0
+            ));
+        }
+    };
     let source = language_home()?
         .join(PACKAGE_STORE)
-        .join(package.package.hashed_name());
+        .join(canonical_git_cache_key(&package.package.0, &canonical_url));
 
     let destination = package.path()?;
 
@@ -216,7 +256,15 @@ pub fn install_revision(package: ResolvedPackage, revision: Oid) -> Result<PathB
     repo.checkout_head(Some(&mut co))
         .map_err(|e| format!("failed to checkout tree: {}", e))?;
 
-    // Ensure destination exists
+    // Ensure destination exists and does not retain stale files between revisions.
+    if destination.exists() {
+        std::fs::remove_dir_all(&destination).map_err(|err| {
+            format!(
+                "failed to reset install location for {}: {}",
+                package.package.0, err
+            )
+        })?;
+    }
     std::fs::create_dir_all(&destination).map_err(|err| {
         format!(
             "failed to create install location for {}: {}",

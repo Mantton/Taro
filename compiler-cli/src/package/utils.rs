@@ -88,6 +88,13 @@ pub fn derive_git_url(module_path: &str) -> Option<EcoString> {
     )
 }
 
+pub fn canonicalize_git_url(input: &str) -> Result<String, String> {
+    let module_path = normalize_module_path(input)?;
+    derive_git_url(&module_path)
+        .map(|url| url.to_string())
+        .ok_or_else(|| format!("cannot canonicalize git url '{}'", input))
+}
+
 pub fn canonicalize_rel(base: &Path, p: PathBuf) -> Result<PathBuf, String> {
     let abs = if p.is_absolute() { p } else { base.join(p) };
     std::fs::canonicalize(&abs)
@@ -132,4 +139,20 @@ pub fn get_package_name(input: &str) -> Result<EcoString, String> {
     }
 
     Err("invalid package name".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::canonicalize_git_url;
+
+    #[test]
+    fn canonicalizes_equivalent_git_urls() {
+        let https = canonicalize_git_url("https://github.com/Org/Repo.git").expect("https");
+        let ssh = canonicalize_git_url("git@github.com:Org/Repo.git").expect("ssh");
+        let raw = canonicalize_git_url("github.com/Org/Repo").expect("raw");
+
+        assert_eq!(https, "https://github.com/Org/Repo.git");
+        assert_eq!(ssh, https);
+        assert_eq!(raw, https);
+    }
 }

@@ -394,6 +394,21 @@ Taro features a built-in package manager that feels familiar to users of Cargo o
 - **Manifest**: Packages are defined in a TOML manifest.
 - **Dependencies**: Supports Git-based dependencies (tags, branches, commits) and local paths.
 - **Resolution**: Uses semver-aware selection with dependency graph validation (via `semver` and `petgraph`) to resolve dependency graphs.
+- **Locking**: Generates `package.lock` with resolved revisions and dependency tree hashes for reproducible builds.
+- **Integrity**: Verifies installed Git dependencies against locked content hashes and fails on tampering.
+
+### Lockfile and Strict Mode
+
+`package.lock` is generated automatically on dependency sync (`build`, `check`, `run`, `test` for package roots).
+
+- `--locked`: Require `package.lock` to be present and up to date; do not rewrite it.
+- `--update-lock`: Force lockfile refresh from current dependency sources.
+- `CI=true`: Enables strict lock behavior (same drift checks as `--locked`).
+
+Security policy in this phase:
+
+- Transitive `path` dependencies are rejected. Only the root manifest may declare `path` dependencies.
+- Git cache identity is bound to canonical URL + package name, and cached repositories are origin-validated.
 
 ### Package Structure
 

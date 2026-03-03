@@ -55,6 +55,12 @@ pub struct CommandLineArguments {
     /// Rebuild and publish attached std artifacts from source.
     #[arg(long = "build-std")]
     pub build_std: bool,
+    /// Require dependency resolution to match package.lock exactly.
+    #[arg(long = "locked")]
+    pub locked: bool,
+    /// Refresh package.lock entries from current dependency sources.
+    #[arg(long = "update-lock", conflicts_with = "locked")]
+    pub update_lock: bool,
 }
 
 impl CommandLineArguments {
@@ -109,6 +115,23 @@ impl CommandLineArguments {
             .map(ToOwned::to_owned)
             .collect()
     }
+
+    pub fn sync_options(&self) -> crate::package::sync::SyncOptions {
+        crate::package::sync::SyncOptions {
+            locked: self.locked,
+            update_lock: self.update_lock,
+            strict_env: ci_env_is_strict(),
+        }
+    }
+}
+
+fn ci_env_is_strict() -> bool {
+    let Ok(value) = std::env::var("CI") else {
+        return false;
+    };
+
+    let normalized = value.trim().to_ascii_lowercase();
+    !(normalized.is_empty() || normalized == "0" || normalized == "false" || normalized == "no")
 }
 
 pub fn run() {
@@ -160,5 +183,12 @@ mod tests {
 
         assert_eq!(args.normalized_test_filter().as_deref(), Some("core.tests"));
         assert_eq!(args.normalized_test_tags(), vec!["Smoke"]);
+    }
+
+    #[test]
+    fn parses_lock_flags() {
+        let args = CommandLineArguments::parse_from(["taro", "build", "std", "--locked"]);
+        assert!(args.locked);
+        assert!(!args.update_lock);
     }
 }

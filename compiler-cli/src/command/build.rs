@@ -180,8 +180,9 @@ fn run_package(
     let icx = CompilerContext::new(dcx, store);
     let mut package_fingerprints = FxHashMap::default();
     let incremental_enabled = !arguments.no_incremental;
+    let sync_options = arguments.sync_options();
 
-    let graph = sync_dependencies(arguments.path)?;
+    let graph = sync_dependencies(arguments.path.clone(), sync_options)?;
 
     let root_is_std = is_root_std_package(&graph, arguments.std_path.clone(), &icx)?;
 
@@ -695,8 +696,9 @@ fn run_package_test(
     let icx = CompilerContext::new(dcx, store);
     let mut package_fingerprints = FxHashMap::default();
     let incremental_enabled = !arguments.no_incremental;
+    let sync_options = arguments.sync_options();
 
-    let graph = sync_dependencies(arguments.path)?;
+    let graph = sync_dependencies(arguments.path.clone(), sync_options)?;
 
     let root_is_std = is_root_std_package(&graph, arguments.std_path.clone(), &icx)?;
 
