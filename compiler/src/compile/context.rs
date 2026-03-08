@@ -456,6 +456,16 @@ impl<'arena> GlobalContext<'arena> {
         debug_assert!(ok, "duplicated attribute information")
     }
 
+    pub fn cache_definition_unsafe(self, id: DefinitionID, is_unsafe: bool) {
+        self.with_type_database(id.package(), |db| {
+            if is_unsafe {
+                db.def_to_unsafe.insert(id);
+            } else {
+                db.def_to_unsafe.remove(&id);
+            }
+        });
+    }
+
     pub fn allocate_synthetic_id(self, package: PackageIndex) -> DefinitionID {
         let store = &self.context.store;
         let id = store.next_synthetic_id.get();
@@ -1260,6 +1270,20 @@ impl<'arena> GlobalContext<'arena> {
             empty
         }
     }
+
+    pub fn definition_has_known_attribute(
+        self,
+        id: DefinitionID,
+        attr: hir::KnownAttribute,
+    ) -> bool {
+        self.attributes_of(id)
+            .iter()
+            .any(|item| item.as_known(self) == Some(attr))
+    }
+
+    pub fn definition_is_unsafe(self, id: DefinitionID) -> bool {
+        self.with_type_database(id.package(), |db| db.def_to_unsafe.contains(&id))
+    }
 }
 
 pub struct CompilerContext<'arena> {
@@ -1585,6 +1609,7 @@ pub struct TypeDatabase<'arena> {
     /// Lowered default value of a generic const parameter (keyed by parameter DefinitionID).
     pub generic_const_defaults: FxHashMap<DefinitionID, Const<'arena>>,
     pub def_to_attributes: FxHashMap<DefinitionID, &'arena hir::AttributeList>,
+    pub def_to_unsafe: FxHashSet<DefinitionID>,
     pub def_to_iface_def: FxHashMap<DefinitionID, &'arena InterfaceDefinition<'arena>>,
     pub interface_to_supers: FxHashMap<DefinitionID, FxHashSet<DefinitionID>>,
     pub conformance_records: FxHashMap<ConformanceRecordId, ConformanceRecord<'arena>>,

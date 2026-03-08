@@ -1,0 +1,33 @@
+func writeStringThroughPointer(_ dst: *mut string, _ value: string) {
+    dst.write(value)
+}
+
+@test
+func testMaybeUninitWriteSurvivesCollect() {
+    var slot = std.mem.MaybeUninit[string].uninit()
+    let _ = slot.write("hello maybe")
+
+    std.runtime.collect()
+
+    let value = unsafe { slot.assumeInitRead() }
+    std.testing.assertEqual(
+        value,
+        "hello maybe",
+        "MaybeUninit.write should keep GC-visible data alive across collection",
+    )
+}
+
+@test
+func testMaybeUninitPointerWriteSurvivesCollect() {
+    var slot = std.mem.MaybeUninit[string].uninit()
+    writeStringThroughPointer(slot.asMutPtr(), "pointer maybe")
+
+    std.runtime.collect()
+
+    let value = unsafe { slot.assumeInitRead() }
+    std.testing.assertEqual(
+        value,
+        "pointer maybe",
+        "MaybeUninit pointer writes should resync shadow roots after the call",
+    )
+}

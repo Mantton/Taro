@@ -37,4 +37,14 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
         self.cache_attributes(node.id, &node.attributes);
         hir::walk_assoc_declaration(self, node, context)
     }
+
+    fn visit_function(
+        &mut self,
+        id: DefinitionID,
+        node: &hir::Function,
+        context: hir::FunctionContext,
+    ) -> Self::Result {
+        self.context.cache_definition_unsafe(id, node.is_unsafe);
+        hir::walk_function(self, id, node, context)
+    }
 }

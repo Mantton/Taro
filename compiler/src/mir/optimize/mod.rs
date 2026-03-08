@@ -38,6 +38,7 @@ pub fn run_passes<'ctx>(
 /// Includes: prune unreachable, simplify CFG, validate mutability/moves.
 pub fn run_local_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
     let mut passes: Vec<Box<dyn MirPass>> = vec![
+        Box::new(validate::ValidateBodyInvariants),
         Box::new(passes::PruneUnreachable),
         Box::new(passes::SimplifyCfg),
         // Validation passes - must run before inlining to catch errors in original code

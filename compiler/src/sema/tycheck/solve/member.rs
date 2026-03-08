@@ -99,6 +99,19 @@ impl<'ctx> ConstraintSolver<'ctx> {
             let mut candidates = self.lookup_instance_candidates(ty, name.symbol);
             self.filter_extension_candidates_in_place(&mut candidates, ty, span);
             if !candidates.is_empty() {
+                if let Some(def_id) = candidates
+                    .iter()
+                    .copied()
+                    .find(|candidate| self.gcx().definition_is_unsafe(*candidate))
+                {
+                    return SolverResult::Error(vec![Spanned::new(
+                        TypeError::UnsafeCallableValueNotAllowed {
+                            name: self.gcx().definition_symbol_or_fallback(def_id),
+                        },
+                        span,
+                    )]);
+                }
+
                 self.record_adjustments(receiver_node, adjustments);
                 let mut branches = Vec::with_capacity(candidates.len());
                 for candidate in candidates {
@@ -149,6 +162,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             name,
             expr_ty,
             base_hint,
+            allow_unsafe_callable_values,
             span,
         } = data;
 
@@ -195,6 +209,24 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         match resolution {
             Resolution::Definition(def_id, kind) => {
+                if !allow_unsafe_callable_values
+                    && matches!(
+                        kind,
+                        DefinitionKind::Function
+                            | DefinitionKind::AssociatedFunction
+                            | DefinitionKind::AssociatedOperator
+                            | DefinitionKind::VariantConstructor(VariantCtorKind::Function)
+                    )
+                    && self.gcx().definition_is_unsafe(def_id)
+                {
+                    return SolverResult::Error(vec![Spanned::new(
+                        TypeError::UnsafeCallableValueNotAllowed {
+                            name: self.gcx().definition_symbol_or_fallback(def_id),
+                        },
+                        span,
+                    )]);
+                }
+
                 let ty = self.gcx().get_type(def_id);
                 let generics = self.gcx().generics_of(def_id);
                 let mut obligations = Vec::new();
@@ -224,6 +256,21 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 }
             }
             Resolution::FunctionSet(candidates) => {
+                if !allow_unsafe_callable_values {
+                    if let Some(def_id) = candidates
+                        .iter()
+                        .copied()
+                        .find(|candidate| self.gcx().definition_is_unsafe(*candidate))
+                    {
+                        return SolverResult::Error(vec![Spanned::new(
+                            TypeError::UnsafeCallableValueNotAllowed {
+                                name: self.gcx().definition_symbol_or_fallback(def_id),
+                            },
+                            span,
+                        )]);
+                    }
+                }
+
                 let mut branches = Vec::with_capacity(candidates.len());
                 for candidate in candidates {
                     let candidate_ty = self.gcx().get_type(candidate);

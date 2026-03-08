@@ -142,6 +142,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 block.unit()
             }
             ExprKind::Call { callee, args } => {
+                let shadow_resync_locals = self.shadow_resync_locals_for_call(args);
+
                 // Determine whether we need to pack variadic arguments.
                 let mut variadic_split_idx = None;
                 let callee_expr = &self.thir.exprs[*callee];
@@ -395,6 +397,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     unwind,
                 };
                 self.terminate(block, expr.span, terminator);
+                self.push_shadow_resync(next, shadow_resync_locals, expr.span);
                 next.unit()
             }
             ExprKind::ListLiteral {

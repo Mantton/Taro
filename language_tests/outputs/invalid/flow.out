@@ -1,0 +1,48 @@
+Checking – flow
+error: non-exhaustive match, missing 'false' case
+ -> language_tests/source_files/invalid/flow.tr:37:4
+    match value {
+    ^^^^^^^^^^^^^
+        case true => 1
+    }
+     ^
+error: function with return type `string` can complete without returning a value
+ -> language_tests/source_files/invalid/flow.tr:3:20
+	func missingGreeting() -> string {
+	                    ^^^^^^^^^^^^
+error: function with return type `int32` can complete without returning a value
+ -> language_tests/source_files/invalid/flow.tr:7:27
+	func conditionalFallthrough(_ flag: bool) -> int32 {
+	                           ^^^^^^^^^^^^^^^^^^^^^^^
+error: `return` without a value is only allowed in functions returning `()`
+ -> language_tests/source_files/invalid/flow.tr:16:4
+	    return
+	    ^^^^^^
+error: function returning `!` cannot complete normally
+ -> language_tests/source_files/invalid/flow.tr:19:22
+	func neverFallsThrough() -> ! {}
+	                      ^^^^^^^
+error: `return` without a value is only allowed in functions returning `()`
+ -> language_tests/source_files/invalid/flow.tr:22:4
+	    return
+	    ^^^^^^
+error: use of uninitialized local 'value'
+ -> language_tests/source_files/invalid/flow.tr:27:15
+	    let copy = value
+	               ^^^^^
+error: use of uninitialized local 'value'
+ -> language_tests/source_files/invalid/flow.tr:32:19
+	    let ptr = &mut value
+	                   ^^^^^
+error: use of uninitialized local 'value'
+ -> language_tests/source_files/invalid/flow.tr:47:24
+	        defer { let _ = value }
+	                        ^^^^^
+error: use of uninitialized local 'value'
+ -> language_tests/source_files/invalid/flow.tr:56:20
+	    defer { let _ = value }
+	                    ^^^^^
+error: use of uninitialized local 'value'
+ -> language_tests/source_files/invalid/flow.tr:67:28
+	            defer { let _ = value }
+	                            ^^^^^

@@ -80,9 +80,7 @@ impl<'state> Compiler<'state> {
         let result = (|| -> CompileResult<Option<std::path::PathBuf>> {
             let (package, results) = self.analyze_with_timings(&mut timings)?;
 
-            let phase_started_at = Instant::now();
-            let thir = thir::package::build_package(&package, self.context, results)?;
-            timings.push_elapsed("thir.build", phase_started_at);
+            let thir = self.build_semantic_thir_with_timings(&package, results, &mut timings)?;
 
             let phase_started_at = Instant::now();
             let package = mir::package::build_package(thir, self.context)?;
@@ -159,9 +157,7 @@ impl<'state> Compiler<'state> {
             let tests = test_collector::filter_tests(discovered_tests, selection);
             timings.push_elapsed("test.collect", phase_started_at);
 
-            let phase_started_at = Instant::now();
-            let thir = thir::package::build_package(&package, self.context, results)?;
-            timings.push_elapsed("thir.build", phase_started_at);
+            let thir = self.build_semantic_thir_with_timings(&package, results, &mut timings)?;
 
             let phase_started_at = Instant::now();
             let package = mir::package::build_package(thir, self.context)?;
@@ -225,7 +221,8 @@ impl<'state> Compiler<'state> {
         let mut timings = TimingReport::default();
 
         let result = (|| -> CompileResult<hir::Package> {
-            let (package, _) = self.analyze_with_timings(&mut timings)?;
+            let (package, results) = self.analyze_with_timings(&mut timings)?;
+            let _ = self.build_semantic_thir_with_timings(&package, results, &mut timings)?;
             Ok(package)
         })();
 
@@ -248,9 +245,7 @@ impl<'state> Compiler<'state> {
         let result = (|| -> CompileResult<()> {
             let (package, results) = self.analyze_with_timings(&mut timings)?;
 
-            let phase_started_at = Instant::now();
-            let thir = thir::package::build_package(&package, self.context, results)?;
-            timings.push_elapsed("thir.build", phase_started_at);
+            let thir = self.build_semantic_thir_with_timings(&package, results, &mut timings)?;
 
             let phase_started_at = Instant::now();
             let package = mir::package::build_package(thir, self.context)?;
@@ -437,5 +432,17 @@ impl<'state> Compiler<'state> {
         }
 
         Ok((package, results))
+    }
+
+    fn build_semantic_thir_with_timings(
+        &mut self,
+        package: &hir::Package,
+        results: sema::tycheck::results::TypeCheckResults<'state>,
+        timings: &mut TimingReport,
+    ) -> CompileResult<thir::ThirPackage<'state>> {
+        let phase_started_at = Instant::now();
+        let thir = thir::package::build_package(package, self.context, results)?;
+        timings.push_elapsed("thir.build", phase_started_at);
+        Ok(thir)
     }
 }

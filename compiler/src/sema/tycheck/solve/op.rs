@@ -212,6 +212,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 call_span: data.span,
                 callee_ty: method_ty,
                 callee_source: None,
+                is_unsafe_context: false,
                 result_ty: data.rho,
                 _expect_ty: data.expectation,
                 arguments: vec![ApplyArgument {
@@ -514,6 +515,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 call_span: data.span,
                 callee_ty: method_ty,
                 callee_source: None,
+                is_unsafe_context: false,
                 result_ty: data.rho,
                 _expect_ty: data.expectation,
                 arguments: vec![
@@ -612,6 +614,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 call_span: data.span,
                 callee_ty: method_ty,
                 callee_source: None,
+                is_unsafe_context: false,
                 result_ty: data.rho,
                 _expect_ty: data.expectation,
                 arguments: vec![
@@ -1053,6 +1056,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 call_span: data.span,
                 callee_ty: method_ty,
                 callee_source: None,
+                is_unsafe_context: false,
                 result_ty: self.gcx().types.void,
                 _expect_ty: None,
                 arguments: vec![

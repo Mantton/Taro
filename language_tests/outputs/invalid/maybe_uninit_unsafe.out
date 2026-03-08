@@ -1,0 +1,9 @@
+Checking – maybe_uninit_unsafe
+error: call to unsafe function 'assumeInit' must be inside an unsafe { ... } block
+ -> language_tests/source_files/invalid/maybe_uninit_unsafe.tr:5:11
+	    return slot.assumeInit()
+	           ^^^^^^^^^^^^^^^^^
+error: unsafe function 'assumeInitRead' cannot be used as a value; call it directly inside unsafe { ... }
+ -> language_tests/source_files/invalid/maybe_uninit_unsafe.tr:10:17
+	    let reader = slot.assumeInitRead
+	                 ^^^^^^^^^^^^^^^^^^^

@@ -256,6 +256,7 @@ pub struct Function {
     pub generics: Generics,
     pub signature: FunctionSignature,
     pub block: Option<Block>,
+    pub is_unsafe: bool,
     pub abi: Option<Abi>,
 }
 
@@ -871,6 +872,7 @@ pub enum StdItem {
     Dictionary,
     Range,
     ClosedRange,
+    MaybeUninit,
 
     // Interfaces
     Copy,
@@ -918,6 +920,7 @@ impl StdItem {
             StdItem::Dictionary => Some("Dictionary"),
             StdItem::Range => Some("Range"),
             StdItem::ClosedRange => Some("ClosedRange"),
+            StdItem::MaybeUninit => Some("MaybeUninit"),
             StdItem::Copy => Some("Copy"),
             StdItem::Clone => Some("Clone"),
             StdItem::Hashable => Some("Hashable"),
@@ -959,6 +962,7 @@ impl StdItem {
             "Dictionary" => Some(Self::Dictionary),
             "Range" => Some(Self::Range),
             "ClosedRange" => Some(Self::ClosedRange),
+            "MaybeUninit" => Some(Self::MaybeUninit),
             "Copy" => Some(Self::Copy),
             "Clone" => Some(Self::Clone),
             "Hashable" => Some(Self::Hashable),
@@ -995,7 +999,8 @@ impl StdItem {
             | StdItem::Set
             | StdItem::Dictionary
             | StdItem::Range
-            | StdItem::ClosedRange => Some(DefinitionKind::Struct),
+            | StdItem::ClosedRange
+            | StdItem::MaybeUninit => Some(DefinitionKind::Struct),
             StdItem::Copy
             | StdItem::Clone
             | StdItem::Hashable
@@ -1043,6 +1048,7 @@ impl StdItem {
                 | StdItem::Dictionary
                 | StdItem::Range
                 | StdItem::ClosedRange
+                | StdItem::MaybeUninit
                 | StdItem::Copy
                 | StdItem::Clone
                 | StdItem::Hashable
@@ -1075,13 +1081,14 @@ impl StdItem {
         )
     }
 
-    pub const ALL_REQUIRED: [StdItem; 35] = [
+    pub const ALL_REQUIRED: [StdItem; 36] = [
         StdItem::Optional,
         StdItem::List,
         StdItem::Set,
         StdItem::Dictionary,
         StdItem::Range,
         StdItem::ClosedRange,
+        StdItem::MaybeUninit,
         StdItem::Copy,
         StdItem::Clone,
         StdItem::Hashable,

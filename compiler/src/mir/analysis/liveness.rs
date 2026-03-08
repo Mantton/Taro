@@ -81,6 +81,11 @@ pub fn compute_liveness(body: &Body<'_>) -> LivenessResult {
                     // Rvalue is used
                     use_rvalue(&rvalue, &mut current_live);
                 }
+                StatementKind::ShadowResync(locals) => {
+                    for &local in locals {
+                        current_live.insert(local);
+                    }
+                }
                 StatementKind::SetDiscriminant { place, .. } => {
                     if place.projection.is_empty() {
                         // Overwrites discriminant, effectively a partial def?
@@ -176,6 +181,11 @@ pub fn compute_liveness(body: &Body<'_>) -> LivenessResult {
                         use_place(&dest, &mut in_set);
                     }
                     use_rvalue(&rvalue, &mut in_set);
+                }
+                StatementKind::ShadowResync(locals) => {
+                    for &local in locals {
+                        in_set.insert(local);
+                    }
                 }
                 StatementKind::SetDiscriminant { place, .. } => {
                     if !place.projection.is_empty() {

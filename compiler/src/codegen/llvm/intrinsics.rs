@@ -152,6 +152,20 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         self.store_place(destination, body, locals, desc_ptr.into())
     }
 
+    pub(super) fn lower_intrinsic_maybe_uninit(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        destination: &Place<'gcx>,
+    ) -> CompileResult<()> {
+        let dest_ty = self.place_ty(body, destination);
+        let Some(llvm_ty) = self.lower_ty(dest_ty) else {
+            return Ok(());
+        };
+
+        self.store_place(destination, body, locals, llvm_ty.const_zero().into())
+    }
+
     /// Intrinsic: __intrinsic_list_write[T](buffer: GcPtr, index: usize, value: T)
     /// Writes a value to the buffer at the given element index.
     pub(super) fn lower_intrinsic_list_write(

@@ -1,0 +1,71 @@
+// CHECK_ONLY
+
+func missingGreeting() -> string {
+    let greeting = "hello"
+}
+
+func conditionalFallthrough(_ flag: bool) -> int32 {
+    if flag {
+        return 1
+    }
+
+    let value = 2
+}
+
+func bareReturnValue() -> int32 {
+    return
+}
+
+func neverFallsThrough() -> ! {}
+
+func neverBareReturn() -> ! {
+    return
+}
+
+func uninitializedLocal() {
+    let value: int32
+    let copy = value
+}
+
+func uninitializedMutableBorrow() {
+    var value: int32
+    let ptr = &mut value
+    let _ = ptr
+}
+
+func nonExhaustiveMatch(_ value: bool) -> int32 {
+    match value {
+        case true => 1
+    }
+}
+
+func main() {}
+
+func deferScopeExitMaybeUninit(_ flag: bool) {
+    var value: int32
+    {
+        defer { let _ = value }
+        if flag {
+            value = 1
+        }
+    }
+}
+
+func deferReturnMaybeUninit(_ flag: bool) -> string {
+    var value: string
+    defer { let _ = value }
+    if flag {
+        value = "ok"
+    }
+    return "done"
+}
+
+func deferBreakMaybeUninit() {
+    var value: int32
+    loop {
+        {
+            defer { let _ = value }
+            break
+        }
+    }
+}

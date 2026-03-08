@@ -608,6 +608,7 @@ impl Actor<'_, '_> {
             generics: self.lower_generics(node.generics),
             signature: self.lower_function_signature(node.signature),
             block: node.block.map(|n| self.lower_block(n)),
+            is_unsafe: node.is_unsafe,
             abi,
         }
     }

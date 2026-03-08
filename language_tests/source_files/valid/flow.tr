@@ -1,0 +1,151 @@
+// CHECK_ONLY
+// EXPECT_STDERR_CONTAINS: flow.tr:73
+// EXPECT_STDERR_CONTAINS: flow.tr:79
+// EXPECT_STDERR_CONTAINS: flow.tr:86
+// EXPECT_STDERR_CONTAINS: flow.tr:92
+
+func diverge() -> ! {
+    loop {}
+}
+
+func implicitReturn(_ flag: bool) -> int32 {
+    if flag {
+        1
+    } else {
+        2
+    }
+}
+
+func exhaustiveWithNever(_ flag: bool) -> int32 {
+    match flag {
+        case true => 10
+        case false => diverge()
+    }
+}
+
+func loopBreakInitializes() -> int32 {
+    var value: int32
+    loop {
+        value = 42
+        break
+    }
+    value
+}
+
+func coerceInt(_ flag: bool) -> int32 {
+    if flag {
+        return diverge()
+    }
+    7
+}
+
+func coerceString(_ flag: bool) -> string {
+    if flag {
+        return diverge()
+    }
+    "ok"
+}
+
+func helperWrite(_ dst: *mut string, _ value: string) {
+    dst.write(value)
+}
+
+func maybeUninitInt() -> int32 {
+    var slot = std.mem.MaybeUninit[int32].uninit()
+    let _ = slot.write(12)
+    unsafe { slot.assumeInit() }
+}
+
+func maybeUninitString() -> string {
+    var slot = std.mem.MaybeUninit[string].zeroed()
+    let _ = slot.write("hello")
+    unsafe { slot.assumeInit() }
+}
+
+func maybeUninitThroughPtr() -> string {
+    var slot = std.mem.MaybeUninit[string].uninit()
+    helperWrite(slot.asMutPtr(), "world")
+    unsafe { slot.assumeInit() }
+}
+
+func afterReturn() {
+    return
+    let unreachable = 1
+}
+
+func afterBreak() {
+    loop {
+        break
+        let unreachable = 1
+    }
+}
+
+func afterContinue() {
+    loop {
+        continue
+        let unreachable = 1
+    }
+}
+
+func afterNeverCall() {
+    diverge()
+    let unreachable = 1
+}
+
+func main() {
+    let _ = implicitReturn(true)
+    let _ = exhaustiveWithNever(true)
+    let _ = loopBreakInitializes()
+    let _ = coerceInt(false)
+    let _ = coerceString(false)
+    let _ = maybeUninitInt()
+    let _ = maybeUninitString()
+    let _ = maybeUninitThroughPtr()
+    afterReturn()
+    afterBreak()
+    afterContinue()
+}
+
+func deferReadsLaterInit() -> string {
+    var value: string
+    {
+        defer { let _ = value }
+        value = "later"
+    }
+    value
+}
+
+func nestedDeferLifo() -> string {
+    var value: string
+    {
+        defer { let _ = value }
+        defer { value = "from cleanup" }
+    }
+    value
+}
+
+func deferInitializesOnBreak() -> int32 {
+    var value: int32
+    loop {
+        {
+            defer { value = 3 }
+            break
+        }
+    }
+    value
+}
+
+func deferOnReturnSeesLaterInit() -> string {
+    var value: string
+    defer { let _ = value }
+    value = "ready"
+    return value
+}
+
+func deferredNeverCoversMissingReturn() -> int32 {
+    defer { diverge() }
+}
+
+func deferredNeverSatisfiesBang() -> ! {
+    defer { diverge() }
+}

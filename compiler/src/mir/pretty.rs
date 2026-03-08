@@ -44,6 +44,16 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                 write!(f, " = ")?;
                 self.write_rvalue(rvalue, f)
             }
+            StatementKind::ShadowResync(locals) => {
+                write!(f, "shadow_resync(")?;
+                for (index, local) in locals.iter().enumerate() {
+                    if index > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "_{}", local.index())?;
+                }
+                write!(f, ")")
+            }
             StatementKind::GcSafepoint => write!(f, "gc_safepoint"),
             StatementKind::Nop => write!(f, "nop"),
             StatementKind::SetDiscriminant {

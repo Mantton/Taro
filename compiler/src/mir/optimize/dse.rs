@@ -92,6 +92,12 @@ impl<'ctx> MirPass<'ctx> for DeadStoreElimination {
                             use_rvalue(&rvalue, &mut live);
                         }
                     }
+                    StatementKind::ShadowResync(locals) => {
+                        for &local in locals {
+                            live.insert(local);
+                            address_taken[local.index()] = true;
+                        }
+                    }
                     StatementKind::SetDiscriminant { place, .. } => {
                         let needed = if place.projection.is_empty() {
                             live.contains(&place.local) || address_taken[place.local.index()]

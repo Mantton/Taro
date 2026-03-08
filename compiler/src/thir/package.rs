@@ -37,6 +37,8 @@ pub fn build_package<'ctx>(
     };
     let mut package = Actor::run(package, gcx, results, entry)?;
     thir::passes::exhaustiveness::run(&mut package, gcx)?;
+    thir::passes::flow::run(&mut package, gcx)?;
+    gcx.dcx().ok()?;
     Ok(package)
 }
 

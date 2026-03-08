@@ -1,4 +1,4 @@
-import std.mem.{TrackedPointer, GcDesc, __gc__makebuf, __gc__grow_buf, Span, MutableSpan}
+import std.mem.{TrackedPointer, GcDesc, MaybeUninit, __gc__makebuf, __gc__grow_buf, Span, MutableSpan}
 import std.intrinsic.__intrinsic_gc_desc
 import std.optional.Optional
 import std.iter.{Iterator, Iterable, FromIterator}
@@ -172,13 +172,12 @@ impl[Element] List[Element] {
         let desc = __intrinsic_gc_desc[Element]()
         let elemSize = desc.size
         let offset = self.len * elemSize
-        var elem: Element
+        var elem = MaybeUninit[Element].uninit()
         unsafe {
-            let elemPtr = &mut elem as *mut Element
-            let dst = elemPtr as *mut uint8
+            let dst = elem.asMutPtr() as *mut uint8
             self.buffer.byteAdd(offset).readBytes(dst, elemSize)
         }
-        return .some(elem)
+        return .some(unsafe { elem.assumeInit() })
     }
 
     /// Clear all elements from the list.
@@ -249,10 +248,9 @@ impl[Element] List[Element] {
         let desc = __intrinsic_gc_desc[Element]()
         let elemSize = desc.size
         let offset = index * elemSize
-        var elem: Element
+        var elem = MaybeUninit[Element].uninit()
         unsafe {
-            let elemPtr = &mut elem as *mut Element
-            let dst = elemPtr as *mut uint8
+            let dst = elem.asMutPtr() as *mut uint8
             self.buffer.byteAdd(offset).readBytes(dst, elemSize)
         }
 
@@ -268,7 +266,7 @@ impl[Element] List[Element] {
         }
 
         self.len -= 1
-        return .some(elem)
+        return .some(unsafe { elem.assumeInit() })
     }
 }
 
@@ -299,9 +297,9 @@ impl[Element: Ord] List[Element] {
         var i: usize = 1
         while i < self.len {
             // Read element at i into a temporary
-            var key: Element
+            var key = MaybeUninit[Element].uninit()
             unsafe {
-                let keyPtr = &mut key as *mut Element
+                let keyPtr = key.asMutPtr()
                 let src = (self.buffer as *const Element).add(i)
                 (src as *const uint8).readBytes(keyPtr as *mut uint8, elemSize)
             }
@@ -309,7 +307,8 @@ impl[Element: Ord] List[Element] {
             var j = i
             while j > 0 {
                 let prev = unsafe { (self.buffer as *const Element).add(j - (1 as usize)) as &Element }
-                match key.cmp(prev) {
+                let keyRef = unsafe { key.assumeInitRef() }
+                match keyRef.cmp(prev) {
                     case .less => {
                         // Shift element at j-1 to j
                         unsafe {
@@ -325,7 +324,7 @@ impl[Element: Ord] List[Element] {
 
             // Write key into position j
             unsafe {
-                let keyPtr = &key as *const Element
+                let keyPtr = key.asPtr()
                 let dst = (self.buffer as *mut Element).add(j)
                 (keyPtr as *const uint8).readBytes(dst as *mut uint8, elemSize)
             }
@@ -351,15 +350,14 @@ impl[Element] Iterator for ListIterator[Element] {
         let desc = __intrinsic_gc_desc[Element]()
         let elemSize = desc.size
         let offset = self.idx * elemSize
-        var elem: Element
+        var elem = MaybeUninit[Element].uninit()
         unsafe {
-            let elemPtr = &mut elem as *mut Element
-            let dst = elemPtr as *mut uint8
+            let dst = elem.asMutPtr() as *mut uint8
             self.buffer.byteAdd(offset).readBytes(dst, elemSize)
         }
 
         self.idx += 1
-        return .some(elem)
+        return .some(unsafe { elem.assumeInit() })
     }
 }
 

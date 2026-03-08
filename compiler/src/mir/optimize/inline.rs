@@ -355,6 +355,9 @@ fn remap_statement<'ctx>(
                 remap_place(gcx, place, local_map, gen_args),
                 remap_rvalue(gcx, rvalue, local_map, gen_args),
             ),
+            StatementKind::ShadowResync(locals) => StatementKind::ShadowResync(
+                locals.iter().map(|local| local_map[local.index()]).collect(),
+            ),
             StatementKind::GcSafepoint => StatementKind::GcSafepoint,
             StatementKind::Nop => StatementKind::Nop,
             StatementKind::SetDiscriminant {

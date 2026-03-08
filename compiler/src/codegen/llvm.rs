@@ -2316,6 +2316,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     self.store_place(place, body, locals, value)?;
                 }
             }
+            mir::StatementKind::ShadowResync(resynced_locals) => {
+                for &local in resynced_locals {
+                    self.update_shadow_for_local(body, locals, local)?;
+                }
+            }
             mir::StatementKind::GcSafepoint => {
                 let callee = self.get_gc_poll();
                 let _ = self.builder.build_call(callee, &[], "gc_poll").unwrap();
@@ -3600,6 +3605,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             }
             "__intrinsic_align_of" => {
                 self.lower_intrinsic_align_of(body, locals, call_args, args, destination)?;
+                Ok(true)
+            }
+            "__intrinsic_maybe_uninit" => {
+                self.lower_intrinsic_maybe_uninit(body, locals, destination)?;
                 Ok(true)
             }
             "__intrinsic_sqrt" => {

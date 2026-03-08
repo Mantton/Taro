@@ -204,6 +204,7 @@ pub struct Function {
     pub generics: Generics,
     pub signature: FunctionSignature,
     pub block: Option<Block>,
+    pub is_unsafe: bool,
     pub abi: Option<Symbol>,
 }
 

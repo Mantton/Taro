@@ -311,6 +311,8 @@ pub struct TypeDatabaseWire {
     pub generic_const_param_tys: Vec<(DefIdWire, TyWire)>,
     pub generic_const_defaults: Vec<(DefIdWire, ConstWire)>,
     pub def_to_attributes: Vec<(DefIdWire, Vec<AttributeWire>)>,
+    #[serde(default)]
+    pub def_to_unsafe: Vec<DefIdWire>,
     pub def_to_iface_def: Vec<(DefIdWire, InterfaceDefinitionWire)>,
     pub interface_to_supers: Vec<(DefIdWire, Vec<DefIdWire>)>,
     pub conformance_records: Vec<(ConformanceRecordIdWire, ConformanceRecordWire)>,
@@ -851,6 +853,7 @@ pub enum StdItemWire {
     Dictionary,
     Range,
     ClosedRange,
+    MaybeUninit,
     Copy,
     Clone,
     Hashable,
@@ -962,6 +965,7 @@ pub struct StatementWire {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum StatementKindWire {
     Assign(PlaceWire, RvalueWire),
+    ShadowResync(Vec<u32>),
     GcSafepoint,
     Nop,
     SetDiscriminant {
@@ -1422,6 +1426,7 @@ pub fn std_item_to_wire(v: hir::StdItem) -> StdItemWire {
         hir::StdItem::Dictionary => StdItemWire::Dictionary,
         hir::StdItem::Range => StdItemWire::Range,
         hir::StdItem::ClosedRange => StdItemWire::ClosedRange,
+        hir::StdItem::MaybeUninit => StdItemWire::MaybeUninit,
         hir::StdItem::Copy => StdItemWire::Copy,
         hir::StdItem::Clone => StdItemWire::Clone,
         hir::StdItem::Hashable => StdItemWire::Hashable,
@@ -1464,6 +1469,7 @@ pub fn std_item_from_wire(v: &StdItemWire) -> hir::StdItem {
         StdItemWire::Dictionary => hir::StdItem::Dictionary,
         StdItemWire::Range => hir::StdItem::Range,
         StdItemWire::ClosedRange => hir::StdItem::ClosedRange,
+        StdItemWire::MaybeUninit => hir::StdItem::MaybeUninit,
         StdItemWire::Copy => hir::StdItem::Copy,
         StdItemWire::Clone => hir::StdItem::Clone,
         StdItemWire::Hashable => hir::StdItem::Hashable,
@@ -3619,6 +3625,14 @@ pub fn statement_to_wire(v: &mir::Statement<'_>) -> StatementWire {
             mir::StatementKind::Assign(place, rvalue) => {
                 StatementKindWire::Assign(place_to_wire(place), rvalue_to_wire(rvalue))
             }
+            mir::StatementKind::ShadowResync(locals) => {
+                StatementKindWire::ShadowResync(
+                    locals
+                        .iter()
+                        .map(|local| local.index() as u32)
+                        .collect(),
+                )
+            }
             mir::StatementKind::GcSafepoint => StatementKindWire::GcSafepoint,
             mir::StatementKind::Nop => StatementKindWire::Nop,
             mir::StatementKind::SetDiscriminant {
@@ -3643,6 +3657,12 @@ pub fn statement_from_wire<'a>(
             StatementKindWire::Assign(place, rvalue) => mir::StatementKind::Assign(
                 place_from_wire(gcx, place),
                 rvalue_from_wire(gcx, rvalue),
+            ),
+            StatementKindWire::ShadowResync(locals) => mir::StatementKind::ShadowResync(
+                locals
+                    .iter()
+                    .map(|local| mir::LocalId::from_raw(*local))
+                    .collect(),
             ),
             StatementKindWire::GcSafepoint => mir::StatementKind::GcSafepoint,
             StatementKindWire::Nop => mir::StatementKind::Nop,
@@ -4593,6 +4613,7 @@ pub fn type_database_to_wire(
                 )
             })
             .collect(),
+        def_to_unsafe: db.def_to_unsafe.iter().copied().map(def_to_wire).collect(),
         def_to_iface_def: db
             .def_to_iface_def
             .iter()
@@ -4875,6 +4896,7 @@ pub fn type_database_from_wire<'a>(
                 (def_from_wire(def), attrs)
             })
             .collect(),
+        def_to_unsafe: wire.def_to_unsafe.iter().map(def_from_wire).collect(),
         def_to_iface_def: wire
             .def_to_iface_def
             .iter()

@@ -11,7 +11,7 @@ use crate::{
     thir,
 };
 use index_vec::IndexVec;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::mem;
 
 mod block;
@@ -76,6 +76,7 @@ pub struct MirBuilder<'ctx, 'thir> {
     thir: &'thir thir::ThirFunction<'ctx>,
     body: Body<'ctx>,
     locals: FxHashMap<hir::NodeID, LocalId>,
+    immutable_binding_initializers: FxHashMap<hir::NodeID, thir::ExprId>,
     place_bindings: FxHashMap<hir::NodeID, Place<'ctx>>,
     /// Tracks MIR locals by (arm_id, binding_name) for or-patterns.
     /// Ensures all alternatives in an or-pattern share the same local.
@@ -114,11 +115,31 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         body.escape_locals.push(false);
         body.return_local = ret_local;
 
+        let mut immutable_binding_initializers = FxHashMap::default();
+        for stmt in &function.stmts {
+            let thir::StmtKind::Let {
+                pattern,
+                expr: Some(expr),
+                mutable: false,
+                ..
+            } = &stmt.kind
+            else {
+                continue;
+            };
+
+            let thir::PatternKind::Binding { local, .. } = pattern.kind else {
+                continue;
+            };
+
+            immutable_binding_initializers.insert(local, *expr);
+        }
+
         let mut builder = MirBuilder {
             gcx,
             thir: function,
             body,
             locals: FxHashMap::default(),
+            immutable_binding_initializers,
             place_bindings: FxHashMap::default(),
             arm_binding_locals: FxHashMap::default(),
             cleanup_nodes: IndexVec::new(),
@@ -180,6 +201,122 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 }
                 Constraint::TypeEquality(_, _) => false,
             })
+    }
+
+    fn definition_belongs_to_std_item(&self, def_id: hir::DefinitionID, item: StdItem) -> bool {
+        let Some(owner) = self.gcx.std_item_def(item) else {
+            return false;
+        };
+
+        let mut current = Some(def_id);
+        while let Some(id) = current {
+            if id == owner {
+                return true;
+            }
+            current = self.gcx.definition_parent(id);
+        }
+        false
+    }
+
+    fn is_maybe_uninit_ty(&self, ty: Ty<'ctx>) -> bool {
+        matches!(
+            ty.kind(),
+            TyKind::Adt(def, _) if Some(def.id) == self.gcx.std_item_def(StdItem::MaybeUninit)
+        )
+    }
+
+    fn is_maybe_uninit_pointer_method(&self, expr_id: thir::ExprId) -> bool {
+        let thir::ExprKind::Zst { id, .. } = self.thir.exprs[expr_id].kind else {
+            return false;
+        };
+
+        if !self.definition_belongs_to_std_item(id, StdItem::MaybeUninit) {
+            return false;
+        }
+
+        matches!(
+            self.gcx.definition_ident(id).symbol.as_str(),
+            "asPtr" | "asMutPtr"
+        )
+    }
+
+    fn maybe_uninit_place_local(
+        &self,
+        expr_id: thir::ExprId,
+        seen_bindings: &mut FxHashSet<hir::NodeID>,
+    ) -> Option<hir::NodeID> {
+        match self.thir.exprs[expr_id].kind {
+            thir::ExprKind::Local(id) => {
+                if self.is_maybe_uninit_ty(self.thir.exprs[expr_id].ty) {
+                    return Some(id);
+                }
+
+                let init = *self.immutable_binding_initializers.get(&id)?;
+                if !seen_bindings.insert(id) {
+                    return None;
+                }
+                self.maybe_uninit_place_local(init, seen_bindings)
+            }
+            thir::ExprKind::Reference { expr, .. } => {
+                self.maybe_uninit_place_local(expr, seen_bindings)
+            }
+            thir::ExprKind::Cast { value } => self.maybe_uninit_place_local(value, seen_bindings),
+            _ => None,
+        }
+    }
+
+    fn maybe_uninit_local_from_call_arg(
+        &self,
+        expr_id: thir::ExprId,
+        seen_bindings: &mut FxHashSet<hir::NodeID>,
+    ) -> Option<hir::NodeID> {
+        match self.thir.exprs[expr_id].kind {
+            thir::ExprKind::Reference { expr, .. } => {
+                self.maybe_uninit_place_local(expr, seen_bindings)
+            }
+            thir::ExprKind::Cast { value } => {
+                self.maybe_uninit_local_from_call_arg(value, seen_bindings)
+            }
+            thir::ExprKind::Call { callee, ref args } => {
+                if !self.is_maybe_uninit_pointer_method(callee) {
+                    return None;
+                }
+
+                args.first()
+                    .and_then(|receiver| self.maybe_uninit_place_local(*receiver, seen_bindings))
+            }
+            thir::ExprKind::Local(id) => {
+                let init = *self.immutable_binding_initializers.get(&id)?;
+                if !seen_bindings.insert(id) {
+                    return None;
+                }
+                self.maybe_uninit_local_from_call_arg(init, seen_bindings)
+            }
+            _ => None,
+        }
+    }
+
+    fn shadow_resync_locals_for_call(&self, args: &[thir::ExprId]) -> Vec<LocalId> {
+        let mut locals = Vec::new();
+        let mut seen_locals = FxHashSet::default();
+
+        for &arg in args {
+            let mut seen_bindings = FxHashSet::default();
+            let Some(local_id) = self.maybe_uninit_local_from_call_arg(arg, &mut seen_bindings)
+            else {
+                continue;
+            };
+
+            let Some(&mir_local) = self.locals.get(&local_id) else {
+                continue;
+            };
+
+            if seen_locals.insert(mir_local) {
+                locals.push(mir_local);
+            }
+        }
+
+        locals
     }
 
     fn declare_parameters(&mut self, signature: &LabeledFunctionSignature<'ctx>) {
@@ -335,6 +472,17 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
     ) {
         self.body.basic_blocks[block].statements.push(Statement {
             kind: StatementKind::Assign(place, value),
+            span,
+        });
+    }
+
+    fn push_shadow_resync(&mut self, block: BasicBlockId, locals: Vec<LocalId>, span: Span) {
+        if locals.is_empty() {
+            return;
+        }
+
+        self.body.basic_blocks[block].statements.push(Statement {
+            kind: StatementKind::ShadowResync(locals),
             span,
         });
     }

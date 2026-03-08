@@ -167,6 +167,7 @@ pub struct ApplyGoalData<'ctx> {
     pub call_span: Span,
     pub callee_ty: Ty<'ctx>,
     pub callee_source: Option<DefinitionID>,
+    pub is_unsafe_context: bool,
     pub result_ty: Ty<'ctx>,
     pub _expect_ty: Option<Ty<'ctx>>,
     pub arguments: Vec<ApplyArgument<'ctx>>,
@@ -190,6 +191,7 @@ pub struct InferredStaticMemberGoalData<'ctx> {
     pub name: Identifier,
     pub expr_ty: Ty<'ctx>,
     pub base_hint: Option<Ty<'ctx>>,
+    pub allow_unsafe_callable_values: bool,
     pub span: Span,
 }
 
@@ -199,6 +201,7 @@ pub struct MethodCallData<'ctx> {
     pub receiver: Ty<'ctx>,
     pub reciever_span: Span,
     pub reciever_node: NodeID,
+    pub is_unsafe_context: bool,
     pub name: Identifier,
     pub arguments: Vec<ApplyArgument<'ctx>>,
     pub result: Ty<'ctx>,

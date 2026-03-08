@@ -21,6 +21,17 @@ impl<'ctx> ConstraintSolver<'ctx> {
             .callee_source
             .or_else(|| self.icx.overload_binding_for_ty(data.callee_ty));
 
+        if let Some(def_id) = callee_source {
+            if self.gcx().definition_is_unsafe(def_id) && !data.is_unsafe_context {
+                return SolverResult::Error(vec![Spanned::new(
+                    TypeError::UnsafeCallNeedsUnsafeBlock {
+                        name: self.gcx().definition_symbol_or_fallback(def_id),
+                    },
+                    data.call_span,
+                )]);
+            }
+        }
+
         let (inputs, output) = match callee_ty.kind() {
             TyKind::FnPointer { inputs, output } => (inputs, output),
             TyKind::Closure { inputs, output, .. } => (inputs, output),

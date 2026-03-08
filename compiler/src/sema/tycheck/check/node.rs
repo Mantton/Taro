@@ -1761,6 +1761,7 @@ impl<'ctx> Checker<'ctx> {
         resolution: &hir::Resolution,
         expectation: Option<Ty<'ctx>>,
         instantiation_args: Option<GenericArguments<'ctx>>,
+        allow_unsafe_callable_values: bool,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         match resolution {
@@ -1804,7 +1805,20 @@ impl<'ctx> Checker<'ctx> {
                             _ => Ty::error(self.gcx()),
                         }
                     }
-                    _ => self.gcx().get_type(*id),
+                    _ => {
+                        if !allow_unsafe_callable_values
+                            && self.is_unsafe_callable_definition(*id)
+                            && matches!(
+                                kind,
+                                DefinitionKind::Function
+                                    | DefinitionKind::AssociatedFunction
+                                    | DefinitionKind::AssociatedOperator
+                            )
+                        {
+                            return self.emit_unsafe_callable_value_error(*id, span);
+                        }
+                        self.gcx().get_type(*id)
+                    }
                 }
             }
             hir::Resolution::SelfConstructor(..) => {
@@ -1832,6 +1846,16 @@ impl<'ctx> Checker<'ctx> {
                         .dcx()
                         .emit_error("function is not visible here".into(), Some(span));
                     return Ty::error(self.gcx());
+                }
+
+                if !allow_unsafe_callable_values {
+                    if let Some(def_id) = visible
+                        .iter()
+                        .copied()
+                        .find(|id| self.is_unsafe_callable_definition(*id))
+                    {
+                        return self.emit_unsafe_callable_value_error(def_id, span);
+                    }
                 }
 
                 let ty = cs.infer_cx.next_ty_var(span);
@@ -1984,10 +2008,16 @@ impl<'ctx> Checker<'ctx> {
                         name: *name,
                         expr_ty: result_ty,
                         base_hint: expect_ty,
+                        allow_unsafe_callable_values: true,
                         span: callee.span,
                     }),
                     callee.span,
                 );
+                cs.record_expr_ty(callee.id, result_ty);
+                result_ty
+            }
+            hir::ExpressionKind::Path(path) => {
+                let result_ty = self.synth_path_expression_with_policy(callee, path, None, true, cs);
                 cs.record_expr_ty(callee.id, result_ty);
                 result_ty
             }
@@ -2037,6 +2067,7 @@ impl<'ctx> Checker<'ctx> {
             call_span: expression.span,
             callee_ty,
             callee_source: self.resolve_callee(callee, cs),
+            is_unsafe_context: self.unsafe_depth.get() > 0,
             result_ty,
             _expect_ty: expect_ty,
             arguments: apply_arguments,
@@ -2546,6 +2577,7 @@ impl<'ctx> Checker<'ctx> {
                             &resolution,
                             instantiation_args,
                             expect_ty,
+                            true,
                             cs,
                         );
 
@@ -2573,6 +2605,7 @@ impl<'ctx> Checker<'ctx> {
                             call_span: expression.span,
                             callee_ty,
                             callee_source: resolution.definition_id(),
+                            is_unsafe_context: self.unsafe_depth.get() > 0,
                             result_ty,
                             _expect_ty: expect_ty,
                             arguments: apply_arguments,
@@ -2628,6 +2661,7 @@ impl<'ctx> Checker<'ctx> {
                 receiver: recv_ty,
                 reciever_node: receiver.id,
                 reciever_span: receiver.span,
+                is_unsafe_context: self.unsafe_depth.get() > 0,
                 method_ty: method_ty,
                 expect_ty,
                 name: *name,
@@ -3334,6 +3368,22 @@ impl<'ctx> Checker<'ctx> {
 }
 
 impl<'ctx> Checker<'ctx> {
+    fn is_unsafe_callable_definition(&self, id: DefinitionID) -> bool {
+        self.gcx().definition_is_unsafe(id)
+    }
+
+    fn emit_unsafe_callable_value_error(&self, def_id: DefinitionID, span: Span) -> Ty<'ctx> {
+        self.gcx().dcx().emit_error(
+            crate::sema::error::TypeError::UnsafeCallableValueNotAllowed {
+                name: self.gcx().definition_symbol_or_fallback(def_id),
+            }
+            .format(self.gcx())
+            .into(),
+            Some(span),
+        );
+        Ty::error(self.gcx())
+    }
+
     fn resolve_callee(&self, node: &hir::Expression, cs: &Cs<'ctx>) -> Option<DefinitionID> {
         match &node.kind {
             hir::ExpressionKind::Path(path) => {
@@ -4000,6 +4050,7 @@ impl<'ctx> Checker<'ctx> {
         resolution: &hir::Resolution,
         instantiation_args: Option<GenericArguments<'ctx>>,
         expectation: Option<Ty<'ctx>>,
+        allow_unsafe_callable_values: bool,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         if matches!(resolution, hir::Resolution::Error) {
@@ -4012,6 +4063,7 @@ impl<'ctx> Checker<'ctx> {
             resolution,
             expectation,
             instantiation_args,
+            allow_unsafe_callable_values,
             cs,
         );
 
@@ -4042,11 +4094,12 @@ impl<'ctx> Checker<'ctx> {
 }
 
 impl<'ctx> Checker<'ctx> {
-    fn synth_path_expression(
+    fn synth_path_expression_with_policy(
         &self,
         expression: &hir::Expression,
         path: &hir::ResolvedPath,
         expectation: Option<Ty<'ctx>>,
+        allow_unsafe_callable_values: bool,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         let (resolution, base_args) =
@@ -4069,8 +4122,19 @@ impl<'ctx> Checker<'ctx> {
             &resolution,
             instantiation_args,
             expectation,
+            allow_unsafe_callable_values,
             cs,
         )
+    }
+
+    fn synth_path_expression(
+        &self,
+        expression: &hir::Expression,
+        path: &hir::ResolvedPath,
+        expectation: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        self.synth_path_expression_with_policy(expression, path, expectation, false, cs)
     }
 
     fn synth_member_expression(
@@ -4119,6 +4183,7 @@ impl<'ctx> Checker<'ctx> {
                 name: *name,
                 expr_ty: result_ty,
                 base_hint: expectation,
+                allow_unsafe_callable_values: false,
                 span: expression.span,
             }),
             expression.span,

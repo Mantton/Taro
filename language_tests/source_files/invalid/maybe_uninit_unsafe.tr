@@ -1,0 +1,13 @@
+// CHECK_ONLY
+
+func unsafeCallOutsideBlock() -> string {
+    var slot = std.mem.MaybeUninit[string].uninit()
+    return slot.assumeInit()
+}
+
+func unsafeCallableValue() {
+    var slot = std.mem.MaybeUninit[string].uninit()
+    let reader = slot.assumeInitRead
+}
+
+func main() {}

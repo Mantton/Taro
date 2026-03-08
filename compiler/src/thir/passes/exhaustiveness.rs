@@ -13,7 +13,7 @@ use thir::match_tree::compile_match;
 pub fn run<'ctx>(package: &mut ThirPackage<'ctx>, gcx: GlobalContext<'ctx>) -> CompileResult<()> {
     let mut pass = ExhaustivenessPass::new(gcx);
     pass.check_package(package);
-    gcx.dcx().ok()
+    Ok(())
 }
 
 struct ExhaustivenessPass<'ctx> {

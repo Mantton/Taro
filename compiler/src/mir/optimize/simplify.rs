@@ -319,6 +319,11 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
                     }
                     mark_rvalue_used(rv, &mut used);
                 }
+                StatementKind::ShadowResync(locals) => {
+                    for &local in locals {
+                        used[local.index()] = true;
+                    }
+                }
                 StatementKind::SetDiscriminant { place, .. } => {
                     if !place.projection.is_empty() {
                         mark_place_used(place, &mut used);
@@ -467,6 +472,17 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
                         )
                     } else {
                         StatementKind::Nop
+                    }
+                }
+                StatementKind::ShadowResync(locals) => {
+                    let remapped: Vec<_> = locals
+                        .iter()
+                        .filter_map(|local| remap[local.index()])
+                        .collect();
+                    if remapped.is_empty() {
+                        StatementKind::Nop
+                    } else {
+                        StatementKind::ShadowResync(remapped)
                     }
                 }
                 StatementKind::SetDiscriminant {

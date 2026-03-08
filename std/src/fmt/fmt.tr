@@ -212,13 +212,9 @@ public func formatPrintf(_ format: string, _ args: List[any Display]) -> string 
         let maybe_formattable = (*value) as? any Formattable
         match maybe_formattable {
             case .some(formattable) => formattable.format(&mut writer, spec, &state)
-            case .none => {
-                if spec == 'v' {
-                    (*value).display(&mut writer)
-                } else {
-                    std.panic.panic("printf: argument does not support requested format specifier")
-                    writer.writeString("")
-                }
+            case .none => match spec == 'v' {
+                case true => (*value).display(&mut writer)
+                case false => std.panic.panic("printf: argument does not support requested format specifier")
             }
         }
         arg_index += 1

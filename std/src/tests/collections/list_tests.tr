@@ -1,4 +1,5 @@
 import std.collections.List
+import std.cmp.{Ordering, PartialOrd, Ord}
 import std.optional.Optional
 
 func sumRef(_ list: &List[int32]) -> int32 {
@@ -28,6 +29,36 @@ func firstMutable(_ values: &mut List[int32?]) -> Optional[&mut int32] {
     return match slot {
         case .some(v) => .some(v)
         case .none => .none
+    }
+}
+
+struct SizedString {
+    value: string
+}
+
+impl std.ops.PartialEq for SizedString {
+    public func eq(&self, _ other: &SizedString) -> bool {
+        std.string.stringLen(self.value) == std.string.stringLen(other.value)
+    }
+}
+
+impl PartialOrd for SizedString {
+    func partialCmp(&self, _ other: &SizedString) -> Optional[Ordering] {
+        .some(self.cmp(other))
+    }
+}
+
+impl Ord for SizedString {
+    func cmp(&self, _ other: &SizedString) -> Ordering {
+        let lhsLen = std.string.stringLen(self.value)
+        let rhsLen = std.string.stringLen(other.value)
+        return if lhsLen == rhsLen {
+            .equal
+        } else if lhsLen < rhsLen {
+            .less
+        } else {
+            .greater
+        }
     }
 }
 
@@ -248,6 +279,48 @@ func testListSortEmpty() {
     var list: List[int32] = List()
     list.sort()
     std.testing.assertEqual(list.len(), 0 as usize, "sort empty list should remain empty")
+}
+
+@test
+func testListStringPopAndRemoveAt() {
+    var list: List[string] = List()
+    list.append("alpha")
+    list.append("beta")
+    list.append("gamma")
+
+    let removed = list.removeAt(1 as usize)
+    std.testing.assertTrue(removed.isSome(), "removeAt should return removed string")
+    std.testing.assertEqual(removed.unwrap(), "beta", "removeAt should return middle string")
+
+    let popped = list.pop()
+    std.testing.assertTrue(popped.isSome(), "pop should return removed string")
+    std.testing.assertEqual(popped.unwrap(), "gamma", "pop should return last string")
+    std.testing.assertEqual(*list.at(0), "alpha", "remaining string should stay in place")
+}
+
+@test
+func testListStringIteratorAndSort() {
+    var list: List[SizedString] = List()
+    list.append(SizedString { value: "pear" })
+    list.append(SizedString { value: "a" })
+    list.append(SizedString { value: "orange" })
+
+    list.sort()
+    std.testing.assertEqual((*list.at(0)).value, "a", "sort should order shortest string first")
+    std.testing.assertEqual((*list.at(1)).value, "pear", "sort should order middle string second")
+    std.testing.assertEqual((*list.at(2)).value, "orange", "sort should order longest string last")
+
+    var iter = list.iter()
+    let first = iter.next()
+    std.testing.assertTrue(first.isSome(), "string iterator should yield first item")
+    match first {
+        case .some(value) => {
+            std.testing.assertEqual(value.value, "a", "string iterator should read sorted value")
+        }
+        case .none => {
+            std.testing.assertTrue(false, "string iterator unexpectedly returned none")
+        }
+    }
 }
 
 @test

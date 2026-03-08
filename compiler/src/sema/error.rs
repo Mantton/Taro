@@ -78,6 +78,12 @@ pub enum TypeError<'ctx> {
 
     LayoutIncompatibleCast(ExpectedFound<Ty<'ctx>>),
     UnsafePtrCastNeedsUnsafeBlock,
+    UnsafeCallNeedsUnsafeBlock {
+        name: Symbol,
+    },
+    UnsafeCallableValueNotAllowed {
+        name: Symbol,
+    },
     InvalidIntegerToRuneCast {
         from: Ty<'ctx>,
     },
@@ -214,6 +220,18 @@ impl<'ctx> TypeError<'ctx> {
             TypeError::UnsafePtrCastNeedsUnsafeBlock => {
                 "cast involves pointers and is unsafe; must be inside an unsafe { ... } block"
                     .into()
+            }
+            TypeError::UnsafeCallNeedsUnsafeBlock { name } => {
+                format!(
+                    "call to unsafe function '{}' must be inside an unsafe {{ ... }} block",
+                    gcx.symbol_text(name)
+                )
+            }
+            TypeError::UnsafeCallableValueNotAllowed { name } => {
+                format!(
+                    "unsafe function '{}' cannot be used as a value; call it directly inside unsafe {{ ... }}",
+                    gcx.symbol_text(name)
+                )
             }
             TypeError::InvalidIntegerToRuneCast { from } => {
                 format!(

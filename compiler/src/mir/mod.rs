@@ -98,6 +98,7 @@ pub struct Statement<'ctx> {
 #[derive(Debug, Clone)]
 pub enum StatementKind<'ctx> {
     Assign(Place<'ctx>, Rvalue<'ctx>),
+    ShadowResync(Vec<LocalId>),
     GcSafepoint,
     Nop,
     SetDiscriminant {
@@ -241,8 +242,14 @@ pub fn for_each_function_constant_in_body<'ctx>(
 ) {
     for block in &body.basic_blocks {
         for statement in &block.statements {
-            if let StatementKind::Assign(_, rvalue) = &statement.kind {
-                for_each_function_constant_in_rvalue(rvalue, &mut visit);
+            match &statement.kind {
+                StatementKind::Assign(_, rvalue) => {
+                    for_each_function_constant_in_rvalue(rvalue, &mut visit);
+                }
+                StatementKind::ShadowResync(_)
+                | StatementKind::GcSafepoint
+                | StatementKind::Nop
+                | StatementKind::SetDiscriminant { .. } => {}
             }
         }
 

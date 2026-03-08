@@ -147,8 +147,6 @@ public interface Iterable {
                 case .none => return n
             }
         }
-
-        return n
     }
 
     /// Consumes the iterator, returning the last element.

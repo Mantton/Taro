@@ -584,7 +584,7 @@ impl Parser {
             ),
             Token::Extern => self.parse_extern_declaration()?,
             Token::Type => self.parse_type_declaration()?,
-            Token::Function => self.parse_function(mode)?,
+            Token::Function | Token::Unsafe => self.parse_function_declaration_kind(mode)?,
             Token::Impl => (Identifier::emtpy(self.file.id), self.parse_impl()?),
             Token::Namespace => self.parse_namespace()?,
 
@@ -596,6 +596,18 @@ impl Parser {
 }
 
 impl Parser {
+    fn parse_function_declaration_kind(
+        &mut self,
+        mode: FnParseMode,
+    ) -> R<(Identifier, DeclarationKind)> {
+        let is_unsafe = self.eat(Token::Unsafe);
+        if is_unsafe && !self.matches(Token::Function) {
+            return Err(self.err_at_current(ParserError::UnsafeModifierRequiresFunction));
+        }
+
+        self.parse_function(mode, is_unsafe)
+    }
+
     fn parse_extern_declaration(&mut self) -> R<(Identifier, DeclarationKind)> {
         self.expect(Token::Extern)?;
         let abi = match self.current_token() {
@@ -616,8 +628,9 @@ impl Parser {
             ));
         }
 
-        if self.matches(Token::Function) {
-            let (identifier, mut kind) = self.parse_function(FnParseMode { req_body: false })?;
+        if self.matches(Token::Function) || self.matches(Token::Unsafe) {
+            let (identifier, mut kind) =
+                self.parse_function_declaration_kind(FnParseMode { req_body: false })?;
             let DeclarationKind::Function(func) = &mut kind else {
                 return Ok((identifier, kind));
             };
@@ -1126,6 +1139,10 @@ impl Parser {
         if !self.eat(Token::At) {
             return Ok(None);
         };
+
+        if self.matches(Token::Unsafe) {
+            return Err(self.err_at_current(ParserError::UnsafeAttributeRemoved));
+        }
 
         let identifier = self.parse_identifier()?;
 
@@ -2094,9 +2111,13 @@ impl Parser {
             Token::Defer => self.parse_defer_stmt(),
             Token::Guard => self.parse_guard_stmt(),
             _ => {
-                // is decl
-                if let Some(decl) = self.parse_function_declaration()? {
-                    return Ok(StatementKind::Declaration(decl));
+                // `unsafe { ... }` is an expression statement, not a declaration start.
+                let can_start_decl =
+                    !self.matches(Token::Unsafe) || self.next_matches(1, Token::Function);
+                if can_start_decl {
+                    if let Some(decl) = self.parse_function_declaration()? {
+                        return Ok(StatementKind::Declaration(decl));
+                    }
                 }
 
                 // is expr
@@ -3419,15 +3440,19 @@ impl Parser {
 
 // Functions
 impl Parser {
-    fn parse_function(&mut self, mode: FnParseMode) -> R<(Identifier, DeclarationKind)> {
+    fn parse_function(
+        &mut self,
+        mode: FnParseMode,
+        is_unsafe: bool,
+    ) -> R<(Identifier, DeclarationKind)> {
         // func <name> <type_parameters>? (<parameter list>) <async?> -> <return_type>? <where_clause>?
         self.expect(Token::Function)?;
         let identifier = self.parse_identifier()?;
-        let func = self.parse_fn(mode)?;
+        let func = self.parse_fn(mode, is_unsafe)?;
         Ok((identifier, DeclarationKind::Function(func)))
     }
 
-    fn parse_fn(&mut self, mode: FnParseMode) -> R<Function> {
+    fn parse_fn(&mut self, mode: FnParseMode, is_unsafe: bool) -> R<Function> {
         let lo = self.lo_span();
         let type_parameters = self.parse_type_parameters()?;
         let parameters = self.parse_function_parameters()?;
@@ -3471,6 +3496,7 @@ impl Parser {
             signature,
             block,
             generics,
+            is_unsafe,
             abi: None,
         };
 
@@ -3918,6 +3944,8 @@ enum ParserError {
     DisallowedStructLiteral,
     ExpectedPathExpression,
     ExtraTypeArguments,
+    UnsafeModifierRequiresFunction,
+    UnsafeAttributeRemoved,
     UnexpectedSemicolonInList {
         context: &'static str,
     },
@@ -3976,6 +4004,12 @@ impl Display for ParserError {
                 "expected a path expression (identifier, member access, or type specialization)",
             ),
             ExtraTypeArguments => f.write_str("extra type arguments provided"),
+            UnsafeModifierRequiresFunction => {
+                f.write_str("`unsafe` can only be applied to function declarations")
+            }
+            UnsafeAttributeRemoved => {
+                f.write_str("`@unsafe` is no longer supported; use `unsafe func` instead")
+            }
             UnexpectedSemicolonInList { context } => {
                 write!(f, "unexpected semicolon in {}", context)
             }
@@ -5735,6 +5769,46 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_unsafe_function_modifier() {
+        let (decl, symbols) = parse_one_decl_with_symbols("public unsafe func foo() {}");
+        match &decl.kind {
+            DeclarationKind::Function(func) => {
+                assert!(func.is_unsafe);
+                assert_eq!(symbol_text(&symbols, decl.identifier.symbol.clone()), "foo");
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_extern_unsafe_standalone_function() {
+        let input = r#"extern "C" unsafe func read(ptr: *const uint8) -> uint8;"#;
+        let (decl, symbols) = parse_one_decl_with_symbols(input);
+        match &decl.kind {
+            DeclarationKind::Function(func) => {
+                assert!(func.is_unsafe);
+                assert_eq!(
+                    symbol_text(&symbols, func.abi.as_ref().expect("Expected ABI").clone()),
+                    "C"
+                );
+                assert_eq!(symbol_text(&symbols, decl.identifier.symbol.clone()), "read");
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_unsafe_block_statement_still_parses() {
+        let decl = parse_one_decl("func foo() { unsafe { bar() } }");
+        match &decl.kind {
+            DeclarationKind::Function(func) => {
+                assert!(func.block.is_some());
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
     // ==================== ATTRIBUTE TESTS ====================
 
     #[test]
@@ -5746,6 +5820,16 @@ mod tests {
             "inline"
         );
         assert!(decl.attributes[0].args.is_none());
+    }
+
+    #[test]
+    fn test_unsafe_attribute_removed() {
+        let errors = parse_decls("@unsafe public func foo() {}").expect_err("parse should fail");
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(
+            errors[0].value,
+            ParserError::UnsafeAttributeRemoved
+        ));
     }
 
     #[test]

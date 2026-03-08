@@ -5,6 +5,54 @@ import std.iter.{Iterator, Iterable}
 
 public type TrackedPointer = *mut uint8
 
+@lang("MaybeUninit")
+public struct MaybeUninit[T] {
+    value: T
+}
+
+impl[T] MaybeUninit[T] {
+    public func new(_ value: T) -> Self {
+        return MaybeUninit[T] { value }
+    }
+
+    public func uninit() -> Self {
+        return std.intrinsic.__intrinsic_maybe_uninit[T]()
+    }
+
+    public func zeroed() -> Self {
+        return std.intrinsic.__intrinsic_maybe_uninit[T]()
+    }
+
+    public func asPtr(&self) -> *const T {
+        return unsafe { (&self.value as *const T) }
+    }
+
+    public func asMutPtr(&mut self) -> *mut T {
+        return unsafe { (&mut self.value as *mut T) }
+    }
+
+    public func write(&mut self, _ value: T) -> &mut T {
+        self.value = value
+        return unsafe { self.assumeInitMut() }
+    }
+
+    public unsafe func assumeInit(self) -> T {
+        return self.value
+    }
+
+    public unsafe func assumeInitRead(&self) -> T {
+        return self.asPtr().read()
+    }
+
+    public unsafe func assumeInitRef(&self) -> &T {
+        return unsafe { self.asPtr() as &T }
+    }
+
+    public unsafe func assumeInitMut(&mut self) -> &mut T {
+        return unsafe { self.asMutPtr() as &mut T }
+    }
+}
+
 public struct Span[Element]: Copy {
     ptr: *const Element
     len: usize
