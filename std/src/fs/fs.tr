@@ -2,8 +2,6 @@ import std.io.Error
 import std.mem.Span
 import std.result.Result
 
-public type FileType = std.sys.fs.FileType
-public type Metadata = std.sys.fs.Metadata
 public type DirEntry = std.sys.fs.DirEntry
 
 /// Reads the entire file into memory.
@@ -127,26 +125,6 @@ public func symlink(_ target: string, _ linkPath: string) -> Result[(), Error] {
 /// Rename a file or directory to a new name.
 public func rename(_ from: string, _ to: string) -> Result[(), Error] {
     return std.sys.fs.rename(from, to)
-}
-
-/// Queries filesystem metadata for a path.
-public func metadata(_ path: string) -> Result[Metadata, Error] {
-    return std.sys.fs.metadata(path)
-}
-
-/// Stats a filesystem path and returns metadata.
-public func stat(_ path: string) -> Result[Metadata, Error] {
-    return std.sys.fs.stat(path)
-}
-
-/// Queries metadata without following symbolic links.
-public func symlinkMetadata(_ path: string) -> Result[Metadata, Error] {
-    return std.sys.fs.symlinkMetadata(path)
-}
-
-/// Alias for symlinkMetadata.
-public func lstat(_ path: string) -> Result[Metadata, Error] {
-    return std.sys.fs.lstat(path)
 }
 
 /// Reads direct directory entries at a path.

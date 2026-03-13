@@ -1,0 +1,21 @@
+//+cfg family("unix")
+
+import std.io.Error
+import std.sys.unix_rt
+
+public func mapErrno(_ code: int32) -> Error {
+    match code {
+        case 2  => Error.notFound
+        case 4  => Error.interrupted
+        case 11 => Error.wouldBlock
+        case 13 => Error.permissionDenied
+        case 17 => Error.alreadyExists
+        case 22 => Error.invalidInput
+        case 32 => Error.brokenPipe
+        case _  => Error.unexpected(code)
+    }
+}
+
+public func lastError() -> Error {
+    mapErrno(std.sys.unix_rt.errno())
+}

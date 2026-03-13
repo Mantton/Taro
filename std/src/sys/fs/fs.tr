@@ -10,73 +10,6 @@ public enum FileType {
     case other
 }
 
-public struct Metadata {
-    kind: FileType
-    size: usize
-    readOnlyFlag: bool
-    modifiedSecs: int64
-    accessedSecs: int64
-    createdSecs: int64
-}
-
-impl Metadata {
-    public func fileType(&self) -> FileType {
-        match self.kind {
-            case .file => .file
-            case .dir => .dir
-            case .symlink => .symlink
-            case .other => .other
-        }
-    }
-
-    public func isFile(&self) -> bool {
-        match self.kind {
-            case .file => true
-            case .dir => false
-            case .symlink => false
-            case .other => false
-        }
-    }
-
-    public func isDir(&self) -> bool {
-        match self.kind {
-            case .dir => true
-            case .file => false
-            case .symlink => false
-            case .other => false
-        }
-    }
-
-    public func isSymlink(&self) -> bool {
-        match self.kind {
-            case .symlink => true
-            case .file => false
-            case .dir => false
-            case .other => false
-        }
-    }
-
-    public func len(&self) -> usize {
-        self.size
-    }
-
-    public func isReadonly(&self) -> bool {
-        self.readOnlyFlag
-    }
-
-    public func modifiedSeconds(&self) -> int64 {
-        self.modifiedSecs
-    }
-
-    public func accessedSeconds(&self) -> int64 {
-        self.accessedSecs
-    }
-
-    public func createdSeconds(&self) -> int64 {
-        self.createdSecs
-    }
-}
-
 public struct DirEntry {
     name: string
     kind: FileType
@@ -140,22 +73,6 @@ public func openWithOptions(
     _ truncate: bool,
 ) -> Result[RawFile, Error] {
     impOpenWithOptions(path, read, write, append, create, truncate)
-}
-
-public func metadata(_ path: string) -> Result[Metadata, Error] {
-    impMetadata(path)
-}
-
-public func stat(_ path: string) -> Result[Metadata, Error] {
-    metadata(path)
-}
-
-public func symlinkMetadata(_ path: string) -> Result[Metadata, Error] {
-    impSymlinkMetadata(path)
-}
-
-public func lstat(_ path: string) -> Result[Metadata, Error] {
-    symlinkMetadata(path)
 }
 
 public func readDir(_ path: string) -> Result[std.collections.List[DirEntry], Error] {

@@ -1,6 +1,7 @@
 //+cfg family("unix")
 
 import std.libc
+import std.sys.unix_rt
 
 const NANOS_PER_SEC_U32: uint32 = 1000000000_u32
 const NANOS_PER_SEC_I64: int64 = 1000000000_i64
@@ -84,7 +85,7 @@ func impSleep(_ secs: uint64, _ nanos: uint32) {
             return
         }
 
-        let err = std.libc.errno()
+        let err = std.sys.unix_rt.errno()
         if err != std.libc.EINTR {
             std.panic.panic("std.sys.time.sleep: nanosleep failed")
         }

@@ -4,48 +4,36 @@ import std.ffi.CString
 import std.io.Error
 import std.libc
 import std.result.Result
+import std.sys.unix_error
+import std.sys.unix_rt
 
 public struct PlatformFile {
     fd: int32
 }
 
-func mapErrno(_ code: int32) -> Error {
-    match code {
-        case 2  => Error.notFound            // ENOENT
-        case 4  => Error.interrupted         // EINTR
-        case 11 => Error.wouldBlock          // EAGAIN / EWOULDBLOCK
-        case 13 => Error.permissionDenied    // EACCES
-        case 17 => Error.alreadyExists       // EEXIST
-        case 22 => Error.invalidInput        // EINVAL
-        case 32 => Error.brokenPipe          // EPIPE
-        case _  => Error.unexpected(code)
-    }
-}
-
-func lastError() -> Error {
-    mapErrno(std.libc.errno())
-}
+const DEFAULT_FILE_MODE: int32 = 438
+const DEFAULT_DIR_MODE: int32 = 511
 
 func impOpenReadOnly(_ path: string) -> Result[PlatformFile, Error] {
-    let cpath = CString.new(path)
-    let fd = std.libc.openNoMode(cpath.asPtr(), std.libc.O_RDONLY)
-    if fd < 0 {
-        return .err(lastError())
-    }
-    return .ok(PlatformFile { fd })
+    openFile(path, true, false, false, false, false)
 }
 
 func impCreateWrite(_ path: string) -> Result[PlatformFile, Error] {
-    let cpath = CString.new(path)
-    let flags = std.libc.O_WRONLY | std.libc.O_CREAT | std.libc.O_TRUNC
-    let fd = std.libc.openWithMode(cpath.asPtr(), flags, 438)
-    if fd < 0 {
-        return .err(lastError())
-    }
-    return .ok(PlatformFile { fd })
+    openFile(path, false, true, false, true, true)
 }
 
 func impOpenWithOptions(
+    _ path: string,
+    _ read: bool,
+    _ write: bool,
+    _ append: bool,
+    _ create: bool,
+    _ truncate: bool,
+) -> Result[PlatformFile, Error] {
+    openFile(path, read, write, append, create, truncate)
+}
+
+func openFile(
     _ path: string,
     _ read: bool,
     _ write: bool,
@@ -93,12 +81,12 @@ func impOpenWithOptions(
 
     let cpath = CString.new(path)
     let fd = if create {
-        std.libc.openWithMode(cpath.asPtr(), flags, 438)
+        std.sys.unix_rt.openWithMode(cpath.asPtr(), flags, DEFAULT_FILE_MODE)
     } else {
-        std.libc.openNoMode(cpath.asPtr(), flags)
+        std.sys.unix_rt.openNoMode(cpath.asPtr(), flags)
     }
     if fd < 0 {
-        return .err(lastError())
+        return .err(std.sys.unix_error.lastError())
     }
 
     return .ok(PlatformFile { fd })
@@ -122,92 +110,14 @@ func decodeU32LE(_ ptr: *const uint8, _ index: usize) -> usize {
     return value as usize
 }
 
-func impMetadata(_ path: string) -> Result[Metadata, Error] {
-    let cpath = CString.new(path)
-    var rawKind: int32 = 0
-    var size: usize = 0
-    var rawReadonly: int32 = 0
-    var modifiedSecs: int64 = -1_i64
-    var accessedSecs: int64 = -1_i64
-    var createdSecs: int64 = -1_i64
-    let kindPtr = unsafe { (&mut rawKind as *mut int32) }
-    let sizePtr = unsafe { (&mut size as *mut usize) }
-    let readonlyPtr = unsafe { (&mut rawReadonly as *mut int32) }
-    let modifiedPtr = unsafe { (&mut modifiedSecs as *mut int64) }
-    let accessedPtr = unsafe { (&mut accessedSecs as *mut int64) }
-    let createdPtr = unsafe { (&mut createdSecs as *mut int64) }
-    let code = std.libc.fsMetadata(
-        cpath.asPtr(),
-        kindPtr,
-        sizePtr,
-        readonlyPtr,
-        modifiedPtr,
-        accessedPtr,
-        createdPtr,
-    )
-    if code != 0 {
-        return .err(mapErrno(code))
-    }
-
-    let kind = fileTypeFromRaw(rawKind)
-    let readOnlyFlag = rawReadonly != 0
-    return .ok(Metadata {
-        kind,
-        size,
-        readOnlyFlag,
-        modifiedSecs,
-        accessedSecs,
-        createdSecs,
-    })
-}
-
-func impSymlinkMetadata(_ path: string) -> Result[Metadata, Error] {
-    let cpath = CString.new(path)
-    var rawKind: int32 = 0
-    var size: usize = 0
-    var rawReadonly: int32 = 0
-    var modifiedSecs: int64 = -1_i64
-    var accessedSecs: int64 = -1_i64
-    var createdSecs: int64 = -1_i64
-    let kindPtr = unsafe { (&mut rawKind as *mut int32) }
-    let sizePtr = unsafe { (&mut size as *mut usize) }
-    let readonlyPtr = unsafe { (&mut rawReadonly as *mut int32) }
-    let modifiedPtr = unsafe { (&mut modifiedSecs as *mut int64) }
-    let accessedPtr = unsafe { (&mut accessedSecs as *mut int64) }
-    let createdPtr = unsafe { (&mut createdSecs as *mut int64) }
-    let code = std.libc.fsSymlinkMetadata(
-        cpath.asPtr(),
-        kindPtr,
-        sizePtr,
-        readonlyPtr,
-        modifiedPtr,
-        accessedPtr,
-        createdPtr,
-    )
-    if code != 0 {
-        return .err(mapErrno(code))
-    }
-
-    let kind = fileTypeFromRaw(rawKind)
-    let readOnlyFlag = rawReadonly != 0
-    return .ok(Metadata {
-        kind,
-        size,
-        readOnlyFlag,
-        modifiedSecs,
-        accessedSecs,
-        createdSecs,
-    })
-}
-
 func impReadDir(_ path: string) -> Result[std.collections.List[DirEntry], Error] {
     let cpath = CString.new(path)
     var required: usize = 0
     let requiredPtr = unsafe { (&mut required as *mut usize) }
     let nullBuf = unsafe { 0 as *mut uint8 }
-    let probe = std.libc.fsReadDir(cpath.asPtr(), nullBuf, 0, requiredPtr)
+    let probe = std.sys.unix_rt.fsReadDir(cpath.asPtr(), nullBuf, 0, requiredPtr)
     if probe != 0 {
-        return .err(mapErrno(probe))
+        return .err(std.sys.unix_error.mapErrno(probe))
     }
 
     if required == 0 {
@@ -216,9 +126,9 @@ func impReadDir(_ path: string) -> Result[std.collections.List[DirEntry], Error]
 
     let data = std.mem.allocBytes(required)
     let dataPtr = unsafe { data as *mut uint8 }
-    let fill = std.libc.fsReadDir(cpath.asPtr(), dataPtr, required, requiredPtr)
+    let fill = std.sys.unix_rt.fsReadDir(cpath.asPtr(), dataPtr, required, requiredPtr)
     if fill != 0 {
-        return .err(mapErrno(fill))
+        return .err(std.sys.unix_error.mapErrno(fill))
     }
 
     if required < 4 {
@@ -263,18 +173,18 @@ func impReadDir(_ path: string) -> Result[std.collections.List[DirEntry], Error]
 
 func impCreateDirAll(_ path: string) -> Result[(), Error] {
     let cpath = CString.new(path)
-    let code = std.libc.fsCreateDirAll(cpath.asPtr())
+    let code = std.sys.unix_rt.fsCreateDirAll(cpath.asPtr())
     if code != 0 {
-        return .err(mapErrno(code))
+        return .err(std.sys.unix_error.mapErrno(code))
     }
     return .ok(())
 }
 
 func impRemoveDirAll(_ path: string) -> Result[(), Error] {
     let cpath = CString.new(path)
-    let code = std.libc.fsRemoveDirAll(cpath.asPtr())
+    let code = std.sys.unix_rt.fsRemoveDirAll(cpath.asPtr())
     if code != 0 {
-        return .err(mapErrno(code))
+        return .err(std.sys.unix_error.mapErrno(code))
     }
     return .ok(())
 }
@@ -284,7 +194,7 @@ func impSymlink(_ target: string, _ linkPath: string) -> Result[(), Error] {
     let clink = CString.new(linkPath)
     let res = std.libc.symlink(ctarget.asPtr(), clink.asPtr())
     if res < 0 {
-        return .err(lastError())
+        return .err(std.sys.unix_error.lastError())
     }
     return .ok(())
 }
@@ -296,7 +206,7 @@ func impClose(_ file: &mut PlatformFile) -> Result[(), Error] {
 
     let res = std.libc.close(file.fd)
     if res < 0 {
-        return .err(lastError())
+        return .err(std.sys.unix_error.lastError())
     }
     file.fd = -1
     return .ok(())
@@ -305,7 +215,7 @@ func impClose(_ file: &mut PlatformFile) -> Result[(), Error] {
 func impRead(_ file: &PlatformFile, _ buf: *mut uint8, _ len: usize) -> Result[usize, Error] {
     let res = std.libc.read(file.fd, buf, len)
     if res < 0 {
-        return .err(lastError())
+        return .err(std.sys.unix_error.lastError())
     }
     return .ok(res as usize)
 }
@@ -313,7 +223,7 @@ func impRead(_ file: &PlatformFile, _ buf: *mut uint8, _ len: usize) -> Result[u
 func impWrite(_ file: &PlatformFile, _ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
     let res = std.libc.write(file.fd, buf, len)
     if res < 0 {
-        return .err(lastError())
+        return .err(std.sys.unix_error.lastError())
     }
     return .ok(res as usize)
 }
@@ -321,16 +231,16 @@ func impWrite(_ file: &PlatformFile, _ buf: *const uint8, _ len: usize) -> Resul
 func impSeek(_ file: &PlatformFile, _ offset: isize, _ whence: int32) -> Result[isize, Error] {
     let res = std.libc.lseek(file.fd, offset, whence)
     if res < 0 {
-        return .err(lastError())
+        return .err(std.sys.unix_error.lastError())
     }
     return .ok(res)
 }
 
 func impCreateDir(_ path: string) -> Result[(), Error] {
     let cpath = CString.new(path)
-    let res = std.libc.mkdir(cpath.asPtr(), 511)
+    let res = std.libc.mkdir(cpath.asPtr(), DEFAULT_DIR_MODE)
     if res < 0 {
-        return .err(lastError())
+        return .err(std.sys.unix_error.lastError())
     }
     return .ok(())
 }
@@ -339,7 +249,7 @@ func impRemoveDir(_ path: string) -> Result[(), Error] {
     let cpath = CString.new(path)
     let res = std.libc.rmdir(cpath.asPtr())
     if res < 0 {
-        return .err(lastError())
+        return .err(std.sys.unix_error.lastError())
     }
     return .ok(())
 }
@@ -348,7 +258,7 @@ func impRemoveFile(_ path: string) -> Result[(), Error] {
     let cpath = CString.new(path)
     let res = std.libc.unlink(cpath.asPtr())
     if res < 0 {
-        return .err(lastError())
+        return .err(std.sys.unix_error.lastError())
     }
     return .ok(())
 }
@@ -358,7 +268,7 @@ func impRename(_ from: string, _ to: string) -> Result[(), Error] {
     let cto = CString.new(to)
     let res = std.libc.rename(cfrom.asPtr(), cto.asPtr())
     if res < 0 {
-        return .err(lastError())
+        return .err(std.sys.unix_error.lastError())
     }
     return .ok(())
 }

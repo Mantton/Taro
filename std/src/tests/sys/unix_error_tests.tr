@@ -1,0 +1,29 @@
+//+cfg family("unix")
+
+import std.sys.unix_error
+
+@test
+func testUnixErrnoMapperKnownCodes() {
+    match std.sys.unix_error.mapErrno(2) {
+        case .notFound => {}
+        case _ => std.panic.panic("ENOENT should map to notFound")
+    }
+
+    match std.sys.unix_error.mapErrno(13) {
+        case .permissionDenied => {}
+        case _ => std.panic.panic("EACCES should map to permissionDenied")
+    }
+
+    match std.sys.unix_error.mapErrno(32) {
+        case .brokenPipe => {}
+        case _ => std.panic.panic("EPIPE should map to brokenPipe")
+    }
+}
+
+@test
+func testUnixErrnoMapperFallsBackToUnexpected() {
+    match std.sys.unix_error.mapErrno(999) {
+        case .unexpected(code) => std.assert(code == 999, "unexpected should preserve the raw errno")
+        case _ => std.panic.panic("unknown errno should map to unexpected")
+    }
+}

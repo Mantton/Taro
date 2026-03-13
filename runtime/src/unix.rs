@@ -7,7 +7,6 @@ use core::ffi::{c_char, c_int};
 use std::ffi::{CStr, OsStr};
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
-use std::time::UNIX_EPOCH;
 
 #[cfg(unix)]
 unsafe extern "C" {
@@ -74,71 +73,6 @@ fn file_kind(file_type: std::fs::FileType) -> i32 {
     }
 }
 
-fn system_time_to_secs(value: std::io::Result<std::time::SystemTime>) -> i64 {
-    match value {
-        Ok(ts) => match ts.duration_since(UNIX_EPOCH) {
-            Ok(delta) => {
-                if delta.as_secs() > i64::MAX as u64 {
-                    i64::MAX
-                } else {
-                    delta.as_secs() as i64
-                }
-            }
-            Err(before) => {
-                let delta = before.duration();
-                if delta.as_secs() > i64::MAX as u64 {
-                    i64::MIN
-                } else {
-                    -(delta.as_secs() as i64)
-                }
-            }
-        },
-        Err(_) => -1,
-    }
-}
-
-fn write_metadata_out(
-    meta: &std::fs::Metadata,
-    out_kind: *mut i32,
-    out_len: *mut usize,
-    out_readonly: *mut i32,
-    out_modified_secs: *mut i64,
-    out_accessed_secs: *mut i64,
-    out_created_secs: *mut i64,
-) -> i32 {
-    if out_kind.is_null()
-        || out_len.is_null()
-        || out_readonly.is_null()
-        || out_modified_secs.is_null()
-        || out_accessed_secs.is_null()
-        || out_created_secs.is_null()
-    {
-        return EINVAL;
-    }
-
-    let size = meta.len();
-    if size > usize::MAX as u64 {
-        return EINVAL;
-    }
-
-    let kind = file_kind(meta.file_type());
-    let readonly = if meta.permissions().readonly() { 1 } else { 0 };
-    let modified = system_time_to_secs(meta.modified());
-    let accessed = system_time_to_secs(meta.accessed());
-    let created = system_time_to_secs(meta.created());
-
-    unsafe {
-        *out_kind = kind;
-        *out_len = size as usize;
-        *out_readonly = readonly;
-        *out_modified_secs = modified;
-        *out_accessed_secs = accessed;
-        *out_created_secs = created;
-    }
-
-    0
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt__open2(path: *const u8, oflags: i32) -> i32 {
     #[cfg(unix)]
@@ -184,64 +118,6 @@ pub extern "C" fn __rt__errno() -> i32 {
     #[cfg(not(unix))]
     {
         0
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __rt__fs_metadata(
-    path: *const u8,
-    out_kind: *mut i32,
-    out_len: *mut usize,
-    out_readonly: *mut i32,
-    out_modified_secs: *mut i64,
-    out_accessed_secs: *mut i64,
-    out_created_secs: *mut i64,
-) -> i32 {
-    let path = match path_from_c(path) {
-        Ok(value) => value,
-        Err(code) => return code,
-    };
-
-    match std::fs::metadata(path) {
-        Ok(meta) => write_metadata_out(
-            &meta,
-            out_kind,
-            out_len,
-            out_readonly,
-            out_modified_secs,
-            out_accessed_secs,
-            out_created_secs,
-        ),
-        Err(err) => io_error_code(&err),
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __rt__fs_symlink_metadata(
-    path: *const u8,
-    out_kind: *mut i32,
-    out_len: *mut usize,
-    out_readonly: *mut i32,
-    out_modified_secs: *mut i64,
-    out_accessed_secs: *mut i64,
-    out_created_secs: *mut i64,
-) -> i32 {
-    let path = match path_from_c(path) {
-        Ok(value) => value,
-        Err(code) => return code,
-    };
-
-    match std::fs::symlink_metadata(path) {
-        Ok(meta) => write_metadata_out(
-            &meta,
-            out_kind,
-            out_len,
-            out_readonly,
-            out_modified_secs,
-            out_accessed_secs,
-            out_created_secs,
-        ),
-        Err(err) => io_error_code(&err),
     }
 }
 

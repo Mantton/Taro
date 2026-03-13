@@ -26,14 +26,6 @@ func impOpenWithOptions(
     std.panic.todo("std.sys.fs.openWithOptions not implemented on windows yet")
 }
 
-func impMetadata(_ path: string) -> Result[Metadata, Error] {
-    std.panic.todo("std.sys.fs.metadata not implemented on windows yet")
-}
-
-func impSymlinkMetadata(_ path: string) -> Result[Metadata, Error] {
-    std.panic.todo("std.sys.fs.symlinkMetadata not implemented on windows yet")
-}
-
 func impReadDir(_ path: string) -> Result[std.collections.List[DirEntry], Error] {
     std.panic.todo("std.sys.fs.readDir not implemented on windows yet")
 }
