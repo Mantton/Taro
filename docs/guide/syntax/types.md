@@ -85,7 +85,7 @@ Tuples group multiple values of different types.
 
 ## Function Types
 
-Function types describe callable signatures.
+Function types describe function pointer signatures.
 
 ```taro
 () -> void                    // No parameters, no return
@@ -96,6 +96,33 @@ Function types describe callable signatures.
 // Higher-order functions
 ((int32) -> int32) -> int32   // Takes function, returns int
 ```
+
+## Callable Interface Shorthand
+
+Closure trait bounds and existentials can use Rust-style callable shorthand.
+
+```taro
+Fn() -> string
+Fn(int32) -> int32
+FnMut(int32, string) -> bool
+FnOnce(int32) -> Result[string, Error]
+
+func map[F: Fn(int32) -> int32](_ f: F, _ x: int32) -> int32 {
+    f(x)
+}
+
+let cb: any Fn(int32) -> int32 = double
+```
+
+This is shorthand for the existing callable interfaces:
+
+```taro
+Fn() -> string                  // Fn[(), string]
+Fn(int32) -> int32              // Fn[int32, int32]
+FnMut(int32, string) -> bool    // FnMut[(int32, string), bool]
+```
+
+Taro keeps `(A, B) -> R` for function pointers. It does not use lowercase `fn(A) -> R`.
 
 ---
 

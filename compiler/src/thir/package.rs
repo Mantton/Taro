@@ -983,7 +983,11 @@ impl<'ctx> FunctionLower<'ctx> {
                     .iter()
                     .map(|arm| self.lower_match_arm(arm))
                     .collect();
-                ExprKind::Match { scrutinee, arms }
+                ExprKind::Match {
+                    scrutinee,
+                    arms,
+                    binding_condition: false,
+                }
             }
             hir::ExpressionKind::Return { value } => {
                 let value = value.as_deref().map(|expr| self.lower_expr(expr));
@@ -1204,6 +1208,7 @@ impl<'ctx> FunctionLower<'ctx> {
                 ExprKind::Match {
                     scrutinee,
                     arms: vec![true_arm_id, false_arm_id],
+                    binding_condition: true,
                 }
             }
             hir::ExpressionKind::Closure(closure) => {

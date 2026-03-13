@@ -35,7 +35,10 @@ impl<'ctx> ExhaustivenessPass<'ctx> {
         let expr_ids: Vec<_> = func.exprs.indices().collect();
         for expr_id in expr_ids {
             let expr = &func.exprs[expr_id];
-            if let ExprKind::Match { scrutinee, arms } = &expr.kind {
+            if let ExprKind::Match {
+                scrutinee, arms, ..
+            } = &expr.kind
+            {
                 let arms = arms.clone();
                 self.check_match(func, expr_id, *scrutinee, &arms, expr.span);
             }

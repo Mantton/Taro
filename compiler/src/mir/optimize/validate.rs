@@ -15,6 +15,7 @@ use crate::{
     thir::FieldIndex,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::rc::Rc;
 
 use super::MirPass;
 
@@ -70,11 +71,18 @@ pub fn validate_body_invariants<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> Comp
         return Ok(());
     }
 
+    let normalize_icx = Rc::new(crate::sema::tycheck::infer::InferCtx::new(gcx));
+    let normalize_env = crate::sema::tycheck::utils::param_env::ParamEnv::new(
+        crate::sema::tycheck::constraints::canonical_constraints_of(gcx, body.owner)
+            .iter()
+            .map(|constraint| constraint.value)
+            .collect(),
+    );
     let function_output = gcx.get_signature(body.owner).output;
     let return_local_ty = body.locals[body.return_local].ty;
     let require_return_slot = function_output != gcx.types.void;
 
-    if !types_compatible(return_local_ty, function_output) {
+    if !types_compatible(gcx, &normalize_icx, &normalize_env, return_local_ty, function_output) {
         gcx.dcx().emit_error(
             format!(
                 "internal error: MIR return local has type `{}` but function output is `{}`",
@@ -99,7 +107,7 @@ pub fn validate_body_invariants<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> Comp
             if let StatementKind::Assign(destination, rvalue) = &stmt.kind {
                 let dest_ty = place_ty(body, gcx, destination);
                 if let Some(value_ty) = rvalue_ty(body, gcx, rvalue) {
-                    if !types_compatible(dest_ty, value_ty) {
+                    if !types_compatible(gcx, &normalize_icx, &normalize_env, dest_ty, value_ty) {
                         gcx.dcx().emit_error(
                             format!(
                                 "internal error: MIR assignment type mismatch (`{}` <- `{}`)",
@@ -111,7 +119,13 @@ pub fn validate_body_invariants<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> Comp
                     }
 
                     if is_full_return_place(body, destination)
-                        && !types_compatible(function_output, value_ty)
+                        && !types_compatible(
+                            gcx,
+                            &normalize_icx,
+                            &normalize_env,
+                            function_output,
+                            value_ty,
+                        )
                     {
                         gcx.dcx().emit_error(
                             format!(
@@ -143,7 +157,13 @@ pub fn validate_body_invariants<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> Comp
                     let call_output = call_output_ty(body, gcx, func);
 
                     if let Some(call_output) = call_output {
-                        if !types_compatible(destination_ty, call_output) {
+                        if !types_compatible(
+                            gcx,
+                            &normalize_icx,
+                            &normalize_env,
+                            destination_ty,
+                            call_output,
+                        ) {
                             gcx.dcx().emit_error(
                                 format!(
                                     "internal error: MIR call destination type mismatch (`{}` <- `{}`)",
@@ -155,7 +175,13 @@ pub fn validate_body_invariants<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> Comp
                         }
 
                         if is_full_return_place(body, destination)
-                            && !types_compatible(function_output, call_output)
+                            && !types_compatible(
+                                gcx,
+                                &normalize_icx,
+                                &normalize_env,
+                                function_output,
+                                call_output,
+                            )
                         {
                             gcx.dcx().emit_error(
                                 format!(
@@ -563,27 +589,144 @@ fn call_output_ty<'ctx>(
     gcx: Gcx<'ctx>,
     operand: &Operand<'ctx>,
 ) -> Option<Ty<'ctx>> {
+    fn normalize_if_possible<'ctx>(gcx: Gcx<'ctx>, ty: Ty<'ctx>) -> Ty<'ctx> {
+        if ty.needs_instantiation() || ty.contains_inference() {
+            ty
+        } else {
+            crate::sema::tycheck::utils::normalize_post_monomorphization(gcx, ty)
+        }
+    }
+
     match operand {
-        Operand::Constant(constant) => match constant.value {
-            ConstantKind::Function(def_id, _, _) => Some(gcx.get_signature(def_id).output),
-            _ => match constant.ty.kind() {
-                TyKind::FnPointer { output, .. } | TyKind::Closure { output, .. } => Some(output),
+        Operand::Constant(constant) => {
+            let output_from_ty = match constant.ty.kind() {
+                TyKind::FnPointer { output, .. } | TyKind::Closure { output, .. } => {
+                    Some(normalize_if_possible(gcx, output))
+                }
                 _ => None,
-            },
-        },
+            };
+
+            if let Some(output) = output_from_ty {
+                if !output.needs_instantiation() {
+                    return Some(output);
+                }
+            }
+
+            match constant.value {
+                ConstantKind::Function(def_id, args, _) => Some(normalize_if_possible(
+                    gcx,
+                    crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args(
+                        gcx,
+                        gcx.get_signature(def_id).output,
+                        args,
+                    ),
+                )),
+                _ => output_from_ty,
+            }
+        }
         Operand::Copy(place) | Operand::Move(place) => match place_ty(body, gcx, place).kind() {
-            TyKind::FnPointer { output, .. } | TyKind::Closure { output, .. } => Some(output),
+            TyKind::FnPointer { output, .. } | TyKind::Closure { output, .. } => {
+                Some(normalize_if_possible(gcx, output))
+            }
             _ => None,
         },
     }
 }
 
-fn types_compatible<'ctx>(expected: Ty<'ctx>, actual: Ty<'ctx>) -> bool {
+fn types_compatible<'ctx>(
+    _gcx: Gcx<'ctx>,
+    normalize_icx: &Rc<crate::sema::tycheck::infer::InferCtx<'ctx>>,
+    normalize_env: &crate::sema::tycheck::utils::param_env::ParamEnv<'ctx>,
+    expected: Ty<'ctx>,
+    actual: Ty<'ctx>,
+) -> bool {
     if expected.is_error() || actual.is_error() {
         return true;
     }
 
-    actual == expected || matches!(actual.kind(), TyKind::Never)
+    let expected = crate::sema::tycheck::utils::normalize::normalize_ty(
+        normalize_icx.clone(),
+        expected,
+        normalize_env,
+    );
+    let actual = crate::sema::tycheck::utils::normalize::normalize_ty(
+        normalize_icx.clone(),
+        actual,
+        normalize_env,
+    );
+
+    actual == expected
+        || matches!(actual.kind(), TyKind::Never)
+        || matches!(
+            (expected.kind(), actual.kind()),
+            (TyKind::Reference(inner_expected, _), TyKind::Pointer(inner_actual, _))
+                | (TyKind::Pointer(inner_expected, _), TyKind::Reference(inner_actual, _))
+                if inner_expected == inner_actual
+        )
+        || matches!(
+            (expected.kind(), actual.kind()),
+            (
+                TyKind::BoxedExistential {
+                    interfaces: expected_ifaces,
+                },
+                TyKind::BoxedExistential {
+                    interfaces: actual_ifaces,
+                },
+            ) if existential_interfaces_compatible(expected_ifaces, actual_ifaces)
+        )
+}
+
+fn existential_interfaces_compatible<'ctx>(
+    expected: &'ctx [crate::sema::models::InterfaceReference<'ctx>],
+    actual: &'ctx [crate::sema::models::InterfaceReference<'ctx>],
+) -> bool {
+    if expected.len() != actual.len() {
+        return false;
+    }
+
+    let mut matched = vec![false; actual.len()];
+    for expected_iface in expected {
+        let Some((idx, _)) = actual.iter().enumerate().find(|(idx, actual_iface)| {
+            !matched[*idx] && interface_refs_compatible(*expected_iface, **actual_iface)
+        }) else {
+            return false;
+        };
+        matched[idx] = true;
+    }
+
+    true
+}
+
+fn interface_refs_compatible<'ctx>(
+    expected: crate::sema::models::InterfaceReference<'ctx>,
+    actual: crate::sema::models::InterfaceReference<'ctx>,
+) -> bool {
+    if expected.id != actual.id {
+        return false;
+    }
+
+    let expected_args = if !expected.arguments.is_empty() {
+        &expected.arguments[1..]
+    } else {
+        &expected.arguments
+    };
+    let actual_args = if !actual.arguments.is_empty() {
+        &actual.arguments[1..]
+    } else {
+        &actual.arguments
+    };
+
+    if expected_args != actual_args || expected.bindings.len() != actual.bindings.len() {
+        return false;
+    }
+
+    expected.bindings.iter().all(|expected_binding| {
+        actual
+            .bindings
+            .iter()
+            .find(|actual_binding| actual_binding.name == expected_binding.name)
+            .is_some_and(|actual_binding| actual_binding.ty == expected_binding.ty)
+    })
 }
 
 fn operand_ty<'ctx>(body: &Body<'ctx>, gcx: Gcx<'ctx>, operand: &Operand<'ctx>) -> Ty<'ctx> {
@@ -680,7 +823,10 @@ fn rvalue_ty<'ctx>(body: &Body<'ctx>, gcx: Gcx<'ctx>, rvalue: &Rvalue<'ctx>) -> 
                 },
                 gcx,
             )),
-            AggregateKind::Closure { def_id, .. } => Some(gcx.get_type(*def_id)),
+            AggregateKind::Closure {
+                def_id,
+                captured_generics,
+            } => Some(closure_aggregate_ty(gcx, *def_id, *captured_generics)),
         },
         Rvalue::Repeat { count, element, .. } => Some(Ty::new(
             TyKind::Array {
@@ -715,6 +861,33 @@ fn enum_variant_tuple_ty<'ctx>(
             Ty::new(TyKind::Tuple(list), gcx)
         }
     }
+}
+
+fn closure_aggregate_ty<'ctx>(
+    gcx: Gcx<'ctx>,
+    def_id: crate::hir::DefinitionID,
+    captured_generics: crate::sema::models::GenericArguments<'ctx>,
+) -> Ty<'ctx> {
+    let signature = gcx.get_signature(def_id);
+    let inputs = gcx
+        .store
+        .interners
+        .intern_ty_list(signature.inputs.iter().skip(1).map(|param| param.ty).collect());
+    let kind = gcx
+        .get_closure_captures(def_id)
+        .map(|captures| captures.kind)
+        .unwrap_or(crate::sema::models::ClosureKind::Fn);
+
+    Ty::new(
+        TyKind::Closure {
+            closure_def_id: def_id,
+            captured_generics,
+            inputs,
+            output: signature.output,
+            kind,
+        },
+        gcx,
+    )
 }
 
 /// Check that operands in an rvalue are not moved.

@@ -122,7 +122,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 }
                 join_block.unit()
             }
-            ExprKind::Match { scrutinee, arms } => {
+            ExprKind::Match {
+                scrutinee, arms, ..
+            } => {
                 self.lower_match_expr(destination, block, expr_id, *scrutinee, arms)
             }
             ExprKind::Return { value } => {
@@ -174,69 +176,82 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                             .first()
                             .map(|param| param.ty)
                     } else if let crate::sema::models::TyKind::Parameter(_) = callee_ty.kind() {
-                        // Check if this type parameter has Fn/FnMut/FnOnce bounds
-                        if self.has_fn_trait_bound(callee_ty) {
-                            // For callable type parameters, the self parameter is *const F
-                            // (a pointer to the parameter type)
-                            Some(self.gcx.store.interners.intern_ty(
-                                crate::sema::models::TyKind::Pointer(
-                                    callee_ty,
-                                    crate::hir::Mutability::Immutable,
-                                ),
-                            ))
-                        } else {
-                            None
-                        }
+                        self.get_callable_trait_self_param_ty(callee_ty)
                     } else {
                         None
                     };
+                let callable_self_place = if closure_self_param_ty.is_some() {
+                    Some(unpack!(block = self.as_place(block, *callee)))
+                } else {
+                    None
+                };
 
-                let function = if closure_self_param_ty.is_some()
-                    && matches!(Category::of(&callee_expr.kind), Category::Place)
-                {
-                    let place = unpack!(block = self.as_place(block, *callee));
-                    let by_ref = matches!(
-                        closure_self_param_ty.unwrap().kind(),
-                        crate::sema::models::TyKind::Pointer(..)
-                            | crate::sema::models::TyKind::Reference(..)
-                    );
-                    if by_ref {
-                        Operand::Copy(place)
-                    } else {
-                        Operand::Move(place)
-                    }
+                let function = if let Some(place) = callable_self_place.clone() {
+                    // The explicit self argument carries the actual closure environment.
+                    // Keep the callee operand non-consuming so FnOnce call lowering
+                    // does not move the same value twice.
+                    Operand::Copy(place)
                 } else {
                     unpack!(block = self.as_local_operand(block, *callee))
                 };
 
                 // For closure calls, pass self according to the closure kind.
-                let closure_self_arg: Option<Operand<'ctx>> =
-                    closure_self_param_ty.and_then(|self_param_ty| match &function {
-                        Operand::Copy(place) | Operand::Move(place) => {
-                            let closure_place = place.clone();
-                            match self_param_ty.kind() {
-                                crate::sema::models::TyKind::Pointer(_, mutability)
-                                | crate::sema::models::TyKind::Reference(_, mutability) => {
-                                    let ptr_local = self.new_temp_with_ty(self_param_ty, expr.span);
-                                    self.push_assign(
-                                        block,
-                                        Place::from_local(ptr_local),
-                                        Rvalue::Ref {
-                                            mutable: matches!(
-                                                mutability,
-                                                crate::hir::Mutability::Mutable
-                                            ),
-                                            place: closure_place,
-                                        },
-                                        expr.span,
-                                    );
-                                    Some(Operand::Copy(Place::from_local(ptr_local)))
-                                }
-                                _ => Some(Operand::Move(closure_place)),
+                let closure_self_arg: Option<Operand<'ctx>> = closure_self_param_ty.and_then(
+                    |self_param_ty| {
+                        let closure_place = callable_self_place.clone()?;
+                        match self_param_ty.kind() {
+                            crate::sema::models::TyKind::Reference(_, mutability) => {
+                                let ref_local = self.new_temp_with_ty(self_param_ty, expr.span);
+                                self.push_assign(
+                                    block,
+                                    Place::from_local(ref_local),
+                                    Rvalue::Ref {
+                                        mutable: matches!(
+                                            mutability,
+                                            crate::hir::Mutability::Mutable
+                                        ),
+                                        place: closure_place,
+                                    },
+                                    expr.span,
+                                );
+                                Some(Operand::Copy(Place::from_local(ref_local)))
                             }
+                            crate::sema::models::TyKind::Pointer(_, mutability) => {
+                                let ref_ty = self.gcx.store.interners.intern_ty(
+                                    crate::sema::models::TyKind::Reference(callee_ty, mutability),
+                                );
+                                let ref_local = self.new_temp_with_ty(ref_ty, expr.span);
+                                self.push_assign(
+                                    block,
+                                    Place::from_local(ref_local),
+                                    Rvalue::Ref {
+                                        mutable: matches!(
+                                            mutability,
+                                            crate::hir::Mutability::Mutable
+                                        ),
+                                        place: closure_place,
+                                    },
+                                    expr.span,
+                                );
+
+                                let ptr_local = self.new_temp_with_ty(self_param_ty, expr.span);
+                                self.push_assign(
+                                    block,
+                                    Place::from_local(ptr_local),
+                                    Rvalue::Cast {
+                                        kind: CastKind::Pointer,
+                                        operand: Operand::Copy(Place::from_local(ref_local)),
+                                        ty: self_param_ty,
+                                    },
+                                    expr.span,
+                                );
+
+                                Some(Operand::Copy(Place::from_local(ptr_local)))
+                            }
+                            _ => Some(Operand::Move(closure_place)),
                         }
-                        Operand::Constant(_) => None,
-                    });
+                    },
+                );
                 if let crate::sema::models::TyKind::FnPointer { inputs, .. } = callee_ty.kind() {
                     let param_count = inputs.len();
                     if is_known_variadic && param_count > 0 {
@@ -259,8 +274,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 }
 
                 // Check if we're calling through a Fn bound and need to unpack tuple args.
-                // This implements the "rust-call" ABI: when Args is a tuple like (T1, T2),
-                // we pass individual arguments (self, t1, t2) instead of (self, (t1, t2)).
                 let fn_trait_args_ty =
                     if let crate::sema::models::TyKind::Parameter(_) = callee_ty.kind() {
                         self.get_fn_trait_args_type(callee_ty)
@@ -1187,6 +1200,16 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             .intern_generic_args(vec![crate::sema::models::GenericArgument::Type(elem_ty)]);
 
         let ptr_add_ty = self.gcx.get_type(ptr_add_id);
+        let ptr_add_output = match ptr_add_ty.kind() {
+            crate::sema::models::TyKind::FnPointer { output, .. } => {
+                crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args(
+                    self.gcx,
+                    output,
+                    ptr_add_generics,
+                )
+            }
+            _ => panic!("__intrinsic_ptr_add must be a function"),
+        };
 
         let ptr_add_func = Operand::Constant(Constant {
             ty: ptr_add_ty,
@@ -1200,7 +1223,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 Place::from_local(buf_ptr_t)
             } else {
                 let next_block_loop = self.new_block();
-                let temp_ptr = self.new_temp_with_ty(ptr_t_ty, span);
+                let temp_ptr = self.new_temp_with_ty(ptr_add_output, span);
                 let idx_op = Operand::Constant(Constant {
                     ty: usize_ty,
                     value: mir::ConstantKind::Integer(i as u64),
@@ -1218,7 +1241,20 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     },
                 );
                 block = next_block_loop;
-                Place::from_local(temp_ptr)
+
+                let temp_mut_ptr = self.new_temp_with_ty(ptr_t_ty, span);
+                self.push_assign(
+                    block,
+                    Place::from_local(temp_mut_ptr),
+                    Rvalue::Cast {
+                        kind: CastKind::Pointer,
+                        operand: Operand::Copy(Place::from_local(temp_ptr)),
+                        ty: ptr_t_ty,
+                    },
+                    span,
+                );
+
+                Place::from_local(temp_mut_ptr)
             };
 
             let dest = Place {

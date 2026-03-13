@@ -1761,6 +1761,30 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             match mode {
                 abi::PassMode::Ignore => {}
                 abi::PassMode::Direct => {
+                    if let Some(abi_arg) = abi_arg {
+                        let actual_ty = self.operand_ty(body, arg);
+                        let expects_pointer = matches!(
+                            abi_arg.ty.kind(),
+                            TyKind::Pointer(..) | TyKind::Reference(..)
+                        );
+                        let actual_is_pointer = matches!(
+                            actual_ty.kind(),
+                            TyKind::Pointer(..) | TyKind::Reference(..)
+                        );
+
+                        // Generic callable lowering can route an Fn/FnMut closure through an
+                        // FnOnce-shaped call, which means the operand is still a closure value
+                        // while the concrete closure body expects a pointer receiver. Materialize
+                        // an address in that case instead of passing the value bits directly.
+                        if expects_pointer && !actual_is_pointer {
+                            if let Some(ptr) =
+                                self.lower_indirect_call_arg(body, locals, arg, actual_ty)?
+                            {
+                                lowered.push(ptr.as_basic_value_enum());
+                                continue;
+                            }
+                        }
+                    }
                     if let Some(val) = self.eval_operand(body, locals, arg)? {
                         lowered.push(val);
                     }

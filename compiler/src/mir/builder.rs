@@ -71,6 +71,13 @@ pub enum EdgeKind {
     Continue,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum CallableTraitKind {
+    Fn,
+    FnMut,
+    FnOnce,
+}
+
 pub struct MirBuilder<'ctx, 'thir> {
     gcx: Gcx<'ctx>,
     thir: &'thir thir::ThirFunction<'ctx>,
@@ -518,40 +525,108 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
     /// Check if a type has Fn, FnMut, or FnOnce trait bounds
     /// in the current function's constraints.
     pub fn has_fn_trait_bound(&self, ty: Ty<'ctx>) -> bool {
-        self.get_fn_trait_args_type(ty).is_some()
+        self.get_callable_trait_info(ty).is_some()
+    }
+
+    fn callable_trait_kind_for_interface(
+        &self,
+        interface_id: hir::DefinitionID,
+    ) -> Option<CallableTraitKind> {
+        if Some(interface_id) == self.gcx.std_item_def(StdItem::Fn) {
+            Some(CallableTraitKind::Fn)
+        } else if Some(interface_id) == self.gcx.std_item_def(StdItem::FnMut) {
+            Some(CallableTraitKind::FnMut)
+        } else if Some(interface_id) == self.gcx.std_item_def(StdItem::FnOnce) {
+            Some(CallableTraitKind::FnOnce)
+        } else {
+            None
+        }
+    }
+
+    fn get_callable_trait_info(
+        &self,
+        ty: Ty<'ctx>,
+    ) -> Option<(CallableTraitKind, crate::sema::models::InterfaceReference<'ctx>)> {
+        let constraints = self.gcx.canonical_constraints_of(self.thir.id);
+        let mut best: Option<(
+            CallableTraitKind,
+            crate::sema::models::InterfaceReference<'ctx>,
+        )> = None;
+
+        for constraint in constraints {
+            let Constraint::Bound {
+                ty: bound_ty,
+                interface,
+            } = constraint.value
+            else {
+                continue;
+            };
+
+            if bound_ty != ty {
+                continue;
+            }
+
+            let Some(kind) = self.callable_trait_kind_for_interface(interface.id) else {
+                continue;
+            };
+
+            // Interface arguments are [Self, Args, Output].
+            match best {
+                Some((best_kind, _)) if best_kind <= kind => {}
+                _ => best = Some((kind, interface)),
+            }
+        }
+
+        best
+    }
+
+    pub fn get_callable_trait_ref(
+        &self,
+        ty: Ty<'ctx>,
+    ) -> Option<crate::sema::models::InterfaceReference<'ctx>> {
+        self.get_callable_trait_info(ty).map(|(_, interface)| interface)
+    }
+
+    pub fn get_callable_trait_self_param_ty(&self, ty: Ty<'ctx>) -> Option<Ty<'ctx>> {
+        let (kind, _) = self.get_callable_trait_info(ty)?;
+        Some(match kind {
+            CallableTraitKind::Fn => self
+                .gcx
+                .store
+                .interners
+                .intern_ty(TyKind::Reference(ty, hir::Mutability::Immutable)),
+            CallableTraitKind::FnMut => self
+                .gcx
+                .store
+                .interners
+                .intern_ty(TyKind::Reference(ty, hir::Mutability::Mutable)),
+            CallableTraitKind::FnOnce => ty,
+        })
     }
 
     /// Get the Args type from a Fn/FnMut/FnOnce bound on a type parameter.
     /// Returns Some(args_ty) if the type has a Fn trait bound, None otherwise.
     pub fn get_fn_trait_args_type(&self, ty: Ty<'ctx>) -> Option<Ty<'ctx>> {
-        let fn_def = self.gcx.std_item_def(StdItem::Fn);
-        let fn_mut_def = self.gcx.std_item_def(StdItem::FnMut);
-        let fn_once_def = self.gcx.std_item_def(StdItem::FnOnce);
-
-        let constraints = self.gcx.canonical_constraints_of(self.thir.id);
-        for constraint in constraints {
-            if let Constraint::Bound {
-                ty: bound_ty,
-                interface,
-            } = constraint.value
-            {
-                if bound_ty == ty {
-                    let is_fn_trait = fn_def == Some(interface.id)
-                        || fn_mut_def == Some(interface.id)
-                        || fn_once_def == Some(interface.id);
-                    if is_fn_trait {
-                        // The Args type is the first generic argument (index 1, since index 0 is Self)
-                        // Interface arguments are: [Self, Args, Output]
-                        if let Some(crate::sema::models::GenericArgument::Type(args_ty)) =
-                            interface.arguments.get(1)
-                        {
-                            return Some(*args_ty);
-                        }
-                    }
-                }
-            }
+        let interface = self.get_callable_trait_ref(ty)?;
+        match interface.arguments.get(1) {
+            Some(crate::sema::models::GenericArgument::Type(args_ty)) => Some(*args_ty),
+            _ => None,
         }
-        None
+    }
+
+    pub fn get_callable_trait_method_id(&self, ty: Ty<'ctx>) -> Option<hir::DefinitionID> {
+        let (kind, interface) = self.get_callable_trait_info(ty)?;
+        let requirements = self.gcx.get_interface_requirements(interface.id)?;
+        let method_name = match kind {
+            CallableTraitKind::Fn => "call",
+            CallableTraitKind::FnMut => "callMut",
+            CallableTraitKind::FnOnce => "callOnce",
+        };
+        requirements
+            .methods
+            .iter()
+            .find(|method| self.gcx.symbol_eq(method.name, method_name))
+            .map(|method| method.id)
     }
 
     fn record_break_edge(&mut self, block: BasicBlockId, span: Span) -> mir::BlockAnd<()> {

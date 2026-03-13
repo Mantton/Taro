@@ -1,10 +1,10 @@
 // Consolidated closure language tests.
 
-func applyIntExplicit[F: Fn[int32, int32]](_ f: F, _ x: int32) -> int32 {
+func applyIntExplicit[F: Fn(int32) -> int32](_ f: F, _ x: int32) -> int32 {
     f(x)
 }
 
-func mapValueExplicit[T, F: Fn[T, T]](_ value: T, _ f: F) -> T {
+func mapValueExplicit[T, F: Fn(T) -> T](_ value: T, _ f: F) -> T {
     f(value)
 }
 
@@ -13,7 +13,7 @@ struct IntBoxExplicit: Copy {
 }
 
 impl IntBoxExplicit {
-    func map[F: Fn[int32, int32]](&self, _ f: F) -> int32 {
+    func map[F: Fn(int32) -> int32](&self, _ f: F) -> int32 {
         f(self.value)
     }
 }
@@ -22,55 +22,90 @@ func applyFnPtr(_ f: (int32) -> int32, _ x: int32) -> int32 {
     f(x)
 }
 
-func applyFnSimple[F: Fn[int32, int32]](_ f: F, _ x: int32) -> int32 {
+func applyFnSimple[F: Fn(int32) -> int32](_ f: F, _ x: int32) -> int32 {
     f(x)
 }
 
-func applyOnceHierarchy[F: FnOnce[int32, int32]](_ f: F, _ x: int32) -> int32 {
+func applyOnceHierarchy[F: FnOnce(int32) -> int32](_ f: F, _ x: int32) -> int32 {
     f(x)
 }
 
-func applyMutHierarchy[F: FnMut[int32, int32]](_ f: F, _ x: int32) -> int32 {
+func applyMutHierarchy[F: FnMut(int32) -> int32](_ f: F, _ x: int32) -> int32 {
+    var f = f
     f(x)
 }
 
-func applyFnHierarchy[F: Fn[int32, int32]](_ f: F, _ x: int32) -> int32 {
+func applyFnHierarchy[F: Fn(int32) -> int32](_ f: F, _ x: int32) -> int32 {
     f(x)
 }
 
-func applyHigher[F: Fn[int32, int32]](_ f: F, _ x: int32) -> int32 {
+func applyHigher[F: Fn(int32) -> int32](_ f: F, _ x: int32) -> int32 {
     f(x)
 }
 
-func apply2Higher[F: Fn[(int32, int32), int32]](_ f: F, _ a: int32, _ b: int32) -> int32 {
+func apply2Higher[F: Fn(int32, int32) -> int32](_ f: F, _ a: int32, _ b: int32) -> int32 {
     f(a, b)
 }
 
-func mapValHigher[F: Fn[int32, int32]](_ value: int32, _ transform: F) -> int32 {
+func applyZeroHigher[F: Fn() -> int32](_ f: F) -> int32 {
+    f()
+}
+
+func applyZeroMutTwice[F: FnMut() -> int32](_ f: F) -> int32 {
+    var f = f
+    let first = f()
+    let second = f()
+    first + second
+}
+
+func applyZeroOnce[F: FnOnce() -> int32](_ f: F) -> int32 {
+    f()
+}
+
+func applyMutTwice[F: FnMut(int32) -> int32](_ f: F, _ a: int32, _ b: int32) -> int32 {
+    var f = f
+    let first = f(a)
+    let second = f(b)
+    first + second
+}
+
+func apply2MutHierarchy[F: FnMut(int32, int32) -> int32](_ f: F, _ a: int32, _ b: int32) -> int32 {
+    var f = f
+    let first = f(a, b)
+    let second = f(b, a)
+    first + second
+}
+
+func apply2OnceHierarchy[F: FnOnce(int32, int32) -> int32](_ f: F, _ a: int32, _ b: int32) -> int32 {
+    f(a, b)
+}
+
+func mapValHigher[F: Fn(int32) -> int32](_ value: int32, _ transform: F) -> int32 {
     transform(value)
 }
 
-func applyInferred[F: Fn[int32, int32]](_ f: F, _ x: int32) -> int32 {
+func applyInferred[F: Fn(int32) -> int32](_ f: F, _ x: int32) -> int32 {
     f(x)
 }
 
-func apply2Inferred[F: Fn[(int32, int32), int32]](_ f: F, _ a: int32, _ b: int32) -> int32 {
+func apply2Inferred[F: Fn(int32, int32) -> int32](_ f: F, _ a: int32, _ b: int32) -> int32 {
     f(a, b)
 }
 
-func mapValInferred[T, F: Fn[T, T]](_ value: T, _ f: F) -> T {
+func mapValInferred[T, F: Fn(T) -> T](_ value: T, _ f: F) -> T {
     f(value)
 }
 
-func applyOutFn[T, Out, F: Fn[T, Out]](_ x: T, _ f: F) -> Out {
+func applyOutFn[T, Out, F: Fn(T) -> Out](_ x: T, _ f: F) -> Out {
     f(x)
 }
 
-func applyOutMut[T, Out, F: FnMut[T, Out]](_ x: T, _ f: F) -> Out {
+func applyOutMut[T, Out, F: FnMut(T) -> Out](_ x: T, _ f: F) -> Out {
+    var f = f
     f(x)
 }
 
-func applyOutOnce[T, Out, F: FnOnce[T, Out]](_ x: T, _ f: F) -> Out {
+func applyOutOnce[T, Out, F: FnOnce(T) -> Out](_ x: T, _ f: F) -> Out {
     f(x)
 }
 
@@ -79,11 +114,11 @@ struct ContainerInferred {
 }
 
 impl ContainerInferred {
-    func map[F: Fn[int32, int32]](&self, _ f: F) -> int32 {
+    func map[F: Fn(int32) -> int32](&self, _ f: F) -> int32 {
         f(self.value)
     }
 
-    func transform[F: Fn[int32, int32], G: Fn[int32, int32]](&self, _ f: F, _ g: G) -> int32 {
+    func transform[F: Fn(int32) -> int32, G: Fn(int32) -> int32](&self, _ f: F, _ g: G) -> int32 {
         g(f(self.value))
     }
 }
@@ -93,15 +128,15 @@ struct ContainerMethod {
 }
 
 impl ContainerMethod {
-    func map[F: Fn[int32, int32]](&self, _ f: F) -> int32 {
+    func map[F: Fn(int32) -> int32](&self, _ f: F) -> int32 {
         f(self.value)
     }
 
-    func map_once[F: FnOnce[int32, int32]](&self, _ f: F) -> int32 {
+    func map_once[F: FnOnce(int32) -> int32](&self, _ f: F) -> int32 {
         f(self.value)
     }
 
-    func transform[F: Fn[int32, int32], G: Fn[int32, int32]](&self, _ f: F, _ g: G) -> int32 {
+    func transform[F: Fn(int32) -> int32, G: Fn(int32) -> int32](&self, _ f: F, _ g: G) -> int32 {
         g(f(self.value))
     }
 }
@@ -112,7 +147,7 @@ struct PairMethod {
 }
 
 impl PairMethod {
-    func combine[F: Fn[(int32, int32), int32]](&self, _ f: F) -> int32 {
+    func combine[F: Fn(int32, int32) -> int32](&self, _ f: F) -> int32 {
         f(self.a, self.b)
     }
 }
@@ -122,11 +157,11 @@ struct ContainerMethodGeneric[T: Copy]: Copy {
 }
 
 impl[T: Copy] ContainerMethodGeneric[T] {
-    func map[F: Fn[T, T]](self, _ f: F) -> T {
+    func map[F: Fn(T) -> T](self, _ f: F) -> T {
         f(self.value)
     }
 
-    func map_once[F: FnOnce[T, T]](self, _ f: F) -> T {
+    func map_once[F: FnOnce(T) -> T](self, _ f: F) -> T {
         f(self.value)
     }
 }
@@ -137,30 +172,30 @@ struct PairMethodGeneric[T: Copy]: Copy {
 }
 
 impl[T: Copy] PairMethodGeneric[T] {
-    func combine[F: Fn[(T, T), T]](self, _ f: F) -> T {
+    func combine[F: Fn(T, T) -> T](self, _ f: F) -> T {
         f(self.first, self.second)
     }
 
-    func map_both[F: Fn[T, T]](self, _ f: F) -> PairMethodGeneric[T] {
+    func map_both[F: Fn(T) -> T](self, _ f: F) -> PairMethodGeneric[T] {
         PairMethodGeneric[T] { first: f(self.first), second: f(self.second) }
     }
 }
 
-struct CallableField[F: FnMut[int32, int32]] {
+struct CallableField[F: FnMut(int32) -> int32] {
     f: F
 }
 
-impl[F: FnMut[int32, int32]] CallableField[F] {
+impl[F: FnMut(int32) -> int32] CallableField[F] {
     func apply(&mut self, _ x: int32) -> int32 {
         self.f(x)
     }
 }
 
-func applyGenericMethod[T, F: Fn[T, T]](_ f: F, _ x: T) -> T {
+func applyGenericMethod[T, F: Fn(T) -> T](_ f: F, _ x: T) -> T {
     f(x)
 }
 
-func composeGenericMethod[T, F: Fn[T, T], G: Fn[T, T]](_ f: F, _ g: G, _ x: T) -> T {
+func composeGenericMethod[T, F: Fn(T) -> T, G: Fn(T) -> T](_ f: F, _ g: G, _ x: T) -> T {
     let intermediate = f(x)
     g(intermediate)
 }
@@ -466,6 +501,57 @@ func testClosureNested() {
     std.assert(result == 20, "immediate call nested should return 20")
 }
 
+func testClosureShorthandStress() {
+    let zero = applyZeroHigher(|| -> int32 { 99 })
+    std.assert(zero == 99, "zero-arg Fn shorthand should dispatch through generic helper")
+
+    let immediate_zero = applyZeroHigher((|| -> int32 { 123 }))
+    std.assert(immediate_zero == 123, "immediate zero-arg closure should materialize a self place")
+
+    var ticks: int32 = 0
+    let zero_mut_sum = applyZeroMutTwice(|| -> int32 {
+        ticks = ticks + 1
+        ticks
+    })
+    std.assert(zero_mut_sum == 3, "zero-arg FnMut helper should preserve state across calls")
+    std.assert(ticks == 2, "zero-arg FnMut helper should update captured state twice")
+
+    var running: int32 = 0
+    let mut_sum = applyMutTwice(|x: int32| -> int32 {
+        running = running + x
+        running
+    }, 3, 4)
+    std.assert(mut_sum == 10, "FnMut helper should thread closure state across repeated calls")
+    std.assert(running == 7, "FnMut helper should leave final running total in capture")
+
+    var list = List[int32]()
+    list.append(4)
+    list.append(5)
+    let once_len = applyZeroOnce(|| -> int32 {
+        let len = list.len() as int32
+        consumeListMove(list)
+        len
+    })
+    std.assert(once_len == 2, "FnOnce helper should accept non-Copy captured values by move")
+
+    var pair_total: int32 = 0
+    let pair_mut_sum = apply2MutHierarchy(|a: int32, b: int32| -> int32 {
+        pair_total = pair_total + a + b
+        pair_total
+    }, 1, 2)
+    std.assert(pair_mut_sum == 9, "two-arg FnMut shorthand should preserve state across calls")
+    std.assert(pair_total == 6, "two-arg FnMut shorthand should leave final capture state")
+
+    var pair_list = List[int32]()
+    pair_list.append(10)
+    let pair_once = apply2OnceHierarchy(|a: int32, b: int32| -> int32 {
+        let len = pair_list.len() as int32
+        consumeListMove(pair_list)
+        a + b + len
+    }, 3, 4)
+    std.assert(pair_once == 8, "two-arg FnOnce shorthand should consume captured values correctly")
+}
+
 func main() {
     testClosureBasic()
     testClosureByRef()
@@ -483,6 +569,7 @@ func main() {
     testCallableFieldDispatch()
     testClosureMove()
     testClosureNested()
+    testClosureShorthandStress()
 
     std.print("PASS: closures\n")
 }

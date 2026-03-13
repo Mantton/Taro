@@ -3637,6 +3637,42 @@ impl Parser {
 }
 
 impl Parser {
+    fn is_callable_shorthand_name(&self, symbol: Symbol) -> bool {
+        self.symbol_eq(symbol, "Fn")
+            || self.symbol_eq(symbol, "FnMut")
+            || self.symbol_eq(symbol, "FnOnce")
+    }
+
+    fn parse_callable_type_arguments(&mut self) -> R<TypeArguments> {
+        let lo = self.lo_span();
+        let inputs = self.parse_delimiter_sequence(Delimiter::Parenthesis, Token::Comma, |p| {
+            p.parse_type()
+        })?;
+        let tuple_span = lo.to(self.hi_span());
+
+        self.expect(Token::RArrow)?;
+        let output = self.parse_type()?;
+
+        let args = match inputs.len() {
+            0 => Box::new(Type {
+                id: self.next_id(),
+                span: tuple_span,
+                kind: TypeKind::Tuple(Vec::new()),
+            }),
+            1 => inputs.into_iter().next().expect("single input"),
+            _ => Box::new(Type {
+                id: self.next_id(),
+                span: tuple_span,
+                kind: TypeKind::Tuple(inputs),
+            }),
+        };
+
+        Ok(TypeArguments {
+            span: lo.to(self.hi_span()),
+            arguments: vec![TypeArgument::Type(args), TypeArgument::Type(output)],
+        })
+    }
+
     pub fn parse_path(&mut self) -> R<Path> {
         let start_span = self.lo_span();
 
@@ -3662,7 +3698,13 @@ impl Parser {
     pub fn parse_path_segment(&mut self) -> R<PathSegment> {
         let lo = self.lo_span();
         let identifier = self.parse_identifier()?;
-        let arguments = self.parse_optional_type_arguments()?;
+        let arguments = if self.is_callable_shorthand_name(identifier.symbol)
+            && self.matches(Token::LParen)
+        {
+            Some(self.parse_callable_type_arguments()?)
+        } else {
+            self.parse_optional_type_arguments()?
+        };
 
         let segment = PathSegment {
             id: self.next_id(),
@@ -4353,6 +4395,54 @@ mod tests {
     }
 
     #[test]
+    fn test_callable_shorthand_type_single_arg() {
+        let ty = parse_type_str("Fn(int32) -> int32");
+        let TypeKind::Nominal(path) = &ty.kind else {
+            panic!("Expected nominal type");
+        };
+        let args = path.segments[0]
+            .arguments
+            .as_ref()
+            .expect("callable shorthand lowers to type arguments");
+        assert_eq!(args.arguments.len(), 2);
+        assert!(matches!(&args.arguments[0], TypeArgument::Type(ty) if matches!(ty.kind, TypeKind::Nominal(_))));
+        assert!(matches!(&args.arguments[1], TypeArgument::Type(ty) if matches!(ty.kind, TypeKind::Nominal(_))));
+    }
+
+    #[test]
+    fn test_callable_shorthand_type_multi_arg() {
+        let ty = parse_type_str("FnMut(int32, string) -> bool");
+        let TypeKind::Nominal(path) = &ty.kind else {
+            panic!("Expected nominal type");
+        };
+        let args = path.segments[0]
+            .arguments
+            .as_ref()
+            .expect("callable shorthand lowers to type arguments");
+        assert_eq!(args.arguments.len(), 2);
+        assert!(matches!(
+            &args.arguments[0],
+            TypeArgument::Type(ty) if matches!(&ty.kind, TypeKind::Tuple(items) if items.len() == 2)
+        ));
+    }
+
+    #[test]
+    fn test_callable_shorthand_type_zero_arg() {
+        let ty = parse_type_str("FnOnce() -> int32");
+        let TypeKind::Nominal(path) = &ty.kind else {
+            panic!("Expected nominal type");
+        };
+        let args = path.segments[0]
+            .arguments
+            .as_ref()
+            .expect("callable shorthand lowers to type arguments");
+        assert!(matches!(
+            &args.arguments[0],
+            TypeArgument::Type(ty) if matches!(&ty.kind, TypeKind::Tuple(items) if items.is_empty())
+        ));
+    }
+
+    #[test]
     fn test_pointer_type() {
         let ty = parse_type_str("*int32");
         assert!(matches!(ty.kind, TypeKind::Pointer(_, _)));
@@ -4431,6 +4521,12 @@ mod tests {
     }
 
     #[test]
+    fn test_callable_shorthand_existential_type() {
+        let ty = parse_type_str("any Fn(int32) -> int32");
+        assert!(matches!(&ty.kind, TypeKind::BoxedExistential { interfaces } if interfaces.len() == 1));
+    }
+
+    #[test]
     fn test_never_type() {
         let ty = parse_type_str("!");
         assert!(matches!(ty.kind, TypeKind::Never));
@@ -4491,6 +4587,64 @@ mod tests {
             DeclarationKind::Function(f) => assert!(f.generics.where_clause.is_some()),
             _ => panic!("Expected function"),
         }
+    }
+
+    #[test]
+    fn test_callable_shorthand_type_parameter_bounds() {
+        let decl = parse_one_decl("func map[F: Fn(int32) -> int32](_ f: F) { }");
+        match &decl.kind {
+            DeclarationKind::Function(f) => {
+                let p = &f.generics.type_parameters.as_ref().unwrap().parameters[0];
+                let bounds = p.bounds.as_ref().expect("callable shorthand bound");
+                assert_eq!(bounds.len(), 1);
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_callable_shorthand_where_clause() {
+        let decl = parse_one_decl("func map[F](_ f: F) where F: Fn(int32) -> int32 { }");
+        match &decl.kind {
+            DeclarationKind::Function(f) => assert!(f.generics.where_clause.is_some()),
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_callable_shorthand_interface_superface() {
+        let decl = parse_one_decl("interface CallableInt: Fn(int32) -> int32 { }");
+        match &decl.kind {
+            DeclarationKind::Interface(i) => {
+                let bounds = i.conformances.as_ref().expect("superinterface bounds");
+                assert_eq!(bounds.bounds.len(), 1);
+            }
+            _ => panic!("Expected interface"),
+        }
+    }
+
+    #[test]
+    fn test_callable_shorthand_impl_interface() {
+        let decl = parse_one_decl(
+            "impl Fn(int32) -> int32 for Point { func call(&self, args: int32) -> int32 { args }; }",
+        );
+        assert!(matches!(
+            &decl.kind,
+            DeclarationKind::Impl(impl_block) if impl_block.interface.is_some()
+        ));
+    }
+
+    #[test]
+    fn test_callable_legacy_generic_syntax_still_parses() {
+        let ty = parse_type_str("Fn[(int32, int32), int32]");
+        assert!(matches!(ty.kind, TypeKind::Nominal(_)));
+    }
+
+    #[test]
+    fn test_callable_shorthand_requires_arrow() {
+        let err = parse_decls("func map[F: Fn(int32)](_ f: F) { }").expect_err("missing arrow should fail");
+        assert!(!err.is_empty(), "expected parse error");
+        assert!(matches!(err[0].value, ParserError::Expected(Token::RArrow, _)));
     }
 
     // ==================== PATTERN TESTS ====================

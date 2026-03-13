@@ -991,6 +991,7 @@ fn synthesize_enum_hash<'ctx>(
         ExprKind::Match {
             scrutinee,
             arms: arm_ids,
+            binding_condition: false,
         },
         gcx.types.void,
     );
@@ -1155,6 +1156,7 @@ fn synthesize_enum_equality<'ctx>(
             ExprKind::Match {
                 scrutinee: other_scrutinee,
                 arms: inner_arms,
+                binding_condition: false,
             },
             gcx.types.bool,
         );
@@ -1173,6 +1175,7 @@ fn synthesize_enum_equality<'ctx>(
         ExprKind::Match {
             scrutinee: self_scrutinee,
             arms: outer_arms,
+            binding_condition: false,
         },
         gcx.types.bool,
     );
@@ -1460,6 +1463,7 @@ fn synthesize_enum_clone<'ctx>(
         ExprKind::Match {
             scrutinee,
             arms: arm_ids,
+            binding_condition: false,
         },
         info.self_ty,
     );

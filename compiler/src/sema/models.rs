@@ -843,6 +843,52 @@ pub struct AssociatedTypeBinding<'ctx> {
     pub ty: Ty<'ctx>,
 }
 
+fn format_callable_interface<'ctx>(
+    gcx: Gcx<'ctx>,
+    interface_id: DefinitionID,
+    args: &[GenericArgument<'ctx>],
+) -> Option<String> {
+    let kind = if gcx.std_item_def(hir::StdItem::Fn) == Some(interface_id) {
+        "Fn"
+    } else if gcx.std_item_def(hir::StdItem::FnMut) == Some(interface_id) {
+        "FnMut"
+    } else if gcx.std_item_def(hir::StdItem::FnOnce) == Some(interface_id) {
+        "FnOnce"
+    } else {
+        return None;
+    };
+
+    if args.len() != 2 {
+        return None;
+    }
+
+    let inputs_ty = match args.first() {
+        Some(GenericArgument::Type(ty)) => *ty,
+        _ => return None,
+    };
+    let output_ty = match args.get(1) {
+        Some(GenericArgument::Type(ty)) => *ty,
+        _ => return None,
+    };
+
+    let mut out = String::from(kind);
+    out.push('(');
+    match inputs_ty.kind() {
+        TyKind::Tuple(items) => {
+            for (i, input) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&input.format(gcx));
+            }
+        }
+        _ => out.push_str(&inputs_ty.format(gcx)),
+    }
+    out.push_str(") -> ");
+    out.push_str(&output_ty.format(gcx));
+    Some(out)
+}
+
 impl<'ctx> InterfaceReference<'ctx> {
     pub fn format(self, gcx: Gcx<'ctx>) -> String {
         let name = gcx.definition_ident(self.id).symbol;
@@ -850,6 +896,12 @@ impl<'ctx> InterfaceReference<'ctx> {
         // Skip Self (index 0) when formatting - it's implicit
         let skip = if self.arguments.len() > 0 { 1 } else { 0 };
         let display_args = &self.arguments[skip..];
+
+        if self.bindings.is_empty() {
+            if let Some(callable) = format_callable_interface(gcx, self.id, display_args) {
+                return callable;
+            }
+        }
 
         let mut out = String::from(gcx.symbol_text(name).as_ref());
         out.push_str(&format_generic_args(display_args, gcx));

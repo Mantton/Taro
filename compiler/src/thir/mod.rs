@@ -184,6 +184,7 @@ pub enum ExprKind<'a> {
     Match {
         scrutinee: ExprId,
         arms: Vec<ArmId>,
+        binding_condition: bool,
     },
     Zst {
         id: DefinitionID,

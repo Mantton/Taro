@@ -318,6 +318,8 @@ async       await       ref
 <generic_bound>        ::= <path_node>
 
 <type_arguments>       ::= '[' <type_argument_list> ']'
+<callable_type_arguments>
+                       ::= '(' [ <type_list> ] ')' '->' <type>
 <type_argument_list>   ::= <type_argument> { ',' <type_argument> } [ ',' ]
 <type_argument>        ::= <type> | <const_expression>
 ```
@@ -373,7 +375,7 @@ async       await       ref
 ```ebnf
 <path>                 ::= <path_segment> { '.' <path_segment> }
 
-<path_segment>         ::= <identifier> [ <type_arguments> ]
+<path_segment>         ::= <identifier> [ <type_arguments> | <callable_type_arguments> ]
 
 <path_node>            ::= <path>
 ```

@@ -522,7 +522,7 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
                 loop_depth,
                 check_initialization,
             ),
-            ExprKind::Match { scrutinee, arms } => self.analyze_match(
+            ExprKind::Match { scrutinee, arms, .. } => self.analyze_match(
                 scrutinee,
                 arms,
                 initialized,
@@ -566,8 +566,11 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
             return result;
         };
 
+        let then_state = self
+            .pattern_binding_then_state(cond, &cond_state)
+            .unwrap_or_else(|| cond_state.clone());
         let then_result =
-            self.analyze_expr(then_expr, &cond_state, loop_depth, check_initialization);
+            self.analyze_expr(then_expr, &then_state, loop_depth, check_initialization);
         let else_result = if let Some(else_expr) = else_expr {
             self.analyze_expr(else_expr, &cond_state, loop_depth, check_initialization)
         } else {
@@ -855,6 +858,38 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
     fn call_output_is_never(&self, callee: ExprId) -> bool {
         self.call_output_ty(callee)
             .is_some_and(|output| matches!(output.kind(), TyKind::Never))
+    }
+
+    fn pattern_binding_then_state(
+        &mut self,
+        cond: ExprId,
+        initialized: &InitSet,
+    ) -> Option<InitSet> {
+        let ExprKind::Match {
+            arms,
+            binding_condition: true,
+            ..
+        } = &self.func.exprs[cond].kind
+        else {
+            return None;
+        };
+
+        let success_arm = arms.iter().copied().find(|arm_id| {
+            let body = self.func.arms[*arm_id].body;
+            matches!(
+                self.func.exprs[body].kind,
+                ExprKind::Literal(crate::thir::Constant {
+                    value: crate::thir::ConstantKind::Bool(true),
+                    ..
+                })
+            )
+        })?;
+
+        let mut then_state = initialized.clone();
+        for binding_id in self.pattern_binding_ids(&self.func.arms[success_arm].pattern) {
+            then_state.insert(binding_id);
+        }
+        Some(then_state)
     }
 
     fn call_output_ty(&self, callee: ExprId) -> Option<Ty<'ctx>> {

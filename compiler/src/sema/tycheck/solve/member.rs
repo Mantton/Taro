@@ -314,7 +314,13 @@ impl<'ctx> ConstraintSolver<'ctx> {
         if adjustments.is_empty() {
             return;
         }
-        self.adjustments.insert(node_id, adjustments);
+        if let Some(existing) = self.adjustments.get_mut(&node_id) {
+            let mut combined = adjustments;
+            combined.extend(std::mem::take(existing));
+            *existing = combined;
+        } else {
+            self.adjustments.insert(node_id, adjustments);
+        }
     }
 
     pub(crate) fn lookup_field(
