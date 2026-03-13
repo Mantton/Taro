@@ -3,59 +3,6 @@ import std.result.Result
 
 public type RawFile = PlatformFile
 
-public enum FileType {
-    case file
-    case dir
-    case symlink
-    case other
-}
-
-public struct DirEntry {
-    name: string
-    kind: FileType
-}
-
-impl DirEntry {
-    public func name(&self) -> string {
-        let len = std.string.stringLen(self.name)
-        if len == 0 {
-            return ""
-        }
-
-        let src = std.string.stringData(self.name)
-        let data = std.mem.allocBytes(len)
-        src.copyTo(data, len)
-        return std.string.stringFromParts(data, len)
-    }
-
-    public func isFile(&self) -> bool {
-        match self.kind {
-            case .file => true
-            case .dir => false
-            case .symlink => false
-            case .other => false
-        }
-    }
-
-    public func isDir(&self) -> bool {
-        match self.kind {
-            case .dir => true
-            case .file => false
-            case .symlink => false
-            case .other => false
-        }
-    }
-
-    public func isSymlink(&self) -> bool {
-        match self.kind {
-            case .symlink => true
-            case .file => false
-            case .dir => false
-            case .other => false
-        }
-    }
-}
-
 public func openReadOnly(_ path: string) -> Result[RawFile, Error] {
     impOpenReadOnly(path)
 }
@@ -73,18 +20,6 @@ public func openWithOptions(
     _ truncate: bool,
 ) -> Result[RawFile, Error] {
     impOpenWithOptions(path, read, write, append, create, truncate)
-}
-
-public func readDir(_ path: string) -> Result[std.collections.List[DirEntry], Error] {
-    impReadDir(path)
-}
-
-public func createDirAll(_ path: string) -> Result[(), Error] {
-    impCreateDirAll(path)
-}
-
-public func removeDirAll(_ path: string) -> Result[(), Error] {
-    impRemoveDirAll(path)
 }
 
 public func symlink(_ target: string, _ linkPath: string) -> Result[(), Error] {

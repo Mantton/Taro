@@ -1,11 +1,8 @@
 //+cfg family("unix")
 
 import std.libc
-import std.sys.unix_rt
 
-const NANOS_PER_SEC_U32: uint32 = 1000000000_u32
 const NANOS_PER_SEC_I64: int64 = 1000000000_i64
-const I64_MAX_U64: uint64 = 9223372036854775807_u64
 
 func validateNanos(_ nanos: int64) -> uint32 {
     if nanos < 0_i64 || nanos >= NANOS_PER_SEC_I64 {
@@ -58,48 +55,4 @@ func impRealtimeNow() -> RealtimeTime {
         std.panic.panic("std.sys.time.realtimeNow: clock_gettime failed")
     }
     return convertRealtime(ts)
-}
-
-func impSleep(_ secs: uint64, _ nanos: uint32) {
-    if nanos >= NANOS_PER_SEC_U32 {
-        std.panic.panic("std.sys.time.sleep: invalid nanoseconds")
-    }
-    if secs > I64_MAX_U64 {
-        std.panic.panic("std.sys.time.sleep: duration too large")
-    }
-
-    var req = std.libc.Timespec {
-        tv_sec: secs as int64,
-        tv_nsec: nanos as int64,
-    }
-    var rem = std.libc.Timespec {
-        tv_sec: 0_i64,
-        tv_nsec: 0_i64,
-    }
-    let remPtr = unsafe { (&mut rem as *mut std.libc.Timespec) }
-
-    while true {
-        let reqPtr = unsafe { (&req as *const std.libc.Timespec) }
-        let rc = std.libc.nanosleep(reqPtr, remPtr)
-        if rc == 0 {
-            return
-        }
-
-        let err = std.sys.unix_rt.errno()
-        if err != std.libc.EINTR {
-            std.panic.panic("std.sys.time.sleep: nanosleep failed")
-        }
-
-        if rem.tv_sec < 0_i64 {
-            std.panic.panic("std.sys.time.sleep: invalid remainder seconds")
-        }
-        if rem.tv_nsec < 0_i64 || rem.tv_nsec >= NANOS_PER_SEC_I64 {
-            std.panic.panic("std.sys.time.sleep: invalid remainder nanoseconds")
-        }
-
-        req = std.libc.Timespec {
-            tv_sec: rem.tv_sec,
-            tv_nsec: rem.tv_nsec,
-        }
-    }
 }

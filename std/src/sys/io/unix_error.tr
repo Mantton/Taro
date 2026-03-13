@@ -1,7 +1,17 @@
 //+cfg family("unix")
 
 import std.io.Error
-import std.sys.unix_rt
+import std.libc
+
+@cfg(os("linux"))
+func errnoValue() -> int32 {
+    std.libc.__errno_location().read()
+}
+
+@cfg(os("macos"))
+func errnoValue() -> int32 {
+    std.libc.__error().read()
+}
 
 public func mapErrno(_ code: int32) -> Error {
     match code {
@@ -17,5 +27,5 @@ public func mapErrno(_ code: int32) -> Error {
 }
 
 public func lastError() -> Error {
-    mapErrno(std.sys.unix_rt.errno())
+    mapErrno(errnoValue())
 }

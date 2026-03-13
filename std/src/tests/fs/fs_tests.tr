@@ -136,50 +136,68 @@ func testReadMissingFileReturnsNotFound() {
 }
 
 @test
-func testCreateDirAllIsIdempotent() {
-    let root = "taro_fs_create_dir_all_root"
-    let nested = "taro_fs_create_dir_all_root/x/y/z"
+func testCreateDirNestedWithPrimitives() {
+    let root = "taro_fs_create_dir_root"
+    let child = "taro_fs_create_dir_root/x"
+    let grandchild = "taro_fs_create_dir_root/x/y"
+    let leaf = "taro_fs_create_dir_root/x/y/z"
+    let leafFile = "taro_fs_create_dir_root/x/y/z/value.txt"
 
-    std.assert(std.fs.createDirAll(nested).isOk(), "first createDirAll should succeed")
-    std.assert(std.fs.createDirAll(nested).isOk(), "second createDirAll should succeed")
-    std.assert(std.fs.removeDirAll(root).isOk(), "failed to cleanup createDirAll root")
-}
+    let _ = std.fs.removeFile(leafFile)
+    let _ = std.fs.removeDir(leaf)
+    let _ = std.fs.removeDir(grandchild)
+    let _ = std.fs.removeDir(child)
+    let _ = std.fs.removeDir(root)
 
-@test
-func testRemoveDirAllRemovesNestedTree() {
-    let root = "taro_fs_remove_dir_all_root"
-    let nested = "taro_fs_remove_dir_all_root/one/two"
-    let filePath = "taro_fs_remove_dir_all_root/one/two/value.txt"
+    std.assert(std.fs.createDir(root).isOk(), "createDir should create root")
+    std.assert(std.fs.createDir(child).isOk(), "createDir should create child")
+    std.assert(std.fs.createDir(grandchild).isOk(), "createDir should create grandchild")
+    std.assert(std.fs.createDir(leaf).isOk(), "createDir should create leaf")
+    std.assert(std.fs.writeString(leafFile, "leaf").isOk(), "writeString should create a file inside the nested directory")
 
-    std.assert(std.fs.createDirAll(nested).isOk(), "failed to create removeDirAll tree")
-    std.assert(std.fs.writeString(filePath, "value").isOk(), "failed to create removeDirAll file")
-    std.assert(std.fs.removeDirAll(root).isOk(), "removeDirAll should succeed")
-
-    let readDirRes = std.fs.readDir(root)
-    std.assert(readDirRes.isErr(), "readDir should fail after removeDirAll")
-    match readDirRes {
-        case .ok(_) => std.panic.panic("expected readDir to fail after removeDirAll")
-        case .err(err) => {
-            match err {
-                case .notFound => {}
-                case _ => std.panic.panic("expected notFound after removeDirAll")
-            }
-        }
+    let readRes = std.fs.readToString(leafFile)
+    let content = match readRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("readToString should succeed for a file inside nested directories")
     }
+    std.assert(std.string.stringEq(content, "leaf"), "nested createDir should produce a usable leaf path")
+
+    std.assert(std.fs.removeFile(leafFile).isOk(), "failed to remove nested leaf file")
+    std.assert(std.fs.removeDir(leaf).isOk(), "failed to remove leaf directory")
+    std.assert(std.fs.removeDir(grandchild).isOk(), "failed to remove grandchild directory")
+    std.assert(std.fs.removeDir(child).isOk(), "failed to remove child directory")
+    std.assert(std.fs.removeDir(root).isOk(), "failed to remove root directory")
 }
 
 @test
-func testRemoveDirAllMissingReturnsNotFound() {
-    let missing = "taro_fs_remove_dir_all_missing_path"
-    let res = std.fs.removeDirAll(missing)
-    std.assert(res.isErr(), "removeDirAll on missing path should fail")
+func testManualLeafToRootRemoval() {
+    let root = "taro_fs_remove_dir_root"
+    let child = "taro_fs_remove_dir_root/one"
+    let leaf = "taro_fs_remove_dir_root/one/two"
+    let filePath = "taro_fs_remove_dir_root/one/two/value.txt"
 
-    match res {
-        case .ok(_) => std.panic.panic("expected removeDirAll missing to fail")
+    let _ = std.fs.removeFile(filePath)
+    let _ = std.fs.removeDir(leaf)
+    let _ = std.fs.removeDir(child)
+    let _ = std.fs.removeDir(root)
+
+    std.assert(std.fs.createDir(root).isOk(), "failed to create root directory")
+    std.assert(std.fs.createDir(child).isOk(), "failed to create child directory")
+    std.assert(std.fs.createDir(leaf).isOk(), "failed to create leaf directory")
+    std.assert(std.fs.writeString(filePath, "value").isOk(), "failed to create manual cleanup file")
+    std.assert(std.fs.removeFile(filePath).isOk(), "removeFile should succeed")
+    std.assert(std.fs.removeDir(leaf).isOk(), "removeDir should remove leaf directory")
+    std.assert(std.fs.removeDir(child).isOk(), "removeDir should remove child directory")
+    std.assert(std.fs.removeDir(root).isOk(), "removeDir should remove root directory")
+
+    let removeAgainRes = std.fs.removeDir(root)
+    std.assert(removeAgainRes.isErr(), "removeDir should fail after manual removal")
+    match removeAgainRes {
+        case .ok(_) => std.panic.panic("expected removeDir to fail after manual removal")
         case .err(err) => {
             match err {
                 case .notFound => {}
-                case _ => std.panic.panic("expected notFound for missing removeDirAll")
+                case _ => std.panic.panic("expected notFound after manual removal")
             }
         }
     }
@@ -321,65 +339,6 @@ func testOpenOptionsInvalidConfigurations() {
             match err {
                 case .invalidInput => {}
                 case _ => std.panic.panic("expected invalidInput for append+truncate options")
-            }
-        }
-    }
-}
-
-@test
-func testReadDirKinds() {
-    let root = "taro_fs_read_dir_root"
-    let subdir = "taro_fs_read_dir_root/subdir"
-    let filePath = "taro_fs_read_dir_root/file.txt"
-    let linkPath = "taro_fs_read_dir_root/link.txt"
-
-    let _ = std.fs.removeDirAll(root)
-    std.assert(std.fs.createDirAll(subdir).isOk(), "failed to create readDir tree")
-    std.assert(std.fs.writeString(filePath, "hello").isOk(), "failed to create readDir file")
-    std.assert(std.fs.symlink("file.txt", linkPath).isOk(), "failed to create readDir symlink")
-
-    let readRes = std.fs.readDir(root)
-    let entries = match readRes {
-        case .ok(value) => value
-        case .err(_) => std.panic.panic("readDir failed")
-    }
-
-    var sawFile = false
-    var sawDir = false
-    var sawLink = false
-    var idx: usize = 0
-    while idx < entries.len() {
-        let entry = entries.at(idx)
-        let name = entry.name()
-        if std.string.stringEq(name, "file.txt") {
-            sawFile = entry.isFile()
-        } else if std.string.stringEq(name, "subdir") {
-            sawDir = entry.isDir()
-        } else if std.string.stringEq(name, "link.txt") {
-            sawLink = entry.isSymlink()
-        }
-        idx += 1
-    }
-
-    std.assert(sawFile, "readDir should include file entry")
-    std.assert(sawDir, "readDir should include directory entry")
-    std.assert(sawLink, "readDir should include symlink entry")
-
-    std.assert(std.fs.removeDirAll(root).isOk(), "failed to cleanup readDir tree")
-}
-
-@test
-func testReadDirMissingReturnsNotFound() {
-    let missing = "taro_fs_read_dir_missing"
-    let readRes = std.fs.readDir(missing)
-    std.assert(readRes.isErr(), "readDir should fail for missing path")
-
-    match readRes {
-        case .ok(_) => std.panic.panic("expected readDir missing to fail")
-        case .err(err) => {
-            match err {
-                case .notFound => {}
-                case _ => std.panic.panic("expected notFound for missing readDir")
             }
         }
     }

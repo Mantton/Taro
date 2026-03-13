@@ -3,12 +3,11 @@
 import std.io.Error
 import std.libc
 import std.result.Result
-import std.sys.unix_error
 
 func impWriteStdout(_ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
     let res = std.libc.write(std.libc.STDOUT_FILENO, buf, len)
     if res < 0 {
-        return .err(std.sys.unix_error.lastError())
+        return .err(lastError())
     }
     return .ok(res as usize)
 }
@@ -16,7 +15,7 @@ func impWriteStdout(_ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
 func impWriteStderr(_ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
     let res = std.libc.write(std.libc.STDERR_FILENO, buf, len)
     if res < 0 {
-        return .err(std.sys.unix_error.lastError())
+        return .err(lastError())
     }
     return .ok(res as usize)
 }

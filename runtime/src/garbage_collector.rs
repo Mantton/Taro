@@ -154,17 +154,6 @@ pub extern "C" fn __gc__makebuf(desc: *const GcDesc, len: usize, cap: usize) -> 
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __gc__desc_u8() -> *const GcDesc {
-    static DESC: GcDesc = GcDesc {
-        size: 1,
-        align: 1,
-        ptr_offsets: std::ptr::null(),
-        ptr_count: 0,
-    };
-    &DESC
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn __gc__collect() {
     with_gc(|gc| gc.collect());
 }

@@ -1,5 +1,4 @@
-import std.mem.{TrackedPointer, GcDesc, MaybeUninit, __gc__makebuf, __gc__grow_buf, Span, MutableSpan}
-import std.intrinsic.__intrinsic_gc_desc
+import std.mem.{MaybeUninit, MutableSpan, Span, growBuffer, makeBuffer, sizeOf}
 import std.optional.Optional
 import std.iter.{Iterator, Iterable, FromIterator}
 import std.panic.panic
@@ -13,7 +12,7 @@ import std.cmp.{Ord, Ordering}
 /// accessed by index.
 @lang("List")
 public struct List[Element] {
-    buffer: TrackedPointer
+    buffer: *mut uint8
     len: usize
     cap: usize
 }
@@ -22,7 +21,7 @@ impl[Element] List[Element] {
     /// Create a new empty list.
     public func new() -> Self {
         List[Element] {
-            buffer: TrackedPointer.null(),
+            buffer: unsafe { 0 as *mut uint8 },
             len: 0,
             cap: 0,
         }
@@ -34,8 +33,7 @@ impl[Element] List[Element] {
             return List[Element]()
         }
 
-        let desc = __intrinsic_gc_desc[Element]()
-        let buf = __gc__makebuf(desc, 0, capacity)
+        let buf = makeBuffer[Element](0, capacity)
         List[Element] {
             buffer: buf,
             len: 0,
@@ -98,8 +96,7 @@ impl[Element] List[Element] {
     func grow(&mut self) {
         let newCap = if self.cap == 0 { 4 } else { self.cap * 2 }
 
-        let desc = __intrinsic_gc_desc[Element]()
-        let newBuffer = __gc__grow_buf(self.buffer, desc, self.len, newCap)
+        let newBuffer = growBuffer[Element](self.buffer, self.len, newCap)
 
         self.buffer = newBuffer
         self.cap = newCap
@@ -169,8 +166,7 @@ impl[Element] List[Element] {
         }
 
         self.len -= 1
-        let desc = __intrinsic_gc_desc[Element]()
-        let elemSize = desc.size
+        let elemSize = sizeOf[Element]()
         let offset = self.len * elemSize
         var elem = MaybeUninit[Element].uninit()
         unsafe {
@@ -198,8 +194,7 @@ impl[Element] List[Element] {
             newCap = newCap * 2
         }
 
-        let desc = __intrinsic_gc_desc[Element]()
-        let newBuffer = __gc__grow_buf(self.buffer, desc, self.len, newCap)
+        let newBuffer = growBuffer[Element](self.buffer, self.len, newCap)
         self.buffer = newBuffer
         self.cap = newCap
     }
@@ -245,8 +240,7 @@ impl[Element] List[Element] {
         }
 
         // Read out the element
-        let desc = __intrinsic_gc_desc[Element]()
-        let elemSize = desc.size
+        let elemSize = sizeOf[Element]()
         let offset = index * elemSize
         var elem = MaybeUninit[Element].uninit()
         unsafe {
@@ -291,8 +285,7 @@ impl[Element: Ord] List[Element] {
             return
         }
 
-        let desc = __intrinsic_gc_desc[Element]()
-        let elemSize = desc.size
+        let elemSize = sizeOf[Element]()
 
         var i: usize = 1
         while i < self.len {
@@ -335,7 +328,7 @@ impl[Element: Ord] List[Element] {
 }
 
 public struct ListIterator[Element] {
-    buffer: TrackedPointer
+    buffer: *mut uint8
     len: usize
     idx: usize
 }
@@ -347,8 +340,7 @@ impl[Element] Iterator for ListIterator[Element] {
             return .none
         }
 
-        let desc = __intrinsic_gc_desc[Element]()
-        let elemSize = desc.size
+        let elemSize = sizeOf[Element]()
         let offset = self.idx * elemSize
         var elem = MaybeUninit[Element].uninit()
         unsafe {
@@ -362,7 +354,7 @@ impl[Element] Iterator for ListIterator[Element] {
 }
 
 public struct ListRefIterator[Element] {
-    buffer: TrackedPointer
+    buffer: *mut uint8
     len: usize
     idx: usize
 }
@@ -404,7 +396,7 @@ impl[Element] Iterable for &List[Element] {
 }
 
 public struct ListMutIterator[Element] {
-    buffer: TrackedPointer
+    buffer: *mut uint8
     len: usize
     idx: usize
 }

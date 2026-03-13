@@ -60,8 +60,27 @@ func testDurationNewRejectsInvalidNanoseconds() {
 @test
 func testInstantDurationSinceAndSaturating() {
     let before = std.time.Instant.now()
-    std.time.sleep(std.time.Duration.fromMillis(2_u64))
-    let after = std.time.Instant.now()
+    var after = std.time.Instant.now()
+    var spins: usize = 0 as usize
+
+    loop {
+        let maybeDelta = after.checkedDurationSince(before)
+        match maybeDelta {
+            case .some(delta) => {
+                if durationToNanos(delta) > 0_u64 {
+                    break
+                }
+            }
+            case .none => {}
+        }
+
+        spins += 1 as usize
+        if spins == 1000000 as usize {
+            std.panic.panic("Instant.now should eventually advance")
+        }
+
+        after = std.time.Instant.now()
+    }
 
     let forward = after.durationSince(before)
     std.testing.assertTrue(durationToNanos(forward) > 0_u64, "forward durationSince should be positive")
@@ -75,30 +94,6 @@ func testInstantDurationSinceAndSaturating() {
 
     let checkedBackward = before.checkedDurationSince(after)
     std.testing.assertTrue(checkedBackward.isNone(), "checkedDurationSince should be none on reverse order")
-}
-
-@test
-func testSleepMeasurableLowerBound() {
-    let start = std.time.Instant.now()
-    std.time.sleep(std.time.Duration.fromMillis(10_u64))
-    let elapsed = start.elapsed()
-
-    std.testing.assertTrue(
-        durationToNanos(elapsed) >= 5000000_u64,
-        "sleep(10ms) should measure at least 5ms elapsed",
-    )
-}
-
-@test
-func testSleepZeroReturnsQuickly() {
-    let start = std.time.Instant.now()
-    std.time.sleep(std.time.Duration.new(0_u64, 0_u32))
-    let elapsed = start.elapsed()
-
-    std.testing.assertTrue(
-        durationToNanos(elapsed) < 200000000_u64,
-        "sleep(0) should return quickly",
-    )
 }
 
 @test

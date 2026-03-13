@@ -26,18 +26,6 @@ func impOpenWithOptions(
     std.panic.todo("std.sys.fs.openWithOptions not implemented on windows yet")
 }
 
-func impReadDir(_ path: string) -> Result[std.collections.List[DirEntry], Error] {
-    std.panic.todo("std.sys.fs.readDir not implemented on windows yet")
-}
-
-func impCreateDirAll(_ path: string) -> Result[(), Error] {
-    std.panic.todo("std.sys.fs.createDirAll not implemented on windows yet")
-}
-
-func impRemoveDirAll(_ path: string) -> Result[(), Error] {
-    std.panic.todo("std.sys.fs.removeDirAll not implemented on windows yet")
-}
-
 func impSymlink(_ target: string, _ linkPath: string) -> Result[(), Error] {
     std.panic.todo("std.sys.fs.symlink not implemented on windows yet")
 }

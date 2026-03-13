@@ -3,8 +3,6 @@ import std.panic.panic
 import std.marker.Copy
 import std.iter.{Iterator, Iterable}
 
-public type TrackedPointer = *mut uint8
-
 @lang("MaybeUninit")
 public struct MaybeUninit[T] {
     value: T
@@ -264,13 +262,21 @@ public struct GcDesc {
 }
 
 extern "taro_rt" {
-    func __gc__makebuf(_ desc: *const GcDesc, _ len: usize, _ cap: usize) -> TrackedPointer
-    func __gc__grow_buf(_ old_ptr: TrackedPointer, _ desc: *const GcDesc, _ old_len: usize, _ new_cap: usize) -> TrackedPointer
-    func __gc__desc_u8() -> *const GcDesc
+    func __gc__makebuf(_ desc: *const GcDesc, _ len: usize, _ cap: usize) -> *mut uint8
+    func __gc__grow_buf(_ old_ptr: *mut uint8, _ desc: *const GcDesc, _ old_len: usize, _ new_cap: usize) -> *mut uint8
 }
 
-public func allocBytes(_ len: usize) -> TrackedPointer {
-    __gc__makebuf(__gc__desc_u8(), len, len)
+// Raw runtime hooks stay here because the compiler currently resolves them by name.
+public func makeBuffer[T](_ len: usize, _ cap: usize) -> *mut uint8 {
+    __gc__makebuf(std.intrinsic.__intrinsic_gc_desc[T](), len, cap)
+}
+
+public func growBuffer[T](_ oldPtr: *mut uint8, _ oldLen: usize, _ newCap: usize) -> *mut uint8 {
+    __gc__grow_buf(oldPtr, std.intrinsic.__intrinsic_gc_desc[T](), oldLen, newCap)
+}
+
+public func allocBytes(_ len: usize) -> *mut uint8 {
+    makeBuffer[uint8](len, len)
 }
 
 public func sizeOf[T]() -> usize {

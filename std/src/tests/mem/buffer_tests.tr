@@ -1,0 +1,30 @@
+@test
+func testMakeBufferBuildsString() {
+    let data = std.mem.makeBuffer[uint8](5, 5)
+    data.add(0).write(104 as uint8)
+    data.add(1).write(101 as uint8)
+    data.add(2).write(108 as uint8)
+    data.add(3).write(108 as uint8)
+    data.add(4).write(111 as uint8)
+
+    let text = std.string.stringFromParts(data, 5)
+    std.runtime.collect()
+
+    std.testing.assertEqual(text, "hello", "makeBuffer should produce GC-managed byte storage")
+}
+
+@test
+func testGrowBufferPreservesBytes() {
+    let data = std.mem.makeBuffer[uint8](2, 2)
+    data.add(0).write(97 as uint8)
+    data.add(1).write(98 as uint8)
+
+    let grown = std.mem.growBuffer[uint8](data, 2, 4)
+    grown.add(2).write(99 as uint8)
+    grown.add(3).write(100 as uint8)
+
+    let text = std.string.stringFromParts(grown, 4)
+    std.runtime.collect()
+
+    std.testing.assertEqual(text, "abcd", "growBuffer should preserve existing bytes while extending capacity")
+}

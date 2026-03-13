@@ -325,7 +325,3 @@ impl SystemTime {
         })
     }
 }
-
-public func sleep(_ duration: Duration) {
-    std.sys.time.sleep(duration.secs, duration.nanos)
-}

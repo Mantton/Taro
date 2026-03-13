@@ -1,4 +1,4 @@
-import std.mem.{TrackedPointer, GcDesc}
+import std.mem.GcDesc
 
 extern "taro_intrinsic" {
     func __intrinsic_ptr_add[T](_ ptr: *T, _ count: usize) -> *T

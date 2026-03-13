@@ -37,7 +37,3 @@ public func monotonicNow() -> MonotonicTime {
 public func realtimeNow() -> RealtimeTime {
     return impRealtimeNow()
 }
-
-public func sleep(_ secs: uint64, _ nanos: uint32) {
-    impSleep(secs, nanos)
-}

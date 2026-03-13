@@ -1,6 +1,5 @@
 import std.hash.{Hashable, Hasher}
 import std.ops.{PartialEq, Add}
-import std.mem.TrackedPointer
 import std.mem.Span
 import std.panic.panic
 import std.iter.{Iterator, Iterable}
@@ -12,7 +11,7 @@ import std.intrinsic.{
     __intrinsic_string_len,
 }
 
-public func stringFromParts(_ data: TrackedPointer, _ len: usize) -> string {
+public func stringFromParts(_ data: *mut uint8, _ len: usize) -> string {
     __intrinsic_string_from_parts(data, len)
 }
 

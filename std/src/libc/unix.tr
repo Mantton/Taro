@@ -20,7 +20,6 @@ extern "C" {
     public func close(_ fd: int32) -> int32
     public func lseek(_ fd: int32, _ offset: isize, _ whence: int32) -> isize
     public func clock_gettime(_ clock_id: clockid_t, _ tp: *mut Timespec) -> int32
-    public func nanosleep(_ req: *const Timespec, _ rem: *mut Timespec) -> int32
     
     // File system utilities
     public func mkdir(_ path: *const uint8, _ mode: int32) -> int32
@@ -28,6 +27,16 @@ extern "C" {
     public func unlink(_ path: *const uint8) -> int32
     public func rename(_ old_path: *const uint8, _ new_path: *const uint8) -> int32
     public func symlink(_ target: *const uint8, _ linkpath: *const uint8) -> int32
+}
+
+@cfg(os("linux"))
+extern "C" {
+    public func __errno_location() -> *mut int32
+}
+
+@cfg(os("macos"))
+extern "C" {
+    public func __error() -> *mut int32
 }
 
 public const O_RDONLY: int32 = 0
@@ -54,6 +63,4 @@ public const CLOCK_REALTIME: int32 = 0
 public const CLOCK_MONOTONIC: int32 = 1
 @cfg(os("macos"))
 public const CLOCK_MONOTONIC: int32 = 6
-
-public const EINTR: int32 = 4
 public const EINVAL: int32 = 22

@@ -61,7 +61,7 @@ impl Entity for MyData {
 }
 
 struct AssocContainer {
-    data: std.mem.TrackedPointer
+    data: *mut uint8
     len: usize
     cap: usize
 }
@@ -121,7 +121,7 @@ func main() {
     assert(d.identifier() == 123, "interface method implementation check")
 
     let c = AssocContainer {
-        data: std.mem.TrackedPointer.null(),
+        data: unsafe { 0 as *mut uint8 },
         len: 10,
         cap: 20,
     }
