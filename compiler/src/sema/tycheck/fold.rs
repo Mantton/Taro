@@ -216,7 +216,6 @@ fn fold_ty_kind<'ctx, F: TypeFolder<'ctx> + ?Sized>(
             captured_generics,
             inputs,
             output,
-            kind,
         } => {
             // Determine implicit closure types must be deeply resolved to eliminate inference variables.
             let folded_generics = fold_generic_args(gcx, captured_generics, folder);
@@ -234,7 +233,6 @@ fn fold_ty_kind<'ctx, F: TypeFolder<'ctx> + ?Sized>(
                     captured_generics: folded_generics,
                     inputs: folded_inputs,
                     output: folded_output,
-                    kind,
                 })
             }
         }

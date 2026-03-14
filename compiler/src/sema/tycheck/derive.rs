@@ -1,16 +1,14 @@
 //! Derive module for synthesizing interface method implementations.
 //!
-//! This module provides synthesis of interface methods (like Clone.clone)
-//! for types that declare conformance inline (e.g., `struct Foo: Clone {}`).
-
-use crate::sema::tycheck::resolve_conformance_witness;
+//! This module provides synthesis of interface methods for types that
+//! declare conformance inline.
 use crate::{
     compile::context::Gcx,
     hir::{DefinitionID, StdItem},
     sema::{
         models::{
-            GenericArgument, GenericArguments, InterfaceReference, MethodImplementation,
-            MethodWitness, SyntheticMethodKind, Ty, TyKind,
+            GenericArgument, GenericArguments, MethodImplementation, MethodWitness,
+            SyntheticMethodKind, Ty,
         },
         resolve::models::TypeHead,
     },
@@ -60,16 +58,6 @@ pub fn try_synthesize_method<'ctx>(
     }
 
     match std_interface {
-        StdItem::Clone => try_synthesize_clone(
-            gcx,
-            type_head,
-            self_ty,
-            interface_id,
-            interface_args,
-            method_name,
-            method_id,
-            args_template,
-        ),
         StdItem::Hashable => try_synthesize_hash(
             gcx,
             type_head,
@@ -90,8 +78,7 @@ pub fn try_synthesize_method<'ctx>(
             method_id,
             args_template,
         ),
-        StdItem::Copy | StdItem::Tuple => {
-            // Copy and Tuple are marker interfaces, no methods to synthesize
+        StdItem::Tuple => {
             None
         }
         StdItem::Iterator | StdItem::Iterable => {
@@ -100,8 +87,7 @@ pub fn try_synthesize_method<'ctx>(
         }
         // Operator interfaces are not auto-synthesized; they require explicit impl blocks
         StdItem::Fn
-        | StdItem::FnMut
-        | StdItem::FnOnce
+        | StdItem::AsyncFn
         | StdItem::Add
         | StdItem::Sub
         | StdItem::Mul
@@ -128,63 +114,6 @@ fn get_std_interface(gcx: Gcx<'_>, interface_id: DefinitionID) -> Option<StdItem
         }
     }
     None
-}
-
-/// Try to synthesize Clone.clone method.
-fn try_synthesize_clone<'ctx>(
-    gcx: Gcx<'ctx>,
-    type_head: TypeHead,
-    self_ty: Ty<'ctx>,
-    interface_id: DefinitionID,
-    interface_args: GenericArguments<'ctx>,
-    method_name: Symbol,
-    method_id: DefinitionID,
-    args_template: GenericArguments<'ctx>,
-) -> Option<SynthesizedMethod<'ctx>> {
-    // Verify that the method name matches "clone".
-    if !gcx.symbol_eq(&method_name, "clone") {
-        return None;
-    }
-
-    // Determine the synthesis strategy:
-    // - `CopyClone`: Used for Copy types, which are trivially cloneable via bitwise copy.
-    // - `MemberwiseClone`: Used for non-Copy types (e.g., structs with heap-allocated fields).
-    //   Requires all fields to implement the `Clone` interface.
-    let kind = if gcx.is_type_copyable(self_ty) {
-        SyntheticMethodKind::CopyClone
-    } else {
-        if !all_fields_implement_clone(gcx, type_head) {
-            return None;
-        }
-        SyntheticMethodKind::MemberwiseClone
-    };
-
-    // Check for an existing synthetic method to reuse the DefinitionID.
-    // This ensures stable IDs across compilation phases.
-    let mut syn_id = None;
-    if let Some(existing) = gcx.get_synthetic_method(type_head, method_id) {
-        syn_id = existing.syn_id;
-    }
-
-    // Register synthesis metadata for subsequent THIR generation.
-    let info = SyntheticMethodInfo {
-        kind,
-        self_ty,
-        interface_id,
-        interface_args,
-        interface_bindings: &[],
-        method_id,
-        method_name: method_name,
-        syn_id,
-    };
-    gcx.register_synthetic_method(type_head, method_id, method_name, info);
-
-    Some(SynthesizedMethod {
-        witness: MethodWitness {
-            implementation: MethodImplementation::Synthetic(kind, syn_id),
-            args_template,
-        },
-    })
 }
 
 /// Try to synthesize Hashable.hash method.
@@ -275,67 +204,4 @@ fn try_synthesize_partial_eq<'ctx>(
             args_template,
         },
     })
-}
-
-/// Check if all fields of a type implement Clone.
-fn all_fields_implement_clone(gcx: Gcx<'_>, type_head: TypeHead) -> bool {
-    let TypeHead::Nominal(def_id) = type_head else {
-        return false;
-    };
-
-    let Some(clone_def) = gcx.std_item_def(StdItem::Clone) else {
-        return false;
-    };
-
-    // Get fields from struct definition
-    if let Some(struct_def) = gcx.try_get_struct_definition(def_id) {
-        for field in struct_def.fields {
-            if !type_conforms_to_clone(gcx, field.ty, clone_def) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    // For enums, check all variant fields
-    if let Some(enum_def) = gcx.try_get_enum_definition(def_id) {
-        for variant in enum_def.variants {
-            match variant.kind {
-                crate::sema::models::EnumVariantKind::Unit => {}
-                crate::sema::models::EnumVariantKind::Tuple(fields) => {
-                    for field in fields {
-                        if !type_conforms_to_clone(gcx, field.ty, clone_def) {
-                            return false;
-                        }
-                    }
-                }
-            }
-        }
-        return true;
-    }
-
-    false
-}
-
-/// Check if a type conforms to Clone interface.
-fn type_conforms_to_clone<'ctx>(gcx: Gcx<'ctx>, ty: Ty<'ctx>, clone_def: DefinitionID) -> bool {
-    // Primitives and Copy types trivially support Clone
-    if gcx.is_type_copyable(ty) {
-        return true;
-    }
-
-    // For ADTs, check conformance
-    if let TyKind::Adt(_, _) = ty.kind() {
-        let clone_ref = InterfaceReference {
-            id: clone_def,
-            arguments: gcx
-                .store
-                .interners
-                .intern_generic_args(vec![crate::sema::models::GenericArgument::Type(ty)]),
-            bindings: &[],
-        };
-        return resolve_conformance_witness(gcx, clone_ref).is_some();
-    }
-
-    false
 }

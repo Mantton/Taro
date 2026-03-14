@@ -1,6 +1,5 @@
-import std.marker.Copy
 
-public struct MonotonicTime: Copy {
+public struct MonotonicTime {
     secs: uint64
     nanos: uint32
 }
@@ -15,7 +14,7 @@ impl MonotonicTime {
     }
 }
 
-public struct RealtimeTime: Copy {
+public struct RealtimeTime {
     secs: int64
     nanos: uint32
 }

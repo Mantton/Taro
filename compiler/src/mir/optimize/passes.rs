@@ -150,7 +150,7 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                     lowered.push(Statement {
                                         kind: StatementKind::Assign(
                                             place,
-                                            Rvalue::Use(Operand::Move(Place::from_local(
+                                            Rvalue::Use(Operand::Copy(Place::from_local(
                                                 temp_local,
                                             ))),
                                         ),
@@ -169,7 +169,7 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                     lowered.push(Statement {
                                         kind: StatementKind::Assign(
                                             place,
-                                            Rvalue::Use(Operand::Move(Place::from_local(
+                                            Rvalue::Use(Operand::Copy(Place::from_local(
                                                 temp_local,
                                             ))),
                                         ),
@@ -204,7 +204,7 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                             lowered.push(Statement {
                                                 kind: StatementKind::Assign(
                                                     place,
-                                                    Rvalue::Use(Operand::Move(Place::from_local(
+                                                    Rvalue::Use(Operand::Copy(Place::from_local(
                                                         temp_local,
                                                     ))),
                                                 ),
@@ -244,7 +244,7 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                             lowered.push(Statement {
                                                 kind: StatementKind::Assign(
                                                     place,
-                                                    Rvalue::Use(Operand::Move(Place::from_local(
+                                                    Rvalue::Use(Operand::Copy(Place::from_local(
                                                         temp_local,
                                                     ))),
                                                 ),
@@ -263,22 +263,7 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                     .map(|c| {
                                         c.captures
                                             .iter()
-                                            .map(|cap| match cap.capture_kind {
-                                                crate::sema::models::CaptureKind::ByCopy
-                                                | crate::sema::models::CaptureKind::ByMove => {
-                                                    cap.ty
-                                                }
-                                                crate::sema::models::CaptureKind::ByRef {
-                                                    mutable,
-                                                } => {
-                                                    let mutbl = if mutable {
-                                                        crate::hir::Mutability::Mutable
-                                                    } else {
-                                                        crate::hir::Mutability::Immutable
-                                                    };
-                                                    Ty::new(TyKind::Reference(cap.ty, mutbl), gcx)
-                                                }
-                                            })
+                                            .map(|cap| cap.ty)
                                             .collect()
                                     })
                                     .unwrap_or_default();
@@ -295,7 +280,7 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                     lowered.push(Statement {
                                         kind: StatementKind::Assign(
                                             place,
-                                            Rvalue::Use(Operand::Move(Place::from_local(
+                                            Rvalue::Use(Operand::Copy(Place::from_local(
                                                 temp_local,
                                             ))),
                                         ),
@@ -390,7 +375,7 @@ fn operand_ty<'a>(
 ) -> crate::sema::models::Ty<'a> {
     match operand {
         Operand::Constant(c) => c.ty,
-        Operand::Copy(place) | Operand::Move(place) => place_ty(body, gcx, place),
+        Operand::Copy(place) => place_ty(body, gcx, place),
     }
 }
 

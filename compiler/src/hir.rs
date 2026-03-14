@@ -875,15 +875,12 @@ pub enum StdItem {
     MaybeUninit,
 
     // Interfaces
-    Copy,
-    Clone,
     Hashable,
     Equatable,
     Iterator,
     Iterable,
     Fn,
-    FnMut,
-    FnOnce,
+    AsyncFn,
     Tuple,
     Add,
     Sub,
@@ -921,15 +918,12 @@ impl StdItem {
             StdItem::Range => Some("Range"),
             StdItem::ClosedRange => Some("ClosedRange"),
             StdItem::MaybeUninit => Some("MaybeUninit"),
-            StdItem::Copy => Some("Copy"),
-            StdItem::Clone => Some("Clone"),
             StdItem::Hashable => Some("Hashable"),
             StdItem::Equatable => Some("Equatable"),
             StdItem::Iterator => Some("Iterator"),
             StdItem::Iterable => Some("Iterable"),
             StdItem::Fn => Some("Fn"),
-            StdItem::FnMut => Some("FnMut"),
-            StdItem::FnOnce => Some("FnOnce"),
+            StdItem::AsyncFn => Some("AsyncFn"),
             StdItem::Tuple => Some("Tuple"),
             StdItem::Add => Some("Add"),
             StdItem::Sub => Some("Sub"),
@@ -963,15 +957,12 @@ impl StdItem {
             "Range" => Some(Self::Range),
             "ClosedRange" => Some(Self::ClosedRange),
             "MaybeUninit" => Some(Self::MaybeUninit),
-            "Copy" => Some(Self::Copy),
-            "Clone" => Some(Self::Clone),
             "Hashable" => Some(Self::Hashable),
             "Equatable" => Some(Self::Equatable),
             "Iterator" => Some(Self::Iterator),
             "Iterable" => Some(Self::Iterable),
             "Fn" => Some(Self::Fn),
-            "FnMut" => Some(Self::FnMut),
-            "FnOnce" => Some(Self::FnOnce),
+            "AsyncFn" => Some(Self::AsyncFn),
             "Tuple" => Some(Self::Tuple),
             "Add" => Some(Self::Add),
             "Sub" => Some(Self::Sub),
@@ -1001,15 +992,12 @@ impl StdItem {
             | StdItem::Range
             | StdItem::ClosedRange
             | StdItem::MaybeUninit => Some(DefinitionKind::Struct),
-            StdItem::Copy
-            | StdItem::Clone
-            | StdItem::Hashable
+            StdItem::Hashable
             | StdItem::Equatable
             | StdItem::Iterator
             | StdItem::Iterable
             | StdItem::Fn
-            | StdItem::FnMut
-            | StdItem::FnOnce
+            | StdItem::AsyncFn
             | StdItem::Tuple
             | StdItem::Add
             | StdItem::Sub
@@ -1049,15 +1037,12 @@ impl StdItem {
                 | StdItem::Range
                 | StdItem::ClosedRange
                 | StdItem::MaybeUninit
-                | StdItem::Copy
-                | StdItem::Clone
                 | StdItem::Hashable
                 | StdItem::Equatable
                 | StdItem::Iterator
                 | StdItem::Iterable
                 | StdItem::Fn
-                | StdItem::FnMut
-                | StdItem::FnOnce
+                | StdItem::AsyncFn
                 | StdItem::Tuple
                 | StdItem::Add
                 | StdItem::Sub
@@ -1081,7 +1066,7 @@ impl StdItem {
         )
     }
 
-    pub const ALL_REQUIRED: [StdItem; 36] = [
+    pub const ALL_REQUIRED: [StdItem; 33] = [
         StdItem::Optional,
         StdItem::List,
         StdItem::Set,
@@ -1089,15 +1074,12 @@ impl StdItem {
         StdItem::Range,
         StdItem::ClosedRange,
         StdItem::MaybeUninit,
-        StdItem::Copy,
-        StdItem::Clone,
         StdItem::Hashable,
         StdItem::Equatable,
         StdItem::Iterator,
         StdItem::Iterable,
         StdItem::Fn,
-        StdItem::FnMut,
-        StdItem::FnOnce,
+        StdItem::AsyncFn,
         StdItem::Tuple,
         StdItem::Add,
         StdItem::Sub,
@@ -1120,16 +1102,13 @@ impl StdItem {
         StdItem::OptionalNoneCtor,
     ];
 
-    pub const ALL_INTERFACES: [StdItem; 25] = [
-        StdItem::Copy,
-        StdItem::Clone,
+    pub const ALL_INTERFACES: [StdItem; 22] = [
         StdItem::Hashable,
         StdItem::Equatable,
         StdItem::Iterator,
         StdItem::Iterable,
         StdItem::Fn,
-        StdItem::FnMut,
-        StdItem::FnOnce,
+        StdItem::AsyncFn,
         StdItem::Tuple,
         StdItem::Add,
         StdItem::Sub,
@@ -1150,15 +1129,12 @@ impl StdItem {
 
     /// Whether this interface can be auto-derived when declared inline.
     pub fn is_derivable(self) -> bool {
-        matches!(
-            self,
-            Self::Copy | Self::Clone | Self::Hashable | Self::Equatable | Self::PartialEq
-        )
+        matches!(self, Self::Hashable | Self::Equatable | Self::PartialEq)
     }
 
     /// Whether this interface is a marker-only interface (no methods to synthesize).
     pub fn is_marker_only(self) -> bool {
-        matches!(self, Self::Copy | Self::Tuple)
+        matches!(self, Self::Tuple)
     }
 
     /// Whether this interface is an operator interface.

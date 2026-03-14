@@ -280,7 +280,7 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
     // Helper to mark an operand as used
     fn mark_operand_used(op: &Operand<'_>, used: &mut [bool]) {
         match op {
-            Operand::Copy(place) | Operand::Move(place) => mark_place_used(place, used),
+            Operand::Copy(place) => mark_place_used(place, used),
             Operand::Constant(_) => {}
         }
     }
@@ -408,7 +408,6 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
     ) -> Operand<'ctx> {
         match op {
             Operand::Copy(place) => Operand::Copy(remap_place(place, remap)),
-            Operand::Move(place) => Operand::Move(remap_place(place, remap)),
             Operand::Constant(c) => Operand::Constant(c.clone()),
         }
     }

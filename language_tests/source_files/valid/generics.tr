@@ -438,13 +438,13 @@ interface ContainerGCC {
     func get(&self) -> Self.Item
 }
 
-struct BoxUGCC: Copy { value: usize }
+struct BoxUGCC { value: usize }
 impl ContainerGCC for BoxUGCC {
     type Item = usize
     func get(&self) -> usize { self.value }
 }
 
-struct BoxSGCC: Copy { value: string }
+struct BoxSGCC { value: string }
 impl ContainerGCC for BoxSGCC {
     type Item = string
     func get(&self) -> string { self.value }
@@ -464,7 +464,7 @@ interface Container2GCC[T] {
     func get(&self) -> T
 }
 
-struct BoxU2GCC: Copy { value: usize }
+struct BoxU2GCC { value: usize }
 impl Container2GCC[usize] for BoxU2GCC {
     func get(&self) -> usize { self.value }
 }
@@ -481,7 +481,7 @@ interface EntityGCC: NamedGCC {
     func id(&self) -> usize
 }
 
-struct UserGCC: Copy {
+struct UserGCC {
     id: usize
     name: string
 }

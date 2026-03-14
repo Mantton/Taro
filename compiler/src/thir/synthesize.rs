@@ -1,24 +1,24 @@
 //! THIR synthesis for compiler-generated method bodies.
 //!
 //! This module generates actual THIR function bodies for synthesized interface methods
-//! (like Clone.clone) that flow through the normal MIR/codegen pipeline.
+//! that flow through the normal MIR/codegen pipeline.
 
 use crate::{
     compile::context::GlobalContext,
-    hir::{DefinitionID, StdItem},
+    hir::DefinitionID,
     sema::{
         models::{
-            GenericArgument, GenericArguments, GenericParameter, InterfaceReference,
-            SyntheticMethodKind, Ty, TyKind, TyList,
+            GenericArgument, GenericArguments, GenericParameter, SyntheticMethodKind, Ty, TyKind,
+            TyList,
         },
         resolve::models::TypeHead,
         tycheck::derive::SyntheticMethodInfo,
     },
     span::{FileID, Span},
     thir::{
-        AdtExpression, Arm, ArmId, BindingMode, Block, BlockId, Constant, ConstantKind, Expr,
-        ExprId, ExprKind, FieldExpression, FieldIndex, FieldPattern, Param, Pattern, PatternKind,
-        Stmt, StmtId, StmtKind, ThirFunction, VariantIndex,
+        Arm, ArmId, BindingMode, Block, BlockId, Constant, ConstantKind, Expr, ExprId, ExprKind,
+        FieldIndex, FieldPattern, Param, Pattern, PatternKind, Stmt, StmtId, StmtKind,
+        ThirFunction,
     },
 };
 use index_vec::IndexVec;
@@ -64,24 +64,16 @@ fn register_definition<'ctx>(
     info: SyntheticMethodInfo<'ctx>,
 ) {
     let (generics, signature) = match info.kind {
-        SyntheticMethodKind::ClosureCall
-        | SyntheticMethodKind::ClosureCallMut
-        | SyntheticMethodKind::ClosureCallOnce => {
+        SyntheticMethodKind::ClosureCall => {
             let TyKind::Closure { inputs, output, .. } = info.self_ty.kind() else {
                 return;
             };
             let args_ty = closure_args_ty(gcx, inputs);
 
-            let self_ty = match info.kind {
-                SyntheticMethodKind::ClosureCallOnce => info.self_ty,
-                SyntheticMethodKind::ClosureCallMut => gcx.store.interners.intern_ty(
-                    TyKind::Reference(info.self_ty, crate::hir::Mutability::Mutable),
-                ),
-                SyntheticMethodKind::ClosureCall => gcx.store.interners.intern_ty(
-                    TyKind::Reference(info.self_ty, crate::hir::Mutability::Immutable),
-                ),
-                _ => info.self_ty,
-            };
+            let self_ty = gcx.store.interners.intern_ty(TyKind::Reference(
+                info.self_ty,
+                crate::hir::Mutability::Immutable,
+            ));
 
             let signature = crate::sema::models::LabeledFunctionSignature {
                 inputs: vec![
@@ -108,25 +100,6 @@ fn register_definition<'ctx>(
                 has_self: false,
                 parent: None,
                 parent_count: 0,
-            };
-            (generics, signature)
-        }
-        SyntheticMethodKind::CopyClone | SyntheticMethodKind::MemberwiseClone => {
-            let generics = self_type_generics(gcx, info.self_ty);
-            let self_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
-                info.self_ty,
-                crate::hir::Mutability::Immutable,
-            ));
-            let signature = crate::sema::models::LabeledFunctionSignature {
-                inputs: vec![crate::sema::models::LabeledFunctionParameter {
-                    name: gcx.intern_symbol("self"),
-                    ty: self_ref_ty,
-                    label: None,
-                    default_provider: None,
-                }],
-                output: info.self_ty,
-                is_variadic: false,
-                abi: None,
             };
             (generics, signature)
         }
@@ -241,21 +214,13 @@ fn synthesize_method<'ctx>(
     syn_id: DefinitionID,
 ) -> Option<ThirFunction<'ctx>> {
     match info.kind {
-        SyntheticMethodKind::CopyClone => {
-            synthesize_copy_clone(gcx, type_head, method_id, info, syn_id)
-        }
-        SyntheticMethodKind::MemberwiseClone => {
-            synthesize_memberwise_clone(gcx, type_head, method_id, info, syn_id)
-        }
         SyntheticMethodKind::MemberwiseHash => {
             synthesize_memberwise_hash(gcx, type_head, method_id, info, syn_id)
         }
         SyntheticMethodKind::MemberwiseEquality => {
             synthesize_memberwise_equality(gcx, type_head, method_id, info, syn_id)
         }
-        SyntheticMethodKind::ClosureCall
-        | SyntheticMethodKind::ClosureCallMut
-        | SyntheticMethodKind::ClosureCallOnce => synthesize_closure_call(gcx, info, syn_id),
+        SyntheticMethodKind::ClosureCall => synthesize_closure_call(gcx, info, syn_id),
     }
 }
 
@@ -469,187 +434,6 @@ fn emit_eq_call<'ctx>(
             args: vec![lhs_ref, rhs_ref],
         },
         gcx.types.bool,
-    )
-}
-
-/// Synthesize `clone` for Copy types: just dereference self.
-/// ```text
-/// func clone(&self) -> Self {
-///     *self
-/// }
-/// ```
-fn synthesize_copy_clone<'ctx>(
-    gcx: GlobalContext<'ctx>,
-    _type_head: TypeHead,
-    _method_id: DefinitionID,
-    info: SyntheticMethodInfo<'ctx>,
-    syn_id: DefinitionID,
-) -> Option<ThirFunction<'ctx>> {
-    let span = synthetic_span();
-    let mut builder = ThirBuilder::new(gcx, span);
-
-    // Create self parameter with synthetic NodeID
-    let self_node_id = synthetic_node_id(syn_id, 0);
-    let self_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
-        info.self_ty,
-        crate::hir::Mutability::Immutable,
-    ));
-
-    let self_param = Param {
-        id: self_node_id,
-        name: gcx.intern_symbol("self"),
-        ty: self_ref_ty,
-        span,
-    };
-
-    // Build: *self
-    let self_local = builder.push_expr(ExprKind::Local(self_node_id), self_ref_ty);
-    let deref_self = builder.push_expr(ExprKind::Deref(self_local), info.self_ty);
-
-    // Create block with just the deref expression as the return value
-    let body_block = builder.push_block(vec![], Some(deref_self));
-
-    Some(ThirFunction {
-        id: syn_id,
-        body: Some(body_block),
-        span,
-        params: vec![self_param],
-        stmts: builder.stmts,
-        blocks: builder.blocks,
-        exprs: builder.exprs,
-        arms: IndexVec::new(),
-        match_trees: FxHashMap::default(),
-    })
-}
-
-/// Synthesize `clone` for non-Copy types: memberwise clone each field.
-/// ```text
-/// func clone(&self) -> Self {
-///     Self {
-///         field1: self.field1.clone(),
-///         field2: self.field2.clone(),
-///         ...
-///     }
-/// }
-/// ```
-fn synthesize_memberwise_clone<'ctx>(
-    gcx: GlobalContext<'ctx>,
-    type_head: TypeHead,
-    _method_id: DefinitionID,
-    info: SyntheticMethodInfo<'ctx>,
-    syn_id: DefinitionID,
-) -> Option<ThirFunction<'ctx>> {
-    let TypeHead::Nominal(def_id) = type_head else {
-        return None;
-    };
-
-    let span = synthetic_span();
-    let mut builder = ThirBuilder::new(gcx, span);
-
-    // Create self parameter
-    let self_node_id = synthetic_node_id(syn_id, 0);
-    let self_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
-        info.self_ty,
-        crate::hir::Mutability::Immutable,
-    ));
-
-    let self_param = Param {
-        id: self_node_id,
-        name: gcx.intern_symbol("self"),
-        ty: self_ref_ty,
-        span,
-    };
-
-    // Get Clone interface for method calls
-    let clone_def = gcx.std_item_def(StdItem::Clone)?;
-
-    // Build the body based on whether this is a struct or enum
-    let struct_def = gcx.try_get_struct_definition(def_id);
-
-    if let Some(struct_def) = struct_def {
-        // Struct: create Self { field1: self.field1.clone(), ... }
-        let adt_def = struct_def.adt_def;
-        let mut field_exprs = Vec::new();
-
-        // Get generic args from self_ty if it's an ADT
-        let generic_args = match info.self_ty.kind() {
-            TyKind::Adt(_, args) => args,
-            _ => GenericArguments::empty(),
-        };
-
-        for (idx, field) in struct_def.fields.iter().enumerate() {
-            // Build: self.field_i
-            let self_local = builder.push_expr(ExprKind::Local(self_node_id), self_ref_ty);
-            let deref_self = builder.push_expr(ExprKind::Deref(self_local), info.self_ty);
-            let field_access = builder.push_expr(
-                ExprKind::Field {
-                    lhs: deref_self,
-                    index: FieldIndex::from_usize(idx),
-                },
-                field.ty,
-            );
-
-            // If field is Copy, just use the value directly; otherwise call clone
-            let cloned_field = if gcx.is_type_copyable(field.ty) {
-                field_access
-            } else {
-                // If it's an ADT, we can try to clone it
-                match field.ty.kind() {
-                    TyKind::Adt(_, _) => {
-                        clone_adt_field(gcx, &mut builder, field_access, field.ty, clone_def)
-                    }
-                    _ => {
-                        // For non-ADT non-Copy types, just use the field access (shouldn't happen if type checking passed)
-                        field_access
-                    }
-                }
-            };
-
-            field_exprs.push(FieldExpression {
-                index: FieldIndex::from_usize(idx),
-                expression: cloned_field,
-            });
-        }
-
-        // Build: Self { ... }
-        let adt_expr = builder.push_expr(
-            ExprKind::Adt(AdtExpression {
-                definition: adt_def,
-                variant_index: None,
-                generic_args,
-                fields: field_exprs,
-            }),
-            info.self_ty,
-        );
-
-        let body_block = builder.push_block(vec![], Some(adt_expr));
-
-        return Some(ThirFunction {
-            id: syn_id,
-            body: Some(body_block),
-            span,
-            params: vec![self_param],
-            stmts: builder.stmts,
-            blocks: builder.blocks,
-            exprs: builder.exprs,
-            arms: IndexVec::new(),
-            match_trees: FxHashMap::default(),
-        });
-    }
-
-    // Handle enums with match expression
-    let enum_def = gcx.try_get_enum_definition(def_id)?;
-
-    synthesize_enum_clone(
-        gcx,
-        builder,
-        self_param,
-        self_node_id,
-        self_ref_ty,
-        info,
-        syn_id,
-        enum_def,
-        clone_def,
     )
 }
 
@@ -1208,23 +992,10 @@ fn synthesize_closure_call<'ctx>(
 
     let args_ty = closure_args_ty(gcx, inputs);
 
-    let (self_param_ty, needs_deref) = match info.kind {
-        SyntheticMethodKind::ClosureCallOnce => (info.self_ty, false),
-        SyntheticMethodKind::ClosureCallMut => (
-            gcx.store.interners.intern_ty(TyKind::Reference(
-                info.self_ty,
-                crate::hir::Mutability::Mutable,
-            )),
-            true,
-        ),
-        _ => (
-            gcx.store.interners.intern_ty(TyKind::Reference(
-                info.self_ty,
-                crate::hir::Mutability::Immutable,
-            )),
-            true,
-        ),
-    };
+    let self_param_ty = gcx.store.interners.intern_ty(TyKind::Reference(
+        info.self_ty,
+        crate::hir::Mutability::Immutable,
+    ));
 
     let self_node_id = synthetic_node_id(syn_id, 0);
     let args_node_id = synthetic_node_id(syn_id, 1);
@@ -1244,11 +1015,7 @@ fn synthesize_closure_call<'ctx>(
     };
 
     let self_local = builder.push_expr(ExprKind::Local(self_node_id), self_param_ty);
-    let callee = if needs_deref {
-        builder.push_expr(ExprKind::Deref(self_local), info.self_ty)
-    } else {
-        self_local
-    };
+    let callee = builder.push_expr(ExprKind::Deref(self_local), info.self_ty);
 
     let mut call_args = Vec::new();
     match inputs.len() {
@@ -1301,268 +1068,4 @@ fn closure_args_ty<'ctx>(gcx: GlobalContext<'ctx>, inputs: TyList<'ctx>) -> Ty<'
         1 => inputs[0],
         _ => Ty::new(TyKind::Tuple(inputs), gcx),
     }
-}
-
-/// Synthesize `clone` for enum types using a match expression.
-/// ```text
-/// func clone(&self) -> Self {
-///     match *self {
-///         .Variant1 => .Variant1,
-///         .Variant2(a, b) => .Variant2(a.clone(), b.clone()),
-///         ...
-///     }
-/// }
-/// ```
-fn synthesize_enum_clone<'ctx>(
-    gcx: GlobalContext<'ctx>,
-    mut builder: ThirBuilder<'ctx>,
-    self_param: Param<'ctx>,
-    self_node_id: crate::hir::NodeID,
-    self_ref_ty: Ty<'ctx>,
-    info: SyntheticMethodInfo<'ctx>,
-    syn_id: DefinitionID,
-    enum_def: &crate::sema::models::EnumDefinition<'ctx>,
-    clone_def: DefinitionID,
-) -> Option<ThirFunction<'ctx>> {
-    use crate::sema::models::EnumVariantKind;
-
-    let span = synthetic_span();
-    let adt_def = enum_def.adt_def;
-
-    // Get generic args from self_ty
-    let generic_args = match info.self_ty.kind() {
-        TyKind::Adt(_, args) => args,
-        _ => GenericArguments::empty(),
-    };
-
-    // Build: *self (the scrutinee)
-    let self_local = builder.push_expr(ExprKind::Local(self_node_id), self_ref_ty);
-    let scrutinee = builder.push_expr(ExprKind::Deref(self_local), info.self_ty);
-
-    // Create match arms for each variant
-    let mut arm_ids = Vec::new();
-    let mut node_offset = 1u32; // Start after self_node_id
-
-    for (variant_idx, variant) in enum_def.variants.iter().enumerate() {
-        let variant_index = VariantIndex::from_usize(variant_idx);
-
-        match &variant.kind {
-            EnumVariantKind::Unit => {
-                // Unit variant: pattern is just `.Variant`, body returns `.Variant`
-                let pattern = Pattern {
-                    ty: info.self_ty,
-                    span,
-                    kind: PatternKind::Variant {
-                        definition: adt_def,
-                        variant: *variant,
-                        subpatterns: vec![],
-                    },
-                };
-
-                // Body: Self.Variant (unit variant constructor)
-                let body_expr = builder.push_expr(
-                    ExprKind::Adt(AdtExpression {
-                        definition: adt_def,
-                        variant_index: Some(variant_index),
-                        generic_args,
-                        fields: vec![],
-                    }),
-                    info.self_ty,
-                );
-
-                let arm_id = ArmId::from_raw(builder.arms.len() as u32);
-                builder.arms.push(Arm {
-                    pattern: Box::new(pattern),
-                    guard: None,
-                    body: body_expr,
-                    span,
-                });
-                arm_ids.push(arm_id);
-            }
-            EnumVariantKind::Tuple(fields) => {
-                // Tuple variant: pattern binds each field, body clones and reconstructs
-                let mut subpatterns = Vec::new();
-                let mut field_exprs = Vec::new();
-
-                for (field_idx, field) in fields.iter().enumerate() {
-                    // Create a binding pattern for this field
-                    let binding_node_id = synthetic_node_id(syn_id, node_offset);
-                    node_offset += 1;
-
-                    let binding_name = gcx.intern_symbol(&format!("_f{}", field_idx));
-
-                    subpatterns.push(FieldPattern {
-                        index: FieldIndex::from_usize(field_idx),
-                        pattern: Pattern {
-                            ty: field.ty,
-                            span,
-                            kind: PatternKind::Binding {
-                                name: binding_name,
-                                local: binding_node_id,
-                                ty: field.ty,
-                                mode: BindingMode::ByValue,
-                            },
-                        },
-                    });
-
-                    // Build expression for cloning this field
-                    let field_local = builder.push_expr(ExprKind::Local(binding_node_id), field.ty);
-
-                    let cloned_field = if gcx.is_type_copyable(field.ty) {
-                        field_local
-                    } else {
-                        match field.ty.kind() {
-                            TyKind::Adt(_, _) => {
-                                clone_adt_field(gcx, &mut builder, field_local, field.ty, clone_def)
-                            }
-                            _ => field_local,
-                        }
-                    };
-
-                    field_exprs.push(FieldExpression {
-                        index: FieldIndex::from_usize(field_idx),
-                        expression: cloned_field,
-                    });
-                }
-
-                let pattern = Pattern {
-                    ty: info.self_ty,
-                    span,
-                    kind: PatternKind::Variant {
-                        definition: adt_def,
-                        variant: *variant,
-                        subpatterns,
-                    },
-                };
-
-                // Body: Self.Variant(cloned_fields...)
-                let body_expr = builder.push_expr(
-                    ExprKind::Adt(AdtExpression {
-                        definition: adt_def,
-                        variant_index: Some(variant_index),
-                        generic_args,
-                        fields: field_exprs,
-                    }),
-                    info.self_ty,
-                );
-
-                let arm_id = ArmId::from_raw(builder.arms.len() as u32);
-                builder.arms.push(Arm {
-                    pattern: Box::new(pattern),
-                    guard: None,
-                    body: body_expr,
-                    span,
-                });
-                arm_ids.push(arm_id);
-            }
-        }
-    }
-
-    // Build the match expression
-    let match_expr = builder.push_expr(
-        ExprKind::Match {
-            scrutinee,
-            arms: arm_ids,
-            binding_condition: false,
-        },
-        info.self_ty,
-    );
-
-    let body_block = builder.push_block(vec![], Some(match_expr));
-
-    Some(ThirFunction {
-        id: syn_id,
-        body: Some(body_block),
-        span,
-        params: vec![self_param],
-        stmts: builder.stmts,
-        blocks: builder.blocks,
-        exprs: builder.exprs,
-        arms: builder.arms,
-        match_trees: FxHashMap::default(),
-    })
-}
-
-/// Helper function to generate a call to `clone()` for an ADT field.
-fn clone_adt_field<'ctx>(
-    gcx: GlobalContext<'ctx>,
-    builder: &mut ThirBuilder<'ctx>,
-    field_access: ExprId,
-    field_ty: Ty<'ctx>,
-    clone_def: DefinitionID,
-) -> ExprId {
-    // Build: field.clone()
-    let field_ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
-        field_ty,
-        crate::hir::Mutability::Immutable,
-    ));
-    let field_ref = builder.push_expr(
-        ExprKind::Reference {
-            mutable: false,
-            expr: field_access,
-        },
-        field_ref_ty,
-    );
-
-    let clone_ref = InterfaceReference {
-        id: clone_def,
-        arguments: gcx
-            .store
-            .interners
-            .intern_generic_args(vec![GenericArgument::Type(field_ty)]),
-        bindings: &[],
-    };
-
-    // Get the clone method from conformance witness
-    let Some(witness) = crate::sema::tycheck::resolve_conformance_witness(gcx, clone_ref) else {
-        return field_access;
-    };
-
-    // Find the clone method definition
-    let Some(reqs) = gcx.get_interface_requirements(clone_def) else {
-        return field_access;
-    };
-
-    let Some(clone_method) = reqs.methods.iter().find(|m| gcx.symbol_eq(m.name, "clone")) else {
-        return field_access;
-    };
-
-    let Some(method_witness) = witness.method_witnesses.get(&clone_method.id) else {
-        return field_access;
-    };
-
-    let impl_id = method_witness.implementation.impl_id();
-
-    // If it's synthetic or concrete, use appropriate callee
-    let callee_id = impl_id.unwrap_or(clone_method.id);
-
-    let generic_args = gcx
-        .store
-        .interners
-        .intern_generic_args(vec![GenericArgument::Type(field_ty)]);
-
-    // Get the function type from the signature (works for both synthetic and concrete methods)
-    let sig = gcx.get_signature(callee_id);
-    let inputs: Vec<_> = sig.inputs.iter().map(|p| p.ty).collect();
-    let inputs = gcx.store.interners.intern_ty_list(inputs);
-    let callee_ty = gcx.store.interners.intern_ty(TyKind::FnPointer {
-        inputs,
-        output: sig.output,
-    });
-
-    let callee = builder.push_expr(
-        ExprKind::Zst {
-            id: callee_id,
-            generic_args: Some(generic_args),
-        },
-        callee_ty,
-    );
-
-    builder.push_expr(
-        ExprKind::Call {
-            callee,
-            args: vec![field_ref],
-        },
-        field_ty,
-    )
 }

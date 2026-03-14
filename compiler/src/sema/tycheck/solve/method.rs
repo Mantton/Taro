@@ -405,7 +405,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         // ── Callable field fallback ──────────────────────────────────
         // If no method named `f` was found, check if `f` is a struct field
-        // whose type is callable (e.g., `F: FnMut[T, T]`).
+        // whose type is callable (e.g., `F: Fn[T, T]`).
         // Resolve `self.f(args)` as `(self.f)(args)`.
         {
             let mut adjustments = Vec::new();

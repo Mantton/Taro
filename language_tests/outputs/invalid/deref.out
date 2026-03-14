@@ -1,4 +1,4 @@
-error: cannot move out of borrowed content
- -> language_tests/source_files/invalid/deref.tr:12:4
-	    *x
-	    ^^
+error: cannot dereference non-pointer/reference type 'int32'
+ -> language_tests/source_files/invalid/deref.tr:5:12
+	    let _ = *value
+	            ^^^^^^

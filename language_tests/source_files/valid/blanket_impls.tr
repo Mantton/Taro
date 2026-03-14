@@ -18,11 +18,11 @@ interface Retrieve[T] {
     func retrieve(&self) -> T
 }
 
-struct GenericBoxed[T: Copy] {
+struct GenericBoxed[T] {
     value: T
 }
 
-impl[T: Copy] Retrieve[T] for GenericBoxed[T] {
+impl[T] Retrieve[T] for GenericBoxed[T] {
     func retrieve(&self) -> T {
         self.value
     }

@@ -1,6 +1,5 @@
 import std.optional.Optional
 import std.panic.panic
-import std.marker.Copy
 import std.iter.{Iterator, Iterable}
 
 @lang("MaybeUninit")
@@ -51,12 +50,12 @@ impl[T] MaybeUninit[T] {
     }
 }
 
-public struct Span[Element]: Copy {
+public struct Span[Element] {
     ptr: *const Element
     len: usize
 }
 
-public struct MutableSpan[Element]: Copy {
+public struct MutableSpan[Element] {
     ptr: *mut Element
     len: usize
 }

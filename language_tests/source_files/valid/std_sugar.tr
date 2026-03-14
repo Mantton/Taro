@@ -1,13 +1,12 @@
 // CHECK_ONLY
 
 import std.collections.List
-import std.marker.Copy
 
-struct Inner: Copy {
+struct Inner {
     value: int32
 }
 
-struct Outer: Copy {
+struct Outer {
     inner: Inner
 }
 

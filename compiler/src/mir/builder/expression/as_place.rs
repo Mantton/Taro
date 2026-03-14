@@ -3,7 +3,7 @@ use crate::{
     mir::{
         BasicBlockId, BlockAnd, BlockAndExtension, LocalId, Place, PlaceElem, builder::MirBuilder,
     },
-    sema::models::{CaptureKind, TyKind},
+    sema::models::TyKind,
     thir::{ExprId, ExprKind},
     unpack,
 };
@@ -44,9 +44,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             }
             ExprKind::Upvar {
                 field_index,
-                capture_kind,
             } => {
                 // Upvar access uses the closure's self parameter (_1).
+                // All captures are by copy — direct field access, no deref needed.
                 let self_local = LocalId::from_raw(1);
                 let self_ty = self.body.locals[self_local].ty;
                 let needs_self_deref =
@@ -57,26 +57,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     projection.push(PlaceElem::Deref);
                 }
 
-                let field_ty = match capture_kind {
-                    CaptureKind::ByRef { mutable } => {
-                        let mutability = if *mutable {
-                            Mutability::Mutable
-                        } else {
-                            Mutability::Immutable
-                        };
-                        crate::sema::models::Ty::new(
-                            TyKind::Reference(expr.ty, mutability),
-                            self.gcx,
-                        )
-                    }
-                    CaptureKind::ByCopy | CaptureKind::ByMove => expr.ty,
-                };
-
-                projection.push(PlaceElem::Field(*field_index, field_ty));
-
-                if matches!(capture_kind, CaptureKind::ByRef { .. }) {
-                    projection.push(PlaceElem::Deref);
-                }
+                projection.push(PlaceElem::Field(*field_index, expr.ty));
 
                 block.and(PlaceBuilder {
                     base: self_local,

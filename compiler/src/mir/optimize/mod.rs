@@ -35,16 +35,12 @@ pub fn run_passes<'ctx>(
 
 /// Local passes: run per-function during MIR building.
 /// These passes don't require other function bodies to be available.
-/// Includes: prune unreachable, simplify CFG, validate mutability/moves.
+/// Includes: prune unreachable and simplify CFG.
 pub fn run_local_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
     let mut passes: Vec<Box<dyn MirPass>> = vec![
         Box::new(validate::ValidateBodyInvariants),
         Box::new(passes::PruneUnreachable),
         Box::new(passes::SimplifyCfg),
-        // Validation passes - must run before inlining to catch errors in original code
-        Box::new(validate::ValidateMutability),
-        Box::new(validate::ValidateMoves),
-        Box::new(validate::ValidateBorrows),
     ];
     run_passes(gcx, body, &mut passes)?;
     body.phase = MirPhase::CfgClean;

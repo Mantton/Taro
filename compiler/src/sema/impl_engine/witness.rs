@@ -49,8 +49,7 @@ pub(super) fn build_conformance_witness<'ctx>(
             crate::sema::models::CandidateSource::BuiltinClosure => {
                 build_closure_witness(gcx, goal)?
             }
-            crate::sema::models::CandidateSource::BuiltinCopy
-            | crate::sema::models::CandidateSource::ParamEnv => {
+            crate::sema::models::CandidateSource::ParamEnv => {
                 let Some(reqs) = gcx.get_interface_requirements(goal.interface_id) else {
                     return Ok(ConformanceWitness::default());
                 };
@@ -227,17 +226,17 @@ fn build_closure_witness<'ctx>(
     let kind = if let Some(fn_id) = gcx.std_item_def(crate::hir::StdItem::Fn) {
         if goal.interface_id == fn_id {
             SyntheticMethodKind::ClosureCall
-        } else if let Some(fn_mut_id) = gcx.std_item_def(crate::hir::StdItem::FnMut) {
-            if goal.interface_id == fn_mut_id {
-                SyntheticMethodKind::ClosureCallMut
+        } else if let Some(async_fn_id) = gcx.std_item_def(crate::hir::StdItem::AsyncFn) {
+            if goal.interface_id == async_fn_id {
+                SyntheticMethodKind::ClosureCall
             } else {
-                SyntheticMethodKind::ClosureCallOnce
+                return Err(SelectionError::NoCandidates(goal));
             }
         } else {
-            SyntheticMethodKind::ClosureCallOnce
+            return Err(SelectionError::NoCandidates(goal));
         }
     } else {
-        SyntheticMethodKind::ClosureCallOnce
+        return Err(SelectionError::NoCandidates(goal));
     };
 
     let Some(requirements) = gcx.get_interface_requirements(goal.interface_id) else {

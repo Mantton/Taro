@@ -121,7 +121,6 @@ impl<'ctx> Selector<'ctx> {
             CandidateSource::ParamEnv => (usize::MAX - 3, 0),
             CandidateSource::BuiltinTuple => (usize::MAX - 2, 0),
             CandidateSource::BuiltinClosure => (usize::MAX - 1, 0),
-            CandidateSource::BuiltinCopy => (usize::MAX, 0),
         });
 
         let result = match viable.len() {
@@ -169,10 +168,6 @@ impl<'ctx> Selector<'ctx> {
         }
 
         if let Some(candidate) = self.builtin_closure_candidate(goal) {
-            out.push(candidate);
-        }
-
-        if let Some(candidate) = self.builtin_copy_candidate(goal) {
             out.push(candidate);
         }
 
@@ -265,26 +260,6 @@ impl<'ctx> Selector<'ctx> {
         })
     }
 
-    fn builtin_copy_candidate(
-        &self,
-        goal: InterfaceGoal<'ctx>,
-    ) -> Option<ConfirmedCandidate<'ctx>> {
-        let copy_id = self.gcx.std_item_def(StdItem::Copy)?;
-        if goal.interface_id != copy_id {
-            return None;
-        }
-        if !is_implicitly_copy_type(goal.self_ty) {
-            return None;
-        }
-        Some(ConfirmedCandidate {
-            source: CandidateSource::BuiltinCopy,
-            extension_id: None,
-            record_id: None,
-            subst: GenericArguments::empty(),
-            obligations: Vec::new(),
-        })
-    }
-
     fn builtin_closure_candidate(
         &self,
         goal: InterfaceGoal<'ctx>,
@@ -292,40 +267,15 @@ impl<'ctx> Selector<'ctx> {
         let TyKind::Closure {
             inputs,
             output,
-            kind,
             ..
         } = goal.self_ty.kind()
         else {
             return None;
         };
 
-        let fn_id = self.gcx.std_item_def(StdItem::Fn)?;
-        let fn_mut_id = self.gcx.std_item_def(StdItem::FnMut)?;
-        let fn_once_id = self.gcx.std_item_def(StdItem::FnOnce)?;
-
-        let required = if goal.interface_id == fn_id {
-            crate::sema::models::ClosureKind::Fn
-        } else if goal.interface_id == fn_mut_id {
-            crate::sema::models::ClosureKind::FnMut
-        } else if goal.interface_id == fn_once_id {
-            crate::sema::models::ClosureKind::FnOnce
-        } else {
-            return None;
-        };
-
-        let allowed = match required {
-            crate::sema::models::ClosureKind::Fn => {
-                matches!(kind, crate::sema::models::ClosureKind::Fn)
-            }
-            crate::sema::models::ClosureKind::FnMut => {
-                matches!(
-                    kind,
-                    crate::sema::models::ClosureKind::Fn | crate::sema::models::ClosureKind::FnMut
-                )
-            }
-            crate::sema::models::ClosureKind::FnOnce => true,
-        };
-        if !allowed {
+        let fn_id = self.gcx.std_item_def(StdItem::Fn);
+        let async_fn_id = self.gcx.std_item_def(StdItem::AsyncFn);
+        if fn_id != Some(goal.interface_id) && async_fn_id != Some(goal.interface_id) {
             return None;
         }
 
@@ -837,29 +787,4 @@ fn expand_goal_interface_ref<'ctx>(
         iface.arguments = gcx.store.interners.intern_generic_args(args);
     }
     iface
-}
-
-fn is_implicitly_copy_type(ty: Ty<'_>) -> bool {
-    match ty.kind() {
-        TyKind::Int(_)
-        | TyKind::UInt(_)
-        | TyKind::Float(_)
-        | TyKind::Bool
-        | TyKind::Rune
-        | TyKind::String
-        | TyKind::Reference(_, _)
-        | TyKind::Pointer(_, _)
-        | TyKind::FnPointer { .. }
-        | TyKind::Never => true,
-        TyKind::Tuple(items) => items.iter().all(|item| is_implicitly_copy_type(*item)),
-        TyKind::Array { element, .. } => is_implicitly_copy_type(element),
-        TyKind::Adt(_, _)
-        | TyKind::Parameter(_)
-        | TyKind::Infer(_)
-        | TyKind::Alias { .. }
-        | TyKind::BoxedExistential { .. }
-        | TyKind::Closure { .. }
-        | TyKind::Opaque(_)
-        | TyKind::Error => false,
-    }
 }

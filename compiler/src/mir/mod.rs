@@ -172,7 +172,6 @@ pub enum PlaceElem<'ctx> {
 #[derive(Debug, Clone)]
 pub enum Operand<'ctx> {
     Copy(Place<'ctx>),
-    Move(Place<'ctx>),
     Constant(Constant<'ctx>),
 }
 

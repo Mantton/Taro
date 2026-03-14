@@ -37,7 +37,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             TyKind::Closure { inputs, output, .. } => (inputs, output),
             TyKind::Infer(_) => return SolverResult::Deferred,
             TyKind::Parameter(_) => {
-                // Check if this type parameter has Fn/FnMut/FnOnce bounds
+                // Check if this type parameter has Fn/AsyncFn bounds.
                 if let Some((inputs, output)) = self.extract_fn_bound_signature(callee_ty) {
                     (inputs, output)
                 } else {
@@ -119,22 +119,18 @@ impl<'ctx> ConstraintSolver<'ctx> {
         return SolverResult::Solved(obligations);
     }
 
-    /// Extract (inputs, output) from Fn/FnMut/FnOnce bounds on a type parameter.
+    /// Extract (inputs, output) from Fn/AsyncFn bounds on a type parameter.
     /// Returns None if the type has no such bounds.
     fn extract_fn_bound_signature(&self, ty: Ty<'ctx>) -> Option<(TyList<'ctx>, Ty<'ctx>)> {
         let gcx = self.gcx();
         let fn_def = gcx.std_item_def(StdItem::Fn);
-        let fn_mut_def = gcx.std_item_def(StdItem::FnMut);
-        let fn_once_def = gcx.std_item_def(StdItem::FnOnce);
+        let async_fn_def = gcx.std_item_def(StdItem::AsyncFn);
 
         // Get bounds for this type from the parameter environment
         let bounds = self.param_env.bounds_for(ty);
 
         for bound in bounds {
-            // Check if this bound is Fn, FnMut, or FnOnce
-            let is_fn_trait = fn_def == Some(bound.id)
-                || fn_mut_def == Some(bound.id)
-                || fn_once_def == Some(bound.id);
+            let is_fn_trait = fn_def == Some(bound.id) || async_fn_def == Some(bound.id);
 
             if !is_fn_trait {
                 continue;

@@ -32,12 +32,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             Category::Place | Category::Rvalue(RvalueFunc::Into | RvalueFunc::AsRvalue) => {
                 let temp = unpack!(block = self.as_temp(block, expr_id));
                 let place = Place::from_local(temp);
-                // Use Copy for copyable types, Move for non-copyable types
-                if self.is_type_copyable(expression.ty) {
-                    block.and(Operand::Copy(place))
-                } else {
-                    block.and(Operand::Move(place))
-                }
+                block.and(Operand::Copy(place))
             }
         }
     }

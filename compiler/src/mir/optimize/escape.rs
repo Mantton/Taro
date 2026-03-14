@@ -467,7 +467,7 @@ impl<'ctx> MirPass<'ctx> for ApplyEscapeAnalysis {
             };
             let param_place = Place::from_local(LocalId::from_raw(idx as u32));
             param_inits.push(Statement {
-                kind: StatementKind::Assign(heap_place, Rvalue::Use(Operand::Move(param_place))),
+                kind: StatementKind::Assign(heap_place, Rvalue::Use(Operand::Copy(param_place))),
                 span,
             });
         }
@@ -499,7 +499,7 @@ fn base_local_for_ref(place: &Place<'_>) -> Option<LocalId> {
 
 fn ref_local_operand<'a>(body: &Body<'a>, operand: &Operand<'a>) -> Option<LocalId> {
     match operand {
-        Operand::Copy(place) | Operand::Move(place) => {
+        Operand::Copy(place) => {
             if !place.projection.is_empty() {
                 return None;
             }
@@ -554,7 +554,7 @@ fn rewrite_operand<'ctx>(
     param_replacements: &[Option<LocalId>],
 ) {
     match operand {
-        Operand::Copy(place) | Operand::Move(place) => {
+        Operand::Copy(place) => {
             rewrite_place(place, heapified, param_replacements)
         }
         Operand::Constant(_) => {}

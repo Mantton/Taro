@@ -1,9 +1,8 @@
 import std.optional.Optional
 import std.ops.PartialEq
-import std.marker.Copy
 
 /// Represents the result of a comparison between two values.
-public enum Ordering: Copy {
+public enum Ordering {
     case less
     case equal
     case greater

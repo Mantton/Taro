@@ -2,7 +2,7 @@ use crate::{
     hir::{BindingMode, DefinitionID, NodeID},
     mir::{BinaryOperator, LogicalOperator, UnaryOperator},
     sema::models::{
-        AdtDef, CaptureKind, EnumVariant, GenericArguments, GenericParameter, InterfaceReference,
+        AdtDef, EnumVariant, GenericArguments, GenericParameter, InterfaceReference,
         Ty,
     },
     span::{Span, Symbol},
@@ -197,16 +197,12 @@ pub enum ExprKind<'a> {
         def_id: DefinitionID,
         /// Captured variables with their capture expressions
         captures: Vec<ClosureCapture>,
-        /// The closure's callable kind (Fn or FnOnce)
-        kind: crate::sema::models::ClosureKind,
     },
     /// Access to a captured variable (upvar) within a closure body
     /// This is lowered to a field access on the closure's self parameter
     Upvar {
         /// Field index in the closure environment struct
         field_index: FieldIndex,
-        /// How this variable is captured
-        capture_kind: CaptureKind,
     },
     /// Coerce a non-capturing closure to a function pointer
     /// The closure must have no captures for this to be valid
@@ -223,10 +219,8 @@ pub enum ExprKind<'a> {
 pub struct ClosureCapture {
     /// The captured variable's source NodeID
     pub source_id: NodeID,
-    /// Expression to evaluate for capture (ref creation or value copy/move)
+    /// Expression to evaluate for capture (always a value copy)
     pub capture_expr: ExprId,
-    /// How this variable is captured
-    pub capture_kind: crate::sema::models::CaptureKind,
     /// Field index in the environment struct
     pub field_index: FieldIndex,
 }

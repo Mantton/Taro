@@ -15,17 +15,10 @@ pub struct TempCoalescing;
 pub struct CallDestinationCoalescing;
 pub struct RepeatFieldForwarding;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum OperandKind {
-    Copy,
-    Move,
-}
-
 #[derive(Clone)]
 struct DefSite<'ctx> {
     block: BasicBlockId,
     stmt_index: usize,
-    kind: OperandKind,
     replacement: Replacement<'ctx>,
 }
 
@@ -33,13 +26,11 @@ struct DefSite<'ctx> {
 struct UseSite {
     block: BasicBlockId,
     stmt_index: usize,
-    kind: OperandKind,
 }
 
 #[derive(Clone)]
 enum Replacement<'ctx> {
     Copy(LocalId),
-    Move(LocalId),
     Constant(Constant<'ctx>),
 }
 
@@ -66,11 +57,10 @@ impl<'ctx> MirPass<'ctx> for TempCoalescing {
                         if dest.projection.is_empty() {
                             assignment_count[dest.local.index()] += 1;
                             if let Rvalue::Use(op) = rv {
-                                if let Some((kind, replacement)) = replacement_from_operand(op) {
+                                if let Some(replacement) = replacement_from_operand(op) {
                                     def_sites[dest.local.index()] = Some(DefSite {
                                         block: bb,
                                         stmt_index,
-                                        kind,
                                         replacement,
                                     });
                                 }
@@ -145,9 +135,6 @@ impl<'ctx> MirPass<'ctx> for TempCoalescing {
             let Some(use_site) = use_sites[local.index()] else {
                 continue;
             };
-            if !operand_kinds_compatible(def_site.kind, use_site.kind) {
-                continue;
-            }
             if !def_dominates_use(def_site, &use_site, &dominators) {
                 continue;
             }
@@ -163,13 +150,6 @@ impl<'ctx> MirPass<'ctx> for TempCoalescing {
             ) {
                 continue;
             }
-            if def_site.kind == OperandKind::Move && def_site.block != use_site.block {
-                continue;
-            }
-            if def_site.kind == OperandKind::Move && !gap_is_safe(body, def_site, &use_site) {
-                continue;
-            }
-
             replace_map[local.index()] = Some(replacement);
             remove_defs[def_site.block][def_site.stmt_index] = true;
         }
@@ -285,7 +265,7 @@ impl<'ctx> MirPass<'ctx> for CallDestinationCoalescing {
             }
 
             let local_from_operand = match op {
-                Operand::Copy(place) | Operand::Move(place) if place.projection.is_empty() => {
+                Operand::Copy(place) if place.projection.is_empty() => {
                     Some(place.local)
                 }
                 _ => None,
@@ -408,7 +388,7 @@ impl<'ctx> MirPass<'ctx> for RepeatFieldForwarding {
                 }
 
                 let local = match op {
-                    Operand::Copy(place) | Operand::Move(place) if place.projection.is_empty() => {
+                    Operand::Copy(place) if place.projection.is_empty() => {
                         place.local
                     }
                     _ => continue,
@@ -469,12 +449,6 @@ fn def_dominates_use(def: &DefSite<'_>, use_site: &UseSite, dominators: &Dominat
     }
 }
 
-fn operand_kinds_compatible(def_kind: OperandKind, use_kind: OperandKind) -> bool {
-    // `_tmp = copy x; ...; move _tmp` is semantically equivalent to `copy x` at the use.
-    // We can fold this safely for single-use temps and eliminate one aggregate hop.
-    def_kind == use_kind || matches!((def_kind, use_kind), (OperandKind::Copy, OperandKind::Move))
-}
-
 fn replacement_is_safe<'ctx>(
     replacement: &Replacement<'ctx>,
     def: &DefSite<'ctx>,
@@ -497,32 +471,7 @@ fn replacement_is_safe<'ctx>(
             }
             gap_is_safe_source(body, def, use_site, *local)
         }
-        Replacement::Move(local) => gap_is_safe_source(body, def, use_site, *local),
     }
-}
-
-fn gap_is_safe(body: &Body<'_>, def: &DefSite<'_>, use_site: &UseSite) -> bool {
-    if def.block != use_site.block {
-        return false;
-    }
-    let block = &body.basic_blocks[def.block];
-    let start = def.stmt_index + 1;
-    let end = use_site.stmt_index.min(block.statements.len());
-    if start >= end {
-        return true;
-    }
-    for stmt in &block.statements[start..end] {
-        match &stmt.kind {
-            StatementKind::Assign(_, _) => return false,
-            StatementKind::ShadowResync(_) => return false,
-            StatementKind::GcSafepoint
-            | StatementKind::SetDiscriminant { .. }
-            | StatementKind::Nop => {
-                return false;
-            }
-        }
-    }
-    true
 }
 
 fn gap_is_safe_source(
@@ -563,15 +512,12 @@ fn gap_is_safe_source(
     true
 }
 
-fn replacement_from_operand<'ctx>(op: &Operand<'ctx>) -> Option<(OperandKind, Replacement<'ctx>)> {
+fn replacement_from_operand<'ctx>(op: &Operand<'ctx>) -> Option<Replacement<'ctx>> {
     match op {
         Operand::Copy(place) if place.projection.is_empty() => {
-            Some((OperandKind::Copy, Replacement::Copy(place.local)))
+            Some(Replacement::Copy(place.local))
         }
-        Operand::Move(place) if place.projection.is_empty() => {
-            Some((OperandKind::Move, Replacement::Move(place.local)))
-        }
-        Operand::Constant(c) => Some((OperandKind::Copy, Replacement::Constant(c.clone()))),
+        Operand::Constant(c) => Some(Replacement::Constant(c.clone())),
         _ => None,
     }
 }
@@ -599,16 +545,6 @@ fn record_operand_use(
     match op {
         Operand::Copy(place) => record_place_use(
             place,
-            OperandKind::Copy,
-            block,
-            stmt_index,
-            use_sites,
-            use_counts,
-            place_used,
-        ),
-        Operand::Move(place) => record_place_use(
-            place,
-            OperandKind::Move,
             block,
             stmt_index,
             use_sites,
@@ -621,10 +557,10 @@ fn record_operand_use(
 
 fn record_operand_use_count(op: &Operand<'_>, use_counts: &mut [usize]) {
     match op {
-        Operand::Copy(place) | Operand::Move(place) if place.projection.is_empty() => {
+        Operand::Copy(place) if place.projection.is_empty() => {
             use_counts[place.local.index()] += 1;
         }
-        Operand::Copy(_) | Operand::Move(_) | Operand::Constant(_) => {}
+        Operand::Copy(_) | Operand::Constant(_) => {}
     }
 }
 
@@ -698,7 +634,6 @@ fn terminator_successors(term: &TerminatorKind<'_>) -> Vec<BasicBlockId> {
 
 fn record_place_use(
     place: &Place<'_>,
-    kind: OperandKind,
     block: BasicBlockId,
     stmt_index: usize,
     use_sites: &mut [Option<UseSite>],
@@ -715,7 +650,6 @@ fn record_place_use(
         use_sites[idx] = Some(UseSite {
             block,
             stmt_index,
-            kind,
         });
     }
 }
@@ -798,7 +732,7 @@ fn replace_stmt_operands<'ctx>(
         StatementKind::ShadowResync(locals) => {
             for local in locals {
                 match &replace_map[local.index()] {
-                    Some(Replacement::Copy(src) | Replacement::Move(src)) => {
+                    Some(Replacement::Copy(src)) => {
                         *local = *src;
                     }
                     Some(Replacement::Constant(_)) | None => {}
@@ -852,7 +786,7 @@ fn replace_operand<'ctx>(op: &mut Operand<'ctx>, replace_map: &[Option<Replaceme
     let mut steps = 0usize;
     while steps < replace_map.len() {
         let place = match op {
-            Operand::Copy(place) | Operand::Move(place) => {
+            Operand::Copy(place) => {
                 if place.projection.is_empty() {
                     Some(place.local)
                 } else {
@@ -871,7 +805,6 @@ fn replace_operand<'ctx>(op: &mut Operand<'ctx>, replace_map: &[Option<Replaceme
 
         let next = match replacement {
             Replacement::Copy(src) => Operand::Copy(Place::from_local(*src)),
-            Replacement::Move(src) => Operand::Move(Place::from_local(*src)),
             Replacement::Constant(c) => Operand::Constant(c.clone()),
         };
 
@@ -899,7 +832,7 @@ fn rvalue_mentions_local(rv: &Rvalue<'_>, local: LocalId) -> bool {
 
 fn operand_mentions_local(op: &Operand<'_>, local: LocalId) -> bool {
     match op {
-        Operand::Copy(place) | Operand::Move(place) => place.local == local,
+        Operand::Copy(place) => place.local == local,
         Operand::Constant(_) => false,
     }
 }

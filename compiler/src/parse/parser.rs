@@ -3638,9 +3638,7 @@ impl Parser {
 
 impl Parser {
     fn is_callable_shorthand_name(&self, symbol: Symbol) -> bool {
-        self.symbol_eq(symbol, "Fn")
-            || self.symbol_eq(symbol, "FnMut")
-            || self.symbol_eq(symbol, "FnOnce")
+        self.symbol_eq(symbol, "Fn") || self.symbol_eq(symbol, "AsyncFn")
     }
 
     fn parse_callable_type_arguments(&mut self) -> R<TypeArguments> {
@@ -4411,7 +4409,7 @@ mod tests {
 
     #[test]
     fn test_callable_shorthand_type_multi_arg() {
-        let ty = parse_type_str("FnMut(int32, string) -> bool");
+        let ty = parse_type_str("AsyncFn(int32, string) -> bool");
         let TypeKind::Nominal(path) = &ty.kind else {
             panic!("Expected nominal type");
         };
@@ -4428,7 +4426,7 @@ mod tests {
 
     #[test]
     fn test_callable_shorthand_type_zero_arg() {
-        let ty = parse_type_str("FnOnce() -> int32");
+        let ty = parse_type_str("AsyncFn() -> int32");
         let TypeKind::Nominal(path) = &ty.kind else {
             panic!("Expected nominal type");
         };

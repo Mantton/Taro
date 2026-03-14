@@ -6,7 +6,7 @@ use crate::{
     sema::{
         models::{
             AdtDef, AdtKind, AliasDefinition, AliasKind, AssociatedTypeBinding,
-            AssociatedTypeDefinition, CaptureKind, CapturedVar, ClosureCaptures, ClosureKind,
+            AssociatedTypeDefinition, CapturedVar, ClosureCaptures, ClosureKind,
             ConformanceRecord, ConformanceRecordId, Const, ConstKind, ConstValue, Constraint,
             EnumDefinition, EnumVariant, EnumVariantField, EnumVariantKind, FloatTy,
             GenericArgument, GenericParameter, GenericParameterDefinition,
@@ -385,7 +385,6 @@ pub enum TyKindWire {
         captured_generics: Vec<GenericArgumentWire>,
         inputs: Vec<TyWire>,
         output: Box<TyWire>,
-        kind: ClosureKindWire,
     },
     Opaque(DefIdWire),
     Error,
@@ -729,7 +728,6 @@ pub struct ParamEscapeInfoWire {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClosureCapturesWire {
     pub captures: Vec<CapturedVarWire>,
-    pub kind: ClosureKindWire,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -737,22 +735,12 @@ pub struct CapturedVarWire {
     pub source_id: u32,
     pub name: SymbolIdWire,
     pub ty: TyWire,
-    pub capture_kind: CaptureKindWire,
     pub field_index: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum CaptureKindWire {
-    ByCopy,
-    ByRef { mutable: bool },
-    ByMove,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClosureKindWire {
     Fn,
-    FnMut,
-    FnOnce,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -769,13 +757,9 @@ pub struct SyntheticMethodInfoWire {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SyntheticMethodKindWire {
-    CopyClone,
-    MemberwiseClone,
     MemberwiseHash,
     MemberwiseEquality,
     ClosureCall,
-    ClosureCallMut,
-    ClosureCallOnce,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -854,15 +838,12 @@ pub enum StdItemWire {
     Range,
     ClosedRange,
     MaybeUninit,
-    Copy,
-    Clone,
     Hashable,
     Equatable,
     Iterator,
     Iterable,
     Fn,
-    FnMut,
-    FnOnce,
+    AsyncFn,
     Tuple,
     Add,
     Sub,
@@ -1025,7 +1006,6 @@ pub enum PlaceElemWire {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum OperandWire {
     Copy(PlaceWire),
-    Move(PlaceWire),
     Constant(ConstantWire),
 }
 
@@ -1427,15 +1407,12 @@ pub fn std_item_to_wire(v: hir::StdItem) -> StdItemWire {
         hir::StdItem::Range => StdItemWire::Range,
         hir::StdItem::ClosedRange => StdItemWire::ClosedRange,
         hir::StdItem::MaybeUninit => StdItemWire::MaybeUninit,
-        hir::StdItem::Copy => StdItemWire::Copy,
-        hir::StdItem::Clone => StdItemWire::Clone,
         hir::StdItem::Hashable => StdItemWire::Hashable,
         hir::StdItem::Equatable => StdItemWire::Equatable,
         hir::StdItem::Iterator => StdItemWire::Iterator,
         hir::StdItem::Iterable => StdItemWire::Iterable,
         hir::StdItem::Fn => StdItemWire::Fn,
-        hir::StdItem::FnMut => StdItemWire::FnMut,
-        hir::StdItem::FnOnce => StdItemWire::FnOnce,
+        hir::StdItem::AsyncFn => StdItemWire::AsyncFn,
         hir::StdItem::Tuple => StdItemWire::Tuple,
         hir::StdItem::Add => StdItemWire::Add,
         hir::StdItem::Sub => StdItemWire::Sub,
@@ -1470,15 +1447,12 @@ pub fn std_item_from_wire(v: &StdItemWire) -> hir::StdItem {
         StdItemWire::Range => hir::StdItem::Range,
         StdItemWire::ClosedRange => hir::StdItem::ClosedRange,
         StdItemWire::MaybeUninit => hir::StdItem::MaybeUninit,
-        StdItemWire::Copy => hir::StdItem::Copy,
-        StdItemWire::Clone => hir::StdItem::Clone,
         StdItemWire::Hashable => hir::StdItem::Hashable,
         StdItemWire::Equatable => hir::StdItem::Equatable,
         StdItemWire::Iterator => hir::StdItem::Iterator,
         StdItemWire::Iterable => hir::StdItem::Iterable,
         StdItemWire::Fn => hir::StdItem::Fn,
-        StdItemWire::FnMut => hir::StdItem::FnMut,
-        StdItemWire::FnOnce => hir::StdItem::FnOnce,
+        StdItemWire::AsyncFn => hir::StdItem::AsyncFn,
         StdItemWire::Tuple => hir::StdItem::Tuple,
         StdItemWire::Add => hir::StdItem::Add,
         StdItemWire::Sub => hir::StdItem::Sub,
@@ -1804,8 +1778,6 @@ pub fn alias_kind_from_wire(v: &AliasKindWire) -> AliasKind {
 pub fn closure_kind_to_wire(v: ClosureKind) -> ClosureKindWire {
     match v {
         ClosureKind::Fn => ClosureKindWire::Fn,
-        ClosureKind::FnMut => ClosureKindWire::FnMut,
-        ClosureKind::FnOnce => ClosureKindWire::FnOnce,
     }
 }
 
@@ -1813,26 +1785,6 @@ pub fn closure_kind_to_wire(v: ClosureKind) -> ClosureKindWire {
 pub fn closure_kind_from_wire(v: &ClosureKindWire) -> ClosureKind {
     match v {
         ClosureKindWire::Fn => ClosureKind::Fn,
-        ClosureKindWire::FnMut => ClosureKind::FnMut,
-        ClosureKindWire::FnOnce => ClosureKind::FnOnce,
-    }
-}
-
-#[inline]
-pub fn capture_kind_to_wire(v: CaptureKind) -> CaptureKindWire {
-    match v {
-        CaptureKind::ByCopy => CaptureKindWire::ByCopy,
-        CaptureKind::ByRef { mutable } => CaptureKindWire::ByRef { mutable },
-        CaptureKind::ByMove => CaptureKindWire::ByMove,
-    }
-}
-
-#[inline]
-pub fn capture_kind_from_wire(v: &CaptureKindWire) -> CaptureKind {
-    match v {
-        CaptureKindWire::ByCopy => CaptureKind::ByCopy,
-        CaptureKindWire::ByRef { mutable } => CaptureKind::ByRef { mutable: *mutable },
-        CaptureKindWire::ByMove => CaptureKind::ByMove,
     }
 }
 
@@ -1993,7 +1945,6 @@ pub fn ty_to_wire(v: Ty<'_>) -> TyWire {
                 captured_generics,
                 inputs,
                 output,
-                kind,
             } => TyKindWire::Closure {
                 closure_def_id: def_to_wire(closure_def_id),
                 captured_generics: captured_generics
@@ -2003,7 +1954,6 @@ pub fn ty_to_wire(v: Ty<'_>) -> TyWire {
                     .collect(),
                 inputs: inputs.iter().copied().map(ty_to_wire).collect(),
                 output: Box::new(ty_to_wire(output)),
-                kind: closure_kind_to_wire(kind),
             },
             TyKind::Opaque(v) => TyKindWire::Opaque(def_to_wire(v)),
             TyKind::Error => TyKindWire::Error,
@@ -2078,7 +2028,6 @@ pub fn ty_from_wire<'a>(gcx: GlobalContext<'a>, v: &TyWire) -> Ty<'a> {
             captured_generics,
             inputs,
             output,
-            kind,
         } => {
             let captured_generics: Vec<_> = captured_generics
                 .iter()
@@ -2090,7 +2039,6 @@ pub fn ty_from_wire<'a>(gcx: GlobalContext<'a>, v: &TyWire) -> Ty<'a> {
                 captured_generics: gcx.store.interners.intern_generic_args(captured_generics),
                 inputs: gcx.store.interners.intern_ty_list(inputs),
                 output: ty_from_wire(gcx, output),
-                kind: closure_kind_from_wire(kind),
             }
         }
         TyKindWire::Opaque(v) => TyKind::Opaque(def_from_wire(v)),
@@ -2980,11 +2928,9 @@ pub fn closure_captures_to_wire(
                 source_id: hir_node_to_wire(capture.source_id),
                 name: symbols.intern_symbol(capture.name),
                 ty: ty_to_wire(capture.ty),
-                capture_kind: capture_kind_to_wire(capture.capture_kind),
                 field_index: capture.field_index.index() as u32,
             })
             .collect(),
-        kind: closure_kind_to_wire(v.kind),
     }
 }
 
@@ -3001,11 +2947,9 @@ pub fn closure_captures_from_wire<'a>(
                 source_id: hir_node_from_wire(capture.source_id),
                 name: Symbol::new(symbols.resolve_str(capture.name)),
                 ty: ty_from_wire(gcx, &capture.ty),
-                capture_kind: capture_kind_from_wire(&capture.capture_kind),
                 field_index: crate::thir::FieldIndex::from_raw(capture.field_index),
             })
             .collect(),
-        kind: closure_kind_from_wire(&v.kind),
     }
 }
 
@@ -3015,13 +2959,9 @@ pub fn synthetic_method_info_to_wire(
 ) -> SyntheticMethodInfoWire {
     SyntheticMethodInfoWire {
         kind: match v.kind {
-            SyntheticMethodKind::CopyClone => SyntheticMethodKindWire::CopyClone,
-            SyntheticMethodKind::MemberwiseClone => SyntheticMethodKindWire::MemberwiseClone,
             SyntheticMethodKind::MemberwiseHash => SyntheticMethodKindWire::MemberwiseHash,
             SyntheticMethodKind::MemberwiseEquality => SyntheticMethodKindWire::MemberwiseEquality,
             SyntheticMethodKind::ClosureCall => SyntheticMethodKindWire::ClosureCall,
-            SyntheticMethodKind::ClosureCallMut => SyntheticMethodKindWire::ClosureCallMut,
-            SyntheticMethodKind::ClosureCallOnce => SyntheticMethodKindWire::ClosureCallOnce,
         },
         self_ty: ty_to_wire(v.self_ty),
         interface_id: def_to_wire(v.interface_id),
@@ -3066,13 +3006,9 @@ pub fn synthetic_method_info_from_wire<'a>(
 
     SyntheticMethodInfo {
         kind: match v.kind {
-            SyntheticMethodKindWire::CopyClone => SyntheticMethodKind::CopyClone,
-            SyntheticMethodKindWire::MemberwiseClone => SyntheticMethodKind::MemberwiseClone,
             SyntheticMethodKindWire::MemberwiseHash => SyntheticMethodKind::MemberwiseHash,
             SyntheticMethodKindWire::MemberwiseEquality => SyntheticMethodKind::MemberwiseEquality,
             SyntheticMethodKindWire::ClosureCall => SyntheticMethodKind::ClosureCall,
-            SyntheticMethodKindWire::ClosureCallMut => SyntheticMethodKind::ClosureCallMut,
-            SyntheticMethodKindWire::ClosureCallOnce => SyntheticMethodKind::ClosureCallOnce,
         },
         self_ty: ty_from_wire(gcx, &v.self_ty),
         interface_id: def_from_wire(&v.interface_id),
@@ -3407,7 +3343,6 @@ pub fn mir_constant_from_wire<'a>(gcx: GlobalContext<'a>, v: &ConstantWire) -> m
 pub fn operand_to_wire(v: &mir::Operand<'_>) -> OperandWire {
     match v {
         mir::Operand::Copy(v) => OperandWire::Copy(place_to_wire(v)),
-        mir::Operand::Move(v) => OperandWire::Move(place_to_wire(v)),
         mir::Operand::Constant(v) => OperandWire::Constant(mir_constant_to_wire(v)),
     }
 }
@@ -3415,7 +3350,6 @@ pub fn operand_to_wire(v: &mir::Operand<'_>) -> OperandWire {
 pub fn operand_from_wire<'a>(gcx: GlobalContext<'a>, v: &OperandWire) -> mir::Operand<'a> {
     match v {
         OperandWire::Copy(v) => mir::Operand::Copy(place_from_wire(gcx, v)),
-        OperandWire::Move(v) => mir::Operand::Move(place_from_wire(gcx, v)),
         OperandWire::Constant(v) => mir::Operand::Constant(mir_constant_from_wire(gcx, v)),
     }
 }

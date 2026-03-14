@@ -10,7 +10,7 @@ use crate::{
     sema::std_items::{StdItemEntry, StdItemRegistry},
     sema::{
         models::{
-            AliasKind, CanonicalGoalKey, ClosureCaptures, ConformanceRecord, ConformanceRecordId,
+            CanonicalGoalKey, ClosureCaptures, ConformanceRecord, ConformanceRecordId,
             ConformanceWitness, Const, Constraint, EnumDefinition, EnumVariant, FloatTy,
             GenericArgument, GenericArguments, GenericParameter, Generics, GoalResult, IntTy,
             InterfaceDefinition, InterfaceGoal, InterfaceRequirements, LabeledFunctionSignature,
@@ -1028,85 +1028,6 @@ impl<'arena> GlobalContext<'arena> {
         });
 
         rc_visible
-    }
-
-    /// Checks if a type implements the Copy interface.
-    /// Primitives, references, pointers, and function pointers are implicitly copyable.
-    /// Structs/enums must explicitly implement Copy.
-    pub fn is_type_copyable(self, ty: Ty<'arena>) -> bool {
-        match ty.kind() {
-            // Primitives - always copyable
-            TyKind::Int(_) | TyKind::UInt(_) | TyKind::Float(_) | TyKind::Bool | TyKind::Rune => {
-                true
-            }
-
-            // String is copyable (it's a GC-managed reference, copying is cheap)
-            TyKind::String => true,
-
-            // References and pointers - always copyable (copy the reference itself)
-            TyKind::Reference(..) | TyKind::Pointer(..) => true,
-
-            // Never type - vacuously copyable
-            TyKind::Never => true,
-
-            // Tuples - copyable if all elements are copyable
-            TyKind::Tuple(elements) => elements.iter().all(|e| self.is_type_copyable(*e)),
-
-            // Arrays - copyable if element is copyable
-            TyKind::Array { element, .. } => self.is_type_copyable(element),
-
-            // ADTs (struct/enum) - check conformance to Copy interface
-            TyKind::Adt(def, _) => {
-                let Some(copy_def) = self.std_item_def(StdItem::Copy) else {
-                    return false; // No Copy interface defined
-                };
-                let _ = def;
-                let goal = InterfaceGoal {
-                    interface_id: copy_def,
-                    self_ty: ty,
-                    interface_args: GenericArguments::empty(),
-                    bindings: &[],
-                    param_env: &[],
-                };
-                matches!(
-                    self.prove_interface_goal(goal, SelectionMode::Typecheck),
-                    GoalResult::Proven
-                )
-            }
-
-            // Function pointers - copyable
-            TyKind::FnPointer { .. } => true,
-
-            // Boxed existentials - NOT copyable (unknown underlying type)
-            TyKind::BoxedExistential { .. } => false,
-
-            // Type parameters - trust that type checker verified Copy bounds.
-            // When code like `*v` appears in a `impl[T: Copy]` block, the type checker
-            // has already enforced the Copy bound, so we can safely allow the copy.
-            TyKind::Parameter(_) => true,
-
-            // Aliases - normalize weak/inherent aliases and recurse.
-            // Projection aliases (`T.Item`) remain conservative here because
-            // resolving them requires inference/parameter environment context.
-            TyKind::Alias { kind, .. } if kind != AliasKind::Projection => {
-                let normalized = crate::sema::tycheck::utils::normalize_aliases(self, ty);
-                if normalized == ty {
-                    false
-                } else {
-                    self.is_type_copyable(normalized)
-                }
-            }
-            TyKind::Alias { .. } => false,
-
-            // Closures - not copyable by default (may capture non-copyable values)
-            TyKind::Closure { .. } => false,
-
-            // Opaque types - unknown size, not copyable
-            TyKind::Opaque(_) => false,
-
-            // Error/Infer - assume not copyable for safety
-            TyKind::Error | TyKind::Infer(_) => false,
-        }
     }
 
     pub fn definition_visibility(self, id: DefinitionID) -> Visibility {

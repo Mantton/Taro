@@ -8,7 +8,7 @@ func mapValueExplicit[T, F: Fn(T) -> T](_ value: T, _ f: F) -> T {
     f(value)
 }
 
-struct IntBoxExplicit: Copy {
+struct IntBoxExplicit {
     value: int32
 }
 
@@ -26,11 +26,11 @@ func applyFnSimple[F: Fn(int32) -> int32](_ f: F, _ x: int32) -> int32 {
     f(x)
 }
 
-func applyOnceHierarchy[F: FnOnce(int32) -> int32](_ f: F, _ x: int32) -> int32 {
+func applyOnceHierarchy[F: Fn(int32) -> int32](_ f: F, _ x: int32) -> int32 {
     f(x)
 }
 
-func applyMutHierarchy[F: FnMut(int32) -> int32](_ f: F, _ x: int32) -> int32 {
+func applyMutHierarchy[F: Fn(int32) -> int32](_ f: F, _ x: int32) -> int32 {
     var f = f
     f(x)
 }
@@ -51,32 +51,32 @@ func applyZeroHigher[F: Fn() -> int32](_ f: F) -> int32 {
     f()
 }
 
-func applyZeroMutTwice[F: FnMut() -> int32](_ f: F) -> int32 {
+func applyZeroMutTwice[F: Fn() -> int32](_ f: F) -> int32 {
     var f = f
     let first = f()
     let second = f()
     first + second
 }
 
-func applyZeroOnce[F: FnOnce() -> int32](_ f: F) -> int32 {
+func applyZeroOnce[F: Fn() -> int32](_ f: F) -> int32 {
     f()
 }
 
-func applyMutTwice[F: FnMut(int32) -> int32](_ f: F, _ a: int32, _ b: int32) -> int32 {
+func applyMutTwice[F: Fn(int32) -> int32](_ f: F, _ a: int32, _ b: int32) -> int32 {
     var f = f
     let first = f(a)
     let second = f(b)
     first + second
 }
 
-func apply2MutHierarchy[F: FnMut(int32, int32) -> int32](_ f: F, _ a: int32, _ b: int32) -> int32 {
+func apply2MutHierarchy[F: Fn(int32, int32) -> int32](_ f: F, _ a: int32, _ b: int32) -> int32 {
     var f = f
     let first = f(a, b)
     let second = f(b, a)
     first + second
 }
 
-func apply2OnceHierarchy[F: FnOnce(int32, int32) -> int32](_ f: F, _ a: int32, _ b: int32) -> int32 {
+func apply2OnceHierarchy[F: Fn(int32, int32) -> int32](_ f: F, _ a: int32, _ b: int32) -> int32 {
     f(a, b)
 }
 
@@ -100,12 +100,12 @@ func applyOutFn[T, Out, F: Fn(T) -> Out](_ x: T, _ f: F) -> Out {
     f(x)
 }
 
-func applyOutMut[T, Out, F: FnMut(T) -> Out](_ x: T, _ f: F) -> Out {
+func applyOutMut[T, Out, F: Fn(T) -> Out](_ x: T, _ f: F) -> Out {
     var f = f
     f(x)
 }
 
-func applyOutOnce[T, Out, F: FnOnce(T) -> Out](_ x: T, _ f: F) -> Out {
+func applyOutOnce[T, Out, F: Fn(T) -> Out](_ x: T, _ f: F) -> Out {
     f(x)
 }
 
@@ -132,7 +132,7 @@ impl ContainerMethod {
         f(self.value)
     }
 
-    func map_once[F: FnOnce(int32) -> int32](&self, _ f: F) -> int32 {
+    func map_once[F: Fn(int32) -> int32](&self, _ f: F) -> int32 {
         f(self.value)
     }
 
@@ -152,26 +152,26 @@ impl PairMethod {
     }
 }
 
-struct ContainerMethodGeneric[T: Copy]: Copy {
+struct ContainerMethodGeneric[T] {
     value: T
 }
 
-impl[T: Copy] ContainerMethodGeneric[T] {
+impl[T] ContainerMethodGeneric[T] {
     func map[F: Fn(T) -> T](self, _ f: F) -> T {
         f(self.value)
     }
 
-    func map_once[F: FnOnce(T) -> T](self, _ f: F) -> T {
+    func map_once[F: Fn(T) -> T](self, _ f: F) -> T {
         f(self.value)
     }
 }
 
-struct PairMethodGeneric[T: Copy]: Copy {
+struct PairMethodGeneric[T] {
     first: T
     second: T
 }
 
-impl[T: Copy] PairMethodGeneric[T] {
+impl[T] PairMethodGeneric[T] {
     func combine[F: Fn(T, T) -> T](self, _ f: F) -> T {
         f(self.first, self.second)
     }
@@ -181,11 +181,11 @@ impl[T: Copy] PairMethodGeneric[T] {
     }
 }
 
-struct CallableField[F: FnMut(int32) -> int32] {
+struct CallableField[F: Fn(int32) -> int32] {
     f: F
 }
 
-impl[F: FnMut(int32) -> int32] CallableField[F] {
+impl[F: Fn(int32) -> int32] CallableField[F] {
     func apply(&mut self, _ x: int32) -> int32 {
         self.f(x)
     }
@@ -298,10 +298,12 @@ func testClosureFnSimple() {
 
 func testClosureFnMut() {
     var counter: int32 = 0
-    var inc = || { counter = counter + 1 }
-    inc()
-    inc()
-    std.assert(counter == 2, "counter should be 2")
+    let inc = || -> int32 { counter + 1 }
+    let first = inc()
+    let second = inc()
+    std.assert(first == 1, "first call should use copied capture")
+    std.assert(second == 1, "second call should use copied capture")
+    std.assert(counter == 0, "outer counter should remain unchanged under by-copy capture")
 }
 
 func testClosureHierarchy() {
@@ -375,16 +377,11 @@ func testClosureGenericOutInference() {
     let is_even = applyOutFn(6 as int32, |x: int32| { x % 2 == 0 })
     std.assert(is_even, "Out should infer to bool")
 
-    var running_total: int32 = 0
-    let running = applyOutMut(3 as int32, |x: int32| {
-        running_total = running_total + x
-        running_total
-    })
-    std.assert(running == 3, "FnMut Out inference should work")
-    std.assert(running_total == 3, "FnMut closure should mutate captures")
+    let running = applyOutMut(3 as int32, |x: int32| { x + 1 })
+    std.assert(running == 4, "Fn Out inference should work")
 
     let once_result = applyOutOnce(9 as int32, |x: int32| { x + 1 })
-    std.assert(once_result == 10, "FnOnce Out inference should work")
+    std.assert(once_result == 10, "Fn Out inference should work")
 }
 
 func testClosureMethod() {
@@ -456,19 +453,14 @@ func testCallableFieldDispatch() {
     var add_one = CallableField { f: |x: int32| -> int32 { x + 1 } }
     std.assert(add_one.apply(10) == 11, "self.f(x) should dispatch callable field")
 
-    var total: int32 = 0
     var accumulator = CallableField {
-        f: |x: int32| -> int32 {
-            total = total + x
-            total
-        },
+        f: |x: int32| -> int32 { x * 2 },
     }
 
     let first = accumulator.apply(3)
     let second = accumulator.apply(4)
-    std.assert(first == 3, "first call should return running total 3")
-    std.assert(second == 7, "second call should return running total 7")
-    std.assert(total == 7, "callable field should preserve FnMut capture state")
+    std.assert(first == 6, "first call should return doubled value")
+    std.assert(second == 8, "second call should return doubled value")
 }
 
 func testClosureMove() {
@@ -508,21 +500,11 @@ func testClosureShorthandStress() {
     let immediate_zero = applyZeroHigher((|| -> int32 { 123 }))
     std.assert(immediate_zero == 123, "immediate zero-arg closure should materialize a self place")
 
-    var ticks: int32 = 0
-    let zero_mut_sum = applyZeroMutTwice(|| -> int32 {
-        ticks = ticks + 1
-        ticks
-    })
-    std.assert(zero_mut_sum == 3, "zero-arg FnMut helper should preserve state across calls")
-    std.assert(ticks == 2, "zero-arg FnMut helper should update captured state twice")
+    let zero_mut_sum = applyZeroMutTwice(|| -> int32 { 1 })
+    std.assert(zero_mut_sum == 2, "zero-arg Fn helper should call closure twice")
 
-    var running: int32 = 0
-    let mut_sum = applyMutTwice(|x: int32| -> int32 {
-        running = running + x
-        running
-    }, 3, 4)
-    std.assert(mut_sum == 10, "FnMut helper should thread closure state across repeated calls")
-    std.assert(running == 7, "FnMut helper should leave final running total in capture")
+    let mut_sum = applyMutTwice(|x: int32| -> int32 { x + 1 }, 3, 4)
+    std.assert(mut_sum == 9, "Fn helper should apply closure to each argument")
 
     var list = List[int32]()
     list.append(4)
@@ -532,15 +514,10 @@ func testClosureShorthandStress() {
         consumeListMove(list)
         len
     })
-    std.assert(once_len == 2, "FnOnce helper should accept non-Copy captured values by move")
+    std.assert(once_len == 2, "Fn helper should accept non-Copy captured values by move")
 
-    var pair_total: int32 = 0
-    let pair_mut_sum = apply2MutHierarchy(|a: int32, b: int32| -> int32 {
-        pair_total = pair_total + a + b
-        pair_total
-    }, 1, 2)
-    std.assert(pair_mut_sum == 9, "two-arg FnMut shorthand should preserve state across calls")
-    std.assert(pair_total == 6, "two-arg FnMut shorthand should leave final capture state")
+    let pair_mut_sum = apply2MutHierarchy(|a: int32, b: int32| -> int32 { a + b }, 1, 2)
+    std.assert(pair_mut_sum == 6, "two-arg Fn shorthand should run twice and sum results")
 
     var pair_list = List[int32]()
     pair_list.append(10)
@@ -549,7 +526,7 @@ func testClosureShorthandStress() {
         consumeListMove(pair_list)
         a + b + len
     }, 3, 4)
-    std.assert(pair_once == 8, "two-arg FnOnce shorthand should consume captured values correctly")
+    std.assert(pair_once == 8, "two-arg Fn shorthand should consume captured values correctly")
 }
 
 func main() {

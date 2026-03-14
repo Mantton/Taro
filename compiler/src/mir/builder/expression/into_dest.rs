@@ -28,13 +28,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let block_and = match &expr.kind {
             ExprKind::Local(..) => {
                 let place = unpack!(block = self.as_place(block, expr_id));
-                // Use Copy for copyable types, Move for non-copyable types
-                let operand = if self.is_type_copyable(expr.ty) {
-                    Operand::Copy(place)
-                } else {
-                    Operand::Move(place)
-                };
-                let rvalue = Rvalue::Use(operand);
+                let rvalue = Rvalue::Use(Operand::Copy(place));
                 self.push_assign(block, destination, rvalue, expr.span);
                 block.unit()
             }
@@ -188,7 +182,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
                 let function = if let Some(place) = callable_self_place.clone() {
                     // The explicit self argument carries the actual closure environment.
-                    // Keep the callee operand non-consuming so FnOnce call lowering
+                    // Keep the callee operand non-consuming so callable trait lowering
                     // does not move the same value twice.
                     Operand::Copy(place)
                 } else {
@@ -248,7 +242,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
                                 Some(Operand::Copy(Place::from_local(ptr_local)))
                             }
-                            _ => Some(Operand::Move(closure_place)),
+                            _ => Some(Operand::Copy(closure_place)),
                         }
                     },
                 );
@@ -349,11 +343,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                                                 proj
                                             },
                                         };
-                                        if self.is_type_copyable(ty) {
-                                            Operand::Copy(field_place)
-                                        } else {
-                                            Operand::Move(field_place)
-                                        }
+                                        Operand::Copy(field_place)
                                     })
                                     .collect();
                                 (unpacked, None)
@@ -525,13 +515,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             ExprKind::Deref(..) | ExprKind::Field { .. } | ExprKind::Upvar { .. } => {
                 debug_assert!(matches!(Category::of(&expr.kind), Category::Place));
                 let place = unpack!(block = self.as_place(block, expr_id));
-                // Use Copy for copyable types, Move for non-copyable types
-                let operand = if self.is_type_copyable(expr.ty) {
-                    Operand::Copy(place)
-                } else {
-                    Operand::Move(place)
-                };
-                let rvalue = Rvalue::Use(operand);
+                let rvalue = Rvalue::Use(Operand::Copy(place));
                 self.push_assign(block, destination, rvalue, expr.span);
                 block.unit()
             }
@@ -1064,7 +1048,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 },
             );
             block = next_block;
-            return block.and(Operand::Move(destination));
+            return block.and(Operand::Copy(destination));
         }
 
         let value = match literal {
@@ -1087,7 +1071,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             rhs: Operand::Constant(constant),
         };
         self.push_assign(block, Place::from_local(temp), rvalue, span);
-        block.and(Operand::Move(Place::from_local(temp)))
+        block.and(Operand::Copy(Place::from_local(temp)))
     }
 
     fn lower_variadic_sequence(
@@ -1294,7 +1278,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             span,
         );
 
-        block.and(Operand::Move(Place::from_local(list_temp)))
+        block.and(Operand::Copy(Place::from_local(list_temp)))
     }
 
     fn find_function_in_std(
@@ -1498,13 +1482,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             // Generate the appropriate rvalue based on binding mode
             let rvalue = match binding.mode {
                 crate::hir::BindingMode::ByValue => {
-                    // Use Copy for copyable types, Move for non-copyable types
-                    let operand = if self.is_type_copyable(binding.ty) {
-                        Operand::Copy(src_place.clone())
-                    } else {
-                        Operand::Move(src_place.clone())
-                    };
-                    Rvalue::Use(operand)
+                    Rvalue::Use(Operand::Copy(src_place.clone()))
                 }
                 crate::hir::BindingMode::ByRef(mutability) => {
                     // Take a reference to the place
@@ -1524,7 +1502,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
     fn then_else_break(&mut self, mut block: BasicBlockId, condition: ExprId) -> BlockAnd<()> {
         let place = unpack!(block = self.as_temp(block, condition));
-        let operand = Operand::Move(Place::from_local(place));
+        let operand = Operand::Copy(Place::from_local(place));
 
         let then_block = self.new_block_with_note("then block".into());
         let else_block = self.new_block_with_note("else block".into());

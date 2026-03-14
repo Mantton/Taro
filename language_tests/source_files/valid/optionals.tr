@@ -227,7 +227,7 @@ interface Printable {
     func print(&self)
 }
 
-struct MyValue: Copy {
+struct MyValue {
     value: int32
 }
 

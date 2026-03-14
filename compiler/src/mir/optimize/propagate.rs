@@ -163,7 +163,6 @@ impl<'ctx> MirPass<'ctx> for CopyPropagation {
         let remap_operand = |op: &Operand<'ctx>| -> Operand<'ctx> {
             match op {
                 Operand::Copy(p) => Operand::Copy(remap_place(p)),
-                Operand::Move(p) => Operand::Move(p.clone()),
                 Operand::Constant(c) => Operand::Constant(c.clone()),
             }
         };
@@ -303,7 +302,7 @@ fn record_operand_use(
     uses: &mut [Vec<UseSite>],
 ) {
     match op {
-        Operand::Copy(place) | Operand::Move(place) => {
+        Operand::Copy(place) => {
             record_place_use(place, block, stmt_index, uses);
         }
         Operand::Constant(_) => {}

@@ -563,7 +563,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return SolverResult::Solved(vec![]);
         }
 
-        // Special case: closures implicitly implement Fn/FnMut/FnOnce
+        // Special case: closures implicitly implement Fn/AsyncFn.
         // Check this BEFORE deferring on has_infer, because the Equal obligations
         // we generate will bind any inference variables in the interface (like output type U).
         if let Some(result) = self.solve_closure_fn_conformance(location, ty, interface) {
@@ -615,7 +615,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     && args.iter().any(generic_arg_needs_instantiation) =>
             {
                 // Declaration-time self conformance checks for generic nominal types
-                // (e.g. `struct S[T: Copy]: Copy`) can carry unresolved declaration
+                // (e.g. `struct S[T]: Hashable`) can carry unresolved declaration
                 // parameters that are validated via the type's own generic bounds.
                 // Defer instead of marking solved so use-site obligations are still
                 // forced through concrete proof once instantiations are known.
@@ -706,13 +706,6 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 );
             }
             Err(SelectionError::NoCandidates(_)) | Err(SelectionError::ObligationFailed { .. }) => {
-            }
-        }
-
-        // Special case: primitives implicitly satisfy Copy (no explicit conformance record)
-        if let Some(copy_def) = self.gcx().std_item_def(crate::hir::StdItem::Copy) {
-            if interface.id == copy_def && self.gcx().is_type_copyable(ty) {
-                return SolverResult::Solved(vec![]);
             }
         }
 
@@ -820,8 +813,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         Some((args, inner))
     }
 
-    /// Check if a closure type conforms to Fn, FnMut, or FnOnce interfaces.
-    /// Closures implicitly implement these traits based on their kind.
+    /// Check if a closure type conforms to Fn or AsyncFn.
     fn solve_closure_fn_conformance(
         &mut self,
         location: Span,
@@ -829,13 +821,11 @@ impl<'ctx> ConstraintSolver<'ctx> {
         interface: InterfaceReference<'ctx>,
     ) -> Option<SolverResult<'ctx>> {
         use crate::hir::StdItem;
-        use crate::sema::models::ClosureKind;
 
         // Check if ty is a closure
         let TyKind::Closure {
             inputs: closure_inputs,
             output: closure_output,
-            kind: closure_kind,
             ..
         } = ty.kind()
         else {
@@ -844,35 +834,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         let gcx = self.gcx();
 
-        // Check which Fn trait is being requested
         let fn_def = gcx.std_item_def(StdItem::Fn);
-        let fn_mut_def = gcx.std_item_def(StdItem::FnMut);
-        let fn_once_def = gcx.std_item_def(StdItem::FnOnce);
-
-        let required_kind = if fn_def == Some(interface.id) {
-            ClosureKind::Fn
-        } else if fn_mut_def == Some(interface.id) {
-            ClosureKind::FnMut
-        } else if fn_once_def == Some(interface.id) {
-            ClosureKind::FnOnce
-        } else {
-            return None; // Not a Fn trait
-        };
-
-        // Check if the closure's kind is compatible with the required trait
-        // Fn -> can satisfy Fn, FnMut, FnOnce
-        // FnMut -> can satisfy FnMut, FnOnce
-        // FnOnce -> can only satisfy FnOnce
-        let kind_compatible = match (closure_kind, required_kind) {
-            (ClosureKind::Fn, _) => true, // Fn closures implement all three
-            (ClosureKind::FnMut, ClosureKind::Fn) => false,
-            (ClosureKind::FnMut, _) => true, // FnMut implements FnMut and FnOnce
-            (ClosureKind::FnOnce, ClosureKind::FnOnce) => true,
-            (ClosureKind::FnOnce, _) => false, // FnOnce only implements FnOnce
-        };
-
-        if !kind_compatible {
-            return None; // Let normal error handling report the failure
+        let async_fn_def = gcx.std_item_def(StdItem::AsyncFn);
+        if fn_def != Some(interface.id) && async_fn_def != Some(interface.id) {
+            return None;
         }
 
         // Get the interface's Args and Output type parameters
@@ -910,8 +875,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
         Some(SolverResult::Solved(obligations))
     }
 
-    /// Coerce a closure to a type parameter that has Fn/FnMut/FnOnce bounds.
-    /// This extracts the Fn bound from the type param and constrains the closure accordingly.
+    /// Coerce a closure to a type parameter that has Fn/AsyncFn bounds.
+    /// This extracts the callable bound from the type parameter and constrains the closure.
     fn solve_closure_to_fn_bound_param(
         &mut self,
         location: Span,
@@ -940,14 +905,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         let gcx = self.gcx();
         let fn_def = gcx.std_item_def(StdItem::Fn);
-        let fn_mut_def = gcx.std_item_def(StdItem::FnMut);
-        let fn_once_def = gcx.std_item_def(StdItem::FnOnce);
+        let async_fn_def = gcx.std_item_def(StdItem::AsyncFn);
 
         for bound in bounds {
-            // Check if this is an Fn trait bound
-            let is_fn_trait = fn_def == Some(bound.id)
-                || fn_mut_def == Some(bound.id)
-                || fn_once_def == Some(bound.id);
+            let is_fn_trait = fn_def == Some(bound.id) || async_fn_def == Some(bound.id);
 
             if !is_fn_trait {
                 continue;

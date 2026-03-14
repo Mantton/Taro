@@ -74,8 +74,7 @@ pub enum EdgeKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum CallableTraitKind {
     Fn,
-    FnMut,
-    FnOnce,
+    AsyncFn,
 }
 
 pub struct MirBuilder<'ctx, 'thir> {
@@ -163,51 +162,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
     fn finish(self) -> Body<'ctx> {
         self.body
-    }
-
-    fn is_type_copyable(&self, ty: Ty<'ctx>) -> bool {
-        let TyKind::Parameter(param) = ty.kind() else {
-            return self.gcx.is_type_copyable(ty);
-        };
-
-        let Some(copy_def) = self.gcx.std_item_def(StdItem::Copy) else {
-            return false;
-        };
-
-        fn interface_has_copy_bound<'ctx>(
-            gcx: Gcx<'ctx>,
-            interface_id: hir::DefinitionID,
-            copy_def: hir::DefinitionID,
-            visited: &mut std::collections::HashSet<hir::DefinitionID>,
-        ) -> bool {
-            if interface_id == copy_def {
-                return true;
-            }
-            if !visited.insert(interface_id) {
-                return false;
-            }
-            let Some(def) = gcx.get_interface_definition(interface_id) else {
-                return false;
-            };
-            def.superfaces.iter().any(|super_iface| {
-                interface_has_copy_bound(gcx, super_iface.value.id, copy_def, visited)
-            })
-        }
-
-        let param_ty = Ty::new(TyKind::Parameter(param), self.gcx);
-        self.gcx
-            .canonical_constraints_of(self.thir.id)
-            .iter()
-            .any(|constraint| match constraint.value {
-                Constraint::Bound { ty, interface } => {
-                    if ty != param_ty {
-                        return false;
-                    }
-                    let mut visited = std::collections::HashSet::new();
-                    interface_has_copy_bound(self.gcx, interface.id, copy_def, &mut visited)
-                }
-                Constraint::TypeEquality(_, _) => false,
-            })
     }
 
     fn definition_belongs_to_std_item(&self, def_id: hir::DefinitionID, item: StdItem) -> bool {
@@ -522,7 +476,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         println!("{}", pretty);
     }
 
-    /// Check if a type has Fn, FnMut, or FnOnce trait bounds
+    /// Check if a type has Fn or AsyncFn trait bounds
     /// in the current function's constraints.
     pub fn has_fn_trait_bound(&self, ty: Ty<'ctx>) -> bool {
         self.get_callable_trait_info(ty).is_some()
@@ -534,10 +488,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
     ) -> Option<CallableTraitKind> {
         if Some(interface_id) == self.gcx.std_item_def(StdItem::Fn) {
             Some(CallableTraitKind::Fn)
-        } else if Some(interface_id) == self.gcx.std_item_def(StdItem::FnMut) {
-            Some(CallableTraitKind::FnMut)
-        } else if Some(interface_id) == self.gcx.std_item_def(StdItem::FnOnce) {
-            Some(CallableTraitKind::FnOnce)
+        } else if Some(interface_id) == self.gcx.std_item_def(StdItem::AsyncFn) {
+            Some(CallableTraitKind::AsyncFn)
         } else {
             None
         }
@@ -595,16 +547,15 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 .store
                 .interners
                 .intern_ty(TyKind::Reference(ty, hir::Mutability::Immutable)),
-            CallableTraitKind::FnMut => self
+            CallableTraitKind::AsyncFn => self
                 .gcx
                 .store
                 .interners
-                .intern_ty(TyKind::Reference(ty, hir::Mutability::Mutable)),
-            CallableTraitKind::FnOnce => ty,
+                .intern_ty(TyKind::Reference(ty, hir::Mutability::Immutable)),
         })
     }
 
-    /// Get the Args type from a Fn/FnMut/FnOnce bound on a type parameter.
+    /// Get the Args type from a Fn/AsyncFn bound on a type parameter.
     /// Returns Some(args_ty) if the type has a Fn trait bound, None otherwise.
     pub fn get_fn_trait_args_type(&self, ty: Ty<'ctx>) -> Option<Ty<'ctx>> {
         let interface = self.get_callable_trait_ref(ty)?;
@@ -619,8 +570,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let requirements = self.gcx.get_interface_requirements(interface.id)?;
         let method_name = match kind {
             CallableTraitKind::Fn => "call",
-            CallableTraitKind::FnMut => "callMut",
-            CallableTraitKind::FnOnce => "callOnce",
+            CallableTraitKind::AsyncFn => "callAsync",
         };
         requirements
             .methods

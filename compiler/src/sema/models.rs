@@ -250,15 +250,9 @@ impl<'arena> Ty<'arena> {
             TyKind::Closure {
                 inputs,
                 output,
-                kind,
                 ..
             } => {
-                let kind_str = match kind {
-                    ClosureKind::Fn => "Fn",
-                    ClosureKind::FnMut => "FnMut",
-                    ClosureKind::FnOnce => "FnOnce",
-                };
-                let mut out = format!("closure<{}>((", kind_str);
+                let mut out = format!("closure<Fn>((");
                 for (i, input) in inputs.iter().enumerate() {
                     if i > 0 {
                         out.push_str(", ");
@@ -359,8 +353,6 @@ pub enum TyKind<'arena> {
         inputs: TyList<'arena>,
         /// Output type
         output: Ty<'arena>,
-        /// Callable kind
-        kind: ClosureKind,
     },
     /// Opaque external type - can only be used behind pointers
     Opaque(DefinitionID),
@@ -384,21 +376,6 @@ pub enum AliasKind {
 pub enum ClosureKind {
     /// Can be called multiple times with shared access to captures (&self)
     Fn,
-    /// Can be called multiple times with mutable access to captures (&mut self)
-    FnMut,
-    /// Can be called at most once, consuming the closure (self)
-    FnOnce,
-}
-
-/// How a variable is captured by a closure
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CaptureKind {
-    /// Value copied into closure (for Copy types)
-    ByCopy,
-    /// Reference to the original value stored in env
-    ByRef { mutable: bool },
-    /// Value moved into closure (ownership transferred)
-    ByMove,
 }
 
 /// A variable captured by a closure
@@ -408,10 +385,8 @@ pub struct CapturedVar<'arena> {
     pub source_id: hir::NodeID,
     /// Name of the captured variable
     pub name: Symbol,
-    /// Type of the captured value (original type, not ref type)
+    /// Type of the captured value (always copied into closure)
     pub ty: Ty<'arena>,
-    /// How this variable is captured
-    pub capture_kind: CaptureKind,
     /// Field index in the environment struct
     pub field_index: crate::thir::FieldIndex,
 }
@@ -421,8 +396,6 @@ pub struct CapturedVar<'arena> {
 pub struct ClosureCaptures<'arena> {
     /// All captured variables
     pub captures: Vec<CapturedVar<'arena>>,
-    /// The callable kind inferred from body analysis
-    pub kind: ClosureKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -850,10 +823,8 @@ fn format_callable_interface<'ctx>(
 ) -> Option<String> {
     let kind = if gcx.std_item_def(hir::StdItem::Fn) == Some(interface_id) {
         "Fn"
-    } else if gcx.std_item_def(hir::StdItem::FnMut) == Some(interface_id) {
-        "FnMut"
-    } else if gcx.std_item_def(hir::StdItem::FnOnce) == Some(interface_id) {
-        "FnOnce"
+    } else if gcx.std_item_def(hir::StdItem::AsyncFn) == Some(interface_id) {
+        "AsyncFn"
     } else {
         return None;
     };
@@ -978,7 +949,6 @@ pub enum CandidateSource {
     ParamEnv,
     BuiltinTuple,
     BuiltinClosure,
-    BuiltinCopy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1120,20 +1090,12 @@ pub struct SyntheticDefinition<'arena> {
 /// Kind of synthesized method for code generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyntheticMethodKind {
-    /// Clone for Copy types: just dereference self (`*self`)
-    CopyClone,
-    /// Clone for non-Copy types: memberwise clone each field
-    MemberwiseClone,
     /// Hashable.hash: hash each field
     MemberwiseHash,
     /// PartialEq.eq: compare each field for equality
     MemberwiseEquality,
     /// Fn.call: invoke closure with shared access.
     ClosureCall,
-    /// FnMut.call_mut: invoke closure with mutable access.
-    ClosureCallMut,
-    /// FnOnce.call_once: invoke closure consuming self.
-    ClosureCallOnce,
 }
 
 /// Mapping from an interface method to its implementation and instantiation template.

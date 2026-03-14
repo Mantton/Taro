@@ -5,8 +5,8 @@ use crate::{
     hir::{self, DefinitionID, DefinitionKind, HirVisitor, StdItem},
     sema::{
         models::{
-            ConformanceRecord, ConstKind, Constraint, EnumVariantKind, GenericArgument, GoalResult,
-            InterfaceGoal, InterfaceReference, SelectionMode, Ty, TyKind,
+            ConformanceRecord, ConstKind, Constraint, GenericArgument, GoalResult, InterfaceGoal,
+            InterfaceReference, SelectionMode, Ty, TyKind,
         },
         resolve::models::TypeHead,
         tycheck::{
@@ -594,134 +594,14 @@ impl<'ctx> Actor<'ctx> {
         );
     }
 
-    /// Validate marker interface derivation (e.g., Copy).
-    /// Returns true if validation passes, false if there's an error.
+    /// Marker interfaces no longer require special field-level validation.
     fn validate_marker_derivation(
         &self,
-        ty_key: TypeHead,
-        interface: InterfaceReference<'ctx>,
-        span: Span,
-        kind: DefinitionKind,
+        _ty_key: TypeHead,
+        _interface: InterfaceReference<'ctx>,
+        _span: Span,
+        _kind: DefinitionKind,
     ) -> bool {
-        // Check if this is Copy
-        let Some(copy_def) = self.context.std_item_def(StdItem::Copy) else {
-            return true; // No Copy interface defined, skip validation
-        };
-
-        if interface.id != copy_def {
-            return true; // Not Copy, no special validation needed
-        }
-
-        // Validate that all fields are Copy
-        let TypeHead::Nominal(type_id) = ty_key else {
-            // Non-nominal types (tuples, arrays, etc.) are handled by is_type_copyable
-            return true;
-        };
-
-        match kind {
-            DefinitionKind::Struct => self.validate_struct_copy(type_id, span),
-            DefinitionKind::Enum => self.validate_enum_copy(type_id, span),
-            _ => true, // Other types don't need field validation
-        }
-    }
-
-    fn validate_struct_copy(&self, struct_id: DefinitionID, span: Span) -> bool {
-        let def = self.context.get_struct_definition(struct_id);
-        let struct_name = self.context.definition_ident(struct_id).symbol;
-        let mut all_copy = true;
-
-        for field in def.fields.iter() {
-            if !self.is_type_copyable_in_context(field.ty, struct_id) {
-                let type_name = field.ty.format(self.context);
-                self.context.dcx().emit_error(
-                    format!(
-                        "cannot derive Copy for '{}': field '{}' of type '{}' is not Copy",
-                        self.context.symbol_text(struct_name),
-                        self.context.symbol_text(field.name),
-                        type_name
-                    ),
-                    Some(span),
-                );
-                all_copy = false;
-            }
-        }
-
-        all_copy
-    }
-
-    fn validate_enum_copy(&self, enum_id: DefinitionID, span: Span) -> bool {
-        let def = self.context.get_enum_definition(enum_id);
-        let enum_name = self.context.definition_ident(enum_id).symbol;
-        let mut all_copy = true;
-
-        for variant in def.variants.iter() {
-            if let EnumVariantKind::Tuple(fields) = &variant.kind {
-                for (idx, field) in fields.iter().enumerate() {
-                    if !self.is_type_copyable_in_context(field.ty, enum_id) {
-                        let type_name = field.ty.format(self.context);
-                        let field_name = field
-                            .label
-                            .map(|s| self.context.symbol_text(s).to_string())
-                            .unwrap_or_else(|| format!("{}", idx));
-                        self.context.dcx().emit_error(
-                            format!(
-                                "cannot derive Copy for '{}': field '{}' in variant '{}' of type '{}' is not Copy",
-                                self.context.symbol_text(enum_name),
-                                field_name,
-                                self.context.symbol_text(variant.name),
-                                type_name
-                            ),
-                            Some(span),
-                        );
-                        all_copy = false;
-                    }
-                }
-            }
-        }
-
-        all_copy
-    }
-
-    /// Check if a type is copyable within the context of a specific definition.
-    /// This is needed for type parameters, which need to check if they have a Copy bound.
-    fn is_type_copyable_in_context(
-        &self,
-        ty: crate::sema::models::Ty<'ctx>,
-        context_def: DefinitionID,
-    ) -> bool {
-        use crate::sema::models::{Constraint, TyKind};
-
-        match ty.kind() {
-            TyKind::Parameter(param) => {
-                // For type parameters, check if there's a Copy bound in the constraints
-                let Some(copy_def) = self.context.std_item_def(StdItem::Copy) else {
-                    return false;
-                };
-
-                // Use the function that computes constraints if not cached
-                let constraints = crate::sema::tycheck::constraints::canonical_constraints_of(
-                    self.context,
-                    context_def,
-                );
-                constraints.iter().any(|c| {
-                    if let Constraint::Bound {
-                        ty: bound_ty,
-                        interface,
-                    } = &c.value
-                    {
-                        // Compare by parameter index since different Ty instances may represent the same parameter
-                        let bound_matches = match bound_ty.kind() {
-                            TyKind::Parameter(bound_param) => bound_param.index == param.index,
-                            _ => false,
-                        };
-                        bound_matches && interface.id == copy_def
-                    } else {
-                        false
-                    }
-                })
-            }
-            // For other types, delegate to the regular is_type_copyable
-            _ => self.context.is_type_copyable(ty),
-        }
+        true
     }
 }

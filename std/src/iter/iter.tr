@@ -1,5 +1,5 @@
 import std.optional.Optional
-import std.ops.FnMut
+import std.ops.Fn
 import std.cmp.Ord
 
 /// Interface for types that can yield a sequence of values.
@@ -25,12 +25,12 @@ public interface Iterator {
     }
 
     /// Creates an iterator that transforms each element using a function.
-    func map[Out, F: FnMut[Self.Element, Out]](self, _ f: F) -> MapIterator[Self.Element, Out, Self, F] {
+    func map[Out, F: Fn[Self.Element, Out]](self, _ f: F) -> MapIterator[Self.Element, Out, Self, F] {
         return MapIterator[Self.Element, Out, Self, F] { inner: self, f: f }
     }
 
     /// Creates an iterator that yields only elements satisfying a predicate.
-    func filter[F: FnMut[&Self.Element, bool]](self, _ predicate: F) -> FilterIterator[Self.Element, Self, F] {
+    func filter[F: Fn[&Self.Element, bool]](self, _ predicate: F) -> FilterIterator[Self.Element, Self, F] {
         return FilterIterator[Self.Element, Self, F] { inner: self, predicate: predicate }
     }
 
@@ -77,7 +77,7 @@ public interface Iterator {
     }
 
     /// Creates an iterator that yields elements based on a predicate until it returns false.
-    func takeWhile[F: FnMut[&Self.Element, bool]](self, _ predicate: F) -> TakeWhileIterator[Self.Element, F, Self] {
+    func takeWhile[F: Fn[&Self.Element, bool]](self, _ predicate: F) -> TakeWhileIterator[Self.Element, F, Self] {
         return TakeWhileIterator[Self.Element, F, Self] {
             inner: self,
             predicate: predicate,
@@ -86,7 +86,7 @@ public interface Iterator {
     }
 
     /// Creates an iterator that skips elements based on a predicate until it returns false, then yields the rest.
-    func skipWhile[F: FnMut[&Self.Element, bool]](self, _ predicate: F) -> SkipWhileIterator[Self.Element, F, Self] {
+    func skipWhile[F: Fn[&Self.Element, bool]](self, _ predicate: F) -> SkipWhileIterator[Self.Element, F, Self] {
         return SkipWhileIterator[Self.Element, F, Self] {
             inner: self,
             predicate: predicate,
@@ -178,7 +178,7 @@ public interface Iterable {
         }
     }
     /// Tests if every element of the iterator matches a predicate.
-    func allSatisfy[F: FnMut[&Self.Element, bool]](self, _ predicate: F) -> bool {
+    func allSatisfy[F: Fn[&Self.Element, bool]](self, _ predicate: F) -> bool {
         var iter = self.iter()
         var predicate = predicate
         loop {
@@ -194,7 +194,7 @@ public interface Iterable {
     }
 
     /// Tests if any element of the iterator matches a predicate.
-    func anySatisfy[F: FnMut[&Self.Element, bool]](self, _ predicate: F) -> bool {
+    func anySatisfy[F: Fn[&Self.Element, bool]](self, _ predicate: F) -> bool {
         var iter = self.iter()
         var predicate = predicate
         loop {
@@ -210,7 +210,7 @@ public interface Iterable {
     }
 
     /// Searches for an element satisfying the predicate, returning the first match.
-    func find[F: FnMut[&Self.Element, bool]](self, _ predicate: F) -> Optional[Self.Element] {
+    func find[F: Fn[&Self.Element, bool]](self, _ predicate: F) -> Optional[Self.Element] {
         var iter = self.iter()
         var predicate = predicate
         loop {
@@ -226,7 +226,7 @@ public interface Iterable {
     }
 
     /// Searches for the index of the first element satisfying the predicate.
-    func position[F: FnMut[&Self.Element, bool]](self, _ predicate: F) -> Optional[usize] {
+    func position[F: Fn[&Self.Element, bool]](self, _ predicate: F) -> Optional[usize] {
         var iter = self.iter()
         var predicate = predicate
         var i: usize = 0
@@ -244,7 +244,7 @@ public interface Iterable {
     }
 
     /// Folds every element into an accumulator by applying a closure.
-    func fold[B, F: FnMut[(B, Self.Element), B]](self, _ initial: B, _ f: F) -> B {
+    func fold[B, F: Fn[(B, Self.Element), B]](self, _ initial: B, _ f: F) -> B {
         var iter = self.iter()
         var f = f
         var acc = initial
@@ -259,7 +259,7 @@ public interface Iterable {
     }
 
     /// Calls a closure on each element of the iterator.
-    func forEach[F: FnMut[Self.Element, ()]](self, _ f: F) {
+    func forEach[F: Fn[Self.Element, ()]](self, _ f: F) {
         var iter = self.iter()
         var f = f
         loop {
@@ -271,7 +271,7 @@ public interface Iterable {
     }
 
     /// Reduces the elements to a single one, by repeatedly applying a reducing operation.
-    func reduce[F: FnMut[(Self.Element, Self.Element), Self.Element]](self, _ f: F) -> Optional[Self.Element] {
+    func reduce[F: Fn[(Self.Element, Self.Element), Self.Element]](self, _ f: F) -> Optional[Self.Element] {
         var iter = self.iter()
         var f = f
         match iter.next() {
@@ -387,12 +387,12 @@ public func enumerate[Source: Iterable](_ source: Source) -> Enumerate[Source] {
 // ─── Map ────────────────────────────────────────────────────────────
 
 /// Iterator adapter that transforms each element using a function.
-public struct MapIterator[Item, Out, Inner: Iterator[Element = Item], F: FnMut[Item, Out]] {
+public struct MapIterator[Item, Out, Inner: Iterator[Element = Item], F: Fn[Item, Out]] {
     inner: Inner
     f: F
 }
 
-impl[Item, Out, Inner: Iterator[Element = Item], F: FnMut[Item, Out]] Iterator for MapIterator[Item, Out, Inner, F] {
+impl[Item, Out, Inner: Iterator[Element = Item], F: Fn[Item, Out]] Iterator for MapIterator[Item, Out, Inner, F] {
     type Element = Out
 
     public func next(&mut self) -> Optional[Self.Element] {
@@ -403,7 +403,7 @@ impl[Item, Out, Inner: Iterator[Element = Item], F: FnMut[Item, Out]] Iterator f
     }
 }
 
-impl[Item, Out, Inner: Iterator[Element = Item], F: FnMut[Item, Out]] Iterable for MapIterator[Item, Out, Inner, F] {
+impl[Item, Out, Inner: Iterator[Element = Item], F: Fn[Item, Out]] Iterable for MapIterator[Item, Out, Inner, F] {
     type Iterator = MapIterator[Item, Out, Inner, F]
     type Element = Out
 
@@ -413,12 +413,12 @@ impl[Item, Out, Inner: Iterator[Element = Item], F: FnMut[Item, Out]] Iterable f
 }
 
 /// Iterable adapter that transforms each element.
-public struct MapIterable[Item, Source: Iterable[Element = Item], Out, F: FnMut[Item, Out]] {
+public struct MapIterable[Item, Source: Iterable[Element = Item], Out, F: Fn[Item, Out]] {
     source: Source
     f: F
 }
 
-impl[Item, Out, Inner: Iterator[Element = Item], Source: Iterable[Iterator = Inner, Element = Item], F: FnMut[Item, Out]] Iterable for MapIterable[Item, Source, Out, F] {
+impl[Item, Out, Inner: Iterator[Element = Item], Source: Iterable[Iterator = Inner, Element = Item], F: Fn[Item, Out]] Iterable for MapIterable[Item, Source, Out, F] {
     type Iterator = MapIterator[Item, Out, Inner, F]
     type Element = Out
 
@@ -429,19 +429,19 @@ impl[Item, Out, Inner: Iterator[Element = Item], Source: Iterable[Iterator = Inn
 }
 
 /// Create an iterable adapter that transforms each element.
-public func map[Item, Source: Iterable[Element = Item], Out, F: FnMut[Item, Out]](_ source: Source, _ f: F) -> MapIterable[Item, Source, Out, F] {
+public func map[Item, Source: Iterable[Element = Item], Out, F: Fn[Item, Out]](_ source: Source, _ f: F) -> MapIterable[Item, Source, Out, F] {
     return MapIterable[Item, Source, Out, F] { source: source, f: f }
 }
 
 // ─── Filter ─────────────────────────────────────────────────────────
 
 /// Iterator adapter that yields only elements satisfying a predicate.
-public struct FilterIterator[Item, Inner: Iterator[Element = Item], F: FnMut[&Item, bool]] {
+public struct FilterIterator[Item, Inner: Iterator[Element = Item], F: Fn[&Item, bool]] {
     inner: Inner
     predicate: F
 }
 
-impl[Item, Inner: Iterator[Element = Item], F: FnMut[&Item, bool]] Iterator for FilterIterator[Item, Inner, F] {
+impl[Item, Inner: Iterator[Element = Item], F: Fn[&Item, bool]] Iterator for FilterIterator[Item, Inner, F] {
     type Element = Item
 
     public func next(&mut self) -> Optional[Self.Element] {
@@ -458,7 +458,7 @@ impl[Item, Inner: Iterator[Element = Item], F: FnMut[&Item, bool]] Iterator for 
     }
 }
 
-impl[Item, Inner: Iterator[Element = Item], F: FnMut[&Item, bool]] Iterable for FilterIterator[Item, Inner, F] {
+impl[Item, Inner: Iterator[Element = Item], F: Fn[&Item, bool]] Iterable for FilterIterator[Item, Inner, F] {
     type Iterator = FilterIterator[Item, Inner, F]
     type Element = Item
 
@@ -468,12 +468,12 @@ impl[Item, Inner: Iterator[Element = Item], F: FnMut[&Item, bool]] Iterable for 
 }
 
 /// Iterable adapter that yields only elements satisfying a predicate.
-public struct FilterIterable[Item, Source: Iterable[Element = Item], F: FnMut[&Item, bool]] {
+public struct FilterIterable[Item, Source: Iterable[Element = Item], F: Fn[&Item, bool]] {
     source: Source
     predicate: F
 }
 
-impl[Item, Inner: Iterator[Element = Item], Source: Iterable[Iterator = Inner, Element = Item], F: FnMut[&Item, bool]] Iterable for FilterIterable[Item, Source, F] {
+impl[Item, Inner: Iterator[Element = Item], Source: Iterable[Iterator = Inner, Element = Item], F: Fn[&Item, bool]] Iterable for FilterIterable[Item, Source, F] {
     type Iterator = FilterIterator[Item, Inner, F]
     type Element = Item
 
@@ -484,7 +484,7 @@ impl[Item, Inner: Iterator[Element = Item], Source: Iterable[Iterator = Inner, E
 }
 
 /// Create an iterable adapter that yields only elements satisfying a predicate.
-public func filter[Item, Source: Iterable[Element = Item], F: FnMut[&Item, bool]](_ source: Source, _ predicate: F) -> FilterIterable[Item, Source, F] {
+public func filter[Item, Source: Iterable[Element = Item], F: Fn[&Item, bool]](_ source: Source, _ predicate: F) -> FilterIterable[Item, Source, F] {
     return FilterIterable[Item, Source, F] { source: source, predicate: predicate }
 }
 
@@ -863,13 +863,13 @@ impl[
 // ─── TakeWhile ────────────────────────────────────────────────────────────
 
 /// Iterator that yields elements while a predicate returns true.
-public struct TakeWhileIterator[Item, F: FnMut[&Item, bool], Inner: Iterator[Element = Item]] {
+public struct TakeWhileIterator[Item, F: Fn[&Item, bool], Inner: Iterator[Element = Item]] {
     inner: Inner
     predicate: F
     is_done: bool
 }
 
-impl[Item, F: FnMut[&Item, bool], Inner: Iterator[Element = Item]] Iterator for TakeWhileIterator[Item, F, Inner] {
+impl[Item, F: Fn[&Item, bool], Inner: Iterator[Element = Item]] Iterator for TakeWhileIterator[Item, F, Inner] {
     type Element = Item
 
     func next(&mut self) -> Optional[Self.Element] {
@@ -894,7 +894,7 @@ impl[Item, F: FnMut[&Item, bool], Inner: Iterator[Element = Item]] Iterator for 
     }
 }
 
-impl[Item, F: FnMut[&Item, bool], Inner: Iterator[Element = Item]] Iterable for TakeWhileIterator[Item, F, Inner] {
+impl[Item, F: Fn[&Item, bool], Inner: Iterator[Element = Item]] Iterable for TakeWhileIterator[Item, F, Inner] {
     type Iterator = TakeWhileIterator[Item, F, Inner]
     type Element = Item
 
@@ -904,14 +904,14 @@ impl[Item, F: FnMut[&Item, bool], Inner: Iterator[Element = Item]] Iterable for 
 }
 
 /// Iterable adapter that yields elements from an iterable while a predicate returns true.
-public struct TakeWhileIterable[Item, F: FnMut[&Item, bool], InnerIter: Iterator[Element = Item], Source: Iterable[Element = Item, Iterator = InnerIter]] {
+public struct TakeWhileIterable[Item, F: Fn[&Item, bool], InnerIter: Iterator[Element = Item], Source: Iterable[Element = Item, Iterator = InnerIter]] {
     source: Source
     predicate: F
 }
 
 impl[
     Item,
-    F: FnMut[&Item, bool],
+    F: Fn[&Item, bool],
     InnerIter: Iterator[Element = Item],
     Source: Iterable[Element = Item, Iterator = InnerIter],
 ] Iterable for TakeWhileIterable[Item, F, InnerIter, Source] {
@@ -930,13 +930,13 @@ impl[
 // ─── SkipWhile ────────────────────────────────────────────────────────────
 
 /// Iterator that skips elements based on a predicate, yielding the rest.
-public struct SkipWhileIterator[Item, F: FnMut[&Item, bool], Inner: Iterator[Element = Item]] {
+public struct SkipWhileIterator[Item, F: Fn[&Item, bool], Inner: Iterator[Element = Item]] {
     inner: Inner
     predicate: F
     is_done_skipping: bool
 }
 
-impl[Item, F: FnMut[&Item, bool], Inner: Iterator[Element = Item]] Iterator for SkipWhileIterator[Item, F, Inner] {
+impl[Item, F: Fn[&Item, bool], Inner: Iterator[Element = Item]] Iterator for SkipWhileIterator[Item, F, Inner] {
     type Element = Item
 
     func next(&mut self) -> Optional[Self.Element] {
@@ -961,7 +961,7 @@ impl[Item, F: FnMut[&Item, bool], Inner: Iterator[Element = Item]] Iterator for 
     }
 }
 
-impl[Item, F: FnMut[&Item, bool], Inner: Iterator[Element = Item]] Iterable for SkipWhileIterator[Item, F, Inner] {
+impl[Item, F: Fn[&Item, bool], Inner: Iterator[Element = Item]] Iterable for SkipWhileIterator[Item, F, Inner] {
     type Iterator = SkipWhileIterator[Item, F, Inner]
     type Element = Item
 
@@ -971,14 +971,14 @@ impl[Item, F: FnMut[&Item, bool], Inner: Iterator[Element = Item]] Iterable for 
 }
 
 /// Iterable adapter that skips elements based on a predicate, yielding the rest.
-public struct SkipWhileIterable[Item, F: FnMut[&Item, bool], InnerIter: Iterator[Element = Item], Source: Iterable[Element = Item, Iterator = InnerIter]] {
+public struct SkipWhileIterable[Item, F: Fn[&Item, bool], InnerIter: Iterator[Element = Item], Source: Iterable[Element = Item, Iterator = InnerIter]] {
     source: Source
     predicate: F
 }
 
 impl[
     Item,
-    F: FnMut[&Item, bool],
+    F: Fn[&Item, bool],
     InnerIter: Iterator[Element = Item],
     Source: Iterable[Element = Item, Iterator = InnerIter],
 ] Iterable for SkipWhileIterable[Item, F, InnerIter, Source] {

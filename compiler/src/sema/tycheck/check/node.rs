@@ -1550,47 +1550,18 @@ impl<'ctx> Checker<'ctx> {
             let binding = self.get_local(*node_id);
             let ty = cs.infer_cx.resolve_vars_if_possible(binding.ty);
 
-            // Determine capture kind based on usage and type
-            let capture_kind = if info.usage.mut_borrow {
-                crate::sema::models::CaptureKind::ByRef { mutable: true }
-            } else if info.usage.moved {
-                crate::sema::models::CaptureKind::ByMove
-            } else if gcx.is_type_copyable(ty) {
-                crate::sema::models::CaptureKind::ByCopy
-            } else {
-                crate::sema::models::CaptureKind::ByRef { mutable: false }
-            };
-
             captures.push(crate::sema::models::CapturedVar {
                 source_id: *node_id,
                 name: info.name,
                 ty,
-                capture_kind,
                 field_index: crate::thir::FieldIndex::from_raw(field_index as u32),
             });
         }
-
-        let kind = if captures
-            .iter()
-            .any(|cap| matches!(cap.capture_kind, crate::sema::models::CaptureKind::ByMove))
-        {
-            crate::sema::models::ClosureKind::FnOnce
-        } else if captures.iter().any(|cap| {
-            matches!(
-                cap.capture_kind,
-                crate::sema::models::CaptureKind::ByRef { mutable: true }
-            )
-        }) {
-            crate::sema::models::ClosureKind::FnMut
-        } else {
-            crate::sema::models::ClosureKind::Fn
-        };
 
         gcx.cache_closure_captures(
             closure.def_id,
             crate::sema::models::ClosureCaptures {
                 captures: captures.clone(),
-                kind,
             },
         );
 
@@ -1604,24 +1575,17 @@ impl<'ctx> Checker<'ctx> {
                 captured_generics: GenericArguments::empty(),
                 inputs,
                 output: return_ty,
-                kind,
             },
             gcx,
         );
 
         // Cache the closure's function signature
-        // The closure body function takes: self (by ref or by value), then explicit params
-        let self_ty = match kind {
-            crate::sema::models::ClosureKind::Fn => gcx
-                .store
-                .interners
-                .intern_ty(TyKind::Pointer(closure_ty, hir::Mutability::Immutable)),
-            crate::sema::models::ClosureKind::FnMut => gcx
-                .store
-                .interners
-                .intern_ty(TyKind::Pointer(closure_ty, hir::Mutability::Mutable)),
-            crate::sema::models::ClosureKind::FnOnce => closure_ty,
-        };
+        // The closure body function takes: self (by immutable pointer), then explicit params
+        // All closures are Fn (captures are always by copy)
+        let self_ty = gcx
+            .store
+            .interners
+            .intern_ty(TyKind::Pointer(closure_ty, hir::Mutability::Immutable));
 
         let mut sig_inputs = vec![crate::sema::models::LabeledFunctionParameter {
             label: None,
@@ -2215,7 +2179,7 @@ impl<'ctx> Checker<'ctx> {
         Some(expectations)
     }
 
-    /// If the type is a type parameter with an Fn/FnMut/FnOnce bound,
+    /// If the type is a type parameter with an Fn/AsyncFn bound,
     /// create a synthetic FnPointer type with the expected inputs/output.
     /// Returns None if the type is not a type parameter or has no Fn bound.
     fn try_resolve_fn_bound(
@@ -2231,10 +2195,9 @@ impl<'ctx> Checker<'ctx> {
         let gcx = self.gcx();
         let constraints = crate::sema::tycheck::constraints::canonical_constraints_of(gcx, def_id);
 
-        // Look for Fn/FnMut/FnOnce bounds on this parameter
+        // Look for Fn/AsyncFn bounds on this parameter
         let fn_def = gcx.std_item_def(hir::StdItem::Fn);
-        let fn_mut_def = gcx.std_item_def(hir::StdItem::FnMut);
-        let fn_once_def = gcx.std_item_def(hir::StdItem::FnOnce);
+        let async_fn_def = gcx.std_item_def(hir::StdItem::AsyncFn);
 
         for constraint in constraints {
             if let crate::sema::models::Constraint::Bound {
@@ -2252,10 +2215,7 @@ impl<'ctx> Checker<'ctx> {
                     continue;
                 }
 
-                // Check if this is a Fn trait bound
-                let is_fn_trait = fn_def == Some(interface.id)
-                    || fn_mut_def == Some(interface.id)
-                    || fn_once_def == Some(interface.id);
+                let is_fn_trait = fn_def == Some(interface.id) || async_fn_def == Some(interface.id);
 
                 if !is_fn_trait {
                     continue;
@@ -2299,7 +2259,7 @@ impl<'ctx> Checker<'ctx> {
     /// Infer call-site generic arguments by matching a definition's signature types
     /// against the instantiated callee signature types.
     ///
-    /// This lets us instantiate `Fn/FnMut/FnOnce` bounds with inference variables
+    /// This lets us instantiate `Fn/AsyncFn` bounds with inference variables
     /// (for example, infer `Out` from closure return type).
     fn infer_call_generic_args(
         &self,
@@ -5278,14 +5238,11 @@ impl<'ctx> Checker<'ctx> {
     /// inference variables (e.g., `{var(N)}`). Codegen uses the global signature cache, so if we don't
     /// update it after type inference resolves these variables, `normalize_post_monomorphization` will panic.
     fn update_closure_signature(&self, closure_def_id: DefinitionID, closure_ty: Ty<'ctx>) {
-        use crate::sema::models::{
-            ClosureKind, LabeledFunctionParameter, LabeledFunctionSignature,
-        };
+        use crate::sema::models::{LabeledFunctionParameter, LabeledFunctionSignature};
 
         let TyKind::Closure {
             inputs,
             output,
-            kind,
             ..
         } = closure_ty.kind()
         else {
@@ -5295,16 +5252,8 @@ impl<'ctx> Checker<'ctx> {
         let gcx = self.gcx();
         let old_sig = gcx.get_signature(closure_def_id);
 
-        // Reconstruct self_ty
-        let self_ty = match kind {
-            ClosureKind::Fn => {
-                Ty::new(TyKind::Pointer(closure_ty, hir::Mutability::Immutable), gcx)
-            }
-            ClosureKind::FnMut => {
-                Ty::new(TyKind::Pointer(closure_ty, hir::Mutability::Mutable), gcx)
-            }
-            ClosureKind::FnOnce => closure_ty,
-        };
+        // All closures are Fn — self is always an immutable pointer
+        let self_ty = Ty::new(TyKind::Pointer(closure_ty, hir::Mutability::Immutable), gcx);
 
         let mut new_inputs = Vec::with_capacity(old_sig.inputs.len());
 
@@ -5496,16 +5445,10 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                     }
                 }
 
-                if self.checker.gcx().is_type_copyable(local_ty) {
-                    CaptureUsage {
-                        moved: false,
-                        mut_borrow: false,
-                    }
-                } else {
-                    CaptureUsage {
-                        moved: true,
-                        mut_borrow: false,
-                    }
+                let _ = local_ty;
+                CaptureUsage {
+                    moved: false,
+                    mut_borrow: false,
                 }
             }
         }
@@ -5606,14 +5549,8 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                         // Propagate the capture - the nested closure needs this variable,
                         // so we must capture it too to make it available
                         let usage = CaptureUsage {
-                            moved: matches!(
-                                cap.capture_kind,
-                                crate::sema::models::CaptureKind::ByMove
-                            ),
-                            mut_borrow: matches!(
-                                cap.capture_kind,
-                                crate::sema::models::CaptureKind::ByRef { mutable: true }
-                            ),
+                            moved: false,
+                            mut_borrow: false,
                         };
                         self.record_capture(cap.source_id, cap.name, usage);
                     }

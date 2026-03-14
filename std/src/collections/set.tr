@@ -1,5 +1,4 @@
 import std.hash.{Hashable, Hasher}
-import std.marker.Copy
 
 @lang("Set")
 public struct Set[Element: Hashable] {
@@ -51,7 +50,7 @@ impl[Element: Hashable] std.iter.Iterable for &Set[Element] {
     }
 }
 
-impl[Element: Copy] Set[Element] {
+impl[Element] Set[Element] {
     public func union(&self, _ other: &Set[Element]) -> Set[Element] {
         var result = Set[Element].new()
         for x in self {

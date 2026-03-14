@@ -1700,7 +1700,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         arg: &Operand<'gcx>,
         arg_ty: Ty<'gcx>,
     ) -> CompileResult<Option<PointerValue<'llvm>>> {
-        if let Operand::Copy(place) | Operand::Move(place) = arg {
+        if let Operand::Copy(place) = arg {
             if let Some(ptr) = self.place_address(body, locals, place)? {
                 return Ok(Some(ptr));
             }
@@ -1772,8 +1772,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                             TyKind::Pointer(..) | TyKind::Reference(..)
                         );
 
-                        // Generic callable lowering can route an Fn/FnMut closure through an
-                        // FnOnce-shaped call, which means the operand is still a closure value
+                        // Generic callable lowering can route through trait call shims while
+                        // preserving the closure value as the operand
                         // while the concrete closure body expects a pointer receiver. Materialize
                         // an address in that case instead of passing the value bits directly.
                         if expects_pointer && !actual_is_pointer {
@@ -2383,7 +2383,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         destination: &Place<'gcx>,
         rvalue: &mir::Rvalue<'gcx>,
     ) -> CompileResult<bool> {
-        let mir::Rvalue::Use(Operand::Copy(source) | Operand::Move(source)) = rvalue else {
+        let mir::Rvalue::Use(Operand::Copy(source)) = rvalue else {
             return Ok(false);
         };
 
@@ -4710,7 +4710,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     ) -> Option<(FunctionValue<'llvm>, abi::FnAbi<'gcx>)> {
         // Get the type of the operand
         let ty = match func {
-            Operand::Copy(place) | Operand::Move(place) => {
+            Operand::Copy(place) => {
                 // Get the base type from the local
                 let mut ty = body.locals[place.local].ty;
                 // Apply projections to get the final type
@@ -4780,7 +4780,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         op: &mir::Operand<'gcx>,
     ) -> CompileResult<Option<BasicValueEnum<'llvm>>> {
         let value = match op {
-            mir::Operand::Copy(place) | mir::Operand::Move(place) => {
+            mir::Operand::Copy(place) => {
                 self.load_place(body, locals, place)
             }
             mir::Operand::Constant(c) => self.lower_constant(c),
@@ -5114,7 +5114,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
     fn operand_ty(&self, body: &mir::Body<'gcx>, operand: &mir::Operand<'gcx>) -> Ty<'gcx> {
         let ty = match operand {
-            mir::Operand::Copy(place) | mir::Operand::Move(place) => body.locals[place.local].ty,
+            mir::Operand::Copy(place) => body.locals[place.local].ty,
             mir::Operand::Constant(c) => c.ty,
         };
 
@@ -5637,19 +5637,7 @@ fn lower_type<'llvm, 'gcx>(
                         .captures
                         .iter()
                         .filter_map(|cap| {
-                            let field_ty = match cap.capture_kind {
-                                crate::sema::models::CaptureKind::ByCopy
-                                | crate::sema::models::CaptureKind::ByMove => cap.ty,
-                                crate::sema::models::CaptureKind::ByRef { mutable } => {
-                                    let mutability = if mutable {
-                                        crate::hir::Mutability::Mutable
-                                    } else {
-                                        crate::hir::Mutability::Immutable
-                                    };
-                                    Ty::new(TyKind::Reference(cap.ty, mutability), gcx)
-                                }
-                            };
-                            lower_type(context, gcx, target_data, field_ty, subst)
+                            lower_type(context, gcx, target_data, cap.ty, subst)
                         })
                         .collect();
                     Some(context.struct_type(&fields, false).into())

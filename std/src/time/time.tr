@@ -1,4 +1,3 @@
-import std.marker.Copy
 
 const NANOS_PER_SEC_U32: uint32 = 1000000000_u32
 const NANOS_PER_SEC_U64: uint64 = 1000000000_u64
@@ -44,7 +43,7 @@ func checkedUnsignedDiff(
     }
 }
 
-public struct Duration: Copy {
+public struct Duration {
     secs: uint64
     nanos: uint32
 }
@@ -153,7 +152,7 @@ impl Duration {
     }
 }
 
-public struct Instant: Copy {
+public struct Instant {
     secs: uint64
     nanos: uint32
 }
@@ -192,7 +191,7 @@ impl Instant {
     }
 }
 
-public struct SystemTime: Copy {
+public struct SystemTime {
     secs: int64
     nanos: uint32
 }

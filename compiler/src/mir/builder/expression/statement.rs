@@ -35,7 +35,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     Rvalue::Use(Operand::Copy(lhs_place.clone())),
                     expression.span,
                 );
-                let lhs_operand = Operand::Move(Place::from_local(lhs_tmp));
+                let lhs_operand = Operand::Copy(Place::from_local(lhs_tmp));
 
                 // Compute binary op result
                 let result =

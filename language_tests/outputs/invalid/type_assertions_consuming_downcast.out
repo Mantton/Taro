@@ -1,4 +1,0 @@
-error: use of moved value 'value'
- -> language_tests/source_files/invalid/type_assertions_consuming_downcast.tr:18:17
-	    let _again = value
-	                 ^^^^^
