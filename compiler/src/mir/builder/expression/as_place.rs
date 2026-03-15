@@ -42,9 +42,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     block.and(PlaceBuilder::from_local(local))
                 }
             }
-            ExprKind::Upvar {
-                field_index,
-            } => {
+            ExprKind::Upvar { field_index } => {
                 // Upvar access uses the closure's self parameter (_1).
                 // All captures are by copy — direct field access, no deref needed.
                 let self_local = LocalId::from_raw(1);

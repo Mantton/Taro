@@ -112,8 +112,7 @@ impl[Key: Hashable, Value] Dictionary[Key, Value] {
                         match keySlot {
                             case .some(existingKey) => {
                                 if key.eq(existingKey) {
-                                    let values: &mut List[Value?] = &mut self.values
-                                    let valueSlot = values.at(slot)
+                                    let valueSlot: &mut Value? = self.values.at(slot)
                                     var removed: Value?
                                     unsafe {
                                         let valuePtr: *mut Value? = valueSlot as *mut Value?
@@ -121,10 +120,12 @@ impl[Key: Hashable, Value] Dictionary[Key, Value] {
                                         valuePtr.write(.none)
                                     }
 
-                                    let keysWrite: &mut List[Key?] = &mut self.keys
-                                    *keysWrite.at(slot) = .none
-                                    *self.controls.at(slot) = SWISS_CTRL_DELETED
-                                    *self.hashes.at(slot) = 0_u64
+                                    let keySlotWrite: &mut Key? = self.keys.at(slot)
+                                    let ctrlSlot: &mut uint8 = self.controls.at(slot)
+                                    let hashSlot: &mut uint64 = self.hashes.at(slot)
+                                    *keySlotWrite = .none
+                                    *ctrlSlot = SWISS_CTRL_DELETED
+                                    *hashSlot = 0_u64
 
                                     if removed.isSome() {
                                         self.len -= 1
@@ -232,8 +233,7 @@ impl[Key: Hashable, Value] Dictionary[Key, Value] {
                         match keySlot {
                             case .some(existingKey) => {
                                 if key.eq(existingKey) {
-                                    let values: &mut List[Value?] = &mut self.values
-                                    let valueSlot = values.at(slot)
+                                    let valueSlot: &mut Value? = self.values.at(slot)
                                     match valueSlot {
                                         case .some(existingValue) => {
                                             return .some(existingValue)
@@ -307,8 +307,7 @@ impl[Key: Hashable, Value] Dictionary[Key, Value] {
                         match keySlot {
                             case .some(existingKey) => {
                                 if key == *existingKey {
-                                    let values: &mut List[Value?] = &mut self.values
-                                    let valueSlot = values.at(slot)
+                                    let valueSlot: &mut Value? = self.values.at(slot)
                                     var previous: Value?
                                     unsafe {
                                         let valueSlotPtr: *mut Value? = valueSlot as *mut Value?

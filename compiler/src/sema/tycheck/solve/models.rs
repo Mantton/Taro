@@ -199,6 +199,7 @@ pub struct InferredStaticMemberGoalData<'ctx> {
 pub struct MethodCallData<'ctx> {
     pub node_id: NodeID,
     pub receiver: Ty<'ctx>,
+    pub receiver_can_mut_borrow: bool,
     pub reciever_span: Span,
     pub reciever_node: NodeID,
     pub is_unsafe_context: bool,

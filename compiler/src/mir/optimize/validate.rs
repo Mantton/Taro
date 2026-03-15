@@ -55,7 +55,13 @@ pub fn validate_body_invariants<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> Comp
     let return_local_ty = body.locals[body.return_local].ty;
     let require_return_slot = function_output != gcx.types.void;
 
-    if !types_compatible(gcx, &normalize_icx, &normalize_env, return_local_ty, function_output) {
+    if !types_compatible(
+        gcx,
+        &normalize_icx,
+        &normalize_env,
+        return_local_ty,
+        function_output,
+    ) {
         gcx.dcx().emit_error(
             format!(
                 "internal error: MIR return local has type `{}` but function output is `{}`",
@@ -245,7 +251,6 @@ fn is_full_return_place<'ctx>(body: &Body<'ctx>, place: &Place<'ctx>) -> bool {
     place.local == body.return_local && place.projection.is_empty()
 }
 
-
 /// Get successors of a terminator.
 fn successors(term: &TerminatorKind) -> Vec<BasicBlockId> {
     match term {
@@ -311,12 +316,14 @@ fn call_output_ty<'ctx>(
                 _ => output_from_ty,
             }
         }
-        Operand::Copy(place) => match place_ty(body, gcx, place).kind() {
-            TyKind::FnPointer { output, .. } | TyKind::Closure { output, .. } => {
-                Some(normalize_if_possible(gcx, output))
+        Operand::Copy(place) | Operand::CopyWith(place, _) => {
+            match place_ty(body, gcx, place).kind() {
+                TyKind::FnPointer { output, .. } | TyKind::Closure { output, .. } => {
+                    Some(normalize_if_possible(gcx, output))
+                }
+                _ => None,
             }
-            _ => None,
-        },
+        }
     }
 }
 
@@ -419,7 +426,7 @@ fn interface_refs_compatible<'ctx>(
 fn operand_ty<'ctx>(body: &Body<'ctx>, gcx: Gcx<'ctx>, operand: &Operand<'ctx>) -> Ty<'ctx> {
     match operand {
         Operand::Constant(constant) => constant.ty,
-        Operand::Copy(place) => place_ty(body, gcx, place),
+        Operand::Copy(place) | Operand::CopyWith(place, _) => place_ty(body, gcx, place),
     }
 }
 
@@ -556,10 +563,14 @@ fn closure_aggregate_ty<'ctx>(
     captured_generics: crate::sema::models::GenericArguments<'ctx>,
 ) -> Ty<'ctx> {
     let signature = gcx.get_signature(def_id);
-    let inputs = gcx
-        .store
-        .interners
-        .intern_ty_list(signature.inputs.iter().skip(1).map(|param| param.ty).collect());
+    let inputs = gcx.store.interners.intern_ty_list(
+        signature
+            .inputs
+            .iter()
+            .skip(1)
+            .map(|param| param.ty)
+            .collect(),
+    );
     Ty::new(
         TyKind::Closure {
             closure_def_id: def_id,

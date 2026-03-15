@@ -78,9 +78,7 @@ pub fn try_synthesize_method<'ctx>(
             method_id,
             args_template,
         ),
-        StdItem::Tuple => {
-            None
-        }
+        StdItem::Tuple => None,
         StdItem::Iterator | StdItem::Iterable => {
             // Iterator and Iterable are not auto-derivable
             None

@@ -247,11 +247,7 @@ impl<'arena> Ty<'arena> {
                     out
                 }
             }
-            TyKind::Closure {
-                inputs,
-                output,
-                ..
-            } => {
+            TyKind::Closure { inputs, output, .. } => {
                 let mut out = format!("closure<Fn>((");
                 for (i, input) in inputs.iter().enumerate() {
                     if i > 0 {

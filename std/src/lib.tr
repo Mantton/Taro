@@ -1,7 +1,7 @@
-public import std.ffi
-public import std.io
-public import std.fs
-public import std.time
+import std.ffi
+import std.io
+import std.fs
+import std.time
 import std.fmt
 
 @cfg(family("unix"))
@@ -39,7 +39,7 @@ public func println(_ s: string) {
     print("\n")
 }
 
-func renderFormat(_ format: string, _ args: std.collections.List[any std.fmt.Display]) -> string {
+func renderFormat(_ format: string, _ args: std.mem.Span[any std.fmt.Display]) -> string {
     std.fmt.formatPrintf(format, args)
 }
 

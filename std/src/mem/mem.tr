@@ -50,6 +50,7 @@ impl[T] MaybeUninit[T] {
     }
 }
 
+@lang("Span")
 public struct Span[Element] {
     ptr: *const Element
     len: usize

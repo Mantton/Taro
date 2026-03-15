@@ -169,10 +169,47 @@ pub enum PlaceElem<'ctx> {
     VariantDowncast { name: Symbol, index: VariantIndex },
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CopyModifiers {
+    pub take: bool,
+    pub init: bool,
+}
+
 #[derive(Debug, Clone)]
 pub enum Operand<'ctx> {
     Copy(Place<'ctx>),
+    CopyWith(Place<'ctx>, CopyModifiers),
     Constant(Constant<'ctx>),
+}
+
+impl<'ctx> Operand<'ctx> {
+    #[inline]
+    pub fn copy(place: Place<'ctx>) -> Self {
+        Self::Copy(place)
+    }
+
+    #[inline]
+    pub fn copy_with(place: Place<'ctx>, modifiers: CopyModifiers) -> Self {
+        if modifiers.take || modifiers.init {
+            Self::CopyWith(place, modifiers)
+        } else {
+            Self::Copy(place)
+        }
+    }
+
+    #[inline]
+    pub fn as_copy(&self) -> Option<(&Place<'ctx>, CopyModifiers)> {
+        match self {
+            Self::Copy(place) => Some((place, CopyModifiers::default())),
+            Self::CopyWith(place, modifiers) => Some((place, *modifiers)),
+            Self::Constant(_) => None,
+        }
+    }
+
+    #[inline]
+    pub fn modifiers_or_default(&self) -> CopyModifiers {
+        self.as_copy().map(|(_, m)| m).unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone)]

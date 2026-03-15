@@ -264,12 +264,7 @@ impl<'ctx> Selector<'ctx> {
         &self,
         goal: InterfaceGoal<'ctx>,
     ) -> Option<ConfirmedCandidate<'ctx>> {
-        let TyKind::Closure {
-            inputs,
-            output,
-            ..
-        } = goal.self_ty.kind()
-        else {
+        let TyKind::Closure { inputs, output, .. } = goal.self_ty.kind() else {
             return None;
         };
 

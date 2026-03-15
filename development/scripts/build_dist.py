@@ -101,7 +101,7 @@ def main():
                 f"refusing to remove symlink dist directory: {dist_dir}"
             )
         shutil.rmtree(dist_dir)
-    dist_dir.mkdir(parents=True)
+    dist_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. Build Runtime
     print("\n--- Building Runtime ---")
@@ -124,7 +124,7 @@ def main():
     
     # bin/taro
     bin_dir = dist_dir / "bin"
-    bin_dir.mkdir()
+    bin_dir.mkdir(exist_ok=True)
     
     src_bin = repo_root / "target" / profile / "taro-bin"
     dst_bin = bin_dir / "taro"
@@ -134,7 +134,7 @@ def main():
 
     # lib/taro/runtime/libtaro_runtime.a
     lib_dir = dist_dir / "lib" / "taro" / "runtime"
-    lib_dir.mkdir(parents=True)
+    lib_dir.mkdir(parents=True, exist_ok=True)
     
     src_lib = repo_root / "target" / profile / "libtaro_runtime.a"
     dst_lib = lib_dir / "libtaro_runtime.a"
@@ -181,8 +181,12 @@ if __name__ == "__main__":
     try:
         main()
     except subprocess.CalledProcessError as e:
+        import traceback
+        traceback.print_exc()
         print(f"\nError: Command failed with exit code {e.returncode}")
         sys.exit(1)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"\nError: {e}")
         sys.exit(1)

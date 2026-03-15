@@ -265,9 +265,7 @@ impl<'ctx> MirPass<'ctx> for CallDestinationCoalescing {
             }
 
             let local_from_operand = match op {
-                Operand::Copy(place) if place.projection.is_empty() => {
-                    Some(place.local)
-                }
+                Operand::Copy(place) if place.projection.is_empty() => Some(place.local),
                 _ => None,
             };
             if local_from_operand != Some(tmp_local) {
@@ -388,9 +386,7 @@ impl<'ctx> MirPass<'ctx> for RepeatFieldForwarding {
                 }
 
                 let local = match op {
-                    Operand::Copy(place) if place.projection.is_empty() => {
-                        place.local
-                    }
+                    Operand::Copy(place) if place.projection.is_empty() => place.local,
                     _ => continue,
                 };
 
@@ -514,7 +510,7 @@ fn gap_is_safe_source(
 
 fn replacement_from_operand<'ctx>(op: &Operand<'ctx>) -> Option<Replacement<'ctx>> {
     match op {
-        Operand::Copy(place) if place.projection.is_empty() => {
+        Operand::Copy(place) | Operand::CopyWith(place, _) if place.projection.is_empty() => {
             Some(Replacement::Copy(place.local))
         }
         Operand::Constant(c) => Some(Replacement::Constant(c.clone())),
@@ -543,24 +539,19 @@ fn record_operand_use(
     place_used: &mut [bool],
 ) {
     match op {
-        Operand::Copy(place) => record_place_use(
-            place,
-            block,
-            stmt_index,
-            use_sites,
-            use_counts,
-            place_used,
-        ),
+        Operand::Copy(place) | Operand::CopyWith(place, _) => {
+            record_place_use(place, block, stmt_index, use_sites, use_counts, place_used)
+        }
         Operand::Constant(_) => {}
     }
 }
 
 fn record_operand_use_count(op: &Operand<'_>, use_counts: &mut [usize]) {
     match op {
-        Operand::Copy(place) if place.projection.is_empty() => {
+        Operand::Copy(place) | Operand::CopyWith(place, _) if place.projection.is_empty() => {
             use_counts[place.local.index()] += 1;
         }
-        Operand::Copy(_) | Operand::Constant(_) => {}
+        Operand::Copy(_) | Operand::CopyWith(_, _) | Operand::Constant(_) => {}
     }
 }
 
@@ -647,10 +638,7 @@ fn record_place_use(
     let idx = place.local.index();
     use_counts[idx] += 1;
     if use_sites[idx].is_none() {
-        use_sites[idx] = Some(UseSite {
-            block,
-            stmt_index,
-        });
+        use_sites[idx] = Some(UseSite { block, stmt_index });
     }
 }
 
@@ -786,7 +774,7 @@ fn replace_operand<'ctx>(op: &mut Operand<'ctx>, replace_map: &[Option<Replaceme
     let mut steps = 0usize;
     while steps < replace_map.len() {
         let place = match op {
-            Operand::Copy(place) => {
+            Operand::Copy(place) | Operand::CopyWith(place, _) => {
                 if place.projection.is_empty() {
                     Some(place.local)
                 } else {
@@ -804,7 +792,12 @@ fn replace_operand<'ctx>(op: &mut Operand<'ctx>, replace_map: &[Option<Replaceme
         };
 
         let next = match replacement {
-            Replacement::Copy(src) => Operand::Copy(Place::from_local(*src)),
+            Replacement::Copy(src) => match op {
+                Operand::CopyWith(_, modifiers) => {
+                    Operand::copy_with(Place::from_local(*src), *modifiers)
+                }
+                Operand::Copy(_) | Operand::Constant(_) => Operand::copy(Place::from_local(*src)),
+            },
             Replacement::Constant(c) => Operand::Constant(c.clone()),
         };
 
@@ -832,7 +825,7 @@ fn rvalue_mentions_local(rv: &Rvalue<'_>, local: LocalId) -> bool {
 
 fn operand_mentions_local(op: &Operand<'_>, local: LocalId) -> bool {
     match op {
-        Operand::Copy(place) => place.local == local,
+        Operand::Copy(place) | Operand::CopyWith(place, _) => place.local == local,
         Operand::Constant(_) => false,
     }
 }

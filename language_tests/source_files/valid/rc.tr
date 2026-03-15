@@ -1,0 +1,167 @@
+// Tests: Rc[T] reference counting, retain/release, copy semantics.
+
+import std.mem.Rc
+
+func testRcBasic() {
+    let a = Rc[int32].new(42)
+    assert(a.isUnique(), "new Rc should be unique")
+    let value = a.asRef()
+    assert(*value == 42, "asRef should return the stored value")
+}
+
+func testRcCopy() {
+    let a = Rc[int32].new(10)
+    assert(a.isUnique(), "new Rc should be unique")
+    let b = a
+    assert(!a.isUnique(), "a should not be unique after copy")
+    assert(!b.isUnique(), "b should not be unique after copy")
+    assert(*a.asRef() == 10, "a value after copy")
+    assert(*b.asRef() == 10, "b value after copy")
+}
+
+func testRcMultipleCopies() {
+    let a = Rc[int32].new(99)
+    let b = a
+    let c = a
+    let d = b
+    assert(!a.isUnique(), "a not unique with 4 refs")
+    assert(!b.isUnique(), "b not unique with 4 refs")
+    assert(!c.isUnique(), "c not unique with 4 refs")
+    assert(!d.isUnique(), "d not unique with 4 refs")
+    assert(*a.asRef() == 99, "all refs see same value")
+    assert(*d.asRef() == 99, "all refs see same value (d)")
+}
+
+struct Wrapper {
+    rc: Rc[int32]
+    tag: int32
+}
+
+func testRcInStruct() {
+    let rc = Rc[int32].new(7)
+    let w = Wrapper { rc: rc, tag: 1 }
+    assert(!rc.isUnique(), "rc not unique after struct copy")
+    assert(!w.rc.isUnique(), "w.rc not unique")
+    assert(*w.rc.asRef() == 7, "struct Rc value correct")
+}
+
+func testRcPassToFunction() {
+    let a = Rc[int32].new(55)
+    checkNotUnique(a)
+    assert(*a.asRef() == 55, "a still valid after function call")
+}
+
+func checkNotUnique(_ r: Rc[int32]) {
+    assert(!r.isUnique(), "param should not be unique")
+    assert(*r.asRef() == 55, "param value correct")
+}
+
+func testRcSelfAssignment() {
+    var a = Rc[int32].new(33)
+    a = a
+    assert(*a.asRef() == 33, "value preserved after self-assignment")
+}
+
+func makeRc(_ value: int32) -> Rc[int32] {
+    return Rc[int32].new(value)
+}
+
+func testRcReturnFromFunction() {
+    let a = makeRc(100)
+    assert(a.isUnique(), "returned Rc should be unique")
+    assert(*a.asRef() == 100, "returned Rc value correct")
+}
+
+func testRcReturnAndCopy() {
+    let a = makeRc(200)
+    let b = a
+    assert(!a.isUnique(), "a not unique after copy of returned Rc")
+    assert(!b.isUnique(), "b not unique")
+    assert(*a.asRef() == 200, "a value correct")
+    assert(*b.asRef() == 200, "b value correct")
+}
+
+func makeWrapper(_ value: int32) -> Wrapper {
+    return Wrapper { rc: Rc[int32].new(value), tag: value }
+}
+
+func testRcInReturnedStruct() {
+    let w = makeWrapper(77)
+    assert(w.rc.isUnique(), "returned struct Rc should be unique")
+    assert(*w.rc.asRef() == 77, "returned struct Rc value correct")
+    assert(w.tag == 77, "returned struct tag correct")
+}
+
+func testRcReassignment() {
+    var a = Rc[int32].new(1)
+    assert(*a.asRef() == 1, "initial value")
+    a = Rc[int32].new(2)
+    assert(*a.asRef() == 2, "reassigned value")
+    a = Rc[int32].new(3)
+    assert(*a.asRef() == 3, "reassigned again")
+}
+
+func testRcConditional() {
+    let a = Rc[int32].new(10)
+    let b = Rc[int32].new(20)
+    let c = if true { a } else { b }
+    assert(*c.asRef() == 10, "conditional Rc correct value")
+}
+
+func testRcReassignmentInLoop() {
+    var a = Rc[int32].new(0)
+    var i: int32 = 0
+    while i < 5 {
+        a = makeRc(i + 1)
+        assert(*a.asRef() == i + 1, "loop reassignment correct")
+        i = i + 1
+    }
+    assert(*a.asRef() == 5, "final loop value correct")
+}
+
+func testRcInStructReassignmentLoop() {
+    var w = makeWrapper(0)
+    var i: int32 = 0
+    while i < 3 {
+        w = makeWrapper(i + 10)
+        assert(*w.rc.asRef() == i + 10, "struct loop reassign correct")
+        assert(w.tag == i + 10, "struct loop tag correct")
+        i = i + 1
+    }
+    assert(*w.rc.asRef() == 12, "final struct loop value correct")
+}
+
+func testRcMultipleCopiesInLoop() {
+    var a = Rc[int32].new(0)
+    var b = Rc[int32].new(0)
+    var i: int32 = 0
+    while i < 3 {
+        let tmp = makeRc(i + 100)
+        a = tmp
+        b = tmp
+        assert(!a.isUnique(), "a not unique (shared with b and tmp)")
+        assert(*a.asRef() == i + 100, "a value correct in loop")
+        assert(*b.asRef() == i + 100, "b value correct in loop")
+        i = i + 1
+    }
+    assert(*a.asRef() == 102, "final a value correct")
+    assert(*b.asRef() == 102, "final b value correct")
+}
+
+func main() {
+    testRcBasic()
+    testRcCopy()
+    testRcMultipleCopies()
+    testRcInStruct()
+    testRcPassToFunction()
+    testRcSelfAssignment()
+    testRcReturnFromFunction()
+    testRcReturnAndCopy()
+    testRcInReturnedStruct()
+    testRcReassignment()
+    testRcConditional()
+    testRcReassignmentInLoop()
+    testRcInStructReassignmentLoop()
+    testRcMultipleCopiesInLoop()
+    print("PASS: Rc\n")
+}

@@ -356,7 +356,10 @@ fn remap_statement<'ctx>(
                 remap_rvalue(gcx, rvalue, local_map, gen_args),
             ),
             StatementKind::ShadowResync(locals) => StatementKind::ShadowResync(
-                locals.iter().map(|local| local_map[local.index()]).collect(),
+                locals
+                    .iter()
+                    .map(|local| local_map[local.index()])
+                    .collect(),
             ),
             StatementKind::GcSafepoint => StatementKind::GcSafepoint,
             StatementKind::Nop => StatementKind::Nop,
@@ -475,7 +478,10 @@ fn remap_operand<'ctx>(
     gen_args: GenericArguments<'ctx>,
 ) -> Operand<'ctx> {
     match operand {
-        Operand::Copy(place) => Operand::Copy(remap_place(gcx, place, local_map, gen_args)),
+        Operand::Copy(place) => Operand::copy(remap_place(gcx, place, local_map, gen_args)),
+        Operand::CopyWith(place, modifiers) => {
+            Operand::copy_with(remap_place(gcx, place, local_map, gen_args), *modifiers)
+        }
         Operand::Constant(c) => Operand::Constant(remap_constant(gcx, c, gen_args)),
     }
 }

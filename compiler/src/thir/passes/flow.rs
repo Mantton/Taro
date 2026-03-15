@@ -258,11 +258,8 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
                 self.apply_cleanup_to_exit(result.returns.take(), cleanup, &mut result.poisoned);
             result.breaks =
                 self.apply_cleanup_to_exit(result.breaks.take(), cleanup, &mut result.poisoned);
-            result.continues = self.apply_cleanup_to_exit(
-                result.continues.take(),
-                cleanup,
-                &mut result.poisoned,
-            );
+            result.continues =
+                self.apply_cleanup_to_exit(result.continues.take(), cleanup, &mut result.poisoned);
         }
         result
     }
@@ -522,7 +519,9 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
                 loop_depth,
                 check_initialization,
             ),
-            ExprKind::Match { scrutinee, arms, .. } => self.analyze_match(
+            ExprKind::Match {
+                scrutinee, arms, ..
+            } => self.analyze_match(
                 scrutinee,
                 arms,
                 initialized,
@@ -620,8 +619,7 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
             target_state
         };
 
-        let value_result =
-            self.analyze_expr(value, &value_input, loop_depth, check_initialization);
+        let value_result = self.analyze_expr(value, &value_input, loop_depth, check_initialization);
         result.returns = merge_exit_states(result.returns.take(), value_result.returns);
         result.breaks = merge_exit_states(result.breaks.take(), value_result.breaks);
         result.continues = merge_exit_states(result.continues.take(), value_result.continues);
@@ -745,13 +743,16 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
             let body_input = if let Some(guard) = arm.guard {
                 let guard_result =
                     self.analyze_expr(guard, &arm_state, loop_depth, check_initialization);
-                arm_result = merge_results(arm_result, FlowResult {
-                    normal: None,
-                    returns: guard_result.returns.clone(),
-                    breaks: guard_result.breaks.clone(),
-                    continues: guard_result.continues.clone(),
-                    poisoned: guard_result.poisoned,
-                });
+                arm_result = merge_results(
+                    arm_result,
+                    FlowResult {
+                        normal: None,
+                        returns: guard_result.returns.clone(),
+                        breaks: guard_result.breaks.clone(),
+                        continues: guard_result.continues.clone(),
+                        poisoned: guard_result.poisoned,
+                    },
+                );
 
                 match guard_result.normal {
                     Some(guard_state) => guard_state,

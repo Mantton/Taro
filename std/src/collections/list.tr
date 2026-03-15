@@ -1,33 +1,37 @@
-import std.mem.{MaybeUninit, MutableSpan, Span, growBuffer, makeBuffer, sizeOf}
+import std.mem.{MaybeUninit, MutableSpan, Rc, Span, growBuffer, makeBuffer, sizeOf}
 import std.optional.Optional
 import std.iter.{Iterator, Iterable, FromIterator}
 import std.panic.panic
 import std.cmp.{Ord, Ordering}
 
-
-/// A dynamically-sized list (dynamic array).
-///
-/// List provides an automatically growing buffer that stores elements
-/// contiguously in memory. Elements can be added with `append` and
-/// accessed by index.
-@lang("List")
-public struct List[Element] {
+struct ListStorage[Element] {
     buffer: *mut uint8
     len: usize
     cap: usize
 }
 
+@lang("List")
+public struct List[Element] {
+    storage: Rc[ListStorage[Element]]
+}
+
+public func __list_from_raw_parts[Element](_ buffer: *mut uint8, _ len: usize, _ cap: usize) -> List[Element] {
+    List[Element] {
+        storage: Rc[ListStorage[Element]].new(ListStorage[Element] { buffer, len, cap }),
+    }
+}
+
 impl[Element] List[Element] {
-    /// Create a new empty list.
     public func new() -> Self {
         List[Element] {
-            buffer: unsafe { 0 as *mut uint8 },
-            len: 0,
-            cap: 0,
+            storage: Rc[ListStorage[Element]].new(ListStorage[Element] {
+                buffer: unsafe { 0 as *mut uint8 },
+                len: 0,
+                cap: 0,
+            }),
         }
     }
 
-    /// Create a new list with the specified initial capacity.
     public func new(withCapacity capacity: usize) -> Self {
         if capacity == 0 {
             return List[Element]()
@@ -35,35 +39,37 @@ impl[Element] List[Element] {
 
         let buf = makeBuffer[Element](0, capacity)
         List[Element] {
-            buffer: buf,
-            len: 0,
-            cap: capacity,
+            storage: Rc[ListStorage[Element]].new(ListStorage[Element] {
+                buffer: buf,
+                len: 0,
+                cap: capacity,
+            }),
         }
     }
 
-    /// Returns the number of elements in the list.
     public func len(&self) -> usize {
-        self.len
+        self.storage.asRef().len
     }
 
-    /// Returns the current capacity of the list.
     public func capacity(&self) -> usize {
-        self.cap
+        self.storage.asRef().cap
     }
 
-    /// Returns true if the list is empty.
     public func isEmpty(&self) -> bool {
-        self.len == 0
+        self.storage.asRef().len == 0
     }
 
     public func asSpan(&self) -> Span[Element] {
-        let ptr = unsafe { self.buffer as *const Element }
-        return Span[Element].from(ptr, self.len)
+        let s = self.storage.asRef()
+        let ptr = unsafe { s.buffer as *const Element }
+        return Span[Element].from(ptr, s.len)
     }
 
     public func asSpan(&mut self) -> MutableSpan[Element] {
-        let ptr = unsafe { self.buffer as *mut Element }
-        return MutableSpan[Element].from(ptr, self.len)
+        self.ensureUnique()
+        let s = unsafe { self.storage.asMut() }
+        let ptr = unsafe { s.buffer as *mut Element }
+        return MutableSpan[Element].from(ptr, s.len)
     }
 }
 
@@ -76,196 +82,211 @@ impl[T] FromIterator for List[T] {
 }
 
 impl[Element] List[Element] {
-    /// Append an element to the end of the list.
+    func ensureUnique(&mut self) {
+        if self.storage.isUnique() {
+            return
+        }
+        let old = self.storage.asRef()
+        let newBuf = if old.cap > 0 {
+            let buf = makeBuffer[Element](old.len, old.cap)
+            if old.len > 0 {
+                unsafe {
+                    (old.buffer as *const Element).copyToNonoverlapping(buf as *mut Element, old.len)
+                }
+            }
+            buf
+        } else {
+            unsafe { 0 as *mut uint8 }
+        }
+        self.storage = Rc[ListStorage[Element]].new(ListStorage[Element] {
+            buffer: newBuf,
+            len: old.len,
+            cap: old.cap,
+        })
+    }
+
     public func append(&mut self, _ item: Element) {
-        if self.len >= self.cap {
+        self.ensureUnique()
+        let s = unsafe { self.storage.asMut() }
+        if s.len >= s.cap {
             self.grow()
         }
-
-        // Write the element to the buffer using the intrinsic
+        let s = unsafe { self.storage.asMut() }
         unsafe {
-            (self.buffer as *mut Element)
-                .add(self.len)
+            (s.buffer as *mut Element)
+                .add(s.len)
                 .write(item)
         }
-
-        self.len += 1
+        s.len += 1
     }
 
-    /// Internal: grow the buffer capacity.
     func grow(&mut self) {
-        let newCap = if self.cap == 0 { 4 } else { self.cap * 2 }
-
-        let newBuffer = growBuffer[Element](self.buffer, self.len, newCap)
-
-        self.buffer = newBuffer
-        self.cap = newCap
+        let s = unsafe { self.storage.asMut() }
+        let newCap = if s.cap == 0 { 4 } else { s.cap * 2 }
+        let newBuffer = growBuffer[Element](s.buffer, s.len, newCap)
+        s.buffer = newBuffer
+        s.cap = newCap
     }
 }
 
 impl[Element] List[Element] {
-    /// Get a reference to the element at the given index, or none if out of bounds.
     public func get(&self, _ index: usize) -> Optional[&Element] {
-        if index >= self.len {
+        let s = self.storage.asRef()
+        if index >= s.len {
             return .none
         }
-
-        // Read the element from the buffer using the intrinsic
-        let elem = unsafe { (self.buffer as *const Element).add(index) as &Element }
+        let elem = unsafe { (s.buffer as *const Element).add(index) as &Element }
         return .some(elem)
     }
 
-    /// Get a reference to the element at the given index, panicking if out of bounds.
     public func at(&self, _ index: usize) -> &Element {
-        if index >= self.len {
+        let s = self.storage.asRef()
+        if index >= s.len {
             panic("list index out of range")
         }
-
-        // Read the element from the buffer using the intrinsic
-        return unsafe { (self.buffer as *const Element).add(index) as &Element }
+        return unsafe { (s.buffer as *const Element).add(index) as &Element }
     }
 
-    /// Get a mutable reference to the element at the given index, or none if out of bounds.
     public func get(&mut self, _ index: usize) -> Optional[&mut Element] {
-        if index >= self.len {
+        self.ensureUnique()
+        let s = unsafe { self.storage.asMut() }
+        if index >= s.len {
             return .none
         }
-
-        let elem = unsafe { (self.buffer as *mut Element).add(index) as &mut Element }
+        let elem = unsafe { (s.buffer as *mut Element).add(index) as &mut Element }
         return .some(elem)
     }
 
-    /// Get a mutable reference to the element at the given index, panicking if out of bounds.
     public func at(&mut self, _ index: usize) -> &mut Element {
-        if index >= self.len {
+        self.ensureUnique()
+        let s = unsafe { self.storage.asMut() }
+        if index >= s.len {
             panic("list index out of range")
         }
-
-        return unsafe { (self.buffer as *mut Element).add(index) as &mut Element }
+        return unsafe { (s.buffer as *mut Element).add(index) as &mut Element }
     }
 }
 
 impl[Element] List[Element] {
-    /// Set an element at the given index. Panics if out of bounds.
     public func set(&mut self, _ index: usize, _ value: Element) {
-        if index >= self.len {
+        self.ensureUnique()
+        let s = unsafe { self.storage.asMut() }
+        if index >= s.len {
             panic("list index out of range")
         }
-
         unsafe {
-            (self.buffer as *mut Element)
+            (s.buffer as *mut Element)
                 .add(index)
                 .write(value)
         }
     }
 
-    /// Remove and return the last element, or none if the list is empty.
     public func pop(&mut self) -> Optional[Element] {
-        if self.len == 0 {
+        self.ensureUnique()
+        let s = unsafe { self.storage.asMut() }
+        if s.len == 0 {
             return .none
         }
 
-        self.len -= 1
+        s.len -= 1
         let elemSize = sizeOf[Element]()
-        let offset = self.len * elemSize
+        let offset = s.len * elemSize
         var elem = MaybeUninit[Element].uninit()
         unsafe {
             let dst = elem.asMutPtr() as *mut uint8
-            self.buffer.byteAdd(offset).readBytes(dst, elemSize)
+            s.buffer.byteAdd(offset).readBytes(dst, elemSize)
         }
         return .some(unsafe { elem.assumeInit() })
     }
 
-    /// Clear all elements from the list.
     public func clear(&mut self) {
-        self.len = 0
+        self.ensureUnique()
+        let s = unsafe { self.storage.asMut() }
+        s.len = 0
     }
 }
 
 impl[Element] List[Element] {
-    /// Ensure capacity is at least `minCapacity`. No-op if already sufficient.
     public func reserve(&mut self, _ minCapacity: usize) {
-        if minCapacity <= self.cap {
+        self.ensureUnique()
+        let s = unsafe { self.storage.asMut() }
+        if minCapacity <= s.cap {
             return
         }
 
-        var newCap = if self.cap == 0 { 4 } else { self.cap }
+        var newCap = if s.cap == 0 { 4 } else { s.cap }
         while newCap < minCapacity {
             newCap = newCap * 2
         }
 
-        let newBuffer = growBuffer[Element](self.buffer, self.len, newCap)
-        self.buffer = newBuffer
-        self.cap = newCap
+        let newBuffer = growBuffer[Element](s.buffer, s.len, newCap)
+        s.buffer = newBuffer
+        s.cap = newCap
     }
 
-    /// Insert `item` at `index`, shifting elements right.
-    /// Returns false if index > len (out of bounds).
     public func insert(&mut self, at index: usize, _ item: Element) -> bool {
-        if index > self.len {
+        self.ensureUnique()
+        let s = unsafe { self.storage.asMut() }
+        if index > s.len {
             return false
         }
 
-        if self.len >= self.cap {
+        if s.len >= s.cap {
             self.grow()
         }
+        let s = unsafe { self.storage.asMut() }
 
-        // Shift elements [index..len] one slot to the right
-        if index < self.len {
-            let count = self.len - index
+        if index < s.len {
+            let count = s.len - index
             unsafe {
-                let base = self.buffer as *mut Element
+                let base = s.buffer as *mut Element
                 let src = base.add(index)
                 let dst = base.add(index + (1 as usize))
                 (src as *const Element).copyTo(dst, count)
             }
         }
 
-        // Write the new element
         unsafe {
-            (self.buffer as *mut Element)
+            (s.buffer as *mut Element)
                 .add(index)
                 .write(item)
         }
 
-        self.len += 1
+        s.len += 1
         return true
     }
 
-    /// Remove and return the element at `index`, shifting elements left.
-    /// Returns .none if index >= len (out of bounds).
     public func removeAt(&mut self, _ index: usize) -> Optional[Element] {
-        if index >= self.len {
+        self.ensureUnique()
+        let s = unsafe { self.storage.asMut() }
+        if index >= s.len {
             return .none
         }
 
-        // Read out the element
         let elemSize = sizeOf[Element]()
         let offset = index * elemSize
         var elem = MaybeUninit[Element].uninit()
         unsafe {
             let dst = elem.asMutPtr() as *mut uint8
-            self.buffer.byteAdd(offset).readBytes(dst, elemSize)
+            s.buffer.byteAdd(offset).readBytes(dst, elemSize)
         }
 
-        // Shift elements [index+1..len] one slot to the left
-        let remaining = self.len - index - (1 as usize)
+        let remaining = s.len - index - (1 as usize)
         if remaining > 0 {
             unsafe {
-                let base = self.buffer as *mut Element
+                let base = s.buffer as *mut Element
                 let src = base.add(index + (1 as usize))
                 let dst = base.add(index)
                 (src as *const Element).copyTo(dst, remaining)
             }
         }
 
-        self.len -= 1
+        s.len -= 1
         return .some(unsafe { elem.assumeInit() })
     }
 }
 
 impl[Element] List[Element] {
-    /// Collect elements from an iterator into a new list.
     public func from[I: Iterator[Element = Element]](_ iter: &mut I) -> Self {
         var list = List[Element]()
         loop {
@@ -279,34 +300,33 @@ impl[Element] List[Element] {
 }
 
 impl[Element: Ord] List[Element] {
-    /// Sort the list in-place in ascending order (insertion sort).
     public func sort(&mut self) {
-        if self.len <= 1 {
+        self.ensureUnique()
+        let s = unsafe { self.storage.asMut() }
+        if s.len <= 1 {
             return
         }
 
         let elemSize = sizeOf[Element]()
 
         var i: usize = 1
-        while i < self.len {
-            // Read element at i into a temporary
+        while i < s.len {
             var key = MaybeUninit[Element].uninit()
             unsafe {
                 let keyPtr = key.asMutPtr()
-                let src = (self.buffer as *const Element).add(i)
+                let src = (s.buffer as *const Element).add(i)
                 (src as *const uint8).readBytes(keyPtr as *mut uint8, elemSize)
             }
 
             var j = i
             while j > 0 {
-                let prev = unsafe { (self.buffer as *const Element).add(j - (1 as usize)) as &Element }
+                let prev = unsafe { (s.buffer as *const Element).add(j - (1 as usize)) as &Element }
                 let keyRef = unsafe { key.assumeInitRef() }
                 match keyRef.cmp(prev) {
                     case .less => {
-                        // Shift element at j-1 to j
                         unsafe {
-                            let src = (self.buffer as *const Element).add(j - (1 as usize))
-                            let dst = (self.buffer as *mut Element).add(j)
+                            let src = (s.buffer as *const Element).add(j - (1 as usize))
+                            let dst = (s.buffer as *mut Element).add(j)
                             (src as *const uint8).readBytes(dst as *mut uint8, elemSize)
                         }
                         j -= 1
@@ -315,10 +335,9 @@ impl[Element: Ord] List[Element] {
                 }
             }
 
-            // Write key into position j
             unsafe {
                 let keyPtr = key.asPtr()
-                let dst = (self.buffer as *mut Element).add(j)
+                let dst = (s.buffer as *mut Element).add(j)
                 (keyPtr as *const uint8).readBytes(dst as *mut uint8, elemSize)
             }
 
@@ -375,9 +394,10 @@ impl[Element] Iterable for List[Element] {
     type Iterator = ListIterator[Element]
     type Element = Element
     public func iter(self) -> Self.Iterator {
+        let s = self.storage.asRef()
         ListIterator[Element] {
-            buffer: self.buffer,
-            len: self.len,
+            buffer: s.buffer,
+            len: s.len,
             idx: 0,
         }
     }
@@ -387,9 +407,10 @@ impl[Element] Iterable for &List[Element] {
     type Iterator = ListRefIterator[Element]
     type Element = &Element
     public func iter(self) -> Self.Iterator {
+        let s = self.storage.asRef()
         ListRefIterator[Element] {
-            buffer: self.buffer,
-            len: self.len,
+            buffer: s.buffer,
+            len: s.len,
             idx: 0,
         }
     }
@@ -419,9 +440,11 @@ impl[Element] Iterable for &mut List[Element] {
     type Element = &mut Element
 
     public func iter(self) -> Self.Iterator {
+        self.ensureUnique()
+        let s = unsafe { self.storage.asMut() }
         ListMutIterator[Element] {
-            buffer: self.buffer,
-            len: self.len,
+            buffer: s.buffer,
+            len: s.len,
             idx: 0,
         }
     }

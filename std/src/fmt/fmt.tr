@@ -1,4 +1,5 @@
 import std.collections.List
+import std.mem.Span
 
 const BYTE_ZERO: uint8 = 48
 const BYTE_MINUS: uint8 = 45
@@ -163,7 +164,7 @@ func formatUnsignedInteger(_ into: &mut Formatter, _ value: uint64, _ spec: rune
     writeUnsignedInteger(into, value)
 }
 
-public func formatPrintf(_ format: string, _ args: List[any Display]) -> string {
+public func formatPrintf(_ format: string, _ args: Span[any Display]) -> string {
     let format_len = std.string.stringLen(format)
     let format_data = std.string.stringData(format)
 

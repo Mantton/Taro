@@ -3643,9 +3643,8 @@ impl Parser {
 
     fn parse_callable_type_arguments(&mut self) -> R<TypeArguments> {
         let lo = self.lo_span();
-        let inputs = self.parse_delimiter_sequence(Delimiter::Parenthesis, Token::Comma, |p| {
-            p.parse_type()
-        })?;
+        let inputs = self
+            .parse_delimiter_sequence(Delimiter::Parenthesis, Token::Comma, |p| p.parse_type())?;
         let tuple_span = lo.to(self.hi_span());
 
         self.expect(Token::RArrow)?;
@@ -3696,13 +3695,12 @@ impl Parser {
     pub fn parse_path_segment(&mut self) -> R<PathSegment> {
         let lo = self.lo_span();
         let identifier = self.parse_identifier()?;
-        let arguments = if self.is_callable_shorthand_name(identifier.symbol)
-            && self.matches(Token::LParen)
-        {
-            Some(self.parse_callable_type_arguments()?)
-        } else {
-            self.parse_optional_type_arguments()?
-        };
+        let arguments =
+            if self.is_callable_shorthand_name(identifier.symbol) && self.matches(Token::LParen) {
+                Some(self.parse_callable_type_arguments()?)
+            } else {
+                self.parse_optional_type_arguments()?
+            };
 
         let segment = PathSegment {
             id: self.next_id(),
@@ -4403,8 +4401,12 @@ mod tests {
             .as_ref()
             .expect("callable shorthand lowers to type arguments");
         assert_eq!(args.arguments.len(), 2);
-        assert!(matches!(&args.arguments[0], TypeArgument::Type(ty) if matches!(ty.kind, TypeKind::Nominal(_))));
-        assert!(matches!(&args.arguments[1], TypeArgument::Type(ty) if matches!(ty.kind, TypeKind::Nominal(_))));
+        assert!(
+            matches!(&args.arguments[0], TypeArgument::Type(ty) if matches!(ty.kind, TypeKind::Nominal(_)))
+        );
+        assert!(
+            matches!(&args.arguments[1], TypeArgument::Type(ty) if matches!(ty.kind, TypeKind::Nominal(_)))
+        );
     }
 
     #[test]
@@ -4521,7 +4523,9 @@ mod tests {
     #[test]
     fn test_callable_shorthand_existential_type() {
         let ty = parse_type_str("any Fn(int32) -> int32");
-        assert!(matches!(&ty.kind, TypeKind::BoxedExistential { interfaces } if interfaces.len() == 1));
+        assert!(
+            matches!(&ty.kind, TypeKind::BoxedExistential { interfaces } if interfaces.len() == 1)
+        );
     }
 
     #[test]
@@ -4640,9 +4644,13 @@ mod tests {
 
     #[test]
     fn test_callable_shorthand_requires_arrow() {
-        let err = parse_decls("func map[F: Fn(int32)](_ f: F) { }").expect_err("missing arrow should fail");
+        let err = parse_decls("func map[F: Fn(int32)](_ f: F) { }")
+            .expect_err("missing arrow should fail");
         assert!(!err.is_empty(), "expected parse error");
-        assert!(matches!(err[0].value, ParserError::Expected(Token::RArrow, _)));
+        assert!(matches!(
+            err[0].value,
+            ParserError::Expected(Token::RArrow, _)
+        ));
     }
 
     // ==================== PATTERN TESTS ====================
@@ -5944,7 +5952,10 @@ mod tests {
                     symbol_text(&symbols, func.abi.as_ref().expect("Expected ABI").clone()),
                     "C"
                 );
-                assert_eq!(symbol_text(&symbols, decl.identifier.symbol.clone()), "read");
+                assert_eq!(
+                    symbol_text(&symbols, decl.identifier.symbol.clone()),
+                    "read"
+                );
             }
             _ => panic!("Expected function"),
         }

@@ -138,6 +138,15 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
     fn write_operand(&self, op: &Operand<'ctx>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match op {
             Operand::Copy(place) => self.write_place(place, f),
+            Operand::CopyWith(place, modifiers) => {
+                if modifiers.take {
+                    write!(f, "[take] ")?;
+                }
+                if modifiers.init {
+                    write!(f, "[init] ")?;
+                }
+                self.write_place(place, f)
+            }
             Operand::Constant(c) => self.write_constant(c, f),
         }
     }

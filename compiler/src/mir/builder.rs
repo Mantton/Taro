@@ -498,7 +498,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
     fn get_callable_trait_info(
         &self,
         ty: Ty<'ctx>,
-    ) -> Option<(CallableTraitKind, crate::sema::models::InterfaceReference<'ctx>)> {
+    ) -> Option<(
+        CallableTraitKind,
+        crate::sema::models::InterfaceReference<'ctx>,
+    )> {
         let constraints = self.gcx.canonical_constraints_of(self.thir.id);
         let mut best: Option<(
             CallableTraitKind,
@@ -536,7 +539,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         &self,
         ty: Ty<'ctx>,
     ) -> Option<crate::sema::models::InterfaceReference<'ctx>> {
-        self.get_callable_trait_info(ty).map(|(_, interface)| interface)
+        self.get_callable_trait_info(ty)
+            .map(|(_, interface)| interface)
     }
 
     pub fn get_callable_trait_self_param_ty(&self, ty: Ty<'ctx>) -> Option<Ty<'ctx>> {

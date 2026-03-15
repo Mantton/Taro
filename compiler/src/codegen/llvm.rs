@@ -45,6 +45,7 @@ use std::{
 mod existentials;
 mod intrinsics;
 mod normalize;
+mod rc;
 mod witness;
 
 const NON_AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES: u64 = 256;
@@ -216,6 +217,7 @@ struct Emitter<'llvm, 'gcx> {
     strings: FxHashMap<Symbol, PointerValue<'llvm>>,
     target_data: inkwell::targets::TargetData,
     gc_descs: FxHashMap<Ty<'gcx>, PointerValue<'llvm>>,
+    contains_rc_cache: FxHashMap<Ty<'gcx>, bool>,
     witness_tables: FxHashMap<(TypeHead, InterfaceReference<'gcx>), PointerValue<'llvm>>,
     interface_descriptors: FxHashMap<InterfaceReference<'gcx>, PointerValue<'llvm>>,
     type_metadata: FxHashMap<Ty<'gcx>, PointerValue<'llvm>>,
@@ -226,7 +228,7 @@ struct Emitter<'llvm, 'gcx> {
     rt_conformance_entry_ty: inkwell::types::StructType<'llvm>,
     rt_type_metadata_ty: inkwell::types::StructType<'llvm>,
     usize_ty: inkwell::types::IntType<'llvm>,
-    shadow: Option<ShadowStackInfo<'llvm, 'gcx>>,
+    shadow: Option<ShadowStackInfo<'llvm>>,
     eh_personality: Option<FunctionValue<'llvm>>,
     eh_slot: Option<PointerValue<'llvm>>,
     current_fn: Option<FunctionValue<'llvm>>,
@@ -253,24 +255,18 @@ enum StdPanicCallKind {
     Unreachable,
 }
 
-struct ShadowStackInfo<'llvm, 'gcx> {
+struct ShadowStackInfo<'llvm> {
     frame_ptr: PointerValue<'llvm>,
     slots_ptr: PointerValue<'llvm>,
-    slot_defs: Vec<ShadowSlotDef<'gcx>>,
+    slot_defs: Vec<ShadowSlotDef>,
     slot_map: Vec<Vec<usize>>,
 }
 
 #[derive(Clone)]
-struct ShadowSlotDef<'gcx> {
+struct ShadowSlotDef {
     local: mir::LocalId,
-    kind: ShadowSlotKind<'gcx>,
-}
-
-#[derive(Clone)]
-enum ShadowSlotKind<'gcx> {
-    Local(Ty<'gcx>),
-    Field(crate::thir::FieldIndex, Ty<'gcx>),
-    EnumFieldOffset(u64),
+    offset: u64,
+    deref_depth: u8,
 }
 
 impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
@@ -326,6 +322,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             strings: FxHashMap::default(),
             target_data,
             gc_descs: FxHashMap::default(),
+            contains_rc_cache: FxHashMap::default(),
             witness_tables: FxHashMap::default(),
             interface_descriptors: FxHashMap::default(),
             type_metadata: FxHashMap::default(),
@@ -1569,17 +1566,29 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             None
         };
 
+        // Create a preamble block for allocas, zero-init, shadow stack, and param retains.
+        // This is separate from the MIR start block so that retain_rc_params (which may
+        // create branch BBs for enum params) doesn't corrupt the MIR entry block.
+        let preamble_block = self.context.append_basic_block(function, "preamble");
         let llvm_blocks = self.create_blocks(function, body);
-        let entry_block = llvm_blocks[body.start_block.index()];
+        let mir_entry_block = llvm_blocks[body.start_block.index()];
         if self.body_has_unwind(body) {
             function.set_personality_function(self.eh_personality_fn());
-            self.eh_slot = Some(self.allocate_eh_slot(entry_block));
+            self.eh_slot = Some(self.allocate_eh_slot(preamble_block));
         } else {
             self.eh_slot = None;
         }
-        let mut locals = self.allocate_locals(body, entry_block, function, &fn_abi);
-        self.builder.position_at_end(entry_block);
-        self.setup_shadow_stack(body, entry_block, &locals)?;
+        let mut locals = self.allocate_locals(body, preamble_block, function, &fn_abi);
+        self.builder.position_at_end(preamble_block);
+        self.zero_init_rc_locals(body, &locals);
+        self.setup_shadow_stack(body, preamble_block, &locals)?;
+        self.retain_rc_params(body, &locals);
+        // Branch from preamble to the MIR entry block. The builder may have been
+        // repositioned by retain_rc_params (e.g., enum walk merge blocks), so this
+        // branch is emitted wherever the builder currently is — completing the chain.
+        self.builder
+            .build_unconditional_branch(mir_entry_block)
+            .unwrap();
 
         for (bb_id, bb) in body.basic_blocks.iter_enumerated() {
             let llvm_bb = llvm_blocks[bb_id.index()];
@@ -1700,7 +1709,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         arg: &Operand<'gcx>,
         arg_ty: Ty<'gcx>,
     ) -> CompileResult<Option<PointerValue<'llvm>>> {
-        if let Operand::Copy(place) = arg {
+        if let Operand::Copy(place) | Operand::CopyWith(place, _) = arg {
             if let Some(ptr) = self.place_address(body, locals, place)? {
                 return Ok(Some(ptr));
             }
@@ -1811,6 +1820,13 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         call_site: CallSiteValue<'llvm>,
     ) -> CompileResult<()> {
         if matches!(fn_abi.ret.mode, abi::PassMode::Indirect { .. }) {
+            if !destination
+                .projection
+                .iter()
+                .any(|proj| matches!(proj, mir::PlaceElem::Deref))
+            {
+                let _ = self.update_shadow_for_local(body, locals, destination.local);
+            }
             return Ok(());
         }
         if let Some(ret) = call_site.try_as_basic_value().basic() {
@@ -2094,58 +2110,20 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     }
 
     fn collect_shadow_slots(
-        &self,
+        &mut self,
         body: &mir::Body<'gcx>,
-    ) -> (Vec<ShadowSlotDef<'gcx>>, Vec<Vec<usize>>) {
+    ) -> (Vec<ShadowSlotDef>, Vec<Vec<usize>>) {
         let mut slot_defs = Vec::new();
         let mut slot_map = vec![Vec::new(); body.locals.len()];
 
         for (local, decl) in body.locals.iter_enumerated() {
-            let ty = decl.ty;
-            let mut local_slots = Vec::new();
-            match ty.kind() {
-                TyKind::Reference(..) | TyKind::String => {
-                    local_slots.push(ShadowSlotKind::Local(ty));
-                }
-                TyKind::Adt(def, adt_args) => match def.kind {
-                    crate::sema::models::AdtKind::Struct => {
-                        let defn = self.gcx.get_struct_definition(def.id);
-                        for (idx, field) in defn.fields.iter().enumerate() {
-                            let field_ty = instantiate_ty_with_args(self.gcx, field.ty, adt_args);
-                            if is_pointer_ty(field_ty) {
-                                let field_idx = crate::thir::FieldIndex::new(idx);
-                                local_slots.push(ShadowSlotKind::Field(field_idx, field_ty));
-                            }
-                        }
-                    }
-                    crate::sema::models::AdtKind::Enum => {
-                        let offsets = enum_pointer_offsets(
-                            self.context,
-                            self.gcx,
-                            &self.target_data,
-                            def.id,
-                            adt_args,
-                            self.current_subst,
-                        );
-                        for offset in offsets {
-                            local_slots.push(ShadowSlotKind::EnumFieldOffset(offset));
-                        }
-                    }
-                },
-                TyKind::Tuple(items) => {
-                    for (idx, item_ty) in items.iter().enumerate() {
-                        if is_pointer_ty(*item_ty) {
-                            let field_idx = crate::thir::FieldIndex::new(idx);
-                            local_slots.push(ShadowSlotKind::Field(field_idx, *item_ty));
-                        }
-                    }
-                }
-                _ => {}
-            }
-
-            for kind in local_slots {
+            for (offset, deref_depth) in self.shadow_root_offsets_for_ty(decl.ty) {
                 let slot_index = slot_defs.len();
-                slot_defs.push(ShadowSlotDef { local, kind });
+                slot_defs.push(ShadowSlotDef {
+                    local,
+                    offset,
+                    deref_depth,
+                });
                 slot_map[local.index()].push(slot_index);
             }
         }
@@ -2188,7 +2166,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
     fn update_shadow_for_local(
         &mut self,
-        body: &mir::Body<'gcx>,
+        _body: &mir::Body<'gcx>,
         locals: &[LocalStorage<'llvm>],
         local: mir::LocalId,
     ) -> CompileResult<()> {
@@ -2207,99 +2185,76 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         for slot_idx in slot_indices {
             let def = slot_defs.get(slot_idx).cloned().expect("shadow slot def");
-            match def.kind.clone() {
-                ShadowSlotKind::Local(_) | ShadowSlotKind::Field(_, _) => {
-                    let place = match def.kind.clone() {
-                        ShadowSlotKind::Local(_) => mir::Place::from_local(def.local),
-                        ShadowSlotKind::Field(field_idx, field_ty) => mir::Place {
-                            local: def.local,
-                            projection: vec![mir::PlaceElem::Field(field_idx, field_ty)],
-                        },
-                        ShadowSlotKind::EnumFieldOffset(_) => {
-                            unreachable!("enum offsets handled separately")
-                        }
+            let ptr_val = match locals[def.local.index()] {
+                LocalStorage::Stack(ptr) => {
+                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
+                    let mut base = self
+                        .builder
+                        .build_bit_cast(ptr, ptr_ty, "gc_base_i8")
+                        .unwrap()
+                        .into_pointer_value();
+                    for _ in 0..def.deref_depth {
+                        base = self
+                            .builder
+                            .build_load(ptr_ty, base, "gc_deref_root")
+                            .unwrap()
+                            .into_pointer_value();
+                    }
+                    let offset_const = self.usize_ty.const_int(def.offset, false);
+                    let field_ptr = unsafe {
+                        self.builder
+                            .build_gep(
+                                self.context.i8_type(),
+                                base,
+                                &[offset_const],
+                                "gc_root_ptr",
+                            )
+                            .unwrap()
                     };
-
-                    let value = match self.load_place(body, locals, &place) {
-                        Some(v) => v,
-                        None => {
-                            self.store_shadow_slot(
-                                slot_idx,
-                                self.context.ptr_type(AddressSpace::default()).const_null(),
-                            );
-                            continue;
-                        }
-                    };
-
-                    let slot_ty = match def.kind {
-                        ShadowSlotKind::Local(ty) => ty,
-                        ShadowSlotKind::Field(_, ty) => ty,
-                        ShadowSlotKind::EnumFieldOffset(_) => {
-                            unreachable!("enum offsets handled separately")
-                        }
-                    };
-
-                    let ptr_val = match self.shadow_ptr_from_value(slot_ty, value) {
-                        Some(p) => p,
-                        None => self.context.ptr_type(AddressSpace::default()).const_null(),
-                    };
-                    self.store_shadow_slot(slot_idx, ptr_val);
+                    self.builder
+                        .build_load(ptr_ty, field_ptr, "gc_root_load")
+                        .unwrap()
+                        .into_pointer_value()
                 }
-                ShadowSlotKind::EnumFieldOffset(offset) => {
-                    let ptr_val = match locals[def.local.index()] {
-                        LocalStorage::Stack(ptr) => {
-                            let i8_ptr_ty = self.context.ptr_type(AddressSpace::default());
-                            let base = self
-                                .builder
-                                .build_bit_cast(ptr, i8_ptr_ty, "enum_base_i8")
-                                .unwrap()
-                                .into_pointer_value();
-                            let offset_const = self.usize_ty.const_int(offset, false);
-                            let field_ptr = unsafe {
-                                self.builder
-                                    .build_gep(
-                                        self.context.i8_type(),
-                                        base,
-                                        &[offset_const],
-                                        "enum_field_ptr",
-                                    )
-                                    .unwrap()
-                            };
-                            let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                            self.builder
-                                .build_load(ptr_ty, field_ptr, "enum_ptr_load")
-                                .unwrap()
-                                .into_pointer_value()
-                        }
-                        LocalStorage::Value(_) => {
-                            self.context.ptr_type(AddressSpace::default()).const_null()
-                        }
-                    };
-                    self.store_shadow_slot(slot_idx, ptr_val);
-                }
-            }
+                LocalStorage::Value(_) => self.context.ptr_type(AddressSpace::default()).const_null(),
+            };
+            self.store_shadow_slot(slot_idx, ptr_val);
         }
 
         Ok(())
     }
 
-    fn shadow_ptr_from_value(
-        &mut self,
-        ty: Ty<'gcx>,
-        value: BasicValueEnum<'llvm>,
-    ) -> Option<PointerValue<'llvm>> {
-        match ty.kind() {
-            TyKind::Reference(..) => Some(value.into_pointer_value()),
-            TyKind::String => {
-                let struct_val = value.into_struct_value();
-                let ptr_val = self
-                    .builder
-                    .build_extract_value(struct_val, 0, "gc_str_ptr")
-                    .unwrap();
-                Some(ptr_val.into_pointer_value())
-            }
-            _ => None,
+    fn shadow_root_offsets_for_ty(&mut self, ty: Ty<'gcx>) -> Vec<(u64, u8)> {
+        let mut deref_depth = 0u8;
+        let mut current = crate::sema::tycheck::utils::normalize_aliases(self.gcx, ty);
+        while let TyKind::Reference(inner, _) = current.kind() {
+            deref_depth = deref_depth.saturating_add(1);
+            current = crate::sema::tycheck::utils::normalize_aliases(self.gcx, inner);
         }
+        self.gc_root_offsets_for_ty(current)
+            .into_iter()
+            .map(|offset| (offset, deref_depth))
+            .collect()
+    }
+
+    fn should_refresh_shadow_for_place(
+        &self,
+        body: &mir::Body<'gcx>,
+        place: &mir::Place<'gcx>,
+    ) -> bool {
+        if !place
+            .projection
+            .iter()
+            .any(|proj| matches!(proj, mir::PlaceElem::Deref))
+        {
+            return true;
+        }
+
+        let local_ty = crate::sema::tycheck::utils::normalize_aliases(
+            self.gcx,
+            body.locals[place.local].ty,
+        );
+        matches!(local_ty.kind(), TyKind::Reference(..))
     }
 
     fn emit_shadow_pop(&mut self) {
@@ -2329,6 +2284,13 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     ) -> CompileResult<()> {
         match &stmt.kind {
             mir::StatementKind::Assign(place, rvalue) => {
+                let (copy_source, copy_modifiers) = match rvalue {
+                    mir::Rvalue::Use(op) => match op.as_copy() {
+                        Some((source, modifiers)) => (Some(source.clone()), modifiers),
+                        None => (None, mir::CopyModifiers::default()),
+                    },
+                    _ => (None, mir::CopyModifiers::default()),
+                };
                 if self.try_lower_large_place_move(body, locals, place, rvalue)? {
                     return Ok(());
                 }
@@ -2336,8 +2298,46 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     return Ok(());
                 }
                 let dest_ty = self.place_ty(body, place);
+                let dest_ty_mono = self.mono_ty(dest_ty);
+                let needs_rc = self.contains_rc(dest_ty_mono);
+
                 if let Some(value) = self.lower_rvalue(body, locals, dest_ty, rvalue)? {
+                    // Pre-assignment: save old value for Rc-containing owned destinations.
+                    let rc_old_tmp = if needs_rc && !copy_modifiers.init {
+                        if let Some(dest_ptr) = self.place_address(body, locals, place)? {
+                            self.emit_rc_pre_assign(dest_ptr, dest_ty_mono)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
                     self.store_place(place, body, locals, value)?;
+
+                    // Post-assignment (modifiers-aware):
+                    // - copy: retain new, then release old
+                    // - init copy: retain new
+                    // - take: release old only
+                    // - init take: no retain/release
+                    if needs_rc {
+                        if !copy_modifiers.take {
+                            if let Some(dest_ptr) = self.place_address(body, locals, place)? {
+                                self.emit_retain_walk(dest_ptr, dest_ty_mono);
+                            }
+                        }
+                        if let Some(old_tmp) = rc_old_tmp {
+                            self.emit_release_walk(old_tmp, dest_ty_mono);
+                        }
+                    }
+
+                    self.invalidate_taken_copy_source(
+                        body,
+                        locals,
+                        copy_source.as_ref(),
+                        place,
+                        copy_modifiers,
+                    )?;
                 }
             }
             mir::StatementKind::ShadowResync(resynced_locals) => {
@@ -2383,8 +2383,14 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         destination: &Place<'gcx>,
         rvalue: &mir::Rvalue<'gcx>,
     ) -> CompileResult<bool> {
-        let mir::Rvalue::Use(Operand::Copy(source)) = rvalue else {
-            return Ok(false);
+        let (source, copy_modifiers) = match rvalue {
+            mir::Rvalue::Use(op) => {
+                let Some((source, modifiers)) = op.as_copy() else {
+                    return Ok(false);
+                };
+                (source, modifiers)
+            }
+            _ => return Ok(false),
         };
 
         let dest_ty = self.place_ty(body, destination);
@@ -2413,6 +2419,16 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             return Ok(false);
         };
 
+        let dest_ty_mono = self.mono_ty(dest_ty);
+        let needs_rc = self.contains_rc(dest_ty_mono);
+
+        // Pre-assignment: save old for Rc-containing types.
+        let rc_old_tmp = if needs_rc && !copy_modifiers.init {
+            self.emit_rc_pre_assign(dest_ptr, dest_ty_mono)
+        } else {
+            None
+        };
+
         let dest_align = self.target_data.get_abi_alignment(&dest_llvm_ty).max(1);
         let src_align = self.target_data.get_abi_alignment(&src_llvm_ty).max(1);
         let count = self.usize_ty.const_int(dest_size, false);
@@ -2424,15 +2440,75 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .build_memmove(dest_ptr, dest_align, src_ptr, src_align, count)
             .unwrap();
 
-        if !destination
-            .projection
-            .iter()
-            .any(|proj| matches!(proj, mir::PlaceElem::Deref))
-        {
+        // Post-assignment behavior is driven by copy modifiers.
+        if needs_rc {
+            if !copy_modifiers.take {
+                self.emit_retain_walk(dest_ptr, dest_ty_mono);
+            }
+            if let Some(old_tmp) = rc_old_tmp {
+                self.emit_release_walk(old_tmp, dest_ty_mono);
+            }
+        }
+
+        if self.should_refresh_shadow_for_place(body, destination) {
             let _ = self.update_shadow_for_local(body, locals, destination.local);
         }
 
+        self.invalidate_taken_copy_source(body, locals, Some(source), destination, copy_modifiers)?;
+
         Ok(true)
+    }
+
+    fn invalidate_taken_copy_source(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        source: Option<&Place<'gcx>>,
+        destination: &Place<'gcx>,
+        modifiers: mir::CopyModifiers,
+    ) -> CompileResult<()> {
+        if !modifiers.take {
+            return Ok(());
+        }
+        let Some(source) = source else {
+            return Ok(());
+        };
+        if !source.projection.is_empty() {
+            return Ok(());
+        }
+        if source.local == destination.local {
+            return Ok(());
+        }
+        if matches!(body.locals[source.local].kind, mir::LocalKind::Param) {
+            // Params may alias caller storage for indirect ABI; never invalidate in-place.
+            return Ok(());
+        }
+
+        let source_ty = self.mono_ty(self.place_ty(body, source));
+        if !self.contains_rc(source_ty) {
+            return Ok(());
+        }
+        let Some(source_ptr) = self.place_address(body, locals, source)? else {
+            return Ok(());
+        };
+        let Some(source_llvm_ty) = self.lower_ty(source_ty) else {
+            return Ok(());
+        };
+        let size = self.target_data.get_store_size(&source_llvm_ty);
+        if size == 0 {
+            return Ok(());
+        }
+
+        self.builder
+            .build_memset(
+                source_ptr,
+                1,
+                self.context.i8_type().const_zero(),
+                self.usize_ty.const_int(size, false),
+            )
+            .unwrap();
+        let _ = self.update_shadow_for_local(body, locals, source.local);
+        Ok(())
     }
 
     fn lower_rvalue(
@@ -2675,6 +2751,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             return Ok(false);
         };
         if *count == 0 {
+            return Ok(false);
+        }
+        // Keep Rc-containing types on the normal assignment path so retain/release
+        // hooks can run correctly.
+        let dest_ty = self.mono_ty(self.place_ty(body, place));
+        if self.contains_rc(dest_ty) {
             return Ok(false);
         }
 
@@ -3383,6 +3465,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     .unwrap();
             }
             mir::TerminatorKind::Return => {
+                self.emit_rc_cleanup(body, locals);
                 self.emit_shadow_pop();
                 let fn_abi = self
                     .current_fn_abi
@@ -3406,6 +3489,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 }
             }
             mir::TerminatorKind::ResumeUnwind => {
+                self.emit_rc_cleanup(body, locals);
                 self.emit_shadow_pop();
                 let Some(eh_slot) = self.eh_slot else {
                     self.gcx.dcx().emit_error(
@@ -3454,6 +3538,22 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 )? {
                     return Ok(());
                 }
+                // Pre-call: save old destination for Rc-containing types.
+                // Call results are ownership transfers (callee skips release of return
+                // local), so no retain is needed — only release of the old value.
+                let call_dest_ty = self.place_ty(body, destination);
+                let call_dest_ty_mono = self.mono_ty(call_dest_ty);
+                let call_needs_rc = self.contains_rc(call_dest_ty_mono);
+                let call_rc_old_tmp = if call_needs_rc {
+                    if let Some(dest_ptr) = self.place_address(body, locals, destination)? {
+                        self.emit_rc_pre_assign(dest_ptr, call_dest_ty_mono)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
                 let virtual_instance = self.virtual_instance_for_call(func);
                 if let Some(instance) = virtual_instance.as_ref() {
                     self.lower_virtual_call(
@@ -3505,12 +3605,28 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     )?;
                     self.store_direct_call_result(body, locals, destination, &fn_abi, call_site)?;
                 }
-                if virtual_instance.is_none() {
-                    let _ = self.builder.build_unconditional_branch(normal_bb).unwrap();
+                // Post-call: release old destination (no retain — ownership transfer).
+                if let Some(old_tmp) = call_rc_old_tmp {
+                    self.emit_release_walk(old_tmp, call_dest_ty_mono);
                 }
+                self.refresh_rc_shadow_locals(body, locals);
+                let _ = self.builder.build_unconditional_branch(normal_bb).unwrap();
             }
         }
         Ok(())
+    }
+
+    fn refresh_rc_shadow_locals(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &[LocalStorage<'llvm>],
+    ) {
+        for (local, decl) in body.locals.iter_enumerated() {
+            let ty = self.substitute_ty_current(decl.ty);
+            if self.contains_rc(ty) {
+                let _ = self.update_shadow_for_local(body, locals, local);
+            }
+        }
     }
 
     fn try_lower_intrinsic_call(
@@ -4710,7 +4826,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     ) -> Option<(FunctionValue<'llvm>, abi::FnAbi<'gcx>)> {
         // Get the type of the operand
         let ty = match func {
-            Operand::Copy(place) => {
+            Operand::Copy(place) | Operand::CopyWith(place, _) => {
                 // Get the base type from the local
                 let mut ty = body.locals[place.local].ty;
                 // Apply projections to get the final type
@@ -4780,7 +4896,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         op: &mir::Operand<'gcx>,
     ) -> CompileResult<Option<BasicValueEnum<'llvm>>> {
         let value = match op {
-            mir::Operand::Copy(place) => {
+            mir::Operand::Copy(place) | mir::Operand::CopyWith(place, _) => {
                 self.load_place(body, locals, place)
             }
             mir::Operand::Constant(c) => self.lower_constant(c),
@@ -4851,11 +4967,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         let ptr = self.project_place(place, body, locals)?;
         self.builder.build_store(ptr, value).unwrap();
-        if !place
-            .projection
-            .iter()
-            .any(|p| matches!(p, mir::PlaceElem::Deref))
-        {
+        if self.should_refresh_shadow_for_place(body, place) {
             let _ = self.update_shadow_for_local(body, locals, place.local);
         }
         Ok(())
@@ -5114,7 +5226,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
     fn operand_ty(&self, body: &mir::Body<'gcx>, operand: &mir::Operand<'gcx>) -> Ty<'gcx> {
         let ty = match operand {
-            mir::Operand::Copy(place) => body.locals[place.local].ty,
+            mir::Operand::Copy(place) | mir::Operand::CopyWith(place, _) => {
+                self.place_ty(body, place)
+            }
             mir::Operand::Constant(c) => c.ty,
         };
 
@@ -5186,74 +5300,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let llvm_ty = self.lower_ty(ty).expect("lower type");
         let size = self.target_data.get_store_size(&llvm_ty);
         let align = self.target_data.get_abi_alignment(&llvm_ty) as u64;
-
-        // Collect pointer field offsets (only direct reference/string/GcPtr fields).
-        let mut offsets: Vec<u64> = vec![];
-        match ty.kind() {
-            TyKind::Adt(def, adt_args) => match def.kind {
-                crate::sema::models::AdtKind::Struct => {
-                    let defn = self.gcx.get_struct_definition(def.id);
-                    for (idx, field) in defn.fields.iter().enumerate() {
-                        let resolved = crate::sema::tycheck::utils::normalize_post_monomorphization(
-                            self.gcx,
-                            instantiate_ty_with_args(self.gcx, field.ty, adt_args),
-                        );
-                        if is_pointer_ty(resolved) {
-                            let struct_ty = llvm_ty.into_struct_type();
-                            if let Some(off) =
-                                self.target_data.offset_of_element(&struct_ty, idx as u32)
-                            {
-                                offsets.push(off);
-                            }
-                        }
-                    }
-                }
-                crate::sema::models::AdtKind::Enum => {
-                    offsets = enum_pointer_offsets(
-                        self.context,
-                        self.gcx,
-                        &self.target_data,
-                        def.id,
-                        adt_args,
-                        self.current_subst,
-                    );
-                }
-            },
-            TyKind::Tuple(items) => {
-                let struct_ty = llvm_ty.into_struct_type();
-                for (idx, item) in items.iter().enumerate() {
-                    let item = crate::sema::tycheck::utils::normalize_post_monomorphization(
-                        self.gcx, *item,
-                    );
-                    if is_pointer_ty(item) {
-                        if let Some(off) =
-                            self.target_data.offset_of_element(&struct_ty, idx as u32)
-                        {
-                            offsets.push(off);
-                        }
-                    }
-                }
-            }
-            TyKind::Array { element, len } => {
-                let element =
-                    crate::sema::tycheck::utils::normalize_post_monomorphization(self.gcx, element);
-                if !is_pointer_ty(element) {
-                    // Only track direct pointer-like elements for now.
-                } else if let ConstKind::Value(ConstValue::Integer(n)) = len.kind {
-                    if n > 0 {
-                        let elem_ty = self.lower_ty(element).expect("array element type");
-                        let elem_size = self.target_data.get_store_size(&elem_ty);
-                        for i in 0..(n as u64) {
-                            offsets.push(i * elem_size);
-                        }
-                    }
-                }
-            }
-            TyKind::String | TyKind::Reference(..) | TyKind::BoxedExistential { .. } => {
-                offsets.push(0);
-            }
-            _ => {}
-        }
+        let offsets = self.gc_root_offsets_for_ty(ty);
 
         let ptr_offsets_ptr = if offsets.is_empty() {
             self.context
@@ -5302,6 +5349,257 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let ptr = gv.as_pointer_value();
         self.gc_descs.insert(ty, ptr);
         ptr
+    }
+
+    fn gc_root_offsets_for_ty(&mut self, ty: Ty<'gcx>) -> Vec<u64> {
+        let mut offsets = Vec::new();
+        self.append_gc_root_offsets(ty, 0, &mut offsets);
+        offsets.sort_unstable();
+        offsets.dedup();
+        offsets
+    }
+
+    fn append_gc_root_offsets(&mut self, ty: Ty<'gcx>, base: u64, offsets: &mut Vec<u64>) {
+        let ty = crate::sema::tycheck::utils::normalize_aliases(self.gcx, ty);
+        if self.is_rc_ty(ty) {
+            offsets.push(base);
+            return;
+        }
+
+        match ty.kind() {
+            TyKind::Parameter(_) | TyKind::Alias { .. } => {}
+            TyKind::Pointer(..)
+            | TyKind::Reference(..)
+            | TyKind::String
+            | TyKind::BoxedExistential { .. } => offsets.push(base),
+            TyKind::Adt(def, adt_args) => match def.kind {
+                crate::sema::models::AdtKind::Struct => {
+                    let defn = self.gcx.get_struct_definition(def.id);
+                    let struct_ty = self
+                        .lower_ty(ty)
+                        .expect("struct gc layout")
+                        .into_struct_type();
+                    for (idx, field) in defn.fields.iter().enumerate() {
+                        let field_ty = crate::sema::tycheck::utils::normalize_aliases(
+                            self.gcx,
+                            instantiate_ty_with_args(self.gcx, field.ty, adt_args),
+                        );
+                        let Some(field_offset) =
+                            self.target_data.offset_of_element(&struct_ty, idx as u32)
+                        else {
+                            continue;
+                        };
+                        self.append_gc_root_offsets(field_ty, base + field_offset, offsets);
+                    }
+                }
+                crate::sema::models::AdtKind::Enum => {
+                    let defn = self.gcx.get_enum_definition(def.id);
+                    let layout = enum_layout(
+                        self.context,
+                        self.gcx,
+                        &self.target_data,
+                        def.id,
+                        adt_args,
+                        self.current_subst,
+                    );
+                    for variant in defn.variants.iter() {
+                        let crate::sema::models::EnumVariantKind::Tuple(fields) = variant.kind
+                        else {
+                            continue;
+                        };
+                        if fields.is_empty() {
+                            continue;
+                        }
+                        let struct_ty = enum_variant_struct_ty(
+                            self.context,
+                            self.gcx,
+                            &self.target_data,
+                            fields,
+                            adt_args,
+                            self.current_subst,
+                        );
+                        for (idx, field) in fields.iter().enumerate() {
+                            let field_ty = crate::sema::tycheck::utils::normalize_aliases(
+                                self.gcx,
+                                instantiate_ty_with_args(self.gcx, field.ty, adt_args),
+                            );
+                            let Some(field_offset) =
+                                self.target_data.offset_of_element(&struct_ty, idx as u32)
+                            else {
+                                continue;
+                            };
+                            self.append_gc_root_offsets(
+                                field_ty,
+                                base + layout.payload_offset + field_offset,
+                                offsets,
+                            );
+                        }
+                    }
+                }
+            },
+            TyKind::Tuple(items) => {
+                let Some(lowered) = self.lower_ty(ty) else {
+                    return;
+                };
+                let struct_ty = lowered.into_struct_type();
+                for (idx, item_ty) in items.iter().enumerate() {
+                    let item_ty = crate::sema::tycheck::utils::normalize_aliases(self.gcx, *item_ty);
+                    let Some(field_offset) =
+                        self.target_data.offset_of_element(&struct_ty, idx as u32)
+                    else {
+                        continue;
+                    };
+                    self.append_gc_root_offsets(item_ty, base + field_offset, offsets);
+                }
+            }
+            TyKind::Array { element, len } => {
+                let element = crate::sema::tycheck::utils::normalize_aliases(self.gcx, element);
+                let element_offsets = self.gc_root_offsets_for_ty(element);
+                if element_offsets.is_empty() {
+                    return;
+                }
+                if let ConstKind::Value(ConstValue::Integer(n)) = len.kind {
+                    if n == 0 {
+                        return;
+                    }
+                    let elem_ty = self.lower_ty(element).expect("array element type");
+                    let elem_size = self.target_data.get_store_size(&elem_ty);
+                    for i in 0..(n as u64) {
+                        let elem_base = base + (i * elem_size);
+                        for elem_offset in &element_offsets {
+                            offsets.push(elem_base + elem_offset);
+                        }
+                    }
+                }
+            }
+            TyKind::Closure { closure_def_id, .. } => {
+                let Some(captures) = self.gcx.get_closure_captures(closure_def_id) else {
+                    return;
+                };
+                if captures.captures.is_empty() {
+                    return;
+                }
+                let struct_ty = self
+                    .lower_ty(ty)
+                    .expect("closure gc layout")
+                    .into_struct_type();
+                for (idx, capture) in captures.captures.iter().enumerate() {
+                    let capture_ty = crate::sema::tycheck::utils::normalize_aliases(
+                        self.gcx,
+                        capture.ty,
+                    );
+                    let Some(field_offset) =
+                        self.target_data.offset_of_element(&struct_ty, idx as u32)
+                    else {
+                        continue;
+                    };
+                    self.append_gc_root_offsets(capture_ty, base + field_offset, offsets);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Returns true if `ty` is `Rc[T]` for some T.
+    fn is_rc_ty(&self, ty: Ty<'gcx>) -> bool {
+        if let TyKind::Adt(def, _) = ty.kind() {
+            if let Some(rc_id) = self.gcx.std_item_def(hir::StdItem::Rc) {
+                return def.id == rc_id;
+            }
+        }
+        false
+    }
+
+    /// Returns true if `ty` contains any `Rc` fields (including being `Rc` itself).
+    /// Results are cached for efficiency.
+    fn contains_rc(&mut self, ty: Ty<'gcx>) -> bool {
+        if let Some(&cached) = self.contains_rc_cache.get(&ty) {
+            return cached;
+        }
+
+        // Insert false first to handle recursive types.
+        self.contains_rc_cache.insert(ty, false);
+
+        let result = self.contains_rc_inner(ty);
+        self.contains_rc_cache.insert(ty, result);
+        result
+    }
+
+    fn contains_rc_inner(&mut self, ty: Ty<'gcx>) -> bool {
+        if self.is_rc_ty(ty) {
+            return true;
+        }
+
+        match ty.kind() {
+            TyKind::Adt(def, adt_args) => match def.kind {
+                crate::sema::models::AdtKind::Struct => {
+                    let defn = self.gcx.get_struct_definition(def.id);
+                    let fields: Vec<_> = defn.fields.to_vec();
+                    for field in &fields {
+                        let resolved = crate::sema::tycheck::utils::normalize_post_monomorphization(
+                            self.gcx,
+                            instantiate_ty_with_args(self.gcx, field.ty, adt_args),
+                        );
+                        if self.contains_rc(resolved) {
+                            return true;
+                        }
+                    }
+                    false
+                }
+                crate::sema::models::AdtKind::Enum => {
+                    let defn = self.gcx.get_enum_definition(def.id);
+                    let variants: Vec<_> = defn.variants.to_vec();
+                    for variant in &variants {
+                        if let crate::sema::models::EnumVariantKind::Tuple(fields) = variant.kind {
+                            for field in fields {
+                                let resolved =
+                                    crate::sema::tycheck::utils::normalize_post_monomorphization(
+                                        self.gcx,
+                                        instantiate_ty_with_args(self.gcx, field.ty, adt_args),
+                                    );
+                                if self.contains_rc(resolved) {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                    false
+                }
+            },
+            TyKind::Tuple(items) => {
+                let items: Vec<_> = items.to_vec();
+                for item in &items {
+                    let item = crate::sema::tycheck::utils::normalize_post_monomorphization(
+                        self.gcx, *item,
+                    );
+                    if self.contains_rc(item) {
+                        return true;
+                    }
+                }
+                false
+            }
+            TyKind::Array { element, .. } => {
+                let element =
+                    crate::sema::tycheck::utils::normalize_post_monomorphization(self.gcx, element);
+                self.contains_rc(element)
+            }
+            TyKind::Closure { closure_def_id, .. } => {
+                if let Some(captures) = self.gcx.get_closure_captures(closure_def_id) {
+                    for capture in &captures.captures {
+                        let resolved =
+                            crate::sema::tycheck::utils::normalize_post_monomorphization(
+                                self.gcx, capture.ty,
+                            );
+                        if self.contains_rc(resolved) {
+                            return true;
+                        }
+                    }
+                }
+                false
+            }
+            // Rc fields behind pointers/references are not owned — don't recurse.
+            _ => false,
+        }
     }
 }
 
@@ -5422,52 +5720,6 @@ fn enum_variant_tuple_ty<'gcx>(
             Ty::new(TyKind::Tuple(list), gcx)
         }
     }
-}
-
-fn enum_pointer_offsets<'llvm, 'gcx>(
-    context: &'llvm Context,
-    gcx: Gcx<'gcx>,
-    target_data: &TargetData,
-    def_id: hir::DefinitionID,
-    adt_args: GenericArguments<'gcx>,
-    subst: GenericArguments<'gcx>,
-) -> Vec<u64> {
-    let def = gcx.get_enum_definition(def_id);
-    let layout = enum_layout(context, gcx, target_data, def_id, adt_args, subst);
-    let mut offsets = Vec::new();
-
-    for variant in def.variants.iter() {
-        let crate::sema::models::EnumVariantKind::Tuple(fields) = variant.kind else {
-            continue;
-        };
-        if fields.is_empty() {
-            continue;
-        }
-        let struct_ty = enum_variant_struct_ty(context, gcx, target_data, fields, adt_args, subst);
-        for (idx, field) in fields.iter().enumerate() {
-            let resolved = instantiate_ty_with_args(gcx, field.ty, adt_args);
-            if !is_pointer_ty(resolved) {
-                continue;
-            }
-            if let Some(off) = target_data.offset_of_element(&struct_ty, idx as u32) {
-                offsets.push(layout.payload_offset + off);
-            }
-        }
-    }
-
-    offsets.sort_unstable();
-    offsets.dedup();
-    offsets
-}
-
-fn is_pointer_ty(ty: Ty) -> bool {
-    matches!(
-        ty.kind(),
-        TyKind::Pointer(..)
-            | TyKind::Reference(..)
-            | TyKind::String
-            | TyKind::BoxedExistential { .. }
-    )
 }
 
 fn lower_fn_sig<'llvm, 'gcx>(
@@ -5636,9 +5888,7 @@ fn lower_type<'llvm, 'gcx>(
                     let fields: Vec<BasicTypeEnum<'llvm>> = captures
                         .captures
                         .iter()
-                        .filter_map(|cap| {
-                            lower_type(context, gcx, target_data, cap.ty, subst)
-                        })
+                        .filter_map(|cap| lower_type(context, gcx, target_data, cap.ty, subst))
                         .collect();
                     Some(context.struct_type(&fields, false).into())
                 }

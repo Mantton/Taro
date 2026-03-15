@@ -1,5 +1,3 @@
-import std.collections.List
-
 func sum(_ vals: int32...) -> int32 {
     var result: int32 = 0
     var i: usize = 0

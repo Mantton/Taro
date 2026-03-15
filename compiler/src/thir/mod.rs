@@ -2,8 +2,7 @@ use crate::{
     hir::{BindingMode, DefinitionID, NodeID},
     mir::{BinaryOperator, LogicalOperator, UnaryOperator},
     sema::models::{
-        AdtDef, EnumVariant, GenericArguments, GenericParameter, InterfaceReference,
-        Ty,
+        AdtDef, EnumVariant, GenericArguments, GenericParameter, InterfaceReference, Ty,
     },
     span::{Span, Symbol},
 };

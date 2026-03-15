@@ -1069,7 +1069,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 self.store_place(destination, body, locals, ret)?;
             }
         }
-        let _ = self.builder.build_unconditional_branch(normal_bb).unwrap();
+        // Branch to normal_bb is emitted by the caller (lower_terminator) so that
+        // Rc release of old destination can be inserted before the branch.
 
         Ok(())
     }

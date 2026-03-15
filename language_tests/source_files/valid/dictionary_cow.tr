@@ -1,0 +1,193 @@
+import std.collections.Dictionary
+
+// --- COW: copy dict, insert into copy, original unchanged ---
+
+func test_cow_insert() {
+    var original: [int32: string] = [1: "one", 2: "two"]
+    var copy = original
+
+    let _ = copy.insert(key: 3, value: "three")
+
+    assert(original.len() == 2, "dict cow insert: original len unchanged")
+    assert(original.contains(1), "dict cow insert: original has key 1")
+    assert(original.contains(2), "dict cow insert: original has key 2")
+    assert(!original.contains(3), "dict cow insert: original missing key 3")
+
+    assert(copy.len() == 3, "dict cow insert: copy len updated")
+    assert(copy.contains(3), "dict cow insert: copy has key 3")
+}
+
+// --- COW: copy dict, remove from copy, original unchanged ---
+
+func test_cow_remove() {
+    var original: [int32: string] = [1: "one", 2: "two", 3: "three"]
+    var copy = original
+
+    let removed = copy.remove(2)
+    assert(removed.isSome(), "dict cow remove: returns value")
+    assert(removed.unwrap() == "two", "dict cow remove: correct value")
+
+    assert(original.len() == 3, "dict cow remove: original len unchanged")
+    assert(original.contains(2), "dict cow remove: original still has key 2")
+
+    assert(copy.len() == 2, "dict cow remove: copy len decreased")
+    assert(!copy.contains(2), "dict cow remove: copy missing key 2")
+    assert(copy.contains(1), "dict cow remove: copy has key 1")
+    assert(copy.contains(3), "dict cow remove: copy has key 3")
+}
+
+// --- COW: copy dict, overwrite value in copy ---
+
+func test_cow_overwrite() {
+    var original: [int32: string] = [1: "one", 2: "two"]
+    var copy = original
+
+    let old = copy.insert(key: 1, value: "ONE")
+    assert(old.isSome(), "dict cow overwrite: returns old value")
+    assert(old.unwrap() == "one", "dict cow overwrite: old value correct")
+
+    let origVal = original.get(1)
+    assert(origVal.isSome(), "dict cow overwrite: original has key")
+    assert(*origVal.unwrap() == "one", "dict cow overwrite: original value unchanged")
+
+    let copyVal = copy.get(1)
+    assert(copyVal.isSome(), "dict cow overwrite: copy has key")
+    assert(*copyVal.unwrap() == "ONE", "dict cow overwrite: copy value updated")
+}
+
+// --- COW: copy dict, clear copy ---
+
+func test_cow_clear() {
+    var original: [int32: string] = [1: "one", 2: "two"]
+    var copy = original
+
+    copy.clear()
+
+    assert(copy.len() == 0, "dict cow clear: copy empty")
+    assert(copy.isEmpty(), "dict cow clear: copy isEmpty")
+    assert(original.len() == 2, "dict cow clear: original unchanged")
+    assert(original.contains(1), "dict cow clear: original has key 1")
+}
+
+// --- COW: empty dict copy ---
+
+func test_cow_empty() {
+    var a: [int32: string] = [:]
+    var b = a
+
+    let _ = a.insert(key: 1, value: "one")
+    let _ = b.insert(key: 2, value: "two")
+
+    assert(a.len() == 1, "dict cow empty: a has 1")
+    assert(b.len() == 1, "dict cow empty: b has 1")
+    assert(a.contains(1), "dict cow empty: a has key 1")
+    assert(!a.contains(2), "dict cow empty: a missing key 2")
+    assert(b.contains(2), "dict cow empty: b has key 2")
+    assert(!b.contains(1), "dict cow empty: b missing key 1")
+}
+
+// --- COW: multiple copies ---
+
+func test_cow_multi_copy() {
+    var original: [int32: int32] = [1: 100, 2: 200]
+    var copy1 = original
+    var copy2 = original
+    var copy3 = copy1
+
+    let _ = copy1.insert(key: 3, value: 300)
+    let _ = copy2.remove(1)
+    let _ = copy3.insert(key: 4, value: 400)
+
+    assert(original.len() == 2, "dict multi-copy: original unchanged")
+    assert(copy1.len() == 3, "dict multi-copy: copy1 has 3")
+    assert(copy2.len() == 1, "dict multi-copy: copy2 has 1")
+    assert(copy3.len() == 3, "dict multi-copy: copy3 has 3")
+
+    assert(copy1.contains(3), "dict multi-copy: copy1 has 3")
+    assert(!copy2.contains(1), "dict multi-copy: copy2 missing 1")
+    assert(copy3.contains(4), "dict multi-copy: copy3 has 4")
+}
+
+// --- COW: dict in struct ---
+
+struct DictHolder {
+    data: [string: int32]
+}
+
+func test_cow_in_struct() {
+    let data: [string: int32] = ["x": 1, "y": 2]
+    var h1 = DictHolder { data }
+    var h2 = h1
+
+    let _ = h2.data.insert(key: "z", value: 3)
+
+    assert(h1.data.len() == 2, "dict struct cow: h1 unchanged")
+    assert(h2.data.len() == 3, "dict struct cow: h2 updated")
+    assert(!h1.data.contains("z"), "dict struct cow: h1 missing z")
+    assert(h2.data.contains("z"), "dict struct cow: h2 has z")
+}
+
+// --- COW: dict passed to function ---
+
+func insert_and_return(_ d: [int32: string], _ k: int32, _ v: string) -> [int32: string] {
+    var local = d
+    let _ = local.insert(key: k, value: v)
+    return local
+}
+
+func test_cow_function_pass() {
+    var original: [int32: string] = [1: "one"]
+    let result = insert_and_return(original, 2, "two")
+
+    assert(original.len() == 1, "dict func pass: original unchanged")
+    assert(result.len() == 2, "dict func pass: result updated")
+    assert(result.contains(2), "dict func pass: result has key 2")
+}
+
+// --- COW: iteration on copy ---
+
+func test_cow_iteration() {
+    var original: [int32: int32] = [1: 10, 2: 20, 3: 30]
+    let copy = original
+
+    var sum: int32 = 0
+    for entry in &copy {
+        let (k, v) = entry
+        sum += *v
+    }
+
+    assert(sum == 60, "dict cow iter: sum of values correct")
+    assert(original.len() == 3, "dict cow iter: original unchanged")
+}
+
+// --- COW: get readonly on copy sees shared data ---
+
+func test_cow_get_readonly() {
+    var original: [int32: int32] = [1: 100, 2: 200]
+    let copy = original
+
+    match copy.get(1) {
+        case .some(val) => assert(*val == 100, "dict get readonly: sees original value")
+        case .none => assert(false, "dict get readonly: should find key")
+    }
+
+    match copy.get(99) {
+        case .some(_) => assert(false, "dict get readonly: missing key should return none")
+        case .none => {}
+    }
+}
+
+func main() {
+    test_cow_insert()
+    test_cow_remove()
+    test_cow_overwrite()
+    test_cow_clear()
+    test_cow_empty()
+    test_cow_multi_copy()
+    test_cow_in_struct()
+    test_cow_function_pass()
+    test_cow_iteration()
+    test_cow_get_readonly()
+
+    std.print("PASS: Dictionary COW semantics\n")
+}

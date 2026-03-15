@@ -6,15 +6,15 @@ use crate::{
     sema::{
         models::{
             AdtDef, AdtKind, AliasDefinition, AliasKind, AssociatedTypeBinding,
-            AssociatedTypeDefinition, CapturedVar, ClosureCaptures, ClosureKind,
-            ConformanceRecord, ConformanceRecordId, Const, ConstKind, ConstValue, Constraint,
-            EnumDefinition, EnumVariant, EnumVariantField, EnumVariantKind, FloatTy,
-            GenericArgument, GenericParameter, GenericParameterDefinition,
-            GenericParameterDefinitionKind, Generics, InferTy, IntTy, InterfaceConstantRequirement,
-            InterfaceDefinition, InterfaceMethodRequirement, InterfaceReference,
-            InterfaceRequirements, LabeledFunctionParameter, LabeledFunctionSignature,
-            PackageAliasTable, StructDefinition, StructField, SyntheticDefinition,
-            SyntheticMethodKind, Ty, TyKind, UIntTy,
+            AssociatedTypeDefinition, CapturedVar, ClosureCaptures, ClosureKind, ConformanceRecord,
+            ConformanceRecordId, Const, ConstKind, ConstValue, Constraint, EnumDefinition,
+            EnumVariant, EnumVariantField, EnumVariantKind, FloatTy, GenericArgument,
+            GenericParameter, GenericParameterDefinition, GenericParameterDefinitionKind, Generics,
+            InferTy, IntTy, InterfaceConstantRequirement, InterfaceDefinition,
+            InterfaceMethodRequirement, InterfaceReference, InterfaceRequirements,
+            LabeledFunctionParameter, LabeledFunctionSignature, PackageAliasTable,
+            StructDefinition, StructField, SyntheticDefinition, SyntheticMethodKind, Ty, TyKind,
+            UIntTy,
         },
         resolve::models::{
             DefinitionID, DefinitionIndex, DefinitionKind, ExpressionResolutionState, PrimaryType,
@@ -838,6 +838,8 @@ pub enum StdItemWire {
     Range,
     ClosedRange,
     MaybeUninit,
+    Rc,
+    Span,
     Hashable,
     Equatable,
     Iterator,
@@ -1006,7 +1008,14 @@ pub enum PlaceElemWire {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum OperandWire {
     Copy(PlaceWire),
+    CopyWith(PlaceWire, CopyModifiersWire),
     Constant(ConstantWire),
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct CopyModifiersWire {
+    pub take: bool,
+    pub init: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1407,6 +1416,8 @@ pub fn std_item_to_wire(v: hir::StdItem) -> StdItemWire {
         hir::StdItem::Range => StdItemWire::Range,
         hir::StdItem::ClosedRange => StdItemWire::ClosedRange,
         hir::StdItem::MaybeUninit => StdItemWire::MaybeUninit,
+        hir::StdItem::Rc => StdItemWire::Rc,
+        hir::StdItem::Span => StdItemWire::Span,
         hir::StdItem::Hashable => StdItemWire::Hashable,
         hir::StdItem::Equatable => StdItemWire::Equatable,
         hir::StdItem::Iterator => StdItemWire::Iterator,
@@ -1447,6 +1458,8 @@ pub fn std_item_from_wire(v: &StdItemWire) -> hir::StdItem {
         StdItemWire::Range => hir::StdItem::Range,
         StdItemWire::ClosedRange => hir::StdItem::ClosedRange,
         StdItemWire::MaybeUninit => hir::StdItem::MaybeUninit,
+        StdItemWire::Rc => hir::StdItem::Rc,
+        StdItemWire::Span => hir::StdItem::Span,
         StdItemWire::Hashable => hir::StdItem::Hashable,
         StdItemWire::Equatable => hir::StdItem::Equatable,
         StdItemWire::Iterator => hir::StdItem::Iterator,
@@ -3343,6 +3356,13 @@ pub fn mir_constant_from_wire<'a>(gcx: GlobalContext<'a>, v: &ConstantWire) -> m
 pub fn operand_to_wire(v: &mir::Operand<'_>) -> OperandWire {
     match v {
         mir::Operand::Copy(v) => OperandWire::Copy(place_to_wire(v)),
+        mir::Operand::CopyWith(v, modifiers) => OperandWire::CopyWith(
+            place_to_wire(v),
+            CopyModifiersWire {
+                take: modifiers.take,
+                init: modifiers.init,
+            },
+        ),
         mir::Operand::Constant(v) => OperandWire::Constant(mir_constant_to_wire(v)),
     }
 }
@@ -3350,6 +3370,13 @@ pub fn operand_to_wire(v: &mir::Operand<'_>) -> OperandWire {
 pub fn operand_from_wire<'a>(gcx: GlobalContext<'a>, v: &OperandWire) -> mir::Operand<'a> {
     match v {
         OperandWire::Copy(v) => mir::Operand::Copy(place_from_wire(gcx, v)),
+        OperandWire::CopyWith(v, modifiers) => mir::Operand::CopyWith(
+            place_from_wire(gcx, v),
+            mir::CopyModifiers {
+                take: modifiers.take,
+                init: modifiers.init,
+            },
+        ),
         OperandWire::Constant(v) => mir::Operand::Constant(mir_constant_from_wire(gcx, v)),
     }
 }
@@ -3559,14 +3586,9 @@ pub fn statement_to_wire(v: &mir::Statement<'_>) -> StatementWire {
             mir::StatementKind::Assign(place, rvalue) => {
                 StatementKindWire::Assign(place_to_wire(place), rvalue_to_wire(rvalue))
             }
-            mir::StatementKind::ShadowResync(locals) => {
-                StatementKindWire::ShadowResync(
-                    locals
-                        .iter()
-                        .map(|local| local.index() as u32)
-                        .collect(),
-                )
-            }
+            mir::StatementKind::ShadowResync(locals) => StatementKindWire::ShadowResync(
+                locals.iter().map(|local| local.index() as u32).collect(),
+            ),
             mir::StatementKind::GcSafepoint => StatementKindWire::GcSafepoint,
             mir::StatementKind::Nop => StatementKindWire::Nop,
             mir::StatementKind::SetDiscriminant {

@@ -3,6 +3,7 @@ use crate::error::CompileResult;
 use crate::mir::{Body, MirPhase};
 
 pub mod coalesce;
+pub mod copy_modifiers;
 pub mod dse;
 pub mod escape;
 pub mod inline;
@@ -71,6 +72,7 @@ pub fn run_global_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> Compile
         Box::new(escape::ApplyEscapeAnalysis),
         Box::new(passes::InsertSafepoints),
         Box::new(passes::MergeSafepoints), // Clean up redundant consecutive safepoints
+        Box::new(copy_modifiers::MarkCopyModifiers),
     ];
     run_passes(gcx, body, &mut passes)?;
     Ok(())

@@ -69,16 +69,15 @@ impl<'ctx> Actor<'ctx> {
                     );
                 }
 
-                // Desugar T... to List[T]
-                // We need to look up the List type definition
-                if let Some(list_id) = self.context.std_item_def(StdItem::List) {
-                    let list_ty = self.context.get_type(list_id);
+                // Desugar T... to Span[T]
+                if let Some(span_id) = self.context.std_item_def(StdItem::Span) {
+                    let span_ty = self.context.get_type(span_id);
                     let args = vec![crate::sema::models::GenericArgument::Type(ty)];
                     let args = self.context.store.interners.intern_generic_args(args);
-                    ty = instantiate_ty_with_args(self.context, list_ty, args);
+                    ty = instantiate_ty_with_args(self.context, span_ty, args);
                 } else {
                     self.context.dcx().emit_error(
-                        "variadic functions require the standard library 'List' type".into(),
+                        "variadic functions require the standard library 'Span' type".into(),
                         Some(param.span),
                     );
                 }

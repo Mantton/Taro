@@ -252,7 +252,7 @@ fn use_place(place: &Place, live: &mut FxHashSet<LocalId>) {
 
 fn use_operand(op: &Operand, live: &mut FxHashSet<LocalId>) {
     match op {
-        Operand::Copy(p) => use_place(p, live),
+        Operand::Copy(p) | Operand::CopyWith(p, _) => use_place(p, live),
         Operand::Constant(_) => {}
     }
 }

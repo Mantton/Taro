@@ -873,6 +873,8 @@ pub enum StdItem {
     Range,
     ClosedRange,
     MaybeUninit,
+    Rc,
+    Span,
 
     // Interfaces
     Hashable,
@@ -918,6 +920,8 @@ impl StdItem {
             StdItem::Range => Some("Range"),
             StdItem::ClosedRange => Some("ClosedRange"),
             StdItem::MaybeUninit => Some("MaybeUninit"),
+            StdItem::Rc => Some("Rc"),
+            StdItem::Span => Some("Span"),
             StdItem::Hashable => Some("Hashable"),
             StdItem::Equatable => Some("Equatable"),
             StdItem::Iterator => Some("Iterator"),
@@ -957,6 +961,8 @@ impl StdItem {
             "Range" => Some(Self::Range),
             "ClosedRange" => Some(Self::ClosedRange),
             "MaybeUninit" => Some(Self::MaybeUninit),
+            "Rc" => Some(Self::Rc),
+            "Span" => Some(Self::Span),
             "Hashable" => Some(Self::Hashable),
             "Equatable" => Some(Self::Equatable),
             "Iterator" => Some(Self::Iterator),
@@ -991,7 +997,9 @@ impl StdItem {
             | StdItem::Dictionary
             | StdItem::Range
             | StdItem::ClosedRange
-            | StdItem::MaybeUninit => Some(DefinitionKind::Struct),
+            | StdItem::MaybeUninit
+            | StdItem::Rc
+            | StdItem::Span => Some(DefinitionKind::Struct),
             StdItem::Hashable
             | StdItem::Equatable
             | StdItem::Iterator
@@ -1037,6 +1045,8 @@ impl StdItem {
                 | StdItem::Range
                 | StdItem::ClosedRange
                 | StdItem::MaybeUninit
+                | StdItem::Rc
+                | StdItem::Span
                 | StdItem::Hashable
                 | StdItem::Equatable
                 | StdItem::Iterator
@@ -1066,7 +1076,7 @@ impl StdItem {
         )
     }
 
-    pub const ALL_REQUIRED: [StdItem; 33] = [
+    pub const ALL_REQUIRED: [StdItem; 35] = [
         StdItem::Optional,
         StdItem::List,
         StdItem::Set,
@@ -1074,6 +1084,8 @@ impl StdItem {
         StdItem::Range,
         StdItem::ClosedRange,
         StdItem::MaybeUninit,
+        StdItem::Rc,
+        StdItem::Span,
         StdItem::Hashable,
         StdItem::Equatable,
         StdItem::Iterator,

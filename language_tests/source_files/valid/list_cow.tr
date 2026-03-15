@@ -1,0 +1,391 @@
+import std.collections.List
+
+// --- COW: copy then mutate copy, original unchanged ---
+
+func test_cow_append_copy() {
+    var original: [int32] = [1, 2, 3]
+    var copy = original
+
+    copy.append(4)
+
+    assert(original.len() == 3, "original length unchanged after copy append")
+    assert(copy.len() == 4, "copy length updated after append")
+
+    assert(*original.at(0) == 1, "original[0] intact")
+    assert(*original.at(1) == 2, "original[1] intact")
+    assert(*original.at(2) == 3, "original[2] intact")
+
+    assert(*copy.at(0) == 1, "copy[0] correct")
+    assert(*copy.at(1) == 2, "copy[1] correct")
+    assert(*copy.at(2) == 3, "copy[2] correct")
+    assert(*copy.at(3) == 4, "copy[3] correct")
+}
+
+// --- COW: mutate original, copy unchanged ---
+
+func test_cow_mutate_original() {
+    var original: [int32] = [10, 20, 30]
+    var copy = original
+
+    original.append(40)
+    original.set(0 as usize, 99)
+
+    assert(copy.len() == 3, "copy length unchanged after original mutate")
+    assert(*copy.at(0) == 10, "copy[0] unchanged")
+    assert(*copy.at(1) == 20, "copy[1] unchanged")
+    assert(*copy.at(2) == 30, "copy[2] unchanged")
+
+    assert(original.len() == 4, "original length after mutations")
+    assert(*original.at(0) == 99, "original[0] updated via set")
+    assert(*original.at(3) == 40, "original[3] appended")
+}
+
+// --- COW: empty list copy ---
+
+func test_cow_empty_list() {
+    var a: List[int32] = List()
+    var b = a
+
+    a.append(1)
+    b.append(2)
+
+    assert(a.len() == 1, "empty cow: a.len == 1")
+    assert(b.len() == 1, "empty cow: b.len == 1")
+    assert(*a.at(0) == 1, "empty cow: a[0] == 1")
+    assert(*b.at(0) == 2, "empty cow: b[0] == 2")
+}
+
+// --- COW: list passed to function (value copy) ---
+
+func append_and_return(_ list: [int32], _ val: int32) -> [int32] {
+    var local = list
+    local.append(val)
+    return local
+}
+
+func test_cow_function_pass() {
+    var original: [int32] = [1, 2]
+    let result = append_and_return(original, 3)
+
+    assert(original.len() == 2, "original unchanged after function pass")
+    assert(result.len() == 3, "returned list has appended value")
+    assert(*result.at(2) == 3, "returned list[2] correct")
+}
+
+// --- COW: list in struct ---
+
+struct Container {
+    items: [int32]
+}
+
+func test_cow_in_struct() {
+    let items: [int32] = [10, 20]
+    var c1 = Container { items }
+    var c2 = c1
+
+    c2.items.append(30)
+
+    assert(c1.items.len() == 2, "struct cow: c1 unchanged")
+    assert(c2.items.len() == 3, "struct cow: c2 updated")
+    assert(*c2.items.at(2) == 30, "struct cow: c2[2] correct")
+}
+
+// --- COW: multiple copies ---
+
+func test_cow_multiple_copies() {
+    var a: [int32] = [1, 2, 3]
+    var b = a
+    var c = a
+    var d = b
+
+    b.append(4)
+    c.set(0 as usize, 99)
+    d.pop()
+
+    assert(a.len() == 3, "multi-copy: a unchanged")
+    assert(*a.at(0) == 1, "multi-copy: a[0] intact")
+
+    assert(b.len() == 4, "multi-copy: b has 4")
+    assert(*b.at(3) == 4, "multi-copy: b[3] == 4")
+
+    assert(c.len() == 3, "multi-copy: c same length")
+    assert(*c.at(0) == 99, "multi-copy: c[0] == 99")
+
+    assert(d.len() == 2, "multi-copy: d has 2 after pop")
+}
+
+// --- COW: pop and removeAt ---
+
+func test_cow_pop_removeAt() {
+    var original: [int32] = [10, 20, 30, 40]
+    var copy = original
+
+    let popped = copy.pop()
+    assert(popped.isSome(), "pop returns some")
+    assert(popped.unwrap() == 40, "pop returns last")
+    assert(copy.len() == 3, "copy len after pop")
+    assert(original.len() == 4, "original unchanged after copy pop")
+
+    let removed = copy.removeAt(0 as usize)
+    assert(removed.isSome(), "removeAt returns some")
+    assert(removed.unwrap() == 10, "removeAt returns first")
+    assert(copy.len() == 2, "copy len after removeAt")
+    assert(*copy.at(0) == 20, "copy shifted after removeAt")
+    assert(original.len() == 4, "original still unchanged")
+}
+
+// --- COW: insert ---
+
+func test_cow_insert() {
+    var original: [int32] = [1, 3]
+    var copy = original
+
+    let ok = copy.insert(at: 1 as usize, 2)
+    assert(ok, "insert should succeed")
+    assert(copy.len() == 3, "copy has 3 after insert")
+    assert(*copy.at(0) == 1, "copy[0] after insert")
+    assert(*copy.at(1) == 2, "copy[1] after insert")
+    assert(*copy.at(2) == 3, "copy[2] after insert")
+
+    assert(original.len() == 2, "original unchanged after copy insert")
+    assert(*original.at(0) == 1, "original[0] intact")
+    assert(*original.at(1) == 3, "original[1] intact")
+}
+
+// --- COW: clear ---
+
+func test_cow_clear() {
+    var original: [int32] = [1, 2, 3]
+    var copy = original
+
+    copy.clear()
+
+    assert(copy.len() == 0, "copy empty after clear")
+    assert(copy.isEmpty(), "copy isEmpty after clear")
+    assert(original.len() == 3, "original unchanged after copy clear")
+}
+
+// --- COW: reserve ---
+
+func test_cow_reserve() {
+    var original: [int32] = [1, 2]
+    var copy = original
+
+    copy.reserve(100 as usize)
+
+    assert(copy.capacity() >= (100 as usize), "copy capacity after reserve")
+    assert(copy.len() == 2, "copy len unchanged after reserve")
+    assert(*copy.at(0) == 1, "copy[0] unchanged after reserve")
+    assert(*copy.at(1) == 2, "copy[1] unchanged after reserve")
+    assert(original.len() == 2, "original unchanged after copy reserve")
+}
+
+// --- COW: sort ---
+
+func test_cow_sort() {
+    var original: [int32] = [3, 1, 2]
+    var copy = original
+
+    copy.sort()
+
+    assert(*copy.at(0) == 1, "copy sorted[0]")
+    assert(*copy.at(1) == 2, "copy sorted[1]")
+    assert(*copy.at(2) == 3, "copy sorted[2]")
+
+    assert(*original.at(0) == 3, "original[0] unchanged after copy sort")
+    assert(*original.at(1) == 1, "original[1] unchanged after copy sort")
+    assert(*original.at(2) == 2, "original[2] unchanged after copy sort")
+}
+
+// --- COW: loop reassignment ---
+
+func test_cow_loop() {
+    var lists: List[List[int32]] = List()
+    var i: int32 = 0
+    while i < 3 {
+        var list: List[int32] = List()
+        list.append(i)
+        lists.append(list)
+        i += 1
+    }
+
+    assert(lists.len() == 3, "loop: 3 lists created")
+    assert(*(*lists.at(0)).at(0) == 0, "loop: list[0][0] == 0")
+    assert(*(*lists.at(1)).at(0) == 1, "loop: list[1][0] == 1")
+    assert(*(*lists.at(2)).at(0) == 2, "loop: list[2][0] == 2")
+}
+
+// --- COW: mutable iterator on copy ---
+
+func test_cow_mut_iter() {
+    var original: [int32] = [1, 2, 3]
+    var copy = original
+
+    for elem in &mut copy {
+        *elem *= 10
+    }
+
+    assert(*copy.at(0) == 10, "mut iter copy[0]")
+    assert(*copy.at(1) == 20, "mut iter copy[1]")
+    assert(*copy.at(2) == 30, "mut iter copy[2]")
+
+    assert(*original.at(0) == 1, "mut iter original[0] unchanged")
+    assert(*original.at(1) == 2, "mut iter original[1] unchanged")
+    assert(*original.at(2) == 3, "mut iter original[2] unchanged")
+}
+
+// --- COW: at_mut then reassign and mut iter ---
+
+func test_cow_reassign_mut_iter() {
+    var original: [int32] = [1, 2, 3]
+    var copy = original
+
+    // Mutate via at(&mut self) — triggers COW
+    *copy.at(0 as usize) = 50
+    assert(*copy.at(0) == 50, "reassign: at_mut copy[0] == 50")
+    assert(*original.at(0) == 1, "reassign: at_mut original[0] == 1")
+
+    // Reassign copy back to original (re-shares Rc)
+    copy = original
+
+    // Now mutate via mutable iterator — triggers COW again
+    for elem in &mut copy {
+        *elem *= 10
+    }
+
+    assert(*copy.at(0) == 10, "reassign: mut iter copy[0] == 10")
+    assert(*copy.at(1) == 20, "reassign: mut iter copy[1] == 20")
+    assert(*copy.at(2) == 30, "reassign: mut iter copy[2] == 30")
+    assert(*original.at(0) == 1, "reassign: original[0] unchanged")
+    assert(*original.at(1) == 2, "reassign: original[1] unchanged")
+    assert(*original.at(2) == 3, "reassign: original[2] unchanged")
+}
+
+// --- COW: set on copy ---
+
+func test_cow_set() {
+    var original: [int32] = [10, 20, 30]
+    var copy = original
+
+    copy.set(1 as usize, 99)
+
+    assert(*copy.at(1) == 99, "copy[1] updated via set")
+    assert(*original.at(1) == 20, "original[1] unchanged after copy set")
+}
+
+// --- COW: at(&mut self) on copy ---
+
+func test_cow_at_mut() {
+    var original: [int32] = [5, 10, 15]
+    var copy = original
+
+    *copy.at(0 as usize) = 50
+
+    assert(*copy.at(0) == 50, "at_mut copy[0] updated")
+    assert(*original.at(0) == 5, "at_mut original[0] unchanged")
+}
+
+// --- COW: get(&self) on copy sees shared data ---
+
+func test_cow_get_readonly() {
+    var original: [int32] = [100, 200]
+    let copy = original
+
+    match copy.get(0 as usize) {
+        case .some(val) => assert(*val == 100, "get readonly: sees original value")
+        case .none => assert(false, "get readonly: should return some")
+    }
+
+    match copy.get(5 as usize) {
+        case .some(_) => assert(false, "get readonly: OOB should return none")
+        case .none => {}
+    }
+}
+
+// --- List literals ---
+
+func test_list_literals() {
+    let a: [int32] = [1, 2, 3]
+    assert(a.len() == 3, "literal length")
+    assert(*a.at(0) == 1, "literal[0]")
+    assert(*a.at(1) == 2, "literal[1]")
+    assert(*a.at(2) == 3, "literal[2]")
+
+    let empty: [int32] = []
+    assert(empty.len() == 0, "empty literal length")
+    assert(empty.isEmpty(), "empty literal isEmpty")
+}
+
+// --- COW: string list ---
+
+func test_cow_strings() {
+    var original: [string] = ["hello", "world"]
+    var copy = original
+
+    copy.append("!")
+    copy.set(0 as usize, "goodbye")
+
+    assert(original.len() == 2, "string cow: original len unchanged")
+    assert(*original.at(0) == "hello", "string cow: original[0] unchanged")
+    assert(*original.at(1) == "world", "string cow: original[1] unchanged")
+
+    assert(copy.len() == 3, "string cow: copy len updated")
+    assert(*copy.at(0) == "goodbye", "string cow: copy[0] updated")
+    assert(*copy.at(1) == "world", "string cow: copy[1] intact")
+    assert(*copy.at(2) == "!", "string cow: copy[2] appended")
+}
+
+// --- COW: ref iterator on copy reads original data ---
+
+func test_cow_ref_iter() {
+    var original: [int32] = [10, 20, 30]
+    let copy = original
+
+    var sum: int32 = 0
+    for x in &copy {
+        sum += *x
+    }
+
+    assert(sum == 60, "ref iter on copy sums correctly")
+}
+
+// --- COW: value iterator on copy ---
+
+func test_cow_value_iter() {
+    var original: [int32] = [1, 2, 3]
+    let copy = original
+
+    var sum: int32 = 0
+    for x in copy {
+        sum += x
+    }
+
+    assert(sum == 6, "value iter on copy sums correctly")
+    assert(original.len() == 3, "original unchanged after copy value iteration")
+}
+
+func main() {
+    test_cow_append_copy()
+    test_cow_mutate_original()
+    test_cow_empty_list()
+    test_cow_function_pass()
+    test_cow_in_struct()
+    test_cow_multiple_copies()
+    test_cow_pop_removeAt()
+    test_cow_insert()
+    test_cow_clear()
+    test_cow_reserve()
+    test_cow_sort()
+    test_cow_loop()
+    test_cow_mut_iter()
+    test_cow_reassign_mut_iter()
+    test_cow_set()
+    test_cow_at_mut()
+    test_cow_get_readonly()
+    test_list_literals()
+    test_cow_strings()
+    test_cow_ref_iter()
+    test_cow_value_iter()
+
+    std.print("PASS: List COW semantics\n")
+}

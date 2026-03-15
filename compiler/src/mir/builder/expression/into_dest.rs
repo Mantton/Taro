@@ -2,8 +2,8 @@ use crate::{
     compile::context::Gcx,
     mir::{
         self, AggregateKind, BasicBlockId, BinaryOperator, BlockAnd, BlockAndExtension, CastKind,
-        Category, Constant, Operand, Place, PlaceElem, Rvalue, RvalueFunc, TerminatorKind,
-        builder::MirBuilder,
+        Category, Constant, LocalId, Operand, Place, PlaceElem, Rvalue, RvalueFunc,
+        TerminatorKind, builder::MirBuilder,
     },
     sema::{
         models::{GenericArguments, TyKind},
@@ -118,9 +118,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             }
             ExprKind::Match {
                 scrutinee, arms, ..
-            } => {
-                self.lower_match_expr(destination, block, expr_id, *scrutinee, arms)
-            }
+            } => self.lower_match_expr(destination, block, expr_id, *scrutinee, arms),
             ExprKind::Return { value } => {
                 let place = Place::from_local(self.body.return_local);
                 if let Some(&value) = value.as_ref() {
@@ -190,8 +188,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 };
 
                 // For closure calls, pass self according to the closure kind.
-                let closure_self_arg: Option<Operand<'ctx>> = closure_self_param_ty.and_then(
-                    |self_param_ty| {
+                let closure_self_arg: Option<Operand<'ctx>> =
+                    closure_self_param_ty.and_then(|self_param_ty| {
                         let closure_place = callable_self_place.clone()?;
                         match self_param_ty.kind() {
                             crate::sema::models::TyKind::Reference(_, mutability) => {
@@ -244,8 +242,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                             }
                             _ => Some(Operand::Copy(closure_place)),
                         }
-                    },
-                );
+                    });
                 if let crate::sema::models::TyKind::FnPointer { inputs, .. } = callee_ty.kind() {
                     let param_count = inputs.len();
                     if is_known_variadic && param_count > 0 {
@@ -407,16 +404,14 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 elements,
                 element_ty,
             } => {
-                let list_operand = unpack!(
-                    block = self.lower_variadic_sequence(
-                        block,
-                        elements,
-                        expr.ty,
-                        *element_ty,
-                        expr.span,
-                    )
+                block = self.lower_list_literal(
+                    block,
+                    destination,
+                    elements,
+                    expr.ty,
+                    *element_ty,
+                    expr.span,
                 );
-                self.push_assign(block, destination, Rvalue::Use(list_operand), expr.span);
                 block.unit()
             }
             ExprKind::BoxExistential { value, .. } => {
@@ -1074,14 +1069,15 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         block.and(Operand::Copy(Place::from_local(temp)))
     }
 
-    fn lower_variadic_sequence(
+    /// Allocates a GC-tracked buffer and fills it with the given element expressions.
+    /// Returns (block, buf_ptr_u8_place, buf_ptr_t_local, len_const).
+    fn fill_element_buffer(
         &mut self,
         mut block: BasicBlockId,
         args: &[ExprId],
-        list_ty: crate::sema::models::Ty<'ctx>,
         elem_ty: crate::sema::models::Ty<'ctx>,
         span: Span,
-    ) -> BlockAnd<Operand<'ctx>> {
+    ) -> (BasicBlockId, Place<'ctx>, LocalId, Operand<'ctx>) {
         let count = args.len();
         let usize_ty = self.gcx.types.uint;
 
@@ -1103,7 +1099,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         });
 
         let next_block = self.new_block();
-        // `desc_output` is a raw pointer (*const GcDesc).
         let desc_dest = Place::from_local(self.new_temp_with_ty(desc_output, span));
 
         self.terminate(
@@ -1248,28 +1243,59 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             self.push_assign(block, dest, Rvalue::Use(arg_operand), span);
         }
 
-        // 5. Aggregate List { buffer, len, cap }.
+        (block, buf_ptr_dest, buf_ptr_t, len_const)
+    }
+
+    fn lower_variadic_sequence(
+        &mut self,
+        mut block: BasicBlockId,
+        args: &[ExprId],
+        span_ty: crate::sema::models::Ty<'ctx>,
+        elem_ty: crate::sema::models::Ty<'ctx>,
+        span: Span,
+    ) -> BlockAnd<Operand<'ctx>> {
+        let (new_block, _buf_ptr_dest, buf_ptr_t, len_const) =
+            self.fill_element_buffer(block, args, elem_ty, span);
+        block = new_block;
+
+        // Cast *mut T to *const T for Span's ptr field.
+        let ptr_const_t_ty = crate::sema::models::Ty::new(
+            crate::sema::models::TyKind::Pointer(elem_ty, crate::hir::Mutability::Immutable),
+            self.gcx,
+        );
+        let buf_ptr_const_t = self.new_temp_with_ty(ptr_const_t_ty, span);
+        self.push_assign(
+            block,
+            Place::from_local(buf_ptr_const_t),
+            Rvalue::Cast {
+                kind: CastKind::Pointer,
+                operand: Operand::Copy(Place::from_local(buf_ptr_t)),
+                ty: ptr_const_t_ty,
+            },
+            span,
+        );
+
+        // Aggregate Span { ptr, len }.
         let fields = IndexVec::from_vec(vec![
-            Operand::Copy(buf_ptr_dest),
-            len_const.clone(),
+            Operand::Copy(Place::from_local(buf_ptr_const_t)),
             len_const.clone(),
         ]);
 
-        let (list_def_id, generic_args) =
-            if let crate::sema::models::TyKind::Adt(def, args) = list_ty.kind() {
+        let (span_def_id, generic_args) =
+            if let crate::sema::models::TyKind::Adt(def, args) = span_ty.kind() {
                 (def.id, args)
             } else {
                 unreachable!()
             };
 
-        let list_temp = self.new_temp_with_ty(list_ty, span);
+        let span_temp = self.new_temp_with_ty(span_ty, span);
 
         self.push_assign(
             block,
-            Place::from_local(list_temp),
+            Place::from_local(span_temp),
             Rvalue::Aggregate {
                 kind: AggregateKind::Adt {
-                    def_id: list_def_id,
+                    def_id: span_def_id,
                     variant_index: None,
                     generic_args,
                 },
@@ -1278,7 +1304,53 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             span,
         );
 
-        block.and(Operand::Copy(Place::from_local(list_temp)))
+        block.and(Operand::Copy(Place::from_local(span_temp)))
+    }
+
+    fn lower_list_literal(
+        &mut self,
+        mut block: BasicBlockId,
+        destination: Place<'ctx>,
+        args: &[ExprId],
+        _list_ty: crate::sema::models::Ty<'ctx>,
+        elem_ty: crate::sema::models::Ty<'ctx>,
+        span: Span,
+    ) -> BasicBlockId {
+        let (new_block, buf_ptr_dest, _buf_ptr_t, len_const) =
+            self.fill_element_buffer(block, args, elem_ty, span);
+        block = new_block;
+
+        // Call __list_from_raw_parts[Element](buffer, len, cap).
+        let list_fn_id =
+            self.find_function_in_std("collections", "__list_from_raw_parts", span);
+        let list_fn_generics = self.gcx.store.interners.intern_generic_args(vec![
+            crate::sema::models::GenericArgument::Type(elem_ty),
+        ]);
+        let list_fn_ty = self.gcx.get_type(list_fn_id);
+        let list_func = Operand::Constant(Constant {
+            ty: list_fn_ty,
+            value: mir::ConstantKind::Function(list_fn_id, list_fn_generics, list_fn_ty),
+        });
+
+        let unwind = self.call_unwind_action(span);
+        let next_block = self.new_block();
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: list_func,
+                args: vec![
+                    Operand::Copy(buf_ptr_dest),
+                    len_const.clone(),
+                    len_const.clone(),
+                ],
+                destination,
+                target: next_block,
+                unwind,
+            },
+        );
+
+        next_block
     }
 
     fn find_function_in_std(
@@ -1481,9 +1553,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
             // Generate the appropriate rvalue based on binding mode
             let rvalue = match binding.mode {
-                crate::hir::BindingMode::ByValue => {
-                    Rvalue::Use(Operand::Copy(src_place.clone()))
-                }
+                crate::hir::BindingMode::ByValue => Rvalue::Use(Operand::Copy(src_place.clone())),
                 crate::hir::BindingMode::ByRef(mutability) => {
                     // Take a reference to the place
                     Rvalue::Ref {

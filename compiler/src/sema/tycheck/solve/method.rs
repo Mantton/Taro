@@ -67,6 +67,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let MethodCallData {
             node_id,
             receiver,
+            receiver_can_mut_borrow,
             reciever_node,
             reciever_span,
             is_unsafe_context,
@@ -95,11 +96,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 expect.is_infer() || expect.contains_inference()
             }
         };
-        let receiver_is_mut_ref = matches!(
-            resolved_receiver.kind(),
-            TyKind::Reference(_, Mutability::Mutable)
-        );
-        let needs_output_ref_mutability = has_unresolved_expectation && receiver_is_mut_ref;
+        let needs_output_ref_mutability = has_unresolved_expectation && *receiver_can_mut_borrow;
         let expect_requires_mut_ref_output = matches!(
             data.expect_ty.map(|expect| expect.kind()),
             Some(TyKind::Reference(_, Mutability::Mutable))
@@ -121,6 +118,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 AutoReference::Immutable,
                 AutoReference::Mutable,
             ] {
+                if matches!(r, AutoReference::Mutable) && !receiver_can_mut_borrow {
+                    continue;
+                }
+
                 let receiver_ty = match r {
                     AutoReference::None => candidate_ty,
                     AutoReference::Mutable => Ty::new(
@@ -247,7 +248,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         //
         // This prevents early commitment to immutable overloads in contexts where
         // downstream constraints later require `&mut`.
-        if has_unresolved_expectation && receiver_is_mut_ref {
+        if has_unresolved_expectation && *receiver_can_mut_borrow {
             let has_mut_ref_output = all_candidates
                 .iter()
                 .any(|candidate| candidate.output_ref_mutability == Some(Mutability::Mutable));

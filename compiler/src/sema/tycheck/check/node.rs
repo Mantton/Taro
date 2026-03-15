@@ -1137,6 +1137,128 @@ impl<'ctx> Checker<'ctx> {
         }
     }
 
+    fn can_mutably_borrow_receiver(&self, expr: &hir::Expression, cs: &Cs<'ctx>) -> bool {
+        if let Some(expr_ty) = cs.expr_ty(expr.id) {
+            let expr_ty = cs.infer_cx.resolve_vars_if_possible(expr_ty);
+            match expr_ty.kind() {
+                TyKind::Error => return true,
+                TyKind::Pointer(_, hir::Mutability::Mutable)
+                | TyKind::Reference(_, hir::Mutability::Mutable) => return true,
+                _ => {}
+            }
+        }
+
+        match &expr.kind {
+            hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => match &path.resolution {
+                hir::Resolution::LocalVariable(_)
+                | hir::Resolution::Definition(_, DefinitionKind::ModuleVariable) => {
+                    if matches!(
+                        &path.resolution,
+                        hir::Resolution::LocalVariable(id) if self.get_local(*id).ty.is_error()
+                    ) {
+                        return true;
+                    }
+                    self.mutable_binding_for_resolution(&path.resolution)
+                        .unwrap_or(false)
+                }
+                _ => false,
+            },
+            hir::ExpressionKind::Dereference(inner) => {
+                let Some(ptr_ty) = cs.expr_ty(inner.id) else {
+                    return false;
+                };
+
+                let ptr_ty = cs.infer_cx.resolve_vars_if_possible(ptr_ty);
+                if ptr_ty.contains_inference() {
+                    return true;
+                }
+
+                match ptr_ty.kind() {
+                    TyKind::Error => true,
+                    TyKind::Pointer(_, mutbl) | TyKind::Reference(_, mutbl) => {
+                        mutbl == hir::Mutability::Mutable
+                    }
+                    _ => false,
+                }
+            }
+            hir::ExpressionKind::Member { target, name } => {
+                let Some(receiver_ty) = cs.expr_ty(target.id) else {
+                    return false;
+                };
+
+                let receiver_ty = cs.infer_cx.resolve_vars_if_possible(receiver_ty);
+                if receiver_ty.contains_inference() {
+                    return true;
+                }
+
+                let base_ty = match receiver_ty.kind() {
+                    TyKind::Error => return true,
+                    TyKind::Pointer(inner, mutbl) | TyKind::Reference(inner, mutbl) => {
+                        if mutbl != hir::Mutability::Mutable {
+                            return false;
+                        }
+                        inner
+                    }
+                    _ => {
+                        if !self.can_mutably_borrow_receiver(target, cs) {
+                            return false;
+                        }
+                        receiver_ty
+                    }
+                };
+
+                let TyKind::Adt(def, args) = base_ty.kind() else {
+                    return false;
+                };
+                if self.gcx().definition_kind(def.id) != DefinitionKind::Struct {
+                    return false;
+                }
+
+                let struct_def = self.gcx().get_struct_definition(def.id);
+                let struct_def = crate::sema::tycheck::utils::instantiate::
+                    instantiate_struct_definition_with_args(self.gcx(), struct_def, args);
+
+                struct_def.fields.iter().any(|field| field.name == name.symbol)
+            }
+            hir::ExpressionKind::TupleAccess(target, _) => {
+                let Some(receiver_ty) = cs.expr_ty(target.id) else {
+                    return false;
+                };
+
+                let receiver_ty = cs.infer_cx.resolve_vars_if_possible(receiver_ty);
+                if receiver_ty.contains_inference() {
+                    return true;
+                }
+
+                match receiver_ty.kind() {
+                    TyKind::Error => true,
+                    TyKind::Pointer(_, mutbl) | TyKind::Reference(_, mutbl) => {
+                        mutbl == hir::Mutability::Mutable
+                    }
+                    _ => self.can_mutably_borrow_receiver(target, cs),
+                }
+            }
+            hir::ExpressionKind::MethodCall {
+                receiver,
+                name,
+                arguments,
+            } => {
+                let Some(receiver_ty) = cs.expr_ty(receiver.id) else {
+                    return false;
+                };
+
+                self.can_mutably_borrow_receiver(receiver, cs)
+                    && self.method_call_can_yield_mutable_reference(
+                        receiver_ty,
+                        name,
+                        arguments.len(),
+                        cs,
+                    )
+            }
+            _ => false,
+        }
+    }
+
     fn require_mut_borrow(&self, expr: &hir::Expression, cs: &Cs<'ctx>) -> bool {
         match &expr.kind {
             hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => {
@@ -1981,7 +2103,8 @@ impl<'ctx> Checker<'ctx> {
                 result_ty
             }
             hir::ExpressionKind::Path(path) => {
-                let result_ty = self.synth_path_expression_with_policy(callee, path, None, true, cs);
+                let result_ty =
+                    self.synth_path_expression_with_policy(callee, path, None, true, cs);
                 cs.record_expr_ty(callee.id, result_ty);
                 result_ty
             }
@@ -2215,7 +2338,8 @@ impl<'ctx> Checker<'ctx> {
                     continue;
                 }
 
-                let is_fn_trait = fn_def == Some(interface.id) || async_fn_def == Some(interface.id);
+                let is_fn_trait =
+                    fn_def == Some(interface.id) || async_fn_def == Some(interface.id);
 
                 if !is_fn_trait {
                     continue;
@@ -2580,6 +2704,7 @@ impl<'ctx> Checker<'ctx> {
         }
 
         let recv_ty = self.synth(receiver, cs);
+        let receiver_can_mut_borrow = self.can_mutably_borrow_receiver(receiver, cs);
         let arg_expectations = if recv_ty.is_error() {
             None
         } else {
@@ -2619,6 +2744,7 @@ impl<'ctx> Checker<'ctx> {
             Goal::MethodCall(MethodCallData {
                 node_id: expression.id,
                 receiver: recv_ty,
+                receiver_can_mut_borrow,
                 reciever_node: receiver.id,
                 reciever_span: receiver.span,
                 is_unsafe_context: self.unsafe_depth.get() > 0,
@@ -2718,6 +2844,63 @@ impl<'ctx> Checker<'ctx> {
         } else {
             None
         }
+    }
+
+    fn method_call_can_yield_mutable_reference(
+        &self,
+        receiver_ty: Ty<'ctx>,
+        name: &crate::span::Identifier,
+        argument_count: usize,
+        cs: &Cs<'ctx>,
+    ) -> bool {
+        let gcx = self.gcx();
+
+        let mut base_ty = cs.infer_cx.resolve_vars_if_possible(receiver_ty);
+        if base_ty.is_error() || base_ty.is_infer() || base_ty.contains_inference() {
+            return false;
+        }
+
+        loop {
+            match base_ty.kind() {
+                TyKind::Reference(inner, _) | TyKind::Pointer(inner, _) => {
+                    base_ty = cs.infer_cx.resolve_vars_if_possible(inner);
+                    if base_ty.is_error() || base_ty.is_infer() || base_ty.contains_inference() {
+                        return false;
+                    }
+                }
+                _ => break,
+            }
+        }
+
+        let Some(head) = type_head_from_value_ty(base_ty) else {
+            return false;
+        };
+
+        let base_args = match base_ty.kind() {
+            TyKind::Adt(_, args) if !args.is_empty() => Some(args),
+            _ => None,
+        };
+
+        self.collect_inherent_instance_candidates(head, name.symbol)
+            .into_iter()
+            .filter(|def_id| gcx.is_definition_visible(*def_id, self.current_def))
+            .any(|def_id| {
+                let signature = gcx.get_signature(def_id);
+                let signature = if let Some(base_args) = base_args {
+                    instantiate_signature_with_args(gcx, signature, base_args)
+                } else {
+                    signature.clone()
+                };
+
+                if signature.inputs.len() != argument_count + 1 {
+                    return false;
+                }
+
+                matches!(
+                    signature.output.kind(),
+                    TyKind::Reference(_, hir::Mutability::Mutable)
+                )
+            })
     }
 
     fn collect_inherent_instance_candidates(
@@ -5240,12 +5423,7 @@ impl<'ctx> Checker<'ctx> {
     fn update_closure_signature(&self, closure_def_id: DefinitionID, closure_ty: Ty<'ctx>) {
         use crate::sema::models::{LabeledFunctionParameter, LabeledFunctionSignature};
 
-        let TyKind::Closure {
-            inputs,
-            output,
-            ..
-        } = closure_ty.kind()
-        else {
+        let TyKind::Closure { inputs, output, .. } = closure_ty.kind() else {
             return;
         };
 

@@ -260,12 +260,7 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                 let captures_info = gcx.get_closure_captures(def_id);
                                 let capture_tys: Vec<Ty<'ctx>> = captures_info
                                     .as_ref()
-                                    .map(|c| {
-                                        c.captures
-                                            .iter()
-                                            .map(|cap| cap.ty)
-                                            .collect()
-                                    })
+                                    .map(|c| c.captures.iter().map(|cap| cap.ty).collect())
                                     .unwrap_or_default();
 
                                 for ((temp_local, idx), field_ty) in
@@ -375,7 +370,7 @@ fn operand_ty<'a>(
 ) -> crate::sema::models::Ty<'a> {
     match operand {
         Operand::Constant(c) => c.ty,
-        Operand::Copy(place) => place_ty(body, gcx, place),
+        Operand::Copy(place) | Operand::CopyWith(place, _) => place_ty(body, gcx, place),
     }
 }
 

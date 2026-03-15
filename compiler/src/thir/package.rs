@@ -1222,9 +1222,7 @@ impl<'ctx> FunctionLower<'ctx> {
                         // Check if this capture is itself an upvar in our current closure scope
                         // (needed for nested closures)
                         let base_expr_kind = if let Some(captures_map) = &self.captures_map {
-                            if let Some(&outer_field_index) =
-                                captures_map.get(&cap.source_id)
-                            {
+                            if let Some(&outer_field_index) = captures_map.get(&cap.source_id) {
                                 // Variable is captured from outer closure - generate Upvar
                                 ExprKind::Upvar {
                                     field_index: outer_field_index,
@@ -1508,9 +1506,7 @@ impl<'ctx> FunctionLower<'ctx> {
                 if let Some(captures_map) = &self.captures_map {
                     if let Some(&field_index) = captures_map.get(&id) {
                         // This is a captured variable - generate Upvar access
-                        return ExprKind::Upvar {
-                            field_index,
-                        };
+                        return ExprKind::Upvar { field_index };
                     }
                 }
                 // Not a capture - regular local variable
