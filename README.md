@@ -1,6 +1,6 @@
 # Taro
 
-Taro is an experimental programming language that draws inspiration from Rust, Swift, and Golang. It features a strong static type system, automatic garbage collection, and basic move semantics, with a familiar syntax inspired by all three languages.
+Taro is an experimental programming language that draws inspiration from Rust, Swift, and Golang. It features a strong static type system and automatic garbage collection, with a familiar syntax inspired by all three languages.
 
 ## Prerequisites
 
@@ -446,7 +446,7 @@ Taro's compiler pipeline is deeply inspired by modern compiler designs (like Rus
 - **HIR (High-level IR)**: The AST is lowered to a high-level intermediate representation where aggressive desugaring occurs.
 - **Type Checking**: A **Bidirectional TypeChecker** performs local expression type inference, handling function overloading and Swift-inspired optional coercions.
 - **THIR (Typed HIR)**: The fully typed representation where intrinsic operations (like integer addition) are lowered distinctly from overloaded function calls.
-- **MIR (Mid-level IR)**: A control-flow graph representation where significant optimizations happen (inlining, copy propagation, use-after-move catching, escape analysis).
+- **MIR (Mid-level IR)**: A control-flow graph representation where significant optimizations happen (inlining, copy propagation, escape analysis).
 - **Codegen**: Handles monomorphization of generics and translates MIR to LLVM IR for final machine code generation.
 
 ### Memory Management
@@ -461,6 +461,7 @@ Taro uses a custom **non-moving, mark-and-sweep garbage collector** inspired by 
 
 - **Enums**: Tagged unions (sum types) allow for expressive invalid state modeling.
 - **Generics**: Full monomorphization support (like Rust/C++ templates) for zero-cost abstractions.
+- **Copy-on-Write (CoW)**: Efficient value semantics for built-in collections like `List` and `Dictionary`.
 - **Diagnostics**: Rich, clear error messages to guide developers.
 - **Optimizations**: Sophisticated MIR passes including inlining, escape analysis, and simplify-cfg.
 - **Interoperability**: C ABI compatibility for easy FFI.

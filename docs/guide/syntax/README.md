@@ -20,7 +20,7 @@ Taro is a statically-typed systems programming language with:
 - Algebraic data types (enums with associated values)
 - Pattern matching
 - Interfaces for polymorphism
-- Memory safety through references and ownership
+- Memory safety through references and automatic garbage collection (GC)
 - Automatic semicolon insertion (ASI)
 - `printf`/`sprintf`-style formatted output (`%d`, `%s`, `%v`, `%%`) with compile-time checks for literal format strings
 
