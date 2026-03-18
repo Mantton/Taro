@@ -77,6 +77,13 @@ func testListIteratorModes() {
     list.append(3)
 
     std.testing.assertEqual(sumRef(&list), 6, "ref iterator sum mismatch")
+
+    var mutableSum: int32 = 0
+    for x in &mut list {
+        mutableSum += x
+    }
+    std.testing.assertEqual(mutableSum, 6, "mut ref iterator sum mismatch")
+
     std.testing.assertEqual(sumByValue(list), 6, "value iterator sum mismatch")
 }
 

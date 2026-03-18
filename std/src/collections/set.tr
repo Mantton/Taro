@@ -82,6 +82,15 @@ impl[Element: Hashable] std.iter.Iterable for &Set[Element] {
     }
 }
 
+impl[Element: Hashable] std.iter.Iterable for &mut Set[Element] {
+    type Iterator = SetIterator[Element]
+    type Element = Element
+
+    public func iter(self) -> Self.Iterator {
+        (*self).iter()
+    }
+}
+
 impl[Element] Set[Element] {
     public func union(&self, _ other: &Set[Element]) -> Set[Element] {
         var result = Set[Element].new()

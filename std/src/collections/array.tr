@@ -1,5 +1,6 @@
 import std.optional.Optional
-import std.mem.{Span, MutableSpan}
+import std.mem.{MaybeUninit, Span, MutableSpan, sizeOf}
+import std.iter.{Iterator, Iterable}
 import std.panic.panic
 
 public type Array[Element, const Size: usize] = [Element; Size]
@@ -53,5 +54,68 @@ impl[Element, const Size: usize] Array[Element, Size] {
     public func asSpan(&mut self) -> MutableSpan[Element] {
         let ptr = unsafe { self as *mut Element }
         return MutableSpan[Element].from(ptr, Size)
+    }
+}
+
+public struct ArrayIterator[Element, const Size: usize] {
+    array: [Element; Size]
+    idx: usize
+}
+
+impl[Element, const Size: usize] Iterator for ArrayIterator[Element, Size] {
+    type Element = Element
+
+    public func next(&mut self) -> Optional[Self.Element] {
+        if self.idx >= Size {
+            return .none
+        }
+
+        let elemSize = sizeOf[Element]()
+        let offset = self.idx * elemSize
+        var elem = MaybeUninit[Element].uninit()
+        unsafe {
+            let src = ((&self.array) as *const uint8).byteAdd(offset)
+            let dst = elem.asMutPtr() as *mut uint8
+            src.readBytes(dst, elemSize)
+        }
+
+        self.idx += 1
+        return .some(unsafe { elem.assumeInit() })
+    }
+}
+
+impl[Element, const Size: usize] Iterable for [Element; Size] {
+    type Iterator = ArrayIterator[Element, Size]
+    type Element = Element
+
+    public func iter(self) -> Self.Iterator {
+        ArrayIterator[Element, Size] {
+            array: self,
+            idx: 0,
+        }
+    }
+}
+
+impl[Element, const Size: usize] Iterable for &[Element; Size] {
+    type Iterator = ArrayIterator[Element, Size]
+    type Element = Element
+
+    public func iter(self) -> Self.Iterator {
+        ArrayIterator[Element, Size] {
+            array: *self,
+            idx: 0,
+        }
+    }
+}
+
+impl[Element, const Size: usize] Iterable for &mut [Element; Size] {
+    type Iterator = ArrayIterator[Element, Size]
+    type Element = Element
+
+    public func iter(self) -> Self.Iterator {
+        ArrayIterator[Element, Size] {
+            array: *self,
+            idx: 0,
+        }
     }
 }

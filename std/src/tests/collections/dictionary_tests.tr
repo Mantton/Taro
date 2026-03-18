@@ -157,6 +157,14 @@ func testDictionaryIterators() {
     }
     std.testing.assertEqual(entryCount, 3 as usize, "entries() yields wrong number of elements")
 
+    // &mut dict iteration
+    var mutEntryCount: usize = 0
+    for entry in &mut dict {
+        let (k, v) = entry
+        std.testing.assertTrue(k == 1 || k == 2 || k == 3, "mut entries() yields invalid key")
+        mutEntryCount += 1
+    }
+    std.testing.assertEqual(mutEntryCount, 3 as usize, "mut entries() yields wrong number of elements")
 }
 
 @test

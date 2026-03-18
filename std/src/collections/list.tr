@@ -393,3 +393,14 @@ impl[Element] Iterable for &List[Element] {
         }
     }
 }
+
+impl[Element] Iterable for &mut List[Element] {
+    type Iterator = ListIterator[Element]
+    type Element = Element
+    public func iter(self) -> Self.Iterator {
+        ListIterator[Element] {
+            list: *self,
+            idx: 0,
+        }
+    }
+}

@@ -62,6 +62,12 @@ func testSetIteration() {
         sum += x
     }
     std.testing.assertEqual(sum, 6, "set iteration should visit all elements")
+
+    var mutSum = 0
+    for x in &mut set {
+        mutSum += x
+    }
+    std.testing.assertEqual(mutSum, 6, "set mut ref iteration should visit all elements")
 }
 
 @test

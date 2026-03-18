@@ -1,0 +1,46 @@
+@test
+func testArrayValueIteration() {
+    let arr: [int32; 4] = [10, 20, 30, 40]
+    var sum: int32 = 0
+    for x in arr {
+        sum += x
+    }
+    std.testing.assertEqual(sum, 100, "array value iteration sum mismatch")
+}
+
+@test
+func testArrayRefIteration() {
+    let arr: [int32; 3] = [1, 2, 3]
+    var sum: int32 = 0
+    for x in &arr {
+        sum += x
+    }
+    std.testing.assertEqual(sum, 6, "array ref iteration sum mismatch")
+}
+
+@test
+func testArrayIteratorAdapters() {
+    let arr: [int32; 5] = [1, 2, 3, 4, 5]
+    let count = arr.iter().filter(|x: &int32| { *x > 3 }).count()
+    std.testing.assertEqual(count, 2 as usize, "array filter+count mismatch")
+}
+
+@test
+func testArrayMutRefIteration() {
+    var arr: [int32; 3] = [10, 20, 30]
+    var sum: int32 = 0
+    for x in &mut arr {
+        sum += x
+    }
+    std.testing.assertEqual(sum, 60, "array mut ref iteration sum mismatch")
+}
+
+@test
+func testArrayEmptyIteration() {
+    let arr: [int32; 0] = []
+    var count: usize = 0
+    for _ in arr {
+        count += 1
+    }
+    std.testing.assertEqual(count, 0 as usize, "empty array should yield no elements")
+}
