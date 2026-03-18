@@ -59,7 +59,7 @@ func testSetIteration() {
 
     var sum = 0
     for x in &set {
-        sum += *x
+        sum += x
     }
     std.testing.assertEqual(sum, 6, "set iteration should visit all elements")
 }

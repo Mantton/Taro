@@ -45,7 +45,7 @@ func usingBorrow() {
         let res = iter.next()
         match res {
             case .some(value) => {
-                print(*value)
+                print(value)
             }
             case .none => {
                 break

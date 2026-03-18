@@ -5,15 +5,9 @@ import std.optional.Optional
 func sumRef(_ list: &List[int32]) -> int32 {
     var sum: int32 = 0
     for x in list {
-        sum = sum + *x
+        sum = sum + x
     }
     return sum
-}
-
-func doubleViaMutIter(_ list: &mut List[int32]) {
-    for x in list {
-        *x = *x * 2
-    }
 }
 
 func sumByValue(_ list: List[int32]) -> int32 {
@@ -83,24 +77,7 @@ func testListIteratorModes() {
     list.append(3)
 
     std.testing.assertEqual(sumRef(&list), 6, "ref iterator sum mismatch")
-    doubleViaMutIter(&mut list)
-    std.testing.assertEqual(sumByValue(list), 12, "value iterator sum mismatch after mutation")
-}
-
-@test
-func testListMutableIteratorNext() {
-    var list: List[int32] = List()
-    list.append(1)
-    list.append(2)
-    list.append(3)
-
-    for elem in &mut list {
-        *elem *= 2
-    }
-
-    std.testing.assertEqual(*list.at(0), 2, "mutable iterator should update first element")
-    std.testing.assertEqual(*list.at(1), 4, "mutable iterator should update second element")
-    std.testing.assertEqual(*list.at(2), 6, "mutable iterator should update third element")
+    std.testing.assertEqual(sumByValue(list), 6, "value iterator sum mismatch")
 }
 
 @test
@@ -501,26 +478,6 @@ func testListCowSortOnCopy() {
     std.testing.assertEqual(*copy.at(2), 3, "cow sort: copy[2] sorted")
     std.testing.assertEqual(*original.at(0), 3, "cow sort: original[0] unchanged")
     std.testing.assertEqual(*original.at(1), 1, "cow sort: original[1] unchanged")
-}
-
-@test
-func testListCowMutIterOnCopy() {
-    var original: List[int32] = List()
-    original.append(1)
-    original.append(2)
-    original.append(3)
-
-    var copy = original
-
-    for elem in &mut copy {
-        *elem *= 10
-    }
-
-    std.testing.assertEqual(*copy.at(0), 10, "cow mut iter: copy[0] updated")
-    std.testing.assertEqual(*copy.at(1), 20, "cow mut iter: copy[1] updated")
-    std.testing.assertEqual(*copy.at(2), 30, "cow mut iter: copy[2] updated")
-    std.testing.assertEqual(*original.at(0), 1, "cow mut iter: original[0] unchanged")
-    std.testing.assertEqual(*original.at(1), 2, "cow mut iter: original[1] unchanged")
 }
 
 @test

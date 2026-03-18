@@ -125,8 +125,7 @@ func testDictionaryIterators() {
     loop {
         match keysIter.next() {
             case .some(k) => {
-                let keyVal = *k
-                std.testing.assertTrue(keyVal == 1 || keyVal == 2 || keyVal == 3, "keys() yields invalid key")
+                std.testing.assertTrue(k == 1 || k == 2 || k == 3, "keys() yields invalid key")
                 keyCount += 1
             }
             case .none => break
@@ -134,30 +133,26 @@ func testDictionaryIterators() {
     }
     std.testing.assertEqual(keyCount, 3 as usize, "keys() yields wrong number of elements")
 
-/*
     // values()
     var valuesIter = dict.values()
     var valCount: usize = 0
     loop {
         match valuesIter.next() {
             case .some(v) => {
-                let s = *v
-                std.testing.assertTrue(s == "one" || s == "two" || s == "three", "values() yields invalid value")
+                std.testing.assertTrue(v == "one" || v == "two" || v == "three", "values() yields invalid value")
                 valCount += 1
             }
             case .none => break
         }
     }
     std.testing.assertEqual(valCount, 3 as usize, "values() yields wrong number of elements")
-*/
+
     // entries() via Iterable implementation (&dict)
     var entryCount: usize = 0
     for entry in &dict {
         let (k, v) = entry
-        let keyVal = *k
-        std.testing.assertTrue(keyVal == 1 || keyVal == 2 || keyVal == 3, "entries() yields invalid key")
-        let s = *v
-        std.testing.assertTrue(s == "one" || s == "two" || s == "three", "entries() yields invalid value")
+        std.testing.assertTrue(k == 1 || k == 2 || k == 3, "entries() yields invalid key")
+        std.testing.assertTrue(v == "one" || v == "two" || v == "three", "entries() yields invalid value")
         entryCount += 1
     }
     std.testing.assertEqual(entryCount, 3 as usize, "entries() yields wrong number of elements")

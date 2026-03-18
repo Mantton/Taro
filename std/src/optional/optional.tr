@@ -40,12 +40,8 @@ impl[Wrapped] Optional[Wrapped] {
     }
     /// Takes the value out of the optional, leaving a `.none` in its place.
     public func take(&mut self) -> Optional[Wrapped] {
-        var result: Optional[Wrapped] = .none
-        unsafe {
-            let ptr = self as *mut Optional[Wrapped]
-            result = ptr.read()
-            ptr.write(.none)
-        }
+        let result = *self
+        *self = .none
         return result
     }
 }

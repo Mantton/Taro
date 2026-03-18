@@ -41,12 +41,44 @@ impl[Element: Hashable] Set[Element] {
     }
 }
 
-impl[Element: Hashable] std.iter.Iterable for &Set[Element] {
-    type Iterator = DictKeysIterator[Element, ()]
-    type Element = &Element
+public struct SetIterator[Element: Hashable] {
+    inner: DictKeysIterator[Element, ()]
+}
+
+impl[Element: Hashable] std.iter.Iterator for SetIterator[Element] {
+    type Element = Element
+
+    public func next(&mut self) -> std.optional.Optional[Self.Element] {
+        self.inner.next()
+    }
+}
+
+impl[Element: Hashable] std.iter.Iterable for SetIterator[Element] {
+    type Iterator = SetIterator[Element]
+    type Element = Element
 
     public func iter(self) -> Self.Iterator {
-        self.storage.keys()
+        return self
+    }
+}
+
+impl[Element: Hashable] std.iter.Iterable for Set[Element] {
+    type Iterator = SetIterator[Element]
+    type Element = Element
+
+    public func iter(self) -> Self.Iterator {
+        SetIterator[Element] {
+            inner: DictKeysIterator[Element, ()] { dict: self.storage, currentSlot: 0 },
+        }
+    }
+}
+
+impl[Element: Hashable] std.iter.Iterable for &Set[Element] {
+    type Iterator = SetIterator[Element]
+    type Element = Element
+
+    public func iter(self) -> Self.Iterator {
+        (*self).iter()
     }
 }
 
@@ -54,10 +86,10 @@ impl[Element] Set[Element] {
     public func union(&self, _ other: &Set[Element]) -> Set[Element] {
         var result = Set[Element].new()
         for x in self {
-            result.insert(*x)
+            result.insert(x)
         }
         for x in other {
-            result.insert(*x)
+            result.insert(x)
         }
         result
     }
@@ -66,14 +98,14 @@ impl[Element] Set[Element] {
         var result = Set[Element].new()
         if self.len() <= other.len() {
             for x in self {
-                if other.contains(*x) {
-                    result.insert(*x)
+                if other.contains(x) {
+                    result.insert(x)
                 }
             }
         } else {
             for x in other {
-                if self.contains(*x) {
-                    result.insert(*x)
+                if self.contains(x) {
+                    result.insert(x)
                 }
             }
         }
@@ -83,8 +115,8 @@ impl[Element] Set[Element] {
     public func difference(&self, _ other: &Set[Element]) -> Set[Element] {
         var result = Set[Element].new()
         for x in self {
-            if !other.contains(*x) {
-                result.insert(*x)
+            if !other.contains(x) {
+                result.insert(x)
             }
         }
         result
@@ -95,7 +127,7 @@ impl[Element] Set[Element] {
             return false
         }
         for x in self {
-            if !other.contains(*x) {
+            if !other.contains(x) {
                 return false
             }
         }

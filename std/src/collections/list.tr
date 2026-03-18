@@ -347,15 +347,15 @@ impl[Element: Ord] List[Element] {
 }
 
 public struct ListIterator[Element] {
-    buffer: *mut uint8
-    len: usize
+    list: List[Element]
     idx: usize
 }
 
 impl[Element] Iterator for ListIterator[Element] {
     type Element = Element
     public func next(&mut self) -> Optional[Self.Element] {
-        if self.idx >= self.len {
+        let s = self.list.storage.asRef()
+        if self.idx >= s.len {
             return .none
         }
 
@@ -364,7 +364,7 @@ impl[Element] Iterator for ListIterator[Element] {
         var elem = MaybeUninit[Element].uninit()
         unsafe {
             let dst = elem.asMutPtr() as *mut uint8
-            self.buffer.byteAdd(offset).readBytes(dst, elemSize)
+            s.buffer.byteAdd(offset).readBytes(dst, elemSize)
         }
 
         self.idx += 1
@@ -372,79 +372,23 @@ impl[Element] Iterator for ListIterator[Element] {
     }
 }
 
-public struct ListRefIterator[Element] {
-    buffer: *mut uint8
-    len: usize
-    idx: usize
-}
-
-impl[Element] Iterator for ListRefIterator[Element] {
-    type Element = &Element
-    public func next(&mut self) -> Optional[Self.Element] {
-        if self.idx >= self.len {
-            return .none
-        }
-        let elem = unsafe { (self.buffer as *const Element).add(self.idx) as &Element }
-        self.idx += 1
-        return .some(elem)
-    }
-}
-
 impl[Element] Iterable for List[Element] {
     type Iterator = ListIterator[Element]
     type Element = Element
     public func iter(self) -> Self.Iterator {
-        let s = self.storage.asRef()
         ListIterator[Element] {
-            buffer: s.buffer,
-            len: s.len,
+            list: self,
             idx: 0,
         }
     }
 }
 
 impl[Element] Iterable for &List[Element] {
-    type Iterator = ListRefIterator[Element]
-    type Element = &Element
+    type Iterator = ListIterator[Element]
+    type Element = Element
     public func iter(self) -> Self.Iterator {
-        let s = self.storage.asRef()
-        ListRefIterator[Element] {
-            buffer: s.buffer,
-            len: s.len,
-            idx: 0,
-        }
-    }
-}
-
-public struct ListMutIterator[Element] {
-    buffer: *mut uint8
-    len: usize
-    idx: usize
-}
-
-impl[Element] Iterator for ListMutIterator[Element] {
-    type Element = &mut Element
-
-    public func next(&mut self) -> Optional[&mut Element] {
-        if self.idx >= self.len {
-            return .none
-        }
-        let elem = unsafe { (self.buffer as *mut Element).add(self.idx) as &mut Element }
-        self.idx += 1
-        return .some(elem)
-    }
-}
-
-impl[Element] Iterable for &mut List[Element] {
-    type Iterator = ListMutIterator[Element]
-    type Element = &mut Element
-
-    public func iter(self) -> Self.Iterator {
-        self.ensureUnique()
-        let s = unsafe { self.storage.asMut() }
-        ListMutIterator[Element] {
-            buffer: s.buffer,
-            len: s.len,
+        ListIterator[Element] {
+            list: *self,
             idx: 0,
         }
     }

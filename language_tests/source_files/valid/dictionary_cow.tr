@@ -153,7 +153,7 @@ func test_cow_iteration() {
     var sum: int32 = 0
     for entry in &copy {
         let (k, v) = entry
-        sum += *v
+        sum += v
     }
 
     assert(sum == 60, "dict cow iter: sum of values correct")
