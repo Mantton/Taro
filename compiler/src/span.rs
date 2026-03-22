@@ -1,5 +1,5 @@
+use crate::interner;
 use index_vec::define_index_type;
-use internment::Intern;
 use std::fmt;
 
 index_vec::define_index_type! {
@@ -29,7 +29,7 @@ impl Span {
 
 impl Span {
     pub fn to(&self, span: Span) -> Span {
-        assert!(span.file == span.file, "files must match");
+        assert!(self.file == span.file, "files must match");
         Span {
             start: self.start,
             end: span.end,
@@ -58,7 +58,7 @@ impl<T> Spanned<T> {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Symbol(Intern<String>);
+pub struct Symbol(u32);
 
 impl Default for Symbol {
     fn default() -> Self {
@@ -68,17 +68,19 @@ impl Default for Symbol {
 
 impl Symbol {
     pub fn empty() -> Symbol {
-        Symbol(Intern::new(String::new()))
+        Symbol(0) // Index 0 is always the empty string.
     }
 
     pub fn new(value: &str) -> Symbol {
-        Symbol(Intern::new(value.to_owned()))
+        Symbol(interner::intern(value))
     }
 
     pub fn as_str(&self) -> &str {
-        self.0.as_str()
+        interner::resolve(self.0)
     }
 }
+
+pub use interner::{interned_symbol_count, reset_session};
 
 impl fmt::Debug for Symbol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

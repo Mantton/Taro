@@ -61,12 +61,25 @@ python3 development/scripts/run_dist.py --test examples/test_example.tr
 
 ### Manual CLI Usage
 
-If you prefer to run the binary directly (for example, after adding `dist/bin` to your PATH):
+If you install Taro as a toolchain with binaries under `<toolchain>/bin`, both `taro` and `taro-lsp` can infer `TARO_HOME` from that layout automatically.
+
+For a local repo `dist/` or any other portable/custom layout, set `TARO_HOME` explicitly:
 
 ```bash
 export TARO_HOME=$(pwd)/dist
 taro build examples/hello.tr
 ```
+
+### VS Code Extension
+
+The VS Code extension is designed for an external Taro toolchain install:
+
+- put the toolchain `bin/` directory on your `PATH`
+- ensure the toolchain root contains attached std artifacts under `lib/taro/std/<target>/`
+- use `taro.languageServer.path` only for custom `taro-lsp` locations
+- use `taro.languageServer.env` only for advanced overrides such as a custom `TARO_HOME`
+
+Repo-local `target/debug/taro-lsp` and `dist/` are still supported as a development fallback when working inside the Taro repository.
 
 ### Compiler Timings
 

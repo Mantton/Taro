@@ -6,7 +6,7 @@ pub use crate::ast::UnaryOperator;
 use crate::ast::VisitorResult;
 use crate::compile::context::GlobalContext;
 use crate::parse::IntegerTypeSuffix;
-use crate::span::{Identifier, Span, Symbol};
+use crate::span::{FileID, Identifier, Span, Symbol};
 use crate::try_visit;
 use crate::visit_optional;
 use crate::walk_list;
@@ -28,6 +28,7 @@ pub struct Package {
 pub struct Module {
     pub id: DefinitionID,
     pub name: Symbol,
+    pub files: Vec<FileID>,
     pub declarations: Vec<Declaration>,
     pub submodules: Vec<Module>,
 }
@@ -297,7 +298,44 @@ pub struct FunctionSignature {
 }
 
 #[derive(Debug, Clone)]
-pub struct UseTree {}
+pub struct UseTree {
+    pub span: Span,
+    pub path: UseTreePath,
+    pub kind: UseTreeKind,
+}
+
+#[derive(Debug, Clone)]
+pub struct UseTreePath {
+    pub span: Span,
+    pub segments: Vec<PathSegment>,
+}
+
+#[derive(Debug, Clone)]
+pub enum UseTreeKind {
+    Glob,
+    Simple {
+        source: PathSegment,
+        alias: Option<UseTreeAlias>,
+    },
+    Nested {
+        items: Vec<UseTreeNestedItem>,
+        span: Span,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct UseTreeNestedItem {
+    pub span: Span,
+    pub source: PathSegment,
+    pub alias: Option<UseTreeAlias>,
+}
+
+#[derive(Debug, Clone)]
+pub struct UseTreeAlias {
+    pub id: NodeID,
+    pub identifier: Identifier,
+    pub span: Span,
+}
 
 #[derive(Debug, Clone)]
 pub struct Constant {
@@ -1722,10 +1760,32 @@ pub fn walk_impl<V: HirVisitor>(visitor: &mut V, node: &Impl, id: DefinitionID) 
 }
 
 pub fn walk_use_tree<V: HirVisitor>(
-    _visitor: &mut V,
-    _node: &UseTree,
+    visitor: &mut V,
+    node: &UseTree,
     _context: UseTreeContext,
 ) -> V::Result {
+    for segment in &node.path.segments {
+        try_visit!(visitor.visit_path_segment(segment));
+    }
+
+    match &node.kind {
+        UseTreeKind::Glob => {}
+        UseTreeKind::Simple { source, alias } => {
+            try_visit!(visitor.visit_path_segment(source));
+            if let Some(alias) = alias {
+                try_visit!(visitor.visit_identifier(&alias.identifier));
+            }
+        }
+        UseTreeKind::Nested { items, .. } => {
+            for item in items {
+                try_visit!(visitor.visit_path_segment(&item.source));
+                if let Some(alias) = &item.alias {
+                    try_visit!(visitor.visit_identifier(&alias.identifier));
+                }
+            }
+        }
+    }
+
     V::Result::output()
 }
 

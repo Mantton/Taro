@@ -61,3 +61,9 @@ Cargo.lock
 *.pdb
 
 # End of https://www.toptal.com/developers/gitignore/api/rust,macos
+
+node_modules
+
+# tree-sitter generated files
+tree-sitter-taro/src/
+tree-sitter-taro/tree-sitter.json

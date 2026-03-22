@@ -9,7 +9,7 @@ use crate::{
 use std::{
     ffi::OsStr,
     fs::{read_dir, read_to_string},
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 pub struct Pacakge {
@@ -25,17 +25,6 @@ pub struct Module {
 pub struct File {
     pub id: FileID,
     pub tokens: Vec<Spanned<Token>>,
-}
-
-fn display_path(path: &Path) -> String {
-    let Ok(cwd) = std::env::current_dir() else {
-        return path.display().to_string();
-    };
-
-    match path.strip_prefix(cwd) {
-        Ok(relative) => relative.display().to_string(),
-        Err(_) => path.display().to_string(),
-    }
 }
 
 pub fn tokenize_package(
@@ -87,9 +76,7 @@ pub fn tokenize_single_file(
     let id = dcx.add_file_mapping(file_path.clone());
     let file = match tokenize_file(id, file_path.clone(), dcx, target_triple) {
         Ok(file) => file,
-        Err(e) => {
-            let message = format!("lexer error in file '{}': {}", display_path(&file_path), e);
-            dcx.emit_error(message, None);
+        Err(_) => {
             return Err(ReportedError);
         }
     };
@@ -182,9 +169,7 @@ pub fn tokenize_module(
             let id = dcx.add_file_mapping(path.clone());
             let file = match tokenize_file(id, path.clone(), dcx, target_triple) {
                 Ok(file) => file,
-                Err(e) => {
-                    let message = format!("lexer error in file '{}': {}", display_path(&path), e);
-                    dcx.emit_error(message, None);
+                Err(_) => {
                     return Err(ReportedError);
                 }
             };
@@ -207,13 +192,17 @@ pub fn tokenize_file(
     path: PathBuf,
     dcx: &DiagCtx,
     target_triple: Option<&str>,
-) -> Result<File, LexerError> {
-    let source = match read_to_string(&path) {
-        Ok(source) => source,
-        Err(e) => {
-            let message = format!("failed to read file '{}': {}", path.display(), e);
-            dcx.emit_error(message.clone(), None);
-            return Err(LexerError::IO(message));
+) -> Result<File, ReportedError> {
+    let source = if let Some(content) = dcx.content_override(&path) {
+        content
+    } else {
+        match read_to_string(&path) {
+            Ok(source) => source,
+            Err(e) => {
+                let message = format!("failed to read file '{}': {}", path.display(), e);
+                dcx.emit_error(message.clone(), None);
+                return Err(ReportedError);
+            }
         }
     };
 
@@ -229,7 +218,14 @@ pub fn tokenize_file(
     }
 
     let lexer = Lexer::new(&source, file);
-    lexer.tokenize()
+    match lexer.tokenize() {
+        Ok(file) => Ok(file),
+        Err(err) => {
+            let message = format!("lexer error: {}", err.value);
+            dcx.emit_error(message, Some(err.span));
+            Err(ReportedError)
+        }
+    }
 }
 
 pub struct Lexer {
@@ -259,13 +255,14 @@ impl Lexer {
 }
 
 impl Lexer {
-    pub fn tokenize(mut self) -> Result<File, LexerError> {
+    pub fn tokenize(mut self) -> Result<File, Spanned<LexerError>> {
         while self.has_next() {
             self.anchor = self.position();
             let case = match self.next_token() {
                 Ok(case) => case,
                 Err(e) => {
-                    return Err(e);
+                    let span = self.span_from_anchor();
+                    return Err(Spanned::new(e, span));
                 }
             };
 
@@ -1024,7 +1021,6 @@ pub enum LexerError {
     EscapeIdentifierMustBeSingleLine,
     InvalidIntegerLiteral,
     InvalidFloatLiteral,
-    IO(String),
 }
 
 impl std::fmt::Display for LexerError {
@@ -1045,7 +1041,6 @@ impl std::fmt::Display for LexerError {
             }
             LexerError::InvalidIntegerLiteral => write!(f, "invalid integer literal"),
             LexerError::InvalidFloatLiteral => write!(f, "invalid float literal"),
-            LexerError::IO(msg) => write!(f, "{}", msg),
         }
     }
 }
@@ -1215,7 +1210,7 @@ mod tests {
         let file_id = dcx.add_file_mapping(PathBuf::from("test.taro"));
         let lexer = Lexer::new(input, file_id);
 
-        let file = lexer.tokenize()?;
+        let file = lexer.tokenize().map_err(|s| s.value)?;
         Ok(file.tokens.into_iter().map(|s| s.value).collect())
     }
 

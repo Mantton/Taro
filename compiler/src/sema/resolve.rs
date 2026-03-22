@@ -7,6 +7,7 @@ mod define;
 mod full;
 pub mod models;
 mod resolver;
+pub(crate) mod scope_lookup;
 mod tag;
 mod usage;
 

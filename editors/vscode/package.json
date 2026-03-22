@@ -3,9 +3,13 @@
     "displayName": "Taro Language",
     "description": "Language support for Taro",
     "version": "0.1.0",
+    "main": "./extension.js",
     "engines": {
         "vscode": "^1.74.0"
     },
+    "activationEvents": [
+        "onLanguage:taro"
+    ],
     "categories": [
         "Programming Languages"
     ],
@@ -29,11 +33,32 @@
                 "scopeName": "source.taro",
                 "path": "./syntaxes/taro.tmLanguage.json"
             }
-        ]
+        ],
+        "configuration": {
+            "title": "Taro",
+            "properties": {
+                "taro.languageServer.path": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Optional path to the taro-lsp executable. If empty, the extension probes local debug builds for development and then PATH."
+                },
+                "taro.languageServer.env": {
+                    "type": "object",
+                    "default": {},
+                    "description": "Optional environment overrides passed to taro-lsp. Usually not needed for normal toolchain installs; TARO_HOME is inferred by the server.",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                }
+            }
+        }
     },
     "repository": {
         "type": "git",
         "url": "https://github.com/Mantton/Taro.git",
         "directory": "editors/vscode"
+    },
+    "dependencies": {
+        "vscode-languageclient": "^9.0.1"
     }
 }

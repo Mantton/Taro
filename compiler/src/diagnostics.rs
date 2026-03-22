@@ -9,7 +9,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::{
     cell::{Cell, RefCell},
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 pub struct DiagCtx {
@@ -113,15 +113,35 @@ impl DiagCtx {
             inner.error_count.set(count + 1);
         }
 
-        if let Some(message) = self.format(&diagnostic, false) {
-            eprintln!("{}", message);
-            for note in &diagnostic.children {
-                if let Some(m) = self.format(&note, false) {
-                    eprintln!("{}", m);
-                }
-            }
+        let recording = self.inner.borrow().recording;
+        if recording {
+            let related_info = diagnostic
+                .children
+                .iter()
+                .map(|child| RelatedDiagnosticInfo {
+                    message: child.message.clone(),
+                    span: child.span,
+                })
+                .collect();
+            self.inner.borrow_mut().recorded.push(DiagnosticRecord {
+                message: diagnostic.message.clone(),
+                span: diagnostic.span,
+                level: diagnostic.level,
+                code: diagnostic.code,
+                stage: DiagnosticStage::General,
+                related_info,
+            });
         } else {
-            println!("no msg?")
+            if let Some(message) = self.format(&diagnostic, false) {
+                eprintln!("{}", message);
+                for note in &diagnostic.children {
+                    if let Some(m) = self.format(&note, false) {
+                        eprintln!("{}", m);
+                    }
+                }
+            } else {
+                println!("no msg?")
+            }
         }
     }
     pub fn emit_error(&self, message: String, span: Option<Span>) {
@@ -133,7 +153,7 @@ impl DiagCtx {
     }
 
     pub fn emit_warning(&self, message: String, span: Option<Span>) {
-        self.emit(Diagnostic::new(message, span, DiagnosticLevel::Info));
+        self.emit(Diagnostic::new(message, span, DiagnosticLevel::Warn));
     }
 }
 
@@ -194,6 +214,9 @@ struct DiagCtxInner {
     file_mappings: IndexVec<FileID, PathBuf>,
     file_content_mappings: FxHashMap<FileID, EcoString>,
     emitted_error_keys: FxHashSet<String>,
+    content_overrides: FxHashMap<PathBuf, String>,
+    recording: bool,
+    recorded: Vec<DiagnosticRecord>,
 }
 
 pub struct Diagnostic {
@@ -245,6 +268,63 @@ impl std::fmt::Display for DiagnosticLevel {
             DiagnosticLevel::Error => "error".red().bold(),
         };
         write!(f, "{}", str)
+    }
+}
+
+// --- IDE diagnostic types ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiagnosticStage {
+    Parse,
+    Resolve,
+    Typecheck,
+    PostTypecheck,
+    Thir,
+    Mir,
+    Entry,
+    General,
+}
+
+#[derive(Debug, Clone)]
+pub struct RelatedDiagnosticInfo {
+    pub message: String,
+    pub span: Option<Span>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiagnosticRecord {
+    pub message: String,
+    pub span: Option<Span>,
+    pub level: DiagnosticLevel,
+    pub code: Option<usize>,
+    pub stage: DiagnosticStage,
+    pub related_info: Vec<RelatedDiagnosticInfo>,
+}
+
+// --- Recording & content override methods ---
+
+impl DiagCtx {
+    pub fn enable_recording(&self) {
+        self.inner.borrow_mut().recording = true;
+    }
+
+    pub fn take_recorded_diagnostics(&self) -> Vec<DiagnosticRecord> {
+        std::mem::take(&mut self.inner.borrow_mut().recorded)
+    }
+
+    pub fn set_content_override(&self, path: PathBuf, content: String) {
+        self.inner
+            .borrow_mut()
+            .content_overrides
+            .insert(path, content);
+    }
+
+    pub fn content_override(&self, path: &Path) -> Option<String> {
+        self.inner
+            .borrow()
+            .content_overrides
+            .get(path)
+            .cloned()
     }
 }
 

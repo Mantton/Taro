@@ -199,15 +199,11 @@ impl<'ctx> Actor<'ctx> {
                 continue;
             }
 
-            let signature = crate::sema::models::Ty::from_labeled_signature(
-                self.context,
-                requirement.signature,
-            );
             self.context.dcx().emit_info(
                 format!(
                     "missing required method '{}' with signature '{}'",
                     self.context.symbol_text(requirement.name),
-                    signature.format(self.context)
+                    requirement.signature.format_for_display(self.context)
                 ),
                 Some(span),
             );

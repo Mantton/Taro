@@ -8,3 +8,4 @@ pub const PACKAGE_STORE: &str = "packages"; // $TARO_HOME/packages
 pub const PACKAGE_SOURCE: &str = "sources"; // $TARO_HOME/sources
 pub const VCS_REMOTE_NAME: &str = "origin";
 pub const STD_PREFIX: &str = "std";
+pub const STD_PACKAGE_PATH: &str = "github.com/taro/std";

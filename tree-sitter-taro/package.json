@@ -1,0 +1,21 @@
+{
+  "name": "tree-sitter-taro",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for the Taro programming language",
+  "main": "bindings/node",
+  "keywords": [
+    "parser",
+    "tree-sitter",
+    "taro"
+  ],
+  "dependencies": {
+    "nan": "^2.18.0"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.24.0"
+  },
+  "scripts": {
+    "build": "tree-sitter generate && node-gyp build",
+    "test": "tree-sitter test"
+  }
+}

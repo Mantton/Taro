@@ -6,10 +6,8 @@ use std::{
 
 use compiler::error::{CompileResult, ReportedError};
 
-use crate::{
-    CommandLineArguments,
-    package::utils::{get_package_name, normalize_module_path},
-};
+use crate::CommandLineArguments;
+use compiler::package::utils::{get_package_name, normalize_module_path};
 
 pub fn run(arguments: CommandLineArguments) -> CompileResult<()> {
     // 1. Validate and normalize the input name which functions as the package name

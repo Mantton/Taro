@@ -4,8 +4,12 @@ use crate::{
     compile::context::GlobalContext,
     error::CompileResult,
     hir::{self, DefinitionKind, StdItem},
-    sema::resolve::models::{
-        ExpressionResolutionState, Resolution, ResolutionOutput, ResolutionState,
+    sema::resolve::{
+        models::{
+        ExpressionResolutionState, Holder, Resolution, ResolutionOutput, ResolutionState, Scope,
+        ScopeNamespace,
+        },
+        scope_lookup,
     },
     span::{Span, Symbol},
 };
@@ -56,9 +60,10 @@ impl<'a, 'c> Actor<'a, 'c> {
     }
 }
 
-impl Actor<'_, '_> {
+impl<'a, 'c> Actor<'a, 'c> {
     fn lower_module(&mut self, module: ast::Module) -> hir::Module {
         let id = self.definition_id(module.id);
+        let file_ids = module.files.iter().map(|file| file.id).collect();
         let declarations: Vec<hir::Declaration> = module
             .files
             .into_iter()
@@ -74,6 +79,7 @@ impl Actor<'_, '_> {
         hir::Module {
             id,
             name: module.name,
+            files: file_ids,
             declarations,
             submodules,
         }
@@ -142,7 +148,7 @@ impl Actor<'_, '_> {
     }
 }
 
-impl Actor<'_, '_> {
+impl<'a, 'c> Actor<'a, 'c> {
     fn lower_declaration(&mut self, node: ast::Declaration) -> Vec<hir::Declaration> {
         // Check @cfg attributes - if any cfg condition fails, skip this declaration
         if !self.should_include_declaration(&node.attributes) {
@@ -596,12 +602,205 @@ impl Actor<'_, '_> {
         }
     }
 
-    fn lower_use_tree(&mut self, _: ast::UseTree) -> hir::UseTree {
-        hir::UseTree {}
+    fn lower_use_tree(&mut self, node: ast::UseTree) -> hir::UseTree {
+        match node.kind {
+            ast::UseTreeKind::Glob => hir::UseTree {
+                span: node.span,
+                path: self.lower_use_tree_module_path(&node.path.nodes),
+                kind: hir::UseTreeKind::Glob,
+            },
+            ast::UseTreeKind::Simple { alias } => {
+                let mut nodes = node.path.nodes;
+                let source = nodes.pop().expect("non-empty use tree path");
+                let path = self.lower_use_tree_module_path(&nodes);
+                let module_scope = self.resolve_module_scope(&nodes);
+                hir::UseTree {
+                    span: node.span,
+                    path,
+                    kind: hir::UseTreeKind::Simple {
+                        source: self.lower_use_tree_source_segment(source, module_scope),
+                        alias: alias.map(|identifier| self.lower_use_tree_alias(identifier)),
+                    },
+                }
+            }
+            ast::UseTreeKind::Nested { nodes, span } => {
+                let path = self.lower_use_tree_module_path(&node.path.nodes);
+                let module_scope = self.resolve_module_scope(&node.path.nodes);
+                let items = nodes
+                    .into_iter()
+                    .map(|item| {
+                        let alias_span = item.alias.map(|alias| alias.span);
+                        let source = self.lower_use_tree_source_segment(item.name, module_scope);
+                        hir::UseTreeNestedItem {
+                            span: source.span.to(alias_span.unwrap_or(source.span)),
+                            source,
+                            alias: item.alias.map(|identifier| self.lower_use_tree_alias(identifier)),
+                        }
+                    })
+                    .collect();
+
+                hir::UseTree {
+                    span: node.span,
+                    path,
+                    kind: hir::UseTreeKind::Nested { items, span },
+                }
+            }
+        }
     }
 }
 
-impl Actor<'_, '_> {
+impl<'a, 'c> Actor<'a, 'c> {
+    fn lower_use_tree_alias(&mut self, identifier: Identifier) -> hir::UseTreeAlias {
+        hir::UseTreeAlias {
+            id: self.next_index(),
+            identifier,
+            span: identifier.span,
+        }
+    }
+
+    fn lower_use_tree_module_path(&mut self, nodes: &[Identifier]) -> hir::UseTreePath {
+        let span = if let Some((first, rest)) = nodes.split_first() {
+            let end = rest.last().copied().unwrap_or(*first).span;
+            first.span.to(end)
+        } else {
+            Span::empty(crate::span::FileID::new(0))
+        };
+
+        hir::UseTreePath {
+            span,
+            segments: self.resolve_module_path_segments(nodes),
+        }
+    }
+
+    fn lower_use_tree_source_segment(
+        &mut self,
+        identifier: Identifier,
+        module_scope: Option<Scope<'c>>,
+    ) -> hir::PathSegment {
+        let resolution = if let Some(scope) = module_scope {
+            if let Some(holder) = self.resolve_in_scope(scope, identifier) {
+                self.lower_resolution(holder.resolution())
+            } else {
+                hir::Resolution::Error
+            }
+        } else if let Some(scope) = self.resolve_package_scope(identifier) {
+            if let Some(resolution) = scope.resolution() {
+                self.lower_resolution(resolution)
+            } else {
+                hir::Resolution::Error
+            }
+        } else {
+            hir::Resolution::Error
+        };
+
+        hir::PathSegment {
+            id: self.next_index(),
+            identifier,
+            arguments: None,
+            span: identifier.span,
+            resolution,
+        }
+    }
+
+    fn resolve_module_path_segments(&mut self, nodes: &[Identifier]) -> Vec<hir::PathSegment> {
+        let mut scope = None;
+        let mut segments = Vec::with_capacity(nodes.len());
+
+        for identifier in nodes.iter().copied() {
+            let (resolution, next_scope) = if let Some(current_scope) = scope {
+                let holder = match self.resolve_in_scope(current_scope, identifier) {
+                    Some(holder) => holder,
+                    None => {
+                        segments.push(self.use_tree_error_segment(identifier));
+                        break;
+                    }
+                };
+                let next_scope = match self.scope_for_holder(&holder) {
+                    Some(scope) => scope,
+                    None => {
+                        segments.push(self.use_tree_error_segment(identifier));
+                        break;
+                    }
+                };
+                (self.lower_resolution(holder.resolution()), next_scope)
+            } else {
+                let Some(next_scope) = self.resolve_package_scope(identifier) else {
+                    segments.push(self.use_tree_error_segment(identifier));
+                    break;
+                };
+                let resolution = next_scope
+                    .resolution()
+                    .map(|resolution| self.lower_resolution(resolution))
+                    .unwrap_or(hir::Resolution::Error);
+                (resolution, next_scope)
+            };
+
+            segments.push(hir::PathSegment {
+                id: self.next_index(),
+                identifier,
+                arguments: None,
+                span: identifier.span,
+                resolution,
+            });
+            scope = Some(next_scope);
+        }
+
+        segments
+    }
+
+    fn resolve_module_scope(&self, nodes: &[Identifier]) -> Option<Scope<'c>> {
+        let mut scope: Option<Scope<'c>> = None;
+
+        for identifier in nodes.iter().copied() {
+            scope = Some(if let Some(current_scope) = scope {
+                let holder = self.resolve_in_scope(current_scope, identifier)?;
+                self.scope_for_holder(&holder)?
+            } else {
+                self.resolve_package_scope(identifier)?
+            });
+        }
+
+        scope
+    }
+
+    fn resolve_package_scope(&self, identifier: Identifier) -> Option<Scope<'c>> {
+        scope_lookup::resolve_package_scope(self.context, self.resolutions, identifier)
+    }
+
+    fn resolve_in_scope(&self, scope: Scope<'c>, identifier: Identifier) -> Option<Holder<'c>> {
+        self.find_holder_in_scope(scope, identifier, ScopeNamespace::Type)
+            .or_else(|| self.find_holder_in_scope(scope, identifier, ScopeNamespace::Value))
+            .or_else(|| {
+                scope_lookup::resolve_in_scope(scope, identifier, ScopeNamespace::Type)
+                    .or_else(|| {
+                        scope_lookup::resolve_in_scope(scope, identifier, ScopeNamespace::Value)
+                    })
+            })
+    }
+
+    fn find_holder_in_scope(
+        &self,
+        scope: Scope<'c>,
+        identifier: Identifier,
+        namespace: ScopeNamespace,
+    ) -> Option<Holder<'c>> {
+        scope_lookup::find_holder_in_scope(scope, identifier.symbol, namespace)
+    }
+
+    fn scope_for_holder(&self, holder: &Holder<'c>) -> Option<Scope<'c>> {
+        scope_lookup::scope_for_holder(self.context, self.resolutions, holder)
+    }
+
+    fn use_tree_error_segment(&mut self, identifier: Identifier) -> hir::PathSegment {
+        hir::PathSegment {
+            id: self.next_index(),
+            identifier,
+            arguments: None,
+            span: identifier.span,
+            resolution: hir::Resolution::Error,
+        }
+    }
+
     fn lower_function(&mut self, node: ast::Function, span: Span) -> hir::Function {
         let abi = self.lower_abi(node.abi, span);
         hir::Function {
@@ -1888,8 +2087,8 @@ impl Actor<'_, '_> {
 
         let (base_id, base_ident) = parts.first()?;
 
-        let mut last_resolution = self.get_resolution(*base_id);
         let mut segments = Vec::with_capacity(parts.len());
+        let mut last_resolution = self.get_resolution(*base_id);
         segments.push(hir::PathSegment {
             id: self.next_index(),
             identifier: *base_ident,
@@ -3036,7 +3235,7 @@ mod escape {
         MultipleSkippedLinesWarning,
     }
 
-    impl EscapeError {
+impl EscapeError {
         /// Returns true for actual errors, as opposed to warnings.
         pub fn _is_fatal(&self) -> bool {
             !matches!(
@@ -3259,5 +3458,142 @@ mod escape {
             return Err(EscapeError::MoreThanOneChar);
         }
         Ok(res)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        PackageIndex,
+        compile::{
+            Compiler,
+            config::{BuildProfile, Config, DebugOptions, PackageKind, StdMode},
+            context::{CompilerArenas, CompilerContext, CompilerStore},
+        },
+        diagnostics::DiagCtx,
+        hir::{DeclarationKind, ExpressionKind, ResolvedPath, StatementKind},
+        interner,
+    };
+    use rustc_hash::FxHashMap;
+    use std::{
+        fs::{create_dir_all, write},
+        path::{Path, PathBuf},
+        rc::Rc,
+    };
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "taro-ast-lowering-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        create_dir_all(&path).expect("temp dir");
+        path
+    }
+
+    fn write_file(path: &Path, contents: &str) {
+        if let Some(parent) = path.parent() {
+            create_dir_all(parent).expect("parent dir");
+        }
+        write(path, contents).expect("write file");
+    }
+
+    fn analyze_script(source: &str) -> crate::hir::Package {
+        interner::reset_session();
+
+        let root = temp_dir("member-chain");
+        let output_root = root.join("target");
+        create_dir_all(&output_root).expect("output root");
+
+        let file = root.join("main.tr");
+        write_file(&file, source);
+
+        let dcx = Rc::new(DiagCtx::new(PathBuf::from(".")));
+        let arenas = CompilerArenas::new();
+        let store = CompilerStore::new(
+            &arenas,
+            output_root,
+            &dcx,
+            None,
+            BuildProfile::Debug,
+        )
+        .unwrap_or_else(|_| panic!("store"));
+        let icx = CompilerContext::new(dcx, store);
+        let config = icx.store.arenas.configs.alloc(Config {
+            name: "script".into(),
+            identifier: "script-member-chain".into(),
+            src: file,
+            dependencies: FxHashMap::default(),
+            index: PackageIndex::new(1),
+            kind: PackageKind::Executable,
+            executable_out: None,
+            no_std_prelude: true,
+            is_script: true,
+            profile: BuildProfile::Debug,
+            overflow_checks: false,
+            debug: DebugOptions {
+                dump_mir: false,
+                dump_llvm: false,
+                timings: false,
+            },
+            test_mode: false,
+            std_mode: StdMode::BootstrapStd,
+            is_std_provider: false,
+        });
+
+        let mut compiler = Compiler::new(&icx, config);
+        let (package, _) = compiler.analyze().unwrap_or_else(|_| panic!("analyze"));
+        package
+    }
+
+    #[test]
+    fn resolved_member_chain_keeps_per_segment_resolution() {
+        let package = analyze_script(
+            "func main() {\n    Foo.bar()\n}\n\nnamespace Foo {\n    func bar() {}\n}\n",
+        );
+
+        let main_decl = package
+            .root
+            .declarations
+            .iter()
+            .find(|declaration| declaration.identifier.symbol.as_str() == "main")
+            .expect("main declaration");
+        let DeclarationKind::Function(function) = &main_decl.kind else {
+            panic!("main should be a function");
+        };
+        let block = function.block.as_ref().expect("main body");
+        let expression = if let Some(expression) = block.tail.as_ref() {
+            expression
+        } else {
+            let StatementKind::Expression(expression) = &block.statements[0].kind else {
+                panic!("first statement should be an expression");
+            };
+            expression
+        };
+        let ExpressionKind::Call { callee, .. } = &expression.kind else {
+            panic!("statement should lower to a call");
+        };
+        let ExpressionKind::Path(ResolvedPath::Resolved(path)) = &callee.kind else {
+            panic!("callee should lower to a resolved path");
+        };
+
+        assert_eq!(path.segments.len(), 2);
+
+        let crate::hir::Resolution::Definition(first_id, first_kind) = &path.segments[0].resolution
+        else {
+            panic!("first segment should resolve to a definition");
+        };
+        let crate::hir::Resolution::Definition(second_id, second_kind) =
+            &path.segments[1].resolution
+        else {
+            panic!("second segment should resolve to a definition");
+        };
+
+        assert_eq!(*first_kind, crate::hir::DefinitionKind::Namespace);
+        assert_ne!(*first_id, *second_id);
+        assert_eq!(*second_kind, crate::hir::DefinitionKind::Function);
     }
 }

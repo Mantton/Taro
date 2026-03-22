@@ -19,6 +19,18 @@ pub struct Compiler<'state> {
     pub context: GlobalContext<'state>,
 }
 
+pub struct IdeAnalysis<'state> {
+    pub package: hir::Package,
+    pub results: Option<sema::tycheck::results::TypeCheckResults<'state>>,
+    pub status: IdeAnalysisStatus,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct IdeAnalysisStatus {
+    pub hir_available: bool,
+    pub typed_available: bool,
+}
+
 #[derive(Debug, Clone)]
 struct PhaseTiming {
     name: &'static str,
@@ -286,6 +298,11 @@ impl<'state> Compiler<'state> {
         self.analyze_with_timings(&mut timings)
     }
 
+    pub fn analyze_for_ide(&mut self) -> CompileResult<IdeAnalysis<'state>> {
+        let mut timings = TimingReport::default();
+        self.analyze_for_ide_with_timings(&mut timings)
+    }
+
     fn predicted_emitted_instances(&self) -> FxHashSet<specialize::Instance<'state>> {
         let mut emitted = FxHashSet::default();
         let current_pkg = self.context.package_index();
@@ -324,6 +341,79 @@ impl<'state> Compiler<'state> {
         hir::Package,
         sema::tycheck::results::TypeCheckResults<'state>,
     )> {
+        let package = self.lower_to_hir_with_timings(timings, false)?;
+
+        let phase_started_at = Instant::now();
+        sema::validate::validate_package(&package, self.context)?;
+        timings.push_elapsed("sema.validate", phase_started_at);
+
+        let phase_started_at = Instant::now();
+        let results = if self.context.config.debug.timings {
+            let (results, typecheck_timings) =
+                sema::tycheck::typecheck_package_with_timings(&package, self.context)?;
+            for phase in typecheck_timings {
+                timings.push_duration(phase.name, phase.duration);
+            }
+            results
+        } else {
+            sema::tycheck::typecheck_package(&package, self.context)?
+        };
+        timings.push_elapsed("sema.typecheck", phase_started_at);
+
+        let phase_started_at = Instant::now();
+        sema::validate::validate_post_typecheck(&package, self.context, &results)?;
+        timings.push_elapsed("sema.validate_post", phase_started_at);
+
+        if !self.context.config.test_mode {
+            let phase_started_at = Instant::now();
+            let _ = entry::validate_entry_point(&package, self.context)?;
+            timings.push_elapsed("entry.validate", phase_started_at);
+        }
+
+        Ok((package, results))
+    }
+
+    fn analyze_for_ide_with_timings(
+        &mut self,
+        timings: &mut TimingReport,
+    ) -> CompileResult<IdeAnalysis<'state>> {
+        let package = self.lower_to_hir_with_timings(timings, true)?;
+
+        let phase_started_at = Instant::now();
+        let _ = sema::validate::validate_package(&package, self.context);
+        timings.push_elapsed("sema.validate", phase_started_at);
+
+        let phase_started_at = Instant::now();
+        let results = sema::tycheck::typecheck_package(&package, self.context).ok();
+        timings.push_elapsed("sema.typecheck", phase_started_at);
+
+        if let Some(results) = &results {
+            let phase_started_at = Instant::now();
+            let _ = sema::validate::validate_post_typecheck(&package, self.context, results);
+            timings.push_elapsed("sema.validate_post", phase_started_at);
+
+            if !self.context.config.test_mode {
+                let phase_started_at = Instant::now();
+                let _ = entry::validate_entry_point(&package, self.context);
+                timings.push_elapsed("entry.validate", phase_started_at);
+            }
+        }
+
+        Ok(IdeAnalysis {
+            package,
+            status: IdeAnalysisStatus {
+                hir_available: true,
+                typed_available: results.is_some(),
+            },
+            results,
+        })
+    }
+
+    fn lower_to_hir_with_timings(
+        &mut self,
+        timings: &mut TimingReport,
+        ide_mode: bool,
+    ) -> CompileResult<hir::Package> {
         {
             let mut table = self.context.store.package_mapping.borrow_mut();
             table.insert(
@@ -394,7 +484,8 @@ impl<'state> Compiler<'state> {
             let mut table = self.context.store.resolution_outputs.borrow_mut();
             table.insert(self.context.config.index, output);
         }
-        if let Some(items) = sema::std_items::collect_std_items(&package, self.context, output)? {
+        let std_items = sema::std_items::collect_std_items(&package, self.context, output);
+        if let Some(items) = if ide_mode { std_items.ok().flatten() } else { std_items? } {
             self.context
                 .store
                 .std_items
@@ -403,35 +494,7 @@ impl<'state> Compiler<'state> {
         }
         let package = ast_lowering::lower_package(package, self.context, output)?;
         timings.push_elapsed("hir.lower", phase_started_at);
-
-        let phase_started_at = Instant::now();
-        sema::validate::validate_package(&package, self.context)?;
-        timings.push_elapsed("sema.validate", phase_started_at);
-
-        let phase_started_at = Instant::now();
-        let results = if self.context.config.debug.timings {
-            let (results, typecheck_timings) =
-                sema::tycheck::typecheck_package_with_timings(&package, self.context)?;
-            for phase in typecheck_timings {
-                timings.push_duration(phase.name, phase.duration);
-            }
-            results
-        } else {
-            sema::tycheck::typecheck_package(&package, self.context)?
-        };
-        timings.push_elapsed("sema.typecheck", phase_started_at);
-
-        let phase_started_at = Instant::now();
-        sema::validate::validate_post_typecheck(&package, self.context, &results)?;
-        timings.push_elapsed("sema.validate_post", phase_started_at);
-
-        if !self.context.config.test_mode {
-            let phase_started_at = Instant::now();
-            let _ = entry::validate_entry_point(&package, self.context)?;
-            timings.push_elapsed("entry.validate", phase_started_at);
-        }
-
-        Ok((package, results))
+        Ok(package)
     }
 
     fn build_semantic_thir_with_timings(

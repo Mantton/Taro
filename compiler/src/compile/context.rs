@@ -633,14 +633,16 @@ impl<'arena> GlobalContext<'arena> {
     }
 
     pub fn get_signature(self, id: DefinitionID) -> &'arena LabeledFunctionSignature<'arena> {
+        self.try_get_signature(id).expect("fn signature of definition")
+    }
+
+    pub fn try_get_signature(self, id: DefinitionID) -> Option<&'arena LabeledFunctionSignature<'arena>> {
         if let Some(def) = self.context.store.synthetic_definitions.borrow().get(&id) {
-            return def.signature;
+            return Some(def.signature);
         }
 
         self.with_type_database(id.package(), |db| {
-            *db.def_to_fn_sig
-                .get(&id)
-                .expect("fn signature of definition")
+            db.def_to_fn_sig.get(&id).copied()
         })
     }
 

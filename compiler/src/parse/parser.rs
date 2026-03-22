@@ -391,18 +391,87 @@ impl Parser {
 }
 
 impl Parser {
+    fn synchronize_declaration(&mut self) {
+        while !self.is_at_end() {
+            if self.eat(Token::Semicolon) {
+                return;
+            }
+
+            if let Some(token) = self.current() {
+                match token.value {
+                    Token::Function
+                    | Token::Struct
+                    | Token::Enum
+                    | Token::Interface
+                    | Token::Namespace
+                    | Token::Impl
+                    | Token::Export
+                    | Token::Import
+                    | Token::Type
+                    | Token::Const
+                    | Token::At => return,
+                    _ => {
+                        self.bump();
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn synchronize_statement(&mut self) {
+        while !self.is_at_end() {
+            if self.eat(Token::Semicolon) {
+                return;
+            }
+
+            if let Some(token) = self.current() {
+                match token.value {
+                    Token::Let
+                    | Token::Var
+                    | Token::If
+                    | Token::Return
+                    | Token::For
+                    | Token::While
+                    | Token::Defer
+                    | Token::Guard
+                    | Token::Match
+                    | Token::RBrace => return,
+                    _ => {
+                        self.bump();
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
     fn parse_module_declarations(&mut self) -> R<Vec<Declaration>> {
         let mut items = vec![];
         loop {
-            let Some(item) = self.parse_declaration()? else {
+            if self.is_at_end() {
                 break;
-            };
-
-            items.push(item);
-        }
-
-        if !self.is_at_end() {
-            return Err(self.err_at_current(ParserError::ExpectedTopLevelDeclaration));
+            }
+            match self.parse_declaration() {
+                Ok(Some(item)) => items.push(item),
+                Ok(None) => {
+                    // No declaration matched, but we might not be at EOF if there are trailing invalid tokens
+                    if !self.is_at_end() {
+                        let err = self.err_at_current(ParserError::ExpectedTopLevelDeclaration);
+                        self.emit_error(err.value, err.span);
+                        self.bump(); // forcefully consume token to avoid infinite loop
+                        self.synchronize_declaration();
+                    } else {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    self.emit_error(e.value, e.span);
+                    self.synchronize_declaration();
+                }
+            }
         }
 
         return Ok(items);
@@ -2385,8 +2454,18 @@ impl Parser {
             if self.matches(Token::RBrace) {
                 break;
             }
-            let item = parse_action(self)?;
-            items.push(item);
+            match parse_action(self) {
+                Ok(item) => items.push(item),
+                Err(e) => {
+                    self.emit_error(e.value, e.span);
+                    self.synchronize_statement();
+                    // If synchronization left us on a token that is not a closing brace
+                    // but we failed to parse anything, we need to ensure we make progress
+                    // so we don't infinitely loop on bad tokens. The `parse_action` usually
+                    // consumes tokens, but if it didn't, or we sync'd to the same bad token:
+                    // (This is primarily handled by synchronize_statement inherently advancing if it doesn't match).
+                }
+            }
 
             if self.matches(Token::RBrace) {
                 break;
@@ -6151,6 +6230,53 @@ mod tests {
                 _ => panic!("Expected string literal"),
             },
             _ => panic!("Expected literal"),
+        }
+    }
+
+    fn parse_decls_with_recovery(input: &str) -> (Vec<Declaration>, Vec<Spanned<ParserError>>) {
+        let dcx = DiagCtx::new(PathBuf::from("."));
+        let file_id = dcx.add_file_mapping(PathBuf::from("test.taro"));
+        let lexer = Lexer::new(input, file_id);
+        let file = lexer.tokenize().expect("Lexing failed");
+        let next: NextNode = Default::default();
+        let mut parser = Parser::new(file, next);
+        let decls = parser.parse_module_declarations().unwrap_or_default();
+        (decls, parser.errors)
+    }
+
+    #[test]
+    fn test_parser_recovery_declarations() {
+        let input = "
+            func good1() {}
+            let bad1 = 1;
+            func good2() {}
+            struct Bad2 { let }
+            func good3() {}
+        ";
+        let (decls, errors) = parse_decls_with_recovery(input);
+        assert!(!errors.is_empty(), "Should have parse errors");
+        
+        let func_count = decls.iter().filter(|d| matches!(d.kind, DeclarationKind::Function(_))).count();
+        assert!(func_count >= 3, "Failed to recover all valid functions");
+    }
+
+    #[test]
+    fn test_parser_recovery_statements() {
+        let input = "func test() {
+            let x = 1;
+            let y = if if if;
+            let z = 2;
+        }";
+        let (decls, errors) = parse_decls_with_recovery(input);
+        assert!(!errors.is_empty(), "Should have parse errors");
+        
+        let func = decls.into_iter().find(|d| matches!(d.kind, DeclarationKind::Function(_))).unwrap();
+        if let DeclarationKind::Function(f) = func.kind {
+            let body = f.block.unwrap();
+            let let_count = body.statements.iter().filter(|s| matches!(s.kind, StatementKind::Variable(_))).count();
+            assert!(let_count >= 2, "Failed to recover statements inside block");
+        } else {
+            panic!("Expected function");
         }
     }
 }

@@ -14,7 +14,7 @@ DIST_DIR := $(ROOT)/dist
 TARO := $(DIST_DIR)/bin/taro
 STD_PATH := $(ROOT)/std
 
-.PHONY: help compiler compiler-release dist run check cargo-test test language-tests std-tests all-tests benchmark
+.PHONY: help compiler compiler-release lsp lsp-release lsp-bin lsp-release-bin dist run check cargo-test test language-tests std-tests all-tests benchmark
 
 help:
 	@echo "Taro development shortcuts"
@@ -22,6 +22,10 @@ help:
 	@echo "Build:"
 	@echo "  make compiler                 Build taro-bin (debug)"
 	@echo "  make compiler-release         Build taro-bin (release)"
+	@echo "  make lsp                      Build dist/ and taro-lsp (debug)"
+	@echo "  make lsp-release              Build dist/ and taro-lsp (release)"
+	@echo "  make lsp-bin                  Build taro-lsp only (debug)"
+	@echo "  make lsp-release-bin          Build taro-lsp only (release)"
 	@echo "  make dist                     Build dist/ layout (compiler + runtime + std link)"
 	@echo ""
 	@echo "Run compiler:"
@@ -45,6 +49,18 @@ compiler:
 
 compiler-release:
 	$(CARGO) build -p taro-bin --release
+
+lsp: dist
+	$(CARGO) build -p taro-lsp
+
+lsp-release: dist
+	$(CARGO) build -p taro-lsp --release
+
+lsp-bin:
+	$(CARGO) build -p taro-lsp
+
+lsp-release-bin:
+	$(CARGO) build -p taro-lsp --release
 
 dist:
 	$(PYTHON) $(BUILD_DIST)

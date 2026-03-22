@@ -512,7 +512,7 @@ pub struct LabeledFunctionSignature<'ctx> {
     pub abi: Option<crate::hir::Abi>,
 }
 
-impl LabeledFunctionSignature<'_> {
+impl<'ctx> LabeledFunctionSignature<'ctx> {
     pub fn min_parameter_count(&self) -> usize {
         self.inputs
             .len()
@@ -541,6 +541,98 @@ impl LabeledFunctionSignature<'_> {
         self.inputs.iter().zip(&other.inputs).all(|(a, b)| {
             a.label == b.label && a.default_provider.is_some() == b.default_provider.is_some()
         })
+    }
+
+    pub fn format_for_display(&self, gcx: Gcx<'ctx>) -> String {
+        let mut out = String::new();
+        out.push('(');
+
+        for (index, _) in self.inputs.iter().enumerate() {
+            if index > 0 {
+                out.push_str(", ");
+            }
+
+            out.push_str(&format_parameter_for_display(self, index, gcx));
+        }
+
+        out.push_str(") -> ");
+        out.push_str(&self.output.format(gcx));
+        out
+    }
+}
+
+pub fn format_signature_parameter_labels_for_display<'ctx>(
+    signature: &LabeledFunctionSignature<'ctx>,
+    gcx: Gcx<'ctx>,
+) -> Vec<String> {
+    signature
+        .inputs
+        .iter()
+        .enumerate()
+        .map(|(index, _)| format_parameter_for_display(signature, index, gcx))
+        .collect()
+}
+
+pub fn format_definition_signature_parameter_labels_for_display(
+    gcx: Gcx<'_>,
+    id: DefinitionID,
+) -> Option<Vec<String>> {
+    match gcx.definition_kind(id) {
+        crate::sema::resolve::models::DefinitionKind::Function
+        | crate::sema::resolve::models::DefinitionKind::AssociatedFunction => {
+            Some(format_signature_parameter_labels_for_display(
+                gcx.try_get_signature(id)?,
+                gcx,
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn format_parameter_for_display<'ctx>(
+    signature: &LabeledFunctionSignature<'ctx>,
+    index: usize,
+    gcx: Gcx<'ctx>,
+) -> String {
+    let param = &signature.inputs[index];
+    let is_variadic = signature.is_variadic && index + 1 == signature.inputs.len();
+    format_parameter_type_for_display(param.ty, is_variadic, gcx)
+}
+
+fn format_parameter_type_for_display<'ctx>(
+    ty: Ty<'ctx>,
+    is_variadic: bool,
+    gcx: Gcx<'ctx>,
+) -> String {
+    if is_variadic && let Some(element_ty) = variadic_element_type(ty, gcx) {
+        return format!("{}...", element_ty.format(gcx));
+    }
+
+    ty.format(gcx)
+}
+
+fn variadic_element_type<'ctx>(ty: Ty<'ctx>, gcx: Gcx<'ctx>) -> Option<Ty<'ctx>> {
+    let span_id = gcx.std_item_def(hir::StdItem::Span)?;
+
+    match ty.kind() {
+        TyKind::Adt(adt, args) if adt.id == span_id => match args.get(0) {
+            Some(GenericArgument::Type(inner)) if args.len() == 1 => Some(*inner),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+pub fn format_definition_signature_for_display(
+    gcx: Gcx<'_>,
+    id: DefinitionID,
+) -> Option<String> {
+    match gcx.definition_kind(id) {
+        crate::sema::resolve::models::DefinitionKind::Function
+        | crate::sema::resolve::models::DefinitionKind::AssociatedFunction => {
+            Some(gcx.try_get_signature(id)?.format_for_display(gcx))
+        }
+        _ => None,
     }
 }
 
