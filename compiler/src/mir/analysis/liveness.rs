@@ -54,6 +54,16 @@ pub fn compute_liveness(body: &Body<'_>) -> LivenessResult {
                 TerminatorKind::SwitchInt { discr, .. } => {
                     use_operand(discr, &mut current_live);
                 }
+                TerminatorKind::Yield {
+                    value, resume_arg, ..
+                } => {
+                    use_operand(value, &mut current_live);
+                    if resume_arg.projection.is_empty() {
+                        current_live.remove(&resume_arg.local);
+                    } else {
+                        use_place(resume_arg, &mut current_live);
+                    }
+                }
                 TerminatorKind::Return => {
                     // Return local is used
                     current_live.insert(body.return_local);
@@ -164,6 +174,14 @@ pub fn compute_liveness(body: &Body<'_>) -> LivenessResult {
                     }
                 }
                 TerminatorKind::SwitchInt { discr, .. } => use_operand(discr, &mut in_set),
+                TerminatorKind::Yield { value, resume_arg, .. } => {
+                    use_operand(value, &mut in_set);
+                    if resume_arg.projection.is_empty() {
+                        in_set.remove(&resume_arg.local);
+                    } else {
+                        use_place(resume_arg, &mut in_set);
+                    }
+                }
                 TerminatorKind::Return => {
                     in_set.insert(body.return_local);
                 }
@@ -240,6 +258,7 @@ fn successors(term: &TerminatorKind) -> Vec<BasicBlockId> {
             }
             succ
         }
+        TerminatorKind::Yield { resume, .. } => vec![*resume],
         _ => vec![],
     }
 }

@@ -436,6 +436,7 @@ fn terminator_successors(term: &crate::mir::Terminator<'_>) -> Vec<BasicBlockId>
             }
             succs
         }
+        TerminatorKind::Yield { resume, .. } => vec![*resume],
         TerminatorKind::Return
         | TerminatorKind::ResumeUnwind
         | TerminatorKind::Unreachable

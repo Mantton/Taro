@@ -211,6 +211,16 @@ pub enum ExprKind<'a> {
         /// The closure's definition ID (to get the body function)
         closure_def_id: DefinitionID,
     },
+    /// `await future` — suspend until the future completes
+    Await {
+        /// The future expression being awaited
+        future: ExprId,
+    },
+    /// `spawn { block }` — spawn a concurrent async task
+    Spawn {
+        /// The body block of the spawned task
+        body: BlockId,
+    },
 }
 
 /// A captured variable in a closure

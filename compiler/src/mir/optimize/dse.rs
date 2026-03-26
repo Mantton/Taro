@@ -53,6 +53,14 @@ impl<'ctx> MirPass<'ctx> for DeadStoreElimination {
                         }
                     }
                     TerminatorKind::SwitchInt { discr, .. } => use_operand(discr, &mut live),
+                    TerminatorKind::Yield { value, resume_arg, .. } => {
+                        use_operand(value, &mut live);
+                        if resume_arg.projection.is_empty() {
+                            live.remove(&resume_arg.local);
+                        } else {
+                            use_place(resume_arg, &mut live);
+                        }
+                    }
                     TerminatorKind::Return => {
                         live.insert(body.return_local);
                     }

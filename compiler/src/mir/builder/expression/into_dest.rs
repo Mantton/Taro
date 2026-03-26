@@ -555,6 +555,31 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 self.push_assign(block, destination, rvalue, expr.span);
                 block.unit()
             }
+            ExprKind::Await { future } => {
+                // Lower the future expression into a temp
+                let future_op = unpack!(block = self.as_local_operand(block, *future));
+
+                // Create the resume block (where execution continues after yield)
+                let resume = self.new_block_with_note("await-resume".into());
+
+                // Emit a Yield terminator as the suspension point marker
+                let terminator = TerminatorKind::Yield {
+                    value: future_op,
+                    resume,
+                    resume_arg: destination.clone(),
+                };
+                self.terminate(block, expr.span, terminator);
+
+                // Continue from the resume block
+                resume.unit()
+            }
+            ExprKind::Spawn { .. } => {
+                // TODO(phase7): Lower spawn to runtime executor call.
+                // Spawn requires the async runtime (executor, Task construction)
+                // which is not yet implemented. For now, emit a placeholder unit
+                // so that `taro check` works (it doesn't reach MIR).
+                todo!("spawn expression requires async runtime (Phase 7)")
+            }
             ExprKind::Tuple { .. }
             | ExprKind::Array { .. }
             | ExprKind::Repeat { .. }

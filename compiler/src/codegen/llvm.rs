@@ -3612,6 +3612,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 self.refresh_rc_shadow_locals(body, locals);
                 let _ = self.builder.build_unconditional_branch(normal_bb).unwrap();
             }
+            mir::TerminatorKind::Yield { .. } => {
+                unreachable!("Yield terminators must be lowered by the state machine transform before codegen");
+            }
         }
         Ok(())
     }

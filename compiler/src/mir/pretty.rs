@@ -114,6 +114,17 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                     CallUnwindAction::Terminate => write!(f, " unwind terminate"),
                 }
             }
+            TerminatorKind::Yield {
+                value,
+                resume,
+                resume_arg,
+            } => {
+                write!(f, "yield(")?;
+                self.write_operand(value, f)?;
+                write!(f, ") -> ")?;
+                self.write_place(resume_arg, f)?;
+                write!(f, " resume bb{:?}", resume)
+            }
         }
     }
 

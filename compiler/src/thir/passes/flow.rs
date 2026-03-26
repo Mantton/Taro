@@ -534,6 +534,12 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
                 loop_depth,
                 check_initialization,
             ),
+            ExprKind::Await { future } => {
+                self.analyze_expr(future, initialized, loop_depth, check_initialization)
+            }
+            ExprKind::Spawn { body } => {
+                self.analyze_block(body, initialized, loop_depth, check_initialization)
+            }
         }
     }
 

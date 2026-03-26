@@ -588,6 +588,7 @@ fn record_terminator_use_counts(term: &TerminatorKind<'_>, use_counts: &mut [usi
             }
         }
         TerminatorKind::SwitchInt { discr, .. } => record_operand_use_count(discr, use_counts),
+        TerminatorKind::Yield { value, .. } => record_operand_use_count(value, use_counts),
         TerminatorKind::Return
         | TerminatorKind::Goto { .. }
         | TerminatorKind::UnresolvedGoto
@@ -616,6 +617,7 @@ fn terminator_successors(term: &TerminatorKind<'_>) -> Vec<BasicBlockId> {
             }
             out
         }
+        TerminatorKind::Yield { resume, .. } => vec![*resume],
         TerminatorKind::Return
         | TerminatorKind::ResumeUnwind
         | TerminatorKind::Unreachable

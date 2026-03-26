@@ -84,6 +84,7 @@ fn successors(term: &TerminatorKind<'_>) -> Vec<BasicBlockId> {
             }
             succ
         }
+        TerminatorKind::Yield { resume, .. } => vec![*resume],
         _ => vec![],
     }
 }

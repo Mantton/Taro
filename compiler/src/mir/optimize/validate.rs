@@ -269,6 +269,7 @@ fn successors(term: &TerminatorKind) -> Vec<BasicBlockId> {
             }
             succs
         }
+        TerminatorKind::Yield { resume, .. } => vec![*resume],
         TerminatorKind::Return
         | TerminatorKind::ResumeUnwind
         | TerminatorKind::Unreachable

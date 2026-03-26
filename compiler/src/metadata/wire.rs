@@ -987,6 +987,11 @@ pub enum TerminatorKindWire {
         target: u32,
         unwind: CallUnwindActionWire,
     },
+    Yield {
+        value: OperandWire,
+        resume: u32,
+        resume_arg: PlaceWire,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3696,6 +3701,15 @@ pub fn terminator_to_wire(v: &mir::Terminator<'_>) -> TerminatorWire {
                 target: target.index() as u32,
                 unwind: unwind_to_wire(*unwind),
             },
+            mir::TerminatorKind::Yield {
+                value,
+                resume,
+                resume_arg,
+            } => TerminatorKindWire::Yield {
+                value: operand_to_wire(value),
+                resume: resume.index() as u32,
+                resume_arg: place_to_wire(resume_arg),
+            },
         },
         span: span_to_wire(v.span),
     }
@@ -3739,6 +3753,15 @@ pub fn terminator_from_wire<'a>(
                 destination: place_from_wire(gcx, destination),
                 target: mir::BasicBlockId::from_raw(*target),
                 unwind: unwind_from_wire(unwind),
+            },
+            TerminatorKindWire::Yield {
+                value,
+                resume,
+                resume_arg,
+            } => mir::TerminatorKind::Yield {
+                value: operand_from_wire(gcx, value),
+                resume: mir::BasicBlockId::from_raw(*resume),
+                resume_arg: place_from_wire(gcx, resume_arg),
             },
         },
         span: span_from_wire(&v.span, remap),

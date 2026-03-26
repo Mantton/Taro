@@ -101,7 +101,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             | ExprKind::Repeat { .. }
             | ExprKind::Adt { .. }
             | ExprKind::Zst { .. }
-            | ExprKind::Closure { .. } => {
+            | ExprKind::Closure { .. }
+            | ExprKind::Await { .. }
+            | ExprKind::Spawn { .. } => {
                 let temp = unpack!(block = self.as_temp(block, expr_id));
                 block.and(PlaceBuilder::from_local(temp))
             }

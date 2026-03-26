@@ -197,6 +197,9 @@ pub fn prune_unreachable_blocks(body: &mut Body<'_>) {
                         stack.push(*bb);
                     }
                 }
+                TerminatorKind::Yield { resume, .. } => {
+                    stack.push(*resume);
+                }
                 TerminatorKind::Return
                 | TerminatorKind::ResumeUnwind
                 | TerminatorKind::Unreachable
@@ -239,6 +242,9 @@ pub fn prune_unreachable_blocks(body: &mut Body<'_>) {
                     if let CallUnwindAction::Cleanup(bb) = unwind {
                         *bb = remap_bb(*bb);
                     }
+                }
+                TerminatorKind::Yield { resume, .. } => {
+                    *resume = remap_bb(*resume);
                 }
                 TerminatorKind::Return
                 | TerminatorKind::ResumeUnwind
@@ -350,6 +356,12 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
                 }
                 TerminatorKind::SwitchInt { discr, .. } => {
                     mark_operand_used(discr, &mut used);
+                }
+                TerminatorKind::Yield {
+                    value, resume_arg, ..
+                } => {
+                    mark_operand_used(value, &mut used);
+                    mark_place_used(resume_arg, &mut used);
                 }
                 TerminatorKind::Return => {
                     used[body.return_local.index()] = true;
@@ -537,6 +549,15 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
                 TerminatorKind::ResumeUnwind => TerminatorKind::ResumeUnwind,
                 TerminatorKind::Unreachable => TerminatorKind::Unreachable,
                 TerminatorKind::UnresolvedGoto => TerminatorKind::UnresolvedGoto,
+                TerminatorKind::Yield {
+                    value,
+                    resume,
+                    resume_arg,
+                } => TerminatorKind::Yield {
+                    value: remap_operand(value, &remap),
+                    resume: *resume,
+                    resume_arg: remap_place(resume_arg, &remap),
+                },
             };
         }
     }

@@ -141,6 +141,18 @@ pub enum TerminatorKind<'ctx> {
         target: BasicBlockId,
         unwind: CallUnwindAction,
     },
+    /// Suspend point for async/await. Marks where an async function
+    /// yields control back to the executor while awaiting a future.
+    /// The state machine transform (Phase 5) will expand this into
+    /// poll calls and state transitions.
+    Yield {
+        /// The future being awaited
+        value: Operand<'ctx>,
+        /// Block to jump to when resumed with the ready value
+        resume: BasicBlockId,
+        /// Place to write the awaited value into on resume
+        resume_arg: Place<'ctx>,
+    },
 }
 
 impl<'a> TerminatorKind<'a> {
@@ -290,11 +302,17 @@ pub fn for_each_function_constant_in_body<'ctx>(
         }
 
         if let Some(terminator) = &block.terminator {
-            if let TerminatorKind::Call { func, args, .. } = &terminator.kind {
-                for_each_function_constant_in_operand(func, &mut visit);
-                for argument in args {
-                    for_each_function_constant_in_operand(argument, &mut visit);
+            match &terminator.kind {
+                TerminatorKind::Call { func, args, .. } => {
+                    for_each_function_constant_in_operand(func, &mut visit);
+                    for argument in args {
+                        for_each_function_constant_in_operand(argument, &mut visit);
+                    }
                 }
+                TerminatorKind::Yield { value, .. } => {
+                    for_each_function_constant_in_operand(value, &mut visit);
+                }
+                _ => {}
             }
         }
     }
@@ -527,7 +545,9 @@ impl Category {
             | thir::ExprKind::Block(..)
             | thir::ExprKind::Adt(..)
             | thir::ExprKind::Closure { .. }
-            | thir::ExprKind::ListLiteral { .. } => Category::Rvalue(RvalueFunc::Into),
+            | thir::ExprKind::ListLiteral { .. }
+            | thir::ExprKind::Await { .. }
+            | thir::ExprKind::Spawn { .. } => Category::Rvalue(RvalueFunc::Into),
 
             thir::ExprKind::Assign { .. }
             | thir::ExprKind::AssignOp { .. }

@@ -429,6 +429,15 @@ fn remap_terminator<'ctx>(
                 CallUnwindAction::Terminate => CallUnwindAction::Terminate,
             },
         },
+        TerminatorKind::Yield {
+            value,
+            resume,
+            resume_arg,
+        } => TerminatorKind::Yield {
+            value: remap_operand(gcx, value, local_map, gen_args),
+            resume: block_map[resume.index()],
+            resume_arg: remap_place(gcx, resume_arg, local_map, gen_args),
+        },
     };
     Terminator {
         kind,
