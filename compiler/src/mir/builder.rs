@@ -108,6 +108,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             return_local: LocalId::from_raw(0),
             escape_locals: Vec::new(),
             phase: mir::MirPhase::Built,
+            is_async: function.is_async,
         };
 
         // Create return place first.

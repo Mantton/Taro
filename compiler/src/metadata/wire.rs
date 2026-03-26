@@ -916,6 +916,8 @@ pub struct BodyWire {
     pub return_local: u32,
     pub escape_locals: Vec<bool>,
     pub phase: MirPhaseWire,
+    #[serde(default)]
+    pub is_async: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3795,6 +3797,7 @@ pub fn mir_body_to_wire(v: &mir::Body<'_>) -> BodyWire {
         return_local: v.return_local.index() as u32,
         escape_locals: v.escape_locals.clone(),
         phase: mir_phase_to_wire(v.phase),
+        is_async: v.is_async,
     }
 }
 
@@ -3836,6 +3839,7 @@ pub fn mir_body_from_wire<'a>(
         return_local: mir::LocalId::from_raw(v.return_local),
         escape_locals: v.escape_locals.clone(),
         phase: mir_phase_from_wire(&v.phase),
+        is_async: v.is_async,
     }
 }
 

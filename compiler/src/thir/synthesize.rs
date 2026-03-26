@@ -529,6 +529,7 @@ fn synthesize_memberwise_hash<'ctx>(
             exprs: builder.exprs,
             arms: IndexVec::new(),
             match_trees: FxHashMap::default(),
+            is_async: false,
         });
     }
 
@@ -638,6 +639,7 @@ fn synthesize_memberwise_equality<'ctx>(
             exprs: builder.exprs,
             arms: IndexVec::new(),
             match_trees: FxHashMap::default(),
+            is_async: false,
         });
     }
 
@@ -791,6 +793,7 @@ fn synthesize_enum_hash<'ctx>(
         exprs: builder.exprs,
         arms: builder.arms,
         match_trees: FxHashMap::default(),
+        is_async: false,
     })
 }
 
@@ -975,6 +978,7 @@ fn synthesize_enum_equality<'ctx>(
         exprs: builder.exprs,
         arms: builder.arms,
         match_trees: FxHashMap::default(),
+        is_async: false,
     })
 }
 
@@ -1059,6 +1063,7 @@ fn synthesize_closure_call<'ctx>(
         exprs: builder.exprs,
         arms: IndexVec::new(),
         match_trees: FxHashMap::default(),
+        is_async: false,
     })
 }
 

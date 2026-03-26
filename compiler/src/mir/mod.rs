@@ -63,6 +63,7 @@ pub struct Body<'ctx> {
     pub return_local: LocalId,
     pub escape_locals: Vec<bool>,
     pub phase: MirPhase,
+    pub is_async: bool,
 }
 
 #[derive(Debug, Clone)]

@@ -2,6 +2,7 @@ use crate::compile::context::Gcx;
 use crate::error::CompileResult;
 use crate::mir::{Body, MirPhase};
 
+pub mod async_transform;
 pub mod coalesce;
 pub mod copy_modifiers;
 pub mod dse;
@@ -56,6 +57,7 @@ pub fn run_local_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileR
 /// to enable interprocedural escape analysis.
 pub fn run_global_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
     let mut passes: Vec<Box<dyn MirPass>> = vec![
+        Box::new(async_transform::AsyncTransform),
         Box::new(inline::Inline::default()),
         Box::new(passes::SimplifyCfg), // Clean up after inlining (merges blocks, removes unreachable)
         Box::new(passes::LowerAggregates),

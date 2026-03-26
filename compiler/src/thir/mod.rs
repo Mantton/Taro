@@ -55,6 +55,7 @@ pub struct ThirFunction<'a> {
     pub exprs: IndexVec<ExprId, Expr<'a>>,
     pub arms: IndexVec<ArmId, Arm<'a>>,
     pub match_trees: FxHashMap<ExprId, match_tree::MatchTree<'a>>,
+    pub is_async: bool,
 }
 
 #[derive(Debug, Clone)]
