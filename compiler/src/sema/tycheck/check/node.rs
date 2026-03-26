@@ -169,12 +169,21 @@ impl<'ctx> Checker<'ctx> {
             return;
         };
 
+        // Async functions introduce an async context for their body.
+        if node.is_async {
+            self.async_depth.set(1);
+        }
+
         if let Some(body) = hir::is_expression_bodied(body) {
             // --- single-expression body ---
             self.check_return(Some(body), body.span, None);
         } else {
             // --- regular block body ---
             self.check_block(body, None);
+        }
+
+        if node.is_async {
+            self.async_depth.set(0);
         }
     }
 }
@@ -812,11 +821,11 @@ impl<'ctx> Checker<'ctx> {
             hir::ExpressionKind::Closure(closure) => {
                 self.synth_closure_expression(expression, closure, expectation, cs)
             }
-            hir::ExpressionKind::Await(_) => {
-                todo!("async/await type checking not yet implemented")
+            hir::ExpressionKind::Await(inner) => {
+                self.synth_await_expression(inner, expression.span, cs)
             }
-            hir::ExpressionKind::Spawn(_) => {
-                todo!("spawn type checking not yet implemented")
+            hir::ExpressionKind::Spawn(block) => {
+                self.synth_spawn_expression(block, expectation, cs, expression.span)
             }
             hir::ExpressionKind::Malformed => {
                 unreachable!("ICE: trying to typecheck a malformed expression node")
@@ -1768,6 +1777,112 @@ impl<'ctx> Checker<'ctx> {
         let ty = self.synth_block_expression(block, expectation, cs);
         self.unsafe_depth.set(prev);
         ty
+    }
+
+    /// `await expr` — verify expr implements Future, return Future::Output.
+    fn synth_await_expression(
+        &self,
+        inner: &hir::Expression,
+        span: Span,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        let gcx = self.gcx();
+
+        // await is only valid inside an async context
+        if self.async_depth.get() == 0 {
+            gcx.dcx().emit_error(
+                "`await` can only be used inside an `async` function or `spawn` block".into(),
+                Some(span),
+            );
+            return Ty::error(gcx);
+        }
+
+        let future_ty = self.synth(inner, cs);
+        if future_ty.is_error() {
+            return Ty::error(gcx);
+        }
+
+        // Create a fresh inference variable for the Output associated type
+        let output_ty = cs.infer_cx.next_ty_var(span);
+
+        // Build Future interface reference with Output = ?output_ty
+        let Some(future_def_id) = gcx.std_item_def(hir::StdItem::Future) else {
+            gcx.dcx().emit_error(
+                "Future interface not found in standard library".into(),
+                Some(span),
+            );
+            return Ty::error(gcx);
+        };
+
+        let output_symbol = gcx.intern_symbol("Output");
+        let bindings = gcx.store.arenas.global.alloc_slice_clone(&[
+            crate::sema::models::AssociatedTypeBinding {
+                name: output_symbol,
+                ty: output_ty,
+            },
+        ]);
+
+        let self_arg = GenericArgument::Type(future_ty);
+        let args = gcx
+            .store
+            .interners
+            .intern_generic_args(vec![self_arg]);
+
+        let future_ref = InterfaceReference {
+            id: future_def_id,
+            arguments: args,
+            bindings,
+        };
+
+        // Add conformance goal: future_ty conforms to Future where Output = output_ty
+        cs.add_goal(
+            Goal::Conforms {
+                ty: future_ty,
+                interface: future_ref,
+            },
+            span,
+        );
+
+        output_ty
+    }
+
+    /// `spawn { block }` — block is an async context, returns Task[T].
+    fn synth_spawn_expression(
+        &self,
+        block: &hir::Block,
+        _expectation: Option<Ty<'ctx>>,
+        cs: &mut Cs<'ctx>,
+        span: Span,
+    ) -> Ty<'ctx> {
+        let gcx = self.gcx();
+
+        // spawn introduces an async context
+        let prev = self.async_depth.get();
+        self.async_depth.set(prev + 1);
+        let body_ty = self.synth_block_expression(block, None, cs);
+        self.async_depth.set(prev);
+
+        if body_ty.is_error() {
+            return Ty::error(gcx);
+        }
+
+        // Build Task[body_ty]
+        let Some(task_def_id) = gcx.std_item_def(hir::StdItem::Task) else {
+            gcx.dcx().emit_error(
+                "Task type not found in standard library".into(),
+                Some(span),
+            );
+            return Ty::error(gcx);
+        };
+
+        let struct_def = gcx.get_struct_definition(task_def_id);
+        let args = gcx
+            .store
+            .interners
+            .intern_generic_args(vec![GenericArgument::Type(body_ty)]);
+        gcx.store
+            .interners
+            .intern_ty(TyKind::Adt(struct_def.adt_def, args))
     }
 
     fn synth_expression_literal(
