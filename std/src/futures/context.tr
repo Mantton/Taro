@@ -1,0 +1,15 @@
+import std.futures.Waker
+
+/// The context passed to `Future.poll()`.
+///
+/// Contains a `Waker` that the future can use to re-schedule itself
+/// when the underlying operation is ready to make progress.
+public struct Context {
+    waker: Waker
+}
+
+impl Context {
+    public func getWaker(&self) -> &Waker {
+        return &self.waker
+    }
+}

@@ -866,6 +866,9 @@ pub enum StdItemWire {
     OptionalSomeCtor,
     OptionalNoneVariant,
     OptionalNoneCtor,
+    Future,
+    Poll,
+    Task,
     Make,
 }
 
@@ -1444,6 +1447,9 @@ pub fn std_item_to_wire(v: hir::StdItem) -> StdItemWire {
         hir::StdItem::OptionalSomeCtor => StdItemWire::OptionalSomeCtor,
         hir::StdItem::OptionalNoneVariant => StdItemWire::OptionalNoneVariant,
         hir::StdItem::OptionalNoneCtor => StdItemWire::OptionalNoneCtor,
+        hir::StdItem::Future => StdItemWire::Future,
+        hir::StdItem::Poll => StdItemWire::Poll,
+        hir::StdItem::Task => StdItemWire::Task,
         hir::StdItem::Make => StdItemWire::Make,
     }
 }
@@ -1486,6 +1492,9 @@ pub fn std_item_from_wire(v: &StdItemWire) -> hir::StdItem {
         StdItemWire::OptionalSomeCtor => hir::StdItem::OptionalSomeCtor,
         StdItemWire::OptionalNoneVariant => hir::StdItem::OptionalNoneVariant,
         StdItemWire::OptionalNoneCtor => hir::StdItem::OptionalNoneCtor,
+        StdItemWire::Future => hir::StdItem::Future,
+        StdItemWire::Poll => hir::StdItem::Poll,
+        StdItemWire::Task => hir::StdItem::Task,
         StdItemWire::Make => hir::StdItem::Make,
     }
 }

@@ -1,0 +1,11 @@
+/// Indicates whether a future's value is available.
+///
+/// `Poll[T]` is returned by `Future.poll()` to signal whether
+/// the future has completed with a value or is still pending.
+@lang("Poll")
+public enum Poll[T] {
+    /// The future has completed and produced a value.
+    case ready(T)
+    /// The future is not yet complete and should be polled again.
+    case pending
+}

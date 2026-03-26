@@ -1,0 +1,17 @@
+/// A handle for waking a suspended task.
+///
+/// When a future returns `Poll.pending`, the executor provides a `Waker`
+/// that the I/O source or timer can use to signal that the future
+/// should be polled again.
+public struct Waker {
+    /// Opaque pointer to the executor's wake implementation.
+    data: *mut uint8
+    /// Function pointer that performs the wake.
+    wake_fn: *const uint8
+}
+
+impl Waker {
+    public func wake(&self) {
+        // TODO: call through wake_fn
+    }
+}

@@ -1,0 +1,19 @@
+import std.futures.{Poll, Context, Future}
+import std.mem.Rc
+
+/// The internal state of a spawned task.
+struct TaskState[T] {
+    result: Poll[T]
+}
+
+/// A handle to a spawned asynchronous task.
+///
+/// `Task[T]` is returned by `spawn { ... }` and is itself a `Future`
+/// that resolves to the spawned computation's result.
+///
+/// Copying a `Task[T]` is cheap (Rc bump) — all copies share the
+/// same underlying task and will observe the same result.
+@lang("Task")
+public struct Task[T] {
+    state: Rc[TaskState[T]]
+}

@@ -1,0 +1,13 @@
+import std.futures.{Poll, Context}
+
+/// A value that may not have been computed yet.
+///
+/// A `Future` represents an asynchronous computation. The executor
+/// drives it to completion by calling `poll` repeatedly. Each call
+/// either returns `Poll.ready(value)` when the result is available,
+/// or `Poll.pending` when more work is needed.
+@lang("Future")
+public interface Future {
+    type Output
+    func poll(&mut self, ctx: &mut Context) -> Poll[Self.Output]
+}

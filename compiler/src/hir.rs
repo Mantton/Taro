@@ -949,6 +949,11 @@ pub enum StdItem {
     OptionalNoneVariant,
     OptionalNoneCtor,
 
+    // Async
+    Future,
+    Poll,
+    Task,
+
     // Builtin
     Make,
 }
@@ -987,6 +992,9 @@ impl StdItem {
             StdItem::BitNot => Some("BitNot"),
             StdItem::PartialEq => Some("PartialEq"),
             StdItem::PartialOrd => Some("PartialOrd"),
+            StdItem::Future => Some("Future"),
+            StdItem::Poll => Some("Poll"),
+            StdItem::Task => Some("Task"),
             StdItem::OptionalSomeVariant => Some("OptionalSomeVariant"),
             StdItem::OptionalSomeCtor => Some("OptionalSomeCtor"),
             StdItem::OptionalNoneVariant => Some("OptionalNoneVariant"),
@@ -1028,13 +1036,16 @@ impl StdItem {
             "BitNot" => Some(Self::BitNot),
             "PartialEq" => Some(Self::PartialEq),
             "PartialOrd" => Some(Self::PartialOrd),
+            "Future" => Some(Self::Future),
+            "Poll" => Some(Self::Poll),
+            "Task" => Some(Self::Task),
             _ => None,
         }
     }
 
     pub fn expected_def_kind(self) -> Option<DefinitionKind> {
         match self {
-            StdItem::Optional => Some(DefinitionKind::Enum),
+            StdItem::Optional | StdItem::Poll => Some(DefinitionKind::Enum),
             StdItem::List
             | StdItem::Set
             | StdItem::Dictionary
@@ -1042,13 +1053,15 @@ impl StdItem {
             | StdItem::ClosedRange
             | StdItem::MaybeUninit
             | StdItem::Rc
-            | StdItem::Span => Some(DefinitionKind::Struct),
+            | StdItem::Span
+            | StdItem::Task => Some(DefinitionKind::Struct),
             StdItem::Hashable
             | StdItem::Equatable
             | StdItem::Iterator
             | StdItem::Iterable
             | StdItem::Fn
             | StdItem::AsyncFn
+            | StdItem::Future
             | StdItem::Tuple
             | StdItem::Add
             | StdItem::Sub
@@ -1096,6 +1109,9 @@ impl StdItem {
                 | StdItem::Iterable
                 | StdItem::Fn
                 | StdItem::AsyncFn
+                | StdItem::Future
+                | StdItem::Poll
+                | StdItem::Task
                 | StdItem::Tuple
                 | StdItem::Add
                 | StdItem::Sub
@@ -1119,7 +1135,7 @@ impl StdItem {
         )
     }
 
-    pub const ALL_REQUIRED: [StdItem; 35] = [
+    pub const ALL_REQUIRED: [StdItem; 38] = [
         StdItem::Optional,
         StdItem::List,
         StdItem::Set,
@@ -1151,19 +1167,23 @@ impl StdItem {
         StdItem::BitNot,
         StdItem::PartialEq,
         StdItem::PartialOrd,
+        StdItem::Future,
+        StdItem::Poll,
+        StdItem::Task,
         StdItem::OptionalSomeVariant,
         StdItem::OptionalSomeCtor,
         StdItem::OptionalNoneVariant,
         StdItem::OptionalNoneCtor,
     ];
 
-    pub const ALL_INTERFACES: [StdItem; 22] = [
+    pub const ALL_INTERFACES: [StdItem; 23] = [
         StdItem::Hashable,
         StdItem::Equatable,
         StdItem::Iterator,
         StdItem::Iterable,
         StdItem::Fn,
         StdItem::AsyncFn,
+        StdItem::Future,
         StdItem::Tuple,
         StdItem::Add,
         StdItem::Sub,
