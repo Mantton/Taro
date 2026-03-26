@@ -205,6 +205,7 @@ pub struct Function {
     pub signature: FunctionSignature,
     pub block: Option<Block>,
     pub is_unsafe: bool,
+    pub is_async: bool,
     pub abi: Option<Symbol>,
 }
 
@@ -477,6 +478,10 @@ pub enum ExpressionKind {
     OptionalEvaluation(Box<Expression>),
     /// `#cfg(os("macos"))` - compile-time config check
     CfgCheck(CfgExpr),
+    /// `await expr` — suspend until the future completes
+    Await(Box<Expression>),
+    /// `spawn { block }` — spawn a concurrent async task
+    Spawn(Block),
 }
 
 #[derive(Debug, Clone)]
@@ -1722,6 +1727,12 @@ pub fn walk_expression<V: AstVisitor>(visitor: &mut V, node: &Expression) -> V::
         }
         ExpressionKind::CfgCheck(_) => {
             // CfgExpr doesn't contain inner expressions to visit
+        }
+        ExpressionKind::Await(expression) => {
+            try_visit!(visitor.visit_expression(expression));
+        }
+        ExpressionKind::Spawn(block) => {
+            try_visit!(visitor.visit_block(block));
         }
     };
 

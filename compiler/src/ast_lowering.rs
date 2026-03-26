@@ -808,6 +808,7 @@ impl<'a, 'c> Actor<'a, 'c> {
             signature: self.lower_function_signature(node.signature),
             block: node.block.map(|n| self.lower_block(n)),
             is_unsafe: node.is_unsafe,
+            is_async: node.is_async,
             abi,
         }
     }
@@ -2061,6 +2062,12 @@ impl Actor<'_, '_> {
                 // Evaluate the cfg expression at compile time
                 let result = self.evaluate_cfg_expr(&cfg_expr);
                 hir::ExpressionKind::Literal(hir::Literal::Bool(result))
+            }
+            ast::ExpressionKind::Await(expr) => {
+                hir::ExpressionKind::Await(self.lower_expression(expr))
+            }
+            ast::ExpressionKind::Spawn(block) => {
+                hir::ExpressionKind::Spawn(self.lower_block(block))
             }
         };
 

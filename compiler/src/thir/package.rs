@@ -1257,6 +1257,12 @@ impl<'ctx> FunctionLower<'ctx> {
                     captures,
                 }
             }
+            hir::ExpressionKind::Await(_) => {
+                todo!("await THIR lowering not yet implemented")
+            }
+            hir::ExpressionKind::Spawn(_) => {
+                todo!("spawn THIR lowering not yet implemented")
+            }
             hir::ExpressionKind::Malformed => {
                 unreachable!("malformed expression should not reach THIR lowering");
             }

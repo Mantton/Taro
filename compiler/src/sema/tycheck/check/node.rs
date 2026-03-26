@@ -812,6 +812,12 @@ impl<'ctx> Checker<'ctx> {
             hir::ExpressionKind::Closure(closure) => {
                 self.synth_closure_expression(expression, closure, expectation, cs)
             }
+            hir::ExpressionKind::Await(_) => {
+                todo!("async/await type checking not yet implemented")
+            }
+            hir::ExpressionKind::Spawn(_) => {
+                todo!("spawn type checking not yet implemented")
+            }
             hir::ExpressionKind::Malformed => {
                 unreachable!("ICE: trying to typecheck a malformed expression node")
             }
@@ -5825,6 +5831,12 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                 for field in &literal.fields {
                     self.collect_expr(&field.expression, UseContext::Value);
                 }
+            }
+            hir::ExpressionKind::Await(value) => {
+                self.collect_expr(value, UseContext::Value);
+            }
+            hir::ExpressionKind::Spawn(block) => {
+                self.collect_block(block);
             }
         }
     }

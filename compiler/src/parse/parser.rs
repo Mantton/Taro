@@ -3304,6 +3304,8 @@ impl Parser {
             Token::Break => self.parse_break_expression(),
             Token::Continue => self.parse_continue_expression(),
             Token::Unsafe => self.parse_unsafe_block_expression(),
+            Token::Await => self.parse_await_expression(),
+            Token::Spawn => self.parse_spawn_expression(),
             Token::LBrace => self.parse_block_expression(),
             Token::Bar | Token::BarBar => self.parse_closure_expression(),
             Token::Underscore => {
@@ -3371,6 +3373,24 @@ impl Parser {
         let kind = ExpressionKind::UnsafeBlock(block);
         let span = lo.to(self.hi_span());
         Ok(self.build_expr(kind, span))
+    }
+
+    /// `await expr`
+    fn parse_await_expression(&mut self) -> R<Box<Expression>> {
+        let lo = self.lo_span();
+        self.expect(Token::Await)?;
+        let value = self.parse_expression()?;
+        let kind = ExpressionKind::Await(value);
+        Ok(self.build_expr(kind, lo.to(self.hi_span())))
+    }
+
+    /// `spawn { block }`
+    fn parse_spawn_expression(&mut self) -> R<Box<Expression>> {
+        let lo = self.lo_span();
+        self.expect(Token::Spawn)?;
+        let block = self.parse_block()?;
+        let kind = ExpressionKind::Spawn(block);
+        Ok(self.build_expr(kind, lo.to(self.hi_span())))
     }
 
     fn parse_block_expression(&mut self) -> R<Box<Expression>> {
@@ -3536,6 +3556,9 @@ impl Parser {
         let type_parameters = self.parse_type_parameters()?;
         let parameters = self.parse_function_parameters()?;
 
+        // `func foo() async -> T`
+        let is_async = self.eat(Token::Async);
+
         let return_type = if self.eat(Token::RArrow) {
             Some(self.parse_type()?)
         } else {
@@ -3576,6 +3599,7 @@ impl Parser {
             block,
             generics,
             is_unsafe,
+            is_async,
             abi: None,
         };
 
@@ -6277,6 +6301,132 @@ mod tests {
             assert!(let_count >= 2, "Failed to recover statements inside block");
         } else {
             panic!("Expected function");
+        }
+    }
+
+    // ==================== ASYNC/AWAIT/SPAWN TESTS ====================
+
+    #[test]
+    fn test_async_function() {
+        let (decl, symbols) = parse_one_decl_with_symbols("func fetch() async -> int32 {}");
+        match &decl.kind {
+            DeclarationKind::Function(func) => {
+                assert!(func.is_async);
+                assert!(!func.is_unsafe);
+                assert!(func.signature.prototype.output.is_some());
+                assert_eq!(
+                    symbol_text(&symbols, decl.identifier.symbol.clone()),
+                    "fetch"
+                );
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_non_async_function_is_not_async() {
+        let decl = parse_one_decl("func foo() -> int32 {}");
+        match &decl.kind {
+            DeclarationKind::Function(func) => {
+                assert!(!func.is_async);
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_async_function_no_return_type() {
+        let decl = parse_one_decl("func fire() async {}");
+        match &decl.kind {
+            DeclarationKind::Function(func) => {
+                assert!(func.is_async);
+                assert!(func.signature.prototype.output.is_none());
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_async_function_with_params() {
+        let decl = parse_one_decl("func fetch(id: int64) async -> string {}");
+        match &decl.kind {
+            DeclarationKind::Function(func) => {
+                assert!(func.is_async);
+                assert_eq!(func.signature.prototype.inputs.len(), 1);
+                assert!(func.signature.prototype.output.is_some());
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_unsafe_async_function() {
+        let decl = parse_one_decl("unsafe func fetch() async -> int32 {}");
+        match &decl.kind {
+            DeclarationKind::Function(func) => {
+                assert!(func.is_unsafe);
+                assert!(func.is_async);
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_await_expression() {
+        let expr = parse_expr_str("await foo()");
+        match &expr.kind {
+            ExpressionKind::Await(inner) => {
+                assert!(matches!(inner.kind, ExpressionKind::Call(_, _)));
+            }
+            _ => panic!("Expected Await expression, got {:?}", expr.kind),
+        }
+    }
+
+    #[test]
+    fn test_await_simple_identifier() {
+        let expr = parse_expr_str("await task");
+        assert!(matches!(expr.kind, ExpressionKind::Await(_)));
+    }
+
+    #[test]
+    fn test_spawn_block() {
+        let expr = parse_expr_str("spawn { 1 + 2 }");
+        assert!(matches!(expr.kind, ExpressionKind::Spawn(_)));
+    }
+
+    #[test]
+    fn test_await_in_function_body() {
+        let decl = parse_one_decl("func foo() async { let x = await bar() }");
+        match &decl.kind {
+            DeclarationKind::Function(func) => {
+                assert!(func.is_async);
+                assert!(func.block.is_some());
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_spawn_in_function_body() {
+        let decl = parse_one_decl("func foo() async { let t = spawn { 42 } }");
+        match &decl.kind {
+            DeclarationKind::Function(func) => {
+                assert!(func.is_async);
+                assert!(func.block.is_some());
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_await_spawn() {
+        // `await spawn { expr }` — await a spawned task
+        let expr = parse_expr_str("await spawn { 42 }");
+        match &expr.kind {
+            ExpressionKind::Await(inner) => {
+                assert!(matches!(inner.kind, ExpressionKind::Spawn(_)));
+            }
+            _ => panic!("Expected Await(Spawn(...))"),
         }
     }
 }

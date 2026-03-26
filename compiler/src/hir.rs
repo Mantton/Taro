@@ -258,6 +258,7 @@ pub struct Function {
     pub signature: FunctionSignature,
     pub block: Option<Block>,
     pub is_unsafe: bool,
+    pub is_async: bool,
     pub abi: Option<Abi>,
 }
 
@@ -709,6 +710,10 @@ pub enum ExpressionKind {
     StructLiteral(StructLiteral),
     /// `|a, b| a + b` or `move |x| x`
     Closure(ClosureExpr),
+    /// `await expr` — suspend until the future completes
+    Await(Box<Expression>),
+    /// `spawn { block }` — spawn a concurrent async task
+    Spawn(Block),
     Malformed,
 }
 
@@ -2113,6 +2118,12 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, node: &Expression) -> V::
             }
             visit_optional!(visitor, visit_type, &closure.return_ty);
             try_visit!(visitor.visit_expression(&closure.body));
+        }
+        ExpressionKind::Await(expression) => {
+            try_visit!(visitor.visit_expression(expression));
+        }
+        ExpressionKind::Spawn(block) => {
+            try_visit!(visitor.visit_block(block));
         }
         ExpressionKind::Malformed => {}
     };
