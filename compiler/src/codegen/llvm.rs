@@ -476,7 +476,35 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             self.current_subst = instance.args();
 
             let sig = self.gcx.get_signature(def_id);
-            let fn_abi = self.compute_fn_abi(sig);
+
+            // If a MIR pass (e.g., async transform) changed the return type,
+            // compute the ABI using the body's actual return type instead of
+            // the declared signature.
+            let fn_abi = if self.instance_has_mir_body(instance) {
+                let body = self.gcx.get_mir_body(def_id);
+                let actual_ret_ty = body.locals[body.return_local].ty;
+                if actual_ret_ty != sig.output {
+                    let input_tys: Vec<_> = sig.inputs.iter().map(|param| param.ty).collect();
+                    abi::compute_fn_abi_from_tys(
+                        &input_tys,
+                        actual_ret_ty,
+                        sig.is_variadic,
+                        |ty| {
+                            let llvm_ty = self.lower_ty(ty)?;
+                            Some(abi::TypeLayout {
+                                size: self.target_data.get_store_size(&llvm_ty),
+                                align: self.target_data.get_abi_alignment(&llvm_ty),
+                            })
+                        },
+                        self.abi_policy_for_signature(sig),
+                    )
+                } else {
+                    self.compute_fn_abi(sig)
+                }
+            } else {
+                self.compute_fn_abi(sig)
+            };
+
             let fn_ty = self.lower_fn_abi(&fn_abi);
             let name = mangle_instance(self.gcx, instance);
 
@@ -4703,7 +4731,35 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 let sig = self.gcx.get_signature(resolved_def_id);
                 let prev_subst = self.current_subst;
                 self.current_subst = instance.args();
-                let fn_abi = self.compute_fn_abi(sig);
+
+                // If a MIR pass (e.g., async transform) changed the return type,
+                // use the body's actual return type for the ABI.
+                let fn_abi = if self.instance_has_mir_body(instance) {
+                    let body = self.gcx.get_mir_body(resolved_def_id);
+                    let actual_ret_ty = body.locals[body.return_local].ty;
+                    if actual_ret_ty != sig.output {
+                        let input_tys: Vec<_> =
+                            sig.inputs.iter().map(|param| param.ty).collect();
+                        abi::compute_fn_abi_from_tys(
+                            &input_tys,
+                            actual_ret_ty,
+                            sig.is_variadic,
+                            |ty| {
+                                let llvm_ty = self.lower_ty(ty)?;
+                                Some(abi::TypeLayout {
+                                    size: self.target_data.get_store_size(&llvm_ty),
+                                    align: self.target_data.get_abi_alignment(&llvm_ty),
+                                })
+                            },
+                            self.abi_policy_for_signature(sig),
+                        )
+                    } else {
+                        self.compute_fn_abi(sig)
+                    }
+                } else {
+                    self.compute_fn_abi(sig)
+                };
+
                 let name = mangle_instance(self.gcx, instance);
                 self.current_subst = prev_subst;
 
