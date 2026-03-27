@@ -1,4 +1,5 @@
 import std.ops.AsyncFn
+import std.intrinsic.__intrinsic_sleep
 import std.intrinsic.__intrinsic_spawn_async
 import std.intrinsic.__intrinsic_task_value
 
@@ -13,6 +14,10 @@ public struct Task[T] {
 /// handle that can be awaited later via `await task.value()`.
 public func spawn[T, F: AsyncFn() -> T](_ thunk: F) -> Task[T] {
     return __intrinsic_spawn_async[T, F](thunk)
+}
+
+public func sleep(_ duration: std.time.Duration) async {
+    return await __intrinsic_sleep(duration)
 }
 
 impl[T] Task[T] {

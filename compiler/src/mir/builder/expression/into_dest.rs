@@ -371,6 +371,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         if self.is_hidden_task_value_intrinsic(callee) {
             return self.lower_task_value_call(destination, block, args, span);
         }
+        if self.is_hidden_sleep_intrinsic(callee) {
+            return self.lower_sleep_call(destination, block, args, span);
+        }
 
         let shadow_resync_locals = self.shadow_resync_locals_for_call(args);
 
@@ -808,6 +811,54 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         join_block.unit()
     }
 
+    fn lower_sleep_call(
+        &mut self,
+        destination: Place<'ctx>,
+        mut block: BasicBlockId,
+        args: &[ExprId],
+        span: Span,
+    ) -> BlockAnd<()> {
+        let [duration] = args else {
+            panic!("ICE: sleep lowering expects exactly one duration argument");
+        };
+
+        let destination_ty = self.place_ty(&destination);
+        assert_eq!(
+            destination_ty,
+            self.gcx.async_handle_ty(),
+            "ICE: sleep intrinsic must lower into an async handle destination"
+        );
+
+        let duration_local = unpack!(block = self.as_temp(block, *duration));
+        let duration_place = Place::from_local(duration_local);
+        let sleep_id = find_or_register_async_runtime_function(self.gcx, AsyncRuntimeFn::Sleep, span);
+        let sleep_ty = self.gcx.get_type(sleep_id);
+        let next = self.new_block();
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: sleep_ty,
+                    value: mir::ConstantKind::Function(
+                        sleep_id,
+                        GenericArguments::empty(),
+                        sleep_ty,
+                    ),
+                }),
+                args: vec![
+                    Operand::Copy(duration_secs_place(self.gcx, duration_place.clone())),
+                    Operand::Copy(duration_nanos_place(self.gcx, duration_place)),
+                ],
+                destination,
+                target: next,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+
+        next.unit()
+    }
+
     fn is_hidden_spawn_intrinsic(&self, callee: ExprId) -> bool {
         let ExprKind::Zst { id, .. } = self.thir.exprs[callee].kind else {
             return false;
@@ -828,6 +879,17 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             && self
                 .gcx
                 .symbol_eq(self.gcx.definition_ident(id).symbol, "__intrinsic_task_value")
+    }
+
+    fn is_hidden_sleep_intrinsic(&self, callee: ExprId) -> bool {
+        let ExprKind::Zst { id, .. } = self.thir.exprs[callee].kind else {
+            return false;
+        };
+
+        matches!(self.gcx.get_signature(id).abi, Some(crate::hir::Abi::Intrinsic))
+            && self
+                .gcx
+                .symbol_eq(self.gcx.definition_ident(id).symbol, "__intrinsic_sleep")
     }
 
     fn async_callable_operand(
@@ -1860,6 +1922,24 @@ fn task_spawned_id_place<'ctx>(gcx: Gcx<'ctx>, task_place: Place<'ctx>) -> Place
     projection.push(PlaceElem::Field(FieldIndex::from_raw(1), gcx.types.uint));
     Place {
         local: task_place.local,
+        projection,
+    }
+}
+
+fn duration_secs_place<'ctx>(gcx: Gcx<'ctx>, duration_place: Place<'ctx>) -> Place<'ctx> {
+    let mut projection = duration_place.projection;
+    projection.push(PlaceElem::Field(FieldIndex::from_raw(0), gcx.types.uint64));
+    Place {
+        local: duration_place.local,
+        projection,
+    }
+}
+
+fn duration_nanos_place<'ctx>(gcx: Gcx<'ctx>, duration_place: Place<'ctx>) -> Place<'ctx> {
+    let mut projection = duration_place.projection;
+    projection.push(PlaceElem::Field(FieldIndex::from_raw(1), gcx.types.uint32));
+    Place {
+        local: duration_place.local,
         projection,
     }
 }

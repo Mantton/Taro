@@ -1,3 +1,7 @@
+func durationToNanos(_ d: std.time.Duration) -> uint64 {
+    return (d.seconds() * 1000000000_u64) + (d.subsecNanos() as uint64)
+}
+
 func asyncValue() async -> int32 {
     return 7
 }
@@ -213,6 +217,52 @@ func spawnedTasksComplete() async {
 
     let result = await task.value()
     std.testing.assertEqual(result, 15, "spawned task should resolve")
+}
+
+@test
+func zeroDurationSleepCompletesImmediately() async {
+    let sleeper = std.futures.spawn(|| async {
+        await std.futures.sleep(std.time.Duration.fromNanos(0_u64))
+        return std.time.Instant.now()
+    })
+    let yielded = std.futures.spawn(|| async {
+        await std.testing.yieldNow()
+        return std.time.Instant.now()
+    })
+
+    let sleepAt = await sleeper.value()
+    let yieldAt = await yielded.value()
+    let gap = yieldAt.checkedDurationSince(sleepAt)
+    std.testing.assertTrue(gap.isSome(), "zero-duration sleep should complete no later than a yielded task")
+}
+
+@test
+func sleepDelaysExecution() async {
+    let start = std.time.Instant.now()
+    await std.futures.sleep(std.time.Duration.fromMillis(5_u64))
+    let elapsed = start.elapsed()
+    std.testing.assertTrue(
+        durationToNanos(elapsed) >= 1000000_u64,
+        "sleep should measurably delay execution",
+    )
+}
+
+@test
+func spawnedSleepersWakeInDeadlineOrder() async {
+    let short = std.futures.spawn(|| async {
+        await std.futures.sleep(std.time.Duration.fromMillis(1_u64))
+        return std.time.Instant.now()
+    })
+    let long = std.futures.spawn(|| async {
+        await std.futures.sleep(std.time.Duration.fromMillis(5_u64))
+        return std.time.Instant.now()
+    })
+
+    let shortAt = await short.value()
+    let longAt = await long.value()
+    let gap = longAt.checkedDurationSince(shortAt)
+    std.testing.assertTrue(gap.isSome(), "shorter sleepers should wake no later than longer sleepers")
+    std.testing.assertTrue(durationToNanos(gap.unwrap()) > 0_u64, "shorter sleepers should wake before longer sleepers")
 }
 
 @test

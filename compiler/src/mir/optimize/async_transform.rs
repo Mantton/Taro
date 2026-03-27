@@ -1475,6 +1475,7 @@ pub(crate) enum AsyncRuntimeFn {
     RunRoot,
     Spawn,
     FromSpawned,
+    Sleep,
     YieldNow,
 }
 
@@ -1522,6 +1523,11 @@ pub(crate) fn find_or_register_async_runtime_function<'ctx>(
         AsyncRuntimeFn::FromSpawned => (
             "__rt__async_from_spawned",
             vec![gcx.types.uint],
+            gcx.async_handle_ty(),
+        ),
+        AsyncRuntimeFn::Sleep => (
+            "__rt__async_sleep",
+            vec![gcx.types.uint64, gcx.types.uint32],
             gcx.async_handle_ty(),
         ),
         AsyncRuntimeFn::YieldNow => ("__rt__async_yield_now", vec![], gcx.async_handle_ty()),

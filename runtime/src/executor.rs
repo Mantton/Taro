@@ -1,10 +1,19 @@
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, VecDeque};
+use std::time::{Duration as StdDuration, Instant};
 
 use crate::garbage_collector::with_gc;
 use crate::task::{__rt__async_destroy, __rt__async_poll, async_handle_frame};
 
 type TaskId = usize;
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct TimerEntry {
+    deadline: Instant,
+    sequence: u64,
+    task_id: TaskId,
+}
 
 struct ExecutorTask {
     handle: *mut u8,
@@ -20,12 +29,13 @@ struct ExecutorTask {
 struct Executor {
     tasks: Vec<Option<ExecutorTask>>,
     ready_queue: VecDeque<TaskId>,
+    timers: BinaryHeap<Reverse<TimerEntry>>,
     current_task: Option<TaskId>,
-    /// Set to true during a poll if the current task registered itself as a
-    /// waiter on a spawned task (via `__rt__executor_poll_spawned`).  When true
-    /// the scheduler does NOT re-enqueue the task after a pending poll — the
-    /// task will be woken when the target completes.
-    current_registered_waiter: bool,
+    /// Set to true during a poll if the current task blocked on some external
+    /// wakeup source (another spawned task or a timer). When true, the
+    /// scheduler does not immediately re-enqueue the task after a pending poll.
+    current_task_blocked: bool,
+    next_timer_sequence: u64,
     rooted: bool,
 }
 
@@ -38,8 +48,10 @@ impl Executor {
         Self {
             tasks: Vec::new(),
             ready_queue: VecDeque::new(),
+            timers: BinaryHeap::new(),
             current_task: None,
-            current_registered_waiter: false,
+            current_task_blocked: false,
+            next_timer_sequence: 0,
             rooted,
         }
     }
@@ -93,31 +105,70 @@ impl Executor {
             .flatten()
             .any(|task| !task.completed)
     }
+
+    fn add_sleep_timer(&mut self, task_id: TaskId, deadline: Instant) {
+        let sequence = self.next_timer_sequence;
+        self.next_timer_sequence = self
+            .next_timer_sequence
+            .checked_add(1)
+            .expect("sleep timer sequence overflow");
+        self.timers.push(Reverse(TimerEntry {
+            deadline,
+            sequence,
+            task_id,
+        }));
+    }
+
+    fn wake_due_timers(&mut self, now: Instant) {
+        while let Some(Reverse(entry)) = self.timers.peek().copied() {
+            if entry.deadline > now {
+                break;
+            }
+            let _ = self.timers.pop();
+            if self.tasks[entry.task_id]
+                .as_ref()
+                .is_some_and(|task| !task.completed)
+            {
+                self.ready_queue.push_back(entry.task_id);
+            }
+        }
+    }
+
+    fn next_timer_deadline(&self) -> Option<Instant> {
+        self.timers.peek().map(|entry| entry.0.deadline)
+    }
+}
+
+enum DriveAction {
+    Poll(TaskId, *mut u8, *mut u8),
+    Sleep(StdDuration),
+    Done,
+    Deadlock,
 }
 
 fn drive_executor() {
     loop {
-        // Extract the next ready task's info, releasing the borrow before
-        // calling poll (which may re-enter via spawn/poll_spawned).
-        let poll_info = EXECUTOR.with(|cell| {
+        let action = EXECUTOR.with(|cell| {
             let mut borrow = cell.borrow_mut();
             let executor = borrow.as_mut().expect("ICE: executor missing");
 
-            if !executor.has_incomplete_tasks() {
-                return None;
-            }
-            if executor.ready_queue.is_empty() {
-                panic!("async executor deadlock: no ready tasks and incomplete tasks remain");
-            }
-
             loop {
+                if !executor.has_incomplete_tasks() {
+                    return DriveAction::Done;
+                }
+
+                executor.wake_due_timers(Instant::now());
+
                 let Some(task_id) = executor.ready_queue.pop_front() else {
-                    if executor.has_incomplete_tasks() {
-                        panic!(
-                            "async executor deadlock: ready queue exhausted while incomplete tasks remain"
-                        );
+                    if let Some(deadline) = executor.next_timer_deadline() {
+                        let now = Instant::now();
+                        if deadline <= now {
+                            executor.wake_due_timers(now);
+                            continue;
+                        }
+                        return DriveAction::Sleep(deadline.duration_since(now));
                     }
-                    return None;
+                    return DriveAction::Deadlock;
                 };
 
                 let task = executor.tasks[task_id]
@@ -130,13 +181,23 @@ fn drive_executor() {
                 }
 
                 executor.current_task = Some(task_id);
-                executor.current_registered_waiter = false;
-                return Some((task_id, task.handle, task.out_ptr));
+                executor.current_task_blocked = false;
+                return DriveAction::Poll(task_id, task.handle, task.out_ptr);
             }
         });
 
-        let Some((task_id, handle, out_ptr)) = poll_info else {
-            break;
+        let (task_id, handle, out_ptr) = match action {
+            DriveAction::Poll(task_id, handle, out_ptr) => (task_id, handle, out_ptr),
+            DriveAction::Sleep(duration) => {
+                std::thread::sleep(duration);
+                continue;
+            }
+            DriveAction::Done => break,
+            DriveAction::Deadlock => {
+                panic!(
+                    "async executor deadlock: no ready tasks, no pending timers, and incomplete tasks remain"
+                );
+            }
         };
 
         // Poll outside the borrow — this may call __rt__executor_spawn or
@@ -151,9 +212,7 @@ fn drive_executor() {
             executor.current_task = None;
 
             if tag == 0 {
-                // Pending.  Re-enqueue unless the task registered a waiter
-                // (in which case it will be woken when the target completes).
-                if !executor.current_registered_waiter {
+                if !executor.current_task_blocked {
                     executor.ready_queue.push_back(task_id);
                 }
             } else {
@@ -246,11 +305,23 @@ pub extern "C" fn __rt__executor_poll_spawned(task_id: u64, out: *mut u8) -> u8 
                     .as_mut()
                     .expect("ICE: polling absent spawned task");
                 target.waiters.push(current);
-                executor.current_registered_waiter = true;
+                executor.current_task_blocked = true;
             }
             0
         }
     })
+}
+
+pub(crate) fn register_sleep(deadline: Instant) {
+    EXECUTOR.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        let executor = borrow.as_mut().expect("sleep polled outside executor");
+        let current = executor
+            .current_task
+            .expect("sleep polled with no current task");
+        executor.add_sleep_timer(current, deadline);
+        executor.current_task_blocked = true;
+    });
 }
 
 /// Finish any lazily-created rootless executor work after a synchronous root
@@ -292,4 +363,30 @@ pub extern "C" fn __rt__executor_abort_rootless() {
     });
 
     teardown_executor();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn equal_deadline_timers_are_fifo() {
+        let deadline = Instant::now()
+            .checked_add(StdDuration::from_millis(1))
+            .expect("deadline");
+        let mut timers = BinaryHeap::new();
+        timers.push(Reverse(TimerEntry {
+            deadline,
+            sequence: 1,
+            task_id: 11,
+        }));
+        timers.push(Reverse(TimerEntry {
+            deadline,
+            sequence: 0,
+            task_id: 7,
+        }));
+
+        assert_eq!(timers.pop().unwrap().0.task_id, 7);
+        assert_eq!(timers.pop().unwrap().0.task_id, 11);
+    }
 }

@@ -1,3 +1,5 @@
+use std::time::{Duration as StdDuration, Instant};
+
 type PollThunk = unsafe extern "C-unwind" fn(frame: *mut u8, ctx: *mut u8, out: *mut u8) -> u8;
 type DropThunk = unsafe extern "C" fn(frame: *mut u8);
 
@@ -119,6 +121,11 @@ struct SpawnedTaskValueFrame {
     task_id: u64,
 }
 
+#[repr(C)]
+struct SleepFrame {
+    deadline: Instant,
+}
+
 unsafe extern "C-unwind" fn spawned_task_value_poll(
     frame: *mut u8,
     _ctx: *mut u8,
@@ -140,6 +147,28 @@ unsafe extern "C" fn spawned_task_value_drop(frame: *mut u8) {
     let _ = unsafe { Box::from_raw(frame as *mut SpawnedTaskValueFrame) };
 }
 
+unsafe extern "C-unwind" fn sleep_poll(frame: *mut u8, _ctx: *mut u8, _out: *mut u8) -> u8 {
+    if frame.is_null() {
+        return 1;
+    }
+
+    let deadline = unsafe { (*(frame as *mut SleepFrame)).deadline };
+    if Instant::now() >= deadline {
+        1
+    } else {
+        crate::executor::register_sleep(deadline);
+        0
+    }
+}
+
+unsafe extern "C" fn sleep_drop(frame: *mut u8) {
+    if frame.is_null() {
+        return;
+    }
+
+    let _ = unsafe { Box::from_raw(frame as *mut SleepFrame) };
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt__async_from_spawned(task_id: u64) -> *mut u8 {
     let frame = Box::into_raw(Box::new(SpawnedTaskValueFrame { task_id }));
@@ -157,5 +186,19 @@ pub extern "C" fn __rt__async_yield_now() -> *mut u8 {
         frame,
         yield_now_poll as *const () as *const u8,
         yield_now_drop as *const () as *const u8,
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __rt__async_sleep(secs: u64, nanos: u32) -> *mut u8 {
+    let duration = StdDuration::new(secs, nanos);
+    let deadline = Instant::now()
+        .checked_add(duration)
+        .unwrap_or_else(|| panic!("sleep duration overflow"));
+    let frame = Box::into_raw(Box::new(SleepFrame { deadline }));
+    __rt__async_create(
+        frame as *mut u8,
+        sleep_poll as *const () as *const u8,
+        sleep_drop as *const () as *const u8,
     )
 }
