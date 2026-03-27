@@ -298,6 +298,8 @@ pub struct TypeDatabaseWire {
     #[serde(default)]
     pub def_to_static_init: Vec<(DefIdWire, ConstWire)>,
     pub def_to_fn_sig: Vec<(DefIdWire, LabeledFunctionSignatureWire)>,
+    #[serde(default)]
+    pub def_to_async_body_output: Vec<(DefIdWire, TyWire)>,
     pub def_to_struct_def: Vec<(DefIdWire, StructDefinitionWire)>,
     pub def_to_enum_def: Vec<(DefIdWire, EnumDefinitionWire)>,
     pub def_to_constraints: Vec<(DefIdWire, Vec<ConstraintSpannedWire>)>,
@@ -382,6 +384,7 @@ pub enum TyKindWire {
     Parameter(GenericParameterWire),
     Closure {
         closure_def_id: DefIdWire,
+        kind: ClosureKindWire,
         captured_generics: Vec<GenericArgumentWire>,
         inputs: Vec<TyWire>,
         output: Box<TyWire>,
@@ -741,6 +744,7 @@ pub struct CapturedVarWire {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClosureKindWire {
     Fn,
+    AsyncFn,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -866,8 +870,6 @@ pub enum StdItemWire {
     OptionalSomeCtor,
     OptionalNoneVariant,
     OptionalNoneCtor,
-    Future,
-    Poll,
     Task,
     Make,
 }
@@ -1454,8 +1456,6 @@ pub fn std_item_to_wire(v: hir::StdItem) -> StdItemWire {
         hir::StdItem::OptionalSomeCtor => StdItemWire::OptionalSomeCtor,
         hir::StdItem::OptionalNoneVariant => StdItemWire::OptionalNoneVariant,
         hir::StdItem::OptionalNoneCtor => StdItemWire::OptionalNoneCtor,
-        hir::StdItem::Future => StdItemWire::Future,
-        hir::StdItem::Poll => StdItemWire::Poll,
         hir::StdItem::Task => StdItemWire::Task,
         hir::StdItem::Make => StdItemWire::Make,
     }
@@ -1499,8 +1499,6 @@ pub fn std_item_from_wire(v: &StdItemWire) -> hir::StdItem {
         StdItemWire::OptionalSomeCtor => hir::StdItem::OptionalSomeCtor,
         StdItemWire::OptionalNoneVariant => hir::StdItem::OptionalNoneVariant,
         StdItemWire::OptionalNoneCtor => hir::StdItem::OptionalNoneCtor,
-        StdItemWire::Future => hir::StdItem::Future,
-        StdItemWire::Poll => hir::StdItem::Poll,
         StdItemWire::Task => hir::StdItem::Task,
         StdItemWire::Make => hir::StdItem::Make,
     }
@@ -1807,6 +1805,7 @@ pub fn alias_kind_from_wire(v: &AliasKindWire) -> AliasKind {
 pub fn closure_kind_to_wire(v: ClosureKind) -> ClosureKindWire {
     match v {
         ClosureKind::Fn => ClosureKindWire::Fn,
+        ClosureKind::AsyncFn => ClosureKindWire::AsyncFn,
     }
 }
 
@@ -1814,6 +1813,7 @@ pub fn closure_kind_to_wire(v: ClosureKind) -> ClosureKindWire {
 pub fn closure_kind_from_wire(v: &ClosureKindWire) -> ClosureKind {
     match v {
         ClosureKindWire::Fn => ClosureKind::Fn,
+        ClosureKindWire::AsyncFn => ClosureKind::AsyncFn,
     }
 }
 
@@ -1971,11 +1971,13 @@ pub fn ty_to_wire(v: Ty<'_>) -> TyWire {
             TyKind::Parameter(v) => TyKindWire::Parameter(generic_param_to_wire(v)),
             TyKind::Closure {
                 closure_def_id,
+                kind,
                 captured_generics,
                 inputs,
                 output,
             } => TyKindWire::Closure {
                 closure_def_id: def_to_wire(closure_def_id),
+                kind: closure_kind_to_wire(kind),
                 captured_generics: captured_generics
                     .iter()
                     .copied()
@@ -2054,6 +2056,7 @@ pub fn ty_from_wire<'a>(gcx: GlobalContext<'a>, v: &TyWire) -> Ty<'a> {
         TyKindWire::Parameter(v) => TyKind::Parameter(generic_param_from_wire(v)),
         TyKindWire::Closure {
             closure_def_id,
+            kind,
             captured_generics,
             inputs,
             output,
@@ -2065,6 +2068,7 @@ pub fn ty_from_wire<'a>(gcx: GlobalContext<'a>, v: &TyWire) -> Ty<'a> {
             let inputs: Vec<_> = inputs.iter().map(|item| ty_from_wire(gcx, item)).collect();
             TyKind::Closure {
                 closure_def_id: def_from_wire(closure_def_id),
+                kind: closure_kind_from_wire(kind),
                 captured_generics: gcx.store.interners.intern_generic_args(captured_generics),
                 inputs: gcx.store.interners.intern_ty_list(inputs),
                 output: ty_from_wire(gcx, output),
@@ -4500,6 +4504,11 @@ pub fn type_database_to_wire(
             .iter()
             .map(|(def, sig)| (def_to_wire(*def), signature_to_wire(sig)))
             .collect(),
+        def_to_async_body_output: db
+            .def_to_async_body_output
+            .iter()
+            .map(|(def, ty)| (def_to_wire(*def), ty_to_wire(*ty)))
+            .collect(),
         def_to_struct_def: db
             .def_to_struct_def
             .iter()
@@ -4762,6 +4771,11 @@ pub fn type_database_from_wire<'a>(
                     .alloc(signature_from_wire(gcx, sig));
                 (def_from_wire(def), sig)
             })
+            .collect(),
+        def_to_async_body_output: wire
+            .def_to_async_body_output
+            .iter()
+            .map(|(def, ty)| (def_from_wire(def), ty_from_wire(gcx, ty)))
             .collect(),
         def_to_struct_def: wire
             .def_to_struct_def

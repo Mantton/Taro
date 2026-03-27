@@ -63,17 +63,22 @@ fn register_definition<'ctx>(
     _type_head: TypeHead,
     info: SyntheticMethodInfo<'ctx>,
 ) {
-    let (generics, signature) = match info.kind {
+    let (generics, signature, async_output) = match info.kind {
         SyntheticMethodKind::ClosureCall => {
             let TyKind::Closure { inputs, output, .. } = info.self_ty.kind() else {
                 return;
             };
             let args_ty = closure_args_ty(gcx, inputs);
+            let is_async = gcx.std_item_def(crate::hir::StdItem::AsyncFn) == Some(info.interface_id);
 
-            let self_ty = gcx.store.interners.intern_ty(TyKind::Reference(
-                info.self_ty,
-                crate::hir::Mutability::Immutable,
-            ));
+            let self_ty = if is_async {
+                info.self_ty
+            } else {
+                gcx.store.interners.intern_ty(TyKind::Reference(
+                    info.self_ty,
+                    crate::hir::Mutability::Immutable,
+                ))
+            };
 
             let signature = crate::sema::models::LabeledFunctionSignature {
                 inputs: vec![
@@ -101,7 +106,7 @@ fn register_definition<'ctx>(
                 parent: None,
                 parent_count: 0,
             };
-            (generics, signature)
+            (generics, signature, is_async.then_some(output))
         }
         SyntheticMethodKind::MemberwiseEquality => {
             let rhs_ty = match partial_eq_rhs_ty(info.interface_args, info.self_ty) {
@@ -136,7 +141,7 @@ fn register_definition<'ctx>(
                 is_variadic: false,
                 abi: None,
             };
-            (generics, signature)
+            (generics, signature, None)
         }
         SyntheticMethodKind::MemberwiseHash => {
             let mut generics = self_type_generics(gcx, info.self_ty);
@@ -187,7 +192,7 @@ fn register_definition<'ctx>(
                 is_variadic: false,
                 abi: None,
             };
-            (generics, signature)
+            (generics, signature, None)
         }
     };
     let labeled_sig = gcx.store.arenas.function_signatures.alloc(signature);
@@ -203,6 +208,9 @@ fn register_definition<'ctx>(
     };
 
     gcx.register_synthetic_definition(syn_id, def);
+    if let Some(output) = async_output {
+        gcx.cache_async_body_output(syn_id, output);
+    }
 }
 
 /// Synthesize a single THIR function for a synthetic method.
@@ -391,6 +399,7 @@ fn emit_hash_call<'ctx>(
         ExprKind::Call {
             callee,
             args: vec![value_ref, hasher_local],
+            is_async: false,
         },
         gcx.types.void,
     )
@@ -432,6 +441,7 @@ fn emit_eq_call<'ctx>(
         ExprKind::Call {
             callee,
             args: vec![lhs_ref, rhs_ref],
+            is_async: false,
         },
         gcx.types.bool,
     )
@@ -990,16 +1000,21 @@ fn synthesize_closure_call<'ctx>(
     let TyKind::Closure { inputs, output, .. } = info.self_ty.kind() else {
         return None;
     };
+    let is_async = gcx.std_item_def(crate::hir::StdItem::AsyncFn) == Some(info.interface_id);
 
     let span = synthetic_span();
     let mut builder = ThirBuilder::new(gcx, span);
 
     let args_ty = closure_args_ty(gcx, inputs);
 
-    let self_param_ty = gcx.store.interners.intern_ty(TyKind::Reference(
-        info.self_ty,
-        crate::hir::Mutability::Immutable,
-    ));
+    let self_param_ty = if is_async {
+        info.self_ty
+    } else {
+        gcx.store.interners.intern_ty(TyKind::Reference(
+            info.self_ty,
+            crate::hir::Mutability::Immutable,
+        ))
+    };
 
     let self_node_id = synthetic_node_id(syn_id, 0);
     let args_node_id = synthetic_node_id(syn_id, 1);
@@ -1019,7 +1034,11 @@ fn synthesize_closure_call<'ctx>(
     };
 
     let self_local = builder.push_expr(ExprKind::Local(self_node_id), self_param_ty);
-    let callee = builder.push_expr(ExprKind::Deref(self_local), info.self_ty);
+    let callee = if is_async {
+        self_local
+    } else {
+        builder.push_expr(ExprKind::Deref(self_local), info.self_ty)
+    };
 
     let mut call_args = Vec::new();
     match inputs.len() {
@@ -1047,11 +1066,17 @@ fn synthesize_closure_call<'ctx>(
         ExprKind::Call {
             callee,
             args: call_args,
+            is_async,
         },
         output,
     );
 
-    let body_block = builder.push_block(vec![], Some(call_expr));
+    let body_expr = if is_async {
+        builder.push_expr(ExprKind::Await { future: call_expr }, output)
+    } else {
+        call_expr
+    };
+    let body_block = builder.push_block(vec![], Some(body_expr));
 
     Some(ThirFunction {
         id: syn_id,
@@ -1063,7 +1088,7 @@ fn synthesize_closure_call<'ctx>(
         exprs: builder.exprs,
         arms: IndexVec::new(),
         match_trees: FxHashMap::default(),
-        is_async: false,
+        is_async,
     })
 }
 

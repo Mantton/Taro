@@ -2,13 +2,17 @@ use crate::{
     compile::context::Gcx,
     mir::{
         self, AggregateKind, BasicBlockId, BinaryOperator, BlockAnd, BlockAndExtension, CastKind,
-        Category, Constant, LocalId, Operand, Place, PlaceElem, Rvalue, RvalueFunc,
-        TerminatorKind, builder::MirBuilder,
+        Category, Constant, LocalId, Operand, Place, PlaceElem, Rvalue, RvalueFunc, TerminatorKind,
+        builder::MirBuilder,
+        optimize::async_transform::{
+            AsyncRuntimeFn, find_or_register_async_runtime_function, find_std_function,
+        },
     },
     sema::{
-        models::{GenericArguments, TyKind},
+        models::{GenericArgument, GenericArguments, TyKind},
         resolve::models::DefinitionKind,
     },
+    hir::StdItem,
     span::Span,
     thir::{self, ExprId, ExprKind, FieldIndex},
     unpack,
@@ -135,271 +139,11 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 self.push_assign_unit(block, expr.span, destination, self.gcx);
                 block.unit()
             }
-            ExprKind::Call { callee, args } => {
-                let shadow_resync_locals = self.shadow_resync_locals_for_call(args);
-
-                // Determine whether we need to pack variadic arguments.
-                let mut variadic_split_idx = None;
-                let callee_expr = &self.thir.exprs[*callee];
-                let is_known_variadic = match callee_expr.kind {
-                    ExprKind::Zst { id, .. } => {
-                        matches!(
-                            self.gcx.try_definition_kind(id),
-                            Some(
-                                DefinitionKind::Function
-                                    | DefinitionKind::AssociatedFunction
-                                    | DefinitionKind::AssociatedOperator
-                            )
-                        ) && self.gcx.get_signature(id).is_variadic
-                    }
-                    _ => false,
-                };
-
-                // Use the callee type to detect variadic shape.
-                let callee_ty = callee_expr.ty;
-
-                let closure_self_param_ty =
-                    if let crate::sema::models::TyKind::Closure { closure_def_id, .. } =
-                        callee_ty.kind()
-                    {
-                        self.gcx
-                            .get_signature(closure_def_id)
-                            .inputs
-                            .first()
-                            .map(|param| param.ty)
-                    } else if let crate::sema::models::TyKind::Parameter(_) = callee_ty.kind() {
-                        self.get_callable_trait_self_param_ty(callee_ty)
-                    } else {
-                        None
-                    };
-                let callable_self_place = if closure_self_param_ty.is_some() {
-                    Some(unpack!(block = self.as_place(block, *callee)))
-                } else {
-                    None
-                };
-
-                let function = if let Some(place) = callable_self_place.clone() {
-                    // The explicit self argument carries the actual closure environment.
-                    // Keep the callee operand non-consuming so callable trait lowering
-                    // does not move the same value twice.
-                    Operand::Copy(place)
-                } else {
-                    unpack!(block = self.as_local_operand(block, *callee))
-                };
-
-                // For closure calls, pass self according to the closure kind.
-                let closure_self_arg: Option<Operand<'ctx>> =
-                    closure_self_param_ty.and_then(|self_param_ty| {
-                        let closure_place = callable_self_place.clone()?;
-                        match self_param_ty.kind() {
-                            crate::sema::models::TyKind::Reference(_, mutability) => {
-                                let ref_local = self.new_temp_with_ty(self_param_ty, expr.span);
-                                self.push_assign(
-                                    block,
-                                    Place::from_local(ref_local),
-                                    Rvalue::Ref {
-                                        mutable: matches!(
-                                            mutability,
-                                            crate::hir::Mutability::Mutable
-                                        ),
-                                        place: closure_place,
-                                    },
-                                    expr.span,
-                                );
-                                Some(Operand::Copy(Place::from_local(ref_local)))
-                            }
-                            crate::sema::models::TyKind::Pointer(_, mutability) => {
-                                let ref_ty = self.gcx.store.interners.intern_ty(
-                                    crate::sema::models::TyKind::Reference(callee_ty, mutability),
-                                );
-                                let ref_local = self.new_temp_with_ty(ref_ty, expr.span);
-                                self.push_assign(
-                                    block,
-                                    Place::from_local(ref_local),
-                                    Rvalue::Ref {
-                                        mutable: matches!(
-                                            mutability,
-                                            crate::hir::Mutability::Mutable
-                                        ),
-                                        place: closure_place,
-                                    },
-                                    expr.span,
-                                );
-
-                                let ptr_local = self.new_temp_with_ty(self_param_ty, expr.span);
-                                self.push_assign(
-                                    block,
-                                    Place::from_local(ptr_local),
-                                    Rvalue::Cast {
-                                        kind: CastKind::Pointer,
-                                        operand: Operand::Copy(Place::from_local(ref_local)),
-                                        ty: self_param_ty,
-                                    },
-                                    expr.span,
-                                );
-
-                                Some(Operand::Copy(Place::from_local(ptr_local)))
-                            }
-                            _ => Some(Operand::Copy(closure_place)),
-                        }
-                    });
-                if let crate::sema::models::TyKind::FnPointer { inputs, .. } = callee_ty.kind() {
-                    let param_count = inputs.len();
-                    if is_known_variadic && param_count > 0 {
-                        let list_idx = param_count - 1;
-                        if list_idx <= args.len() {
-                            let needs_pack = if args.len() != param_count {
-                                true
-                            } else {
-                                let last_param_ty = inputs[list_idx];
-                                let last_arg_ty = self.thir.exprs[args[list_idx]].ty;
-                                last_arg_ty != last_param_ty
-                            };
-                            if needs_pack {
-                                variadic_split_idx = Some(list_idx);
-                            }
-                        }
-                    } else if args.len() > param_count && param_count > 0 {
-                        variadic_split_idx = Some(param_count - 1);
-                    }
-                }
-
-                // Check if we're calling through a Fn bound and need to unpack tuple args.
-                let fn_trait_args_ty =
-                    if let crate::sema::models::TyKind::Parameter(_) = callee_ty.kind() {
-                        self.get_fn_trait_args_type(callee_ty)
-                    } else {
-                        None
-                    };
-
-                let (fixed_args, variadic_list_operand) = if let Some(split) = variadic_split_idx {
-                    let (fixed, var_args) = args.split_at(split);
-                    let inputs = if let crate::sema::models::TyKind::FnPointer { inputs, .. } =
-                        callee_ty.kind()
-                    {
-                        inputs
-                    } else {
-                        panic!("callee must be fn pointer");
-                    };
-                    let list_ty = inputs[inputs.len() - 1];
-
-                    // Extract element type T from List[T].
-                    let elem_ty = if let crate::sema::models::TyKind::Adt(_, args) = list_ty.kind()
-                    {
-                        if let Some(crate::sema::models::GenericArgument::Type(ty)) = args.get(0) {
-                            *ty
-                        } else {
-                            panic!("List must have generic arg");
-                        }
-                    } else {
-                        panic!("Variadic param must be List");
-                    };
-
-                    let list_operand = unpack!(
-                        block = self
-                            .lower_variadic_sequence(block, var_args, list_ty, elem_ty, expr.span)
-                    );
-
-                    let fixed_operands: Vec<Operand<'ctx>> = fixed
-                        .iter()
-                        .map(|arg| unpack!(block = self.as_operand(block, *arg)))
-                        .collect();
-                    (fixed_operands, Some(list_operand))
-                } else if let Some(args_ty) = fn_trait_args_ty {
-                    // Tuple-unpacking ABI for Fn trait calls.
-                    // If Args is a tuple type, unpack the argument tuple into individual args.
-                    if let crate::sema::models::TyKind::Tuple(elem_tys) = args_ty.kind() {
-                        // Args is a tuple type - check if we have a single tuple argument to unpack
-                        if args.len() == 1 {
-                            let arg_expr = &self.thir.exprs[args[0]];
-                            if let ExprKind::Tuple { fields } = &arg_expr.kind {
-                                // Direct tuple literal - unpack its elements
-                                let unpacked: Vec<Operand<'ctx>> = fields
-                                    .iter()
-                                    .map(|field| unpack!(block = self.as_operand(block, *field)))
-                                    .collect();
-                                (unpacked, None)
-                            } else if matches!(
-                                arg_expr.ty.kind(),
-                                crate::sema::models::TyKind::Tuple(_)
-                            ) {
-                                // Tuple value (variable or expression) - extract elements
-                                let tuple_place = unpack!(block = self.as_place(block, args[0]));
-                                let unpacked: Vec<Operand<'ctx>> = elem_tys
-                                    .iter()
-                                    .enumerate()
-                                    .map(|(i, &ty)| {
-                                        let field_place = Place {
-                                            local: tuple_place.local,
-                                            projection: {
-                                                let mut proj = tuple_place.projection.clone();
-                                                proj.push(PlaceElem::Field(
-                                                    FieldIndex::from_usize(i),
-                                                    ty,
-                                                ));
-                                                proj
-                                            },
-                                        };
-                                        Operand::Copy(field_place)
-                                    })
-                                    .collect();
-                                (unpacked, None)
-                            } else {
-                                // Single non-tuple arg - pass as-is
-                                let all_args = args
-                                    .iter()
-                                    .map(|arg| unpack!(block = self.as_operand(block, *arg)))
-                                    .collect();
-                                (all_args, None)
-                            }
-                        } else {
-                            // Multiple args provided directly - pass as-is
-                            // This handles the case where user writes f(a, b) instead of f((a, b))
-                            let all_args = args
-                                .iter()
-                                .map(|arg| unpack!(block = self.as_operand(block, *arg)))
-                                .collect();
-                            (all_args, None)
-                        }
-                    } else {
-                        // Args is not a tuple - pass as-is
-                        let all_args = args
-                            .iter()
-                            .map(|arg| unpack!(block = self.as_operand(block, *arg)))
-                            .collect();
-                        (all_args, None)
-                    }
-                } else {
-                    let all_args = args
-                        .iter()
-                        .map(|arg| unpack!(block = self.as_operand(block, *arg)))
-                        .collect();
-                    (all_args, None)
-                };
-
-                // For closure calls, prepend self pointer to the argument list
-                let mut final_args = Vec::new();
-                if let Some(self_arg) = closure_self_arg {
-                    final_args.push(self_arg);
-                }
-                final_args.extend(fixed_args);
-                if let Some(list) = variadic_list_operand {
-                    final_args.push(list);
-                }
-
-                let next = self.new_block();
-                let unwind = self.call_unwind_for_callee(&function, expr.span);
-                let terminator = TerminatorKind::Call {
-                    func: function,
-                    args: final_args,
-                    destination,
-                    target: next,
-                    unwind,
-                };
-                self.terminate(block, expr.span, terminator);
-                self.push_shadow_resync(next, shadow_resync_locals, expr.span);
-                next.unit()
-            }
+            ExprKind::Call {
+                callee,
+                args,
+                is_async,
+            } => self.lower_call_into_dest(destination, block, *callee, args, *is_async, expr.span),
             ExprKind::ListLiteral {
                 elements,
                 element_ty,
@@ -556,29 +300,29 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 block.unit()
             }
             ExprKind::Await { future } => {
-                // Lower the future expression into a temp
-                let future_op = unpack!(block = self.as_local_operand(block, *future));
-
-                // Create the resume block (where execution continues after yield)
-                let resume = self.new_block_with_note("await-resume".into());
-
-                // Emit a Yield terminator as the suspension point marker
-                let terminator = TerminatorKind::Yield {
-                    value: future_op,
-                    resume,
-                    resume_arg: destination.clone(),
+                let future_op = if matches!(
+                    self.thir.exprs[*future].kind,
+                    ExprKind::Call { is_async: true, .. }
+                ) {
+                    let handle_local = self.new_temp_with_ty(self.gcx.async_handle_ty(), expr.span);
+                    block = self
+                        .expr_into_dest(Place::from_local(handle_local), block, *future)
+                        .into_block();
+                    Operand::Copy(Place::from_local(handle_local))
+                } else {
+                    unpack!(block = self.as_operand(block, *future))
                 };
-                self.terminate(block, expr.span, terminator);
-
-                // Continue from the resume block
+                let resume = self.new_block_with_note("await-resume".into());
+                self.terminate(
+                    block,
+                    expr.span,
+                    TerminatorKind::Yield {
+                        value: future_op,
+                        resume,
+                        resume_arg: destination.clone(),
+                    },
+                );
                 resume.unit()
-            }
-            ExprKind::Spawn { .. } => {
-                // TODO(phase7): Lower spawn to runtime executor call.
-                // Spawn requires the async runtime (executor, Task construction)
-                // which is not yet implemented. For now, emit a placeholder unit
-                // so that `taro check` works (it doesn't reach MIR).
-                todo!("spawn expression requires async runtime (Phase 7)")
             }
             ExprKind::Tuple { .. }
             | ExprKind::Array { .. }
@@ -610,6 +354,513 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         };
 
         block_and
+    }
+
+    fn lower_call_into_dest(
+        &mut self,
+        destination: Place<'ctx>,
+        mut block: BasicBlockId,
+        callee: ExprId,
+        args: &[ExprId],
+        is_async: bool,
+        span: Span,
+    ) -> BlockAnd<()> {
+        if self.is_hidden_spawn_intrinsic(callee) {
+            return self.lower_spawn_call(destination, block, args, span);
+        }
+        if self.is_hidden_task_value_intrinsic(callee) {
+            return self.lower_task_value_call(destination, block, args, span);
+        }
+
+        let shadow_resync_locals = self.shadow_resync_locals_for_call(args);
+
+        let mut variadic_split_idx = None;
+        let callee_expr = &self.thir.exprs[callee];
+        let is_known_variadic = match callee_expr.kind {
+            ExprKind::Zst { id, .. } => {
+                matches!(
+                    self.gcx.try_definition_kind(id),
+                    Some(
+                        DefinitionKind::Function
+                            | DefinitionKind::AssociatedFunction
+                            | DefinitionKind::AssociatedOperator
+                    )
+                ) && self.gcx.get_signature(id).is_variadic
+            }
+            _ => false,
+        };
+
+        let callee_ty = callee_expr.ty;
+        let closure_self_param_ty =
+            if let crate::sema::models::TyKind::Closure { closure_def_id, .. } = callee_ty.kind() {
+                self.gcx
+                    .get_signature(closure_def_id)
+                    .inputs
+                    .first()
+                    .map(|param| param.ty)
+            } else if let crate::sema::models::TyKind::Parameter(_) = callee_ty.kind() {
+                self.get_callable_trait_self_param_ty(callee_ty)
+            } else {
+                None
+            };
+        let callable_self_place = if closure_self_param_ty.is_some() {
+            Some(unpack!(block = self.as_place(block, callee)))
+        } else {
+            None
+        };
+
+        let function = if let Some(place) = callable_self_place.clone() {
+            Operand::Copy(place)
+        } else if is_async {
+            unpack!(block = self.async_callable_operand(block, callee, callee_ty))
+        } else {
+            unpack!(block = self.as_local_operand(block, callee))
+        };
+
+        let closure_self_arg: Option<Operand<'ctx>> =
+            closure_self_param_ty.and_then(|self_param_ty| {
+                let closure_place = callable_self_place.clone()?;
+                match self_param_ty.kind() {
+                    crate::sema::models::TyKind::Reference(_, mutability) => {
+                        let ref_local = self.new_temp_with_ty(self_param_ty, span);
+                        self.push_assign(
+                            block,
+                            Place::from_local(ref_local),
+                            Rvalue::Ref {
+                                mutable: matches!(mutability, crate::hir::Mutability::Mutable),
+                                place: closure_place,
+                            },
+                            span,
+                        );
+                        Some(Operand::Copy(Place::from_local(ref_local)))
+                    }
+                    crate::sema::models::TyKind::Pointer(_, mutability) => {
+                        let ref_ty = self.gcx.store.interners.intern_ty(
+                            crate::sema::models::TyKind::Reference(callee_ty, mutability),
+                        );
+                        let ref_local = self.new_temp_with_ty(ref_ty, span);
+                        self.push_assign(
+                            block,
+                            Place::from_local(ref_local),
+                            Rvalue::Ref {
+                                mutable: matches!(mutability, crate::hir::Mutability::Mutable),
+                                place: closure_place,
+                            },
+                            span,
+                        );
+
+                        let ptr_local = self.new_temp_with_ty(self_param_ty, span);
+                        self.push_assign(
+                            block,
+                            Place::from_local(ptr_local),
+                            Rvalue::Cast {
+                                kind: CastKind::Pointer,
+                                operand: Operand::Copy(Place::from_local(ref_local)),
+                                ty: self_param_ty,
+                            },
+                            span,
+                        );
+
+                        Some(Operand::Copy(Place::from_local(ptr_local)))
+                    }
+                    _ => Some(Operand::Copy(closure_place)),
+                }
+            });
+        if let crate::sema::models::TyKind::FnPointer { inputs, .. } = callee_ty.kind() {
+            let param_count = inputs.len();
+            if is_known_variadic && param_count > 0 {
+                let list_idx = param_count - 1;
+                if list_idx <= args.len() {
+                    let needs_pack = if args.len() != param_count {
+                        true
+                    } else {
+                        let last_param_ty = inputs[list_idx];
+                        let last_arg_ty = self.thir.exprs[args[list_idx]].ty;
+                        last_arg_ty != last_param_ty
+                    };
+                    if needs_pack {
+                        variadic_split_idx = Some(list_idx);
+                    }
+                }
+            } else if args.len() > param_count && param_count > 0 {
+                variadic_split_idx = Some(param_count - 1);
+            }
+        }
+
+        let fn_trait_args_ty = if let crate::sema::models::TyKind::Parameter(_) = callee_ty.kind() {
+            self.get_fn_trait_args_type(callee_ty)
+        } else {
+            None
+        };
+
+        let (fixed_args, variadic_list_operand) = if let Some(split) = variadic_split_idx {
+            let (fixed, var_args) = args.split_at(split);
+            let inputs = if let crate::sema::models::TyKind::FnPointer { inputs, .. } =
+                callee_ty.kind()
+            {
+                inputs
+            } else {
+                panic!("callee must be fn pointer");
+            };
+            let list_ty = inputs[inputs.len() - 1];
+            let elem_ty = if let crate::sema::models::TyKind::Adt(_, args) = list_ty.kind() {
+                if let Some(crate::sema::models::GenericArgument::Type(ty)) = args.get(0) {
+                    *ty
+                } else {
+                    panic!("List must have generic arg");
+                }
+            } else {
+                panic!("Variadic param must be List");
+            };
+
+            let list_operand = unpack!(
+                block = self.lower_variadic_sequence(block, var_args, list_ty, elem_ty, span)
+            );
+
+            let fixed_operands: Vec<Operand<'ctx>> = fixed
+                .iter()
+                .map(|arg| unpack!(block = self.as_operand(block, *arg)))
+                .collect();
+            (fixed_operands, Some(list_operand))
+        } else if let Some(args_ty) = fn_trait_args_ty {
+            if let crate::sema::models::TyKind::Tuple(elem_tys) = args_ty.kind() {
+                if args.len() == 1 {
+                    let arg_expr = &self.thir.exprs[args[0]];
+                    if let ExprKind::Tuple { fields } = &arg_expr.kind {
+                        let unpacked: Vec<Operand<'ctx>> = fields
+                            .iter()
+                            .map(|field| unpack!(block = self.as_operand(block, *field)))
+                            .collect();
+                        (unpacked, None)
+                    } else if matches!(arg_expr.ty.kind(), crate::sema::models::TyKind::Tuple(_)) {
+                        let tuple_place = unpack!(block = self.as_place(block, args[0]));
+                        let unpacked: Vec<Operand<'ctx>> = elem_tys
+                            .iter()
+                            .enumerate()
+                            .map(|(i, &ty)| {
+                                let field_place = Place {
+                                    local: tuple_place.local,
+                                    projection: {
+                                        let mut proj = tuple_place.projection.clone();
+                                        proj.push(PlaceElem::Field(FieldIndex::from_usize(i), ty));
+                                        proj
+                                    },
+                                };
+                                Operand::Copy(field_place)
+                            })
+                            .collect();
+                        (unpacked, None)
+                    } else {
+                        let all_args = args
+                            .iter()
+                            .map(|arg| unpack!(block = self.as_operand(block, *arg)))
+                            .collect();
+                        (all_args, None)
+                    }
+                } else {
+                    let all_args = args
+                        .iter()
+                        .map(|arg| unpack!(block = self.as_operand(block, *arg)))
+                        .collect();
+                    (all_args, None)
+                }
+            } else {
+                let all_args = args
+                    .iter()
+                    .map(|arg| unpack!(block = self.as_operand(block, *arg)))
+                    .collect();
+                (all_args, None)
+            }
+        } else {
+            let all_args = args
+                .iter()
+                .map(|arg| unpack!(block = self.as_operand(block, *arg)))
+                .collect();
+            (all_args, None)
+        };
+
+        let mut final_args = Vec::new();
+        if let Some(self_arg) = closure_self_arg {
+            final_args.push(self_arg);
+        }
+        final_args.extend(fixed_args);
+        if let Some(list) = variadic_list_operand {
+            final_args.push(list);
+        }
+
+        let next = self.new_block();
+        let unwind = self.call_unwind_for_callee(&function, span);
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: function,
+                args: final_args,
+                destination,
+                target: next,
+                unwind,
+            },
+        );
+        self.push_shadow_resync(next, shadow_resync_locals, span);
+        next.unit()
+    }
+
+    fn lower_spawn_call(
+        &mut self,
+        destination: Place<'ctx>,
+        mut block: BasicBlockId,
+        args: &[ExprId],
+        span: Span,
+    ) -> BlockAnd<()> {
+        let [thunk] = args else {
+            panic!("ICE: spawn lowering expects exactly one thunk argument");
+        };
+
+        let task_ty = self.place_ty(&destination);
+        let TyKind::Adt(def, task_args) = task_ty.kind() else {
+            panic!("ICE: spawn destination must be Task[T]");
+        };
+        let Some(task_def_id) = self.gcx.std_item_def(StdItem::Task) else {
+            panic!("ICE: Task std item missing");
+        };
+        assert_eq!(def.id, task_def_id, "ICE: spawn destination must be Task[T]");
+        let Some(GenericArgument::Type(task_output_ty)) = task_args.first().copied() else {
+            panic!("ICE: Task[T] must carry its output type");
+        };
+
+        let handle_local = self.new_temp_with_ty(self.gcx.async_handle_ty(), span);
+        block = self
+            .lower_call_into_dest(
+                Place::from_local(handle_local),
+                block,
+                *thunk,
+                &[],
+                true,
+                span,
+            )
+            .into_block();
+
+        let size_local = self.new_temp_with_ty(self.gcx.types.uint, span);
+        let task_id_local = self.new_temp_with_ty(self.gcx.types.uint, span);
+        let null_handle_local = self.new_temp_with_ty(self.gcx.async_handle_ty(), span);
+
+        let size_of_id = find_std_function(self.gcx, "mem", "sizeOf", span)
+            .unwrap_or_else(|_| panic!("spawn lowering requires std.mem.sizeOf"));
+        let size_of_ty = self.gcx.get_type(size_of_id);
+        let after_size = self.new_block();
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: size_of_ty,
+                    value: mir::ConstantKind::Function(
+                        size_of_id,
+                        self.gcx
+                            .store
+                            .interners
+                            .intern_generic_args(vec![GenericArgument::Type(task_output_ty)]),
+                        size_of_ty,
+                    ),
+                }),
+                args: vec![],
+                destination: Place::from_local(size_local),
+                target: after_size,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+
+        let executor_spawn_id =
+            find_or_register_async_runtime_function(self.gcx, AsyncRuntimeFn::Spawn, span);
+        let executor_spawn_ty = self.gcx.get_type(executor_spawn_id);
+        let after_spawn = self.new_block();
+        self.terminate(
+            after_size,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: executor_spawn_ty,
+                    value: mir::ConstantKind::Function(
+                        executor_spawn_id,
+                        GenericArguments::empty(),
+                        executor_spawn_ty,
+                    ),
+                }),
+                args: vec![
+                    Operand::Copy(Place::from_local(handle_local)),
+                    Operand::Copy(Place::from_local(size_local)),
+                ],
+                destination: Place::from_local(task_id_local),
+                target: after_spawn,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+
+        self.push_assign(
+            after_spawn,
+            Place::from_local(null_handle_local),
+            Rvalue::Cast {
+                operand: Operand::Constant(Constant {
+                    ty: self.gcx.types.uint,
+                    value: mir::ConstantKind::Integer(0),
+                }),
+                ty: self.gcx.async_handle_ty(),
+                kind: CastKind::Pointer,
+            },
+            span,
+        );
+
+        let fields = IndexVec::from_vec(vec![
+            Operand::Copy(Place::from_local(null_handle_local)),
+            Operand::Copy(Place::from_local(task_id_local)),
+        ]);
+        self.push_assign(
+            after_spawn,
+            destination,
+            Rvalue::Aggregate {
+                kind: AggregateKind::Adt {
+                    def_id: task_def_id,
+                    variant_index: None,
+                    generic_args: task_args,
+                },
+                fields,
+            },
+            span,
+        );
+
+        after_spawn.unit()
+    }
+
+    fn lower_task_value_call(
+        &mut self,
+        destination: Place<'ctx>,
+        mut block: BasicBlockId,
+        args: &[ExprId],
+        span: Span,
+    ) -> BlockAnd<()> {
+        let [task] = args else {
+            panic!("ICE: task value lowering expects exactly one task argument");
+        };
+
+        let destination_ty = self.place_ty(&destination);
+        assert_eq!(
+            destination_ty,
+            self.gcx.async_handle_ty(),
+            "ICE: task value intrinsic must lower into an async handle destination"
+        );
+
+        let task_place = unpack!(block = self.as_place(block, *task));
+        let spawned_id_local = self.new_temp_with_ty(self.gcx.types.uint, span);
+        self.push_assign(
+            block,
+            Place::from_local(spawned_id_local),
+            Rvalue::Use(Operand::Copy(task_spawned_id_place(
+                self.gcx,
+                task_place.clone(),
+            ))),
+            span,
+        );
+
+        let direct_block = self.new_block();
+        let spawned_block = self.new_block();
+        let join_block = self.new_block();
+
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::SwitchInt {
+                discr: Operand::Copy(Place::from_local(spawned_id_local)),
+                targets: vec![(0u128, direct_block)],
+                otherwise: spawned_block,
+            },
+        );
+
+        self.push_assign(
+            direct_block,
+            destination.clone(),
+            Rvalue::Use(Operand::Copy(task_raw_place(self.gcx, task_place))),
+            span,
+        );
+        self.goto(direct_block, join_block, span);
+
+        let from_spawned_id =
+            find_or_register_async_runtime_function(self.gcx, AsyncRuntimeFn::FromSpawned, span);
+        let from_spawned_ty = self.gcx.get_type(from_spawned_id);
+        self.terminate(
+            spawned_block,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: from_spawned_ty,
+                    value: mir::ConstantKind::Function(
+                        from_spawned_id,
+                        GenericArguments::empty(),
+                        from_spawned_ty,
+                    ),
+                }),
+                args: vec![Operand::Copy(Place::from_local(spawned_id_local))],
+                destination,
+                target: join_block,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+
+        join_block.unit()
+    }
+
+    fn is_hidden_spawn_intrinsic(&self, callee: ExprId) -> bool {
+        let ExprKind::Zst { id, .. } = self.thir.exprs[callee].kind else {
+            return false;
+        };
+
+        matches!(self.gcx.get_signature(id).abi, Some(crate::hir::Abi::Intrinsic))
+            && self
+                .gcx
+                .symbol_eq(self.gcx.definition_ident(id).symbol, "__intrinsic_spawn_async")
+    }
+
+    fn is_hidden_task_value_intrinsic(&self, callee: ExprId) -> bool {
+        let ExprKind::Zst { id, .. } = self.thir.exprs[callee].kind else {
+            return false;
+        };
+
+        matches!(self.gcx.get_signature(id).abi, Some(crate::hir::Abi::Intrinsic))
+            && self
+                .gcx
+                .symbol_eq(self.gcx.definition_ident(id).symbol, "__intrinsic_task_value")
+    }
+
+    fn async_callable_operand(
+        &mut self,
+        block: BasicBlockId,
+        callee: ExprId,
+        callee_ty: crate::sema::models::Ty<'ctx>,
+    ) -> BlockAnd<Operand<'ctx>> {
+        let callee_expr = &self.thir.exprs[callee];
+        match &callee_expr.kind {
+            ExprKind::Zst { id, generic_args } if self.gcx.definition_is_async(*id) => {
+                let async_callee_ty = match callee_ty.kind() {
+                    crate::sema::models::TyKind::FnPointer { inputs, .. } => self
+                        .gcx
+                        .store
+                        .interners
+                        .intern_ty(crate::sema::models::TyKind::FnPointer {
+                            inputs,
+                            output: self.gcx.async_handle_ty(),
+                        }),
+                    _ => self.gcx.async_handle_ty(),
+                };
+                block.and(Operand::Constant(Constant {
+                    ty: async_callee_ty,
+                    value: mir::ConstantKind::Function(
+                        *id,
+                        generic_args.unwrap_or(GenericArguments::empty()),
+                        async_callee_ty,
+                    ),
+                }))
+            }
+            _ => self.as_local_operand(block, callee),
+        }
     }
 
     fn goto_if_fallthrough(
@@ -1346,11 +1597,12 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         block = new_block;
 
         // Call __list_from_raw_parts[Element](buffer, len, cap).
-        let list_fn_id =
-            self.find_function_in_std("collections", "__list_from_raw_parts", span);
-        let list_fn_generics = self.gcx.store.interners.intern_generic_args(vec![
-            crate::sema::models::GenericArgument::Type(elem_ty),
-        ]);
+        let list_fn_id = self.find_function_in_std("collections", "__list_from_raw_parts", span);
+        let list_fn_generics = self
+            .gcx
+            .store
+            .interners
+            .intern_generic_args(vec![crate::sema::models::GenericArgument::Type(elem_ty)]);
         let list_fn_ty = self.gcx.get_type(list_fn_id);
         let list_func = Operand::Constant(Constant {
             ty: list_fn_ty,
@@ -1591,6 +1843,24 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             self.push_assign(block, Place::from_local(local), rvalue, binding.span);
         }
         block.unit()
+    }
+}
+
+fn task_raw_place<'ctx>(gcx: Gcx<'ctx>, task_place: Place<'ctx>) -> Place<'ctx> {
+    let mut projection = task_place.projection;
+    projection.push(PlaceElem::Field(FieldIndex::from_raw(0), gcx.async_handle_ty()));
+    Place {
+        local: task_place.local,
+        projection,
+    }
+}
+
+fn task_spawned_id_place<'ctx>(gcx: Gcx<'ctx>, task_place: Place<'ctx>) -> Place<'ctx> {
+    let mut projection = task_place.projection;
+    projection.push(PlaceElem::Field(FieldIndex::from_raw(1), gcx.types.uint));
+    Place {
+        local: task_place.local,
+        projection,
     }
 }
 

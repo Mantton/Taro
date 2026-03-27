@@ -224,7 +224,9 @@ fn compute_take_blocked_locals(body: &Body<'_>) -> Vec<bool> {
                 TerminatorKind::SwitchInt { discr, .. } => {
                     mark_operand_take_blocker(discr, &mut blocked);
                 }
-                TerminatorKind::Yield { value, resume_arg, .. } => {
+                TerminatorKind::Yield {
+                    value, resume_arg, ..
+                } => {
                     mark_operand_take_blocker(value, &mut blocked);
                     if !resume_arg.projection.is_empty() {
                         blocked[resume_arg.local.index()] = true;
@@ -378,7 +380,9 @@ fn apply_terminator_liveness(
             }
         }
         TerminatorKind::SwitchInt { discr, .. } => use_operand(discr, live),
-        TerminatorKind::Yield { value, resume_arg, .. } => {
+        TerminatorKind::Yield {
+            value, resume_arg, ..
+        } => {
             if resume_arg.projection.is_empty() {
                 live.remove(&resume_arg.local);
             } else {

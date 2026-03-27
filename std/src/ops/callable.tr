@@ -9,5 +9,5 @@ public interface Fn[Args: Tuple, Output] {
 
 @lang("AsyncFn")
 public interface AsyncFn[Args: Tuple, Output] {
-    func callAsync(&self, args: Args) -> Output
+    func call(self, args: Args) async -> Output
 }

@@ -1,6 +1,6 @@
 use crate::{
     compile::context::Gcx,
-    hir::{self, DefinitionID, NodeID},
+    hir::{self, DefinitionID, HirVisitor, NodeID},
     sema::{
         models::{
             Const, ConstKind, ConstValue, GenericArgument, GenericArguments, GenericParameter,
@@ -114,7 +114,13 @@ impl<'ctx> Checker<'ctx> {
             _ => unreachable!("function signature must be of function pointer type"),
         };
 
-        self.return_ty = Some(return_ty);
+        let body_return_ty = if node.is_async {
+            gcx.function_body_output(id)
+        } else {
+            return_ty
+        };
+
+        self.return_ty.set(Some(body_return_ty));
 
         let param_ids: Vec<NodeID> = node
             .signature
@@ -254,7 +260,7 @@ impl<'ctx> Checker<'ctx> {
             return;
         };
 
-        let Some(expectation) = self.return_ty else {
+        let Some(expectation) = self.return_ty.get() else {
             unreachable!("ICE: return check called outside function body")
         };
         if let Some(cs) = cs.as_deref_mut() {
@@ -528,6 +534,8 @@ impl<'ctx> Checker<'ctx> {
             self.finalize_local(id, ty);
             self.results.borrow_mut().record_node_type(id, ty);
         }
+
+        self.finalize_deferred_async_call_surface_checks(cs);
     }
 
     fn resolve_adjustment(&self, cs: &Cs<'ctx>, adjustment: Adjustment<'ctx>) -> Adjustment<'ctx> {
@@ -823,9 +831,6 @@ impl<'ctx> Checker<'ctx> {
             }
             hir::ExpressionKind::Await(inner) => {
                 self.synth_await_expression(inner, expression.span, cs)
-            }
-            hir::ExpressionKind::Spawn(block) => {
-                self.synth_spawn_expression(block, expectation, cs, expression.span)
             }
             hir::ExpressionKind::Malformed => {
                 unreachable!("ICE: trying to typecheck a malformed expression node")
@@ -1164,20 +1169,22 @@ impl<'ctx> Checker<'ctx> {
         }
 
         match &expr.kind {
-            hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => match &path.resolution {
-                hir::Resolution::LocalVariable(_)
-                | hir::Resolution::Definition(_, DefinitionKind::ModuleVariable) => {
-                    if matches!(
-                        &path.resolution,
-                        hir::Resolution::LocalVariable(id) if self.get_local(*id).ty.is_error()
-                    ) {
-                        return true;
+            hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => {
+                match &path.resolution {
+                    hir::Resolution::LocalVariable(_)
+                    | hir::Resolution::Definition(_, DefinitionKind::ModuleVariable) => {
+                        if matches!(
+                            &path.resolution,
+                            hir::Resolution::LocalVariable(id) if self.get_local(*id).ty.is_error()
+                        ) {
+                            return true;
+                        }
+                        self.mutable_binding_for_resolution(&path.resolution)
+                            .unwrap_or(false)
                     }
-                    self.mutable_binding_for_resolution(&path.resolution)
-                        .unwrap_or(false)
+                    _ => false,
                 }
-                _ => false,
-            },
+            }
             hir::ExpressionKind::Dereference(inner) => {
                 let Some(ptr_ty) = cs.expr_ty(inner.id) else {
                     return false;
@@ -1233,7 +1240,10 @@ impl<'ctx> Checker<'ctx> {
                 let struct_def = crate::sema::tycheck::utils::instantiate::
                     instantiate_struct_definition_with_args(self.gcx(), struct_def, args);
 
-                struct_def.fields.iter().any(|field| field.name == name.symbol)
+                struct_def
+                    .fields
+                    .iter()
+                    .any(|field| field.name == name.symbol)
             }
             hir::ExpressionKind::TupleAccess(target, _) => {
                 let Some(receiver_ty) = cs.expr_ty(target.id) else {
@@ -1581,6 +1591,11 @@ impl<'ctx> Checker<'ctx> {
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         let gcx = self.gcx();
+        let closure_kind = if closure.is_async {
+            crate::sema::models::ClosureKind::AsyncFn
+        } else {
+            crate::sema::models::ClosureKind::Fn
+        };
 
         // Collect closure parameter IDs (these are NOT captures)
         let param_ids: rustc_hash::FxHashSet<NodeID> =
@@ -1637,24 +1652,63 @@ impl<'ctx> Checker<'ctx> {
             );
         }
 
-        // Type check the closure body
-        let return_ty = if let Some(ret_ty) = &closure.return_ty {
-            // Explicit return type annotation
-            let expected_return = self.lower_type(ret_ty);
-            let actual_return =
-                self.synth_with_expectation(&closure.body, Some(expected_return), cs);
-            cs.equal(expected_return, actual_return, closure.body.span);
-            expected_return
+        let expected_return = if let Some(ret_ty) = &closure.return_ty {
+            self.lower_type(ret_ty)
         } else if let Some(expected_return) = expected_output {
-            // Infer return type from expectation (e.g., from Fn bound)
-            let actual_return =
-                self.synth_with_expectation(&closure.body, Some(expected_return), cs);
-            cs.equal(expected_return, actual_return, closure.body.span);
             expected_return
         } else {
-            // No expectation - infer from body
-            self.synth(&closure.body, cs)
+            cs.infer_cx.next_ty_var(closure.body.span)
         };
+
+        // Type check the closure body under the closure's own return context so
+        // explicit `return expr` participates in the same output inference as a
+        // tail expression.
+        let (return_ty, body_ty) = self.with_return_ty(Some(expected_return), || {
+            let prev_async_depth = self.async_depth.get();
+            if closure.is_async {
+                self.async_depth.set(prev_async_depth + 1);
+            }
+
+            let body_ty = match &closure.body.kind {
+                hir::ExpressionKind::Block(block) | hir::ExpressionKind::UnsafeBlock(block) => {
+                    for statement in &block.statements {
+                        self.check_statement(statement, Some(cs));
+                    }
+
+                    if let Some(tail) = block.tail.as_deref() {
+                        if matches!(tail.kind, hir::ExpressionKind::Return { .. }) {
+                            self.synth_with_expectation(tail, None, cs)
+                        } else {
+                            let actual_return =
+                                self.synth_with_expectation(tail, Some(expected_return), cs);
+                            cs.equal(expected_return, actual_return, tail.span);
+                            actual_return
+                        }
+                    } else if !closure_body_has_explicit_return(&closure.body) {
+                        cs.equal(expected_return, self.gcx().types.void, closure.body.span);
+                        self.gcx().types.void
+                    } else {
+                        self.gcx().types.void
+                    }
+                }
+                hir::ExpressionKind::Return { .. } => {
+                    self.synth_with_expectation(&closure.body, None, cs)
+                }
+                _ => {
+                    let actual_return =
+                        self.synth_with_expectation(&closure.body, Some(expected_return), cs);
+                    cs.equal(expected_return, actual_return, closure.body.span);
+                    actual_return
+                }
+            };
+
+            if closure.is_async {
+                self.async_depth.set(prev_async_depth);
+            }
+
+            (expected_return, body_ty)
+        });
+        cs.record_expr_ty(closure.body.id, body_ty);
 
         // Resolve what we can so we don't cache infer vars in closure signatures.
         cs.solve_intermediate();
@@ -1709,20 +1763,26 @@ impl<'ctx> Checker<'ctx> {
         let closure_ty = Ty::new(
             TyKind::Closure {
                 closure_def_id: closure.def_id,
+                kind: closure_kind,
                 captured_generics: GenericArguments::empty(),
                 inputs,
                 output: return_ty,
             },
             gcx,
         );
+        if closure.is_async {
+            gcx.cache_async_body_output(closure.def_id, return_ty);
+        }
 
-        // Cache the closure's function signature
-        // The closure body function takes: self (by immutable pointer), then explicit params
-        // All closures are Fn (captures are always by copy)
-        let self_ty = gcx
-            .store
-            .interners
-            .intern_ty(TyKind::Pointer(closure_ty, hir::Mutability::Immutable));
+        // Sync closure bodies borrow `self`; async closure bodies must own
+        // their captures so the state machine can keep them across suspension.
+        let self_ty = if closure.is_async {
+            closure_ty
+        } else {
+            gcx.store
+                .interners
+                .intern_ty(TyKind::Pointer(closure_ty, hir::Mutability::Immutable))
+        };
 
         let mut sig_inputs = vec![crate::sema::models::LabeledFunctionParameter {
             label: None,
@@ -1779,7 +1839,7 @@ impl<'ctx> Checker<'ctx> {
         ty
     }
 
-    /// `await expr` — verify expr implements Future, return Future::Output.
+    /// `await expr` — verify expr is a direct async call, then return its ready type.
     fn synth_await_expression(
         &self,
         inner: &hir::Expression,
@@ -1791,98 +1851,40 @@ impl<'ctx> Checker<'ctx> {
         // await is only valid inside an async context
         if self.async_depth.get() == 0 {
             gcx.dcx().emit_error(
-                "`await` can only be used inside an `async` function or `spawn` block".into(),
+                "`await` can only be used inside an `async` function".into(),
                 Some(span),
             );
             return Ty::error(gcx);
         }
 
-        let future_ty = self.synth(inner, cs);
+        let future_ty = self.with_direct_await_operand(inner.id, || self.synth(inner, cs));
         if future_ty.is_error() {
             return Ty::error(gcx);
         }
+        cs.solve_intermediate();
+        let future_ty = cs.infer_cx.resolve_vars_if_possible(future_ty);
 
-        // Create a fresh inference variable for the Output associated type
-        let output_ty = cs.infer_cx.next_ty_var(span);
+        if self.results.borrow().is_async_call(inner.id) {
+            return future_ty;
+        }
 
-        // Build Future interface reference with Output = ?output_ty
-        let Some(future_def_id) = gcx.std_item_def(hir::StdItem::Future) else {
+        if matches!(self.resolved_async_call_status(inner.id, Some(cs)), Some(true)) {
+            return future_ty;
+        }
+
+        if self.task_inner_type(future_ty).is_some() {
             gcx.dcx().emit_error(
-                "Future interface not found in standard library".into(),
+                "use `await task.value()` to await a `Task[T]`".into(),
                 Some(span),
             );
-            return Ty::error(gcx);
-        };
-
-        let output_symbol = gcx.intern_symbol("Output");
-        let bindings = gcx.store.arenas.global.alloc_slice_clone(&[
-            crate::sema::models::AssociatedTypeBinding {
-                name: output_symbol,
-                ty: output_ty,
-            },
-        ]);
-
-        let self_arg = GenericArgument::Type(future_ty);
-        let args = gcx
-            .store
-            .interners
-            .intern_generic_args(vec![self_arg]);
-
-        let future_ref = InterfaceReference {
-            id: future_def_id,
-            arguments: args,
-            bindings,
-        };
-
-        // Add conformance goal: future_ty conforms to Future where Output = output_ty
-        cs.add_goal(
-            Goal::Conforms {
-                ty: future_ty,
-                interface: future_ref,
-            },
-            span,
-        );
-
-        output_ty
-    }
-
-    /// `spawn { block }` — block is an async context, returns Task[T].
-    fn synth_spawn_expression(
-        &self,
-        block: &hir::Block,
-        _expectation: Option<Ty<'ctx>>,
-        cs: &mut Cs<'ctx>,
-        span: Span,
-    ) -> Ty<'ctx> {
-        let gcx = self.gcx();
-
-        // spawn introduces an async context
-        let prev = self.async_depth.get();
-        self.async_depth.set(prev + 1);
-        let body_ty = self.synth_block_expression(block, None, cs);
-        self.async_depth.set(prev);
-
-        if body_ty.is_error() {
             return Ty::error(gcx);
         }
 
-        // Build Task[body_ty]
-        let Some(task_def_id) = gcx.std_item_def(hir::StdItem::Task) else {
-            gcx.dcx().emit_error(
-                "Task type not found in standard library".into(),
-                Some(span),
-            );
-            return Ty::error(gcx);
-        };
-
-        let struct_def = gcx.get_struct_definition(task_def_id);
-        let args = gcx
-            .store
-            .interners
-            .intern_generic_args(vec![GenericArgument::Type(body_ty)]);
-        gcx.store
-            .interners
-            .intern_ty(TyKind::Adt(struct_def.adt_def, args))
+        gcx.dcx().emit_error(
+            "`await` expects an async call".into(),
+            Some(span),
+        );
+        Ty::error(gcx)
     }
 
     fn synth_expression_literal(
@@ -2270,6 +2272,12 @@ impl<'ctx> Checker<'ctx> {
         let result_ty = cs.infer_cx.next_ty_var(expression.span);
         cs.record_expr_ty(expression.id, result_ty);
 
+        if callee_def.is_some_and(|def_id| self.gcx().definition_is_async(def_id))
+            || self.type_is_async_callable(callee_ty)
+        {
+            self.results.borrow_mut().record_async_call(expression.id);
+        }
+
         let data = ApplyGoalData {
             call_node_id: expression.id,
             call_span: expression.span,
@@ -2283,7 +2291,7 @@ impl<'ctx> Checker<'ctx> {
         };
         cs.add_goal(Goal::Apply(data), expression.span);
 
-        result_ty
+        self.finish_async_call_surface_check(expression.id, expression.span, result_ty)
     }
 
     fn argument_expectations_for_call(
@@ -2468,8 +2476,8 @@ impl<'ctx> Checker<'ctx> {
 
                 interface = instantiate_interface_ref_with_args(gcx, interface, instantiation_args);
 
-                // Extract Args and Output from Fn[Args, Output]
-                // Interface arguments are: [Self, Args, Output]
+                // Extract Args and Output from Fn[Args, Output].
+                // Raw interface refs still carry `Self` as the first argument.
                 if interface.arguments.len() < 3 {
                     continue;
                 }
@@ -2608,11 +2616,13 @@ impl<'ctx> Checker<'ctx> {
                 }
             }
             TyKind::Closure {
+                kind: pattern_kind,
                 inputs: pattern_inputs,
                 output: pattern_output,
                 ..
             } => {
                 let TyKind::Closure {
+                    kind: actual_kind,
                     inputs: actual_inputs,
                     output: actual_output,
                     ..
@@ -2620,6 +2630,9 @@ impl<'ctx> Checker<'ctx> {
                 else {
                     return;
                 };
+                if pattern_kind != actual_kind {
+                    return;
+                }
                 for (&pattern_input, &actual_input) in
                     pattern_inputs.iter().zip(actual_inputs.iter())
                 {
@@ -2817,7 +2830,11 @@ impl<'ctx> Checker<'ctx> {
                             skip_labels: false,
                         };
                         cs.add_goal(Goal::Apply(data), expression.span);
-                        return result_ty;
+                        return self.finish_async_call_surface_check(
+                            expression.id,
+                            expression.span,
+                            result_ty,
+                        );
                     }
                     _ => {}
                 }
@@ -2860,6 +2877,7 @@ impl<'ctx> Checker<'ctx> {
 
         let method_ty = cs.infer_cx.next_ty_var(name.span);
         let result_ty = cs.infer_cx.next_ty_var(expression.span);
+        cs.record_expr_ty(expression.id, result_ty);
 
         cs.add_goal(
             Goal::MethodCall(MethodCallData {
@@ -2879,6 +2897,7 @@ impl<'ctx> Checker<'ctx> {
             expression.span,
         );
 
+        self.defer_async_call_surface_check(expression.id, expression.span);
         result_ty
     }
 }
@@ -5448,6 +5467,152 @@ impl<'ctx> Checker<'ctx> {
         def.id == opt_id
     }
 
+    fn task_inner_type(&self, ty: Ty<'ctx>) -> Option<Ty<'ctx>> {
+        let TyKind::Adt(def, args) = ty.kind() else {
+            return None;
+        };
+        let Some(task_id) = self.gcx().std_item_def(hir::StdItem::Task) else {
+            return None;
+        };
+        if def.id != task_id {
+            return None;
+        }
+        (*args.first()?).ty()
+    }
+
+    fn with_return_ty<R>(&self, return_ty: Option<Ty<'ctx>>, f: impl FnOnce() -> R) -> R {
+        let prev = self.return_ty.replace(return_ty);
+        let result = f();
+        self.return_ty.set(prev);
+        result
+    }
+
+    fn finish_async_call_surface_check(
+        &self,
+        node_id: NodeID,
+        span: Span,
+        result_ty: Ty<'ctx>,
+    ) -> Ty<'ctx> {
+        if self.results.borrow().is_async_call(node_id)
+            && self.direct_await_operand.get() != Some(node_id)
+        {
+            self.gcx().dcx().emit_error(
+                "async calls must be immediately awaited".into(),
+                Some(span),
+            );
+            return Ty::error(self.gcx());
+        }
+
+        result_ty
+    }
+
+    fn resolved_async_call_status(&self, node_id: NodeID, cs: Option<&Cs<'ctx>>) -> Option<bool> {
+        if self.results.borrow().is_async_call(node_id) {
+            return Some(true);
+        }
+
+        {
+            let results = self.results.borrow();
+            if let Some(def_id) = results.overload_source(node_id) {
+                return Some(self.gcx().definition_is_async(def_id));
+            }
+
+            if let Some(call_info) = results.interface_call(node_id) {
+                return Some(self.gcx().definition_is_async(call_info.method_id));
+            }
+        }
+
+        let Some(cs) = cs else {
+            return None;
+        };
+
+        if let Some(def_id) = cs.resolved_overload_sources().get(&node_id).copied() {
+            return Some(self.gcx().definition_is_async(def_id));
+        }
+
+        if let Some(call_info) = cs.resolved_interface_calls().get(&node_id).copied() {
+            return Some(self.gcx().definition_is_async(call_info.method_id));
+        }
+
+        None
+    }
+
+    fn finalize_deferred_async_call_surface_checks(&self, cs: &Cs<'ctx>) {
+        let pending: Vec<_> = self
+            .pending_async_surface_checks
+            .borrow_mut()
+            .drain(..)
+            .collect();
+        let mut unresolved = Vec::new();
+
+        for pending in pending {
+            match self.resolved_async_call_status(pending.node_id, Some(cs)) {
+                Some(true) => {
+                    self.results.borrow_mut().record_async_call(pending.node_id);
+                    if !pending.directly_awaited {
+                        self.gcx().dcx().emit_error(
+                            "async calls must be immediately awaited".into(),
+                            Some(pending.span),
+                        );
+                    }
+                }
+                Some(false) => {}
+                None => unresolved.push(pending),
+            }
+        }
+
+        if !unresolved.is_empty() {
+            self.pending_async_surface_checks
+                .borrow_mut()
+                .extend(unresolved);
+        }
+    }
+
+    fn type_is_async_callable(&self, ty: Ty<'ctx>) -> bool {
+        self.async_callable_input_count(ty).is_some()
+    }
+
+    fn async_callable_input_count(&self, ty: Ty<'ctx>) -> Option<usize> {
+        match ty.kind() {
+            TyKind::Closure { kind, inputs, .. } => {
+                (kind == crate::sema::models::ClosureKind::AsyncFn).then_some(inputs.len())
+            }
+            TyKind::Parameter(param) => {
+                let gcx = self.gcx();
+                let Some(async_fn_def) = gcx.std_item_def(hir::StdItem::AsyncFn) else {
+                    return None;
+                };
+                crate::sema::tycheck::constraints::canonical_constraints_of(gcx, self.current_def)
+                    .into_iter()
+                    .find_map(|constraint| {
+                        let crate::sema::models::Constraint::Bound {
+                            ty: bound_ty,
+                            interface,
+                        } = constraint.value
+                        else {
+                            return None;
+                        };
+                        let TyKind::Parameter(bound_param) = bound_ty.kind() else {
+                            return None;
+                        };
+                        if bound_param.index != param.index
+                            || bound_param.name != param.name
+                            || interface.id != async_fn_def
+                        {
+                            return None;
+                        }
+
+                        let args_ty = interface.arguments.get(1).and_then(|arg| arg.ty())?;
+                        Some(match args_ty.kind() {
+                            TyKind::Tuple(elem_tys) => elem_tys.len(),
+                            _ => 1,
+                        })
+                    })
+            }
+            _ => None,
+        }
+    }
+
     fn optional_inner_type(&self, ty: Ty<'ctx>) -> Option<(GenericArguments<'ctx>, Ty<'ctx>)> {
         let TyKind::Adt(def, args) = ty.kind() else {
             return None;
@@ -5544,15 +5709,24 @@ impl<'ctx> Checker<'ctx> {
     fn update_closure_signature(&self, closure_def_id: DefinitionID, closure_ty: Ty<'ctx>) {
         use crate::sema::models::{LabeledFunctionParameter, LabeledFunctionSignature};
 
-        let TyKind::Closure { inputs, output, .. } = closure_ty.kind() else {
+        let TyKind::Closure {
+            kind,
+            inputs,
+            output,
+            ..
+        } = closure_ty.kind()
+        else {
             return;
         };
 
         let gcx = self.gcx();
         let old_sig = gcx.get_signature(closure_def_id);
 
-        // All closures are Fn — self is always an immutable pointer
-        let self_ty = Ty::new(TyKind::Pointer(closure_ty, hir::Mutability::Immutable), gcx);
+        let self_ty = if kind == crate::sema::models::ClosureKind::AsyncFn {
+            closure_ty
+        } else {
+            Ty::new(TyKind::Pointer(closure_ty, hir::Mutability::Immutable), gcx)
+        };
 
         let mut new_inputs = Vec::with_capacity(old_sig.inputs.len());
 
@@ -5670,6 +5844,28 @@ enum UseContext {
     Value,
     Place,
     Borrow { mutable: bool },
+}
+
+fn closure_body_has_explicit_return(expr: &hir::Expression) -> bool {
+    struct ReturnFinder {
+        found: bool,
+    }
+
+    impl hir::HirVisitor for ReturnFinder {
+        fn visit_expression(&mut self, node: &hir::Expression) {
+            match &node.kind {
+                hir::ExpressionKind::Return { .. } => {
+                    self.found = true;
+                }
+                hir::ExpressionKind::Closure(_) => {}
+                _ => hir::walk_expression(self, node),
+            }
+        }
+    }
+
+    let mut finder = ReturnFinder { found: false };
+    finder.visit_expression(expr);
+    finder.found
 }
 
 /// Collects free variable references from a closure body.
@@ -5949,9 +6145,6 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
             }
             hir::ExpressionKind::Await(value) => {
                 self.collect_expr(value, UseContext::Value);
-            }
-            hir::ExpressionKind::Spawn(block) => {
-                self.collect_block(block);
             }
         }
     }

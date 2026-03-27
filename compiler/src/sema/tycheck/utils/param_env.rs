@@ -26,6 +26,34 @@ impl<'ctx> ParamEnv<'ctx> {
         }
     }
 
+    pub fn add_constraint(&mut self, constraint: Constraint<'ctx>) {
+        match constraint {
+            Constraint::TypeEquality(lhs, rhs) => {
+                if !self.type_equalities.contains(&(lhs, rhs))
+                    && !self.type_equalities.contains(&(rhs, lhs))
+                {
+                    self.type_equalities.push((lhs, rhs));
+                }
+            }
+            Constraint::Bound { ty, interface } => {
+                let item = (ty, interface);
+                if !self.bounds.contains(&item) {
+                    self.bounds.push(item);
+                }
+            }
+        }
+    }
+
+    pub fn extend_from(&mut self, other: &ParamEnv<'ctx>) {
+        for &(lhs, rhs) in &other.type_equalities {
+            self.add_constraint(Constraint::TypeEquality(lhs, rhs));
+        }
+
+        for &(ty, interface) in &other.bounds {
+            self.add_constraint(Constraint::Bound { ty, interface });
+        }
+    }
+
     pub fn has_type_equalities(&self) -> bool {
         !self.type_equalities.is_empty()
     }

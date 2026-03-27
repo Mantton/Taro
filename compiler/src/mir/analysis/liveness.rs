@@ -174,7 +174,9 @@ pub fn compute_liveness(body: &Body<'_>) -> LivenessResult {
                     }
                 }
                 TerminatorKind::SwitchInt { discr, .. } => use_operand(discr, &mut in_set),
-                TerminatorKind::Yield { value, resume_arg, .. } => {
+                TerminatorKind::Yield {
+                    value, resume_arg, ..
+                } => {
                     use_operand(value, &mut in_set);
                     if resume_arg.projection.is_empty() {
                         in_set.remove(&resume_arg.local);

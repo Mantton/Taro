@@ -480,8 +480,6 @@ pub enum ExpressionKind {
     CfgCheck(CfgExpr),
     /// `await expr` — suspend until the future completes
     Await(Box<Expression>),
-    /// `spawn { block }` — spawn a concurrent async task
-    Spawn(Block),
 }
 
 #[derive(Debug, Clone)]
@@ -549,6 +547,7 @@ pub struct PatternBindingCondition {
 #[derive(Debug, Clone)]
 pub struct ClosureExpression {
     pub signature: FunctionSignature,
+    pub is_async: bool,
     pub body: Box<Expression>,
     pub span: Span,
 }
@@ -1730,9 +1729,6 @@ pub fn walk_expression<V: AstVisitor>(visitor: &mut V, node: &Expression) -> V::
         }
         ExpressionKind::Await(expression) => {
             try_visit!(visitor.visit_expression(expression));
-        }
-        ExpressionKind::Spawn(block) => {
-            try_visit!(visitor.visit_block(block));
         }
     };
 

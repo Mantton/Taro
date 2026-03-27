@@ -157,6 +157,7 @@ pub enum ExprKind<'a> {
     Call {
         callee: ExprId,
         args: Vec<ExprId>,
+        is_async: bool,
     },
     /// Box a concrete value into a Swift-style existential container
     BoxExistential {
@@ -216,11 +217,6 @@ pub enum ExprKind<'a> {
     Await {
         /// The future expression being awaited
         future: ExprId,
-    },
-    /// `spawn { block }` — spawn a concurrent async task
-    Spawn {
-        /// The body block of the spawned task
-        body: BlockId,
     },
 }
 

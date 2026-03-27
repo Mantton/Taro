@@ -1,0 +1,251 @@
+func asyncValue() async -> int32 {
+    return 7
+}
+
+func asyncAwaitValue() async -> int32 {
+    return await asyncValue()
+}
+
+func delayedAsyncValue() async -> int32 {
+    await std.testing.yieldNow()
+    return 9
+}
+
+func delayedNestedAwaitValue() async -> int32 {
+    return await delayedAsyncValue()
+}
+
+func multiAwaitValue() async -> int32 {
+    await std.testing.yieldNow()
+    await std.testing.yieldNow()
+    return 13
+}
+
+@test
+func asyncFunctionsReturnValues() async {
+    let value = await asyncValue()
+    std.testing.assertEqual(value, 7, "async fn should resolve to its declared value")
+}
+
+@test
+func awaitUnwrapsAsyncCalls() async {
+    let value = await asyncAwaitValue()
+    std.testing.assertEqual(value, 7, "await should unwrap async function calls")
+}
+
+@test
+func suspendingAsyncFunctionsResumeThroughAwait() async {
+    let value = await delayedAsyncValue()
+    std.testing.assertEqual(value, 9, "async fn should resume after pending")
+}
+
+@test
+func nestedAwaitsPropagateSuspension() async {
+    let value = await delayedNestedAwaitValue()
+    std.testing.assertEqual(value, 9, "await should resume nested pending async calls")
+}
+
+@test
+func asyncFunctionsHandleMultipleAwaitPoints() async {
+    let value = await multiAwaitValue()
+    std.testing.assertEqual(value, 13, "async fn should handle multiple suspension points")
+}
+
+func asyncChainC() async -> int32 {
+    await std.testing.yieldNow()
+    return 100
+}
+
+func asyncChainB() async -> int32 {
+    return (await asyncChainC()) + 1
+}
+
+func asyncChainA() async -> int32 {
+    return (await asyncChainB()) + 1
+}
+
+@test
+func deepAwaitChainsResolveCorrectly() async {
+    let value = await asyncChainA()
+    std.testing.assertEqual(value, 102, "A -> B -> C chain should resolve to 102")
+}
+
+func asyncAdd(_ x: int32, _ y: int32) async -> int32 {
+    await std.testing.yieldNow()
+    return x + y
+}
+
+@test
+func asyncFunctionsPreserveParameters() async {
+    let value = await asyncAdd(13, 29)
+    std.testing.assertEqual(value, 42, "parameters should survive across yield")
+}
+
+struct AsyncPoint {
+    x: int32
+    y: int32
+}
+
+func asyncPoint() async -> AsyncPoint {
+    await std.testing.yieldNow()
+    return AsyncPoint { x: 3, y: 4 }
+}
+
+@test
+func asyncFunctionsReturnStructs() async {
+    let p = await asyncPoint()
+    std.testing.assertEqual(p.x, 3, "struct x field should be 3")
+    std.testing.assertEqual(p.y, 4, "struct y field should be 4")
+}
+
+func asyncManyLocals() async -> int32 {
+    let a = 1 as int32
+    let b = 2 as int32
+    let c = 3 as int32
+    let d = 4 as int32
+    let e = 5 as int32
+    await std.testing.yieldNow()
+    let f = 6 as int32
+    let g = 7 as int32
+    await std.testing.yieldNow()
+    return a + b + c + d + e + f + g
+}
+
+@test
+func asyncFunctionsPreserveLocalsAcrossYields() async {
+    let value = await asyncManyLocals()
+    std.testing.assertEqual(value, 28, "all locals should be preserved across multiple yields")
+}
+
+func asyncConditional(_ flag: bool) async -> int32 {
+    await std.testing.yieldNow()
+    if flag {
+        return 42
+    }
+    return 0
+}
+
+@test
+func asyncFunctionsHandleConditionalPaths() async {
+    let a = await asyncConditional(true)
+    let b = await asyncConditional(false)
+    std.testing.assertEqual(a, 42, "true branch should return 42")
+    std.testing.assertEqual(b, 0, "false branch should return 0")
+}
+
+func asyncVoid(_ x: *mut int32) async {
+    await std.testing.yieldNow()
+    unsafe { x.write(99) }
+}
+
+@test
+func voidAsyncFunctionsComplete() async {
+    var sentinel: int32 = 0
+    await asyncVoid(unsafe { (&mut sentinel) as *mut int32 })
+    std.testing.assertEqual(sentinel, 99, "void async fn should complete and apply side effect")
+}
+
+func asyncWithStrings() async -> string {
+    let a = "hello"
+    await std.testing.yieldNow()
+    let b = " world"
+    await std.testing.yieldNow()
+    return a + b
+}
+
+func asyncHoldList() async -> int32 {
+    var items: std.collections.List[int32] = std.collections.List()
+    items.append(10)
+    await std.testing.yieldNow()
+    items.append(20)
+    await std.testing.yieldNow()
+    items.append(30)
+    return *items.at(0 as usize) + *items.at(1 as usize) + *items.at(2 as usize)
+}
+
+func applyAsyncClosure[F: std.ops.AsyncFn(int32) -> int32](_ f: F, _ x: int32) async -> int32 {
+    return await f(x)
+}
+
+@test
+func rcBackedStringsAcrossYields() async {
+    let value = await asyncWithStrings()
+    std.testing.assertEqual(value, "hello world", "strings should survive across yield points")
+}
+
+@test
+func rcBackedListsAcrossYields() async {
+    let value = await asyncHoldList()
+    std.testing.assertEqual(value, 60, "list should survive across yield points")
+}
+
+@test
+func asyncClosuresCaptureAcrossYields() async {
+    let captured = 5 as int32
+    let addCaptured = |x: int32| async {
+        await std.testing.yieldNow()
+        return x + captured
+    }
+
+    let value = await addCaptured(7)
+    std.testing.assertEqual(value, 12, "async closures should capture locals across yields")
+}
+
+@test
+func asyncClosuresSatisfyAsyncFnBounds() async {
+    let captured = 9 as int32
+    let closure = |x: int32| async {
+        await std.testing.yieldNow()
+        return x + captured
+    }
+
+    let value = await applyAsyncClosure(closure, 3)
+    std.testing.assertEqual(value, 12, "async closures should satisfy AsyncFn bounds")
+}
+
+@test
+func spawnedTasksComplete() async {
+    let captured = 5 as int32
+    let task = std.futures.spawn(|| async {
+        await std.testing.yieldNow()
+        return captured + 10
+    })
+
+    let result = await task.value()
+    std.testing.assertEqual(result, 15, "spawned task should resolve")
+}
+
+@test
+func multipleSpawnedTasksInterleave() async {
+    let a = std.futures.spawn(|| async {
+        await std.testing.yieldNow()
+        await std.testing.yieldNow()
+        return 11 as int32
+    })
+    let b = std.futures.spawn(|| async {
+        await std.testing.yieldNow()
+        return 12 as int32
+    })
+
+    let x = await a.value()
+    let y = await b.value()
+    std.testing.assertEqual(x + y, 23, "both spawned tasks should complete")
+}
+
+@test
+@expectPanic
+func spawnedTaskPanicAfterAsyncRootStillFailsTest() async {
+    let _ = std.futures.spawn(|| async {
+        await std.testing.yieldNow()
+        std.panic.panic("post-root spawned panic should still fail the async test")
+    })
+}
+
+@test
+@expectPanic
+func syncSpawnedTaskPanicIsAttributedToTest() {
+    let _ = std.futures.spawn(|| async {
+        await std.testing.yieldNow()
+        std.panic.panic("spawned task panic should fail the sync test")
+    })
+}

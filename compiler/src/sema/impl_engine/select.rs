@@ -264,7 +264,13 @@ impl<'ctx> Selector<'ctx> {
         &self,
         goal: InterfaceGoal<'ctx>,
     ) -> Option<ConfirmedCandidate<'ctx>> {
-        let TyKind::Closure { inputs, output, .. } = goal.self_ty.kind() else {
+        let TyKind::Closure {
+            kind,
+            inputs,
+            output,
+            ..
+        } = goal.self_ty.kind()
+        else {
             return None;
         };
 
@@ -273,13 +279,18 @@ impl<'ctx> Selector<'ctx> {
         if fn_id != Some(goal.interface_id) && async_fn_id != Some(goal.interface_id) {
             return None;
         }
+        if (fn_id == Some(goal.interface_id) && kind != crate::sema::models::ClosureKind::Fn)
+            || (async_fn_id == Some(goal.interface_id)
+                && kind != crate::sema::models::ClosureKind::AsyncFn)
+        {
+            return None;
+        }
 
         if goal.interface_args.len() != 2 {
             return None;
         }
 
         let args_ty = match inputs.len() {
-            0 => self.gcx.types.void,
             1 => inputs[0],
             _ => Ty::new(TyKind::Tuple(inputs), self.gcx),
         };

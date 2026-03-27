@@ -140,11 +140,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 if let Some(captures) = self.gcx.get_closure_captures(closure_def_id) {
                     let llvm_ty = self.lower_ty(ty).unwrap().into_struct_type();
                     for capture in &captures.captures {
-                        let resolved =
-                            crate::sema::tycheck::utils::normalize_post_monomorphization(
-                                self.gcx,
-                                capture.ty,
-                            );
+                        let resolved = crate::sema::tycheck::utils::normalize_post_monomorphization(
+                            self.gcx, capture.ty,
+                        );
                         if !self.contains_rc(resolved) {
                             continue;
                         }
@@ -362,11 +360,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 if let Some(captures) = self.gcx.get_closure_captures(closure_def_id) {
                     let llvm_ty = self.lower_ty(ty).unwrap().into_struct_type();
                     for capture in &captures.captures {
-                        let resolved =
-                            crate::sema::tycheck::utils::normalize_post_monomorphization(
-                                self.gcx,
-                                capture.ty,
-                            );
+                        let resolved = crate::sema::tycheck::utils::normalize_post_monomorphization(
+                            self.gcx, capture.ty,
+                        );
                         if !self.contains_rc(resolved) {
                             continue;
                         }

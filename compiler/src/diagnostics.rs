@@ -320,11 +320,7 @@ impl DiagCtx {
     }
 
     pub fn content_override(&self, path: &Path) -> Option<String> {
-        self.inner
-            .borrow()
-            .content_overrides
-            .get(path)
-            .cloned()
+        self.inner.borrow().content_overrides.get(path).cloned()
     }
 }
 

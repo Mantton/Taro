@@ -136,7 +136,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 continue;
             }
 
-            // Fn[Args, Output] has Self at [0], Args at [1], Output at [2]
+            // Raw interface refs still carry `Self` as the first argument.
             if bound.arguments.len() < 3 {
                 continue;
             }

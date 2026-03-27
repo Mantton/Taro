@@ -123,6 +123,8 @@ struct FunctionLower<'ctx> {
     nested_closures: Vec<ThirFunction<'ctx>>,
     /// For closure bodies: maps captured variable source_ids to field_index
     captures_map: Option<FxHashMap<crate::hir::NodeID, FieldIndex>>,
+    /// Remaps source local node ids to synthetic parameter node ids.
+    local_remap: Option<FxHashMap<crate::hir::NodeID, crate::hir::NodeID>>,
 }
 
 impl<'ctx> FunctionLower<'ctx> {
@@ -149,6 +151,7 @@ impl<'ctx> FunctionLower<'ctx> {
             },
             nested_closures: Vec::new(),
             captures_map: None,
+            local_remap: None,
         };
 
         lower.lower_params(node);
@@ -179,6 +182,7 @@ impl<'ctx> FunctionLower<'ctx> {
             },
             nested_closures: Vec::new(),
             captures_map: None,
+            local_remap: None,
         };
 
         let expr_id = lower.lower_expr(expr);
@@ -319,6 +323,7 @@ impl<'ctx> FunctionLower<'ctx> {
                     ExprKind::Call {
                         callee: provider,
                         args: vec![],
+                        is_async: false,
                     },
                     param.ty,
                     span,
@@ -846,6 +851,7 @@ impl<'ctx> FunctionLower<'ctx> {
                 ExprKind::Call {
                     callee: thir_callee,
                     args: final_args,
+                    is_async: self.results.is_async_call(expr.id),
                 }
             }
             hir::ExpressionKind::Binary(op, lhs, rhs) => {
@@ -867,6 +873,7 @@ impl<'ctx> FunctionLower<'ctx> {
                     ExprKind::Call {
                         callee,
                         args: vec![lhs_expr, rhs_expr],
+                        is_async: false,
                     }
                 } else {
                     match op {
@@ -907,6 +914,7 @@ impl<'ctx> FunctionLower<'ctx> {
                     ExprKind::Call {
                         callee,
                         args: vec![operand_expr],
+                        is_async: false,
                     }
                 } else {
                     let operand = self.lower_expr(operand);
@@ -958,6 +966,7 @@ impl<'ctx> FunctionLower<'ctx> {
                     ExprKind::Call {
                         callee,
                         args: vec![lhs_expr, rhs_expr],
+                        is_async: false,
                     }
                 } else {
                     // Intrinsic compound assignment
@@ -1053,6 +1062,7 @@ impl<'ctx> FunctionLower<'ctx> {
                     ExprKind::Call {
                         callee,
                         args: final_args,
+                        is_async: self.results.is_async_call(expr.id),
                     }
                 } else if let Some(field_index) = self.results.field_index(expr.id) {
                     // Callable-field fallback from method resolution:
@@ -1087,6 +1097,7 @@ impl<'ctx> FunctionLower<'ctx> {
                     ExprKind::Call {
                         callee,
                         args: final_args,
+                        is_async: self.results.is_async_call(expr.id),
                     }
                 } else {
                     self.gcx.dcx().emit_error(
@@ -1229,6 +1240,18 @@ impl<'ctx> FunctionLower<'ctx> {
                                 ExprKind::Upvar {
                                     field_index: outer_field_index,
                                 }
+                            } else if let Some(local_remap) = &self.local_remap {
+                                if let Some(&remapped) = local_remap.get(&cap.source_id) {
+                                    ExprKind::Local(remapped)
+                                } else {
+                                    ExprKind::Local(cap.source_id)
+                                }
+                            } else {
+                                ExprKind::Local(cap.source_id)
+                            }
+                        } else if let Some(local_remap) = &self.local_remap {
+                            if let Some(&remapped) = local_remap.get(&cap.source_id) {
+                                ExprKind::Local(remapped)
                             } else {
                                 ExprKind::Local(cap.source_id)
                             }
@@ -1262,10 +1285,6 @@ impl<'ctx> FunctionLower<'ctx> {
             hir::ExpressionKind::Await(inner) => {
                 let future = self.lower_expr(inner);
                 ExprKind::Await { future }
-            }
-            hir::ExpressionKind::Spawn(block) => {
-                let body = self.lower_block(block);
-                ExprKind::Spawn { body }
             }
             hir::ExpressionKind::Malformed => {
                 unreachable!("malformed expression should not reach THIR lowering");
@@ -1324,10 +1343,11 @@ impl<'ctx> FunctionLower<'ctx> {
                 exprs: IndexVec::new(),
                 arms: IndexVec::new(),
                 match_trees: FxHashMap::default(),
-                is_async: false,
+                is_async: closure.is_async,
             },
             nested_closures: Vec::new(),
             captures_map,
+            local_remap: None,
         };
 
         // Get the full signature (self pointer + explicit params)
@@ -1518,6 +1538,11 @@ impl<'ctx> FunctionLower<'ctx> {
                     if let Some(&field_index) = captures_map.get(&id) {
                         // This is a captured variable - generate Upvar access
                         return ExprKind::Upvar { field_index };
+                    }
+                }
+                if let Some(local_remap) = &self.local_remap {
+                    if let Some(&remapped) = local_remap.get(&id) {
+                        return ExprKind::Local(remapped);
                     }
                 }
                 // Not a capture - regular local variable

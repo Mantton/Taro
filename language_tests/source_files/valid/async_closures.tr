@@ -1,0 +1,42 @@
+// CHECK_ONLY
+
+func applyAsync[F: AsyncFn(int32) -> int32](_ f: F, _ x: int32) async -> int32 {
+    return await f(x)
+}
+
+func applyZeroAsync[F: AsyncFn() -> int32](_ f: F) async -> int32 {
+    return await f()
+}
+
+func main() async {
+    let captured = 7 as int32
+
+    let zero = || async {
+        await std.testing.yieldNow()
+        return captured * 2
+    }
+
+    let unary = |x: int32| async {
+        await std.testing.yieldNow()
+        return x + captured
+    }
+
+    let sync = || {
+        return captured - 1
+    }
+
+    let _ = await applyZeroAsync(zero)
+    let _ = await applyAsync(unary, 5)
+    let _ = sync()
+
+    let spawned = std.futures.spawn(|| async {
+        await std.testing.yieldNow()
+        return captured + 1
+    })
+    let _ = await spawned.value()
+
+    for i in 0..=2 {
+        let task = std.futures.spawn(|| async { return i })
+        let _ = await task.value()
+    }
+}

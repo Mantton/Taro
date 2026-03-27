@@ -3085,7 +3085,7 @@ impl Parser {
 
 impl Parser {
     fn parse_closure_expression(&mut self) -> R<Box<Expression>> {
-        // |a| {} | || -> int {} | async || await ok()
+        // |a| {} | || -> int {} | |x| async { await ok() }
         let lo = self.lo_span();
         let prototype = self.parse_closure_prototype()?;
         let signature = FunctionSignature {
@@ -3093,10 +3093,16 @@ impl Parser {
             span: lo.to(self.hi_span()),
         };
 
-        let body = self.parse_expression()?;
+        let is_async = self.eat(Token::Async);
+        let body = if is_async {
+            self.parse_block_expression()?
+        } else {
+            self.parse_expression()?
+        };
 
         let closure = ClosureExpression {
             signature,
+            is_async,
             body,
             span: lo.to(self.hi_span()),
         };
@@ -3305,7 +3311,6 @@ impl Parser {
             Token::Continue => self.parse_continue_expression(),
             Token::Unsafe => self.parse_unsafe_block_expression(),
             Token::Await => self.parse_await_expression(),
-            Token::Spawn => self.parse_spawn_expression(),
             Token::LBrace => self.parse_block_expression(),
             Token::Bar | Token::BarBar => self.parse_closure_expression(),
             Token::Underscore => {
@@ -3381,15 +3386,6 @@ impl Parser {
         self.expect(Token::Await)?;
         let value = self.parse_expression()?;
         let kind = ExpressionKind::Await(value);
-        Ok(self.build_expr(kind, lo.to(self.hi_span())))
-    }
-
-    /// `spawn { block }`
-    fn parse_spawn_expression(&mut self) -> R<Box<Expression>> {
-        let lo = self.lo_span();
-        self.expect(Token::Spawn)?;
-        let block = self.parse_block()?;
-        let kind = ExpressionKind::Spawn(block);
         Ok(self.build_expr(kind, lo.to(self.hi_span())))
     }
 
@@ -4312,6 +4308,18 @@ mod tests {
         (expr, Symbols)
     }
 
+    fn parse_expr_err(input: &str) -> Vec<Spanned<ParserError>> {
+        let dcx = DiagCtx::new(PathBuf::from("."));
+        let file_id = dcx.add_file_mapping(PathBuf::from("test.taro"));
+        let lexer = Lexer::new(input, file_id);
+        let file = lexer.tokenize().expect("Lexing failed");
+        let next: NextNode = Default::default();
+        let mut parser = Parser::new(file, next);
+        vec![parser
+            .parse_expression()
+            .expect_err("expected parse failure")]
+    }
+
     /// Helper to parse a type from source
     fn parse_type_str(input: &str) -> Box<Type> {
         let dcx = DiagCtx::new(PathBuf::from("."));
@@ -5101,6 +5109,15 @@ mod tests {
     }
 
     #[test]
+    fn test_async_closure_expr_empty() {
+        let expr = parse_expr_str("|| async { 42 }");
+        match &expr.kind {
+            ExpressionKind::Closure(closure) => assert!(closure.is_async),
+            _ => panic!("Expected closure"),
+        }
+    }
+
+    #[test]
     fn test_struct_literal() {
         let expr = parse_expr_str("Point { x: 1, y: 2 }");
         assert!(matches!(expr.kind, ExpressionKind::StructLiteral(_)));
@@ -5849,6 +5866,24 @@ mod tests {
     }
 
     #[test]
+    fn test_async_closure_with_return_type() {
+        let expr = parse_expr_str("|x: int32| -> int32 async { x * 2 }");
+        match &expr.kind {
+            ExpressionKind::Closure(closure) => {
+                assert!(closure.is_async);
+                assert!(matches!(closure.body.kind, ExpressionKind::Block(_)));
+            }
+            _ => panic!("Expected closure"),
+        }
+    }
+
+    #[test]
+    fn test_async_closure_prefix_syntax_is_rejected() {
+        let errors = parse_expr_err("async || {}");
+        assert!(!errors.is_empty(), "expected parse error for `async || {{}}`");
+    }
+
+    #[test]
     fn test_struct_literal_shorthand() {
         let expr = parse_expr_str("Point { x, y }");
         match &expr.kind {
@@ -6279,8 +6314,11 @@ mod tests {
         ";
         let (decls, errors) = parse_decls_with_recovery(input);
         assert!(!errors.is_empty(), "Should have parse errors");
-        
-        let func_count = decls.iter().filter(|d| matches!(d.kind, DeclarationKind::Function(_))).count();
+
+        let func_count = decls
+            .iter()
+            .filter(|d| matches!(d.kind, DeclarationKind::Function(_)))
+            .count();
         assert!(func_count >= 3, "Failed to recover all valid functions");
     }
 
@@ -6293,11 +6331,18 @@ mod tests {
         }";
         let (decls, errors) = parse_decls_with_recovery(input);
         assert!(!errors.is_empty(), "Should have parse errors");
-        
-        let func = decls.into_iter().find(|d| matches!(d.kind, DeclarationKind::Function(_))).unwrap();
+
+        let func = decls
+            .into_iter()
+            .find(|d| matches!(d.kind, DeclarationKind::Function(_)))
+            .unwrap();
         if let DeclarationKind::Function(f) = func.kind {
             let body = f.block.unwrap();
-            let let_count = body.statements.iter().filter(|s| matches!(s.kind, StatementKind::Variable(_))).count();
+            let let_count = body
+                .statements
+                .iter()
+                .filter(|s| matches!(s.kind, StatementKind::Variable(_)))
+                .count();
             assert!(let_count >= 2, "Failed to recover statements inside block");
         } else {
             panic!("Expected function");
@@ -6389,9 +6434,9 @@ mod tests {
     }
 
     #[test]
-    fn test_spawn_block() {
-        let expr = parse_expr_str("spawn { 1 + 2 }");
-        assert!(matches!(expr.kind, ExpressionKind::Spawn(_)));
+    fn test_spawn_is_identifier_expression() {
+        let expr = parse_expr_str("spawn");
+        assert!(matches!(expr.kind, ExpressionKind::Identifier(_)));
     }
 
     #[test]
@@ -6407,8 +6452,9 @@ mod tests {
     }
 
     #[test]
-    fn test_spawn_in_function_body() {
-        let decl = parse_one_decl("func foo() async { let t = spawn { 42 } }");
+    fn test_spawn_call_in_function_body() {
+        let decl =
+            parse_one_decl("func foo() async { let t = std.futures.spawn(|| async { await bar() }) }");
         match &decl.kind {
             DeclarationKind::Function(func) => {
                 assert!(func.is_async);
@@ -6419,14 +6465,13 @@ mod tests {
     }
 
     #[test]
-    fn test_await_spawn() {
-        // `await spawn { expr }` — await a spawned task
-        let expr = parse_expr_str("await spawn { 42 }");
+    fn test_await_spawn_call() {
+        let expr = parse_expr_str("await std.futures.spawn(|| async { await foo() })");
         match &expr.kind {
             ExpressionKind::Await(inner) => {
-                assert!(matches!(inner.kind, ExpressionKind::Spawn(_)));
+                assert!(matches!(inner.kind, ExpressionKind::Call(_, _)));
             }
-            _ => panic!("Expected Await(Spawn(...))"),
+            _ => panic!("Expected Await(Call(...))"),
         }
     }
 }

@@ -6,8 +6,8 @@ use crate::{
     hir::{self, DefinitionKind, StdItem},
     sema::resolve::{
         models::{
-        ExpressionResolutionState, Holder, Resolution, ResolutionOutput, ResolutionState, Scope,
-        ScopeNamespace,
+            ExpressionResolutionState, Holder, Resolution, ResolutionOutput, ResolutionState,
+            Scope, ScopeNamespace,
         },
         scope_lookup,
     },
@@ -634,7 +634,9 @@ impl Actor<'_, '_> {
                         hir::UseTreeNestedItem {
                             span: source.span.to(alias_span.unwrap_or(source.span)),
                             source,
-                            alias: item.alias.map(|identifier| self.lower_use_tree_alias(identifier)),
+                            alias: item
+                                .alias
+                                .map(|identifier| self.lower_use_tree_alias(identifier)),
                         }
                     })
                     .collect();
@@ -771,10 +773,9 @@ impl<'a, 'c> Actor<'a, 'c> {
         self.find_holder_in_scope(scope, identifier, ScopeNamespace::Type)
             .or_else(|| self.find_holder_in_scope(scope, identifier, ScopeNamespace::Value))
             .or_else(|| {
-                scope_lookup::resolve_in_scope(scope, identifier, ScopeNamespace::Type)
-                    .or_else(|| {
-                        scope_lookup::resolve_in_scope(scope, identifier, ScopeNamespace::Value)
-                    })
+                scope_lookup::resolve_in_scope(scope, identifier, ScopeNamespace::Type).or_else(
+                    || scope_lookup::resolve_in_scope(scope, identifier, ScopeNamespace::Value),
+                )
             })
     }
 
@@ -2066,9 +2067,6 @@ impl Actor<'_, '_> {
             ast::ExpressionKind::Await(expr) => {
                 hir::ExpressionKind::Await(self.lower_expression(expr))
             }
-            ast::ExpressionKind::Spawn(block) => {
-                hir::ExpressionKind::Spawn(self.lower_block(block))
-            }
         };
 
         Box::new(hir::Expression {
@@ -2419,6 +2417,7 @@ impl Actor<'_, '_> {
             def_id,
             params,
             return_ty,
+            is_async: closure.is_async,
             body,
             is_move: false, // TODO: Support `move` keyword in parser
             span,
@@ -3242,7 +3241,7 @@ mod escape {
         MultipleSkippedLinesWarning,
     }
 
-impl EscapeError {
+    impl EscapeError {
         /// Returns true for actual errors, as opposed to warnings.
         pub fn _is_fatal(&self) -> bool {
             !matches!(
@@ -3520,14 +3519,8 @@ mod tests {
 
         let dcx = Rc::new(DiagCtx::new(PathBuf::from(".")));
         let arenas = CompilerArenas::new();
-        let store = CompilerStore::new(
-            &arenas,
-            output_root,
-            &dcx,
-            None,
-            BuildProfile::Debug,
-        )
-        .unwrap_or_else(|_| panic!("store"));
+        let store = CompilerStore::new(&arenas, output_root, &dcx, None, BuildProfile::Debug)
+            .unwrap_or_else(|_| panic!("store"));
         let icx = CompilerContext::new(dcx, store);
         let config = icx.store.arenas.configs.alloc(Config {
             name: "script".into(),

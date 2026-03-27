@@ -247,8 +247,17 @@ impl<'arena> Ty<'arena> {
                     out
                 }
             }
-            TyKind::Closure { inputs, output, .. } => {
-                let mut out = format!("closure<Fn>((");
+            TyKind::Closure {
+                kind,
+                inputs,
+                output,
+                ..
+            } => {
+                let kind_name = match kind {
+                    ClosureKind::Fn => "Fn",
+                    ClosureKind::AsyncFn => "AsyncFn",
+                };
+                let mut out = format!("closure<{kind_name}>((");
                 for (i, input) in inputs.iter().enumerate() {
                     if i > 0 {
                         out.push_str(", ");
@@ -343,6 +352,8 @@ pub enum TyKind<'arena> {
     Closure {
         /// Unique ID for this closure definition
         closure_def_id: DefinitionID,
+        /// Whether the closure is synchronous or async.
+        kind: ClosureKind,
         /// Generic arguments captured from enclosing scope
         captured_generics: GenericArguments<'arena>,
         /// Input parameter types
@@ -372,6 +383,8 @@ pub enum AliasKind {
 pub enum ClosureKind {
     /// Can be called multiple times with shared access to captures (&self)
     Fn,
+    /// Async closure whose call result must be awaited.
+    AsyncFn,
 }
 
 /// A variable captured by a closure
@@ -579,12 +592,9 @@ pub fn format_definition_signature_parameter_labels_for_display(
 ) -> Option<Vec<String>> {
     match gcx.definition_kind(id) {
         crate::sema::resolve::models::DefinitionKind::Function
-        | crate::sema::resolve::models::DefinitionKind::AssociatedFunction => {
-            Some(format_signature_parameter_labels_for_display(
-                gcx.try_get_signature(id)?,
-                gcx,
-            ))
-        }
+        | crate::sema::resolve::models::DefinitionKind::AssociatedFunction => Some(
+            format_signature_parameter_labels_for_display(gcx.try_get_signature(id)?, gcx),
+        ),
         _ => None,
     }
 }
@@ -623,10 +633,7 @@ fn variadic_element_type<'ctx>(ty: Ty<'ctx>, gcx: Gcx<'ctx>) -> Option<Ty<'ctx>>
     }
 }
 
-pub fn format_definition_signature_for_display(
-    gcx: Gcx<'_>,
-    id: DefinitionID,
-) -> Option<String> {
+pub fn format_definition_signature_for_display(gcx: Gcx<'_>, id: DefinitionID) -> Option<String> {
     match gcx.definition_kind(id) {
         crate::sema::resolve::models::DefinitionKind::Function
         | crate::sema::resolve::models::DefinitionKind::AssociatedFunction => {

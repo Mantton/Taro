@@ -194,7 +194,9 @@ mod tests {
             None
         );
         assert_eq!(
-            infer_language_home_from_executable(&root.join("target").join("debug").join("taro-lsp")),
+            infer_language_home_from_executable(
+                &root.join("target").join("debug").join("taro-lsp")
+            ),
             None
         );
     }

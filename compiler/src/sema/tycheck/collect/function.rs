@@ -146,10 +146,16 @@ impl<'ctx> Actor<'ctx> {
             });
         }
 
-        let output = if let Some(node) = &node.signature.prototype.output {
+        let declared_output = if let Some(node) = &node.signature.prototype.output {
             ctx.lowerer().lower_type(node)
         } else {
             self.context.types.void
+        };
+        let output = if node.is_async {
+            self.context.cache_async_body_output(id, declared_output);
+            declared_output
+        } else {
+            declared_output
         };
 
         // Determine if the function is variadic based on the last parameter

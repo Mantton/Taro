@@ -97,7 +97,7 @@ pub struct MirBuilder<'ctx, 'thir> {
 impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
     pub fn build_function(gcx: Gcx<'ctx>, function: &'thir thir::ThirFunction<'ctx>) -> Body<'ctx> {
         let signature = gcx.get_signature(function.id);
-        let output_ty = signature.output;
+        let output_ty = gcx.function_body_output(function.id);
         let entry_span = function.span;
 
         let mut body = Body {
@@ -239,7 +239,11 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             thir::ExprKind::Cast { value } => {
                 self.maybe_uninit_local_from_call_arg(value, seen_bindings)
             }
-            thir::ExprKind::Call { callee, ref args } => {
+            thir::ExprKind::Call {
+                callee,
+                ref args,
+                ..
+            } => {
                 if !self.is_maybe_uninit_pointer_method(callee) {
                     return None;
                 }
@@ -552,11 +556,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 .store
                 .interners
                 .intern_ty(TyKind::Reference(ty, hir::Mutability::Immutable)),
-            CallableTraitKind::AsyncFn => self
-                .gcx
-                .store
-                .interners
-                .intern_ty(TyKind::Reference(ty, hir::Mutability::Immutable)),
+            CallableTraitKind::AsyncFn => ty,
         })
     }
 
@@ -575,7 +575,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let requirements = self.gcx.get_interface_requirements(interface.id)?;
         let method_name = match kind {
             CallableTraitKind::Fn => "call",
-            CallableTraitKind::AsyncFn => "callAsync",
+            CallableTraitKind::AsyncFn => "call",
         };
         requirements
             .methods

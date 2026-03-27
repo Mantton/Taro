@@ -137,7 +137,6 @@ pub enum Token {
     Protected,
     Async,
     Await,
-    Spawn,
     Ref,
     Init,
 }

@@ -176,6 +176,9 @@ impl<'ctx> ConstraintSystem<'ctx> {
     }
 
     fn add_constraint(&mut self, constraint: Constraint<'ctx>, location: Span) {
+        if let Constraint::Bound { .. } = constraint {
+            self.env.add_constraint(constraint);
+        }
         match constraint {
             Constraint::TypeEquality(lhs, rhs) => {
                 self.add_goal(Goal::ConstraintEqual(lhs, rhs), location);
@@ -311,6 +314,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
         self.overload_sources.extend(other.overload_sources);
         self.value_resolutions.extend(other.value_resolutions);
         self.instantiation_args.extend(other.instantiation_args);
+        self.env.extend_from(&other.env);
     }
 }
 
@@ -326,8 +330,6 @@ impl<'ctx> ConstraintSystem<'ctx> {
     fn solve_internal(&mut self, check_unresolved: bool) {
         let gcx = self.infer_cx.gcx;
 
-        let param_env = Self::build_param_env(self.infer_cx.gcx, self.current_def);
-
         let solver = ConstraintSolver {
             icx: self.infer_cx.clone(),
             obligations: std::mem::take(&mut self.obligations),
@@ -339,7 +341,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
             value_resolutions: std::mem::take(&mut self.value_resolutions),
             instantiation_args: std::mem::take(&mut self.instantiation_args),
             current_def: self.current_def,
-            param_env,
+            param_env: self.env.clone(),
             visible_traits: self.visible_traits.clone(),
         };
 
@@ -469,7 +471,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
 impl<'ctx> ConstraintSolver<'ctx> {
     fn constraints_for_def(
-        &self,
+        &mut self,
         def_id: crate::sema::resolve::models::DefinitionID,
         args: Option<GenericArguments<'ctx>>,
         location: Span,
@@ -483,6 +485,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     Some(args) => instantiate_constraint_with_args(gcx, constraint.value, args),
                     None => constraint.value,
                 };
+                if let Constraint::Bound { .. } = constraint {
+                    self.param_env.add_constraint(constraint);
+                }
                 let goal = match constraint {
                     Constraint::TypeEquality(lhs, rhs) => Goal::ConstraintEqual(lhs, rhs),
                     Constraint::Bound { ty, interface } => Goal::Conforms { ty, interface },

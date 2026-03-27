@@ -748,7 +748,7 @@ struct SweepStats {
 
 // Top-level GC state. Spans are stored separately so the page map can store
 // just a span id, and the class lists track spans with free slots.
-struct Gc {
+pub(crate) struct Gc {
     segments: Vec<Segment>,
     // Maps arena index (address / SEGMENT_SIZE) to segment index for O(1) lookup.
     // A segment may span multiple arenas, so multiple keys can point to the same segment.
@@ -761,6 +761,7 @@ struct Gc {
     class_spans: Vec<[Vec<usize>; 2]>,
     static_roots: Vec<Range<*const u8>>,
     manual_roots: Vec<*const u8>,
+    persistent_roots: Vec<*const u8>,
     stats: GcStats,
     // Bytes allocated since the last collection (used to trigger GC).
     alloc_since_gc: usize,
@@ -796,6 +797,7 @@ impl Gc {
             class_spans,
             static_roots: Vec::new(),
             manual_roots: Vec::new(),
+            persistent_roots: Vec::new(),
             stats: GcStats::default(),
             alloc_since_gc: 0,
             gc_threshold_bytes: GC_MIN_TRIGGER,
@@ -977,10 +979,21 @@ impl Gc {
         }
     }
 
+    pub(crate) fn add_persistent_root(&mut self, ptr: *const u8) {
+        if !ptr.is_null() && !self.persistent_roots.contains(&ptr) {
+            self.persistent_roots.push(ptr);
+        }
+    }
+
+    pub(crate) fn remove_persistent_root(&mut self, ptr: *const u8) {
+        self.persistent_roots.retain(|&r| r != ptr);
+    }
+
     fn collect(&mut self) {
         // Stop-the-world collection: gather roots, mark, then sweep.
-        let manual_roots = std::mem::take(&mut self.manual_roots);
+        let mut manual_roots = std::mem::take(&mut self.manual_roots);
         let static_roots = std::mem::take(&mut self.static_roots);
+        manual_roots.extend(self.persistent_roots.iter().copied());
         self.mark_roots(manual_roots.into_iter(), &static_roots);
         self.static_roots = static_roots;
         let freed = self.sweep();
@@ -1240,7 +1253,7 @@ impl Gc {
     }
 }
 
-fn with_gc<R>(f: impl FnOnce(&mut Gc) -> R) -> R {
+pub(crate) fn with_gc<R>(f: impl FnOnce(&mut Gc) -> R) -> R {
     // Single global GC instance protected by a mutex.
     static INSTANCE: OnceLock<Mutex<Gc>> = OnceLock::new();
     let gc = INSTANCE.get_or_init(|| Mutex::new(Gc::new()));

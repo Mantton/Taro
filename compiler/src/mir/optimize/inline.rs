@@ -673,6 +673,9 @@ fn instantiate_mono_ty<'ctx>(
     ty: Ty<'ctx>,
     args: GenericArguments<'ctx>,
 ) -> Ty<'ctx> {
-    let substituted = instantiate_ty_with_args(gcx, ty, args);
-    crate::sema::tycheck::utils::normalize_post_monomorphization(gcx, substituted)
+    // Inlining happens before full monomorphization. Substituting a callee body
+    // into a generic caller may legitimately leave the caller's own type
+    // parameters in the remapped MIR, so post-monomorphization normalization is
+    // too strong here.
+    instantiate_ty_with_args(gcx, ty, args)
 }

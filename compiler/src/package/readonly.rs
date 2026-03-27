@@ -185,9 +185,10 @@ impl ReadonlyPackageLoader {
             }
         };
 
-        let revision = entry.revision.clone().ok_or_else(|| {
-            format!("lockfile entry for `{}` is missing a revision", package.0)
-        })?;
+        let revision = entry
+            .revision
+            .clone()
+            .ok_or_else(|| format!("lockfile entry for `{}` is missing a revision", package.0))?;
         let home = if let Some(home) = &self.language_home_override {
             home.clone()
         } else {
@@ -211,7 +212,9 @@ impl ReadonlyPackageLoader {
 #[cfg(test)]
 mod tests {
     use super::{ReadonlyPackageSource, load_package_graph_with_language_home};
-    use crate::package::lockfile::{LockFile, LockPackage, LockSourceType, write as write_lockfile};
+    use crate::package::lockfile::{
+        LockFile, LockPackage, LockSourceType, write as write_lockfile,
+    };
     use std::fs::{create_dir_all, write};
     use std::path::{Path, PathBuf};
 
@@ -260,10 +263,7 @@ mod tests {
         assert_eq!(ordered[0].display_name, "dep");
         assert_eq!(ordered[1].display_name, "root");
         assert_eq!(
-            ordered[1]
-                .dependencies
-                .get("dep")
-                .expect("dep alias"),
+            ordered[1].dependencies.get("dep").expect("dep alias"),
             &ordered[0].unique_identifier().expect("dep id")
         );
         assert!(matches!(ordered[0].source, ReadonlyPackageSource::Path));
@@ -276,7 +276,9 @@ mod tests {
         let root = workspace.join("root");
         let revision = "0123456789abcdef0123456789abcdef01234567";
         let package_name = "github.com/example/dep";
-        let source_root = home.join("sources").join(format!("{package_name}-{revision}"));
+        let source_root = home
+            .join("sources")
+            .join(format!("{package_name}-{revision}"));
 
         write_manifest(
             &root,
@@ -303,8 +305,8 @@ mod tests {
         });
         write_lockfile(&root.join("package.lock"), &lockfile).expect("write lockfile");
 
-        let ordered = load_package_graph_with_language_home(&root, Some(home.as_path()))
-            .expect("graph");
+        let ordered =
+            load_package_graph_with_language_home(&root, Some(home.as_path())).expect("graph");
         assert_eq!(ordered.len(), 2);
         assert!(matches!(
             ordered[0].source,

@@ -559,10 +559,7 @@ fn owner_documents_changed(
     })
 }
 
-fn has_documents_for_owner(
-    documents: &HashMap<Url, DocumentData>,
-    owner: &AnalysisOwner,
-) -> bool {
+fn has_documents_for_owner(documents: &HashMap<Url, DocumentData>, owner: &AnalysisOwner) -> bool {
     documents
         .values()
         .any(|document| document.owner.as_ref() == Some(owner))
@@ -691,11 +688,11 @@ fn stage_name(stage: DiagnosticStage) -> &'static str {
 
 fn file_id_for_uri(snapshot: &AnalysisSnapshot, uri: &Url) -> Option<FileID> {
     let path = uri.to_file_path().ok()?;
-    snapshot
-        .file_lookup
-        .get(&path)
-        .copied()
-        .or_else(|| path.canonicalize().ok().and_then(|path| snapshot.file_lookup.get(&path).copied()))
+    snapshot.file_lookup.get(&path).copied().or_else(|| {
+        path.canonicalize()
+            .ok()
+            .and_then(|path| snapshot.file_lookup.get(&path).copied())
+    })
 }
 
 fn find_navigation_index<T>(
@@ -709,9 +706,8 @@ fn find_navigation_index<T>(
         return None;
     }
 
-    let insertion = items.partition_point(|item| {
-        span_start_at_or_before(span_of(item), file, position)
-    });
+    let insertion =
+        items.partition_point(|item| span_start_at_or_before(span_of(item), file, position));
     let mut current = insertion.checked_sub(1)?;
 
     loop {
@@ -900,7 +896,10 @@ mod tests {
         let outer = Span {
             file,
             start: Position { line: 0, offset: 0 },
-            end: Position { line: 0, offset: 10 },
+            end: Position {
+                line: 0,
+                offset: 10,
+            },
         };
         let inner = Span {
             file,

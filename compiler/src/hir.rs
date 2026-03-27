@@ -712,8 +712,6 @@ pub enum ExpressionKind {
     Closure(ClosureExpr),
     /// `await expr` — suspend until the future completes
     Await(Box<Expression>),
-    /// `spawn { block }` — spawn a concurrent async task
-    Spawn(Block),
     Malformed,
 }
 
@@ -825,7 +823,7 @@ pub struct ExpressionField {
     pub span: Span,
 }
 
-/// Closure expression: `|args| body` or `move |args| body`
+/// Closure expression: `|args| body`, `|args| async { ... }`, or `move |args| body`
 #[derive(Debug, Clone)]
 pub struct ClosureExpr {
     /// Unique definition ID for this closure
@@ -834,6 +832,8 @@ pub struct ClosureExpr {
     pub params: Vec<ClosureParam>,
     /// Optional explicit return type
     pub return_ty: Option<Box<Type>>,
+    /// Whether this closure is async and lowers through the async transform.
+    pub is_async: bool,
     /// Closure body expression
     pub body: Box<Expression>,
     /// Whether `move` keyword was specified (forces by-move capture)
@@ -950,8 +950,6 @@ pub enum StdItem {
     OptionalNoneCtor,
 
     // Async
-    Future,
-    Poll,
     Task,
 
     // Builtin
@@ -992,8 +990,6 @@ impl StdItem {
             StdItem::BitNot => Some("BitNot"),
             StdItem::PartialEq => Some("PartialEq"),
             StdItem::PartialOrd => Some("PartialOrd"),
-            StdItem::Future => Some("Future"),
-            StdItem::Poll => Some("Poll"),
             StdItem::Task => Some("Task"),
             StdItem::OptionalSomeVariant => Some("OptionalSomeVariant"),
             StdItem::OptionalSomeCtor => Some("OptionalSomeCtor"),
@@ -1036,8 +1032,6 @@ impl StdItem {
             "BitNot" => Some(Self::BitNot),
             "PartialEq" => Some(Self::PartialEq),
             "PartialOrd" => Some(Self::PartialOrd),
-            "Future" => Some(Self::Future),
-            "Poll" => Some(Self::Poll),
             "Task" => Some(Self::Task),
             _ => None,
         }
@@ -1045,7 +1039,7 @@ impl StdItem {
 
     pub fn expected_def_kind(self) -> Option<DefinitionKind> {
         match self {
-            StdItem::Optional | StdItem::Poll => Some(DefinitionKind::Enum),
+            StdItem::Optional => Some(DefinitionKind::Enum),
             StdItem::List
             | StdItem::Set
             | StdItem::Dictionary
@@ -1061,7 +1055,6 @@ impl StdItem {
             | StdItem::Iterable
             | StdItem::Fn
             | StdItem::AsyncFn
-            | StdItem::Future
             | StdItem::Tuple
             | StdItem::Add
             | StdItem::Sub
@@ -1109,8 +1102,6 @@ impl StdItem {
                 | StdItem::Iterable
                 | StdItem::Fn
                 | StdItem::AsyncFn
-                | StdItem::Future
-                | StdItem::Poll
                 | StdItem::Task
                 | StdItem::Tuple
                 | StdItem::Add
@@ -1135,7 +1126,7 @@ impl StdItem {
         )
     }
 
-    pub const ALL_REQUIRED: [StdItem; 38] = [
+    pub const ALL_REQUIRED: [StdItem; 36] = [
         StdItem::Optional,
         StdItem::List,
         StdItem::Set,
@@ -1167,8 +1158,6 @@ impl StdItem {
         StdItem::BitNot,
         StdItem::PartialEq,
         StdItem::PartialOrd,
-        StdItem::Future,
-        StdItem::Poll,
         StdItem::Task,
         StdItem::OptionalSomeVariant,
         StdItem::OptionalSomeCtor,
@@ -1176,14 +1165,13 @@ impl StdItem {
         StdItem::OptionalNoneCtor,
     ];
 
-    pub const ALL_INTERFACES: [StdItem; 23] = [
+    pub const ALL_INTERFACES: [StdItem; 22] = [
         StdItem::Hashable,
         StdItem::Equatable,
         StdItem::Iterator,
         StdItem::Iterable,
         StdItem::Fn,
         StdItem::AsyncFn,
-        StdItem::Future,
         StdItem::Tuple,
         StdItem::Add,
         StdItem::Sub,
@@ -2141,9 +2129,6 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, node: &Expression) -> V::
         }
         ExpressionKind::Await(expression) => {
             try_visit!(visitor.visit_expression(expression));
-        }
-        ExpressionKind::Spawn(block) => {
-            try_visit!(visitor.visit_block(block));
         }
         ExpressionKind::Malformed => {}
     };

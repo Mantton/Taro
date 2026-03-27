@@ -39,6 +39,7 @@ pub fn validate_entry_point(
 fn validate_entry_signature(id: hir::DefinitionID, gcx: GlobalContext) -> CompileResult<()> {
     let ident = gcx.definition_ident(id);
     let sig = gcx.get_signature(id);
+    let body_output = gcx.function_body_output(id);
 
     if !sig.inputs.is_empty() {
         gcx.dcx().emit_error(
@@ -48,7 +49,7 @@ fn validate_entry_signature(id: hir::DefinitionID, gcx: GlobalContext) -> Compil
         return Err(ReportedError);
     }
 
-    if sig.output != gcx.types.void {
+    if body_output != gcx.types.void {
         gcx.dcx().emit_error(
             "entry point `main` must have signature `() -> void`".into(),
             Some(ident.span),

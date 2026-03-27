@@ -91,4 +91,6 @@ extern "taro_intrinsic" {
     func __intrinsic_string_len(_ s: string) -> usize
     func __intrinsic_rune_from_u32_unchecked(_ value: uint32) -> rune
     func __intrinsic_gc_desc[T]() -> *const GcDesc
+    func __intrinsic_spawn_async[T, F: std.ops.AsyncFn() -> T](_ thunk: F) -> std.futures.Task[T]
+    func __intrinsic_task_value[T](_ task: std.futures.Task[T]) async -> T
 }

@@ -1,5 +1,6 @@
 use crate::{
     compile::context::Gcx,
+    span::Span,
     hir::{self, DefinitionID, NodeID},
     sema::{
         models::Ty,
@@ -13,14 +14,23 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+#[derive(Clone, Copy)]
+pub(super) struct PendingAsyncCallSurfaceCheck {
+    pub node_id: NodeID,
+    pub span: Span,
+    pub directly_awaited: bool,
+}
+
 pub struct Checker<'arena> {
     pub context: Gcx<'arena>,
     pub locals: RefCell<FxHashMap<NodeID, LocalBinding<'arena>>>,
-    pub return_ty: Option<Ty<'arena>>,
+    pub return_ty: Cell<Option<Ty<'arena>>>,
     pub(super) loop_depth: Cell<usize>,
     pub(super) unsafe_depth: Cell<usize>,
     pub(super) defer_depth: Cell<usize>,
     pub(super) async_depth: Cell<usize>,
+    pub(super) direct_await_operand: Cell<Option<NodeID>>,
+    pub(super) pending_async_surface_checks: RefCell<Vec<PendingAsyncCallSurfaceCheck>>,
     pub current_def: DefinitionID,
     pub results: Rc<RefCell<TypeCheckResults<'arena>>>,
     infer_cx: RefCell<Option<Rc<InferCtx<'arena>>>>,
@@ -42,12 +52,14 @@ impl<'arena> Checker<'arena> {
         let visible_traits = context.visible_traits(current_def);
         Checker {
             context,
-            return_ty: None,
+            return_ty: Cell::new(None),
             locals: Default::default(),
             loop_depth: Cell::new(0),
             unsafe_depth: Cell::new(0),
             defer_depth: Cell::new(0),
             async_depth: Cell::new(0),
+            direct_await_operand: Cell::new(None),
+            pending_async_surface_checks: RefCell::new(Vec::new()),
             current_def,
             results,
             infer_cx: RefCell::new(None),
@@ -133,6 +145,27 @@ impl<'arena> Checker<'arena> {
 
     pub(super) fn infer_ctx(&self) -> Option<Rc<InferCtx<'arena>>> {
         self.infer_cx.borrow().clone()
+    }
+
+    pub(super) fn with_direct_await_operand<T>(
+        &self,
+        node_id: NodeID,
+        f: impl FnOnce() -> T,
+    ) -> T {
+        let prev = self.direct_await_operand.replace(Some(node_id));
+        let result = f();
+        self.direct_await_operand.set(prev);
+        result
+    }
+
+    pub(super) fn defer_async_call_surface_check(&self, node_id: NodeID, span: Span) {
+        self.pending_async_surface_checks.borrow_mut().push(
+            PendingAsyncCallSurfaceCheck {
+                node_id,
+                span,
+                directly_awaited: self.direct_await_operand.get() == Some(node_id),
+            },
+        );
     }
 
     pub fn get_local(&self, id: NodeID) -> LocalBinding<'arena> {

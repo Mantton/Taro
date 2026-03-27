@@ -26,10 +26,9 @@ pub fn resolve_package_root_from_src_ancestor(file_path: &Path) -> Result<Option
             continue;
         }
         if package_root_owns_file(package_root, file_path) {
-            return package_root
-                .canonicalize()
-                .map(Some)
-                .map_err(|e| format!("failed to canonicalize '{}': {}", package_root.display(), e));
+            return package_root.canonicalize().map(Some).map_err(|e| {
+                format!("failed to canonicalize '{}': {}", package_root.display(), e)
+            });
         }
     }
 
@@ -96,7 +95,9 @@ mod tests {
         let file = root.join("src").join("main.tr");
         write_file(&file, "fn main() {}\n");
 
-        let owner = resolve_package_root(&file).expect("owner").expect("package");
+        let owner = resolve_package_root(&file)
+            .expect("owner")
+            .expect("package");
         assert_eq!(owner, root.canonicalize().expect("canonical root"));
     }
 
@@ -116,7 +117,9 @@ mod tests {
         let file = nested.join("src").join("lib.tr");
         write_file(&file, "fn nested() {}\n");
 
-        let owner = resolve_package_root(&file).expect("owner").expect("package");
+        let owner = resolve_package_root(&file)
+            .expect("owner")
+            .expect("package");
         assert_eq!(owner, nested.canonicalize().expect("canonical nested"));
     }
 

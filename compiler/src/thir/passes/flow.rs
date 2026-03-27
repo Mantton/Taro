@@ -145,7 +145,7 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
         Self {
             gcx,
             func,
-            output_ty: gcx.get_signature(func.id).output,
+            output_ty: gcx.function_body_output(func.id),
             local_infos,
             emitted_errors: FxHashSet::default(),
             emitted_warnings: FxHashSet::default(),
@@ -507,7 +507,7 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
             ExprKind::Logical { lhs, rhs, .. } => {
                 self.analyze_logical(lhs, rhs, initialized, loop_depth, check_initialization)
             }
-            ExprKind::Call { callee, args } => {
+            ExprKind::Call { callee, args, .. } => {
                 self.analyze_call(callee, args, initialized, loop_depth, check_initialization)
             }
             ExprKind::Block(block) => {
@@ -536,9 +536,6 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
             ),
             ExprKind::Await { future } => {
                 self.analyze_expr(future, initialized, loop_depth, check_initialization)
-            }
-            ExprKind::Spawn { body } => {
-                self.analyze_block(body, initialized, loop_depth, check_initialization)
             }
         }
     }

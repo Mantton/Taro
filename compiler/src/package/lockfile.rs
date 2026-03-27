@@ -74,11 +74,7 @@ impl LockFile {
         })
     }
 
-    pub fn find_git_candidates(
-        &self,
-        name: &str,
-        canonical_url: &str,
-    ) -> Vec<&LockPackage> {
+    pub fn find_git_candidates(&self, name: &str, canonical_url: &str) -> Vec<&LockPackage> {
         self.package
             .iter()
             .filter(|entry| {

@@ -1,0 +1,20 @@
+error: async calls must be immediately awaited
+ -> language_tests/source_files/invalid/async_closures.tr:4:12
+	    let _ = f()
+	            ^^^
+error: use `await task.value()` to await a `Task[T]`
+ -> language_tests/source_files/invalid/async_closures.tr:10:12
+	    let _ = await task
+	            ^^^^^^^^^^
+error: type annotations needed: unable to infer type
+ -> language_tests/source_files/invalid/async_closures.tr:14:24
+	    let _ = std.futures.spawn(|| -> int32 { 1 })
+	                        ^^^^^
+error: expected int32, found ()
+ -> language_tests/source_files/invalid/async_closures.tr:18:30
+	    let _ = std.futures.spawn(|x: int32| async { x })
+	                              ^
+error: async calls must be immediately awaited
+ -> language_tests/source_files/invalid/async_closures.tr:24:12
+	    let _ = task.value()
+	            ^^^^^^^^^^^^

@@ -163,8 +163,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             | ExprKind::Adt(..)
             | ExprKind::Field { .. }
             | ExprKind::Closure { .. }
-            | ExprKind::Await { .. }
-            | ExprKind::Spawn { .. } => {
+            | ExprKind::Await { .. } => {
                 debug_assert!(!matches!(
                     Category::of(&expr.kind),
                     Category::Rvalue(RvalueFunc::AsRvalue) | Category::Constant

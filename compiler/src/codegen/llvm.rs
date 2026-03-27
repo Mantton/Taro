@@ -789,6 +789,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             return;
         };
         let entry_sig = self.gcx.get_signature(entry);
+        let finish_rootless_fn = self.declare_executor_finish_rootless_fn();
 
         let i32_ty = self.context.i32_type();
         let start_ty = i32_ty.fn_type(&[], false);
@@ -806,6 +807,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .unwrap();
 
         builder.position_at_end(bb_ret);
+        builder
+            .build_call(finish_rootless_fn, &[], "finish_rootless")
+            .unwrap();
 
         let exit_code = match (entry_sig.output.kind(), call.try_as_basic_value().basic()) {
             (TyKind::Infer(_) | TyKind::Error, _) => {
@@ -841,7 +845,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     .unwrap()
                     .as_basic_value_enum()
             }
-            (_, Some(val)) => val,
+            (_, Some(_)) => i32_ty.const_int(0, false).as_basic_value_enum(),
             _ => i32_ty.const_int(0, false).as_basic_value_enum(),
         };
 
@@ -924,6 +928,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let printf_fn = self.declare_printf_fn();
         let panic_clear_fn = self.declare_panic_clear_fn();
         let test_call_fn = self.declare_test_call_fn();
+        let async_run_root_fn = self.declare_async_run_root_fn();
+        let finish_rootless_fn = self.declare_executor_finish_rootless_fn();
+        let abort_rootless_fn = self.declare_executor_abort_rootless_fn();
 
         // --- taro_start function ---
         let start_ty = i32_ty.fn_type(&[], false);
@@ -972,7 +979,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 self.build_global_cstring(&skipped_msg, &format!("skipped_msg_{}", idx));
             skipped_msg_ptrs.push(skipped_global);
 
-            fn_ptrs.push(test_fn.as_global_value().as_pointer_value());
+            let fn_ptr = if test.is_async {
+                self.emit_async_test_wrapper(test_fn, async_run_root_fn, idx)
+            } else {
+                self.emit_sync_test_wrapper(test_fn, finish_rootless_fn, idx)
+            };
+            fn_ptrs.push(fn_ptr);
             expect_flags.push(if test.expect_panic { 1 } else { 0 });
             skipped_flags.push(if test.skipped { 1 } else { 0 });
         }
@@ -1134,6 +1146,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             // Reset panic state for next iteration; this is harmless in non-panicked cases.
             builder
                 .build_call(panic_clear_fn, &[], "test_panic_clear")
+                .unwrap();
+            builder
+                .build_call(abort_rootless_fn, &[], "test_executor_abort")
                 .unwrap();
 
             let expect_flag_ptr = unsafe {
@@ -1382,6 +1397,104 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 self.module
                     .add_function("__rt__test_call_fn", fn_ty, Some(Linkage::External))
             })
+    }
+
+    fn declare_async_run_root_fn(&self) -> FunctionValue<'llvm> {
+        let ptr = self.context.ptr_type(AddressSpace::default());
+        let fn_ty = self.context.void_type().fn_type(&[ptr.into(), ptr.into()], false);
+        self.module
+            .get_function("__rt__async_run_root")
+            .unwrap_or_else(|| {
+                self.module
+                    .add_function("__rt__async_run_root", fn_ty, Some(Linkage::External))
+            })
+    }
+
+    fn declare_executor_finish_rootless_fn(&self) -> FunctionValue<'llvm> {
+        let fn_ty = self.context.void_type().fn_type(&[], false);
+        self.module
+            .get_function("__rt__executor_finish_rootless")
+            .unwrap_or_else(|| {
+                self.module.add_function(
+                    "__rt__executor_finish_rootless",
+                    fn_ty,
+                    Some(Linkage::External),
+                )
+            })
+    }
+
+    fn declare_executor_abort_rootless_fn(&self) -> FunctionValue<'llvm> {
+        let fn_ty = self.context.void_type().fn_type(&[], false);
+        self.module
+            .get_function("__rt__executor_abort_rootless")
+            .unwrap_or_else(|| {
+                self.module.add_function(
+                    "__rt__executor_abort_rootless",
+                    fn_ty,
+                    Some(Linkage::External),
+                )
+            })
+    }
+
+    fn emit_sync_test_wrapper(
+        &self,
+        sync_test_fn: FunctionValue<'llvm>,
+        finish_rootless_fn: FunctionValue<'llvm>,
+        index: usize,
+    ) -> PointerValue<'llvm> {
+        let wrapper_ty = self.context.void_type().fn_type(&[], false);
+        let wrapper = self.module.add_function(
+            &format!("__taro_sync_test_wrapper_{index}"),
+            wrapper_ty,
+            Some(Linkage::Private),
+        );
+        let builder = self.context.create_builder();
+        let entry = self.context.append_basic_block(wrapper, "entry");
+        builder.position_at_end(entry);
+
+        builder.build_call(sync_test_fn, &[], "").unwrap();
+        builder
+            .build_call(finish_rootless_fn, &[], "finish_rootless")
+            .unwrap();
+        builder.build_return(None).unwrap();
+        wrapper.as_global_value().as_pointer_value()
+    }
+
+    fn emit_async_test_wrapper(
+        &self,
+        async_test_fn: FunctionValue<'llvm>,
+        async_run_root_fn: FunctionValue<'llvm>,
+        index: usize,
+    ) -> PointerValue<'llvm> {
+        let wrapper_ty = self.context.void_type().fn_type(&[], false);
+        let wrapper = self.module.add_function(
+            &format!("__taro_async_test_wrapper_{index}"),
+            wrapper_ty,
+            Some(Linkage::Private),
+        );
+        let builder = self.context.create_builder();
+        let entry = self.context.append_basic_block(wrapper, "entry");
+        builder.position_at_end(entry);
+
+        let handle = builder
+            .build_call(async_test_fn, &[], "async_test_handle")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .expect("async test constructor should return a runtime handle")
+            .into_pointer_value();
+        let dummy = builder
+            .build_alloca(self.context.i8_type(), "async_test_dummy")
+            .unwrap();
+        builder
+            .build_call(
+                async_run_root_fn,
+                &[handle.into(), dummy.as_basic_value_enum().into()],
+                "",
+            )
+            .unwrap();
+        builder.build_return(None).unwrap();
+        wrapper.as_global_value().as_pointer_value()
     }
 
     /// Helper: create a null-terminated global string constant, return pointer
@@ -2231,12 +2344,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     let offset_const = self.usize_ty.const_int(def.offset, false);
                     let field_ptr = unsafe {
                         self.builder
-                            .build_gep(
-                                self.context.i8_type(),
-                                base,
-                                &[offset_const],
-                                "gc_root_ptr",
-                            )
+                            .build_gep(self.context.i8_type(), base, &[offset_const], "gc_root_ptr")
                             .unwrap()
                     };
                     self.builder
@@ -2244,7 +2352,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         .unwrap()
                         .into_pointer_value()
                 }
-                LocalStorage::Value(_) => self.context.ptr_type(AddressSpace::default()).const_null(),
+                LocalStorage::Value(_) => {
+                    self.context.ptr_type(AddressSpace::default()).const_null()
+                }
             };
             self.store_shadow_slot(slot_idx, ptr_val);
         }
@@ -2278,10 +2388,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             return true;
         }
 
-        let local_ty = crate::sema::tycheck::utils::normalize_aliases(
-            self.gcx,
-            body.locals[place.local].ty,
-        );
+        let local_ty =
+            crate::sema::tycheck::utils::normalize_aliases(self.gcx, body.locals[place.local].ty);
         matches!(local_ty.kind(), TyKind::Reference(..))
     }
 
@@ -3641,17 +3749,15 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 let _ = self.builder.build_unconditional_branch(normal_bb).unwrap();
             }
             mir::TerminatorKind::Yield { .. } => {
-                unreachable!("Yield terminators must be lowered by the state machine transform before codegen");
+                unreachable!(
+                    "Yield terminators must be lowered by the state machine transform before codegen"
+                );
             }
         }
         Ok(())
     }
 
-    fn refresh_rc_shadow_locals(
-        &mut self,
-        body: &mir::Body<'gcx>,
-        locals: &[LocalStorage<'llvm>],
-    ) {
+    fn refresh_rc_shadow_locals(&mut self, body: &mir::Body<'gcx>, locals: &[LocalStorage<'llvm>]) {
         for (local, decl) in body.locals.iter_enumerated() {
             let ty = self.substitute_ty_current(decl.ty);
             if self.contains_rc(ty) {
@@ -4738,8 +4844,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     let body = self.gcx.get_mir_body(resolved_def_id);
                     let actual_ret_ty = body.locals[body.return_local].ty;
                     if actual_ret_ty != sig.output {
-                        let input_tys: Vec<_> =
-                            sig.inputs.iter().map(|param| param.ty).collect();
+                        let input_tys: Vec<_> = sig.inputs.iter().map(|param| param.ty).collect();
                         abi::compute_fn_abi_from_tys(
                             &input_tys,
                             actual_ret_ty,
@@ -4921,7 +5026,30 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let prev_subst = self.current_subst;
         self.current_subst = GenericArguments::empty();
         let sig = self.gcx.get_signature(closure_def_id);
-        let fn_abi = self.compute_fn_abi(sig);
+        let fn_abi = if self.instance_has_mir_body(instance) {
+            let body = self.gcx.get_mir_body(closure_def_id);
+            let actual_ret_ty = body.locals[body.return_local].ty;
+            if actual_ret_ty != sig.output {
+                let input_tys: Vec<_> = sig.inputs.iter().map(|param| param.ty).collect();
+                abi::compute_fn_abi_from_tys(
+                    &input_tys,
+                    actual_ret_ty,
+                    sig.is_variadic,
+                    |ty| {
+                        let llvm_ty = self.lower_ty(ty)?;
+                        Some(abi::TypeLayout {
+                            size: self.target_data.get_store_size(&llvm_ty),
+                            align: self.target_data.get_abi_alignment(&llvm_ty),
+                        })
+                    },
+                    self.abi_policy_for_signature(sig),
+                )
+            } else {
+                self.compute_fn_abi(sig)
+            }
+        } else {
+            self.compute_fn_abi(sig)
+        };
         let fn_ty = self.lower_fn_abi(&fn_abi);
         let name = mangle_instance(self.gcx, instance);
         let linkage = Some(Linkage::External);
@@ -5502,7 +5630,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 };
                 let struct_ty = lowered.into_struct_type();
                 for (idx, item_ty) in items.iter().enumerate() {
-                    let item_ty = crate::sema::tycheck::utils::normalize_aliases(self.gcx, *item_ty);
+                    let item_ty =
+                        crate::sema::tycheck::utils::normalize_aliases(self.gcx, *item_ty);
                     let Some(field_offset) =
                         self.target_data.offset_of_element(&struct_ty, idx as u32)
                     else {
@@ -5543,10 +5672,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     .expect("closure gc layout")
                     .into_struct_type();
                 for (idx, capture) in captures.captures.iter().enumerate() {
-                    let capture_ty = crate::sema::tycheck::utils::normalize_aliases(
-                        self.gcx,
-                        capture.ty,
-                    );
+                    let capture_ty =
+                        crate::sema::tycheck::utils::normalize_aliases(self.gcx, capture.ty);
                     let Some(field_offset) =
                         self.target_data.offset_of_element(&struct_ty, idx as u32)
                     else {
@@ -5645,10 +5772,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             TyKind::Closure { closure_def_id, .. } => {
                 if let Some(captures) = self.gcx.get_closure_captures(closure_def_id) {
                     for capture in &captures.captures {
-                        let resolved =
-                            crate::sema::tycheck::utils::normalize_post_monomorphization(
-                                self.gcx, capture.ty,
-                            );
+                        let resolved = crate::sema::tycheck::utils::normalize_post_monomorphization(
+                            self.gcx, capture.ty,
+                        );
                         if self.contains_rc(resolved) {
                             return true;
                         }

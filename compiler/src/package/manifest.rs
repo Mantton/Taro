@@ -1,6 +1,4 @@
-use super::utils::{
-    canonicalize_rel, derive_git_url, get_package_name, normalize_module_path,
-};
+use super::utils::{canonicalize_rel, derive_git_url, get_package_name, normalize_module_path};
 use crate::compile::config::PackageKind;
 use ecow::EcoString;
 use rustc_hash::FxHashMap;

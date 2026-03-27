@@ -192,6 +192,12 @@ impl<'arena> GlobalContext<'arena> {
         database.def_to_fn_sig.insert(id, alloc);
     }
 
+    pub fn cache_async_body_output(self, id: DefinitionID, ty: Ty<'arena>) {
+        self.with_type_database(id.package(), |db| {
+            db.def_to_async_body_output.insert(id, ty);
+        });
+    }
+
     pub fn cache_struct_definition(self, id: DefinitionID, def: StructDefinition<'arena>) {
         let mut cache = self.context.store.type_databases.borrow_mut();
         let package_index = id.package();
@@ -497,6 +503,18 @@ impl<'arena> GlobalContext<'arena> {
             .borrow_mut()
             .insert(id, expr);
     }
+
+    pub fn queue_synthetic_mir_body(self, id: DefinitionID, body: Body<'arena>) {
+        self.context
+            .store
+            .queued_mir_bodies
+            .borrow_mut()
+            .insert(id, body);
+    }
+
+    pub fn take_queued_mir_bodies(self) -> FxHashMap<DefinitionID, Body<'arena>> {
+        std::mem::take(&mut *self.context.store.queued_mir_bodies.borrow_mut())
+    }
 }
 
 impl<'arena> GlobalContext<'arena> {
@@ -633,17 +651,45 @@ impl<'arena> GlobalContext<'arena> {
     }
 
     pub fn get_signature(self, id: DefinitionID) -> &'arena LabeledFunctionSignature<'arena> {
-        self.try_get_signature(id).expect("fn signature of definition")
+        self.try_get_signature(id)
+            .expect("fn signature of definition")
     }
 
-    pub fn try_get_signature(self, id: DefinitionID) -> Option<&'arena LabeledFunctionSignature<'arena>> {
-        if let Some(def) = self.context.store.synthetic_definitions.borrow().get(&id) {
-            return Some(def.signature);
+    pub fn try_get_signature(
+        self,
+        id: DefinitionID,
+    ) -> Option<&'arena LabeledFunctionSignature<'arena>> {
+        let synthetic_sig = {
+            let defs = self.context.store.synthetic_definitions.borrow();
+            defs.get(&id).map(|def| def.signature)
+        };
+        if let Some(signature) = synthetic_sig {
+            return Some(signature);
         }
 
+        self.with_type_database(id.package(), |db| db.def_to_fn_sig.get(&id).copied())
+    }
+
+    pub fn function_body_output(self, id: DefinitionID) -> Ty<'arena> {
+        if let Some(ty) = self.with_type_database(id.package(), |db| {
+            db.def_to_async_body_output.get(&id).copied()
+        }) {
+            ty
+        } else {
+            self.get_signature(id).output
+        }
+    }
+
+    pub fn definition_is_async(self, id: DefinitionID) -> bool {
         self.with_type_database(id.package(), |db| {
-            db.def_to_fn_sig.get(&id).copied()
+            db.def_to_async_body_output.contains_key(&id)
         })
+    }
+
+    pub fn async_handle_ty(self) -> Ty<'arena> {
+        self.store
+            .interners
+            .intern_ty(TyKind::Pointer(self.types.uint8, hir::Mutability::Mutable))
     }
 
     /// Get the escape summary for a function, if one has been computed.
@@ -1179,6 +1225,24 @@ impl<'arena> GlobalContext<'arena> {
         }
     }
 
+    pub fn empty_generics_for_package(self, package: PackageIndex) -> &'arena Generics {
+        let mut database = self.context.store.type_databases.borrow_mut();
+        let database = database.entry(package).or_default();
+
+        if let Some(empty) = database.empty_generics {
+            empty
+        } else {
+            let generics = self.context.store.arenas.generics.alloc(Generics {
+                parameters: vec![],
+                has_self: false,
+                parent: None,
+                parent_count: 0,
+            });
+            database.empty_generics = Some(generics);
+            generics
+        }
+    }
+
     pub fn attributes_of(self, id: DefinitionID) -> &'arena hir::AttributeList {
         let mut database = self.context.store.type_databases.borrow_mut();
         let database = database.entry(id.package()).or_default();
@@ -1235,6 +1299,7 @@ pub struct CompilerStore<'arena> {
     pub package_idents: RefCell<FxHashMap<PackageIndex, EcoString>>,
     pub type_databases: RefCell<FxHashMap<PackageIndex, TypeDatabase<'arena>>>,
     pub mir_packages: RefCell<FxHashMap<PackageIndex, &'arena mir::MirPackage<'arena>>>,
+    pub queued_mir_bodies: RefCell<FxHashMap<DefinitionID, Body<'arena>>>,
     pub llvm_modules: RefCell<FxHashMap<PackageIndex, String>>,
     pub object_files: RefCell<FxHashMap<PackageIndex, PathBuf>>,
     pub link_inputs: RefCell<Vec<PathBuf>>,
@@ -1277,6 +1342,7 @@ impl<'arena> CompilerStore<'arena> {
             resolution_outputs: Default::default(),
             type_databases: Default::default(),
             mir_packages: Default::default(),
+            queued_mir_bodies: Default::default(),
             llvm_modules: Default::default(),
             object_files: Default::default(),
             link_inputs: Default::default(),
@@ -1515,6 +1581,7 @@ pub struct TypeDatabase<'arena> {
     pub def_to_static_mutability: FxHashMap<DefinitionID, hir::Mutability>,
     pub def_to_static_init: FxHashMap<DefinitionID, Const<'arena>>,
     pub def_to_fn_sig: FxHashMap<DefinitionID, &'arena LabeledFunctionSignature<'arena>>,
+    pub def_to_async_body_output: FxHashMap<DefinitionID, Ty<'arena>>,
     pub def_to_struct_def: FxHashMap<DefinitionID, &'arena StructDefinition<'arena>>,
     pub def_to_enum_def: FxHashMap<DefinitionID, &'arena EnumDefinition<'arena>>,
     pub def_to_constraints: FxHashMap<DefinitionID, Vec<crate::span::Spanned<Constraint<'arena>>>>,

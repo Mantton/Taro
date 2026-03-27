@@ -250,7 +250,9 @@ impl<'ctx> MirPass<'ctx> for CopyPropagation {
                         }
                     }
                     TerminatorKind::SwitchInt { discr, .. } => *discr = remap_operand(discr),
-                    TerminatorKind::Yield { value, resume_arg, .. } => {
+                    TerminatorKind::Yield {
+                        value, resume_arg, ..
+                    } => {
                         *value = remap_operand(value);
                         if !resume_arg.projection.is_empty() {
                             *resume_arg = remap_place(resume_arg);
@@ -371,7 +373,9 @@ fn record_terminator_uses(
         TerminatorKind::SwitchInt { discr, .. } => {
             record_operand_use(discr, block, stmt_index, uses);
         }
-        TerminatorKind::Yield { value, resume_arg, .. } => {
+        TerminatorKind::Yield {
+            value, resume_arg, ..
+        } => {
             record_operand_use(value, block, stmt_index, uses);
             if !resume_arg.projection.is_empty() {
                 record_place_use(resume_arg, block, stmt_index, uses);

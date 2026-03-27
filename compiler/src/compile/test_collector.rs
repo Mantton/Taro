@@ -70,6 +70,8 @@ pub struct TestCase {
     pub id: hir::DefinitionID,
     /// Display name for test output (e.g., "module::test_name")
     pub display_name: String,
+    /// Whether this test must be run through the async runtime.
+    pub is_async: bool,
     /// Whether this test is marked `@skip`
     pub skipped: bool,
     /// Reason string from `@skip("reason")`, if any
@@ -193,6 +195,7 @@ fn collect_from_declaration(
             tests.push(TestCase {
                 id: decl.id,
                 display_name,
+                is_async: func.is_async,
                 skipped,
                 skip_reason,
                 expect_panic,
@@ -351,6 +354,7 @@ mod tests {
         TestCase {
             id: DefinitionID::new(PackageIndex::new(0), DefinitionIndex::from_raw(0)),
             display_name: name.to_string(),
+            is_async: false,
             skipped: false,
             skip_reason: None,
             expect_panic: false,

@@ -9,10 +9,10 @@ use crate::{
     diagnostics::{DiagCtx, DiagnosticRecord},
     hir::{
         self, AssociatedDeclaration, AssociatedDeclarationKind, Declaration, DeclarationKind,
-        DefinitionID, Expression, ExpressionField, ExpressionKind, HirVisitor, Module,
-        PathSegment, Pattern, PatternKind, PatternPath, Resolution, ResolvedPath, StructLiteral,
-        Type, UseTree, UseTreeAlias, UseTreeKind, walk_assoc_declaration, walk_declaration,
-        walk_expression, walk_path_segment, walk_pattern, walk_type, walk_use_tree,
+        DefinitionID, Expression, ExpressionField, ExpressionKind, HirVisitor, Module, PathSegment,
+        Pattern, PatternKind, PatternPath, Resolution, ResolvedPath, StructLiteral, Type, UseTree,
+        UseTreeAlias, UseTreeKind, walk_assoc_declaration, walk_declaration, walk_expression,
+        walk_path_segment, walk_pattern, walk_type, walk_use_tree,
     },
     interner,
     metadata::{self, MetadataLoadStatus, ReuseMode},
@@ -86,7 +86,6 @@ pub struct NavigationData {
     pub definitions: Vec<DefinitionInfo>,
     pub definition_parents: Vec<Option<usize>>,
 }
-
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AnalysisStatus {
@@ -266,12 +265,8 @@ fn run_analysis(
     let icx = CompilerContext::new(dcx.clone(), store);
 
     match owner {
-        AnalysisOwner::Script(file_path) => {
-            analyze_script_owner(&icx, file_path, std_path)
-        }
-        AnalysisOwner::Package(package_root) => {
-            analyze_package_owner(&icx, package_root, std_path)
-        }
+        AnalysisOwner::Script(file_path) => analyze_script_owner(&icx, file_path, std_path),
+        AnalysisOwner::Package(package_root) => analyze_package_owner(&icx, package_root, std_path),
     }
 }
 
@@ -286,12 +281,7 @@ fn analyze_script_owner<'a>(
     let file_stem = file_path
         .file_stem()
         .and_then(|s| s.to_str())
-        .ok_or_else(|| {
-            format!(
-                "failed to extract filename from '{}'",
-                file_path.display()
-            )
-        })?
+        .ok_or_else(|| format!("failed to extract filename from '{}'", file_path.display()))?
         .to_string();
 
     compile_std_for_ide(icx, std_path)?;
@@ -302,7 +292,11 @@ fn analyze_script_owner<'a>(
 
     let config = icx.store.arenas.configs.alloc(Config {
         name: file_stem.into(),
-        identifier: format!("script-{}", file_path.file_stem().unwrap().to_string_lossy()).into(),
+        identifier: format!(
+            "script-{}",
+            file_path.file_stem().unwrap().to_string_lossy()
+        )
+        .into(),
         src: file_path,
         dependencies,
         index: package_index,
@@ -423,8 +417,7 @@ fn analyze_package_owner<'a>(
                 package,
                 results,
                 status,
-            } =
-                compiler.analyze_for_ide().map_err(|_| String::new())?;
+            } = compiler.analyze_for_ide().map_err(|_| String::new())?;
             let file_paths = icx.dcx.all_file_mappings().into_iter().collect();
             let module_targets = build_module_target_map(&package.root, &file_paths);
             return Ok(collect_ide_artifacts(
@@ -432,7 +425,7 @@ fn analyze_package_owner<'a>(
                 &package,
                 results.as_ref(),
                 &module_targets,
-        analysis_status(status),
+                analysis_status(status),
             ));
         }
 
@@ -473,18 +466,18 @@ impl<'ctx, 'results> NavigationVisitor<'ctx, 'results> {
     }
 
     fn finish(mut self) -> NavigationData {
-        self.nav_data.hovers.sort_by(|lhs, rhs| {
-            compare_navigation_spans(lhs.span, rhs.span)
-        });
+        self.nav_data
+            .hovers
+            .sort_by(|lhs, rhs| compare_navigation_spans(lhs.span, rhs.span));
         self.nav_data
             .hovers
             .dedup_by(|lhs, rhs| lhs.span == rhs.span && lhs.contents == rhs.contents);
-        self.nav_data.definitions.sort_by(|lhs, rhs| {
-            compare_navigation_spans(lhs.source, rhs.source)
-        });
-        self.nav_data.definitions.dedup_by(|lhs, rhs| {
-            lhs.source == rhs.source && lhs.target == rhs.target
-        });
+        self.nav_data
+            .definitions
+            .sort_by(|lhs, rhs| compare_navigation_spans(lhs.source, rhs.source));
+        self.nav_data
+            .definitions
+            .dedup_by(|lhs, rhs| lhs.source == rhs.source && lhs.target == rhs.target);
         self.nav_data.hover_parents =
             build_parent_links(self.nav_data.hovers.iter().map(|hover| hover.span));
         self.nav_data.definition_parents = build_parent_links(
@@ -521,7 +514,10 @@ impl<'ctx, 'results> NavigationVisitor<'ctx, 'results> {
     }
 
     fn push_pattern_hover(&mut self, node: &Pattern) {
-        let Some(ty) = self.results.and_then(|results| results.try_node_type(node.id)) else {
+        let Some(ty) = self
+            .results
+            .and_then(|results| results.try_node_type(node.id))
+        else {
             return;
         };
 
@@ -532,7 +528,10 @@ impl<'ctx, 'results> NavigationVisitor<'ctx, 'results> {
     }
 
     fn push_type_hover(&mut self, node: &Type) {
-        let Some(ty) = self.results.and_then(|results| results.try_node_type(node.id)) else {
+        let Some(ty) = self
+            .results
+            .and_then(|results| results.try_node_type(node.id))
+        else {
             return;
         };
 
@@ -590,9 +589,7 @@ impl<'ctx, 'results> NavigationVisitor<'ctx, 'results> {
             AssociatedDeclarationKind::Function(..) => {
                 crate::sema::models::format_definition_signature_for_display(self.gcx, id)
             }
-            AssociatedDeclarationKind::Constant(..) => {
-                Some(self.gcx.get_type(id).format(self.gcx))
-            }
+            AssociatedDeclarationKind::Constant(..) => Some(self.gcx.get_type(id).format(self.gcx)),
             AssociatedDeclarationKind::Type(..) => self
                 .gcx
                 .try_get_alias_type(id)
@@ -687,11 +684,14 @@ impl<'ctx, 'results> NavigationVisitor<'ctx, 'results> {
             | DefinitionKind::AssociatedOperator => {
                 crate::sema::models::format_definition_signature_for_display(self.gcx, def_id)
             }
-            DefinitionKind::Module | DefinitionKind::Namespace | DefinitionKind::Interface => Some(format!(
-                "{} {}",
-                self.gcx.definition_kind(def_id).description(),
-                self.gcx.symbol_text(self.gcx.definition_ident(def_id).symbol)
-            )),
+            DefinitionKind::Module | DefinitionKind::Namespace | DefinitionKind::Interface => {
+                Some(format!(
+                    "{} {}",
+                    self.gcx.definition_kind(def_id).description(),
+                    self.gcx
+                        .symbol_text(self.gcx.definition_ident(def_id).symbol)
+                ))
+            }
             DefinitionKind::TypeAlias | DefinitionKind::AssociatedType => self
                 .gcx
                 .try_get_alias_type(def_id)
@@ -714,7 +714,10 @@ impl<'ctx, 'results> NavigationVisitor<'ctx, 'results> {
         self.results
             .and_then(|results| results.overload_source(node.id))
             .map(|def_id| Resolution::Definition(def_id, self.gcx.definition_kind(def_id)))
-            .or_else(|| self.results.and_then(|results| results.value_resolution(node.id)))
+            .or_else(|| {
+                self.results
+                    .and_then(|results| results.value_resolution(node.id))
+            })
             .or_else(|| expression_fallback_resolution(node))
     }
 
@@ -722,14 +725,14 @@ impl<'ctx, 'results> NavigationVisitor<'ctx, 'results> {
         self.results
             .and_then(|results| results.overload_source(node.id))
             .map(|def_id| Resolution::Definition(def_id, self.gcx.definition_kind(def_id)))
-            .or_else(|| self.results.and_then(|results| results.value_resolution(node.id)))
+            .or_else(|| {
+                self.results
+                    .and_then(|results| results.value_resolution(node.id))
+            })
             .or_else(|| pattern_fallback_resolution(node))
     }
 
-    fn definition_target_for_resolution(
-        &self,
-        resolution: &Resolution,
-    ) -> Option<Span> {
+    fn definition_target_for_resolution(&self, resolution: &Resolution) -> Option<Span> {
         match resolution {
             Resolution::LocalVariable(id) => self.local_binding_spans.get(id).copied(),
             _ => {
@@ -961,11 +964,17 @@ impl<'ctx, 'results> SignatureVisitor<'ctx, 'results> {
         let (signatures, arguments) = match &node.kind {
             ExpressionKind::Call { callee, arguments } => (
                 call_signature_candidates(self.gcx, self.results, node, Some(callee.as_ref())),
-                arguments.iter().map(|argument| argument.span).collect::<Vec<_>>(),
+                arguments
+                    .iter()
+                    .map(|argument| argument.span)
+                    .collect::<Vec<_>>(),
             ),
             ExpressionKind::MethodCall { arguments, .. } => (
                 call_signature_candidates(self.gcx, self.results, node, None),
-                arguments.iter().map(|argument| argument.span).collect::<Vec<_>>(),
+                arguments
+                    .iter()
+                    .map(|argument| argument.span)
+                    .collect::<Vec<_>>(),
             ),
             _ => return,
         };
@@ -1043,7 +1052,6 @@ fn collect_ide_artifacts<'ctx>(
     }
 }
 
-
 pub fn signature_help_at(
     snapshot: &AnalysisSnapshot,
     _source_text: &str,
@@ -1070,7 +1078,6 @@ pub fn signature_help_at(
         active_parameter: clamped_parameter,
     })
 }
-
 
 fn find_innermost_span_index(
     spans: &[Span],
@@ -1114,7 +1121,6 @@ fn active_signature_parameter(site: &SignatureHelpSite, position: Position) -> u
     }
     site.arguments.len()
 }
-
 
 fn span_contains_position(span: Span, file_id: FileID, position: Position) -> bool {
     span.file == file_id
@@ -1401,9 +1407,8 @@ fn ide_target_dir(file_path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        AnalysisSnapshot, build_module_target_map, collect_ide_artifacts,
+        AnalysisSnapshot, NavigationData, build_module_target_map, collect_ide_artifacts,
         collect_navigation_data, compare_positions, is_std_package_root,
-        NavigationData,
     };
     use crate::{
         PackageIndex,
@@ -1470,14 +1475,8 @@ mod tests {
 
         let dcx = Rc::new(DiagCtx::new(PathBuf::from(".")));
         let arenas = CompilerArenas::new();
-        let store = CompilerStore::new(
-            &arenas,
-            output_root,
-            &dcx,
-            None,
-            BuildProfile::Debug,
-        )
-        .unwrap_or_else(|_| panic!("store"));
+        let store = CompilerStore::new(&arenas, output_root, &dcx, None, BuildProfile::Debug)
+            .unwrap_or_else(|_| panic!("store"));
         let icx = CompilerContext::new(dcx, store);
         let config = icx.store.arenas.configs.alloc(Config {
             name: "script".into(),
@@ -1521,14 +1520,8 @@ mod tests {
 
         let dcx = Rc::new(DiagCtx::new(PathBuf::from(".")));
         let arenas = CompilerArenas::new();
-        let store = CompilerStore::new(
-            &arenas,
-            output_root,
-            &dcx,
-            None,
-            BuildProfile::Debug,
-        )
-        .unwrap_or_else(|_| panic!("store"));
+        let store = CompilerStore::new(&arenas, output_root, &dcx, None, BuildProfile::Debug)
+            .unwrap_or_else(|_| panic!("store"));
         let icx = CompilerContext::new(dcx.clone(), store);
         let config = icx.store.arenas.configs.alloc(Config {
             name: "script".into(),
@@ -1613,19 +1606,16 @@ mod tests {
 
         let output_root = root.join("target");
         create_dir_all(&output_root).expect("output root");
-        let entry_path = root.join(entry_relative).canonicalize().expect("canonical entry");
+        let entry_path = root
+            .join(entry_relative)
+            .canonicalize()
+            .expect("canonical entry");
         let entry_text = std::fs::read_to_string(&entry_path).expect("entry text");
 
         let dcx = Rc::new(DiagCtx::new(PathBuf::from(".")));
         let arenas = CompilerArenas::new();
-        let store = CompilerStore::new(
-            &arenas,
-            output_root,
-            &dcx,
-            None,
-            BuildProfile::Debug,
-        )
-        .unwrap_or_else(|_| panic!("store"));
+        let store = CompilerStore::new(&arenas, output_root, &dcx, None, BuildProfile::Debug)
+            .unwrap_or_else(|_| panic!("store"));
         let icx = CompilerContext::new(dcx.clone(), store);
         let display_name = package_name.rsplit('/').next().unwrap_or(package_name);
         let is_std_provider = package_name == STD_PACKAGE_PATH;
@@ -1726,9 +1716,9 @@ mod tests {
         navigation: &'a NavigationData,
         position: Position,
     ) -> Option<&'a super::HoverInfo> {
-        let index = navigation
-            .hovers
-            .partition_point(|hover| compare_positions(hover.span.start, position) != Ordering::Greater);
+        let index = navigation.hovers.partition_point(|hover| {
+            compare_positions(hover.span.start, position) != Ordering::Greater
+        });
         if index == 0 {
             return None;
         }
@@ -1844,7 +1834,10 @@ mod tests {
     fn std_package_identity_matches_manifest_name() {
         let root = temp_dir("std-manifest-identity");
         write_manifest(&root, "github.com/taro/std", true);
-        write_file(&root.join("src").join("main.tr"), "enum Heading { case north }\n");
+        write_file(
+            &root.join("src").join("main.tr"),
+            "enum Heading { case north }\n",
+        );
 
         let mismatched_std_root = temp_dir("other-std-root");
         assert!(is_std_package_root(&root, Some(mismatched_std_root)).expect("std identity"));
@@ -1854,7 +1847,10 @@ mod tests {
     fn non_std_package_is_not_misidentified() {
         let root = temp_dir("non-std-package");
         write_manifest(&root, "github.com/example/pkg", false);
-        write_file(&root.join("src").join("main.tr"), "enum Heading { case north }\n");
+        write_file(
+            &root.join("src").join("main.tr"),
+            "enum Heading { case north }\n",
+        );
 
         let mismatched_std_root = temp_dir("other-std-root");
         assert!(!is_std_package_root(&root, Some(mismatched_std_root)).expect("non-std identity"));
@@ -1898,8 +1894,7 @@ mod tests {
 
     #[test]
     fn field_member_goes_to_field_definition() {
-        let source =
-            "struct Foo { bar: uint32 }\n\nfunc main() {\n    let foo = Foo { bar: 10 }\n    let value = foo.bar\n}\n";
+        let source = "struct Foo { bar: uint32 }\n\nfunc main() {\n    let foo = Foo { bar: 10 }\n    let value = foo.bar\n}\n";
         let navigation = analyze_navigation_source(source);
 
         let field_use = start_position(source, "bar", 2);
@@ -1933,11 +1928,16 @@ mod tests {
             &[("src/main.tr", source)],
         );
 
-        assert!(!has_results, "expected typecheck failure to drop IDE results");
-        assert!(snapshot
-            .file_mappings
-            .iter()
-            .any(|mapping| mapping.file == file_id));
+        assert!(
+            !has_results,
+            "expected typecheck failure to drop IDE results"
+        );
+        assert!(
+            snapshot
+                .file_mappings
+                .iter()
+                .any(|mapping| mapping.file == file_id)
+        );
 
         let heading_use = start_position(&source_text, "Heading", 2);
         let hover = find_hover_at(&snapshot.navigation, heading_use).expect("fallback hover");
@@ -1945,7 +1945,10 @@ mod tests {
             find_definition_at(&snapshot.navigation, heading_use).expect("fallback definition");
 
         assert!(hover.contents.contains("Heading"), "{}", hover.contents);
-        assert_eq!(definition.target.start, start_position(&source_text, "Heading", 1));
+        assert_eq!(
+            definition.target.start,
+            start_position(&source_text, "Heading", 1)
+        );
     }
 
     #[test]
@@ -2003,13 +2006,12 @@ mod tests {
             .map(|mapping| mapping.file)
             .expect("entry file id");
         let format_printf_use = start_position(&source, "formatPrintf", 1);
-        let hover = find_hover_in_file(&snapshot.navigation, file_id, format_printf_use).expect("hover");
-        let definition =
-            find_definition_in_file(&snapshot.navigation, file_id, format_printf_use)
-                .expect("definition");
+        let hover =
+            find_hover_in_file(&snapshot.navigation, file_id, format_printf_use).expect("hover");
+        let definition = find_definition_in_file(&snapshot.navigation, file_id, format_printf_use)
+            .expect("definition");
 
         assert!(hover.contents.contains("Display"), "{}", hover.contents);
         assert_ne!(definition.target.file, file_id);
     }
-
 }

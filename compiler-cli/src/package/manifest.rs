@@ -97,7 +97,11 @@ impl ValidatedDependencyGraph {
             .edges_directed(node_idx, petgraph::Direction::Incoming)
             .map(|e| {
                 let name = e.weight().name.clone();
-                let id = e.weight().dependency.unique_identifier().map_err(|err| err.to_string())?;
+                let id = e
+                    .weight()
+                    .dependency
+                    .unique_identifier()
+                    .map_err(|err| err.to_string())?;
                 Ok((name, id.into()))
             })
             .collect::<Result<FxHashMap<_, _>, String>>()

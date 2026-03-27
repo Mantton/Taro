@@ -547,8 +547,7 @@ impl Category {
             | thir::ExprKind::Adt(..)
             | thir::ExprKind::Closure { .. }
             | thir::ExprKind::ListLiteral { .. }
-            | thir::ExprKind::Await { .. }
-            | thir::ExprKind::Spawn { .. } => Category::Rvalue(RvalueFunc::Into),
+            | thir::ExprKind::Await { .. } => Category::Rvalue(RvalueFunc::Into),
 
             thir::ExprKind::Assign { .. }
             | thir::ExprKind::AssignOp { .. }

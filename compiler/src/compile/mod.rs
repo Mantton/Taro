@@ -485,7 +485,11 @@ impl<'state> Compiler<'state> {
             table.insert(self.context.config.index, output);
         }
         let std_items = sema::std_items::collect_std_items(&package, self.context, output);
-        if let Some(items) = if ide_mode { std_items.ok().flatten() } else { std_items? } {
+        if let Some(items) = if ide_mode {
+            std_items.ok().flatten()
+        } else {
+            std_items?
+        } {
             self.context
                 .store
                 .std_items

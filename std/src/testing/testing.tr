@@ -27,3 +27,5 @@ public func assertFalse(_ condition: bool, _ message: string) {
 public func fail(_ message: string) {
     std.panic.panic(message)
 }
+
+public func yieldNow() async {}

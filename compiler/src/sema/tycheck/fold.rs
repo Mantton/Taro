@@ -213,6 +213,7 @@ fn fold_ty_kind<'ctx, F: TypeFolder<'ctx> + ?Sized>(
 
         Closure {
             closure_def_id,
+            kind,
             captured_generics,
             inputs,
             output,
@@ -230,6 +231,7 @@ fn fold_ty_kind<'ctx, F: TypeFolder<'ctx> + ?Sized>(
             } else {
                 Some(Closure {
                     closure_def_id,
+                    kind,
                     captured_generics: folded_generics,
                     inputs: folded_inputs,
                     output: folded_output,

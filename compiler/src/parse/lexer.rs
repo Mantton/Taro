@@ -1001,7 +1001,6 @@ fn str_to_keyword(word: &str) -> Option<Token> {
         "protected" => Token::Protected,
         "async" => Token::Async,
         "await" => Token::Await,
-        "spawn" => Token::Spawn,
         "mut" => Token::Mut,
         "ref" => Token::Ref,
         _ => return None,
@@ -1720,7 +1719,6 @@ mod tests {
             ("protected", Token::Protected),
             ("async", Token::Async),
             ("await", Token::Await),
-            ("spawn", Token::Spawn),
             ("ref", Token::Ref),
             ("init", Token::Init),
         ];

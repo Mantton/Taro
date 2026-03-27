@@ -186,6 +186,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         // Check if source is a closure type
         let TyKind::Closure {
             closure_def_id,
+            kind,
             inputs: closure_inputs,
             output: closure_output,
             ..
@@ -193,6 +194,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
         else {
             return None;
         };
+        if kind != crate::sema::models::ClosureKind::Fn {
+            return None;
+        }
 
         // Check if target is a function pointer type
         let TyKind::FnPointer {
@@ -824,6 +828,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         // Check if ty is a closure
         let TyKind::Closure {
+            kind,
             inputs: closure_inputs,
             output: closure_output,
             ..
@@ -839,9 +844,15 @@ impl<'ctx> ConstraintSolver<'ctx> {
         if fn_def != Some(interface.id) && async_fn_def != Some(interface.id) {
             return None;
         }
+        if (fn_def == Some(interface.id) && kind != crate::sema::models::ClosureKind::Fn)
+            || (async_fn_def == Some(interface.id)
+                && kind != crate::sema::models::ClosureKind::AsyncFn)
+        {
+            return None;
+        }
 
-        // Get the interface's Args and Output type parameters
-        // Fn[Self, Args, Output] - Self is at [0], Args at [1], Output at [2]
+        // Get the interface's Args and Output type parameters.
+        // Raw interface refs still carry `Self` as the first argument.
         if interface.arguments.len() < 3 {
             return None;
         }
@@ -875,8 +886,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
         Some(SolverResult::Solved(obligations))
     }
 
-    /// Coerce a closure to a type parameter that has Fn/AsyncFn bounds.
-    /// This extracts the callable bound from the type parameter and constrains the closure.
+    /// Coerce a closure to a type that has Fn/AsyncFn bounds.
+    /// This extracts the callable bound and constrains the closure immediately.
     fn solve_closure_to_fn_bound_param(
         &mut self,
         location: Span,
@@ -887,6 +898,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         // Check if from is a closure
         let TyKind::Closure {
+            kind,
             inputs: closure_inputs,
             output: closure_output,
             ..
@@ -895,13 +907,13 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return None;
         };
 
-        // Check if to is a type parameter
-        let TyKind::Parameter(_) = to.kind() else {
-            return None;
-        };
-
-        // Get Fn bounds for this type parameter from param_env
+        // Get Fn bounds for this type from param_env. Generic calls instantiate
+        // type parameters with inference variables, so this must work for both
+        // parameter types and the fresh inference vars they become at call sites.
         let bounds = self.param_env.bounds_for(to);
+        if bounds.is_empty() {
+            return None;
+        }
 
         let gcx = self.gcx();
         let fn_def = gcx.std_item_def(StdItem::Fn);
@@ -913,8 +925,14 @@ impl<'ctx> ConstraintSolver<'ctx> {
             if !is_fn_trait {
                 continue;
             }
+            if (fn_def == Some(bound.id) && kind != crate::sema::models::ClosureKind::Fn)
+                || (async_fn_def == Some(bound.id)
+                    && kind != crate::sema::models::ClosureKind::AsyncFn)
+            {
+                continue;
+            }
 
-            // Fn[Args, Output] has Self at [0], Args at [1], Output at [2]
+            // Raw interface refs still carry `Self` as the first argument.
             if bound.arguments.len() < 3 {
                 continue;
             }
@@ -933,8 +951,16 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 Ty::new(TyKind::Tuple(closure_inputs), gcx)
             };
 
-            // Create obligations to match Args and Output
+            // Create obligations to bind the target inference variable to this
+            // concrete closure type, then validate the callable signature.
             let mut obligations = vec![];
+
+            if to.is_infer() {
+                obligations.push(super::Obligation {
+                    location,
+                    goal: super::Goal::Equal(from, to),
+                });
+            }
 
             obligations.push(super::Obligation {
                 location,

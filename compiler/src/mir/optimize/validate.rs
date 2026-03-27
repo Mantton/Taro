@@ -51,8 +51,14 @@ pub fn validate_body_invariants<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> Comp
             .map(|constraint| constraint.value)
             .collect(),
     );
-    let function_output = gcx.get_signature(body.owner).output;
     let return_local_ty = body.locals[body.return_local].ty;
+    let function_output = if body.is_async {
+        gcx.function_body_output(body.owner)
+    } else if gcx.definition_is_async(body.owner) {
+        return_local_ty
+    } else {
+        gcx.get_signature(body.owner).output
+    };
     let require_return_slot = function_output != gcx.types.void;
 
     if !types_compatible(
@@ -197,6 +203,15 @@ pub fn validate_body_invariants<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> Comp
                         );
                     }
                 }
+                TerminatorKind::Yield {
+                    resume, resume_arg, ..
+                } => {
+                    let mut resume_state = return_slot_initialized;
+                    if is_full_return_place(body, resume_arg) {
+                        resume_state = true;
+                    }
+                    propagate_bool_state(&mut block_states, &mut worklist, *resume, resume_state);
+                }
                 TerminatorKind::Return => {
                     if require_return_slot && !return_slot_initialized {
                         gcx.dcx().emit_error(
@@ -292,10 +307,21 @@ fn call_output_ty<'ctx>(
 
     match operand {
         Operand::Constant(constant) => {
-            let output_from_ty = match constant.ty.kind() {
-                TyKind::FnPointer { output, .. } | TyKind::Closure { output, .. } => {
-                    Some(normalize_if_possible(gcx, output))
+            if let ConstantKind::Function(def_id, _, _) = constant.value {
+                if gcx.definition_is_async(def_id) {
+                    return Some(gcx.async_handle_ty());
                 }
+            }
+
+            let output_from_ty = match constant.ty.kind() {
+                TyKind::FnPointer { output, .. } => Some(normalize_if_possible(gcx, output)),
+                TyKind::Closure { kind, output, .. } => Some(if kind
+                    == crate::sema::models::ClosureKind::AsyncFn
+                {
+                    gcx.async_handle_ty()
+                } else {
+                    normalize_if_possible(gcx, output)
+                }),
                 _ => None,
             };
 
@@ -319,9 +345,14 @@ fn call_output_ty<'ctx>(
         }
         Operand::Copy(place) | Operand::CopyWith(place, _) => {
             match place_ty(body, gcx, place).kind() {
-                TyKind::FnPointer { output, .. } | TyKind::Closure { output, .. } => {
-                    Some(normalize_if_possible(gcx, output))
-                }
+                TyKind::FnPointer { output, .. } => Some(normalize_if_possible(gcx, output)),
+                TyKind::Closure { kind, output, .. } => Some(if kind
+                    == crate::sema::models::ClosureKind::AsyncFn
+                {
+                    gcx.async_handle_ty()
+                } else {
+                    normalize_if_possible(gcx, output)
+                }),
                 _ => None,
             }
         }
@@ -575,6 +606,11 @@ fn closure_aggregate_ty<'ctx>(
     Ty::new(
         TyKind::Closure {
             closure_def_id: def_id,
+            kind: if gcx.definition_is_async(def_id) {
+                crate::sema::models::ClosureKind::AsyncFn
+            } else {
+                crate::sema::models::ClosureKind::Fn
+            },
             captured_generics,
             inputs,
             output: signature.output,

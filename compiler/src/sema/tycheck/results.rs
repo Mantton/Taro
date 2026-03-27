@@ -5,7 +5,7 @@ use crate::{
         tycheck::solve::{Adjustment, InterfaceCallInfo},
     },
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 #[derive(Debug, Default)]
 pub struct TypeCheckResults<'ctx> {
@@ -16,6 +16,7 @@ pub struct TypeCheckResults<'ctx> {
     overload_sources: FxHashMap<hir::NodeID, DefinitionID>,
     value_resolutions: FxHashMap<hir::NodeID, Resolution>,
     instantiations: FxHashMap<hir::NodeID, GenericArguments<'ctx>>,
+    async_calls: FxHashSet<hir::NodeID>,
     /// Maps pattern NodeIDs to their inferred binding modes (for Binding patterns)
     binding_modes: FxHashMap<hir::NodeID, hir::BindingMode>,
 }
@@ -30,6 +31,7 @@ impl<'ctx> TypeCheckResults<'ctx> {
         self.value_resolutions
             .extend(other.value_resolutions.drain());
         self.instantiations.extend(other.instantiations.drain());
+        self.async_calls.extend(other.async_calls.drain());
         self.binding_modes.extend(other.binding_modes.drain());
     }
 
@@ -64,6 +66,10 @@ impl<'ctx> TypeCheckResults<'ctx> {
         self.instantiations.insert(id, args);
     }
 
+    pub fn record_async_call(&mut self, id: hir::NodeID) {
+        self.async_calls.insert(id);
+    }
+
     #[track_caller]
     pub fn node_type(&self, id: hir::NodeID) -> Ty<'ctx> {
         *self.node_tys.get(&id).expect("type of node")
@@ -95,6 +101,10 @@ impl<'ctx> TypeCheckResults<'ctx> {
 
     pub fn instantiation(&self, id: hir::NodeID) -> Option<GenericArguments<'ctx>> {
         self.instantiations.get(&id).cloned()
+    }
+
+    pub fn is_async_call(&self, id: hir::NodeID) -> bool {
+        self.async_calls.contains(&id)
     }
 
     pub fn record_binding_mode(&mut self, id: hir::NodeID, mode: hir::BindingMode) {
