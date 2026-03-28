@@ -4,6 +4,19 @@ import std.io.Error
 import std.libc
 import std.result.Result
 
+extern "taro_rt" {
+    func __rt__async_io_adopt_fd(_ fd: int32) -> usize
+    func __rt__async_io_close_source(_ source_id: usize) -> int32
+    func __rt__async_io_dup(_ fd: int32) -> int32
+    func __rt__async_io_pipe(_ read_fd_out: *mut int32, _ write_fd_out: *mut int32) -> int32
+    func __rt__async_io_read_source(_ source_id: usize, _ buf: *mut uint8, _ len: usize) -> isize
+    func __rt__async_io_write_source(_ source_id: usize, _ buf: *const uint8, _ len: usize) -> isize
+}
+
+public struct PlatformAsyncStream {
+    source_id: usize
+}
+
 func impWriteStdout(_ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
     let res = std.libc.write(std.libc.STDOUT_FILENO, buf, len)
     if res < 0 {
@@ -16,6 +29,108 @@ func impWriteStderr(_ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
     let res = std.libc.write(std.libc.STDERR_FILENO, buf, len)
     if res < 0 {
         return .err(lastError())
+    }
+    return .ok(res as usize)
+}
+
+func adoptOwnedFd(_ fd: int32) -> Result[PlatformAsyncStream, Error] {
+    let sourceId = __rt__async_io_adopt_fd(fd)
+    if sourceId == 0 {
+        let _ = std.libc.close(fd)
+        return .err(lastError())
+    }
+
+    return .ok(PlatformAsyncStream {
+        source_id: sourceId,
+    })
+}
+
+func duplicateAndWrap(_ fd: int32) -> Result[PlatformAsyncStream, Error] {
+    let duplicated = __rt__async_io_dup(fd)
+    if duplicated < 0 {
+        return .err(lastError())
+    }
+
+    return adoptOwnedFd(duplicated)
+}
+
+func impStdin() -> Result[PlatformAsyncStream, Error] {
+    duplicateAndWrap(std.libc.STDIN_FILENO)
+}
+
+func impStdout() -> Result[PlatformAsyncStream, Error] {
+    duplicateAndWrap(std.libc.STDOUT_FILENO)
+}
+
+func impStderr() -> Result[PlatformAsyncStream, Error] {
+    duplicateAndWrap(std.libc.STDERR_FILENO)
+}
+
+func impPipe() -> Result[(PlatformAsyncStream, PlatformAsyncStream), Error] {
+    var readFd: int32 = -1
+    var writeFd: int32 = -1
+    let res = __rt__async_io_pipe(
+        unsafe { (&mut readFd as *mut int32) },
+        unsafe { (&mut writeFd as *mut int32) },
+    )
+    if res < 0 {
+        return .err(lastError())
+    }
+
+    let readEnd = adoptOwnedFd(readFd)
+    let wrappedRead = match readEnd {
+        case .ok(stream) => stream
+        case .err(err) => {
+            let _ = std.libc.close(writeFd)
+            return .err(err)
+        }
+    }
+
+    let writeEnd = adoptOwnedFd(writeFd)
+    let wrappedWrite = match writeEnd {
+        case .ok(stream) => stream
+        case .err(err) => {
+            var cleanup = wrappedRead
+            let _ = impClose(cleanup)
+            return .err(err)
+        }
+    }
+
+    return .ok((wrappedRead, wrappedWrite))
+}
+
+func impClose(_ stream: PlatformAsyncStream) -> Result[(), Error] {
+    if stream.source_id == 0 {
+        return .ok(())
+    }
+
+    let res = __rt__async_io_close_source(stream.source_id)
+    if res < 0 {
+        return .err(mapErrno((0_i32 - res) as int32))
+    }
+    return .ok(())
+}
+
+func impRead(
+    _ stream: PlatformAsyncStream,
+    _ buf: *mut uint8,
+    _ len: usize,
+) -> Result[usize, Error] {
+    let res = __rt__async_io_read_source(stream.source_id, buf, len)
+    if res < 0 {
+        return .err(mapErrno(((0 as isize) - res) as int32))
+    }
+    return .ok(res as usize)
+}
+
+func impWrite(
+    _ stream: PlatformAsyncStream,
+    _ buf: *const uint8,
+    _ len: usize,
+) -> Result[usize, Error] {
+    let res = __rt__async_io_write_source(stream.source_id, buf, len)
+    if res < 0 {
+        return .err(mapErrno(((0 as isize) - res) as int32))
     }
     return .ok(res as usize)
 }

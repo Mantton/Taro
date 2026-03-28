@@ -1,8 +1,8 @@
 func main() {
     std.print("hello\n")
 
-    let _ = std.futures.spawn(|| async {
-        await std.futures.sleep(std.time.Duration.fromMillis(1_u64))
+    let _ = std.task.spawn(|| async {
+        await std.task.sleep(std.time.Duration.fromMillis(1_u64))
         std.print("world\n")
     })
 }

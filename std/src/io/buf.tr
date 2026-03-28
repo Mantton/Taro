@@ -1,3 +1,4 @@
+import std.io.{Error, Reader, Writer, writeAll}
 import std.mem.{Span, MutableSpan}
 import std.optional.Optional
 import std.result.Result

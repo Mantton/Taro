@@ -5,21 +5,21 @@ func badAwait() async {
 }
 
 func badAwaitTask() async {
-    let task = std.futures.spawn(|| async { 1 as int32 })
+    let task = std.task.spawn(|| async { 1 as int32 })
 
     let _ = await task
 }
 
 func badSpawnSync() async {
-    let _ = std.futures.spawn(|| -> int32 { 1 })
+    let _ = std.task.spawn(|| -> int32 { 1 })
 }
 
 func badSpawnArg() async {
-    let _ = std.futures.spawn(|x: int32| async { x })
+    let _ = std.task.spawn(|x: int32| async { x })
 }
 
 func badSyncTaskValue() {
-    let task = std.futures.spawn(|| async { 1 as int32 })
+    let task = std.task.spawn(|| async { 1 as int32 })
 
     let _ = task.value()
 }

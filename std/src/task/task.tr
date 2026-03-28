@@ -21,7 +21,7 @@ public func sleep(_ duration: std.time.Duration) async {
 }
 
 impl[T] Task[T] {
-    public func value(self) async -> T {
+    public func value(&self) async -> T {
         return await __intrinsic_task_value[T](self)
     }
 }

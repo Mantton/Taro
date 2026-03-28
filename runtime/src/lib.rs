@@ -2,6 +2,7 @@ pub mod executor;
 pub mod existentials;
 pub mod garbage_collector;
 pub mod hash_seed;
+mod io_poller;
 pub mod panic_unwind;
 pub mod task;
 #[cfg(unix)]

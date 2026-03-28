@@ -6454,7 +6454,7 @@ mod tests {
     #[test]
     fn test_spawn_call_in_function_body() {
         let decl =
-            parse_one_decl("func foo() async { let t = std.futures.spawn(|| async { await bar() }) }");
+            parse_one_decl("func foo() async { let t = std.task.spawn(|| async { await bar() }) }");
         match &decl.kind {
             DeclarationKind::Function(func) => {
                 assert!(func.is_async);
@@ -6466,7 +6466,7 @@ mod tests {
 
     #[test]
     fn test_await_spawn_call() {
-        let expr = parse_expr_str("await std.futures.spawn(|| async { await foo() })");
+        let expr = parse_expr_str("await std.task.spawn(|| async { await foo() })");
         match &expr.kind {
             ExpressionKind::Await(inner) => {
                 assert!(matches!(inner.kind, ExpressionKind::Call(_, _)));

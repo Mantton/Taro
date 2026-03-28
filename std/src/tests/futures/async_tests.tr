@@ -1,5 +1,90 @@
+import std.optional.Optional
+
 func durationToNanos(_ d: std.time.Duration) -> uint64 {
     return (d.seconds() * 1000000000_u64) + (d.subsecNanos() as uint64)
+}
+
+func stringBytes(_ s: string) -> std.mem.Span[uint8] {
+    return std.mem.Span[uint8].from(std.string.stringData(s), std.string.stringLen(s))
+}
+
+static var SHARED_INT_TASK: Optional[std.task.Task[int32]] = .none
+
+@cfg(family("unix"))
+static var PIPE_WRITER_STREAM: Optional[std.io.task.AsyncStream] = .none
+
+@cfg(family("unix"))
+static var SHARED_PIPE_READ_STREAM: Optional[std.io.task.AsyncStream] = .none
+
+@cfg(family("unix"))
+static var SHARED_PIPE_WRITE_STREAM: Optional[std.io.task.AsyncStream] = .none
+
+func sharedTaskValueBody() async -> int32 {
+    let task = match SHARED_INT_TASK {
+        case .some(value) => value
+        case .none => std.panic.panic("shared task should be seeded before spawning waiters")
+    }
+
+    return await task.value()
+}
+
+@cfg(family("unix"))
+func sharedPipeReaderBody() async -> int32 {
+    let reader = match SHARED_PIPE_READ_STREAM {
+        case .some(value) => value
+        case .none => std.panic.panic("shared pipe reader should be seeded before spawning")
+    }
+
+    var byte: uint8 = 0
+    let readRes = await reader.read(std.mem.MutableSpan[uint8].from(unsafe { (&mut byte) as *mut uint8 }, 1))
+    let readCount = match readRes {
+        case .ok(count) => count
+        case .err(_) => std.panic.panic("shared pipe reader should succeed")
+    }
+    std.testing.assertEqual(readCount, 1, "shared pipe reader should receive one byte")
+    return byte as int32
+}
+
+@cfg(family("unix"))
+func sharedPipeWriterBody() async -> int32 {
+    let writer = match SHARED_PIPE_WRITE_STREAM {
+        case .some(value) => value
+        case .none => std.panic.panic("shared pipe writer should be seeded before spawning")
+    }
+
+    await std.testing.yieldNow()
+    let writeRes = await writer.write(stringBytes("ab"))
+    let written = match writeRes {
+        case .ok(count) => count
+        case .err(_) => std.panic.panic("shared pipe writer should succeed")
+    }
+    match writer.close() {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("shared pipe writer close should succeed")
+    }
+    return written as int32
+}
+
+@cfg(family("unix"))
+func pipeWriterBody() async -> int32 {
+    let seeded = match PIPE_WRITER_STREAM.take() {
+        case .some(value) => value
+        case .none => std.panic.panic("pipe writer seed should be set before spawning")
+    }
+
+    let writer = seeded
+    await std.testing.yieldNow()
+    let writeRes = await writer.write(stringBytes("ping"))
+    let written = match writeRes {
+        case .ok(count) => count
+        case .err(err) => std.panic.panic("pipe writer should succeed")
+    }
+    let closeRes = writer.close()
+    match closeRes {
+        case .ok(_) => {}
+        case .err(err) => std.panic.panic("pipe writer close should succeed")
+    }
+    return written as int32
 }
 
 func asyncValue() async -> int32 {
@@ -210,7 +295,7 @@ func asyncClosuresSatisfyAsyncFnBounds() async {
 @test
 func spawnedTasksComplete() async {
     let captured = 5 as int32
-    let task = std.futures.spawn(|| async {
+    let task = std.task.spawn(|| async {
         await std.testing.yieldNow()
         return captured + 10
     })
@@ -220,12 +305,49 @@ func spawnedTasksComplete() async {
 }
 
 @test
+func spawnedTaskValueCanBeReadMoreThanOnce() async {
+    let task = std.task.spawn(|| async {
+        await std.testing.yieldNow()
+        return 21 as int32
+    })
+
+    let first = await task.value()
+    let second = await task.value()
+    std.testing.assertEqual(first, 21, "first task value read should succeed")
+    std.testing.assertEqual(second, 21, "second task value read should reuse the stored output")
+}
+
+@test
+func spawnedTaskValueSupportsConcurrentWaiters() async {
+    let task = std.task.spawn(|| async {
+        await std.testing.yieldNow()
+        return 33 as int32
+    })
+
+    SHARED_INT_TASK = .some(task)
+    let firstWaiter = std.task.spawn(|| async {
+        return await sharedTaskValueBody()
+    })
+    let secondWaiter = std.task.spawn(|| async {
+        return await sharedTaskValueBody()
+    })
+
+    let first = await firstWaiter.value()
+    let second = await secondWaiter.value()
+    let direct = await task.value()
+    std.testing.assertEqual(first, 33, "first concurrent waiter should receive the task value")
+    std.testing.assertEqual(second, 33, "second concurrent waiter should receive the task value")
+    std.testing.assertEqual(direct, 33, "task value should still be readable after concurrent waiters")
+    SHARED_INT_TASK = .none
+}
+
+@test
 func zeroDurationSleepCompletesImmediately() async {
-    let sleeper = std.futures.spawn(|| async {
-        await std.futures.sleep(std.time.Duration.fromNanos(0_u64))
+    let sleeper = std.task.spawn(|| async {
+        await std.task.sleep(std.time.Duration.fromNanos(0_u64))
         return std.time.Instant.now()
     })
-    let yielded = std.futures.spawn(|| async {
+    let yielded = std.task.spawn(|| async {
         await std.testing.yieldNow()
         return std.time.Instant.now()
     })
@@ -239,7 +361,7 @@ func zeroDurationSleepCompletesImmediately() async {
 @test
 func sleepDelaysExecution() async {
     let start = std.time.Instant.now()
-    await std.futures.sleep(std.time.Duration.fromMillis(5_u64))
+    await std.task.sleep(std.time.Duration.fromMillis(5_u64))
     let elapsed = start.elapsed()
     std.testing.assertTrue(
         durationToNanos(elapsed) >= 1000000_u64,
@@ -249,12 +371,12 @@ func sleepDelaysExecution() async {
 
 @test
 func spawnedSleepersWakeInDeadlineOrder() async {
-    let short = std.futures.spawn(|| async {
-        await std.futures.sleep(std.time.Duration.fromMillis(1_u64))
+    let short = std.task.spawn(|| async {
+        await std.task.sleep(std.time.Duration.fromMillis(1_u64))
         return std.time.Instant.now()
     })
-    let long = std.futures.spawn(|| async {
-        await std.futures.sleep(std.time.Duration.fromMillis(5_u64))
+    let long = std.task.spawn(|| async {
+        await std.task.sleep(std.time.Duration.fromMillis(5_u64))
         return std.time.Instant.now()
     })
 
@@ -267,12 +389,12 @@ func spawnedSleepersWakeInDeadlineOrder() async {
 
 @test
 func multipleSpawnedTasksInterleave() async {
-    let a = std.futures.spawn(|| async {
+    let a = std.task.spawn(|| async {
         await std.testing.yieldNow()
         await std.testing.yieldNow()
         return 11 as int32
     })
-    let b = std.futures.spawn(|| async {
+    let b = std.task.spawn(|| async {
         await std.testing.yieldNow()
         return 12 as int32
     })
@@ -285,7 +407,7 @@ func multipleSpawnedTasksInterleave() async {
 @test
 @expectPanic
 func spawnedTaskPanicAfterAsyncRootStillFailsTest() async {
-    let _ = std.futures.spawn(|| async {
+    let _ = std.task.spawn(|| async {
         await std.testing.yieldNow()
         std.panic.panic("post-root spawned panic should still fail the async test")
     })
@@ -294,8 +416,163 @@ func spawnedTaskPanicAfterAsyncRootStillFailsTest() async {
 @test
 @expectPanic
 func syncSpawnedTaskPanicIsAttributedToTest() {
-    let _ = std.futures.spawn(|| async {
+    let _ = std.task.spawn(|| async {
         await std.testing.yieldNow()
         std.panic.panic("spawned task panic should fail the sync test")
     })
+}
+
+@cfg(family("unix"))
+@test
+func asyncStreamPipeRoundTrip() async {
+    let pipeRes = std.io.task.pipe()
+    let pipePair = match pipeRes {
+        case .ok(value) => value
+        case .err(err) => std.panic.panic("pipe() should succeed on unix")
+    }
+    let readEnd = pipePair.0
+    let writeEnd = pipePair.1
+
+    var writerSeed = writeEnd
+    PIPE_WRITER_STREAM = .some(writerSeed)
+    let writerTask = std.task.spawn(|| async {
+        return await pipeWriterBody()
+    })
+
+    let reader = readEnd
+    var storage: [uint8; 4] = [0; 4]
+    let storagePtr = unsafe { (&mut storage as *mut [uint8; 4]) as *mut uint8 }
+    let readRes = await reader.read(std.mem.MutableSpan[uint8].from(storagePtr, 4))
+    let readCount = match readRes {
+        case .ok(count) => count
+        case .err(err) => std.panic.panic("pipe reader should succeed")
+    }
+
+    std.testing.assertEqual(readCount, 4, "pipe reader should receive the full payload")
+    std.testing.assertEqual(*storage.at(0 as usize), 112_u8, "first byte should be 'p'")
+    std.testing.assertEqual(*storage.at(1 as usize), 105_u8, "second byte should be 'i'")
+    std.testing.assertEqual(*storage.at(2 as usize), 110_u8, "third byte should be 'n'")
+    std.testing.assertEqual(*storage.at(3 as usize), 103_u8, "fourth byte should be 'g'")
+
+    let written = await writerTask.value()
+    std.testing.assertEqual(written, 4, "pipe writer should report the written byte count")
+
+    let eofRes = await reader.read(std.mem.MutableSpan[uint8].from(storagePtr, 4))
+    let eofCount = match eofRes {
+        case .ok(count) => count
+        case .err(err) => std.panic.panic("pipe reader should observe EOF after writer close")
+    }
+    std.testing.assertEqual(eofCount, 0, "closing the pipe writer should produce EOF on the reader")
+
+    let closeRes = reader.close()
+    match closeRes {
+        case .ok(_) => {}
+        case .err(err) => std.panic.panic("pipe reader close should succeed")
+    }
+}
+
+@cfg(family("unix"))
+@test
+func asyncStreamSupportsConcurrentReadWaiters() async {
+    let pipeRes = std.io.task.pipe()
+    let pipePair = match pipeRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("pipe() should succeed on unix")
+    }
+
+    SHARED_PIPE_READ_STREAM = .some(pipePair.0)
+    SHARED_PIPE_WRITE_STREAM = .some(pipePair.1)
+    let firstReader = std.task.spawn(|| async {
+        return await sharedPipeReaderBody()
+    })
+    let secondReader = std.task.spawn(|| async {
+        return await sharedPipeReaderBody()
+    })
+    let writer = std.task.spawn(|| async {
+        return await sharedPipeWriterBody()
+    })
+
+    let firstByte = await firstReader.value()
+    let secondByte = await secondReader.value()
+    let written = await writer.value()
+    std.testing.assertEqual(written, 2, "shared pipe writer should write both bytes")
+    std.testing.assertTrue(firstByte != secondByte, "separate read waiters should each receive one byte")
+    std.testing.assertEqual(firstByte + secondByte, 195, "shared waiters should receive the written byte payload")
+    SHARED_PIPE_READ_STREAM = .none
+    SHARED_PIPE_WRITE_STREAM = .none
+}
+
+@cfg(family("unix"))
+@test
+func asyncStreamCloseIsIdempotentAcrossAliases() async {
+    let stdoutRes = std.io.task.stdout()
+    let stream = match stdoutRes {
+        case .ok(value) => value
+        case .err(err) => std.panic.panic("stdout() should succeed on unix")
+    }
+    let alias = stream
+
+    match stream.close() {
+        case .ok(_) => {}
+        case .err(err) => std.panic.panic("first close should succeed")
+    }
+
+    match alias.close() {
+        case .ok(_) => {}
+        case .err(err) => std.panic.panic("second close should also succeed")
+    }
+}
+
+@cfg(family("unix"))
+@test
+func asyncStreamPostCloseOperationsReturnErrors() async {
+    let pipeRes = std.io.task.pipe()
+    let pipePair = match pipeRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("pipe() should succeed on unix")
+    }
+    let reader = pipePair.0
+    let writer = pipePair.1
+    let readerAlias = reader
+    let writerAlias = writer
+
+    match reader.close() {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("reader close should succeed")
+    }
+    match readerAlias.close() {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("reader alias close should also succeed")
+    }
+    match writer.close() {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("writer close should succeed")
+    }
+    match writerAlias.close() {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("writer alias close should also succeed")
+    }
+
+    var byte: uint8 = 0
+    let readRes = await readerAlias.read(std.mem.MutableSpan[uint8].from(unsafe { (&mut byte) as *mut uint8 }, 1))
+    match readRes {
+        case .ok(_) => std.panic.panic("read after close should fail")
+        case .err(err) => {
+            match err {
+                case .unexpected(code) => std.testing.assertEqual(code, 9, "read after close should surface EBADF")
+                case _ => std.panic.panic("read after close should surface a normal io error")
+            }
+        }
+    }
+
+    let writeRes = await writerAlias.write(stringBytes("x"))
+    match writeRes {
+        case .ok(_) => std.panic.panic("write after close should fail")
+        case .err(err) => {
+            match err {
+                case .unexpected(code) => std.testing.assertEqual(code, 9, "write after close should surface EBADF")
+                case _ => std.panic.panic("write after close should surface a normal io error")
+            }
+        }
+    }
 }

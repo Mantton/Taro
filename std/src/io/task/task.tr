@@ -1,0 +1,99 @@
+import std.io.Error
+import std.mem.{Span, MutableSpan}
+import std.result.Result
+
+public struct AsyncStream {
+    inner: std.sys.io.RawAsyncStream
+}
+
+public func stdin() -> Result[AsyncStream, Error] {
+    let res = std.sys.io.stdin()
+    match res {
+        case .ok(inner) => return .ok(AsyncStream { inner })
+        case .err(err) => return .err(err)
+    }
+}
+
+public func stdout() -> Result[AsyncStream, Error] {
+    let res = std.sys.io.stdout()
+    match res {
+        case .ok(inner) => return .ok(AsyncStream { inner })
+        case .err(err) => return .err(err)
+    }
+}
+
+public func stderr() -> Result[AsyncStream, Error] {
+    let res = std.sys.io.stderr()
+    match res {
+        case .ok(inner) => return .ok(AsyncStream { inner })
+        case .err(err) => return .err(err)
+    }
+}
+
+public func pipe() -> Result[(AsyncStream, AsyncStream), Error] {
+    let res = std.sys.io.pipe()
+    match res {
+        case .ok((readEnd, writeEnd)) => {
+            return .ok((AsyncStream { inner: readEnd }, AsyncStream { inner: writeEnd }))
+        }
+        case .err(err) => return .err(err)
+    }
+}
+
+impl AsyncStream {
+    public func close(&self) -> Result[(), Error] {
+        let stream = self.inner
+        std.sys.io.close(stream)
+    }
+
+    public func read(&self, _ buf: MutableSpan[uint8]) async -> Result[usize, Error] {
+        let len = buf.len()
+        if len == 0 {
+            return .ok(0)
+        }
+
+        let stream = self.inner
+        var writable = buf
+        let ptr = unsafe { writable.at(0) as *mut uint8 }
+        loop {
+            let readRes = std.sys.io.read(stream, ptr, len)
+            match readRes {
+                case .ok(count) => return .ok(count)
+                case .err(.interrupted) => {}
+                case .err(.wouldBlock) => {
+                    let waitRes = await std.sys.io.waitReadable(stream)
+                    match waitRes {
+                        case .ok(_) => {}
+                        case .err(err) => return .err(err)
+                    }
+                }
+                case .err(err) => return .err(err)
+            }
+        }
+    }
+
+    public func write(&self, _ buf: Span[uint8]) async -> Result[usize, Error] {
+        let len = buf.len()
+        if len == 0 {
+            return .ok(0)
+        }
+
+        let stream = self.inner
+        let ptr = unsafe { buf.at(0) as *const uint8 }
+        loop {
+            let writeRes = std.sys.io.write(stream, ptr, len)
+            match writeRes {
+                case .ok(count) => return .ok(count)
+                case .err(.interrupted) => {}
+                case .err(.wouldBlock) => {
+                    let waitRes = await std.sys.io.waitWritable(stream)
+                    match waitRes {
+                        case .ok(_) => {}
+                        case .err(err) => return .err(err)
+                    }
+                }
+                case .err(err) => return .err(err)
+            }
+        }
+    }
+}

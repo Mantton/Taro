@@ -3,10 +3,58 @@
 import std.io.Error
 import std.result.Result
 
+public struct PlatformAsyncStream {
+    source_id: usize
+}
+
+public func mapErrno(_ code: int32) -> Error {
+    Error.unexpected(code)
+}
+
+public func lastError() -> Error {
+    Error.unsupported
+}
+
 func impWriteStdout(_ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
     std.panic.todo("std.sys.io.writeStdout not implemented on windows yet")
 }
 
 func impWriteStderr(_ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
     std.panic.todo("std.sys.io.writeStderr not implemented on windows yet")
+}
+
+func impStdin() -> Result[PlatformAsyncStream, Error] {
+    std.panic.todo("std.sys.io.stdin not implemented on windows yet")
+}
+
+func impStdout() -> Result[PlatformAsyncStream, Error] {
+    std.panic.todo("std.sys.io.stdout not implemented on windows yet")
+}
+
+func impStderr() -> Result[PlatformAsyncStream, Error] {
+    std.panic.todo("std.sys.io.stderr not implemented on windows yet")
+}
+
+func impPipe() -> Result[(PlatformAsyncStream, PlatformAsyncStream), Error] {
+    std.panic.todo("std.sys.io.pipe not implemented on windows yet")
+}
+
+func impClose(_ stream: PlatformAsyncStream) -> Result[(), Error] {
+    std.panic.todo("std.sys.io.close not implemented on windows yet")
+}
+
+func impRead(
+    _ stream: PlatformAsyncStream,
+    _ buf: *mut uint8,
+    _ len: usize,
+) -> Result[usize, Error] {
+    std.panic.todo("std.sys.io.read not implemented on windows yet")
+}
+
+func impWrite(
+    _ stream: PlatformAsyncStream,
+    _ buf: *const uint8,
+    _ len: usize,
+) -> Result[usize, Error] {
+    std.panic.todo("std.sys.io.write not implemented on windows yet")
 }

@@ -29,14 +29,14 @@ func main() async {
     let _ = await applyAsync(unary, 5)
     let _ = sync()
 
-    let spawned = std.futures.spawn(|| async {
+    let spawned = std.task.spawn(|| async {
         await std.testing.yieldNow()
         return captured + 1
     })
     let _ = await spawned.value()
 
     for i in 0..=2 {
-        let task = std.futures.spawn(|| async { return i })
+        let task = std.task.spawn(|| async { return i })
         let _ = await task.value()
     }
 }

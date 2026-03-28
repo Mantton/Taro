@@ -4,6 +4,7 @@ use std::collections::{BinaryHeap, VecDeque};
 use std::time::{Duration as StdDuration, Instant};
 
 use crate::garbage_collector::with_gc;
+use crate::io_poller::{self, Interest};
 use crate::task::{__rt__async_destroy, __rt__async_poll, async_handle_frame};
 
 type TaskId = usize;
@@ -142,6 +143,7 @@ impl Executor {
 enum DriveAction {
     Poll(TaskId, *mut u8, *mut u8),
     Sleep(StdDuration),
+    WaitIo(Option<StdDuration>),
     Done,
     Deadlock,
 }
@@ -160,13 +162,21 @@ fn drive_executor() {
                 executor.wake_due_timers(Instant::now());
 
                 let Some(task_id) = executor.ready_queue.pop_front() else {
-                    if let Some(deadline) = executor.next_timer_deadline() {
+                    let timeout = executor.next_timer_deadline().map(|deadline| {
                         let now = Instant::now();
                         if deadline <= now {
-                            executor.wake_due_timers(now);
-                            continue;
+                            StdDuration::ZERO
+                        } else {
+                            deadline.duration_since(now)
                         }
-                        return DriveAction::Sleep(deadline.duration_since(now));
+                    });
+
+                    if io_poller::has_waiters() {
+                        return DriveAction::WaitIo(timeout);
+                    }
+
+                    if let Some(duration) = timeout {
+                        return DriveAction::Sleep(duration);
                     }
                     return DriveAction::Deadlock;
                 };
@@ -192,10 +202,21 @@ fn drive_executor() {
                 std::thread::sleep(duration);
                 continue;
             }
+            DriveAction::WaitIo(timeout) => {
+                let ready = io_poller::wait(timeout);
+                EXECUTOR.with(|cell| {
+                    let mut borrow = cell.borrow_mut();
+                    let executor = borrow.as_mut().expect("ICE: executor missing");
+                    for task_id in ready {
+                        executor.ready_queue.push_back(task_id);
+                    }
+                });
+                continue;
+            }
             DriveAction::Done => break,
             DriveAction::Deadlock => {
                 panic!(
-                    "async executor deadlock: no ready tasks, no pending timers, and incomplete tasks remain"
+                    "async executor deadlock: no ready tasks, no pending timers or io waits, and incomplete tasks remain"
                 );
             }
         };
@@ -228,7 +249,11 @@ fn teardown_executor() {
     EXECUTOR.with(|cell| {
         let mut borrow = cell.borrow_mut();
         if let Some(executor) = borrow.take() {
-            for task in executor.tasks.into_iter().flatten() {
+            for (task_id, task) in executor.tasks.into_iter().enumerate() {
+                let Some(task) = task else {
+                    continue;
+                };
+                io_poller::cancel_task(task_id);
                 if !task.frame.is_null() {
                     with_gc(|gc| gc.remove_persistent_root(task.frame as *const u8));
                 }
@@ -321,6 +346,40 @@ pub(crate) fn register_sleep(deadline: Instant) {
             .expect("sleep polled with no current task");
         executor.add_sleep_timer(current, deadline);
         executor.current_task_blocked = true;
+    });
+}
+
+pub(crate) fn register_io_wait(source_id: usize, interest: Interest) -> Result<(), i32> {
+    EXECUTOR.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        let executor = borrow.as_mut().expect("async io polled outside executor");
+        let current = executor
+            .current_task
+            .expect("async io polled with no current task");
+
+        io_poller::register_wait(source_id, current, interest)?;
+        executor.current_task_blocked = true;
+        Ok(())
+    })
+}
+
+pub(crate) fn wake_tasks(task_ids: &[usize]) {
+    EXECUTOR.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        let Some(executor) = borrow.as_mut() else {
+            return;
+        };
+
+        for &task_id in task_ids {
+            if executor
+                .tasks
+                .get(task_id)
+                .and_then(|task| task.as_ref())
+                .is_some_and(|task| !task.completed)
+            {
+                executor.ready_queue.push_back(task_id);
+            }
+        }
     });
 }
 

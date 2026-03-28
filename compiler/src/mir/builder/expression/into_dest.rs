@@ -371,6 +371,24 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         if self.is_hidden_task_value_intrinsic(callee) {
             return self.lower_task_value_call(destination, block, args, span);
         }
+        if self.is_hidden_wait_readable_intrinsic(callee) {
+            return self.lower_io_wait_call(
+                destination,
+                block,
+                args,
+                span,
+                AsyncRuntimeFn::WaitReadable,
+            );
+        }
+        if self.is_hidden_wait_writable_intrinsic(callee) {
+            return self.lower_io_wait_call(
+                destination,
+                block,
+                args,
+                span,
+                AsyncRuntimeFn::WaitWritable,
+            );
+        }
         if self.is_hidden_sleep_intrinsic(callee) {
             return self.lower_sleep_call(destination, block, args, span);
         }
@@ -752,7 +770,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             "ICE: task value intrinsic must lower into an async handle destination"
         );
 
-        let task_place = unpack!(block = self.as_place(block, *task));
+        let mut task_place = unpack!(block = self.as_place(block, *task));
+        if matches!(self.thir.exprs[*task].ty.kind(), TyKind::Reference(..) | TyKind::Pointer(..)) {
+            task_place.projection.push(PlaceElem::Deref);
+        }
         let spawned_id_local = self.new_temp_with_ty(self.gcx.types.uint, span);
         self.push_assign(
             block,
@@ -859,6 +880,51 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         next.unit()
     }
 
+    fn lower_io_wait_call(
+        &mut self,
+        destination: Place<'ctx>,
+        mut block: BasicBlockId,
+        args: &[ExprId],
+        span: Span,
+        which: AsyncRuntimeFn,
+    ) -> BlockAnd<()> {
+        let [source_id] = args else {
+            panic!("ICE: async io wait lowering expects exactly one source id argument");
+        };
+
+        let destination_ty = self.place_ty(&destination);
+        assert_eq!(
+            destination_ty,
+            self.gcx.async_handle_ty(),
+            "ICE: async io wait intrinsic must lower into an async handle destination"
+        );
+
+        let source_id_operand = unpack!(block = self.as_operand(block, *source_id));
+        let wait_id = find_or_register_async_runtime_function(self.gcx, which, span);
+        let wait_ty = self.gcx.get_type(wait_id);
+        let next = self.new_block();
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: wait_ty,
+                    value: mir::ConstantKind::Function(
+                        wait_id,
+                        GenericArguments::empty(),
+                        wait_ty,
+                    ),
+                }),
+                args: vec![source_id_operand],
+                destination,
+                target: next,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+
+        next.unit()
+    }
+
     fn is_hidden_spawn_intrinsic(&self, callee: ExprId) -> bool {
         let ExprKind::Zst { id, .. } = self.thir.exprs[callee].kind else {
             return false;
@@ -890,6 +956,28 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             && self
                 .gcx
                 .symbol_eq(self.gcx.definition_ident(id).symbol, "__intrinsic_sleep")
+    }
+
+    fn is_hidden_wait_readable_intrinsic(&self, callee: ExprId) -> bool {
+        let ExprKind::Zst { id, .. } = self.thir.exprs[callee].kind else {
+            return false;
+        };
+
+        matches!(self.gcx.get_signature(id).abi, Some(crate::hir::Abi::Intrinsic))
+            && self
+                .gcx
+                .symbol_eq(self.gcx.definition_ident(id).symbol, "__intrinsic_wait_readable")
+    }
+
+    fn is_hidden_wait_writable_intrinsic(&self, callee: ExprId) -> bool {
+        let ExprKind::Zst { id, .. } = self.thir.exprs[callee].kind else {
+            return false;
+        };
+
+        matches!(self.gcx.get_signature(id).abi, Some(crate::hir::Abi::Intrinsic))
+            && self
+                .gcx
+                .symbol_eq(self.gcx.definition_ident(id).symbol, "__intrinsic_wait_writable")
     }
 
     fn async_callable_operand(

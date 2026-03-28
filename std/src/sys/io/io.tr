@@ -1,5 +1,8 @@
 import std.io.Error
+import std.intrinsic.{__intrinsic_wait_readable, __intrinsic_wait_writable}
 import std.result.Result
+
+public type RawAsyncStream = PlatformAsyncStream
 
 public func writeStdout(_ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
     impWriteStdout(buf, len)
@@ -7,4 +10,64 @@ public func writeStdout(_ buf: *const uint8, _ len: usize) -> Result[usize, Erro
 
 public func writeStderr(_ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
     impWriteStderr(buf, len)
+}
+
+public func stdin() -> Result[RawAsyncStream, Error] {
+    impStdin()
+}
+
+public func stdout() -> Result[RawAsyncStream, Error] {
+    impStdout()
+}
+
+public func stderr() -> Result[RawAsyncStream, Error] {
+    impStderr()
+}
+
+public func pipe() -> Result[(RawAsyncStream, RawAsyncStream), Error] {
+    impPipe()
+}
+
+public func close(_ stream: RawAsyncStream) -> Result[(), Error] {
+    impClose(stream)
+}
+
+public func read(
+    _ stream: RawAsyncStream,
+    _ buf: *mut uint8,
+    _ len: usize,
+) -> Result[usize, Error] {
+    impRead(stream, buf, len)
+}
+
+public func write(
+    _ stream: RawAsyncStream,
+    _ buf: *const uint8,
+    _ len: usize,
+) -> Result[usize, Error] {
+    impWrite(stream, buf, len)
+}
+
+public func waitReadable(_ stream: RawAsyncStream) async -> Result[(), Error] {
+    if stream.source_id == 0 {
+        return .err(Error.invalidInput)
+    }
+
+    let code = await __intrinsic_wait_readable(stream.source_id)
+    if code == 0 {
+        return .ok(())
+    }
+    return .err(mapErrno(code))
+}
+
+public func waitWritable(_ stream: RawAsyncStream) async -> Result[(), Error] {
+    if stream.source_id == 0 {
+        return .err(Error.invalidInput)
+    }
+
+    let code = await __intrinsic_wait_writable(stream.source_id)
+    if code == 0 {
+        return .ok(())
+    }
+    return .err(mapErrno(code))
 }

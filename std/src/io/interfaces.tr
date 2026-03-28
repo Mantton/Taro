@@ -1,3 +1,4 @@
+import std.io.Error
 import std.result.Result
 import std.mem.{Span, MutableSpan}
 

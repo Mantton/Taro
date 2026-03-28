@@ -7,13 +7,13 @@ error: use `await task.value()` to await a `Task[T]`
 	    let _ = await task
 	            ^^^^^^^^^^
 error: type annotations needed: unable to infer type
- -> language_tests/source_files/invalid/async_closures.tr:14:24
-	    let _ = std.futures.spawn(|| -> int32 { 1 })
-	                        ^^^^^
+ -> language_tests/source_files/invalid/async_closures.tr:14:21
+	    let _ = std.task.spawn(|| -> int32 { 1 })
+	                     ^^^^^
 error: expected int32, found ()
- -> language_tests/source_files/invalid/async_closures.tr:18:30
-	    let _ = std.futures.spawn(|x: int32| async { x })
-	                              ^
+ -> language_tests/source_files/invalid/async_closures.tr:18:27
+	    let _ = std.task.spawn(|x: int32| async { x })
+	                           ^
 error: async calls must be immediately awaited
  -> language_tests/source_files/invalid/async_closures.tr:24:12
 	    let _ = task.value()

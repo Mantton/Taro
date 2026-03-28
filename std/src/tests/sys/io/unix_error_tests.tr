@@ -16,6 +16,25 @@ func testUnixErrnoMapperKnownCodes() {
         case .brokenPipe => {}
         case _ => std.panic.panic("EPIPE should map to brokenPipe")
     }
+
+}
+
+@cfg(os("linux"))
+@test
+func testUnixErrnoMapperWouldBlockLinux() {
+    match std.sys.io.mapErrno(11) {
+        case .wouldBlock => {}
+        case _ => std.panic.panic("linux EWOULDBLOCK should map to wouldBlock")
+    }
+}
+
+@cfg(os("macos"))
+@test
+func testUnixErrnoMapperWouldBlockMacos() {
+    match std.sys.io.mapErrno(35) {
+        case .wouldBlock => {}
+        case _ => std.panic.panic("macOS EWOULDBLOCK should map to wouldBlock")
+    }
 }
 
 @test

@@ -1,7 +1,7 @@
 func main() async {
     std.print("hello\n")
 
-    let _ = std.futures.spawn(|| async {
+    let _ = std.task.spawn(|| async {
         await std.testing.yieldNow()
         std.print("world\n")
     })
