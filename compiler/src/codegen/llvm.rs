@@ -2713,8 +2713,21 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 }
             }
             mir::Rvalue::Ref { place, .. } => {
-                // Produce the address of the place.
-                let ptr = self.project_place(place, body, locals)?;
+                // References to uninhabited / otherwise unrepresentable locals can
+                // still appear in MIR around diverging async awaits (for example,
+                // awaiting `Task[!]`). Those locals have no LLVM storage layout, so
+                // project_place cannot materialize a real address. Provide a dummy
+                // stack slot instead; code that would meaningfully read/write the
+                // pointee is unreachable because the value never exists.
+                let ptr = if matches!(locals[place.local.index()], LocalStorage::Value(None))
+                    || self.lower_ty(self.place_ty(body, place)).is_none()
+                {
+                    self.builder
+                        .build_alloca(self.context.i8_type(), "ref_dummy")
+                        .unwrap()
+                } else {
+                    self.project_place(place, body, locals)?
+                };
                 Some(ptr.as_basic_value_enum())
             }
             mir::Rvalue::Discriminant { place } => {
@@ -5173,7 +5186,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 _ => panic!("projection on non-pointer local"),
             },
             LocalStorage::Value(None) => {
-                panic!("use of uninitialized local");
+                panic!(
+                    "use of uninitialized local {} while projecting a place with {} projection elems of type {}",
+                    place.local.index(),
+                    place.projection.len(),
+                    self.place_ty(body, place).format(self.gcx)
+                );
             }
         };
 

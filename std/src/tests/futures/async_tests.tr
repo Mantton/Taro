@@ -305,6 +305,90 @@ func spawnedTasksComplete() async {
 }
 
 @test
+func joinReturnsBothTaskValues() async {
+    let intTask = std.task.spawn(|| async {
+        await std.testing.yieldNow()
+        return 17 as int32
+    })
+    let stringTask = std.task.spawn(|| async {
+        return "joined"
+    })
+
+    let joined = await std.task.join(intTask, stringTask)
+    std.testing.assertEqual(joined.0, 17, "join should preserve the left task result")
+    std.testing.assertEqual(joined.1, "joined", "join should preserve the right task result")
+}
+
+@test
+func joinHandlesDifferentCompletionTiming() async {
+    let slow = std.task.spawn(|| async {
+        await std.task.sleep(std.time.Duration.fromMillis(5_u64))
+        return "slow"
+    })
+    let fast = std.task.spawn(|| async {
+        await std.testing.yieldNow()
+        return 99 as int32
+    })
+
+    let joined = await std.task.join(slow, fast)
+    std.testing.assertEqual(joined.0, "slow", "join should return the slower left task result")
+    std.testing.assertEqual(joined.1, 99, "join should return the faster right task result")
+}
+
+@test
+func joinAcceptsAlreadyCompletedTasks() async {
+    let ready = std.task.spawn(|| async {
+        return 1 as int32
+    })
+    let delayed = std.task.spawn(|| async {
+        await std.testing.yieldNow()
+        return 2 as int32
+    })
+
+    let first = await ready.value()
+    std.testing.assertEqual(first, 1, "task should be readable before join")
+
+    let joined = await std.task.join(ready, delayed)
+    std.testing.assertEqual(joined.0, 1, "join should accept an already-completed left task")
+    std.testing.assertEqual(joined.1, 2, "join should still await the incomplete right task")
+}
+
+@test
+func joinDoesNotConsumeTaskValues() async {
+    let left = std.task.spawn(|| async {
+        await std.testing.yieldNow()
+        return 41 as int32
+    })
+    let right = std.task.spawn(|| async {
+        return 1 as int32
+    })
+
+    let joined = await std.task.join(left, right)
+    std.testing.assertEqual(joined.0, 41, "join should read the left task result")
+    std.testing.assertEqual(joined.1, 1, "join should read the right task result")
+
+    let leftAgain = await left.value()
+    let rightAgain = await right.value()
+    std.testing.assertEqual(leftAgain, 41, "left task value should remain readable after join")
+    std.testing.assertEqual(rightAgain, 1, "right task value should remain readable after join")
+}
+
+@test
+@expectPanic
+func joinPropagatesTaskPanic() async {
+    let left = std.task.spawn(|| async {
+        await std.testing.yieldNow()
+        return 7 as int32
+    })
+    let right = std.task.spawn(|| async {
+        await std.testing.yieldNow()
+        std.panic.panic("joined task panic should fail the awaiter")
+    })
+
+    let _ = await std.task.join(left, right)
+}
+
+@test
 func spawnedTaskValueCanBeReadMoreThanOnce() async {
     let task = std.task.spawn(|| async {
         await std.testing.yieldNow()

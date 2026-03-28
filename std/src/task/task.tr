@@ -20,6 +20,15 @@ public func sleep(_ duration: std.time.Duration) async {
     return await __intrinsic_sleep(duration)
 }
 
+/// Await two already-running tasks and return both results as a tuple.
+/// The tasks continue to use the existing shared `value()` semantics, so the
+/// results can be read again after `join` completes.
+public func join[A, B](_ left: Task[A], _ right: Task[B]) async -> (A, B) {
+    let leftValue = await left.value()
+    let rightValue = await right.value()
+    return (leftValue, rightValue)
+}
+
 impl[T] Task[T] {
     public func value(&self) async -> T {
         return await __intrinsic_task_value[T](self)

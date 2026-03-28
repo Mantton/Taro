@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, VecDeque};
+use std::collections::{BinaryHeap, HashSet, VecDeque};
 use std::time::{Duration as StdDuration, Instant};
 
 use crate::garbage_collector::with_gc;
@@ -23,9 +23,6 @@ struct ExecutorTask {
     /// Owned output buffer for spawned tasks (root task uses caller's pointer).
     _out_buf: Option<Vec<u8>>,
     completed: bool,
-    /// Whether this task ID is currently present in the ready queue.
-    /// Used to prevent duplicate entries that cause wasted polls.
-    in_ready_queue: bool,
     /// Tasks waiting for this one to complete.
     waiters: Vec<TaskId>,
 }
@@ -33,6 +30,9 @@ struct ExecutorTask {
 struct Executor {
     tasks: Vec<Option<ExecutorTask>>,
     ready_queue: VecDeque<TaskId>,
+    /// Tracks which task IDs are currently in `ready_queue` to prevent
+    /// duplicate entries that cause wasted polls.
+    ready_set: HashSet<TaskId>,
     timers: BinaryHeap<Reverse<TimerEntry>>,
     current_task: Option<TaskId>,
     /// Set to true during a poll if the current task blocked on some external
@@ -52,6 +52,7 @@ impl Executor {
         Self {
             tasks: Vec::new(),
             ready_queue: VecDeque::new(),
+            ready_set: HashSet::new(),
             timers: BinaryHeap::new(),
             current_task: None,
             current_task_blocked: false,
@@ -74,7 +75,6 @@ impl Executor {
             out_ptr,
             _out_buf: out_buf,
             completed: false,
-            in_ready_queue: true,
             waiters: Vec::new(),
         }));
 
@@ -84,20 +84,24 @@ impl Executor {
             with_gc(|gc| gc.add_persistent_root(frame as *const u8));
         }
 
+        self.ready_set.insert(id);
         self.ready_queue.push_back(id);
         id
     }
 
-    /// Enqueue a task into the ready queue, deduplicating entries.
+    /// Enqueue a task into the ready queue, deduplicating via `ready_set`.
     fn enqueue_task(&mut self, task_id: TaskId) {
-        let Some(task) = self.tasks[task_id].as_mut() else {
-            return;
-        };
-        if task.completed || task.in_ready_queue {
+        let dominated = self
+            .tasks
+            .get(task_id)
+            .and_then(|slot| slot.as_ref())
+            .is_none_or(|task| task.completed);
+        if dominated {
             return;
         }
-        task.in_ready_queue = true;
-        self.ready_queue.push_back(task_id);
+        if self.ready_set.insert(task_id) {
+            self.ready_queue.push_back(task_id);
+        }
     }
 
     fn complete_task(&mut self, id: TaskId) {
@@ -173,10 +177,7 @@ fn drive_executor() {
                 executor.wake_due_timers(Instant::now());
 
                 let Some(task_id) = executor.ready_queue.pop_front().map(|id| {
-                    // Clear the in_ready_queue flag as we dequeue.
-                    if let Some(Some(task)) = executor.tasks.get_mut(id) {
-                        task.in_ready_queue = false;
-                    }
+                    executor.ready_set.remove(&id);
                     id
                 }) else {
                     let timeout = executor.next_timer_deadline().map(|deadline| {
