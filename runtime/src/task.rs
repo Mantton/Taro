@@ -132,6 +132,9 @@ struct SleepFrame {
 struct IoWaitFrame {
     source_id: usize,
     interest: u8,
+    /// Whether we have registered a wait with the IO poller.  Once the
+    /// executor re-polls us (after the IO poller wakes the task), we return
+    /// Ready and clear this flag.
     armed: bool,
 }
 
@@ -184,7 +187,12 @@ unsafe extern "C-unwind" fn io_wait_poll(frame: *mut u8, _ctx: *mut u8, out: *mu
     }
 
     let wait = unsafe { &mut *(frame as *mut IoWaitFrame) };
+
+    // After arming, the executor will only re-poll us once the IO poller has
+    // delivered a wakeup (ready queue dedup prevents spurious re-entries).
+    // Return Ready and clear the armed flag so the frame can be reused.
     if wait.armed {
+        wait.armed = false;
         if !out.is_null() {
             unsafe { (out as *mut i32).write(0) };
         }

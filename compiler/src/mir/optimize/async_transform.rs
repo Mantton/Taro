@@ -1323,16 +1323,26 @@ fn build_async_drop_body<'ctx>(
     for (i, &mirror) in mirror_locals.iter().enumerate() {
         let field_index = i + 1; // +1 because field 0 is the state tag
         let field_ty = poll_body.locals[frame.stored_locals[i]].ty;
+        // Use init+take modifiers: skip retain (init) and zero the frame's
+        // field after loading (take).  This transfers Rc ownership from the
+        // frame to the mirror local so emit_rc_cleanup at Return releases
+        // exactly once, and the frame is left zeroed (safe against GC scans).
         statements.push(Statement {
             kind: StatementKind::Assign(
                 Place::from_local(mirror),
-                Rvalue::Use(Operand::Copy(Place {
-                    local: frame_ptr,
-                    projection: vec![
-                        PlaceElem::Deref,
-                        PlaceElem::Field(FieldIndex::from_raw(field_index as u32), field_ty),
-                    ],
-                })),
+                Rvalue::Use(Operand::CopyWith(
+                    Place {
+                        local: frame_ptr,
+                        projection: vec![
+                            PlaceElem::Deref,
+                            PlaceElem::Field(FieldIndex::from_raw(field_index as u32), field_ty),
+                        ],
+                    },
+                    CopyModifiers {
+                        init: true,
+                        take: true,
+                    },
+                )),
             ),
             span,
         });

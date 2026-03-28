@@ -23,6 +23,9 @@ struct ExecutorTask {
     /// Owned output buffer for spawned tasks (root task uses caller's pointer).
     _out_buf: Option<Vec<u8>>,
     completed: bool,
+    /// Whether this task ID is currently present in the ready queue.
+    /// Used to prevent duplicate entries that cause wasted polls.
+    in_ready_queue: bool,
     /// Tasks waiting for this one to complete.
     waiters: Vec<TaskId>,
 }
@@ -71,6 +74,7 @@ impl Executor {
             out_ptr,
             _out_buf: out_buf,
             completed: false,
+            in_ready_queue: true,
             waiters: Vec::new(),
         }));
 
@@ -82,6 +86,18 @@ impl Executor {
 
         self.ready_queue.push_back(id);
         id
+    }
+
+    /// Enqueue a task into the ready queue, deduplicating entries.
+    fn enqueue_task(&mut self, task_id: TaskId) {
+        let Some(task) = self.tasks[task_id].as_mut() else {
+            return;
+        };
+        if task.completed || task.in_ready_queue {
+            return;
+        }
+        task.in_ready_queue = true;
+        self.ready_queue.push_back(task_id);
     }
 
     fn complete_task(&mut self, id: TaskId) {
@@ -96,7 +112,7 @@ impl Executor {
         // Wake all tasks that were waiting for this one.
         let waiters: Vec<TaskId> = task.waiters.drain(..).collect();
         for waiter_id in waiters {
-            self.ready_queue.push_back(waiter_id);
+            self.enqueue_task(waiter_id);
         }
     }
 
@@ -126,12 +142,7 @@ impl Executor {
                 break;
             }
             let _ = self.timers.pop();
-            if self.tasks[entry.task_id]
-                .as_ref()
-                .is_some_and(|task| !task.completed)
-            {
-                self.ready_queue.push_back(entry.task_id);
-            }
+            self.enqueue_task(entry.task_id);
         }
     }
 
@@ -161,7 +172,13 @@ fn drive_executor() {
 
                 executor.wake_due_timers(Instant::now());
 
-                let Some(task_id) = executor.ready_queue.pop_front() else {
+                let Some(task_id) = executor.ready_queue.pop_front().map(|id| {
+                    // Clear the in_ready_queue flag as we dequeue.
+                    if let Some(Some(task)) = executor.tasks.get_mut(id) {
+                        task.in_ready_queue = false;
+                    }
+                    id
+                }) else {
                     let timeout = executor.next_timer_deadline().map(|deadline| {
                         let now = Instant::now();
                         if deadline <= now {
@@ -208,7 +225,7 @@ fn drive_executor() {
                     let mut borrow = cell.borrow_mut();
                     let executor = borrow.as_mut().expect("ICE: executor missing");
                     for task_id in ready {
-                        executor.ready_queue.push_back(task_id);
+                        executor.enqueue_task(task_id);
                     }
                 });
                 continue;
@@ -234,7 +251,7 @@ fn drive_executor() {
 
             if tag == 0 {
                 if !executor.current_task_blocked {
-                    executor.ready_queue.push_back(task_id);
+                    executor.enqueue_task(task_id);
                 }
             } else {
                 // Ready.
@@ -324,12 +341,14 @@ pub extern "C" fn __rt__executor_poll_spawned(task_id: u64, out: *mut u8) -> u8 
             }
             1
         } else {
-            // Register the current task as a waiter.
+            // Register the current task as a waiter (deduplicated).
             if let Some(current) = executor.current_task {
                 let target = executor.tasks[id]
                     .as_mut()
                     .expect("ICE: polling absent spawned task");
-                target.waiters.push(current);
+                if !target.waiters.contains(&current) {
+                    target.waiters.push(current);
+                }
                 executor.current_task_blocked = true;
             }
             0
@@ -371,14 +390,7 @@ pub(crate) fn wake_tasks(task_ids: &[usize]) {
         };
 
         for &task_id in task_ids {
-            if executor
-                .tasks
-                .get(task_id)
-                .and_then(|task| task.as_ref())
-                .is_some_and(|task| !task.completed)
-            {
-                executor.ready_queue.push_back(task_id);
-            }
+            executor.enqueue_task(task_id);
         }
     });
 }
