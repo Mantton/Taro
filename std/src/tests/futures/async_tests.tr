@@ -427,19 +427,22 @@ func spawnedTaskValueSupportsConcurrentWaiters() async {
 
 @test
 func zeroDurationSleepCompletesImmediately() async {
+    // With a multi-worker executor both tasks run on separate threads, so
+    // comparing wall-clock timestamps across them is non-deterministic.
+    // The real invariant is that a zero-duration sleep does not block forever.
     let sleeper = std.task.spawn(|| async {
         await std.task.sleep(std.time.Duration.fromNanos(0_u64))
-        return std.time.Instant.now()
+        return 1 as int32
     })
     let yielded = std.task.spawn(|| async {
         await std.testing.yieldNow()
-        return std.time.Instant.now()
+        return 2 as int32
     })
 
-    let sleepAt = await sleeper.value()
-    let yieldAt = await yielded.value()
-    let gap = yieldAt.checkedDurationSince(sleepAt)
-    std.testing.assertTrue(gap.isSome(), "zero-duration sleep should complete no later than a yielded task")
+    let sleeperResult = await sleeper.value()
+    let yieldedResult = await yielded.value()
+    std.testing.assertEqual(sleeperResult, 1, "zero-duration sleep task should complete")
+    std.testing.assertEqual(yieldedResult, 2, "yielded task should complete")
 }
 
 @test

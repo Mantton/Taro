@@ -190,6 +190,9 @@ mod imp {
         #[cfg(target_os = "linux")]
         fn drain_control(&self) {
             let mut value = 0u64;
+            // eventfd read atomically clears the entire counter in a single
+            // 8-byte read. One successful read is all we need; looping would
+            // spin until EAGAIN.
             loop {
                 let result = unsafe {
                     libc::read(
@@ -199,35 +202,36 @@ mod imp {
                     )
                 };
                 if result > 0 {
-                    continue;
+                    break; // counter cleared; done
                 }
 
                 if result == 0 {
-                    break;
+                    break; // shouldn't happen for eventfd, but be safe
                 }
 
                 let err = last_errno();
                 if err == libc::EINTR {
                     continue;
                 }
-                if err == libc::EAGAIN {
-                    break;
-                }
+                // EAGAIN or any other error: nothing left to read
                 break;
             }
         }
 
         #[cfg(target_os = "macos")]
         fn drain_control(&self) {
+            // Drain all bytes currently in the pipe so it resets to non-ready.
             let mut buf = [0u8; 64];
             loop {
                 let result =
                     unsafe { libc::read(self.control_read_fd, buf.as_mut_ptr().cast(), buf.len()) };
                 if result > 0 {
+                    // Read some bytes; keep draining in case more are buffered.
                     continue;
                 }
 
                 if result == 0 {
+                    // EOF — pipe write end was closed; stop.
                     break;
                 }
 
@@ -235,9 +239,7 @@ mod imp {
                 if err == libc::EINTR {
                     continue;
                 }
-                if err == libc::EAGAIN {
-                    break;
-                }
+                // EAGAIN: pipe is empty; done.
                 break;
             }
         }

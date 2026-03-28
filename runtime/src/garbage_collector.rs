@@ -229,6 +229,18 @@ fn wait_for_gc_resume() {
     }
 }
 
+/// Cancel any in-progress GC and wake all threads blocked in
+/// `wait_for_gc_resume`. Called by the executor during `force_shutdown` so
+/// that a worker-thread panic does not leave background workers deadlocked
+/// indefinitely on the GC resume condvar.
+pub(crate) fn cancel_pending_collection() {
+    let _guard = GC_RESUME_LOCK.lock().unwrap();
+    if GC_REQUESTED.load(Ordering::Acquire) {
+        GC_REQUESTED.store(false, Ordering::Release);
+        GC_RESUME_COND.notify_all();
+    }
+}
+
 pub(crate) fn ensure_thread_registered() {
     let should_park = with_current_thread_state(|state| {
         GC_REQUESTED.load(Ordering::Acquire) && !state.at_safepoint.load(Ordering::Relaxed)
@@ -315,10 +327,16 @@ fn initiate_collection() {
     // Now all other threads are parked. We can safely collect.
     with_gc(|gc| gc.collect(&threads));
 
-    // Wake up everyone
-    GC_REQUESTED.store(false, Ordering::Release);
-    let _guard = GC_RESUME_LOCK.lock().unwrap();
-    GC_RESUME_COND.notify_all();
+    // Wake up everyone. GC_REQUESTED must be cleared *while holding*
+    // GC_RESUME_LOCK so no thread can slip between seeing GC_REQUESTED==true
+    // and calling cond.wait() without observing the notify. Clearing it before
+    // acquiring the lock would open a lost-wakeup window that deadlocks the
+    // thread indefinitely.
+    {
+        let _guard = GC_RESUME_LOCK.lock().unwrap();
+        GC_REQUESTED.store(false, Ordering::Release);
+        GC_RESUME_COND.notify_all();
+    }
 }
 
 #[unsafe(no_mangle)]

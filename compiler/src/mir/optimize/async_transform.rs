@@ -291,7 +291,10 @@ fn ty_is_movable_across_workers<'ctx>(
 ) -> bool {
     let ty = normalize_aliases(gcx, ty);
     if ty == gcx.async_handle_ty() {
-        return true;
+        // Async handles can encapsulate child futures that transiently hold
+        // stack-derived pointers/references across await boundaries. Treat
+        // them as non-movable until we can prove cross-worker safety.
+        return false;
     }
     if !visited.insert(ty) {
         return true;

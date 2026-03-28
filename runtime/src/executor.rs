@@ -4,7 +4,7 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, VecDeque};
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::thread::{self, JoinHandle, Thread};
 use std::time::{Duration as StdDuration, Instant};
 
@@ -24,6 +24,17 @@ struct TimerEntry {
     deadline: Instant,
     sequence: u64,
     task_id: TaskId,
+}
+
+#[derive(Clone, Copy)]
+struct TimerRegistration {
+    deadline: Instant,
+    sequence: u64,
+}
+
+struct TimerState {
+    heap: BinaryHeap<Reverse<TimerEntry>>,
+    latest: Vec<Option<TimerRegistration>>,
 }
 
 struct TaskSlot {
@@ -95,17 +106,19 @@ struct Scheduler {
     rooted: bool,
     test_mode: bool,
     worker_count: usize,
-    tasks: Mutex<Vec<Arc<TaskSlot>>>,
+    tasks: RwLock<Vec<Arc<TaskSlot>>>,
     injector: Injector<TaskId>,
     local_workers: Mutex<Vec<Option<Worker<TaskId>>>>,
     stealers: Vec<Stealer<TaskId>>,
     pinned_queues: Vec<Mutex<VecDeque<TaskId>>>,
     remote_queues: Vec<Mutex<VecDeque<TaskId>>>,
     worker_threads: Vec<Mutex<Option<Thread>>>,
+    worker_registered: Vec<AtomicBool>,
     worker_joins: Mutex<Vec<JoinHandle<()>>>,
     io_join: Mutex<Option<JoinHandle<()>>>,
-    timers: Mutex<BinaryHeap<Reverse<TimerEntry>>>,
+    timers: Mutex<TimerState>,
     next_timer_sequence: AtomicU64,
+    idle_workers: AtomicUsize,
     incomplete_tasks: AtomicUsize,
     shutdown: AtomicBool,
     started: AtomicBool,
@@ -203,6 +216,7 @@ impl Scheduler {
         let mut pinned_queues = Vec::with_capacity(worker_count);
         let mut remote_queues = Vec::with_capacity(worker_count);
         let mut worker_threads = Vec::with_capacity(worker_count);
+        let mut worker_registered = Vec::with_capacity(worker_count);
         for _ in 0..worker_count {
             let local = Worker::new_lifo();
             stealers.push(local.stealer());
@@ -210,23 +224,29 @@ impl Scheduler {
             pinned_queues.push(Mutex::new(VecDeque::new()));
             remote_queues.push(Mutex::new(VecDeque::new()));
             worker_threads.push(Mutex::new(None));
+            worker_registered.push(AtomicBool::new(false));
         }
 
         Arc::new(Self {
             rooted,
             test_mode: crate::panic_unwind::in_test_harness(),
             worker_count,
-            tasks: Mutex::new(Vec::new()),
+            tasks: RwLock::new(Vec::new()),
             injector: Injector::new(),
             local_workers: Mutex::new(locals),
             stealers,
             pinned_queues,
             remote_queues,
             worker_threads,
+            worker_registered,
             worker_joins: Mutex::new(Vec::new()),
             io_join: Mutex::new(None),
-            timers: Mutex::new(BinaryHeap::new()),
+            timers: Mutex::new(TimerState {
+                heap: BinaryHeap::new(),
+                latest: Vec::new(),
+            }),
             next_timer_sequence: AtomicU64::new(0),
+            idle_workers: AtomicUsize::new(0),
             incomplete_tasks: AtomicUsize::new(0),
             shutdown: AtomicBool::new(false),
             started: AtomicBool::new(false),
@@ -272,8 +292,13 @@ impl Scheduler {
     }
 
     fn worker_loop(self: Arc<Self>, worker_id: usize, local: Worker<TaskId>) {
-        self.register_worker_thread(worker_id);
+        // GC attach first: registers this thread in THREAD_REGISTRY and sets
+        // at_safepoint=true before we expose the thread handle to the scheduler.
+        // If the order were reversed a concurrent GC could observe the thread
+        // in worker_threads but not yet in THREAD_REGISTRY, missing it during
+        // the safepoint wait.
         crate::garbage_collector::__gc__thread_attach();
+        self.register_worker_thread(worker_id);
         crate::panic_unwind::set_test_harness_active(self.test_mode);
         let _runtime_guard = WorkerRuntimeGuard;
 
@@ -323,7 +348,9 @@ impl Scheduler {
             }
 
             self.stats.parks.fetch_add(1, Ordering::Relaxed);
+            self.idle_workers.fetch_add(1, Ordering::AcqRel);
             thread::park();
+            self.idle_workers.fetch_sub(1, Ordering::AcqRel);
         }
     }
 
@@ -332,7 +359,6 @@ impl Scheduler {
         crate::panic_unwind::set_test_harness_active(self.test_mode);
         let _runtime_guard = WorkerRuntimeGuard;
         while !self.shutdown.load(Ordering::Acquire) {
-            self.wake_due_timers();
             let timeout = self.next_timer_timeout();
             let ready = io_poller::wait(timeout);
             if !ready.is_empty() {
@@ -413,6 +439,7 @@ impl Scheduler {
 
     fn register_worker_thread(&self, worker_id: usize) {
         *self.worker_threads[worker_id].lock().unwrap() = Some(thread::current());
+        self.worker_registered[worker_id].store(true, Ordering::Release);
     }
 
     fn add_task(
@@ -438,11 +465,15 @@ impl Scheduler {
         }
 
         let task_id = {
-            let mut tasks = self.tasks.lock().unwrap();
+            let mut tasks = self.tasks.write().unwrap();
             let task_id = tasks.len();
             tasks.push(slot);
             task_id
         };
+        {
+            let mut timers = self.timers.lock().unwrap();
+            timers.latest.push(None);
+        }
         self.incomplete_tasks.fetch_add(1, Ordering::AcqRel);
         self.schedule_task(task_id, preferred_worker);
         task_id
@@ -530,6 +561,7 @@ impl Scheduler {
         };
 
         io_poller::cancel_task(task_id);
+        self.clear_task_timer(task_id);
         if !frame.is_null() {
             with_gc(|gc| gc.remove_persistent_root(frame as *const u8));
         }
@@ -547,13 +579,23 @@ impl Scheduler {
     fn register_sleep(&self, task_id: TaskId, deadline: Instant) {
         let should_notify = {
             let mut timers = self.timers.lock().unwrap();
-            let previous = timers.peek().map(|entry| entry.0.deadline);
+            if task_id >= timers.latest.len() {
+                timers.latest.resize(task_id + 1, None);
+            }
+
+            // Re-registering the same deadline for the same task is a no-op.
+            if timers.latest[task_id].is_some_and(|entry| entry.deadline == deadline) {
+                return;
+            }
+
+            let previous = timers.heap.peek().map(|entry| entry.0.deadline);
             let sequence = self.next_timer_sequence.fetch_add(1, Ordering::Relaxed);
-            timers.push(Reverse(TimerEntry {
+            timers.heap.push(Reverse(TimerEntry {
                 deadline,
                 sequence,
                 task_id,
             }));
+            timers.latest[task_id] = Some(TimerRegistration { deadline, sequence });
             previous.is_none_or(|earliest| deadline < earliest)
         };
 
@@ -563,12 +605,16 @@ impl Scheduler {
     }
 
     fn next_timer_timeout(&self) -> Option<StdDuration> {
-        let deadline = self
-            .timers
-            .lock()
-            .unwrap()
-            .peek()
-            .map(|entry| entry.0.deadline)?;
+        let deadline = {
+            let mut timers = self.timers.lock().unwrap();
+            loop {
+                let entry = timers.heap.peek().copied()?.0;
+                if Self::is_live_timer_entry(&timers, entry) {
+                    break entry.deadline;
+                }
+                let _ = timers.heap.pop();
+            }
+        };
         let now = Instant::now();
         Some(if deadline <= now {
             StdDuration::ZERO
@@ -582,11 +628,18 @@ impl Scheduler {
         let mut due = Vec::new();
         {
             let mut timers = self.timers.lock().unwrap();
-            while let Some(Reverse(entry)) = timers.peek().copied() {
+            while let Some(Reverse(entry)) = timers.heap.peek().copied() {
+                if !Self::is_live_timer_entry(&timers, entry) {
+                    let _ = timers.heap.pop();
+                    continue;
+                }
                 if entry.deadline > now {
                     break;
                 }
-                let _ = timers.pop();
+                let _ = timers.heap.pop();
+                if let Some(slot) = timers.latest.get_mut(entry.task_id) {
+                    *slot = None;
+                }
                 due.push(entry.task_id);
             }
         }
@@ -599,8 +652,25 @@ impl Scheduler {
         }
     }
 
+    fn is_live_timer_entry(timers: &TimerState, entry: TimerEntry) -> bool {
+        timers
+            .latest
+            .get(entry.task_id)
+            .and_then(|slot| *slot)
+            .is_some_and(|latest| {
+                latest.sequence == entry.sequence && latest.deadline == entry.deadline
+            })
+    }
+
+    fn clear_task_timer(&self, task_id: TaskId) {
+        let mut timers = self.timers.lock().unwrap();
+        if let Some(slot) = timers.latest.get_mut(task_id) {
+            *slot = None;
+        }
+    }
+
     fn lookup_task(&self, task_id: TaskId) -> Arc<TaskSlot> {
-        self.tasks.lock().unwrap()[task_id].clone()
+        self.tasks.read().unwrap()[task_id].clone()
     }
 
     fn enqueue_task(
@@ -708,6 +778,11 @@ impl Scheduler {
         if self.shutdown.swap(true, Ordering::AcqRel) {
             return;
         }
+        // Unblock any thread waiting for a GC cycle to complete. Without this,
+        // a worker-thread panic can leave other threads deadlocked forever in
+        // wait_for_gc_resume since no collector will ever finish the GC and
+        // clear GC_REQUESTED.
+        crate::garbage_collector::cancel_pending_collection();
         io_poller::notify();
         for worker_id in 0..self.worker_count {
             self.unpark_worker(worker_id);
@@ -721,7 +796,7 @@ impl Scheduler {
     }
 
     fn unpark_next_worker(&self) {
-        if self.worker_count == 0 {
+        if self.worker_count == 0 || self.idle_workers.load(Ordering::Acquire) == 0 {
             return;
         }
 
@@ -732,14 +807,14 @@ impl Scheduler {
             if current_worker == Some(worker_id) {
                 continue;
             }
-            if self.worker_threads[worker_id].lock().unwrap().is_some() {
+            if self.worker_registered[worker_id].load(Ordering::Acquire) {
                 self.unpark_worker(worker_id);
                 return;
             }
         }
 
         if let Some(worker_id) = current_worker {
-            if self.worker_threads[worker_id].lock().unwrap().is_some() {
+            if self.worker_registered[worker_id].load(Ordering::Acquire) {
                 self.unpark_worker(worker_id);
             }
         }
@@ -772,7 +847,7 @@ impl Scheduler {
     }
 
     fn teardown_remaining_tasks(&self) {
-        let tasks = self.tasks.lock().unwrap();
+        let tasks: Vec<_> = self.tasks.read().unwrap().iter().cloned().collect();
         for (task_id, slot) in tasks.iter().enumerate() {
             let (frame, handle, completed) = {
                 let mut inner = slot.inner.lock().unwrap();
@@ -793,6 +868,7 @@ impl Scheduler {
                 continue;
             }
             io_poller::cancel_task(task_id);
+            self.clear_task_timer(task_id);
             if !frame.is_null() {
                 with_gc(|gc| gc.remove_persistent_root(frame as *const u8));
             }
@@ -920,6 +996,9 @@ pub extern "C" fn __rt__executor_spawn(handle: *mut u8, out_size: u64) -> u64 {
 
     let mut out_buf = vec![0u8; out_size as usize];
     let out_ptr = out_buf.as_mut_ptr();
+    // Work-first policy: start newly spawned tasks on the current worker to
+    // preserve cache locality; movable tasks can still migrate after the first
+    // pending poll via injector requeue.
     let preferred_worker = Some(owner_worker);
     let task_id = scheduler.add_task(
         handle,
@@ -944,9 +1023,8 @@ pub extern "C" fn __rt__executor_poll_spawned(task_id: u64, out: *mut u8) -> u8 
         let mut inner = slot.inner.lock().unwrap();
 
         if inner.completed {
-            let src = inner.out_ptr;
             if let Some(buf) = &inner.out_buf {
-                unsafe { std::ptr::copy_nonoverlapping(src, out, buf.len()) };
+                unsafe { std::ptr::copy_nonoverlapping(buf.as_ptr(), out, buf.len()) };
             }
             1
         } else {
@@ -1086,9 +1164,10 @@ mod tests {
 
         for worker_id in 0..scheduler.worker_count {
             *scheduler.worker_threads[worker_id].lock().unwrap() = Some(thread::current());
+            scheduler.worker_registered[worker_id].store(true, Ordering::Release);
         }
 
-        let mut tasks = scheduler.tasks.lock().unwrap();
+        let mut tasks = scheduler.tasks.write().unwrap();
         for _ in 0..8 {
             tasks.push(Arc::new(TaskSlot::new(
                 ptr::null_mut(),
