@@ -1,5 +1,6 @@
 use crate::{
     compile::context::Gcx,
+    hir::StdItem,
     mir::{
         self, AggregateKind, BasicBlockId, BinaryOperator, BlockAnd, BlockAndExtension, CastKind,
         Category, Constant, LocalId, Operand, Place, PlaceElem, Rvalue, RvalueFunc, TerminatorKind,
@@ -12,7 +13,6 @@ use crate::{
         models::{GenericArgument, GenericArguments, TyKind},
         resolve::models::DefinitionKind,
     },
-    hir::StdItem,
     span::Span,
     thir::{self, ExprId, ExprKind, FieldIndex},
     unpack,
@@ -516,13 +516,12 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
         let (fixed_args, variadic_list_operand) = if let Some(split) = variadic_split_idx {
             let (fixed, var_args) = args.split_at(split);
-            let inputs = if let crate::sema::models::TyKind::FnPointer { inputs, .. } =
-                callee_ty.kind()
-            {
-                inputs
-            } else {
-                panic!("callee must be fn pointer");
-            };
+            let inputs =
+                if let crate::sema::models::TyKind::FnPointer { inputs, .. } = callee_ty.kind() {
+                    inputs
+                } else {
+                    panic!("callee must be fn pointer");
+                };
             let list_ty = inputs[inputs.len() - 1];
             let elem_ty = if let crate::sema::models::TyKind::Adt(_, args) = list_ty.kind() {
                 if let Some(crate::sema::models::GenericArgument::Type(ty)) = args.get(0) {
@@ -644,7 +643,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let Some(task_def_id) = self.gcx.std_item_def(StdItem::Task) else {
             panic!("ICE: Task std item missing");
         };
-        assert_eq!(def.id, task_def_id, "ICE: spawn destination must be Task[T]");
+        assert_eq!(
+            def.id, task_def_id,
+            "ICE: spawn destination must be Task[T]"
+        );
         let Some(GenericArgument::Type(task_output_ty)) = task_args.first().copied() else {
             panic!("ICE: Task[T] must carry its output type");
         };
@@ -771,7 +773,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         );
 
         let mut task_place = unpack!(block = self.as_place(block, *task));
-        if matches!(self.thir.exprs[*task].ty.kind(), TyKind::Reference(..) | TyKind::Pointer(..)) {
+        if matches!(
+            self.thir.exprs[*task].ty.kind(),
+            TyKind::Reference(..) | TyKind::Pointer(..)
+        ) {
             task_place.projection.push(PlaceElem::Deref);
         }
         let spawned_id_local = self.new_temp_with_ty(self.gcx.types.uint, span);
@@ -852,7 +857,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
         let duration_local = unpack!(block = self.as_temp(block, *duration));
         let duration_place = Place::from_local(duration_local);
-        let sleep_id = find_or_register_async_runtime_function(self.gcx, AsyncRuntimeFn::Sleep, span);
+        let sleep_id =
+            find_or_register_async_runtime_function(self.gcx, AsyncRuntimeFn::Sleep, span);
         let sleep_ty = self.gcx.get_type(sleep_id);
         let next = self.new_block();
         self.terminate(
@@ -909,11 +915,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             TerminatorKind::Call {
                 func: Operand::Constant(Constant {
                     ty: wait_ty,
-                    value: mir::ConstantKind::Function(
-                        wait_id,
-                        GenericArguments::empty(),
-                        wait_ty,
-                    ),
+                    value: mir::ConstantKind::Function(wait_id, GenericArguments::empty(), wait_ty),
                 }),
                 args: vec![source_id_operand],
                 destination,
@@ -930,10 +932,13 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             return false;
         };
 
-        matches!(self.gcx.get_signature(id).abi, Some(crate::hir::Abi::Intrinsic))
-            && self
-                .gcx
-                .symbol_eq(self.gcx.definition_ident(id).symbol, "__intrinsic_spawn_async")
+        matches!(
+            self.gcx.get_signature(id).abi,
+            Some(crate::hir::Abi::Intrinsic)
+        ) && self.gcx.symbol_eq(
+            self.gcx.definition_ident(id).symbol,
+            "__intrinsic_spawn_async",
+        )
     }
 
     fn is_hidden_task_value_intrinsic(&self, callee: ExprId) -> bool {
@@ -941,10 +946,13 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             return false;
         };
 
-        matches!(self.gcx.get_signature(id).abi, Some(crate::hir::Abi::Intrinsic))
-            && self
-                .gcx
-                .symbol_eq(self.gcx.definition_ident(id).symbol, "__intrinsic_task_value")
+        matches!(
+            self.gcx.get_signature(id).abi,
+            Some(crate::hir::Abi::Intrinsic)
+        ) && self.gcx.symbol_eq(
+            self.gcx.definition_ident(id).symbol,
+            "__intrinsic_task_value",
+        )
     }
 
     fn is_hidden_sleep_intrinsic(&self, callee: ExprId) -> bool {
@@ -952,10 +960,12 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             return false;
         };
 
-        matches!(self.gcx.get_signature(id).abi, Some(crate::hir::Abi::Intrinsic))
-            && self
-                .gcx
-                .symbol_eq(self.gcx.definition_ident(id).symbol, "__intrinsic_sleep")
+        matches!(
+            self.gcx.get_signature(id).abi,
+            Some(crate::hir::Abi::Intrinsic)
+        ) && self
+            .gcx
+            .symbol_eq(self.gcx.definition_ident(id).symbol, "__intrinsic_sleep")
     }
 
     fn is_hidden_wait_readable_intrinsic(&self, callee: ExprId) -> bool {
@@ -963,10 +973,13 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             return false;
         };
 
-        matches!(self.gcx.get_signature(id).abi, Some(crate::hir::Abi::Intrinsic))
-            && self
-                .gcx
-                .symbol_eq(self.gcx.definition_ident(id).symbol, "__intrinsic_wait_readable")
+        matches!(
+            self.gcx.get_signature(id).abi,
+            Some(crate::hir::Abi::Intrinsic)
+        ) && self.gcx.symbol_eq(
+            self.gcx.definition_ident(id).symbol,
+            "__intrinsic_wait_readable",
+        )
     }
 
     fn is_hidden_wait_writable_intrinsic(&self, callee: ExprId) -> bool {
@@ -974,10 +987,13 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             return false;
         };
 
-        matches!(self.gcx.get_signature(id).abi, Some(crate::hir::Abi::Intrinsic))
-            && self
-                .gcx
-                .symbol_eq(self.gcx.definition_ident(id).symbol, "__intrinsic_wait_writable")
+        matches!(
+            self.gcx.get_signature(id).abi,
+            Some(crate::hir::Abi::Intrinsic)
+        ) && self.gcx.symbol_eq(
+            self.gcx.definition_ident(id).symbol,
+            "__intrinsic_wait_writable",
+        )
     }
 
     fn async_callable_operand(
@@ -1998,7 +2014,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
 fn task_raw_place<'ctx>(gcx: Gcx<'ctx>, task_place: Place<'ctx>) -> Place<'ctx> {
     let mut projection = task_place.projection;
-    projection.push(PlaceElem::Field(FieldIndex::from_raw(0), gcx.async_handle_ty()));
+    projection.push(PlaceElem::Field(
+        FieldIndex::from_raw(0),
+        gcx.async_handle_ty(),
+    ));
     Place {
         local: task_place.local,
         projection,

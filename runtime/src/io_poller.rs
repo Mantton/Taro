@@ -27,6 +27,12 @@ mod imp {
 
     struct Reactor {
         poll_fd: RawFd,
+        #[cfg(target_os = "linux")]
+        control_fd: RawFd,
+        #[cfg(target_os = "macos")]
+        control_read_fd: RawFd,
+        #[cfg(target_os = "macos")]
+        control_write_fd: RawFd,
         next_source_id: usize,
         sources: HashMap<usize, SourceEntry>,
     }
@@ -42,11 +48,198 @@ mod imp {
                 return Err(last_errno());
             }
 
-            Ok(Self {
+            #[cfg(target_os = "linux")]
+            let control_fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+            #[cfg(target_os = "linux")]
+            if control_fd < 0 {
+                let err = last_errno();
+                let _ = unsafe { libc::close(poll_fd) };
+                return Err(err);
+            }
+
+            #[cfg(target_os = "macos")]
+            let (control_read_fd, control_write_fd) = {
+                let mut fds = [0; 2];
+                if unsafe { libc::pipe(fds.as_mut_ptr()) } < 0 {
+                    let err = last_errno();
+                    let _ = unsafe { libc::close(poll_fd) };
+                    return Err(err);
+                }
+                if let Err(err) = set_nonblocking(fds[0]).and_then(|_| set_nonblocking(fds[1])) {
+                    let _ = unsafe { libc::close(fds[0]) };
+                    let _ = unsafe { libc::close(fds[1]) };
+                    let _ = unsafe { libc::close(poll_fd) };
+                    return Err(err);
+                }
+                (fds[0], fds[1])
+            };
+
+            let mut reactor = Self {
                 poll_fd,
+                #[cfg(target_os = "linux")]
+                control_fd,
+                #[cfg(target_os = "macos")]
+                control_read_fd,
+                #[cfg(target_os = "macos")]
+                control_write_fd,
                 next_source_id: 1,
                 sources: HashMap::new(),
-            })
+            };
+            reactor.register_control_source()?;
+            Ok(reactor)
+        }
+
+        #[cfg(target_os = "linux")]
+        fn register_control_source(&mut self) -> Result<(), i32> {
+            let mut event = libc::epoll_event {
+                events: libc::EPOLLIN as u32,
+                u64: 0,
+            };
+            if unsafe {
+                libc::epoll_ctl(
+                    self.poll_fd,
+                    libc::EPOLL_CTL_ADD,
+                    self.control_fd,
+                    &mut event,
+                )
+            } < 0
+            {
+                return Err(last_errno());
+            }
+            Ok(())
+        }
+
+        #[cfg(target_os = "macos")]
+        fn register_control_source(&mut self) -> Result<(), i32> {
+            let mut change = libc::kevent {
+                ident: self.control_read_fd as libc::uintptr_t,
+                filter: libc::EVFILT_READ,
+                flags: (libc::EV_ADD | libc::EV_ENABLE) as u16,
+                fflags: 0,
+                data: 0,
+                udata: ptr::null_mut(),
+            };
+
+            if unsafe {
+                libc::kevent(
+                    self.poll_fd,
+                    &mut change,
+                    1,
+                    ptr::null_mut(),
+                    0,
+                    ptr::null(),
+                )
+            } < 0
+            {
+                return Err(last_errno());
+            }
+
+            Ok(())
+        }
+
+        #[cfg(target_os = "linux")]
+        fn notify(&self) {
+            let value: u64 = 1;
+            let bytes = value.to_ne_bytes();
+            let mut offset = 0;
+            while offset < bytes.len() {
+                let result = unsafe {
+                    libc::write(
+                        self.control_fd,
+                        bytes[offset..].as_ptr().cast(),
+                        bytes.len() - offset,
+                    )
+                };
+                if result > 0 {
+                    offset += result as usize;
+                    continue;
+                }
+
+                let err = last_errno();
+                if err == libc::EINTR {
+                    continue;
+                }
+                if err == libc::EAGAIN {
+                    break;
+                }
+                break;
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        fn notify(&self) {
+            let byte = [1u8];
+            loop {
+                let result =
+                    unsafe { libc::write(self.control_write_fd, byte.as_ptr().cast(), byte.len()) };
+                if result >= 0 {
+                    break;
+                }
+
+                let err = last_errno();
+                if err == libc::EINTR {
+                    continue;
+                }
+                if err == libc::EAGAIN {
+                    break;
+                }
+                break;
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        fn drain_control(&self) {
+            let mut value = 0u64;
+            loop {
+                let result = unsafe {
+                    libc::read(
+                        self.control_fd,
+                        (&mut value as *mut u64).cast(),
+                        std::mem::size_of::<u64>(),
+                    )
+                };
+                if result > 0 {
+                    continue;
+                }
+
+                if result == 0 {
+                    break;
+                }
+
+                let err = last_errno();
+                if err == libc::EINTR {
+                    continue;
+                }
+                if err == libc::EAGAIN {
+                    break;
+                }
+                break;
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        fn drain_control(&self) {
+            let mut buf = [0u8; 64];
+            loop {
+                let result =
+                    unsafe { libc::read(self.control_read_fd, buf.as_mut_ptr().cast(), buf.len()) };
+                if result > 0 {
+                    continue;
+                }
+
+                if result == 0 {
+                    break;
+                }
+
+                let err = last_errno();
+                if err == libc::EINTR {
+                    continue;
+                }
+                if err == libc::EAGAIN {
+                    break;
+                }
+                break;
+            }
         }
 
         fn register_source(&mut self, fd: RawFd) -> usize {
@@ -88,12 +281,6 @@ mod imp {
             }
 
             self.arm_wait(source_id, interest)
-        }
-
-        fn has_waiters(&self) -> bool {
-            self.sources
-                .values()
-                .any(|source| !source.read_waiters.is_empty() || !source.write_waiters.is_empty())
         }
 
         fn cancel_task(&mut self, task_id: usize) {
@@ -162,6 +349,10 @@ mod imp {
             let mut rearm = Vec::new();
             for event in events {
                 let source_id = event.u64 as usize;
+                if source_id == 0 {
+                    self.drain_control();
+                    continue;
+                }
                 let mut needs_rearm = false;
 
                 if let Some(source) = self.sources.get_mut(&source_id) {
@@ -202,6 +393,10 @@ mod imp {
             let mut wake = Vec::new();
             for event in events {
                 let source_id = event.udata as usize;
+                if source_id == 0 {
+                    self.drain_control();
+                    continue;
+                }
                 let Some(source) = self.sources.get_mut(&source_id) else {
                     continue;
                 };
@@ -303,6 +498,13 @@ mod imp {
     impl Drop for Reactor {
         fn drop(&mut self) {
             let _ = unsafe { libc::close(self.poll_fd) };
+            #[cfg(target_os = "linux")]
+            let _ = unsafe { libc::close(self.control_fd) };
+            #[cfg(target_os = "macos")]
+            {
+                let _ = unsafe { libc::close(self.control_read_fd) };
+                let _ = unsafe { libc::close(self.control_write_fd) };
+            }
         }
     }
 
@@ -376,6 +578,17 @@ mod imp {
             *guard = Some(Reactor::new()?);
         }
         Ok(())
+    }
+
+    pub(crate) fn initialize() -> Result<(), i32> {
+        ensure_reactor()
+    }
+
+    pub(crate) fn notify() {
+        let guard = REACTOR.lock().unwrap();
+        if let Some(reactor) = guard.as_ref() {
+            reactor.notify();
+        }
     }
 
     fn last_errno() -> i32 {
@@ -489,10 +702,6 @@ mod imp {
         ensure_reactor()?;
         with_reactor_mut(|reactor| reactor.register_wait(source_id, task_id, interest))
             .expect("async io reactor missing after initialization")
-    }
-
-    pub(crate) fn has_waiters() -> bool {
-        with_reactor_mut(|reactor| reactor.has_waiters()).unwrap_or(false)
     }
 
     pub(crate) fn wait(timeout: Option<StdDuration>) -> Vec<usize> {
@@ -615,9 +824,11 @@ mod imp {
         Err(UNSUPPORTED_ERRNO)
     }
 
-    pub(crate) fn has_waiters() -> bool {
-        false
+    pub(crate) fn initialize() -> Result<(), i32> {
+        Err(UNSUPPORTED_ERRNO)
     }
+
+    pub(crate) fn notify() {}
 
     pub(crate) fn wait(_timeout: Option<StdDuration>) -> Vec<usize> {
         Vec::new()
@@ -658,8 +869,12 @@ pub(crate) fn register_wait(
     imp::register_wait(source_id, task_id, interest)
 }
 
-pub(crate) fn has_waiters() -> bool {
-    imp::has_waiters()
+pub(crate) fn initialize() -> Result<(), i32> {
+    imp::initialize()
+}
+
+pub(crate) fn notify() {
+    imp::notify()
 }
 
 pub(crate) fn wait(timeout: Option<StdDuration>) -> Vec<usize> {

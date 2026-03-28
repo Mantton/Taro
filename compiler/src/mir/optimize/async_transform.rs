@@ -2,23 +2,25 @@ use crate::{
     compile::context::Gcx,
     error::{CompileResult, ReportedError},
     hir::DefinitionID,
+    hir::StdItem,
     mir::{
-        analysis::liveness::compute_liveness,
         BasicBlockData, BasicBlockId, Body, CallUnwindAction, Constant, ConstantKind,
         CopyModifiers, LocalDecl, LocalId, LocalKind, Operand, Place, PlaceElem, Rvalue, Statement,
-        StatementKind, Terminator, TerminatorKind,
+        StatementKind, Terminator, TerminatorKind, analysis::liveness::compute_liveness,
     },
     sema::{
         models::{
-            AdtKind, EnumVariantKind, GenericArgument, GenericArguments,
-            LabeledFunctionParameter, LabeledFunctionSignature, Ty, TyKind,
+            AdtKind, EnumVariantKind, GenericArgument, GenericArguments, LabeledFunctionParameter,
+            LabeledFunctionSignature, Ty, TyKind,
         },
         resolve::models::DefinitionKind,
         tycheck::utils::generics::GenericsBuilder,
+        tycheck::utils::{instantiate::instantiate_ty_with_args, normalize::normalize_aliases},
     },
     span::{FileID, Span},
     thir::FieldIndex,
 };
+use rustc_hash::FxHashSet;
 
 use super::MirPass;
 
@@ -43,6 +45,13 @@ struct AsyncFrameLayout<'ctx> {
     ty: Ty<'ctx>,
     state_ty: Ty<'ctx>,
     stored_locals: Vec<LocalId>,
+    mobility: AsyncTaskMobility,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AsyncTaskMobility {
+    Pinned,
+    Movable,
 }
 
 struct PollThunkLocals<'ctx> {
@@ -250,11 +259,108 @@ fn build_frame_layout<'ctx>(
         TyKind::Tuple(gcx.store.interners.intern_ty_list(fields)),
         gcx,
     );
+    let mobility = infer_async_task_mobility(gcx, body, &stored_locals);
     AsyncFrameLayout {
         ty: frame_ty,
         state_ty,
         stored_locals,
+        mobility,
     }
+}
+
+fn infer_async_task_mobility<'ctx>(
+    gcx: Gcx<'ctx>,
+    body: &Body<'ctx>,
+    stored_locals: &[LocalId],
+) -> AsyncTaskMobility {
+    let mut visited = FxHashSet::default();
+    if stored_locals
+        .iter()
+        .all(|local| ty_is_movable_across_workers(gcx, body.locals[*local].ty, &mut visited))
+    {
+        AsyncTaskMobility::Movable
+    } else {
+        AsyncTaskMobility::Pinned
+    }
+}
+
+fn ty_is_movable_across_workers<'ctx>(
+    gcx: Gcx<'ctx>,
+    ty: Ty<'ctx>,
+    visited: &mut FxHashSet<Ty<'ctx>>,
+) -> bool {
+    let ty = normalize_aliases(gcx, ty);
+    if ty == gcx.async_handle_ty() {
+        return true;
+    }
+    if !visited.insert(ty) {
+        return true;
+    }
+
+    let movable = match ty.kind() {
+        TyKind::Bool
+        | TyKind::Rune
+        | TyKind::String
+        | TyKind::Int(_)
+        | TyKind::UInt(_)
+        | TyKind::Float(_)
+        | TyKind::Never => true,
+        TyKind::Pointer(..)
+        | TyKind::Reference(..)
+        | TyKind::BoxedExistential { .. }
+        | TyKind::Alias { .. }
+        | TyKind::Infer(_)
+        | TyKind::Parameter(_)
+        | TyKind::Opaque(_)
+        | TyKind::Error => false,
+        TyKind::Array { element, .. } => ty_is_movable_across_workers(gcx, element, visited),
+        TyKind::Tuple(items) => items
+            .iter()
+            .copied()
+            .all(|item| ty_is_movable_across_workers(gcx, item, visited)),
+        TyKind::FnPointer { .. } => true,
+        TyKind::Closure { closure_def_id, .. } => gcx
+            .get_closure_captures(closure_def_id)
+            .map(|captures| {
+                captures
+                    .captures
+                    .iter()
+                    .all(|capture| ty_is_movable_across_workers(gcx, capture.ty, visited))
+            })
+            .unwrap_or(true),
+        TyKind::Adt(def, args) => {
+            if gcx.std_item_def(StdItem::Task) == Some(def.id) {
+                true
+            } else {
+                match def.kind {
+                    AdtKind::Struct => {
+                        gcx.get_struct_definition(def.id)
+                            .fields
+                            .iter()
+                            .all(|field| {
+                                let field_ty = instantiate_ty_with_args(gcx, field.ty, args);
+                                ty_is_movable_across_workers(gcx, field_ty, visited)
+                            })
+                    }
+                    AdtKind::Enum => {
+                        gcx.get_enum_definition(def.id)
+                            .variants
+                            .iter()
+                            .all(|variant| match variant.kind {
+                                EnumVariantKind::Unit => true,
+                                EnumVariantKind::Tuple(fields) => fields.iter().all(|field| {
+                                    let field_ty = instantiate_ty_with_args(gcx, field.ty, args);
+                                    ty_is_movable_across_workers(gcx, field_ty, visited)
+                                }),
+                            })
+                    }
+                }
+            }
+        }
+    };
+
+    visited.remove(&ty);
+    movable
 }
 
 fn add_poll_thunk_locals<'ctx>(
@@ -391,17 +497,10 @@ fn rewrite_yields<'ctx>(
     locals: &PollThunkLocals<'ctx>,
 ) -> CompileResult<()> {
     let span = body_span(body);
-    let async_poll_id = find_or_register_async_runtime_function(
-        gcx,
-        AsyncRuntimeFn::Poll,
-        span,
-    );
+    let async_poll_id = find_or_register_async_runtime_function(gcx, AsyncRuntimeFn::Poll, span);
     let async_poll_ty = gcx.get_type(async_poll_id);
-    let async_destroy_id = find_or_register_async_runtime_function(
-        gcx,
-        AsyncRuntimeFn::Destroy,
-        span,
-    );
+    let async_destroy_id =
+        find_or_register_async_runtime_function(gcx, AsyncRuntimeFn::Destroy, span);
     let async_destroy_ty = gcx.get_type(async_destroy_id);
 
     for (index, site) in yields.iter().enumerate() {
@@ -608,11 +707,7 @@ fn rewrite_yields<'ctx>(
 
         body.basic_blocks[poll_handle_block].terminator = Some(Terminator {
             kind: TerminatorKind::Call {
-                func: fn_operand(
-                    async_poll_id,
-                    GenericArguments::empty(),
-                    async_poll_ty,
-                ),
+                func: fn_operand(async_poll_id, GenericArguments::empty(), async_poll_ty),
                 args: vec![
                     Operand::Copy(Place::from_local(handle_local)),
                     Operand::Copy(Place::from_local(ready_raw_local)),
@@ -1182,15 +1277,18 @@ fn build_async_constructor<'ctx>(
     let async_create_ty = gcx.get_type(async_create_id);
     body.basic_blocks[after_memset].terminator = Some(Terminator {
         kind: TerminatorKind::Call {
-            func: fn_operand(
-                async_create_id,
-                GenericArguments::empty(),
-                async_create_ty,
-            ),
+            func: fn_operand(async_create_id, GenericArguments::empty(), async_create_ty),
             args: vec![
                 Operand::Copy(Place::from_local(frame_bytes_local)),
                 Operand::Copy(Place::from_local(poll_ptr_local)),
                 Operand::Copy(Place::from_local(drop_ptr_local)),
+                const_uint8_operand(
+                    gcx,
+                    match frame.mobility {
+                        AsyncTaskMobility::Pinned => 0,
+                        AsyncTaskMobility::Movable => 1,
+                    },
+                ),
             ],
             destination: Place::from_local(async_return_local),
             target: ret_block,
@@ -1503,6 +1601,7 @@ pub(crate) fn find_or_register_async_runtime_function<'ctx>(
                 raw_ptr_ty(gcx, gcx.types.uint8, crate::hir::Mutability::Mutable),
                 raw_ptr_ty(gcx, gcx.types.uint8, crate::hir::Mutability::Immutable),
                 raw_ptr_ty(gcx, gcx.types.uint8, crate::hir::Mutability::Immutable),
+                gcx.types.uint8,
             ],
             gcx.async_handle_ty(),
         ),
@@ -1588,7 +1687,11 @@ pub(crate) fn find_or_register_async_runtime_function<'ctx>(
         is_variadic: false,
         abi: Some(crate::hir::Abi::Runtime),
     };
-    let signature = gcx.store.arenas.function_signatures.alloc(signature.clone());
+    let signature = gcx
+        .store
+        .arenas
+        .function_signatures
+        .alloc(signature.clone());
     let def = crate::sema::models::SyntheticDefinition {
         name: symbol,
         generics: gcx.empty_generics_for_package(gcx.package_index()),

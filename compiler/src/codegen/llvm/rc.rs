@@ -257,7 +257,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         self.builder.position_at_end(zero_bb);
         self.builder
-            .build_fence(AtomicOrdering::Acquire, 0, "rc_release_acquire")
+            .build_fence(AtomicOrdering::Acquire, 0, "")
             .unwrap();
         self.builder.build_unconditional_branch(merge_bb).unwrap();
 

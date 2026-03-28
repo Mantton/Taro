@@ -1401,7 +1401,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
     fn declare_async_run_root_fn(&self) -> FunctionValue<'llvm> {
         let ptr = self.context.ptr_type(AddressSpace::default());
-        let fn_ty = self.context.void_type().fn_type(&[ptr.into(), ptr.into()], false);
+        let fn_ty = self
+            .context
+            .void_type()
+            .fn_type(&[ptr.into(), ptr.into()], false);
         self.module
             .get_function("__rt__async_run_root")
             .unwrap_or_else(|| {

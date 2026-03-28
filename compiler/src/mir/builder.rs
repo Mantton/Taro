@@ -240,9 +240,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 self.maybe_uninit_local_from_call_arg(value, seen_bindings)
             }
             thir::ExprKind::Call {
-                callee,
-                ref args,
-                ..
+                callee, ref args, ..
             } => {
                 if !self.is_maybe_uninit_pointer_method(callee) {
                     return None;

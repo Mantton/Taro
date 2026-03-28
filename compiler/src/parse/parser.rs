@@ -4315,9 +4315,11 @@ mod tests {
         let file = lexer.tokenize().expect("Lexing failed");
         let next: NextNode = Default::default();
         let mut parser = Parser::new(file, next);
-        vec![parser
-            .parse_expression()
-            .expect_err("expected parse failure")]
+        vec![
+            parser
+                .parse_expression()
+                .expect_err("expected parse failure"),
+        ]
     }
 
     /// Helper to parse a type from source
@@ -5880,7 +5882,10 @@ mod tests {
     #[test]
     fn test_async_closure_prefix_syntax_is_rejected() {
         let errors = parse_expr_err("async || {}");
-        assert!(!errors.is_empty(), "expected parse error for `async || {{}}`");
+        assert!(
+            !errors.is_empty(),
+            "expected parse error for `async || {{}}`"
+        );
     }
 
     #[test]

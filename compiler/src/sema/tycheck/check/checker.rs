@@ -1,6 +1,5 @@
 use crate::{
     compile::context::Gcx,
-    span::Span,
     hir::{self, DefinitionID, NodeID},
     sema::{
         models::Ty,
@@ -9,6 +8,7 @@ use crate::{
             solve::DefaultFallbackGoalData,
         },
     },
+    span::Span,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cell::{Cell, RefCell};
@@ -147,11 +147,7 @@ impl<'arena> Checker<'arena> {
         self.infer_cx.borrow().clone()
     }
 
-    pub(super) fn with_direct_await_operand<T>(
-        &self,
-        node_id: NodeID,
-        f: impl FnOnce() -> T,
-    ) -> T {
+    pub(super) fn with_direct_await_operand<T>(&self, node_id: NodeID, f: impl FnOnce() -> T) -> T {
         let prev = self.direct_await_operand.replace(Some(node_id));
         let result = f();
         self.direct_await_operand.set(prev);
@@ -159,13 +155,13 @@ impl<'arena> Checker<'arena> {
     }
 
     pub(super) fn defer_async_call_surface_check(&self, node_id: NodeID, span: Span) {
-        self.pending_async_surface_checks.borrow_mut().push(
-            PendingAsyncCallSurfaceCheck {
+        self.pending_async_surface_checks
+            .borrow_mut()
+            .push(PendingAsyncCallSurfaceCheck {
                 node_id,
                 span,
                 directly_awaited: self.direct_await_operand.get() == Some(node_id),
-            },
-        );
+            });
     }
 
     pub fn get_local(&self, id: NodeID) -> LocalBinding<'arena> {

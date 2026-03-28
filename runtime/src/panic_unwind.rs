@@ -70,6 +70,14 @@ std::thread_local! {
     static IN_TEST_HARNESS: Cell<bool> = const { Cell::new(false) };
 }
 
+pub(crate) fn in_test_harness() -> bool {
+    IN_TEST_HARNESS.with(Cell::get)
+}
+
+pub(crate) fn set_test_harness_active(active: bool) {
+    IN_TEST_HARNESS.with(|flag| flag.set(active));
+}
+
 #[inline]
 fn set_panic_report(message: String) {
     set_panic_report_with_location(message, None);
@@ -85,6 +93,23 @@ fn set_panic_report_with_location(message: String, location: Option<String>) {
             location,
         });
     });
+}
+
+pub(crate) fn take_thread_panic_report() -> Option<String> {
+    let was_active = PANIC_ACTIVE.with(|flag| {
+        let active = flag.get();
+        flag.set(false);
+        active
+    });
+
+    let report = PANIC_REPORT.with(|slot| slot.borrow_mut().take());
+    if was_active {
+        return report
+            .map(|report| report.message)
+            .or_else(|| Some(String::new()));
+    }
+
+    report.map(|report| report.message)
 }
 
 fn format_location(file: RtString, line: usize, column: usize) -> Option<String> {
@@ -237,7 +262,7 @@ struct TaroPanicPayload;
 /// Returns `true` if the function panicked, `false` if it returned normally.
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt__test_call_fn(fn_ptr: extern "C-unwind" fn()) -> bool {
-    IN_TEST_HARNESS.with(|f| f.set(true));
+    set_test_harness_active(true);
 
     // Suppress Rust's built-in panic output; Taro's test harness owns reporting.
     let old_hook = std::panic::take_hook();
@@ -249,8 +274,19 @@ pub extern "C" fn __rt__test_call_fn(fn_ptr: extern "C-unwind" fn()) -> bool {
     .is_err();
 
     std::panic::set_hook(old_hook);
-    IN_TEST_HARNESS.with(|f| f.set(false));
+    set_test_harness_active(false);
     panicked
+}
+
+pub(crate) fn resume_test_panic(message: String) -> ! {
+    assert!(
+        in_test_harness(),
+        "ICE: resume_test_panic called outside test harness mode"
+    );
+    __rt__panic_unwind(RtString {
+        ptr: message.as_ptr(),
+        len: message.len(),
+    })
 }
 
 #[unsafe(no_mangle)]

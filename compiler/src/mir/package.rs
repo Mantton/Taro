@@ -25,10 +25,10 @@ pub fn build_package<'ctx>(
     gcx: GlobalContext<'ctx>,
 ) -> CompileResult<&'ctx MirPackage<'ctx>> {
     let async_entry = package.entry.and_then(|entry| {
-        package
-            .functions
-            .get(&entry)
-            .and_then(|func| func.is_async.then_some((entry, gcx.function_body_output(entry))))
+        package.functions.get(&entry).and_then(|func| {
+            func.is_async
+                .then_some((entry, gcx.function_body_output(entry)))
+        })
     });
 
     // Phase 1: Build MIR for all functions and run local passes
@@ -144,10 +144,13 @@ fn build_async_entry_wrapper<'ctx>(
     } else {
         output_ty
     };
-    let output_ref_ty = gcx.store.interners.intern_ty(crate::sema::models::TyKind::Reference(
-        output_storage_ty,
-        crate::hir::Mutability::Mutable,
-    ));
+    let output_ref_ty = gcx
+        .store
+        .interners
+        .intern_ty(crate::sema::models::TyKind::Reference(
+            output_storage_ty,
+            crate::hir::Mutability::Mutable,
+        ));
     let output_ptr_ty = gcx
         .store
         .interners
@@ -305,16 +308,11 @@ fn build_async_entry_wrapper<'ctx>(
         span,
     });
 
-    let run_root_id =
-        find_or_register_async_runtime_function(gcx, AsyncRuntimeFn::RunRoot, span);
+    let run_root_id = find_or_register_async_runtime_function(gcx, AsyncRuntimeFn::RunRoot, span);
     let run_root_ty = gcx.get_type(run_root_id);
     body.basic_blocks[prepare_block].terminator = Some(Terminator {
         kind: TerminatorKind::Call {
-            func: fn_operand(
-                run_root_id,
-                GenericArguments::empty(),
-                run_root_ty,
-            ),
+            func: fn_operand(run_root_id, GenericArguments::empty(), run_root_ty),
             args: vec![
                 Operand::Copy(Place::from_local(handle_local)),
                 Operand::Copy(Place::from_local(output_raw_local)),
@@ -342,16 +340,24 @@ fn register_async_entry_definition<'ctx>(
         is_variadic: false,
         abi: None,
     };
-    let signature_ref = gcx.store.arenas.function_signatures.alloc(signature.clone());
+    let signature_ref = gcx
+        .store
+        .arenas
+        .function_signatures
+        .alloc(signature.clone());
     let entry_name = gcx.definition_symbol_or_fallback(entry_id);
     let def = crate::sema::models::SyntheticDefinition {
         name: gcx.intern_symbol(&format!("{}$async_entry", gcx.symbol_text(entry_name))),
-        generics: gcx.store.arenas.generics.alloc(crate::sema::models::Generics {
-            parameters: vec![],
-            has_self: false,
-            parent: None,
-            parent_count: 0,
-        }),
+        generics: gcx
+            .store
+            .arenas
+            .generics
+            .alloc(crate::sema::models::Generics {
+                parameters: vec![],
+                has_self: false,
+                parent: None,
+                parent_count: 0,
+            }),
         signature: signature_ref,
         span,
     };

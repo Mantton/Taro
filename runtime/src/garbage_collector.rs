@@ -2,11 +2,11 @@
 //!
 //! # Thread Safety
 //!
-//! This collector is **single-threaded only**. All allocations, collections, and
-//! shadow stack operations must occur on the same thread. The shadow stack is
-//! thread-local, so each thread has its own root set, but the global heap is
-//! protected by a mutex and concurrent mutation during collection is undefined
-//! behavior.
+//! This collector uses a single global heap with stop-the-world collection
+//! coordinated through per-thread safepoints. Each thread maintains its own
+//! shadow stack, all registered threads rendezvous before collection, and the
+//! global heap remains protected by a mutex. This keeps multithreaded mutation
+//! safe, but allocation and collection are still globally serialized.
 //!
 //! # Overview
 //!

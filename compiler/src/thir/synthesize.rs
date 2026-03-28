@@ -69,7 +69,8 @@ fn register_definition<'ctx>(
                 return;
             };
             let args_ty = closure_args_ty(gcx, inputs);
-            let is_async = gcx.std_item_def(crate::hir::StdItem::AsyncFn) == Some(info.interface_id);
+            let is_async =
+                gcx.std_item_def(crate::hir::StdItem::AsyncFn) == Some(info.interface_id);
 
             let self_ty = if is_async {
                 info.self_ty

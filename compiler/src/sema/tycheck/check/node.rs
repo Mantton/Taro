@@ -1868,7 +1868,10 @@ impl<'ctx> Checker<'ctx> {
             return future_ty;
         }
 
-        if matches!(self.resolved_async_call_status(inner.id, Some(cs)), Some(true)) {
+        if matches!(
+            self.resolved_async_call_status(inner.id, Some(cs)),
+            Some(true)
+        ) {
             return future_ty;
         }
 
@@ -1880,10 +1883,8 @@ impl<'ctx> Checker<'ctx> {
             return Ty::error(gcx);
         }
 
-        gcx.dcx().emit_error(
-            "`await` expects an async call".into(),
-            Some(span),
-        );
+        gcx.dcx()
+            .emit_error("`await` expects an async call".into(), Some(span));
         Ty::error(gcx)
     }
 
@@ -5496,10 +5497,9 @@ impl<'ctx> Checker<'ctx> {
         if self.results.borrow().is_async_call(node_id)
             && self.direct_await_operand.get() != Some(node_id)
         {
-            self.gcx().dcx().emit_error(
-                "async calls must be immediately awaited".into(),
-                Some(span),
-            );
+            self.gcx()
+                .dcx()
+                .emit_error("async calls must be immediately awaited".into(), Some(span));
             return Ty::error(self.gcx());
         }
 

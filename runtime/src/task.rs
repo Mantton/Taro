@@ -5,12 +5,29 @@ use crate::io_poller::Interest;
 type PollThunk = unsafe extern "C-unwind" fn(frame: *mut u8, ctx: *mut u8, out: *mut u8) -> u8;
 type DropThunk = unsafe extern "C" fn(frame: *mut u8);
 
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TaskMobility {
+    Pinned = 0,
+    Movable = 1,
+}
+
+impl TaskMobility {
+    pub(crate) fn from_runtime_byte(value: u8) -> Self {
+        match value {
+            1 => Self::Movable,
+            _ => Self::Pinned,
+        }
+    }
+}
+
 #[repr(C)]
 struct AsyncHandle {
     frame: *mut u8,
     poll_fn: *const u8,
     drop_fn: *const u8,
     completed: bool,
+    mobility: u8,
 }
 
 pub(crate) fn async_handle_frame(handle: *mut u8) -> *mut u8 {
@@ -18,6 +35,13 @@ pub(crate) fn async_handle_frame(handle: *mut u8) -> *mut u8 {
         return std::ptr::null_mut();
     }
     unsafe { (*(handle as *mut AsyncHandle)).frame }
+}
+
+pub(crate) fn async_handle_mobility(handle: *mut u8) -> TaskMobility {
+    if handle.is_null() {
+        return TaskMobility::Pinned;
+    }
+    TaskMobility::from_runtime_byte(unsafe { (*(handle as *mut AsyncHandle)).mobility })
 }
 
 fn decode_poll(ptr: *const u8) -> Option<PollThunk> {
@@ -33,12 +57,14 @@ pub extern "C" fn __rt__async_create(
     frame: *mut u8,
     poll_fn: *const u8,
     drop_fn: *const u8,
+    mobility: u8,
 ) -> *mut u8 {
     let handle = Box::new(AsyncHandle {
         frame,
         poll_fn,
         drop_fn,
         completed: false,
+        mobility,
     });
     Box::into_raw(handle) as *mut u8
 }
@@ -234,6 +260,7 @@ pub extern "C" fn __rt__async_from_spawned(task_id: u64) -> *mut u8 {
         frame as *mut u8,
         spawned_task_value_poll as *const () as *const u8,
         spawned_task_value_drop as *const () as *const u8,
+        TaskMobility::Movable as u8,
     )
 }
 
@@ -244,6 +271,7 @@ pub extern "C" fn __rt__async_yield_now() -> *mut u8 {
         frame,
         yield_now_poll as *const () as *const u8,
         yield_now_drop as *const () as *const u8,
+        TaskMobility::Movable as u8,
     )
 }
 
@@ -258,6 +286,7 @@ pub extern "C" fn __rt__async_sleep(secs: u64, nanos: u32) -> *mut u8 {
         frame as *mut u8,
         sleep_poll as *const () as *const u8,
         sleep_drop as *const () as *const u8,
+        TaskMobility::Movable as u8,
     )
 }
 
@@ -272,6 +301,7 @@ pub extern "C" fn __rt__async_wait_readable(source_id: usize) -> *mut u8 {
         frame as *mut u8,
         io_wait_poll as *const () as *const u8,
         io_wait_drop as *const () as *const u8,
+        TaskMobility::Movable as u8,
     )
 }
 
@@ -286,5 +316,6 @@ pub extern "C" fn __rt__async_wait_writable(source_id: usize) -> *mut u8 {
         frame as *mut u8,
         io_wait_poll as *const () as *const u8,
         io_wait_drop as *const () as *const u8,
+        TaskMobility::Movable as u8,
     )
 }

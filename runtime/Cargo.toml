@@ -7,4 +7,5 @@ edition = "2024"
 crate-type = ["staticlib"]
 
 [dependencies]
+crossbeam-deque = "0.8"
 libc = "0.2"

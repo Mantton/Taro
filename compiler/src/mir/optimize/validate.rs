@@ -315,13 +315,13 @@ fn call_output_ty<'ctx>(
 
             let output_from_ty = match constant.ty.kind() {
                 TyKind::FnPointer { output, .. } => Some(normalize_if_possible(gcx, output)),
-                TyKind::Closure { kind, output, .. } => Some(if kind
-                    == crate::sema::models::ClosureKind::AsyncFn
-                {
-                    gcx.async_handle_ty()
-                } else {
-                    normalize_if_possible(gcx, output)
-                }),
+                TyKind::Closure { kind, output, .. } => {
+                    Some(if kind == crate::sema::models::ClosureKind::AsyncFn {
+                        gcx.async_handle_ty()
+                    } else {
+                        normalize_if_possible(gcx, output)
+                    })
+                }
                 _ => None,
             };
 
@@ -346,13 +346,13 @@ fn call_output_ty<'ctx>(
         Operand::Copy(place) | Operand::CopyWith(place, _) => {
             match place_ty(body, gcx, place).kind() {
                 TyKind::FnPointer { output, .. } => Some(normalize_if_possible(gcx, output)),
-                TyKind::Closure { kind, output, .. } => Some(if kind
-                    == crate::sema::models::ClosureKind::AsyncFn
-                {
-                    gcx.async_handle_ty()
-                } else {
-                    normalize_if_possible(gcx, output)
-                }),
+                TyKind::Closure { kind, output, .. } => {
+                    Some(if kind == crate::sema::models::ClosureKind::AsyncFn {
+                        gcx.async_handle_ty()
+                    } else {
+                        normalize_if_possible(gcx, output)
+                    })
+                }
                 _ => None,
             }
         }
