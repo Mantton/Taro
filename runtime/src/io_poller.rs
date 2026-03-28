@@ -10,14 +10,12 @@ pub(crate) enum Interest {
 mod imp {
     use super::{Interest, StdDuration};
     use libc::{self, c_int};
-    use std::cell::RefCell;
     use std::collections::HashMap;
     use std::os::fd::RawFd;
     use std::ptr;
+    use std::sync::Mutex;
 
-    thread_local! {
-        static REACTOR: RefCell<Option<Reactor>> = const { RefCell::new(None) };
-    }
+    static REACTOR: Mutex<Option<Reactor>> = Mutex::new(None);
 
     struct SourceEntry {
         fd: RawFd,
@@ -128,7 +126,8 @@ mod imp {
                 }
 
                 #[cfg(target_os = "linux")]
-                if cleared && (!source.read_waiters.is_empty() || !source.write_waiters.is_empty()) {
+                if cleared && (!source.read_waiters.is_empty() || !source.write_waiters.is_empty())
+                {
                     needs_rearm.push(source_id);
                 }
             }
@@ -157,16 +156,68 @@ mod imp {
                 .ok_or(libc::EBADF)
         }
 
-        fn wait(&mut self, timeout: Option<StdDuration>) -> Vec<usize> {
-            #[cfg(target_os = "linux")]
-            {
-                self.wait_epoll(timeout)
+        #[cfg(target_os = "linux")]
+        fn process_epoll_events(&mut self, events: &[libc::epoll_event]) -> Vec<usize> {
+            let mut wake = Vec::new();
+            let mut rearm = Vec::new();
+            for event in events {
+                let source_id = event.u64 as usize;
+                let mut needs_rearm = false;
+
+                if let Some(source) = self.sources.get_mut(&source_id) {
+                    let flags = event.events as c_int;
+                    let read_ready = (flags
+                        & (libc::EPOLLIN | libc::EPOLLHUP | libc::EPOLLERR | libc::EPOLLRDHUP))
+                        != 0;
+                    let write_ready =
+                        (flags & (libc::EPOLLOUT | libc::EPOLLHUP | libc::EPOLLERR)) != 0;
+
+                    if read_ready {
+                        drain_unique(&mut wake, &mut source.read_waiters);
+                    }
+                    if write_ready {
+                        drain_unique(&mut wake, &mut source.write_waiters);
+                    }
+
+                    needs_rearm =
+                        !source.read_waiters.is_empty() || !source.write_waiters.is_empty();
+                }
+
+                if needs_rearm {
+                    rearm.push(source_id);
+                }
             }
 
-            #[cfg(target_os = "macos")]
-            {
-                self.wait_kqueue(timeout)
+            for source_id in rearm {
+                if let Err(err) = self.rearm_linux_source(source_id) {
+                    panic!("async io re-arm failed with errno {err}");
+                }
             }
+
+            wake
+        }
+
+        #[cfg(target_os = "macos")]
+        fn process_kqueue_events(&mut self, events: &[libc::kevent]) -> Vec<usize> {
+            let mut wake = Vec::new();
+            for event in events {
+                let source_id = event.udata as usize;
+                let Some(source) = self.sources.get_mut(&source_id) else {
+                    continue;
+                };
+
+                match event.filter {
+                    libc::EVFILT_READ => {
+                        drain_unique(&mut wake, &mut source.read_waiters);
+                    }
+                    libc::EVFILT_WRITE => {
+                        drain_unique(&mut wake, &mut source.write_waiters);
+                    }
+                    _ => {}
+                }
+            }
+
+            wake
         }
 
         #[cfg(target_os = "linux")]
@@ -246,113 +297,7 @@ mod imp {
             self.rearm_linux_source(source_id)
         }
 
-        #[cfg(target_os = "linux")]
-        fn wait_epoll(&mut self, timeout: Option<StdDuration>) -> Vec<usize> {
-            let mut events: [libc::epoll_event; 64] = [libc::epoll_event { events: 0, u64: 0 }; 64];
-            let timeout_ms = epoll_timeout_ms(timeout);
-            let ready = unsafe {
-                libc::epoll_wait(
-                    self.poll_fd,
-                    events.as_mut_ptr(),
-                    events.len() as c_int,
-                    timeout_ms,
-                )
-            };
-            if ready < 0 {
-                let err = last_errno();
-                if err == libc::EINTR {
-                    return Vec::new();
-                }
-                panic!("async io poll wait failed with errno {err}");
-            }
-
-            let mut wake = Vec::new();
-            let mut rearm = Vec::new();
-            for event in &events[..ready as usize] {
-                let source_id = event.u64 as usize;
-                let mut needs_rearm = false;
-
-                if let Some(source) = self.sources.get_mut(&source_id) {
-                    let flags = event.events as c_int;
-                    let read_ready = (flags
-                        & (libc::EPOLLIN | libc::EPOLLHUP | libc::EPOLLERR | libc::EPOLLRDHUP))
-                        != 0;
-                    let write_ready =
-                        (flags & (libc::EPOLLOUT | libc::EPOLLHUP | libc::EPOLLERR)) != 0;
-
-                    if read_ready {
-                        drain_unique(&mut wake, &mut source.read_waiters);
-                    }
-                    if write_ready {
-                        drain_unique(&mut wake, &mut source.write_waiters);
-                    }
-
-                    needs_rearm = !source.read_waiters.is_empty() || !source.write_waiters.is_empty();
-                }
-
-                if needs_rearm {
-                    rearm.push(source_id);
-                }
-            }
-
-            for source_id in rearm {
-                if let Err(err) = self.rearm_linux_source(source_id) {
-                    panic!("async io re-arm failed with errno {err}");
-                }
-            }
-
-            wake
-        }
-
-        #[cfg(target_os = "macos")]
-        fn wait_kqueue(&mut self, timeout: Option<StdDuration>) -> Vec<usize> {
-            let mut events: [libc::kevent; 64] = unsafe { std::mem::zeroed() };
-            let mut timeout_storage = timeout.map(|duration| libc::timespec {
-                tv_sec: duration.as_secs() as libc::time_t,
-                tv_nsec: duration.subsec_nanos() as libc::c_long,
-            });
-            let timeout_ptr = timeout_storage
-                .as_mut()
-                .map_or(ptr::null(), |timespec| timespec as *const libc::timespec);
-
-            let ready = unsafe {
-                libc::kevent(
-                    self.poll_fd,
-                    ptr::null(),
-                    0,
-                    events.as_mut_ptr(),
-                    events.len() as c_int,
-                    timeout_ptr,
-                )
-            };
-            if ready < 0 {
-                let err = last_errno();
-                if err == libc::EINTR {
-                    return Vec::new();
-                }
-                panic!("async io poll wait failed with errno {err}");
-            }
-
-            let mut wake = Vec::new();
-            for event in &events[..ready as usize] {
-                let source_id = event.udata as usize;
-                let Some(source) = self.sources.get_mut(&source_id) else {
-                    continue;
-                };
-
-                match event.filter {
-                    libc::EVFILT_READ => {
-                        drain_unique(&mut wake, &mut source.read_waiters);
-                    }
-                    libc::EVFILT_WRITE => {
-                        drain_unique(&mut wake, &mut source.write_waiters);
-                    }
-                    _ => {}
-                }
-            }
-
-            wake
-        }
+        // wait methods replaced by process_*_events
     }
 
     impl Drop for Reactor {
@@ -421,20 +366,16 @@ mod imp {
     }
 
     fn with_reactor_mut<R>(f: impl FnOnce(&mut Reactor) -> R) -> Option<R> {
-        REACTOR.with(|cell| {
-            let mut borrow = cell.borrow_mut();
-            borrow.as_mut().map(f)
-        })
+        let mut guard = REACTOR.lock().unwrap();
+        guard.as_mut().map(f)
     }
 
     fn ensure_reactor() -> Result<(), i32> {
-        REACTOR.with(|cell| {
-            let mut borrow = cell.borrow_mut();
-            if borrow.is_none() {
-                *borrow = Some(Reactor::new()?);
-            }
-            Ok(())
-        })
+        let mut guard = REACTOR.lock().unwrap();
+        if guard.is_none() {
+            *guard = Some(Reactor::new()?);
+        }
+        Ok(())
     }
 
     fn last_errno() -> i32 {
@@ -509,8 +450,8 @@ mod imp {
     }
 
     pub(crate) fn read_source(source_id: usize, buf: *mut u8, len: usize) -> isize {
-        let fd = with_reactor_mut(|reactor| reactor.source_fd(source_id))
-            .unwrap_or(Err(libc::EBADF));
+        let fd =
+            with_reactor_mut(|reactor| reactor.source_fd(source_id)).unwrap_or(Err(libc::EBADF));
         let fd = match fd {
             Ok(value) => value,
             Err(err) => return -(err as isize),
@@ -525,8 +466,8 @@ mod imp {
     }
 
     pub(crate) fn write_source(source_id: usize, buf: *const u8, len: usize) -> isize {
-        let fd = with_reactor_mut(|reactor| reactor.source_fd(source_id))
-            .unwrap_or(Err(libc::EBADF));
+        let fd =
+            with_reactor_mut(|reactor| reactor.source_fd(source_id)).unwrap_or(Err(libc::EBADF));
         let fd = match fd {
             Ok(value) => value,
             Err(err) => return -(err as isize),
@@ -555,7 +496,80 @@ mod imp {
     }
 
     pub(crate) fn wait(timeout: Option<StdDuration>) -> Vec<usize> {
-        with_reactor_mut(|reactor| reactor.wait(timeout)).unwrap_or_default()
+        let poll_fd = {
+            let guard = REACTOR.lock().unwrap();
+            guard.as_ref().map(|r| r.poll_fd)
+        };
+        let Some(poll_fd) = poll_fd else {
+            return Vec::new();
+        };
+
+        #[cfg(target_os = "linux")]
+        {
+            let mut events: [libc::epoll_event; 64] = [libc::epoll_event { events: 0, u64: 0 }; 64];
+            let timeout_ms = epoll_timeout_ms(timeout);
+            crate::garbage_collector::enter_safepoint();
+            let ready = unsafe {
+                libc::epoll_wait(
+                    poll_fd,
+                    events.as_mut_ptr(),
+                    events.len() as c_int,
+                    timeout_ms,
+                )
+            };
+            crate::garbage_collector::leave_safepoint();
+
+            if ready < 0 {
+                let err = last_errno();
+                if err == libc::EINTR {
+                    return Vec::new();
+                }
+                panic!("async io poll wait failed with errno {err}");
+            }
+            if ready == 0 {
+                return Vec::new();
+            }
+            with_reactor_mut(|reactor| reactor.process_epoll_events(&events[..ready as usize]))
+                .unwrap_or_default()
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let mut events: [libc::kevent; 64] = unsafe { std::mem::zeroed() };
+            let mut timeout_storage = timeout.map(|duration| libc::timespec {
+                tv_sec: duration.as_secs() as libc::time_t,
+                tv_nsec: duration.subsec_nanos() as libc::c_long,
+            });
+            let timeout_ptr = timeout_storage
+                .as_mut()
+                .map_or(ptr::null(), |timespec| timespec as *const libc::timespec);
+
+            crate::garbage_collector::enter_safepoint();
+            let ready = unsafe {
+                libc::kevent(
+                    poll_fd,
+                    ptr::null(),
+                    0,
+                    events.as_mut_ptr(),
+                    events.len() as c_int,
+                    timeout_ptr,
+                )
+            };
+            crate::garbage_collector::leave_safepoint();
+
+            if ready < 0 {
+                let err = last_errno();
+                if err == libc::EINTR {
+                    return Vec::new();
+                }
+                panic!("async io poll wait failed with errno {err}");
+            }
+            if ready == 0 {
+                return Vec::new();
+            }
+            with_reactor_mut(|reactor| reactor.process_kqueue_events(&events[..ready as usize]))
+                .unwrap_or_default()
+        }
     }
 
     pub(crate) fn cancel_task(task_id: usize) {

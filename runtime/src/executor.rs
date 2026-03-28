@@ -61,12 +61,7 @@ impl Executor {
         }
     }
 
-    fn add_task(
-        &mut self,
-        handle: *mut u8,
-        out_ptr: *mut u8,
-        out_buf: Option<Vec<u8>>,
-    ) -> TaskId {
+    fn add_task(&mut self, handle: *mut u8, out_ptr: *mut u8, out_buf: Option<Vec<u8>>) -> TaskId {
         let frame = async_handle_frame(handle);
         let id = self.tasks.len();
         self.tasks.push(Some(ExecutorTask {
@@ -105,7 +100,9 @@ impl Executor {
     }
 
     fn complete_task(&mut self, id: TaskId) {
-        let task = self.tasks[id].as_mut().expect("ICE: completing absent task");
+        let task = self.tasks[id]
+            .as_mut()
+            .expect("ICE: completing absent task");
         task.completed = true;
 
         // Remove the frame from GC roots — locals have been consumed.
@@ -121,10 +118,7 @@ impl Executor {
     }
 
     fn has_incomplete_tasks(&self) -> bool {
-        self.tasks
-            .iter()
-            .flatten()
-            .any(|task| !task.completed)
+        self.tasks.iter().flatten().any(|task| !task.completed)
     }
 
     fn add_sleep_timer(&mut self, task_id: TaskId, deadline: Instant) {
@@ -217,7 +211,9 @@ fn drive_executor() {
         let (task_id, handle, out_ptr) = match action {
             DriveAction::Poll(task_id, handle, out_ptr) => (task_id, handle, out_ptr),
             DriveAction::Sleep(duration) => {
+                crate::garbage_collector::enter_safepoint();
                 std::thread::sleep(duration);
+                crate::garbage_collector::leave_safepoint();
                 continue;
             }
             DriveAction::WaitIo(timeout) => {
@@ -281,6 +277,7 @@ fn teardown_executor() {
             }
         }
     });
+    crate::garbage_collector::__gc__thread_detach();
 }
 
 struct ExecutorTeardownGuard;
@@ -327,7 +324,9 @@ pub extern "C" fn __rt__executor_spawn(handle: *mut u8, out_size: u64) -> u64 {
 pub extern "C" fn __rt__executor_poll_spawned(task_id: u64, out: *mut u8) -> u8 {
     EXECUTOR.with(|cell| {
         let mut borrow = cell.borrow_mut();
-        let executor = borrow.as_mut().expect("poll_spawned called outside executor");
+        let executor = borrow
+            .as_mut()
+            .expect("poll_spawned called outside executor");
         let id = task_id as usize;
 
         let task = executor.tasks[id]

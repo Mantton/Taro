@@ -6,7 +6,10 @@ use crate::{
         tycheck::utils::instantiate::instantiate_ty_with_args,
     },
 };
-use inkwell::{AddressSpace, types::BasicType, values::PointerValue};
+use inkwell::{
+    AddressSpace, AtomicOrdering, AtomicRMWBinOp, IntPredicate, types::BasicType,
+    values::PointerValue,
+};
 
 impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     /// Zero-initialize Rc-containing non-param stack slots so that unconditional
@@ -211,34 +214,54 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         Some(tmp)
     }
 
-    /// Emit an inline `rc_inc`: load strong count, add 1, store.
     pub(super) fn emit_rc_retain(&self, rc_ptr: PointerValue<'llvm>) {
-        let strong_ptr = rc_ptr;
-        let old = self
-            .builder
-            .build_load(self.usize_ty, strong_ptr, "rc_strong")
-            .unwrap()
-            .into_int_value();
-        let new = self
-            .builder
-            .build_int_add(old, self.usize_ty.const_int(1, false), "rc_inc")
+        self.builder
+            .build_atomicrmw(
+                AtomicRMWBinOp::Add,
+                rc_ptr,
+                self.usize_ty.const_int(1, false),
+                AtomicOrdering::Monotonic,
+            )
             .unwrap();
-        self.builder.build_store(strong_ptr, new).unwrap();
     }
 
-    /// Emit an inline `rc_dec`: load strong count, sub 1, store.
     pub(super) fn emit_rc_release(&self, rc_ptr: PointerValue<'llvm>) {
-        let strong_ptr = rc_ptr;
         let old = self
             .builder
-            .build_load(self.usize_ty, strong_ptr, "rc_strong")
-            .unwrap()
-            .into_int_value();
-        let new = self
-            .builder
-            .build_int_sub(old, self.usize_ty.const_int(1, false), "rc_dec")
+            .build_atomicrmw(
+                AtomicRMWBinOp::Sub,
+                rc_ptr,
+                self.usize_ty.const_int(1, false),
+                AtomicOrdering::Release,
+            )
             .unwrap();
-        self.builder.build_store(strong_ptr, new).unwrap();
+        let is_last = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                old,
+                self.usize_ty.const_int(1, false),
+                "rc_last_release",
+            )
+            .unwrap();
+        let current_fn = self.current_fn.unwrap();
+        let zero_bb = self
+            .context
+            .append_basic_block(current_fn, "rc_release_zero");
+        let merge_bb = self
+            .context
+            .append_basic_block(current_fn, "rc_release_merge");
+        self.builder
+            .build_conditional_branch(is_last, zero_bb, merge_bb)
+            .unwrap();
+
+        self.builder.position_at_end(zero_bb);
+        self.builder
+            .build_fence(AtomicOrdering::Acquire, 0, "rc_release_acquire")
+            .unwrap();
+        self.builder.build_unconditional_branch(merge_bb).unwrap();
+
+        self.builder.position_at_end(merge_bb);
     }
 
     /// Walk the type structure at `base_ptr` and retain (rc_inc) all Rc pointer fields.

@@ -43,7 +43,8 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
 // === Public GC surface ===
 
@@ -149,13 +150,181 @@ pub struct GcShadowFrame {
 
 // Thread-local shadow stack top. Each thread maintains its own shadow stack,
 // ensuring no data races on the root set. The GC iterates all thread-local
-// stacks during collection (currently only the main thread is supported).
+// stacks during collection.
 std::thread_local! {
-    static GC_SHADOW_TOP: std::cell::Cell<*mut GcShadowFrame> = const { std::cell::Cell::new(std::ptr::null_mut()) };
+    pub(crate) static GC_SHADOW_TOP: std::cell::Cell<*mut GcShadowFrame> = const { std::cell::Cell::new(std::ptr::null_mut()) };
+}
+
+pub(crate) struct ThreadState {
+    pub id: std::thread::ThreadId,
+    pub shadow_top: *const std::cell::Cell<*mut GcShadowFrame>,
+    pub at_safepoint: AtomicBool,
+}
+unsafe impl Send for ThreadState {}
+unsafe impl Sync for ThreadState {}
+
+static THREAD_REGISTRY: Mutex<Vec<Arc<ThreadState>>> = Mutex::new(Vec::new());
+static THREAD_REGISTRY_EPOCH: AtomicUsize = AtomicUsize::new(0);
+static THREAD_ATTACHING: AtomicUsize = AtomicUsize::new(0);
+static GC_REQUESTED: AtomicBool = AtomicBool::new(false);
+static GC_RESUME_COND: Condvar = Condvar::new();
+static GC_RESUME_LOCK: Mutex<()> = Mutex::new(());
+
+struct ThreadStateWrapper(Arc<ThreadState>);
+impl Drop for ThreadStateWrapper {
+    fn drop(&mut self) {
+        unregister_thread(self.0.id);
+    }
+}
+
+fn register_current_thread_state() -> Arc<ThreadState> {
+    THREAD_ATTACHING.fetch_add(1, Ordering::AcqRel);
+
+    let state = Arc::new(ThreadState {
+        id: std::thread::current().id(),
+        shadow_top: GC_SHADOW_TOP.with(|top| top as *const _),
+        at_safepoint: AtomicBool::new(false),
+    });
+
+    {
+        let mut reg = THREAD_REGISTRY.lock().unwrap();
+        reg.retain(|existing| existing.id != state.id);
+        reg.push(state.clone());
+    }
+
+    THREAD_REGISTRY_EPOCH.fetch_add(1, Ordering::Release);
+    THREAD_ATTACHING.fetch_sub(1, Ordering::AcqRel);
+    state
+}
+
+fn unregister_thread(id: std::thread::ThreadId) {
+    let mut reg = THREAD_REGISTRY.lock().unwrap();
+    let len_before = reg.len();
+    reg.retain(|state| state.id != id);
+    if reg.len() != len_before {
+        THREAD_REGISTRY_EPOCH.fetch_add(1, Ordering::Release);
+    }
+}
+
+std::thread_local! {
+    static CURRENT_THREAD_STATE: ThreadStateWrapper = ThreadStateWrapper(register_current_thread_state());
+}
+
+fn with_current_thread_state<R>(f: impl FnOnce(&ThreadState) -> R) -> R {
+    CURRENT_THREAD_STATE.with(|state| f(&state.0))
+}
+
+fn set_current_thread_safepoint(at_safepoint: bool) {
+    with_current_thread_state(|state| {
+        state.at_safepoint.store(at_safepoint, Ordering::Release);
+    });
+}
+
+fn wait_for_gc_resume() {
+    if GC_REQUESTED.load(Ordering::Acquire) {
+        let mut guard = GC_RESUME_LOCK.lock().unwrap();
+        while GC_REQUESTED.load(Ordering::Acquire) {
+            guard = GC_RESUME_COND.wait(guard).unwrap();
+        }
+    }
+}
+
+pub(crate) fn ensure_thread_registered() {
+    let should_park = with_current_thread_state(|state| {
+        GC_REQUESTED.load(Ordering::Acquire) && !state.at_safepoint.load(Ordering::Relaxed)
+    });
+    if should_park {
+        park_at_safepoint();
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __gc__thread_attach() {
+    enter_safepoint();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __gc__thread_detach() {
+    unregister_thread(std::thread::current().id());
+}
+
+pub(crate) fn enter_safepoint() {
+    CURRENT_THREAD_STATE.with(|_| {});
+    set_current_thread_safepoint(true);
+}
+
+pub(crate) fn leave_safepoint() {
+    wait_for_gc_resume();
+    set_current_thread_safepoint(false);
+}
+
+pub(crate) fn park_at_safepoint() {
+    enter_safepoint();
+    leave_safepoint();
+}
+
+fn snapshot_registered_threads() -> (usize, Vec<Arc<ThreadState>>) {
+    let registry = THREAD_REGISTRY.lock().unwrap();
+    let epoch = THREAD_REGISTRY_EPOCH.load(Ordering::Acquire);
+    (epoch, registry.clone())
+}
+
+fn wait_for_registered_threads(snapshot: &[Arc<ThreadState>], current_id: std::thread::ThreadId) {
+    for thread in snapshot {
+        if thread.id == current_id {
+            continue;
+        }
+        while !thread.at_safepoint.load(Ordering::Acquire) {
+            std::hint::spin_loop();
+            std::thread::yield_now();
+        }
+    }
+}
+
+fn threads_for_collection(current_id: std::thread::ThreadId) -> Vec<Arc<ThreadState>> {
+    loop {
+        while THREAD_ATTACHING.load(Ordering::Acquire) != 0 {
+            std::hint::spin_loop();
+            std::thread::yield_now();
+        }
+
+        let (epoch, snapshot) = snapshot_registered_threads();
+        wait_for_registered_threads(&snapshot, current_id);
+
+        if THREAD_ATTACHING.load(Ordering::Acquire) == 0
+            && THREAD_REGISTRY_EPOCH.load(Ordering::Acquire) == epoch
+        {
+            return snapshot;
+        }
+    }
+}
+
+fn initiate_collection() {
+    // Ensure only one thread acts as the collector
+    if GC_REQUESTED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        park_at_safepoint();
+        return;
+    }
+
+    let current_id = std::thread::current().id();
+    let threads = threads_for_collection(current_id);
+
+    // Now all other threads are parked. We can safely collect.
+    with_gc(|gc| gc.collect(&threads));
+
+    // Wake up everyone
+    GC_REQUESTED.store(false, Ordering::Release);
+    let _guard = GC_RESUME_LOCK.lock().unwrap();
+    GC_RESUME_COND.notify_all();
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt__gc_push_frame(frame: *mut GcShadowFrame) {
+    ensure_thread_registered();
+    leave_safepoint();
     GC_SHADOW_TOP.with(|top| {
         unsafe { (*frame).prev = top.get() };
         top.set(frame);
@@ -164,9 +333,11 @@ pub extern "C" fn __rt__gc_push_frame(frame: *mut GcShadowFrame) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt__gc_pop_frame(frame: *mut GcShadowFrame) {
-    GC_SHADOW_TOP.with(|top| {
+    let reached_thread_root = GC_SHADOW_TOP.with(|top| {
         if top.get() == frame {
-            unsafe { top.set((*frame).prev) };
+            let prev = unsafe { (*frame).prev };
+            top.set(prev);
+            prev.is_null()
         } else {
             // Frame is not at top - this can happen with longjmp/exceptions.
             // Walk the list to unlink if present (debug builds only).
@@ -177,13 +348,17 @@ pub extern "C" fn __rt__gc_pop_frame(frame: *mut GcShadowFrame) {
                     let prev = unsafe { (*current).prev };
                     if prev == frame {
                         unsafe { (*current).prev = (*frame).prev };
-                        return;
+                        return false;
                     }
                     current = prev;
                 }
             }
+            false
         }
     });
+    if reached_thread_root {
+        enter_safepoint();
+    }
 }
 
 /// Allocate a GC-managed object with a payload of `size` bytes.
@@ -192,8 +367,13 @@ pub extern "C" fn __rt__gc_pop_frame(frame: *mut GcShadowFrame) {
 /// Returns null if size is 0 or desc is null.
 #[unsafe(no_mangle)]
 pub extern "C" fn __gc__alloc(size: usize, desc: *const GcDesc) -> *mut u8 {
+    ensure_thread_registered();
     if size == 0 || desc.is_null() {
         return std::ptr::null_mut();
+    }
+    let needs_gc = with_gc(|gc| gc.alloc_since_gc >= gc.gc_threshold_bytes);
+    if needs_gc {
+        initiate_collection();
     }
     with_gc(|gc| gc.alloc(size, desc, false))
 }
@@ -209,6 +389,7 @@ pub extern "C" fn __gc__rc_alloc(
     payload_align: usize,
     desc: *const GcDesc,
 ) -> *mut u8 {
+    ensure_thread_registered();
     if desc.is_null() {
         return std::ptr::null_mut();
     }
@@ -221,6 +402,10 @@ pub extern "C" fn __gc__rc_alloc(
     };
     // Shift payload descriptor offsets so tracing starts after the Rc header.
     let shifted_desc = shifted_rc_desc(desc, payload_offset, effective_align);
+    let needs_gc = with_gc(|gc| gc.alloc_since_gc >= gc.gc_threshold_bytes);
+    if needs_gc {
+        initiate_collection();
+    }
     let ptr = with_gc(|gc| gc.alloc(total_size, shifted_desc, false));
     if !ptr.is_null() {
         // Initialize strong count to 1.
@@ -234,6 +419,7 @@ pub extern "C" fn __gc__rc_alloc(
 /// The descriptor is for a single element; total allocation is elem_size * cap.
 #[unsafe(no_mangle)]
 pub extern "C" fn __gc__makebuf(desc: *const GcDesc, len: usize, cap: usize) -> *mut u8 {
+    ensure_thread_registered();
     if cap < len {
         return std::ptr::null_mut();
     }
@@ -248,22 +434,31 @@ pub extern "C" fn __gc__makebuf(desc: *const GcDesc, len: usize, cap: usize) -> 
     if total == 0 {
         return std::ptr::null_mut();
     }
+    let needs_gc = with_gc(|gc| gc.alloc_since_gc >= gc.gc_threshold_bytes);
+    if needs_gc {
+        initiate_collection();
+    }
     with_gc(|gc| gc.alloc(total, desc, true))
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __gc__collect() {
-    with_gc(|gc| gc.collect());
+    ensure_thread_registered();
+    initiate_collection();
 }
 
 /// Poll for a pending collection at a compiler-inserted safepoint.
 #[unsafe(no_mangle)]
 pub extern "C" fn __gc__poll() {
-    with_gc(|gc| {
-        if gc.alloc_since_gc >= gc.gc_threshold_bytes {
-            gc.collect();
+    ensure_thread_registered();
+    if GC_REQUESTED.load(Ordering::Acquire) {
+        park_at_safepoint();
+    } else {
+        let needs_gc = with_gc(|gc| gc.alloc_since_gc >= gc.gc_threshold_bytes);
+        if needs_gc {
+            initiate_collection();
         }
-    });
+    }
 }
 
 /// Manually add a root pointer (useful for embeddings/tests).
@@ -989,12 +1184,12 @@ impl Gc {
         self.persistent_roots.retain(|&r| r != ptr);
     }
 
-    fn collect(&mut self) {
+    fn collect(&mut self, threads: &[Arc<ThreadState>]) {
         // Stop-the-world collection: gather roots, mark, then sweep.
         let mut manual_roots = std::mem::take(&mut self.manual_roots);
         let static_roots = std::mem::take(&mut self.static_roots);
         manual_roots.extend(self.persistent_roots.iter().copied());
-        self.mark_roots(manual_roots.into_iter(), &static_roots);
+        self.mark_roots(manual_roots.into_iter(), &static_roots, threads);
         self.static_roots = static_roots;
         let freed = self.sweep();
         let (free_runs, free_pages) = self.free_page_stats();
@@ -1012,8 +1207,12 @@ impl Gc {
         self.gc_threshold_bytes = next_gc_threshold(self.stats.live_bytes);
     }
 
-    fn mark_roots<I>(&mut self, manual_roots: I, static_roots: &[Range<*const u8>])
-    where
+    fn mark_roots<I>(
+        &mut self,
+        manual_roots: I,
+        static_roots: &[Range<*const u8>],
+        threads: &[Arc<ThreadState>],
+    ) where
         I: IntoIterator<Item = *const u8>,
     {
         // Pre-allocate the mark stack to avoid reallocations during tracing.
@@ -1034,7 +1233,7 @@ impl Gc {
             }
         }
 
-        self.push_shadow_roots(&mut stack);
+        self.push_shadow_roots(&mut stack, threads);
         self.trace_stack(&mut stack);
     }
 
@@ -1113,10 +1312,11 @@ impl Gc {
         }
     }
 
-    fn push_shadow_roots(&self, stack: &mut Vec<*const u8>) {
-        // Walk the shadow stack frames produced by codegen.
-        GC_SHADOW_TOP.with(|top| {
-            let mut frame = top.get();
+    fn push_shadow_roots(&self, stack: &mut Vec<*const u8>, threads: &[Arc<ThreadState>]) {
+        // Walk the shadow stack frames of the parked thread snapshot.
+        for thread in threads {
+            let top_cell = unsafe { &*thread.shadow_top };
+            let mut frame = top_cell.get();
             while !frame.is_null() {
                 let count = unsafe { (*frame).count };
                 let slots = unsafe { (*frame).slots };
@@ -1130,7 +1330,7 @@ impl Gc {
                 }
                 frame = unsafe { (*frame).prev };
             }
-        });
+        }
     }
 
     // Sweep spans: free unmarked slots, and return empty spans to the segment.
