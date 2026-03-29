@@ -1,0 +1,706 @@
+@cfg(family("unix"))
+const FRAME_HEADER_LEN: usize = 4
+
+@cfg(family("unix"))
+func ipv6Loopback(_ port: uint16) -> std.net.SocketAddress {
+    let ip: std.net.IpAddress = .ipv6([
+        0_u8, 0_u8, 0_u8, 0_u8,
+        0_u8, 0_u8, 0_u8, 0_u8,
+        0_u8, 0_u8, 0_u8, 0_u8,
+        0_u8, 0_u8, 0_u8, 1_u8,
+    ])
+    return std.net.SocketAddress {
+        ip,
+        port,
+    }
+}
+
+@cfg(family("unix"))
+func byteSpan(_ value: &uint8) -> std.mem.Span[uint8] {
+    return std.mem.Span[uint8].from(unsafe { value as *const uint8 }, 1)
+}
+
+@cfg(family("unix"))
+func byteMutSpan(_ value: &mut uint8) -> std.mem.MutableSpan[uint8] {
+    return std.mem.MutableSpan[uint8].from(unsafe { value as *mut uint8 }, 1)
+}
+
+@cfg(family("unix"))
+func headerSpan(_ header: &[uint8; FRAME_HEADER_LEN]) -> std.mem.Span[uint8] {
+    let ptr = unsafe { (header as *const [uint8; FRAME_HEADER_LEN]) as *const uint8 }
+    return std.mem.Span[uint8].from(ptr, FRAME_HEADER_LEN)
+}
+
+@cfg(family("unix"))
+func headerMutSpan(_ header: &mut [uint8; FRAME_HEADER_LEN]) -> std.mem.MutableSpan[uint8] {
+    let ptr = unsafe { (header as *mut [uint8; FRAME_HEADER_LEN]) as *mut uint8 }
+    return std.mem.MutableSpan[uint8].from(ptr, FRAME_HEADER_LEN)
+}
+
+@cfg(family("unix"))
+func stringBytes(_ s: string) -> std.mem.Span[uint8] {
+    let len = std.string.stringLen(s)
+    if len == 0 {
+        return std.mem.Span[uint8].from(std.string.stringData(""), 0)
+    }
+    return std.mem.Span[uint8].from(std.string.stringData(s), len)
+}
+
+@cfg(family("unix"))
+func mutableSpanFromPtr(_ ptr: *mut uint8, _ len: usize) -> std.mem.MutableSpan[uint8] {
+    return std.mem.MutableSpan[uint8].from(ptr, len)
+}
+
+@cfg(family("unix"))
+func encodeFrameLength(_ len: usize) -> [uint8; FRAME_HEADER_LEN] {
+    let value = len as uint32
+    return [
+        ((value >> 24_u32) & 255_u32) as uint8,
+        ((value >> 16_u32) & 255_u32) as uint8,
+        ((value >> 8_u32) & 255_u32) as uint8,
+        (value & 255_u32) as uint8,
+    ]
+}
+
+@cfg(family("unix"))
+func decodeFrameLength(_ header: &[uint8; FRAME_HEADER_LEN]) -> usize {
+    let b0 = (*header.at(0 as usize) as uint32) << 24_u32
+    let b1 = (*header.at(1 as usize) as uint32) << 16_u32
+    let b2 = (*header.at(2 as usize) as uint32) << 8_u32
+    let b3 = *header.at(3 as usize) as uint32
+    return (b0 | b1 | b2 | b3) as usize
+}
+
+@cfg(family("unix"))
+func transformedMessage(_ request: string) -> string {
+    return "server<" + request + ">:ok"
+}
+
+@cfg(family("unix"))
+func expectUnexpectedCode(_ err: std.io.Error, _ code: int32, _ message: string) {
+    match err {
+        case .unexpected(actual) => std.testing.assertEqual(actual, code, message)
+        case _ => std.panic.panic(message)
+    }
+}
+
+@cfg(family("unix"))
+func acceptEchoByte(_ listener: &std.net.TcpListener, _ expected: uint8) async {
+    let acceptRes = await listener.accept()
+    let accepted = match acceptRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("accept should succeed")
+    }
+
+    let stream = accepted.0
+    var received: uint8 = 0
+    let readRes = await stream.read(byteMutSpan(&mut received))
+    let readCount = match readRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("server read should succeed")
+    }
+    std.testing.assertEqual(readCount, 1 as usize, "server should read exactly one byte")
+    std.testing.assertEqual(received, expected, "server should receive the expected byte")
+
+    let writeRes = await stream.write(byteSpan(&received))
+    let writeCount = match writeRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("server write should succeed")
+    }
+    std.testing.assertEqual(writeCount, 1 as usize, "server should write exactly one byte")
+
+    match stream.close() {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("accepted stream close should succeed")
+    }
+}
+
+@cfg(family("unix"))
+func acceptAndEchoClients(_ listener: &std.net.TcpListener, _ expectedClients: int32) async -> int32 {
+    var handled: int32 = 0
+
+    while handled < expectedClients {
+        let acceptRes = await listener.accept()
+        let pair = match acceptRes {
+            case .ok(value) => value
+            case .err(_) => std.panic.panic("async listener accept should succeed")
+        }
+
+        let stream = pair.0
+        var received: uint8 = 0
+        let readRes = await stream.read(byteMutSpan(&mut received))
+        let readCount = match readRes {
+            case .ok(value) => value
+            case .err(_) => std.panic.panic("async server read should succeed")
+        }
+        std.testing.assertEqual(readCount, 1 as usize, "async server should read one byte per client")
+
+        let writeRes = await stream.write(byteSpan(&received))
+        let writeCount = match writeRes {
+            case .ok(value) => value
+            case .err(_) => std.panic.panic("async server write should succeed")
+        }
+        std.testing.assertEqual(writeCount, 1 as usize, "async server should write one byte per client")
+
+        match stream.close() {
+            case .ok(_) => {}
+            case .err(_) => std.panic.panic("async accepted stream close should succeed")
+        }
+
+        handled += 1
+    }
+
+    return handled
+}
+
+@cfg(family("unix"))
+func writeMessage(_ stream: &std.net.TcpStream, _ message: string) async {
+    let header = encodeFrameLength(std.string.stringLen(message))
+    let headerRes = await stream.writeAll(headerSpan(&header))
+    match headerRes {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("writeAll header should succeed")
+    }
+
+    let writeRes = await stream.write(message)
+    match writeRes {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("write string should succeed")
+    }
+}
+
+@cfg(family("unix"))
+func readMessage(_ stream: &std.net.TcpStream) async -> string {
+    var header: [uint8; FRAME_HEADER_LEN] = [0; FRAME_HEADER_LEN]
+    let headerRes = await stream.readExact(headerMutSpan(&mut header))
+    match headerRes {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("readExact header should succeed")
+    }
+
+    let payloadLen = decodeFrameLength(&header)
+    if payloadLen == 0 {
+        return ""
+    }
+
+    let payload = std.mem.allocBytes(payloadLen)
+    let payloadRes = await stream.readExact(mutableSpanFromPtr(payload, payloadLen))
+    match payloadRes {
+        case .ok(_) => return std.string.stringFromParts(payload, payloadLen)
+        case .err(_) => std.panic.panic("readExact payload should succeed")
+    }
+}
+
+@cfg(family("unix"))
+func acceptAndTransformMessages(_ listener: &std.net.TcpListener, _ expectedClients: int32) async -> int32 {
+    var handled: int32 = 0
+
+    while handled < expectedClients {
+        let acceptRes = await listener.accept()
+        let pair = match acceptRes {
+            case .ok(value) => value
+            case .err(_) => std.panic.panic("string listener accept should succeed")
+        }
+
+        let stream = pair.0
+        let request = await readMessage(&stream)
+        let response = transformedMessage(request)
+        await writeMessage(&stream, response)
+
+        match stream.close() {
+            case .ok(_) => {}
+            case .err(_) => std.panic.panic("string server close should succeed")
+        }
+
+        handled += 1_i32
+    }
+
+    return handled
+}
+
+@cfg(family("unix"))
+func clientRoundTrip(_ address: std.net.SocketAddress, _ value: uint8) async -> int32 {
+    let connectRes = await std.net.TcpStream.connect(address)
+    let stream = match connectRes {
+        case .ok(inner) => inner
+        case .err(_) => std.panic.panic("concurrent async connect should succeed")
+    }
+
+    var outbound = value
+    let writeRes = await stream.write(byteSpan(&outbound))
+    let writeCount = match writeRes {
+        case .ok(inner) => inner
+        case .err(_) => std.panic.panic("concurrent async write should succeed")
+    }
+    std.testing.assertEqual(writeCount, 1 as usize, "concurrent async client should write one byte")
+
+    var echoed: uint8 = 0
+    let readRes = await stream.read(byteMutSpan(&mut echoed))
+    let readCount = match readRes {
+        case .ok(inner) => inner
+        case .err(_) => std.panic.panic("concurrent async read should succeed")
+    }
+    std.testing.assertEqual(readCount, 1 as usize, "concurrent async client should read one byte")
+
+    match stream.close() {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("concurrent async client close should succeed")
+    }
+
+    return echoed as int32
+}
+
+@cfg(family("unix"))
+@test
+func tcpLocalAddressReflectsEphemeralPortIpv4() async {
+    let listenRes = std.net.TcpListener.bind(std.net.SocketAddress.localhost(0_u16))
+    var listener = match listenRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("ipv4 listen should succeed")
+    }
+
+    let localRes = listener.localAddress()
+    let local = match localRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("ipv4 localAddress should succeed")
+    }
+    std.testing.assertTrue(local.port != 0_u16, "port 0 bind should allocate an ipv4 port")
+
+    match listener.close() {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("ipv4 listener close should succeed")
+    }
+}
+
+@cfg(family("unix"))
+@test
+func tcpLocalAddressReflectsEphemeralPortIpv6() async {
+    let listenRes = std.net.TcpListener.bind(ipv6Loopback(0_u16))
+    var listener = match listenRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("ipv6 listen should succeed")
+    }
+
+    let localRes = listener.localAddress()
+    let local = match localRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("ipv6 localAddress should succeed")
+    }
+    std.testing.assertTrue(local.port != 0_u16, "port 0 bind should allocate an ipv6 port")
+
+    match listener.close() {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("ipv6 listener close should succeed")
+    }
+}
+
+@cfg(family("unix"))
+@test
+func tcpClientServerEcho() async {
+    let listenRes = std.net.TcpListener.bind(std.net.SocketAddress.localhost(0_u16))
+    var listener = match listenRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("listen should succeed")
+    }
+    let local = match listener.localAddress() {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("localAddress should succeed")
+    }
+
+    var outbound: uint8 = 44_u8
+    let serverTask = std.task.spawn(|| async {
+        return await clientRoundTrip(local, outbound)
+    })
+
+    let handled = await acceptAndEchoClients(&listener, 1_i32)
+    std.testing.assertEqual(handled, 1_i32, "server side should handle one client")
+
+    let echoed = await serverTask.value()
+    std.testing.assertEqual(echoed, outbound as int32, "client should receive the echoed byte")
+
+    match listener.close() {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("listener close should succeed")
+    }
+}
+
+@cfg(family("unix"))
+@test
+func tcpStreamReportsPeerAndLocalAddresses() async {
+    let listenRes = std.net.TcpListener.bind(std.net.SocketAddress.localhost(0_u16))
+    var listener = match listenRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("listener should start")
+    }
+
+    let serverLocal = match listener.localAddress() {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("listener localAddress should succeed")
+    }
+
+    let connectRes = await std.net.TcpStream.connect(serverLocal)
+    let client = match connectRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("connect should succeed")
+    }
+
+    let clientLocal = match client.localAddress() {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("client localAddress should succeed")
+    }
+    let clientPeer = match client.peerAddress() {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("client peerAddress should succeed")
+    }
+    std.testing.assertEqual(clientPeer.port, serverLocal.port, "client peerAddress should match listener port")
+    std.testing.assertTrue(clientLocal.port != 0_u16, "client localAddress should have an ephemeral port")
+
+    let acceptRes = await listener.accept()
+    let accepted = match acceptRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("accept should succeed")
+    }
+    let serverStream = accepted.0
+    let acceptedPeer = accepted.1
+    let serverPeer = match serverStream.peerAddress() {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("accepted peerAddress should succeed")
+    }
+
+    std.testing.assertEqual(acceptedPeer.port, clientLocal.port, "accept should report the client port")
+    std.testing.assertEqual(serverPeer.port, clientLocal.port, "accepted stream peerAddress should match the client port")
+
+    match client.close() {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("client close should succeed")
+    }
+    match serverStream.close() {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("accepted stream close should succeed")
+    }
+    match listener.close() {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("listener close should succeed")
+    }
+}
+
+@cfg(family("unix"))
+@test
+func tcpStringRequestResponse() async {
+    let listenRes = std.net.TcpListener.bind(std.net.SocketAddress.localhost(0_u16))
+    var listener = match listenRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("string listener should start")
+    }
+
+    let local = match listener.localAddress() {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("string localAddress should succeed")
+    }
+
+    let connectRes = await std.net.TcpStream.connect(local)
+    let client = match connectRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("string connect should succeed")
+    }
+
+    let acceptRes = await listener.accept()
+    let accepted = match acceptRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("string accept should succeed")
+    }
+    let server = accepted.0
+
+    let request = "string request"
+    await writeMessage(&client, request)
+    let serverRequest = await readMessage(&server)
+    std.testing.assertTrue(
+        std.string.stringEq(serverRequest, request),
+        "string server should receive the request payload",
+    )
+
+    await writeMessage(&server, transformedMessage(serverRequest))
+    let response = await readMessage(&client)
+    std.testing.assertTrue(
+        std.string.stringEq(response, transformedMessage(request)),
+        "string response should be transformed by the server",
+    )
+
+    match client.close() {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("string client close should succeed")
+    }
+    match server.close() {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("string server close should succeed")
+    }
+
+    match listener.close() {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("string listener close should succeed")
+    }
+}
+
+@cfg(family("unix"))
+@test
+func tcpAcceptsMultipleSequentialClients() async {
+    let listenRes = std.net.TcpListener.bind(std.net.SocketAddress.localhost(0_u16))
+    var listener = match listenRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("listen should succeed")
+    }
+    let local = match listener.localAddress() {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("localAddress should succeed")
+    }
+
+    var idx: int32 = 0
+    while idx < 3_i32 {
+        let connectRes = await std.net.TcpStream.connect(local)
+        let client = match connectRes {
+            case .ok(value) => value
+            case .err(_) => std.panic.panic("sequential connect should succeed")
+        }
+
+        var outbound: uint8 = (idx + 1_i32) as uint8
+        let writeRes = await client.write(byteSpan(&outbound))
+        let writeCount = match writeRes {
+            case .ok(value) => value
+            case .err(_) => std.panic.panic("sequential client write should succeed")
+        }
+        std.testing.assertEqual(writeCount, 1 as usize, "sequential client write should send one byte")
+
+        await acceptEchoByte(&listener, outbound)
+
+        var echoed: uint8 = 0
+        let readRes = await client.read(byteMutSpan(&mut echoed))
+        let readCount = match readRes {
+            case .ok(value) => value
+            case .err(_) => std.panic.panic("sequential client read should succeed")
+        }
+        std.testing.assertEqual(readCount, 1 as usize, "sequential client should read one byte")
+        std.testing.assertEqual(echoed, outbound, "sequential echo should preserve the byte")
+
+        match client.close() {
+            case .ok(_) => {}
+            case .err(_) => std.panic.panic("sequential client close should succeed")
+        }
+
+        idx += 1
+    }
+
+    match listener.close() {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("listener close should succeed")
+    }
+}
+
+@cfg(family("unix"))
+@test
+func syncUdpLoopbackRoundTrip() {
+    let serverBind = std.net.SocketAddress.localhost(0_u16)
+    let serverSocketRes = std.sys.net.socket(std.sys.net.domainForAddress(serverBind), .datagram)
+    var server = match serverSocketRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("udp server socket should succeed")
+    }
+
+    match std.sys.net.bind(&server, serverBind) {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("udp server bind should succeed")
+    }
+
+    let serverAddr = match std.sys.net.localAddress(&server) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("udp server localAddress should succeed")
+    }
+    std.testing.assertTrue(serverAddr.port != 0_u16, "udp server should get an ephemeral port")
+
+    let clientSocketRes = std.sys.net.socket(std.sys.net.domainForAddress(serverAddr), .datagram)
+    var client = match clientSocketRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("udp client socket should succeed")
+    }
+
+    var outbound: uint8 = 91_u8
+    let sendRes = std.sys.net.sendTo(&client, unsafe { (&outbound as *const uint8) }, 1 as usize, serverAddr)
+    let sendCount = match sendRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("udp sendTo should succeed")
+    }
+    std.testing.assertEqual(sendCount, 1 as usize, "udp sendTo should send one byte")
+
+    var serverByte: uint8 = 0
+    let recvRes = std.sys.net.recvFrom(&server, unsafe { (&mut serverByte as *mut uint8) }, 1 as usize)
+    let received = match recvRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("udp recvFrom should succeed")
+    }
+    std.testing.assertEqual(received.0, 1 as usize, "udp recvFrom should receive one byte")
+    std.testing.assertEqual(serverByte, outbound, "udp server should receive the sent byte")
+
+    let replyRes = std.sys.net.sendTo(&server, unsafe { (&serverByte as *const uint8) }, 1 as usize, received.1)
+    let replyCount = match replyRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("udp reply sendTo should succeed")
+    }
+    std.testing.assertEqual(replyCount, 1 as usize, "udp reply should send one byte")
+
+    var clientByte: uint8 = 0
+    let clientRecvRes = std.sys.net.recvFrom(&client, unsafe { (&mut clientByte as *mut uint8) }, 1 as usize)
+    let clientReceived = match clientRecvRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("udp client recvFrom should succeed")
+    }
+    std.testing.assertEqual(clientReceived.0, 1 as usize, "udp client should receive one byte")
+    std.testing.assertEqual(clientByte, outbound, "udp reply should echo the original byte")
+
+    match std.sys.net.close(&mut client) {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("udp client close should succeed")
+    }
+    match std.sys.net.close(&mut server) {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("udp server close should succeed")
+    }
+}
+
+@cfg(family("unix"))
+@test
+func closedListenerReturnsErrorOnAccept() async {
+    let listenRes = std.net.TcpListener.bind(std.net.SocketAddress.localhost(0_u16))
+    var listener = match listenRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("listen should succeed")
+    }
+
+    match listener.close() {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("first close should succeed")
+    }
+    match listener.close() {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("second close should also succeed")
+    }
+
+    let acceptRes = await listener.accept()
+    match acceptRes {
+        case .ok(_) => std.panic.panic("accept on a closed listener should fail")
+        case .err(err) => expectUnexpectedCode(err, 9, "closed listener should surface EBADF")
+    }
+}
+
+@cfg(family("unix"))
+@test
+func tcpManyConcurrentClients() async {
+    let listenRes = std.net.TcpListener.bind(std.net.SocketAddress.localhost(0_u16))
+    var listener = match listenRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("listen should succeed")
+    }
+    let local = match listener.localAddress() {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("localAddress should succeed")
+    }
+
+    let clientCount = 4_i32
+    var tasks = std.collections.List[std.task.Task[int32]]()
+    var idx: int32 = 0
+    while idx < clientCount {
+        let value = (idx + 1_i32) as uint8
+        let task = std.task.spawn(|| async {
+            return await clientRoundTrip(local, value)
+        })
+
+        tasks.append(task)
+        idx += 1
+    }
+
+    let handled = await acceptAndEchoClients(&listener, clientCount)
+    std.testing.assertEqual(handled, clientCount, "server should handle every concurrent client")
+
+    var seen: int32 = 0
+    var taskIdx: usize = 0
+    while taskIdx < tasks.len() {
+        let echoed = await tasks.at(taskIdx).value()
+        seen += echoed
+        taskIdx += 1
+    }
+
+    std.testing.assertEqual(seen, 10_i32, "concurrent clients should all receive their echoed bytes")
+
+    match listener.close() {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("listener close should succeed")
+    }
+}
+
+@cfg(family("unix"))
+@test
+func asyncUdpLoopbackRoundTrip() async {
+    let bindAddr = std.net.SocketAddress.localhost(0_u16)
+    let serverSocketRes = std.sys.net.task.socket(std.sys.net.domainForAddress(bindAddr), .datagram)
+    var server = match serverSocketRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("async udp server socket should succeed")
+    }
+
+    match std.sys.net.task.bind(&server, bindAddr) {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("async udp server bind should succeed")
+    }
+
+    let serverAddr = match std.sys.net.task.localAddress(&server) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("async udp server localAddress should succeed")
+    }
+    std.testing.assertTrue(serverAddr.port != 0_u16, "async udp server should get an ephemeral port")
+
+    let clientSocketRes = std.sys.net.task.socket(std.sys.net.domainForAddress(serverAddr), .datagram)
+    var client = match clientSocketRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("async udp client socket should succeed")
+    }
+
+    var outbound: uint8 = 109_u8
+    let sendRes = await std.sys.net.task.sendTo(&client, byteSpan(&outbound), serverAddr)
+    let sendCount = match sendRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("async udp sendTo should succeed")
+    }
+    std.testing.assertEqual(sendCount, 1 as usize, "async udp sendTo should send one byte")
+
+    var serverByte: uint8 = 0
+    let recvRes = await std.sys.net.task.recvFrom(&server, byteMutSpan(&mut serverByte))
+    let received = match recvRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("async udp recvFrom should succeed")
+    }
+    std.testing.assertEqual(received.0, 1 as usize, "async udp recvFrom should receive one byte")
+    std.testing.assertEqual(serverByte, outbound, "async udp server should receive the sent byte")
+
+    let replyRes = await std.sys.net.task.sendTo(&server, byteSpan(&serverByte), received.1)
+    let replyCount = match replyRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("async udp reply sendTo should succeed")
+    }
+    std.testing.assertEqual(replyCount, 1 as usize, "async udp reply should send one byte")
+
+    var clientByte: uint8 = 0
+    let clientRecvRes = await std.sys.net.task.recvFrom(&client, byteMutSpan(&mut clientByte))
+    let clientReceived = match clientRecvRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("async udp client recvFrom should succeed")
+    }
+    std.testing.assertEqual(clientReceived.0, 1 as usize, "async udp client should receive one byte")
+    std.testing.assertEqual(clientByte, outbound, "async udp reply should echo the original byte")
+
+    match std.sys.net.task.close(&mut client) {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("async udp client close should succeed")
+    }
+    match std.sys.net.task.close(&mut server) {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("async udp server close should succeed")
+    }
+}

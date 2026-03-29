@@ -16,11 +16,13 @@ use crate::compile::context::Gcx;
 use crate::error::CompileResult;
 use crate::hir::{DefinitionID, Mutability};
 use crate::mir::{
-    Body, ConstantKind, EscapeSummary, LocalDecl, LocalId, LocalKind, Operand, ParamEscapeInfo,
-    Place, PlaceElem, Rvalue, Statement, StatementKind, TerminatorKind,
+    BasicBlockData, BasicBlockId, Body, ConstantKind, CopyModifiers, EscapeSummary, LocalDecl,
+    LocalId, LocalKind, Operand, ParamEscapeInfo, Place, PlaceElem, Rvalue, Statement,
+    StatementKind, Terminator, TerminatorKind,
 };
 use crate::sema::models::{GenericArguments, Ty, TyKind};
-use rustc_hash::FxHashMap;
+use index_vec::IndexVec;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 pub struct EscapeAnalysis;
 pub struct ApplyEscapeAnalysis;
@@ -445,6 +447,8 @@ impl<'ctx> MirPass<'ctx> for ApplyEscapeAnalysis {
             }
         }
 
+        rewrite_fresh_heapified_initializations(body, &heapified);
+
         let span = body.locals[body.return_local].span;
         let mut allocs: Vec<Statement<'ctx>> = Vec::new();
         for (idx, ty) in heapified.iter().enumerate() {
@@ -482,6 +486,249 @@ impl<'ctx> MirPass<'ctx> for ApplyEscapeAnalysis {
         }
         Ok(())
     }
+}
+
+fn rewrite_fresh_heapified_initializations<'ctx>(body: &mut Body<'ctx>, heapified: &[Option<Ty<'ctx>>]) {
+    let may_assigned_in = compute_heapified_may_assigned_in(body, heapified);
+    let original_blocks: Vec<BasicBlockId> = body.basic_blocks.indices().collect();
+
+    for bb in original_blocks {
+        let mut assigned = may_assigned_in[bb].clone();
+
+        let old_statements = std::mem::take(&mut body.basic_blocks[bb].statements);
+        let mut new_statements = Vec::with_capacity(old_statements.len());
+        for stmt in old_statements {
+            let span = stmt.span;
+            match stmt.kind {
+                StatementKind::Assign(destination, rvalue) => {
+                    if let Some(pointee_ty) = heapified_direct_deref_pointee_ty(&destination, heapified)
+                    {
+                        let is_first_write = !assigned.contains(&destination.local);
+                        assigned.insert(destination.local);
+                        if is_first_write {
+                            let tmp_local = body.locals.push(LocalDecl {
+                                ty: pointee_ty,
+                                kind: LocalKind::Temp,
+                                mutable: true,
+                                name: None,
+                                span,
+                            });
+                            body.escape_locals.push(false);
+                            new_statements.push(Statement {
+                                kind: StatementKind::Assign(Place::from_local(tmp_local), rvalue),
+                                span,
+                            });
+                            new_statements.push(Statement {
+                                kind: StatementKind::Assign(
+                                    destination,
+                                    Rvalue::Use(Operand::copy_with(
+                                        Place::from_local(tmp_local),
+                                        CopyModifiers {
+                                            init: true,
+                                            take: true,
+                                        },
+                                    )),
+                                ),
+                                span,
+                            });
+                            continue;
+                        }
+                    }
+
+                    new_statements.push(Statement {
+                        kind: StatementKind::Assign(destination, rvalue),
+                        span,
+                    });
+                }
+                other => new_statements.push(Statement { kind: other, span }),
+            }
+        }
+        body.basic_blocks[bb].statements = new_statements;
+
+        let Some(mut term) = body.basic_blocks[bb].terminator.take() else {
+            continue;
+        };
+        if let TerminatorKind::Call {
+            destination,
+            target,
+            ..
+        } = &mut term.kind
+        {
+            if let Some(pointee_ty) = heapified_direct_deref_pointee_ty(destination, heapified) {
+                let is_first_write = !assigned.contains(&destination.local);
+                assigned.insert(destination.local);
+                if is_first_write {
+                    let original_destination = destination.clone();
+                    let tmp_local = body.locals.push(LocalDecl {
+                        ty: pointee_ty,
+                        kind: LocalKind::Temp,
+                        mutable: true,
+                        name: None,
+                        span: term.span,
+                    });
+                    body.escape_locals.push(false);
+                    *destination = Place::from_local(tmp_local);
+
+                    let original_target = *target;
+                    let init_block = body.basic_blocks.push(BasicBlockData {
+                        note: Some("escape-init-call-destination".into()),
+                        statements: vec![Statement {
+                            kind: StatementKind::Assign(
+                                original_destination,
+                                Rvalue::Use(Operand::copy_with(
+                                    Place::from_local(tmp_local),
+                                    CopyModifiers {
+                                        init: true,
+                                        take: true,
+                                    },
+                                )),
+                            ),
+                            span: term.span,
+                        }],
+                        terminator: Some(Terminator {
+                            kind: TerminatorKind::Goto {
+                                target: original_target,
+                            },
+                            span: term.span,
+                        }),
+                    });
+                    *target = init_block;
+                }
+            }
+        }
+        body.basic_blocks[bb].terminator = Some(term);
+    }
+}
+
+fn compute_heapified_may_assigned_in<'ctx>(
+    body: &Body<'ctx>,
+    heapified: &[Option<Ty<'ctx>>],
+) -> IndexVec<BasicBlockId, FxHashSet<LocalId>> {
+    let mut in_sets: IndexVec<BasicBlockId, FxHashSet<LocalId>> =
+        IndexVec::from(vec![FxHashSet::default(); body.basic_blocks.len()]);
+    let mut out_sets: IndexVec<BasicBlockId, FxHashSet<LocalId>> =
+        IndexVec::from(vec![FxHashSet::default(); body.basic_blocks.len()]);
+
+    let preds = build_predecessors(body);
+    let succs = build_successors(body);
+    let mut worklist: Vec<BasicBlockId> = body.basic_blocks.indices().collect();
+
+    while let Some(bb) = worklist.pop() {
+        let mut new_in = FxHashSet::default();
+        for &pred in &preds[bb] {
+            for &local in &out_sets[pred] {
+                new_in.insert(local);
+            }
+        }
+
+        let mut new_out = new_in.clone();
+        let block = &body.basic_blocks[bb];
+        for stmt in &block.statements {
+            apply_heapified_statement_def(stmt, heapified, &mut new_out);
+        }
+        if let Some(term) = &block.terminator {
+            apply_heapified_terminator_def(&term.kind, heapified, &mut new_out);
+        }
+
+        let changed = new_in != in_sets[bb] || new_out != out_sets[bb];
+        if changed {
+            in_sets[bb] = new_in;
+            out_sets[bb] = new_out;
+            for &succ in &succs[bb] {
+                worklist.push(succ);
+            }
+        }
+    }
+
+    in_sets
+}
+
+fn apply_heapified_statement_def<'ctx>(
+    stmt: &Statement<'ctx>,
+    heapified: &[Option<Ty<'ctx>>],
+    assigned: &mut FxHashSet<LocalId>,
+) {
+    if let StatementKind::Assign(destination, _) = &stmt.kind {
+        if heapified_direct_deref_pointee_ty(destination, heapified).is_some() {
+            assigned.insert(destination.local);
+        }
+    }
+}
+
+fn apply_heapified_terminator_def<'ctx>(
+    term: &TerminatorKind<'ctx>,
+    heapified: &[Option<Ty<'ctx>>],
+    assigned: &mut FxHashSet<LocalId>,
+) {
+    if let TerminatorKind::Call { destination, .. } = term {
+        if heapified_direct_deref_pointee_ty(destination, heapified).is_some() {
+            assigned.insert(destination.local);
+        }
+    }
+}
+
+fn build_predecessors(body: &Body<'_>) -> IndexVec<BasicBlockId, Vec<BasicBlockId>> {
+    let mut preds: IndexVec<BasicBlockId, Vec<BasicBlockId>> =
+        IndexVec::from(vec![Vec::new(); body.basic_blocks.len()]);
+    for (bb, data) in body.basic_blocks.iter_enumerated() {
+        if let Some(term) = &data.terminator {
+            for succ in terminator_successors(&term.kind) {
+                preds[succ].push(bb);
+            }
+        }
+    }
+    preds
+}
+
+fn build_successors(body: &Body<'_>) -> IndexVec<BasicBlockId, Vec<BasicBlockId>> {
+    let mut succs: IndexVec<BasicBlockId, Vec<BasicBlockId>> =
+        IndexVec::from(vec![Vec::new(); body.basic_blocks.len()]);
+    for (bb, data) in body.basic_blocks.iter_enumerated() {
+        if let Some(term) = &data.terminator {
+            succs[bb] = terminator_successors(&term.kind);
+        }
+    }
+    succs
+}
+
+fn terminator_successors(term: &TerminatorKind<'_>) -> Vec<BasicBlockId> {
+    match term {
+        TerminatorKind::Goto { target } => vec![*target],
+        TerminatorKind::SwitchInt {
+            targets, otherwise, ..
+        } => {
+            let mut out = Vec::with_capacity(targets.len() + 1);
+            for (_, bb) in targets {
+                out.push(*bb);
+            }
+            out.push(*otherwise);
+            out
+        }
+        TerminatorKind::Call { target, unwind, .. } => {
+            let mut out = vec![*target];
+            if let crate::mir::CallUnwindAction::Cleanup(bb) = unwind {
+                out.push(*bb);
+            }
+            out
+        }
+        TerminatorKind::Yield { resume, .. } => vec![*resume],
+        TerminatorKind::Return
+        | TerminatorKind::ResumeUnwind
+        | TerminatorKind::Unreachable
+        | TerminatorKind::UnresolvedGoto => Vec::new(),
+    }
+}
+
+fn heapified_direct_deref_pointee_ty<'ctx>(
+    place: &Place<'ctx>,
+    heapified: &[Option<Ty<'ctx>>],
+) -> Option<Ty<'ctx>> {
+    if place.projection.len() != 1 || !matches!(place.projection[0], PlaceElem::Deref) {
+        return None;
+    }
+    heapified
+        .get(place.local.index())
+        .and_then(|item| item.as_ref().copied())
 }
 
 // Helper functions

@@ -3,10 +3,55 @@
 public type size_t = usize
 public type ssize_t = isize
 public type clockid_t = int32
+public type socklen_t = uint32
 
 public struct Timespec {
     tv_sec: int64
     tv_nsec: int64
+}
+
+public struct InAddr {
+    s_addr: uint32
+}
+
+public struct In6Addr {
+    s6_addr: [uint8; 16]
+}
+
+@cfg(os("linux"))
+public struct SockaddrIn {
+    sin_family: uint16
+    sin_port: uint16
+    sin_addr: InAddr
+    sin_zero: [uint8; 8]
+}
+
+@cfg(os("macos"))
+public struct SockaddrIn {
+    sin_len: uint8
+    sin_family: uint8
+    sin_port: uint16
+    sin_addr: InAddr
+    sin_zero: [uint8; 8]
+}
+
+@cfg(os("linux"))
+public struct SockaddrIn6 {
+    sin6_family: uint16
+    sin6_port: uint16
+    sin6_flowinfo: uint32
+    sin6_addr: In6Addr
+    sin6_scope_id: uint32
+}
+
+@cfg(os("macos"))
+public struct SockaddrIn6 {
+    sin6_len: uint8
+    sin6_family: uint8
+    sin6_port: uint16
+    sin6_flowinfo: uint32
+    sin6_addr: In6Addr
+    sin6_scope_id: uint32
 }
 
 public const STDIN_FILENO: int32 = 0
@@ -20,6 +65,44 @@ extern "C" {
     public func close(_ fd: int32) -> int32
     public func lseek(_ fd: int32, _ offset: isize, _ whence: int32) -> isize
     public func clock_gettime(_ clock_id: clockid_t, _ tp: *mut Timespec) -> int32
+    public func socket(_ domain: int32, _ type_: int32, _ protocol: int32) -> int32
+    public func bind(_ fd: int32, _ addr: *const uint8, _ len: socklen_t) -> int32
+    public func listen(_ fd: int32, _ backlog: int32) -> int32
+    public func connect(_ fd: int32, _ addr: *const uint8, _ len: socklen_t) -> int32
+    public func accept(_ fd: int32, _ addr: *mut uint8, _ len: *mut socklen_t) -> int32
+    public func getsockname(_ fd: int32, _ addr: *mut uint8, _ len: *mut socklen_t) -> int32
+    public func getpeername(_ fd: int32, _ addr: *mut uint8, _ len: *mut socklen_t) -> int32
+    public func getsockopt(
+        _ fd: int32,
+        _ level: int32,
+        _ optname: int32,
+        _ optval: *mut uint8,
+        _ optlen: *mut socklen_t,
+    ) -> int32
+    public func setsockopt(
+        _ fd: int32,
+        _ level: int32,
+        _ optname: int32,
+        _ optval: *const uint8,
+        _ optlen: socklen_t,
+    ) -> int32
+    public func recvfrom(
+        _ fd: int32,
+        _ buf: *mut uint8,
+        _ len: size_t,
+        _ flags: int32,
+        _ src_addr: *mut uint8,
+        _ addrlen: *mut socklen_t,
+    ) -> ssize_t
+    public func sendto(
+        _ fd: int32,
+        _ buf: *const uint8,
+        _ len: size_t,
+        _ flags: int32,
+        _ dest_addr: *const uint8,
+        _ addrlen: socklen_t,
+    ) -> ssize_t
+    public func fcntl(_ fd: int32, _ cmd: int32, _ arg: int32) -> int32
     
     // File system utilities
     public func mkdir(_ path: *const uint8, _ mode: int32) -> int32
@@ -44,6 +127,11 @@ public const O_WRONLY: int32 = 1
 public const O_RDWR: int32 = 2
 
 @cfg(os("linux"))
+public const O_NONBLOCK: int32 = 2048
+@cfg(os("macos"))
+public const O_NONBLOCK: int32 = 4
+
+@cfg(os("linux"))
 public const O_CREAT: int32 = 64
 @cfg(os("macos"))
 public const O_CREAT: int32 = 512
@@ -58,9 +146,43 @@ public const O_APPEND: int32 = 1024
 @cfg(os("macos"))
 public const O_APPEND: int32 = 8
 
+public const F_GETFD: int32 = 1
+public const F_SETFD: int32 = 2
+public const F_GETFL: int32 = 3
+public const F_SETFL: int32 = 4
+public const FD_CLOEXEC: int32 = 1
+
+public const AF_INET: int32 = 2
+@cfg(os("linux"))
+public const AF_INET6: int32 = 10
+@cfg(os("macos"))
+public const AF_INET6: int32 = 30
+
+public const SOCK_STREAM: int32 = 1
+public const SOCK_DGRAM: int32 = 2
+
+@cfg(os("linux"))
+public const SOL_SOCKET: int32 = 1
+@cfg(os("macos"))
+public const SOL_SOCKET: int32 = 65535
+
+@cfg(os("linux"))
+public const SO_REUSEADDR: int32 = 2
+@cfg(os("macos"))
+public const SO_REUSEADDR: int32 = 4
+
+@cfg(os("linux"))
+public const SO_ERROR: int32 = 4
+@cfg(os("macos"))
+public const SO_ERROR: int32 = 4103
+
 public const CLOCK_REALTIME: int32 = 0
 @cfg(os("linux"))
 public const CLOCK_MONOTONIC: int32 = 1
 @cfg(os("macos"))
 public const CLOCK_MONOTONIC: int32 = 6
 public const EINVAL: int32 = 22
+@cfg(os("linux"))
+public const EINPROGRESS: int32 = 115
+@cfg(os("macos"))
+public const EINPROGRESS: int32 = 36

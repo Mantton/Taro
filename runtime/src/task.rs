@@ -1,6 +1,7 @@
 use std::time::{Duration as StdDuration, Instant};
 
 use crate::io_poller::Interest;
+use crate::garbage_collector::with_gc;
 
 type PollThunk = unsafe extern "C-unwind" fn(frame: *mut u8, ctx: *mut u8, out: *mut u8) -> u8;
 type DropThunk = unsafe extern "C" fn(frame: *mut u8);
@@ -59,6 +60,9 @@ pub extern "C" fn __rt__async_create(
     drop_fn: *const u8,
     mobility: u8,
 ) -> *mut u8 {
+    if !frame.is_null() {
+        with_gc(|gc| gc.add_persistent_root(frame as *const u8));
+    }
     let handle = Box::new(AsyncHandle {
         frame,
         poll_fn,
@@ -104,6 +108,9 @@ pub extern "C" fn __rt__async_destroy(handle: *mut u8) {
     }
 
     let mut handle = unsafe { Box::from_raw(handle as *mut AsyncHandle) };
+    if !handle.frame.is_null() {
+        with_gc(|gc| gc.remove_persistent_root(handle.frame as *const u8));
+    }
     if !handle.completed {
         if let Some(drop) = decode_drop(handle.drop_fn) {
             unsafe { drop(handle.frame) };

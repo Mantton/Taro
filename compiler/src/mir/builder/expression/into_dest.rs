@@ -193,12 +193,26 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 let alloc_rvalue = Rvalue::Alloc { ty: value_ty };
                 self.push_assign(block, Place::from_local(ptr_local), alloc_rvalue, expr.span);
 
-                // Store initializer into *ptr_local.
+                // Evaluate initializer into a temp first so calls never write
+                // directly into fresh pointee memory.
+                let tmp_local = self.new_temp_with_ty(value_ty, expr.span);
+                block = self
+                    .expr_into_dest(Place::from_local(tmp_local), block, *value)
+                    .into_block();
+
+                // Initialize *ptr_local using an init+take copy.
                 let dest_place = Place {
                     local: ptr_local,
                     projection: vec![mir::PlaceElem::Deref],
                 };
-                block = self.expr_into_dest(dest_place, block, *value).into_block();
+                let init_value = Rvalue::Use(Operand::copy_with(
+                    Place::from_local(tmp_local),
+                    mir::CopyModifiers {
+                        init: true,
+                        take: true,
+                    },
+                ));
+                self.push_assign(block, dest_place, init_value, expr.span);
 
                 // Return the pointer.
                 let rvalue = Rvalue::Use(Operand::Copy(Place::from_local(ptr_local)));

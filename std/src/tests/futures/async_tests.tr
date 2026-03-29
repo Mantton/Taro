@@ -170,6 +170,39 @@ func asyncFunctionsPreserveParameters() async {
     std.testing.assertEqual(value, 42, "parameters should survive across yield")
 }
 
+func gcSuspendedTaskValue(_ captured: int32) async -> int32 {
+    await std.task.sleep(std.time.Duration.fromMillis(10_u64))
+    return captured
+}
+
+@test
+func suspendedSpawnedTasksSurviveManualGc() async {
+    let taskCount = 17_i32
+    var tasks = std.collections.List[std.task.Task[int32]]()
+
+    var idx: int32 = 0
+    while idx < taskCount {
+        let captured = idx + 1_i32
+        let task = std.task.spawn(|| async {
+            return await gcSuspendedTaskValue(captured)
+        })
+        tasks.append(task)
+        idx += 1_i32
+    }
+
+    std.runtime.collect()
+
+    var sum: int32 = 0
+    var taskIdx: usize = 0
+    while taskIdx < tasks.len() {
+        let value = await tasks.at(taskIdx).value()
+        sum += value
+        taskIdx += 1
+    }
+
+    std.testing.assertEqual(sum, 153_i32, "manual GC should preserve suspended spawned task frames")
+}
+
 struct AsyncPoint {
     x: int32
     y: int32

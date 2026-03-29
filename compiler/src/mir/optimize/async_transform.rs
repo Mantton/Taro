@@ -45,6 +45,8 @@ struct AsyncFrameLayout<'ctx> {
     ty: Ty<'ctx>,
     state_ty: Ty<'ctx>,
     stored_locals: Vec<LocalId>,
+    start_locals: Vec<LocalId>,
+    yield_locals: Vec<Vec<LocalId>>,
     mobility: AsyncTaskMobility,
 }
 
@@ -62,6 +64,8 @@ struct PollThunkLocals<'ctx> {
     out_ptr: LocalId,
     state: LocalId,
     tag_return: LocalId,
+    frame_size: LocalId,
+    memset_void: LocalId,
     output_ty: Ty<'ctx>,
 }
 
@@ -162,7 +166,7 @@ fn lower_async_poll_body<'ctx>(
     }
 
     let yields = materialize_await_futures(gcx, body);
-    let frame = build_frame_layout(gcx, body, &yields, &original_params);
+    let frame = build_frame_layout(gcx, body, &yields);
     let locals = add_poll_thunk_locals(gcx, body, frame.ty, output_ty);
 
     rewrite_returns(gcx, body, original_return_local, &locals);
@@ -234,22 +238,28 @@ fn build_frame_layout<'ctx>(
     gcx: Gcx<'ctx>,
     body: &Body<'ctx>,
     yields: &[YieldSite<'ctx>],
-    original_params: &[LocalId],
 ) -> AsyncFrameLayout<'ctx> {
     let state_ty = gcx.types.uint;
     let liveness = compute_liveness(body);
+    let start_locals = collect_async_state_locals(body, &liveness.live_in[body.start_block], None);
+    let yield_locals: Vec<_> = yields
+        .iter()
+        .map(|site| {
+            collect_async_state_locals(
+                body,
+                &liveness.live_in[site.block],
+                Some(site.future_place.local),
+            )
+        })
+        .collect();
     let stored_locals: Vec<_> = body
         .locals
         .indices()
         .filter(|&local| {
-            original_params.contains(&local)
-                || yields.iter().any(|site| site.future_place.local == local)
-                || yields
+            start_locals.contains(&local)
+                || yield_locals
                     .iter()
-                    .any(|site| liveness.live_in[site.block].contains(&local))
-                || yields
-                    .iter()
-                    .any(|site| liveness.live_in[site.resume].contains(&local))
+                    .any(|locals| locals.contains(&local))
         })
         .collect();
     let mut fields = Vec::with_capacity(stored_locals.len() + 1);
@@ -264,8 +274,21 @@ fn build_frame_layout<'ctx>(
         ty: frame_ty,
         state_ty,
         stored_locals,
+        start_locals,
+        yield_locals,
         mobility,
     }
+}
+
+fn collect_async_state_locals(
+    body: &Body<'_>,
+    live_locals: &FxHashSet<LocalId>,
+    extra_local: Option<LocalId>,
+) -> Vec<LocalId> {
+    body.locals
+        .indices()
+        .filter(|&local| live_locals.contains(&local) || extra_local == Some(local))
+        .collect()
 }
 
 fn infer_async_task_mobility<'ctx>(
@@ -429,6 +452,22 @@ fn add_poll_thunk_locals<'ctx>(
         Some(gcx.intern_symbol("$state")),
         span,
     );
+    let frame_size = push_local(
+        body,
+        gcx.types.uint,
+        LocalKind::Temp,
+        true,
+        Some(gcx.intern_symbol("$frame_size")),
+        span,
+    );
+    let memset_void = push_local(
+        body,
+        gcx.types.void,
+        LocalKind::Temp,
+        true,
+        Some(gcx.intern_symbol("$memset_void")),
+        span,
+    );
     body.return_local = tag_return;
 
     PollThunkLocals {
@@ -439,6 +478,8 @@ fn add_poll_thunk_locals<'ctx>(
         out_ptr,
         state,
         tag_return,
+        frame_size,
+        memset_void,
         output_ty,
     }
 }
@@ -505,6 +546,8 @@ fn rewrite_yields<'ctx>(
     let async_destroy_id =
         find_or_register_async_runtime_function(gcx, AsyncRuntimeFn::Destroy, span);
     let async_destroy_ty = gcx.get_type(async_destroy_id);
+    let memset_id = find_std_function(gcx, "intrinsic", "__intrinsic_memset", span)?;
+    let memset_ty = gcx.get_type(memset_id);
 
     for (index, site) in yields.iter().enumerate() {
         let ready_ty = place_ty(body, gcx, &site.resume_arg);
@@ -620,11 +663,12 @@ fn rewrite_yields<'ctx>(
             statements: vec![],
             terminator: None,
         });
-        let pending_block = body.basic_blocks.push(BasicBlockData {
-            note: Some(format!("await-pending-{}", index)),
+        let pending_store_block = body.basic_blocks.push(BasicBlockData {
+            note: Some(format!("await-pending-store-{}", index)),
             statements: pending_save_statements(
                 gcx,
                 frame,
+                &frame.yield_locals[index],
                 locals.frame_ptr,
                 locals.tag_return,
                 index + 1,
@@ -632,6 +676,30 @@ fn rewrite_yields<'ctx>(
             ),
             terminator: Some(Terminator {
                 kind: TerminatorKind::Return,
+                span: site.span,
+            }),
+        });
+        let pending_block = body.basic_blocks.push(BasicBlockData {
+            note: Some(format!("await-pending-{}", index)),
+            statements: vec![],
+            terminator: Some(Terminator {
+                kind: TerminatorKind::Call {
+                    func: fn_operand(
+                        memset_id,
+                        gcx.store
+                            .interners
+                            .intern_generic_args(vec![GenericArgument::Type(gcx.types.uint8)]),
+                        memset_ty,
+                    ),
+                    args: vec![
+                        Operand::Copy(Place::from_local(locals.frame_raw)),
+                        const_uint8_operand(gcx, 0),
+                        Operand::Copy(Place::from_local(locals.frame_size)),
+                    ],
+                    destination: Place::from_local(locals.memset_void),
+                    target: pending_store_block,
+                    unwind: CallUnwindAction::Terminate,
+                },
                 span: site.span,
             }),
         });
@@ -745,24 +813,6 @@ fn install_dispatch<'ctx>(
     let span = body_span(body);
     let original_start = body.start_block;
 
-    // Locals for computing frame size and zeroing the frame after restore.
-    let frame_size_local = push_local(
-        body,
-        gcx.types.uint,
-        LocalKind::Temp,
-        true,
-        Some(gcx.intern_symbol("$frame_size")),
-        span,
-    );
-    let memset_void_local = push_local(
-        body,
-        gcx.types.void,
-        LocalKind::Temp,
-        true,
-        Some(gcx.intern_symbol("$memset_void")),
-        span,
-    );
-
     // Entry block: compute sizeOf[FrameTy], then dispatch.
     let dispatch = body.basic_blocks.push(BasicBlockData {
         note: Some("async-dispatch".into()),
@@ -821,7 +871,7 @@ fn install_dispatch<'ctx>(
                 size_of_ty,
             ),
             args: vec![],
-            destination: Place::from_local(frame_size_local),
+            destination: Place::from_local(locals.frame_size),
             target: dispatch,
             unwind: CallUnwindAction::Terminate,
         },
@@ -836,11 +886,12 @@ fn install_dispatch<'ctx>(
         gcx,
         body,
         frame,
+        &frame.start_locals,
         locals.frame_raw,
         locals.frame_ptr,
         original_start,
-        frame_size_local,
-        memset_void_local,
+        locals.frame_size,
+        locals.memset_void,
         memset_id,
         memset_ty,
         span,
@@ -851,11 +902,12 @@ fn install_dispatch<'ctx>(
             gcx,
             body,
             frame,
+            &frame.yield_locals[index],
             locals.frame_raw,
             locals.frame_ptr,
             site.block,
-            frame_size_local,
-            memset_void_local,
+            locals.frame_size,
+            locals.memset_void,
             memset_id,
             memset_ty,
             site.span,
@@ -888,6 +940,7 @@ fn restore_block<'ctx>(
     gcx: Gcx<'ctx>,
     body: &mut Body<'ctx>,
     frame: &AsyncFrameLayout<'ctx>,
+    locals_to_restore: &[LocalId],
     frame_raw_local: LocalId,
     frame_ptr_local: LocalId,
     target: BasicBlockId,
@@ -897,8 +950,7 @@ fn restore_block<'ctx>(
     memset_ty: Ty<'ctx>,
     span: Span,
 ) -> BasicBlockId {
-    let statements: Vec<_> = frame
-        .stored_locals
+    let statements: Vec<_> = locals_to_restore
         .iter()
         .map(|local| Statement {
             // Use init+take modifiers: skip pre-save of old local (may be
@@ -952,13 +1004,14 @@ fn restore_block<'ctx>(
 fn pending_save_statements<'ctx>(
     gcx: Gcx<'ctx>,
     frame: &AsyncFrameLayout<'ctx>,
+    locals_to_save: &[LocalId],
     frame_ptr_local: LocalId,
     tag_return_local: LocalId,
     state: usize,
     span: Span,
 ) -> Vec<Statement<'ctx>> {
-    let mut statements = Vec::with_capacity(frame.stored_locals.len() + 2);
-    for local in &frame.stored_locals {
+    let mut statements = Vec::with_capacity(locals_to_save.len() + 2);
+    for local in locals_to_save {
         // Use take semantics: the codegen will zero the source local after copying,
         // which prevents emit_rc_cleanup from double-releasing Rc-containing locals
         // that now live in the frame.
@@ -1236,6 +1289,9 @@ fn build_async_constructor<'ctx>(
     });
 
     for ((poll_local, _), ctor_local) in poll_param_locals.iter().zip(ctor_param_locals.iter()) {
+        if !frame.stored_locals.contains(poll_local) {
+            continue;
+        }
         body.basic_blocks[after_memset].statements.push(Statement {
             kind: StatementKind::Assign(
                 frame_local_place_stub(frame, frame_ptr_local, *poll_local),

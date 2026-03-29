@@ -6,6 +6,10 @@ public struct AsyncStream {
     inner: std.sys.io.RawAsyncStream
 }
 
+public func fromRaw(_ inner: std.sys.io.RawAsyncStream) -> AsyncStream {
+    AsyncStream { inner }
+}
+
 public func stdin() -> Result[AsyncStream, Error] {
     let res = std.sys.io.stdin()
     match res {

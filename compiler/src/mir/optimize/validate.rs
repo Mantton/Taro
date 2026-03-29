@@ -13,7 +13,7 @@ use crate::{
     },
     sema::models::{Const, ConstKind, ConstValue, EnumVariantKind, Ty, TyKind},
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::rc::Rc;
 
 use super::MirPass;
@@ -40,6 +40,8 @@ impl<'ctx> MirPass<'ctx> for ValidateBodyInvariants {
 // ============================================================================
 
 pub fn validate_body_invariants<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResult<()> {
+    validate_make_alloc_call_destination_invariant(gcx, body);
+
     if gcx.config.is_std_provider {
         return Ok(());
     }
@@ -236,6 +238,53 @@ pub fn validate_body_invariants<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> Comp
     }
 
     gcx.dcx().ok()
+}
+
+fn validate_make_alloc_call_destination_invariant<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) {
+    for (bb_id, block) in body.basic_blocks.iter_enumerated() {
+        let mut fresh_alloc_locals: FxHashSet<_> = FxHashSet::default();
+
+        for stmt in &block.statements {
+            let StatementKind::Assign(destination, rvalue) = &stmt.kind else {
+                continue;
+            };
+
+            if destination.projection.is_empty() {
+                if matches!(rvalue, Rvalue::Alloc { .. }) {
+                    fresh_alloc_locals.insert(destination.local);
+                    continue;
+                }
+
+                fresh_alloc_locals.remove(&destination.local);
+            }
+
+            if matches!(destination.projection.first(), Some(PlaceElem::Deref)) {
+                fresh_alloc_locals.remove(&destination.local);
+            }
+        }
+
+        let Some(term) = &block.terminator else {
+            continue;
+        };
+        let TerminatorKind::Call { destination, .. } = &term.kind else {
+            continue;
+        };
+
+        if destination.projection.len() == 1
+            && matches!(destination.projection[0], PlaceElem::Deref)
+            && fresh_alloc_locals.contains(&destination.local)
+        {
+            gcx.dcx().emit_error(
+                format!(
+                    "internal error: MIR make-lowering invariant violated in bb{}: call result \
+                     was written directly into fresh alloc pointee `*local{}`",
+                    bb_id.index(),
+                    destination.local.index(),
+                ),
+                Some(term.span),
+            );
+        }
+    }
 }
 
 fn propagate_bool_state(

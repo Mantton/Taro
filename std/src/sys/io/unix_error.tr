@@ -27,7 +27,7 @@ func mapCommonErrno(_ code: int32) -> Error {
 
 @cfg(os("linux"))
 public func mapErrno(_ code: int32) -> Error {
-    if code == 11 {
+    if code == 11 || code == std.libc.EINPROGRESS {
         return Error.wouldBlock
     }
     return mapCommonErrno(code)
@@ -35,7 +35,7 @@ public func mapErrno(_ code: int32) -> Error {
 
 @cfg(os("macos"))
 public func mapErrno(_ code: int32) -> Error {
-    if code == 35 {
+    if code == 35 || code == std.libc.EINPROGRESS {
         return Error.wouldBlock
     }
     return mapCommonErrno(code)

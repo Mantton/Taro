@@ -33,7 +33,7 @@ func impWriteStderr(_ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
     return .ok(res as usize)
 }
 
-func adoptOwnedFd(_ fd: int32) -> Result[PlatformAsyncStream, Error] {
+func impAdoptFd(_ fd: int32) -> Result[PlatformAsyncStream, Error] {
     let sourceId = __rt__async_io_adopt_fd(fd)
     if sourceId == 0 {
         let _ = std.libc.close(fd)
@@ -51,7 +51,7 @@ func duplicateAndWrap(_ fd: int32) -> Result[PlatformAsyncStream, Error] {
         return .err(lastError())
     }
 
-    return adoptOwnedFd(duplicated)
+    return impAdoptFd(duplicated)
 }
 
 func impStdin() -> Result[PlatformAsyncStream, Error] {
@@ -77,7 +77,7 @@ func impPipe() -> Result[(PlatformAsyncStream, PlatformAsyncStream), Error] {
         return .err(lastError())
     }
 
-    let readEnd = adoptOwnedFd(readFd)
+    let readEnd = impAdoptFd(readFd)
     let wrappedRead = match readEnd {
         case .ok(stream) => stream
         case .err(err) => {
@@ -86,7 +86,7 @@ func impPipe() -> Result[(PlatformAsyncStream, PlatformAsyncStream), Error] {
         }
     }
 
-    let writeEnd = adoptOwnedFd(writeFd)
+    let writeEnd = impAdoptFd(writeFd)
     let wrappedWrite = match writeEnd {
         case .ok(stream) => stream
         case .err(err) => {

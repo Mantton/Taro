@@ -39,6 +39,10 @@ func impPipe() -> Result[(PlatformAsyncStream, PlatformAsyncStream), Error] {
     std.panic.todo("std.sys.io.pipe not implemented on windows yet")
 }
 
+func impAdoptFd(_ fd: int32) -> Result[PlatformAsyncStream, Error] {
+    std.panic.todo("std.sys.io.adoptFd not implemented on windows yet")
+}
+
 func impClose(_ stream: PlatformAsyncStream) -> Result[(), Error] {
     std.panic.todo("std.sys.io.close not implemented on windows yet")
 }

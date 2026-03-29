@@ -28,6 +28,10 @@ public func pipe() -> Result[(RawAsyncStream, RawAsyncStream), Error] {
     impPipe()
 }
 
+public func adoptFd(_ fd: int32) -> Result[RawAsyncStream, Error] {
+    impAdoptFd(fd)
+}
+
 public func close(_ stream: RawAsyncStream) -> Result[(), Error] {
     impClose(stream)
 }
@@ -70,4 +74,14 @@ public func waitWritable(_ stream: RawAsyncStream) async -> Result[(), Error] {
         return .ok(())
     }
     return .err(mapErrno(code))
+}
+
+public func sourceId(_ stream: RawAsyncStream) -> usize {
+    stream.source_id
+}
+
+public func take(_ stream: &mut RawAsyncStream) -> RawAsyncStream {
+    let current = *stream
+    stream.source_id = 0
+    return current
 }

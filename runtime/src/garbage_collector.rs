@@ -42,6 +42,7 @@
 //!   pointer-free objects entirely.
 
 use std::collections::HashMap;
+use std::cell::RefCell;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
@@ -170,21 +171,21 @@ static GC_REQUESTED: AtomicBool = AtomicBool::new(false);
 static GC_RESUME_COND: Condvar = Condvar::new();
 static GC_RESUME_LOCK: Mutex<()> = Mutex::new(());
 
-struct ThreadStateWrapper(Arc<ThreadState>);
-impl Drop for ThreadStateWrapper {
+struct CurrentThreadState {
+    state: Arc<ThreadState>,
+    attached: bool,
+}
+
+impl Drop for CurrentThreadState {
     fn drop(&mut self) {
-        unregister_thread(self.0.id);
+        if self.attached {
+            unregister_thread(self.state.id);
+        }
     }
 }
 
-fn register_current_thread_state() -> Arc<ThreadState> {
+fn register_thread_state(state: Arc<ThreadState>) -> Arc<ThreadState> {
     THREAD_ATTACHING.fetch_add(1, Ordering::AcqRel);
-
-    let state = Arc::new(ThreadState {
-        id: std::thread::current().id(),
-        shadow_top: GC_SHADOW_TOP.with(|top| top as *const _),
-        at_safepoint: AtomicBool::new(false),
-    });
 
     {
         let mut reg = THREAD_REGISTRY.lock().unwrap();
@@ -197,6 +198,14 @@ fn register_current_thread_state() -> Arc<ThreadState> {
     state
 }
 
+fn register_current_thread_state() -> Arc<ThreadState> {
+    register_thread_state(Arc::new(ThreadState {
+        id: std::thread::current().id(),
+        shadow_top: GC_SHADOW_TOP.with(|top| top as *const _),
+        at_safepoint: AtomicBool::new(false),
+    }))
+}
+
 fn unregister_thread(id: std::thread::ThreadId) {
     let mut reg = THREAD_REGISTRY.lock().unwrap();
     let len_before = reg.len();
@@ -207,11 +216,40 @@ fn unregister_thread(id: std::thread::ThreadId) {
 }
 
 std::thread_local! {
-    static CURRENT_THREAD_STATE: ThreadStateWrapper = ThreadStateWrapper(register_current_thread_state());
+    static CURRENT_THREAD_STATE: RefCell<Option<CurrentThreadState>> = const { RefCell::new(None) };
+}
+
+fn ensure_current_thread_state() -> Arc<ThreadState> {
+    CURRENT_THREAD_STATE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        match slot.as_mut() {
+            Some(current) => {
+                if !current.attached {
+                    // The thread-local state outlives explicit detach/reattach
+                    // cycles (for example, the main test thread running
+                    // multiple async roots). Reinsert the existing state into
+                    // the global registry so later collections keep scanning
+                    // this thread's shadow stack.
+                    current.state = register_thread_state(current.state.clone());
+                    current.attached = true;
+                }
+                current.state.clone()
+            }
+            None => {
+                let state = register_current_thread_state();
+                *slot = Some(CurrentThreadState {
+                    state: state.clone(),
+                    attached: true,
+                });
+                state
+            }
+        }
+    })
 }
 
 fn with_current_thread_state<R>(f: impl FnOnce(&ThreadState) -> R) -> R {
-    CURRENT_THREAD_STATE.with(|state| f(&state.0))
+    let state = ensure_current_thread_state();
+    f(&state)
 }
 
 fn set_current_thread_safepoint(at_safepoint: bool) {
@@ -257,7 +295,15 @@ pub extern "C" fn __gc__thread_attach() {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __gc__thread_detach() {
-    unregister_thread(std::thread::current().id());
+    CURRENT_THREAD_STATE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if let Some(current) = slot.as_mut() {
+            if current.attached {
+                unregister_thread(current.state.id);
+                current.attached = false;
+            }
+        }
+    });
 }
 
 pub(crate) fn enter_safepoint() {
@@ -974,7 +1020,7 @@ pub(crate) struct Gc {
     class_spans: Vec<[Vec<usize>; 2]>,
     static_roots: Vec<Range<*const u8>>,
     manual_roots: Vec<*const u8>,
-    persistent_roots: Vec<*const u8>,
+    persistent_roots: HashMap<*const u8, usize>,
     stats: GcStats,
     // Bytes allocated since the last collection (used to trigger GC).
     alloc_since_gc: usize,
@@ -1010,7 +1056,7 @@ impl Gc {
             class_spans,
             static_roots: Vec::new(),
             manual_roots: Vec::new(),
-            persistent_roots: Vec::new(),
+            persistent_roots: HashMap::new(),
             stats: GcStats::default(),
             alloc_since_gc: 0,
             gc_threshold_bytes: GC_MIN_TRIGGER,
@@ -1193,20 +1239,41 @@ impl Gc {
     }
 
     pub(crate) fn add_persistent_root(&mut self, ptr: *const u8) {
-        if !ptr.is_null() && !self.persistent_roots.contains(&ptr) {
-            self.persistent_roots.push(ptr);
+        if !ptr.is_null() {
+            let entry = self.persistent_roots.entry(ptr).or_insert(0);
+            *entry = entry
+                .checked_add(1)
+                .expect("persistent root refcount overflow");
         }
     }
 
     pub(crate) fn remove_persistent_root(&mut self, ptr: *const u8) {
-        self.persistent_roots.retain(|&r| r != ptr);
+        if ptr.is_null() {
+            return;
+        }
+
+        let mut remove = false;
+        if let Some(count) = self.persistent_roots.get_mut(&ptr) {
+            if *count == 1 {
+                remove = true;
+            } else {
+                *count -= 1;
+            }
+        } else {
+            debug_assert!(false, "persistent root removal without matching add");
+            return;
+        }
+
+        if remove {
+            self.persistent_roots.remove(&ptr);
+        }
     }
 
     fn collect(&mut self, threads: &[Arc<ThreadState>]) {
         // Stop-the-world collection: gather roots, mark, then sweep.
         let mut manual_roots = std::mem::take(&mut self.manual_roots);
         let static_roots = std::mem::take(&mut self.static_roots);
-        manual_roots.extend(self.persistent_roots.iter().copied());
+        manual_roots.extend(self.persistent_roots.keys().copied());
         self.mark_roots(manual_roots.into_iter(), &static_roots, threads);
         self.static_roots = static_roots;
         let freed = self.sweep();
@@ -1591,5 +1658,26 @@ fn register_segment_arenas(arena_map: &mut HashMap<usize, usize>, segment: &Segm
     let last_arena = (end.saturating_sub(1)) / SEGMENT_SIZE;
     for arena in first_arena..=last_arena {
         arena_map.insert(arena, index);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Gc;
+
+    #[test]
+    fn persistent_roots_use_reference_counts() {
+        let mut gc = Gc::new();
+        let ptr = 0x1234usize as *const u8;
+
+        gc.add_persistent_root(ptr);
+        gc.add_persistent_root(ptr);
+        assert_eq!(gc.persistent_roots.get(&ptr), Some(&2));
+
+        gc.remove_persistent_root(ptr);
+        assert_eq!(gc.persistent_roots.get(&ptr), Some(&1));
+
+        gc.remove_persistent_root(ptr);
+        assert!(!gc.persistent_roots.contains_key(&ptr));
     }
 }

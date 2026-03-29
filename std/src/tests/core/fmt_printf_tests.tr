@@ -76,6 +76,36 @@ func testSprintfBasic() {
 }
 
 @test
+func testSprintfStressWithManualCollect() {
+    var idx: int32 = 0_i32
+    var last = ""
+
+    while idx < 4096_i32 {
+        last = std.sprintf("iter=%d label=%s ok=%v", idx, "stress", true)
+        if idx % 64_i32 == 0_i32 {
+            std.runtime.collect()
+        }
+        idx += 1_i32
+    }
+
+    std.testing.assertEqual(last, "iter=4095 label=stress ok=true", "looped sprintf should remain stable across manual GC")
+}
+
+@test
+func testPrintfLoopedSmoke() {
+    var idx: int32 = 0_i32
+    while idx < 64_i32 {
+        std.printf("printf-smoke idx=%d ok=%v\n", idx, true)
+        if idx % 16_i32 == 0_i32 {
+            std.runtime.collect()
+        }
+        idx += 1_i32
+    }
+
+    std.testing.assertEqual(idx, 64_i32, "looped printf should complete without crashing")
+}
+
+@test
 func testDisplayFallbackAndFormattablePreference() {
     let display_only = DisplayOnlyValue { text: "display-only" }
     let display_only_text = std.sprintf("%v", display_only)
