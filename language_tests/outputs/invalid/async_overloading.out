@@ -1,0 +1,8 @@
+error: `await` expects an async call
+ -> language_tests/source_files/invalid/async_overloading.tr:5:12
+	    let _ = await onlySync()
+	            ^^^^^^^^^^^^^^^^
+error: async calls must be immediately awaited
+ -> language_tests/source_files/invalid/async_overloading.tr:9:12
+	    let _ = onlyAsync()
+	            ^^^^^^^^^^^

@@ -36,6 +36,7 @@ struct MethodCandidate<'ctx> {
     /// Cost of auto-reference: None=0, Immutable=1, Mutable=2
     autoref_cost: u8,
     matches_expectation: bool,
+    matches_async_preference: bool,
     output_ref_mutability: Option<Mutability>,
     deref_steps: usize,
 }
@@ -76,6 +77,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             result,
             span,
             method_ty,
+            prefer_async,
             expect_ty,
             ..
         } = &data;
@@ -236,6 +238,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         receiver_ty,
                         autoref_cost,
                         matches_expectation,
+                        matches_async_preference: self.gcx().definition_is_async(def_id)
+                            == *prefer_async,
                         output_ref_mutability,
                         deref_steps,
                     });
@@ -296,6 +300,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         source: Some(candidate.def_id),
                         autoref_cost: candidate.autoref_cost,
                         matches_expectation: candidate.matches_expectation,
+                        matches_async_preference: candidate.matches_async_preference,
                         deref_steps: candidate.deref_steps,
                     };
                     branches.push(branch);
@@ -361,6 +366,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         source: Some(candidate.def_id),
                         autoref_cost: candidate.autoref_cost,
                         matches_expectation: candidate.matches_expectation,
+                        matches_async_preference: candidate.matches_async_preference,
                         deref_steps: candidate.deref_steps,
                     };
                     branches.push(branch);
@@ -629,6 +635,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 source: Some(candidate.source),
                 autoref_cost: 0, // Interface method calls don't have autoref ambiguity
                 matches_expectation: false,
+                matches_async_preference: self.gcx().definition_is_async(candidate.source)
+                    == data.prefer_async,
                 deref_steps: 0,
             });
         }

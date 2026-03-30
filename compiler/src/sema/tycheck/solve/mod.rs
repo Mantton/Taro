@@ -834,6 +834,11 @@ fn rank_branches<'ctx>(
                 score += 1000;
             }
 
+            // Prefer sync vs async overload based on immediate call context.
+            if branch.matches_async_preference {
+                score += 400;
+            }
+
             // Subtract autoref_cost: prefer None (0) over Immutable (1) over Mutable (2)
             // This ensures that when we have at(&self) and at(&mut self), and the receiver
             // is immutable, we prefer at(&self) which has lower autoref_cost.

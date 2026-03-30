@@ -1965,6 +1965,7 @@ impl<'ctx> Checker<'ctx> {
         expectation: Option<Ty<'ctx>>,
         instantiation_args: Option<GenericArguments<'ctx>>,
         allow_unsafe_callable_values: bool,
+        prefer_async: Option<bool>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         match resolution {
@@ -2077,6 +2078,10 @@ impl<'ctx> Checker<'ctx> {
                         source: Some(candidate),
                         autoref_cost: 0,
                         matches_expectation: false,
+                        matches_async_preference: prefer_async
+                            .is_some_and(|want_async| {
+                                self.gcx().definition_is_async(candidate) == want_async
+                            }),
                         deref_steps: 0,
                     });
                 }
@@ -2179,6 +2184,8 @@ impl<'ctx> Checker<'ctx> {
         expect_ty: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
+        let prefer_async_call = self.direct_await_operand.get() == Some(expression.id);
+
         // Builtin `make`: returns a pointer to the argument type.
         if let hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) = &callee.kind
             && matches!(
@@ -2212,6 +2219,7 @@ impl<'ctx> Checker<'ctx> {
                         expr_ty: result_ty,
                         base_hint: expect_ty,
                         allow_unsafe_callable_values: true,
+                        prefer_async: prefer_async_call,
                         span: callee.span,
                     }),
                     callee.span,
@@ -2220,8 +2228,14 @@ impl<'ctx> Checker<'ctx> {
                 result_ty
             }
             hir::ExpressionKind::Path(path) => {
-                let result_ty =
-                    self.synth_path_expression_with_policy(callee, path, None, true, cs);
+                let result_ty = self.synth_path_expression_with_policy(
+                    callee,
+                    path,
+                    None,
+                    true,
+                    Some(prefer_async_call),
+                    cs,
+                );
                 cs.record_expr_ty(callee.id, result_ty);
                 result_ty
             }
@@ -2266,17 +2280,32 @@ impl<'ctx> Checker<'ctx> {
         let result_ty = cs.infer_cx.next_ty_var(expression.span);
         cs.record_expr_ty(expression.id, result_ty);
 
-        if callee_def.is_some_and(|def_id| self.gcx().definition_is_async(def_id))
-            || self.type_is_async_callable(callee_ty)
-        {
+        let is_known_async_call = callee_def.is_some_and(|def_id| self.gcx().definition_is_async(def_id))
+            || self.type_is_async_callable(callee_ty);
+        if is_known_async_call {
             self.results.borrow_mut().record_async_call(expression.id);
         }
+
+        let uses_function_overload_set = match &callee.kind {
+            hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => {
+                matches!(path.resolution, hir::Resolution::FunctionSet(_))
+            }
+            hir::ExpressionKind::Path(hir::ResolvedPath::Relative(_, segment)) => {
+                matches!(segment.resolution, hir::Resolution::FunctionSet(_))
+            }
+            _ => matches!(
+                self.results.borrow().value_resolution(callee.id),
+                Some(hir::Resolution::FunctionSet(_))
+            ),
+        };
+        let may_resolve_async_via_overload = uses_function_overload_set
+            || matches!(callee.kind, hir::ExpressionKind::InferredMember { .. });
 
         let data = ApplyGoalData {
             call_node_id: expression.id,
             call_span: expression.span,
             callee_ty,
-            callee_source: self.resolve_callee(callee, cs),
+            callee_source: callee_def,
             is_unsafe_context: self.unsafe_depth.get() > 0,
             result_ty,
             _expect_ty: expect_ty,
@@ -2284,6 +2313,11 @@ impl<'ctx> Checker<'ctx> {
             skip_labels: false,
         };
         cs.add_goal(Goal::Apply(data), expression.span);
+
+        if !is_known_async_call && may_resolve_async_via_overload {
+            self.defer_async_call_surface_check(expression.id, expression.span);
+            return result_ty;
+        }
 
         self.finish_async_call_surface_check(expression.id, expression.span, result_ty)
     }
@@ -2747,6 +2781,8 @@ impl<'ctx> Checker<'ctx> {
         expect_ty: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
+        let prefer_async_call = self.direct_await_operand.get() == Some(expression.id);
+
         // Static member invocation on a type (e.g., `List[Int].new()`).
         if let hir::ExpressionKind::Path(path) = &receiver.kind {
             let (resolution, base_args) =
@@ -2798,6 +2834,7 @@ impl<'ctx> Checker<'ctx> {
                             instantiation_args,
                             expect_ty,
                             true,
+                            Some(prefer_async_call),
                             cs,
                         );
 
@@ -2832,6 +2869,18 @@ impl<'ctx> Checker<'ctx> {
                             skip_labels: false,
                         };
                         cs.add_goal(Goal::Apply(data), expression.span);
+
+                        if resolution
+                            .definition_id()
+                            .is_some_and(|id| self.gcx().definition_is_async(id))
+                            || self.type_is_async_callable(callee_ty)
+                        {
+                            self.results.borrow_mut().record_async_call(expression.id);
+                        } else if matches!(&resolution, hir::Resolution::FunctionSet(..)) {
+                            self.defer_async_call_surface_check(expression.id, expression.span);
+                            return result_ty;
+                        }
+
                         return self.finish_async_call_surface_check(
                             expression.id,
                             expression.span,
@@ -2890,6 +2939,7 @@ impl<'ctx> Checker<'ctx> {
                 reciever_span: receiver.span,
                 is_unsafe_context: self.unsafe_depth.get() > 0,
                 method_ty: method_ty,
+                prefer_async: prefer_async_call,
                 expect_ty,
                 name: *name,
                 arguments: args,
@@ -3128,6 +3178,7 @@ impl<'ctx> Checker<'ctx> {
                 source: Some(ctor),
                 autoref_cost: 0,
                 matches_expectation: false,
+                matches_async_preference: false,
                 deref_steps: 0,
             });
         }
@@ -4336,6 +4387,7 @@ impl<'ctx> Checker<'ctx> {
         instantiation_args: Option<GenericArguments<'ctx>>,
         expectation: Option<Ty<'ctx>>,
         allow_unsafe_callable_values: bool,
+        prefer_async: Option<bool>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         if matches!(resolution, hir::Resolution::Error) {
@@ -4349,6 +4401,7 @@ impl<'ctx> Checker<'ctx> {
             expectation,
             instantiation_args,
             allow_unsafe_callable_values,
+            prefer_async,
             cs,
         );
 
@@ -4385,6 +4438,7 @@ impl<'ctx> Checker<'ctx> {
         path: &hir::ResolvedPath,
         expectation: Option<Ty<'ctx>>,
         allow_unsafe_callable_values: bool,
+        prefer_async: Option<bool>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         let (resolution, base_args) =
@@ -4408,6 +4462,7 @@ impl<'ctx> Checker<'ctx> {
             instantiation_args,
             expectation,
             allow_unsafe_callable_values,
+            prefer_async,
             cs,
         )
     }
@@ -4419,7 +4474,7 @@ impl<'ctx> Checker<'ctx> {
         expectation: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
-        self.synth_path_expression_with_policy(expression, path, expectation, false, cs)
+        self.synth_path_expression_with_policy(expression, path, expectation, false, None, cs)
     }
 
     fn synth_member_expression(
@@ -4469,6 +4524,7 @@ impl<'ctx> Checker<'ctx> {
                 expr_ty: result_ty,
                 base_hint: expectation,
                 allow_unsafe_callable_values: false,
+                prefer_async: false,
                 span: expression.span,
             }),
             expression.span,

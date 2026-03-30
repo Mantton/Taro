@@ -508,6 +508,9 @@ pub(crate) fn method_signature_matches<'ctx>(
 ) -> bool {
     let interface_sig = gcx.get_signature(interface_fn_id);
     let impl_sig = gcx.get_signature(impl_fn_id);
+    if gcx.definition_is_async(interface_fn_id) != gcx.definition_is_async(impl_fn_id) {
+        return false;
+    }
     if !interface_sig.same_shape(impl_sig) {
         return false;
     }

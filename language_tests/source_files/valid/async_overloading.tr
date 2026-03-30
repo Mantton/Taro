@@ -1,0 +1,31 @@
+func use() -> int32 { 1 }
+func use() async -> int32 { 2 }
+
+struct Counter {
+    value: int32
+}
+
+impl Counter {
+    func use(&self) -> int32 {
+        self.value
+    }
+
+    func use(&self) async -> int32 {
+        self.value + 1
+    }
+}
+
+func main() async {
+    let sync_free = use()
+    let async_free = await use()
+    assert(sync_free == 1, "sync free overload")
+    assert(async_free == 2, "async free overload")
+
+    let counter = Counter { value: 10 }
+    let sync_method = counter.use()
+    let async_method = await counter.use()
+    assert(sync_method == 10, "sync method overload")
+    assert(async_method == 11, "async method overload")
+
+    std.print("PASS: async overloading\n")
+}

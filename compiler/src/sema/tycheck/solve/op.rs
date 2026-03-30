@@ -195,6 +195,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 source: Some(candidate),
                 autoref_cost: 0,
                 matches_expectation: false,
+                matches_async_preference: false,
                 deref_steps: 0,
             });
         }
@@ -498,6 +499,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 source: Some(candidate),
                 autoref_cost: 0,
                 matches_expectation: false,
+                matches_async_preference: false,
                 deref_steps: 0,
             });
         }
@@ -597,6 +599,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 source: Some(candidate),
                 autoref_cost: 0,
                 matches_expectation: false,
+                matches_async_preference: false,
                 deref_steps: 0,
             });
         }
@@ -1038,6 +1041,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 source: Some(candidate),
                 autoref_cost: 0,
                 matches_expectation: false,
+                matches_async_preference: false,
                 deref_steps: 0,
             });
         }

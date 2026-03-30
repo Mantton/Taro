@@ -96,6 +96,9 @@ pub struct DisjunctionBranch<'ctx> {
     /// Whether the candidate's return type matches the expected type (e.g. mutability expectations).
     /// Used for ranking: true gives a significant score bonus (+1000).
     pub matches_expectation: bool,
+    /// Whether the candidate matches async/sync preference from call context.
+    /// Used for ranking overloads between same-shape sync/async candidates.
+    pub matches_async_preference: bool,
     /// Number of dereferences performed on the receiver to find this candidate.
     /// Used for ranking method candidates found via autoderef loops.
     /// Candidates with fewer dereferences (closer to the original type) are preferred.
@@ -192,6 +195,7 @@ pub struct InferredStaticMemberGoalData<'ctx> {
     pub expr_ty: Ty<'ctx>,
     pub base_hint: Option<Ty<'ctx>>,
     pub allow_unsafe_callable_values: bool,
+    pub prefer_async: bool,
     pub span: Span,
 }
 
@@ -207,6 +211,7 @@ pub struct MethodCallData<'ctx> {
     pub arguments: Vec<ApplyArgument<'ctx>>,
     pub result: Ty<'ctx>,
     pub method_ty: Ty<'ctx>,
+    pub prefer_async: bool,
     pub expect_ty: Option<Ty<'ctx>>,
     pub span: Span,
 }

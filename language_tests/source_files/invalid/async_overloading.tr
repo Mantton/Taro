@@ -1,0 +1,10 @@
+func onlySync() -> int32 { 1 }
+func onlyAsync() async -> int32 { 2 }
+
+func badAwaitSync() async {
+    let _ = await onlySync()
+}
+
+func badMissingAwait() async {
+    let _ = onlyAsync()
+}

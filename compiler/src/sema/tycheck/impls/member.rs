@@ -113,6 +113,7 @@ impl<'ctx> Actor<'ctx> {
         let sig = self.context.get_signature(id);
 
         let mut hasher = FxHasher::default();
+        self.context.definition_is_async(id).hash(&mut hasher);
         sig.abi.hash(&mut hasher);
         sig.is_variadic.hash(&mut hasher);
         sig.inputs.len().hash(&mut hasher);

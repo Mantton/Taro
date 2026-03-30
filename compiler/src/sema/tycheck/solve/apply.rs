@@ -116,6 +116,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
             },
         });
 
+        if let Some(def_id) = callee_source {
+            self.record_overload_source(data.call_node_id, def_id);
+        }
+
         return SolverResult::Solved(obligations);
     }
 
