@@ -1,13 +1,31 @@
 /// Callable interfaces for closures and function-like types.
-///
-/// Under value semantics, callable types are modeled with shared-call traits only.
+
+@lang("FnOnce")
+public interface FnOnce[Args: Tuple, Output] {
+    func callOnce(self, args: Args) -> Output
+}
+
+@lang("FnMut")
+public interface FnMut[Args: Tuple, Output]: FnOnce[Args, Output] {
+    func callMut(&mut self, args: Args) -> Output
+}
 
 @lang("Fn")
-public interface Fn[Args: Tuple, Output] {
+public interface Fn[Args: Tuple, Output]: FnMut[Args, Output] {
     func call(&self, args: Args) -> Output
 }
 
+@lang("AsyncFnOnce")
+public interface AsyncFnOnce[Args: Tuple, Output] {
+    func callOnce(self, args: Args) async -> Output
+}
+
+@lang("AsyncFnMut")
+public interface AsyncFnMut[Args: Tuple, Output]: AsyncFnOnce[Args, Output] {
+    func callMut(&mut self, args: Args) async -> Output
+}
+
 @lang("AsyncFn")
-public interface AsyncFn[Args: Tuple, Output] {
-    func call(self, args: Args) async -> Output
+public interface AsyncFn[Args: Tuple, Output]: AsyncFnMut[Args, Output] {
+    func call(&self, args: Args) async -> Output
 }

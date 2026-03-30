@@ -150,9 +150,12 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                     lowered.push(Statement {
                                         kind: StatementKind::Assign(
                                             place,
-                                            Rvalue::Use(Operand::Copy(Place::from_local(
+                                            Rvalue::Use(aggregate_field_operand(
+                                                gcx,
+                                                body.owner,
+                                                body.locals[temp_local].ty,
                                                 temp_local,
-                                            ))),
+                                            )),
                                         ),
                                         span,
                                     });
@@ -169,9 +172,12 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                     lowered.push(Statement {
                                         kind: StatementKind::Assign(
                                             place,
-                                            Rvalue::Use(Operand::Copy(Place::from_local(
+                                            Rvalue::Use(aggregate_field_operand(
+                                                gcx,
+                                                body.owner,
+                                                body.locals[temp_local].ty,
                                                 temp_local,
-                                            ))),
+                                            )),
                                         ),
                                         span,
                                     });
@@ -204,9 +210,12 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                             lowered.push(Statement {
                                                 kind: StatementKind::Assign(
                                                     place,
-                                                    Rvalue::Use(Operand::Copy(Place::from_local(
+                                                    Rvalue::Use(aggregate_field_operand(
+                                                        gcx,
+                                                        body.owner,
+                                                        body.locals[temp_local].ty,
                                                         temp_local,
-                                                    ))),
+                                                    )),
                                                 ),
                                                 span,
                                             });
@@ -244,9 +253,12 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                             lowered.push(Statement {
                                                 kind: StatementKind::Assign(
                                                     place,
-                                                    Rvalue::Use(Operand::Copy(Place::from_local(
+                                                    Rvalue::Use(aggregate_field_operand(
+                                                        gcx,
+                                                        body.owner,
+                                                        body.locals[temp_local].ty,
                                                         temp_local,
-                                                    ))),
+                                                    )),
                                                 ),
                                                 span,
                                             });
@@ -275,9 +287,12 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                     lowered.push(Statement {
                                         kind: StatementKind::Assign(
                                             place,
-                                            Rvalue::Use(Operand::Copy(Place::from_local(
+                                            Rvalue::Use(aggregate_field_operand(
+                                                gcx,
+                                                body.owner,
+                                                body.locals[temp_local].ty,
                                                 temp_local,
-                                            ))),
+                                            )),
                                         ),
                                         span,
                                     });
@@ -363,6 +378,20 @@ impl<'ctx> MirPass<'ctx> for InsertSafepoints {
     }
 }
 
+fn aggregate_field_operand<'ctx>(
+    gcx: Gcx<'ctx>,
+    owner: crate::hir::DefinitionID,
+    ty: Ty<'ctx>,
+    local: LocalId,
+) -> Operand<'ctx> {
+    let ty = crate::sema::tycheck::utils::normalize::normalize_aliases(gcx, ty);
+    if gcx.is_type_copyable_in_def(ty, owner) {
+        Operand::Copy(Place::from_local(local))
+    } else {
+        Operand::Move(Place::from_local(local))
+    }
+}
+
 fn operand_ty<'a>(
     body: &Body<'a>,
     gcx: Gcx<'a>,
@@ -370,7 +399,9 @@ fn operand_ty<'a>(
 ) -> crate::sema::models::Ty<'a> {
     match operand {
         Operand::Constant(c) => c.ty,
-        Operand::Copy(place) | Operand::CopyWith(place, _) => place_ty(body, gcx, place),
+        Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
+            place_ty(body, gcx, place)
+        }
     }
 }
 

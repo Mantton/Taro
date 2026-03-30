@@ -12,7 +12,7 @@ use crate::{
 };
 use index_vec::IndexVec;
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::mem;
+use std::{mem, rc::Rc};
 
 mod block;
 mod expression;
@@ -74,7 +74,11 @@ pub enum EdgeKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum CallableTraitKind {
     Fn,
+    FnMut,
+    FnOnce,
     AsyncFn,
+    AsyncFnMut,
+    AsyncFnOnce,
 }
 
 pub struct MirBuilder<'ctx, 'thir> {
@@ -163,6 +167,23 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
     fn finish(self) -> Body<'ctx> {
         self.body
+    }
+
+    fn is_type_copyable(&self, ty: Ty<'ctx>) -> bool {
+        // Normalize alias types before checking copyability
+        let icx = Rc::new(crate::sema::tycheck::infer::InferCtx::new(self.gcx));
+        let env = crate::sema::tycheck::utils::param_env::ParamEnv::new(
+            self.gcx
+                .canonical_constraints_of(self.thir.id)
+                .iter()
+                .map(|constraint| constraint.value)
+                .collect(),
+        );
+        let normalized =
+            crate::sema::tycheck::utils::normalize::normalize_ty(icx, ty, &env);
+        let ty = if normalized != ty { normalized } else { ty };
+
+        self.gcx.is_type_copyable_in_def(ty, self.thir.id)
     }
 
     fn definition_belongs_to_std_item(&self, def_id: hir::DefinitionID, item: StdItem) -> bool {
@@ -479,7 +500,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         println!("{}", pretty);
     }
 
-    /// Check if a type has Fn or AsyncFn trait bounds
+    /// Check if a type has callable trait bounds
     /// in the current function's constraints.
     pub fn has_fn_trait_bound(&self, ty: Ty<'ctx>) -> bool {
         self.get_callable_trait_info(ty).is_some()
@@ -491,8 +512,16 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
     ) -> Option<CallableTraitKind> {
         if Some(interface_id) == self.gcx.std_item_def(StdItem::Fn) {
             Some(CallableTraitKind::Fn)
+        } else if Some(interface_id) == self.gcx.std_item_def(StdItem::FnMut) {
+            Some(CallableTraitKind::FnMut)
+        } else if Some(interface_id) == self.gcx.std_item_def(StdItem::FnOnce) {
+            Some(CallableTraitKind::FnOnce)
         } else if Some(interface_id) == self.gcx.std_item_def(StdItem::AsyncFn) {
             Some(CallableTraitKind::AsyncFn)
+        } else if Some(interface_id) == self.gcx.std_item_def(StdItem::AsyncFnMut) {
+            Some(CallableTraitKind::AsyncFnMut)
+        } else if Some(interface_id) == self.gcx.std_item_def(StdItem::AsyncFnOnce) {
+            Some(CallableTraitKind::AsyncFnOnce)
         } else {
             None
         }
@@ -554,11 +583,27 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 .store
                 .interners
                 .intern_ty(TyKind::Reference(ty, hir::Mutability::Immutable)),
-            CallableTraitKind::AsyncFn => ty,
+            CallableTraitKind::FnMut => self
+                .gcx
+                .store
+                .interners
+                .intern_ty(TyKind::Reference(ty, hir::Mutability::Mutable)),
+            CallableTraitKind::FnOnce => ty,
+            CallableTraitKind::AsyncFn => self
+                .gcx
+                .store
+                .interners
+                .intern_ty(TyKind::Reference(ty, hir::Mutability::Immutable)),
+            CallableTraitKind::AsyncFnMut => self
+                .gcx
+                .store
+                .interners
+                .intern_ty(TyKind::Reference(ty, hir::Mutability::Mutable)),
+            CallableTraitKind::AsyncFnOnce => ty,
         })
     }
 
-    /// Get the Args type from a Fn/AsyncFn bound on a type parameter.
+    /// Get the Args type from a callable bound on a type parameter.
     /// Returns Some(args_ty) if the type has a Fn trait bound, None otherwise.
     pub fn get_fn_trait_args_type(&self, ty: Ty<'ctx>) -> Option<Ty<'ctx>> {
         let interface = self.get_callable_trait_ref(ty)?;
@@ -573,7 +618,11 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let requirements = self.gcx.get_interface_requirements(interface.id)?;
         let method_name = match kind {
             CallableTraitKind::Fn => "call",
+            CallableTraitKind::FnMut => "callMut",
+            CallableTraitKind::FnOnce => "callOnce",
             CallableTraitKind::AsyncFn => "call",
+            CallableTraitKind::AsyncFnMut => "callMut",
+            CallableTraitKind::AsyncFnOnce => "callOnce",
         };
         requirements
             .methods

@@ -1,27 +1,28 @@
 import std.io.Error
 import std.libc
+import std.marker.Copy
 import std.result.Result
 
-public struct RawSocket {
+public struct RawSocket: Copy {
     fd: int32
 }
 
-public enum IpAddress {
+public enum IpAddress: Copy {
     case ipv4([uint8; 4])
     case ipv6([uint8; 16])
 }
 
-public struct SocketAddress {
+public struct SocketAddress: Copy {
     ip: IpAddress
     port: uint16
 }
 
-public enum SocketDomain {
+public enum SocketDomain: Copy {
     case ipv4
     case ipv6
 }
 
-public enum SocketType {
+public enum SocketType: Copy {
     case stream
     case datagram
 }

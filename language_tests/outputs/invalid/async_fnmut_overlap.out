@@ -1,0 +1,8 @@
+error: async calls must be immediately awaited
+ -> language_tests/source_files/invalid/async_fnmut_overlap.tr:7:18
+	    let future1 = f(x)
+	                  ^^^^
+error: async calls must be immediately awaited
+ -> language_tests/source_files/invalid/async_fnmut_overlap.tr:8:18
+	    let future2 = f(x)
+	                  ^^^^

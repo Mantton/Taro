@@ -1,10 +1,10 @@
-import std.hash.{Hashable, Hasher}
+import std.hash.Hashable
+import std.marker.Clone
 
 @lang("Set")
 public struct Set[Element: Hashable] {
     storage: Dictionary[Element, ()]
 }
-
 
 impl[Element: Hashable] Set[Element] {
     public func new() -> Self {
@@ -22,17 +22,16 @@ impl[Element: Hashable] Set[Element] {
     }
 }
 
-
 impl[Element: Hashable] Set[Element] {
     public func insert(&mut self, _ value: Element) {
         let _ = self.storage.insert(key: value, value: ())
     }
 
-    public func contains(&self, _ value: Element) -> bool {
+    public func contains(&self, _ value: &Element) -> bool {
         self.storage.contains(value)
     }
 
-    public func remove(&mut self, _ value: Element) -> bool {
+    public func remove(&mut self, _ value: &Element) -> bool {
         self.storage.remove(value).isSome()
     }
 
@@ -41,24 +40,52 @@ impl[Element: Hashable] Set[Element] {
     }
 }
 
+impl[Element: Hashable] Clone for Set[Element] where Element: Clone {
+    public func clone(&self) -> Self {
+        var cloned = Set[Element].new()
+        for value in self {
+            cloned.insert(value.clone())
+        }
+        cloned
+    }
+}
+
 public struct SetIterator[Element: Hashable] {
-    inner: DictKeysIterator[Element, ()]
+    inner: DictOwnedEntriesIterator[Element, ()]
 }
 
 impl[Element: Hashable] std.iter.Iterator for SetIterator[Element] {
     type Element = Element
 
-    public func next(&mut self) -> std.optional.Optional[Self.Element] {
+    public func next(&mut self) -> Element? {
+        match self.inner.next() {
+            case .some(value) => return .some(value.0)
+            case .none => return .none
+        }
+    }
+}
+
+public struct SetRefIterator[Element: Hashable] {
+    inner: DictKeysIterator[Element, ()]
+}
+
+impl[Element: Hashable] std.iter.Iterator for SetRefIterator[Element] {
+    type Element = &Element
+
+    public func next(&mut self) -> Self.Element? {
         self.inner.next()
     }
 }
 
-impl[Element: Hashable] std.iter.Iterable for SetIterator[Element] {
-    type Iterator = SetIterator[Element]
-    type Element = Element
+public struct SetMutIterator[Element: Hashable] {
+    inner: DictMutKeysIterator[Element, ()]
+}
 
-    public func iter(self) -> Self.Iterator {
-        return self
+impl[Element: Hashable] std.iter.Iterator for SetMutIterator[Element] {
+    type Element = &Element
+
+    public func next(&mut self) -> Self.Element? {
+        self.inner.next()
     }
 }
 
@@ -68,37 +95,44 @@ impl[Element: Hashable] std.iter.Iterable for Set[Element] {
 
     public func iter(self) -> Self.Iterator {
         SetIterator[Element] {
-            inner: DictKeysIterator[Element, ()] { dict: self.storage, currentSlot: 0 },
+            inner: DictOwnedEntriesIterator[Element, ()] {
+                dict: self.storage,
+                currentSlot: 0,
+            },
         }
     }
 }
 
 impl[Element: Hashable] std.iter.Iterable for &Set[Element] {
-    type Iterator = SetIterator[Element]
-    type Element = Element
+    type Iterator = SetRefIterator[Element]
+    type Element = &Element
 
     public func iter(self) -> Self.Iterator {
-        (*self).iter()
+        SetRefIterator[Element] {
+            inner: self.storage.keys(),
+        }
     }
 }
 
 impl[Element: Hashable] std.iter.Iterable for &mut Set[Element] {
-    type Iterator = SetIterator[Element]
-    type Element = Element
+    type Iterator = SetMutIterator[Element]
+    type Element = &Element
 
     public func iter(self) -> Self.Iterator {
-        (*self).iter()
+        SetMutIterator[Element] {
+            inner: self.storage.keys(),
+        }
     }
 }
 
-impl[Element] Set[Element] {
+impl[Element: Hashable] Set[Element] where Element: Clone {
     public func union(&self, _ other: &Set[Element]) -> Set[Element] {
         var result = Set[Element].new()
         for x in self {
-            result.insert(x)
+            result.insert(x.clone())
         }
         for x in other {
-            result.insert(x)
+            result.insert(x.clone())
         }
         result
     }
@@ -108,13 +142,13 @@ impl[Element] Set[Element] {
         if self.len() <= other.len() {
             for x in self {
                 if other.contains(x) {
-                    result.insert(x)
+                    result.insert(x.clone())
                 }
             }
         } else {
             for x in other {
                 if self.contains(x) {
-                    result.insert(x)
+                    result.insert(x.clone())
                 }
             }
         }
@@ -125,7 +159,7 @@ impl[Element] Set[Element] {
         var result = Set[Element].new()
         for x in self {
             if !other.contains(x) {
-                result.insert(x)
+                result.insert(x.clone())
             }
         }
         result

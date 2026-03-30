@@ -1,0 +1,5 @@
+func main() async {
+    let task = std.task.spawn(|| async { 1 as int32 })
+    let _ = await task.value()
+    let _ = await task.value()
+}

@@ -746,7 +746,7 @@ fn base_local_for_ref(place: &Place<'_>) -> Option<LocalId> {
 
 fn ref_local_operand<'a>(body: &Body<'a>, operand: &Operand<'a>) -> Option<LocalId> {
     match operand {
-        Operand::Copy(place) | Operand::CopyWith(place, _) => {
+        Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
             if !place.projection.is_empty() {
                 return None;
             }
@@ -801,7 +801,7 @@ fn rewrite_operand<'ctx>(
     param_replacements: &[Option<LocalId>],
 ) {
     match operand {
-        Operand::Copy(place) | Operand::CopyWith(place, _) => {
+        Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
             rewrite_place(place, heapified, param_replacements)
         }
         Operand::Constant(_) => {}

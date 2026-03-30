@@ -48,7 +48,7 @@ func impClose(_ stream: PlatformAsyncStream) -> Result[(), Error] {
 }
 
 func impRead(
-    _ stream: PlatformAsyncStream,
+    _ stream: &PlatformAsyncStream,
     _ buf: *mut uint8,
     _ len: usize,
 ) -> Result[usize, Error] {
@@ -56,7 +56,7 @@ func impRead(
 }
 
 func impWrite(
-    _ stream: PlatformAsyncStream,
+    _ stream: &PlatformAsyncStream,
     _ buf: *const uint8,
     _ len: usize,
 ) -> Result[usize, Error] {

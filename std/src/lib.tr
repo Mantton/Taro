@@ -4,6 +4,7 @@ import std.fs
 import std.net
 import std.time
 import std.fmt
+import std.default
 
 @cfg(family("unix"))
 public func print(_ s: string) {

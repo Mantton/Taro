@@ -1,0 +1,6 @@
+func consume[T](_ x: T) {}
+
+func doubleUse[T](_ x: T) {
+    consume(x)
+    consume(x)
+}

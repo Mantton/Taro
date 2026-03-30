@@ -1,4 +1,4 @@
-import std.ops.AsyncFn
+import std.ops.AsyncFnOnce
 import std.intrinsic.__intrinsic_sleep
 import std.intrinsic.__intrinsic_spawn_async
 import std.intrinsic.__intrinsic_task_value
@@ -12,7 +12,7 @@ public struct Task[T] {
 /// Enqueue an async call on the executor for concurrent execution.
 /// The argument must be a zero-argument async closure. Returns a `Task[T]`
 /// handle that can be awaited later via `await task.value()`.
-public func spawn[T, F: AsyncFn() -> T](_ thunk: F) -> Task[T] {
+public func spawn[T, F: AsyncFnOnce() -> T](_ thunk: F) -> Task[T] {
     return __intrinsic_spawn_async[T, F](thunk)
 }
 
@@ -20,9 +20,6 @@ public func sleep(_ duration: std.time.Duration) async {
     return await __intrinsic_sleep(duration)
 }
 
-/// Await two already-running tasks and return both results as a tuple.
-/// The tasks continue to use the existing shared `value()` semantics, so the
-/// results can be read again after `join` completes.
 public func join[A, B](_ left: Task[A], _ right: Task[B]) async -> (A, B) {
     let leftValue = await left.value()
     let rightValue = await right.value()
@@ -30,7 +27,7 @@ public func join[A, B](_ left: Task[A], _ right: Task[B]) async -> (A, B) {
 }
 
 impl[T] Task[T] {
-    public func value(&self) async -> T {
+    public func value(self) async -> T {
         return await __intrinsic_task_value[T](self)
     }
 }

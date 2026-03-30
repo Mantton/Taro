@@ -45,7 +45,6 @@ use std::{
 mod existentials;
 mod intrinsics;
 mod normalize;
-mod rc;
 mod witness;
 
 const NON_AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES: u64 = 256;
@@ -217,7 +216,6 @@ struct Emitter<'llvm, 'gcx> {
     strings: FxHashMap<Symbol, PointerValue<'llvm>>,
     target_data: inkwell::targets::TargetData,
     gc_descs: FxHashMap<Ty<'gcx>, PointerValue<'llvm>>,
-    contains_rc_cache: FxHashMap<Ty<'gcx>, bool>,
     witness_tables: FxHashMap<(TypeHead, InterfaceReference<'gcx>), PointerValue<'llvm>>,
     interface_descriptors: FxHashMap<InterfaceReference<'gcx>, PointerValue<'llvm>>,
     type_metadata: FxHashMap<Ty<'gcx>, PointerValue<'llvm>>,
@@ -322,7 +320,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             strings: FxHashMap::default(),
             target_data,
             gc_descs: FxHashMap::default(),
-            contains_rc_cache: FxHashMap::default(),
             witness_tables: FxHashMap::default(),
             interface_descriptors: FxHashMap::default(),
             type_metadata: FxHashMap::default(),
@@ -1710,9 +1707,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             None
         };
 
-        // Create a preamble block for allocas, zero-init, shadow stack, and param retains.
-        // This is separate from the MIR start block so that retain_rc_params (which may
-        // create branch BBs for enum params) doesn't corrupt the MIR entry block.
+        // Create a preamble block for allocas and the shadow stack before
+        // branching into the MIR entry block.
         let preamble_block = self.context.append_basic_block(function, "preamble");
         let llvm_blocks = self.create_blocks(function, body);
         let mir_entry_block = llvm_blocks[body.start_block.index()];
@@ -1724,12 +1720,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         }
         let mut locals = self.allocate_locals(body, preamble_block, function, &fn_abi);
         self.builder.position_at_end(preamble_block);
-        self.zero_init_rc_locals(body, &locals);
         self.setup_shadow_stack(body, preamble_block, &locals)?;
-        self.retain_rc_params(body, &locals);
-        // Branch from preamble to the MIR entry block. The builder may have been
-        // repositioned by retain_rc_params (e.g., enum walk merge blocks), so this
-        // branch is emitted wherever the builder currently is — completing the chain.
         self.builder
             .build_unconditional_branch(mir_entry_block)
             .unwrap();
@@ -1853,7 +1844,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         arg: &Operand<'gcx>,
         arg_ty: Ty<'gcx>,
     ) -> CompileResult<Option<PointerValue<'llvm>>> {
-        if let Operand::Copy(place) | Operand::CopyWith(place, _) = arg {
+        if let Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) = arg {
             if let Some(ptr) = self.place_address(body, locals, place)? {
                 return Ok(Some(ptr));
             }
@@ -2423,13 +2414,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     ) -> CompileResult<()> {
         match &stmt.kind {
             mir::StatementKind::Assign(place, rvalue) => {
-                let (copy_source, copy_modifiers) = match rvalue {
-                    mir::Rvalue::Use(op) => match op.as_copy() {
-                        Some((source, modifiers)) => (Some(source.clone()), modifiers),
-                        None => (None, mir::CopyModifiers::default()),
-                    },
-                    _ => (None, mir::CopyModifiers::default()),
-                };
                 if self.try_lower_large_place_move(body, locals, place, rvalue)? {
                     return Ok(());
                 }
@@ -2437,46 +2421,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     return Ok(());
                 }
                 let dest_ty = self.place_ty(body, place);
-                let dest_ty_mono = self.mono_ty(dest_ty);
-                let needs_rc = self.contains_rc(dest_ty_mono);
 
                 if let Some(value) = self.lower_rvalue(body, locals, dest_ty, rvalue)? {
-                    // Pre-assignment: save old value for Rc-containing owned destinations.
-                    let rc_old_tmp = if needs_rc && !copy_modifiers.init {
-                        if let Some(dest_ptr) = self.place_address(body, locals, place)? {
-                            self.emit_rc_pre_assign(dest_ptr, dest_ty_mono)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
-
                     self.store_place(place, body, locals, value)?;
-
-                    // Post-assignment (modifiers-aware):
-                    // - copy: retain new, then release old
-                    // - init copy: retain new
-                    // - take: release old only
-                    // - init take: no retain/release
-                    if needs_rc {
-                        if !copy_modifiers.take {
-                            if let Some(dest_ptr) = self.place_address(body, locals, place)? {
-                                self.emit_retain_walk(dest_ptr, dest_ty_mono);
-                            }
-                        }
-                        if let Some(old_tmp) = rc_old_tmp {
-                            self.emit_release_walk(old_tmp, dest_ty_mono);
-                        }
-                    }
-
-                    self.invalidate_taken_copy_source(
-                        body,
-                        locals,
-                        copy_source.as_ref(),
-                        place,
-                        copy_modifiers,
-                    )?;
                 }
             }
             mir::StatementKind::ShadowResync(resynced_locals) => {
@@ -2522,12 +2469,13 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         destination: &Place<'gcx>,
         rvalue: &mir::Rvalue<'gcx>,
     ) -> CompileResult<bool> {
-        let (source, copy_modifiers) = match rvalue {
+        let source = match rvalue {
             mir::Rvalue::Use(op) => {
                 let Some((source, modifiers)) = op.as_copy() else {
                     return Ok(false);
                 };
-                (source, modifiers)
+                let _ = modifiers;
+                source
             }
             _ => return Ok(false),
         };
@@ -2558,16 +2506,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             return Ok(false);
         };
 
-        let dest_ty_mono = self.mono_ty(dest_ty);
-        let needs_rc = self.contains_rc(dest_ty_mono);
-
-        // Pre-assignment: save old for Rc-containing types.
-        let rc_old_tmp = if needs_rc && !copy_modifiers.init {
-            self.emit_rc_pre_assign(dest_ptr, dest_ty_mono)
-        } else {
-            None
-        };
-
         let dest_align = self.target_data.get_abi_alignment(&dest_llvm_ty).max(1);
         let src_align = self.target_data.get_abi_alignment(&src_llvm_ty).max(1);
         let count = self.usize_ty.const_int(dest_size, false);
@@ -2579,75 +2517,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .build_memmove(dest_ptr, dest_align, src_ptr, src_align, count)
             .unwrap();
 
-        // Post-assignment behavior is driven by copy modifiers.
-        if needs_rc {
-            if !copy_modifiers.take {
-                self.emit_retain_walk(dest_ptr, dest_ty_mono);
-            }
-            if let Some(old_tmp) = rc_old_tmp {
-                self.emit_release_walk(old_tmp, dest_ty_mono);
-            }
-        }
-
         if self.should_refresh_shadow_for_place(body, destination) {
             let _ = self.update_shadow_for_local(body, locals, destination.local);
         }
 
-        self.invalidate_taken_copy_source(body, locals, Some(source), destination, copy_modifiers)?;
-
         Ok(true)
-    }
-
-    fn invalidate_taken_copy_source(
-        &mut self,
-        body: &mir::Body<'gcx>,
-        locals: &mut [LocalStorage<'llvm>],
-        source: Option<&Place<'gcx>>,
-        destination: &Place<'gcx>,
-        modifiers: mir::CopyModifiers,
-    ) -> CompileResult<()> {
-        if !modifiers.take {
-            return Ok(());
-        }
-        let Some(source) = source else {
-            return Ok(());
-        };
-        if !source.projection.is_empty() {
-            return Ok(());
-        }
-        if source.local == destination.local {
-            return Ok(());
-        }
-        if matches!(body.locals[source.local].kind, mir::LocalKind::Param) {
-            // Params may alias caller storage for indirect ABI; never invalidate in-place.
-            return Ok(());
-        }
-
-        let source_ty = self.mono_ty(self.place_ty(body, source));
-        if !self.contains_rc(source_ty) {
-            return Ok(());
-        }
-        let Some(source_ptr) = self.place_address(body, locals, source)? else {
-            return Ok(());
-        };
-        let Some(source_llvm_ty) = self.lower_ty(source_ty) else {
-            return Ok(());
-        };
-        let size = self.target_data.get_store_size(&source_llvm_ty);
-        if size == 0 {
-            return Ok(());
-        }
-
-        self.builder
-            .build_memset(
-                source_ptr,
-                1,
-                self.context.i8_type().const_zero(),
-                self.usize_ty.const_int(size, false),
-            )
-            .unwrap();
-        let _ = self.update_shadow_for_local(body, locals, source.local);
-        Ok(())
     }
 
     fn lower_rvalue(
@@ -2905,13 +2779,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         if *count == 0 {
             return Ok(false);
         }
-        // Keep Rc-containing types on the normal assignment path so retain/release
-        // hooks can run correctly.
-        let dest_ty = self.mono_ty(self.place_ty(body, place));
-        if self.contains_rc(dest_ty) {
-            return Ok(false);
-        }
-
         let Some(dest_ptr) = self.place_address(body, locals, place)? else {
             return Ok(false);
         };
@@ -3375,7 +3242,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         from_ty: Ty<'gcx>,
         to_ty: Ty<'gcx>,
     ) -> CompileResult<BasicValueEnum<'llvm>> {
-        let TyKind::Closure { closure_def_id, .. } = from_ty.kind() else {
+        let TyKind::Closure {
+            closure_def_id,
+            captured_generics,
+            ..
+        } = from_ty.kind()
+        else {
             panic!("ICE: closure to fn pointer cast on non-closure type");
         };
 
@@ -3383,12 +3255,18 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             panic!("ICE: closure to fn pointer cast to non-fn-pointer type");
         };
 
+        let closure_args = if captured_generics.is_empty() {
+            self.current_subst
+        } else {
+            captured_generics
+        };
+
         // Generate a unique name for the shim
         let shim_name = format!(
             "{}_fn_shim",
             mangle_instance(
                 self.gcx,
-                Instance::item(closure_def_id, GenericArguments::empty()),
+                Instance::item(closure_def_id, closure_args),
             )
         );
 
@@ -3398,7 +3276,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         }
 
         // Get the closure body function
-        let closure_instance = Instance::item(closure_def_id, GenericArguments::empty());
+        let closure_instance = Instance::item(closure_def_id, closure_args);
         let (closure_fn, closure_fn_abi) = if let Some(&f) = self.functions.get(&closure_instance) {
             let fn_abi = self
                 .fn_abis
@@ -3406,7 +3284,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 .cloned()
                 .unwrap_or_else(|| {
                     let prev_subst = self.current_subst;
-                    self.current_subst = GenericArguments::empty();
+                    self.current_subst = closure_args;
                     let sig = self.gcx.get_signature(closure_def_id);
                     let abi = self.compute_fn_abi(sig);
                     self.current_subst = prev_subst;
@@ -3416,7 +3294,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         } else {
             // Declare the closure body function
             let prev_subst = self.current_subst;
-            self.current_subst = GenericArguments::empty();
+            self.current_subst = closure_args;
             let sig = self.gcx.get_signature(closure_def_id);
             let fn_abi = self.compute_fn_abi(sig);
             let fn_ty = self.lower_fn_abi(&fn_abi);
@@ -3617,7 +3495,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     .unwrap();
             }
             mir::TerminatorKind::Return => {
-                self.emit_rc_cleanup(body, locals);
                 self.emit_shadow_pop();
                 let fn_abi = self
                     .current_fn_abi
@@ -3641,7 +3518,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 }
             }
             mir::TerminatorKind::ResumeUnwind => {
-                self.emit_rc_cleanup(body, locals);
                 self.emit_shadow_pop();
                 let Some(eh_slot) = self.eh_slot else {
                     self.gcx.dcx().emit_error(
@@ -3690,22 +3566,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 )? {
                     return Ok(());
                 }
-                // Pre-call: save old destination for Rc-containing types.
-                // Call results are ownership transfers (callee skips release of return
-                // local), so no retain is needed — only release of the old value.
-                let call_dest_ty = self.place_ty(body, destination);
-                let call_dest_ty_mono = self.mono_ty(call_dest_ty);
-                let call_needs_rc = self.contains_rc(call_dest_ty_mono);
-                let call_rc_old_tmp = if call_needs_rc {
-                    if let Some(dest_ptr) = self.place_address(body, locals, destination)? {
-                        self.emit_rc_pre_assign(dest_ptr, call_dest_ty_mono)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-
                 let virtual_instance = self.virtual_instance_for_call(func);
                 if let Some(instance) = virtual_instance.as_ref() {
                     self.lower_virtual_call(
@@ -3757,11 +3617,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     )?;
                     self.store_direct_call_result(body, locals, destination, &fn_abi, call_site)?;
                 }
-                // Post-call: release old destination (no retain — ownership transfer).
-                if let Some(old_tmp) = call_rc_old_tmp {
-                    self.emit_release_walk(old_tmp, call_dest_ty_mono);
-                }
-                self.refresh_rc_shadow_locals(body, locals);
                 let _ = self.builder.build_unconditional_branch(normal_bb).unwrap();
             }
             mir::TerminatorKind::Yield { .. } => {
@@ -3771,15 +3626,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             }
         }
         Ok(())
-    }
-
-    fn refresh_rc_shadow_locals(&mut self, body: &mir::Body<'gcx>, locals: &[LocalStorage<'llvm>]) {
-        for (local, decl) in body.locals.iter_enumerated() {
-            let ty = self.substitute_ty_current(decl.ty);
-            if self.contains_rc(ty) {
-                let _ = self.update_shadow_for_local(body, locals, local);
-            }
-        }
     }
 
     fn try_lower_intrinsic_call(
@@ -5006,7 +4852,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     ) -> Option<(FunctionValue<'llvm>, abi::FnAbi<'gcx>)> {
         // Get the type of the operand
         let ty = match func {
-            Operand::Copy(place) | Operand::CopyWith(place, _) => {
+            Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
                 // Get the base type from the local
                 let mut ty = body.locals[place.local].ty;
                 // Apply projections to get the final type
@@ -5024,12 +4870,22 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let ty = self.mono_ty(ty);
 
         // Check if it's a closure type
-        let TyKind::Closure { closure_def_id, .. } = ty.kind() else {
+        let TyKind::Closure {
+            closure_def_id,
+            captured_generics,
+            ..
+        } = ty.kind()
+        else {
             return None;
         };
 
         // Create an instance for the closure body function
-        let instance = Instance::item(closure_def_id, GenericArguments::empty());
+        let closure_args = if captured_generics.is_empty() {
+            self.current_subst
+        } else {
+            captured_generics
+        };
+        let instance = Instance::item(closure_def_id, closure_args);
 
         // Look up or declare the closure body function
         if let Some(&f) = self.functions.get(&instance) {
@@ -5040,7 +4896,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         // Need to declare it as external
         let prev_subst = self.current_subst;
-        self.current_subst = GenericArguments::empty();
+        self.current_subst = closure_args;
         let sig = self.gcx.get_signature(closure_def_id);
         let fn_abi = if self.instance_has_mir_body(instance) {
             let body = self.gcx.get_mir_body(closure_def_id);
@@ -5099,7 +4955,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         op: &mir::Operand<'gcx>,
     ) -> CompileResult<Option<BasicValueEnum<'llvm>>> {
         let value = match op {
-            mir::Operand::Copy(place) | mir::Operand::CopyWith(place, _) => {
+            mir::Operand::Copy(place)
+            | mir::Operand::Move(place)
+            | mir::Operand::CopyWith(place, _) => {
                 self.load_place(body, locals, place)
             }
             mir::Operand::Constant(c) => self.lower_constant(c),
@@ -5434,7 +5292,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
     fn operand_ty(&self, body: &mir::Body<'gcx>, operand: &mir::Operand<'gcx>) -> Ty<'gcx> {
         let ty = match operand {
-            mir::Operand::Copy(place) | mir::Operand::CopyWith(place, _) => {
+            mir::Operand::Copy(place)
+            | mir::Operand::Move(place)
+            | mir::Operand::CopyWith(place, _) => {
                 self.place_ty(body, place)
             }
             mir::Operand::Constant(c) => c.ty,
@@ -5569,10 +5429,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
     fn append_gc_root_offsets(&mut self, ty: Ty<'gcx>, base: u64, offsets: &mut Vec<u64>) {
         let ty = crate::sema::tycheck::utils::normalize_aliases(self.gcx, ty);
-        if self.is_rc_ty(ty) {
-            offsets.push(base);
-            return;
-        }
 
         match ty.kind() {
             TyKind::Parameter(_) | TyKind::Alias { .. } => {}
@@ -5681,7 +5537,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     }
                 }
             }
-            TyKind::Closure { closure_def_id, .. } => {
+            TyKind::Closure {
+                closure_def_id,
+                captured_generics,
+                ..
+            } => {
                 let Some(captures) = self.gcx.get_closure_captures(closure_def_id) else {
                     return;
                 };
@@ -5693,8 +5553,23 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     .expect("closure gc layout")
                     .into_struct_type();
                 for (idx, capture) in captures.captures.iter().enumerate() {
-                    let capture_ty =
-                        crate::sema::tycheck::utils::normalize_aliases(self.gcx, capture.ty);
+                    let base_ty = instantiate_ty_with_args(
+                        self.gcx,
+                        instantiate_ty_with_args(self.gcx, capture.ty, captured_generics),
+                        self.current_subst,
+                    );
+                    // ByRef captures are stored as pointers in the environment struct.
+                    let capture_ty = if let crate::sema::models::CaptureKind::ByRef { mutable } = capture.capture_kind {
+                        let mutability = if mutable {
+                            hir::Mutability::Mutable
+                        } else {
+                            hir::Mutability::Immutable
+                        };
+                        Ty::new(TyKind::Reference(base_ty, mutability), self.gcx)
+                    } else {
+                        base_ty
+                    };
+                    let capture_ty = crate::sema::tycheck::utils::normalize_aliases(self.gcx, capture_ty);
                     let Some(field_offset) =
                         self.target_data.offset_of_element(&struct_ty, idx as u32)
                     else {
@@ -5707,106 +5582,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         }
     }
 
-    /// Returns true if `ty` is `Rc[T]` for some T.
-    fn is_rc_ty(&self, ty: Ty<'gcx>) -> bool {
-        if let TyKind::Adt(def, _) = ty.kind() {
-            if let Some(rc_id) = self.gcx.std_item_def(hir::StdItem::Rc) {
-                return def.id == rc_id;
-            }
-        }
-        false
-    }
-
-    /// Returns true if `ty` contains any `Rc` fields (including being `Rc` itself).
-    /// Results are cached for efficiency.
-    fn contains_rc(&mut self, ty: Ty<'gcx>) -> bool {
-        if let Some(&cached) = self.contains_rc_cache.get(&ty) {
-            return cached;
-        }
-
-        // Insert false first to handle recursive types.
-        self.contains_rc_cache.insert(ty, false);
-
-        let result = self.contains_rc_inner(ty);
-        self.contains_rc_cache.insert(ty, result);
-        result
-    }
-
-    fn contains_rc_inner(&mut self, ty: Ty<'gcx>) -> bool {
-        if self.is_rc_ty(ty) {
-            return true;
-        }
-
-        match ty.kind() {
-            TyKind::Adt(def, adt_args) => match def.kind {
-                crate::sema::models::AdtKind::Struct => {
-                    let defn = self.gcx.get_struct_definition(def.id);
-                    let fields: Vec<_> = defn.fields.to_vec();
-                    for field in &fields {
-                        let resolved = crate::sema::tycheck::utils::normalize_post_monomorphization(
-                            self.gcx,
-                            instantiate_ty_with_args(self.gcx, field.ty, adt_args),
-                        );
-                        if self.contains_rc(resolved) {
-                            return true;
-                        }
-                    }
-                    false
-                }
-                crate::sema::models::AdtKind::Enum => {
-                    let defn = self.gcx.get_enum_definition(def.id);
-                    let variants: Vec<_> = defn.variants.to_vec();
-                    for variant in &variants {
-                        if let crate::sema::models::EnumVariantKind::Tuple(fields) = variant.kind {
-                            for field in fields {
-                                let resolved =
-                                    crate::sema::tycheck::utils::normalize_post_monomorphization(
-                                        self.gcx,
-                                        instantiate_ty_with_args(self.gcx, field.ty, adt_args),
-                                    );
-                                if self.contains_rc(resolved) {
-                                    return true;
-                                }
-                            }
-                        }
-                    }
-                    false
-                }
-            },
-            TyKind::Tuple(items) => {
-                let items: Vec<_> = items.to_vec();
-                for item in &items {
-                    let item = crate::sema::tycheck::utils::normalize_post_monomorphization(
-                        self.gcx, *item,
-                    );
-                    if self.contains_rc(item) {
-                        return true;
-                    }
-                }
-                false
-            }
-            TyKind::Array { element, .. } => {
-                let element =
-                    crate::sema::tycheck::utils::normalize_post_monomorphization(self.gcx, element);
-                self.contains_rc(element)
-            }
-            TyKind::Closure { closure_def_id, .. } => {
-                if let Some(captures) = self.gcx.get_closure_captures(closure_def_id) {
-                    for capture in &captures.captures {
-                        let resolved = crate::sema::tycheck::utils::normalize_post_monomorphization(
-                            self.gcx, capture.ty,
-                        );
-                        if self.contains_rc(resolved) {
-                            return true;
-                        }
-                    }
-                }
-                false
-            }
-            // Rc fields behind pointers/references are not owned — don't recurse.
-            _ => false,
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -6082,7 +5857,11 @@ fn lower_type<'llvm, 'gcx>(
                 kind_str, formatted, def_id, args
             )
         }
-        TyKind::Closure { closure_def_id, .. } => {
+        TyKind::Closure {
+            closure_def_id,
+            captured_generics,
+            ..
+        } => {
             // Closure is represented as its environment struct
             // Get the captures and build a struct type for them
             if let Some(captures) = gcx.get_closure_captures(closure_def_id) {
@@ -6094,7 +5873,25 @@ fn lower_type<'llvm, 'gcx>(
                     let fields: Vec<BasicTypeEnum<'llvm>> = captures
                         .captures
                         .iter()
-                        .filter_map(|cap| lower_type(context, gcx, target_data, cap.ty, subst))
+                        .filter_map(|cap| {
+                            let base = instantiate_ty_with_args(
+                                gcx,
+                                instantiate_ty_with_args(gcx, cap.ty, captured_generics),
+                                subst,
+                            );
+                            // ByRef captures are stored as pointers in the environment struct.
+                            let resolved = if let crate::sema::models::CaptureKind::ByRef { mutable } = cap.capture_kind {
+                                let mutability = if mutable {
+                                    hir::Mutability::Mutable
+                                } else {
+                                    hir::Mutability::Immutable
+                                };
+                                Ty::new(TyKind::Reference(base, mutability), gcx)
+                            } else {
+                                base
+                            };
+                            lower_type(context, gcx, target_data, resolved, subst)
+                        })
                         .collect();
                     Some(context.struct_type(&fields, false).into())
                 }

@@ -488,6 +488,7 @@ fn remap_operand<'ctx>(
 ) -> Operand<'ctx> {
     match operand {
         Operand::Copy(place) => Operand::copy(remap_place(gcx, place, local_map, gen_args)),
+        Operand::Move(place) => Operand::move_(remap_place(gcx, place, local_map, gen_args)),
         Operand::CopyWith(place, modifiers) => {
             Operand::copy_with(remap_place(gcx, place, local_map, gen_args), *modifiers)
         }

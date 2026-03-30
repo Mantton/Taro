@@ -22,7 +22,7 @@ struct GenericBoxed[T] {
     value: T
 }
 
-impl[T] Retrieve[T] for GenericBoxed[T] {
+impl[T] Retrieve[T] for GenericBoxed[T] where T: Copy {
     func retrieve(&self) -> T {
         self.value
     }

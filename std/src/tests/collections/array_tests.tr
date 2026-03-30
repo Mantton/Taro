@@ -13,7 +13,7 @@ func testArrayRefIteration() {
     let arr: [int32; 3] = [1, 2, 3]
     var sum: int32 = 0
     for x in &arr {
-        sum += x
+        sum += *x
     }
     std.testing.assertEqual(sum, 6, "array ref iteration sum mismatch")
 }
@@ -30,7 +30,7 @@ func testArrayMutRefIteration() {
     var arr: [int32; 3] = [10, 20, 30]
     var sum: int32 = 0
     for x in &mut arr {
-        sum += x
+        sum += *x
     }
     std.testing.assertEqual(sum, 60, "array mut ref iteration sum mismatch")
 }

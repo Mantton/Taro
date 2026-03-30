@@ -118,9 +118,12 @@ impl<'ctx> Selector<'ctx> {
 
         viable.sort_by_key(|candidate| match candidate.source {
             CandidateSource::Impl(id) => (id.package.index(), id.index as usize),
-            CandidateSource::ParamEnv => (usize::MAX - 3, 0),
-            CandidateSource::BuiltinTuple => (usize::MAX - 2, 0),
-            CandidateSource::BuiltinClosure => (usize::MAX - 1, 0),
+            CandidateSource::ParamEnv => (usize::MAX - 4, 0),
+            CandidateSource::BuiltinTuple => (usize::MAX - 3, 0),
+            CandidateSource::BuiltinClosure => (usize::MAX - 2, 0),
+            CandidateSource::BuiltinClone => (usize::MAX - 1, 0),
+            CandidateSource::BuiltinCopy => (usize::MAX, 0),
+            CandidateSource::BuiltinSendable => (usize::MAX, 1),
         });
 
         let result = match viable.len() {
@@ -168,6 +171,18 @@ impl<'ctx> Selector<'ctx> {
         }
 
         if let Some(candidate) = self.builtin_closure_candidate(goal) {
+            out.push(candidate);
+        }
+
+        if let Some(candidate) = self.builtin_clone_candidate(goal) {
+            out.push(candidate);
+        }
+
+        if let Some(candidate) = self.builtin_copy_candidate(goal) {
+            out.push(candidate);
+        }
+
+        if let Some(candidate) = self.builtin_sendable_candidate(goal) {
             out.push(candidate);
         }
 
@@ -260,6 +275,57 @@ impl<'ctx> Selector<'ctx> {
         })
     }
 
+    fn builtin_copy_candidate(
+        &self,
+        goal: InterfaceGoal<'ctx>,
+    ) -> Option<ConfirmedCandidate<'ctx>> {
+        let copy_id = self.gcx.std_item_def(StdItem::Copy)?;
+        if goal.interface_id != copy_id || !self.gcx.is_type_builtin_copyable(goal.self_ty) {
+            return None;
+        }
+        Some(ConfirmedCandidate {
+            source: CandidateSource::BuiltinCopy,
+            extension_id: None,
+            record_id: None,
+            subst: GenericArguments::empty(),
+            obligations: Vec::new(),
+        })
+    }
+
+    fn builtin_clone_candidate(
+        &self,
+        goal: InterfaceGoal<'ctx>,
+    ) -> Option<ConfirmedCandidate<'ctx>> {
+        let clone_id = self.gcx.std_item_def(StdItem::Clone)?;
+        if goal.interface_id != clone_id || !self.gcx.is_type_copyable(goal.self_ty) {
+            return None;
+        }
+        Some(ConfirmedCandidate {
+            source: CandidateSource::BuiltinClone,
+            extension_id: None,
+            record_id: None,
+            subst: GenericArguments::empty(),
+            obligations: Vec::new(),
+        })
+    }
+
+    fn builtin_sendable_candidate(
+        &self,
+        goal: InterfaceGoal<'ctx>,
+    ) -> Option<ConfirmedCandidate<'ctx>> {
+        let sendable_id = self.gcx.std_item_def(StdItem::Sendable)?;
+        if goal.interface_id != sendable_id || !self.gcx.is_type_sendable(goal.self_ty) {
+            return None;
+        }
+        Some(ConfirmedCandidate {
+            source: CandidateSource::BuiltinSendable,
+            extension_id: None,
+            record_id: None,
+            subst: GenericArguments::empty(),
+            obligations: Vec::new(),
+        })
+    }
+
     fn builtin_closure_candidate(
         &self,
         goal: InterfaceGoal<'ctx>,
@@ -275,14 +341,45 @@ impl<'ctx> Selector<'ctx> {
         };
 
         let fn_id = self.gcx.std_item_def(StdItem::Fn);
+        let fn_mut_id = self.gcx.std_item_def(StdItem::FnMut);
+        let fn_once_id = self.gcx.std_item_def(StdItem::FnOnce);
         let async_fn_id = self.gcx.std_item_def(StdItem::AsyncFn);
-        if fn_id != Some(goal.interface_id) && async_fn_id != Some(goal.interface_id) {
-            return None;
-        }
-        if (fn_id == Some(goal.interface_id) && kind != crate::sema::models::ClosureKind::Fn)
-            || (async_fn_id == Some(goal.interface_id)
-                && kind != crate::sema::models::ClosureKind::AsyncFn)
-        {
+        let async_fn_mut_id = self.gcx.std_item_def(StdItem::AsyncFnMut);
+        let async_fn_once_id = self.gcx.std_item_def(StdItem::AsyncFnOnce);
+        let allowed = if fn_id == Some(goal.interface_id) {
+            matches!(kind, crate::sema::models::ClosureKind::Fn)
+        } else if fn_mut_id == Some(goal.interface_id) {
+            matches!(
+                kind,
+                crate::sema::models::ClosureKind::Fn
+                    | crate::sema::models::ClosureKind::FnMut
+            )
+        } else if fn_once_id == Some(goal.interface_id) {
+            matches!(
+                kind,
+                crate::sema::models::ClosureKind::Fn
+                    | crate::sema::models::ClosureKind::FnMut
+                    | crate::sema::models::ClosureKind::FnOnce
+            )
+        } else if async_fn_id == Some(goal.interface_id) {
+            matches!(kind, crate::sema::models::ClosureKind::AsyncFn)
+        } else if async_fn_mut_id == Some(goal.interface_id) {
+            matches!(
+                kind,
+                crate::sema::models::ClosureKind::AsyncFn
+                    | crate::sema::models::ClosureKind::AsyncFnMut
+            )
+        } else if async_fn_once_id == Some(goal.interface_id) {
+            matches!(
+                kind,
+                crate::sema::models::ClosureKind::AsyncFn
+                    | crate::sema::models::ClosureKind::AsyncFnMut
+                    | crate::sema::models::ClosureKind::AsyncFnOnce
+            )
+        } else {
+            false
+        };
+        if !allowed {
             return None;
         }
 

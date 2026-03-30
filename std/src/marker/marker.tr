@@ -1,0 +1,12 @@
+// Marker interfaces for move semantics and derivable protocols.
+
+@lang("Copy")
+public interface Copy {}
+
+@lang("Clone")
+public interface Clone {
+    func clone(&self) -> Self
+}
+
+@lang("Sendable")
+public interface Sendable {}

@@ -255,7 +255,11 @@ impl<'arena> Ty<'arena> {
             } => {
                 let kind_name = match kind {
                     ClosureKind::Fn => "Fn",
+                    ClosureKind::FnMut => "FnMut",
+                    ClosureKind::FnOnce => "FnOnce",
                     ClosureKind::AsyncFn => "AsyncFn",
+                    ClosureKind::AsyncFnMut => "AsyncFnMut",
+                    ClosureKind::AsyncFnOnce => "AsyncFnOnce",
                 };
                 let mut out = format!("closure<{kind_name}>((");
                 for (i, input) in inputs.iter().enumerate() {
@@ -299,6 +303,18 @@ impl<'ctx> Ty<'ctx> {
                 TyKind::Tuple(elems) => elems.iter().cloned().any(visit),
                 TyKind::FnPointer { inputs, output, .. } => {
                     inputs.iter().cloned().any(visit) || visit(output)
+                }
+                TyKind::Closure {
+                    captured_generics,
+                    inputs,
+                    output,
+                    ..
+                } => {
+                    captured_generics.iter().any(|arg| match arg {
+                        GenericArgument::Type(ty) => visit(*ty),
+                        GenericArgument::Const(c) => const_needs_instantiation(*c),
+                    }) || inputs.iter().cloned().any(visit)
+                        || visit(output)
                 }
                 // Existential, associated, infer, error, primitives …
                 TyKind::BoxedExistential { interfaces } => interfaces.iter().any(|iface| {
@@ -383,8 +399,24 @@ pub enum AliasKind {
 pub enum ClosureKind {
     /// Can be called multiple times with shared access to captures (&self)
     Fn,
+    /// Can be called multiple times with exclusive access to captures (&mut self)
+    FnMut,
+    /// Can be called at most once, consuming the closure (self)
+    FnOnce,
     /// Async closure whose call result must be awaited.
     AsyncFn,
+    /// Async closure requiring exclusive access while its future is alive.
+    AsyncFnMut,
+    /// Async closure whose environment is consumed by the call.
+    AsyncFnOnce,
+}
+
+/// How a variable is captured by a closure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CaptureKind {
+    ByCopy,
+    ByRef { mutable: bool },
+    ByMove,
 }
 
 /// A variable captured by a closure
@@ -394,8 +426,10 @@ pub struct CapturedVar<'arena> {
     pub source_id: hir::NodeID,
     /// Name of the captured variable
     pub name: Symbol,
-    /// Type of the captured value (always copied into closure)
+    /// Type of the captured value (original type, not ref type)
     pub ty: Ty<'arena>,
+    /// How this variable is captured.
+    pub capture_kind: CaptureKind,
     /// Field index in the environment struct
     pub field_index: crate::thir::FieldIndex,
 }
@@ -405,6 +439,8 @@ pub struct CapturedVar<'arena> {
 pub struct ClosureCaptures<'arena> {
     /// All captured variables
     pub captures: Vec<CapturedVar<'arena>>,
+    /// The callable kind inferred from body analysis.
+    pub kind: ClosureKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -918,8 +954,16 @@ fn format_callable_interface<'ctx>(
 ) -> Option<String> {
     let kind = if gcx.std_item_def(hir::StdItem::Fn) == Some(interface_id) {
         "Fn"
+    } else if gcx.std_item_def(hir::StdItem::FnMut) == Some(interface_id) {
+        "FnMut"
+    } else if gcx.std_item_def(hir::StdItem::FnOnce) == Some(interface_id) {
+        "FnOnce"
     } else if gcx.std_item_def(hir::StdItem::AsyncFn) == Some(interface_id) {
         "AsyncFn"
+    } else if gcx.std_item_def(hir::StdItem::AsyncFnMut) == Some(interface_id) {
+        "AsyncFnMut"
+    } else if gcx.std_item_def(hir::StdItem::AsyncFnOnce) == Some(interface_id) {
+        "AsyncFnOnce"
     } else {
         return None;
     };
@@ -1044,6 +1088,9 @@ pub enum CandidateSource {
     ParamEnv,
     BuiltinTuple,
     BuiltinClosure,
+    BuiltinClone,
+    BuiltinCopy,
+    BuiltinSendable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1185,12 +1232,20 @@ pub struct SyntheticDefinition<'arena> {
 /// Kind of synthesized method for code generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyntheticMethodKind {
+    /// Clone for Copy types: just dereference self (`*self`)
+    CopyClone,
+    /// Clone for non-Copy types: memberwise clone each field.
+    MemberwiseClone,
     /// Hashable.hash: hash each field
     MemberwiseHash,
     /// PartialEq.eq: compare each field for equality
     MemberwiseEquality,
     /// Fn.call: invoke closure with shared access.
     ClosureCall,
+    /// FnMut/AsyncFnMut.callMut: invoke closure with exclusive access.
+    ClosureCallMut,
+    /// FnOnce/AsyncFnOnce.callOnce: invoke closure consuming self.
+    ClosureCallOnce,
 }
 
 /// Mapping from an interface method to its implementation and instantiation template.

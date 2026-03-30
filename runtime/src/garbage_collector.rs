@@ -71,72 +71,6 @@ pub struct GcDesc {
 unsafe impl Send for GcDesc {}
 unsafe impl Sync for GcDesc {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct RcShiftedDescKey {
-    base_desc: usize,
-    payload_offset: usize,
-    effective_align: usize,
-}
-
-struct RcShiftedDesc {
-    desc: Box<GcDesc>,
-    // Keep the shifted pointer-offset table alive for `desc.ptr_offsets`.
-    _offsets: Box<[usize]>,
-}
-
-fn shifted_rc_desc(
-    desc: *const GcDesc,
-    payload_offset: usize,
-    effective_align: usize,
-) -> *const GcDesc {
-    static CACHE: OnceLock<Mutex<HashMap<RcShiftedDescKey, RcShiftedDesc>>> = OnceLock::new();
-    let key = RcShiftedDescKey {
-        base_desc: desc as usize,
-        payload_offset,
-        effective_align,
-    };
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut guard = cache.lock().expect("rc shifted desc cache mutex");
-
-    if let Some(entry) = guard.get(&key) {
-        return entry.desc.as_ref() as *const GcDesc;
-    }
-
-    let base = unsafe { desc.as_ref() };
-    let Some(base) = base else {
-        return std::ptr::null();
-    };
-
-    let mut shifted = Vec::with_capacity(base.ptr_count);
-    for i in 0..base.ptr_count {
-        let off = unsafe { *base.ptr_offsets.add(i) };
-        shifted.push(off.saturating_add(payload_offset));
-    }
-    let offsets = shifted.into_boxed_slice();
-    let ptr_offsets = if offsets.is_empty() {
-        std::ptr::null()
-    } else {
-        offsets.as_ptr()
-    };
-
-    let shifted_desc = Box::new(GcDesc {
-        size: base.size.saturating_add(payload_offset),
-        align: effective_align,
-        ptr_offsets,
-        ptr_count: base.ptr_count,
-    });
-    let desc_ptr = shifted_desc.as_ref() as *const GcDesc;
-
-    guard.insert(
-        key,
-        RcShiftedDesc {
-            desc: shifted_desc,
-            _offsets: offsets,
-        },
-    );
-    desc_ptr
-}
-
 /// Shadow stack frame layout emitted by the compiler.
 ///
 /// - prev: linked list to the previous frame.
@@ -440,42 +374,6 @@ pub extern "C" fn __gc__alloc(size: usize, desc: *const GcDesc) -> *mut u8 {
         initiate_collection();
     }
     with_gc(|gc| gc.alloc(size, desc, false))
-}
-
-/// Allocate a GC-managed Rc object: `RcHeader { strong: usize } + payload T`.
-///
-/// The returned pointer points to the RcHeader. The payload starts at
-/// `align_up(size_of::<usize>(), payload_align)` bytes from the returned pointer.
-/// The strong count is initialized to 1.
-#[unsafe(no_mangle)]
-pub extern "C" fn __gc__rc_alloc(
-    payload_size: usize,
-    payload_align: usize,
-    desc: *const GcDesc,
-) -> *mut u8 {
-    ensure_thread_registered();
-    if desc.is_null() {
-        return std::ptr::null_mut();
-    }
-    let header_size = std::mem::size_of::<usize>();
-    let effective_align = payload_align.max(std::mem::align_of::<usize>());
-    let payload_offset = align_up(header_size, effective_align);
-    let total_size = match payload_offset.checked_add(payload_size) {
-        Some(n) if n > 0 => n,
-        _ => return std::ptr::null_mut(),
-    };
-    // Shift payload descriptor offsets so tracing starts after the Rc header.
-    let shifted_desc = shifted_rc_desc(desc, payload_offset, effective_align);
-    let needs_gc = with_gc(|gc| gc.alloc_since_gc >= gc.gc_threshold_bytes);
-    if needs_gc {
-        initiate_collection();
-    }
-    let ptr = with_gc(|gc| gc.alloc(total_size, shifted_desc, false));
-    if !ptr.is_null() {
-        // Initialize strong count to 1.
-        unsafe { (ptr as *mut usize).write(1) };
-    }
-    ptr
 }
 
 /// Allocate a GC-managed buffer for dynamic arrays/strings.

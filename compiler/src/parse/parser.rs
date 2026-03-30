@@ -3085,15 +3085,24 @@ impl Parser {
 
 impl Parser {
     fn parse_closure_expression(&mut self) -> R<Box<Expression>> {
-        // |a| {} | || -> int {} | |x| async { await ok() }
+        // |a| {} | || -> int {} | |x| async { await ok() } | |x| async -> int { ... }
         let lo = self.lo_span();
-        let prototype = self.parse_closure_prototype()?;
+        let mut prototype = self.parse_closure_prototype()?;
+
+        let is_async = self.eat(Token::Async);
+
+        // Allow return type after `async`: |x| async -> int32 { ... }
+        if is_async && prototype.output.is_none() {
+            if self.eat(Token::RArrow) {
+                prototype.output = Some(self.parse_type()?);
+            }
+        }
+
         let signature = FunctionSignature {
             prototype,
             span: lo.to(self.hi_span()),
         };
 
-        let is_async = self.eat(Token::Async);
         let body = if is_async {
             self.parse_block_expression()?
         } else {
@@ -3737,7 +3746,12 @@ impl Parser {
 
 impl Parser {
     fn is_callable_shorthand_name(&self, symbol: Symbol) -> bool {
-        self.symbol_eq(symbol, "Fn") || self.symbol_eq(symbol, "AsyncFn")
+        self.symbol_eq(symbol, "Fn")
+            || self.symbol_eq(symbol, "FnMut")
+            || self.symbol_eq(symbol, "FnOnce")
+            || self.symbol_eq(symbol, "AsyncFn")
+            || self.symbol_eq(symbol, "AsyncFnMut")
+            || self.symbol_eq(symbol, "AsyncFnOnce")
     }
 
     fn parse_callable_type_arguments(&mut self) -> R<TypeArguments> {

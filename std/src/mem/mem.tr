@@ -1,6 +1,7 @@
 import std.optional.Optional
 import std.panic.panic
 import std.iter.{Iterator, Iterable}
+import std.marker.Copy
 
 @lang("MaybeUninit")
 public struct MaybeUninit[T] {
@@ -51,12 +52,12 @@ impl[T] MaybeUninit[T] {
 }
 
 @lang("Span")
-public struct Span[Element] {
+public struct Span[Element]: Copy {
     ptr: *const Element
     len: usize
 }
 
-public struct MutableSpan[Element] {
+public struct MutableSpan[Element]: Copy {
     ptr: *mut Element
     len: usize
 }
@@ -285,4 +286,28 @@ public func sizeOf[T]() -> usize {
 
 public func alignOf[T]() -> usize {
     std.intrinsic.__intrinsic_align_of[T]()
+}
+
+public func replace[T](_ dest: &mut T, _ src: T) -> T {
+    var old: T
+    unsafe {
+        let ptr = dest as *mut T
+        old = ptr.read()
+        ptr.write(src)
+    }
+    return old
+}
+
+public func swap[T](_ x: &mut T, _ y: &mut T) {
+    unsafe {
+        let ptr_x = x as *mut T
+        let ptr_y = y as *mut T
+        let temp = ptr_x.read()
+        ptr_x.write(ptr_y.read())
+        ptr_y.write(temp)
+    }
+}
+
+public func take[T: std.default.Default](_ dest: &mut T) -> T {
+    replace(dest, T.default())
 }

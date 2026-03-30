@@ -149,6 +149,10 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
     fn write_operand(&self, op: &Operand<'ctx>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match op {
             Operand::Copy(place) => self.write_place(place, f),
+            Operand::Move(place) => {
+                write!(f, "move ")?;
+                self.write_place(place, f)
+            }
             Operand::CopyWith(place, modifiers) => {
                 if modifiers.take {
                     write!(f, "[take] ")?;

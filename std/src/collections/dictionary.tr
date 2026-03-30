@@ -3,6 +3,7 @@ import std.hash.{Hashable, DefaultHasher, Hasher}
 import std.collections.List
 import std.panic.panic
 import std.iter.{Iterator, Iterable}
+import std.marker.Clone
 
 const SWISS_GROUP_WIDTH: usize = 8
 const SWISS_CTRL_EMPTY: uint8 = 0x80
@@ -77,16 +78,16 @@ impl[Key: Hashable, Value] Dictionary[Key, Value] {
         self.len == 0
     }
 
-    public func contains(&self, _ key: Key) -> bool {
+    public func contains(&self, _ key: &Key) -> bool {
         self.get(key).isSome()
     }
 
-    public func remove(&mut self, _ key: Key) -> Value? {
+    public func remove(&mut self, _ key: &Key) -> Value? {
         if self.capacity == 0 {
             return .none
         }
 
-        let hash = hashKey(&key)
+        let hash = hashKey(key)
         let fp = swissFingerprint(hash)
         let mask = self.capacity - (1 as usize)
         let base = (hash as usize) & mask
@@ -147,12 +148,12 @@ impl[Key: Hashable, Value] Dictionary[Key, Value] {
         return .none
     }
 
-    public func get(&self, _ key: Key) -> Optional[&Value] {
+    public func get(&self, _ key: &Key) -> Optional[&Value] {
         if self.capacity == 0 {
             return .none
         }
 
-        let hash = hashKey(&key)
+        let hash = hashKey(key)
         let fp = swissFingerprint(hash)
         let mask = self.capacity - (1 as usize)
         let base = (hash as usize) & mask
@@ -202,12 +203,12 @@ impl[Key: Hashable, Value] Dictionary[Key, Value] {
         return .none
     }
 
-    public func get(&mut self, _ key: Key) -> Optional[&mut Value] {
+    public func get(&mut self, _ key: &Key) -> Optional[&mut Value] {
         if self.capacity == 0 {
             return .none
         }
 
-        let hash = hashKey(&key)
+        let hash = hashKey(key)
         let fp = swissFingerprint(hash)
         let mask = self.capacity - (1 as usize)
         let base = (hash as usize) & mask
@@ -459,29 +460,51 @@ impl[Key: Hashable, Value] Dictionary[Key, Value] {
         self.len = 0
     }
 
-    public func keys(self) -> DictKeysIterator[Key, Value] {
+    public func keys(&self) -> DictKeysIterator[Key, Value] {
         DictKeysIterator[Key, Value] { dict: self, currentSlot: 0 }
     }
 
-    public func values(self) -> DictValuesIterator[Key, Value] {
+    public func keys(&mut self) -> DictMutKeysIterator[Key, Value] {
+        DictMutKeysIterator[Key, Value] { dict: self, currentSlot: 0 }
+    }
+
+    public func values(&self) -> DictValuesIterator[Key, Value] {
         DictValuesIterator[Key, Value] { dict: self, currentSlot: 0 }
     }
 
-    public func entries(self) -> DictEntriesIterator[Key, Value] {
+    public func values(&mut self) -> DictMutValuesIterator[Key, Value] {
+        DictMutValuesIterator[Key, Value] { dict: self, currentSlot: 0 }
+    }
+
+    public func entries(&self) -> DictEntriesIterator[Key, Value] {
         DictEntriesIterator[Key, Value] { dict: self, currentSlot: 0 }
+    }
+
+    public func entries(&mut self) -> DictMutEntriesIterator[Key, Value] {
+        DictMutEntriesIterator[Key, Value] { dict: self, currentSlot: 0 }
+    }
+}
+
+impl[Key: Hashable, Value] Clone for Dictionary[Key, Value] where Key: Clone, Value: Clone {
+    public func clone(&self) -> Self {
+        var cloned = Dictionary[Key, Value].new()
+        for (key, value) in self {
+            let _ = cloned.insert(key: key.clone(), value: value.clone())
+        }
+        return cloned
     }
 }
 
 public struct DictKeysIterator[Key: Hashable, Value] {
-    dict: Dictionary[Key, Value]
+    dict: &Dictionary[Key, Value]
     currentSlot: usize
 }
 
 impl[Key: Hashable, Value] Iterator for DictKeysIterator[Key, Value] {
-    type Element = Key
+    type Element = &Key
 
     public func next(&mut self) -> Optional[Self.Element] {
-        let dict = &self.dict
+        let dict = self.dict
         while self.currentSlot < dict.capacity {
             let slot = self.currentSlot
             self.currentSlot += 1
@@ -489,7 +512,7 @@ impl[Key: Hashable, Value] Iterator for DictKeysIterator[Key, Value] {
             let ctrl = *dict.controls.at(slot)
             if swissCtrlIsFull(ctrl) {
                 match dict.keys.at(slot) {
-                    case .some(key) => return .some(*key)
+                    case .some(key) => return .some(key)
                     case .none => {}
                 }
             }
@@ -498,25 +521,43 @@ impl[Key: Hashable, Value] Iterator for DictKeysIterator[Key, Value] {
     }
 }
 
-impl[Key: Hashable, Value] Iterable for DictKeysIterator[Key, Value] {
-    type Iterator = DictKeysIterator[Key, Value]
-    type Element = Key
+public struct DictMutKeysIterator[Key: Hashable, Value] {
+    dict: &mut Dictionary[Key, Value]
+    currentSlot: usize
+}
 
-    public func iter(self) -> Self.Iterator {
-        return self
+impl[Key: Hashable, Value] Iterator for DictMutKeysIterator[Key, Value] {
+    type Element = &Key
+
+    public func next(&mut self) -> Optional[Self.Element] {
+        let dict = self.dict
+        while self.currentSlot < dict.capacity {
+            let slot = self.currentSlot
+            self.currentSlot += 1
+
+            let ctrl = *dict.controls.at(slot)
+            if swissCtrlIsFull(ctrl) {
+                let keysRead: &List[Key?] = &dict.keys
+                match keysRead.at(slot) {
+                    case .some(key) => return .some(key)
+                    case .none => {}
+                }
+            }
+        }
+        return .none
     }
 }
 
 public struct DictValuesIterator[Key: Hashable, Value] {
-    dict: Dictionary[Key, Value]
+    dict: &Dictionary[Key, Value]
     currentSlot: usize
 }
 
 impl[Key: Hashable, Value] Iterator for DictValuesIterator[Key, Value] {
-    type Element = Value
+    type Element = &Value
 
     public func next(&mut self) -> Optional[Self.Element] {
-        let dict = &self.dict
+        let dict = self.dict
         while self.currentSlot < dict.capacity {
             let slot = self.currentSlot
             self.currentSlot += 1
@@ -524,7 +565,7 @@ impl[Key: Hashable, Value] Iterator for DictValuesIterator[Key, Value] {
             let ctrl = *dict.controls.at(slot)
             if swissCtrlIsFull(ctrl) {
                 match dict.values.at(slot) {
-                    case .some(val) => return .some(*val)
+                    case .some(val) => return .some(val)
                     case .none => {}
                 }
             }
@@ -533,25 +574,42 @@ impl[Key: Hashable, Value] Iterator for DictValuesIterator[Key, Value] {
     }
 }
 
-impl[Key: Hashable, Value] Iterable for DictValuesIterator[Key, Value] {
-    type Iterator = DictValuesIterator[Key, Value]
-    type Element = Value
+public struct DictMutValuesIterator[Key: Hashable, Value] {
+    dict: &mut Dictionary[Key, Value]
+    currentSlot: usize
+}
 
-    public func iter(self) -> Self.Iterator {
-        return self
+impl[Key: Hashable, Value] Iterator for DictMutValuesIterator[Key, Value] {
+    type Element = &mut Value
+
+    public func next(&mut self) -> Optional[Self.Element] {
+        let dict = self.dict
+        while self.currentSlot < dict.capacity {
+            let slot = self.currentSlot
+            self.currentSlot += 1
+
+            let ctrl = *dict.controls.at(slot)
+            if swissCtrlIsFull(ctrl) {
+                match dict.values.at(slot) {
+                    case .some(val) => return .some(val)
+                    case .none => {}
+                }
+            }
+        }
+        return .none
     }
 }
 
 public struct DictEntriesIterator[Key: Hashable, Value] {
-    dict: Dictionary[Key, Value]
+    dict: &Dictionary[Key, Value]
     currentSlot: usize
 }
 
 impl[Key: Hashable, Value] Iterator for DictEntriesIterator[Key, Value] {
-    type Element = (Key, Value)
+    type Element = (&Key, &Value)
 
     public func next(&mut self) -> Optional[Self.Element] {
-        let dict = &self.dict
+        let dict = self.dict
         while self.currentSlot < dict.capacity {
             let slot = self.currentSlot
             self.currentSlot += 1
@@ -563,7 +621,7 @@ impl[Key: Hashable, Value] Iterator for DictEntriesIterator[Key, Value] {
                 match keyOpt {
                     case .some(key) => {
                         match valOpt {
-                            case .some(val) => return .some((*key, *val))
+                            case .some(val) => return .some((key, val))
                             case .none => {}
                         }
                     }
@@ -575,21 +633,83 @@ impl[Key: Hashable, Value] Iterator for DictEntriesIterator[Key, Value] {
     }
 }
 
-impl[Key: Hashable, Value] Iterable for DictEntriesIterator[Key, Value] {
-    type Iterator = DictEntriesIterator[Key, Value]
+public struct DictMutEntriesIterator[Key: Hashable, Value] {
+    dict: &mut Dictionary[Key, Value]
+    currentSlot: usize
+}
+
+impl[Key: Hashable, Value] Iterator for DictMutEntriesIterator[Key, Value] {
+    type Element = (&Key, &mut Value)
+
+    public func next(&mut self) -> Optional[Self.Element] {
+        let dict = self.dict
+        while self.currentSlot < dict.capacity {
+            let slot = self.currentSlot
+            self.currentSlot += 1
+
+            let ctrl = *dict.controls.at(slot)
+            if swissCtrlIsFull(ctrl) {
+                let keysRead: &List[Key?] = &dict.keys
+                let keyOpt = keysRead.at(slot)
+                let valOpt = dict.values.at(slot)
+                match keyOpt {
+                    case .some(key) => {
+                        match valOpt {
+                            case .some(val) => return .some((key, val))
+                            case .none => {}
+                        }
+                    }
+                    case .none => {}
+                }
+            }
+        }
+        return .none
+    }
+}
+
+public struct DictOwnedEntriesIterator[Key: Hashable, Value] {
+    dict: Dictionary[Key, Value]
+    currentSlot: usize
+}
+
+impl[Key: Hashable, Value] Iterator for DictOwnedEntriesIterator[Key, Value] {
     type Element = (Key, Value)
 
-    public func iter(self) -> Self.Iterator {
-        return self
+    public func next(&mut self) -> Optional[Self.Element] {
+        let dict = &mut self.dict
+        while self.currentSlot < dict.capacity {
+            let slot = self.currentSlot
+            self.currentSlot += 1
+
+            let ctrl = *dict.controls.at(slot)
+            if swissCtrlIsFull(ctrl) {
+                let keySlot: &mut Key? = dict.keys.at(slot)
+                let keyOpt = std.mem.take(keySlot)
+
+                let valueSlot: &mut Value? = dict.values.at(slot)
+                let valueOpt = std.mem.take(valueSlot)
+
+                match keyOpt {
+                    case .some(key) => {
+                        match valueOpt {
+                            case .some(value) => return .some((key, value))
+                            case .none => {}
+                        }
+                    }
+                    case .none => {}
+                }
+            }
+        }
+        return .none
     }
 }
 
 impl[Key: Hashable, Value] Iterable for Dictionary[Key, Value] {
     type Element = (Key, Value)
-    type Iterator = DictEntriesIterator[Key, Value]
+    type Iterator = DictOwnedEntriesIterator[Key, Value]
 
     public func iter(self) -> Self.Iterator {
-        DictEntriesIterator[Key, Value] {
+        DictOwnedEntriesIterator[Key, Value] {
             dict: self,
             currentSlot: 0,
         }
@@ -597,25 +717,19 @@ impl[Key: Hashable, Value] Iterable for Dictionary[Key, Value] {
 }
 
 impl[Key: Hashable, Value] Iterable for &Dictionary[Key, Value] {
-    type Element = (Key, Value)
+    type Element = (&Key, &Value)
     type Iterator = DictEntriesIterator[Key, Value]
 
     public func iter(self) -> Self.Iterator {
-        DictEntriesIterator[Key, Value] {
-            dict: *self,
-            currentSlot: 0,
-        }
+        self.entries()
     }
 }
 
 impl[Key: Hashable, Value] Iterable for &mut Dictionary[Key, Value] {
-    type Element = (Key, Value)
-    type Iterator = DictEntriesIterator[Key, Value]
+    type Element = (&Key, &mut Value)
+    type Iterator = DictMutEntriesIterator[Key, Value]
 
     public func iter(self) -> Self.Iterator {
-        DictEntriesIterator[Key, Value] {
-            dict: *self,
-            currentSlot: 0,
-        }
+        self.entries()
     }
 }

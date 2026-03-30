@@ -163,7 +163,12 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 );
                 self.locals.insert(*pat_id, local);
                 if let Some(src) = place {
-                    let rvalue = Rvalue::Use(Operand::Copy(src.clone()));
+                    let operand = if self.is_type_copyable(*ty) {
+                        Operand::Copy(src.clone())
+                    } else {
+                        Operand::Move(src.clone())
+                    };
+                    let rvalue = Rvalue::Use(operand);
                     self.push_assign(block, Place::from_local(local), rvalue, pattern.span);
                 }
                 block.unit()

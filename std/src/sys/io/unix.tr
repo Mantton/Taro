@@ -90,8 +90,7 @@ func impPipe() -> Result[(PlatformAsyncStream, PlatformAsyncStream), Error] {
     let wrappedWrite = match writeEnd {
         case .ok(stream) => stream
         case .err(err) => {
-            var cleanup = wrappedRead
-            let _ = impClose(cleanup)
+            let _ = impClose(wrappedRead)
             return .err(err)
         }
     }
@@ -112,7 +111,7 @@ func impClose(_ stream: PlatformAsyncStream) -> Result[(), Error] {
 }
 
 func impRead(
-    _ stream: PlatformAsyncStream,
+    _ stream: &PlatformAsyncStream,
     _ buf: *mut uint8,
     _ len: usize,
 ) -> Result[usize, Error] {
@@ -124,7 +123,7 @@ func impRead(
 }
 
 func impWrite(
-    _ stream: PlatformAsyncStream,
+    _ stream: &PlatformAsyncStream,
     _ buf: *const uint8,
     _ len: usize,
 ) -> Result[usize, Error] {

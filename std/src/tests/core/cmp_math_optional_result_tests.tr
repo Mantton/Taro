@@ -116,105 +116,113 @@ func testStdIntrinsicMath() {
 
 @test
 func testStdOptionalOperations() {
-    let someVal: int32? = .some(42)
-    let noneVal: int32? = .none
+    func someVal() -> int32? {
+        .some(42)
+    }
+    func noneVal() -> int32? {
+        .none
+    }
 
-    std.testing.assertTrue(someVal.isSome(), "isSome should be true for .some")
-    std.testing.assertTrue(noneVal.isNone(), "isNone should be true for .none")
-    std.testing.assertEqual(someVal.unwrap(), 42, "unwrap should return value")
-    std.testing.assertEqual(someVal.expect("should have value"), 42, "expect should return value")
-    std.testing.assertEqual(noneVal.unwrapOr(100), 100, "unwrapOr should return default for none")
-    std.testing.assertEqual(someVal.unwrapOr(100), 42, "unwrapOr should return value for some")
-    std.testing.assertEqual(noneVal.unwrapOrElse(|| -> int32 { 50 + 50 }), 100, "unwrapOrElse")
+    std.testing.assertTrue(someVal().isSome(), "isSome should be true for .some")
+    std.testing.assertTrue(noneVal().isNone(), "isNone should be true for .none")
+    std.testing.assertEqual(someVal().unwrap(), 42, "unwrap should return value")
+    std.testing.assertEqual(someVal().expect("should have value"), 42, "expect should return value")
+    std.testing.assertEqual(noneVal().unwrapOr(100), 100, "unwrapOr should return default for none")
+    std.testing.assertEqual(someVal().unwrapOr(100), 42, "unwrapOr should return value for some")
+    std.testing.assertEqual(noneVal().unwrapOrElse(|| -> int32 { 50 + 50 }), 100, "unwrapOrElse")
 
-    let mapped = someVal.map(|x| -> int32 { x * 2 })
+    let mapped = someVal().map(|x| -> int32 { x * 2 })
     std.testing.assertEqual(mapped.unwrap(), 84, "map should transform value")
-    std.testing.assertTrue(noneVal.map(|x| -> int32 { x * 2 }).isNone(), "map on none should return none")
+    std.testing.assertTrue(noneVal().map(|x| -> int32 { x * 2 }).isNone(), "map on none should return none")
 
     std.testing.assertEqual(
-        someVal.flatMap(|x| -> int32? { .some(x + 1) }).unwrap(),
+        someVal().flatMap(|x| -> int32? { .some(x + 1) }).unwrap(),
         43,
         "flatMap should chain transformations",
     )
     std.testing.assertTrue(
-        someVal.flatMap(|x| -> int32? { .none }).isNone(),
+        someVal().flatMap(|x| -> int32? { .none }).isNone(),
         "flatMap returning none should give none",
     )
 
     std.testing.assertTrue(
-        someVal.filter(|x: &int32| -> bool { *x > 0 }).isSome(),
+        someVal().filter(|x: &int32| -> bool { *x > 0 }).isSome(),
         "filter passing predicate should keep value",
     )
     std.testing.assertTrue(
-        someVal.filter(|x: &int32| -> bool { *x < 0 }).isNone(),
+        someVal().filter(|x: &int32| -> bool { *x < 0 }).isNone(),
         "filter failing predicate should return none",
     )
 
     let other1: int32? = .some(100)
-    std.testing.assertEqual(someVal.and(other1).unwrap(), 100, "and should return second if first is some")
+    std.testing.assertEqual(someVal().and(other1).unwrap(), 100, "and should return second if first is some")
     let other2: int32? = .some(100)
-    std.testing.assertTrue(noneVal.and(other2).isNone(), "and on none should return none")
+    std.testing.assertTrue(noneVal().and(other2).isNone(), "and on none should return none")
 
     let other3: int32? = .some(100)
-    std.testing.assertEqual(someVal.or(other3).unwrap(), 42, "or should return first if some")
+    std.testing.assertEqual(someVal().or(other3).unwrap(), 42, "or should return first if some")
     let other4: int32? = .some(100)
-    std.testing.assertEqual(noneVal.or(other4).unwrap(), 100, "or should return second if first is none")
+    std.testing.assertEqual(noneVal().or(other4).unwrap(), 100, "or should return second if first is none")
 }
 
 @test
 func testStdResultOperations() {
-    let okVal: std.result.Result[int32, string] = .ok(42)
-    let errVal: std.result.Result[int32, string] = .err("error")
+    func okVal() -> std.result.Result[int32, string] {
+        .ok(42)
+    }
+    func errVal() -> std.result.Result[int32, string] {
+        .err("error")
+    }
 
-    std.testing.assertTrue(okVal.isOk(), "isOk should be true for .ok")
-    std.testing.assertTrue(errVal.isErr(), "isErr should be true for .err")
-    std.testing.assertFalse(okVal.isErr(), "isErr should be false for .ok")
-    std.testing.assertFalse(errVal.isOk(), "isOk should be false for .err")
+    std.testing.assertTrue(okVal().isOk(), "isOk should be true for .ok")
+    std.testing.assertTrue(errVal().isErr(), "isErr should be true for .err")
+    std.testing.assertFalse(okVal().isErr(), "isErr should be false for .ok")
+    std.testing.assertFalse(errVal().isOk(), "isOk should be false for .err")
 
-    std.testing.assertEqual(okVal.unwrap(), 42, "unwrap should return value")
-    std.testing.assertEqual(okVal.expect("should have value"), 42, "expect should return value")
-    std.testing.assertEqual(errVal.unwrapOr(100), 100, "unwrapOr should return default for err")
-    std.testing.assertEqual(okVal.unwrapOr(100), 42, "unwrapOr should return value for ok")
-    std.testing.assertEqual(errVal.unwrapOrElse(|e| -> int32 { 200 }), 200, "unwrapOrElse should compute from error")
+    std.testing.assertEqual(okVal().unwrap(), 42, "unwrap should return value")
+    std.testing.assertEqual(okVal().expect("should have value"), 42, "expect should return value")
+    std.testing.assertEqual(errVal().unwrapOr(100), 100, "unwrapOr should return default for err")
+    std.testing.assertEqual(okVal().unwrapOr(100), 42, "unwrapOr should return value for ok")
+    std.testing.assertEqual(errVal().unwrapOrElse(|e| -> int32 { 200 }), 200, "unwrapOrElse should compute from error")
 
-    let mapped = okVal.map(|x| -> int32 { x * 2 })
+    let mapped = okVal().map(|x| -> int32 { x * 2 })
     std.testing.assertEqual(mapped.unwrap(), 84, "map should transform value")
-    std.testing.assertTrue(errVal.map(|x| -> int32 { x * 2 }).isErr(), "map on err should return err")
+    std.testing.assertTrue(errVal().map(|x| -> int32 { x * 2 }).isErr(), "map on err should return err")
 
     std.testing.assertEqual(
-        okVal.flatMap(|x| -> std.result.Result[int32, string] { .ok(x + 1) }).unwrap(),
+        okVal().flatMap(|x| -> std.result.Result[int32, string] { .ok(x + 1) }).unwrap(),
         43,
         "flatMap should chain transformations",
     )
     std.testing.assertTrue(
-        okVal.flatMap(|x| -> std.result.Result[int32, string] { .err("failed") }).isErr(),
+        okVal().flatMap(|x| -> std.result.Result[int32, string] { .err("failed") }).isErr(),
         "flatMap returning err should give err",
     )
 
-    std.testing.assertTrue(errVal.mapErr(|e| -> int32 { 999 }).isErr(), "mapErr should keep error status")
-    std.testing.assertTrue(okVal.ok().isSome(), "ok() on ok result should return some")
-    std.testing.assertEqual(okVal.ok().unwrap(), 42, "ok() should extract value")
-    std.testing.assertTrue(errVal.ok().isNone(), "ok() on err result should return none")
-    std.testing.assertTrue(okVal.err().isNone(), "err() on ok result should return none")
-    std.testing.assertTrue(errVal.err().isSome(), "err() on err result should return some")
+    std.testing.assertTrue(errVal().mapErr(|e| -> int32 { 999 }).isErr(), "mapErr should keep error status")
+    std.testing.assertTrue(okVal().ok().isSome(), "ok() on ok result should return some")
+    std.testing.assertEqual(okVal().ok().unwrap(), 42, "ok() should extract value")
+    std.testing.assertTrue(errVal().ok().isNone(), "ok() on err result should return none")
+    std.testing.assertTrue(okVal().err().isNone(), "err() on ok result should return none")
+    std.testing.assertTrue(errVal().err().isSome(), "err() on err result should return some")
 
     let otherOk: std.result.Result[int32, string] = .ok(100)
-    std.testing.assertEqual(okVal.and(otherOk).unwrap(), 100, "and should return second if first is ok")
+    std.testing.assertEqual(okVal().and(otherOk).unwrap(), 100, "and should return second if first is ok")
     let otherOk2: std.result.Result[int32, string] = .ok(100)
-    std.testing.assertTrue(errVal.and(otherOk2).isErr(), "and on err should return err")
+    std.testing.assertTrue(errVal().and(otherOk2).isErr(), "and on err should return err")
 
     let otherOk3: std.result.Result[int32, string] = .ok(100)
-    std.testing.assertEqual(okVal.or(otherOk3).unwrap(), 42, "or should return first if ok")
+    std.testing.assertEqual(okVal().or(otherOk3).unwrap(), 42, "or should return first if ok")
     let otherOk4: std.result.Result[int32, string] = .ok(100)
-    std.testing.assertEqual(errVal.or(otherOk4).unwrap(), 100, "or should return second if first is err")
+    std.testing.assertEqual(errVal().or(otherOk4).unwrap(), 100, "or should return second if first is err")
 
     std.testing.assertEqual(
-        okVal.orElse(|e| -> std.result.Result[int32, string] { .ok(999) }).unwrap(),
+        okVal().orElse(|e| -> std.result.Result[int32, string] { .ok(999) }).unwrap(),
         42,
         "orElse on ok should return ok",
     )
     std.testing.assertEqual(
-        errVal.orElse(|e| -> std.result.Result[int32, string] { .ok(888) }).unwrap(),
+        errVal().orElse(|e| -> std.result.Result[int32, string] { .ok(888) }).unwrap(),
         888,
         "orElse on err should compute fallback",
     )

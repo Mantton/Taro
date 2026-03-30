@@ -1,0 +1,14 @@
+// Test that a mutating closure does not satisfy an Fn bound.
+
+func applyFn[F: Fn() -> int32](_ f: F) -> int32 {
+    f()
+}
+
+func main() {
+    var items: std.collections.List[int32] = std.collections.List()
+    let mutating = || -> int32 {
+        items.append(1)
+        return items.len() as int32
+    }
+    let _ = applyFn(mutating)
+}

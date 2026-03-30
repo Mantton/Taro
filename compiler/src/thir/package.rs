@@ -121,8 +121,9 @@ struct FunctionLower<'ctx> {
     func: ThirFunction<'ctx>,
     /// Nested closure bodies collected during lowering
     nested_closures: Vec<ThirFunction<'ctx>>,
-    /// For closure bodies: maps captured variable source_ids to field_index
-    captures_map: Option<FxHashMap<crate::hir::NodeID, FieldIndex>>,
+    /// For closure bodies: maps captured variable source ids to their slot and capture mode.
+    captures_map:
+        Option<FxHashMap<crate::hir::NodeID, (FieldIndex, crate::sema::models::CaptureKind)>>,
     /// Remaps source local node ids to synthetic parameter node ids.
     local_remap: Option<FxHashMap<crate::hir::NodeID, crate::hir::NodeID>>,
 }
@@ -1226,19 +1227,25 @@ impl<'ctx> FunctionLower<'ctx> {
             hir::ExpressionKind::Closure(closure) => {
                 // Get closure capture information from type checking phase
                 let captures_info = self.gcx.get_closure_captures(closure.def_id);
+                let kind = captures_info
+                    .as_ref()
+                    .map(|caps| caps.kind)
+                    .unwrap_or(crate::sema::models::ClosureKind::Fn);
 
                 // Build capture expressions for each captured variable
-                // All captures are by copy (value semantics)
                 let mut captures = vec![];
                 if let Some(ref caps) = captures_info {
                     for cap in &caps.captures {
                         // Check if this capture is itself an upvar in our current closure scope
                         // (needed for nested closures)
                         let base_expr_kind = if let Some(captures_map) = &self.captures_map {
-                            if let Some(&outer_field_index) = captures_map.get(&cap.source_id) {
+                            if let Some(&(outer_field_index, outer_capture_kind)) =
+                                captures_map.get(&cap.source_id)
+                            {
                                 // Variable is captured from outer closure - generate Upvar
                                 ExprKind::Upvar {
                                     field_index: outer_field_index,
+                                    capture_kind: outer_capture_kind,
                                 }
                             } else if let Some(local_remap) = &self.local_remap {
                                 if let Some(&remapped) = local_remap.get(&cap.source_id) {
@@ -1259,15 +1266,40 @@ impl<'ctx> FunctionLower<'ctx> {
                             ExprKind::Local(cap.source_id)
                         };
 
-                        let capture_expr_id = self.func.exprs.push(Expr {
+                        let mut capture_expr_id = self.func.exprs.push(Expr {
                             kind: base_expr_kind,
                             ty: cap.ty,
                             span,
                         });
 
+                        if let crate::sema::models::CaptureKind::ByRef { mutable } =
+                            cap.capture_kind
+                        {
+                            let ref_ty = Ty::new(
+                                crate::sema::models::TyKind::Reference(
+                                    cap.ty,
+                                    if mutable {
+                                        crate::hir::Mutability::Mutable
+                                    } else {
+                                        crate::hir::Mutability::Immutable
+                                    },
+                                ),
+                                self.gcx,
+                            );
+                            capture_expr_id = self.func.exprs.push(Expr {
+                                kind: ExprKind::Reference {
+                                    mutable,
+                                    expr: capture_expr_id,
+                                },
+                                ty: ref_ty,
+                                span,
+                            });
+                        }
+
                         captures.push(ClosureCapture {
                             source_id: cap.source_id,
                             capture_expr: capture_expr_id,
+                            capture_kind: cap.capture_kind,
                             field_index: cap.field_index,
                         });
                     }
@@ -1280,6 +1312,7 @@ impl<'ctx> FunctionLower<'ctx> {
                 ExprKind::Closure {
                     def_id: closure.def_id,
                     captures,
+                    kind,
                 }
             }
             hir::ExpressionKind::Await(inner) => {
@@ -1314,7 +1347,7 @@ impl<'ctx> FunctionLower<'ctx> {
         let captures_map = captures.as_ref().map(|caps| {
             caps.captures
                 .iter()
-                .map(|cap| (cap.source_id, cap.field_index))
+                .map(|cap| (cap.source_id, (cap.field_index, cap.capture_kind)))
                 .collect::<FxHashMap<_, _>>()
         });
 
@@ -1535,9 +1568,12 @@ impl<'ctx> FunctionLower<'ctx> {
             Resolution::LocalVariable(id) => {
                 // Check if this is a captured variable that needs to be accessed via upvar
                 if let Some(captures_map) = &self.captures_map {
-                    if let Some(&field_index) = captures_map.get(&id) {
+                    if let Some(&(field_index, capture_kind)) = captures_map.get(&id) {
                         // This is a captured variable - generate Upvar access
-                        return ExprKind::Upvar { field_index };
+                        return ExprKind::Upvar {
+                            field_index,
+                            capture_kind,
+                        };
                     }
                 }
                 if let Some(local_remap) = &self.local_remap {

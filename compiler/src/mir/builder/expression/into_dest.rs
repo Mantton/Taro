@@ -32,7 +32,12 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let block_and = match &expr.kind {
             ExprKind::Local(..) => {
                 let place = unpack!(block = self.as_place(block, expr_id));
-                let rvalue = Rvalue::Use(Operand::Copy(place));
+                let operand = if self.is_type_copyable(expr.ty) {
+                    Operand::Copy(place)
+                } else {
+                    Operand::Move(place)
+                };
+                let rvalue = Rvalue::Use(operand);
                 self.push_assign(block, destination, rvalue, expr.span);
                 block.unit()
             }
@@ -268,7 +273,12 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             ExprKind::Deref(..) | ExprKind::Field { .. } | ExprKind::Upvar { .. } => {
                 debug_assert!(matches!(Category::of(&expr.kind), Category::Place));
                 let place = unpack!(block = self.as_place(block, expr_id));
-                let rvalue = Rvalue::Use(Operand::Copy(place));
+                let operand = if self.is_type_copyable(expr.ty) {
+                    Operand::Copy(place)
+                } else {
+                    Operand::Move(place)
+                };
+                let rvalue = Rvalue::Use(operand);
                 self.push_assign(block, destination, rvalue, expr.span);
                 block.unit()
             }
@@ -498,7 +508,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
                         Some(Operand::Copy(Place::from_local(ptr_local)))
                     }
-                    _ => Some(Operand::Copy(closure_place)),
+                    _ => Some(Operand::Move(closure_place)),
                 }
             });
         if let crate::sema::models::TyKind::FnPointer { inputs, .. } = callee_ty.kind() {
@@ -2010,7 +2020,14 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
             // Generate the appropriate rvalue based on binding mode
             let rvalue = match binding.mode {
-                crate::hir::BindingMode::ByValue => Rvalue::Use(Operand::Copy(src_place.clone())),
+                crate::hir::BindingMode::ByValue => {
+                    let operand = if self.is_type_copyable(binding.ty) {
+                        Operand::Copy(src_place.clone())
+                    } else {
+                        Operand::Move(src_place.clone())
+                    };
+                    Rvalue::Use(operand)
+                }
                 crate::hir::BindingMode::ByRef(mutability) => {
                     // Take a reference to the place
                     Rvalue::Ref {
@@ -2068,7 +2085,11 @@ fn duration_nanos_place<'ctx>(gcx: Gcx<'ctx>, duration_place: Place<'ctx>) -> Pl
 impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
     fn then_else_break(&mut self, mut block: BasicBlockId, condition: ExprId) -> BlockAnd<()> {
         let place = unpack!(block = self.as_temp(block, condition));
-        let operand = Operand::Copy(Place::from_local(place));
+        let operand = if self.is_type_copyable(self.thir.exprs[condition].ty) {
+            Operand::Copy(Place::from_local(place))
+        } else {
+            Operand::Move(Place::from_local(place))
+        };
 
         let then_block = self.new_block_with_note("then block".into());
         let else_block = self.new_block_with_note("else block".into());

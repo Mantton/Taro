@@ -4,47 +4,47 @@ import std.cmp.Ord
 
 /// Values that can advance one step at a time for range iteration.
 public interface Step: Ord {
-    func stepForward(self) -> Self
+    func stepForward(&self) -> Self
 }
 
 impl Step for int8 {
-    public func stepForward(self) -> int8 { self + 1 }
+    public func stepForward(&self) -> int8 { *self + 1 }
 }
 
 impl Step for int16 {
-    public func stepForward(self) -> int16 { self + 1 }
+    public func stepForward(&self) -> int16 { *self + 1 }
 }
 
 impl Step for int32 {
-    public func stepForward(self) -> int32 { self + 1 }
+    public func stepForward(&self) -> int32 { *self + 1 }
 }
 
 impl Step for int64 {
-    public func stepForward(self) -> int64 { self + 1 }
+    public func stepForward(&self) -> int64 { *self + 1 }
 }
 
 impl Step for uint8 {
-    public func stepForward(self) -> uint8 { self + 1 }
+    public func stepForward(&self) -> uint8 { *self + 1 }
 }
 
 impl Step for uint16 {
-    public func stepForward(self) -> uint16 { self + 1 }
+    public func stepForward(&self) -> uint16 { *self + 1 }
 }
 
 impl Step for uint32 {
-    public func stepForward(self) -> uint32 { self + 1 }
+    public func stepForward(&self) -> uint32 { *self + 1 }
 }
 
 impl Step for uint64 {
-    public func stepForward(self) -> uint64 { self + 1 }
+    public func stepForward(&self) -> uint64 { *self + 1 }
 }
 
 impl Step for isize {
-    public func stepForward(self) -> isize { self + 1 }
+    public func stepForward(&self) -> isize { *self + 1 }
 }
 
 impl Step for usize {
-    public func stepForward(self) -> usize { self + 1 }
+    public func stepForward(&self) -> usize { *self + 1 }
 }
 
 /// A half-open range from `start` to `end` (exclusive).
@@ -74,8 +74,9 @@ impl[Bound: Step] Iterator for RangeIterator[Bound] {
             return .none
         }
 
+        let next = self.current.stepForward()
         let value = self.current
-        self.current = self.current.stepForward()
+        self.current = next
         return .some(value)
     }
 }
@@ -122,13 +123,15 @@ impl[Bound: Step] Iterator for ClosedRangeIterator[Bound] {
             return .none
         }
 
-        let value = self.current
         if self.current < self.end {
-            self.current = self.current.stepForward()
-        } else {
-            self.done = true
+            let next = self.current.stepForward()
+            let value = self.current
+            self.current = next
+            return .some(value)
         }
 
+        let value = self.current
+        self.done = true
         return .some(value)
     }
 }

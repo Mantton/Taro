@@ -43,7 +43,7 @@ func stdSugarCompileCoverage() {
     let seeded: [int32: string] = [1: "one", 2: "two"]
     var empty: [int32: string] = [:]
     let _ = empty.insert(key: 3, value: "three")
-    let _ = seeded.contains(1)
+    let _ = seeded.contains(&1)
 
     // Half-open range sugar
     var count: int32 = 0

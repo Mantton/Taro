@@ -1,0 +1,23 @@
+func consumeList(_ values: std.collections.List[int32]) -> int32 {
+    return values.len() as int32
+}
+
+func main() async {
+    var values: std.collections.List[int32] = std.collections.List()
+    values.append(10)
+    values.append(20)
+
+    let clone = values.clone()
+    let moved = consumeList(values)
+    assert(moved == 2, "non-copy lists should move by value")
+    assert(clone.len() == 2, "clone should preserve moved list contents")
+
+    let task = std.task.spawn(|| async {
+        await std.testing.yieldNow()
+        return 7 as int32
+    })
+    let result = await task.value()
+    assert(result == 7, "task value should be consumed exactly once")
+
+    print("PASS: Move semantics\n")
+}

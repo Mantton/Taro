@@ -1,5 +1,7 @@
 // Consolidated closure language tests.
 
+// --- Fn helpers ---
+
 func applyIntExplicit[F: Fn(int32) -> int32](_ f: F, _ x: int32) -> int32 {
     f(x)
 }
@@ -26,7 +28,7 @@ func applyFnSimple[F: Fn(int32) -> int32](_ f: F, _ x: int32) -> int32 {
     f(x)
 }
 
-func applyOnceHierarchy[F: Fn(int32) -> int32](_ f: F, _ x: int32) -> int32 {
+func applyOnceHierarchy[F: FnOnce(int32) -> int32](_ f: F, _ x: int32) -> int32 {
     f(x)
 }
 
@@ -58,7 +60,7 @@ func applyZeroMutTwice[F: Fn() -> int32](_ f: F) -> int32 {
     first + second
 }
 
-func applyZeroOnce[F: Fn() -> int32](_ f: F) -> int32 {
+func applyZeroOnce[F: FnOnce() -> int32](_ f: F) -> int32 {
     f()
 }
 
@@ -76,7 +78,7 @@ func apply2MutHierarchy[F: Fn(int32, int32) -> int32](_ f: F, _ a: int32, _ b: i
     first + second
 }
 
-func apply2OnceHierarchy[F: Fn(int32, int32) -> int32](_ f: F, _ a: int32, _ b: int32) -> int32 {
+func apply2OnceHierarchy[F: FnOnce(int32, int32) -> int32](_ f: F, _ a: int32, _ b: int32) -> int32 {
     f(a, b)
 }
 
@@ -105,9 +107,38 @@ func applyOutMut[T, Out, F: Fn(T) -> Out](_ x: T, _ f: F) -> Out {
     f(x)
 }
 
-func applyOutOnce[T, Out, F: Fn(T) -> Out](_ x: T, _ f: F) -> Out {
+func applyOutOnce[T, Out, F: FnOnce(T) -> Out](_ x: T, _ f: F) -> Out {
     f(x)
 }
+
+// --- FnMut helpers ---
+
+func applyMut[F: FnMut(int32) -> int32](_ f: F, _ a: int32, _ b: int32) -> int32 {
+    var f = f
+    let first = f(a)
+    let second = f(b)
+    return first + second
+}
+
+func applyZeroMut[F: FnMut() -> int32](_ f: F) -> int32 {
+    var f = f
+    let a = f()
+    let b = f()
+    let c = f()
+    return a + b + c
+}
+
+// --- FnOnce helpers ---
+
+func consumeViaOnce[F: FnOnce() -> int32](_ f: F) -> int32 {
+    f()
+}
+
+func callTwice[F: Fn() -> int32](_ f: F) -> int32 {
+    f() + f()
+}
+
+// --- Struct helpers ---
 
 struct ContainerInferred {
     value: int32
@@ -132,7 +163,7 @@ impl ContainerMethod {
         f(self.value)
     }
 
-    func map_once[F: Fn(int32) -> int32](&self, _ f: F) -> int32 {
+    func map_once[F: FnOnce(int32) -> int32](&self, _ f: F) -> int32 {
         f(self.value)
     }
 
@@ -161,7 +192,7 @@ impl[T] ContainerMethodGeneric[T] {
         f(self.value)
     }
 
-    func map_once[F: Fn(T) -> T](self, _ f: F) -> T {
+    func map_once[F: FnOnce(T) -> T](self, _ f: F) -> T {
         f(self.value)
     }
 }
@@ -202,6 +233,20 @@ func composeGenericMethod[T, F: Fn(T) -> T, G: Fn(T) -> T](_ f: F, _ g: G, _ x: 
 
 func consumeListMove(_ list: List[int32]) {
 }
+
+// --- Generic capture helpers ---
+
+func wrapAndConsume[T](_ value: T, _ check: (T) -> int32) -> int32 {
+    let closure = || { check(value) }
+    return consumeViaOnce(closure)
+}
+
+func wrapCopyable[T: Copy](_ value: T, _ check: (T) -> int32) -> int32 {
+    let closure = || { check(value) }
+    return callTwice(closure)
+}
+
+// === Tests ===
 
 func testClosureBasic() {
     let add = |a: int32, b: int32| -> int32 { a + b }
@@ -296,7 +341,7 @@ func testClosureFnSimple() {
     std.assert(result == 10, "should be 10")
 }
 
-func testClosureFnMut() {
+func testClosureFnCopyCaptureSemantics() {
     var counter: int32 = 0
     let inc = || -> int32 { counter + 1 }
     let first = inc()
@@ -529,6 +574,99 @@ func testClosureShorthandStress() {
     std.assert(pair_once == 8, "two-arg Fn shorthand should consume captured values correctly")
 }
 
+// --- FnMut dispatch tests ---
+
+func testFnMutNonCapturing() {
+    let result = applyMut(|x: int32| -> int32 { x * 2 }, 3, 5)
+    assert(result == 16, "non-capturing closure through FnMut(int32)->int32 should work")
+}
+
+func testFnMutListCapture() {
+    var items: std.collections.List[int32] = std.collections.List()
+    let acc = |val: int32| -> int32 {
+        items.append(val)
+        return items.len() as int32
+    }
+    let result = applyMut(acc, 10, 20)
+    assert(result == 3, "mutating List closure through FnMut(int32)->int32: 1+2=3")
+    assert(items.len() == 2 as usize, "List should have two items after applyMut")
+}
+
+func testFnMutZeroArgListCapture() {
+    var growing: std.collections.List[int32] = std.collections.List()
+    let inc = || -> int32 {
+        growing.append(1)
+        return growing.len() as int32
+    }
+    let sum = applyZeroMut(inc)
+    assert(sum == 6, "mutating List closure through FnMut()->int32: 1+2+3=6")
+    assert(growing.len() == 3 as usize, "List should have three items after applyZeroMut")
+}
+
+func testFnMutListCaptureWithArg() {
+    var items: std.collections.List[int32] = std.collections.List()
+    var push = |val: int32| {
+        items.append(val)
+    }
+    push(10)
+    push(20)
+    push(30)
+    assert(items.len() == 3, "closure should mutate captured list")
+}
+
+// --- FnMut scalar mutable capture tests ---
+
+func testFnMutScalarCaptureThroughHelper() {
+    var counter: int32 = 0
+    let inc = || -> int32 {
+        counter = counter + 1
+        return counter
+    }
+    let sum = applyZeroMut(inc)
+    assert(sum == 6, "scalar mutable capture through FnMut should accumulate: 1+2+3=6")
+    assert(counter == 3, "outer counter should reflect mutations after applyZeroMut")
+}
+
+func testFnMutScalarCaptureDirectCalls() {
+    var counter: int32 = 0
+    var inc = || -> int32 {
+        counter = counter + 1
+        return counter
+    }
+    let a = inc()
+    let b = inc()
+    let c = inc()
+    assert(a == 1, "first direct call should return 1")
+    assert(b == 2, "second direct call should return 2")
+    assert(c == 3, "third direct call should return 3")
+    assert(counter == 3, "outer counter should be 3 after three direct calls")
+}
+
+func testFnMutScalarCaptureWithArg() {
+    var total: int32 = 0
+    let acc = |val: int32| -> int32 {
+        total = total + val
+        return total
+    }
+    let result = applyMut(acc, 10, 20)
+    assert(result == 40, "scalar accumulator through FnMut(int32)->int32: 10+30=40")
+    assert(total == 30, "outer total should be 30 after accumulating 10 and 20")
+}
+
+// --- Generic closure move semantics tests ---
+
+func testGenericClosureNonCopyCapture() {
+    let result = wrapAndConsume(42 as int32, |x| { x })
+    assert(result == 42, "non-copy generic capture via FnOnce")
+}
+
+func testGenericClosureCopyCapture() {
+    let result = wrapCopyable(10 as int32, |x| { x })
+    assert(result == 20, "copy generic capture via Fn called twice")
+}
+
+// === Main ===
+
 func main() {
     testClosureBasic()
     testClosureByRef()
@@ -536,7 +674,7 @@ func main() {
     testClosureExplicitParams()
     testClosureFnPtr()
     testClosureFnSimple()
-    testClosureFnMut()
+    testClosureFnCopyCaptureSemantics()
     testClosureHierarchy()
     testClosureHigherOrder()
     testClosureInferred()
@@ -547,6 +685,15 @@ func main() {
     testClosureMove()
     testClosureNested()
     testClosureShorthandStress()
+    testFnMutNonCapturing()
+    testFnMutListCapture()
+    testFnMutZeroArgListCapture()
+    testFnMutListCaptureWithArg()
+    testFnMutScalarCaptureThroughHelper()
+    testFnMutScalarCaptureDirectCalls()
+    testFnMutScalarCaptureWithArg()
+    testGenericClosureNonCopyCapture()
+    testGenericClosureCopyCapture()
 
     std.print("PASS: closures\n")
 }

@@ -817,7 +817,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         Some((args, inner))
     }
 
-    /// Check if a closure type conforms to Fn or AsyncFn.
+    /// Check if a closure type conforms to one of the callable interfaces.
     fn solve_closure_fn_conformance(
         &mut self,
         location: Span,
@@ -840,14 +840,54 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let gcx = self.gcx();
 
         let fn_def = gcx.std_item_def(StdItem::Fn);
+        let fn_mut_def = gcx.std_item_def(StdItem::FnMut);
+        let fn_once_def = gcx.std_item_def(StdItem::FnOnce);
         let async_fn_def = gcx.std_item_def(StdItem::AsyncFn);
-        if fn_def != Some(interface.id) && async_fn_def != Some(interface.id) {
+        let async_fn_mut_def = gcx.std_item_def(StdItem::AsyncFnMut);
+        let async_fn_once_def = gcx.std_item_def(StdItem::AsyncFnOnce);
+        if fn_def != Some(interface.id)
+            && fn_mut_def != Some(interface.id)
+            && fn_once_def != Some(interface.id)
+            && async_fn_def != Some(interface.id)
+            && async_fn_mut_def != Some(interface.id)
+            && async_fn_once_def != Some(interface.id)
+        {
             return None;
         }
-        if (fn_def == Some(interface.id) && kind != crate::sema::models::ClosureKind::Fn)
-            || (async_fn_def == Some(interface.id)
-                && kind != crate::sema::models::ClosureKind::AsyncFn)
-        {
+        let allowed = if fn_def == Some(interface.id) {
+            matches!(kind, crate::sema::models::ClosureKind::Fn)
+        } else if fn_mut_def == Some(interface.id) {
+            matches!(
+                kind,
+                crate::sema::models::ClosureKind::Fn
+                    | crate::sema::models::ClosureKind::FnMut
+            )
+        } else if fn_once_def == Some(interface.id) {
+            matches!(
+                kind,
+                crate::sema::models::ClosureKind::Fn
+                    | crate::sema::models::ClosureKind::FnMut
+                    | crate::sema::models::ClosureKind::FnOnce
+            )
+        } else if async_fn_def == Some(interface.id) {
+            matches!(kind, crate::sema::models::ClosureKind::AsyncFn)
+        } else if async_fn_mut_def == Some(interface.id) {
+            matches!(
+                kind,
+                crate::sema::models::ClosureKind::AsyncFn
+                    | crate::sema::models::ClosureKind::AsyncFnMut
+            )
+        } else if async_fn_once_def == Some(interface.id) {
+            matches!(
+                kind,
+                crate::sema::models::ClosureKind::AsyncFn
+                    | crate::sema::models::ClosureKind::AsyncFnMut
+                    | crate::sema::models::ClosureKind::AsyncFnOnce
+            )
+        } else {
+            false
+        };
+        if !allowed {
             return None;
         }
 
@@ -886,7 +926,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         Some(SolverResult::Solved(obligations))
     }
 
-    /// Coerce a closure to a type that has Fn/AsyncFn bounds.
+    /// Coerce a closure to a type that has callable bounds.
     /// This extracts the callable bound and constrains the closure immediately.
     fn solve_closure_to_fn_bound_param(
         &mut self,
@@ -917,18 +957,57 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         let gcx = self.gcx();
         let fn_def = gcx.std_item_def(StdItem::Fn);
+        let fn_mut_def = gcx.std_item_def(StdItem::FnMut);
+        let fn_once_def = gcx.std_item_def(StdItem::FnOnce);
         let async_fn_def = gcx.std_item_def(StdItem::AsyncFn);
+        let async_fn_mut_def = gcx.std_item_def(StdItem::AsyncFnMut);
+        let async_fn_once_def = gcx.std_item_def(StdItem::AsyncFnOnce);
 
         for bound in bounds {
-            let is_fn_trait = fn_def == Some(bound.id) || async_fn_def == Some(bound.id);
+            let is_fn_trait = fn_def == Some(bound.id)
+                || fn_mut_def == Some(bound.id)
+                || fn_once_def == Some(bound.id)
+                || async_fn_def == Some(bound.id)
+                || async_fn_mut_def == Some(bound.id)
+                || async_fn_once_def == Some(bound.id);
 
             if !is_fn_trait {
                 continue;
             }
-            if (fn_def == Some(bound.id) && kind != crate::sema::models::ClosureKind::Fn)
-                || (async_fn_def == Some(bound.id)
-                    && kind != crate::sema::models::ClosureKind::AsyncFn)
-            {
+            let allowed = if fn_def == Some(bound.id) {
+                matches!(kind, crate::sema::models::ClosureKind::Fn)
+            } else if fn_mut_def == Some(bound.id) {
+                matches!(
+                    kind,
+                    crate::sema::models::ClosureKind::Fn
+                        | crate::sema::models::ClosureKind::FnMut
+                )
+            } else if fn_once_def == Some(bound.id) {
+                matches!(
+                    kind,
+                    crate::sema::models::ClosureKind::Fn
+                        | crate::sema::models::ClosureKind::FnMut
+                        | crate::sema::models::ClosureKind::FnOnce
+                )
+            } else if async_fn_def == Some(bound.id) {
+                matches!(kind, crate::sema::models::ClosureKind::AsyncFn)
+            } else if async_fn_mut_def == Some(bound.id) {
+                matches!(
+                    kind,
+                    crate::sema::models::ClosureKind::AsyncFn
+                        | crate::sema::models::ClosureKind::AsyncFnMut
+                )
+            } else if async_fn_once_def == Some(bound.id) {
+                matches!(
+                    kind,
+                    crate::sema::models::ClosureKind::AsyncFn
+                        | crate::sema::models::ClosureKind::AsyncFnMut
+                        | crate::sema::models::ClosureKind::AsyncFnOnce
+                )
+            } else {
+                false
+            };
+            if !allowed {
                 continue;
             }
 

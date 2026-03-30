@@ -119,18 +119,27 @@ impl<'ctx> ConstraintSolver<'ctx> {
         return SolverResult::Solved(obligations);
     }
 
-    /// Extract (inputs, output) from Fn/AsyncFn bounds on a type parameter.
+    /// Extract (inputs, output) from callable bounds on a type parameter.
     /// Returns None if the type has no such bounds.
     fn extract_fn_bound_signature(&self, ty: Ty<'ctx>) -> Option<(TyList<'ctx>, Ty<'ctx>)> {
         let gcx = self.gcx();
         let fn_def = gcx.std_item_def(StdItem::Fn);
+        let fn_mut_def = gcx.std_item_def(StdItem::FnMut);
+        let fn_once_def = gcx.std_item_def(StdItem::FnOnce);
         let async_fn_def = gcx.std_item_def(StdItem::AsyncFn);
+        let async_fn_mut_def = gcx.std_item_def(StdItem::AsyncFnMut);
+        let async_fn_once_def = gcx.std_item_def(StdItem::AsyncFnOnce);
 
         // Get bounds for this type from the parameter environment
         let bounds = self.param_env.bounds_for(ty);
 
         for bound in bounds {
-            let is_fn_trait = fn_def == Some(bound.id) || async_fn_def == Some(bound.id);
+            let is_fn_trait = fn_def == Some(bound.id)
+                || fn_mut_def == Some(bound.id)
+                || fn_once_def == Some(bound.id)
+                || async_fn_def == Some(bound.id)
+                || async_fn_mut_def == Some(bound.id)
+                || async_fn_once_def == Some(bound.id);
 
             if !is_fn_trait {
                 continue;

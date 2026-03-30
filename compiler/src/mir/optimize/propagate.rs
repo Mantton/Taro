@@ -54,7 +54,7 @@ impl<'ctx> MirPass<'ctx> for CopyPropagation {
                                     stmt_index,
                                 });
                             }
-                            if let Rvalue::Use(Operand::Copy(src)) = rv {
+                            if let Rvalue::Use(Operand::Copy(src) | Operand::Move(src)) = rv {
                                 if src.projection.is_empty() {
                                     copy_source[dest.local.index()] = Some(src.local);
                                 }
@@ -163,6 +163,7 @@ impl<'ctx> MirPass<'ctx> for CopyPropagation {
         let remap_operand = |op: &Operand<'ctx>| -> Operand<'ctx> {
             match op {
                 Operand::Copy(p) => Operand::copy(remap_place(p)),
+                Operand::Move(p) => Operand::move_(remap_place(p)),
                 Operand::CopyWith(p, modifiers) => Operand::copy_with(remap_place(p), *modifiers),
                 Operand::Constant(c) => Operand::Constant(c.clone()),
             }
@@ -311,7 +312,7 @@ fn record_operand_use(
     uses: &mut [Vec<UseSite>],
 ) {
     match op {
-        Operand::Copy(place) | Operand::CopyWith(place, _) => {
+        Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
             record_place_use(place, block, stmt_index, uses);
         }
         Operand::Constant(_) => {}

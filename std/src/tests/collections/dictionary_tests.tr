@@ -1,19 +1,24 @@
 import std.hash.{Hashable, Hasher}
 import std.iter.{Iterator, Iterable}
+import std.marker.Clone
+
+func consumeDictionaryMoveSemantics(_ values: [int32: string]) -> usize {
+    values.len()
+}
 
 @test
 func testDictionaryLiteralAndConstructorInference() {
     let values: [int32: string] = [1: "one", 2: "two"]
     std.testing.assertEqual(values.len(), 2 as usize, "non-empty literal should infer destination type")
-    std.testing.assertTrue(values.contains(1), "literal-inferred dictionary should contain inserted key")
+    std.testing.assertTrue(values.contains(&1), "literal-inferred dictionary should contain inserted key")
 
     var fromLiteral: [int32: string] = [:]
     let _ = fromLiteral.insert(key: 10, value: "Hello, World")
-    std.testing.assertTrue(fromLiteral.contains(10), "literal dictionary should support insert/contains")
+    std.testing.assertTrue(fromLiteral.contains(&10), "literal dictionary should support insert/contains")
 
     var fromTypedLiteral: [uint32: string] = [:]
     let _ = fromTypedLiteral.insert(key: 10, value: "Hello, World")
-    std.testing.assertTrue(fromTypedLiteral.contains(10), "typed literal dictionary should support insert/contains")
+    std.testing.assertTrue(fromTypedLiteral.contains(&10), "typed literal dictionary should support insert/contains")
 }
 
 struct CollisionKey {
@@ -41,8 +46,8 @@ func testCollisionInsertLookupOverwrite() {
     let _ = dict.insert(key: CollisionKey { id: 1 }, value: 100)
     let _ = dict.insert(key: CollisionKey { id: 2 }, value: 200)
 
-    let hit1 = dict.get(CollisionKey { id: 1 })
-    let hit2 = dict.get(CollisionKey { id: 2 })
+    let hit1 = dict.get(&CollisionKey { id: 1 })
+    let hit2 = dict.get(&CollisionKey { id: 2 })
     std.testing.assertTrue(hit1.isSome(), "collision lookup should find key 1")
     std.testing.assertTrue(hit2.isSome(), "collision lookup should find key 2")
     std.testing.assertEqual(*hit1.unwrap(), 100, "collision key 1 value mismatch")
@@ -61,13 +66,13 @@ func testRemoveTombstoneKeepsProbeChain() {
     let _ = dict.insert(key: CollisionKey { id: 2 }, value: 200)
     let _ = dict.insert(key: CollisionKey { id: 3 }, value: 300)
 
-    let removed = dict.remove(CollisionKey { id: 2 })
+    let removed = dict.remove(&CollisionKey { id: 2 })
     std.testing.assertTrue(removed.isSome(), "remove should return value for present collision key")
     std.testing.assertEqual(removed.unwrap(), 200, "removed value mismatch for collision key")
 
-    let hit1 = dict.get(CollisionKey { id: 1 })
-    let hit2 = dict.get(CollisionKey { id: 2 })
-    let hit3 = dict.get(CollisionKey { id: 3 })
+    let hit1 = dict.get(&CollisionKey { id: 1 })
+    let hit2 = dict.get(&CollisionKey { id: 2 })
+    let hit3 = dict.get(&CollisionKey { id: 3 })
     std.testing.assertTrue(hit1.isSome(), "key 1 should still be reachable after tombstone creation")
     std.testing.assertTrue(hit2.isNone(), "removed key should not be reachable")
     std.testing.assertTrue(hit3.isSome(), "key 3 should remain reachable through tombstone")
@@ -79,14 +84,14 @@ func testDeletedSlotCanBeReused() {
 
     let _ = dict.insert(key: CollisionKey { id: 10 }, value: 1000)
     let _ = dict.insert(key: CollisionKey { id: 11 }, value: 1100)
-    let _ = dict.remove(CollisionKey { id: 10 })
+    let _ = dict.remove(&CollisionKey { id: 10 })
 
     let added = dict.insert(key: CollisionKey { id: 12 }, value: 1200)
     std.testing.assertTrue(added.isNone(), "insert into table with tombstone should behave as new insert")
     std.testing.assertEqual(dict.len(), 2 as usize, "len should account for tombstone reuse correctly")
 
-    let hit11 = dict.get(CollisionKey { id: 11 })
-    let hit12 = dict.get(CollisionKey { id: 12 })
+    let hit11 = dict.get(&CollisionKey { id: 11 })
+    let hit12 = dict.get(&CollisionKey { id: 12 })
     std.testing.assertTrue(hit11.isSome(), "existing key should survive tombstone reuse")
     std.testing.assertTrue(hit12.isSome(), "new key should be reachable after tombstone reuse")
     std.testing.assertEqual(*hit11.unwrap(), 1100, "key 11 value mismatch after tombstone reuse")
@@ -125,7 +130,7 @@ func testDictionaryIterators() {
     loop {
         match keysIter.next() {
             case .some(k) => {
-                std.testing.assertTrue(k == 1 || k == 2 || k == 3, "keys() yields invalid key")
+                std.testing.assertTrue(*k == 1 || *k == 2 || *k == 3, "keys() yields invalid key")
                 keyCount += 1
             }
             case .none => break
@@ -139,7 +144,7 @@ func testDictionaryIterators() {
     loop {
         match valuesIter.next() {
             case .some(v) => {
-                std.testing.assertTrue(v == "one" || v == "two" || v == "three", "values() yields invalid value")
+                std.testing.assertTrue(*v == "one" || *v == "two" || *v == "three", "values() yields invalid value")
                 valCount += 1
             }
             case .none => break
@@ -151,8 +156,8 @@ func testDictionaryIterators() {
     var entryCount: usize = 0
     for entry in &dict {
         let (k, v) = entry
-        std.testing.assertTrue(k == 1 || k == 2 || k == 3, "entries() yields invalid key")
-        std.testing.assertTrue(v == "one" || v == "two" || v == "three", "entries() yields invalid value")
+        std.testing.assertTrue(*k == 1 || *k == 2 || *k == 3, "entries() yields invalid key")
+        std.testing.assertTrue(*v == "one" || *v == "two" || *v == "three", "entries() yields invalid value")
         entryCount += 1
     }
     std.testing.assertEqual(entryCount, 3 as usize, "entries() yields wrong number of elements")
@@ -161,10 +166,12 @@ func testDictionaryIterators() {
     var mutEntryCount: usize = 0
     for entry in &mut dict {
         let (k, v) = entry
-        std.testing.assertTrue(k == 1 || k == 2 || k == 3, "mut entries() yields invalid key")
+        std.testing.assertTrue(*k == 1 || *k == 2 || *k == 3, "mut entries() yields invalid key")
+        *v = "visited"
         mutEntryCount += 1
     }
     std.testing.assertEqual(mutEntryCount, 3 as usize, "mut entries() yields wrong number of elements")
+    std.testing.assertEqual(*dict.get(&1).unwrap(), "visited", "mut iteration should yield mutable values")
 }
 
 @test
@@ -174,125 +181,68 @@ func testDictionaryClear() {
     let _ = dict.insert(key: 2, value: "two")
 
     std.testing.assertEqual(dict.len(), 2 as usize, "dictionary should have 2 elements")
-    std.testing.assertTrue(dict.contains(1), "should contain key 1")
+    std.testing.assertTrue(dict.contains(&1), "should contain key 1")
 
     dict.clear()
 
     std.testing.assertEqual(dict.len(), 0 as usize, "dictionary should be empty after clear")
     std.testing.assertTrue(dict.isEmpty(), "isEmpty should be true")
-    std.testing.assertTrue(dict.get(1).isNone(), "cleared dict shouldn't contain previous keys")
-    std.testing.assertTrue(dict.get(2).isNone(), "cleared dict shouldn't contain previous keys")
+    std.testing.assertTrue(dict.get(&1).isNone(), "cleared dict shouldn't contain previous keys")
+    std.testing.assertTrue(dict.get(&2).isNone(), "cleared dict shouldn't contain previous keys")
 
     // Should be able to insert again
     let _ = dict.insert(key: 3, value: "three")
     std.testing.assertEqual(dict.len(), 1 as usize, "dictionary should have 1 element after insert")
-    std.testing.assertTrue(dict.contains(3), "should contain new key")
+    std.testing.assertTrue(dict.contains(&3), "should contain new key")
 }
 
-// --- COW (Copy-On-Write) Tests ---
-
 @test
-func testDictionaryCowInsertCopy() {
+func testDictionaryCloneProducesIndependentStorage() {
     var original: [int32: string] = [1: "one", 2: "two"]
-    var copy = original
+    var copy = original.clone()
 
     let _ = copy.insert(key: 3, value: "three")
-
-    std.testing.assertEqual(original.len(), 2 as usize, "cow insert: original len unchanged")
-    std.testing.assertTrue(original.contains(1), "cow insert: original has key 1")
-    std.testing.assertTrue(original.contains(2), "cow insert: original has key 2")
-    std.testing.assertFalse(original.contains(3), "cow insert: original missing key 3")
-    std.testing.assertEqual(copy.len(), 3 as usize, "cow insert: copy len updated")
-    std.testing.assertTrue(copy.contains(3), "cow insert: copy has key 3")
-}
-
-@test
-func testDictionaryCowRemoveCopy() {
-    var original: [int32: string] = [1: "one", 2: "two", 3: "three"]
-    var copy = original
-
-    let removed = copy.remove(2)
-    std.testing.assertTrue(removed.isSome(), "cow remove: returns value")
-    std.testing.assertEqual(removed.unwrap(), "two", "cow remove: correct value")
-
-    std.testing.assertEqual(original.len(), 3 as usize, "cow remove: original len unchanged")
-    std.testing.assertTrue(original.contains(2), "cow remove: original still has key 2")
-    std.testing.assertEqual(copy.len(), 2 as usize, "cow remove: copy len decreased")
-    std.testing.assertFalse(copy.contains(2), "cow remove: copy missing key 2")
-}
-
-@test
-func testDictionaryCowOverwriteCopy() {
-    var original: [int32: string] = [1: "one", 2: "two"]
-    var copy = original
-
     let old = copy.insert(key: 1, value: "ONE")
-    std.testing.assertTrue(old.isSome(), "cow overwrite: returns old value")
-    std.testing.assertEqual(old.unwrap(), "one", "cow overwrite: old value correct")
 
-    let origVal = original.get(1)
-    std.testing.assertTrue(origVal.isSome(), "cow overwrite: original has key")
-    std.testing.assertEqual(*origVal.unwrap(), "one", "cow overwrite: original value unchanged")
+    std.testing.assertTrue(old.isSome(), "clone overwrite should return the previous value")
+    std.testing.assertEqual(old.unwrap(), "one", "clone overwrite should report the original value")
+    std.testing.assertEqual(original.len(), 2 as usize, "clone should not change original length")
+    std.testing.assertTrue(original.contains(&1), "clone should preserve original keys")
+    std.testing.assertFalse(original.contains(&3), "clone insert should not affect original keys")
+    std.testing.assertEqual(copy.len(), 3 as usize, "clone should allow independent inserts")
+    std.testing.assertEqual(*copy.get(&1).unwrap(), "ONE", "clone overwrite should update only copied storage")
 
-    let copyVal = copy.get(1)
-    std.testing.assertTrue(copyVal.isSome(), "cow overwrite: copy has key")
-    std.testing.assertEqual(*copyVal.unwrap(), "ONE", "cow overwrite: copy value updated")
+    let movedLen = consumeDictionaryMoveSemantics(copy)
+    std.testing.assertEqual(movedLen, 3 as usize, "cloned dictionary should still move by value")
 }
 
 @test
-func testDictionaryCowClearCopy() {
-    var original: [int32: string] = [1: "one", 2: "two"]
-    var copy = original
+func testDictionaryCloneSupportsIndependentRemoval() {
+    var original: [int32: string] = [1: "one", 2: "two", 3: "three"]
+    var copy = original.clone()
 
-    copy.clear()
+    let removed = copy.remove(&2)
+    std.testing.assertTrue(removed.isSome(), "clone remove should return the removed value")
+    std.testing.assertEqual(removed.unwrap(), "two", "clone remove should remove the requested key")
 
-    std.testing.assertEqual(copy.len(), 0 as usize, "cow clear: copy empty")
-    std.testing.assertTrue(copy.isEmpty(), "cow clear: copy isEmpty")
-    std.testing.assertEqual(original.len(), 2 as usize, "cow clear: original unchanged")
-    std.testing.assertTrue(original.contains(1), "cow clear: original has key 1")
+    std.testing.assertEqual(original.len(), 3 as usize, "original should remain unchanged after clone removal")
+    std.testing.assertTrue(original.contains(&2), "original should still contain removed clone key")
+    std.testing.assertEqual(copy.len(), 2 as usize, "clone remove should update copied storage")
+    std.testing.assertFalse(copy.contains(&2), "clone remove should only affect the copy")
 }
 
 @test
-func testDictionaryCowEmptyDict() {
-    var a: [int32: string] = [:]
-    var b = a
-
-    let _ = a.insert(key: 1, value: "one")
-    let _ = b.insert(key: 2, value: "two")
-
-    std.testing.assertEqual(a.len(), 1 as usize, "cow empty: a has 1")
-    std.testing.assertEqual(b.len(), 1 as usize, "cow empty: b has 1")
-    std.testing.assertTrue(a.contains(1), "cow empty: a has key 1")
-    std.testing.assertFalse(a.contains(2), "cow empty: a missing key 2")
-    std.testing.assertTrue(b.contains(2), "cow empty: b has key 2")
-    std.testing.assertFalse(b.contains(1), "cow empty: b missing key 1")
-}
-
-@test
-func testDictionaryCowMultipleCopies() {
+func testDictionaryCloneSupportsMultipleCopies() {
     var original: [int32: int32] = [1: 100, 2: 200]
-    var copy1 = original
-    var copy2 = original
+    var copy1 = original.clone()
+    var copy2 = original.clone()
 
     let _ = copy1.insert(key: 3, value: 300)
-    let _ = copy2.remove(1)
+    let _ = copy2.remove(&1)
 
-    std.testing.assertEqual(original.len(), 2 as usize, "cow multi: original unchanged")
-    std.testing.assertEqual(copy1.len(), 3 as usize, "cow multi: copy1 has 3")
-    std.testing.assertTrue(copy1.contains(3), "cow multi: copy1 has key 3")
-    std.testing.assertEqual(copy2.len(), 1 as usize, "cow multi: copy2 has 1")
-    std.testing.assertFalse(copy2.contains(1), "cow multi: copy2 missing key 1")
-}
-
-@test
-func testDictionaryCowGetReadonlyCopy() {
-    var original: [int32: int32] = [1: 100, 2: 200]
-    let copy = original
-
-    match copy.get(1) {
-        case .some(val) => std.testing.assertEqual(*val, 100, "cow get readonly: sees original value")
-        case .none => std.testing.fail("cow get readonly: should find key")
-    }
-
-    std.testing.assertTrue(copy.get(99).isNone(), "cow get readonly: missing key returns none")
+    std.testing.assertEqual(original.len(), 2 as usize, "original should stay intact across multiple clones")
+    std.testing.assertEqual(copy1.len(), 3 as usize, "first clone should track its own insert")
+    std.testing.assertTrue(copy1.contains(&3), "first clone should contain its inserted key")
+    std.testing.assertEqual(copy2.len(), 1 as usize, "second clone should track its own removal")
+    std.testing.assertFalse(copy2.contains(&1), "second clone should remove its own key only")
 }

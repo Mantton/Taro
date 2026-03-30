@@ -18,3 +18,7 @@ error: async calls must be immediately awaited
  -> language_tests/source_files/invalid/async_closures.tr:24:12
 	    let _ = task.value()
 	            ^^^^^^^^^^^^
+error: type 'closure<AsyncFnOnce>((int32) -> int32)' does not conform to interface 'AsyncFn(int32) -> int32'
+ -> language_tests/source_files/invalid/async_closures.tr:37:18
+	    let _ = await applyReusableAsync(closure, 1)
+	                  ^^^^^^^^^^^^^^^^^^

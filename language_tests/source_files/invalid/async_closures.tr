@@ -23,3 +23,16 @@ func badSyncTaskValue() {
 
     let _ = task.value()
 }
+
+func applyReusableAsync[F: AsyncFn(int32) -> int32](_ f: F, _ x: int32) async -> int32 {
+    return await f(x)
+}
+
+func badCapturingAsyncFnBound() async {
+    let captured = 7 as int32
+    let closure = |x: int32| async {
+        return x + captured
+    }
+
+    let _ = await applyReusableAsync(closure, 1)
+}

@@ -1591,11 +1591,6 @@ impl<'ctx> Checker<'ctx> {
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         let gcx = self.gcx();
-        let closure_kind = if closure.is_async {
-            crate::sema::models::ClosureKind::AsyncFn
-        } else {
-            crate::sema::models::ClosureKind::Fn
-        };
 
         // Collect closure parameter IDs (these are NOT captures)
         let param_ids: rustc_hash::FxHashSet<NodeID> =
@@ -1740,31 +1735,37 @@ impl<'ctx> Checker<'ctx> {
             // Get the type of the captured variable from local bindings
             let binding = self.get_local(*node_id);
             let ty = cs.infer_cx.resolve_vars_if_possible(binding.ty);
+            let capture_kind = classify_capture_kind(gcx, self.current_def, ty, info.usage);
 
             captures.push(crate::sema::models::CapturedVar {
                 source_id: *node_id,
                 name: info.name,
                 ty,
+                capture_kind,
                 field_index: crate::thir::FieldIndex::from_raw(field_index as u32),
             });
         }
+
+        let closure_kind = infer_closure_kind(closure.is_async, &captures);
 
         gcx.cache_closure_captures(
             closure.def_id,
             crate::sema::models::ClosureCaptures {
                 captures: captures.clone(),
+                kind: closure_kind,
             },
         );
 
         // Create the closure type (with user-visible parameter types only)
         let inputs = gcx.store.interners.intern_ty_list(param_tys.clone());
+        let captured_generics = GenericsBuilder::identity_for_item(gcx, self.current_def);
 
         // Create the closure type first (we need it for the body function signature)
         let closure_ty = Ty::new(
             TyKind::Closure {
                 closure_def_id: closure.def_id,
                 kind: closure_kind,
-                captured_generics: GenericArguments::empty(),
+                captured_generics,
                 inputs,
                 output: return_ty,
             },
@@ -1774,15 +1775,7 @@ impl<'ctx> Checker<'ctx> {
             gcx.cache_async_body_output(closure.def_id, return_ty);
         }
 
-        // Sync closure bodies borrow `self`; async closure bodies must own
-        // their captures so the state machine can keep them across suspension.
-        let self_ty = if closure.is_async {
-            closure_ty
-        } else {
-            gcx.store
-                .interners
-                .intern_ty(TyKind::Pointer(closure_ty, hir::Mutability::Immutable))
-        };
+        let self_ty = closure_self_ty(gcx, closure_ty, closure_kind);
 
         let mut sig_inputs = vec![crate::sema::models::LabeledFunctionParameter {
             label: None,
@@ -2448,9 +2441,13 @@ impl<'ctx> Checker<'ctx> {
         let gcx = self.gcx();
         let constraints = crate::sema::tycheck::constraints::canonical_constraints_of(gcx, def_id);
 
-        // Look for Fn/AsyncFn bounds on this parameter
+        // Look for callable bounds on this parameter.
         let fn_def = gcx.std_item_def(hir::StdItem::Fn);
+        let fn_mut_def = gcx.std_item_def(hir::StdItem::FnMut);
         let async_fn_def = gcx.std_item_def(hir::StdItem::AsyncFn);
+        let async_fn_mut_def = gcx.std_item_def(hir::StdItem::AsyncFnMut);
+        let fn_once_def = gcx.std_item_def(hir::StdItem::FnOnce);
+        let async_fn_once_def = gcx.std_item_def(hir::StdItem::AsyncFnOnce);
 
         for constraint in constraints {
             if let crate::sema::models::Constraint::Bound {
@@ -2468,8 +2465,12 @@ impl<'ctx> Checker<'ctx> {
                     continue;
                 }
 
-                let is_fn_trait =
-                    fn_def == Some(interface.id) || async_fn_def == Some(interface.id);
+                let is_fn_trait = fn_def == Some(interface.id)
+                    || fn_mut_def == Some(interface.id)
+                    || fn_once_def == Some(interface.id)
+                    || async_fn_def == Some(interface.id)
+                    || async_fn_mut_def == Some(interface.id)
+                    || async_fn_once_def == Some(interface.id);
 
                 if !is_fn_trait {
                     continue;
@@ -5574,14 +5575,20 @@ impl<'ctx> Checker<'ctx> {
 
     fn async_callable_input_count(&self, ty: Ty<'ctx>) -> Option<usize> {
         match ty.kind() {
-            TyKind::Closure { kind, inputs, .. } => {
-                (kind == crate::sema::models::ClosureKind::AsyncFn).then_some(inputs.len())
-            }
+            TyKind::Closure { kind, inputs, .. } => matches!(
+                kind,
+                crate::sema::models::ClosureKind::AsyncFn
+                    | crate::sema::models::ClosureKind::AsyncFnMut
+                    | crate::sema::models::ClosureKind::AsyncFnOnce
+            )
+            .then_some(inputs.len()),
             TyKind::Parameter(param) => {
                 let gcx = self.gcx();
                 let Some(async_fn_def) = gcx.std_item_def(hir::StdItem::AsyncFn) else {
                     return None;
                 };
+                let async_fn_mut_def = gcx.std_item_def(hir::StdItem::AsyncFnMut);
+                let async_fn_once_def = gcx.std_item_def(hir::StdItem::AsyncFnOnce);
                 crate::sema::tycheck::constraints::canonical_constraints_of(gcx, self.current_def)
                     .into_iter()
                     .find_map(|constraint| {
@@ -5597,7 +5604,9 @@ impl<'ctx> Checker<'ctx> {
                         };
                         if bound_param.index != param.index
                             || bound_param.name != param.name
-                            || interface.id != async_fn_def
+                            || (interface.id != async_fn_def
+                                && Some(interface.id) != async_fn_mut_def
+                                && Some(interface.id) != async_fn_once_def)
                         {
                             return None;
                         }
@@ -5722,11 +5731,7 @@ impl<'ctx> Checker<'ctx> {
         let gcx = self.gcx();
         let old_sig = gcx.get_signature(closure_def_id);
 
-        let self_ty = if kind == crate::sema::models::ClosureKind::AsyncFn {
-            closure_ty
-        } else {
-            Ty::new(TyKind::Pointer(closure_ty, hir::Mutability::Immutable), gcx)
-        };
+        let self_ty = closure_self_ty(gcx, closure_ty, kind);
 
         let mut new_inputs = Vec::with_capacity(old_sig.inputs.len());
 
@@ -5832,7 +5837,7 @@ impl<'a> hir::HirVisitor for DefaultParamRefChecker<'a> {
 #[derive(Default, Clone, Copy)]
 struct CaptureUsage {
     moved: bool,
-    mut_borrow: bool,
+    by_ref: Option<hir::Mutability>,
 }
 
 struct CaptureInfo {
@@ -5898,8 +5903,14 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
         if usage.moved {
             entry.usage.moved = true;
         }
-        if usage.mut_borrow {
-            entry.usage.mut_borrow = true;
+        match (entry.usage.by_ref, usage.by_ref) {
+            (_, Some(hir::Mutability::Mutable)) => {
+                entry.usage.by_ref = Some(hir::Mutability::Mutable);
+            }
+            (None, Some(hir::Mutability::Immutable)) => {
+                entry.usage.by_ref = Some(hir::Mutability::Immutable);
+            }
+            _ => {}
         }
     }
 
@@ -5912,11 +5923,15 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
         match ctx {
             UseContext::Borrow { mutable } => CaptureUsage {
                 moved: false,
-                mut_borrow: mutable,
+                by_ref: Some(if mutable {
+                    hir::Mutability::Mutable
+                } else {
+                    hir::Mutability::Immutable
+                }),
             },
             UseContext::Place => CaptureUsage {
                 moved: false,
-                mut_borrow: true,
+                by_ref: Some(hir::Mutability::Mutable),
             },
             UseContext::Value => {
                 if let Some(adjustments) = self.adjustments.get(&expr.id) {
@@ -5926,7 +5941,7 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                     {
                         return CaptureUsage {
                             moved: false,
-                            mut_borrow: true,
+                            by_ref: Some(hir::Mutability::Mutable),
                         };
                     }
                     if adjustments
@@ -5935,15 +5950,17 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                     {
                         return CaptureUsage {
                             moved: false,
-                            mut_borrow: false,
+                            by_ref: Some(hir::Mutability::Immutable),
                         };
                     }
                 }
 
-                let _ = local_ty;
                 CaptureUsage {
-                    moved: false,
-                    mut_borrow: false,
+                    moved: !self
+                        .checker
+                        .gcx()
+                        .is_type_copyable_in_def(local_ty, self.checker.current_def),
+                    by_ref: None,
                 }
             }
         }
@@ -6043,9 +6060,20 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                         }
                         // Propagate the capture - the nested closure needs this variable,
                         // so we must capture it too to make it available
-                        let usage = CaptureUsage {
-                            moved: false,
-                            mut_borrow: false,
+                        let usage = match cap.capture_kind {
+                            crate::sema::models::CaptureKind::ByCopy => CaptureUsage::default(),
+                            crate::sema::models::CaptureKind::ByRef { mutable } => CaptureUsage {
+                                moved: false,
+                                by_ref: Some(if mutable {
+                                    hir::Mutability::Mutable
+                                } else {
+                                    hir::Mutability::Immutable
+                                }),
+                            },
+                            crate::sema::models::CaptureKind::ByMove => CaptureUsage {
+                                moved: true,
+                                by_ref: None,
+                            },
                         };
                         self.record_capture(cap.source_id, cap.name, usage);
                     }
@@ -6147,5 +6175,85 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                 self.collect_expr(value, UseContext::Value);
             }
         }
+    }
+}
+
+fn classify_capture_kind<'ctx>(
+    gcx: Gcx<'ctx>,
+    owner: DefinitionID,
+    ty: Ty<'ctx>,
+    usage: CaptureUsage,
+) -> crate::sema::models::CaptureKind {
+    if usage.moved {
+        return crate::sema::models::CaptureKind::ByMove;
+    }
+    if let Some(mutability) = usage.by_ref {
+        return crate::sema::models::CaptureKind::ByRef {
+            mutable: matches!(mutability, hir::Mutability::Mutable),
+        };
+    }
+    if gcx.is_type_copyable_in_def(ty, owner) {
+        crate::sema::models::CaptureKind::ByCopy
+    } else {
+        crate::sema::models::CaptureKind::ByMove
+    }
+}
+
+fn infer_closure_kind(
+    is_async: bool,
+    captures: &[crate::sema::models::CapturedVar<'_>],
+) -> crate::sema::models::ClosureKind {
+    // Async closures currently lower to futures that outlive the call site.
+    // Any captured environment therefore has to be owned by the returned
+    // future, which means the closure must be consumed when invoked.
+    if is_async {
+        return if captures.is_empty() {
+            crate::sema::models::ClosureKind::AsyncFn
+        } else {
+            crate::sema::models::ClosureKind::AsyncFnOnce
+        };
+    }
+
+    let mut kind = crate::sema::models::ClosureKind::Fn;
+
+    for capture in captures {
+        match capture.capture_kind {
+            crate::sema::models::CaptureKind::ByMove => {
+                return if is_async {
+                    crate::sema::models::ClosureKind::AsyncFnOnce
+                } else {
+                    crate::sema::models::ClosureKind::FnOnce
+                };
+            }
+            crate::sema::models::CaptureKind::ByRef { mutable: true } => {
+                kind = if is_async {
+                    crate::sema::models::ClosureKind::AsyncFnMut
+                } else {
+                    crate::sema::models::ClosureKind::FnMut
+                };
+            }
+            crate::sema::models::CaptureKind::ByCopy
+            | crate::sema::models::CaptureKind::ByRef { mutable: false } => {}
+        }
+    }
+
+    kind
+}
+
+fn closure_self_ty<'ctx>(
+    gcx: Gcx<'ctx>,
+    closure_ty: Ty<'ctx>,
+    kind: crate::sema::models::ClosureKind,
+) -> Ty<'ctx> {
+    match kind {
+        crate::sema::models::ClosureKind::Fn | crate::sema::models::ClosureKind::AsyncFn => {
+            Ty::new(TyKind::Pointer(closure_ty, hir::Mutability::Immutable), gcx)
+        }
+        crate::sema::models::ClosureKind::FnMut
+        | crate::sema::models::ClosureKind::AsyncFnMut => {
+            Ty::new(TyKind::Pointer(closure_ty, hir::Mutability::Mutable), gcx)
+        }
+        crate::sema::models::ClosureKind::FnOnce
+        | crate::sema::models::ClosureKind::AsyncFnOnce => closure_ty,
     }
 }

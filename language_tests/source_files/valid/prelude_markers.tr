@@ -1,0 +1,38 @@
+// CHECK_ONLY
+
+struct PreludeCopyUser: Copy {
+    value: int32
+}
+
+struct PreludeSendableUser {
+    value: int32
+}
+
+func duplicatePrelude[T: Clone](_ value: &T) -> T {
+    value.clone()
+}
+
+func identitySendablePrelude[T: Sendable](_ value: T) -> T {
+    value
+}
+
+func preludeMarkerCoverage() {
+    let original = PreludeCopyUser { value: 7 }
+    let copy = original
+    let _ = copy.value
+
+    var values: List[int32] = List()
+    values.append(1)
+    values.append(2)
+
+    let cloned = duplicatePrelude(&values)
+    let _ = cloned.len()
+
+    let sendable = PreludeSendableUser { value: 11 }
+    let echoed = identitySendablePrelude(sendable)
+    let _ = echoed.value
+}
+
+func main() {
+    preludeMarkerCoverage()
+}

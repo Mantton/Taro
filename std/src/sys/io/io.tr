@@ -37,7 +37,7 @@ public func close(_ stream: RawAsyncStream) -> Result[(), Error] {
 }
 
 public func read(
-    _ stream: RawAsyncStream,
+    _ stream: &RawAsyncStream,
     _ buf: *mut uint8,
     _ len: usize,
 ) -> Result[usize, Error] {
@@ -45,14 +45,14 @@ public func read(
 }
 
 public func write(
-    _ stream: RawAsyncStream,
+    _ stream: &RawAsyncStream,
     _ buf: *const uint8,
     _ len: usize,
 ) -> Result[usize, Error] {
     impWrite(stream, buf, len)
 }
 
-public func waitReadable(_ stream: RawAsyncStream) async -> Result[(), Error] {
+public func waitReadable(_ stream: &RawAsyncStream) async -> Result[(), Error] {
     if stream.source_id == 0 {
         return .err(Error.invalidInput)
     }
@@ -64,7 +64,19 @@ public func waitReadable(_ stream: RawAsyncStream) async -> Result[(), Error] {
     return .err(mapErrno(code))
 }
 
-public func waitWritable(_ stream: RawAsyncStream) async -> Result[(), Error] {
+public func waitReadableSourceId(_ source_id: usize) async -> Result[(), Error] {
+    if source_id == 0 {
+        return .err(Error.invalidInput)
+    }
+
+    let code = await __intrinsic_wait_readable(source_id)
+    if code == 0 {
+        return .ok(())
+    }
+    return .err(mapErrno(code))
+}
+
+public func waitWritable(_ stream: &RawAsyncStream) async -> Result[(), Error] {
     if stream.source_id == 0 {
         return .err(Error.invalidInput)
     }
@@ -76,12 +88,50 @@ public func waitWritable(_ stream: RawAsyncStream) async -> Result[(), Error] {
     return .err(mapErrno(code))
 }
 
-public func sourceId(_ stream: RawAsyncStream) -> usize {
+public func waitWritableSourceId(_ source_id: usize) async -> Result[(), Error] {
+    if source_id == 0 {
+        return .err(Error.invalidInput)
+    }
+
+    let code = await __intrinsic_wait_writable(source_id)
+    if code == 0 {
+        return .ok(())
+    }
+    return .err(mapErrno(code))
+}
+
+public func sourceId(_ stream: &RawAsyncStream) -> usize {
     stream.source_id
 }
 
+func streamFromSourceId(_ source_id: usize) -> RawAsyncStream {
+    PlatformAsyncStream { source_id }
+}
+
+public func readSourceId(
+    _ source_id: usize,
+    _ buf: *mut uint8,
+    _ len: usize,
+) -> Result[usize, Error] {
+    let stream = streamFromSourceId(source_id)
+    impRead(&stream, buf, len)
+}
+
+public func writeSourceId(
+    _ source_id: usize,
+    _ buf: *const uint8,
+    _ len: usize,
+) -> Result[usize, Error] {
+    let stream = streamFromSourceId(source_id)
+    impWrite(&stream, buf, len)
+}
+
 public func take(_ stream: &mut RawAsyncStream) -> RawAsyncStream {
-    let current = *stream
-    stream.source_id = 0
-    return current
+    var result: RawAsyncStream
+    unsafe {
+        let ptr: *mut RawAsyncStream = stream as *mut RawAsyncStream
+        result = ptr.read()
+        ptr.write(PlatformAsyncStream { source_id: 0 })
+    }
+    return result
 }

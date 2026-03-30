@@ -32,10 +32,18 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 self.push_assign(
                     block,
                     Place::from_local(lhs_tmp),
-                    Rvalue::Use(Operand::Copy(lhs_place.clone())),
+                    Rvalue::Use(if self.is_type_copyable(lhs_ty) {
+                        Operand::Copy(lhs_place.clone())
+                    } else {
+                        Operand::Move(lhs_place.clone())
+                    }),
                     expression.span,
                 );
-                let lhs_operand = Operand::Copy(Place::from_local(lhs_tmp));
+                let lhs_operand = if self.is_type_copyable(lhs_ty) {
+                    Operand::Copy(Place::from_local(lhs_tmp))
+                } else {
+                    Operand::Move(Place::from_local(lhs_tmp))
+                };
 
                 // Compute binary op result
                 let result =

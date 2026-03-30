@@ -60,36 +60,23 @@ public func peerAddress(_ socket: &RawAsyncSocket) -> Result[std.sys.net.SocketA
 }
 
 @cfg(family("unix"))
-public func close(_ socket: &mut RawAsyncSocket) -> Result[(), Error] {
-    if std.sys.io.sourceId(socket.stream) != 0 {
-        let stream = std.sys.io.take(&mut socket.stream)
-        let _ = std.sys.net.takeFd(&mut socket.inner)
+public func close(_ socket: RawAsyncSocket) -> Result[(), Error] {
+    var s = socket
+    if std.sys.io.sourceId(&s.stream) != 0 {
+        let stream = std.sys.io.take(&mut s.stream)
+        let _ = std.sys.net.takeFd(&mut s.inner)
         return std.sys.io.close(stream)
     }
 
-    return std.sys.net.close(&mut socket.inner)
+    return std.sys.net.close(&mut s.inner)
 }
 
 @cfg(family("windows"))
-public func close(_ socket: &mut RawAsyncSocket) -> Result[(), Error] {
+public func close(_ socket: RawAsyncSocket) -> Result[(), Error] {
     std.panic.todo("std.sys.net.task.close not implemented on windows yet")
 }
 
-@cfg(family("unix"))
-public func closeShared(_ socket: &RawAsyncSocket) -> Result[(), Error] {
-    let stream = socket.stream
-    if std.sys.io.sourceId(stream) != 0 {
-        return std.sys.io.close(stream)
-    }
 
-    var raw = socket.inner
-    return std.sys.net.close(&mut raw)
-}
-
-@cfg(family("windows"))
-public func closeShared(_ socket: &RawAsyncSocket) -> Result[(), Error] {
-    std.panic.todo("std.sys.net.task.closeShared not implemented on windows yet")
-}
 
 @cfg(family("unix"))
 public func read(_ socket: &RawAsyncSocket, _ buf: MutableSpan[uint8]) async -> Result[usize, Error] {
@@ -98,7 +85,7 @@ public func read(_ socket: &RawAsyncSocket, _ buf: MutableSpan[uint8]) async -> 
         return .ok(0)
     }
 
-    let stream = socket.stream
+    let stream = &socket.stream
     var writable = buf
     let ptr = unsafe { writable.at(0) as *mut uint8 }
     loop {
@@ -130,7 +117,7 @@ public func write(_ socket: &RawAsyncSocket, _ buf: Span[uint8]) async -> Result
         return .ok(0)
     }
 
-    let stream = socket.stream
+    let stream = &socket.stream
     let ptr = unsafe { buf.at(0) as *const uint8 }
     loop {
         let writeRes = std.sys.io.write(stream, ptr, len)
@@ -162,7 +149,7 @@ public func connect(_ socket: &RawAsyncSocket, _ address: std.sys.net.SocketAddr
             case .ok(_) => return .ok(())
             case .err(.interrupted) => {}
             case .err(.wouldBlock) => {
-                let waitRes = await std.sys.io.waitWritable(socket.stream)
+                let waitRes = await std.sys.io.waitWritable(&socket.stream)
                 match waitRes {
                     case .ok(_) => {}
                     case .err(err) => return .err(err)
@@ -213,7 +200,7 @@ public func accept(_ socket: &RawAsyncSocket) async -> Result[(RawAsyncSocket, s
             }
             case .err(.interrupted) => {}
             case .err(.wouldBlock) => {
-                let waitRes = await std.sys.io.waitReadable(socket.stream)
+                let waitRes = await std.sys.io.waitReadable(&socket.stream)
                 match waitRes {
                     case .ok(_) => {}
                     case .err(err) => return .err(err)
@@ -247,7 +234,7 @@ public func sendTo(
             case .ok(count) => return .ok(count)
             case .err(.interrupted) => {}
             case .err(.wouldBlock) => {
-                let waitRes = await std.sys.io.waitWritable(socket.stream)
+                let waitRes = await std.sys.io.waitWritable(&socket.stream)
                 match waitRes {
                     case .ok(_) => {}
                     case .err(err) => return .err(err)
@@ -285,7 +272,7 @@ public func recvFrom(
             case .ok(value) => return .ok(value)
             case .err(.interrupted) => {}
             case .err(.wouldBlock) => {
-                let waitRes = await std.sys.io.waitReadable(socket.stream)
+                let waitRes = await std.sys.io.waitReadable(&socket.stream)
                 match waitRes {
                     case .ok(_) => {}
                     case .err(err) => return .err(err)
@@ -306,7 +293,7 @@ public func recvFrom(
 
 @cfg(family("unix"))
 public func intoStream(_ socket: &mut RawAsyncSocket) -> Result[std.io.task.AsyncStream, Error] {
-    if std.sys.io.sourceId(socket.stream) == 0 {
+    if std.sys.io.sourceId(&socket.stream) == 0 {
         return .err(Error.invalidInput)
     }
 

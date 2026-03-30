@@ -191,6 +191,7 @@ pub struct CopyModifiers {
 #[derive(Debug, Clone)]
 pub enum Operand<'ctx> {
     Copy(Place<'ctx>),
+    Move(Place<'ctx>),
     CopyWith(Place<'ctx>, CopyModifiers),
     Constant(Constant<'ctx>),
 }
@@ -199,6 +200,11 @@ impl<'ctx> Operand<'ctx> {
     #[inline]
     pub fn copy(place: Place<'ctx>) -> Self {
         Self::Copy(place)
+    }
+
+    #[inline]
+    pub fn move_(place: Place<'ctx>) -> Self {
+        Self::Move(place)
     }
 
     #[inline]
@@ -215,7 +221,7 @@ impl<'ctx> Operand<'ctx> {
         match self {
             Self::Copy(place) => Some((place, CopyModifiers::default())),
             Self::CopyWith(place, modifiers) => Some((place, *modifiers)),
-            Self::Constant(_) => None,
+            Self::Move(_) | Self::Constant(_) => None,
         }
     }
 

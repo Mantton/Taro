@@ -77,6 +77,12 @@ impl<'ctx> Collector<'ctx> {
 
         // Add all other concrete (non-generic) functions
         for (&def_id, _) in &package.functions {
+            // Nested closure bodies are instantiated from the closure value's
+            // captured generics at use sites. Treating them as zero-arg roots
+            // leaks raw parent type parameters into codegen.
+            if self.gcx.get_closure_captures(def_id).is_some() {
+                continue;
+            }
             let generics = self.gcx.generics_of(def_id);
             if generics.is_empty() {
                 let root = Instance::item(def_id, GenericArguments::empty());

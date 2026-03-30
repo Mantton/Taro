@@ -1,11 +1,15 @@
 // CHECK_ONLY
 
-func applyAsync[F: AsyncFn(int32) -> int32](_ f: F, _ x: int32) async -> int32 {
+func applyAsync[F: AsyncFnOnce(int32) -> int32](_ f: F, _ x: int32) async -> int32 {
     return await f(x)
 }
 
-func applyZeroAsync[F: AsyncFn() -> int32](_ f: F) async -> int32 {
+func applyZeroAsync[F: AsyncFnOnce() -> int32](_ f: F) async -> int32 {
     return await f()
+}
+
+func applyReusableAsync[F: AsyncFn(int32) -> int32](_ f: F, _ x: int32) async -> int32 {
+    return await f(x)
 }
 
 func main() async {
@@ -25,8 +29,14 @@ func main() async {
         return captured - 1
     }
 
+    let reusable = |x: int32| async {
+        await std.testing.yieldNow()
+        return x + 1
+    }
+
     let _ = await applyZeroAsync(zero)
     let _ = await applyAsync(unary, 5)
+    let _ = await applyReusableAsync(reusable, 5)
     let _ = sync()
 
     let spawned = std.task.spawn(|| async {

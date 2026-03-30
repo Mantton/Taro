@@ -10,7 +10,7 @@ use crate::{
     sema::std_items::{StdItemEntry, StdItemRegistry},
     sema::{
         models::{
-            CanonicalGoalKey, ClosureCaptures, ConformanceRecord, ConformanceRecordId,
+            AliasKind, CanonicalGoalKey, ClosureCaptures, ConformanceRecord, ConformanceRecordId,
             ConformanceWitness, Const, Constraint, EnumDefinition, EnumVariant, FloatTy,
             GenericArgument, GenericArguments, GenericParameter, Generics, GoalResult, IntTy,
             InterfaceDefinition, InterfaceGoal, InterfaceRequirements, LabeledFunctionSignature,
@@ -1076,6 +1076,258 @@ impl<'arena> GlobalContext<'arena> {
         });
 
         rc_visible
+    }
+
+    /// Checks whether a type is intrinsically copyable without consulting interface selection.
+    ///
+    /// This is used for the builtin `Copy` candidate and must not call back into trait
+    /// resolution, otherwise `Copy` selection immediately recurses on itself.
+    pub fn is_type_builtin_copyable(self, ty: Ty<'arena>) -> bool {
+        match ty.kind() {
+            TyKind::Int(_)
+            | TyKind::UInt(_)
+            | TyKind::Float(_)
+            | TyKind::Bool
+            | TyKind::Rune
+            | TyKind::String
+            | TyKind::Reference(..)
+            | TyKind::Pointer(..)
+            | TyKind::FnPointer { .. }
+            | TyKind::Never => true,
+            TyKind::Tuple(elements) => elements.iter().all(|elem| self.is_type_copyable(*elem)),
+            TyKind::Array { element, .. } => self.is_type_copyable(element),
+            TyKind::Adt(def, _) => {
+                self.std_item_def(StdItem::Span) == Some(def.id)
+            }
+            TyKind::BoxedExistential { .. } => false,
+            TyKind::Parameter(_) => false,
+            TyKind::Alias { kind, .. } if kind != AliasKind::Projection => {
+                let normalized = crate::sema::tycheck::utils::normalize_aliases(self, ty);
+                if normalized == ty {
+                    false
+                } else {
+                    self.is_type_builtin_copyable(normalized)
+                }
+            }
+            TyKind::Alias { .. } => false,
+            TyKind::Closure { .. } => false,
+            TyKind::Opaque(_) | TyKind::Error | TyKind::Infer(_) => false,
+        }
+    }
+
+    /// Checks if a type implements the `Copy` interface.
+    /// Primitives, references, pointers, function pointers, spans, and never are
+    /// implicitly copyable. Structs/enums must explicitly implement `Copy`.
+    /// Type parameters are conservatively non-Copy; use `is_type_copyable_in_def`
+    /// when a definition context is available to check constraints.
+    pub fn is_type_copyable(self, ty: Ty<'arena>) -> bool {
+        if self.is_type_builtin_copyable(ty) {
+            return true;
+        }
+
+        match ty.kind() {
+            TyKind::Adt(def, _) => {
+                let Some(copy_def) = self.std_item_def(StdItem::Copy) else {
+                    return false;
+                };
+                if self.std_item_def(StdItem::Span) == Some(def.id) {
+                    return true;
+                }
+                let goal = InterfaceGoal {
+                    interface_id: copy_def,
+                    self_ty: ty,
+                    interface_args: GenericArguments::empty(),
+                    bindings: &[],
+                    param_env: &[],
+                };
+                matches!(
+                    self.prove_interface_goal(goal, SelectionMode::Typecheck),
+                    GoalResult::Proven
+                )
+            }
+            TyKind::Alias { kind, .. } if kind != AliasKind::Projection => {
+                let normalized = crate::sema::tycheck::utils::normalize_aliases(self, ty);
+                if normalized == ty {
+                    false
+                } else {
+                    self.is_type_copyable(normalized)
+                }
+            }
+            TyKind::Tuple(elements) => elements.iter().all(|elem| self.is_type_copyable(*elem)),
+            TyKind::Array { element, .. } => self.is_type_copyable(element),
+            TyKind::Int(_)
+            | TyKind::UInt(_)
+            | TyKind::Float(_)
+            | TyKind::Bool
+            | TyKind::Rune
+            | TyKind::String
+            | TyKind::Reference(..)
+            | TyKind::Pointer(..)
+            | TyKind::FnPointer { .. }
+            | TyKind::Never => true,
+            TyKind::BoxedExistential { .. } => false,
+            TyKind::Parameter(_) => false,
+            TyKind::Alias { .. } => false,
+            TyKind::Closure { .. } => false,
+            TyKind::Opaque(_) | TyKind::Error | TyKind::Infer(_) => false,
+        }
+    }
+
+    /// Checks if a type implements `Copy` in the context of a specific definition,
+    /// consulting the definition's constraints for type parameter bounds.
+    pub fn is_type_copyable_in_def(self, ty: Ty<'arena>, owner: hir::DefinitionID) -> bool {
+        let TyKind::Parameter(param) = ty.kind() else {
+            return self.is_type_copyable(ty);
+        };
+
+        let Some(copy_def) = self.std_item_def(StdItem::Copy) else {
+            return false;
+        };
+
+        let param_ty = Ty::new(TyKind::Parameter(param), self);
+        self.canonical_constraints_of(owner)
+            .iter()
+            .any(|constraint| match constraint.value {
+                Constraint::Bound { ty, interface } => {
+                    if ty != param_ty {
+                        return false;
+                    }
+                    self.interface_transitively_requires(interface.id, copy_def)
+                }
+                Constraint::TypeEquality(_, _) => false,
+            })
+    }
+
+    /// Returns true if `interface_id` is `target_id` or transitively extends it.
+    fn interface_transitively_requires(
+        self,
+        interface_id: hir::DefinitionID,
+        target_id: hir::DefinitionID,
+    ) -> bool {
+        let mut visited = FxHashSet::default();
+        self.interface_transitively_requires_inner(interface_id, target_id, &mut visited)
+    }
+
+    fn interface_transitively_requires_inner(
+        self,
+        interface_id: hir::DefinitionID,
+        target_id: hir::DefinitionID,
+        visited: &mut FxHashSet<hir::DefinitionID>,
+    ) -> bool {
+        if interface_id == target_id {
+            return true;
+        }
+        if !visited.insert(interface_id) {
+            return false;
+        }
+        let Some(def) = self.get_interface_definition(interface_id) else {
+            return false;
+        };
+        def.superfaces.iter().any(|super_iface| {
+            self.interface_transitively_requires_inner(
+                super_iface.value.id,
+                target_id,
+                visited,
+            )
+        })
+    }
+
+    /// Checks if a type is safe to move across executor workers.
+    /// This powers the builtin `Sendable` marker and async task scheduling.
+    pub fn is_type_sendable(self, ty: Ty<'arena>) -> bool {
+        let mut visited = FxHashSet::default();
+        self.is_type_sendable_inner(ty, &mut visited)
+    }
+
+    fn is_type_sendable_inner(
+        self,
+        ty: Ty<'arena>,
+        visited: &mut FxHashSet<Ty<'arena>>,
+    ) -> bool {
+        let ty = crate::sema::tycheck::utils::normalize_aliases(self, ty);
+        if ty == self.async_handle_ty() {
+            return false;
+        }
+        if !visited.insert(ty) {
+            return true;
+        }
+
+        let sendable = match ty.kind() {
+            TyKind::Bool
+            | TyKind::Rune
+            | TyKind::String
+            | TyKind::Int(_)
+            | TyKind::UInt(_)
+            | TyKind::Float(_)
+            | TyKind::Never
+            | TyKind::FnPointer { .. } => true,
+            TyKind::Pointer(..)
+            | TyKind::Reference(..)
+            | TyKind::BoxedExistential { .. }
+            | TyKind::Parameter(_)
+            | TyKind::Opaque(_)
+            | TyKind::Infer(_)
+            | TyKind::Error => false,
+            TyKind::Alias { .. } => false,
+            TyKind::Array { element, .. } => self.is_type_sendable_inner(element, visited),
+            TyKind::Tuple(items) => items
+                .iter()
+                .copied()
+                .all(|item| self.is_type_sendable_inner(item, visited)),
+            TyKind::Closure { closure_def_id, .. } => self
+                .get_closure_captures(closure_def_id)
+                .map(|captures| {
+                    captures.captures.iter().all(|capture| {
+                        !matches!(
+                            capture.capture_kind,
+                            crate::sema::models::CaptureKind::ByRef { .. }
+                        ) && self.is_type_sendable_inner(capture.ty, visited)
+                    })
+                })
+                .unwrap_or(true),
+            TyKind::Adt(def, args) => {
+                if self.std_item_def(StdItem::Task) == Some(def.id) {
+                    true
+                } else {
+                    match def.kind {
+                        crate::sema::models::AdtKind::Struct => self
+                            .get_struct_definition(def.id)
+                            .fields
+                            .iter()
+                            .all(|field| {
+                                let field_ty =
+                                    crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args(
+                                        self,
+                                        field.ty,
+                                        args,
+                                    );
+                                self.is_type_sendable_inner(field_ty, visited)
+                            }),
+                        crate::sema::models::AdtKind::Enum => self
+                            .get_enum_definition(def.id)
+                            .variants
+                            .iter()
+                            .all(|variant| match variant.kind {
+                                crate::sema::models::EnumVariantKind::Unit => true,
+                                crate::sema::models::EnumVariantKind::Tuple(fields) => fields
+                                    .iter()
+                                    .all(|field| {
+                                        let field_ty =
+                                            crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args(
+                                                self,
+                                                field.ty,
+                                                args,
+                                            );
+                                        self.is_type_sendable_inner(field_ty, visited)
+                                    }),
+                            }),
+                    }
+                }
+            }
+        };
+
+        visited.remove(&ty);
+        sendable
     }
 
     pub fn definition_visibility(self, id: DefinitionID) -> Visibility {

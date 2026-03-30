@@ -1,7 +1,7 @@
 use crate::{
     PackageIndex,
     compile::{
-        Compiler, IdeAnalysis, IdeAnalysisStatus,
+        Compiler, IdeAnalysis, IdeAnalysisMode, IdeAnalysisStatus,
         config::{BuildProfile, Config, DebugOptions, PackageKind, StdMode},
         context::{CompilerArenas, CompilerContext, CompilerStore, Gcx},
     },
@@ -190,7 +190,7 @@ pub fn analyze_owner_for_ide(
         dcx.set_content_override(overlay.path.clone(), overlay.content.clone());
     }
 
-    let result = run_analysis(&dcx, &owner, std_path);
+    let result = run_analysis(&dcx, &owner, request.mode, std_path);
 
     // Always collect diagnostics, even on failure
     let diagnostics = dcx.take_recorded_diagnostics();
@@ -242,6 +242,7 @@ pub fn analyze_owner_for_ide(
 fn run_analysis(
     dcx: &Rc<DiagCtx>,
     owner: &AnalysisOwner,
+    mode: AnalysisMode,
     std_path: Option<PathBuf>,
 ) -> Result<IdeArtifacts, String> {
     let target_root = ide_target_dir(owner.path());
@@ -265,14 +266,17 @@ fn run_analysis(
     let icx = CompilerContext::new(dcx.clone(), store);
 
     match owner {
-        AnalysisOwner::Script(file_path) => analyze_script_owner(&icx, file_path, std_path),
-        AnalysisOwner::Package(package_root) => analyze_package_owner(&icx, package_root, std_path),
+        AnalysisOwner::Script(file_path) => analyze_script_owner(&icx, file_path, mode, std_path),
+        AnalysisOwner::Package(package_root) => {
+            analyze_package_owner(&icx, package_root, mode, std_path)
+        }
     }
 }
 
 fn analyze_script_owner<'a>(
     icx: &'a CompilerContext<'a>,
     file_path: &Path,
+    mode: AnalysisMode,
     std_path: Option<PathBuf>,
 ) -> Result<IdeArtifacts, String> {
     let file_path = file_path
@@ -322,7 +326,9 @@ fn analyze_script_owner<'a>(
         package,
         results,
         status,
-    } = compiler.analyze_for_ide().map_err(|_| String::new())?;
+    } = compiler
+        .analyze_for_ide(compile_ide_mode(mode))
+        .map_err(|_| String::new())?;
     let file_paths = icx.dcx.all_file_mappings().into_iter().collect();
     let module_targets = build_module_target_map(&package.root, &file_paths);
 
@@ -338,6 +344,7 @@ fn analyze_script_owner<'a>(
 fn analyze_package_owner<'a>(
     icx: &'a CompilerContext<'a>,
     package_root: &Path,
+    mode: AnalysisMode,
     std_path: Option<PathBuf>,
 ) -> Result<IdeArtifacts, String> {
     let package_root = package_root
@@ -417,7 +424,9 @@ fn analyze_package_owner<'a>(
                 package,
                 results,
                 status,
-            } = compiler.analyze_for_ide().map_err(|_| String::new())?;
+            } = compiler
+                .analyze_for_ide(compile_ide_mode(mode))
+                .map_err(|_| String::new())?;
             let file_paths = icx.dcx.all_file_mappings().into_iter().collect();
             let module_targets = build_module_target_map(&package.root, &file_paths);
             return Ok(collect_ide_artifacts(
@@ -429,7 +438,7 @@ fn analyze_package_owner<'a>(
             ));
         }
 
-        let _ = compiler.analyze_for_ide();
+        let _ = compiler.analyze_for_ide(IdeAnalysisMode::OnType);
     }
 
     Err("package analysis did not produce a root package".into())
@@ -439,6 +448,13 @@ fn analysis_status(status: IdeAnalysisStatus) -> AnalysisStatus {
     AnalysisStatus {
         hir_available: status.hir_available,
         typed_available: status.typed_available,
+    }
+}
+
+fn compile_ide_mode(mode: AnalysisMode) -> IdeAnalysisMode {
+    match mode {
+        AnalysisMode::OnType => IdeAnalysisMode::OnType,
+        AnalysisMode::OnSave => IdeAnalysisMode::OnSave,
     }
 }
 
@@ -1413,7 +1429,7 @@ mod tests {
     use crate::{
         PackageIndex,
         compile::{
-            Compiler, IdeAnalysis,
+            Compiler, IdeAnalysis, IdeAnalysisMode,
             config::{BuildProfile, Config, DebugOptions, PackageKind, StdMode},
             context::{CompilerArenas, CompilerContext, CompilerStore, Gcx},
         },
@@ -1552,7 +1568,7 @@ mod tests {
             results,
             status,
         } = compiler
-            .analyze_for_ide()
+            .analyze_for_ide(IdeAnalysisMode::OnType)
             .unwrap_or_else(|_| panic!("analyze"));
         let file_paths = icx.dcx.all_file_mappings().into_iter().collect();
         let module_targets = build_module_target_map(&package.root, &file_paths);
@@ -1656,7 +1672,7 @@ mod tests {
             results,
             status,
         } = compiler
-            .analyze_for_ide()
+            .analyze_for_ide(IdeAnalysisMode::OnType)
             .unwrap_or_else(|_| panic!("package analyze"));
         let file_paths = icx.dcx.all_file_mappings().into_iter().collect();
         let module_targets = build_module_target_map(&package.root, &file_paths);

@@ -96,25 +96,63 @@ impl[Element, const Size: usize] Iterable for [Element; Size] {
     }
 }
 
+public struct ArrayRefIterator[Element, const Size: usize] {
+    ptr: *const Element
+    idx: usize
+}
+
+impl[Element, const Size: usize] Iterator for ArrayRefIterator[Element, Size] {
+    type Element = &Element
+
+    public func next(&mut self) -> Optional[Self.Element] {
+        if self.idx >= Size {
+            return .none
+        }
+
+        let elem = unsafe { self.ptr.add(self.idx) as &Element }
+        self.idx += 1
+        return .some(elem)
+    }
+}
+
+public struct ArrayMutIterator[Element, const Size: usize] {
+    ptr: *mut Element
+    idx: usize
+}
+
+impl[Element, const Size: usize] Iterator for ArrayMutIterator[Element, Size] {
+    type Element = &mut Element
+
+    public func next(&mut self) -> Optional[Self.Element] {
+        if self.idx >= Size {
+            return .none
+        }
+
+        let elem = unsafe { self.ptr.add(self.idx) as &mut Element }
+        self.idx += 1
+        return .some(elem)
+    }
+}
+
 impl[Element, const Size: usize] Iterable for &[Element; Size] {
-    type Iterator = ArrayIterator[Element, Size]
-    type Element = Element
+    type Iterator = ArrayRefIterator[Element, Size]
+    type Element = &Element
 
     public func iter(self) -> Self.Iterator {
-        ArrayIterator[Element, Size] {
-            array: *self,
+        ArrayRefIterator[Element, Size] {
+            ptr: unsafe { self as *const Element },
             idx: 0,
         }
     }
 }
 
 impl[Element, const Size: usize] Iterable for &mut [Element; Size] {
-    type Iterator = ArrayIterator[Element, Size]
-    type Element = Element
+    type Iterator = ArrayMutIterator[Element, Size]
+    type Element = &mut Element
 
     public func iter(self) -> Self.Iterator {
-        ArrayIterator[Element, Size] {
-            array: *self,
+        ArrayMutIterator[Element, Size] {
+            ptr: unsafe { self as *mut Element },
             idx: 0,
         }
     }

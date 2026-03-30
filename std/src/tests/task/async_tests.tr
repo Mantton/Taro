@@ -8,8 +8,6 @@ func stringBytes(_ s: string) -> std.mem.Span[uint8] {
     return std.mem.Span[uint8].from(std.string.stringData(s), std.string.stringLen(s))
 }
 
-static var SHARED_INT_TASK: Optional[std.task.Task[int32]] = .none
-
 @cfg(family("unix"))
 static var PIPE_WRITER_STREAM: Optional[std.io.task.AsyncStream] = .none
 
@@ -18,15 +16,6 @@ static var SHARED_PIPE_READ_STREAM: Optional[std.io.task.AsyncStream] = .none
 
 @cfg(family("unix"))
 static var SHARED_PIPE_WRITE_STREAM: Optional[std.io.task.AsyncStream] = .none
-
-func sharedTaskValueBody() async -> int32 {
-    let task = match SHARED_INT_TASK {
-        case .some(value) => value
-        case .none => std.panic.panic("shared task should be seeded before spawning waiters")
-    }
-
-    return await task.value()
-}
 
 @cfg(family("unix"))
 func sharedPipeReaderBody() async -> int32 {
@@ -193,11 +182,13 @@ func suspendedSpawnedTasksSurviveManualGc() async {
     std.runtime.collect()
 
     var sum: int32 = 0
-    var taskIdx: usize = 0
-    while taskIdx < tasks.len() {
-        let value = await tasks.at(taskIdx).value()
+    while !tasks.isEmpty() {
+        let task = match tasks.pop() {
+            case .some(t) => t
+            case .none => std.panic.panic("task list should not be empty")
+        }
+        let value = await task.value()
         sum += value
-        taskIdx += 1
     }
 
     std.testing.assertEqual(sum, 153_i32, "manual GC should preserve suspended spawned task frames")
@@ -285,18 +276,22 @@ func asyncHoldList() async -> int32 {
     return *items.at(0 as usize) + *items.at(1 as usize) + *items.at(2 as usize)
 }
 
-func applyAsyncClosure[F: std.ops.AsyncFn(int32) -> int32](_ f: F, _ x: int32) async -> int32 {
+func applyAsyncClosure[F: std.ops.AsyncFnOnce(int32) -> int32](_ f: F, _ x: int32) async -> int32 {
+    return await f(x)
+}
+
+func applyReusableAsyncClosure[F: std.ops.AsyncFn(int32) -> int32](_ f: F, _ x: int32) async -> int32 {
     return await f(x)
 }
 
 @test
-func rcBackedStringsAcrossYields() async {
+func stringsSurviveAcrossYields() async {
     let value = await asyncWithStrings()
     std.testing.assertEqual(value, "hello world", "strings should survive across yield points")
 }
 
 @test
-func rcBackedListsAcrossYields() async {
+func listsSurviveAcrossYields() async {
     let value = await asyncHoldList()
     std.testing.assertEqual(value, 60, "list should survive across yield points")
 }
@@ -305,16 +300,19 @@ func rcBackedListsAcrossYields() async {
 func asyncClosuresCaptureAcrossYields() async {
     let captured = 5 as int32
     let addCaptured = |x: int32| async {
+        std.println("before yield, x=" + std.sprintf("%d", x) + " captured=" + std.sprintf("%d", captured))
         await std.testing.yieldNow()
+        std.println("after yield, x=" + std.sprintf("%d", x) + " captured=" + std.sprintf("%d", captured))
         return x + captured
     }
 
     let value = await addCaptured(7)
+    std.println("value=" + std.sprintf("%d", value))
     std.testing.assertEqual(value, 12, "async closures should capture locals across yields")
 }
 
 @test
-func asyncClosuresSatisfyAsyncFnBounds() async {
+func asyncClosuresSatisfyAsyncFnOnceBounds() async {
     let captured = 9 as int32
     let closure = |x: int32| async {
         await std.testing.yieldNow()
@@ -322,7 +320,18 @@ func asyncClosuresSatisfyAsyncFnBounds() async {
     }
 
     let value = await applyAsyncClosure(closure, 3)
-    std.testing.assertEqual(value, 12, "async closures should satisfy AsyncFn bounds")
+    std.testing.assertEqual(value, 12, "capturing async closures should satisfy AsyncFnOnce bounds")
+}
+
+@test
+func noncapturingAsyncClosuresSatisfyAsyncFnBounds() async {
+    let closure = |x: int32| async {
+        await std.testing.yieldNow()
+        return x + 9
+    }
+
+    let value = await applyReusableAsyncClosure(closure, 3)
+    std.testing.assertEqual(value, 12, "noncapturing async closures should satisfy AsyncFn bounds")
 }
 
 @test
@@ -369,44 +378,6 @@ func joinHandlesDifferentCompletionTiming() async {
 }
 
 @test
-func joinAcceptsAlreadyCompletedTasks() async {
-    let ready = std.task.spawn(|| async {
-        return 1 as int32
-    })
-    let delayed = std.task.spawn(|| async {
-        await std.testing.yieldNow()
-        return 2 as int32
-    })
-
-    let first = await ready.value()
-    std.testing.assertEqual(first, 1, "task should be readable before join")
-
-    let joined = await std.task.join(ready, delayed)
-    std.testing.assertEqual(joined.0, 1, "join should accept an already-completed left task")
-    std.testing.assertEqual(joined.1, 2, "join should still await the incomplete right task")
-}
-
-@test
-func joinDoesNotConsumeTaskValues() async {
-    let left = std.task.spawn(|| async {
-        await std.testing.yieldNow()
-        return 41 as int32
-    })
-    let right = std.task.spawn(|| async {
-        return 1 as int32
-    })
-
-    let joined = await std.task.join(left, right)
-    std.testing.assertEqual(joined.0, 41, "join should read the left task result")
-    std.testing.assertEqual(joined.1, 1, "join should read the right task result")
-
-    let leftAgain = await left.value()
-    let rightAgain = await right.value()
-    std.testing.assertEqual(leftAgain, 41, "left task value should remain readable after join")
-    std.testing.assertEqual(rightAgain, 1, "right task value should remain readable after join")
-}
-
-@test
 @expectPanic
 func joinPropagatesTaskPanic() async {
     let left = std.task.spawn(|| async {
@@ -419,43 +390,6 @@ func joinPropagatesTaskPanic() async {
     })
 
     let _ = await std.task.join(left, right)
-}
-
-@test
-func spawnedTaskValueCanBeReadMoreThanOnce() async {
-    let task = std.task.spawn(|| async {
-        await std.testing.yieldNow()
-        return 21 as int32
-    })
-
-    let first = await task.value()
-    let second = await task.value()
-    std.testing.assertEqual(first, 21, "first task value read should succeed")
-    std.testing.assertEqual(second, 21, "second task value read should reuse the stored output")
-}
-
-@test
-func spawnedTaskValueSupportsConcurrentWaiters() async {
-    let task = std.task.spawn(|| async {
-        await std.testing.yieldNow()
-        return 33 as int32
-    })
-
-    SHARED_INT_TASK = .some(task)
-    let firstWaiter = std.task.spawn(|| async {
-        return await sharedTaskValueBody()
-    })
-    let secondWaiter = std.task.spawn(|| async {
-        return await sharedTaskValueBody()
-    })
-
-    let first = await firstWaiter.value()
-    let second = await secondWaiter.value()
-    let direct = await task.value()
-    std.testing.assertEqual(first, 33, "first concurrent waiter should receive the task value")
-    std.testing.assertEqual(second, 33, "second concurrent waiter should receive the task value")
-    std.testing.assertEqual(direct, 33, "task value should still be readable after concurrent waiters")
-    SHARED_INT_TASK = .none
 }
 
 @test
@@ -622,77 +556,39 @@ func asyncStreamSupportsConcurrentReadWaiters() async {
     SHARED_PIPE_WRITE_STREAM = .none
 }
 
-@cfg(family("unix"))
-@test
-func asyncStreamCloseIsIdempotentAcrossAliases() async {
-    let stdoutRes = std.io.task.stdout()
-    let stream = match stdoutRes {
-        case .ok(value) => value
-        case .err(err) => std.panic.panic("stdout() should succeed on unix")
-    }
-    let alias = stream
-
-    match stream.close() {
-        case .ok(_) => {}
-        case .err(err) => std.panic.panic("first close should succeed")
-    }
-
-    match alias.close() {
-        case .ok(_) => {}
-        case .err(err) => std.panic.panic("second close should also succeed")
-    }
+func applyAsyncMut[F: std.ops.AsyncFnMut(int32) -> int32](_ f: F, _ x: int32) async -> int32 {
+    var f = f
+    let first = await f(x)
+    let second = await f(x)
+    return first + second
 }
 
-@cfg(family("unix"))
+func applyZeroAsyncMut[F: std.ops.AsyncFnMut() -> int32](_ f: F) async -> int32 {
+    var f = f
+    let a = await f()
+    let b = await f()
+    let c = await f()
+    return a + b + c
+}
+
 @test
-func asyncStreamPostCloseOperationsReturnErrors() async {
-    let pipeRes = std.io.task.pipe()
-    let pipePair = match pipeRes {
-        case .ok(value) => value
-        case .err(_) => std.panic.panic("pipe() should succeed on unix")
+func asyncClosuresSatisfyAsyncFnMutBounds() async {
+    let closure = |x: int32| async {
+        await std.testing.yieldNow()
+        return x * 3
     }
-    let reader = pipePair.0
-    let writer = pipePair.1
-    let readerAlias = reader
-    let writerAlias = writer
+    let value = await applyAsyncMut(closure, 5)
+    // 5*3 + 5*3 = 30
+    std.testing.assertEqual(value, 30, "non-capturing async closure should satisfy AsyncFnMut and be reusable")
+}
 
-    match reader.close() {
-        case .ok(_) => {}
-        case .err(_) => std.panic.panic("reader close should succeed")
+@test
+func asyncClosuresReusedThroughZeroArgAsyncFnMut() async {
+    let closure = || async {
+        await std.testing.yieldNow()
+        return 7 as int32
     }
-    match readerAlias.close() {
-        case .ok(_) => {}
-        case .err(_) => std.panic.panic("reader alias close should also succeed")
-    }
-    match writer.close() {
-        case .ok(_) => {}
-        case .err(_) => std.panic.panic("writer close should succeed")
-    }
-    match writerAlias.close() {
-        case .ok(_) => {}
-        case .err(_) => std.panic.panic("writer alias close should also succeed")
-    }
-
-    var byte: uint8 = 0
-    let readRes = await readerAlias.read(std.mem.MutableSpan[uint8].from(unsafe { (&mut byte) as *mut uint8 }, 1))
-    match readRes {
-        case .ok(_) => std.panic.panic("read after close should fail")
-        case .err(err) => {
-            match err {
-                case .unexpected(code) => std.testing.assertEqual(code, 9, "read after close should surface EBADF")
-                case _ => std.panic.panic("read after close should surface a normal io error")
-            }
-        }
-    }
-
-    let writeRes = await writerAlias.write(stringBytes("x"))
-    match writeRes {
-        case .ok(_) => std.panic.panic("write after close should fail")
-        case .err(err) => {
-            match err {
-                case .unexpected(code) => std.testing.assertEqual(code, 9, "write after close should surface EBADF")
-                case _ => std.panic.panic("write after close should surface a normal io error")
-            }
-        }
-    }
+    let sum = await applyZeroAsyncMut(closure)
+    // 7 + 7 + 7 = 21
+    std.testing.assertEqual(sum, 21, "non-capturing async closure should be reusable through AsyncFnMut() bound")
 }

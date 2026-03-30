@@ -1,0 +1,12 @@
+func consumeList(_ values: std.collections.List[int32]) -> int32 {
+    return values.len() as int32
+}
+
+func main() {
+    var values: std.collections.List[int32] = std.collections.List()
+    values.append(1)
+
+    let borrow = &values
+    let _ = consumeList(values)
+    let _ = borrow
+}

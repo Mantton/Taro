@@ -25,6 +25,12 @@ pub struct IdeAnalysis<'state> {
     pub status: IdeAnalysisStatus,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdeAnalysisMode {
+    OnType,
+    OnSave,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct IdeAnalysisStatus {
     pub hir_available: bool,
@@ -234,7 +240,11 @@ impl<'state> Compiler<'state> {
 
         let result = (|| -> CompileResult<hir::Package> {
             let (package, results) = self.analyze_with_timings(&mut timings)?;
-            let _ = self.build_semantic_thir_with_timings(&package, results, &mut timings)?;
+            let thir = self.build_semantic_thir_with_timings(&package, results, &mut timings)?;
+
+            let phase_started_at = Instant::now();
+            let _ = mir::package::build_package(thir, self.context)?;
+            timings.push_elapsed("mir.build", phase_started_at);
             Ok(package)
         })();
 
@@ -298,9 +308,9 @@ impl<'state> Compiler<'state> {
         self.analyze_with_timings(&mut timings)
     }
 
-    pub fn analyze_for_ide(&mut self) -> CompileResult<IdeAnalysis<'state>> {
+    pub fn analyze_for_ide(&mut self, mode: IdeAnalysisMode) -> CompileResult<IdeAnalysis<'state>> {
         let mut timings = TimingReport::default();
-        self.analyze_for_ide_with_timings(&mut timings)
+        self.analyze_for_ide_with_timings(mode, &mut timings)
     }
 
     fn predicted_emitted_instances(&self) -> FxHashSet<specialize::Instance<'state>> {
@@ -375,6 +385,7 @@ impl<'state> Compiler<'state> {
 
     fn analyze_for_ide_with_timings(
         &mut self,
+        mode: IdeAnalysisMode,
         timings: &mut TimingReport,
     ) -> CompileResult<IdeAnalysis<'state>> {
         let package = self.lower_to_hir_with_timings(timings, true)?;
@@ -396,6 +407,16 @@ impl<'state> Compiler<'state> {
                 let phase_started_at = Instant::now();
                 let _ = entry::validate_entry_point(&package, self.context);
                 timings.push_elapsed("entry.validate", phase_started_at);
+            }
+
+            if mode == IdeAnalysisMode::OnSave {
+                let phase_started_at = Instant::now();
+                if let Ok(thir) =
+                    self.build_semantic_thir_with_timings(&package, results.clone(), timings)
+                {
+                    let _ = mir::package::build_package(thir, self.context);
+                }
+                timings.push_elapsed("mir.build", phase_started_at);
             }
         }
 

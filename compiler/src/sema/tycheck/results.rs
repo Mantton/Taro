@@ -7,7 +7,7 @@ use crate::{
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct TypeCheckResults<'ctx> {
     node_tys: FxHashMap<hir::NodeID, Ty<'ctx>>,
     node_adjustments: FxHashMap<hir::NodeID, Vec<Adjustment<'ctx>>>,

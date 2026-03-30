@@ -2,7 +2,6 @@ use crate::{
     compile::context::Gcx,
     error::{CompileResult, ReportedError},
     hir::DefinitionID,
-    hir::StdItem,
     mir::{
         BasicBlockData, BasicBlockId, Body, CallUnwindAction, Constant, ConstantKind,
         CopyModifiers, LocalDecl, LocalId, LocalKind, Operand, Place, PlaceElem, Rvalue, Statement,
@@ -10,12 +9,11 @@ use crate::{
     },
     sema::{
         models::{
-            AdtKind, EnumVariantKind, GenericArgument, GenericArguments, LabeledFunctionParameter,
-            LabeledFunctionSignature, Ty, TyKind,
+            AdtKind, EnumVariantKind, GenericArgument, GenericArguments,
+            LabeledFunctionParameter, LabeledFunctionSignature, Ty, TyKind,
         },
         resolve::models::DefinitionKind,
         tycheck::utils::generics::GenericsBuilder,
-        tycheck::utils::{instantiate::instantiate_ty_with_args, normalize::normalize_aliases},
     },
     span::{FileID, Span},
     thir::FieldIndex,
@@ -296,97 +294,14 @@ fn infer_async_task_mobility<'ctx>(
     body: &Body<'ctx>,
     stored_locals: &[LocalId],
 ) -> AsyncTaskMobility {
-    let mut visited = FxHashSet::default();
     if stored_locals
         .iter()
-        .all(|local| ty_is_movable_across_workers(gcx, body.locals[*local].ty, &mut visited))
+        .all(|local| gcx.is_type_sendable(body.locals[*local].ty))
     {
         AsyncTaskMobility::Movable
     } else {
         AsyncTaskMobility::Pinned
     }
-}
-
-fn ty_is_movable_across_workers<'ctx>(
-    gcx: Gcx<'ctx>,
-    ty: Ty<'ctx>,
-    visited: &mut FxHashSet<Ty<'ctx>>,
-) -> bool {
-    let ty = normalize_aliases(gcx, ty);
-    if ty == gcx.async_handle_ty() {
-        // Async handles can encapsulate child futures that transiently hold
-        // stack-derived pointers/references across await boundaries. Treat
-        // them as non-movable until we can prove cross-worker safety.
-        return false;
-    }
-    if !visited.insert(ty) {
-        return true;
-    }
-
-    let movable = match ty.kind() {
-        TyKind::Bool
-        | TyKind::Rune
-        | TyKind::String
-        | TyKind::Int(_)
-        | TyKind::UInt(_)
-        | TyKind::Float(_)
-        | TyKind::Never => true,
-        TyKind::Pointer(..)
-        | TyKind::Reference(..)
-        | TyKind::BoxedExistential { .. }
-        | TyKind::Alias { .. }
-        | TyKind::Infer(_)
-        | TyKind::Parameter(_)
-        | TyKind::Opaque(_)
-        | TyKind::Error => false,
-        TyKind::Array { element, .. } => ty_is_movable_across_workers(gcx, element, visited),
-        TyKind::Tuple(items) => items
-            .iter()
-            .copied()
-            .all(|item| ty_is_movable_across_workers(gcx, item, visited)),
-        TyKind::FnPointer { .. } => true,
-        TyKind::Closure { closure_def_id, .. } => gcx
-            .get_closure_captures(closure_def_id)
-            .map(|captures| {
-                captures
-                    .captures
-                    .iter()
-                    .all(|capture| ty_is_movable_across_workers(gcx, capture.ty, visited))
-            })
-            .unwrap_or(true),
-        TyKind::Adt(def, args) => {
-            if gcx.std_item_def(StdItem::Task) == Some(def.id) {
-                true
-            } else {
-                match def.kind {
-                    AdtKind::Struct => {
-                        gcx.get_struct_definition(def.id)
-                            .fields
-                            .iter()
-                            .all(|field| {
-                                let field_ty = instantiate_ty_with_args(gcx, field.ty, args);
-                                ty_is_movable_across_workers(gcx, field_ty, visited)
-                            })
-                    }
-                    AdtKind::Enum => {
-                        gcx.get_enum_definition(def.id)
-                            .variants
-                            .iter()
-                            .all(|variant| match variant.kind {
-                                EnumVariantKind::Unit => true,
-                                EnumVariantKind::Tuple(fields) => fields.iter().all(|field| {
-                                    let field_ty = instantiate_ty_with_args(gcx, field.ty, args);
-                                    ty_is_movable_across_workers(gcx, field_ty, visited)
-                                }),
-                            })
-                    }
-                }
-            }
-        }
-    };
-
-    visited.remove(&ty);
-    movable
 }
 
 fn add_poll_thunk_locals<'ctx>(
@@ -970,10 +885,8 @@ fn restore_block<'ctx>(
         })
         .collect();
 
-    // After loading locals, memset the frame to zero. This transfers Rc
-    // ownership to the locals so that emit_rc_cleanup at Return correctly
-    // releases them, while the drop body (which loads from the frame) will
-    // see zeroed Rc pointers and no-op.
+    // After loading locals, memset the frame to zero. This transfers ownership
+    // back to the locals and leaves the frame cleared before returning.
     let restore = body.basic_blocks.push(BasicBlockData {
         note: Some("async-restore".into()),
         statements,
@@ -1012,9 +925,8 @@ fn pending_save_statements<'ctx>(
 ) -> Vec<Statement<'ctx>> {
     let mut statements = Vec::with_capacity(locals_to_save.len() + 2);
     for local in locals_to_save {
-        // Use take semantics: the codegen will zero the source local after copying,
-        // which prevents emit_rc_cleanup from double-releasing Rc-containing locals
-        // that now live in the frame.
+        // Use take semantics: the codegen will zero the source local after copying
+        // so the moved value only remains in the frame.
         statements.push(Statement {
             kind: StatementKind::Assign(
                 frame_local_place_stub(frame, frame_ptr_local, *local),
@@ -1396,8 +1308,7 @@ fn register_async_drop_definition<'ctx>(
 }
 
 /// Build a synthetic drop body that loads all frame locals into temps, then
-/// returns. The codegen's `emit_rc_cleanup` will release any Rc fields
-/// contained in those locals at the return point.
+/// returns after taking ownership out of the frame.
 fn build_async_drop_body<'ctx>(
     gcx: Gcx<'ctx>,
     owner: DefinitionID,
@@ -1452,9 +1363,8 @@ fn build_async_drop_body<'ctx>(
         span,
     );
 
-    // Create temp locals mirroring the frame's stored locals (only those with
-    // types that may contain Rc — but for simplicity and correctness we load
-    // all of them; the codegen no-ops for non-Rc types).
+    // Create temp locals mirroring the frame's stored locals. We load all of
+    // them so the drop body can take ownership out of the frame uniformly.
     let mirror_locals: Vec<_> = frame
         .stored_locals
         .iter()
@@ -1480,10 +1390,8 @@ fn build_async_drop_body<'ctx>(
     for (i, &mirror) in mirror_locals.iter().enumerate() {
         let field_index = i + 1; // +1 because field 0 is the state tag
         let field_ty = poll_body.locals[frame.stored_locals[i]].ty;
-        // Use init+take modifiers: skip retain (init) and zero the frame's
-        // field after loading (take).  This transfers Rc ownership from the
-        // frame to the mirror local so emit_rc_cleanup at Return releases
-        // exactly once, and the frame is left zeroed (safe against GC scans).
+        // Use init+take modifiers and zero the frame field after loading so
+        // ownership transfers into the mirror local exactly once.
         statements.push(Statement {
             kind: StatementKind::Assign(
                 Place::from_local(mirror),
@@ -1870,7 +1778,9 @@ pub(crate) fn find_std_function<'ctx>(
 fn operand_ty<'ctx>(body: &Body<'ctx>, gcx: Gcx<'ctx>, operand: &Operand<'ctx>) -> Ty<'ctx> {
     match operand {
         Operand::Constant(constant) => constant.ty,
-        Operand::Copy(place) | Operand::CopyWith(place, _) => place_ty(body, gcx, place),
+        Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
+            place_ty(body, gcx, place)
+        }
     }
 }
 

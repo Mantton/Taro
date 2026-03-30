@@ -360,7 +360,10 @@ impl[Item, Inner: Iterator[Element = Item]] Iterable for EnumerateIterator[Item,
     type Element = (usize, Item)
 
     public func iter(self) -> Self.Iterator {
-        return self
+        return EnumerateIterator[Item, Inner] {
+            inner: self.inner,
+            index: self.index,
+        }
     }
 }
 
@@ -408,7 +411,10 @@ impl[Item, Out, Inner: Iterator[Element = Item], F: Fn[Item, Out]] Iterable for 
     type Element = Out
 
     public func iter(self) -> Self.Iterator {
-        return self
+        return MapIterator[Item, Out, Inner, F] {
+            inner: self.inner,
+            f: self.f,
+        }
     }
 }
 
@@ -463,7 +469,10 @@ impl[Item, Inner: Iterator[Element = Item], F: Fn[&Item, bool]] Iterable for Fil
     type Element = Item
 
     public func iter(self) -> Self.Iterator {
-        return self
+        return FilterIterator[Item, Inner, F] {
+            inner: self.inner,
+            predicate: self.predicate,
+        }
     }
 }
 
@@ -513,7 +522,10 @@ impl[Item, Inner: Iterator[Element = Item]] Iterable for TakeIterator[Item, Inne
     type Element = Item
 
     public func iter(self) -> Self.Iterator {
-        return self
+        return TakeIterator[Item, Inner] {
+            inner: self.inner,
+            remaining: self.remaining,
+        }
     }
 }
 
@@ -566,7 +578,10 @@ impl[Item, Inner: Iterator[Element = Item]] Iterable for SkipIterator[Item, Inne
     type Element = Item
 
     public func iter(self) -> Self.Iterator {
-        return self
+        return SkipIterator[Item, Inner] {
+            inner: self.inner,
+            remaining: self.remaining,
+        }
     }
 }
 
@@ -620,7 +635,10 @@ impl[A, B, IA: Iterator[Element = A], IB: Iterator[Element = B]] Iterable for Zi
     type Element = (A, B)
 
     public func iter(self) -> Self.Iterator {
-        return self
+        return ZipIterator[A, B, IA, IB] {
+            a: self.a,
+            b: self.b,
+        }
     }
 }
 
@@ -676,7 +694,11 @@ impl[Item, A: Iterator[Element = Item], B: Iterator[Element = Item]] Iterable fo
     type Element = Item
 
     public func iter(self) -> Self.Iterator {
-        return self
+        return ChainIterator[Item, A, B] {
+            a: self.a,
+            b: self.b,
+            state: self.state,
+        }
     }
 }
 
@@ -764,7 +786,10 @@ impl[
     type Element = Item
 
     public func iter(self) -> Self.Iterator {
-        return self
+        return FlattenIterator[Item, InnerIter, InnerIterable, OuterIter] {
+            outer: self.outer,
+            inner: self.inner,
+        }
     }
 }
 
@@ -833,7 +858,11 @@ impl[Item, Inner: Iterator[Element = Item]] Iterable for StepByIterator[Item, In
     type Element = Item
 
     public func iter(self) -> Self.Iterator {
-        return self
+        return StepByIterator[Item, Inner] {
+            inner: self.inner,
+            step: self.step,
+            first_take: self.first_take,
+        }
     }
 }
 
@@ -899,7 +928,11 @@ impl[Item, F: Fn[&Item, bool], Inner: Iterator[Element = Item]] Iterable for Tak
     type Element = Item
 
     public func iter(self) -> Self.Iterator {
-        return self
+        return TakeWhileIterator[Item, F, Inner] {
+            inner: self.inner,
+            predicate: self.predicate,
+            is_done: self.is_done,
+        }
     }
 }
 
@@ -966,7 +999,11 @@ impl[Item, F: Fn[&Item, bool], Inner: Iterator[Element = Item]] Iterable for Ski
     type Element = Item
 
     public func iter(self) -> Self.Iterator {
-        return self
+        return SkipWhileIterator[Item, F, Inner] {
+            inner: self.inner,
+            predicate: self.predicate,
+            is_done_skipping: self.is_done_skipping,
+        }
     }
 }
 
@@ -1018,7 +1055,10 @@ impl[Item, Inner: Iterator[Element = Item]] Iterable for PeekableIterator[Item, 
     type Element = Item
 
     public func iter(self) -> Self.Iterator {
-        return self
+        return PeekableIterator[Item, Inner] {
+            inner: self.inner,
+            peeked: self.peeked,
+        }
     }
 }
 

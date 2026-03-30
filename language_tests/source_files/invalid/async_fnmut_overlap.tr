@@ -1,0 +1,10 @@
+// Test that async closure calls cannot overlap:
+// storing the future without immediately awaiting is rejected.
+
+func applyAsyncMut[F: AsyncFnMut(int32) -> int32](_ f: F, _ x: int32) async -> int32 {
+    var f = f
+    // Attempt to call f() without awaiting — should be rejected.
+    let future1 = f(x)
+    let future2 = f(x)
+    return await future1 + await future2
+}

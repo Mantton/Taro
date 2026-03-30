@@ -1,3 +1,4 @@
+
 @cfg(family("unix"))
 const FRAME_HEADER_LEN: usize = 4
 
@@ -565,30 +566,7 @@ func syncUdpLoopbackRoundTrip() {
     }
 }
 
-@cfg(family("unix"))
-@test
-func closedListenerReturnsErrorOnAccept() async {
-    let listenRes = std.net.TcpListener.bind(std.net.SocketAddress.localhost(0_u16))
-    var listener = match listenRes {
-        case .ok(value) => value
-        case .err(_) => std.panic.panic("listen should succeed")
-    }
 
-    match listener.close() {
-        case .ok(_) => {}
-        case .err(_) => std.panic.panic("first close should succeed")
-    }
-    match listener.close() {
-        case .ok(_) => {}
-        case .err(_) => std.panic.panic("second close should also succeed")
-    }
-
-    let acceptRes = await listener.accept()
-    match acceptRes {
-        case .ok(_) => std.panic.panic("accept on a closed listener should fail")
-        case .err(err) => expectUnexpectedCode(err, 9, "closed listener should surface EBADF")
-    }
-}
 
 @cfg(family("unix"))
 @test
@@ -620,11 +598,13 @@ func tcpManyConcurrentClients() async {
     std.testing.assertEqual(handled, clientCount, "server should handle every concurrent client")
 
     var seen: int32 = 0
-    var taskIdx: usize = 0
-    while taskIdx < tasks.len() {
-        let echoed = await tasks.at(taskIdx).value()
+    while !tasks.isEmpty() {
+        let task = match tasks.pop() {
+            case .some(t) => t
+            case .none => std.panic.panic("task list should not be empty")
+        }
+        let echoed = await task.value()
         seen += echoed
-        taskIdx += 1
     }
 
     std.testing.assertEqual(seen, 10_i32, "concurrent clients should all receive their echoed bytes")
@@ -695,11 +675,11 @@ func asyncUdpLoopbackRoundTrip() async {
     std.testing.assertEqual(clientReceived.0, 1 as usize, "async udp client should receive one byte")
     std.testing.assertEqual(clientByte, outbound, "async udp reply should echo the original byte")
 
-    match std.sys.net.task.close(&mut client) {
+    match std.sys.net.task.close(client) {
         case .ok(_) => {}
         case .err(_) => std.panic.panic("async udp client close should succeed")
     }
-    match std.sys.net.task.close(&mut server) {
+    match std.sys.net.task.close(server) {
         case .ok(_) => {}
         case .err(_) => std.panic.panic("async udp server close should succeed")
     }

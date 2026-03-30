@@ -4,7 +4,6 @@ use crate::mir::{Body, MirPhase};
 
 pub mod async_transform;
 pub mod coalesce;
-pub mod copy_modifiers;
 pub mod dse;
 pub mod escape;
 pub mod inline;
@@ -39,11 +38,17 @@ pub fn run_passes<'ctx>(
 /// These passes don't require other function bodies to be available.
 /// Includes: prune unreachable and simplify CFG.
 pub fn run_local_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
+    let validate_ownership = matches!(body.phase, MirPhase::Built);
     let mut passes: Vec<Box<dyn MirPass>> = vec![
         Box::new(validate::ValidateBodyInvariants),
         Box::new(passes::PruneUnreachable),
         Box::new(passes::SimplifyCfg),
     ];
+    if validate_ownership {
+        passes.push(Box::new(validate::ValidateMutability));
+        passes.push(Box::new(validate::ValidateMoves));
+        passes.push(Box::new(validate::ValidateBorrows));
+    }
     run_passes(gcx, body, &mut passes)?;
     body.phase = MirPhase::CfgClean;
     Ok(())
@@ -74,7 +79,6 @@ pub fn run_global_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> Compile
         Box::new(escape::ApplyEscapeAnalysis),
         Box::new(passes::InsertSafepoints),
         Box::new(passes::MergeSafepoints), // Clean up redundant consecutive safepoints
-        Box::new(copy_modifiers::MarkCopyModifiers),
     ];
     run_passes(gcx, body, &mut passes)?;
     Ok(())

@@ -1,5 +1,7 @@
 import std.panic.panic
+import std.marker.Copy
 import std.ops.Fn
+import std.default.Default
 
 /// An optional value that may or may not contain a wrapped value.
 ///
@@ -40,22 +42,26 @@ impl[Wrapped] Optional[Wrapped] {
     }
     /// Takes the value out of the optional, leaving a `.none` in its place.
     public func take(&mut self) -> Optional[Wrapped] {
-        let result = *self
-        *self = .none
-        return result
+        std.mem.take(self)
     }
 }
 
-// Unwrapping methods - require Copy since we take &self but return Wrapped
+impl[Wrapped] Default for Optional[Wrapped] {
+    public func default() -> Self {
+        .none
+    }
+}
+
+// Unwrapping methods
 impl[Wrapped] Optional[Wrapped] {
     /// Returns the contained value, panicking if none.
     ///
     /// Panics with a generic message if the optional is none.
     /// Prefer `expect` if you want a custom panic message.
-    public func unwrap(&self) -> Wrapped {
+    public func unwrap(self) -> Wrapped {
         match self {
             case .some(v) => {
-                *v
+                v
             }
             case .none => {
                 panic("called unwrap on a none value")
@@ -64,10 +70,10 @@ impl[Wrapped] Optional[Wrapped] {
     }
 
     /// Returns the contained value, panicking with the given message if none.
-    public func expect(&self, _ message: string) -> Wrapped {
+    public func expect(self, _ message: string) -> Wrapped {
         match self {
             case .some(v) => {
-                *v
+                v
             }
             case .none => {
                 panic(message)
@@ -77,31 +83,31 @@ impl[Wrapped] Optional[Wrapped] {
 
     /// Returns the contained value or a default.
     @inline
-    public func unwrapOr(&self, _ default: Wrapped) -> Wrapped {
+    public func unwrapOr(self, _ default: Wrapped) -> Wrapped {
         match self {
-            case .some(v) => *v
+            case .some(v) => v
             case .none => default
         }
     }
 
     /// Returns the contained value or computes it from a closure.
-    public func unwrapOrElse[F: Fn[(), Wrapped]](&self, _ f: F) -> Wrapped {
+    public func unwrapOrElse[F: Fn[(), Wrapped]](self, _ f: F) -> Wrapped {
         match self {
-            case .some(v) => *v
+            case .some(v) => v
             case .none => f()
         }
     }
 }
 
-// Transformation methods - require Copy since we take &self
+// Transformation methods
 impl[Wrapped] Optional[Wrapped] {
     /// Transforms the contained value using a function.
     ///
     /// Returns `.none` if the optional is none, otherwise returns
     /// `.some(f(value))`.
-    public func map[U, F: Fn[Wrapped, U]](&self, _ f: F) -> Optional[U] {
+    public func map[U, F: Fn[Wrapped, U]](self, _ f: F) -> Optional[U] {
         match self {
-            case .some(v) => .some(f(*v))
+            case .some(v) => .some(f(v))
             case .none => .none
         }
     }
@@ -109,20 +115,19 @@ impl[Wrapped] Optional[Wrapped] {
     /// Transforms the contained value using a function that returns an Optional.
     ///
     /// This is useful for chaining operations that may fail.
-    public func flatMap[U, F: Fn[Wrapped, Optional[U]]](&self, _ f: F) -> Optional[U] {
+    public func flatMap[U, F: Fn[Wrapped, Optional[U]]](self, _ f: F) -> Optional[U] {
         match self {
-            case .some(v) => f(*v)
+            case .some(v) => f(v)
             case .none => .none
         }
     }
 
     /// Returns the optional if it contains a value matching the predicate.
-    public func filter[F: Fn[&Wrapped, bool]](&self, _ predicate: F) -> Optional[Wrapped] {
+    public func filter[F: Fn[&Wrapped, bool]](self, _ predicate: F) -> Optional[Wrapped] {
         match self {
             case .some(v) => {
-                let val = *v
-                if predicate(v) {
-                    .some(val)
+                if predicate(&v) {
+                    .some(v)
                 } else {
                     .none
                 }
@@ -136,7 +141,7 @@ impl[Wrapped] Optional[Wrapped] {
 impl[Wrapped] Optional[Wrapped] {
     /// Returns `.none` if self is `.none`, otherwise returns `other`.
     @inline
-    public func and[U](&self, _ other: Optional[U]) -> Optional[U] {
+    public func and[U](self, _ other: Optional[U]) -> Optional[U] {
         match self {
             case .some(_) => other
             case .none => .none
@@ -147,10 +152,19 @@ impl[Wrapped] Optional[Wrapped] {
 impl[Wrapped] Optional[Wrapped] {
     /// Returns the option if it contains a value, otherwise returns `other`.
     @inline
-    public func or(&self, _ other: Self) -> Self {
+    public func or(self, _ other: Self) -> Self {
         match self {
-            case .some(v) => .some(*v)
+            case .some(v) => .some(v)
             case .none => other
+        }
+    }
+
+    /// Returns the option if it contains a value, otherwise calls `f` and returns the result.
+    @inline
+    public func orElse[F: Fn[(), Self]](self, _ f: F) -> Self {
+        match self {
+            case .some(v) => .some(v)
+            case .none => f()
         }
     }
 }

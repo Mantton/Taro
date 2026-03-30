@@ -1,0 +1,3 @@
+public interface Default {
+    func default() -> Self
+}

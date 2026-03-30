@@ -1,11 +1,12 @@
 import std.collections.List
 import std.cmp.{Ordering, PartialOrd, Ord}
+import std.marker.Clone
 import std.optional.Optional
 
 func sumRef(_ list: &List[int32]) -> int32 {
     var sum: int32 = 0
     for x in list {
-        sum = sum + x
+        sum = sum + *x
     }
     return sum
 }
@@ -80,7 +81,7 @@ func testListIteratorModes() {
 
     var mutableSum: int32 = 0
     for x in &mut list {
-        mutableSum += x
+        mutableSum += *x
     }
     std.testing.assertEqual(mutableSum, 6, "mut ref iterator sum mismatch")
 
@@ -318,216 +319,61 @@ func testListFrom() {
     std.testing.assertEqual(*list.at(2), 3, "from: element 2")
 }
 
-// --- COW (Copy-On-Write) Tests ---
-
 @test
-func testListCowAppendCopy() {
+func testListCloneProducesIndependentStorage() {
     var original: List[int32] = List()
     original.append(1)
     original.append(2)
     original.append(3)
 
-    var copy = original
+    var copy = original.clone()
     copy.append(4)
+    copy.set(0 as usize, 99)
 
-    std.testing.assertEqual(original.len(), 3 as usize, "cow append: original length unchanged")
-    std.testing.assertEqual(copy.len(), 4 as usize, "cow append: copy length updated")
-    std.testing.assertEqual(*copy.at(3), 4, "cow append: copy[3] correct")
-    std.testing.assertEqual(*original.at(0), 1, "cow append: original[0] intact")
+    std.testing.assertEqual(original.len(), 3 as usize, "clone should not change original length")
+    std.testing.assertEqual(*original.at(0), 1, "clone should preserve original elements")
+    std.testing.assertEqual(copy.len(), 4 as usize, "clone should be independently mutable")
+    std.testing.assertEqual(*copy.at(0), 99, "clone mutation should update copied storage")
+    std.testing.assertEqual(*copy.at(3), 4, "clone append should update copied storage")
+
+    let movedSum = sumByValue(copy)
+    std.testing.assertEqual(movedSum, 108, "cloned list should still move by value")
 }
 
 @test
-func testListCowMutateOriginal() {
+func testListCloneSupportsMultipleIndependentCopies() {
     var original: List[int32] = List()
     original.append(10)
     original.append(20)
     original.append(30)
 
-    var copy = original
-    original.append(40)
-    original.set(0 as usize, 99)
+    var left = original.clone()
+    var right = original.clone()
 
-    std.testing.assertEqual(copy.len(), 3 as usize, "cow mutate orig: copy length unchanged")
-    std.testing.assertEqual(*copy.at(0), 10, "cow mutate orig: copy[0] unchanged")
-    std.testing.assertEqual(original.len(), 4 as usize, "cow mutate orig: original length updated")
-    std.testing.assertEqual(*original.at(0), 99, "cow mutate orig: original[0] updated")
+    let removed = left.removeAt(1 as usize)
+    right.sort()
+
+    std.testing.assertTrue(removed.isSome(), "clone removeAt should return removed value")
+    std.testing.assertEqual(removed.unwrap(), 20, "clone removeAt should remove the requested element")
+    std.testing.assertEqual(original.len(), 3 as usize, "original should stay intact across multiple clones")
+    std.testing.assertEqual(left.len(), 2 as usize, "left clone should reflect its own removal")
+    std.testing.assertEqual(right.len(), 3 as usize, "right clone should keep its own length")
+    std.testing.assertEqual(*right.at(0), 10, "right clone should sort independently")
 }
 
 @test
-func testListCowEmptyList() {
-    var a: List[int32] = List()
-    var b = a
-
-    a.append(1)
-    b.append(2)
-
-    std.testing.assertEqual(a.len(), 1 as usize, "cow empty: a.len == 1")
-    std.testing.assertEqual(b.len(), 1 as usize, "cow empty: b.len == 1")
-    std.testing.assertEqual(*a.at(0), 1, "cow empty: a[0] == 1")
-    std.testing.assertEqual(*b.at(0), 2, "cow empty: b[0] == 2")
-}
-
-@test
-func testListCowMultipleCopies() {
-    var a: List[int32] = List()
-    a.append(1)
-    a.append(2)
-    a.append(3)
-
-    var b = a
-    var c = a
-    var d = b
-
-    b.append(4)
-    c.set(0 as usize, 99)
-    let _ = d.pop()
-
-    std.testing.assertEqual(a.len(), 3 as usize, "cow multi: a unchanged")
-    std.testing.assertEqual(*a.at(0), 1, "cow multi: a[0] intact")
-    std.testing.assertEqual(b.len(), 4 as usize, "cow multi: b has 4")
-    std.testing.assertEqual(*b.at(3), 4, "cow multi: b[3] == 4")
-    std.testing.assertEqual(c.len(), 3 as usize, "cow multi: c same length")
-    std.testing.assertEqual(*c.at(0), 99, "cow multi: c[0] == 99")
-    std.testing.assertEqual(d.len(), 2 as usize, "cow multi: d has 2")
-}
-
-@test
-func testListCowPopOnCopy() {
-    var original: List[int32] = List()
-    original.append(10)
-    original.append(20)
-    original.append(30)
-
-    var copy = original
-    let popped = copy.pop()
-
-    std.testing.assertTrue(popped.isSome(), "cow pop: returns some")
-    std.testing.assertEqual(popped.unwrap(), 30, "cow pop: returns last")
-    std.testing.assertEqual(copy.len(), 2 as usize, "cow pop: copy len decreased")
-    std.testing.assertEqual(original.len(), 3 as usize, "cow pop: original unchanged")
-}
-
-@test
-func testListCowRemoveAtOnCopy() {
-    var original: List[int32] = List()
-    original.append(10)
-    original.append(20)
-    original.append(30)
-
-    var copy = original
-    let removed = copy.removeAt(1 as usize)
-
-    std.testing.assertTrue(removed.isSome(), "cow removeAt: returns some")
-    std.testing.assertEqual(removed.unwrap(), 20, "cow removeAt: returns middle")
-    std.testing.assertEqual(copy.len(), 2 as usize, "cow removeAt: copy len decreased")
-    std.testing.assertEqual(*copy.at(0), 10, "cow removeAt: copy[0] correct")
-    std.testing.assertEqual(*copy.at(1), 30, "cow removeAt: copy[1] shifted")
-    std.testing.assertEqual(original.len(), 3 as usize, "cow removeAt: original unchanged")
-}
-
-@test
-func testListCowInsertOnCopy() {
-    var original: List[int32] = List()
-    original.append(1)
-    original.append(3)
-
-    var copy = original
-    let ok = copy.insert(at: 1 as usize, 2)
-
-    std.testing.assertTrue(ok, "cow insert: should succeed")
-    std.testing.assertEqual(copy.len(), 3 as usize, "cow insert: copy has 3")
-    std.testing.assertEqual(*copy.at(1), 2, "cow insert: copy[1] == 2")
-    std.testing.assertEqual(original.len(), 2 as usize, "cow insert: original unchanged")
-}
-
-@test
-func testListCowClearOnCopy() {
-    var original: List[int32] = List()
-    original.append(1)
-    original.append(2)
-    original.append(3)
-
-    var copy = original
-    copy.clear()
-
-    std.testing.assertEqual(copy.len(), 0 as usize, "cow clear: copy empty")
-    std.testing.assertTrue(copy.isEmpty(), "cow clear: copy isEmpty")
-    std.testing.assertEqual(original.len(), 3 as usize, "cow clear: original unchanged")
-}
-
-@test
-func testListCowReserveOnCopy() {
-    var original: List[int32] = List()
-    original.append(1)
-    original.append(2)
-
-    var copy = original
-    copy.reserve(100 as usize)
-
-    std.testing.assertTrue(copy.capacity() >= (100 as usize), "cow reserve: copy capacity grown")
-    std.testing.assertEqual(copy.len(), 2 as usize, "cow reserve: copy len unchanged")
-    std.testing.assertEqual(*copy.at(0), 1, "cow reserve: copy[0] intact")
-    std.testing.assertEqual(original.len(), 2 as usize, "cow reserve: original unchanged")
-}
-
-@test
-func testListCowSortOnCopy() {
-    var original: List[int32] = List()
-    original.append(3)
-    original.append(1)
-    original.append(2)
-
-    var copy = original
-    copy.sort()
-
-    std.testing.assertEqual(*copy.at(0), 1, "cow sort: copy[0] sorted")
-    std.testing.assertEqual(*copy.at(1), 2, "cow sort: copy[1] sorted")
-    std.testing.assertEqual(*copy.at(2), 3, "cow sort: copy[2] sorted")
-    std.testing.assertEqual(*original.at(0), 3, "cow sort: original[0] unchanged")
-    std.testing.assertEqual(*original.at(1), 1, "cow sort: original[1] unchanged")
-}
-
-@test
-func testListCowSetOnCopy() {
-    var original: List[int32] = List()
-    original.append(10)
-    original.append(20)
-    original.append(30)
-
-    var copy = original
-    copy.set(1 as usize, 99)
-
-    std.testing.assertEqual(*copy.at(1), 99, "cow set: copy[1] updated")
-    std.testing.assertEqual(*original.at(1), 20, "cow set: original[1] unchanged")
-}
-
-@test
-func testListCowAtMutOnCopy() {
-    var original: List[int32] = List()
-    original.append(5)
-    original.append(10)
-    original.append(15)
-
-    var copy = original
-    *copy.at(0 as usize) = 50
-
-    std.testing.assertEqual(*copy.at(0), 50, "cow at_mut: copy[0] updated")
-    std.testing.assertEqual(*original.at(0), 5, "cow at_mut: original[0] unchanged")
-}
-
-@test
-func testListCowStringValues() {
+func testListCloneStringValues() {
     var original: List[string] = List()
     original.append("hello")
     original.append("world")
 
-    var copy = original
+    var copy = original.clone()
     copy.append("!")
     copy.set(0 as usize, "goodbye")
 
-    std.testing.assertEqual(original.len(), 2 as usize, "cow string: original len unchanged")
-    std.testing.assertEqual(*original.at(0), "hello", "cow string: original[0] unchanged")
-    std.testing.assertEqual(copy.len(), 3 as usize, "cow string: copy len updated")
-    std.testing.assertEqual(*copy.at(0), "goodbye", "cow string: copy[0] updated")
-    std.testing.assertEqual(*copy.at(2), "!", "cow string: copy[2] appended")
+    std.testing.assertEqual(original.len(), 2 as usize, "string clone should preserve original length")
+    std.testing.assertEqual(*original.at(0), "hello", "string clone should preserve original contents")
+    std.testing.assertEqual(copy.len(), 3 as usize, "string clone should allow independent append")
+    std.testing.assertEqual(*copy.at(0), "goodbye", "string clone should allow independent mutation")
+    std.testing.assertEqual(*copy.at(2), "!", "string clone append should affect only the clone")
 }

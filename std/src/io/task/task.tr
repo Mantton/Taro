@@ -45,7 +45,7 @@ public func pipe() -> Result[(AsyncStream, AsyncStream), Error] {
 }
 
 impl AsyncStream {
-    public func close(&self) -> Result[(), Error] {
+    public func close(self) -> Result[(), Error] {
         let stream = self.inner
         std.sys.io.close(stream)
     }
@@ -56,16 +56,16 @@ impl AsyncStream {
             return .ok(0)
         }
 
-        let stream = self.inner
+        let sourceId = std.sys.io.sourceId(&self.inner)
         var writable = buf
         let ptr = unsafe { writable.at(0) as *mut uint8 }
         loop {
-            let readRes = std.sys.io.read(stream, ptr, len)
+            let readRes = std.sys.io.readSourceId(sourceId, ptr, len)
             match readRes {
                 case .ok(count) => return .ok(count)
                 case .err(.interrupted) => {}
                 case .err(.wouldBlock) => {
-                    let waitRes = await std.sys.io.waitReadable(stream)
+                    let waitRes = await std.sys.io.waitReadableSourceId(sourceId)
                     match waitRes {
                         case .ok(_) => {}
                         case .err(err) => return .err(err)
@@ -82,15 +82,15 @@ impl AsyncStream {
             return .ok(0)
         }
 
-        let stream = self.inner
+        let sourceId = std.sys.io.sourceId(&self.inner)
         let ptr = unsafe { buf.at(0) as *const uint8 }
         loop {
-            let writeRes = std.sys.io.write(stream, ptr, len)
+            let writeRes = std.sys.io.writeSourceId(sourceId, ptr, len)
             match writeRes {
                 case .ok(count) => return .ok(count)
                 case .err(.interrupted) => {}
                 case .err(.wouldBlock) => {
-                    let waitRes = await std.sys.io.waitWritable(stream)
+                    let waitRes = await std.sys.io.waitWritableSourceId(sourceId)
                     match waitRes {
                         case .ok(_) => {}
                         case .err(err) => return .err(err)

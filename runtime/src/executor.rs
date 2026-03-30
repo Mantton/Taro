@@ -50,7 +50,7 @@ struct TaskSlotInner {
     queued: bool,
     running: bool,
     wake_requested: bool,
-    waiters: Vec<TaskId>,
+    waiter: Option<TaskId>,
     owner_worker: usize,
     last_worker: usize,
     mobility: TaskMobility,
@@ -77,7 +77,7 @@ impl TaskSlot {
                 queued: false,
                 running: false,
                 wake_requested: false,
-                waiters: Vec::new(),
+                waiter: None,
                 owner_worker,
                 last_worker: owner_worker,
                 mobility,
@@ -544,7 +544,7 @@ impl Scheduler {
 
     fn complete_task(&self, task_id: TaskId) {
         let slot = self.lookup_task(task_id);
-        let (frame, handle, waiters) = {
+        let (frame, handle, waiter) = {
             let mut inner = slot.inner.lock().unwrap();
             if inner.completed {
                 inner.running = false;
@@ -557,7 +557,7 @@ impl Scheduler {
             let handle = inner.handle;
             inner.frame = std::ptr::null_mut();
             inner.handle = std::ptr::null_mut();
-            (frame, handle, std::mem::take(&mut inner.waiters))
+            (frame, handle, inner.waiter.take())
         };
 
         io_poller::cancel_task(task_id);
@@ -569,7 +569,9 @@ impl Scheduler {
             __rt__async_destroy(handle);
         }
 
-        self.wake_tasks(&waiters);
+        if let Some(waiter) = waiter {
+            self.wake_tasks(&[waiter]);
+        }
 
         if self.incomplete_tasks.fetch_sub(1, Ordering::AcqRel) == 1 {
             self.force_shutdown();
@@ -1011,7 +1013,7 @@ pub extern "C" fn __rt__executor_spawn(handle: *mut u8, out_size: u64) -> u64 {
 }
 
 /// Poll a spawned task by ID. Returns 1 if completed (output copied to `out`),
-/// 0 if still pending (current task registered as waiter).
+/// 0 if still pending (current task registered as the sole waiter).
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt__executor_poll_spawned(task_id: u64, out: *mut u8) -> u8 {
     WORKER_CONTEXT.with(|cell| {
@@ -1019,20 +1021,34 @@ pub extern "C" fn __rt__executor_poll_spawned(task_id: u64, out: *mut u8) -> u8 
         let context = borrow
             .as_mut()
             .expect("poll_spawned called outside executor worker");
+        let current = context
+            .current_task
+            .expect("poll_spawned called with no current task");
         let slot = context.scheduler.lookup_task(task_id as usize);
         let mut inner = slot.inner.lock().unwrap();
 
         if inner.completed {
-            if let Some(buf) = &inner.out_buf {
-                unsafe { std::ptr::copy_nonoverlapping(buf.as_ptr(), out, buf.len()) };
+            if let Some(waiter) = inner.waiter {
+                assert_eq!(
+                    waiter, current,
+                    "spawned task value already reserved by another waiter"
+                );
             }
+
+            if let Some(buf) = inner.out_buf.take() {
+                if !out.is_null() && !buf.is_empty() {
+                    unsafe { std::ptr::copy_nonoverlapping(buf.as_ptr(), out, buf.len()) };
+                }
+            }
+            inner.waiter = None;
             1
         } else {
-            let current = context
-                .current_task
-                .expect("poll_spawned called with no current task");
-            if !inner.waiters.contains(&current) {
-                inner.waiters.push(current);
+            match inner.waiter {
+                Some(waiter) if waiter != current => {
+                    panic!("spawned task value already has an active waiter");
+                }
+                Some(_) => {}
+                None => inner.waiter = Some(current),
             }
             context.current_task_blocked = true;
             0
@@ -1290,6 +1306,7 @@ mod tests {
         mobility: TaskMobility,
         recorder: ThreadRecorder,
         child_ids: Vec<u64>,
+        child_done: Vec<bool>,
         spawned: bool,
         child_count: usize,
         polls_per_child: usize,
@@ -1311,15 +1328,21 @@ mod tests {
                     frame.mobility as u8,
                 );
                 frame.child_ids.push(__rt__executor_spawn(handle, 0));
+                frame.child_done.push(false);
             }
             frame.spawned = true;
             return 0;
         }
 
         let mut all_done = true;
-        for &task_id in &frame.child_ids {
+        for (index, &task_id) in frame.child_ids.iter().enumerate() {
+            if frame.child_done[index] {
+                continue;
+            }
             if __rt__executor_poll_spawned(task_id, std::ptr::null_mut()) == 0 {
                 all_done = false;
+            } else {
+                frame.child_done[index] = true;
             }
         }
         u8::from(all_done)
@@ -1340,6 +1363,7 @@ mod tests {
                 visits: Arc::clone(&visits),
             },
             child_ids: Vec::new(),
+            child_done: Vec::new(),
             spawned: false,
             child_count: 128,
             polls_per_child: 8,

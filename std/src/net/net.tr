@@ -31,7 +31,7 @@ impl TcpListener {
         match reuseRes {
             case .ok(_) => {}
             case .err(err) => {
-                let _ = std.sys.net.task.close(&mut socket)
+                let _ = std.sys.net.task.close(socket)
                 return .err(err)
             }
         }
@@ -40,7 +40,7 @@ impl TcpListener {
         match bindRes {
             case .ok(_) => {}
             case .err(err) => {
-                let _ = std.sys.net.task.close(&mut socket)
+                let _ = std.sys.net.task.close(socket)
                 return .err(err)
             }
         }
@@ -49,7 +49,7 @@ impl TcpListener {
         match listenRes {
             case .ok(_) => return .ok(TcpListener { inner: socket })
             case .err(err) => {
-                let _ = std.sys.net.task.close(&mut socket)
+                let _ = std.sys.net.task.close(socket)
                 return .err(err)
             }
         }
@@ -69,8 +69,8 @@ impl TcpListener {
         std.sys.net.task.localAddress(&self.inner)
     }
 
-    public func close(&mut self) -> Result[(), Error] {
-        std.sys.net.task.close(&mut self.inner)
+    public func close(self) -> Result[(), Error] {
+        std.sys.net.task.close(self.inner)
     }
 }
 
@@ -86,7 +86,7 @@ impl TcpStream {
         match connectRes {
             case .ok(_) => {}
             case .err(err) => {
-                let _ = std.sys.net.task.close(&mut socket)
+                let _ = std.sys.net.task.close(socket)
                 return .err(err)
             }
         }
@@ -102,8 +102,8 @@ impl TcpStream {
         std.sys.net.task.peerAddress(&self.inner)
     }
 
-    public func close(&self) -> Result[(), Error] {
-        std.sys.net.task.closeShared(&self.inner)
+    public func close(self) -> Result[(), Error] {
+        std.sys.net.task.close(self.inner)
     }
 
     public func intoStream(&mut self) -> Result[std.io.task.AsyncStream, Error] {

@@ -1,0 +1,4 @@
+error: type 'closure<FnMut>(() -> int32)' does not conform to interface 'Fn() -> int32'
+ -> language_tests/source_files/invalid/fnmut_not_fn.tr:13:12
+	    let _ = applyFn(mutating)
+	            ^^^^^^^
