@@ -1376,7 +1376,7 @@ impl<'ctx> FunctionLower<'ctx> {
                 exprs: IndexVec::new(),
                 arms: IndexVec::new(),
                 match_trees: FxHashMap::default(),
-                is_async: closure.is_async,
+                is_async: self.gcx.definition_is_async(closure.def_id),
             },
             nested_closures: Vec::new(),
             captures_map,

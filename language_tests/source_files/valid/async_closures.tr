@@ -45,6 +45,21 @@ func main() async {
     })
     let _ = await spawned.value()
 
+    let inferredSpawnAwait = std.task.spawn(|| {
+        await std.testing.yieldNow()
+        return captured + 2
+    })
+    let _ = await inferredSpawnAwait.value()
+
+    let inferredSpawnSyncBody = std.task.spawn(|| {
+        return captured + 3
+    })
+    let _ = await inferredSpawnSyncBody.value()
+
+    let _ = await applyZeroAsync(|| {
+        return captured + 4
+    })
+
     for i in 0..=2 {
         let task = std.task.spawn(|| async { return i })
         let _ = await task.value()

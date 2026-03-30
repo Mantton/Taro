@@ -474,7 +474,7 @@ Taro uses a custom **non-moving, mark-and-sweep garbage collector** inspired by 
 
 - **Enums**: Tagged unions (sum types) allow for expressive invalid state modeling.
 - **Generics**: Full monomorphization support (like Rust/C++ templates) for zero-cost abstractions.
-- **Copy-on-Write (CoW)**: Efficient value semantics for built-in collections like `List` and `Dictionary`.
+- **Move Semantics**: Rust-style ownership and move semantics, with values moved by default and explicit copying for copyable types, but without a mutability uniqueness guarantee.
 - **Diagnostics**: Rich, clear error messages to guide developers.
 - **Optimizations**: Sophisticated MIR passes including inlining, escape analysis, and simplify-cfg.
 - **Interoperability**: C ABI compatibility for easy FFI.

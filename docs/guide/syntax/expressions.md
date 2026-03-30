@@ -424,6 +424,18 @@ Anonymous functions.
     y + 1
 }
 
+// Explicit async closure
+|| async {
+    await std.testing.yieldNow()
+    42 as int32
+}
+
+// Contextual async inference for inline call arguments
+std.task.spawn(|| {
+    await std.testing.yieldNow()
+    42 as int32
+})
+
 // Trailing comma allowed
 |a, b,| a + b
 ```

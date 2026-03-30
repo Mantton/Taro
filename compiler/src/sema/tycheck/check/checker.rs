@@ -30,6 +30,7 @@ pub struct Checker<'arena> {
     pub(super) defer_depth: Cell<usize>,
     pub(super) async_depth: Cell<usize>,
     pub(super) direct_await_operand: Cell<Option<NodeID>>,
+    pub(super) forced_async_closure_expr: Cell<Option<NodeID>>,
     pub(super) pending_async_surface_checks: RefCell<Vec<PendingAsyncCallSurfaceCheck>>,
     pub current_def: DefinitionID,
     pub results: Rc<RefCell<TypeCheckResults<'arena>>>,
@@ -59,6 +60,7 @@ impl<'arena> Checker<'arena> {
             defer_depth: Cell::new(0),
             async_depth: Cell::new(0),
             direct_await_operand: Cell::new(None),
+            forced_async_closure_expr: Cell::new(None),
             pending_async_surface_checks: RefCell::new(Vec::new()),
             current_def,
             results,
@@ -152,6 +154,21 @@ impl<'arena> Checker<'arena> {
         let result = f();
         self.direct_await_operand.set(prev);
         result
+    }
+
+    pub(super) fn with_forced_async_closure_expr<T>(
+        &self,
+        node_id: NodeID,
+        f: impl FnOnce() -> T,
+    ) -> T {
+        let prev = self.forced_async_closure_expr.replace(Some(node_id));
+        let result = f();
+        self.forced_async_closure_expr.set(prev);
+        result
+    }
+
+    pub(super) fn is_forced_async_closure_expr(&self, node_id: NodeID) -> bool {
+        self.forced_async_closure_expr.get() == Some(node_id)
     }
 
     pub(super) fn defer_async_call_surface_check(&self, node_id: NodeID, span: Span) {

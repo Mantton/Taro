@@ -10,8 +10,9 @@ func badAwaitTask() async {
     let _ = await task
 }
 
-func badSpawnSync() async {
-    let _ = std.task.spawn(|| -> int32 { 1 })
+func badSpawnLocalFirst() async {
+    let thunk = || { return 1 as int32 }
+    let _ = std.task.spawn(thunk)
 }
 
 func badSpawnArg() async {

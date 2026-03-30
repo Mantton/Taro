@@ -35,6 +35,18 @@ use crate::{
 use rustc_hash::FxHashSet;
 use std::rc::Rc;
 
+#[derive(Clone, Copy)]
+struct ArgumentExpectation<'ctx> {
+    ty: Ty<'ctx>,
+    expects_async_callable: bool,
+}
+
+#[derive(Clone, Copy)]
+struct ResolvedCallableBound<'ctx> {
+    fn_signature_ty: Ty<'ctx>,
+    expects_async_callable: bool,
+}
+
 impl<'ctx> Checker<'ctx> {
     pub fn gcx(&self) -> Gcx<'ctx> {
         self.context
@@ -1585,12 +1597,13 @@ impl<'ctx> Checker<'ctx> {
 
     fn synth_closure_expression(
         &self,
-        _expression: &hir::Expression,
+        expression: &hir::Expression,
         closure: &hir::ClosureExpr,
         expectation: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         let gcx = self.gcx();
+        let effective_async = closure.is_async || self.is_forced_async_closure_expr(expression.id);
 
         // Collect closure parameter IDs (these are NOT captures)
         let param_ids: rustc_hash::FxHashSet<NodeID> =
@@ -1660,7 +1673,7 @@ impl<'ctx> Checker<'ctx> {
         // tail expression.
         let (return_ty, body_ty) = self.with_return_ty(Some(expected_return), || {
             let prev_async_depth = self.async_depth.get();
-            if closure.is_async {
+            if effective_async {
                 self.async_depth.set(prev_async_depth + 1);
             }
 
@@ -1697,7 +1710,7 @@ impl<'ctx> Checker<'ctx> {
                 }
             };
 
-            if closure.is_async {
+            if effective_async {
                 self.async_depth.set(prev_async_depth);
             }
 
@@ -1746,7 +1759,7 @@ impl<'ctx> Checker<'ctx> {
             });
         }
 
-        let closure_kind = infer_closure_kind(closure.is_async, &captures);
+        let closure_kind = infer_closure_kind(effective_async, &captures);
 
         gcx.cache_closure_captures(
             closure.def_id,
@@ -1771,7 +1784,7 @@ impl<'ctx> Checker<'ctx> {
             },
             gcx,
         );
-        if closure.is_async {
+        if effective_async {
             gcx.cache_async_body_output(closure.def_id, return_ty);
         }
 
@@ -2078,10 +2091,9 @@ impl<'ctx> Checker<'ctx> {
                         source: Some(candidate),
                         autoref_cost: 0,
                         matches_expectation: false,
-                        matches_async_preference: prefer_async
-                            .is_some_and(|want_async| {
-                                self.gcx().definition_is_async(candidate) == want_async
-                            }),
+                        matches_async_preference: prefer_async.is_some_and(|want_async| {
+                            self.gcx().definition_is_async(candidate) == want_async
+                        }),
                         deref_steps: 0,
                     });
                 }
@@ -2260,7 +2272,14 @@ impl<'ctx> Checker<'ctx> {
                     .and_then(|items| items.get(index))
                     .and_then(|item| *item);
                 let ty = if let Some(expected) = expected {
-                    self.synth_with_expectation(&n.expression, Some(expected), cs)
+                    let is_closure = matches!(n.expression.kind, hir::ExpressionKind::Closure(_));
+                    if expected.expects_async_callable && is_closure {
+                        self.with_forced_async_closure_expr(n.expression.id, || {
+                            self.synth_with_expectation(&n.expression, Some(expected.ty), cs)
+                        })
+                    } else {
+                        self.synth_with_expectation(&n.expression, Some(expected.ty), cs)
+                    }
                 } else {
                     self.synth(&n.expression, cs)
                 };
@@ -2280,7 +2299,8 @@ impl<'ctx> Checker<'ctx> {
         let result_ty = cs.infer_cx.next_ty_var(expression.span);
         cs.record_expr_ty(expression.id, result_ty);
 
-        let is_known_async_call = callee_def.is_some_and(|def_id| self.gcx().definition_is_async(def_id))
+        let is_known_async_call = callee_def
+            .is_some_and(|def_id| self.gcx().definition_is_async(def_id))
             || self.type_is_async_callable(callee_ty);
         if is_known_async_call {
             self.results.borrow_mut().record_async_call(expression.id);
@@ -2330,13 +2350,22 @@ impl<'ctx> Checker<'ctx> {
         expect_ty: Option<Ty<'ctx>>,
         callee_def: Option<DefinitionID>,
         cs: &mut Cs<'ctx>,
-    ) -> Option<Vec<Option<Ty<'ctx>>>> {
+    ) -> Option<Vec<Option<ArgumentExpectation<'ctx>>>> {
         if let hir::ExpressionKind::InferredMember { name } = &callee.kind {
             if let Some(expect_ty) = expect_ty {
                 if let Some(args) =
                     self.inferred_member_argument_expectations(name, expect_ty, callee.span, cs)
                 {
-                    return Some(args.into_iter().map(Some).collect());
+                    return Some(
+                        args.into_iter()
+                            .map(|ty| {
+                                Some(ArgumentExpectation {
+                                    ty,
+                                    expects_async_callable: self.ty_is_known_async_callable(ty),
+                                })
+                            })
+                            .collect(),
+                    );
                 }
             }
         }
@@ -2361,33 +2390,51 @@ impl<'ctx> Checker<'ctx> {
                 instantiated_output,
             );
 
-            let resolved: Vec<Ty<'ctx>> = original_inputs
-                .iter()
-                .zip(instantiated_inputs.iter())
-                .map(|(&original_ty, &instantiated_ty)| {
-                    // Try to resolve Fn bound if the original param is a type parameter
-                    if let Some(fn_ptr) =
-                        self.try_resolve_fn_bound(original_ty, def_id, bound_instantiation_args)
-                    {
-                        fn_ptr
-                    } else {
-                        // Fall back to instantiated type from callee
-                        instantiated_ty
-                    }
-                })
-                .collect();
-            return self.map_argument_expectations(callee_def, &resolved, arguments);
+            let mut resolved = Vec::with_capacity(original_inputs.len());
+            let mut resolved_async_expectations = Vec::with_capacity(original_inputs.len());
+            for (&original_ty, &instantiated_ty) in
+                original_inputs.iter().zip(instantiated_inputs.iter())
+            {
+                // Try to resolve Fn bound if the original param is a type parameter
+                if let Some(bound) =
+                    self.try_resolve_fn_bound(original_ty, def_id, bound_instantiation_args)
+                {
+                    resolved.push(bound.fn_signature_ty);
+                    resolved_async_expectations.push(bound.expects_async_callable);
+                } else {
+                    // Fall back to instantiated type from callee
+                    resolved.push(instantiated_ty);
+                    resolved_async_expectations
+                        .push(self.ty_is_known_async_callable(instantiated_ty));
+                }
+            }
+            return self.map_argument_expectations(
+                callee_def,
+                &resolved,
+                &resolved_async_expectations,
+                arguments,
+            );
         }
 
-        self.map_argument_expectations(callee_def, &instantiated_inputs, arguments)
+        let parameter_async_expectations: Vec<bool> = instantiated_inputs
+            .iter()
+            .map(|&ty| self.ty_is_known_async_callable(ty))
+            .collect();
+        self.map_argument_expectations(
+            callee_def,
+            &instantiated_inputs,
+            &parameter_async_expectations,
+            arguments,
+        )
     }
 
     fn map_argument_expectations(
         &self,
         callee_def: Option<DefinitionID>,
         parameter_tys: &[Ty<'ctx>],
+        parameter_expects_async: &[bool],
         arguments: &[hir::ExpressionArgument],
-    ) -> Option<Vec<Option<Ty<'ctx>>>> {
+    ) -> Option<Vec<Option<ArgumentExpectation<'ctx>>>> {
         if arguments.is_empty() {
             return Some(vec![]);
         }
@@ -2448,10 +2495,17 @@ impl<'ctx> Checker<'ctx> {
                 } else {
                     param_ty
                 };
+            let expects_async = parameter_expects_async
+                .get(param_idx)
+                .copied()
+                .unwrap_or(false);
 
             for &arg_idx in arg_indices {
                 if let Some(slot) = expectations.get_mut(arg_idx) {
-                    *slot = Some(expected_ty);
+                    *slot = Some(ArgumentExpectation {
+                        ty: expected_ty,
+                        expects_async_callable: expects_async,
+                    });
                 }
             }
         }
@@ -2467,7 +2521,7 @@ impl<'ctx> Checker<'ctx> {
         ty: Ty<'ctx>,
         def_id: DefinitionID,
         instantiation_args: GenericArguments<'ctx>,
-    ) -> Option<Ty<'ctx>> {
+    ) -> Option<ResolvedCallableBound<'ctx>> {
         let TyKind::Parameter(param) = ty.kind() else {
             return None;
         };
@@ -2509,6 +2563,9 @@ impl<'ctx> Checker<'ctx> {
                 if !is_fn_trait {
                     continue;
                 }
+                let expects_async_callable = async_fn_def == Some(interface.id)
+                    || async_fn_mut_def == Some(interface.id)
+                    || async_fn_once_def == Some(interface.id);
 
                 interface = instantiate_interface_ref_with_args(gcx, interface, instantiation_args);
 
@@ -2535,10 +2592,13 @@ impl<'ctx> Checker<'ctx> {
 
                 // Create a synthetic FnPointer type to pass as expectation
                 // This allows the closure synthesizer to extract expected input types
-                return Some(gcx.store.interners.intern_ty(TyKind::FnPointer {
-                    inputs,
-                    output: output_ty,
-                }));
+                return Some(ResolvedCallableBound {
+                    fn_signature_ty: gcx.store.interners.intern_ty(TyKind::FnPointer {
+                        inputs,
+                        output: output_ty,
+                    }),
+                    expects_async_callable,
+                });
             }
         }
 
@@ -2909,7 +2969,14 @@ impl<'ctx> Checker<'ctx> {
                     .and_then(|items| items.get(index))
                     .cloned();
                 let ty = if let Some(expected) = expected {
-                    self.synth_with_expectation(&n.expression, Some(expected), cs)
+                    let is_closure = matches!(n.expression.kind, hir::ExpressionKind::Closure(_));
+                    if self.ty_is_known_async_callable(expected) && is_closure {
+                        self.with_forced_async_closure_expr(n.expression.id, || {
+                            self.synth_with_expectation(&n.expression, Some(expected), cs)
+                        })
+                    } else {
+                        self.synth_with_expectation(&n.expression, Some(expected), cs)
+                    }
                 } else {
                     self.synth(&n.expression, cs)
                 };
@@ -5629,6 +5696,18 @@ impl<'ctx> Checker<'ctx> {
         self.async_callable_input_count(ty).is_some()
     }
 
+    fn ty_is_known_async_callable(&self, ty: Ty<'ctx>) -> bool {
+        matches!(
+            ty.kind(),
+            TyKind::Closure {
+                kind: crate::sema::models::ClosureKind::AsyncFn
+                    | crate::sema::models::ClosureKind::AsyncFnMut
+                    | crate::sema::models::ClosureKind::AsyncFnOnce,
+                ..
+            }
+        )
+    }
+
     fn async_callable_input_count(&self, ty: Ty<'ctx>) -> Option<usize> {
         match ty.kind() {
             TyKind::Closure { kind, inputs, .. } => matches!(
@@ -6305,8 +6384,7 @@ fn closure_self_ty<'ctx>(
         crate::sema::models::ClosureKind::Fn | crate::sema::models::ClosureKind::AsyncFn => {
             Ty::new(TyKind::Pointer(closure_ty, hir::Mutability::Immutable), gcx)
         }
-        crate::sema::models::ClosureKind::FnMut
-        | crate::sema::models::ClosureKind::AsyncFnMut => {
+        crate::sema::models::ClosureKind::FnMut | crate::sema::models::ClosureKind::AsyncFnMut => {
             Ty::new(TyKind::Pointer(closure_ty, hir::Mutability::Mutable), gcx)
         }
         crate::sema::models::ClosureKind::FnOnce
