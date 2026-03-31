@@ -193,6 +193,13 @@ pub fn mangle(gcx: GlobalContext, id: hir::DefinitionID) -> String {
         .package_ident(id.package())
         .unwrap_or_else(|| gcx.config.identifier.clone());
     let pkg_ident = sanitize(pkg_ident.as_ref());
+    let origin_tag = if gcx.store.synthetic_definitions.borrow().contains_key(&id) {
+        "syn"
+    } else if gcx.is_std_package(id.package()) {
+        "std"
+    } else {
+        "usr"
+    };
 
     // Check if this is a closure (synthetic definition)
     let leaf_ident = if let Some(ident) = output.definition_to_ident.get(&id) {
@@ -252,9 +259,12 @@ pub fn mangle(gcx: GlobalContext, id: hir::DefinitionID) -> String {
     }
 
     let mut mangled = if modules.is_empty() {
-        format!("{pkg_ident}__{leaf_ident}")
+        format!("{pkg_ident}__bt_{origin_tag}__{leaf_ident}")
     } else {
-        format!("{pkg_ident}__{}__{leaf_ident}", modules.join("__"))
+        format!(
+            "{pkg_ident}__bt_{origin_tag}__{}__{leaf_ident}",
+            modules.join("__")
+        )
     };
 
     // Add hashed signature to disambiguate overloads.

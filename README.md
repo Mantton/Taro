@@ -81,6 +81,17 @@ The VS Code extension is designed for an external Taro toolchain install:
 
 Repo-local `target/debug/taro-lsp` and `dist/` are still supported as a development fallback when working inside the Taro repository.
 
+### Language Server (Basic)
+
+`taro-lsp` currently provides:
+
+- diagnostics (parse/resolve/typecheck and related info) on open/change/save
+- hover
+- go-to-definition
+- signature help
+
+This is intentionally a basic surface for now (for example, completion/rename/formatting are not part of this phase yet).
+
 ### Compiler Timings
 
 To print compiler phase timings (parse/typecheck/THIR/MIR/codegen/link), pass `--timings`:
@@ -158,11 +169,24 @@ For day-to-day development, you can use the root `Makefile`:
 make help
 make run FILE=examples/hello.tr
 make check FILE=examples/hello.tr
+make lsp
 make test
 make language-tests
 make std-tests
 make all-tests
 ```
+
+### Panic Stack Traces
+
+Panic reports default to compact Taro-first output:
+
+- prefer language-level frames under `taro stack:`
+- otherwise render a filtered native backtrace (keeping Taro/std/synthetic entry frames)
+- if filtering would be empty, fall back to a short raw trace so output is never blank
+
+When a symbol is synthetic and no source definition symbol exists, stack entries use a stable fallback name (`missing_p{pkg}_d{idx}`) instead of debug-formatted IDs.
+
+Set `TARO_BACKTRACE=full` to print the full unfiltered native backtrace.
 
 ## Language Basics
 
@@ -462,6 +486,18 @@ Taro's compiler pipeline is deeply inspired by modern compiler designs (like Rus
 - **MIR (Mid-level IR)**: A control-flow graph representation where significant optimizations happen (inlining, copy propagation, escape analysis).
 - **Codegen**: Handles monomorphization of generics and translates MIR to LLVM IR for final machine code generation.
 
+### Async Concurrency Runtime
+
+Taro includes a multithreaded async runtime:
+
+- `std.task.spawn` runs async closures concurrently and returns `Task[T]`
+- `Task.result()` returns `Result[T, TaskError]` with cancellation/panic reporting
+- `Task.cancel()` and `std.task.isCancelled()` provide cancellation controls
+- `withTaskGroup` supports `.cancelOnPanic` and `.independent` policies
+- `std.task.sleep` and `std.io.task.AsyncStream` provide timer and async I/O integration
+
+The executor uses worker threads with work stealing. Worker count defaults to logical CPU count and can be overridden with `TARO_WORKERS`.
+
 ### Memory Management
 
 Taro uses a custom **non-moving, mark-and-sweep garbage collector** inspired by Golang's approach but tailored for simplicity and performance.
@@ -475,7 +511,10 @@ Taro uses a custom **non-moving, mark-and-sweep garbage collector** inspired by 
 - **Enums**: Tagged unions (sum types) allow for expressive invalid state modeling.
 - **Generics**: Full monomorphization support (like Rust/C++ templates) for zero-cost abstractions.
 - **Move Semantics**: Rust-style ownership and move semantics, with values moved by default and explicit copying for copyable types, but without a mutability uniqueness guarantee.
+- **Async Concurrency**: Multithreaded task runtime (`std.task.spawn`, cancellation, task groups, async sleep, async stream I/O).
 - **Diagnostics**: Rich, clear error messages to guide developers.
+- **Basic LSP**: Diagnostics, hover, go-to-definition, and signature help via `taro-lsp`.
+- **Panic Reporting**: Compact Taro-first panic stacks by default, with `TARO_BACKTRACE=full` for raw native traces.
 - **Optimizations**: Sophisticated MIR passes including inlining, escape analysis, and simplify-cfg.
 - **Interoperability**: C ABI compatibility for easy FFI.
 - **Built-in Testing**: First-class test support via `taro test` with `@test`, `@tag`, `@skip`, `@expectPanic`, plus `--filter` / `--tag` selection.
@@ -483,10 +522,12 @@ Taro uses a custom **non-moving, mark-and-sweep garbage collector** inspired by 
 ## Repository Structure
 
 - `compiler/`: The core compiler source code (parsing, HIR, THIR, MIR, codegen).
-- `runtime/`: Runtime components (garbage collector, attributes).
+- `runtime/`: Runtime components (garbage collector, async executor, panic/unwind support).
 - `std/`: The standard library implementation.
 - `language_tests/`: Comprehensive test suite for language features.
 - `compiler-cli/`: The command-line interface implementation.
+- `taro-lsp/`: Language server implementation.
+- `editors/`: Editor integrations (VS Code, Zed).
 
 ## Roadmap and Status
 
@@ -496,8 +537,8 @@ Taro is currently **experimental**.
 - [x] Garbage Collection (Stop-the-world)
 - [x] Generics and Monomorphization
 - [x] Built-in Test Framework (`taro test`, `@test`, `@tag`, `@skip`, `@expectPanic`, `--filter`, `--tag`)
-- [ ] Concurrency and garbage collection improvements
-- [ ] LSP support and editor integration
+- [x] Async Concurrency Runtime (`std.task`, task groups, async timers, async I/O waits)
+- [x] Basic LSP support and editor integration (`taro-lsp`, VS Code, Zed)
 - [ ] Package manager polish and registry
 - [ ] Standard library expansion
 

@@ -866,7 +866,13 @@ impl<'arena> GlobalContext<'arena> {
     pub fn definition_symbol_or_fallback(self, id: DefinitionID) -> Symbol {
         self.try_definition_ident(id)
             .map(|ident| ident.symbol)
-            .unwrap_or_else(|| self.intern_symbol(&format!("<missing:{id:?}>")))
+            .unwrap_or_else(|| {
+                self.intern_symbol(&format!(
+                    "missing_p{}_d{}",
+                    id.package().raw(),
+                    id.index().raw()
+                ))
+            })
     }
 
     pub fn definition_kind(self, id: DefinitionID) -> DefinitionKind {

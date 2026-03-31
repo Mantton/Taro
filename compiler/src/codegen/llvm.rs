@@ -1721,6 +1721,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let mut locals = self.allocate_locals(body, preamble_block, function, &fn_abi);
         self.builder.position_at_end(preamble_block);
         self.setup_shadow_stack(body, preamble_block, &locals)?;
+        self.emit_logical_stack_push(instance);
         self.builder
             .build_unconditional_branch(mir_entry_block)
             .unwrap();
@@ -2403,6 +2404,43 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let _ = self
             .builder
             .build_call(pop_fn, &[shadow.frame_ptr.into()], "gc_pop")
+            .unwrap();
+    }
+
+    fn get_logical_stack_push_fn(&self) -> FunctionValue<'llvm> {
+        let str_ty = string_header_ty(self.context, &self.target_data);
+        let fn_ty = self.context.void_type().fn_type(&[str_ty.into()], false);
+        self.module
+            .get_function("__rt__logical_stack_push")
+            .unwrap_or_else(|| {
+                self.module
+                    .add_function("__rt__logical_stack_push", fn_ty, Some(Linkage::External))
+            })
+    }
+
+    fn get_logical_stack_pop_fn(&self) -> FunctionValue<'llvm> {
+        let fn_ty = self.context.void_type().fn_type(&[], false);
+        self.module
+            .get_function("__rt__logical_stack_pop")
+            .unwrap_or_else(|| {
+                self.module
+                    .add_function("__rt__logical_stack_pop", fn_ty, Some(Linkage::External))
+            })
+    }
+
+    fn emit_logical_stack_push(&mut self, instance: Instance<'gcx>) {
+        let symbol = mangle_instance(self.gcx, instance);
+        let arg = self.const_string_value(&symbol);
+        let _ = self
+            .builder
+            .build_call(self.get_logical_stack_push_fn(), &[arg.into()], "taro_stack_push")
+            .unwrap();
+    }
+
+    fn emit_logical_stack_pop(&mut self) {
+        let _ = self
+            .builder
+            .build_call(self.get_logical_stack_pop_fn(), &[], "taro_stack_pop")
             .unwrap();
     }
 
@@ -3492,6 +3530,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     .unwrap();
             }
             mir::TerminatorKind::Return => {
+                self.emit_logical_stack_pop();
                 self.emit_shadow_pop();
                 let fn_abi = self
                     .current_fn_abi
@@ -3515,6 +3554,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 }
             }
             mir::TerminatorKind::ResumeUnwind => {
+                self.emit_logical_stack_pop();
                 self.emit_shadow_pop();
                 let Some(eh_slot) = self.eh_slot else {
                     self.gcx.dcx().emit_error(

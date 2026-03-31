@@ -63,6 +63,13 @@ pub(crate) struct PanicReport {
     pub(crate) message: String,
     pub(crate) backtrace: String,
     pub(crate) location: Option<String>,
+    pub(crate) logical_stack: Vec<String>,
+}
+
+#[derive(Clone, Copy)]
+struct LogicalFrameRaw {
+    ptr: *const u8,
+    len: usize,
 }
 
 std::thread_local! {
@@ -76,6 +83,9 @@ std::thread_local! {
     /// Set temporarily while polling a grouped child task so the executor can
     /// capture its panic and apply task-group policy.
     static IN_EXECUTOR_CATCH: Cell<bool> = const { Cell::new(false) };
+    /// Logical (language-level) call stack captured via compiler/runtime push/pop.
+    /// Entries are symbol byte slices backed by static binary data.
+    static LOGICAL_STACK: RefCell<Vec<LogicalFrameRaw>> = const { RefCell::new(Vec::new()) };
 }
 
 pub(crate) fn in_test_harness() -> bool {
@@ -84,6 +94,46 @@ pub(crate) fn in_test_harness() -> bool {
 
 pub(crate) fn set_test_harness_active(active: bool) {
     IN_TEST_HARNESS.with(|flag| flag.set(active));
+}
+
+fn snapshot_logical_stack() -> Vec<String> {
+    LOGICAL_STACK.with(|stack| {
+        stack
+            .borrow()
+            .iter()
+            .filter_map(|frame| {
+                if frame.ptr.is_null() || frame.len == 0 {
+                    return None;
+                }
+                let bytes = unsafe { std::slice::from_raw_parts(frame.ptr, frame.len) };
+                Some(String::from_utf8_lossy(bytes).into_owned())
+            })
+            .collect()
+    })
+}
+
+fn clear_logical_stack() {
+    LOGICAL_STACK.with(|stack| stack.borrow_mut().clear());
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __rt__logical_stack_push(symbol: RtString) {
+    if symbol.ptr.is_null() || symbol.len == 0 {
+        return;
+    }
+    LOGICAL_STACK.with(|stack| {
+        stack.borrow_mut().push(LogicalFrameRaw {
+            ptr: symbol.ptr,
+            len: symbol.len,
+        });
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __rt__logical_stack_pop() {
+    LOGICAL_STACK.with(|stack| {
+        let _ = stack.borrow_mut().pop();
+    });
 }
 
 pub(crate) fn catch_executor_panic<R>(f: impl FnOnce() -> R) -> Result<R, PanicReport> {
@@ -111,6 +161,7 @@ pub(crate) fn catch_executor_panic<R>(f: impl FnOnce() -> R) -> Result<R, PanicR
                 message: "task panicked on executor worker".into(),
                 backtrace: String::new(),
                 location: None,
+                logical_stack: Vec::new(),
             });
             Err(report)
         }
@@ -126,12 +177,14 @@ pub(crate) fn take_full_panic_report() -> Option<PanicReport> {
         active
     });
     let report = PANIC_REPORT.with(|slot| slot.borrow_mut().take());
+    clear_logical_stack();
     if was_active {
         return report.or_else(|| {
             Some(PanicReport {
                 message: String::new(),
                 backtrace: String::new(),
                 location: None,
+                logical_stack: Vec::new(),
             })
         });
     }
@@ -146,11 +199,13 @@ fn set_panic_report(message: String) {
 #[inline]
 fn set_panic_report_with_location(message: String, location: Option<String>) {
     let backtrace = format!("{:#}", Backtrace::force_capture());
+    let logical_stack = snapshot_logical_stack();
     PANIC_REPORT.with(|slot| {
         *slot.borrow_mut() = Some(PanicReport {
             message,
             backtrace,
             location,
+            logical_stack,
         });
     });
 }
@@ -163,6 +218,7 @@ pub(crate) fn take_thread_panic_report() -> Option<String> {
     });
 
     let report = PANIC_REPORT.with(|slot| slot.borrow_mut().take());
+    clear_logical_stack();
     if was_active {
         return report
             .map(|report| report.message)
@@ -186,9 +242,240 @@ fn format_location(file: RtString, line: usize, column: usize) -> Option<String>
     Some(format!("{file}:{line}:{column}"))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BacktracePolicy {
+    Compact,
+    Full,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FrameKind {
+    User,
+    Std,
+    Synthetic,
+    Entry,
+    Runtime,
+    Toolchain,
+    Native,
+    Unknown,
+}
+
+#[derive(Clone, Debug)]
+struct ParsedFrame {
+    _index: usize,
+    _symbol: String,
+    lines: Vec<String>,
+    kind: FrameKind,
+}
+
+fn parse_backtrace_policy(raw: Option<&str>) -> BacktracePolicy {
+    if raw.is_some_and(|value| value.eq_ignore_ascii_case("full")) {
+        BacktracePolicy::Full
+    } else {
+        BacktracePolicy::Compact
+    }
+}
+
+fn backtrace_policy() -> BacktracePolicy {
+    let value = std::env::var("TARO_BACKTRACE").ok();
+    parse_backtrace_policy(value.as_deref())
+}
+
+fn parse_frame_header(line: &str) -> Option<(usize, &str)> {
+    let trimmed = line.trim_start();
+    let colon = trimmed.find(':')?;
+    let (index_raw, rest_with_colon) = trimmed.split_at(colon);
+    if index_raw.is_empty() || !index_raw.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let index = index_raw.parse::<usize>().ok()?;
+    let after_colon = rest_with_colon[1..].trim_start();
+    let symbol = if let Some((_, symbol)) = after_colon.split_once(" - ") {
+        symbol.trim()
+    } else {
+        after_colon.trim()
+    };
+    Some((index, symbol))
+}
+
+fn classify_frame(symbol: &str) -> FrameKind {
+    let symbol = symbol.trim_start_matches('_');
+
+    if symbol == "taro_start" {
+        return FrameKind::Entry;
+    }
+
+    if symbol.contains("__bt_usr__") {
+        return FrameKind::User;
+    }
+    if symbol.contains("__bt_std__") {
+        return FrameKind::Std;
+    }
+    if symbol.contains("__bt_syn__") {
+        return FrameKind::Synthetic;
+    }
+
+    if symbol.starts_with("taro_runtime::") || symbol.starts_with("rt__") || symbol.starts_with("gc__") {
+        return FrameKind::Runtime;
+    }
+
+    if symbol.starts_with("std::")
+        || symbol.starts_with("core::")
+        || symbol.starts_with("alloc::")
+        || symbol.starts_with("test::")
+        || symbol.starts_with("backtrace_rs::")
+        || symbol.starts_with("rust_begin_unwind")
+        || symbol.starts_with("___rust_try")
+    {
+        return FrameKind::Toolchain;
+    }
+
+    if symbol.starts_with("__pthread")
+        || symbol.starts_with("pthread_")
+        || symbol.starts_with("libsystem_")
+    {
+        return FrameKind::Native;
+    }
+
+    if let Some((pkg, _)) = symbol.split_once("__") {
+        if pkg == "std" {
+            return FrameKind::Std;
+        }
+        if !pkg.is_empty() && pkg.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            return FrameKind::User;
+        }
+    }
+
+    FrameKind::Unknown
+}
+
+fn parse_backtrace_frames(backtrace: &str) -> Vec<ParsedFrame> {
+    let mut frames = Vec::new();
+    let mut current_index: Option<usize> = None;
+    let mut current_symbol: Option<String> = None;
+    let mut current_lines: Vec<String> = Vec::new();
+
+    for line in backtrace.lines() {
+        if let Some((index, symbol)) = parse_frame_header(line) {
+            if let (Some(prev_index), Some(prev_symbol)) = (current_index.take(), current_symbol.take()) {
+                frames.push(ParsedFrame {
+                    _index: prev_index,
+                    kind: classify_frame(&prev_symbol),
+                    _symbol: prev_symbol,
+                    lines: std::mem::take(&mut current_lines),
+                });
+            }
+            current_index = Some(index);
+            current_symbol = Some(symbol.to_string());
+            current_lines.push(line.to_string());
+        } else if current_index.is_some() {
+            current_lines.push(line.to_string());
+        }
+    }
+
+    if let (Some(last_index), Some(last_symbol)) = (current_index, current_symbol) {
+        frames.push(ParsedFrame {
+            _index: last_index,
+            kind: classify_frame(&last_symbol),
+            _symbol: last_symbol,
+            lines: current_lines,
+        });
+    }
+
+    frames
+}
+
+fn render_panic_backtrace_with_policy(backtrace: &str, policy: BacktracePolicy) -> String {
+    if matches!(policy, BacktracePolicy::Full) {
+        return backtrace.to_string();
+    }
+
+    let frames = parse_backtrace_frames(backtrace);
+
+    let mut filtered = Vec::new();
+    for frame in &frames {
+        if matches!(
+            frame.kind,
+            FrameKind::User | FrameKind::Std | FrameKind::Synthetic | FrameKind::Entry
+        ) {
+            filtered.extend(frame.lines.iter().cloned());
+        }
+    }
+    if !filtered.is_empty() {
+        return filtered.join("\n");
+    }
+
+    let mut fallback = Vec::new();
+    for frame in frames.iter().take(6) {
+        fallback.extend(frame.lines.iter().cloned());
+    }
+    if !fallback.is_empty() {
+        return fallback.join("\n");
+    }
+
+    let condensed: Vec<_> = backtrace.lines().take(12).collect();
+    if !condensed.is_empty() {
+        condensed.join("\n")
+    } else {
+        "<no backtrace available>".to_string()
+    }
+}
+
+fn render_panic_backtrace(backtrace: &str) -> String {
+    render_panic_backtrace_with_policy(backtrace, backtrace_policy())
+}
+
+fn format_logical_symbol(symbol: &str) -> String {
+    let symbol = symbol.trim_start_matches('_');
+    let Some((pkg, rest)) = symbol.split_once("__") else {
+        return symbol.to_string();
+    };
+    let (kind_tag, rest) = if let Some(rest) = rest.strip_prefix("bt_usr__") {
+        ("usr", rest)
+    } else if let Some(rest) = rest.strip_prefix("bt_std__") {
+        ("std", rest)
+    } else if let Some(rest) = rest.strip_prefix("bt_syn__") {
+        ("syn", rest)
+    } else {
+        ("", rest)
+    };
+
+    let mut display = format!("{pkg}::{}", rest.replace("__", "::"));
+    if let Some(pos) = display.rfind("::h") {
+        let hash = &display[pos + 3..];
+        if hash.len() == 16 && hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+            display.truncate(pos);
+        }
+    }
+    if kind_tag.is_empty() {
+        display
+    } else {
+        format!("[{kind_tag}] {display}")
+    }
+}
+
+fn render_logical_stack(frames: &[String]) -> String {
+    if frames.is_empty() {
+        return String::new();
+    }
+    const MAX_LOGICAL_FRAMES: usize = 64;
+    let mut lines = Vec::new();
+    for (idx, frame) in frames.iter().rev().take(MAX_LOGICAL_FRAMES).enumerate() {
+        lines.push(format!("  {idx:>2}: {}", format_logical_symbol(frame)));
+    }
+    if frames.len() > MAX_LOGICAL_FRAMES {
+        lines.push(format!(
+            "  ... {} older frame(s) omitted",
+            frames.len() - MAX_LOGICAL_FRAMES
+        ));
+    }
+    lines.join("\n")
+}
+
 pub(crate) fn write_report(default_message: &str) {
     let mut stderr = std::io::stderr().lock();
     let mut had_report = false;
+    let policy = backtrace_policy();
 
     PANIC_REPORT.with(|slot| {
         if let Some(report) = slot.borrow().as_ref() {
@@ -197,15 +484,38 @@ pub(crate) fn write_report(default_message: &str) {
             if let Some(location) = report.location.as_ref() {
                 let _ = writeln!(stderr, "  at {}", location);
             }
-            let _ = writeln!(stderr, "stack backtrace:");
-            let _ = writeln!(stderr, "{}", report.backtrace);
+            if matches!(policy, BacktracePolicy::Compact) {
+                let logical = render_logical_stack(&report.logical_stack);
+                if !logical.is_empty() {
+                    let _ = writeln!(stderr, "taro stack:");
+                    let _ = writeln!(stderr, "{logical}");
+                } else {
+                    let _ = writeln!(stderr, "stack backtrace:");
+                    let _ = writeln!(stderr, "{}", render_panic_backtrace(&report.backtrace));
+                }
+            } else {
+                let _ = writeln!(stderr, "stack backtrace:");
+                let _ = writeln!(stderr, "{}", render_panic_backtrace(&report.backtrace));
+            }
         }
     });
 
     if !had_report {
+        let raw_backtrace = format!("{:#}", Backtrace::force_capture());
         let _ = writeln!(stderr, "panic: {}", default_message);
-        let _ = writeln!(stderr, "stack backtrace:");
-        let _ = writeln!(stderr, "{:#}", Backtrace::force_capture());
+        if matches!(policy, BacktracePolicy::Compact) {
+            let logical = render_logical_stack(&snapshot_logical_stack());
+            if !logical.is_empty() {
+                let _ = writeln!(stderr, "taro stack:");
+                let _ = writeln!(stderr, "{logical}");
+            } else {
+                let _ = writeln!(stderr, "stack backtrace:");
+                let _ = writeln!(stderr, "{}", render_panic_backtrace(&raw_backtrace));
+            }
+        } else {
+            let _ = writeln!(stderr, "stack backtrace:");
+            let _ = writeln!(stderr, "{}", render_panic_backtrace(&raw_backtrace));
+        }
     }
 
     let _ = stderr.flush();
@@ -271,6 +581,7 @@ pub extern "C" fn __rt__panic_take_report() -> PanicTakeReportResult {
         f.set(false);
         v
     });
+    clear_logical_stack();
 
     if !was_active {
         return PanicTakeReportResult {
@@ -307,6 +618,7 @@ pub extern "C" fn __rt__panic_clear() {
     PANIC_REPORT.with(|slot| {
         slot.borrow_mut().take();
     });
+    clear_logical_stack();
     // The test harness calls this after each test. Clear any stray shadow-stack
     // link left behind by unwinding so later explicit collections don't walk a
     // stale frame chain from a prior test.
@@ -527,4 +839,87 @@ extern "C" fn forced_unwind_stop(
         __rt__panic_abort_unwind(exception_object.cast::<u8>());
     }
     URC_NO_REASON
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        BacktracePolicy, FrameKind, parse_backtrace_frames, parse_backtrace_policy,
+        render_panic_backtrace_with_policy,
+    };
+
+    #[test]
+    fn parse_backtrace_frames_classifies_compiler_tagged_symbols() {
+        let raw = r#"   0: 0x1000 - std::panicking::begin_panic
+   1: 0x1001 - taro_runtime::panic_unwind::write_report
+   2: 0x1002 - ___rt__panic_unwind_at
+   3: 0x1003 - ___rust_try
+   4: 0x1004 - _app__bt_usr__mod__boom
+   5: 0x1005 - _std__bt_std__task__join
+   6: 0x1006 - _std__bt_syn__missing_p1_d7_poll
+   7: 0x1007 - _taro_start
+   8: 0x1008 - __pthread_kill"#;
+        let frames = parse_backtrace_frames(raw);
+        let kinds: Vec<_> = frames.iter().map(|f| f.kind).collect();
+        assert!(kinds.contains(&FrameKind::User));
+        assert!(kinds.contains(&FrameKind::Std));
+        assert!(kinds.contains(&FrameKind::Synthetic));
+        assert!(kinds.contains(&FrameKind::Entry));
+        assert!(kinds.contains(&FrameKind::Runtime));
+        assert!(kinds.contains(&FrameKind::Toolchain));
+        assert!(kinds.contains(&FrameKind::Native));
+    }
+
+    #[test]
+    fn render_panic_backtrace_compact_keeps_taro_frames_and_drops_runtime_noise() {
+        let raw = r#"   0: 0x1000 - std::panicking::begin_panic
+   1: 0x1001 - taro_runtime::panic_unwind::write_report
+   2: 0x1002 - ___rt__panic_unwind_at
+   3: 0x1003 - ___rust_try
+   4: 0x1004 - _app__bt_usr__mod__boom
+   5: 0x1005 - _std__bt_std__task__join
+   6: 0x1006 - _std__bt_syn__missing_p1_d7_poll
+   7: 0x1007 - _taro_start
+   8: 0x1008 - __pthread_kill"#;
+        let rendered = render_panic_backtrace_with_policy(raw, BacktracePolicy::Compact);
+        assert!(rendered.contains("_app__bt_usr__mod__boom"));
+        assert!(rendered.contains("_std__bt_std__task__join"));
+        assert!(rendered.contains("_std__bt_syn__missing_p1_d7_poll"));
+        assert!(rendered.contains("_taro_start"));
+        assert!(!rendered.contains("std::panicking::begin_panic"));
+        assert!(!rendered.contains("taro_runtime::panic_unwind::write_report"));
+        assert!(!rendered.contains("___rt__panic_unwind_at"));
+        assert!(!rendered.contains("___rust_try"));
+        assert!(!rendered.contains("__pthread_kill"));
+    }
+
+    #[test]
+    fn render_panic_backtrace_falls_back_to_short_raw_when_no_taro_frames() {
+        let raw = r#"   0: 0x2000 - std::panicking::begin_panic
+   1: 0x2001 - taro_runtime::panic_unwind::write_report
+   2: 0x2002 - ___rust_try
+   3: 0x2003 - __pthread_kill"#;
+        let rendered = render_panic_backtrace_with_policy(raw, BacktracePolicy::Compact);
+        assert!(!rendered.is_empty());
+        assert!(rendered.contains("std::panicking::begin_panic"));
+    }
+
+    #[test]
+    fn render_panic_backtrace_full_policy_keeps_original_text() {
+        let raw = r#"   0: 0x3000 - std::panicking::begin_panic
+   1: 0x3001 - _app__bt_usr__mod__boom"#;
+        let rendered = render_panic_backtrace_with_policy(raw, BacktracePolicy::Full);
+        assert_eq!(rendered, raw);
+    }
+
+    #[test]
+    fn parse_backtrace_policy_defaults_to_compact() {
+        assert_eq!(parse_backtrace_policy(None), BacktracePolicy::Compact);
+        assert_eq!(
+            parse_backtrace_policy(Some("compact")),
+            BacktracePolicy::Compact
+        );
+        assert_eq!(parse_backtrace_policy(Some("full")), BacktracePolicy::Full);
+        assert_eq!(parse_backtrace_policy(Some("FuLl")), BacktracePolicy::Full);
+    }
 }
