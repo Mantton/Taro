@@ -1303,16 +1303,36 @@ mod tests {
     use std::collections::{HashMap, HashSet};
     use std::panic::{self, AssertUnwindSafe};
     use std::ptr;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Condvar, Mutex, mpsc};
 
     static TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn worker_count_prefers_env_override() {
         let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let previous = std::env::var_os("TARO_WORKERS");
         unsafe { std::env::set_var("TARO_WORKERS", "2") };
         assert_eq!(configured_worker_count(), 2);
+        if let Some(previous) = previous {
+            unsafe { std::env::set_var("TARO_WORKERS", previous) };
+        } else {
+            unsafe { std::env::remove_var("TARO_WORKERS") };
+        }
+    }
+
+    #[test]
+    fn worker_count_defaults_to_logical_cpu_count() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let previous = std::env::var_os("TARO_WORKERS");
         unsafe { std::env::remove_var("TARO_WORKERS") };
+        let expected = thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(1)
+            .max(1);
+        assert_eq!(configured_worker_count(), expected);
+        if let Some(previous) = previous {
+            unsafe { std::env::set_var("TARO_WORKERS", previous) };
+        }
     }
 
     #[test]
@@ -1493,6 +1513,209 @@ mod tests {
         assert!(inner.completed);
         assert_eq!(inner.generation, task_generation);
         assert!(inner.out_buf.is_some());
+    }
+
+    fn note_max(counter: &AtomicUsize, candidate: usize) {
+        let mut current = counter.load(Ordering::Relaxed);
+        while current < candidate {
+            match counter.compare_exchange_weak(
+                current,
+                candidate,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    #[derive(Clone)]
+    struct OneShotRecorder {
+        in_flight: Arc<AtomicUsize>,
+        max_in_flight: Arc<AtomicUsize>,
+        threads: Arc<Mutex<HashSet<String>>>,
+    }
+
+    impl OneShotRecorder {
+        fn enter(&self) {
+            let thread_name = thread::current()
+                .name()
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("{:?}", thread::current().id()));
+            self.threads.lock().unwrap().insert(thread_name);
+            let in_flight = self.in_flight.fetch_add(1, Ordering::AcqRel) + 1;
+            note_max(&self.max_in_flight, in_flight);
+        }
+
+        fn exit(&self) {
+            self.in_flight.fetch_sub(1, Ordering::AcqRel);
+        }
+
+        fn max_in_flight(&self) -> usize {
+            self.max_in_flight.load(Ordering::Acquire)
+        }
+
+        fn thread_count(&self) -> usize {
+            self.threads.lock().unwrap().len()
+        }
+    }
+
+    struct OneShotFrame {
+        recorder: OneShotRecorder,
+        sleep: StdDuration,
+    }
+
+    unsafe extern "C-unwind" fn one_shot_poll(frame: *mut u8, _ctx: *mut u8, _out: *mut u8) -> u8 {
+        let frame = unsafe { &mut *(frame as *mut OneShotFrame) };
+        frame.recorder.enter();
+        thread::sleep(frame.sleep);
+        frame.recorder.exit();
+        1
+    }
+
+    unsafe extern "C" fn one_shot_drop(frame: *mut u8) {
+        let _ = unsafe { Box::from_raw(frame as *mut OneShotFrame) };
+    }
+
+    fn run_one_shot_scheduler(task_count: usize, sleep: StdDuration) -> (usize, usize, u64) {
+        let scheduler = Scheduler::new(false, 4);
+        let recorder = OneShotRecorder {
+            in_flight: Arc::new(AtomicUsize::new(0)),
+            max_in_flight: Arc::new(AtomicUsize::new(0)),
+            threads: Arc::new(Mutex::new(HashSet::new())),
+        };
+
+        for _ in 0..task_count {
+            let frame = Box::new(OneShotFrame {
+                recorder: recorder.clone(),
+                sleep,
+            });
+            let handle = __rt__async_create(
+                Box::into_raw(frame) as *mut u8,
+                one_shot_poll as *const () as *const u8,
+                one_shot_drop as *const () as *const u8,
+                TaskMobility::Movable as u8,
+            );
+            let _ = scheduler.add_task(handle, ptr::null_mut(), None, 0, Some(0));
+        }
+
+        let local = scheduler.start();
+        Arc::clone(&scheduler).worker_loop(0, local);
+        scheduler.join_background_threads();
+        (
+            recorder.max_in_flight(),
+            recorder.thread_count(),
+            scheduler.stats.steals.load(Ordering::Relaxed),
+        )
+    }
+
+    #[test]
+    fn movable_work_executes_with_overlap() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let (max_in_flight, thread_count, _steals) =
+            run_one_shot_scheduler(128, StdDuration::from_millis(8));
+        assert!(
+            max_in_flight > 1,
+            "expected concurrent overlap across workers, observed max in-flight {max_in_flight}"
+        );
+        assert!(
+            thread_count > 1,
+            "expected work to run on multiple workers, observed {thread_count} worker thread(s)"
+        );
+    }
+
+    #[test]
+    fn victim_queue_steals_happen() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let (_max_in_flight, _thread_count, steals) =
+            run_one_shot_scheduler(128, StdDuration::from_millis(8));
+        assert!(steals > 0, "expected at least one victim-queue steal, observed {steals}");
+    }
+
+    struct GcGateFrame {
+        entered: Arc<AtomicBool>,
+        gate: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    unsafe extern "C-unwind" fn gc_gate_poll(frame: *mut u8, _ctx: *mut u8, _out: *mut u8) -> u8 {
+        let frame = unsafe { &mut *(frame as *mut GcGateFrame) };
+        frame.entered.store(true, Ordering::Release);
+        let (lock, condvar) = &*frame.gate;
+        let mut open = lock.lock().unwrap();
+        while !*open {
+            open = condvar.wait(open).unwrap();
+        }
+        1
+    }
+
+    unsafe extern "C" fn gc_gate_drop(frame: *mut u8) {
+        let _ = unsafe { Box::from_raw(frame as *mut GcGateFrame) };
+    }
+
+    #[test]
+    fn gc_waits_for_active_worker_then_resumes() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let scheduler = Scheduler::new(false, 2);
+        let entered = Arc::new(AtomicBool::new(false));
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let handle = __rt__async_create(
+            Box::into_raw(Box::new(GcGateFrame {
+                entered: Arc::clone(&entered),
+                gate: Arc::clone(&gate),
+            })) as *mut u8,
+            gc_gate_poll as *const () as *const u8,
+            gc_gate_drop as *const () as *const u8,
+            TaskMobility::Movable as u8,
+        );
+        let _ = scheduler.add_task(handle, ptr::null_mut(), None, 0, Some(0));
+
+        let local = scheduler.start();
+        let worker_scheduler = Arc::clone(&scheduler);
+        let worker0_join = thread::Builder::new()
+            .name("taro-test-worker-0".into())
+            .spawn(move || worker_scheduler.worker_thread_entry(0, local))
+            .expect("failed to spawn worker 0 test thread");
+
+        let deadline = Instant::now() + StdDuration::from_secs(1);
+        while Instant::now() < deadline && !entered.load(Ordering::Acquire) {
+            thread::yield_now();
+        }
+        assert!(
+            entered.load(Ordering::Acquire),
+            "blocking task never entered poll; GC rendezvous test did not start"
+        );
+
+        let (gc_done_tx, gc_done_rx) = mpsc::channel();
+        let gc_join = thread::Builder::new()
+            .name("taro-test-gc".into())
+            .spawn(move || {
+                crate::garbage_collector::__gc__thread_attach();
+                crate::garbage_collector::__gc__collect();
+                crate::garbage_collector::__gc__thread_detach();
+                gc_done_tx.send(()).expect("failed to report GC completion");
+            })
+            .expect("failed to spawn GC thread");
+
+        thread::sleep(StdDuration::from_millis(25));
+        assert!(
+            matches!(gc_done_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
+            "GC completed while worker was still executing outside safepoint"
+        );
+
+        {
+            let (lock, condvar) = &*gate;
+            let mut open = lock.lock().unwrap();
+            *open = true;
+            condvar.notify_all();
+        }
+
+        gc_done_rx
+            .recv_timeout(StdDuration::from_secs(2))
+            .expect("GC did not resume/complete after worker reached safepoint");
+        gc_join.join().expect("GC thread join failed");
+        worker0_join.join().expect("worker 0 join failed");
+        scheduler.join_background_threads();
     }
 
     #[derive(Clone)]
