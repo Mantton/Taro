@@ -1580,6 +1580,7 @@ pub(crate) enum AsyncRuntimeFn {
     WaitWritable,
     Sleep,
     YieldNow,
+    IsTaskCancelled,
     TaskGroupCreate,
     TaskGroupSpawn,
     TaskGroupClose,
@@ -1648,6 +1649,11 @@ pub(crate) fn find_or_register_async_runtime_function<'ctx>(
             gcx.async_handle_ty(),
         ),
         AsyncRuntimeFn::YieldNow => ("__rt__async_yield_now", vec![], gcx.async_handle_ty()),
+        AsyncRuntimeFn::IsTaskCancelled => (
+            "__rt__executor_is_current_task_cancelled",
+            vec![],
+            gcx.types.bool,
+        ),
         AsyncRuntimeFn::FromSpawnedChecked => (
             "__rt__async_from_spawned_checked",
             vec![gcx.types.uint],

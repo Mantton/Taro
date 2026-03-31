@@ -93,6 +93,7 @@ extern "taro_intrinsic" {
     func __intrinsic_gc_desc[T]() -> *const GcDesc
     func __intrinsic_spawn_async[T, F: std.ops.AsyncFnOnce() -> T](_ thunk: F) -> std.task.Task[T]
     func __intrinsic_cancel_task[T](_ task: &std.task.Task[T])
+    func __intrinsic_is_task_cancelled() -> bool
     func __intrinsic_task_result[T](_ task: std.task.Task[T]) async -> std.result.Result[T, std.task.TaskError]
     func __intrinsic_task_group_create[T](_ cancel_on_panic: bool) -> usize
     func __intrinsic_task_group_spawn[T, F: std.ops.AsyncFnOnce() -> T](_ group: usize, _ thunk: F)

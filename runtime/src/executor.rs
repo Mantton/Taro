@@ -1372,6 +1372,35 @@ pub fn run_root(handle: *mut u8, out: *mut u8) {
     }
 }
 
+/// Check if the currently running task is cancelled.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn __rt__executor_is_current_task_cancelled() -> bool {
+    WORKER_CONTEXT.with(|cell| {
+        let borrow = match cell.try_borrow() {
+            Ok(value) => value,
+            Err(_) => return false,
+        };
+        let context = match borrow.as_ref() {
+            Some(c) => c,
+            None => return false,
+        };
+        let current = match context.current_task {
+            Some(token) => token,
+            None => return false,
+        };
+        let (task_index, _) = unpack_task_token(current);
+        if let Some(slot) = context.scheduler.lookup_task_slot(task_index) {
+            let inner = slot
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            inner.cancelled
+        } else {
+            false
+        }
+    })
+}
+
 /// Spawn a new task on the executor. Returns a task token that can be polled
 /// later via `__rt__executor_poll_spawned_checked`.
 #[unsafe(no_mangle)]
@@ -2678,6 +2707,89 @@ mod tests {
         __rt__async_run_root(handle, (&mut out as *mut u8).cast::<u8>());
         assert_eq!(out, 2);
         assert_eq!(drops.load(Ordering::Acquire), 1);
+    }
+
+    struct SelfCancelProbeFrame {
+        self_token: u64,
+    }
+
+    unsafe extern "C-unwind" fn self_cancel_probe_poll(
+        frame: *mut u8,
+        _ctx: *mut u8,
+        _out: *mut u8,
+    ) -> u8 {
+        let frame = unsafe { &mut *(frame as *mut SelfCancelProbeFrame) };
+        assert!(
+            !__rt__executor_is_current_task_cancelled(),
+            "task should not start out cancelled"
+        );
+        __rt__executor_cancel_task(frame.self_token);
+        assert!(
+            __rt__executor_is_current_task_cancelled(),
+            "task should observe cancellation immediately after self-cancel"
+        );
+        1
+    }
+
+    unsafe extern "C" fn self_cancel_probe_drop(frame: *mut u8) {
+        let _ = unsafe { Box::from_raw(frame as *mut SelfCancelProbeFrame) };
+    }
+
+    struct SelfCancelProbeRoot {
+        stage: u8,
+        token: u64,
+        child_frame: *mut SelfCancelProbeFrame,
+    }
+
+    unsafe extern "C-unwind" fn self_cancel_probe_root_poll(
+        frame: *mut u8,
+        _ctx: *mut u8,
+        _out: *mut u8,
+    ) -> u8 {
+        let frame = unsafe { &mut *(frame as *mut SelfCancelProbeRoot) };
+        if frame.stage == 0 {
+            frame.child_frame = Box::into_raw(Box::new(SelfCancelProbeFrame { self_token: 0 }));
+            let handle = __rt__async_create(
+                frame.child_frame as *mut u8,
+                self_cancel_probe_poll as *const () as *const u8,
+                self_cancel_probe_drop as *const () as *const u8,
+                TaskMobility::Movable as u8,
+            );
+            frame.token = __rt__executor_spawn(handle, 0);
+            unsafe { (*frame.child_frame).self_token = frame.token };
+            frame.stage = 1;
+            return 0;
+        }
+
+        let status = __rt__executor_poll_spawned_checked(frame.token, std::ptr::null_mut());
+        if status == 0 {
+            return 0;
+        }
+        assert_eq!(status, 2);
+        assert_eq!(__rt__executor_task_completion_status(frame.token), 2);
+        __rt__executor_reclaim_spawned(frame.token);
+        1
+    }
+
+    unsafe extern "C" fn self_cancel_probe_root_drop(frame: *mut u8) {
+        let _ = unsafe { Box::from_raw(frame as *mut SelfCancelProbeRoot) };
+    }
+
+    #[test]
+    fn current_task_cancellation_is_observable_after_self_cancel() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let handle = __rt__async_create(
+            Box::into_raw(Box::new(SelfCancelProbeRoot {
+                stage: 0,
+                token: 0,
+                child_frame: std::ptr::null_mut(),
+            })) as *mut u8,
+            self_cancel_probe_root_poll as *const () as *const u8,
+            self_cancel_probe_root_drop as *const () as *const u8,
+            TaskMobility::Movable as u8,
+        );
+
+        __rt__async_run_root(handle, std::ptr::null_mut());
     }
 
     struct GroupCollectRoot {

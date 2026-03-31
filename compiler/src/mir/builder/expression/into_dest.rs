@@ -426,6 +426,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         if self.is_hidden_sleep_intrinsic(callee) {
             return self.lower_sleep_call(destination, block, args, span);
         }
+        if self.is_hidden_is_task_cancelled_intrinsic(callee) {
+            return self.lower_is_task_cancelled_call(destination, block, args, span);
+        }
         if self.is_hidden_cancel_task_intrinsic(callee) {
             return self.lower_cancel_task_call(destination, block, args, span);
         }
@@ -1630,6 +1633,54 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             self.gcx.definition_ident(id).symbol,
             "__intrinsic_spawn_async",
         )
+    }
+
+    fn is_hidden_is_task_cancelled_intrinsic(&self, callee: ExprId) -> bool {
+        self.is_hidden_intrinsic_named(callee, "__intrinsic_is_task_cancelled")
+    }
+
+    fn lower_is_task_cancelled_call(
+        &mut self,
+        destination: Place<'ctx>,
+        block: BasicBlockId,
+        args: &[ExprId],
+        span: Span,
+    ) -> BlockAnd<()> {
+        let [] = args else {
+            panic!("ICE: task is_cancelled lowering expects no arguments");
+        };
+        let destination_ty = self.place_ty(&destination);
+        assert_eq!(
+            destination_ty,
+            self.gcx.types.bool,
+            "ICE: task is_cancelled intrinsic must lower into a bool destination"
+        );
+        let func_id = find_or_register_async_runtime_function(
+            self.gcx,
+            AsyncRuntimeFn::IsTaskCancelled,
+            span,
+        );
+        let func_ty = self.gcx.get_type(func_id);
+        let next = self.new_block();
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: func_ty,
+                    value: mir::ConstantKind::Function(
+                        func_id,
+                        GenericArguments::empty(),
+                        func_ty,
+                    ),
+                }),
+                args: vec![],
+                destination,
+                target: next,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+        next.unit()
     }
 
     fn is_hidden_sleep_intrinsic(&self, callee: ExprId) -> bool {

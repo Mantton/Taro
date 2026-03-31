@@ -487,6 +487,18 @@ func cancelledTaskResultReturnsCancelledError() async {
 }
 
 @test
+@expectPanic
+func taskValuePanicsOnCancelledTask() async {
+    let task = std.task.spawn(|| async {
+        await std.task.sleep(std.time.Duration.fromMillis(200_u64))
+        return 7 as int32
+    })
+
+    task.cancel()
+    let _ = (await task.result()).unwrap()
+}
+
+@test
 func asyncDeferRunsOnNormalReturnAfterSuspension() async {
     ASYNC_DEFER_RETURN_COUNT = 0
 
@@ -543,15 +555,21 @@ func cancellingSleepingTaskCompletesQuickly() async {
 }
 
 @test
-@expectPanic
-func taskValuePanicsOnCancelledTask() async {
+func taskIsCancelledIsFalseForActiveTask() async {
     let task = std.task.spawn(|| async {
-        await std.task.sleep(std.time.Duration.fromMillis(200_u64))
-        return 7 as int32
+        await std.testing.yieldNow()
+        let moduleLevel = std.task.isCancelled()
+        let typeLevel = std.task.Task[int32].isCancelled()
+        std.testing.assertEqual(
+            moduleLevel,
+            typeLevel,
+            "module and Task[T] cancellation APIs should agree",
+        )
+        return typeLevel
     })
 
-    task.cancel()
-    let _ = (await task.result()).unwrap()
+    let result = (await task.result()).unwrap()
+    std.testing.assertFalse(result, "isCancelled() should be false for active, non-cancelled tasks")
 }
 
 @test
