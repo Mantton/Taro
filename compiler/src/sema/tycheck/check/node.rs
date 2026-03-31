@@ -555,6 +555,12 @@ impl<'ctx> Checker<'ctx> {
         for (id, index) in cs.resolved_field_indices() {
             self.results.borrow_mut().record_field_index(id, index);
         }
+        for (id, info) in cs.resolved_property_reads() {
+            self.results.borrow_mut().record_property_read(id, info);
+        }
+        for (id, info) in cs.resolved_property_writes() {
+            self.results.borrow_mut().record_property_write(id, info);
+        }
         for (id, args) in cs.resolved_instantiations() {
             let resolved_args = cs.infer_cx.resolve_args_if_possible(args);
             self.results
@@ -568,6 +574,7 @@ impl<'ctx> Checker<'ctx> {
         }
 
         self.finalize_deferred_async_call_surface_checks(cs);
+        self.finalize_deferred_async_property_surface_checks(cs);
     }
 
     fn resolve_adjustment(&self, cs: &Cs<'ctx>, adjustment: Adjustment<'ctx>) -> Adjustment<'ctx> {
@@ -970,6 +977,30 @@ impl<'ctx> Checker<'ctx> {
         gcx.types.bool
     }
 
+    fn lookup_member_property_on_base_ty(
+        &self,
+        base_ty: Ty<'ctx>,
+        name: Symbol,
+    ) -> Option<crate::compile::context::ComputedPropertyEntry<'ctx>> {
+        let head = type_head_from_value_ty(base_ty)?;
+        let mut property = self.gcx().lookup_computed_property(head, name)?;
+        if !self
+            .gcx()
+            .is_visibility_allowed(property.visibility, self.current_def)
+        {
+            return None;
+        }
+
+        if let TyKind::Adt(_, args) = base_ty.kind()
+            && !args.is_empty()
+            && property.ty.needs_instantiation()
+        {
+            property.ty = instantiate_ty_with_args(self.gcx(), property.ty, args);
+        }
+
+        Some(property)
+    }
+
     fn mutable_binding_for_resolution(&self, resolution: &hir::Resolution) -> Option<bool> {
         match resolution {
             hir::Resolution::LocalVariable(id) => Some(self.get_local(*id).mutable),
@@ -1117,50 +1148,41 @@ impl<'ctx> Checker<'ctx> {
                     return false;
                 }
 
-                // Field mutability (struct only for now).
-                let TyKind::Adt(def, args) = base_ty.kind() else {
-                    self.gcx().dcx().emit_error(
-                        "cannot assign to a member of a non-struct value".into(),
-                        Some(expr.span),
-                    );
-                    return false;
-                };
-                if self.gcx().definition_kind(def.id) != DefinitionKind::Struct {
-                    self.gcx().dcx().emit_error(
-                        "cannot assign to a member of a non-struct value".into(),
-                        Some(expr.span),
-                    );
-                    return false;
-                }
-
-                let struct_def = self.gcx().get_struct_definition(def.id);
-                let struct_def = crate::sema::tycheck::utils::instantiate::
-                    instantiate_struct_definition_with_args(self.gcx(), struct_def, args);
-                let mut field = None;
-                for f in struct_def.fields {
-                    if f.name == name.symbol {
-                        field = Some(*f);
-                        break;
+                if let TyKind::Adt(def, args) = base_ty.kind()
+                    && self.gcx().definition_kind(def.id) == DefinitionKind::Struct
+                {
+                    let struct_def = self.gcx().get_struct_definition(def.id);
+                    let struct_def = crate::sema::tycheck::utils::instantiate::
+                        instantiate_struct_definition_with_args(self.gcx(), struct_def, args);
+                    if let Some(field) = struct_def.fields.iter().find(|field| field.name == name.symbol)
+                    {
+                        if field.mutability != hir::Mutability::Mutable {
+                            self.gcx().dcx().emit_error(
+                                "cannot assign to an immutable field".into(),
+                                Some(expr.span),
+                            );
+                            return false;
+                        }
+                        return true;
                     }
                 }
 
-                let Some(field) = field else {
-                    self.gcx().dcx().emit_error(
-                        format!("unknown field '{}'", self.gcx().symbol_text(name.symbol)),
-                        Some(expr.span),
-                    );
-                    return false;
-                };
-
-                if field.mutability != hir::Mutability::Mutable {
-                    self.gcx().dcx().emit_error(
-                        "cannot assign to an immutable field".into(),
-                        Some(expr.span),
-                    );
-                    return false;
+                if let Some(property) = self.lookup_member_property_on_base_ty(base_ty, name.symbol)
+                {
+                    if property.setter_id.is_none() {
+                        self.gcx()
+                            .dcx()
+                            .emit_error("cannot assign to a read-only property".into(), Some(expr.span));
+                        return false;
+                    }
+                    return true;
                 }
 
-                true
+                self.gcx().dcx().emit_error(
+                    format!("unknown field '{}'", self.gcx().symbol_text(name.symbol)),
+                    Some(expr.span),
+                );
+                false
             }
             hir::ExpressionKind::TupleAccess(target, _) => {
                 let Some(receiver_ty) = cs.expr_ty(target.id) else {
@@ -1261,21 +1283,29 @@ impl<'ctx> Checker<'ctx> {
                     }
                 };
 
-                let TyKind::Adt(def, args) = base_ty.kind() else {
-                    return false;
-                };
-                if self.gcx().definition_kind(def.id) != DefinitionKind::Struct {
+                if let TyKind::Adt(def, args) = base_ty.kind()
+                    && self.gcx().definition_kind(def.id) == DefinitionKind::Struct
+                {
+                    let struct_def = self.gcx().get_struct_definition(def.id);
+                    let struct_def = crate::sema::tycheck::utils::instantiate::
+                        instantiate_struct_definition_with_args(self.gcx(), struct_def, args);
+                    if struct_def
+                        .fields
+                        .iter()
+                        .any(|field| field.name == name.symbol)
+                    {
+                        return true;
+                    }
+                }
+
+                if self
+                    .lookup_member_property_on_base_ty(base_ty, name.symbol)
+                    .is_some()
+                {
                     return false;
                 }
 
-                let struct_def = self.gcx().get_struct_definition(def.id);
-                let struct_def = crate::sema::tycheck::utils::instantiate::
-                    instantiate_struct_definition_with_args(self.gcx(), struct_def, args);
-
-                struct_def
-                    .fields
-                    .iter()
-                    .any(|field| field.name == name.symbol)
+                false
             }
             hir::ExpressionKind::TupleAccess(target, _) => {
                 let Some(receiver_ty) = cs.expr_ty(target.id) else {
@@ -1466,49 +1496,50 @@ impl<'ctx> Checker<'ctx> {
                     }
                 }
 
-                let TyKind::Adt(def, args) = base_ty.kind() else {
-                    self.gcx().dcx().emit_error(
-                        "cannot borrow a member of a non-struct value".into(),
-                        Some(expr.span),
-                    );
-                    return false;
-                };
-                if self.gcx().definition_kind(def.id) != DefinitionKind::Struct {
-                    self.gcx().dcx().emit_error(
-                        "cannot borrow a member of a non-struct value".into(),
-                        Some(expr.span),
-                    );
-                    return false;
-                }
-
-                let struct_def = self.gcx().get_struct_definition(def.id);
-                let struct_def = crate::sema::tycheck::utils::instantiate::
-                    instantiate_struct_definition_with_args(self.gcx(), struct_def, args);
-                let mut field = None;
-                for f in struct_def.fields {
-                    if f.name == name.symbol {
-                        field = Some(*f);
-                        break;
+                if let TyKind::Adt(def, args) = base_ty.kind()
+                    && self.gcx().definition_kind(def.id) == DefinitionKind::Struct
+                {
+                    let struct_def = self.gcx().get_struct_definition(def.id);
+                    let struct_def = crate::sema::tycheck::utils::instantiate::
+                        instantiate_struct_definition_with_args(self.gcx(), struct_def, args);
+                    if let Some(field) = struct_def.fields.iter().find(|field| field.name == name.symbol)
+                    {
+                        if field.mutability != hir::Mutability::Mutable {
+                            self.gcx().dcx().emit_error(
+                                "cannot take a mutable reference to an immutable field".into(),
+                                Some(expr.span),
+                            );
+                            return false;
+                        }
+                        return true;
                     }
                 }
 
-                let Some(field) = field else {
+                if self
+                    .lookup_member_property_on_base_ty(base_ty, name.symbol)
+                    .is_some()
+                {
+                    self.gcx().dcx().emit_error(
+                        "cannot take a mutable reference to a computed property".into(),
+                        Some(expr.span),
+                    );
+                    return false;
+                }
+
+                if matches!(base_ty.kind(), TyKind::Adt(def, _) if self.gcx().definition_kind(def.id) == DefinitionKind::Struct)
+                {
                     self.gcx().dcx().emit_error(
                         format!("unknown field '{}'", self.gcx().symbol_text(name.symbol)),
                         Some(expr.span),
                     );
                     return false;
-                };
-
-                if field.mutability != hir::Mutability::Mutable {
-                    self.gcx().dcx().emit_error(
-                        "cannot take a mutable reference to an immutable field".into(),
-                        Some(expr.span),
-                    );
-                    return false;
                 }
 
-                true
+                self.gcx().dcx().emit_error(
+                    "cannot borrow a member of a non-struct value".into(),
+                    Some(expr.span),
+                );
+                false
             }
             hir::ExpressionKind::TupleAccess(target, _) => {
                 let Some(receiver_ty) = cs.expr_ty(target.id) else {
@@ -1586,6 +1617,30 @@ impl<'ctx> Checker<'ctx> {
         if lhs_ty.is_error() || rhs_ty.is_error() {
             return Ty::error(self.gcx());
         }
+
+        if let hir::ExpressionKind::Member { target, name } = &lhs.kind
+            && let Some(receiver_ty) = cs.expr_ty(target.id)
+        {
+            let receiver_ty = cs.infer_cx.resolve_vars_if_possible(receiver_ty);
+            let base_ty = match receiver_ty.kind() {
+                TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => inner,
+                _ => receiver_ty,
+            };
+
+            if let Some(property) = self.lookup_member_property_on_base_ty(base_ty, name.symbol)
+                && let Some(setter_id) = property.setter_id
+            {
+                cs.record_property_write(
+                    expr.id,
+                    crate::sema::tycheck::solve::ResolvedPropertyWrite {
+                        property_id: property.property_id,
+                        setter_id,
+                        ty: property.ty,
+                    },
+                );
+            }
+        }
+
         cs.add_goal(
             crate::sema::tycheck::solve::Goal::Coerce {
                 node_id: rhs.id,
@@ -3882,6 +3937,27 @@ impl<'ctx> Checker<'ctx> {
             return Ty::error(self.gcx());
         }
 
+        if let hir::ExpressionKind::Member { target, name } = &lhs.kind
+            && let Some(receiver_ty) = cs.expr_ty(target.id)
+        {
+            let receiver_ty = cs.infer_cx.resolve_vars_if_possible(receiver_ty);
+            let base_ty = match receiver_ty.kind() {
+                TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => inner,
+                _ => receiver_ty,
+            };
+
+            if self
+                .lookup_member_property_on_base_ty(base_ty, name.symbol)
+                .is_some()
+            {
+                self.gcx().dcx().emit_error(
+                    "compound assignment on computed properties is not supported".into(),
+                    Some(expression.span),
+                );
+                return Ty::error(self.gcx());
+            }
+        }
+
         let data = AssignOpGoalData {
             lhs: lhs_ty,
             rhs: rhs_ty,
@@ -4686,18 +4762,22 @@ impl<'ctx> Checker<'ctx> {
         if receiver_ty.is_error() {
             return Ty::error(self.gcx());
         }
+        let receiver_can_mut_borrow = self.can_mutably_borrow_receiver(target, cs);
         let result_ty = cs.infer_cx.next_ty_var(expression.span);
         cs.add_goal(
             Goal::Member(MemberGoalData {
                 node_id: expression.id,
                 receiver_node: target.id,
                 receiver: receiver_ty,
+                receiver_can_mut_borrow,
                 name: *name,
                 result: result_ty,
                 span: expression.span,
             }),
             expression.span,
         );
+
+        self.defer_async_property_surface_check(expression.id, expression.span);
 
         if let Some(expectation) = expectation {
             cs.equal(expectation, result_ty, expression.span);
@@ -5790,6 +5870,24 @@ impl<'ctx> Checker<'ctx> {
         None
     }
 
+    fn resolved_async_property_status(
+        &self,
+        node_id: NodeID,
+        cs: Option<&Cs<'ctx>>,
+    ) -> Option<bool> {
+        if let Some(property) = self.results.borrow().property_read(node_id) {
+            return Some(property.getter_is_async);
+        }
+
+        let Some(cs) = cs else {
+            return None;
+        };
+
+        cs.resolved_property_reads()
+            .get(&node_id)
+            .map(|property| property.getter_is_async)
+    }
+
     fn finalize_deferred_async_call_surface_checks(&self, cs: &Cs<'ctx>) {
         let pending: Vec<_> = self
             .pending_async_surface_checks
@@ -5818,6 +5916,30 @@ impl<'ctx> Checker<'ctx> {
             self.pending_async_surface_checks
                 .borrow_mut()
                 .extend(unresolved);
+        }
+    }
+
+    fn finalize_deferred_async_property_surface_checks(&self, cs: &Cs<'ctx>) {
+        let pending: Vec<_> = self
+            .pending_async_property_surface_checks
+            .borrow_mut()
+            .drain(..)
+            .collect();
+
+        for pending in pending {
+            match self.resolved_async_property_status(pending.node_id, Some(cs)) {
+                Some(true) => {
+                    self.results.borrow_mut().record_async_call(pending.node_id);
+                    if !pending.directly_awaited {
+                        self.gcx().dcx().emit_error(
+                            "async calls must be immediately awaited".into(),
+                            Some(pending.span),
+                        );
+                    }
+                }
+                Some(false) => {}
+                None => {}
+            }
         }
     }
 

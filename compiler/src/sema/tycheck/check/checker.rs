@@ -21,6 +21,13 @@ pub(super) struct PendingAsyncCallSurfaceCheck {
     pub directly_awaited: bool,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct PendingAsyncPropertySurfaceCheck {
+    pub node_id: NodeID,
+    pub span: Span,
+    pub directly_awaited: bool,
+}
+
 pub struct Checker<'arena> {
     pub context: Gcx<'arena>,
     pub locals: RefCell<FxHashMap<NodeID, LocalBinding<'arena>>>,
@@ -32,6 +39,8 @@ pub struct Checker<'arena> {
     pub(super) direct_await_operand: Cell<Option<NodeID>>,
     pub(super) forced_async_closure_expr: Cell<Option<NodeID>>,
     pub(super) pending_async_surface_checks: RefCell<Vec<PendingAsyncCallSurfaceCheck>>,
+    pub(super) pending_async_property_surface_checks:
+        RefCell<Vec<PendingAsyncPropertySurfaceCheck>>,
     pub current_def: DefinitionID,
     pub results: Rc<RefCell<TypeCheckResults<'arena>>>,
     infer_cx: RefCell<Option<Rc<InferCtx<'arena>>>>,
@@ -62,6 +71,7 @@ impl<'arena> Checker<'arena> {
             direct_await_operand: Cell::new(None),
             forced_async_closure_expr: Cell::new(None),
             pending_async_surface_checks: RefCell::new(Vec::new()),
+            pending_async_property_surface_checks: RefCell::new(Vec::new()),
             current_def,
             results,
             infer_cx: RefCell::new(None),
@@ -175,6 +185,16 @@ impl<'arena> Checker<'arena> {
         self.pending_async_surface_checks
             .borrow_mut()
             .push(PendingAsyncCallSurfaceCheck {
+                node_id,
+                span,
+                directly_awaited: self.direct_await_operand.get() == Some(node_id),
+            });
+    }
+
+    pub(super) fn defer_async_property_surface_check(&self, node_id: NodeID, span: Span) {
+        self.pending_async_property_surface_checks
+            .borrow_mut()
+            .push(PendingAsyncPropertySurfaceCheck {
                 node_id,
                 span,
                 directly_awaited: self.direct_await_operand.get() == Some(node_id),

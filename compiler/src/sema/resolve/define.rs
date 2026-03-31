@@ -335,7 +335,8 @@ impl<'r, 'a> Actor<'r, 'a> {
 
         match &declaration.kind {
             ast::AssociatedDeclarationKind::Constant(..)
-            | ast::AssociatedDeclarationKind::Function(..) => {
+            | ast::AssociatedDeclarationKind::Function(..)
+            | ast::AssociatedDeclarationKind::Property(..) => {
                 self.define(identifier, ScopeNamespace::Value, resolution, visibility);
             }
             ast::AssociatedDeclarationKind::AssociatedType(..) => {

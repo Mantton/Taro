@@ -1,5 +1,6 @@
 use crate::{
     compile::context::Gcx,
+    constants::INTERFACE_COMPUTED_PROPERTIES_DEFERRED_DIAGNOSTIC,
     error::CompileResult,
     hir::{self, DefinitionID},
     sema::{
@@ -116,6 +117,13 @@ impl<'ctx> Actor<'ctx> {
         let Some(goal) = self.goal_from_interface(interface) else {
             return;
         };
+        if self.context.interface_has_associated_property(goal.interface_id) {
+            self.context.dcx().emit_error(
+                INTERFACE_COMPUTED_PROPERTIES_DEFERRED_DIAGNOSTIC.into(),
+                Some(span),
+            );
+            return;
+        }
         if is_conditional || goal_has_unresolved_types(goal) {
             return;
         }

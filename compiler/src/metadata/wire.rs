@@ -186,6 +186,7 @@ pub enum DefinitionKindWire {
     Variant,
     AssociatedFunction,
     AssociatedConstant,
+    AssociatedProperty,
     AssociatedOperator,
     AssociatedType,
     VariantConstructor(VariantCtorKindWire),
@@ -308,6 +309,8 @@ pub struct TypeDatabaseWire {
     pub impl_to_target_ty: Vec<(DefIdWire, TyWire)>,
     pub type_head_to_impls: Vec<(TypeHeadWire, Vec<DefIdWire>)>,
     pub type_head_to_members: Vec<(TypeHeadWire, TypeMemberIndexWire)>,
+    #[serde(default)]
+    pub type_head_to_properties: Vec<(TypeHeadWire, Vec<(SymbolIdWire, ComputedPropertyEntryWire)>)>,
     pub def_to_generics: Vec<(DefIdWire, GenericsWire)>,
     pub generic_type_defaults: Vec<(DefIdWire, TyWire)>,
     pub generic_const_param_tys: Vec<(DefIdWire, TyWire)>,
@@ -666,6 +669,15 @@ pub struct TypeMemberIndexWire {
     pub trait_methods: Vec<((DefIdWire, SymbolIdWire), MemberSetWire)>,
     pub trait_methods_by_name: Vec<(SymbolIdWire, Vec<DefIdWire>)>,
     pub operators: Vec<(OperatorKindWire, MemberSetWire)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComputedPropertyEntryWire {
+    pub property_id: DefIdWire,
+    pub ty: TyWire,
+    pub getter_id: DefIdWire,
+    pub setter_id: Option<DefIdWire>,
+    pub visibility: VisibilityWire,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1406,6 +1418,7 @@ pub fn definition_kind_to_wire(v: DefinitionKind) -> DefinitionKindWire {
         DefinitionKind::Variant => DefinitionKindWire::Variant,
         DefinitionKind::AssociatedFunction => DefinitionKindWire::AssociatedFunction,
         DefinitionKind::AssociatedConstant => DefinitionKindWire::AssociatedConstant,
+        DefinitionKind::AssociatedProperty => DefinitionKindWire::AssociatedProperty,
         DefinitionKind::AssociatedOperator => DefinitionKindWire::AssociatedOperator,
         DefinitionKind::AssociatedType => DefinitionKindWire::AssociatedType,
         DefinitionKind::VariantConstructor(v) => {
@@ -1436,6 +1449,7 @@ pub fn definition_kind_from_wire(v: &DefinitionKindWire) -> DefinitionKind {
         DefinitionKindWire::Variant => DefinitionKind::Variant,
         DefinitionKindWire::AssociatedFunction => DefinitionKind::AssociatedFunction,
         DefinitionKindWire::AssociatedConstant => DefinitionKind::AssociatedConstant,
+        DefinitionKindWire::AssociatedProperty => DefinitionKind::AssociatedProperty,
         DefinitionKindWire::AssociatedOperator => DefinitionKind::AssociatedOperator,
         DefinitionKindWire::AssociatedType => DefinitionKind::AssociatedType,
         DefinitionKindWire::VariantConstructor(v) => {
@@ -2791,6 +2805,32 @@ pub fn member_set_from_wire(v: &MemberSetWire) -> crate::compile::context::Membe
             .iter()
             .map(|(fp, id)| (*fp, def_from_wire(id)))
             .collect(),
+    }
+}
+
+pub fn computed_property_entry_to_wire(
+    v: crate::compile::context::ComputedPropertyEntry<'_>,
+) -> ComputedPropertyEntryWire {
+    ComputedPropertyEntryWire {
+        property_id: def_to_wire(v.property_id),
+        ty: ty_to_wire(v.ty),
+        getter_id: def_to_wire(v.getter_id),
+        setter_id: v.setter_id.map(def_to_wire),
+        visibility: visibility_to_wire(v.visibility),
+    }
+}
+
+pub fn computed_property_entry_from_wire<'a>(
+    gcx: GlobalContext<'a>,
+    v: &ComputedPropertyEntryWire,
+    remap: FileRemap<'_>,
+) -> crate::compile::context::ComputedPropertyEntry<'a> {
+    crate::compile::context::ComputedPropertyEntry {
+        property_id: def_from_wire(&v.property_id),
+        ty: ty_from_wire(gcx, &v.ty),
+        getter_id: def_from_wire(&v.getter_id),
+        setter_id: v.setter_id.as_ref().map(def_from_wire),
+        visibility: visibility_from_wire(&v.visibility, remap),
     }
 }
 
@@ -4666,6 +4706,24 @@ pub fn type_database_to_wire(
                 )
             })
             .collect(),
+        type_head_to_properties: db
+            .type_head_to_properties
+            .iter()
+            .map(|(head, properties)| {
+                (
+                    type_head_to_wire(*head),
+                    properties
+                        .iter()
+                        .map(|(name, property)| {
+                            (
+                                symbols.intern_symbol(*name),
+                                computed_property_entry_to_wire(*property),
+                            )
+                        })
+                        .collect(),
+                )
+            })
+            .collect(),
         def_to_generics: db
             .def_to_generics
             .iter()
@@ -4945,6 +5003,24 @@ pub fn type_database_from_wire<'a>(
                 (
                     type_head_from_wire(head),
                     type_member_index_from_wire(members, symbols),
+                )
+            })
+            .collect(),
+        type_head_to_properties: wire
+            .type_head_to_properties
+            .iter()
+            .map(|(head, properties)| {
+                (
+                    type_head_from_wire(head),
+                    properties
+                        .iter()
+                        .map(|(name, property)| {
+                            (
+                                Symbol::new(symbols.resolve_str(*name)),
+                                computed_property_entry_from_wire(gcx, property, remap),
+                            )
+                        })
+                        .collect(),
                 )
             })
             .collect(),

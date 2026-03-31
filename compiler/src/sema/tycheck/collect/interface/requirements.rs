@@ -1,5 +1,6 @@
 use crate::{
     compile::context::Gcx,
+    constants::INTERFACE_COMPUTED_PROPERTIES_DEFERRED_DIAGNOSTIC,
     error::CompileResult,
     hir::{self, DefinitionID, DefinitionKind, HirVisitor},
     sema::{
@@ -133,6 +134,12 @@ impl<'ctx> Actor<'ctx> {
                     default,
                 };
                 constants.push(req);
+            }
+            hir::AssociatedDeclarationKind::Property(_) => {
+                gcx.dcx().emit_error(
+                    INTERFACE_COMPUTED_PROPERTIES_DEFERRED_DIAGNOSTIC.into(),
+                    Some(node.span),
+                );
             }
         }
     }

@@ -9,3 +9,5 @@ pub const PACKAGE_SOURCE: &str = "sources"; // $TARO_HOME/sources
 pub const VCS_REMOTE_NAME: &str = "origin";
 pub const STD_PREFIX: &str = "std";
 pub const STD_PACKAGE_PATH: &str = "github.com/taro/std";
+pub const INTERFACE_COMPUTED_PROPERTIES_DEFERRED_DIAGNOSTIC: &str =
+    "interface computed properties are deferred for safety";

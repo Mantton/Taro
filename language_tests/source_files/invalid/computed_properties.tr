@@ -1,0 +1,19 @@
+struct MoveValue {
+    values: std.collections.List[int32]
+}
+
+impl MoveValue {
+    var takeValues: std.collections.List[int32] {
+        get(self) {
+            self.values
+        }
+    };
+}
+
+func main() {
+    var items: std.collections.List[int32] = std.collections.List()
+    items.append(1)
+    let mv = MoveValue { values: items }
+    let _ = mv.takeValues
+    let _ = mv
+}

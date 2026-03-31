@@ -536,6 +536,13 @@ impl<'a, 'c> Actor<'a, 'c> {
             ast::AssociatedDeclarationKind::AssociatedType(node) => {
                 hir::AssociatedDeclarationKind::Type(self.lower_alias(node))
             }
+            ast::AssociatedDeclarationKind::Property(node) => {
+                hir::AssociatedDeclarationKind::Property(hir::ComputedProperty {
+                    ty: self.lower_type(node.ty),
+                    getter_id: self.definition_id(node.getter_id),
+                    setter_id: node.setter_id.map(|id| self.definition_id(id)),
+                })
+            }
         };
 
         hir::AssociatedDeclaration {

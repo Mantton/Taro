@@ -14,7 +14,8 @@ use crate::{
             ConformanceWitness, Const, Constraint, EnumDefinition, EnumVariant, FloatTy,
             GenericArgument, GenericArguments, GenericParameter, Generics, GoalResult, IntTy,
             InterfaceDefinition, InterfaceGoal, InterfaceRequirements, LabeledFunctionSignature,
-            SelectionMode, SelectionResult, StructDefinition, Ty, TyKind, TyList, UIntTy,
+            SelectionMode, SelectionResult, StructDefinition, StructField, Ty, TyKind, TyList,
+            UIntTy,
         },
         resolve::models::{
             DefinitionKind, PrimaryType, ResolutionOutput, ScopeData, ScopeEntryData, TypeHead,
@@ -731,6 +732,23 @@ impl<'arena> GlobalContext<'arena> {
         self.with_type_database(id.package(), |db| db.def_to_struct_def.get(&id).cloned())
     }
 
+    pub fn lookup_field_in_type_head(
+        self,
+        head: TypeHead,
+        name: Symbol,
+    ) -> Option<StructField<'arena>> {
+        let TypeHead::Nominal(def_id) = head else {
+            return None;
+        };
+
+        if self.definition_kind(def_id) != DefinitionKind::Struct {
+            return None;
+        }
+
+        let def = self.get_struct_definition(def_id);
+        def.fields.iter().find(|field| field.name == name).copied()
+    }
+
     pub fn get_enum_definition(self, id: DefinitionID) -> &'arena EnumDefinition<'arena> {
         self.with_type_database(id.package(), |db| {
             *db.def_to_enum_def
@@ -769,6 +787,18 @@ impl<'arena> GlobalContext<'arena> {
         id: DefinitionID,
     ) -> Option<&'arena InterfaceDefinition<'arena>> {
         self.with_type_database(id.package(), |db| db.def_to_iface_def.get(&id).cloned())
+    }
+
+    pub fn interface_has_associated_property(self, interface_id: DefinitionID) -> bool {
+        let output = self.resolution_output(interface_id.package());
+        output.definition_to_kind.iter().any(|(candidate, kind)| {
+            *kind == DefinitionKind::AssociatedProperty
+                && output
+                    .definition_to_parent
+                    .get(candidate)
+                    .copied()
+                    .is_some_and(|parent| parent == interface_id)
+        })
     }
 
     pub fn get_impl_type_head(self, impl_id: DefinitionID) -> Option<TypeHead> {
@@ -1839,6 +1869,7 @@ pub struct TypeDatabase<'arena> {
     pub impl_to_target_ty: FxHashMap<DefinitionID, Ty<'arena>>,
     pub type_head_to_impls: FxHashMap<TypeHead, Vec<DefinitionID>>,
     pub type_head_to_members: FxHashMap<TypeHead, TypeMemberIndex>,
+    pub type_head_to_properties: FxHashMap<TypeHead, FxHashMap<Symbol, ComputedPropertyEntry<'arena>>>,
     pub def_to_generics: FxHashMap<DefinitionID, &'arena Generics>,
     /// Lowered default type for a generic type parameter (keyed by parameter DefinitionID).
     pub generic_type_defaults: FxHashMap<DefinitionID, Ty<'arena>>,
@@ -1878,6 +1909,15 @@ pub struct TypeDatabase<'arena> {
     pub visible_traits: FxHashMap<DefinitionID, Rc<FxHashSet<DefinitionID>>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ComputedPropertyEntry<'arena> {
+    pub property_id: DefinitionID,
+    pub ty: Ty<'arena>,
+    pub getter_id: DefinitionID,
+    pub setter_id: Option<DefinitionID>,
+    pub visibility: crate::sema::resolve::models::Visibility,
+}
+
 #[derive(Default, Debug, Clone)]
 pub struct MemberSet {
     pub members: Vec<DefinitionID>,
@@ -1897,6 +1937,20 @@ pub struct TypeMemberIndex {
     pub trait_methods_by_name: FxHashMap<Symbol, Vec<DefinitionID>>,
 
     pub operators: FxHashMap<hir::OperatorKind, MemberSet>,
+}
+
+impl<'arena> GlobalContext<'arena> {
+    pub fn lookup_computed_property(
+        self,
+        head: TypeHead,
+        name: Symbol,
+    ) -> Option<ComputedPropertyEntry<'arena>> {
+        self.find_in_databases(|db| {
+            db.type_head_to_properties
+                .get(&head)
+                .and_then(|properties| properties.get(&name).copied())
+        })
+    }
 }
 
 impl<'arena> GlobalContext<'arena> {

@@ -84,6 +84,7 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
         let kind = match &node.kind {
             ast::AssociatedDeclarationKind::Constant(..) => DefinitionKind::AssociatedConstant,
             ast::AssociatedDeclarationKind::Function(..) => DefinitionKind::AssociatedFunction,
+            ast::AssociatedDeclarationKind::Property(..) => DefinitionKind::AssociatedProperty,
             ast::AssociatedDeclarationKind::AssociatedType(..) => DefinitionKind::AssociatedType,
         };
         let parent = self.tag(&node.identifier, node.id, kind);

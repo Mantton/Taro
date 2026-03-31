@@ -129,6 +129,11 @@ class       final       override    fileprivate protected
 async       await       ref
 ```
 
+### Contextual Keywords
+
+`get` and `set` are contextual keywords for computed-property accessor blocks.
+Outside those blocks, they are regular identifiers.
+
 ---
 
 ## Operators

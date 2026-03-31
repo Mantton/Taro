@@ -1,0 +1,5 @@
+interface Named {
+    var name: string { get(&self) { "taro" } };
+}
+
+func main() {}

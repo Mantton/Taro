@@ -2,7 +2,9 @@ use crate::{
     hir::{self, DefinitionID, Resolution},
     sema::{
         models::{GenericArguments, Ty},
-        tycheck::solve::{Adjustment, InterfaceCallInfo},
+        tycheck::solve::{
+            Adjustment, InterfaceCallInfo, ResolvedPropertyRead, ResolvedPropertyWrite,
+        },
     },
 };
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -13,6 +15,8 @@ pub struct TypeCheckResults<'ctx> {
     node_adjustments: FxHashMap<hir::NodeID, Vec<Adjustment<'ctx>>>,
     interface_calls: FxHashMap<hir::NodeID, InterfaceCallInfo>,
     field_indices: FxHashMap<hir::NodeID, usize>,
+    property_reads: FxHashMap<hir::NodeID, ResolvedPropertyRead<'ctx>>,
+    property_writes: FxHashMap<hir::NodeID, ResolvedPropertyWrite<'ctx>>,
     overload_sources: FxHashMap<hir::NodeID, DefinitionID>,
     value_resolutions: FxHashMap<hir::NodeID, Resolution>,
     instantiations: FxHashMap<hir::NodeID, GenericArguments<'ctx>>,
@@ -27,6 +31,8 @@ impl<'ctx> TypeCheckResults<'ctx> {
         self.node_adjustments.extend(other.node_adjustments.drain());
         self.interface_calls.extend(other.interface_calls.drain());
         self.field_indices.extend(other.field_indices.drain());
+        self.property_reads.extend(other.property_reads.drain());
+        self.property_writes.extend(other.property_writes.drain());
         self.overload_sources.extend(other.overload_sources.drain());
         self.value_resolutions
             .extend(other.value_resolutions.drain());
@@ -52,6 +58,14 @@ impl<'ctx> TypeCheckResults<'ctx> {
 
     pub fn record_field_index(&mut self, id: hir::NodeID, index: usize) {
         self.field_indices.insert(id, index);
+    }
+
+    pub fn record_property_read(&mut self, id: hir::NodeID, info: ResolvedPropertyRead<'ctx>) {
+        self.property_reads.insert(id, info);
+    }
+
+    pub fn record_property_write(&mut self, id: hir::NodeID, info: ResolvedPropertyWrite<'ctx>) {
+        self.property_writes.insert(id, info);
     }
 
     pub fn record_overload_source(&mut self, id: hir::NodeID, def_id: DefinitionID) {
@@ -89,6 +103,14 @@ impl<'ctx> TypeCheckResults<'ctx> {
 
     pub fn field_index(&self, id: hir::NodeID) -> Option<usize> {
         self.field_indices.get(&id).cloned()
+    }
+
+    pub fn property_read(&self, id: hir::NodeID) -> Option<ResolvedPropertyRead<'ctx>> {
+        self.property_reads.get(&id).copied()
+    }
+
+    pub fn property_write(&self, id: hir::NodeID) -> Option<ResolvedPropertyWrite<'ctx>> {
+        self.property_writes.get(&id).copied()
     }
 
     pub fn overload_source(&self, id: hir::NodeID) -> Option<DefinitionID> {

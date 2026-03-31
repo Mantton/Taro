@@ -123,6 +123,22 @@ pub struct InterfaceCallInfo {
     pub table_index: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ResolvedPropertyRead<'ctx> {
+    pub property_id: DefinitionID,
+    pub getter_id: DefinitionID,
+    pub setter_id: Option<DefinitionID>,
+    pub ty: Ty<'ctx>,
+    pub getter_is_async: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ResolvedPropertyWrite<'ctx> {
+    pub property_id: DefinitionID,
+    pub setter_id: DefinitionID,
+    pub ty: Ty<'ctx>,
+}
+
 #[derive(Debug, Clone)]
 pub struct BindInterfaceMethodGoalData<'ctx> {
     pub node_id: NodeID,
@@ -183,6 +199,7 @@ pub struct MemberGoalData<'ctx> {
     pub node_id: NodeID,
     pub receiver_node: NodeID,
     pub receiver: Ty<'ctx>,
+    pub receiver_can_mut_borrow: bool,
     pub name: Identifier,
     pub result: Ty<'ctx>,
     pub span: Span,

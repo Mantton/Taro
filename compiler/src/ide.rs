@@ -606,6 +606,7 @@ impl<'ctx, 'results> NavigationVisitor<'ctx, 'results> {
                 crate::sema::models::format_definition_signature_for_display(self.gcx, id)
             }
             AssociatedDeclarationKind::Constant(..) => Some(self.gcx.get_type(id).format(self.gcx)),
+            AssociatedDeclarationKind::Property(..) => Some(self.gcx.get_type(id).format(self.gcx)),
             AssociatedDeclarationKind::Type(..) => self
                 .gcx
                 .try_get_alias_type(id)
@@ -718,6 +719,7 @@ impl<'ctx, 'results> NavigationVisitor<'ctx, 'results> {
             | DefinitionKind::Variant
             | DefinitionKind::Constant
             | DefinitionKind::AssociatedConstant
+            | DefinitionKind::AssociatedProperty
             | DefinitionKind::ModuleVariable
             | DefinitionKind::OpaqueType
             | DefinitionKind::TypeParameter
@@ -766,13 +768,25 @@ impl<'ctx, 'results> NavigationVisitor<'ctx, 'results> {
     }
 
     fn member_hover_contents(&self, node: &Expression, target: &Expression) -> Option<String> {
-        self.member_definition(node, target)?;
+        let has_definition = self
+            .results
+            .and_then(|results| results.property_read(node.id))
+            .is_some()
+            || self.member_definition(node, target).is_some();
+        if !has_definition {
+            return None;
+        }
+
         self.results
             .and_then(|results| results.try_node_type(node.id))
             .map(|ty| ty.format(self.gcx))
     }
 
     fn member_definition_target(&self, node: &Expression, target: &Expression) -> Option<Span> {
+        if let Some(property) = self.results.and_then(|results| results.property_read(node.id)) {
+            return Some(self.gcx.definition_ident(property.property_id).span);
+        }
+
         let (field_def, _) = self.member_definition(node, target)?;
         Some(self.gcx.definition_ident(field_def.def_id).span)
     }

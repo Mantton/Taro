@@ -142,6 +142,11 @@ interface Collection {
 }
 ```
 
+Computed properties in `interface` declarations are deferred for safety in the
+current release. The deferral is intentional while receiver-effect semantics
+(`self` vs `&self` vs `&mut self`) and duplicate-name ambiguity across
+interfaces are finalized.
+
 ---
 
 ## Function Declaration
@@ -231,6 +236,60 @@ impl[T] List[T] where T: Equatable {
     }
 }
 ```
+
+### Computed Properties (impl-only, v1)
+
+Computed properties use explicit `get`/`set` accessor blocks and are accessed
+with field-like syntax.
+
+```taro
+impl Counter {
+    var value: int32 {
+        get(&self) {
+            return self.raw
+        }
+        set(&mut self, value: int32) {
+            self.raw = value
+        }
+    }
+}
+```
+
+Getter-only properties are read-only:
+
+```taro
+impl User {
+    var id: int64 {
+        get(&self) {
+            return self._id
+        }
+    }
+}
+```
+
+Getters may be async:
+
+```taro
+impl SessionStore {
+    var current: Session {
+        get(&self) async {
+            return await self.loadCurrent()
+        }
+    }
+}
+```
+
+Rules:
+
+- Exactly one `get` accessor is required.
+- `set` is optional.
+- `set` must use `set(&mut self, value: T)` where `T` matches the property type.
+- `set` cannot be `async` in v1.
+- Async getters require explicit await at the read site: `await obj.prop`.
+- Compound assignment on computed properties (for example `obj.prop += 1`) is not supported in v1.
+- Computed properties are supported in `impl` blocks only in v1.
+- Interface computed properties are deferred for safety in this cycle.
+- `get` and `set` are contextual keywords only inside accessor blocks.
 
 ---
 

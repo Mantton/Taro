@@ -1,0 +1,10 @@
+error: interface computed properties are deferred for safety
+ -> language_tests/source_files/invalid/interface_properties_deferred.tr:2:4
+    var name: string { get(&self) { "taro" } };
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+interface Named {
+                 ^
+error: expected top-level declaration
+ -> language_tests/source_files/invalid/interface_properties_deferred.tr:3:0
+	}
+	^

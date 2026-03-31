@@ -185,6 +185,19 @@ object.method()
 user.profile.name
 ```
 
+Computed properties are also accessed through member syntax:
+
+```taro
+counter.value        // getter read
+counter.value = 10   // setter write (if a setter exists)
+```
+
+If the property getter is async, reads must be directly awaited:
+
+```taro
+let s = await store.current
+```
+
 ### Tuple Access
 
 ```taro
@@ -294,6 +307,11 @@ x ^= bits           // Bitwise XOR and assign
 x <<= 1             // Left shift and assign
 x >>= 1             // Right shift and assign
 ```
+
+For computed properties:
+
+- `obj.prop = value` is valid only when a setter is declared.
+- `obj.prop += value` and other compound assignments are not supported in v1.
 
 ---
 

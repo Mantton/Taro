@@ -10,6 +10,7 @@ use crate::{
         },
     },
 };
+use rustc_hash::FxHashMap;
 
 pub fn run(package: &hir::Package, context: GlobalContext) -> CompileResult<()> {
     Actor::run(package, context)
@@ -17,11 +18,15 @@ pub fn run(package: &hir::Package, context: GlobalContext) -> CompileResult<()> 
 
 struct Actor<'ctx> {
     context: GlobalContext<'ctx>,
+    getter_output_tys: FxHashMap<DefinitionID, hir::Type>,
 }
 
 impl<'ctx> Actor<'ctx> {
     fn new(context: GlobalContext<'ctx>) -> Actor<'ctx> {
-        Actor { context }
+        Actor {
+            context,
+            getter_output_tys: FxHashMap::default(),
+        }
     }
 
     fn run(package: &hir::Package, context: GlobalContext<'ctx>) -> CompileResult<()> {
@@ -32,6 +37,18 @@ impl<'ctx> Actor<'ctx> {
 }
 
 impl<'ctx> HirVisitor for Actor<'ctx> {
+    fn visit_assoc_declaration(
+        &mut self,
+        node: &hir::AssociatedDeclaration,
+        context: hir::AssocContext,
+    ) -> Self::Result {
+        if let hir::AssociatedDeclarationKind::Property(property) = &node.kind {
+            self.getter_output_tys
+                .insert(property.getter_id, *property.ty.clone());
+        }
+        hir::walk_assoc_declaration(self, node, context)
+    }
+
     fn visit_function(
         &mut self,
         id: hir::DefinitionID,
@@ -146,7 +163,9 @@ impl<'ctx> Actor<'ctx> {
             });
         }
 
-        let declared_output = if let Some(node) = &node.signature.prototype.output {
+        let declared_output = if let Some(property_output) = self.getter_output_tys.get(&id) {
+            ctx.lowerer().lower_type(property_output)
+        } else if let Some(node) = &node.signature.prototype.output {
             ctx.lowerer().lower_type(node)
         } else {
             self.context.types.void

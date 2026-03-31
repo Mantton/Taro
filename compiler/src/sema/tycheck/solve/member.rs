@@ -1,6 +1,7 @@
 use super::{
-    Adjustment, BindOverloadGoalData, ConstraintSolver, DisjunctionBranch, Goal,
-    InferredStaticMemberGoalData, MemberGoalData, Obligation, SolverResult,
+    Adjustment, ApplyArgument, ApplyGoalData, BindOverloadGoalData, ConstraintSolver,
+    DisjunctionBranch, Goal, InferredStaticMemberGoalData, MemberGoalData, Obligation,
+    ResolvedPropertyRead, SolverResult,
 };
 use crate::{
     hir::{NodeID, OperatorKind, Resolution, StdItem},
@@ -51,6 +52,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             node_id,
             receiver_node,
             receiver,
+            receiver_can_mut_borrow,
             name,
             result,
             span,
@@ -93,6 +95,79 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 self.record_adjustments(receiver_node, adjustments);
                 self.record_field_index(node_id, index);
                 return self.solve_equality(span, result, field.ty);
+            }
+
+            if let Some(property) = self.lookup_computed_property(ty, name.symbol) {
+                let mut receiver_arg_ty = ty;
+                let mut property_adjustments = adjustments.clone();
+                let getter_sig = self.gcx().get_signature(property.getter_id);
+                if let Some(self_param) = getter_sig.inputs.first()
+                    && let TyKind::Reference(_, mutability) = self_param.ty.kind()
+                {
+                    if mutability == crate::hir::Mutability::Mutable && !receiver_can_mut_borrow {
+                        continue;
+                    }
+
+                    receiver_arg_ty =
+                        Ty::new(TyKind::Reference(ty, mutability), self.gcx());
+                    property_adjustments.push(match mutability {
+                        crate::hir::Mutability::Mutable => Adjustment::BorrowMutable,
+                        crate::hir::Mutability::Immutable => Adjustment::BorrowImmutable,
+                    });
+                }
+
+                self.record_adjustments(receiver_node, property_adjustments);
+                self.record_property_read(
+                    node_id,
+                    ResolvedPropertyRead {
+                        property_id: property.property_id,
+                        getter_id: property.getter_id,
+                        setter_id: property.setter_id,
+                        ty: property.ty,
+                        getter_is_async: self.gcx().definition_is_async(property.getter_id),
+                    },
+                );
+
+                let getter_ty = self.gcx().get_type(property.getter_id);
+                let getter_var = self.icx.next_ty_var(span);
+
+                let bind = Obligation {
+                    location: span,
+                    goal: Goal::BindOverload(BindOverloadGoalData {
+                        node_id,
+                        var_ty: getter_var,
+                        candidate_ty: getter_ty,
+                        source: property.getter_id,
+                        instantiation_args: None,
+                    }),
+                };
+
+                let apply = Obligation {
+                    location: span,
+                    goal: Goal::Apply(ApplyGoalData {
+                        call_node_id: node_id,
+                        call_span: span,
+                        callee_ty: getter_var,
+                        callee_source: Some(property.getter_id),
+                        is_unsafe_context: false,
+                        result_ty: result,
+                        _expect_ty: Some(property.ty),
+                        arguments: vec![ApplyArgument {
+                            id: receiver_node,
+                            label: None,
+                            ty: receiver_arg_ty,
+                            span,
+                        }],
+                        skip_labels: false,
+                    }),
+                };
+
+                let contract = Obligation {
+                    location: span,
+                    goal: Goal::Equal(result, property.ty),
+                };
+
+                return SolverResult::Solved(vec![bind, apply, contract]);
             }
 
             // Instance methods.
@@ -348,6 +423,30 @@ impl<'ctx> ConstraintSolver<'ctx> {
             }
         }
         None
+    }
+
+    pub(crate) fn lookup_computed_property(
+        &self,
+        ty: Ty<'ctx>,
+        name: Symbol,
+    ) -> Option<crate::compile::context::ComputedPropertyEntry<'ctx>> {
+        let head = self.type_head_from_type(ty)?;
+        let mut property = self.gcx().lookup_computed_property(head, name)?;
+        if !self
+            .gcx()
+            .is_visibility_allowed(property.visibility, self.current_def)
+        {
+            return None;
+        }
+
+        if let TyKind::Adt(_, args) = ty.kind()
+            && !args.is_empty()
+            && property.ty.needs_instantiation()
+        {
+            property.ty = instantiate_ty_with_args(self.gcx(), property.ty, args);
+        }
+
+        Some(property)
     }
 
     fn lookup_instance_candidates(&self, ty: Ty<'ctx>, name: Symbol) -> Vec<DefinitionID> {

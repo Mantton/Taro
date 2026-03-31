@@ -1,0 +1,4 @@
+error: use of moved value 'mv'
+ -> language_tests/source_files/invalid/computed_properties.tr:18:12
+	    let _ = mv
+	            ^^

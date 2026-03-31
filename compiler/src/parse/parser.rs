@@ -2,19 +2,21 @@ use crate::{
     ast::{
         self, AnonConst, AssociatedDeclaration, AssociatedDeclarationKind, Attribute, AttributeArg,
         AttributeArgs, AttributeList, BinaryOperator, Block, CfgExpr, ClosureExpression,
-        ConformanceConstraint, Conformances, Constant, Declaration, DeclarationKind, Enum,
-        EnumCase, Expression, ExpressionArgument, ExpressionField, ExpressionKind, FieldDefinition,
-        ForStatement, Function, FunctionDeclaration, FunctionDeclarationKind, FunctionParameter,
-        FunctionPrototype, FunctionSignature, GenericBound, GenericBounds, GenericRequirement,
-        GenericRequirementList, GenericWhereClause, Generics, Identifier, IfExpression, Impl,
-        Interface, Label, Literal, Local, MapPair, MatchArm, MatchExpression, Mutability,
-        Namespace, NamespaceDeclaration, NamespaceDeclarationKind, NodeID, Path, PathNode,
-        PathSegment, Pattern, PatternBindingCondition, PatternKind, PatternPath,
-        RequiredTypeConstraint, SelfKind, Statement, StatementKind, StaticVariable, Struct,
-        StructLiteral, Type, TypeAlias, TypeArgument, TypeArguments, TypeKind, TypeParameter,
-        TypeParameterKind, TypeParameters, UnaryOperator, UseTree, UseTreeKind, UseTreeNestedItem,
-        UseTreePath, Variant, VariantKind, Visibility, VisibilityLevel,
+        ComputedProperty, ConformanceConstraint, Conformances, Constant, Declaration,
+        DeclarationKind, Enum, EnumCase, Expression, ExpressionArgument, ExpressionField,
+        ExpressionKind, FieldDefinition, ForStatement, Function, FunctionDeclaration,
+        FunctionDeclarationKind, FunctionParameter, FunctionPrototype, FunctionSignature,
+        GenericBound, GenericBounds, GenericRequirement, GenericRequirementList, GenericWhereClause,
+        Generics, Identifier, IfExpression, Impl, Interface, Label, Literal, Local, MapPair,
+        MatchArm, MatchExpression, Mutability, Namespace, NamespaceDeclaration,
+        NamespaceDeclarationKind, NodeID, Path, PathNode, PathSegment, Pattern,
+        PatternBindingCondition, PatternKind, PatternPath, RequiredTypeConstraint, SelfKind,
+        Statement, StatementKind, StaticVariable, Struct, StructLiteral, Type, TypeAlias,
+        TypeArgument, TypeArguments, TypeKind, TypeParameter, TypeParameterKind, TypeParameters,
+        UnaryOperator, UseTree, UseTreeKind, UseTreeNestedItem, UseTreePath, Variant, VariantKind,
+        Visibility, VisibilityLevel,
     },
+    constants::INTERFACE_COMPUTED_PROPERTIES_DEFERRED_DIAGNOSTIC,
     diagnostics::DiagCtx,
     error::ReportedError,
     parse::{Base, lexer, token::Token},
@@ -96,6 +98,7 @@ struct Parser {
     cursor: usize,
     restrictions: Restrictions,
     anchors: VecDeque<usize>,
+    pending_associated_declarations: VecDeque<AssociatedDeclaration>,
     next_index: NextNode,
     errors: Vec<Spanned<ParserError>>,
 }
@@ -107,6 +110,7 @@ impl Parser {
             cursor: 0,
             restrictions: Restrictions::empty(),
             anchors: VecDeque::new(),
+            pending_associated_declarations: VecDeque::new(),
             errors: vec![],
             next_index: next,
         }
@@ -516,10 +520,12 @@ impl Parser {
 
         let mut decls = vec![];
 
-        while !self.matches(Token::RBrace) && !self.is_at_end() {
+        while (!self.matches(Token::RBrace) || !self.pending_associated_declarations.is_empty())
+            && !self.is_at_end()
+        {
             // Skip ASI-inserted semicolons between declarations
             while self.eat(Token::Semicolon) {}
-            if self.matches(Token::RBrace) {
+            if self.matches(Token::RBrace) && self.pending_associated_declarations.is_empty() {
                 break;
             }
             match action(self)? {
@@ -529,7 +535,7 @@ impl Parser {
                 }
             }
 
-            if self.matches(Token::RBrace) {
+            if self.matches(Token::RBrace) && self.pending_associated_declarations.is_empty() {
                 break;
             }
         }
@@ -544,6 +550,29 @@ impl Parser {
         &mut self,
         fn_mode: FnParseMode,
     ) -> R<Option<AssociatedDeclaration>> {
+        if let Some(declaration) = self.pending_associated_declarations.pop_front() {
+            return Ok(Some(declaration));
+        }
+
+        let checkpoint = self.checkpoint();
+        let start_span = self.lo_span();
+        let attributes = self.parse_attributes()?;
+        let visibility = self.parse_visibility()?;
+        if self.matches(Token::Var) {
+            if !fn_mode.req_body {
+                return Err(Spanned::new(
+                    ParserError::ComputedPropertyOnlyAllowedInImpl,
+                    start_span.to(self.hi_span()),
+                ));
+            }
+
+            let declaration =
+                self.parse_computed_property_associated(start_span, attributes, visibility)?;
+            self.expect_semi()?;
+            return Ok(Some(declaration));
+        }
+        self.restore(checkpoint);
+
         let result = self.parse_declaration_internal(fn_mode)?;
         let Some(result) = result else {
             return Ok(None);
@@ -567,6 +596,297 @@ impl Parser {
         };
 
         return Ok(Some(declaration));
+    }
+
+    fn parse_computed_property_associated(
+        &mut self,
+        start_span: Span,
+        attributes: AttributeList,
+        visibility: Visibility,
+    ) -> R<AssociatedDeclaration> {
+        self.expect(Token::Var)?;
+        let identifier = self.parse_identifier()?;
+        self.expect(Token::Colon)?;
+        let ty = self.parse_type()?;
+
+        let (getter_decl, setter_decl) =
+            self.parse_computed_property_accessors(identifier, &ty, visibility)?;
+
+        let property = ComputedProperty {
+            ty,
+            getter_id: getter_decl.id,
+            setter_id: setter_decl.as_ref().map(|declaration| declaration.id),
+        };
+
+        let declaration = Declaration {
+            id: self.next_id(),
+            span: start_span.to(self.hi_span()),
+            identifier,
+            kind: AssociatedDeclarationKind::Property(property),
+            visibility,
+            attributes,
+        };
+
+        self.pending_associated_declarations.push_back(getter_decl);
+        if let Some(setter_decl) = setter_decl {
+            self.pending_associated_declarations.push_back(setter_decl);
+        }
+
+        Ok(declaration)
+    }
+
+    fn parse_computed_property_accessors(
+        &mut self,
+        property_identifier: Identifier,
+        property_ty: &Box<Type>,
+        visibility: Visibility,
+    ) -> R<(AssociatedDeclaration, Option<AssociatedDeclaration>)> {
+        self.expect(Token::LBrace)?;
+
+        let getter_ident =
+            self.make_hidden_property_accessor_identifier(&property_identifier, "get");
+        let setter_ident =
+            self.make_hidden_property_accessor_identifier(&property_identifier, "set");
+
+        let mut getter = None;
+        let mut setter = None;
+
+        while !self.matches(Token::RBrace) && !self.is_at_end() {
+            while self.eat(Token::Semicolon) {}
+            if self.matches(Token::RBrace) {
+                break;
+            }
+
+            if self.matches_contextual_identifier("get") {
+                if getter.is_some() {
+                    return Err(self.err_at_current(ParserError::DuplicateComputedPropertyAccessor));
+                }
+                getter = Some(self.parse_computed_property_getter(
+                    property_ty,
+                    getter_ident,
+                    visibility,
+                )?);
+            } else if self.matches_contextual_identifier("set") {
+                if setter.is_some() {
+                    return Err(self.err_at_current(ParserError::DuplicateComputedPropertyAccessor));
+                }
+                setter = Some(self.parse_computed_property_setter(
+                    property_ty,
+                    setter_ident,
+                    visibility,
+                )?);
+            } else {
+                return Err(self.err_at_current(ParserError::ExpectedComputedPropertyAccessor));
+            }
+        }
+
+        self.expect(Token::RBrace)?;
+
+        let Some(getter) = getter else {
+            return Err(Spanned::new(
+                ParserError::MissingComputedPropertyGetter,
+                property_identifier.span,
+            ));
+        };
+
+        Ok((getter, setter))
+    }
+
+    fn parse_computed_property_getter(
+        &mut self,
+        _property_ty: &Type,
+        hidden_name: Identifier,
+        visibility: Visibility,
+    ) -> R<AssociatedDeclaration> {
+        let lo = self.lo_span();
+        let get_ident = self.parse_identifier()?;
+        debug_assert!(self.symbol_eq(get_ident.symbol, "get"));
+
+        let inputs = self.parse_function_parameters()?;
+        if inputs.len() != 1 || !self.is_valid_computed_property_getter_input(&inputs[0]) {
+            return Err(Spanned::new(
+                ParserError::InvalidComputedPropertyGetterSignature,
+                get_ident.span,
+            ));
+        }
+
+        let is_async = self.eat(Token::Async);
+
+        if self.eat(Token::RArrow) {
+            let _ = self.parse_type()?;
+        }
+
+        let block = if self.matches(Token::LBrace) {
+            Some(self.parse_block()?)
+        } else {
+            return Err(self.err_at_current(ParserError::FunctionBodyRequired));
+        };
+
+        let signature = FunctionSignature {
+            span: get_ident.span.to(self.hi_span()),
+            prototype: FunctionPrototype {
+                inputs,
+                output: None,
+            },
+        };
+
+        let function = Function {
+            generics: Generics {
+                type_parameters: None,
+                where_clause: None,
+            },
+            signature,
+            block,
+            is_unsafe: false,
+            is_async,
+            abi: None,
+        };
+
+        Ok(Declaration {
+            id: self.next_id(),
+            span: lo.to(self.hi_span()),
+            identifier: hidden_name,
+            kind: AssociatedDeclarationKind::Function(function),
+            visibility,
+            attributes: vec![],
+        })
+    }
+
+    fn parse_computed_property_setter(
+        &mut self,
+        _property_ty: &Type,
+        hidden_name: Identifier,
+        visibility: Visibility,
+    ) -> R<AssociatedDeclaration> {
+        let lo = self.lo_span();
+        let set_ident = self.parse_identifier()?;
+        debug_assert!(self.symbol_eq(set_ident.symbol, "set"));
+
+        let inputs = self.parse_function_parameters()?;
+        if !self.is_valid_computed_property_setter_inputs(&inputs) {
+            return Err(Spanned::new(
+                ParserError::InvalidComputedPropertySetterSignature,
+                set_ident.span,
+            ));
+        }
+
+        if self.eat(Token::Async) {
+            return Err(Spanned::new(
+                ParserError::AsyncComputedPropertySetterNotAllowed,
+                set_ident.span,
+            ));
+        }
+
+        if self.eat(Token::RArrow) {
+            let _ = self.parse_type()?;
+            return Err(Spanned::new(
+                ParserError::InvalidComputedPropertySetterSignature,
+                set_ident.span,
+            ));
+        }
+
+        let block = if self.matches(Token::LBrace) {
+            Some(self.parse_block()?)
+        } else {
+            return Err(self.err_at_current(ParserError::FunctionBodyRequired));
+        };
+
+        let signature = FunctionSignature {
+            span: set_ident.span.to(self.hi_span()),
+            prototype: FunctionPrototype {
+                inputs,
+                output: None,
+            },
+        };
+
+        let function = Function {
+            generics: Generics {
+                type_parameters: None,
+                where_clause: None,
+            },
+            signature,
+            block,
+            is_unsafe: false,
+            is_async: false,
+            abi: None,
+        };
+
+        Ok(Declaration {
+            id: self.next_id(),
+            span: lo.to(self.hi_span()),
+            identifier: hidden_name,
+            kind: AssociatedDeclarationKind::Function(function),
+            visibility,
+            attributes: vec![],
+        })
+    }
+
+    fn is_valid_computed_property_setter_inputs(&self, inputs: &[FunctionParameter]) -> bool {
+        if inputs.len() != 2 {
+            return false;
+        }
+
+        let receiver = &inputs[0];
+        if !self.symbol_eq(receiver.name.symbol, "self") {
+            return false;
+        }
+        if receiver.default_value.is_some() || receiver.is_variadic {
+            return false;
+        }
+
+        let is_mut_self = match &receiver.annotated_type.kind {
+            TypeKind::Reference(inner, mutability) => {
+                *mutability == Mutability::Mutable && matches!(&inner.kind, TypeKind::ImplicitSelf)
+            }
+            _ => false,
+        };
+
+        if !is_mut_self {
+            return false;
+        }
+
+        let value = &inputs[1];
+        value.default_value.is_none() && !value.is_variadic
+    }
+
+    fn is_valid_computed_property_getter_input(&self, input: &FunctionParameter) -> bool {
+        if !self.symbol_eq(input.name.symbol, "self") {
+            return false;
+        }
+
+        if input.default_value.is_some() || input.is_variadic {
+            return false;
+        }
+
+        match &input.annotated_type.kind {
+            TypeKind::ImplicitSelf => true,
+            TypeKind::Reference(inner, _) => matches!(&inner.kind, TypeKind::ImplicitSelf),
+            _ => false,
+        }
+    }
+
+    fn matches_contextual_identifier(&self, text: &str) -> bool {
+        match self.current_token() {
+            Token::Identifier { value } => value == text,
+            _ => false,
+        }
+    }
+
+    fn make_hidden_property_accessor_identifier(
+        &mut self,
+        property_identifier: &Identifier,
+        accessor_kind: &str,
+    ) -> Identifier {
+        let symbol = self.intern_symbol(&format!(
+            "__prop_{}_{}",
+            accessor_kind,
+            property_identifier.symbol.as_ref()
+        ));
+
+        Identifier {
+            span: property_identifier.span,
+            symbol,
+        }
     }
 
     fn parse_function_declaration(&mut self) -> R<Option<FunctionDeclaration>> {
@@ -4096,6 +4416,13 @@ enum ParserError {
     ExternFunctionBodyNotAllowed,
     DisallowedStructLiteral,
     ExpectedPathExpression,
+    ExpectedComputedPropertyAccessor,
+    MissingComputedPropertyGetter,
+    DuplicateComputedPropertyAccessor,
+    InvalidComputedPropertyGetterSignature,
+    InvalidComputedPropertySetterSignature,
+    AsyncComputedPropertySetterNotAllowed,
+    ComputedPropertyOnlyAllowedInImpl,
     ExtraTypeArguments,
     UnsafeModifierRequiresFunction,
     UnsafeAttributeRemoved,
@@ -4156,6 +4483,29 @@ impl Display for ParserError {
             ExpectedPathExpression => f.write_str(
                 "expected a path expression (identifier, member access, or type specialization)",
             ),
+            ExpectedComputedPropertyAccessor => {
+                f.write_str("expected computed property accessor `get` or `set`")
+            }
+            MissingComputedPropertyGetter => {
+                f.write_str("computed property must declare a getter")
+            }
+            DuplicateComputedPropertyAccessor => {
+                f.write_str("duplicate computed property accessor")
+            }
+            InvalidComputedPropertyGetterSignature => {
+                f.write_str("invalid getter signature; expected `get(self|&self|&mut self)`")
+            }
+            InvalidComputedPropertySetterSignature => {
+                f.write_str(
+                    "invalid setter signature; expected `set(&mut self, value: T)` with no return",
+                )
+            }
+            AsyncComputedPropertySetterNotAllowed => {
+                f.write_str("computed property setter cannot be async")
+            }
+            ComputedPropertyOnlyAllowedInImpl => {
+                f.write_str(INTERFACE_COMPUTED_PROPERTIES_DEFERRED_DIAGNOSTIC)
+            }
             ExtraTypeArguments => f.write_str("extra type arguments provided"),
             UnsafeModifierRequiresFunction => {
                 f.write_str("`unsafe` can only be applied to function declarations")
@@ -6160,6 +6510,109 @@ mod tests {
             }
             _ => panic!("Expected function"),
         }
+    }
+
+    #[test]
+    fn test_impl_computed_property_getter_only() {
+        let decl = parse_one_decl("impl Foo { var x: int32 { get(self) { 1 } }; }");
+        let DeclarationKind::Impl(node) = decl.kind else {
+            panic!("Expected impl declaration");
+        };
+
+        assert_eq!(node.declarations.len(), 2);
+        let property = &node.declarations[0];
+        let getter = &node.declarations[1];
+        let AssociatedDeclarationKind::Property(property_node) = &property.kind else {
+            panic!("Expected property declaration");
+        };
+        assert_eq!(property_node.getter_id, getter.id);
+        assert!(property_node.setter_id.is_none());
+    }
+
+    #[test]
+    fn test_impl_computed_property_getter_setter_async_getter() {
+        let decl = parse_one_decl(
+            "impl Foo { var x: int32 { get(self) async { 1 } set(&mut self, value: int32) { } }; }",
+        );
+        let DeclarationKind::Impl(node) = decl.kind else {
+            panic!("Expected impl declaration");
+        };
+
+        assert_eq!(node.declarations.len(), 3);
+        let property = &node.declarations[0];
+        let getter = &node.declarations[1];
+        let setter = &node.declarations[2];
+
+        let AssociatedDeclarationKind::Property(property_node) = &property.kind else {
+            panic!("Expected property declaration");
+        };
+        assert_eq!(property_node.getter_id, getter.id);
+        assert_eq!(property_node.setter_id, Some(setter.id));
+
+        let AssociatedDeclarationKind::Function(getter_fn) = &getter.kind else {
+            panic!("Expected getter function declaration");
+        };
+        assert!(getter_fn.is_async);
+
+        let AssociatedDeclarationKind::Function(setter_fn) = &setter.kind else {
+            panic!("Expected setter function declaration");
+        };
+        assert!(!setter_fn.is_async);
+    }
+
+    #[test]
+    fn test_impl_computed_property_getter_mut_ref_receiver() {
+        let decl = parse_one_decl("impl Foo { var x: int32 { get(&mut self) { 1 } }; }");
+        let DeclarationKind::Impl(node) = decl.kind else {
+            panic!("Expected impl declaration");
+        };
+
+        assert_eq!(node.declarations.len(), 2);
+        let property = &node.declarations[0];
+        let getter = &node.declarations[1];
+
+        let AssociatedDeclarationKind::Property(property_node) = &property.kind else {
+            panic!("Expected property declaration");
+        };
+        assert_eq!(property_node.getter_id, getter.id);
+        assert!(property_node.setter_id.is_none());
+
+        let AssociatedDeclarationKind::Function(getter_fn) = &getter.kind else {
+            panic!("Expected getter function declaration");
+        };
+        assert_eq!(getter_fn.signature.prototype.inputs.len(), 1);
+        let self_param = &getter_fn.signature.prototype.inputs[0];
+        match &self_param.annotated_type.kind {
+            TypeKind::Reference(inner, Mutability::Mutable) => {
+                assert!(matches!(inner.kind, TypeKind::ImplicitSelf));
+            }
+            _ => panic!("Expected &mut self getter receiver"),
+        }
+    }
+
+    #[test]
+    fn test_interface_computed_property_rejected() {
+        let errors = parse_decls("interface Foo { var x: int32 { get(self) { 1 } } }")
+            .expect_err("parse should fail");
+        assert!(errors.iter().any(|error| {
+            matches!(
+                error.value,
+                ParserError::ComputedPropertyOnlyAllowedInImpl
+            )
+        }));
+    }
+
+    #[test]
+    fn test_computed_property_async_setter_rejected() {
+        let errors =
+            parse_decls("impl Foo { var x: int32 { get(self) { 1 } set(&mut self, value: int32) async { } } }")
+                .expect_err("parse should fail");
+        assert!(errors.iter().any(|error| {
+            matches!(
+                error.value,
+                ParserError::AsyncComputedPropertySetterNotAllowed
+            )
+        }));
     }
 
     // ==================== ATTRIBUTE TESTS ====================

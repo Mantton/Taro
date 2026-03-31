@@ -80,6 +80,11 @@ class       final       override    fileprivate protected
 async       await       ref
 ```
 
+### Contextual Keywords
+
+`get` and `set` are not reserved globally. They are interpreted as contextual
+keywords only inside computed-property accessor blocks.
+
 ### Operators and Punctuation
 
 ```ebnf
@@ -187,14 +192,21 @@ async       await       ref
 
 ```ebnf
 <interface_declaration>::= 'interface' <identifier> <generics> [ <conformances> ]
-                           '{' { <associated_declaration> } '}'
+                           '{' { <interface_associated_declaration> } '}'
 
-<associated_declaration>::= { <attribute> } <visibility> <associated_decl_kind>
+<interface_associated_declaration>
+                       ::= { <attribute> } <visibility> <interface_associated_decl_kind>
 
-<associated_decl_kind> ::= <function_declaration>
+<interface_associated_decl_kind>
+                       ::= <function_declaration>
                          | <constant_declaration>
                          | <type_alias_declaration>
                          | <operator_declaration>
+
+> Note: computed properties in `interface` declarations are intentionally
+> deferred for safety. Current concerns include receiver-effect semantics
+> (`self` vs `&self` vs `&mut self`) and duplicate-name ambiguity when
+> multiple interfaces define the same property name.
 
 <conformances>         ::= ':' <path_node> { ',' <path_node> }
 ```
@@ -203,7 +215,23 @@ async       await       ref
 
 ```ebnf
 <impl_declaration>     ::= 'impl' [ <generics> ] <type> [ 'for' <type> ]
-                           '{' { <associated_declaration> } '}'
+                           '{' { <impl_associated_declaration> } '}'
+
+<impl_associated_declaration>
+                       ::= { <attribute> } <visibility> <impl_associated_decl_kind>
+
+<impl_associated_decl_kind>
+                       ::= <interface_associated_decl_kind>
+                         | <computed_property_declaration>
+
+<computed_property_declaration>
+                       ::= 'var' <identifier> ':' <type>
+                           '{' <getter_accessor> [ <setter_accessor> ] '}'
+
+<getter_accessor>      ::= 'get' '(' <self_parameter> ')' [ 'async' ] <block>
+
+<setter_accessor>      ::= 'set' '(' '&' 'mut' 'self' ',' <identifier> ':' <type> ')'
+                           <block>
 ```
 
 ### Function Declaration

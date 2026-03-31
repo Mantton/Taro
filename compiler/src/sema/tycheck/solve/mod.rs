@@ -52,6 +52,8 @@ pub struct ConstraintSystem<'ctx> {
     interface_calls: FxHashMap<NodeID, InterfaceCallInfo>,
     pub locals: RefCell<FxHashMap<NodeID, Ty<'ctx>>>,
     pub field_indices: FxHashMap<NodeID, usize>,
+    pub property_reads: FxHashMap<NodeID, ResolvedPropertyRead<'ctx>>,
+    pub property_writes: FxHashMap<NodeID, ResolvedPropertyWrite<'ctx>>,
     overload_sources: FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
     value_resolutions: FxHashMap<NodeID, Resolution>,
     instantiation_args: FxHashMap<NodeID, GenericArguments<'ctx>>,
@@ -92,6 +94,8 @@ impl<'ctx> ConstraintSystem<'ctx> {
             adjustments: Default::default(),
             interface_calls: Default::default(),
             field_indices: Default::default(),
+            property_reads: Default::default(),
+            property_writes: Default::default(),
             overload_sources: Default::default(),
             value_resolutions: Default::default(),
             instantiation_args: Default::default(),
@@ -210,6 +214,10 @@ impl<'ctx> ConstraintSystem<'ctx> {
         }
     }
 
+    pub fn record_property_write(&mut self, node_id: NodeID, info: ResolvedPropertyWrite<'ctx>) {
+        self.property_writes.insert(node_id, info);
+    }
+
     pub fn expr_ty(&self, id: NodeID) -> Option<Ty<'ctx>> {
         self.expr_tys.get(&id).cloned()
     }
@@ -257,6 +265,14 @@ impl<'ctx> ConstraintSystem<'ctx> {
 
     pub fn resolved_field_indices(&self) -> FxHashMap<NodeID, usize> {
         self.field_indices.clone()
+    }
+
+    pub fn resolved_property_reads(&self) -> FxHashMap<NodeID, ResolvedPropertyRead<'ctx>> {
+        self.property_reads.clone()
+    }
+
+    pub fn resolved_property_writes(&self) -> FxHashMap<NodeID, ResolvedPropertyWrite<'ctx>> {
+        self.property_writes.clone()
     }
 
     pub fn resolved_overload_sources(
@@ -315,6 +331,8 @@ impl<'ctx> ConstraintSystem<'ctx> {
         self.interface_calls.extend(other.interface_calls);
         self.locals.borrow_mut().extend(other.locals.into_inner());
         self.field_indices.extend(other.field_indices);
+        self.property_reads.extend(other.property_reads);
+        self.property_writes.extend(other.property_writes);
         self.overload_sources.extend(other.overload_sources);
         self.value_resolutions.extend(other.value_resolutions);
         self.instantiation_args.extend(other.instantiation_args);
@@ -341,6 +359,8 @@ impl<'ctx> ConstraintSystem<'ctx> {
             interface_calls: std::mem::take(&mut self.interface_calls),
             integer_literals: self.integer_literals.clone(),
             field_indices: std::mem::take(&mut self.field_indices),
+            property_reads: std::mem::take(&mut self.property_reads),
+            property_writes: std::mem::take(&mut self.property_writes),
             overload_sources: std::mem::take(&mut self.overload_sources),
             value_resolutions: std::mem::take(&mut self.value_resolutions),
             instantiation_args: std::mem::take(&mut self.instantiation_args),
@@ -357,6 +377,8 @@ impl<'ctx> ConstraintSystem<'ctx> {
             adjustments,
             interface_calls,
             field_indices,
+            property_reads,
+            property_writes,
             overload_sources,
             value_resolutions,
             instantiation_args,
@@ -364,6 +386,8 @@ impl<'ctx> ConstraintSystem<'ctx> {
         self.adjustments = adjustments;
         self.interface_calls = interface_calls;
         self.field_indices = field_indices;
+        self.property_reads = property_reads;
+        self.property_writes = property_writes;
         self.overload_sources = overload_sources;
         self.value_resolutions = value_resolutions;
         self.instantiation_args = instantiation_args;
@@ -431,6 +455,8 @@ struct ConstraintSolver<'ctx> {
     interface_calls: FxHashMap<NodeID, InterfaceCallInfo>,
     integer_literals: FxHashMap<NodeID, u64>,
     pub field_indices: FxHashMap<NodeID, usize>,
+    pub property_reads: FxHashMap<NodeID, ResolvedPropertyRead<'ctx>>,
+    pub property_writes: FxHashMap<NodeID, ResolvedPropertyWrite<'ctx>>,
     overload_sources: FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
     value_resolutions: FxHashMap<NodeID, Resolution>,
     instantiation_args: FxHashMap<NodeID, GenericArguments<'ctx>>,
@@ -446,6 +472,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
     pub fn record_field_index(&mut self, id: NodeID, index: usize) {
         self.field_indices.insert(id, index);
+    }
+
+    pub fn record_property_read(&mut self, id: NodeID, info: ResolvedPropertyRead<'ctx>) {
+        self.property_reads.insert(id, info);
     }
 
     pub fn record_overload_source(
@@ -799,6 +829,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
             interface_calls: FxHashMap::default(),
             integer_literals: self.integer_literals.clone(),
             field_indices: FxHashMap::default(),
+            property_reads: FxHashMap::default(),
+            property_writes: FxHashMap::default(),
             overload_sources: FxHashMap::default(),
             value_resolutions: FxHashMap::default(),
             instantiation_args: FxHashMap::default(),
@@ -889,6 +921,8 @@ impl<'ctx> SolverDriver<'ctx> {
         FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
         FxHashMap<NodeID, InterfaceCallInfo>,
         FxHashMap<NodeID, usize>,
+        FxHashMap<NodeID, ResolvedPropertyRead<'ctx>>,
+        FxHashMap<NodeID, ResolvedPropertyWrite<'ctx>>,
         FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
         FxHashMap<NodeID, Resolution>,
         FxHashMap<NodeID, GenericArguments<'ctx>>,
@@ -897,6 +931,8 @@ impl<'ctx> SolverDriver<'ctx> {
             self.solver.adjustments,
             self.solver.interface_calls,
             self.solver.field_indices,
+            self.solver.property_reads,
+            self.solver.property_writes,
             self.solver.overload_sources,
             self.solver.value_resolutions,
             self.solver.instantiation_args,

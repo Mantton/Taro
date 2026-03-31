@@ -176,6 +176,14 @@ pub enum AssociatedDeclarationKind {
     Constant(Constant),
     Function(Function),
     AssociatedType(TypeAlias),
+    Property(ComputedProperty),
+}
+
+#[derive(Debug, Clone)]
+pub struct ComputedProperty {
+    pub ty: Box<Type>,
+    pub getter_id: NodeID,
+    pub setter_id: Option<NodeID>,
 }
 
 #[derive(Debug, Clone)]
@@ -1460,6 +1468,9 @@ pub fn walk_assoc_declaration<V: AstVisitor>(
         }
         AssociatedDeclarationKind::AssociatedType(node) => {
             try_visit!(visitor.visit_alias(&node));
+        }
+        AssociatedDeclarationKind::Property(node) => {
+            try_visit!(visitor.visit_type(&node.ty));
         }
     }
 

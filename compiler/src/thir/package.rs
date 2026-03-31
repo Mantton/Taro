@@ -956,9 +956,47 @@ impl<'ctx> FunctionLower<'ctx> {
                 ExprKind::ExistentialTypeIs { value, target }
             }
             hir::ExpressionKind::Assign(lhs, rhs) => {
-                let target = self.lower_expr(lhs);
-                let value = self.lower_expr(rhs);
-                ExprKind::Assign { target, value }
+                if let Some(property_write) = self
+                    .results
+                    .property_write(expr.id)
+                    .or_else(|| {
+                        self.results.property_read(lhs.id).and_then(|read| {
+                            read.setter_id.map(|setter_id| {
+                                crate::sema::tycheck::solve::ResolvedPropertyWrite {
+                                    property_id: read.property_id,
+                                    setter_id,
+                                    ty: read.ty,
+                                }
+                            })
+                        })
+                    })
+                    && let hir::ExpressionKind::Member { target, .. } = &lhs.kind
+                {
+                    let receiver = self.lower_expr(target);
+                    let value = self.lower_expr(rhs);
+                    let callee_ty = self.gcx.get_type(property_write.setter_id);
+                    let generic_args = self
+                        .results
+                        .instantiation(lhs.id)
+                        .or_else(|| self.results.instantiation(expr.id));
+                    let callee = self.push_expr(
+                        ExprKind::Zst {
+                            id: property_write.setter_id,
+                            generic_args,
+                        },
+                        callee_ty,
+                        expr.span,
+                    );
+                    ExprKind::Call {
+                        callee,
+                        args: vec![receiver, value],
+                        is_async: false,
+                    }
+                } else {
+                    let target = self.lower_expr(lhs);
+                    let value = self.lower_expr(rhs);
+                    ExprKind::Assign { target, value }
+                }
             }
             hir::ExpressionKind::AssignOp(op, lhs, rhs) => {
                 // Check if this is an operator method call (e.g., AddAssign)
@@ -1158,12 +1196,31 @@ impl<'ctx> FunctionLower<'ctx> {
                 ExprKind::Adt(node)
             }
             hir::ExpressionKind::Member { target, .. } => {
-                let lhs = self.lower_expr(target);
-                ExprKind::Field {
-                    lhs,
-                    index: FieldIndex::from_usize(
-                        self.results.field_index(expr.id).expect("Field Index"),
-                    ),
+                if let Some(property) = self.results.property_read(expr.id) {
+                    let receiver = self.lower_expr(target);
+                    let callee_ty = self.gcx.get_type(property.getter_id);
+                    let generic_args = self.results.instantiation(expr.id);
+                    let callee = self.push_expr(
+                        ExprKind::Zst {
+                            id: property.getter_id,
+                            generic_args,
+                        },
+                        callee_ty,
+                        expr.span,
+                    );
+                    ExprKind::Call {
+                        callee,
+                        args: vec![receiver],
+                        is_async: self.results.is_async_call(expr.id),
+                    }
+                } else {
+                    let lhs = self.lower_expr(target);
+                    ExprKind::Field {
+                        lhs,
+                        index: FieldIndex::from_usize(
+                            self.results.field_index(expr.id).expect("Field Index"),
+                        ),
+                    }
                 }
             }
             hir::ExpressionKind::Tuple(elems) => {

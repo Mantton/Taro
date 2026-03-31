@@ -1,5 +1,6 @@
 use crate::{
     compile::context::Gcx,
+    constants::INTERFACE_COMPUTED_PROPERTIES_DEFERRED_DIAGNOSTIC,
     sema::{
         models::{
             AliasKind, ConformanceRecord, ConformanceWitness, GenericArgument, GenericArguments,
@@ -31,6 +32,18 @@ pub(super) fn build_conformance_witness<'ctx>(
     let key = goal_key(gcx, goal, mode);
     if let Some(cached) = gcx.get_witness_cache(gcx.package_index(), key) {
         return Ok(cached);
+    }
+
+    if gcx.interface_has_associated_property(goal.interface_id) {
+        gcx.dcx().emit_error(
+            INTERFACE_COMPUTED_PROPERTIES_DEFERRED_DIAGNOSTIC.into(),
+            None,
+        );
+        gcx.dcx().emit_info(
+            "internal consistency check triggered in conformance witness builder".into(),
+            None,
+        );
+        return Err(SelectionError::NoCandidates(goal));
     }
 
     let selection = select_interface_impl(gcx, goal, mode);

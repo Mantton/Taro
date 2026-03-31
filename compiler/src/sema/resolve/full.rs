@@ -468,6 +468,9 @@ impl<'r, 'a> Actor<'r, 'a> {
                     });
                 })
             }
+            ast::AssociatedDeclarationKind::Property(..) => {
+                ast::walk_assoc_declaration(self, declaration, ctx);
+            }
         }
     }
 }

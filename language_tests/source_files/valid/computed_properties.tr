@@ -1,0 +1,85 @@
+struct Counter {
+    value: int32
+}
+
+impl Counter {
+    var doubled: int32 {
+        get(&self) {
+            self.value * 2
+        }
+
+        set(&mut self, value: int32) {
+            self.value = value / 2
+        }
+    };
+
+    var next: int32 {
+        get(&self) async {
+            self.value + 1
+        }
+    };
+
+    var incremented: int32 {
+        get(&mut self) {
+            self.value += 1
+            self.value
+        }
+    };
+}
+
+struct CopyValue: Copy {
+    value: int32
+}
+
+impl CopyValue {
+    var snapshot: int32 {
+        get(self) {
+            self.value
+        }
+    };
+}
+
+struct MoveValue {
+    values: std.collections.List[int32]
+}
+
+impl MoveValue {
+    var takeValues: std.collections.List[int32] {
+        get(self) {
+            self.values
+        }
+    };
+}
+
+func main() async {
+    var counter = Counter { value: 10 }
+
+    let doubled_before = counter.doubled
+    assert(doubled_before == 20, "sync getter")
+
+    counter.doubled = 50
+    assert(counter.value == 25, "setter")
+
+    let next = await counter.next
+    assert(next == 26, "async getter")
+
+    let inc1 = counter.incremented
+    let inc2 = counter.incremented
+    assert(inc1 == 26, "&mut self getter first read")
+    assert(inc2 == 27, "&mut self getter second read")
+
+    let copy_value = CopyValue { value: 7 }
+    let snap1 = copy_value.snapshot
+    let snap2 = copy_value.snapshot
+    assert(snap1 == 7, "self getter with Copy receiver (first)")
+    assert(snap2 == 7, "self getter with Copy receiver (second)")
+
+    var items: std.collections.List[int32] = std.collections.List()
+    items.append(10)
+    items.append(20)
+    let move_value = MoveValue { values: items }
+    let taken = move_value.takeValues
+    assert(taken.len() == 2, "self getter moves non-copy payload")
+
+    std.print("PASS: computed properties\n")
+}
