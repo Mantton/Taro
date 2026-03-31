@@ -1,5 +1,7 @@
 use std::time::Duration as StdDuration;
 
+type TaskToken = u64;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Interest {
     Read,
@@ -8,7 +10,7 @@ pub(crate) enum Interest {
 
 #[cfg(unix)]
 mod imp {
-    use super::{Interest, StdDuration};
+    use super::{Interest, StdDuration, TaskToken};
     use libc::{self, c_int};
     use std::collections::HashMap;
     use std::os::fd::RawFd;
@@ -19,8 +21,8 @@ mod imp {
 
     struct SourceEntry {
         fd: RawFd,
-        read_waiters: Vec<usize>,
-        write_waiters: Vec<usize>,
+        read_waiters: Vec<TaskToken>,
+        write_waiters: Vec<TaskToken>,
         #[cfg(target_os = "linux")]
         registered: bool,
     }
@@ -266,7 +268,7 @@ mod imp {
         fn register_wait(
             &mut self,
             source_id: usize,
-            task_id: usize,
+            task_token: TaskToken,
             interest: Interest,
         ) -> Result<(), i32> {
             let Some(source) = self.sources.get_mut(&source_id) else {
@@ -278,14 +280,14 @@ mod imp {
                 Interest::Write => &mut source.write_waiters,
             };
 
-            if !waiters.contains(&task_id) {
-                waiters.push(task_id);
+            if !waiters.contains(&task_token) {
+                waiters.push(task_token);
             }
 
             self.arm_wait(source_id, interest)
         }
 
-        fn cancel_task(&mut self, task_id: usize) {
+        fn cancel_task(&mut self, task_token: TaskToken) {
             #[cfg(target_os = "linux")]
             let mut needs_rearm = Vec::new();
 
@@ -297,7 +299,7 @@ mod imp {
                 let mut cleared = false;
 
                 let read_before = source.read_waiters.len();
-                source.read_waiters.retain(|waiter| *waiter != task_id);
+                source.read_waiters.retain(|waiter| *waiter != task_token);
                 if source.read_waiters.len() != read_before {
                     #[cfg(target_os = "linux")]
                     {
@@ -306,7 +308,7 @@ mod imp {
                 }
 
                 let write_before = source.write_waiters.len();
-                source.write_waiters.retain(|waiter| *waiter != task_id);
+                source.write_waiters.retain(|waiter| *waiter != task_token);
                 if source.write_waiters.len() != write_before {
                     #[cfg(target_os = "linux")]
                     {
@@ -327,7 +329,7 @@ mod imp {
             }
         }
 
-        fn close_source(&mut self, source_id: usize) -> (c_int, Vec<usize>) {
+        fn close_source(&mut self, source_id: usize) -> (c_int, Vec<TaskToken>) {
             let Some(source) = self.sources.remove(&source_id) else {
                 return (0, Vec::new());
             };
@@ -346,7 +348,7 @@ mod imp {
         }
 
         #[cfg(target_os = "linux")]
-        fn process_epoll_events(&mut self, events: &[libc::epoll_event]) -> Vec<usize> {
+        fn process_epoll_events(&mut self, events: &[libc::epoll_event]) -> Vec<TaskToken> {
             let mut wake = Vec::new();
             let mut rearm = Vec::new();
             for event in events {
@@ -391,7 +393,7 @@ mod imp {
         }
 
         #[cfg(target_os = "macos")]
-        fn process_kqueue_events(&mut self, events: &[libc::kevent]) -> Vec<usize> {
+        fn process_kqueue_events(&mut self, events: &[libc::kevent]) -> Vec<TaskToken> {
             let mut wake = Vec::new();
             for event in events {
                 let source_id = event.udata as usize;
@@ -551,21 +553,21 @@ mod imp {
         Ok(())
     }
 
-    fn push_unique(waiters: &mut Vec<usize>, task_id: usize) {
-        if !waiters.contains(&task_id) {
-            waiters.push(task_id);
+    fn push_unique(waiters: &mut Vec<TaskToken>, task_token: TaskToken) {
+        if !waiters.contains(&task_token) {
+            waiters.push(task_token);
         }
     }
 
-    fn extend_unique(dst: &mut Vec<usize>, src: &[usize]) {
-        for &task_id in src {
-            push_unique(dst, task_id);
+    fn extend_unique(dst: &mut Vec<TaskToken>, src: &[TaskToken]) {
+        for &task_token in src {
+            push_unique(dst, task_token);
         }
     }
 
-    fn drain_unique(dst: &mut Vec<usize>, src: &mut Vec<usize>) {
-        for task_id in src.drain(..) {
-            push_unique(dst, task_id);
+    fn drain_unique(dst: &mut Vec<TaskToken>, src: &mut Vec<TaskToken>) {
+        for task_token in src.drain(..) {
+            push_unique(dst, task_token);
         }
     }
 
@@ -615,7 +617,7 @@ mod imp {
         with_reactor_mut(|reactor| reactor.register_source(fd)).unwrap_or(0)
     }
 
-    pub(crate) fn close_source(source_id: usize) -> (c_int, Vec<usize>) {
+    pub(crate) fn close_source(source_id: usize) -> (c_int, Vec<TaskToken>) {
         if source_id == 0 {
             return (0, Vec::new());
         }
@@ -698,15 +700,15 @@ mod imp {
 
     pub(crate) fn register_wait(
         source_id: usize,
-        task_id: usize,
+        task_token: TaskToken,
         interest: Interest,
     ) -> Result<(), i32> {
         ensure_reactor()?;
-        with_reactor_mut(|reactor| reactor.register_wait(source_id, task_id, interest))
+        with_reactor_mut(|reactor| reactor.register_wait(source_id, task_token, interest))
             .expect("async io reactor missing after initialization")
     }
 
-    pub(crate) fn wait(timeout: Option<StdDuration>) -> Vec<usize> {
+    pub(crate) fn wait(timeout: Option<StdDuration>) -> Vec<TaskToken> {
         let poll_fd = {
             let guard = REACTOR.lock().unwrap();
             guard.as_ref().map(|r| r.poll_fd)
@@ -783,14 +785,14 @@ mod imp {
         }
     }
 
-    pub(crate) fn cancel_task(task_id: usize) {
-        let _ = with_reactor_mut(|reactor| reactor.cancel_task(task_id));
+    pub(crate) fn cancel_task(task_token: TaskToken) {
+        let _ = with_reactor_mut(|reactor| reactor.cancel_task(task_token));
     }
 }
 
 #[cfg(not(unix))]
 mod imp {
-    use super::{Interest, StdDuration};
+    use super::{Interest, StdDuration, TaskToken};
 
     const UNSUPPORTED_ERRNO: i32 = 95;
 
@@ -798,7 +800,7 @@ mod imp {
         0
     }
 
-    pub(crate) fn close_source(_source_id: usize) -> (i32, Vec<usize>) {
+    pub(crate) fn close_source(_source_id: usize) -> (i32, Vec<TaskToken>) {
         (0, Vec::new())
     }
 
@@ -820,7 +822,7 @@ mod imp {
 
     pub(crate) fn register_wait(
         _source_id: usize,
-        _task_id: usize,
+        _task_token: TaskToken,
         _interest: Interest,
     ) -> Result<(), i32> {
         Err(UNSUPPORTED_ERRNO)
@@ -832,18 +834,18 @@ mod imp {
 
     pub(crate) fn notify() {}
 
-    pub(crate) fn wait(_timeout: Option<StdDuration>) -> Vec<usize> {
+    pub(crate) fn wait(_timeout: Option<StdDuration>) -> Vec<TaskToken> {
         Vec::new()
     }
 
-    pub(crate) fn cancel_task(_task_id: usize) {}
+    pub(crate) fn cancel_task(_task_token: TaskToken) {}
 }
 
 pub(crate) fn adopt_fd(fd: i32) -> usize {
     imp::adopt_fd(fd)
 }
 
-pub(crate) fn close_source(source_id: usize) -> (i32, Vec<usize>) {
+pub(crate) fn close_source(source_id: usize) -> (i32, Vec<TaskToken>) {
     imp::close_source(source_id)
 }
 
@@ -865,10 +867,10 @@ pub(crate) fn write_source(source_id: usize, buf: *const u8, len: usize) -> isiz
 
 pub(crate) fn register_wait(
     source_id: usize,
-    task_id: usize,
+    task_token: TaskToken,
     interest: Interest,
 ) -> Result<(), i32> {
-    imp::register_wait(source_id, task_id, interest)
+    imp::register_wait(source_id, task_token, interest)
 }
 
 pub(crate) fn initialize() -> Result<(), i32> {
@@ -879,12 +881,12 @@ pub(crate) fn notify() {
     imp::notify()
 }
 
-pub(crate) fn wait(timeout: Option<StdDuration>) -> Vec<usize> {
+pub(crate) fn wait(timeout: Option<StdDuration>) -> Vec<TaskToken> {
     imp::wait(timeout)
 }
 
-pub(crate) fn cancel_task(task_id: usize) {
-    imp::cancel_task(task_id)
+pub(crate) fn cancel_task(task_token: TaskToken) {
+    imp::cancel_task(task_token)
 }
 
 #[unsafe(no_mangle)]

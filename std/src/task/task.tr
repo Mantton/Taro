@@ -5,8 +5,7 @@ import std.intrinsic.__intrinsic_task_value
 
 @lang("Task")
 public struct Task[T] {
-    raw: *mut uint8
-    spawned_id: usize
+    token: usize
 }
 
 /// Enqueue an async call on the executor for concurrent execution.

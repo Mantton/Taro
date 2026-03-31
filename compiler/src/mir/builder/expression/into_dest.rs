@@ -688,8 +688,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             .into_block();
 
         let size_local = self.new_temp_with_ty(self.gcx.types.uint, span);
-        let task_id_local = self.new_temp_with_ty(self.gcx.types.uint, span);
-        let null_handle_local = self.new_temp_with_ty(self.gcx.async_handle_ty(), span);
+        let task_token_local = self.new_temp_with_ty(self.gcx.types.uint, span);
 
         let size_of_id = find_std_function(self.gcx, "mem", "sizeOf", span)
             .unwrap_or_else(|_| panic!("spawn lowering requires std.mem.sizeOf"));
@@ -737,30 +736,13 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     Operand::Copy(Place::from_local(handle_local)),
                     Operand::Copy(Place::from_local(size_local)),
                 ],
-                destination: Place::from_local(task_id_local),
+                destination: Place::from_local(task_token_local),
                 target: after_spawn,
                 unwind: mir::CallUnwindAction::Terminate,
             },
         );
 
-        self.push_assign(
-            after_spawn,
-            Place::from_local(null_handle_local),
-            Rvalue::Cast {
-                operand: Operand::Constant(Constant {
-                    ty: self.gcx.types.uint,
-                    value: mir::ConstantKind::Integer(0),
-                }),
-                ty: self.gcx.async_handle_ty(),
-                kind: CastKind::Pointer,
-            },
-            span,
-        );
-
-        let fields = IndexVec::from_vec(vec![
-            Operand::Copy(Place::from_local(null_handle_local)),
-            Operand::Copy(Place::from_local(task_id_local)),
-        ]);
+        let fields = IndexVec::from_vec(vec![Operand::Copy(Place::from_local(task_token_local))]);
         self.push_assign(
             after_spawn,
             destination,
@@ -803,44 +785,20 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         ) {
             task_place.projection.push(PlaceElem::Deref);
         }
-        let spawned_id_local = self.new_temp_with_ty(self.gcx.types.uint, span);
+        let token_local = self.new_temp_with_ty(self.gcx.types.uint, span);
         self.push_assign(
             block,
-            Place::from_local(spawned_id_local),
-            Rvalue::Use(Operand::Copy(task_spawned_id_place(
-                self.gcx,
-                task_place.clone(),
-            ))),
+            Place::from_local(token_local),
+            Rvalue::Use(Operand::Copy(task_token_place(self.gcx, task_place))),
             span,
         );
-
-        let direct_block = self.new_block();
-        let spawned_block = self.new_block();
         let join_block = self.new_block();
-
-        self.terminate(
-            block,
-            span,
-            TerminatorKind::SwitchInt {
-                discr: Operand::Copy(Place::from_local(spawned_id_local)),
-                targets: vec![(0u128, direct_block)],
-                otherwise: spawned_block,
-            },
-        );
-
-        self.push_assign(
-            direct_block,
-            destination.clone(),
-            Rvalue::Use(Operand::Copy(task_raw_place(self.gcx, task_place))),
-            span,
-        );
-        self.goto(direct_block, join_block, span);
 
         let from_spawned_id =
             find_or_register_async_runtime_function(self.gcx, AsyncRuntimeFn::FromSpawned, span);
         let from_spawned_ty = self.gcx.get_type(from_spawned_id);
         self.terminate(
-            spawned_block,
+            block,
             span,
             TerminatorKind::Call {
                 func: Operand::Constant(Constant {
@@ -851,7 +809,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                         from_spawned_ty,
                     ),
                 }),
-                args: vec![Operand::Copy(Place::from_local(spawned_id_local))],
+                args: vec![Operand::Copy(Place::from_local(token_local))],
                 destination,
                 target: join_block,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -2043,21 +2001,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
     }
 }
 
-fn task_raw_place<'ctx>(gcx: Gcx<'ctx>, task_place: Place<'ctx>) -> Place<'ctx> {
+fn task_token_place<'ctx>(gcx: Gcx<'ctx>, task_place: Place<'ctx>) -> Place<'ctx> {
     let mut projection = task_place.projection;
-    projection.push(PlaceElem::Field(
-        FieldIndex::from_raw(0),
-        gcx.async_handle_ty(),
-    ));
-    Place {
-        local: task_place.local,
-        projection,
-    }
-}
-
-fn task_spawned_id_place<'ctx>(gcx: Gcx<'ctx>, task_place: Place<'ctx>) -> Place<'ctx> {
-    let mut projection = task_place.projection;
-    projection.push(PlaceElem::Field(FieldIndex::from_raw(1), gcx.types.uint));
+    projection.push(PlaceElem::Field(FieldIndex::from_raw(0), gcx.types.uint));
     Place {
         local: task_place.local,
         projection,

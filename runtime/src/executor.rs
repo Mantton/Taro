@@ -14,16 +14,21 @@ use crate::task::{
     __rt__async_destroy, __rt__async_poll, TaskMobility, async_handle_frame, async_handle_mobility,
 };
 
-type TaskId = usize;
+type TaskIndex = usize;
+type TaskGeneration = u32;
+type TaskToken = u64;
 
 const IDLE_SPINS: usize = 32;
 const IDLE_YIELDS: usize = 8;
+const TASK_TOKEN_INDEX_BITS: u32 = 32;
+const TASK_TOKEN_INDEX_MASK: u64 = (1u64 << TASK_TOKEN_INDEX_BITS) - 1;
+const TASK_INITIAL_GENERATION: TaskGeneration = 1;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct TimerEntry {
     deadline: Instant,
     sequence: u64,
-    task_id: TaskId,
+    task_token: TaskToken,
 }
 
 #[derive(Clone, Copy)]
@@ -42,6 +47,8 @@ struct TaskSlot {
 }
 
 struct TaskSlotInner {
+    generation: TaskGeneration,
+    occupied: bool,
     handle: *mut u8,
     frame: *mut u8,
     out_ptr: *mut u8,
@@ -50,7 +57,7 @@ struct TaskSlotInner {
     queued: bool,
     running: bool,
     wake_requested: bool,
-    waiter: Option<TaskId>,
+    waiter: Option<TaskToken>,
     owner_worker: usize,
     last_worker: usize,
     mobility: TaskMobility,
@@ -61,6 +68,7 @@ unsafe impl Sync for TaskSlot {}
 
 impl TaskSlot {
     fn new(
+        generation: TaskGeneration,
         handle: *mut u8,
         out_ptr: *mut u8,
         out_buf: Option<Vec<u8>>,
@@ -69,6 +77,8 @@ impl TaskSlot {
     ) -> Self {
         Self {
             inner: Mutex::new(TaskSlotInner {
+                generation,
+                occupied: true,
                 frame: async_handle_frame(handle),
                 handle,
                 out_ptr,
@@ -107,11 +117,12 @@ struct Scheduler {
     test_mode: bool,
     worker_count: usize,
     tasks: RwLock<Vec<Arc<TaskSlot>>>,
-    injector: Injector<TaskId>,
-    local_workers: Mutex<Vec<Option<Worker<TaskId>>>>,
-    stealers: Vec<Stealer<TaskId>>,
-    pinned_queues: Vec<Mutex<VecDeque<TaskId>>>,
-    remote_queues: Vec<Mutex<VecDeque<TaskId>>>,
+    free_slots: Mutex<Vec<TaskIndex>>,
+    injector: Injector<TaskToken>,
+    local_workers: Mutex<Vec<Option<Worker<TaskToken>>>>,
+    stealers: Vec<Stealer<TaskToken>>,
+    pinned_queues: Vec<Mutex<VecDeque<TaskToken>>>,
+    remote_queues: Vec<Mutex<VecDeque<TaskToken>>>,
     worker_threads: Vec<Mutex<Option<Thread>>>,
     worker_registered: Vec<AtomicBool>,
     worker_joins: Mutex<Vec<JoinHandle<()>>>,
@@ -134,7 +145,7 @@ thread_local! {
 struct WorkerContext {
     scheduler: Arc<Scheduler>,
     worker_id: usize,
-    current_task: Option<TaskId>,
+    current_task: Option<TaskToken>,
     current_task_blocked: bool,
 }
 
@@ -174,7 +185,7 @@ impl Drop for SessionGuard {
 
 #[derive(Clone, Copy)]
 struct WakeRequest {
-    task_id: TaskId,
+    task_token: TaskToken,
     preferred_worker: Option<usize>,
 }
 
@@ -209,6 +220,23 @@ impl WakeBatch {
     }
 }
 
+fn pack_task_token(index: TaskIndex, generation: TaskGeneration) -> TaskToken {
+    let raw_index =
+        u32::try_from(index).unwrap_or_else(|_| panic!("task slot index {index} exceeds token width"));
+    (u64::from(generation) << TASK_TOKEN_INDEX_BITS) | u64::from(raw_index)
+}
+
+fn unpack_task_token(token: TaskToken) -> (TaskIndex, TaskGeneration) {
+    let index = (token & TASK_TOKEN_INDEX_MASK) as TaskIndex;
+    let generation = (token >> TASK_TOKEN_INDEX_BITS) as TaskGeneration;
+    (index, generation)
+}
+
+fn next_task_generation(generation: TaskGeneration) -> TaskGeneration {
+    let next = generation.wrapping_add(1);
+    if next == 0 { 1 } else { next }
+}
+
 impl Scheduler {
     fn new(rooted: bool, worker_count: usize) -> Arc<Self> {
         let mut locals = Vec::with_capacity(worker_count);
@@ -232,6 +260,7 @@ impl Scheduler {
             test_mode: crate::panic_unwind::in_test_harness(),
             worker_count,
             tasks: RwLock::new(Vec::new()),
+            free_slots: Mutex::new(Vec::new()),
             injector: Injector::new(),
             local_workers: Mutex::new(locals),
             stealers,
@@ -256,7 +285,7 @@ impl Scheduler {
         })
     }
 
-    fn start(self: &Arc<Self>) -> Worker<TaskId> {
+    fn start(self: &Arc<Self>) -> Worker<TaskToken> {
         if self.started.swap(true, Ordering::AcqRel) {
             panic!("ICE: scheduler started twice");
         }
@@ -285,13 +314,13 @@ impl Scheduler {
         self.take_local_worker(0)
     }
 
-    fn take_local_worker(&self, worker_id: usize) -> Worker<TaskId> {
+    fn take_local_worker(&self, worker_id: usize) -> Worker<TaskToken> {
         self.local_workers.lock().unwrap()[worker_id]
             .take()
             .expect("ICE: missing worker deque")
     }
 
-    fn worker_loop(self: Arc<Self>, worker_id: usize, local: Worker<TaskId>) {
+    fn worker_loop(self: Arc<Self>, worker_id: usize, local: Worker<TaskToken>) {
         // GC attach first: registers this thread in THREAD_REGISTRY and sets
         // at_safepoint=true before we expose the thread handle to the scheduler.
         // If the order were reversed a concurrent GC could observe the thread
@@ -371,7 +400,7 @@ impl Scheduler {
         }
     }
 
-    fn worker_thread_entry(self: Arc<Self>, worker_id: usize, local: Worker<TaskId>) {
+    fn worker_thread_entry(self: Arc<Self>, worker_id: usize, local: Worker<TaskToken>) {
         if self.test_mode {
             if let Err(_panic) = panic::catch_unwind(AssertUnwindSafe(|| {
                 Arc::clone(&self).worker_loop(worker_id, local);
@@ -383,7 +412,7 @@ impl Scheduler {
         }
     }
 
-    fn next_task(&self, worker_id: usize, local: &Worker<TaskId>) -> Option<TaskId> {
+    fn next_task(&self, worker_id: usize, local: &Worker<TaskToken>) -> Option<TaskToken> {
         if let Some(task_id) = self.pop_pinned_task(worker_id) {
             return Some(task_id);
         }
@@ -407,11 +436,11 @@ impl Scheduler {
         None
     }
 
-    fn pop_pinned_task(&self, worker_id: usize) -> Option<TaskId> {
+    fn pop_pinned_task(&self, worker_id: usize) -> Option<TaskToken> {
         self.pinned_queues[worker_id].lock().unwrap().pop_front()
     }
 
-    fn drain_remote_queue(&self, worker_id: usize, local: &Worker<TaskId>) {
+    fn drain_remote_queue(&self, worker_id: usize, local: &Worker<TaskToken>) {
         let mut remote = self.remote_queues[worker_id].lock().unwrap();
         let mut drained = Vec::with_capacity(remote.len());
         while let Some(task_id) = remote.pop_front() {
@@ -424,7 +453,7 @@ impl Scheduler {
         }
     }
 
-    fn steal_batch_and_pop<S>(&self, stealer: &S, local: &Worker<TaskId>) -> Option<TaskId>
+    fn steal_batch_and_pop<S>(&self, stealer: &S, local: &Worker<TaskToken>) -> Option<TaskToken>
     where
         S: StealSource,
     {
@@ -449,41 +478,82 @@ impl Scheduler {
         out_buf: Option<Vec<u8>>,
         owner_worker: usize,
         preferred_worker: Option<usize>,
-    ) -> TaskId {
+    ) -> TaskToken {
         let frame = async_handle_frame(handle);
         let mobility = async_handle_mobility(handle);
-        let slot = Arc::new(TaskSlot::new(
-            handle,
-            out_ptr,
-            out_buf,
-            owner_worker,
-            mobility,
-        ));
+
+        let (task_index, task_generation) =
+            if let Some(task_index) = self.free_slots.lock().unwrap().pop() {
+                let slot = self
+                    .lookup_task_slot(task_index)
+                    .unwrap_or_else(|| panic!("ICE: recycled task slot {task_index} missing"));
+                let mut inner = slot.inner.lock().unwrap();
+                assert!(
+                    !inner.occupied,
+                    "ICE: recycled task slot {task_index} is still occupied"
+                );
+                let generation = next_task_generation(inner.generation);
+                inner.generation = generation;
+                inner.occupied = true;
+                inner.handle = handle;
+                inner.frame = frame;
+                inner.out_ptr = out_ptr;
+                inner.out_buf = out_buf;
+                inner.completed = false;
+                inner.queued = false;
+                inner.running = false;
+                inner.wake_requested = false;
+                inner.waiter = None;
+                inner.owner_worker = owner_worker;
+                inner.last_worker = owner_worker;
+                inner.mobility = mobility;
+                (task_index, generation)
+            } else {
+                let task_generation = TASK_INITIAL_GENERATION;
+                let slot = Arc::new(TaskSlot::new(
+                    task_generation,
+                    handle,
+                    out_ptr,
+                    out_buf,
+                    owner_worker,
+                    mobility,
+                ));
+                let task_index = {
+                    let mut tasks = self.tasks.write().unwrap();
+                    let task_index = tasks.len();
+                    tasks.push(slot);
+                    task_index
+                };
+                {
+                    let mut timers = self.timers.lock().unwrap();
+                    timers.latest.push(None);
+                }
+                (task_index, task_generation)
+            };
 
         if !frame.is_null() {
             with_gc(|gc| gc.add_persistent_root(frame as *const u8));
         }
 
-        let task_id = {
-            let mut tasks = self.tasks.write().unwrap();
-            let task_id = tasks.len();
-            tasks.push(slot);
-            task_id
-        };
-        {
-            let mut timers = self.timers.lock().unwrap();
-            timers.latest.push(None);
-        }
+        let task_token = pack_task_token(task_index, task_generation);
         self.incomplete_tasks.fetch_add(1, Ordering::AcqRel);
-        self.schedule_task(task_id, preferred_worker);
-        task_id
+        self.schedule_task(task_token, preferred_worker);
+        task_token
     }
 
-    fn run_task(&self, worker_id: usize, task_id: TaskId) {
-        let slot = self.lookup_task(task_id);
+    fn run_task(&self, worker_id: usize, task_token: TaskToken) {
+        let (task_index, task_generation) = unpack_task_token(task_token);
+        let Some(slot) = self.lookup_task_slot(task_index) else {
+            return;
+        };
         let (handle, out_ptr) = {
             let mut inner = slot.inner.lock().unwrap();
-            if inner.completed || inner.running || !inner.queued {
+            if !inner.occupied
+                || inner.generation != task_generation
+                || inner.completed
+                || inner.running
+                || !inner.queued
+            {
                 return;
             }
             inner.queued = false;
@@ -495,7 +565,7 @@ impl Scheduler {
         WORKER_CONTEXT.with(|cell| {
             let mut borrow = cell.borrow_mut();
             let context = borrow.as_mut().expect("ICE: worker context missing");
-            context.current_task = Some(task_id);
+            context.current_task = Some(task_token);
             context.current_task_blocked = false;
         });
 
@@ -514,7 +584,7 @@ impl Scheduler {
             let requeue_target = {
                 let mut inner = slot.inner.lock().unwrap();
                 inner.running = false;
-                if inner.completed {
+                if !inner.occupied || inner.generation != task_generation || inner.completed {
                     None
                 } else if inner.wake_requested {
                     inner.wake_requested = false;
@@ -535,17 +605,23 @@ impl Scheduler {
                 }
             };
             if let Some(preferred_worker) = requeue_target {
-                self.schedule_task(task_id, preferred_worker);
+                self.schedule_task(task_token, preferred_worker);
             }
         } else {
-            self.complete_task(task_id);
+            self.complete_task(task_token);
         }
     }
 
-    fn complete_task(&self, task_id: TaskId) {
-        let slot = self.lookup_task(task_id);
+    fn complete_task(&self, task_token: TaskToken) {
+        let (task_index, task_generation) = unpack_task_token(task_token);
+        let Some(slot) = self.lookup_task_slot(task_index) else {
+            return;
+        };
         let (frame, handle, waiter) = {
             let mut inner = slot.inner.lock().unwrap();
+            if !inner.occupied || inner.generation != task_generation {
+                return;
+            }
             if inner.completed {
                 inner.running = false;
                 return;
@@ -560,8 +636,8 @@ impl Scheduler {
             (frame, handle, inner.waiter.take())
         };
 
-        io_poller::cancel_task(task_id);
-        self.clear_task_timer(task_id);
+        io_poller::cancel_task(task_token);
+        self.clear_task_timer(task_token);
         if !frame.is_null() {
             with_gc(|gc| gc.remove_persistent_root(frame as *const u8));
         }
@@ -578,15 +654,38 @@ impl Scheduler {
         }
     }
 
-    fn register_sleep(&self, task_id: TaskId, deadline: Instant) {
+    fn reclaim_task_slot(&self, task_token: TaskToken, inner: &mut TaskSlotInner) {
+        let (task_index, task_generation) = unpack_task_token(task_token);
+        assert!(
+            inner.occupied && inner.generation == task_generation,
+            "ICE: attempted to reclaim stale task token {task_token}"
+        );
+        assert!(
+            inner.completed,
+            "ICE: attempted to reclaim task token {task_token} before completion"
+        );
+        inner.occupied = false;
+        inner.waiter = None;
+        inner.queued = false;
+        inner.running = false;
+        inner.wake_requested = false;
+        inner.handle = std::ptr::null_mut();
+        inner.frame = std::ptr::null_mut();
+        inner.out_ptr = std::ptr::null_mut();
+        inner.out_buf = None;
+        self.free_slots.lock().unwrap().push(task_index);
+    }
+
+    fn register_sleep(&self, task_token: TaskToken, deadline: Instant) {
+        let (task_index, _) = unpack_task_token(task_token);
         let should_notify = {
             let mut timers = self.timers.lock().unwrap();
-            if task_id >= timers.latest.len() {
-                timers.latest.resize(task_id + 1, None);
+            if task_index >= timers.latest.len() {
+                timers.latest.resize(task_index + 1, None);
             }
 
             // Re-registering the same deadline for the same task is a no-op.
-            if timers.latest[task_id].is_some_and(|entry| entry.deadline == deadline) {
+            if timers.latest[task_index].is_some_and(|entry| entry.deadline == deadline) {
                 return;
             }
 
@@ -595,9 +694,9 @@ impl Scheduler {
             timers.heap.push(Reverse(TimerEntry {
                 deadline,
                 sequence,
-                task_id,
+                task_token,
             }));
-            timers.latest[task_id] = Some(TimerRegistration { deadline, sequence });
+            timers.latest[task_index] = Some(TimerRegistration { deadline, sequence });
             previous.is_none_or(|earliest| deadline < earliest)
         };
 
@@ -639,10 +738,11 @@ impl Scheduler {
                     break;
                 }
                 let _ = timers.heap.pop();
-                if let Some(slot) = timers.latest.get_mut(entry.task_id) {
+                let (task_index, _) = unpack_task_token(entry.task_token);
+                if let Some(slot) = timers.latest.get_mut(task_index) {
                     *slot = None;
                 }
-                due.push(entry.task_id);
+                due.push(entry.task_token);
             }
         }
 
@@ -655,36 +755,54 @@ impl Scheduler {
     }
 
     fn is_live_timer_entry(timers: &TimerState, entry: TimerEntry) -> bool {
+        let (task_index, _) = unpack_task_token(entry.task_token);
         timers
             .latest
-            .get(entry.task_id)
+            .get(task_index)
             .and_then(|slot| *slot)
             .is_some_and(|latest| {
                 latest.sequence == entry.sequence && latest.deadline == entry.deadline
             })
     }
 
-    fn clear_task_timer(&self, task_id: TaskId) {
+    fn clear_task_timer(&self, task_token: TaskToken) {
+        let (task_index, _) = unpack_task_token(task_token);
         let mut timers = self.timers.lock().unwrap();
-        if let Some(slot) = timers.latest.get_mut(task_id) {
+        if let Some(slot) = timers.latest.get_mut(task_index) {
             *slot = None;
         }
     }
 
-    fn lookup_task(&self, task_id: TaskId) -> Arc<TaskSlot> {
-        self.tasks.read().unwrap()[task_id].clone()
+    fn lookup_task_slot(&self, task_index: TaskIndex) -> Option<Arc<TaskSlot>> {
+        self.tasks.read().unwrap().get(task_index).cloned()
+    }
+
+    #[cfg(test)]
+    fn assert_spawned_token_live_or_panic(&self, task_token: TaskToken) {
+        let (task_index, task_generation) = unpack_task_token(task_token);
+        let slot = self
+            .lookup_task_slot(task_index)
+            .unwrap_or_else(|| panic!("invalid spawned task token {task_token}"));
+        let inner = slot.inner.lock().unwrap();
+        if !inner.occupied || inner.generation != task_generation {
+            panic!("stale spawned task token {task_token}");
+        }
     }
 
     fn enqueue_task(
         &self,
-        task_id: TaskId,
+        task_token: TaskToken,
         preferred_worker: Option<usize>,
         batch: &mut WakeBatch,
     ) {
-        let slot = self.lookup_task(task_id);
+        let (task_index, task_generation) = unpack_task_token(task_token);
+        let Some(slot) = self.lookup_task_slot(task_index) else {
+            return;
+        };
         let target = {
             let mut inner = slot.inner.lock().unwrap();
-            if inner.completed || inner.queued {
+            if !inner.occupied || inner.generation != task_generation || inner.completed || inner.queued
+            {
                 return;
             }
             if inner.running {
@@ -706,19 +824,19 @@ impl Scheduler {
                 self.pinned_queues[worker_id]
                     .lock()
                     .unwrap()
-                    .push_back(task_id);
+                    .push_back(task_token);
                 batch.note_worker(worker_id);
             }
             QueueTarget::Worker(worker_id) => {
                 self.remote_queues[worker_id]
                     .lock()
                     .unwrap()
-                    .push_back(task_id);
+                    .push_back(task_token);
                 batch.note_worker(worker_id);
             }
             QueueTarget::Global => {
                 self.stats.global_injects.fetch_add(1, Ordering::Relaxed);
-                self.injector.push(task_id);
+                self.injector.push(task_token);
                 batch.note_global();
             }
         }
@@ -747,30 +865,42 @@ impl Scheduler {
     {
         let mut batch = WakeBatch::new(self.worker_count);
         for request in requests {
-            self.enqueue_task(request.task_id, request.preferred_worker, &mut batch);
+            self.enqueue_task(request.task_token, request.preferred_worker, &mut batch);
         }
         self.finish_wake_batch(batch);
     }
 
-    fn schedule_task(&self, task_id: TaskId, preferred_worker: Option<usize>) {
+    fn schedule_task(&self, task_token: TaskToken, preferred_worker: Option<usize>) {
         self.schedule_tasks([WakeRequest {
-            task_id,
+            task_token,
             preferred_worker,
         }]);
     }
 
-    fn wake_tasks(&self, task_ids: &[TaskId]) {
-        self.schedule_tasks(task_ids.iter().copied().map(|task_id| {
+    fn wake_tasks(&self, task_tokens: &[TaskToken]) {
+        self.schedule_tasks(task_tokens.iter().copied().map(|task_token| {
+            let (task_index, task_generation) = unpack_task_token(task_token);
             let preferred_worker = {
-                let slot = self.lookup_task(task_id);
+                let Some(slot) = self.lookup_task_slot(task_index) else {
+                    return WakeRequest {
+                        task_token,
+                        preferred_worker: None,
+                    };
+                };
                 let inner = slot.inner.lock().unwrap();
+                if !inner.occupied || inner.generation != task_generation {
+                    return WakeRequest {
+                        task_token,
+                        preferred_worker: None,
+                    };
+                }
                 match inner.mobility {
                     TaskMobility::Pinned => Some(inner.owner_worker),
                     TaskMobility::Movable => Some(inner.last_worker),
                 }
             };
             WakeRequest {
-                task_id,
+                task_token,
                 preferred_worker,
             }
         }));
@@ -850,27 +980,31 @@ impl Scheduler {
 
     fn teardown_remaining_tasks(&self) {
         let tasks: Vec<_> = self.tasks.read().unwrap().iter().cloned().collect();
-        for (task_id, slot) in tasks.iter().enumerate() {
-            let (frame, handle, completed) = {
+        for (task_index, slot) in tasks.iter().enumerate() {
+            let (task_token, frame, handle) = {
                 let mut inner = slot.inner.lock().unwrap();
-                if inner.completed {
-                    (std::ptr::null_mut(), std::ptr::null_mut(), true)
+                if !inner.occupied || inner.completed {
+                    inner.occupied = false;
+                    (None, std::ptr::null_mut(), std::ptr::null_mut())
                 } else {
+                    let generation = inner.generation;
+                    let task_token = pack_task_token(task_index, generation);
                     inner.completed = true;
+                    inner.occupied = false;
                     inner.running = false;
                     inner.queued = false;
                     let frame = inner.frame;
                     let handle = inner.handle;
                     inner.frame = std::ptr::null_mut();
                     inner.handle = std::ptr::null_mut();
-                    (frame, handle, false)
+                    (Some(task_token), frame, handle)
                 }
             };
-            if completed {
+            let Some(task_token) = task_token else {
                 continue;
-            }
-            io_poller::cancel_task(task_id);
-            self.clear_task_timer(task_id);
+            };
+            io_poller::cancel_task(task_token);
+            self.clear_task_timer(task_token);
             if !frame.is_null() {
                 with_gc(|gc| gc.remove_persistent_root(frame as *const u8));
             }
@@ -882,17 +1016,17 @@ impl Scheduler {
 }
 
 trait StealSource {
-    fn steal_batch_and_pop(&self, local: &Worker<TaskId>) -> Steal<TaskId>;
+    fn steal_batch_and_pop(&self, local: &Worker<TaskToken>) -> Steal<TaskToken>;
 }
 
-impl StealSource for Injector<TaskId> {
-    fn steal_batch_and_pop(&self, local: &Worker<TaskId>) -> Steal<TaskId> {
+impl StealSource for Injector<TaskToken> {
+    fn steal_batch_and_pop(&self, local: &Worker<TaskToken>) -> Steal<TaskToken> {
         self.steal_batch_and_pop(local)
     }
 }
 
-impl StealSource for Stealer<TaskId> {
-    fn steal_batch_and_pop(&self, local: &Worker<TaskId>) -> Steal<TaskId> {
+impl StealSource for Stealer<TaskToken> {
+    fn steal_batch_and_pop(&self, local: &Worker<TaskToken>) -> Steal<TaskToken> {
         self.steal_batch_and_pop(local)
     }
 }
@@ -989,7 +1123,7 @@ pub fn run_root(handle: *mut u8, out: *mut u8) {
     }
 }
 
-/// Spawn a new task on the executor. Returns a task ID that can be polled
+/// Spawn a new task on the executor. Returns a task token that can be polled
 /// later via `__rt__executor_poll_spawned`.
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt__executor_spawn(handle: *mut u8, out_size: u64) -> u64 {
@@ -1002,20 +1136,20 @@ pub extern "C" fn __rt__executor_spawn(handle: *mut u8, out_size: u64) -> u64 {
     // preserve cache locality; movable tasks can still migrate after the first
     // pending poll via injector requeue.
     let preferred_worker = Some(owner_worker);
-    let task_id = scheduler.add_task(
+    let task_token = scheduler.add_task(
         handle,
         out_ptr,
         Some(out_buf),
         owner_worker,
         preferred_worker,
     );
-    task_id as u64
+    task_token
 }
 
-/// Poll a spawned task by ID. Returns 1 if completed (output copied to `out`),
+/// Poll a spawned task by token. Returns 1 if completed (output copied to `out`),
 /// 0 if still pending (current task registered as the sole waiter).
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__executor_poll_spawned(task_id: u64, out: *mut u8) -> u8 {
+pub extern "C" fn __rt__executor_poll_spawned(task_token: u64, out: *mut u8) -> u8 {
     WORKER_CONTEXT.with(|cell| {
         let mut borrow = cell.borrow_mut();
         let context = borrow
@@ -1024,8 +1158,15 @@ pub extern "C" fn __rt__executor_poll_spawned(task_id: u64, out: *mut u8) -> u8 
         let current = context
             .current_task
             .expect("poll_spawned called with no current task");
-        let slot = context.scheduler.lookup_task(task_id as usize);
+        let (task_index, task_generation) = unpack_task_token(task_token);
+        let slot = context
+            .scheduler
+            .lookup_task_slot(task_index)
+            .unwrap_or_else(|| panic!("invalid spawned task token {task_token}"));
         let mut inner = slot.inner.lock().unwrap();
+        if !inner.occupied || inner.generation != task_generation {
+            panic!("stale spawned task token {task_token}");
+        }
 
         if inner.completed {
             if let Some(waiter) = inner.waiter {
@@ -1041,6 +1182,7 @@ pub extern "C" fn __rt__executor_poll_spawned(task_id: u64, out: *mut u8) -> u8 
                 }
             }
             inner.waiter = None;
+            context.scheduler.reclaim_task_slot(task_token, &mut inner);
             1
         } else {
             match inner.waiter {
@@ -1060,11 +1202,11 @@ pub(crate) fn register_sleep(deadline: Instant) {
     WORKER_CONTEXT.with(|cell| {
         let mut borrow = cell.borrow_mut();
         let context = borrow.as_mut().expect("sleep polled outside executor");
-        let task_id = context
+        let task_token = context
             .current_task
             .expect("sleep polled with no current task");
         context.current_task_blocked = true;
-        context.scheduler.register_sleep(task_id, deadline);
+        context.scheduler.register_sleep(task_token, deadline);
     });
 }
 
@@ -1082,9 +1224,9 @@ pub(crate) fn register_io_wait(source_id: usize, interest: Interest) -> Result<(
     })
 }
 
-pub(crate) fn wake_tasks(task_ids: &[usize]) {
+pub(crate) fn wake_tasks(task_tokens: &[TaskToken]) {
     if let Some(scheduler) = current_worker_scheduler() {
-        scheduler.wake_tasks(task_ids);
+        scheduler.wake_tasks(task_tokens);
         return;
     }
 
@@ -1093,7 +1235,7 @@ pub(crate) fn wake_tasks(task_ids: &[usize]) {
         session.as_ref().cloned()
     };
     if let Some(scheduler) = scheduler {
-        scheduler.wake_tasks(task_ids);
+        scheduler.wake_tasks(task_tokens);
     }
 }
 
@@ -1159,6 +1301,7 @@ mod tests {
     use super::*;
     use crate::task::{__rt__async_create, __rt__async_run_root, TaskMobility};
     use std::collections::{HashMap, HashSet};
+    use std::panic::{self, AssertUnwindSafe};
     use std::ptr;
     use std::sync::{Arc, Mutex};
 
@@ -1186,6 +1329,7 @@ mod tests {
         let mut tasks = scheduler.tasks.write().unwrap();
         for _ in 0..8 {
             tasks.push(Arc::new(TaskSlot::new(
+                TASK_INITIAL_GENERATION,
                 ptr::null_mut(),
                 ptr::null_mut(),
                 None,
@@ -1195,6 +1339,7 @@ mod tests {
         }
         for _ in 0..5 {
             tasks.push(Arc::new(TaskSlot::new(
+                TASK_INITIAL_GENERATION,
                 ptr::null_mut(),
                 ptr::null_mut(),
                 None,
@@ -1204,6 +1349,7 @@ mod tests {
         }
         for _ in 0..3 {
             tasks.push(Arc::new(TaskSlot::new(
+                TASK_INITIAL_GENERATION,
                 ptr::null_mut(),
                 ptr::null_mut(),
                 None,
@@ -1214,12 +1360,12 @@ mod tests {
         drop(tasks);
 
         let requests = (0..8)
-            .map(|task_id| WakeRequest {
-                task_id,
+            .map(|task_index| WakeRequest {
+                task_token: pack_task_token(task_index, TASK_INITIAL_GENERATION),
                 preferred_worker: None,
             })
-            .chain((8..16).map(|task_id| WakeRequest {
-                task_id,
+            .chain((8..16).map(|task_index| WakeRequest {
+                task_token: pack_task_token(task_index, TASK_INITIAL_GENERATION),
                 preferred_worker: Some(0),
             }));
 
@@ -1259,6 +1405,94 @@ mod tests {
 
         scheduler.force_shutdown();
         scheduler.join_background_threads();
+    }
+
+    #[test]
+    fn task_token_pack_unpack_roundtrip() {
+        let token = pack_task_token(17, 42);
+        let (index, generation) = unpack_task_token(token);
+        assert_eq!(index, 17);
+        assert_eq!(generation, 42);
+    }
+
+    #[test]
+    fn consumed_completed_task_slot_is_reused() {
+        let scheduler = Scheduler::new(false, 1);
+        let slot = Arc::new(TaskSlot::new(
+            TASK_INITIAL_GENERATION,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            Some(Vec::new()),
+            0,
+            TaskMobility::Movable,
+        ));
+        {
+            let mut inner = slot.inner.lock().unwrap();
+            inner.completed = true;
+        }
+        scheduler.tasks.write().unwrap().push(Arc::clone(&slot));
+        scheduler.timers.lock().unwrap().latest.push(None);
+
+        let old_token = pack_task_token(0, TASK_INITIAL_GENERATION);
+        {
+            let mut inner = slot.inner.lock().unwrap();
+            scheduler.reclaim_task_slot(old_token, &mut inner);
+        }
+
+        let new_token = scheduler.add_task(ptr::null_mut(), ptr::null_mut(), Some(Vec::new()), 0, None);
+        let (new_index, new_generation) = unpack_task_token(new_token);
+        assert_eq!(new_index, 0);
+        assert_ne!(new_generation, TASK_INITIAL_GENERATION);
+    }
+
+    #[test]
+    fn stale_token_rejected_after_slot_reuse() {
+        let scheduler = Scheduler::new(false, 1);
+        let slot = Arc::new(TaskSlot::new(
+            TASK_INITIAL_GENERATION,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            Some(Vec::new()),
+            0,
+            TaskMobility::Movable,
+        ));
+        {
+            let mut inner = slot.inner.lock().unwrap();
+            inner.completed = true;
+        }
+        scheduler.tasks.write().unwrap().push(Arc::clone(&slot));
+        scheduler.timers.lock().unwrap().latest.push(None);
+
+        let stale_token = pack_task_token(0, TASK_INITIAL_GENERATION);
+        {
+            let mut inner = slot.inner.lock().unwrap();
+            scheduler.reclaim_task_slot(stale_token, &mut inner);
+        }
+        let _current_token =
+            scheduler.add_task(ptr::null_mut(), ptr::null_mut(), Some(Vec::new()), 0, None);
+
+        let panicked =
+            panic::catch_unwind(AssertUnwindSafe(|| scheduler.assert_spawned_token_live_or_panic(stale_token)));
+        assert!(panicked.is_err());
+    }
+
+    #[test]
+    fn completed_unconsumed_task_remains_until_teardown() {
+        let scheduler = Scheduler::new(false, 1);
+        let token = scheduler.add_task(ptr::null_mut(), ptr::null_mut(), Some(Vec::new()), 0, None);
+        scheduler.complete_task(token);
+
+        assert!(scheduler.free_slots.lock().unwrap().is_empty());
+
+        let (task_index, task_generation) = unpack_task_token(token);
+        let slot = scheduler
+            .lookup_task_slot(task_index)
+            .expect("completed task slot must still exist");
+        let inner = slot.inner.lock().unwrap();
+        assert!(inner.occupied);
+        assert!(inner.completed);
+        assert_eq!(inner.generation, task_generation);
+        assert!(inner.out_buf.is_some());
     }
 
     #[derive(Clone)]
