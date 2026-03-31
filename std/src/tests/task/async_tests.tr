@@ -17,6 +17,17 @@ static var SHARED_PIPE_READ_STREAM: Optional[std.io.task.AsyncStream] = .none
 @cfg(family("unix"))
 static var SHARED_PIPE_WRITE_STREAM: Optional[std.io.task.AsyncStream] = .none
 
+static var ASYNC_DEFER_RETURN_COUNT: int32 = 0
+
+func asyncDeferReturnProbe() async -> int32 {
+    defer {
+        ASYNC_DEFER_RETURN_COUNT = ASYNC_DEFER_RETURN_COUNT + 1
+    }
+
+    await std.testing.yieldNow()
+    return 77 as int32
+}
+
 @cfg(family("unix"))
 func sharedPipeReaderBody() async -> int32 {
     let reader = match SHARED_PIPE_READ_STREAM {
@@ -456,6 +467,200 @@ func multipleSpawnedTasksInterleave() async {
     let x = await a.value()
     let y = await b.value()
     std.testing.assertEqual(x + y, 23, "both spawned tasks should complete")
+}
+
+@test
+func cancelledTaskResultReturnsCancelledError() async {
+    let task = std.task.spawn(|| async {
+        await std.task.sleep(std.time.Duration.fromMillis(200_u64))
+        return 99 as int32
+    })
+
+    task.cancel()
+    let result = await task.result()
+    match result {
+        case .ok(_) => std.panic.panic("cancelled task should resolve through Task.result() as an error")
+        case .err(err) => match err {
+            case .cancelled => {}
+        }
+    }
+}
+
+@test
+func asyncDeferRunsOnNormalReturnAfterSuspension() async {
+    ASYNC_DEFER_RETURN_COUNT = 0
+
+    let value = await asyncDeferReturnProbe()
+
+    std.testing.assertEqual(value, 77, "async defer probe should return its computed value")
+    std.testing.assertEqual(
+        ASYNC_DEFER_RETURN_COUNT,
+        1,
+        "async defer should run when an async function returns after suspension",
+    )
+}
+
+@test
+func cancellingCompletedTaskIsHarmless() async {
+    let task = std.task.spawn(|| async {
+        await std.task.sleep(std.time.Duration.fromMillis(1_u64))
+        return 44 as int32
+    })
+
+    await std.task.sleep(std.time.Duration.fromMillis(10_u64))
+    task.cancel()
+
+    let result = await task.result()
+    match result {
+        case .ok(value) => std.testing.assertEqual(value, 44, "cancelling an already completed task should keep its value")
+        case .err(_) => std.panic.panic("completed task should not become cancelled")
+    }
+}
+
+@test
+func cancellingSleepingTaskCompletesQuickly() async {
+    let task = std.task.spawn(|| async {
+        await std.task.sleep(std.time.Duration.fromMillis(250_u64))
+        return 5 as int32
+    })
+
+    let start = std.time.Instant.now()
+    task.cancel()
+    let result = await task.result()
+    let elapsed = start.elapsed()
+
+    match result {
+        case .ok(_) => std.panic.panic("cancelled sleeper should not resolve successfully")
+        case .err(err) => match err {
+            case .cancelled => {}
+        }
+    }
+
+    std.testing.assertTrue(
+        durationToNanos(elapsed) < 150000000_u64,
+        "cancelling a sleeping task should finish without waiting for the full sleep duration",
+    )
+}
+
+@test
+@expectPanic
+func taskValuePanicsOnCancelledTask() async {
+    let task = std.task.spawn(|| async {
+        await std.task.sleep(std.time.Duration.fromMillis(200_u64))
+        return 7 as int32
+    })
+
+    task.cancel()
+    let _ = await task.value()
+}
+
+@test
+func withTaskGroupCollectsResultsViaNext() async {
+    let total: int32 = await std.task.withTaskGroup(|group: &mut std.task.TaskGroup[int32]| async {
+        group.spawn(|| async {
+            await std.testing.yieldNow()
+            return 11 as int32
+        })
+        group.spawn(|| async {
+            return 31 as int32
+        })
+
+        var seen = 0 as int32
+        var sum = 0 as int32
+        while seen < 2 {
+            match await group.next() {
+                case .some(value) => {
+                    sum += value
+                    seen += 1
+                }
+                case .none => std.panic.panic("task group should yield both spawned task results")
+            }
+        }
+
+        return sum
+    })
+
+    std.testing.assertEqual(total, 42, "withTaskGroup should surface successful child results through next()")
+}
+
+@test
+func withTaskGroupCancelsRemainingTasksWhenBodyReturnsEarly() async {
+    let start = std.time.Instant.now()
+    let value: int32 = await std.task.withTaskGroup(|group: &mut std.task.TaskGroup[int32]| async {
+        group.spawn(|| async {
+            await std.task.sleep(std.time.Duration.fromMillis(250_u64))
+            return 1 as int32
+        })
+
+        return 9 as int32
+    })
+    let elapsed = start.elapsed()
+
+    std.testing.assertEqual(value, 9, "withTaskGroup should return the body result")
+    std.testing.assertTrue(
+        durationToNanos(elapsed) < 150000000_u64,
+        "withTaskGroup should cancel outstanding children when the body returns early",
+    )
+}
+
+@test
+@expectPanic
+func withTaskGroupCancelOnPanicCancelsSiblingsThenRethrows() async {
+    let _ = await std.task.withTaskGroup(policy: .cancelOnPanic, |group: &mut std.task.TaskGroup[int32]| async {
+        group.spawn(|| async {
+            await std.testing.yieldNow()
+            std.panic.panic("child panic should be rethrown after group cleanup")
+        })
+        group.spawn(|| async {
+            await std.task.sleep(std.time.Duration.fromMillis(250_u64))
+            return 1 as int32
+        })
+
+        match await group.next() {
+            case .some(_) => std.panic.panic("cancel-on-panic policy should not yield successful sibling results")
+            case .none => {}
+        }
+
+        return 0 as int32
+    })
+}
+
+@test
+@expectPanic
+func withTaskGroupIndependentLetsSiblingsContinueBeforeRethrow() async {
+    let _ = await std.task.withTaskGroup(policy: .independent, |group: &mut std.task.TaskGroup[int32]| async {
+        group.spawn(|| async {
+            await std.testing.yieldNow()
+            std.panic.panic("independent group should still rethrow child panic after cleanup")
+        })
+        group.spawn(|| async {
+            await std.testing.yieldNow()
+            await std.testing.yieldNow()
+            return 7 as int32
+        })
+
+        match await group.next() {
+            case .some(value) => {
+                std.testing.assertEqual(value, 7, "independent policy should let siblings complete after another child panics")
+            }
+            case .none => std.panic.panic("independent policy should still yield sibling results before scope cleanup")
+        }
+
+        return 0 as int32
+    })
+}
+
+@test
+@expectPanic
+func withTaskGroupBodyPanicRemainsVisible() async {
+    let _ = await std.task.withTaskGroup(policy: .independent, |group: &mut std.task.TaskGroup[int32]| async {
+        group.spawn(|| async {
+            await std.testing.yieldNow()
+            std.panic.panic("child panic should not replace the body panic")
+        })
+
+        std.panic.panic("body panic should remain visible after group cleanup")
+    })
 }
 
 @test

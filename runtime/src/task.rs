@@ -192,6 +192,37 @@ unsafe extern "C" fn spawned_task_value_drop(frame: *mut u8) {
     let _ = unsafe { Box::from_raw(frame as *mut SpawnedTaskValueFrame) };
 }
 
+/// Checked poll for spawned task result — does NOT panic on cancellation.
+/// Returns 1 (ready) for both completed and cancelled tasks.
+/// The caller must query `__rt__executor_task_completion_status` after resume.
+unsafe extern "C-unwind" fn spawned_task_result_poll(
+    frame: *mut u8,
+    _ctx: *mut u8,
+    out: *mut u8,
+) -> u8 {
+    if frame.is_null() {
+        return 1;
+    }
+
+    let task_id = unsafe { (*(frame as *mut SpawnedTaskValueFrame)).task_id };
+    let status = crate::executor::__rt__executor_poll_spawned_checked(task_id, out);
+    match status {
+        0 => 0,
+        _ => 1, // 1 (completed) or 2 (cancelled) both -> ready
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __rt__async_from_spawned_checked(task_id: u64) -> *mut u8 {
+    let frame = Box::into_raw(Box::new(SpawnedTaskValueFrame { task_id }));
+    __rt__async_create(
+        frame as *mut u8,
+        spawned_task_result_poll as *const () as *const u8,
+        spawned_task_value_drop as *const () as *const u8,
+        TaskMobility::Movable as u8,
+    )
+}
+
 unsafe extern "C-unwind" fn sleep_poll(frame: *mut u8, _ctx: *mut u8, _out: *mut u8) -> u8 {
     if frame.is_null() {
         return 1;
@@ -323,6 +354,52 @@ pub extern "C" fn __rt__async_wait_writable(source_id: usize) -> *mut u8 {
         frame as *mut u8,
         io_wait_poll as *const () as *const u8,
         io_wait_drop as *const () as *const u8,
+        TaskMobility::Movable as u8,
+    )
+}
+
+// --- Task group poll ---
+
+#[repr(C)]
+struct GroupNextFrame {
+    group_id: u64,
+}
+
+/// Poll for the next completed result from a task group.
+/// Returns 0 (pending) or 1 (ready — result written to `out`, or group exhausted
+/// indicated by a tag byte the compiler interprets).
+unsafe extern "C-unwind" fn group_next_poll(
+    frame: *mut u8,
+    _ctx: *mut u8,
+    out: *mut u8,
+) -> u8 {
+    if frame.is_null() {
+        return 1;
+    }
+
+    let group_id = unsafe { (*(frame as *mut GroupNextFrame)).group_id };
+    let status = crate::executor::__rt__task_group_poll_next(group_id, out);
+    match status {
+        0 => 0,
+        _ => 1, // 1 (got result) or 2 (exhausted) → both ready
+    }
+}
+
+unsafe extern "C" fn group_next_drop(frame: *mut u8) {
+    if frame.is_null() {
+        return;
+    }
+    let _ = unsafe { Box::from_raw(frame as *mut GroupNextFrame) };
+}
+
+/// Create an async handle that polls for the next completed result from a task group.
+#[unsafe(no_mangle)]
+pub extern "C" fn __rt__async_group_next(group_id: u64) -> *mut u8 {
+    let frame = Box::into_raw(Box::new(GroupNextFrame { group_id }));
+    __rt__async_create(
+        frame as *mut u8,
+        group_next_poll as *const () as *const u8,
+        group_next_drop as *const () as *const u8,
         TaskMobility::Movable as u8,
     )
 }

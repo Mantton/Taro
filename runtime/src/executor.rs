@@ -54,6 +54,7 @@ struct TaskSlotInner {
     out_ptr: *mut u8,
     out_buf: Option<Vec<u8>>,
     completed: bool,
+    cancelled: bool,
     queued: bool,
     running: bool,
     wake_requested: bool,
@@ -61,6 +62,7 @@ struct TaskSlotInner {
     owner_worker: usize,
     last_worker: usize,
     mobility: TaskMobility,
+    group_id: Option<u64>,
 }
 
 unsafe impl Send for TaskSlot {}
@@ -84,6 +86,7 @@ impl TaskSlot {
                 out_ptr,
                 out_buf,
                 completed: false,
+                cancelled: false,
                 queued: false,
                 running: false,
                 wake_requested: false,
@@ -91,6 +94,7 @@ impl TaskSlot {
                 owner_worker,
                 last_worker: owner_worker,
                 mobility,
+                group_id: None,
             }),
         }
     }
@@ -136,6 +140,24 @@ struct Scheduler {
     wake_cursor: AtomicUsize,
     worker_panic: Mutex<Option<String>>,
     stats: RuntimeStats,
+    task_groups: Mutex<Vec<Option<TaskGroupState>>>,
+    free_group_slots: Mutex<Vec<usize>>,
+}
+
+struct TaskGroupState {
+    tasks: Vec<TaskToken>,
+    completed: VecDeque<CompletedGroupTask>,
+    result_size: usize,
+    waiter: Option<TaskToken>,
+    spawning_closed: bool,
+    cancelled: bool,
+    cancel_on_panic: bool,
+    ready_status: u8,
+    panic_message: Option<String>,
+}
+
+struct CompletedGroupTask {
+    buf: Vec<u8>,
 }
 
 thread_local! {
@@ -282,6 +304,8 @@ impl Scheduler {
             wake_cursor: AtomicUsize::new(0),
             worker_panic: Mutex::new(None),
             stats: RuntimeStats::default(),
+            task_groups: Mutex::new(Vec::new()),
+            free_group_slots: Mutex::new(Vec::new()),
         })
     }
 
@@ -500,6 +524,7 @@ impl Scheduler {
                 inner.out_ptr = out_ptr;
                 inner.out_buf = out_buf;
                 inner.completed = false;
+                inner.cancelled = false;
                 inner.queued = false;
                 inner.running = false;
                 inner.wake_requested = false;
@@ -507,6 +532,7 @@ impl Scheduler {
                 inner.owner_worker = owner_worker;
                 inner.last_worker = owner_worker;
                 inner.mobility = mobility;
+                inner.group_id = None;
                 (task_index, generation)
             } else {
                 let task_generation = TASK_INITIAL_GENERATION;
@@ -546,8 +572,11 @@ impl Scheduler {
         let Some(slot) = self.lookup_task_slot(task_index) else {
             return;
         };
-        let (handle, out_ptr) = {
-            let mut inner = slot.inner.lock().unwrap();
+        let (handle, out_ptr, cancelled, group_id) = {
+            let mut inner = slot
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if !inner.occupied
                 || inner.generation != task_generation
                 || inner.completed
@@ -559,8 +588,13 @@ impl Scheduler {
             inner.queued = false;
             inner.running = true;
             inner.last_worker = worker_id;
-            (inner.handle, inner.out_ptr)
+            (inner.handle, inner.out_ptr, inner.cancelled, inner.group_id)
         };
+
+        if cancelled {
+            self.complete_task_cancelled(task_token);
+            return;
+        }
 
         WORKER_CONTEXT.with(|cell| {
             let mut borrow = cell.borrow_mut();
@@ -570,7 +604,11 @@ impl Scheduler {
         });
 
         crate::garbage_collector::leave_safepoint();
-        let tag = __rt__async_poll(handle, out_ptr);
+        let poll_result = if group_id.is_some() {
+            crate::panic_unwind::catch_executor_panic(|| __rt__async_poll(handle, out_ptr))
+        } else {
+            Ok(__rt__async_poll(handle, out_ptr))
+        };
         crate::garbage_collector::enter_safepoint();
 
         let blocked = WORKER_CONTEXT.with(|cell| {
@@ -579,6 +617,14 @@ impl Scheduler {
             context.current_task = None;
             std::mem::take(&mut context.current_task_blocked)
         });
+
+        let tag = match poll_result {
+            Ok(tag) => tag,
+            Err(message) => {
+                self.complete_task_panicked(task_token, message);
+                return;
+            }
+        };
 
         if tag == 0 {
             let requeue_target = {
@@ -617,7 +663,7 @@ impl Scheduler {
         let Some(slot) = self.lookup_task_slot(task_index) else {
             return;
         };
-        let (frame, handle, waiter) = {
+        let (frame, handle, waiter, group_id, out_buf_clone) = {
             let mut inner = slot.inner.lock().unwrap();
             if !inner.occupied || inner.generation != task_generation {
                 return;
@@ -633,7 +679,12 @@ impl Scheduler {
             let handle = inner.handle;
             inner.frame = std::ptr::null_mut();
             inner.handle = std::ptr::null_mut();
-            (frame, handle, inner.waiter.take())
+            let out_buf_clone = if inner.group_id.is_some() {
+                inner.out_buf.as_ref().map(|b| b.clone())
+            } else {
+                None
+            };
+            (frame, handle, inner.waiter.take(), inner.group_id, out_buf_clone)
         };
 
         io_poller::cancel_task(task_token);
@@ -643,6 +694,131 @@ impl Scheduler {
         }
         if !handle.is_null() {
             __rt__async_destroy(handle);
+        }
+
+        if let Some(group_id) = group_id {
+            self.notify_group_task_completed(group_id, task_token, out_buf_clone);
+        }
+
+        if let Some(waiter) = waiter {
+            self.wake_tasks(&[waiter]);
+        }
+
+        if self.incomplete_tasks.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.force_shutdown();
+        }
+    }
+
+    fn cancel_task(&self, task_token: TaskToken) {
+        let (task_index, task_generation) = unpack_task_token(task_token);
+        let Some(slot) = self.lookup_task_slot(task_index) else {
+            return;
+        };
+        let should_wake = {
+            let mut inner = slot.inner.lock().unwrap();
+            if !inner.occupied || inner.generation != task_generation {
+                return;
+            }
+            if inner.completed || inner.cancelled {
+                return;
+            }
+            inner.cancelled = true;
+            if inner.running {
+                inner.wake_requested = true;
+                false
+            } else if !inner.queued {
+                true
+            } else {
+                false
+            }
+        };
+        if should_wake {
+            self.wake_tasks(&[task_token]);
+        }
+    }
+
+    fn complete_task_cancelled(&self, task_token: TaskToken) {
+        let (task_index, task_generation) = unpack_task_token(task_token);
+        let Some(slot) = self.lookup_task_slot(task_index) else {
+            return;
+        };
+        let (frame, handle, waiter, group_id) = {
+            let mut inner = slot.inner.lock().unwrap();
+            if !inner.occupied || inner.generation != task_generation {
+                return;
+            }
+            if inner.completed {
+                inner.running = false;
+                return;
+            }
+            inner.completed = true;
+            inner.cancelled = true;
+            inner.running = false;
+            inner.queued = false;
+            let frame = inner.frame;
+            let handle = inner.handle;
+            inner.frame = std::ptr::null_mut();
+            inner.handle = std::ptr::null_mut();
+            (frame, handle, inner.waiter.take(), inner.group_id)
+        };
+
+        io_poller::cancel_task(task_token);
+        self.clear_task_timer(task_token);
+        if !frame.is_null() {
+            with_gc(|gc| gc.remove_persistent_root(frame as *const u8));
+        }
+        if !handle.is_null() {
+            __rt__async_destroy(handle);
+        }
+
+        if let Some(group_id) = group_id {
+            self.notify_group_task_cancelled(group_id, task_token);
+        }
+
+        if let Some(waiter) = waiter {
+            self.wake_tasks(&[waiter]);
+        }
+
+        if self.incomplete_tasks.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.force_shutdown();
+        }
+    }
+
+    fn complete_task_panicked(&self, task_token: TaskToken, message: String) {
+        let (task_index, task_generation) = unpack_task_token(task_token);
+        let Some(slot) = self.lookup_task_slot(task_index) else {
+            return;
+        };
+        let (frame, handle, waiter, group_id) = {
+            let mut inner = slot.inner.lock().unwrap();
+            if !inner.occupied || inner.generation != task_generation {
+                return;
+            }
+            if inner.completed {
+                inner.running = false;
+                return;
+            }
+            inner.completed = true;
+            inner.running = false;
+            inner.queued = false;
+            let frame = inner.frame;
+            let handle = inner.handle;
+            inner.frame = std::ptr::null_mut();
+            inner.handle = std::ptr::null_mut();
+            (frame, handle, inner.waiter.take(), inner.group_id)
+        };
+
+        io_poller::cancel_task(task_token);
+        self.clear_task_timer(task_token);
+        if !frame.is_null() {
+            with_gc(|gc| gc.remove_persistent_root(frame as *const u8));
+        }
+        if !handle.is_null() {
+            __rt__async_destroy(handle);
+        }
+
+        if let Some(group_id) = group_id {
+            self.notify_group_task_panicked(group_id, task_token, message);
         }
 
         if let Some(waiter) = waiter {
@@ -665,6 +841,7 @@ impl Scheduler {
             "ICE: attempted to reclaim task token {task_token} before completion"
         );
         inner.occupied = false;
+        inner.cancelled = false;
         inner.waiter = None;
         inner.queued = false;
         inner.running = false;
@@ -673,7 +850,76 @@ impl Scheduler {
         inner.frame = std::ptr::null_mut();
         inner.out_ptr = std::ptr::null_mut();
         inner.out_buf = None;
+        inner.group_id = None;
         self.free_slots.lock().unwrap().push(task_index);
+    }
+
+    fn notify_group_task_completed(
+        &self,
+        group_id: u64,
+        task_token: TaskToken,
+        out_buf: Option<Vec<u8>>,
+    ) {
+        let mut groups = self.task_groups.lock().unwrap();
+        let group = match groups.get_mut(group_id as usize).and_then(|g| g.as_mut()) {
+            Some(g) => g,
+            None => return,
+        };
+        group.tasks.retain(|t| *t != task_token);
+        if let Some(buf) = out_buf {
+            group.completed.push_back(CompletedGroupTask { buf });
+        }
+        if let Some(waiter) = group.waiter.take() {
+            self.wake_tasks(&[waiter]);
+        }
+    }
+
+    fn notify_group_task_cancelled(&self, group_id: u64, task_token: TaskToken) {
+        let mut groups = self.task_groups.lock().unwrap();
+        let group = match groups.get_mut(group_id as usize).and_then(|g| g.as_mut()) {
+            Some(g) => g,
+            None => return,
+        };
+        group.tasks.retain(|t| *t != task_token);
+        if let Some(waiter) = group.waiter.take() {
+            self.wake_tasks(&[waiter]);
+        }
+    }
+
+    fn notify_group_task_panicked(&self, group_id: u64, task_token: TaskToken, message: String) {
+        let mut groups = self.task_groups.lock().unwrap();
+        let group = match groups.get_mut(group_id as usize).and_then(|g| g.as_mut()) {
+            Some(g) => g,
+            None => return,
+        };
+        group.tasks.retain(|t| *t != task_token);
+        if group.panic_message.is_none() {
+            group.panic_message = Some(message);
+        }
+        let waiter = group.waiter.take();
+        if group.cancel_on_panic {
+            group.cancelled = true;
+            group.spawning_closed = true;
+            let remaining: Vec<TaskToken> = group.tasks.clone();
+            drop(groups);
+            for t in remaining {
+                self.cancel_task(t);
+            }
+        } else {
+            drop(groups);
+        }
+        if let Some(waiter) = waiter {
+            self.wake_tasks(&[waiter]);
+        }
+    }
+
+    fn destroy_task_group(&self, group_id: u64) -> Option<String> {
+        let mut groups = self.task_groups.lock().unwrap();
+        let slot = groups.get_mut(group_id as usize)?;
+        let state = slot.take()?;
+        drop(groups);
+        self.free_group_slots.lock().unwrap().push(group_id as usize);
+        state.panic_message
     }
 
     fn register_sleep(&self, task_token: TaskToken, deadline: Instant) {
@@ -982,7 +1228,10 @@ impl Scheduler {
         let tasks: Vec<_> = self.tasks.read().unwrap().iter().cloned().collect();
         for (task_index, slot) in tasks.iter().enumerate() {
             let (task_token, frame, handle) = {
-                let mut inner = slot.inner.lock().unwrap();
+                let mut inner = slot
+                    .inner
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if !inner.occupied || inner.completed {
                     inner.occupied = false;
                     (None, std::ptr::null_mut(), std::ptr::null_mut())
@@ -1126,7 +1375,7 @@ pub fn run_root(handle: *mut u8, out: *mut u8) {
 /// Spawn a new task on the executor. Returns a task token that can be polled
 /// later via `__rt__executor_poll_spawned`.
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__executor_spawn(handle: *mut u8, out_size: u64) -> u64 {
+pub extern "C-unwind" fn __rt__executor_spawn(handle: *mut u8, out_size: u64) -> u64 {
     let scheduler = current_worker_scheduler().unwrap_or_else(ensure_rootless_scheduler);
     let owner_worker = current_worker_id().unwrap_or(0);
 
@@ -1148,8 +1397,9 @@ pub extern "C" fn __rt__executor_spawn(handle: *mut u8, out_size: u64) -> u64 {
 
 /// Poll a spawned task by token. Returns 1 if completed (output copied to `out`),
 /// 0 if still pending (current task registered as the sole waiter).
+/// Panics if the task was cancelled.
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__executor_poll_spawned(task_token: u64, out: *mut u8) -> u8 {
+pub extern "C-unwind" fn __rt__executor_poll_spawned(task_token: u64, out: *mut u8) -> u8 {
     WORKER_CONTEXT.with(|cell| {
         let mut borrow = cell.borrow_mut();
         let context = borrow
@@ -1163,17 +1413,28 @@ pub extern "C" fn __rt__executor_poll_spawned(task_token: u64, out: *mut u8) -> 
             .scheduler
             .lookup_task_slot(task_index)
             .unwrap_or_else(|| panic!("invalid spawned task token {task_token}"));
-        let mut inner = slot.inner.lock().unwrap();
+        let mut inner = slot
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !inner.occupied || inner.generation != task_generation {
+            drop(inner);
             panic!("stale spawned task token {task_token}");
         }
 
         if inner.completed {
             if let Some(waiter) = inner.waiter {
-                assert_eq!(
-                    waiter, current,
-                    "spawned task value already reserved by another waiter"
-                );
+                if waiter != current {
+                    drop(inner);
+                    panic!("spawned task value already reserved by another waiter");
+                }
+            }
+
+            if inner.cancelled {
+                inner.waiter = None;
+                context.scheduler.reclaim_task_slot(task_token, &mut inner);
+                drop(inner);
+                panic!("task was cancelled");
             }
 
             if let Some(buf) = inner.out_buf.take() {
@@ -1187,6 +1448,7 @@ pub extern "C" fn __rt__executor_poll_spawned(task_token: u64, out: *mut u8) -> 
         } else {
             match inner.waiter {
                 Some(waiter) if waiter != current => {
+                    drop(inner);
                     panic!("spawned task value already has an active waiter");
                 }
                 Some(_) => {}
@@ -1196,6 +1458,335 @@ pub extern "C" fn __rt__executor_poll_spawned(task_token: u64, out: *mut u8) -> 
             0
         }
     })
+}
+
+/// Poll a spawned task by token (checked, non-panicking variant).
+/// Returns 0 = pending, 1 = completed (output copied), 2 = cancelled.
+/// Does NOT reclaim the task slot — caller must call `__rt__executor_reclaim_spawned`.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn __rt__executor_poll_spawned_checked(task_token: u64, out: *mut u8) -> u8 {
+    WORKER_CONTEXT.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        let context = borrow
+            .as_mut()
+            .expect("poll_spawned_checked called outside executor worker");
+        let current = context
+            .current_task
+            .expect("poll_spawned_checked called with no current task");
+        let (task_index, task_generation) = unpack_task_token(task_token);
+        let slot = context
+            .scheduler
+            .lookup_task_slot(task_index)
+            .unwrap_or_else(|| panic!("invalid spawned task token {task_token}"));
+        let mut inner = slot
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !inner.occupied || inner.generation != task_generation {
+            drop(inner);
+            panic!("stale spawned task token {task_token}");
+        }
+
+        if inner.completed {
+            if let Some(waiter) = inner.waiter {
+                assert_eq!(
+                    waiter, current,
+                    "spawned task value already reserved by another waiter"
+                );
+            }
+            inner.waiter = None;
+
+            if inner.cancelled {
+                return 2;
+            }
+
+            if let Some(buf) = inner.out_buf.take() {
+                if !out.is_null() && !buf.is_empty() {
+                    unsafe { std::ptr::copy_nonoverlapping(buf.as_ptr(), out, buf.len()) };
+                }
+            }
+            1
+        } else {
+            match inner.waiter {
+                Some(waiter) if waiter != current => {
+                    drop(inner);
+                    panic!("spawned task value already has an active waiter");
+                }
+                Some(_) => {}
+                None => inner.waiter = Some(current),
+            }
+            context.current_task_blocked = true;
+            0
+        }
+    })
+}
+
+/// Query the completion status of a spawned task.
+/// Returns 1 if completed normally, 2 if cancelled.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn __rt__executor_task_completion_status(task_token: u64) -> u8 {
+    let (task_index, task_generation) = unpack_task_token(task_token);
+    let scheduler = current_worker_scheduler()
+        .unwrap_or_else(|| panic!("task_completion_status called outside executor"));
+    let slot = scheduler
+        .lookup_task_slot(task_index)
+        .unwrap_or_else(|| panic!("invalid task token {task_token}"));
+    let inner = slot.inner.lock().unwrap();
+    if !inner.occupied || inner.generation != task_generation {
+        panic!("stale task token {task_token}");
+    }
+    assert!(inner.completed, "task_completion_status called on incomplete task");
+    if inner.cancelled { 2 } else { 1 }
+}
+
+/// Reclaim a spawned task slot after reading its completion status.
+/// Used by the checked (non-panicking) poll path.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn __rt__executor_reclaim_spawned(task_token: u64) {
+    WORKER_CONTEXT.with(|cell| {
+        let borrow = cell.borrow();
+        let context = borrow
+            .as_ref()
+            .expect("reclaim_spawned called outside executor worker");
+        let (task_index, task_generation) = unpack_task_token(task_token);
+        let slot = context
+            .scheduler
+            .lookup_task_slot(task_index)
+            .unwrap_or_else(|| panic!("invalid task token {task_token}"));
+        let mut inner = slot.inner.lock().unwrap();
+        if !inner.occupied || inner.generation != task_generation {
+            return;
+        }
+        if inner.completed {
+            context.scheduler.reclaim_task_slot(task_token, &mut inner);
+        }
+    });
+}
+
+/// Cancel a task by token. Idempotent — safe to call on completed tasks.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn __rt__executor_cancel_task(task_token: u64) {
+    let scheduler = current_worker_scheduler()
+        .or_else(|| session_cell().lock().unwrap().clone())
+        .expect("cancel_task called outside executor");
+    scheduler.cancel_task(task_token);
+}
+
+/// Create a new task group. Returns a group ID.
+/// `cancel_on_panic`: 1 = cancel siblings on panic, 0 = independent.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn __rt__task_group_create(result_size: u64, cancel_on_panic: u8) -> u64 {
+    let scheduler = current_worker_scheduler()
+        .or_else(|| session_cell().lock().unwrap().clone())
+        .expect("task_group_create called outside executor");
+    let state = TaskGroupState {
+        tasks: Vec::new(),
+        completed: VecDeque::new(),
+        result_size: result_size as usize,
+        waiter: None,
+        spawning_closed: false,
+        cancelled: false,
+        cancel_on_panic: cancel_on_panic != 0,
+        ready_status: 0,
+        panic_message: None,
+    };
+    let mut free = scheduler.free_group_slots.lock().unwrap();
+    let mut groups = scheduler.task_groups.lock().unwrap();
+    if let Some(idx) = free.pop() {
+        groups[idx] = Some(state);
+        idx as u64
+    } else {
+        let idx = groups.len();
+        groups.push(Some(state));
+        idx as u64
+    }
+}
+
+/// Spawn a task into a group. Returns the task token.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn __rt__task_group_spawn(
+    group_id: u64,
+    handle: *mut u8,
+    out_size: u64,
+) -> u64 {
+    let scheduler = current_worker_scheduler()
+        .or_else(|| session_cell().lock().unwrap().clone())
+        .expect("task_group_spawn called outside executor");
+    let owner_worker = current_worker_id().unwrap_or(0);
+
+    {
+        let groups = scheduler.task_groups.lock().unwrap();
+        let group = groups
+            .get(group_id as usize)
+            .and_then(|g| g.as_ref())
+            .unwrap_or_else(|| panic!("invalid task group id {group_id}"));
+        assert!(
+            !group.spawning_closed,
+            "task_group_spawn called after group was closed"
+        );
+        assert!(
+            !group.cancelled,
+            "task_group_spawn called after group was cancelled"
+        );
+        assert_eq!(
+            group.result_size,
+            out_size as usize,
+            "task_group_spawn result size mismatch"
+        );
+    }
+
+    let mut out_buf = vec![0u8; out_size as usize];
+    let out_ptr = out_buf.as_mut_ptr();
+    let preferred_worker = Some(owner_worker);
+    let task_token = scheduler.add_task(handle, out_ptr, Some(out_buf), owner_worker, preferred_worker);
+
+    // Register group_id on the task slot
+    {
+        let (task_index, task_generation) = unpack_task_token(task_token);
+        if let Some(slot) = scheduler.lookup_task_slot(task_index) {
+            let mut inner = slot.inner.lock().unwrap();
+            if inner.occupied && inner.generation == task_generation {
+                inner.group_id = Some(group_id);
+            }
+        }
+    }
+
+    // Track in group
+    {
+        let mut groups = scheduler.task_groups.lock().unwrap();
+        if let Some(Some(group)) = groups.get_mut(group_id as usize) {
+            group.tasks.push(task_token);
+        }
+    }
+
+    task_token
+}
+
+/// Signal that no more tasks will be spawned into the group.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn __rt__task_group_close(group_id: u64) {
+    let scheduler = current_worker_scheduler()
+        .or_else(|| session_cell().lock().unwrap().clone())
+        .expect("task_group_close called outside executor");
+    let mut groups = scheduler.task_groups.lock().unwrap();
+    if let Some(Some(group)) = groups.get_mut(group_id as usize) {
+        group.spawning_closed = true;
+        // If already drained, wake waiter
+        if group.tasks.is_empty() && group.completed.is_empty() {
+            if let Some(waiter) = group.waiter.take() {
+                drop(groups);
+                scheduler.wake_tasks(&[waiter]);
+            }
+        }
+    }
+}
+
+/// Cancel all remaining tasks in the group.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn __rt__task_group_cancel_all(group_id: u64) {
+    let scheduler = current_worker_scheduler()
+        .or_else(|| session_cell().lock().unwrap().clone())
+        .expect("task_group_cancel_all called outside executor");
+    let tokens: Vec<TaskToken> = {
+        let mut groups = scheduler.task_groups.lock().unwrap();
+        if let Some(Some(group)) = groups.get_mut(group_id as usize) {
+            group.cancelled = true;
+            group.tasks.clone()
+        } else {
+            return;
+        }
+    };
+    for t in tokens {
+        scheduler.cancel_task(t);
+    }
+}
+
+/// Destroy the group state after all tasks are complete.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn __rt__task_group_destroy(group_id: u64) {
+    let scheduler = current_worker_scheduler()
+        .or_else(|| session_cell().lock().unwrap().clone())
+        .expect("task_group_destroy called outside executor");
+    let _ = scheduler.destroy_task_group(group_id);
+}
+
+/// Destroy the group state and rethrow the first captured child panic, if any.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn __rt__task_group_destroy_and_rethrow_panic(group_id: u64) {
+    let scheduler = current_worker_scheduler()
+        .or_else(|| session_cell().lock().unwrap().clone())
+        .expect("task_group_destroy_and_rethrow_panic called outside executor");
+    if let Some(message) = scheduler.destroy_task_group(group_id) {
+        crate::panic_unwind::rethrow_panic_message(message);
+    }
+}
+
+/// Poll for the next completed result from a task group.
+/// Returns 0 = pending, 1 = got result (written to `out`), 2 = group exhausted.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn __rt__task_group_poll_next(group_id: u64, out: *mut u8) -> u8 {
+    WORKER_CONTEXT.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        let context = borrow
+            .as_mut()
+            .expect("task_group_poll_next called outside executor worker");
+        let current = context
+            .current_task
+            .expect("task_group_poll_next called with no current task");
+        let mut groups = context.scheduler.task_groups.lock().unwrap();
+        let group = match groups.get_mut(group_id as usize).and_then(|g| g.as_mut()) {
+            Some(g) => g,
+            None => return 2, // group doesn't exist, treat as exhausted
+        };
+
+        // Check for completed results
+        if let Some(completed) = group.completed.pop_front() {
+            group.ready_status = 1;
+            if !out.is_null() && !completed.buf.is_empty() {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(completed.buf.as_ptr(), out, completed.buf.len())
+                };
+            }
+            return 1;
+        }
+
+        // If spawning is closed and no tasks remain, group is exhausted
+        if group.spawning_closed && group.tasks.is_empty() {
+            group.ready_status = 2;
+            return 2;
+        }
+
+        // Otherwise, register as waiter
+        match group.waiter {
+            Some(waiter) if waiter != current => {
+                panic!("task group already has an active waiter");
+            }
+            Some(_) => {}
+            None => group.waiter = Some(current),
+        }
+        group.ready_status = 0;
+        context.current_task_blocked = true;
+        0
+    })
+}
+
+/// Return the most recent ready status observed by `__rt__task_group_poll_next`.
+/// Returns 1 = yielded value, 2 = exhausted.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn __rt__task_group_next_status(group_id: u64) -> u8 {
+    let scheduler = current_worker_scheduler()
+        .or_else(|| session_cell().lock().unwrap().clone())
+        .expect("task_group_next_status called outside executor");
+    let mut groups = scheduler.task_groups.lock().unwrap();
+    let group = groups
+        .get_mut(group_id as usize)
+        .and_then(|g| g.as_mut())
+        .unwrap_or_else(|| panic!("invalid task group id {group_id}"));
+    assert!(
+        group.ready_status != 0,
+        "task_group_next_status called before a ready group event"
+    );
+    group.ready_status
 }
 
 pub(crate) fn register_sleep(deadline: Instant) {
@@ -1847,5 +2438,649 @@ mod tests {
     fn pinned_tasks_stay_on_one_worker() {
         let visits = run_recording_root(TaskMobility::Pinned);
         assert!(visits.values().all(|threads| threads.len() == 1));
+    }
+
+    struct PendingFrame {
+        polls: Arc<AtomicUsize>,
+        drops: Arc<AtomicUsize>,
+    }
+
+    unsafe extern "C-unwind" fn pending_poll(frame: *mut u8, _ctx: *mut u8, _out: *mut u8) -> u8 {
+        let frame = unsafe { &mut *(frame as *mut PendingFrame) };
+        frame.polls.fetch_add(1, Ordering::AcqRel);
+        0
+    }
+
+    unsafe extern "C" fn pending_drop(frame: *mut u8) {
+        let frame = unsafe { Box::from_raw(frame as *mut PendingFrame) };
+        frame.drops.fetch_add(1, Ordering::AcqRel);
+    }
+
+    struct ReadyValueFrame {
+        value: u32,
+    }
+
+    unsafe extern "C-unwind" fn ready_value_poll(
+        frame: *mut u8,
+        _ctx: *mut u8,
+        out: *mut u8,
+    ) -> u8 {
+        let frame = unsafe { &*(frame as *mut ReadyValueFrame) };
+        if !out.is_null() {
+            unsafe { (out as *mut u32).write(frame.value) };
+        }
+        1
+    }
+
+    unsafe extern "C" fn ready_value_drop(frame: *mut u8) {
+        let _ = unsafe { Box::from_raw(frame as *mut ReadyValueFrame) };
+    }
+
+    struct DelayedValueFrame {
+        value: u32,
+        remaining: usize,
+        drops: Arc<AtomicUsize>,
+    }
+
+    unsafe extern "C-unwind" fn delayed_value_poll(
+        frame: *mut u8,
+        _ctx: *mut u8,
+        out: *mut u8,
+    ) -> u8 {
+        let frame = unsafe { &mut *(frame as *mut DelayedValueFrame) };
+        if frame.remaining > 0 {
+            frame.remaining -= 1;
+            return 0;
+        }
+        if !out.is_null() {
+            unsafe { (out as *mut u32).write(frame.value) };
+        }
+        1
+    }
+
+    unsafe extern "C" fn delayed_value_drop(frame: *mut u8) {
+        let frame = unsafe { Box::from_raw(frame as *mut DelayedValueFrame) };
+        frame.drops.fetch_add(1, Ordering::AcqRel);
+    }
+
+    struct PanicFrame {
+        message: String,
+    }
+
+    unsafe extern "C-unwind" fn panic_task_poll(
+        frame: *mut u8,
+        _ctx: *mut u8,
+        _out: *mut u8,
+    ) -> u8 {
+        let frame = unsafe { &*(frame as *mut PanicFrame) };
+        crate::panic_unwind::rethrow_panic_message(frame.message.clone())
+    }
+
+    unsafe extern "C" fn panic_task_drop(frame: *mut u8) {
+        let _ = unsafe { Box::from_raw(frame as *mut PanicFrame) };
+    }
+
+    fn make_pending_handle(
+        polls: Arc<AtomicUsize>,
+        drops: Arc<AtomicUsize>,
+    ) -> *mut u8 {
+        __rt__async_create(
+            Box::into_raw(Box::new(PendingFrame { polls, drops })) as *mut u8,
+            pending_poll as *const () as *const u8,
+            pending_drop as *const () as *const u8,
+            TaskMobility::Movable as u8,
+        )
+    }
+
+    fn make_ready_value_handle(value: u32) -> *mut u8 {
+        __rt__async_create(
+            Box::into_raw(Box::new(ReadyValueFrame { value })) as *mut u8,
+            ready_value_poll as *const () as *const u8,
+            ready_value_drop as *const () as *const u8,
+            TaskMobility::Movable as u8,
+        )
+    }
+
+    fn make_delayed_value_handle(
+        value: u32,
+        remaining: usize,
+        drops: Arc<AtomicUsize>,
+    ) -> *mut u8 {
+        __rt__async_create(
+            Box::into_raw(Box::new(DelayedValueFrame {
+                value,
+                remaining,
+                drops,
+            })) as *mut u8,
+            delayed_value_poll as *const () as *const u8,
+            delayed_value_drop as *const () as *const u8,
+            TaskMobility::Movable as u8,
+        )
+    }
+
+    fn make_panic_handle(message: &str) -> *mut u8 {
+        __rt__async_create(
+            Box::into_raw(Box::new(PanicFrame {
+                message: message.to_string(),
+            })) as *mut u8,
+            panic_task_poll as *const () as *const u8,
+            panic_task_drop as *const () as *const u8,
+            TaskMobility::Movable as u8,
+        )
+    }
+
+    #[test]
+    fn cancel_marks_blocked_task_and_wakes_it() {
+        let scheduler = Scheduler::new(false, 1);
+        let token = scheduler.add_task(ptr::null_mut(), ptr::null_mut(), Some(Vec::new()), 0, None);
+        let (task_index, _) = unpack_task_token(token);
+        let slot = scheduler.lookup_task_slot(task_index).unwrap();
+        {
+            let mut inner = slot.inner.lock().unwrap();
+            inner.queued = false;
+        }
+
+        scheduler.cancel_task(token);
+
+        let inner = slot.inner.lock().unwrap();
+        assert!(inner.cancelled);
+        assert!(inner.queued);
+    }
+
+    #[test]
+    fn cancel_completed_task_is_noop() {
+        let scheduler = Scheduler::new(false, 1);
+        let token = scheduler.add_task(ptr::null_mut(), ptr::null_mut(), Some(Vec::new()), 0, None);
+        scheduler.complete_task(token);
+
+        scheduler.cancel_task(token);
+
+        let (task_index, _) = unpack_task_token(token);
+        let slot = scheduler.lookup_task_slot(task_index).unwrap();
+        let inner = slot.inner.lock().unwrap();
+        assert!(inner.completed);
+        assert!(!inner.cancelled);
+    }
+
+    #[test]
+    fn cancelled_task_skips_poll_and_runs_drop() {
+        let scheduler = Scheduler::new(false, 1);
+        let polls = Arc::new(AtomicUsize::new(0));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let token = scheduler.add_task(
+            make_pending_handle(Arc::clone(&polls), Arc::clone(&drops)),
+            ptr::null_mut(),
+            None,
+            0,
+            Some(0),
+        );
+
+        scheduler.cancel_task(token);
+        scheduler.run_task(0, token);
+
+        assert_eq!(polls.load(Ordering::Acquire), 0);
+        assert_eq!(drops.load(Ordering::Acquire), 1);
+    }
+
+    struct PollSpawnedCancelledRoot {
+        stage: u8,
+        token: u64,
+        drops: Arc<AtomicUsize>,
+    }
+
+    unsafe extern "C-unwind" fn poll_spawned_cancelled_root_poll(
+        frame: *mut u8,
+        _ctx: *mut u8,
+        _out: *mut u8,
+    ) -> u8 {
+        let frame = unsafe { &mut *(frame as *mut PollSpawnedCancelledRoot) };
+        if frame.stage == 0 {
+            let polls = Arc::new(AtomicUsize::new(0));
+            frame.token = __rt__executor_spawn(
+                make_pending_handle(polls, Arc::clone(&frame.drops)),
+                0,
+            );
+            __rt__executor_cancel_task(frame.token);
+            frame.stage = 1;
+            return 0;
+        }
+
+        if __rt__executor_poll_spawned(frame.token, std::ptr::null_mut()) == 0 {
+            return 0;
+        }
+        panic!("cancelled spawned task should panic when polled via value()");
+    }
+
+    unsafe extern "C" fn poll_spawned_cancelled_root_drop(frame: *mut u8) {
+        let _ = unsafe { Box::from_raw(frame as *mut PollSpawnedCancelledRoot) };
+    }
+
+    #[test]
+    fn poll_spawned_panics_on_cancelled_task() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let drops = Arc::new(AtomicUsize::new(0));
+        let handle = __rt__async_create(
+            Box::into_raw(Box::new(PollSpawnedCancelledRoot {
+                stage: 0,
+                token: 0,
+                drops: Arc::clone(&drops),
+            })) as *mut u8,
+            poll_spawned_cancelled_root_poll as *const () as *const u8,
+            poll_spawned_cancelled_root_drop as *const () as *const u8,
+            TaskMobility::Pinned as u8,
+        );
+
+        let panicked =
+            panic::catch_unwind(AssertUnwindSafe(|| __rt__async_run_root(handle, std::ptr::null_mut())));
+        assert!(panicked.is_err());
+        assert_eq!(drops.load(Ordering::Acquire), 1);
+    }
+
+    struct PollSpawnedCheckedRoot {
+        stage: u8,
+        token: u64,
+        drops: Arc<AtomicUsize>,
+    }
+
+    unsafe extern "C-unwind" fn poll_spawned_checked_root_poll(
+        frame: *mut u8,
+        _ctx: *mut u8,
+        out: *mut u8,
+    ) -> u8 {
+        let frame = unsafe { &mut *(frame as *mut PollSpawnedCheckedRoot) };
+        if frame.stage == 0 {
+            let polls = Arc::new(AtomicUsize::new(0));
+            frame.token = __rt__executor_spawn(
+                make_pending_handle(polls, Arc::clone(&frame.drops)),
+                std::mem::size_of::<u32>() as u64,
+            );
+            __rt__executor_cancel_task(frame.token);
+            frame.stage = 1;
+            return 0;
+        }
+
+        let mut value = 99_u32;
+        let status = __rt__executor_poll_spawned_checked(
+            frame.token,
+            (&mut value as *mut u32).cast::<u8>(),
+        );
+        if status == 0 {
+            return 0;
+        }
+
+        assert_eq!(status, 2);
+        assert_eq!(__rt__executor_task_completion_status(frame.token), 2);
+        __rt__executor_reclaim_spawned(frame.token);
+        if !out.is_null() {
+            unsafe { (out as *mut u8).write(status) };
+        }
+        1
+    }
+
+    unsafe extern "C" fn poll_spawned_checked_root_drop(frame: *mut u8) {
+        let _ = unsafe { Box::from_raw(frame as *mut PollSpawnedCheckedRoot) };
+    }
+
+    #[test]
+    fn checked_poll_reports_cancelled_status() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let drops = Arc::new(AtomicUsize::new(0));
+        let handle = __rt__async_create(
+            Box::into_raw(Box::new(PollSpawnedCheckedRoot {
+                stage: 0,
+                token: 0,
+                drops: Arc::clone(&drops),
+            })) as *mut u8,
+            poll_spawned_checked_root_poll as *const () as *const u8,
+            poll_spawned_checked_root_drop as *const () as *const u8,
+            TaskMobility::Movable as u8,
+        );
+
+        let mut out = 0_u8;
+        __rt__async_run_root(handle, (&mut out as *mut u8).cast::<u8>());
+        assert_eq!(out, 2);
+        assert_eq!(drops.load(Ordering::Acquire), 1);
+    }
+
+    struct GroupCollectRoot {
+        stage: u8,
+        group_id: u64,
+        sum: u32,
+    }
+
+    unsafe extern "C-unwind" fn group_collect_root_poll(
+        frame: *mut u8,
+        _ctx: *mut u8,
+        out: *mut u8,
+    ) -> u8 {
+        let frame = unsafe { &mut *(frame as *mut GroupCollectRoot) };
+        if frame.stage == 0 {
+            frame.group_id =
+                __rt__task_group_create(std::mem::size_of::<u32>() as u64, 1);
+            let _ = __rt__task_group_spawn(frame.group_id, make_ready_value_handle(11), 4);
+            let _ = __rt__task_group_spawn(frame.group_id, make_ready_value_handle(31), 4);
+            __rt__task_group_close(frame.group_id);
+            frame.stage = 1;
+            return 0;
+        }
+
+        let mut value = 0_u32;
+        match __rt__task_group_poll_next(frame.group_id, (&mut value as *mut u32).cast::<u8>()) {
+            0 => 0,
+            1 => {
+                assert_eq!(__rt__task_group_next_status(frame.group_id), 1);
+                frame.sum += value;
+                0
+            }
+            2 => {
+                assert_eq!(__rt__task_group_next_status(frame.group_id), 2);
+                __rt__task_group_destroy(frame.group_id);
+                if !out.is_null() {
+                    unsafe { (out as *mut u32).write(frame.sum) };
+                }
+                1
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    unsafe extern "C" fn group_collect_root_drop(frame: *mut u8) {
+        let _ = unsafe { Box::from_raw(frame as *mut GroupCollectRoot) };
+    }
+
+    #[test]
+    fn task_group_lifecycle_collects_results() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let handle = __rt__async_create(
+            Box::into_raw(Box::new(GroupCollectRoot {
+                stage: 0,
+                group_id: 0,
+                sum: 0,
+            })) as *mut u8,
+            group_collect_root_poll as *const () as *const u8,
+            group_collect_root_drop as *const () as *const u8,
+            TaskMobility::Movable as u8,
+        );
+
+        let mut out = 0_u32;
+        __rt__async_run_root(handle, (&mut out as *mut u32).cast::<u8>());
+        assert_eq!(out, 42);
+    }
+
+    struct GroupCancelAllRoot {
+        stage: u8,
+        group_id: u64,
+        drops: Arc<AtomicUsize>,
+    }
+
+    unsafe extern "C-unwind" fn group_cancel_all_root_poll(
+        frame: *mut u8,
+        _ctx: *mut u8,
+        out: *mut u8,
+    ) -> u8 {
+        let frame = unsafe { &mut *(frame as *mut GroupCancelAllRoot) };
+        if frame.stage == 0 {
+            let polls_a = Arc::new(AtomicUsize::new(0));
+            let polls_b = Arc::new(AtomicUsize::new(0));
+            frame.group_id =
+                __rt__task_group_create(std::mem::size_of::<u32>() as u64, 1);
+            let _ = __rt__task_group_spawn(
+                frame.group_id,
+                make_pending_handle(polls_a, Arc::clone(&frame.drops)),
+                4,
+            );
+            let _ = __rt__task_group_spawn(
+                frame.group_id,
+                make_pending_handle(polls_b, Arc::clone(&frame.drops)),
+                4,
+            );
+            __rt__task_group_close(frame.group_id);
+            __rt__task_group_cancel_all(frame.group_id);
+            frame.stage = 1;
+            return 0;
+        }
+
+        let mut scratch = 0_u32;
+        match __rt__task_group_poll_next(frame.group_id, (&mut scratch as *mut u32).cast::<u8>()) {
+            0 => 0,
+            1 => panic!("cancelled group should not yield successful results"),
+            2 => {
+                __rt__task_group_destroy(frame.group_id);
+                if !out.is_null() {
+                    unsafe { (out as *mut u8).write(1) };
+                }
+                1
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    unsafe extern "C" fn group_cancel_all_root_drop(frame: *mut u8) {
+        let _ = unsafe { Box::from_raw(frame as *mut GroupCancelAllRoot) };
+    }
+
+    #[test]
+    fn task_group_cancel_all_cancels_remaining_tasks() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let drops = Arc::new(AtomicUsize::new(0));
+        let handle = __rt__async_create(
+            Box::into_raw(Box::new(GroupCancelAllRoot {
+                stage: 0,
+                group_id: 0,
+                drops: Arc::clone(&drops),
+            })) as *mut u8,
+            group_cancel_all_root_poll as *const () as *const u8,
+            group_cancel_all_root_drop as *const () as *const u8,
+            TaskMobility::Movable as u8,
+        );
+
+        let mut out = 0_u8;
+        __rt__async_run_root(handle, (&mut out as *mut u8).cast::<u8>());
+        assert_eq!(out, 1);
+        assert_eq!(drops.load(Ordering::Acquire), 2);
+    }
+
+    struct GroupCancelOnPanicRoot {
+        stage: u8,
+        group_id: u64,
+        drops: Arc<AtomicUsize>,
+    }
+
+    unsafe extern "C-unwind" fn group_cancel_on_panic_root_poll(
+        frame: *mut u8,
+        _ctx: *mut u8,
+        out: *mut u8,
+    ) -> u8 {
+        let frame = unsafe { &mut *(frame as *mut GroupCancelOnPanicRoot) };
+        if frame.stage == 0 {
+            let polls = Arc::new(AtomicUsize::new(0));
+            frame.group_id =
+                __rt__task_group_create(std::mem::size_of::<u32>() as u64, 1);
+            let _ = __rt__task_group_spawn(frame.group_id, make_panic_handle("group child panic"), 4);
+            let _ = __rt__task_group_spawn(
+                frame.group_id,
+                make_pending_handle(polls, Arc::clone(&frame.drops)),
+                4,
+            );
+            __rt__task_group_close(frame.group_id);
+            frame.stage = 1;
+            return 0;
+        }
+
+        let mut scratch = 0_u32;
+        match __rt__task_group_poll_next(frame.group_id, (&mut scratch as *mut u32).cast::<u8>()) {
+            0 => 0,
+            1 => panic!("cancel-on-panic group should not yield successful results"),
+            2 => {
+                __rt__task_group_destroy(frame.group_id);
+                if !out.is_null() {
+                    unsafe { (out as *mut u8).write(1) };
+                }
+                1
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    unsafe extern "C" fn group_cancel_on_panic_root_drop(frame: *mut u8) {
+        let _ = unsafe { Box::from_raw(frame as *mut GroupCancelOnPanicRoot) };
+    }
+
+    #[test]
+    fn task_group_cancel_on_panic_cancels_siblings() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let drops = Arc::new(AtomicUsize::new(0));
+        let handle = __rt__async_create(
+            Box::into_raw(Box::new(GroupCancelOnPanicRoot {
+                stage: 0,
+                group_id: 0,
+                drops: Arc::clone(&drops),
+            })) as *mut u8,
+            group_cancel_on_panic_root_poll as *const () as *const u8,
+            group_cancel_on_panic_root_drop as *const () as *const u8,
+            TaskMobility::Movable as u8,
+        );
+
+        let mut out = 0_u8;
+        __rt__async_run_root(handle, (&mut out as *mut u8).cast::<u8>());
+        assert_eq!(out, 1);
+        assert_eq!(drops.load(Ordering::Acquire), 1);
+    }
+
+    struct GroupCancelOnPanicOpenRoot {
+        stage: u8,
+        group_id: u64,
+        drops: Arc<AtomicUsize>,
+    }
+
+    unsafe extern "C-unwind" fn group_cancel_on_panic_open_root_poll(
+        frame: *mut u8,
+        _ctx: *mut u8,
+        out: *mut u8,
+    ) -> u8 {
+        let frame = unsafe { &mut *(frame as *mut GroupCancelOnPanicOpenRoot) };
+        if frame.stage == 0 {
+            let polls = Arc::new(AtomicUsize::new(0));
+            frame.group_id =
+                __rt__task_group_create(std::mem::size_of::<u32>() as u64, 1);
+            let _ = __rt__task_group_spawn(frame.group_id, make_panic_handle("group child panic"), 4);
+            let _ = __rt__task_group_spawn(
+                frame.group_id,
+                make_pending_handle(polls, Arc::clone(&frame.drops)),
+                4,
+            );
+            frame.stage = 1;
+            return 0;
+        }
+
+        let mut scratch = 0_u32;
+        match __rt__task_group_poll_next(frame.group_id, (&mut scratch as *mut u32).cast::<u8>()) {
+            0 => 0,
+            1 => panic!("cancel-on-panic group should not yield successful results"),
+            2 => {
+                __rt__task_group_destroy(frame.group_id);
+                if !out.is_null() {
+                    unsafe { (out as *mut u8).write(1) };
+                }
+                1
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    unsafe extern "C" fn group_cancel_on_panic_open_root_drop(frame: *mut u8) {
+        let _ = unsafe { Box::from_raw(frame as *mut GroupCancelOnPanicOpenRoot) };
+    }
+
+    #[test]
+    fn task_group_cancel_on_panic_closes_group_for_waiters() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let drops = Arc::new(AtomicUsize::new(0));
+        let handle = __rt__async_create(
+            Box::into_raw(Box::new(GroupCancelOnPanicOpenRoot {
+                stage: 0,
+                group_id: 0,
+                drops: Arc::clone(&drops),
+            })) as *mut u8,
+            group_cancel_on_panic_open_root_poll as *const () as *const u8,
+            group_cancel_on_panic_open_root_drop as *const () as *const u8,
+            TaskMobility::Movable as u8,
+        );
+
+        let mut out = 0_u8;
+        __rt__async_run_root(handle, (&mut out as *mut u8).cast::<u8>());
+        assert_eq!(out, 1);
+        assert_eq!(drops.load(Ordering::Acquire), 1);
+    }
+
+    struct GroupIndependentRoot {
+        stage: u8,
+        group_id: u64,
+        sum: u32,
+        drops: Arc<AtomicUsize>,
+    }
+
+    unsafe extern "C-unwind" fn group_independent_root_poll(
+        frame: *mut u8,
+        _ctx: *mut u8,
+        out: *mut u8,
+    ) -> u8 {
+        let frame = unsafe { &mut *(frame as *mut GroupIndependentRoot) };
+        if frame.stage == 0 {
+            frame.group_id =
+                __rt__task_group_create(std::mem::size_of::<u32>() as u64, 0);
+            let _ = __rt__task_group_spawn(frame.group_id, make_panic_handle("group child panic"), 4);
+            let _ = __rt__task_group_spawn(
+                frame.group_id,
+                make_delayed_value_handle(7, 1, Arc::clone(&frame.drops)),
+                4,
+            );
+            __rt__task_group_close(frame.group_id);
+            frame.stage = 1;
+            return 0;
+        }
+
+        let mut value = 0_u32;
+        match __rt__task_group_poll_next(frame.group_id, (&mut value as *mut u32).cast::<u8>()) {
+            0 => 0,
+            1 => {
+                frame.sum += value;
+                0
+            }
+            2 => {
+                __rt__task_group_destroy(frame.group_id);
+                if !out.is_null() {
+                    unsafe { (out as *mut u32).write(frame.sum) };
+                }
+                1
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    unsafe extern "C" fn group_independent_root_drop(frame: *mut u8) {
+        let _ = unsafe { Box::from_raw(frame as *mut GroupIndependentRoot) };
+    }
+
+    #[test]
+    fn task_group_independent_keeps_siblings_running_after_panic() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let drops = Arc::new(AtomicUsize::new(0));
+        let handle = __rt__async_create(
+            Box::into_raw(Box::new(GroupIndependentRoot {
+                stage: 0,
+                group_id: 0,
+                sum: 0,
+                drops: Arc::clone(&drops),
+            })) as *mut u8,
+            group_independent_root_poll as *const () as *const u8,
+            group_independent_root_drop as *const () as *const u8,
+            TaskMobility::Movable as u8,
+        );
+
+        let mut out = 0_u32;
+        __rt__async_run_root(handle, (&mut out as *mut u32).cast::<u8>());
+        assert_eq!(out, 7);
+        assert_eq!(drops.load(Ordering::Acquire), 1);
     }
 }

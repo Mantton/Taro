@@ -1,12 +1,16 @@
+error: `await` is not allowed inside a defer block
+ -> language_tests/source_files/invalid/defer.tr:6:20
+	    defer { let _ = await asyncValue() }
+	                    ^^^^^^^^^^^^^^^^^^
 error: `break` is not allowed inside a defer block
- -> language_tests/source_files/invalid/defer.tr:2:12
+ -> language_tests/source_files/invalid/defer.tr:10:12
 	    defer { break }
 	            ^^^^^
 error: `continue` is not allowed inside a defer block
- -> language_tests/source_files/invalid/defer.tr:3:12
+ -> language_tests/source_files/invalid/defer.tr:11:12
 	    defer { continue }
 	            ^^^^^^^^
 error: `return` is not allowed inside a defer block
- -> language_tests/source_files/invalid/defer.tr:4:12
+ -> language_tests/source_files/invalid/defer.tr:12:12
 	    defer { return }
 	            ^^^^^^

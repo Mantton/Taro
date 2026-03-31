@@ -258,6 +258,18 @@ impl<'ctx> FunctionLower<'ctx> {
                 param_idx += 1;
             }
 
+            while param_idx < params.len() {
+                let param = &params[param_idx];
+                if param.label.is_some() && param.default_provider.is_some() {
+                    param_idx += 1;
+                    while param_idx < params.len() && param_to_arg[param_idx].is_some() {
+                        param_idx += 1;
+                    }
+                    continue;
+                }
+                break;
+            }
+
             if param_idx >= params.len() {
                 if signature.is_variadic {
                     variadic_args.push(arg_idx);
@@ -1236,6 +1248,9 @@ impl<'ctx> FunctionLower<'ctx> {
                 let mut captures = vec![];
                 if let Some(ref caps) = captures_info {
                     for cap in &caps.captures {
+                        if closure.params.iter().any(|param| param.id == cap.source_id) {
+                            continue;
+                        }
                         // Check if this capture is itself an upvar in our current closure scope
                         // (needed for nested closures)
                         let base_expr_kind = if let Some(captures_map) = &self.captures_map {
@@ -1398,12 +1413,27 @@ impl<'ctx> FunctionLower<'ctx> {
             });
         }
 
-        // Add explicit closure parameters (after self in the signature)
-        for (param, sig_param) in closure.params.iter().zip(signature.inputs.iter().skip(1)) {
+        // Add explicit closure parameters (after self in the signature).
+        // Prefer the resolved local type recorded during type checking so THIR
+        // does not depend on the cached closure signature preserving parameter
+        // slots perfectly through later closure-signature updates.
+        for (index, param) in closure.params.iter().enumerate() {
+            let sig_param = signature.inputs.get(index + 1);
+            let ty = self
+                .results
+                .try_node_type(param.id)
+                .or_else(|| sig_param.map(|param| param.ty))
+                .unwrap_or(self.gcx.types.error);
+            let name = sig_param
+                .map(|param| param.name)
+                .unwrap_or_else(|| match &param.pattern.kind {
+                    hir::PatternKind::Binding { name, .. } => name.symbol,
+                    _ => self.gcx.intern_symbol("_"),
+                });
             closure_lower.func.params.push(Param {
                 id: param.id,
-                name: sig_param.name,
-                ty: sig_param.ty,
+                name,
+                ty,
                 span: param.span,
             });
         }

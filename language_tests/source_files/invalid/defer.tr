@@ -1,3 +1,11 @@
+func asyncValue() async -> int32 {
+    return 1
+}
+
+func badAwait() async {
+    defer { let _ = await asyncValue() }
+}
+
 func main() {
     defer { break }
     defer { continue }

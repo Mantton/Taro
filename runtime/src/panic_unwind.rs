@@ -26,6 +26,10 @@
 //! in test mode because `_Unwind_RaiseException` performs a normal
 //! search-then-cleanup two-phase unwind, and `__gcc_personality_v0` runs
 //! cleanup actions for any exception type.
+//!
+//! Grouped executor tasks also temporarily opt into the catchable
+//! `_Unwind_RaiseException` path so the runtime can record child-task panics
+//! without tearing down the whole scheduler.
 
 use std::{
     backtrace::Backtrace,
@@ -68,6 +72,9 @@ std::thread_local! {
     /// can intercept it.  When false, it uses `_Unwind_ForcedUnwind` so that
     /// cleanup/defer landing pads execute correctly in normal mode.
     static IN_TEST_HARNESS: Cell<bool> = const { Cell::new(false) };
+    /// Set temporarily while polling a grouped child task so the executor can
+    /// capture its panic and apply task-group policy.
+    static IN_EXECUTOR_CATCH: Cell<bool> = const { Cell::new(false) };
 }
 
 pub(crate) fn in_test_harness() -> bool {
@@ -76,6 +83,30 @@ pub(crate) fn in_test_harness() -> bool {
 
 pub(crate) fn set_test_harness_active(active: bool) {
     IN_TEST_HARNESS.with(|flag| flag.set(active));
+}
+
+pub(crate) fn catch_executor_panic<R>(f: impl FnOnce() -> R) -> Result<R, String> {
+    let previous = IN_EXECUTOR_CATCH.with(|flag| {
+        let prev = flag.get();
+        flag.set(true);
+        prev
+    });
+
+    // Suppress Rust's built-in panic output; the executor owns reporting.
+    let old_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+
+    std::panic::set_hook(old_hook);
+    IN_EXECUTOR_CATCH.with(|flag| flag.set(previous));
+
+    match result {
+        Ok(value) => Ok(value),
+        Err(_) => Err(
+            take_thread_panic_report().unwrap_or_else(|| "task panicked on executor worker".to_string()),
+        ),
+    }
 }
 
 #[inline]
@@ -283,6 +314,10 @@ pub(crate) fn resume_test_panic(message: String) -> ! {
         in_test_harness(),
         "ICE: resume_test_panic called outside test harness mode"
     );
+    rethrow_panic_message(message)
+}
+
+pub(crate) fn rethrow_panic_message(message: String) -> ! {
     __rt__panic_unwind(RtString {
         ptr: message.as_ptr(),
         len: message.len(),
@@ -333,7 +368,7 @@ pub extern "C-unwind" fn __rt__panic_unwind_at(
     let location = format_location(file, line, column);
     set_panic_report_with_location(msg, location);
 
-    if IN_TEST_HARNESS.with(|f| f.get()) {
+    if IN_TEST_HARNESS.with(|f| f.get()) || IN_EXECUTOR_CATCH.with(|f| f.get()) {
         // Test mode: raise via Rust's panic so catch_unwind can intercept it.
         std::panic::panic_any(TaroPanicPayload)
     } else {

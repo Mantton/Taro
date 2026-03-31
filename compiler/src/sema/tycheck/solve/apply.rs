@@ -280,6 +280,18 @@ pub fn match_arguments_to_parameters(
             param_idx += 1;
         }
 
+        while !skip_labels && param_idx < signature.inputs.len() {
+            let param = &signature.inputs[param_idx];
+            if param.label.is_some() && param.default_provider.is_some() {
+                param_idx += 1;
+                while param_idx < signature.inputs.len() && !param_to_arg[param_idx].is_empty() {
+                    param_idx += 1;
+                }
+                continue;
+            }
+            break;
+        }
+
         // If we are out of parameters, check if the last one is variadic
         if param_idx >= signature.inputs.len() {
             if signature.is_variadic {

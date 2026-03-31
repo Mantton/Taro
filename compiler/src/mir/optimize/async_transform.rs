@@ -456,6 +456,8 @@ fn rewrite_yields<'ctx>(
     locals: &PollThunkLocals<'ctx>,
 ) -> CompileResult<()> {
     let span = body_span(body);
+    let resume_unwind = ensure_resume_unwind_block(body, span);
+    let unwind = CallUnwindAction::Cleanup(resume_unwind);
     let async_poll_id = find_or_register_async_runtime_function(gcx, AsyncRuntimeFn::Poll, span);
     let async_poll_ty = gcx.get_type(async_poll_id);
     let async_destroy_id =
@@ -640,7 +642,7 @@ fn rewrite_yields<'ctx>(
                     args: vec![Operand::Copy(Place::from_local(handle_local))],
                     destination: Place::from_local(destroy_void_local),
                     target: site.resume,
-                    unwind: CallUnwindAction::Terminate,
+                    unwind,
                 },
                 span: site.span,
             }),
@@ -700,7 +702,7 @@ fn rewrite_yields<'ctx>(
                 ],
                 destination: Place::from_local(tag_local),
                 target: check_block,
-                unwind: CallUnwindAction::Terminate,
+                unwind,
             },
             span: site.span,
         });
@@ -716,6 +718,27 @@ fn rewrite_yields<'ctx>(
         });
     }
     Ok(())
+}
+
+fn ensure_resume_unwind_block<'ctx>(body: &mut Body<'ctx>, span: Span) -> BasicBlockId {
+    for (block, data) in body.basic_blocks.iter_enumerated() {
+        if data
+            .terminator
+            .as_ref()
+            .is_some_and(|term| matches!(term.kind, TerminatorKind::ResumeUnwind))
+        {
+            return block;
+        }
+    }
+
+    body.basic_blocks.push(BasicBlockData {
+        note: Some("resume_unwind".into()),
+        statements: vec![],
+        terminator: Some(Terminator {
+            kind: TerminatorKind::ResumeUnwind,
+            span,
+        }),
+    })
 }
 
 fn install_dispatch<'ctx>(
@@ -1550,10 +1573,22 @@ pub(crate) enum AsyncRuntimeFn {
     RunRoot,
     Spawn,
     FromSpawned,
+    FromSpawnedChecked,
+    TaskCompletionStatus,
+    ReclaimSpawned,
+    CancelTask,
     WaitReadable,
     WaitWritable,
     Sleep,
     YieldNow,
+    TaskGroupCreate,
+    TaskGroupSpawn,
+    TaskGroupClose,
+    TaskGroupCancelAll,
+    TaskGroupDestroy,
+    TaskGroupDestroyAndRethrowPanic,
+    TaskGroupNextStatus,
+    GroupNext,
 }
 
 pub(crate) fn find_or_register_async_runtime_function<'ctx>(
@@ -1619,6 +1654,66 @@ pub(crate) fn find_or_register_async_runtime_function<'ctx>(
             gcx.async_handle_ty(),
         ),
         AsyncRuntimeFn::YieldNow => ("__rt__async_yield_now", vec![], gcx.async_handle_ty()),
+        AsyncRuntimeFn::FromSpawnedChecked => (
+            "__rt__async_from_spawned_checked",
+            vec![gcx.types.uint],
+            gcx.async_handle_ty(),
+        ),
+        AsyncRuntimeFn::TaskCompletionStatus => (
+            "__rt__executor_task_completion_status",
+            vec![gcx.types.uint],
+            gcx.types.uint8,
+        ),
+        AsyncRuntimeFn::ReclaimSpawned => (
+            "__rt__executor_reclaim_spawned",
+            vec![gcx.types.uint],
+            gcx.types.void,
+        ),
+        AsyncRuntimeFn::CancelTask => (
+            "__rt__executor_cancel_task",
+            vec![gcx.types.uint],
+            gcx.types.void,
+        ),
+        AsyncRuntimeFn::TaskGroupCreate => (
+            "__rt__task_group_create",
+            vec![gcx.types.uint, gcx.types.uint8],
+            gcx.types.uint,
+        ),
+        AsyncRuntimeFn::TaskGroupSpawn => (
+            "__rt__task_group_spawn",
+            vec![gcx.types.uint, gcx.async_handle_ty(), gcx.types.uint],
+            gcx.types.uint,
+        ),
+        AsyncRuntimeFn::TaskGroupClose => (
+            "__rt__task_group_close",
+            vec![gcx.types.uint],
+            gcx.types.void,
+        ),
+        AsyncRuntimeFn::TaskGroupCancelAll => (
+            "__rt__task_group_cancel_all",
+            vec![gcx.types.uint],
+            gcx.types.void,
+        ),
+        AsyncRuntimeFn::TaskGroupDestroy => (
+            "__rt__task_group_destroy",
+            vec![gcx.types.uint],
+            gcx.types.void,
+        ),
+        AsyncRuntimeFn::TaskGroupDestroyAndRethrowPanic => (
+            "__rt__task_group_destroy_and_rethrow_panic",
+            vec![gcx.types.uint],
+            gcx.types.void,
+        ),
+        AsyncRuntimeFn::TaskGroupNextStatus => (
+            "__rt__task_group_next_status",
+            vec![gcx.types.uint],
+            gcx.types.uint8,
+        ),
+        AsyncRuntimeFn::GroupNext => (
+            "__rt__async_group_next",
+            vec![gcx.types.uint],
+            gcx.async_handle_ty(),
+        ),
     };
 
     let symbol = gcx.intern_symbol(name);

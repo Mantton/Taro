@@ -1,3 +1,7 @@
+error: expected int32, found string
+ -> language_tests/source_files/invalid/result.tr:5:19
+	    let _ = r.map(|x: string| -> int32 { x.len() as int32 })
+	                   ^^^^^^^^^
 error: no member named 'len' found on type string
  -> language_tests/source_files/invalid/result.tr:5:43
 	    let _ = r.map(|x: string| -> int32 { x.len() as int32 })

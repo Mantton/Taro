@@ -365,8 +365,17 @@ impl<'ctx> Checker<'ctx> {
                 self.add_type_constraints(local_ty, annotation.span, &mut cs);
             }
 
-            if let Some(expression) = node.initializer.as_ref() {
-                let init_ty = self.synth_with_expectation(expression, Some(local_ty), &mut cs);
+        if let Some(expression) = node.initializer.as_ref() {
+            let init_ty = self.synth_with_expectation(expression, Some(local_ty), &mut cs);
+            if node.ty.is_none()
+                && matches!(node.pattern.kind, hir::PatternKind::Wildcard)
+                && matches!(
+                    cs.infer_cx.resolve_vars_if_possible(init_ty).kind(),
+                    TyKind::Never
+                )
+            {
+                cs.equal(local_ty, init_ty, expression.span);
+            } else {
                 cs.add_goal(
                     Goal::Coerce {
                         node_id: expression.id,
@@ -376,6 +385,7 @@ impl<'ctx> Checker<'ctx> {
                     expression.span,
                 );
             }
+        }
 
             let scrutinee_id = node.initializer.as_ref().map(|e| e.id).unwrap_or(node.id);
             self.check_pattern(&node.pattern, local_ty, scrutinee_id, &mut cs);
@@ -395,14 +405,24 @@ impl<'ctx> Checker<'ctx> {
 
         if let Some(expression) = node.initializer.as_ref() {
             let init_ty = self.synth_with_expectation(expression, Some(local_ty), cs);
-            cs.add_goal(
-                Goal::Coerce {
-                    node_id: expression.id,
-                    from: init_ty,
-                    to: local_ty,
-                },
-                expression.span,
-            );
+            if node.ty.is_none()
+                && matches!(node.pattern.kind, hir::PatternKind::Wildcard)
+                && matches!(
+                    cs.infer_cx.resolve_vars_if_possible(init_ty).kind(),
+                    TyKind::Never
+                )
+            {
+                cs.equal(local_ty, init_ty, expression.span);
+            } else {
+                cs.add_goal(
+                    Goal::Coerce {
+                        node_id: expression.id,
+                        from: init_ty,
+                        to: local_ty,
+                    },
+                    expression.span,
+                );
+            }
         }
 
         let scrutinee_id = node.initializer.as_ref().map(|e| e.id).unwrap_or(node.id);
@@ -1689,7 +1709,24 @@ impl<'ctx> Checker<'ctx> {
                         } else {
                             let actual_return =
                                 self.synth_with_expectation(tail, Some(expected_return), cs);
-                            cs.equal(expected_return, actual_return, tail.span);
+                            let resolved_actual =
+                                cs.infer_cx.resolve_vars_if_possible(actual_return);
+                            let resolved_expected =
+                                cs.infer_cx.resolve_vars_if_possible(expected_return);
+                            if matches!(resolved_actual.kind(), TyKind::Never)
+                                && resolved_expected.is_infer()
+                            {
+                                cs.equal(expected_return, actual_return, tail.span);
+                            } else {
+                            cs.add_goal(
+                                Goal::Coerce {
+                                    node_id: tail.id,
+                                    from: actual_return,
+                                    to: expected_return,
+                                },
+                                tail.span,
+                            );
+                            }
                             actual_return
                         }
                     } else if !closure_body_has_explicit_return(&closure.body) {
@@ -1705,7 +1742,20 @@ impl<'ctx> Checker<'ctx> {
                 _ => {
                     let actual_return =
                         self.synth_with_expectation(&closure.body, Some(expected_return), cs);
-                    cs.equal(expected_return, actual_return, closure.body.span);
+                    let resolved_actual = cs.infer_cx.resolve_vars_if_possible(actual_return);
+                    let resolved_expected = cs.infer_cx.resolve_vars_if_possible(expected_return);
+                    if matches!(resolved_actual.kind(), TyKind::Never) && resolved_expected.is_infer() {
+                        cs.equal(expected_return, actual_return, closure.body.span);
+                    } else {
+                    cs.add_goal(
+                        Goal::Coerce {
+                            node_id: closure.body.id,
+                            from: actual_return,
+                            to: expected_return,
+                        },
+                        closure.body.span,
+                    );
+                    }
                     actual_return
                 }
             };
@@ -1741,6 +1791,9 @@ impl<'ctx> Checker<'ctx> {
         // Build capture list with types and capture kinds
         let mut captures = Vec::new();
         for (field_index, node_id) in collector.order.iter().enumerate() {
+            if param_ids.contains(node_id) {
+                continue;
+            }
             let info = collector
                 .info
                 .get(node_id)
@@ -1853,6 +1906,14 @@ impl<'ctx> Checker<'ctx> {
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         let gcx = self.gcx();
+
+        if self.defer_depth.get() > 0 {
+            gcx.dcx().emit_error(
+                "`await` is not allowed inside a defer block".into(),
+                Some(span),
+            );
+            return Ty::error(gcx);
+        }
 
         // await is only valid inside an async context
         if self.async_depth.get() == 0 {
@@ -2296,7 +2357,17 @@ impl<'ctx> Checker<'ctx> {
             return Ty::error(self.gcx());
         }
 
-        let result_ty = cs.infer_cx.next_ty_var(expression.span);
+        let result_ty = match cs.infer_cx.resolve_vars_if_possible(callee_ty).kind() {
+            TyKind::FnPointer { output, .. } | TyKind::Closure { output, .. }
+                if matches!(
+                    cs.infer_cx.resolve_vars_if_possible(output).kind(),
+                    TyKind::Never
+                ) =>
+            {
+                output
+            }
+            _ => cs.infer_cx.next_ty_var(expression.span),
+        };
         cs.record_expr_ty(expression.id, result_ty);
 
         let is_known_async_call = callee_def
@@ -2382,13 +2453,32 @@ impl<'ctx> Checker<'ctx> {
         if let Some(def_id) = callee_def {
             let signature = self.gcx().get_signature(def_id);
             let original_inputs: Vec<Ty<'ctx>> = signature.inputs.iter().map(|p| p.ty).collect();
-            let bound_instantiation_args = self.infer_call_generic_args(
-                def_id,
-                &original_inputs,
-                &instantiated_inputs,
-                signature.output,
-                instantiated_output,
-            );
+            let identity_args = GenericsBuilder::identity_for_item(self.gcx(), def_id);
+            let has_callable_bound_inputs = original_inputs
+                .iter()
+                .copied()
+                .any(|input| self.try_resolve_fn_bound(input, def_id, identity_args).is_some());
+            let bound_instantiation_args = if has_callable_bound_inputs {
+                cs.instantiation(callee.id)
+                    .or_else(|| self.results.borrow().instantiation(callee.id))
+                    .unwrap_or_else(|| {
+                        self.infer_call_generic_args(
+                            def_id,
+                            &original_inputs,
+                            &instantiated_inputs,
+                            signature.output,
+                            instantiated_output,
+                        )
+                    })
+            } else {
+                self.infer_call_generic_args(
+                    def_id,
+                    &original_inputs,
+                    &instantiated_inputs,
+                    signature.output,
+                    instantiated_output,
+                )
+            };
 
             let mut resolved = Vec::with_capacity(original_inputs.len());
             let mut resolved_async_expectations = Vec::with_capacity(original_inputs.len());
@@ -2970,12 +3060,12 @@ impl<'ctx> Checker<'ctx> {
                     .cloned();
                 let ty = if let Some(expected) = expected {
                     let is_closure = matches!(n.expression.kind, hir::ExpressionKind::Closure(_));
-                    if self.ty_is_known_async_callable(expected) && is_closure {
+                    if expected.expects_async_callable && is_closure {
                         self.with_forced_async_closure_expr(n.expression.id, || {
-                            self.synth_with_expectation(&n.expression, Some(expected), cs)
+                            self.synth_with_expectation(&n.expression, Some(expected.ty), cs)
                         })
                     } else {
-                        self.synth_with_expectation(&n.expression, Some(expected), cs)
+                        self.synth_with_expectation(&n.expression, Some(expected.ty), cs)
                     }
                 } else {
                     self.synth(&n.expression, cs)
@@ -3029,7 +3119,7 @@ impl<'ctx> Checker<'ctx> {
         argument_count: usize,
         _span: Span,
         cs: &mut Cs<'ctx>,
-    ) -> Option<Vec<Ty<'ctx>>> {
+    ) -> Option<Vec<ArgumentExpectation<'ctx>>> {
         let gcx = self.gcx();
 
         let mut base_ty = cs.infer_cx.resolve_vars_if_possible(receiver_ty);
@@ -3063,7 +3153,7 @@ impl<'ctx> Checker<'ctx> {
             return None;
         }
 
-        let mut candidate_inputs: Vec<Vec<Ty<'ctx>>> = vec![];
+        let mut candidate_inputs: Vec<Vec<ArgumentExpectation<'ctx>>> = vec![];
 
         for def_id in candidates {
             if !gcx.is_definition_visible(def_id, self.current_def) {
@@ -3071,26 +3161,54 @@ impl<'ctx> Checker<'ctx> {
             }
 
             let signature = gcx.get_signature(def_id);
-            let signature = if let Some(base_args) = base_args {
-                instantiate_signature_with_args(gcx, signature, base_args)
+            let original_inputs: Vec<Ty<'ctx>> = signature.inputs.iter().map(|input| input.ty).collect();
+            let generics = self.gcx().generics_of(def_id);
+            let instantiation_args = if generics.is_empty() {
+                None
+            } else {
+                let identity_args = GenericsBuilder::identity_for_item(self.gcx(), def_id);
+                Some(GenericsBuilder::for_item(self.gcx(), def_id, |param, _| {
+                    base_args
+                        .and_then(|args| args.get(param.index).cloned())
+                        .unwrap_or_else(|| identity_args[param.index])
+                }))
+            };
+            let signature = if let Some(args) = instantiation_args {
+                instantiate_signature_with_args(gcx, signature, args)
             } else {
                 signature.clone()
             };
 
-            let mut input_tys: Vec<Ty<'ctx>> =
+            let instantiated_inputs: Vec<Ty<'ctx>> =
                 signature.inputs.iter().map(|input| input.ty).collect();
-            if input_tys.is_empty() {
+            if instantiated_inputs.is_empty() {
                 continue;
             }
 
-            // Drop the receiver parameter; only infer user-supplied arguments.
-            input_tys.remove(0);
+            let mut input_expectations = Vec::with_capacity(instantiated_inputs.len().saturating_sub(1));
+            for (&original_ty, &instantiated_ty) in
+                original_inputs.iter().skip(1).zip(instantiated_inputs.iter().skip(1))
+            {
+                if let Some(bound_args) = instantiation_args
+                    && let Some(bound) = self.try_resolve_fn_bound(original_ty, def_id, bound_args)
+                {
+                    input_expectations.push(ArgumentExpectation {
+                        ty: bound.fn_signature_ty,
+                        expects_async_callable: bound.expects_async_callable,
+                    });
+                } else {
+                    input_expectations.push(ArgumentExpectation {
+                        ty: instantiated_ty,
+                        expects_async_callable: self.ty_is_known_async_callable(instantiated_ty),
+                    });
+                }
+            }
 
-            if input_tys.len() != argument_count {
+            if input_expectations.len() != argument_count {
                 continue;
             }
 
-            candidate_inputs.push(input_tys);
+            candidate_inputs.push(input_expectations);
         }
 
         if candidate_inputs.is_empty() {
@@ -3098,7 +3216,16 @@ impl<'ctx> Checker<'ctx> {
         }
 
         let first = candidate_inputs[0].clone();
-        if candidate_inputs.iter().all(|inputs| *inputs == first) {
+        if candidate_inputs.iter().all(|inputs| {
+            inputs.len() == first.len()
+                && inputs
+                    .iter()
+                    .zip(first.iter())
+                    .all(|(lhs, rhs)| {
+                        lhs.ty == rhs.ty
+                            && lhs.expects_async_callable == rhs.expects_async_callable
+                    })
+        }) {
             Some(first)
         } else {
             None
@@ -6149,9 +6276,8 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                 if let Some(init) = local.initializer.as_deref() {
                     self.collect_expr(init, UseContext::Value);
                 }
-                // Mark this local as declared inside the closure body
-                // Note: Use pattern.id since that's what name resolution uses
-                self.local_decls.insert(local.pattern.id);
+                // Mark every binding introduced by this local pattern as scoped to the closure body.
+                self.collect_pattern_bindings(&local.pattern);
             }
             hir::StatementKind::Loop { block, .. } => {
                 self.collect_block(block);
@@ -6239,10 +6365,18 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
             hir::ExpressionKind::Match(expr) => {
                 self.collect_expr(&expr.value, UseContext::Value);
                 for arm in &expr.arms {
+                    let mut arm_bindings = Vec::new();
+                    self.collect_pattern_binding_ids(&arm.pattern, &mut arm_bindings);
+                    for binding_id in &arm_bindings {
+                        self.local_decls.insert(*binding_id);
+                    }
                     if let Some(guard) = arm.guard.as_deref() {
                         self.collect_expr(guard, UseContext::Value);
                     }
                     self.collect_expr(&arm.body, UseContext::Value);
+                    for binding_id in arm_bindings {
+                        self.local_decls.remove(&binding_id);
+                    }
                 }
             }
             hir::ExpressionKind::Return { value } => {
@@ -6309,6 +6443,38 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
             hir::ExpressionKind::Await(value) => {
                 self.collect_expr(value, UseContext::Value);
             }
+        }
+    }
+
+    fn collect_pattern_bindings(&mut self, pattern: &hir::Pattern) {
+        let mut binding_ids = Vec::new();
+        self.collect_pattern_binding_ids(pattern, &mut binding_ids);
+        for binding_id in binding_ids {
+            self.local_decls.insert(binding_id);
+        }
+    }
+
+    fn collect_pattern_binding_ids(&self, pattern: &hir::Pattern, binding_ids: &mut Vec<NodeID>) {
+        match &pattern.kind {
+            hir::PatternKind::Binding { .. } => binding_ids.push(pattern.id),
+            hir::PatternKind::Tuple(patterns, _)
+            | hir::PatternKind::Or(patterns, _) => {
+                for pattern in patterns {
+                    self.collect_pattern_binding_ids(pattern, binding_ids);
+                }
+            }
+            hir::PatternKind::Reference { pattern, .. } => {
+                self.collect_pattern_binding_ids(pattern, binding_ids);
+            }
+            hir::PatternKind::PathTuple { fields, .. } => {
+                for pattern in fields {
+                    self.collect_pattern_binding_ids(pattern, binding_ids);
+                }
+            }
+            hir::PatternKind::Wildcard
+            | hir::PatternKind::Rest
+            | hir::PatternKind::Member(_)
+            | hir::PatternKind::Literal(_) => {}
         }
     }
 }

@@ -1,0 +1,67 @@
+import std.ops.AsyncFnOnce
+import std.intrinsic.__intrinsic_task_group_cancel
+import std.intrinsic.__intrinsic_task_group_close
+import std.intrinsic.__intrinsic_task_group_create
+import std.intrinsic.__intrinsic_task_group_destroy
+import std.intrinsic.__intrinsic_task_group_destroy_and_rethrow
+import std.intrinsic.__intrinsic_task_group_next
+import std.intrinsic.__intrinsic_task_group_spawn
+
+public enum TaskGroupPolicy {
+    case cancelOnPanic
+    case independent
+}
+
+public struct TaskGroup[T] {
+    id: usize
+}
+
+impl[T] TaskGroup[T] {
+    public func spawn[F: AsyncFnOnce() -> T](&mut self, _ thunk: F) {
+        __intrinsic_task_group_spawn[T, F](self.id, thunk)
+    }
+
+    public func next(&mut self) async -> T? {
+        return await __intrinsic_task_group_next[T](self.id)
+    }
+}
+
+func drainTaskGroup[T](_ group: &mut TaskGroup[T]) async {
+    var draining = true
+    while draining {
+        match await group.next() {
+            case .some(_) => {}
+            case .none => draining = false
+        }
+    }
+}
+
+public func withTaskGroup[T, R, F: AsyncFnOnce(&mut TaskGroup[T]) -> R](
+    policy: TaskGroupPolicy = .cancelOnPanic,
+    _ body: F,
+) async -> R {
+    let cancelOnPanic = match policy {
+        case .cancelOnPanic => true
+        case .independent => false
+    }
+
+    let groupId = __intrinsic_task_group_create[T](cancelOnPanic)
+    var group = TaskGroup[T] { id: groupId }
+    var cleanupPending = true
+
+    defer {
+        if cleanupPending {
+            __intrinsic_task_group_close(groupId)
+            __intrinsic_task_group_cancel(groupId)
+            __intrinsic_task_group_destroy(groupId)
+        }
+    }
+
+    let result = await body(&mut group)
+    __intrinsic_task_group_close(groupId)
+    __intrinsic_task_group_cancel(groupId)
+    await drainTaskGroup(&mut group)
+    cleanupPending = false
+    __intrinsic_task_group_destroy_and_rethrow(groupId)
+    return result
+}

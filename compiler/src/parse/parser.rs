@@ -4209,6 +4209,7 @@ fn is_generic_type_disambiguating_token(token: &Token) -> bool {
         token,
         &RParen
             | &RBracket
+            | &Bar
             | &LBrace
             | &RBrace
             | &Dot
@@ -5867,6 +5868,22 @@ mod tests {
     fn test_closure_typed_params() {
         let expr = parse_expr_str("|x: int32, y: int32| x + y");
         assert!(matches!(expr.kind, ExpressionKind::Closure(_)));
+    }
+
+    #[test]
+    fn test_closure_typed_param_with_generic_type() {
+        let expr = parse_expr_str("|group: std.task.TaskGroup[int32]| async { return 0 }");
+        let ExpressionKind::Closure(closure) = &expr.kind else {
+            panic!("Expected closure");
+        };
+        assert!(closure.is_async);
+        assert_eq!(closure.signature.prototype.inputs.len(), 1);
+        let param_ty = &closure.signature.prototype.inputs[0].annotated_type;
+        let TypeKind::Nominal(path) = &param_ty.kind else {
+            panic!("Expected nominal type");
+        };
+        assert_eq!(path.segments.len(), 3);
+        assert!(path.segments[2].arguments.is_some());
     }
 
     #[test]

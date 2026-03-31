@@ -324,6 +324,19 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 block.unit()
             }
             ExprKind::Await { future } => {
+                if let ExprKind::Call {
+                    callee,
+                    args,
+                    is_async: true,
+                } = &self.thir.exprs[*future].kind
+                {
+                    if self.is_hidden_task_result_intrinsic(*callee) {
+                        return self.lower_awaited_task_result(destination, block, args, expr.span);
+                    }
+                    if self.is_hidden_task_group_next_intrinsic(*callee) {
+                        return self.lower_awaited_task_group_next(destination, block, args, expr.span);
+                    }
+                }
                 let future_op = if matches!(
                     self.thir.exprs[*future].kind,
                     ExprKind::Call { is_async: true, .. }
@@ -415,6 +428,33 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         }
         if self.is_hidden_sleep_intrinsic(callee) {
             return self.lower_sleep_call(destination, block, args, span);
+        }
+        if self.is_hidden_cancel_task_intrinsic(callee) {
+            return self.lower_cancel_task_call(destination, block, args, span);
+        }
+        if self.is_hidden_task_result_intrinsic(callee) {
+            return self.lower_task_result_call(destination, block, args, span);
+        }
+        if self.is_hidden_task_group_create_intrinsic(callee) {
+            return self.lower_task_group_create_call(destination, block, callee, args, span);
+        }
+        if self.is_hidden_task_group_spawn_intrinsic(callee) {
+            return self.lower_task_group_spawn_call(destination, block, callee, args, span);
+        }
+        if self.is_hidden_task_group_next_intrinsic(callee) {
+            return self.lower_task_group_next_call(destination, block, args, span);
+        }
+        if self.is_hidden_task_group_close_intrinsic(callee) {
+            return self.lower_task_group_close_call(destination, block, args, span);
+        }
+        if self.is_hidden_task_group_cancel_intrinsic(callee) {
+            return self.lower_task_group_cancel_call(destination, block, args, span);
+        }
+        if self.is_hidden_task_group_destroy_intrinsic(callee) {
+            return self.lower_task_group_destroy_call(destination, block, args, span);
+        }
+        if self.is_hidden_task_group_destroy_and_rethrow_intrinsic(callee) {
+            return self.lower_task_group_destroy_and_rethrow_call(destination, block, args, span);
         }
 
         let shadow_resync_locals = self.shadow_resync_locals_for_call(args);
@@ -868,6 +908,737 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         next.unit()
     }
 
+    fn lower_cancel_task_call(
+        &mut self,
+        destination: Place<'ctx>,
+        mut block: BasicBlockId,
+        args: &[ExprId],
+        span: Span,
+    ) -> BlockAnd<()> {
+        let [task] = args else {
+            panic!("ICE: cancel task lowering expects exactly one task argument");
+        };
+
+        let token_local = unpack!(block = self.lower_task_token_local(block, *task, span));
+        let cancel_id =
+            find_or_register_async_runtime_function(self.gcx, AsyncRuntimeFn::CancelTask, span);
+        let cancel_ty = self.gcx.get_type(cancel_id);
+        let next = self.new_block();
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: cancel_ty,
+                    value: mir::ConstantKind::Function(cancel_id, GenericArguments::empty(), cancel_ty),
+                }),
+                args: vec![Operand::Copy(Place::from_local(token_local))],
+                destination,
+                target: next,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+
+        next.unit()
+    }
+
+    fn lower_task_result_call(
+        &mut self,
+        destination: Place<'ctx>,
+        mut block: BasicBlockId,
+        args: &[ExprId],
+        span: Span,
+    ) -> BlockAnd<()> {
+        let [task] = args else {
+            panic!("ICE: task result lowering expects exactly one task argument");
+        };
+
+        let destination_ty = self.place_ty(&destination);
+        assert_eq!(
+            destination_ty,
+            self.gcx.async_handle_ty(),
+            "ICE: task result intrinsic must lower into an async handle destination"
+        );
+
+        let token_local = unpack!(block = self.lower_task_token_local(block, *task, span));
+        let from_spawned_id = find_or_register_async_runtime_function(
+            self.gcx,
+            AsyncRuntimeFn::FromSpawnedChecked,
+            span,
+        );
+        let from_spawned_ty = self.gcx.get_type(from_spawned_id);
+        let next = self.new_block();
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: from_spawned_ty,
+                    value: mir::ConstantKind::Function(
+                        from_spawned_id,
+                        GenericArguments::empty(),
+                        from_spawned_ty,
+                    ),
+                }),
+                args: vec![Operand::Copy(Place::from_local(token_local))],
+                destination,
+                target: next,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+
+        next.unit()
+    }
+
+    fn lower_awaited_task_result(
+        &mut self,
+        destination: Place<'ctx>,
+        mut block: BasicBlockId,
+        args: &[ExprId],
+        span: Span,
+    ) -> BlockAnd<()> {
+        let [task] = args else {
+            panic!("ICE: awaited task result lowering expects exactly one task argument");
+        };
+
+        let destination_ty = self.place_ty(&destination);
+        let TyKind::Adt(result_def, result_args) = destination_ty.kind() else {
+            panic!("ICE: awaited task result destination must be Result[T, E]");
+        };
+        let ready_ty = result_args
+            .first()
+            .copied()
+            .and_then(GenericArgument::ty)
+            .unwrap_or_else(|| panic!("ICE: Result[T, E] is missing value type"));
+
+        let token_local = unpack!(block = self.lower_task_token_local(block, *task, span));
+        let handle_local = self.new_temp_with_ty(self.gcx.async_handle_ty(), span);
+        let ready_local = self.new_temp_with_ty(ready_ty, span);
+
+        let from_spawned_id = find_or_register_async_runtime_function(
+            self.gcx,
+            AsyncRuntimeFn::FromSpawnedChecked,
+            span,
+        );
+        let from_spawned_ty = self.gcx.get_type(from_spawned_id);
+        let after_handle = self.new_block();
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: from_spawned_ty,
+                    value: mir::ConstantKind::Function(
+                        from_spawned_id,
+                        GenericArguments::empty(),
+                        from_spawned_ty,
+                    ),
+                }),
+                args: vec![Operand::Copy(Place::from_local(token_local))],
+                destination: Place::from_local(handle_local),
+                target: after_handle,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+
+        let resume = self.new_block_with_note("task-result-resume".into());
+        self.terminate(
+            after_handle,
+            span,
+            TerminatorKind::Yield {
+                value: Operand::Copy(Place::from_local(handle_local)),
+                resume,
+                resume_arg: Place::from_local(ready_local),
+            },
+        );
+
+        let status_local = self.new_temp_with_ty(self.gcx.types.uint8, span);
+        let status_id = find_or_register_async_runtime_function(
+            self.gcx,
+            AsyncRuntimeFn::TaskCompletionStatus,
+            span,
+        );
+        let status_ty = self.gcx.get_type(status_id);
+        let after_status = self.new_block();
+        self.terminate(
+            resume,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: status_ty,
+                    value: mir::ConstantKind::Function(
+                        status_id,
+                        GenericArguments::empty(),
+                        status_ty,
+                    ),
+                }),
+                args: vec![Operand::Copy(Place::from_local(token_local))],
+                destination: Place::from_local(status_local),
+                target: after_status,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+
+        let reclaim_id =
+            find_or_register_async_runtime_function(self.gcx, AsyncRuntimeFn::ReclaimSpawned, span);
+        let reclaim_ty = self.gcx.get_type(reclaim_id);
+        let reclaim_dest = self.new_temp_with_ty(self.gcx.types.void, span);
+        let after_reclaim = self.new_block();
+        self.terminate(
+            after_status,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: reclaim_ty,
+                    value: mir::ConstantKind::Function(
+                        reclaim_id,
+                        GenericArguments::empty(),
+                        reclaim_ty,
+                    ),
+                }),
+                args: vec![Operand::Copy(Place::from_local(token_local))],
+                destination: Place::from_local(reclaim_dest),
+                target: after_reclaim,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+
+        let ok_block = self.new_block_with_note("task-result-ok".into());
+        let err_block = self.new_block_with_note("task-result-cancelled".into());
+        let join_block = self.new_block_with_note("task-result-join".into());
+        self.terminate(
+            after_reclaim,
+            span,
+            TerminatorKind::SwitchInt {
+                discr: Operand::Copy(Place::from_local(status_local)),
+                targets: vec![(1, ok_block)],
+                otherwise: err_block,
+            },
+        );
+
+        self.push_assign(
+            ok_block,
+            destination.clone(),
+            Rvalue::Aggregate {
+                kind: AggregateKind::Adt {
+                    def_id: result_def.id,
+                    variant_index: Some(thir::VariantIndex::from_usize(0)),
+                    generic_args: result_args,
+                },
+                fields: IndexVec::from_vec(vec![Operand::Move(Place::from_local(ready_local))]),
+            },
+            span,
+        );
+        self.goto(ok_block, join_block, span);
+
+        let err_ty = result_args
+            .get(1)
+            .copied()
+            .and_then(GenericArgument::ty)
+            .unwrap_or_else(|| panic!("ICE: Result[T, E] is missing error type"));
+        let TyKind::Adt(err_def, err_args) = err_ty.kind() else {
+            panic!("ICE: Task.result() error type must be an enum");
+        };
+        let error_local = self.new_temp_with_ty(err_ty, span);
+        self.push_assign(
+            err_block,
+            Place::from_local(error_local),
+            Rvalue::Aggregate {
+                kind: AggregateKind::Adt {
+                    def_id: err_def.id,
+                    variant_index: Some(thir::VariantIndex::from_usize(0)),
+                    generic_args: err_args,
+                },
+                fields: IndexVec::new(),
+            },
+            span,
+        );
+        self.push_assign(
+            err_block,
+            destination.clone(),
+            Rvalue::Aggregate {
+                kind: AggregateKind::Adt {
+                    def_id: result_def.id,
+                    variant_index: Some(thir::VariantIndex::from_usize(1)),
+                    generic_args: result_args,
+                },
+                fields: IndexVec::from_vec(vec![Operand::Move(Place::from_local(error_local))]),
+            },
+            span,
+        );
+        self.goto(err_block, join_block, span);
+
+        join_block.unit()
+    }
+
+    fn lower_task_group_create_call(
+        &mut self,
+        destination: Place<'ctx>,
+        mut block: BasicBlockId,
+        callee: ExprId,
+        args: &[ExprId],
+        span: Span,
+    ) -> BlockAnd<()> {
+        let [cancel_on_panic] = args else {
+            panic!("ICE: task group create lowering expects exactly one policy argument");
+        };
+
+        let result_ty = intrinsic_type_arg(self.thir, callee, 0);
+        let policy_local = unpack!(block = self.lower_bool_to_u8_local(block, *cancel_on_panic, span));
+        let size_local =
+            unpack!(block = self.lower_size_of_type_to_local(block, result_ty, span));
+        let create_id = find_or_register_async_runtime_function(
+            self.gcx,
+            AsyncRuntimeFn::TaskGroupCreate,
+            span,
+        );
+        let create_ty = self.gcx.get_type(create_id);
+        let next = self.new_block();
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: create_ty,
+                    value: mir::ConstantKind::Function(create_id, GenericArguments::empty(), create_ty),
+                }),
+                args: vec![
+                    Operand::Copy(Place::from_local(size_local)),
+                    Operand::Copy(Place::from_local(policy_local)),
+                ],
+                destination,
+                target: next,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+
+        next.unit()
+    }
+
+    fn lower_task_group_spawn_call(
+        &mut self,
+        destination: Place<'ctx>,
+        mut block: BasicBlockId,
+        callee: ExprId,
+        args: &[ExprId],
+        span: Span,
+    ) -> BlockAnd<()> {
+        let [group_id, thunk] = args else {
+            panic!("ICE: task group spawn lowering expects group id and thunk");
+        };
+
+        let result_ty = intrinsic_type_arg(self.thir, callee, 0);
+        let group_operand = unpack!(block = self.as_operand(block, *group_id));
+        let handle_local = self.new_temp_with_ty(self.gcx.async_handle_ty(), span);
+        block = self
+            .lower_call_into_dest(
+                Place::from_local(handle_local),
+                block,
+                *thunk,
+                &[],
+                true,
+                span,
+            )
+            .into_block();
+
+        let size_local =
+            unpack!(block = self.lower_size_of_type_to_local(block, result_ty, span));
+        let token_local = self.new_temp_with_ty(self.gcx.types.uint, span);
+        let spawn_id = find_or_register_async_runtime_function(
+            self.gcx,
+            AsyncRuntimeFn::TaskGroupSpawn,
+            span,
+        );
+        let spawn_ty = self.gcx.get_type(spawn_id);
+        let after_spawn = self.new_block();
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: spawn_ty,
+                    value: mir::ConstantKind::Function(spawn_id, GenericArguments::empty(), spawn_ty),
+                }),
+                args: vec![
+                    group_operand,
+                    Operand::Copy(Place::from_local(handle_local)),
+                    Operand::Copy(Place::from_local(size_local)),
+                ],
+                destination: Place::from_local(token_local),
+                target: after_spawn,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+        self.push_assign_unit(after_spawn, span, destination, self.gcx);
+        after_spawn.unit()
+    }
+
+    fn lower_task_group_next_call(
+        &mut self,
+        destination: Place<'ctx>,
+        mut block: BasicBlockId,
+        args: &[ExprId],
+        span: Span,
+    ) -> BlockAnd<()> {
+        let [group_id] = args else {
+            panic!("ICE: task group next lowering expects exactly one group id argument");
+        };
+
+        let destination_ty = self.place_ty(&destination);
+        assert_eq!(
+            destination_ty,
+            self.gcx.async_handle_ty(),
+            "ICE: task group next intrinsic must lower into an async handle destination"
+        );
+
+        let group_operand = unpack!(block = self.as_operand(block, *group_id));
+        let next_id =
+            find_or_register_async_runtime_function(self.gcx, AsyncRuntimeFn::GroupNext, span);
+        let next_ty = self.gcx.get_type(next_id);
+        let next = self.new_block();
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: next_ty,
+                    value: mir::ConstantKind::Function(next_id, GenericArguments::empty(), next_ty),
+                }),
+                args: vec![group_operand],
+                destination,
+                target: next,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+
+        next.unit()
+    }
+
+    fn lower_awaited_task_group_next(
+        &mut self,
+        destination: Place<'ctx>,
+        mut block: BasicBlockId,
+        args: &[ExprId],
+        span: Span,
+    ) -> BlockAnd<()> {
+        let [group_id] = args else {
+            panic!("ICE: awaited task group next lowering expects exactly one group id argument");
+        };
+
+        let destination_ty = self.place_ty(&destination);
+        let TyKind::Adt(optional_def, optional_args) = destination_ty.kind() else {
+            panic!("ICE: awaited task group next destination must be Optional[T]");
+        };
+        let ready_ty = optional_args
+            .first()
+            .copied()
+            .and_then(GenericArgument::ty)
+            .unwrap_or_else(|| panic!("ICE: Optional[T] is missing payload type"));
+
+        let group_local = self.new_temp_with_ty(self.gcx.types.uint, span);
+        let group_operand = unpack!(block = self.as_operand(block, *group_id));
+        self.push_assign(
+            block,
+            Place::from_local(group_local),
+            Rvalue::Use(group_operand),
+            span,
+        );
+
+        let handle_local = self.new_temp_with_ty(self.gcx.async_handle_ty(), span);
+        let ready_local = self.new_temp_with_ty(ready_ty, span);
+        let next_id =
+            find_or_register_async_runtime_function(self.gcx, AsyncRuntimeFn::GroupNext, span);
+        let next_ty = self.gcx.get_type(next_id);
+        let after_handle = self.new_block();
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: next_ty,
+                    value: mir::ConstantKind::Function(next_id, GenericArguments::empty(), next_ty),
+                }),
+                args: vec![Operand::Copy(Place::from_local(group_local))],
+                destination: Place::from_local(handle_local),
+                target: after_handle,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+
+        let resume = self.new_block_with_note("task-group-next-resume".into());
+        self.terminate(
+            after_handle,
+            span,
+            TerminatorKind::Yield {
+                value: Operand::Copy(Place::from_local(handle_local)),
+                resume,
+                resume_arg: Place::from_local(ready_local),
+            },
+        );
+
+        let status_local = self.new_temp_with_ty(self.gcx.types.uint8, span);
+        let status_id = find_or_register_async_runtime_function(
+            self.gcx,
+            AsyncRuntimeFn::TaskGroupNextStatus,
+            span,
+        );
+        let status_ty = self.gcx.get_type(status_id);
+        let after_status = self.new_block();
+        self.terminate(
+            resume,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: status_ty,
+                    value: mir::ConstantKind::Function(status_id, GenericArguments::empty(), status_ty),
+                }),
+                args: vec![Operand::Copy(Place::from_local(group_local))],
+                destination: Place::from_local(status_local),
+                target: after_status,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+
+        let some_block = self.new_block_with_note("task-group-next-some".into());
+        let none_block = self.new_block_with_note("task-group-next-none".into());
+        let join_block = self.new_block_with_note("task-group-next-join".into());
+        self.terminate(
+            after_status,
+            span,
+            TerminatorKind::SwitchInt {
+                discr: Operand::Copy(Place::from_local(status_local)),
+                targets: vec![(1, some_block)],
+                otherwise: none_block,
+            },
+        );
+
+        self.push_assign(
+            some_block,
+            destination.clone(),
+            Rvalue::Aggregate {
+                kind: AggregateKind::Adt {
+                    def_id: optional_def.id,
+                    variant_index: Some(thir::VariantIndex::from_usize(0)),
+                    generic_args: optional_args,
+                },
+                fields: IndexVec::from_vec(vec![Operand::Move(Place::from_local(ready_local))]),
+            },
+            span,
+        );
+        self.goto(some_block, join_block, span);
+
+        self.push_assign(
+            none_block,
+            destination.clone(),
+            Rvalue::Aggregate {
+                kind: AggregateKind::Adt {
+                    def_id: optional_def.id,
+                    variant_index: Some(thir::VariantIndex::from_usize(1)),
+                    generic_args: optional_args,
+                },
+                fields: IndexVec::new(),
+            },
+            span,
+        );
+        self.goto(none_block, join_block, span);
+
+        join_block.unit()
+    }
+
+    fn lower_task_group_close_call(
+        &mut self,
+        destination: Place<'ctx>,
+        block: BasicBlockId,
+        args: &[ExprId],
+        span: Span,
+    ) -> BlockAnd<()> {
+        self.lower_task_group_void_call(destination, block, args, span, AsyncRuntimeFn::TaskGroupClose)
+    }
+
+    fn lower_task_group_cancel_call(
+        &mut self,
+        destination: Place<'ctx>,
+        block: BasicBlockId,
+        args: &[ExprId],
+        span: Span,
+    ) -> BlockAnd<()> {
+        self.lower_task_group_void_call(
+            destination,
+            block,
+            args,
+            span,
+            AsyncRuntimeFn::TaskGroupCancelAll,
+        )
+    }
+
+    fn lower_task_group_destroy_call(
+        &mut self,
+        destination: Place<'ctx>,
+        block: BasicBlockId,
+        args: &[ExprId],
+        span: Span,
+    ) -> BlockAnd<()> {
+        self.lower_task_group_void_call(destination, block, args, span, AsyncRuntimeFn::TaskGroupDestroy)
+    }
+
+    fn lower_task_group_destroy_and_rethrow_call(
+        &mut self,
+        destination: Place<'ctx>,
+        block: BasicBlockId,
+        args: &[ExprId],
+        span: Span,
+    ) -> BlockAnd<()> {
+        let [group_id] = args else {
+            panic!("ICE: task group runtime call expects exactly one group id argument");
+        };
+
+        let mut block = block;
+        let group_operand = unpack!(block = self.as_operand(block, *group_id));
+        let call_id = find_or_register_async_runtime_function(
+            self.gcx,
+            AsyncRuntimeFn::TaskGroupDestroyAndRethrowPanic,
+            span,
+        );
+        let call_ty = self.gcx.get_type(call_id);
+        let next = self.new_block();
+        let unwind = self.call_unwind_action(span);
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: call_ty,
+                    value: mir::ConstantKind::Function(
+                        call_id,
+                        GenericArguments::empty(),
+                        call_ty,
+                    ),
+                }),
+                args: vec![group_operand],
+                destination,
+                target: next,
+                // This runtime helper re-panics when a child panic was recorded,
+                // so it must unwind through active cleanup/defer scopes.
+                unwind,
+            },
+        );
+
+        next.unit()
+    }
+
+    fn lower_task_group_void_call(
+        &mut self,
+        destination: Place<'ctx>,
+        mut block: BasicBlockId,
+        args: &[ExprId],
+        span: Span,
+        which: AsyncRuntimeFn,
+    ) -> BlockAnd<()> {
+        let [group_id] = args else {
+            panic!("ICE: task group runtime call expects exactly one group id argument");
+        };
+
+        let group_operand = unpack!(block = self.as_operand(block, *group_id));
+        let call_id = find_or_register_async_runtime_function(self.gcx, which, span);
+        let call_ty = self.gcx.get_type(call_id);
+        let next = self.new_block();
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: call_ty,
+                    value: mir::ConstantKind::Function(call_id, GenericArguments::empty(), call_ty),
+                }),
+                args: vec![group_operand],
+                destination,
+                target: next,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+
+        next.unit()
+    }
+
+    fn lower_task_token_local(
+        &mut self,
+        mut block: BasicBlockId,
+        task: ExprId,
+        span: Span,
+    ) -> BlockAnd<LocalId> {
+        let mut task_place = unpack!(block = self.as_place(block, task));
+        if matches!(
+            self.thir.exprs[task].ty.kind(),
+            TyKind::Reference(..) | TyKind::Pointer(..)
+        ) {
+            task_place.projection.push(PlaceElem::Deref);
+        }
+        let token_local = self.new_temp_with_ty(self.gcx.types.uint, span);
+        self.push_assign(
+            block,
+            Place::from_local(token_local),
+            Rvalue::Use(Operand::Copy(task_token_place(self.gcx, task_place))),
+            span,
+        );
+        block.and(token_local)
+    }
+
+    fn lower_size_of_type_to_local(
+        &mut self,
+        block: BasicBlockId,
+        ty: crate::sema::models::Ty<'ctx>,
+        span: Span,
+    ) -> BlockAnd<LocalId> {
+        let size_local = self.new_temp_with_ty(self.gcx.types.uint, span);
+        let size_of_id = find_std_function(self.gcx, "mem", "sizeOf", span)
+            .unwrap_or_else(|_| panic!("lowering requires std.mem.sizeOf"));
+        let size_of_ty = self.gcx.get_type(size_of_id);
+        let after_size = self.new_block();
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: size_of_ty,
+                    value: mir::ConstantKind::Function(
+                        size_of_id,
+                        self.gcx
+                            .store
+                            .interners
+                            .intern_generic_args(vec![GenericArgument::Type(ty)]),
+                        size_of_ty,
+                    ),
+                }),
+                args: vec![],
+                destination: Place::from_local(size_local),
+                target: after_size,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+        after_size.and(size_local)
+    }
+
+    fn lower_bool_to_u8_local(
+        &mut self,
+        mut block: BasicBlockId,
+        expr: ExprId,
+        span: Span,
+    ) -> BlockAnd<LocalId> {
+        let policy_operand = unpack!(block = self.as_operand(block, expr));
+        let policy_local = self.new_temp_with_ty(self.gcx.types.uint8, span);
+        self.push_assign(
+            block,
+            Place::from_local(policy_local),
+            Rvalue::Cast {
+                operand: policy_operand,
+                ty: self.gcx.types.uint8,
+                kind: CastKind::Numeric,
+            },
+            span,
+        );
+        block.and(policy_local)
+    }
+
     fn lower_io_wait_call(
         &mut self,
         destination: Place<'ctx>,
@@ -976,6 +1747,54 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             self.gcx.definition_ident(id).symbol,
             "__intrinsic_wait_writable",
         )
+    }
+
+    fn is_hidden_intrinsic_named(&self, callee: ExprId, name: &str) -> bool {
+        let ExprKind::Zst { id, .. } = self.thir.exprs[callee].kind else {
+            return false;
+        };
+        matches!(
+            self.gcx.get_signature(id).abi,
+            Some(crate::hir::Abi::Intrinsic)
+        ) && self
+            .gcx
+            .symbol_eq(self.gcx.definition_ident(id).symbol, name)
+    }
+
+    fn is_hidden_cancel_task_intrinsic(&self, callee: ExprId) -> bool {
+        self.is_hidden_intrinsic_named(callee, "__intrinsic_cancel_task")
+    }
+
+    fn is_hidden_task_result_intrinsic(&self, callee: ExprId) -> bool {
+        self.is_hidden_intrinsic_named(callee, "__intrinsic_task_result")
+    }
+
+    fn is_hidden_task_group_create_intrinsic(&self, callee: ExprId) -> bool {
+        self.is_hidden_intrinsic_named(callee, "__intrinsic_task_group_create")
+    }
+
+    fn is_hidden_task_group_spawn_intrinsic(&self, callee: ExprId) -> bool {
+        self.is_hidden_intrinsic_named(callee, "__intrinsic_task_group_spawn")
+    }
+
+    fn is_hidden_task_group_next_intrinsic(&self, callee: ExprId) -> bool {
+        self.is_hidden_intrinsic_named(callee, "__intrinsic_task_group_next")
+    }
+
+    fn is_hidden_task_group_close_intrinsic(&self, callee: ExprId) -> bool {
+        self.is_hidden_intrinsic_named(callee, "__intrinsic_task_group_close")
+    }
+
+    fn is_hidden_task_group_cancel_intrinsic(&self, callee: ExprId) -> bool {
+        self.is_hidden_intrinsic_named(callee, "__intrinsic_task_group_cancel")
+    }
+
+    fn is_hidden_task_group_destroy_intrinsic(&self, callee: ExprId) -> bool {
+        self.is_hidden_intrinsic_named(callee, "__intrinsic_task_group_destroy")
+    }
+
+    fn is_hidden_task_group_destroy_and_rethrow_intrinsic(&self, callee: ExprId) -> bool {
+        self.is_hidden_intrinsic_named(callee, "__intrinsic_task_group_destroy_and_rethrow")
     }
 
     fn async_callable_operand(
@@ -2008,6 +2827,22 @@ fn task_token_place<'ctx>(gcx: Gcx<'ctx>, task_place: Place<'ctx>) -> Place<'ctx
         local: task_place.local,
         projection,
     }
+}
+
+fn intrinsic_type_arg<'ctx, 'thir>(
+    thir: &'thir thir::ThirFunction<'ctx>,
+    callee: ExprId,
+    index: usize,
+) -> crate::sema::models::Ty<'ctx> {
+    let ExprKind::Zst { generic_args, .. } = thir.exprs[callee].kind else {
+        panic!("ICE: intrinsic type arg requested from non-ZST callee");
+    };
+    generic_args
+        .unwrap_or(GenericArguments::empty())
+        .get(index)
+        .copied()
+        .and_then(GenericArgument::ty)
+        .unwrap_or_else(|| panic!("ICE: intrinsic missing type argument {index}"))
 }
 
 fn duration_secs_place<'ctx>(gcx: Gcx<'ctx>, duration_place: Place<'ctx>) -> Place<'ctx> {

@@ -273,6 +273,10 @@ impl<'ctx> ConstraintSystem<'ctx> {
         self.instantiation_args.insert(node_id, args);
     }
 
+    pub fn instantiation(&self, node_id: NodeID) -> Option<GenericArguments<'ctx>> {
+        self.instantiation_args.get(&node_id).copied()
+    }
+
     pub fn resolved_instantiations(&self) -> FxHashMap<NodeID, GenericArguments<'ctx>> {
         use crate::sema::models::GenericArgument;
 

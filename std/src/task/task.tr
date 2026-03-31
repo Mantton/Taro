@@ -1,6 +1,7 @@
-import std.ops.AsyncFnOnce
+import std.intrinsic.__intrinsic_cancel_task
 import std.intrinsic.__intrinsic_sleep
 import std.intrinsic.__intrinsic_spawn_async
+import std.intrinsic.__intrinsic_task_result
 import std.intrinsic.__intrinsic_task_value
 
 @lang("Task")
@@ -8,10 +9,14 @@ public struct Task[T] {
     token: usize
 }
 
+public enum TaskError {
+    case cancelled
+}
+
 /// Enqueue an async call on the executor for concurrent execution.
 /// The argument must be a zero-argument async closure. Returns a `Task[T]`
 /// handle that can be awaited later via `await task.value()`.
-public func spawn[T, F: AsyncFnOnce() -> T](_ thunk: F) -> Task[T] {
+public func spawn[T, F: std.ops.AsyncFnOnce() -> T](_ thunk: F) -> Task[T] {
     return __intrinsic_spawn_async[T, F](thunk)
 }
 
@@ -26,6 +31,14 @@ public func join[A, B](_ left: Task[A], _ right: Task[B]) async -> (A, B) {
 }
 
 impl[T] Task[T] {
+    public func cancel(&self) {
+        __intrinsic_cancel_task[T](self)
+    }
+
+    public func result(self) async -> std.result.Result[T, TaskError] {
+        return await __intrinsic_task_result[T](self)
+    }
+
     public func value(self) async -> T {
         return await __intrinsic_task_value[T](self)
     }
