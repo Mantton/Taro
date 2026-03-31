@@ -552,6 +552,16 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             adt_args,
             self.current_subst,
         );
+
+        // NPO: the unit variant is represented as the all-zero bit pattern.
+        if let Some(npo) = layout.npo {
+            if variant_index == npo.null_variant {
+                let enum_ty = self.lower_ty(ty)?;
+                return Some(enum_ty.const_zero().as_basic_value_enum());
+            }
+            return None;
+        }
+
         let enum_ty = self.lower_ty(ty)?.into_struct_type();
         let mut fields = Vec::with_capacity(if layout.payload_size == 0 {
             1
@@ -2483,21 +2493,44 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             } => {
                 let ptr = self.project_place(place, body, locals)?;
                 let place_ty = self.place_ty(body, place);
-                let _def = match place_ty.kind() {
-                    TyKind::Adt(def, _) if def.kind == crate::sema::models::AdtKind::Enum => def,
+                let (def, adt_args) = match place_ty.kind() {
+                    TyKind::Adt(def, args)
+                        if def.kind == crate::sema::models::AdtKind::Enum =>
+                    {
+                        (def, args)
+                    }
                     _ => panic!(
                         "set_discriminant on non-enum type {}",
                         place_ty.format(self.gcx)
                     ),
                 };
-                let enum_ty = self.lower_ty(place_ty).expect("enum");
-                let enum_struct = enum_ty.into_struct_type();
-                let discr_ptr = self
-                    .builder
-                    .build_struct_gep(enum_struct, ptr, 0, "enum_discr_ptr")
-                    .unwrap();
-                let discr_val = self.usize_ty.const_int(variant_index.index() as u64, false);
-                let _ = self.builder.build_store(discr_ptr, discr_val).unwrap();
+                let layout = enum_layout(
+                    self.context,
+                    self.gcx,
+                    &self.target_data,
+                    def.id,
+                    adt_args,
+                    self.current_subst,
+                );
+                if let Some(npo) = layout.npo {
+                    // NPO: setting to the null/unit variant stores all-zero bits;
+                    // setting to the payload variant is a no-op (the value itself
+                    // serves as the discriminant).
+                    if variant_index.index() == npo.null_variant {
+                        let npo_ty = self.lower_ty(place_ty).expect("NPO enum type");
+                        let _ = self.builder.build_store(ptr, npo_ty.const_zero()).unwrap();
+                    }
+                } else {
+                    let enum_ty = self.lower_ty(place_ty).expect("enum");
+                    let enum_struct = enum_ty.into_struct_type();
+                    let discr_ptr = self
+                        .builder
+                        .build_struct_gep(enum_struct, ptr, 0, "enum_discr_ptr")
+                        .unwrap();
+                    let discr_val =
+                        self.usize_ty.const_int(variant_index.index() as u64, false);
+                    let _ = self.builder.build_store(discr_ptr, discr_val).unwrap();
+                }
             }
             mir::StatementKind::Nop => {}
         }
@@ -2638,9 +2671,16 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 // project_place cannot materialize a real address. Provide a dummy
                 // stack slot instead; code that would meaningfully read/write the
                 // pointee is unreachable because the value never exists.
+                let place_ty = self.place_ty(body, place);
+                let place_llvm_ty = self.lower_ty(place_ty);
+                let place_has_no_storage = match place_llvm_ty {
+                    None => true,
+                    Some(llvm_ty) => self.target_data.get_store_size(&llvm_ty) == 0,
+                };
                 let ptr = if matches!(locals[place.local.index()], LocalStorage::Value(None))
-                    || self.lower_ty(self.place_ty(body, place)).is_none()
+                    || place_has_no_storage
                 {
+                    // Keep references non-null even for zero-sized pointees.
                     self.builder
                         .build_alloca(self.context.i8_type(), "ref_dummy")
                         .unwrap()
@@ -2652,24 +2692,73 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             mir::Rvalue::Discriminant { place } => {
                 let ptr = self.project_place(place, body, locals)?;
                 let place_ty = self.place_ty(body, place);
-                let _def = match place_ty.kind() {
-                    TyKind::Adt(def, _) if def.kind == crate::sema::models::AdtKind::Enum => def,
+                let (def, adt_args) = match place_ty.kind() {
+                    TyKind::Adt(def, args)
+                        if def.kind == crate::sema::models::AdtKind::Enum =>
+                    {
+                        (def, args)
+                    }
                     _ => panic!(
                         "ICE: discriminant on non-enum type {}",
                         place_ty.format(self.gcx)
                     ),
                 };
-                let enum_ty = self.lower_ty(place_ty).expect("enum");
-                let enum_struct = enum_ty.into_struct_type();
-                let discr_ptr = self
-                    .builder
-                    .build_struct_gep(enum_struct, ptr, 0, "enum_discr_ptr")
-                    .unwrap();
-                let discr_val = self
-                    .builder
-                    .build_load(self.usize_ty, discr_ptr, "enum_discr")
-                    .unwrap();
-                Some(discr_val.as_basic_value_enum())
+                let layout = enum_layout(
+                    self.context,
+                    self.gcx,
+                    &self.target_data,
+                    def.id,
+                    adt_args,
+                    self.current_subst,
+                );
+                if let Some(npo) = layout.npo {
+                    // NPO: discriminant is derived from a null check on the niche pointer.
+                    let npo_ty = self.lower_ty(place_ty).expect("npo enum type");
+                    let loaded = self
+                        .builder
+                        .build_load(npo_ty, ptr, "npo_val")
+                        .unwrap();
+                    let niche_ptr = match loaded {
+                        BasicValueEnum::PointerValue(ptr) => ptr,
+                        BasicValueEnum::StructValue(struct_val) => self
+                            .builder
+                            .build_extract_value(struct_val, 0, "npo_data_ptr")
+                            .unwrap()
+                            .into_pointer_value(),
+                        _ => panic!(
+                            "ICE: NPO enum lowered to unsupported LLVM type for {}",
+                            place_ty.format(self.gcx)
+                        ),
+                    };
+                    let is_null = self
+                        .builder
+                        .build_is_null(niche_ptr, "npo_is_null")
+                        .unwrap();
+                    let discr = self
+                        .builder
+                        .build_select(
+                            is_null,
+                            self.usize_ty
+                                .const_int(npo.null_variant as u64, false),
+                            self.usize_ty
+                                .const_int(npo.payload_variant as u64, false),
+                            "npo_discr",
+                        )
+                        .unwrap();
+                    Some(discr.as_basic_value_enum())
+                } else {
+                    let enum_ty = self.lower_ty(place_ty).expect("enum");
+                    let enum_struct = enum_ty.into_struct_type();
+                    let discr_ptr = self
+                        .builder
+                        .build_struct_gep(enum_struct, ptr, 0, "enum_discr_ptr")
+                        .unwrap();
+                    let discr_val = self
+                        .builder
+                        .build_load(self.usize_ty, discr_ptr, "enum_discr")
+                        .unwrap();
+                    Some(discr_val.as_basic_value_enum())
+                }
             }
             mir::Rvalue::Aggregate { kind, fields } => match kind {
                 mir::AggregateKind::Array { .. } => {
@@ -5210,39 +5299,54 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         adt_args,
                         self.current_subst,
                     );
-                    let payload_ptr = if let Some(payload_index) = layout.payload_field_index {
-                        let enum_ty = self.lower_ty(ty).expect("enum");
-                        let enum_struct = enum_ty.into_struct_type();
-                        self.builder
-                            .build_struct_gep(enum_struct, ptr, payload_index, "enum_payload_ptr")
-                            .unwrap()
-                    } else {
-                        // Zero-sized enum payloads (e.g. Optional[()]) have no dedicated payload field.
-                        // Reuse the enum base address as the variant payload base.
-                        ptr
-                    };
 
                     let variant_ty = enum_variant_tuple_ty(self.gcx, def.id, *index, adt_args);
-                    let _variant_struct = match self.lower_ty(variant_ty) {
-                        Some(BasicTypeEnum::StructType(st)) => st,
-                        None => self.context.struct_type(&[], false),
-                        Some(other) => {
-                            panic!("variant tuple lowered to non-struct {:?}", other);
-                        }
-                    };
-                    let variant_ptr = self
-                        .builder
-                        .build_bit_cast(
-                            payload_ptr,
-                            self.context.ptr_type(AddressSpace::default()),
-                            "enum_variant_ptr",
-                        )
-                        .unwrap()
-                        .into_pointer_value();
 
-                    ptr = variant_ptr;
-                    ptr_is_storage = true;
-                    ty = variant_ty;
+                    if layout.npo.is_some() {
+                        // NPO: the value IS the payload — no struct GEP needed.
+                        // ptr already points to the niche-eligible value.
+                        ptr_is_storage = true;
+                        ty = variant_ty;
+                    } else {
+                        let payload_ptr =
+                            if let Some(payload_index) = layout.payload_field_index {
+                                let enum_ty = self.lower_ty(ty).expect("enum");
+                                let enum_struct = enum_ty.into_struct_type();
+                                self.builder
+                                    .build_struct_gep(
+                                        enum_struct,
+                                        ptr,
+                                        payload_index,
+                                        "enum_payload_ptr",
+                                    )
+                                    .unwrap()
+                            } else {
+                                // Zero-sized enum payloads (e.g. Optional[()]) have no dedicated payload field.
+                                // Reuse the enum base address as the variant payload base.
+                                ptr
+                            };
+
+                        let _variant_struct = match self.lower_ty(variant_ty) {
+                            Some(BasicTypeEnum::StructType(st)) => st,
+                            None => self.context.struct_type(&[], false),
+                            Some(other) => {
+                                panic!("variant tuple lowered to non-struct {:?}", other);
+                            }
+                        };
+                        let variant_ptr = self
+                            .builder
+                            .build_bit_cast(
+                                payload_ptr,
+                                self.context.ptr_type(AddressSpace::default()),
+                                "enum_variant_ptr",
+                            )
+                            .unwrap()
+                            .into_pointer_value();
+
+                        ptr = variant_ptr;
+                        ptr_is_storage = true;
+                        ty = variant_ty;
+                    }
                 }
             }
         }
@@ -5542,37 +5646,53 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         adt_args,
                         self.current_subst,
                     );
-                    for variant in defn.variants.iter() {
-                        let crate::sema::models::EnumVariantKind::Tuple(fields) = variant.kind
-                        else {
-                            continue;
-                        };
-                        if fields.is_empty() {
-                            continue;
+
+                    if let Some(npo) = layout.npo {
+                        // NPO: the entire value is the single payload field at offset 0.
+                        // The GC handles null pointers gracefully (mark_ptr returns early).
+                        let variant = &defn.variants[npo.payload_variant];
+                        if let crate::sema::models::EnumVariantKind::Tuple(fields) = variant.kind {
+                            if !fields.is_empty() {
+                                let field_ty = crate::sema::tycheck::utils::normalize_aliases(
+                                    self.gcx,
+                                    instantiate_ty_with_args(self.gcx, fields[0].ty, adt_args),
+                                );
+                                self.append_gc_root_offsets(field_ty, base, offsets);
+                            }
                         }
-                        let struct_ty = enum_variant_struct_ty(
-                            self.context,
-                            self.gcx,
-                            &self.target_data,
-                            fields,
-                            adt_args,
-                            self.current_subst,
-                        );
-                        for (idx, field) in fields.iter().enumerate() {
-                            let field_ty = crate::sema::tycheck::utils::normalize_aliases(
-                                self.gcx,
-                                instantiate_ty_with_args(self.gcx, field.ty, adt_args),
-                            );
-                            let Some(field_offset) =
-                                self.target_data.offset_of_element(&struct_ty, idx as u32)
+                    } else {
+                        for variant in defn.variants.iter() {
+                            let crate::sema::models::EnumVariantKind::Tuple(fields) = variant.kind
                             else {
                                 continue;
                             };
-                            self.append_gc_root_offsets(
-                                field_ty,
-                                base + layout.payload_offset + field_offset,
-                                offsets,
+                            if fields.is_empty() {
+                                continue;
+                            }
+                            let struct_ty = enum_variant_struct_ty(
+                                self.context,
+                                self.gcx,
+                                &self.target_data,
+                                fields,
+                                adt_args,
+                                self.current_subst,
                             );
+                            for (idx, field) in fields.iter().enumerate() {
+                                let field_ty = crate::sema::tycheck::utils::normalize_aliases(
+                                    self.gcx,
+                                    instantiate_ty_with_args(self.gcx, field.ty, adt_args),
+                                );
+                                let Some(field_offset) =
+                                    self.target_data.offset_of_element(&struct_ty, idx as u32)
+                                else {
+                                    continue;
+                                };
+                                self.append_gc_root_offsets(
+                                    field_ty,
+                                    base + layout.payload_offset + field_offset,
+                                    offsets,
+                                );
+                            }
                         }
                     }
                 }
@@ -5663,12 +5783,23 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 }
 
 #[derive(Clone, Copy)]
+struct NpoLayout {
+    /// The variant index that carries the payload (the non-unit variant).
+    payload_variant: usize,
+    /// The variant index that is the unit/none variant (represented as null).
+    null_variant: usize,
+}
+
+#[derive(Clone, Copy)]
 struct EnumLayout<'llvm> {
     discr_ty: IntType<'llvm>,
     discr_size: u64,
     payload_size: u64,
     payload_offset: u64,
     payload_field_index: Option<u32>,
+    /// When set, this enum uses null-pointer optimization: no discriminant tag,
+    /// the null bit pattern represents the unit variant.
+    npo: Option<NpoLayout>,
 }
 
 fn align_up(value: u64, align: u64) -> u64 {
@@ -5681,6 +5812,22 @@ fn align_up(value: u64, align: u64) -> u64 {
     } else {
         value + (align - rem)
     }
+}
+
+/// Returns `true` when `ty` is guaranteed to never have an all-zero bit pattern,
+/// making it eligible for null-pointer optimization in enums.
+fn is_niche_eligible_ty<'gcx>(
+    gcx: Gcx<'gcx>,
+    ty: Ty<'gcx>,
+    subst: GenericArguments<'gcx>,
+) -> bool {
+    let ty = if subst.is_empty() {
+        ty
+    } else {
+        instantiate_ty_with_args(gcx, ty, subst)
+    };
+    let ty = crate::sema::tycheck::utils::normalize_aliases(gcx, ty);
+    matches!(ty.kind(), TyKind::Reference(..) | TyKind::FnPointer { .. })
 }
 
 fn enum_layout<'llvm, 'gcx>(
@@ -5726,12 +5873,50 @@ fn enum_layout<'llvm, 'gcx>(
         Some(1)
     };
 
+    // Detect null-pointer optimization eligibility:
+    // Exactly 2 variants, one unit and one with a single niche-eligible field.
+    let npo = if def.variants.len() == 2 {
+        let mut unit_idx = None;
+        let mut payload_idx = None;
+
+        for (i, variant) in def.variants.iter().enumerate() {
+            match variant.kind {
+                crate::sema::models::EnumVariantKind::Unit => {
+                    unit_idx = Some(i);
+                }
+                crate::sema::models::EnumVariantKind::Tuple(fields) if fields.is_empty() => {
+                    unit_idx = Some(i);
+                }
+                crate::sema::models::EnumVariantKind::Tuple(fields) if fields.len() == 1 => {
+                    let field_ty = instantiate_ty_with_args(gcx, fields[0].ty, adt_args);
+                    if is_niche_eligible_ty(gcx, field_ty, subst) {
+                        payload_idx = Some(i);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        match (unit_idx, payload_idx) {
+            (Some(null_variant), Some(payload_variant)) if null_variant != payload_variant => {
+                Some(NpoLayout {
+                    payload_variant,
+                    null_variant,
+                })
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+
     EnumLayout {
         discr_ty,
         discr_size,
         payload_size,
         payload_offset,
         payload_field_index,
+        npo,
     }
 }
 
@@ -5977,6 +6162,20 @@ fn lower_type<'llvm, 'gcx>(
             }
             crate::sema::models::AdtKind::Enum => {
                 let layout = enum_layout(context, gcx, target_data, def.id, adt_args, subst);
+
+                // Null-pointer optimization: represent as the payload type directly.
+                if let Some(npo) = layout.npo {
+                    let enum_def = gcx.get_enum_definition(def.id);
+                    let variant = &enum_def.variants[npo.payload_variant];
+                    let field_ty = match variant.kind {
+                        crate::sema::models::EnumVariantKind::Tuple(fields) => {
+                            instantiate_ty_with_args(gcx, fields[0].ty, adt_args)
+                        }
+                        _ => unreachable!("NPO payload variant must be a tuple"),
+                    };
+                    return lower_type(context, gcx, target_data, field_ty, subst);
+                }
+
                 let mut fields: Vec<BasicTypeEnum<'llvm>> = vec![layout.discr_ty.into()];
 
                 if layout.payload_size == 0 {

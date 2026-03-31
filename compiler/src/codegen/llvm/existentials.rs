@@ -454,16 +454,31 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         variant_index: usize,
         payload: Option<BasicValueEnum<'llvm>>,
     ) -> CompileResult<BasicValueEnum<'llvm>> {
-        let Some(BasicTypeEnum::StructType(enum_struct_ty)) = self.lower_ty(optional_ty) else {
-            panic!(
-                "ICE: existential try cast result must lower to Optional enum, found '{}'",
-                optional_ty.format(self.gcx)
-            );
-        };
-
         let Some((_, _, def, adt_args)) = self.optional_variant_indices(optional_ty) else {
             panic!(
                 "ICE: existential try cast result must be Optional[T], found '{}'",
+                optional_ty.format(self.gcx)
+            );
+        };
+        let layout = enum_layout(
+            self.context,
+            self.gcx,
+            &self.target_data,
+            def.id,
+            adt_args,
+            self.current_subst,
+        );
+        if let Some(npo) = layout.npo {
+            if variant_index == npo.null_variant {
+                let enum_ty = self.lower_ty(optional_ty).expect("NPO Optional LLVM type");
+                return Ok(enum_ty.const_zero().as_basic_value_enum());
+            }
+            return Ok(payload.expect("NPO payload variant must carry payload value"));
+        }
+
+        let Some(BasicTypeEnum::StructType(enum_struct_ty)) = self.lower_ty(optional_ty) else {
+            panic!(
+                "ICE: existential try cast result must lower to Optional enum, found '{}'",
                 optional_ty.format(self.gcx)
             );
         };
@@ -485,14 +500,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let _ = self.builder.build_store(discr_ptr, discr_val).unwrap();
 
         if let Some(payload_value) = payload {
-            let layout = enum_layout(
-                self.context,
-                self.gcx,
-                &self.target_data,
-                def.id,
-                adt_args,
-                self.current_subst,
-            );
             if let Some(payload_field_index) = layout.payload_field_index {
                 let payload_storage_ptr = self
                     .builder
@@ -618,8 +625,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 let to_meta = self.type_metadata_ptr(target_ty);
                 let success = self.pointer_eq(from_meta, to_meta, "exist_try_cast_concrete_eq");
 
-                let Some(BasicTypeEnum::StructType(result_struct_ty)) = self.lower_ty(result_ty)
-                else {
+                let Some(result_llvm_ty) = self.lower_ty(result_ty) else {
                     panic!(
                         "ICE: existential try cast result must lower to Optional enum, found '{}'",
                         result_ty.format(self.gcx)
@@ -627,7 +633,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 };
                 let tmp_ptr = self
                     .builder
-                    .build_alloca(result_struct_ty, "exist_try_cast_tmp")
+                    .build_alloca(result_llvm_ty, "exist_try_cast_tmp")
                     .unwrap();
                 let parent = self
                     .current_fn
@@ -671,9 +677,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 self.builder.position_at_end(merge_bb);
                 let loaded = self
                     .builder
-                    .build_load(result_struct_ty, tmp_ptr, "exist_try_cast_result")
+                    .build_load(result_llvm_ty, tmp_ptr, "exist_try_cast_result")
                     .unwrap();
-                Ok(loaded.as_basic_value_enum())
+                Ok(loaded)
             }
             _ => {
                 if from_ty == target_ty {

@@ -1,0 +1,48 @@
+struct Node {
+    value: int32
+}
+
+func testOptionalReferenceNpoLayout() {
+    let ptr_size = std.mem.sizeOf[usize]()
+    let ref_size = std.mem.sizeOf[&Node]()
+    let optional_ref_size = std.mem.sizeOf[Optional[&Node]]()
+    let optional_int_size = std.mem.sizeOf[Optional[int32]]()
+    let nested_optional_ref_size = std.mem.sizeOf[Optional[Optional[&Node]]]()
+    let tagged_size = ptr_size + ptr_size
+
+    assert(ref_size == ptr_size, "&T should be pointer-sized")
+    assert(
+        optional_ref_size == ref_size,
+        "Optional[&T] should use null-pointer optimization",
+    )
+    assert(
+        optional_int_size == tagged_size,
+        "Optional[int32] should keep tagged enum layout",
+    )
+    assert(
+        nested_optional_ref_size == tagged_size,
+        "Optional[Optional[&T]] should not use null-pointer optimization",
+    )
+}
+
+func testOptionalReferenceMatchBehavior() {
+    let node = Node { value: 77 }
+
+    let some_ref: Optional[&Node] = Optional.some(&node)
+    match some_ref {
+        case .some(value) => assert(value.value == 77, "Optional[&T] some payload mismatch")
+        case .none => assert(false, "Optional[&T] some should not match none")
+    }
+
+    let none_ref: Optional[&Node] = Optional.none
+    match none_ref {
+        case .some(_) => assert(false, "Optional[&T] none should not match some")
+        case .none => {}
+    }
+}
+
+func main() {
+    testOptionalReferenceNpoLayout()
+    testOptionalReferenceMatchBehavior()
+    std.print("optional npo layouts ok\n")
+}
