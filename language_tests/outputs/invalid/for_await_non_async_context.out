@@ -1,0 +1,7 @@
+error: `await` can only be used inside an `async` function
+ -> language_tests/source_files/invalid/for_await_non_async_context.tr:30:4
+    for await value in source {
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        let _ = value
+    }
+     ^

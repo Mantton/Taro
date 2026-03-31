@@ -1096,9 +1096,7 @@ impl<'arena> GlobalContext<'arena> {
             | TyKind::Never => true,
             TyKind::Tuple(elements) => elements.iter().all(|elem| self.is_type_copyable(*elem)),
             TyKind::Array { element, .. } => self.is_type_copyable(element),
-            TyKind::Adt(def, _) => {
-                self.std_item_def(StdItem::Span) == Some(def.id)
-            }
+            TyKind::Adt(def, _) => self.std_item_def(StdItem::Span) == Some(def.id),
             TyKind::BoxedExistential { .. } => false,
             TyKind::Parameter(_) => false,
             TyKind::Alias { kind, .. } if kind != AliasKind::Projection => {
@@ -1224,11 +1222,7 @@ impl<'arena> GlobalContext<'arena> {
             return false;
         };
         def.superfaces.iter().any(|super_iface| {
-            self.interface_transitively_requires_inner(
-                super_iface.value.id,
-                target_id,
-                visited,
-            )
+            self.interface_transitively_requires_inner(super_iface.value.id, target_id, visited)
         })
     }
 
@@ -1239,11 +1233,7 @@ impl<'arena> GlobalContext<'arena> {
         self.is_type_sendable_inner(ty, &mut visited)
     }
 
-    fn is_type_sendable_inner(
-        self,
-        ty: Ty<'arena>,
-        visited: &mut FxHashSet<Ty<'arena>>,
-    ) -> bool {
+    fn is_type_sendable_inner(self, ty: Ty<'arena>, visited: &mut FxHashSet<Ty<'arena>>) -> bool {
         let ty = crate::sema::tycheck::utils::normalize_aliases(self, ty);
         if ty == self.async_handle_ty() {
             return false;

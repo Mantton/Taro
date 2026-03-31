@@ -1,0 +1,10 @@
+struct NotAsyncIterable {
+    x: int32
+}
+
+func main() async {
+    let source = NotAsyncIterable { x: 1 }
+    for await value in source {
+        let _ = value
+    }
+}

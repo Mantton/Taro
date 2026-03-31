@@ -243,8 +243,8 @@ impl WakeBatch {
 }
 
 fn pack_task_token(index: TaskIndex, generation: TaskGeneration) -> TaskToken {
-    let raw_index =
-        u32::try_from(index).unwrap_or_else(|_| panic!("task slot index {index} exceeds token width"));
+    let raw_index = u32::try_from(index)
+        .unwrap_or_else(|_| panic!("task slot index {index} exceeds token width"));
     (u64::from(generation) << TASK_TOKEN_INDEX_BITS) | u64::from(raw_index)
 }
 
@@ -684,7 +684,13 @@ impl Scheduler {
             } else {
                 None
             };
-            (frame, handle, inner.waiter.take(), inner.group_id, out_buf_clone)
+            (
+                frame,
+                handle,
+                inner.waiter.take(),
+                inner.group_id,
+                out_buf_clone,
+            )
         };
 
         io_poller::cancel_task(task_token);
@@ -918,7 +924,10 @@ impl Scheduler {
         let slot = groups.get_mut(group_id as usize)?;
         let state = slot.take()?;
         drop(groups);
-        self.free_group_slots.lock().unwrap().push(group_id as usize);
+        self.free_group_slots
+            .lock()
+            .unwrap()
+            .push(group_id as usize);
         state.panic_message
     }
 
@@ -1047,7 +1056,10 @@ impl Scheduler {
         };
         let target = {
             let mut inner = slot.inner.lock().unwrap();
-            if !inner.occupied || inner.generation != task_generation || inner.completed || inner.queued
+            if !inner.occupied
+                || inner.generation != task_generation
+                || inner.completed
+                || inner.queued
             {
                 return;
             }
@@ -1499,7 +1511,10 @@ pub extern "C-unwind" fn __rt__executor_task_completion_status(task_token: u64) 
     if !inner.occupied || inner.generation != task_generation {
         panic!("stale task token {task_token}");
     }
-    assert!(inner.completed, "task_completion_status called on incomplete task");
+    assert!(
+        inner.completed,
+        "task_completion_status called on incomplete task"
+    );
     if inner.cancelled { 2 } else { 1 }
 }
 
@@ -1593,8 +1608,7 @@ pub extern "C-unwind" fn __rt__task_group_spawn(
             "task_group_spawn called after group was cancelled"
         );
         assert_eq!(
-            group.result_size,
-            out_size as usize,
+            group.result_size, out_size as usize,
             "task_group_spawn result size mismatch"
         );
     }
@@ -1602,7 +1616,13 @@ pub extern "C-unwind" fn __rt__task_group_spawn(
     let mut out_buf = vec![0u8; out_size as usize];
     let out_ptr = out_buf.as_mut_ptr();
     let preferred_worker = Some(owner_worker);
-    let task_token = scheduler.add_task(handle, out_ptr, Some(out_buf), owner_worker, preferred_worker);
+    let task_token = scheduler.add_task(
+        handle,
+        out_ptr,
+        Some(out_buf),
+        owner_worker,
+        preferred_worker,
+    );
 
     // Register group_id on the task slot
     {
@@ -1714,8 +1734,10 @@ pub extern "C-unwind" fn __rt__task_group_poll_next(group_id: u64, out: *mut u8)
             return 1;
         }
 
-        // If spawning is closed and no tasks remain, group is exhausted
-        if group.spawning_closed && group.tasks.is_empty() {
+        // If no tasks remain (and no completed values are queued), treat as exhausted.
+        // This matches `TaskGroup.next()` / `for await` semantics where callers can
+        // finish draining without requiring an explicit close first.
+        if group.tasks.is_empty() {
             group.ready_status = 2;
             return 2;
         }
@@ -2014,7 +2036,8 @@ mod tests {
             scheduler.reclaim_task_slot(old_token, &mut inner);
         }
 
-        let new_token = scheduler.add_task(ptr::null_mut(), ptr::null_mut(), Some(Vec::new()), 0, None);
+        let new_token =
+            scheduler.add_task(ptr::null_mut(), ptr::null_mut(), Some(Vec::new()), 0, None);
         let (new_index, new_generation) = unpack_task_token(new_token);
         assert_eq!(new_index, 0);
         assert_ne!(new_generation, TASK_INITIAL_GENERATION);
@@ -2046,8 +2069,9 @@ mod tests {
         let _current_token =
             scheduler.add_task(ptr::null_mut(), ptr::null_mut(), Some(Vec::new()), 0, None);
 
-        let panicked =
-            panic::catch_unwind(AssertUnwindSafe(|| scheduler.assert_spawned_token_live_or_panic(stale_token)));
+        let panicked = panic::catch_unwind(AssertUnwindSafe(|| {
+            scheduler.assert_spawned_token_live_or_panic(stale_token)
+        }));
         assert!(panicked.is_err());
     }
 
@@ -2185,7 +2209,10 @@ mod tests {
         let _guard = TEST_ENV_LOCK.lock().unwrap();
         let (_max_in_flight, _thread_count, steals) =
             run_one_shot_scheduler(128, StdDuration::from_millis(8));
-        assert!(steals > 0, "expected at least one victim-queue steal, observed {steals}");
+        assert!(
+            steals > 0,
+            "expected at least one victim-queue steal, observed {steals}"
+        );
     }
 
     struct GcGateFrame {
@@ -2488,10 +2515,7 @@ mod tests {
         let _ = unsafe { Box::from_raw(frame as *mut PanicFrame) };
     }
 
-    fn make_pending_handle(
-        polls: Arc<AtomicUsize>,
-        drops: Arc<AtomicUsize>,
-    ) -> *mut u8 {
+    fn make_pending_handle(polls: Arc<AtomicUsize>, drops: Arc<AtomicUsize>) -> *mut u8 {
         __rt__async_create(
             Box::into_raw(Box::new(PendingFrame { polls, drops })) as *mut u8,
             pending_poll as *const () as *const u8,
@@ -2509,11 +2533,7 @@ mod tests {
         )
     }
 
-    fn make_delayed_value_handle(
-        value: u32,
-        remaining: usize,
-        drops: Arc<AtomicUsize>,
-    ) -> *mut u8 {
+    fn make_delayed_value_handle(value: u32, remaining: usize, drops: Arc<AtomicUsize>) -> *mut u8 {
         __rt__async_create(
             Box::into_raw(Box::new(DelayedValueFrame {
                 value,
@@ -2604,10 +2624,8 @@ mod tests {
         let frame = unsafe { &mut *(frame as *mut PollSpawnedCancelledRoot) };
         if frame.stage == 0 {
             let polls = Arc::new(AtomicUsize::new(0));
-            frame.token = __rt__executor_spawn(
-                make_pending_handle(polls, Arc::clone(&frame.drops)),
-                0,
-            );
+            frame.token =
+                __rt__executor_spawn(make_pending_handle(polls, Arc::clone(&frame.drops)), 0);
             __rt__executor_cancel_task(frame.token);
             frame.stage = 1;
             return 0;
@@ -2667,10 +2685,8 @@ mod tests {
         }
 
         let mut value = 99_u32;
-        let status = __rt__executor_poll_spawned_checked(
-            frame.token,
-            (&mut value as *mut u32).cast::<u8>(),
-        );
+        let status =
+            __rt__executor_poll_spawned_checked(frame.token, (&mut value as *mut u32).cast::<u8>());
         if status == 0 {
             return 0;
         }
@@ -2805,8 +2821,7 @@ mod tests {
     ) -> u8 {
         let frame = unsafe { &mut *(frame as *mut GroupCollectRoot) };
         if frame.stage == 0 {
-            frame.group_id =
-                __rt__task_group_create(std::mem::size_of::<u32>() as u64, 1);
+            frame.group_id = __rt__task_group_create(std::mem::size_of::<u32>() as u64, 1);
             let _ = __rt__task_group_spawn(frame.group_id, make_ready_value_handle(11), 4);
             let _ = __rt__task_group_spawn(frame.group_id, make_ready_value_handle(31), 4);
             __rt__task_group_close(frame.group_id);
@@ -2872,8 +2887,7 @@ mod tests {
         if frame.stage == 0 {
             let polls_a = Arc::new(AtomicUsize::new(0));
             let polls_b = Arc::new(AtomicUsize::new(0));
-            frame.group_id =
-                __rt__task_group_create(std::mem::size_of::<u32>() as u64, 1);
+            frame.group_id = __rt__task_group_create(std::mem::size_of::<u32>() as u64, 1);
             let _ = __rt__task_group_spawn(
                 frame.group_id,
                 make_pending_handle(polls_a, Arc::clone(&frame.drops)),
@@ -2944,9 +2958,9 @@ mod tests {
         let frame = unsafe { &mut *(frame as *mut GroupCancelOnPanicRoot) };
         if frame.stage == 0 {
             let polls = Arc::new(AtomicUsize::new(0));
-            frame.group_id =
-                __rt__task_group_create(std::mem::size_of::<u32>() as u64, 1);
-            let _ = __rt__task_group_spawn(frame.group_id, make_panic_handle("group child panic"), 4);
+            frame.group_id = __rt__task_group_create(std::mem::size_of::<u32>() as u64, 1);
+            let _ =
+                __rt__task_group_spawn(frame.group_id, make_panic_handle("group child panic"), 4);
             let _ = __rt__task_group_spawn(
                 frame.group_id,
                 make_pending_handle(polls, Arc::clone(&frame.drops)),
@@ -3011,9 +3025,9 @@ mod tests {
         let frame = unsafe { &mut *(frame as *mut GroupCancelOnPanicOpenRoot) };
         if frame.stage == 0 {
             let polls = Arc::new(AtomicUsize::new(0));
-            frame.group_id =
-                __rt__task_group_create(std::mem::size_of::<u32>() as u64, 1);
-            let _ = __rt__task_group_spawn(frame.group_id, make_panic_handle("group child panic"), 4);
+            frame.group_id = __rt__task_group_create(std::mem::size_of::<u32>() as u64, 1);
+            let _ =
+                __rt__task_group_spawn(frame.group_id, make_panic_handle("group child panic"), 4);
             let _ = __rt__task_group_spawn(
                 frame.group_id,
                 make_pending_handle(polls, Arc::clone(&frame.drops)),
@@ -3077,9 +3091,9 @@ mod tests {
     ) -> u8 {
         let frame = unsafe { &mut *(frame as *mut GroupIndependentRoot) };
         if frame.stage == 0 {
-            frame.group_id =
-                __rt__task_group_create(std::mem::size_of::<u32>() as u64, 0);
-            let _ = __rt__task_group_spawn(frame.group_id, make_panic_handle("group child panic"), 4);
+            frame.group_id = __rt__task_group_create(std::mem::size_of::<u32>() as u64, 0);
+            let _ =
+                __rt__task_group_spawn(frame.group_id, make_panic_handle("group child panic"), 4);
             let _ = __rt__task_group_spawn(
                 frame.group_id,
                 make_delayed_value_handle(7, 1, Arc::clone(&frame.drops)),

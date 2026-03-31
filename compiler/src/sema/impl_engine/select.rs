@@ -351,8 +351,7 @@ impl<'ctx> Selector<'ctx> {
         } else if fn_mut_id == Some(goal.interface_id) {
             matches!(
                 kind,
-                crate::sema::models::ClosureKind::Fn
-                    | crate::sema::models::ClosureKind::FnMut
+                crate::sema::models::ClosureKind::Fn | crate::sema::models::ClosureKind::FnMut
             )
         } else if fn_once_id == Some(goal.interface_id) {
             matches!(

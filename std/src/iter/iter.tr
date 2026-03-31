@@ -100,6 +100,13 @@ public interface Iterator {
     }
 }
 
+/// Interface for async iterators that yield a sequence over suspension points.
+@lang("AsyncIterator")
+public interface AsyncIterator {
+    type Element
+    func next(&mut self) async -> Optional[Self.Element]
+}
+
 /// Interface for types that can be constructed from an iterator.
 public interface FromIterator {
     type Element
@@ -353,6 +360,21 @@ impl[Item, Inner: Iterator[Element = Item]] Iterator for EnumerateIterator[Item,
             case .none => return .none
         }
     }
+}
+
+/// Interface for types that can be converted into an AsyncIterator.
+///
+/// Types that implement AsyncIterable can be used in `for await` loops:
+/// ```
+/// for await item in source {
+///     // use item
+/// }
+/// ```
+@lang("AsyncIterable")
+public interface AsyncIterable {
+    type Iterator: AsyncIterator[Element = Self.Element]
+    type Element
+    func iter(self) -> Self.Iterator
 }
 
 impl[Item, Inner: Iterator[Element = Item]] Iterable for EnumerateIterator[Item, Inner] {

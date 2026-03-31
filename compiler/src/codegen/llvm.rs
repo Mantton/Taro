@@ -3264,10 +3264,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         // Generate a unique name for the shim
         let shim_name = format!(
             "{}_fn_shim",
-            mangle_instance(
-                self.gcx,
-                Instance::item(closure_def_id, closure_args),
-            )
+            mangle_instance(self.gcx, Instance::item(closure_def_id, closure_args),)
         );
 
         // Check if we've already generated this shim
@@ -4957,9 +4954,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let value = match op {
             mir::Operand::Copy(place)
             | mir::Operand::Move(place)
-            | mir::Operand::CopyWith(place, _) => {
-                self.load_place(body, locals, place)
-            }
+            | mir::Operand::CopyWith(place, _) => self.load_place(body, locals, place),
             mir::Operand::Constant(c) => self.lower_constant(c),
         };
         Ok(value)
@@ -5294,9 +5289,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let ty = match operand {
             mir::Operand::Copy(place)
             | mir::Operand::Move(place)
-            | mir::Operand::CopyWith(place, _) => {
-                self.place_ty(body, place)
-            }
+            | mir::Operand::CopyWith(place, _) => self.place_ty(body, place),
             mir::Operand::Constant(c) => c.ty,
         };
 
@@ -5559,7 +5552,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         self.current_subst,
                     );
                     // ByRef captures are stored as pointers in the environment struct.
-                    let capture_ty = if let crate::sema::models::CaptureKind::ByRef { mutable } = capture.capture_kind {
+                    let capture_ty = if let crate::sema::models::CaptureKind::ByRef { mutable } =
+                        capture.capture_kind
+                    {
                         let mutability = if mutable {
                             hir::Mutability::Mutable
                         } else {
@@ -5569,7 +5564,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     } else {
                         base_ty
                     };
-                    let capture_ty = crate::sema::tycheck::utils::normalize_aliases(self.gcx, capture_ty);
+                    let capture_ty =
+                        crate::sema::tycheck::utils::normalize_aliases(self.gcx, capture_ty);
                     let Some(field_offset) =
                         self.target_data.offset_of_element(&struct_ty, idx as u32)
                     else {
@@ -5581,7 +5577,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             _ => {}
         }
     }
-
 }
 
 #[derive(Clone, Copy)]
@@ -5880,16 +5875,19 @@ fn lower_type<'llvm, 'gcx>(
                                 subst,
                             );
                             // ByRef captures are stored as pointers in the environment struct.
-                            let resolved = if let crate::sema::models::CaptureKind::ByRef { mutable } = cap.capture_kind {
-                                let mutability = if mutable {
-                                    hir::Mutability::Mutable
+                            let resolved =
+                                if let crate::sema::models::CaptureKind::ByRef { mutable } =
+                                    cap.capture_kind
+                                {
+                                    let mutability = if mutable {
+                                        hir::Mutability::Mutable
+                                    } else {
+                                        hir::Mutability::Immutable
+                                    };
+                                    Ty::new(TyKind::Reference(base, mutability), gcx)
                                 } else {
-                                    hir::Mutability::Immutable
+                                    base
                                 };
-                                Ty::new(TyKind::Reference(base, mutability), gcx)
-                            } else {
-                                base
-                            };
                             lower_type(context, gcx, target_data, resolved, subst)
                         })
                         .collect();

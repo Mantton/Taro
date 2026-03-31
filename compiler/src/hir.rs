@@ -926,6 +926,8 @@ pub enum StdItem {
     Equatable,
     Iterator,
     Iterable,
+    AsyncIterator,
+    AsyncIterable,
     Fn,
     FnMut,
     AsyncFn,
@@ -980,6 +982,8 @@ impl StdItem {
             StdItem::Equatable => Some("Equatable"),
             StdItem::Iterator => Some("Iterator"),
             StdItem::Iterable => Some("Iterable"),
+            StdItem::AsyncIterator => Some("AsyncIterator"),
+            StdItem::AsyncIterable => Some("AsyncIterable"),
             StdItem::Fn => Some("Fn"),
             StdItem::FnMut => Some("FnMut"),
             StdItem::AsyncFn => Some("AsyncFn"),
@@ -1028,6 +1032,8 @@ impl StdItem {
             "Equatable" => Some(Self::Equatable),
             "Iterator" => Some(Self::Iterator),
             "Iterable" => Some(Self::Iterable),
+            "AsyncIterator" => Some(Self::AsyncIterator),
+            "AsyncIterable" => Some(Self::AsyncIterable),
             "Fn" => Some(Self::Fn),
             "FnMut" => Some(Self::FnMut),
             "AsyncFn" => Some(Self::AsyncFn),
@@ -1073,6 +1079,8 @@ impl StdItem {
             | StdItem::Equatable
             | StdItem::Iterator
             | StdItem::Iterable
+            | StdItem::AsyncIterator
+            | StdItem::AsyncIterable
             | StdItem::Fn
             | StdItem::FnMut
             | StdItem::AsyncFn
@@ -1126,6 +1134,8 @@ impl StdItem {
                 | StdItem::Equatable
                 | StdItem::Iterator
                 | StdItem::Iterable
+                | StdItem::AsyncIterator
+                | StdItem::AsyncIterable
                 | StdItem::Fn
                 | StdItem::FnMut
                 | StdItem::AsyncFn
@@ -1156,7 +1166,7 @@ impl StdItem {
         )
     }
 
-    pub const ALL_REQUIRED: [StdItem; 42] = [
+    pub const ALL_REQUIRED: [StdItem; 44] = [
         StdItem::Optional,
         StdItem::List,
         StdItem::Set,
@@ -1172,6 +1182,8 @@ impl StdItem {
         StdItem::Equatable,
         StdItem::Iterator,
         StdItem::Iterable,
+        StdItem::AsyncIterator,
+        StdItem::AsyncIterable,
         StdItem::Fn,
         StdItem::FnMut,
         StdItem::AsyncFn,
@@ -1201,7 +1213,7 @@ impl StdItem {
         StdItem::OptionalNoneCtor,
     ];
 
-    pub const ALL_INTERFACES: [StdItem; 29] = [
+    pub const ALL_INTERFACES: [StdItem; 31] = [
         StdItem::Copy,
         StdItem::Clone,
         StdItem::Sendable,
@@ -1209,6 +1221,8 @@ impl StdItem {
         StdItem::Equatable,
         StdItem::Iterator,
         StdItem::Iterable,
+        StdItem::AsyncIterator,
+        StdItem::AsyncIterable,
         StdItem::Fn,
         StdItem::FnMut,
         StdItem::AsyncFn,

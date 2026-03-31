@@ -1,0 +1,68 @@
+// CHECK_ONLY
+
+struct CountingAsyncIterator {
+    current: int32
+    end: int32
+}
+
+impl AsyncIterator for CountingAsyncIterator {
+    type Element = int32
+
+    func next(&mut self) async -> Optional[int32] {
+        if self.current >= self.end {
+            return .none
+        }
+
+        let value = self.current
+        self.current += 1
+        await std.testing.yieldNow()
+        return .some(value)
+    }
+}
+
+struct CountingAsyncRange {
+    start: int32
+    end: int32
+}
+
+impl AsyncIterable for CountingAsyncRange {
+    type Iterator = CountingAsyncIterator
+    type Element = int32
+
+    func iter(self) -> Self.Iterator {
+        return CountingAsyncIterator {
+            current: self.start,
+            end: self.end,
+        }
+    }
+}
+
+func main() async {
+    let source = CountingAsyncRange { start: 0, end: 6 }
+    var evenSum = 0 as int32
+
+    for await value in source where value % 2 == 0 {
+        evenSum += value
+    }
+
+    assert(evenSum == 6, "for await + where should iterate async iterables")
+
+    let grouped: int32 = await std.task.withTaskGroup(|group: &mut std.task.TaskGroup[int32]| async {
+        group.spawn(|| async {
+            await std.testing.yieldNow()
+            return 11 as int32
+        })
+        group.spawn(|| async {
+            return 31 as int32
+        })
+
+        var sum = 0 as int32
+        for await value in group {
+            sum += value
+        }
+
+        return sum
+    })
+
+    assert(grouped == 42, "for await should work for task groups via AsyncIterable")
+}

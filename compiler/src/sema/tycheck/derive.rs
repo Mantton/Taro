@@ -90,8 +90,8 @@ pub fn try_synthesize_method<'ctx>(
             args_template,
         ),
         StdItem::Copy | StdItem::Sendable | StdItem::Tuple => None,
-        StdItem::Iterator | StdItem::Iterable => {
-            // Iterator and Iterable are not auto-derivable
+        StdItem::Iterator | StdItem::Iterable | StdItem::AsyncIterator | StdItem::AsyncIterable => {
+            // Iterator-like interfaces are not auto-derivable
             None
         }
         // Operator interfaces are not auto-synthesized; they require explicit impl blocks

@@ -2284,6 +2284,7 @@ impl Parser {
 
     fn parse_for_stmt(&mut self, label: Option<Label>) -> R<StatementKind> {
         self.expect(Token::For)?;
+        let is_await = self.eat(Token::Await);
         let pattern = self.parse_pattern()?;
         self.expect(Token::In)?;
 
@@ -2302,6 +2303,7 @@ impl Parser {
 
         let f = ForStatement {
             label,
+            is_await,
             pattern,
             iterator,
             clause,
@@ -4840,6 +4842,12 @@ mod tests {
     }
 
     #[test]
+    fn test_for_await_statement() {
+        let decl = parse_one_decl("func foo(xs: [int32]) async { for await x in xs { break } }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
     fn test_defer_statement() {
         let decl = parse_one_decl("func foo() { defer { cleanup(); } }");
         assert!(matches!(decl.kind, DeclarationKind::Function(_)));
@@ -5484,6 +5492,14 @@ mod tests {
     #[test]
     fn test_for_with_where() {
         let decl = parse_one_decl("func foo(xs: [int32]) { for x in xs where x > 0 { break } }");
+        assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_for_await_with_where() {
+        let decl = parse_one_decl(
+            "func foo(xs: [int32]) async { for await x in xs where x > 0 { break } }",
+        );
         assert!(matches!(decl.kind, DeclarationKind::Function(_)));
     }
 

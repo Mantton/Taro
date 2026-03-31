@@ -241,7 +241,9 @@ fn build_builtin_clone_witness<'ctx>(
         ) else {
             return Err(SelectionError::NoCandidates(goal));
         };
-        witness.method_witnesses.insert(method.id, synthesized.witness);
+        witness
+            .method_witnesses
+            .insert(method.id, synthesized.witness);
     }
     witness.extension_id = None;
     Ok(witness)

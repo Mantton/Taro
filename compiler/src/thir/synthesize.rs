@@ -17,8 +17,8 @@ use crate::{
     span::{FileID, Span},
     thir::{
         AdtExpression, Arm, ArmId, BindingMode, Block, BlockId, Constant, ConstantKind, Expr,
-        ExprId, ExprKind, FieldExpression, FieldIndex, FieldPattern, Param, Pattern,
-        PatternKind, Stmt, StmtId, StmtKind, ThirFunction, VariantIndex,
+        ExprId, ExprKind, FieldExpression, FieldIndex, FieldPattern, Param, Pattern, PatternKind,
+        Stmt, StmtId, StmtKind, ThirFunction, VariantIndex,
     },
 };
 use index_vec::IndexVec;
@@ -261,9 +261,7 @@ fn synthesize_method<'ctx>(
         }
         SyntheticMethodKind::ClosureCall
         | SyntheticMethodKind::ClosureCallMut
-        | SyntheticMethodKind::ClosureCallOnce => {
-            synthesize_closure_call(gcx, info, syn_id)
-        }
+        | SyntheticMethodKind::ClosureCallOnce => synthesize_closure_call(gcx, info, syn_id),
     }
 }
 

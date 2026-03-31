@@ -1,7 +1,7 @@
 use std::time::{Duration as StdDuration, Instant};
 
-use crate::io_poller::Interest;
 use crate::garbage_collector::with_gc;
+use crate::io_poller::Interest;
 
 type PollThunk = unsafe extern "C-unwind" fn(frame: *mut u8, ctx: *mut u8, out: *mut u8) -> u8;
 type DropThunk = unsafe extern "C" fn(frame: *mut u8);
@@ -280,7 +280,6 @@ unsafe extern "C" fn io_wait_drop(frame: *mut u8) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt__async_yield_now() -> *mut u8 {
-
     let frame = Box::into_raw(Box::new(0u8));
     __rt__async_create(
         frame,
@@ -345,11 +344,7 @@ struct GroupNextFrame {
 /// Poll for the next completed result from a task group.
 /// Returns 0 (pending) or 1 (ready — result written to `out`, or group exhausted
 /// indicated by a tag byte the compiler interprets).
-unsafe extern "C-unwind" fn group_next_poll(
-    frame: *mut u8,
-    _ctx: *mut u8,
-    out: *mut u8,
-) -> u8 {
+unsafe extern "C-unwind" fn group_next_poll(frame: *mut u8, _ctx: *mut u8, out: *mut u8) -> u8 {
     if frame.is_null() {
         return 1;
     }

@@ -8,8 +8,8 @@ use crate::{
     error::CompileResult,
     hir::{DefinitionKind, Mutability},
     mir::{
-        AggregateKind, BasicBlockId, Body, CallUnwindAction, ConstantKind, LocalId, Operand,
-        Place, PlaceElem, Rvalue, StatementKind, TerminatorKind, UnaryOperator,
+        AggregateKind, BasicBlockId, Body, CallUnwindAction, ConstantKind, LocalId, Operand, Place,
+        PlaceElem, Rvalue, StatementKind, TerminatorKind, UnaryOperator,
     },
     sema::models::{Const, ConstKind, ConstValue, EnumVariantKind, Ty, TyKind},
     thir::FieldIndex,
@@ -404,8 +404,8 @@ fn call_output_ty<'ctx>(
 
             let output_from_ty = match constant.ty.kind() {
                 TyKind::FnPointer { output, .. } => Some(normalize_if_possible(gcx, output)),
-                TyKind::Closure { kind, output, .. } => {
-                    Some(if matches!(
+                TyKind::Closure { kind, output, .. } => Some(
+                    if matches!(
                         kind,
                         crate::sema::models::ClosureKind::AsyncFn
                             | crate::sema::models::ClosureKind::AsyncFnMut
@@ -414,8 +414,8 @@ fn call_output_ty<'ctx>(
                         gcx.async_handle_ty()
                     } else {
                         normalize_if_possible(gcx, output)
-                    })
-                }
+                    },
+                ),
                 _ => None,
             };
 
@@ -440,8 +440,8 @@ fn call_output_ty<'ctx>(
         Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
             match place_ty(body, gcx, place).kind() {
                 TyKind::FnPointer { output, .. } => Some(normalize_if_possible(gcx, output)),
-                TyKind::Closure { kind, output, .. } => {
-                    Some(if matches!(
+                TyKind::Closure { kind, output, .. } => Some(
+                    if matches!(
                         kind,
                         crate::sema::models::ClosureKind::AsyncFn
                             | crate::sema::models::ClosureKind::AsyncFnMut
@@ -450,8 +450,8 @@ fn call_output_ty<'ctx>(
                         gcx.async_handle_ty()
                     } else {
                         normalize_if_possible(gcx, output)
-                    })
-                }
+                    },
+                ),
                 _ => None,
             }
         }
@@ -1094,8 +1094,10 @@ fn check_borrow_move<'ctx>(
 
     if moved_out_of_immutable_reference && !is_type_copyable_in_body_context(gcx, body, current_ty)
     {
-        gcx.dcx()
-            .emit_error("cannot move out of borrowed content".to_string(), Some(span));
+        gcx.dcx().emit_error(
+            "cannot move out of borrowed content".to_string(),
+            Some(span),
+        );
         return gcx.dcx().ok();
     }
 
@@ -1153,7 +1155,10 @@ fn check_place_not_moved<'ctx>(
                 .map(|symbol| format!("'{}'", symbol))
                 .unwrap_or_else(|| "<temporary>".to_string());
             gcx.dcx().emit_error(
-                format!("use of partially moved value {} (field already moved)", name),
+                format!(
+                    "use of partially moved value {} (field already moved)",
+                    name
+                ),
                 Some(span),
             );
             return gcx.dcx().ok();
@@ -1173,7 +1178,11 @@ fn check_place_not_moved<'ctx>(
     Ok(())
 }
 
-fn collect_moves_from_rvalue<'ctx>(body: &Body<'ctx>, rvalue: &Rvalue<'ctx>, state: &mut MoveState) {
+fn collect_moves_from_rvalue<'ctx>(
+    body: &Body<'ctx>,
+    rvalue: &Rvalue<'ctx>,
+    state: &mut MoveState,
+) {
     match rvalue {
         Rvalue::Use(op) => collect_move_from_operand(body, op, state),
         Rvalue::UnaryOp { operand, .. } => collect_move_from_operand(body, operand, state),
@@ -1309,7 +1318,10 @@ pub fn validate_borrows<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResul
                     if dest.projection.is_empty() {
                         for src_local in borrowed_source_locals(rvalue) {
                             for borrowed in borrowed_locals_for_source(src_local, &active_borrows) {
-                                active_borrows.entry(borrowed).or_default().insert(dest.local);
+                                active_borrows
+                                    .entry(borrowed)
+                                    .or_default()
+                                    .insert(dest.local);
                             }
                         }
                     }
@@ -1580,10 +1592,9 @@ fn operand_local<'ctx>(operand: &Operand<'ctx>) -> Option<LocalId> {
         {
             Some(place.local)
         }
-        Operand::Copy(_)
-        | Operand::Move(_)
-        | Operand::CopyWith(_, _)
-        | Operand::Constant(_) => None,
+        Operand::Copy(_) | Operand::Move(_) | Operand::CopyWith(_, _) | Operand::Constant(_) => {
+            None
+        }
     }
 }
 
@@ -1660,8 +1671,10 @@ fn check_operand_move_borrowed<'ctx>(
 
     if let Some(borrowers) = borrows.get(&place.local) {
         if borrowers.iter().any(|borrower| live.contains(borrower)) {
-            gcx.dcx()
-                .emit_error("cannot move out of borrowed content".to_string(), Some(span));
+            gcx.dcx().emit_error(
+                "cannot move out of borrowed content".to_string(),
+                Some(span),
+            );
             return gcx.dcx().ok();
         }
     }

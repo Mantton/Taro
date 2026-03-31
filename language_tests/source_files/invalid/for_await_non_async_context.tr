@@ -1,0 +1,33 @@
+struct OneShotAsyncIter {
+    emitted: bool
+}
+
+impl AsyncIterator for OneShotAsyncIter {
+    type Element = int32
+
+    func next(&mut self) async -> Optional[int32] {
+        if self.emitted {
+            return .none
+        }
+        self.emitted = true
+        return .some(1 as int32)
+    }
+}
+
+struct OneShotAsyncSequence {}
+
+impl AsyncIterable for OneShotAsyncSequence {
+    type Iterator = OneShotAsyncIter
+    type Element = int32
+
+    func iter(self) -> Self.Iterator {
+        return OneShotAsyncIter { emitted: false }
+    }
+}
+
+func main() {
+    let source = OneShotAsyncSequence {}
+    for await value in source {
+        let _ = value
+    }
+}

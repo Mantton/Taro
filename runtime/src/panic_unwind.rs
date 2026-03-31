@@ -103,9 +103,8 @@ pub(crate) fn catch_executor_panic<R>(f: impl FnOnce() -> R) -> Result<R, String
 
     match result {
         Ok(value) => Ok(value),
-        Err(_) => Err(
-            take_thread_panic_report().unwrap_or_else(|| "task panicked on executor worker".to_string()),
-        ),
+        Err(_) => Err(take_thread_panic_report()
+            .unwrap_or_else(|| "task panicked on executor worker".to_string())),
     }
 }
 

@@ -342,6 +342,7 @@ pub enum StatementKind {
 #[derive(Debug, Clone)]
 pub struct ForStatement {
     pub label: Option<Label>,
+    pub is_await: bool,
     pub pattern: Pattern,
     pub iterator: Box<Expression>,
     pub clause: Option<Box<Expression>>,

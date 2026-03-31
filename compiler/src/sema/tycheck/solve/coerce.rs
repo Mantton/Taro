@@ -859,8 +859,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         } else if fn_mut_def == Some(interface.id) {
             matches!(
                 kind,
-                crate::sema::models::ClosureKind::Fn
-                    | crate::sema::models::ClosureKind::FnMut
+                crate::sema::models::ClosureKind::Fn | crate::sema::models::ClosureKind::FnMut
             )
         } else if fn_once_def == Some(interface.id) {
             matches!(
@@ -979,8 +978,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             } else if fn_mut_def == Some(bound.id) {
                 matches!(
                     kind,
-                    crate::sema::models::ClosureKind::Fn
-                        | crate::sema::models::ClosureKind::FnMut
+                    crate::sema::models::ClosureKind::Fn | crate::sema::models::ClosureKind::FnMut
                 )
             } else if fn_once_def == Some(bound.id) {
                 matches!(

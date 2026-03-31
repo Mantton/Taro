@@ -1340,6 +1340,27 @@ impl Actor<'_, '_> {
                 }
             }
         */
+        let iterable_std_item = if node.is_await {
+            StdItem::AsyncIterable
+        } else {
+            StdItem::Iterable
+        };
+        let iterable_interface_name = if node.is_await {
+            "AsyncIterable"
+        } else {
+            "Iterable"
+        };
+        let iterator_std_item = if node.is_await {
+            StdItem::AsyncIterator
+        } else {
+            StdItem::Iterator
+        };
+        let iterator_interface_name = if node.is_await {
+            "AsyncIterator"
+        } else {
+            "Iterator"
+        };
+
         // 1. Lower the iterator expression
         let collection = self.lower_expression(node.iterator);
 
@@ -1357,7 +1378,7 @@ impl Actor<'_, '_> {
 
         let make_iterator_call = {
             let ufcs_call = (|| {
-                let iterable_id = self.context.std_item_def(StdItem::Iterable)?;
+                let iterable_id = self.context.std_item_def(iterable_std_item)?;
                 let iterable_reqs = self.context.get_interface_requirements(iterable_id)?;
                 let make_iter_def = iterable_reqs
                     .methods
@@ -1369,7 +1390,10 @@ impl Actor<'_, '_> {
                     resolution: Resolution::Definition(iterable_id, DefinitionKind::Interface),
                     segments: vec![hir::PathSegment {
                         id: self.next_index(),
-                        identifier: Identifier::new(self.context.intern_symbol("Iterable"), span),
+                        identifier: Identifier::new(
+                            self.context.intern_symbol(iterable_interface_name),
+                            span,
+                        ),
                         arguments: None,
                         span,
                         resolution: Resolution::Definition(iterable_id, DefinitionKind::Interface),
@@ -1442,7 +1466,7 @@ impl Actor<'_, '_> {
 
         let next_call = {
             let ufcs_call = (|| {
-                let iterator_id = self.context.std_item_def(StdItem::Iterator)?;
+                let iterator_id = self.context.std_item_def(iterator_std_item)?;
                 let iterator_reqs = self.context.get_interface_requirements(iterator_id)?;
                 let next_def = iterator_reqs
                     .methods
@@ -1454,7 +1478,10 @@ impl Actor<'_, '_> {
                     resolution: Resolution::Definition(iterator_id, DefinitionKind::Interface),
                     segments: vec![hir::PathSegment {
                         id: self.next_index(),
-                        identifier: Identifier::new(self.context.intern_symbol("Iterator"), span),
+                        identifier: Identifier::new(
+                            self.context.intern_symbol(iterator_interface_name),
+                            span,
+                        ),
                         arguments: None,
                         span,
                         resolution: Resolution::Definition(iterator_id, DefinitionKind::Interface),
@@ -1530,7 +1557,11 @@ impl Actor<'_, '_> {
             mutability: hir::Mutability::Mutable,
             pattern: element_pattern,
             ty: None,
-            initializer: Some(next_call),
+            initializer: Some(if node.is_await {
+                self.mk_expression(hir::ExpressionKind::Await(next_call), span)
+            } else {
+                next_call
+            }),
         };
 
         // 5. Lower the user's pattern from the for loop

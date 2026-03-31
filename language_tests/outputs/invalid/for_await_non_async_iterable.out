@@ -1,0 +1,7 @@
+error: type 'NotAsyncIterable' does not conform to interface 'AsyncIterable'
+ -> language_tests/source_files/invalid/for_await_non_async_iterable.tr:7:4
+    for await value in source {
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        let _ = value
+    }
+     ^

@@ -573,7 +573,7 @@ func taskIsCancelledIsFalseForActiveTask() async {
 }
 
 @test
-func withTaskGroupCollectsResultsViaNext() async {
+func withTaskGroupCollectsResultsViaForAwait() async {
     let total: int32 = await std.task.withTaskGroup(|group: &mut std.task.TaskGroup[int32]| async {
         group.spawn(|| async {
             await std.testing.yieldNow()
@@ -585,20 +585,16 @@ func withTaskGroupCollectsResultsViaNext() async {
 
         var seen = 0 as int32
         var sum = 0 as int32
-        while seen < 2 {
-            match await group.next() {
-                case .some(value) => {
-                    sum += value
-                    seen += 1
-                }
-                case .none => std.panic.panic("task group should yield both spawned task results")
-            }
+        for await value in group {
+            sum += value
+            seen += 1
         }
+        std.testing.assertEqual(seen, 2, "task group should yield both spawned task results")
 
         return sum
     })
 
-    std.testing.assertEqual(total, 42, "withTaskGroup should surface successful child results through next()")
+    std.testing.assertEqual(total, 42, "withTaskGroup should surface successful child results through for await")
 }
 
 @test

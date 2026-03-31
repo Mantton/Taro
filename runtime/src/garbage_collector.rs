@@ -41,8 +41,8 @@
 //! - Scan/noscan lanes: separate span lists so the GC can skip scanning
 //!   pointer-free objects entirely.
 
-use std::collections::HashMap;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};

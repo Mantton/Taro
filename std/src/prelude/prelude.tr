@@ -4,7 +4,7 @@ export std.ops.*
 export std.collections.{Array, Dictionary, List, Set, DictKeysIterator, DictValuesIterator, DictEntriesIterator}
 export std.range.{Range, ClosedRange, Step}
 export std.marker.{Copy, Clone, Sendable}
-export std.iter.{Iterator, Iterable, FromIterator, enumerate, map, filter, take, skip, zip}
+export std.iter.{Iterator, Iterable, AsyncIterator, AsyncIterable, FromIterator, enumerate, map, filter, take, skip, zip}
 export std.panic.{panic, unreachable, todo}
 export std.mem.{sizeOf, alignOf, Span, MutableSpan}
 export std.{print, println, eprint, eprintln, printf, sprintf, assert, debugAssert}

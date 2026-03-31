@@ -488,7 +488,10 @@ impl<'ctx> MirPass<'ctx> for ApplyEscapeAnalysis {
     }
 }
 
-fn rewrite_fresh_heapified_initializations<'ctx>(body: &mut Body<'ctx>, heapified: &[Option<Ty<'ctx>>]) {
+fn rewrite_fresh_heapified_initializations<'ctx>(
+    body: &mut Body<'ctx>,
+    heapified: &[Option<Ty<'ctx>>],
+) {
     let may_assigned_in = compute_heapified_may_assigned_in(body, heapified);
     let original_blocks: Vec<BasicBlockId> = body.basic_blocks.indices().collect();
 
@@ -501,7 +504,8 @@ fn rewrite_fresh_heapified_initializations<'ctx>(body: &mut Body<'ctx>, heapifie
             let span = stmt.span;
             match stmt.kind {
                 StatementKind::Assign(destination, rvalue) => {
-                    if let Some(pointee_ty) = heapified_direct_deref_pointee_ty(&destination, heapified)
+                    if let Some(pointee_ty) =
+                        heapified_direct_deref_pointee_ty(&destination, heapified)
                     {
                         let is_first_write = !assigned.contains(&destination.local);
                         assigned.insert(destination.local);

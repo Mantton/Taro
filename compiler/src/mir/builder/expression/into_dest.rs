@@ -334,7 +334,12 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                         return self.lower_awaited_task_result(destination, block, args, expr.span);
                     }
                     if self.is_hidden_task_group_next_intrinsic(*callee) {
-                        return self.lower_awaited_task_group_next(destination, block, args, expr.span);
+                        return self.lower_awaited_task_group_next(
+                            destination,
+                            block,
+                            args,
+                            expr.span,
+                        );
                     }
                 }
                 let future_op = if matches!(
@@ -871,7 +876,11 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             TerminatorKind::Call {
                 func: Operand::Constant(Constant {
                     ty: cancel_ty,
-                    value: mir::ConstantKind::Function(cancel_id, GenericArguments::empty(), cancel_ty),
+                    value: mir::ConstantKind::Function(
+                        cancel_id,
+                        GenericArguments::empty(),
+                        cancel_ty,
+                    ),
                 }),
                 args: vec![Operand::Copy(Place::from_local(token_local))],
                 destination,
@@ -1125,9 +1134,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         };
 
         let result_ty = intrinsic_type_arg(self.thir, callee, 0);
-        let policy_local = unpack!(block = self.lower_bool_to_u8_local(block, *cancel_on_panic, span));
-        let size_local =
-            unpack!(block = self.lower_size_of_type_to_local(block, result_ty, span));
+        let policy_local =
+            unpack!(block = self.lower_bool_to_u8_local(block, *cancel_on_panic, span));
+        let size_local = unpack!(block = self.lower_size_of_type_to_local(block, result_ty, span));
         let create_id = find_or_register_async_runtime_function(
             self.gcx,
             AsyncRuntimeFn::TaskGroupCreate,
@@ -1141,7 +1150,11 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             TerminatorKind::Call {
                 func: Operand::Constant(Constant {
                     ty: create_ty,
-                    value: mir::ConstantKind::Function(create_id, GenericArguments::empty(), create_ty),
+                    value: mir::ConstantKind::Function(
+                        create_id,
+                        GenericArguments::empty(),
+                        create_ty,
+                    ),
                 }),
                 args: vec![
                     Operand::Copy(Place::from_local(size_local)),
@@ -1182,14 +1195,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             )
             .into_block();
 
-        let size_local =
-            unpack!(block = self.lower_size_of_type_to_local(block, result_ty, span));
+        let size_local = unpack!(block = self.lower_size_of_type_to_local(block, result_ty, span));
         let token_local = self.new_temp_with_ty(self.gcx.types.uint, span);
-        let spawn_id = find_or_register_async_runtime_function(
-            self.gcx,
-            AsyncRuntimeFn::TaskGroupSpawn,
-            span,
-        );
+        let spawn_id =
+            find_or_register_async_runtime_function(self.gcx, AsyncRuntimeFn::TaskGroupSpawn, span);
         let spawn_ty = self.gcx.get_type(spawn_id);
         let after_spawn = self.new_block();
         self.terminate(
@@ -1198,7 +1207,11 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             TerminatorKind::Call {
                 func: Operand::Constant(Constant {
                     ty: spawn_ty,
-                    value: mir::ConstantKind::Function(spawn_id, GenericArguments::empty(), spawn_ty),
+                    value: mir::ConstantKind::Function(
+                        spawn_id,
+                        GenericArguments::empty(),
+                        spawn_ty,
+                    ),
                 }),
                 args: vec![
                     group_operand,
@@ -1331,7 +1344,11 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             TerminatorKind::Call {
                 func: Operand::Constant(Constant {
                     ty: status_ty,
-                    value: mir::ConstantKind::Function(status_id, GenericArguments::empty(), status_ty),
+                    value: mir::ConstantKind::Function(
+                        status_id,
+                        GenericArguments::empty(),
+                        status_ty,
+                    ),
                 }),
                 args: vec![Operand::Copy(Place::from_local(group_local))],
                 destination: Place::from_local(status_local),
@@ -1393,7 +1410,13 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         args: &[ExprId],
         span: Span,
     ) -> BlockAnd<()> {
-        self.lower_task_group_void_call(destination, block, args, span, AsyncRuntimeFn::TaskGroupClose)
+        self.lower_task_group_void_call(
+            destination,
+            block,
+            args,
+            span,
+            AsyncRuntimeFn::TaskGroupClose,
+        )
     }
 
     fn lower_task_group_cancel_call(
@@ -1419,7 +1442,13 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         args: &[ExprId],
         span: Span,
     ) -> BlockAnd<()> {
-        self.lower_task_group_void_call(destination, block, args, span, AsyncRuntimeFn::TaskGroupDestroy)
+        self.lower_task_group_void_call(
+            destination,
+            block,
+            args,
+            span,
+            AsyncRuntimeFn::TaskGroupDestroy,
+        )
     }
 
     fn lower_task_group_destroy_and_rethrow_call(
@@ -1449,11 +1478,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             TerminatorKind::Call {
                 func: Operand::Constant(Constant {
                     ty: call_ty,
-                    value: mir::ConstantKind::Function(
-                        call_id,
-                        GenericArguments::empty(),
-                        call_ty,
-                    ),
+                    value: mir::ConstantKind::Function(call_id, GenericArguments::empty(), call_ty),
                 }),
                 args: vec![group_operand],
                 destination,
@@ -1651,8 +1676,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         };
         let destination_ty = self.place_ty(&destination);
         assert_eq!(
-            destination_ty,
-            self.gcx.types.bool,
+            destination_ty, self.gcx.types.bool,
             "ICE: task is_cancelled intrinsic must lower into a bool destination"
         );
         let func_id = find_or_register_async_runtime_function(
@@ -1668,11 +1692,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             TerminatorKind::Call {
                 func: Operand::Constant(Constant {
                     ty: func_ty,
-                    value: mir::ConstantKind::Function(
-                        func_id,
-                        GenericArguments::empty(),
-                        func_ty,
-                    ),
+                    value: mir::ConstantKind::Function(func_id, GenericArguments::empty(), func_ty),
                 }),
                 args: vec![],
                 destination,

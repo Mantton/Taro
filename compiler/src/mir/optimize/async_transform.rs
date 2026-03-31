@@ -9,8 +9,8 @@ use crate::{
     },
     sema::{
         models::{
-            AdtKind, EnumVariantKind, GenericArgument, GenericArguments,
-            LabeledFunctionParameter, LabeledFunctionSignature, Ty, TyKind,
+            AdtKind, EnumVariantKind, GenericArgument, GenericArguments, LabeledFunctionParameter,
+            LabeledFunctionSignature, Ty, TyKind,
         },
         resolve::models::DefinitionKind,
         tycheck::utils::generics::GenericsBuilder,
@@ -255,9 +255,7 @@ fn build_frame_layout<'ctx>(
         .indices()
         .filter(|&local| {
             start_locals.contains(&local)
-                || yield_locals
-                    .iter()
-                    .any(|locals| locals.contains(&local))
+                || yield_locals.iter().any(|locals| locals.contains(&local))
         })
         .collect();
     let mut fields = Vec::with_capacity(stored_locals.len() + 1);

@@ -1,4 +1,5 @@
 import std.ops.AsyncFnOnce
+import std.iter.{AsyncIterator, AsyncIterable}
 import std.intrinsic.__intrinsic_task_group_cancel
 import std.intrinsic.__intrinsic_task_group_close
 import std.intrinsic.__intrinsic_task_group_create
@@ -16,6 +17,10 @@ public struct TaskGroup[T] {
     id: usize
 }
 
+public struct TaskGroupAsyncIterator[T] {
+    group: &mut TaskGroup[T]
+}
+
 impl[T] TaskGroup[T] {
     public func spawn[F: AsyncFnOnce() -> T](&mut self, _ thunk: F) {
         __intrinsic_task_group_spawn[T, F](self.id, thunk)
@@ -23,6 +28,23 @@ impl[T] TaskGroup[T] {
 
     public func next(&mut self) async -> T? {
         return await __intrinsic_task_group_next[T](self.id)
+    }
+}
+
+impl[T] AsyncIterator for TaskGroupAsyncIterator[T] {
+    type Element = T
+
+    public func next(&mut self) async -> T? {
+        return await self.group.next()
+    }
+}
+
+impl[T] AsyncIterable for &mut TaskGroup[T] {
+    type Iterator = TaskGroupAsyncIterator[T]
+    type Element = T
+
+    public func iter(self) -> Self.Iterator {
+        return TaskGroupAsyncIterator[T] { group: self }
     }
 }
 

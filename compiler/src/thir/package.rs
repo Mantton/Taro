@@ -1424,12 +1424,13 @@ impl<'ctx> FunctionLower<'ctx> {
                 .try_node_type(param.id)
                 .or_else(|| sig_param.map(|param| param.ty))
                 .unwrap_or(self.gcx.types.error);
-            let name = sig_param
-                .map(|param| param.name)
-                .unwrap_or_else(|| match &param.pattern.kind {
-                    hir::PatternKind::Binding { name, .. } => name.symbol,
-                    _ => self.gcx.intern_symbol("_"),
-                });
+            let name =
+                sig_param
+                    .map(|param| param.name)
+                    .unwrap_or_else(|| match &param.pattern.kind {
+                        hir::PatternKind::Binding { name, .. } => name.symbol,
+                        _ => self.gcx.intern_symbol("_"),
+                    });
             closure_lower.func.params.push(Param {
                 id: param.id,
                 name,

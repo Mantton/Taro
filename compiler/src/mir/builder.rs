@@ -179,8 +179,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 .map(|constraint| constraint.value)
                 .collect(),
         );
-        let normalized =
-            crate::sema::tycheck::utils::normalize::normalize_ty(icx, ty, &env);
+        let normalized = crate::sema::tycheck::utils::normalize::normalize_ty(icx, ty, &env);
         let ty = if normalized != ty { normalized } else { ty };
 
         self.gcx.is_type_copyable_in_def(ty, self.thir.id)
