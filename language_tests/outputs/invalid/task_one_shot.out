@@ -1,4 +1,4 @@
 error: use of moved value 'task'
  -> language_tests/source_files/invalid/task_one_shot.tr:4:18
-	    let _ = await task.value()
+	    let _ = await task.result()
 	                  ^^^^

@@ -405,9 +405,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         if self.is_hidden_spawn_intrinsic(callee) {
             return self.lower_spawn_call(destination, block, args, span);
         }
-        if self.is_hidden_task_value_intrinsic(callee) {
-            return self.lower_task_value_call(destination, block, args, span);
-        }
         if self.is_hidden_wait_readable_intrinsic(callee) {
             return self.lower_io_wait_call(
                 destination,
@@ -798,65 +795,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         );
 
         after_spawn.unit()
-    }
-
-    fn lower_task_value_call(
-        &mut self,
-        destination: Place<'ctx>,
-        mut block: BasicBlockId,
-        args: &[ExprId],
-        span: Span,
-    ) -> BlockAnd<()> {
-        let [task] = args else {
-            panic!("ICE: task value lowering expects exactly one task argument");
-        };
-
-        let destination_ty = self.place_ty(&destination);
-        assert_eq!(
-            destination_ty,
-            self.gcx.async_handle_ty(),
-            "ICE: task value intrinsic must lower into an async handle destination"
-        );
-
-        let mut task_place = unpack!(block = self.as_place(block, *task));
-        if matches!(
-            self.thir.exprs[*task].ty.kind(),
-            TyKind::Reference(..) | TyKind::Pointer(..)
-        ) {
-            task_place.projection.push(PlaceElem::Deref);
-        }
-        let token_local = self.new_temp_with_ty(self.gcx.types.uint, span);
-        self.push_assign(
-            block,
-            Place::from_local(token_local),
-            Rvalue::Use(Operand::Copy(task_token_place(self.gcx, task_place))),
-            span,
-        );
-        let join_block = self.new_block();
-
-        let from_spawned_id =
-            find_or_register_async_runtime_function(self.gcx, AsyncRuntimeFn::FromSpawned, span);
-        let from_spawned_ty = self.gcx.get_type(from_spawned_id);
-        self.terminate(
-            block,
-            span,
-            TerminatorKind::Call {
-                func: Operand::Constant(Constant {
-                    ty: from_spawned_ty,
-                    value: mir::ConstantKind::Function(
-                        from_spawned_id,
-                        GenericArguments::empty(),
-                        from_spawned_ty,
-                    ),
-                }),
-                args: vec![Operand::Copy(Place::from_local(token_local))],
-                destination,
-                target: join_block,
-                unwind: mir::CallUnwindAction::Terminate,
-            },
-        );
-
-        join_block.unit()
     }
 
     fn lower_sleep_call(
@@ -1691,20 +1629,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         ) && self.gcx.symbol_eq(
             self.gcx.definition_ident(id).symbol,
             "__intrinsic_spawn_async",
-        )
-    }
-
-    fn is_hidden_task_value_intrinsic(&self, callee: ExprId) -> bool {
-        let ExprKind::Zst { id, .. } = self.thir.exprs[callee].kind else {
-            return false;
-        };
-
-        matches!(
-            self.gcx.get_signature(id).abi,
-            Some(crate::hir::Abi::Intrinsic)
-        ) && self.gcx.symbol_eq(
-            self.gcx.definition_ident(id).symbol,
-            "__intrinsic_task_value",
         )
     }
 

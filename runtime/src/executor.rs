@@ -1373,7 +1373,7 @@ pub fn run_root(handle: *mut u8, out: *mut u8) {
 }
 
 /// Spawn a new task on the executor. Returns a task token that can be polled
-/// later via `__rt__executor_poll_spawned`.
+/// later via `__rt__executor_poll_spawned_checked`.
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn __rt__executor_spawn(handle: *mut u8, out_size: u64) -> u64 {
     let scheduler = current_worker_scheduler().unwrap_or_else(ensure_rootless_scheduler);
@@ -1393,71 +1393,6 @@ pub extern "C-unwind" fn __rt__executor_spawn(handle: *mut u8, out_size: u64) ->
         preferred_worker,
     );
     task_token
-}
-
-/// Poll a spawned task by token. Returns 1 if completed (output copied to `out`),
-/// 0 if still pending (current task registered as the sole waiter).
-/// Panics if the task was cancelled.
-#[unsafe(no_mangle)]
-pub extern "C-unwind" fn __rt__executor_poll_spawned(task_token: u64, out: *mut u8) -> u8 {
-    WORKER_CONTEXT.with(|cell| {
-        let mut borrow = cell.borrow_mut();
-        let context = borrow
-            .as_mut()
-            .expect("poll_spawned called outside executor worker");
-        let current = context
-            .current_task
-            .expect("poll_spawned called with no current task");
-        let (task_index, task_generation) = unpack_task_token(task_token);
-        let slot = context
-            .scheduler
-            .lookup_task_slot(task_index)
-            .unwrap_or_else(|| panic!("invalid spawned task token {task_token}"));
-        let mut inner = slot
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !inner.occupied || inner.generation != task_generation {
-            drop(inner);
-            panic!("stale spawned task token {task_token}");
-        }
-
-        if inner.completed {
-            if let Some(waiter) = inner.waiter {
-                if waiter != current {
-                    drop(inner);
-                    panic!("spawned task value already reserved by another waiter");
-                }
-            }
-
-            if inner.cancelled {
-                inner.waiter = None;
-                context.scheduler.reclaim_task_slot(task_token, &mut inner);
-                drop(inner);
-                panic!("task was cancelled");
-            }
-
-            if let Some(buf) = inner.out_buf.take() {
-                if !out.is_null() && !buf.is_empty() {
-                    unsafe { std::ptr::copy_nonoverlapping(buf.as_ptr(), out, buf.len()) };
-                }
-            }
-            inner.waiter = None;
-            context.scheduler.reclaim_task_slot(task_token, &mut inner);
-            1
-        } else {
-            match inner.waiter {
-                Some(waiter) if waiter != current => {
-                    drop(inner);
-                    panic!("spawned task value already has an active waiter");
-                }
-                Some(_) => {}
-                None => inner.waiter = Some(current),
-            }
-            context.current_task_blocked = true;
-            0
-        }
-    })
 }
 
 /// Poll a spawned task by token (checked, non-panicking variant).
@@ -2387,9 +2322,13 @@ mod tests {
             if frame.child_done[index] {
                 continue;
             }
-            if __rt__executor_poll_spawned(task_id, std::ptr::null_mut()) == 0 {
+            let status = __rt__executor_poll_spawned_checked(task_id, std::ptr::null_mut());
+            if status == 0 {
                 all_done = false;
             } else {
+                if status == 1 {
+                    __rt__executor_reclaim_spawned(task_id);
+                }
                 frame.child_done[index] = true;
             }
         }
@@ -2645,10 +2584,11 @@ mod tests {
             return 0;
         }
 
-        if __rt__executor_poll_spawned(frame.token, std::ptr::null_mut()) == 0 {
+        if __rt__executor_poll_spawned_checked(frame.token, std::ptr::null_mut()) == 0 {
             return 0;
         }
-        panic!("cancelled spawned task should panic when polled via value()");
+        __rt__executor_reclaim_spawned(frame.token);
+        1
     }
 
     unsafe extern "C" fn poll_spawned_cancelled_root_drop(frame: *mut u8) {
@@ -2656,7 +2596,7 @@ mod tests {
     }
 
     #[test]
-    fn poll_spawned_panics_on_cancelled_task() {
+    fn poll_spawned_checked_returns_cancelled_status() {
         let _guard = TEST_ENV_LOCK.lock().unwrap();
         let drops = Arc::new(AtomicUsize::new(0));
         let handle = __rt__async_create(
@@ -2670,9 +2610,7 @@ mod tests {
             TaskMobility::Pinned as u8,
         );
 
-        let panicked =
-            panic::catch_unwind(AssertUnwindSafe(|| __rt__async_run_root(handle, std::ptr::null_mut())));
-        assert!(panicked.is_err());
+        __rt__async_run_root(handle, std::ptr::null_mut());
         assert_eq!(drops.load(Ordering::Acquire), 1);
     }
 

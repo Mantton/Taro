@@ -1944,7 +1944,7 @@ impl<'ctx> Checker<'ctx> {
 
         if self.task_inner_type(future_ty).is_some() {
             gcx.dcx().emit_error(
-                "use `await task.value()` to await a `Task[T]`".into(),
+                "use `await task.result()` to await a `Task[T]`".into(),
                 Some(span),
             );
             return Ty::error(gcx);

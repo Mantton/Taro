@@ -198,7 +198,7 @@ func suspendedSpawnedTasksSurviveManualGc() async {
             case .some(t) => t
             case .none => std.panic.panic("task list should not be empty")
         }
-        let value = await task.value()
+        let value = (await task.result()).unwrap()
         sum += value
     }
 
@@ -353,7 +353,7 @@ func spawnedTasksComplete() async {
         return captured + 10
     })
 
-    let result = await task.value()
+    let result = (await task.result()).unwrap()
     std.testing.assertEqual(result, 15, "spawned task should resolve")
 }
 
@@ -367,7 +367,7 @@ func joinReturnsBothTaskValues() async {
         return "joined"
     })
 
-    let joined = await std.task.join(intTask, stringTask)
+    let joined = (await std.task.join(intTask, stringTask)).unwrap()
     std.testing.assertEqual(joined.0, 17, "join should preserve the left task result")
     std.testing.assertEqual(joined.1, "joined", "join should preserve the right task result")
 }
@@ -383,7 +383,7 @@ func joinHandlesDifferentCompletionTiming() async {
         return 99 as int32
     })
 
-    let joined = await std.task.join(slow, fast)
+    let joined = (await std.task.join(slow, fast)).unwrap()
     std.testing.assertEqual(joined.0, "slow", "join should return the slower left task result")
     std.testing.assertEqual(joined.1, 99, "join should return the faster right task result")
 }
@@ -400,7 +400,7 @@ func joinPropagatesTaskPanic() async {
         std.panic.panic("joined task panic should fail the awaiter")
     })
 
-    let _ = await std.task.join(left, right)
+    let _ = (await std.task.join(left, right)).unwrap()
 }
 
 @test
@@ -417,8 +417,8 @@ func zeroDurationSleepCompletesImmediately() async {
         return 2 as int32
     })
 
-    let sleeperResult = await sleeper.value()
-    let yieldedResult = await yielded.value()
+    let sleeperResult = (await sleeper.result()).unwrap()
+    let yieldedResult = (await yielded.result()).unwrap()
     std.testing.assertEqual(sleeperResult, 1, "zero-duration sleep task should complete")
     std.testing.assertEqual(yieldedResult, 2, "yielded task should complete")
 }
@@ -445,8 +445,8 @@ func spawnedSleepersWakeInDeadlineOrder() async {
         return std.time.Instant.now()
     })
 
-    let shortAt = await short.value()
-    let longAt = await long.value()
+    let shortAt = (await short.result()).unwrap()
+    let longAt = (await long.result()).unwrap()
     let gap = longAt.checkedDurationSince(shortAt)
     std.testing.assertTrue(gap.isSome(), "shorter sleepers should wake no later than longer sleepers")
     std.testing.assertTrue(durationToNanos(gap.unwrap()) > 0_u64, "shorter sleepers should wake before longer sleepers")
@@ -464,8 +464,8 @@ func multipleSpawnedTasksInterleave() async {
         return 12 as int32
     })
 
-    let x = await a.value()
-    let y = await b.value()
+    let x = (await a.result()).unwrap()
+    let y = (await b.result()).unwrap()
     std.testing.assertEqual(x + y, 23, "both spawned tasks should complete")
 }
 
@@ -551,7 +551,7 @@ func taskValuePanicsOnCancelledTask() async {
     })
 
     task.cancel()
-    let _ = await task.value()
+    let _ = (await task.result()).unwrap()
 }
 
 @test
@@ -713,7 +713,7 @@ func asyncStreamPipeRoundTrip() async {
     std.testing.assertEqual(*storage.at(2 as usize), 110_u8, "third byte should be 'n'")
     std.testing.assertEqual(*storage.at(3 as usize), 103_u8, "fourth byte should be 'g'")
 
-    let written = await writerTask.value()
+    let written = (await writerTask.result()).unwrap()
     std.testing.assertEqual(written, 4, "pipe writer should report the written byte count")
 
     let eofRes = await reader.read(std.mem.MutableSpan[uint8].from(storagePtr, 4))
@@ -751,9 +751,9 @@ func asyncStreamSupportsConcurrentReadWaiters() async {
         return await sharedPipeWriterBody()
     })
 
-    let firstByte = await firstReader.value()
-    let secondByte = await secondReader.value()
-    let written = await writer.value()
+    let firstByte = (await firstReader.result()).unwrap()
+    let secondByte = (await secondReader.result()).unwrap()
+    let written = (await writer.result()).unwrap()
     std.testing.assertEqual(written, 2, "shared pipe writer should write both bytes")
     std.testing.assertTrue(firstByte != secondByte, "separate read waiters should each receive one byte")
     std.testing.assertEqual(firstByte + secondByte, 195, "shared waiters should receive the written byte payload")

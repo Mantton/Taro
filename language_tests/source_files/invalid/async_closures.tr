@@ -22,7 +22,7 @@ func badSpawnArg() async {
 func badSyncTaskValue() {
     let task = std.task.spawn(|| async { 1 as int32 })
 
-    let _ = task.value()
+    let _ = task.result()
 }
 
 func applyReusableAsync[F: AsyncFn(int32) -> int32](_ f: F, _ x: int32) async -> int32 {

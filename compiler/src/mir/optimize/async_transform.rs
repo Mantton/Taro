@@ -1572,7 +1572,6 @@ pub(crate) enum AsyncRuntimeFn {
     Destroy,
     RunRoot,
     Spawn,
-    FromSpawned,
     FromSpawnedChecked,
     TaskCompletionStatus,
     ReclaimSpawned,
@@ -1632,11 +1631,6 @@ pub(crate) fn find_or_register_async_runtime_function<'ctx>(
             "__rt__executor_spawn",
             vec![gcx.async_handle_ty(), gcx.types.uint],
             gcx.types.uint,
-        ),
-        AsyncRuntimeFn::FromSpawned => (
-            "__rt__async_from_spawned",
-            vec![gcx.types.uint],
-            gcx.async_handle_ty(),
         ),
         AsyncRuntimeFn::WaitReadable => (
             "__rt__async_wait_readable",

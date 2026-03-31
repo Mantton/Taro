@@ -316,7 +316,7 @@ func tcpClientServerEcho() async {
     let handled = await acceptAndEchoClients(&listener, 1_i32)
     std.testing.assertEqual(handled, 1_i32, "server side should handle one client")
 
-    let echoed = await serverTask.value()
+    let echoed = (await serverTask.result()).unwrap()
     std.testing.assertEqual(echoed, outbound as int32, "client should receive the echoed byte")
 
     match listener.close() {
@@ -603,7 +603,7 @@ func tcpManyConcurrentClients() async {
             case .some(t) => t
             case .none => std.panic.panic("task list should not be empty")
         }
-        let echoed = await task.value()
+        let echoed = (await task.result()).unwrap()
         seen += echoed
     }
 

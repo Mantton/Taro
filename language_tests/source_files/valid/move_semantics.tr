@@ -16,7 +16,7 @@ func main() async {
         await std.testing.yieldNow()
         return 7 as int32
     })
-    let result = await task.value()
+    let result = (await task.result()).unwrap()
     assert(result == 7, "task value should be consumed exactly once")
 
     print("PASS: Move semantics\n")

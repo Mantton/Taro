@@ -92,7 +92,6 @@ extern "taro_intrinsic" {
     func __intrinsic_rune_from_u32_unchecked(_ value: uint32) -> rune
     func __intrinsic_gc_desc[T]() -> *const GcDesc
     func __intrinsic_spawn_async[T, F: std.ops.AsyncFnOnce() -> T](_ thunk: F) -> std.task.Task[T]
-    func __intrinsic_task_value[T](_ task: std.task.Task[T]) async -> T
     func __intrinsic_cancel_task[T](_ task: &std.task.Task[T])
     func __intrinsic_task_result[T](_ task: std.task.Task[T]) async -> std.result.Result[T, std.task.TaskError]
     func __intrinsic_task_group_create[T](_ cancel_on_panic: bool) -> usize

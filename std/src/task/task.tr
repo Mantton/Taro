@@ -2,7 +2,6 @@ import std.intrinsic.__intrinsic_cancel_task
 import std.intrinsic.__intrinsic_sleep
 import std.intrinsic.__intrinsic_spawn_async
 import std.intrinsic.__intrinsic_task_result
-import std.intrinsic.__intrinsic_task_value
 
 @lang("Task")
 public struct Task[T] {
@@ -15,7 +14,7 @@ public enum TaskError {
 
 /// Enqueue an async call on the executor for concurrent execution.
 /// The argument must be a zero-argument async closure. Returns a `Task[T]`
-/// handle that can be awaited later via `await task.value()`.
+/// handle that can be awaited later via `await task.result()`.
 public func spawn[T, F: std.ops.AsyncFnOnce() -> T](_ thunk: F) -> Task[T] {
     return __intrinsic_spawn_async[T, F](thunk)
 }
@@ -24,10 +23,18 @@ public func sleep(_ duration: std.time.Duration) async {
     return await __intrinsic_sleep(duration)
 }
 
-public func join[A, B](_ left: Task[A], _ right: Task[B]) async -> (A, B) {
-    let leftValue = await left.value()
-    let rightValue = await right.value()
-    return (leftValue, rightValue)
+public func join[A, B](_ left: Task[A], _ right: Task[B]) async -> std.result.Result[(A, B), TaskError] {
+    let leftResult = await left.result()
+    let leftValue = match leftResult {
+        case .ok(v) => v
+        case .err(e) => return .err(e)
+    }
+    let rightResult = await right.result()
+    let rightValue = match rightResult {
+        case .ok(v) => v
+        case .err(e) => return .err(e)
+    }
+    return .ok((leftValue, rightValue))
 }
 
 impl[T] Task[T] {
@@ -37,9 +44,5 @@ impl[T] Task[T] {
 
     public func result(self) async -> std.result.Result[T, TaskError] {
         return await __intrinsic_task_result[T](self)
-    }
-
-    public func value(self) async -> T {
-        return await __intrinsic_task_value[T](self)
     }
 }

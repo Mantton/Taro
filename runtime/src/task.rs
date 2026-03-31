@@ -171,20 +171,7 @@ struct IoWaitFrame {
     armed: bool,
 }
 
-unsafe extern "C-unwind" fn spawned_task_value_poll(
-    frame: *mut u8,
-    _ctx: *mut u8,
-    out: *mut u8,
-) -> u8 {
-    if frame.is_null() {
-        return 1;
-    }
-
-    let task_id = unsafe { (*(frame as *mut SpawnedTaskValueFrame)).task_id };
-    crate::executor::__rt__executor_poll_spawned(task_id, out)
-}
-
-unsafe extern "C" fn spawned_task_value_drop(frame: *mut u8) {
+unsafe extern "C" fn spawned_task_drop(frame: *mut u8) {
     if frame.is_null() {
         return;
     }
@@ -218,7 +205,7 @@ pub extern "C" fn __rt__async_from_spawned_checked(task_id: u64) -> *mut u8 {
     __rt__async_create(
         frame as *mut u8,
         spawned_task_result_poll as *const () as *const u8,
-        spawned_task_value_drop as *const () as *const u8,
+        spawned_task_drop as *const () as *const u8,
         TaskMobility::Movable as u8,
     )
 }
@@ -292,18 +279,8 @@ unsafe extern "C" fn io_wait_drop(frame: *mut u8) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__async_from_spawned(task_id: u64) -> *mut u8 {
-    let frame = Box::into_raw(Box::new(SpawnedTaskValueFrame { task_id }));
-    __rt__async_create(
-        frame as *mut u8,
-        spawned_task_value_poll as *const () as *const u8,
-        spawned_task_value_drop as *const () as *const u8,
-        TaskMobility::Movable as u8,
-    )
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn __rt__async_yield_now() -> *mut u8 {
+
     let frame = Box::into_raw(Box::new(0u8));
     __rt__async_create(
         frame,
