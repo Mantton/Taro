@@ -63,6 +63,30 @@ struct Pair[A, B] {
 }
 ```
 
+### Struct Layout (`@repr`)
+
+Struct layout representation can be selected with `@repr("...")`:
+
+```taro
+// Default if omitted: @repr("Taro")
+@repr("Taro")
+struct PackedPoint {
+    x: int8;
+    y: int64;
+    z: int8;
+}
+
+// C-compatible declaration-order layout
+@repr("C")
+struct CHeader {
+    tag: uint16;
+    len: uint32;
+}
+```
+
+- `@repr("Taro")`: optimization-oriented layout (field order is not source-stable).
+- `@repr("C")`: standard C-style declaration-order layout for FFI-sensitive types.
+
 ---
 
 ## Enum Declaration

@@ -13,7 +13,7 @@ use crate::{
             GenericParameterDefinitionKind, Generics, InferTy, IntTy, InterfaceConstantRequirement,
             InterfaceDefinition, InterfaceMethodRequirement, InterfaceReference,
             InterfaceRequirements, LabeledFunctionParameter, LabeledFunctionSignature,
-            PackageAliasTable, StructDefinition, StructField, SyntheticDefinition,
+            PackageAliasTable, StructDefinition, StructField, StructRepr, SyntheticDefinition,
             SyntheticMethodKind, Ty, TyKind, UIntTy,
         },
         resolve::models::{
@@ -310,7 +310,8 @@ pub struct TypeDatabaseWire {
     pub type_head_to_impls: Vec<(TypeHeadWire, Vec<DefIdWire>)>,
     pub type_head_to_members: Vec<(TypeHeadWire, TypeMemberIndexWire)>,
     #[serde(default)]
-    pub type_head_to_properties: Vec<(TypeHeadWire, Vec<(SymbolIdWire, ComputedPropertyEntryWire)>)>,
+    pub type_head_to_properties:
+        Vec<(TypeHeadWire, Vec<(SymbolIdWire, ComputedPropertyEntryWire)>)>,
     pub def_to_generics: Vec<(DefIdWire, GenericsWire)>,
     pub generic_type_defaults: Vec<(DefIdWire, TyWire)>,
     pub generic_const_param_tys: Vec<(DefIdWire, TyWire)>,
@@ -503,7 +504,14 @@ pub struct StructFieldWire {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StructDefinitionWire {
     pub adt_def: AdtDefWire,
+    pub repr: StructReprWire,
     pub fields: Vec<StructFieldWire>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum StructReprWire {
+    Taro,
+    C,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2514,6 +2522,7 @@ pub fn struct_definition_to_wire(
 ) -> StructDefinitionWire {
     StructDefinitionWire {
         adt_def: adt_def_to_wire(v.adt_def),
+        repr: struct_repr_to_wire(v.repr),
         fields: v
             .fields
             .iter()
@@ -2547,7 +2556,22 @@ pub fn struct_definition_from_wire<'a>(
         .collect();
     StructDefinition {
         adt_def: adt_def_from_wire(&v.adt_def),
+        repr: struct_repr_from_wire(&v.repr),
         fields: gcx.store.arenas.global.alloc_slice_copy(&fields),
+    }
+}
+
+fn struct_repr_to_wire(v: StructRepr) -> StructReprWire {
+    match v {
+        StructRepr::Taro => StructReprWire::Taro,
+        StructRepr::C => StructReprWire::C,
+    }
+}
+
+fn struct_repr_from_wire(v: &StructReprWire) -> StructRepr {
+    match v {
+        StructReprWire::Taro => StructRepr::Taro,
+        StructReprWire::C => StructRepr::C,
     }
 }
 
@@ -5260,5 +5284,14 @@ mod tests {
 
         let err = validate_scope_graph_for_hydration(&wire).unwrap_err();
         assert!(err.to_string().contains("cycle"));
+    }
+
+    #[test]
+    fn struct_repr_roundtrip_through_wire() {
+        for repr in [StructRepr::Taro, StructRepr::C] {
+            let wire = struct_repr_to_wire(repr);
+            let decoded = struct_repr_from_wire(&wire);
+            assert_eq!(decoded, repr);
+        }
     }
 }

@@ -9,8 +9,8 @@ use crate::{
     mir::{self, Operand, Place},
     sema::{
         models::{
-            ConstKind, ConstValue, FloatTy, GenericArguments, IntTy, InterfaceReference, Ty,
-            TyKind, UIntTy,
+            ConstKind, ConstValue, FloatTy, GenericArguments, IntTy, InterfaceReference,
+            StructRepr, Ty, TyKind, UIntTy,
         },
         resolve::models::{DefinitionKind, TypeHead},
         tycheck::utils::instantiate::instantiate_ty_with_args,
@@ -2433,7 +2433,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let arg = self.const_string_value(&symbol);
         let _ = self
             .builder
-            .build_call(self.get_logical_stack_push_fn(), &[arg.into()], "taro_stack_push")
+            .build_call(
+                self.get_logical_stack_push_fn(),
+                &[arg.into()],
+                "taro_stack_push",
+            )
             .unwrap();
     }
 
@@ -5115,21 +5119,50 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 }
                 mir::PlaceElem::Field(idx, field_ty) => {
                     // Compute pointer to the requested field.
+                    let struct_field_index = {
+                        let mono_base_ty = self.mono_ty(ty);
+                        match mono_base_ty.kind() {
+                            TyKind::Adt(def, adt_args)
+                                if def.kind == crate::sema::models::AdtKind::Struct =>
+                            {
+                                let defn = self.gcx.get_struct_definition(def.id);
+                                let layout = struct_field_layout(
+                                    self.context,
+                                    self.gcx,
+                                    &self.target_data,
+                                    def.id,
+                                    adt_args,
+                                    GenericArguments::empty(),
+                                    defn.repr,
+                                );
+                                *layout
+                                    .logical_to_physical
+                                    .get(idx.index())
+                                    .unwrap_or_else(|| {
+                                        panic!(
+                                            "struct field index {} out of bounds for {}",
+                                            idx.index(),
+                                            mono_base_ty.format(self.gcx)
+                                        )
+                                    })
+                            }
+                            _ => idx.index() as u32,
+                        }
+                    };
                     let agg_ty = self.lower_ty(ty).expect("aggregate type lowered");
                     match agg_ty {
                         BasicTypeEnum::StructType(st) => {
-                            let field_index = idx.index() as u32;
                             let gep = match self.builder.build_struct_gep(
                                 st,
                                 ptr,
-                                field_index,
+                                struct_field_index,
                                 "field_ptr",
                             ) {
                                 Ok(gep) => gep,
                                 Err(err) => {
                                     panic!(
                                         "field projection GEP failed: index={}, base_ty={}, field_ty={}, place={:?}, err={:?}",
-                                        field_index,
+                                        struct_field_index,
                                         ty.format(self.gcx),
                                         field_ty.format(self.gcx),
                                         place,
@@ -5472,6 +5505,15 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             TyKind::Adt(def, adt_args) => match def.kind {
                 crate::sema::models::AdtKind::Struct => {
                     let defn = self.gcx.get_struct_definition(def.id);
+                    let layout = struct_field_layout(
+                        self.context,
+                        self.gcx,
+                        &self.target_data,
+                        def.id,
+                        adt_args,
+                        self.current_subst,
+                        defn.repr,
+                    );
                     let struct_ty = self
                         .lower_ty(ty)
                         .expect("struct gc layout")
@@ -5481,8 +5523,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                             self.gcx,
                             instantiate_ty_with_args(self.gcx, field.ty, adt_args),
                         );
-                        let Some(field_offset) =
-                            self.target_data.offset_of_element(&struct_ty, idx as u32)
+                        let Some(field_offset) = self
+                            .target_data
+                            .offset_of_element(&struct_ty, layout.logical_to_physical[idx])
                         else {
                             continue;
                         };
@@ -5763,6 +5806,108 @@ fn lower_fn_sig<'llvm, 'gcx>(
     }
 }
 
+#[derive(Debug, Clone)]
+struct StructFieldLayout {
+    physical_to_logical: Vec<usize>,
+    logical_to_physical: Vec<u32>,
+}
+
+fn packed_field_order(entries: &[(usize, u32, u64)]) -> Vec<usize> {
+    let mut entries = entries.to_vec();
+    entries.sort_by(|lhs, rhs| {
+        rhs.1
+            .cmp(&lhs.1)
+            .then_with(|| rhs.2.cmp(&lhs.2))
+            .then_with(|| lhs.0.cmp(&rhs.0))
+    });
+    entries
+        .into_iter()
+        .map(|(logical_index, _, _)| logical_index)
+        .collect()
+}
+
+fn logical_to_physical_map(physical_to_logical: &[usize]) -> Vec<u32> {
+    let mut logical_to_physical = vec![0_u32; physical_to_logical.len()];
+    for (physical_index, logical_index) in physical_to_logical.iter().enumerate() {
+        logical_to_physical[*logical_index] =
+            u32::try_from(physical_index).expect("field index fits in u32");
+    }
+    logical_to_physical
+}
+
+fn struct_field_layout<'llvm, 'gcx>(
+    context: &'llvm Context,
+    gcx: GlobalContext<'gcx>,
+    target_data: &TargetData,
+    def_id: hir::DefinitionID,
+    adt_args: GenericArguments<'gcx>,
+    subst: GenericArguments<'gcx>,
+    repr: StructRepr,
+) -> StructFieldLayout {
+    let field_count = gcx.get_struct_definition(def_id).fields.len();
+
+    if field_count == 0 || repr == StructRepr::C {
+        let physical_to_logical: Vec<usize> = (0..field_count).collect();
+        let logical_to_physical: Vec<u32> = (0..field_count)
+            .map(|idx| u32::try_from(idx).expect("field index fits in u32"))
+            .collect();
+        return StructFieldLayout {
+            physical_to_logical,
+            logical_to_physical,
+        };
+    }
+
+    let defn = gcx.get_struct_definition(def_id);
+    let mut entries: Vec<(usize, u32, u64)> = Vec::with_capacity(field_count);
+    for (logical_index, field) in defn.fields.iter().enumerate() {
+        let resolved = instantiate_ty_with_args(gcx, field.ty, adt_args);
+        // Preserve slot positions for zero-sized fields when computing sort metrics.
+        let llvm_ty = lower_type(context, gcx, target_data, resolved, subst)
+            .unwrap_or_else(|| context.i8_type().array_type(0).into());
+        let align = target_data.get_abi_alignment(&llvm_ty);
+        let size = target_data.get_store_size(&llvm_ty);
+        entries.push((logical_index, align, size));
+    }
+
+    // Stable deterministic packing heuristic for repr(Taro):
+    // larger alignment first, then larger size, then source order.
+    let physical_to_logical = packed_field_order(&entries);
+    let logical_to_physical = logical_to_physical_map(&physical_to_logical);
+
+    StructFieldLayout {
+        physical_to_logical,
+        logical_to_physical,
+    }
+}
+
+#[cfg(test)]
+mod struct_layout_tests {
+    use super::{logical_to_physical_map, packed_field_order};
+
+    #[test]
+    fn packed_field_order_sorts_by_align_then_size_then_source_index() {
+        // (logical_index, abi_align, store_size)
+        let entries = vec![(0, 4, 4), (1, 8, 1), (2, 8, 8), (3, 4, 8), (4, 8, 8)];
+
+        let order = packed_field_order(&entries);
+        assert_eq!(order, vec![2, 4, 1, 3, 0]);
+    }
+
+    #[test]
+    fn packed_field_order_is_deterministic_for_ties() {
+        let entries = vec![(0, 8, 8), (1, 8, 8), (2, 8, 8)];
+        let order = packed_field_order(&entries);
+        assert_eq!(order, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn logical_to_physical_mapping_is_inverse_of_physical_order() {
+        let physical_to_logical = vec![2, 0, 1];
+        let logical_to_physical = logical_to_physical_map(&physical_to_logical);
+        assert_eq!(logical_to_physical, vec![1, 2, 0]);
+    }
+}
+
 fn lower_type<'llvm, 'gcx>(
     context: &'llvm Context,
     gcx: GlobalContext<'gcx>,
@@ -5803,7 +5948,16 @@ fn lower_type<'llvm, 'gcx>(
         TyKind::Adt(def, adt_args) => match def.kind {
             crate::sema::models::AdtKind::Struct => {
                 let defn = gcx.get_struct_definition(def.id);
-                let field_tys: Vec<BasicTypeEnum<'llvm>> = defn
+                let layout = struct_field_layout(
+                    context,
+                    gcx,
+                    target_data,
+                    def.id,
+                    adt_args,
+                    subst,
+                    defn.repr,
+                );
+                let logical_field_tys: Vec<BasicTypeEnum<'llvm>> = defn
                     .fields
                     .iter()
                     .map(|f| {
@@ -5814,7 +5968,12 @@ fn lower_type<'llvm, 'gcx>(
                             .unwrap_or_else(|| context.i8_type().array_type(0).into())
                     })
                     .collect();
-                Some(context.struct_type(&field_tys, false).into())
+                let reordered: Vec<BasicTypeEnum<'llvm>> = layout
+                    .physical_to_logical
+                    .iter()
+                    .map(|logical_index| logical_field_tys[*logical_index])
+                    .collect();
+                Some(context.struct_type(&reordered, false).into())
             }
             crate::sema::models::AdtKind::Enum => {
                 let layout = enum_layout(context, gcx, target_data, def.id, adt_args, subst);

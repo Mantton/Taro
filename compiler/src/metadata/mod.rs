@@ -18,7 +18,7 @@ use std::{
 pub mod wire;
 
 const META_MAGIC: [u8; 8] = *b"TAROMETA";
-const META_FORMAT_VERSION: u32 = 7;
+const META_FORMAT_VERSION: u32 = 8;
 
 #[derive(Debug, Clone)]
 pub struct DependencyFingerprint {
@@ -994,5 +994,23 @@ mod tests {
         let mut cursor = Cursor::new(bytes);
         let err = read_envelope(&mut cursor).unwrap_err();
         assert!(err.to_string().contains("magic mismatch"));
+    }
+
+    #[test]
+    fn read_envelope_rejects_old_metadata_version() {
+        let header = sample_header();
+        let payload = b"payload";
+        let mut bytes = Vec::new();
+        write_envelope(&mut bytes, &header, payload).expect("envelope write should succeed");
+
+        let stale_version = META_FORMAT_VERSION
+            .checked_sub(1)
+            .expect("metadata format version should be positive");
+        let version_offset = META_MAGIC.len();
+        bytes[version_offset..version_offset + 4].copy_from_slice(&stale_version.to_le_bytes());
+
+        let mut cursor = Cursor::new(bytes);
+        let err = read_envelope(&mut cursor).unwrap_err();
+        assert!(err.to_string().contains("version mismatch"));
     }
 }

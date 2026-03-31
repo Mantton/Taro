@@ -464,9 +464,22 @@ pub struct StructField<'arena> {
     pub visibility: crate::sema::resolve::models::Visibility,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StructRepr {
+    Taro,
+    C,
+}
+
+impl Default for StructRepr {
+    fn default() -> Self {
+        StructRepr::Taro
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct StructDefinition<'arena> {
     pub adt_def: AdtDef,
+    pub repr: StructRepr,
     pub fields: &'arena [StructField<'arena>],
 }
 

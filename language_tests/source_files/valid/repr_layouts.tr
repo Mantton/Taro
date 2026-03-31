@@ -1,0 +1,40 @@
+struct AutoLayout {
+    a: int32;
+    b: int64;
+    c: int32;
+}
+
+@repr("C")
+struct CLayout {
+    a: int32;
+    b: int64;
+    c: int32;
+}
+
+func main() {
+    let auto_size = std.mem.sizeOf[AutoLayout]()
+    let c_size = std.mem.sizeOf[CLayout]()
+
+    assert(auto_size == 16 as usize, "repr(Taro) should pack this layout to 16 bytes")
+    assert(c_size == 24 as usize, "repr(C) should keep declaration-order C layout")
+    assert(auto_size < c_size, "repr(Taro) should optimize this layout")
+
+    var value = AutoLayout { a: 1, b: 2, c: 3 }
+    assert(value.a == 1, "field `a` read should map correctly")
+    assert(value.b == 2, "field `b` read should map correctly")
+    assert(value.c == 3, "field `c` read should map correctly")
+
+    value.a = 10
+    value.b = 20
+    value.c = 30
+    assert(value.a == 10, "field `a` write should map correctly")
+    assert(value.b == 20, "field `b` write should map correctly")
+    assert(value.c == 30, "field `c` write should map correctly")
+
+    let copy = value
+    assert(copy.a == 10, "copied field `a` should preserve value")
+    assert(copy.b == 20, "copied field `b` should preserve value")
+    assert(copy.c == 30, "copied field `c` should preserve value")
+
+    print("repr layouts ok\n")
+}

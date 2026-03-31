@@ -79,6 +79,8 @@ pub enum KnownAttribute {
     ExpectPanic,
     /// `@lang("Item")` - marks a std declaration as a language item
     Lang,
+    /// `@repr("Taro" | "C")` - selects struct layout representation
+    Repr,
 }
 
 impl KnownAttribute {
@@ -92,6 +94,7 @@ impl KnownAttribute {
             "skip" => Some(KnownAttribute::Skip),
             "expectPanic" => Some(KnownAttribute::ExpectPanic),
             "lang" => Some(KnownAttribute::Lang),
+            "repr" => Some(KnownAttribute::Repr),
             _ => None,
         }
     }
@@ -172,6 +175,14 @@ mod tests {
     #[test]
     fn known_attribute_recognizes_tag() {
         assert_eq!(KnownAttribute::from_name("tag"), Some(KnownAttribute::Tag));
+    }
+
+    #[test]
+    fn known_attribute_recognizes_repr() {
+        assert_eq!(
+            KnownAttribute::from_name("repr"),
+            Some(KnownAttribute::Repr)
+        );
     }
 }
 

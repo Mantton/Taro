@@ -391,6 +391,7 @@ impl<'ctx> TypeFoldable<'ctx> for StructDefinition<'ctx> {
         let fields = folder.gcx().store.arenas.global.alloc_slice_clone(&fields);
         StructDefinition {
             adt_def: self.adt_def,
+            repr: self.repr,
             fields,
         }
     }
