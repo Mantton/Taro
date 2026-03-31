@@ -466,7 +466,8 @@ fn rewrite_yields<'ctx>(
 
     for (index, site) in yields.iter().enumerate() {
         let ready_ty = place_ty(body, gcx, &site.resume_arg);
-        let ready_storage_ty = if ready_ty == gcx.types.void {
+        let ready_is_never = matches!(ready_ty.kind(), TyKind::Never);
+        let ready_storage_ty = if ready_ty == gcx.types.void || ready_is_never {
             gcx.types.uint8
         } else {
             ready_ty
@@ -646,34 +647,37 @@ fn rewrite_yields<'ctx>(
             }),
         });
 
+        let mut ready_statements = Vec::new();
+        if ready_ty == gcx.types.void {
+            ready_statements.push(Statement {
+                kind: StatementKind::Assign(
+                    site.resume_arg.clone(),
+                    Rvalue::Use(Operand::Constant(Constant {
+                        ty: gcx.types.void,
+                        value: ConstantKind::Unit,
+                    })),
+                ),
+                span: site.span,
+            });
+        } else if !ready_is_never {
+            ready_statements.push(Statement {
+                kind: StatementKind::Assign(
+                    site.resume_arg.clone(),
+                    Rvalue::Use(Operand::CopyWith(
+                        Place::from_local(ready_storage_local),
+                        CopyModifiers {
+                            init: true,
+                            take: true,
+                        },
+                    )),
+                ),
+                span: site.span,
+            });
+        }
+
         let ready_block = body.basic_blocks.push(BasicBlockData {
             note: Some(format!("await-ready-{}", index)),
-            statements: vec![if ready_ty == gcx.types.void {
-                Statement {
-                    kind: StatementKind::Assign(
-                        site.resume_arg.clone(),
-                        Rvalue::Use(Operand::Constant(Constant {
-                            ty: gcx.types.void,
-                            value: ConstantKind::Unit,
-                        })),
-                    ),
-                    span: site.span,
-                }
-            } else {
-                Statement {
-                    kind: StatementKind::Assign(
-                        site.resume_arg.clone(),
-                        Rvalue::Use(Operand::CopyWith(
-                            Place::from_local(ready_storage_local),
-                            CopyModifiers {
-                                init: true,
-                                take: true,
-                            },
-                        )),
-                    ),
-                    span: site.span,
-                }
-            }],
+            statements: ready_statements,
             terminator: Some(Terminator {
                 kind: TerminatorKind::Goto {
                     target: ready_target,
@@ -1470,7 +1474,7 @@ fn body_span<'ctx>(body: &Body<'ctx>) -> Span {
     body.locals[body.return_local].span
 }
 
-fn raw_ptr_ty<'ctx>(
+pub(crate) fn raw_ptr_ty<'ctx>(
     gcx: Gcx<'ctx>,
     inner: Ty<'ctx>,
     mutability: crate::hir::Mutability,
@@ -1587,6 +1591,9 @@ pub(crate) enum AsyncRuntimeFn {
     TaskGroupDestroyAndRethrowPanic,
     TaskGroupNextStatus,
     GroupNext,
+    TakeTaskPanicInfo,
+    PanicPayloadMessage,
+    PanicPayloadRethrow,
 }
 
 pub(crate) fn find_or_register_async_runtime_function<'ctx>(
@@ -1711,6 +1718,21 @@ pub(crate) fn find_or_register_async_runtime_function<'ctx>(
             "__rt__async_group_next",
             vec![gcx.types.uint],
             gcx.async_handle_ty(),
+        ),
+        AsyncRuntimeFn::TakeTaskPanicInfo => (
+            "__rt__executor_take_task_panic_info",
+            vec![gcx.types.uint],
+            raw_ptr_ty(gcx, gcx.types.uint8, crate::hir::Mutability::Mutable),
+        ),
+        AsyncRuntimeFn::PanicPayloadMessage => (
+            "__rt__panic_payload_message",
+            vec![raw_ptr_ty(gcx, gcx.types.uint8, crate::hir::Mutability::Mutable)],
+            gcx.types.string,
+        ),
+        AsyncRuntimeFn::PanicPayloadRethrow => (
+            "__rt__panic_payload_rethrow",
+            vec![raw_ptr_ty(gcx, gcx.types.uint8, crate::hir::Mutability::Mutable)],
+            Ty::new(TyKind::Never, gcx),
         ),
     };
 

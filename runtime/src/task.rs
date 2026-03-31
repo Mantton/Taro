@@ -109,6 +109,9 @@ pub extern "C" fn __rt__async_destroy(handle: *mut u8) {
 
     let mut handle = unsafe { Box::from_raw(handle as *mut AsyncHandle) };
     if !handle.frame.is_null() {
+        crate::garbage_collector::unlink_shadow_frame_if_present(
+            handle.frame as *mut crate::garbage_collector::GcShadowFrame,
+        );
         with_gc(|gc| gc.remove_persistent_root(handle.frame as *const u8));
     }
     if !handle.completed {

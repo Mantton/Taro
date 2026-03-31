@@ -3,6 +3,7 @@ import std.intrinsic.__intrinsic_is_task_cancelled
 import std.intrinsic.__intrinsic_sleep
 import std.intrinsic.__intrinsic_spawn_async
 import std.intrinsic.__intrinsic_task_result
+import std.panic.PanicPayload
 
 @lang("Task")
 public struct Task[T] {
@@ -11,6 +12,7 @@ public struct Task[T] {
 
 public enum TaskError {
     case cancelled
+    case panicked(PanicPayload)
 }
 
 /// Enqueue an async call on the executor for concurrent execution.

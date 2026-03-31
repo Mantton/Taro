@@ -44,8 +44,8 @@ const TARO_EXCEPTION_CLASS: u64 = u64::from_be_bytes(*b"TAROPAN!");
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct RtString {
-    ptr: *const u8,
-    len: usize,
+    pub ptr: *const u8,
+    pub len: usize,
 }
 
 impl RtString {
@@ -58,10 +58,11 @@ impl RtString {
     }
 }
 
-struct PanicReport {
-    message: String,
-    backtrace: String,
-    location: Option<String>,
+#[derive(Clone)]
+pub(crate) struct PanicReport {
+    pub(crate) message: String,
+    pub(crate) backtrace: String,
+    pub(crate) location: Option<String>,
 }
 
 std::thread_local! {
@@ -85,7 +86,7 @@ pub(crate) fn set_test_harness_active(active: bool) {
     IN_TEST_HARNESS.with(|flag| flag.set(active));
 }
 
-pub(crate) fn catch_executor_panic<R>(f: impl FnOnce() -> R) -> Result<R, String> {
+pub(crate) fn catch_executor_panic<R>(f: impl FnOnce() -> R) -> Result<R, PanicReport> {
     let previous = IN_EXECUTOR_CATCH.with(|flag| {
         let prev = flag.get();
         flag.set(true);
@@ -103,9 +104,38 @@ pub(crate) fn catch_executor_panic<R>(f: impl FnOnce() -> R) -> Result<R, String
 
     match result {
         Ok(value) => Ok(value),
-        Err(_) => Err(take_thread_panic_report()
-            .unwrap_or_else(|| "task panicked on executor worker".to_string())),
+        Err(_) => {
+            // Print the full backtrace to stderr immediately before consuming the report.
+            write_report("spawned task panicked");
+            let report = take_full_panic_report().unwrap_or_else(|| PanicReport {
+                message: "task panicked on executor worker".into(),
+                backtrace: String::new(),
+                location: None,
+            });
+            Err(report)
+        }
     }
+}
+
+/// Take the full panic report (message + backtrace + location) from the thread-local,
+/// resetting the panic state. Returns `None` if no panic was recorded.
+pub(crate) fn take_full_panic_report() -> Option<PanicReport> {
+    let was_active = PANIC_ACTIVE.with(|flag| {
+        let active = flag.get();
+        flag.set(false);
+        active
+    });
+    let report = PANIC_REPORT.with(|slot| slot.borrow_mut().take());
+    if was_active {
+        return report.or_else(|| {
+            Some(PanicReport {
+                message: String::new(),
+                backtrace: String::new(),
+                location: None,
+            })
+        });
+    }
+    report
 }
 
 #[inline]
@@ -156,7 +186,7 @@ fn format_location(file: RtString, line: usize, column: usize) -> Option<String>
     Some(format!("{file}:{line}:{column}"))
 }
 
-fn write_report(default_message: &str) {
+pub(crate) fn write_report(default_message: &str) {
     let mut stderr = std::io::stderr().lock();
     let mut had_report = false;
 
@@ -277,6 +307,10 @@ pub extern "C" fn __rt__panic_clear() {
     PANIC_REPORT.with(|slot| {
         slot.borrow_mut().take();
     });
+    // The test harness calls this after each test. Clear any stray shadow-stack
+    // link left behind by unwinding so later explicit collections don't walk a
+    // stale frame chain from a prior test.
+    crate::garbage_collector::GC_SHADOW_TOP.with(|top| top.set(std::ptr::null_mut()));
 }
 
 /// Zero-sized marker type used as the `panic_any` payload for Taro panics
@@ -306,6 +340,26 @@ pub extern "C" fn __rt__test_call_fn(fn_ptr: extern "C-unwind" fn()) -> bool {
     std::panic::set_hook(old_hook);
     set_test_harness_active(false);
     panicked
+}
+
+/// Restore a previously captured `PanicReport` into the thread-local so that the
+/// next unwind shows the original backtrace and message.
+pub(crate) fn restore_panic_report(report: PanicReport) {
+    PANIC_ACTIVE.with(|f| f.set(true));
+    PANIC_REPORT.with(|slot| {
+        *slot.borrow_mut() = Some(report);
+    });
+}
+
+/// Re-raise the restored panic using the context-appropriate mechanism:
+/// - Inside a test or executor catch context: catchable `panic_any`.
+/// - Otherwise: forced unwind (crashes the program showing the original backtrace).
+pub(crate) fn rethrow_restored_panic() -> ! {
+    if IN_TEST_HARNESS.with(Cell::get) || IN_EXECUTOR_CATCH.with(Cell::get) {
+        std::panic::panic_any(TaroPanicPayload)
+    } else {
+        panic_forced_unwind()
+    }
 }
 
 pub(crate) fn resume_test_panic(message: String) -> ! {
@@ -367,7 +421,9 @@ pub extern "C-unwind" fn __rt__panic_unwind_at(
     let location = format_location(file, line, column);
     set_panic_report_with_location(msg, location);
 
-    if IN_TEST_HARNESS.with(|f| f.get()) || IN_EXECUTOR_CATCH.with(|f| f.get()) {
+    let in_test = IN_TEST_HARNESS.with(|f| f.get());
+    let in_exec = IN_EXECUTOR_CATCH.with(|f| f.get());
+    if in_test || in_exec {
         // Test mode: raise via Rust's panic so catch_unwind can intercept it.
         std::panic::panic_any(TaroPanicPayload)
     } else {

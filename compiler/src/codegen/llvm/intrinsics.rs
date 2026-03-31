@@ -608,7 +608,13 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         };
         let elem_ty = self.substitute_ty_current(*elem_ty);
         let Some(llvm_elem_ty) = self.lower_ty(elem_ty) else {
-            return Ok(());
+            // Types without an LLVM storage representation (e.g. `!`) have size 0.
+            return self.store_place(
+                destination,
+                body,
+                locals,
+                self.usize_ty.const_zero().into(),
+            );
         };
 
         let size = llvm_elem_ty.size_of().unwrap();

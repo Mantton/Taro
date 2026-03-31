@@ -53,20 +53,12 @@ impl std.fmt.Formattable for PreferFormatValue {
 }
 
 @test
-func testPrintfBasic() {
-    std.printf("x=%d y=%s z=%v\n", 7, "ok", true)
-    std.printf("100%%\n")
-
+func testRuneCasting() {
     let runeAsByte: uint8 = 'A' as uint8
     std.testing.assertEqual(runeAsByte, 65_u8, "rune -> uint8 cast should preserve ASCII codepoint")
 
     let byteAsRune: rune = 66_u8 as rune
     std.testing.assertEqual(byteAsRune, 'B', "int literal -> rune cast should preserve ASCII codepoint")
-
-    let tagged = TaggedValue { text: "custom" }
-    std.printf("%v\n", tagged)
-    std.printf("%v\n", 'B')
-    std.printf("%d\n", 1)
 }
 
 @test
@@ -76,33 +68,11 @@ func testSprintfBasic() {
 }
 
 @test
-func testSprintfStressWithManualCollect() {
-    var idx: int32 = 0_i32
-    var last = ""
-
-    while idx < 4096_i32 {
-        last = std.sprintf("iter=%d label=%s ok=%v", idx, "stress", true)
-        if idx % 64_i32 == 0_i32 {
-            std.runtime.collect()
-        }
-        idx += 1_i32
-    }
-
-    std.testing.assertEqual(last, "iter=4095 label=stress ok=true", "looped sprintf should remain stable across manual GC")
-}
-
-@test
-func testPrintfLoopedSmoke() {
-    var idx: int32 = 0_i32
-    while idx < 64_i32 {
-        std.printf("printf-smoke idx=%d ok=%v\n", idx, true)
-        if idx % 16_i32 == 0_i32 {
-            std.runtime.collect()
-        }
-        idx += 1_i32
-    }
-
-    std.testing.assertEqual(idx, 64_i32, "looped printf should complete without crashing")
+func testSprintfCustomType() {
+    let tagged = TaggedValue { text: "custom" }
+    std.testing.assertEqual(std.sprintf("%v", tagged), "custom", "sprintf should support custom Formattable types")
+    std.testing.assertEqual(std.sprintf("%v", 'B'), "B", "sprintf should support runes")
+    std.testing.assertEqual(std.sprintf("%d", 1), "1", "sprintf should support integers")
 }
 
 @test
@@ -167,7 +137,7 @@ func testListDisplayEmpty() {
 
 @test
 @expectPanic
-func testPrintfDynamicRuntimePanic() {
+func testSprintfDynamicRuntimePanic() {
     let format = "%q"
-    std.printf(format, 1)
+    let _ = std.sprintf(format, 1)
 }

@@ -7,6 +7,7 @@ use crate::{
         builder::MirBuilder,
         optimize::async_transform::{
             AsyncRuntimeFn, find_or_register_async_runtime_function, find_std_function,
+            raw_ptr_ty,
         },
     },
     sema::{
@@ -461,6 +462,12 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         if self.is_hidden_task_group_destroy_and_rethrow_intrinsic(callee) {
             return self.lower_task_group_destroy_and_rethrow_call(destination, block, args, span);
         }
+        if self.is_hidden_panic_payload_message_intrinsic(callee) {
+            return self.lower_panic_payload_message_call(destination, block, args, span);
+        }
+        if self.is_hidden_panic_payload_rethrow_intrinsic(callee) {
+            return self.lower_panic_payload_rethrow_call(destination, block, args, span);
+        }
 
         let shadow_resync_locals = self.shadow_resync_locals_for_call(args);
 
@@ -732,41 +739,15 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             )
             .into_block();
 
-        let size_local = self.new_temp_with_ty(self.gcx.types.uint, span);
+        let size_local = unpack!(block = self.lower_size_of_type_to_local(block, task_output_ty, span));
         let task_token_local = self.new_temp_with_ty(self.gcx.types.uint, span);
-
-        let size_of_id = find_std_function(self.gcx, "mem", "sizeOf", span)
-            .unwrap_or_else(|_| panic!("spawn lowering requires std.mem.sizeOf"));
-        let size_of_ty = self.gcx.get_type(size_of_id);
-        let after_size = self.new_block();
-        self.terminate(
-            block,
-            span,
-            TerminatorKind::Call {
-                func: Operand::Constant(Constant {
-                    ty: size_of_ty,
-                    value: mir::ConstantKind::Function(
-                        size_of_id,
-                        self.gcx
-                            .store
-                            .interners
-                            .intern_generic_args(vec![GenericArgument::Type(task_output_ty)]),
-                        size_of_ty,
-                    ),
-                }),
-                args: vec![],
-                destination: Place::from_local(size_local),
-                target: after_size,
-                unwind: mir::CallUnwindAction::Terminate,
-            },
-        );
 
         let executor_spawn_id =
             find_or_register_async_runtime_function(self.gcx, AsyncRuntimeFn::Spawn, span);
         let executor_spawn_ty = self.gcx.get_type(executor_spawn_id);
         let after_spawn = self.new_block();
         self.terminate(
-            after_size,
+            block,
             span,
             TerminatorKind::Call {
                 func: Operand::Constant(Constant {
@@ -960,10 +941,19 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             .copied()
             .and_then(GenericArgument::ty)
             .unwrap_or_else(|| panic!("ICE: Result[T, E] is missing value type"));
+        let ready_is_never = matches!(ready_ty.kind(), TyKind::Never);
 
         let token_local = unpack!(block = self.lower_task_token_local(block, *task, span));
         let handle_local = self.new_temp_with_ty(self.gcx.async_handle_ty(), span);
-        let ready_local = self.new_temp_with_ty(ready_ty, span);
+        let (ready_local, resume_local) = if ready_is_never {
+            (
+                None,
+                self.new_temp_with_ty(self.gcx.types.uint8, span),
+            )
+        } else {
+            let ready_local = self.new_temp_with_ty(ready_ty, span);
+            (Some(ready_local), ready_local)
+        };
 
         let from_spawned_id = find_or_register_async_runtime_function(
             self.gcx,
@@ -998,7 +988,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             TerminatorKind::Yield {
                 value: Operand::Copy(Place::from_local(handle_local)),
                 resume,
-                resume_arg: Place::from_local(ready_local),
+                resume_arg: Place::from_local(resume_local),
             },
         );
 
@@ -1029,13 +1019,42 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             },
         );
 
+        // Take the panic payload pointer BEFORE reclaiming the slot (reclaim clears panic_info).
+        let ptr_u8_mut_ty = raw_ptr_ty(self.gcx, self.gcx.types.uint8, crate::hir::Mutability::Mutable);
+        let raw_ptr_local = self.new_temp_with_ty(ptr_u8_mut_ty, span);
+        let take_panic_id = find_or_register_async_runtime_function(
+            self.gcx,
+            AsyncRuntimeFn::TakeTaskPanicInfo,
+            span,
+        );
+        let take_panic_ty = self.gcx.get_type(take_panic_id);
+        let after_take_panic = self.new_block();
+        self.terminate(
+            after_status,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: take_panic_ty,
+                    value: mir::ConstantKind::Function(
+                        take_panic_id,
+                        GenericArguments::empty(),
+                        take_panic_ty,
+                    ),
+                }),
+                args: vec![Operand::Copy(Place::from_local(token_local))],
+                destination: Place::from_local(raw_ptr_local),
+                target: after_take_panic,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+
         let reclaim_id =
             find_or_register_async_runtime_function(self.gcx, AsyncRuntimeFn::ReclaimSpawned, span);
         let reclaim_ty = self.gcx.get_type(reclaim_id);
         let reclaim_dest = self.new_temp_with_ty(self.gcx.types.void, span);
         let after_reclaim = self.new_block();
         self.terminate(
-            after_status,
+            after_take_panic,
             span,
             TerminatorKind::Call {
                 func: Operand::Constant(Constant {
@@ -1054,32 +1073,39 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         );
 
         let ok_block = self.new_block_with_note("task-result-ok".into());
-        let err_block = self.new_block_with_note("task-result-cancelled".into());
+        let cancelled_block = self.new_block_with_note("task-result-cancelled".into());
+        let panicked_block = self.new_block_with_note("task-result-panicked".into());
         let join_block = self.new_block_with_note("task-result-join".into());
         self.terminate(
             after_reclaim,
             span,
             TerminatorKind::SwitchInt {
                 discr: Operand::Copy(Place::from_local(status_local)),
-                targets: vec![(1, ok_block)],
-                otherwise: err_block,
+                targets: vec![(1, ok_block), (2, cancelled_block)],
+                otherwise: panicked_block,
             },
         );
 
-        self.push_assign(
-            ok_block,
-            destination.clone(),
-            Rvalue::Aggregate {
-                kind: AggregateKind::Adt {
-                    def_id: result_def.id,
-                    variant_index: Some(thir::VariantIndex::from_usize(0)),
-                    generic_args: result_args,
+        // ok branch: Result.ok(ready_value)
+        if let Some(ready_local) = ready_local {
+            self.push_assign(
+                ok_block,
+                destination.clone(),
+                Rvalue::Aggregate {
+                    kind: AggregateKind::Adt {
+                        def_id: result_def.id,
+                        variant_index: Some(thir::VariantIndex::from_usize(0)),
+                        generic_args: result_args,
+                    },
+                    fields: IndexVec::from_vec(vec![Operand::Move(Place::from_local(ready_local))]),
                 },
-                fields: IndexVec::from_vec(vec![Operand::Move(Place::from_local(ready_local))]),
-            },
-            span,
-        );
-        self.goto(ok_block, join_block, span);
+                span,
+            );
+            self.goto(ok_block, join_block, span);
+        } else {
+            // `Task[!]` cannot complete with an `ok` value.
+            self.terminate(ok_block, span, TerminatorKind::Unreachable);
+        }
 
         let err_ty = result_args
             .get(1)
@@ -1089,10 +1115,12 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let TyKind::Adt(err_def, err_args) = err_ty.kind() else {
             panic!("ICE: Task.result() error type must be an enum");
         };
-        let error_local = self.new_temp_with_ty(err_ty, span);
+
+        // cancelled branch: Result.err(TaskError.cancelled)  [variant 0, no fields]
+        let cancelled_error_local = self.new_temp_with_ty(err_ty, span);
         self.push_assign(
-            err_block,
-            Place::from_local(error_local),
+            cancelled_block,
+            Place::from_local(cancelled_error_local),
             Rvalue::Aggregate {
                 kind: AggregateKind::Adt {
                     def_id: err_def.id,
@@ -1104,7 +1132,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             span,
         );
         self.push_assign(
-            err_block,
+            cancelled_block,
             destination.clone(),
             Rvalue::Aggregate {
                 kind: AggregateKind::Adt {
@@ -1112,11 +1140,61 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     variant_index: Some(thir::VariantIndex::from_usize(1)),
                     generic_args: result_args,
                 },
-                fields: IndexVec::from_vec(vec![Operand::Move(Place::from_local(error_local))]),
+                fields: IndexVec::from_vec(vec![Operand::Move(Place::from_local(cancelled_error_local))]),
             },
             span,
         );
-        self.goto(err_block, join_block, span);
+        self.goto(cancelled_block, join_block, span);
+
+        // panicked branch: Result.err(TaskError.panicked(PanicPayload { data: raw_ptr }))  [variant 1]
+        let panic_payload_def_id = self.gcx.std_item_def(StdItem::PanicPayload)
+            .unwrap_or_else(|| panic!("ICE: PanicPayload std item missing"));
+        let panic_payload_ty = self.gcx.get_type(panic_payload_def_id);
+        let TyKind::Adt(panic_payload_adt, panic_payload_args) = panic_payload_ty.kind() else {
+            panic!("ICE: PanicPayload must be a struct");
+        };
+        let payload_local = self.new_temp_with_ty(panic_payload_ty, span);
+        self.push_assign(
+            panicked_block,
+            Place::from_local(payload_local),
+            Rvalue::Aggregate {
+                kind: AggregateKind::Adt {
+                    def_id: panic_payload_adt.id,
+                    variant_index: None,
+                    generic_args: panic_payload_args,
+                },
+                fields: IndexVec::from_vec(vec![Operand::Copy(Place::from_local(raw_ptr_local))]),
+            },
+            span,
+        );
+        let panicked_error_local = self.new_temp_with_ty(err_ty, span);
+        self.push_assign(
+            panicked_block,
+            Place::from_local(panicked_error_local),
+            Rvalue::Aggregate {
+                kind: AggregateKind::Adt {
+                    def_id: err_def.id,
+                    variant_index: Some(thir::VariantIndex::from_usize(1)),
+                    generic_args: err_args,
+                },
+                fields: IndexVec::from_vec(vec![Operand::Move(Place::from_local(payload_local))]),
+            },
+            span,
+        );
+        self.push_assign(
+            panicked_block,
+            destination.clone(),
+            Rvalue::Aggregate {
+                kind: AggregateKind::Adt {
+                    def_id: result_def.id,
+                    variant_index: Some(thir::VariantIndex::from_usize(1)),
+                    generic_args: result_args,
+                },
+                fields: IndexVec::from_vec(vec![Operand::Move(Place::from_local(panicked_error_local))]),
+            },
+            span,
+        );
+        self.goto(panicked_block, join_block, span);
 
         join_block.unit()
     }
@@ -1556,6 +1634,18 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         span: Span,
     ) -> BlockAnd<LocalId> {
         let size_local = self.new_temp_with_ty(self.gcx.types.uint, span);
+        if matches!(ty.kind(), TyKind::Never) {
+            self.push_assign(
+                block,
+                Place::from_local(size_local),
+                Rvalue::Use(Operand::Constant(Constant {
+                    ty: self.gcx.types.uint,
+                    value: mir::ConstantKind::Integer(0),
+                })),
+                span,
+            );
+            return block.and(size_local);
+        }
         let size_of_id = find_std_function(self.gcx, "mem", "sizeOf", span)
             .unwrap_or_else(|_| panic!("lowering requires std.mem.sizeOf"));
         let size_of_ty = self.gcx.get_type(size_of_id);
@@ -1790,6 +1880,92 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
     fn is_hidden_task_group_destroy_and_rethrow_intrinsic(&self, callee: ExprId) -> bool {
         self.is_hidden_intrinsic_named(callee, "__intrinsic_task_group_destroy_and_rethrow")
+    }
+
+    fn is_hidden_panic_payload_message_intrinsic(&self, callee: ExprId) -> bool {
+        self.is_hidden_intrinsic_named(callee, "__intrinsic_panic_payload_message")
+    }
+
+    fn is_hidden_panic_payload_rethrow_intrinsic(&self, callee: ExprId) -> bool {
+        self.is_hidden_intrinsic_named(callee, "__intrinsic_panic_payload_rethrow")
+    }
+
+    fn lower_panic_payload_message_call(
+        &mut self,
+        destination: Place<'ctx>,
+        mut block: BasicBlockId,
+        args: &[ExprId],
+        span: Span,
+    ) -> BlockAnd<()> {
+        let [data_arg] = args else {
+            panic!("ICE: panic_payload_message expects exactly one argument");
+        };
+        let data_operand = unpack!(block = self.as_local_operand(block, *data_arg));
+        let msg_id = find_or_register_async_runtime_function(
+            self.gcx,
+            AsyncRuntimeFn::PanicPayloadMessage,
+            span,
+        );
+        let msg_ty = self.gcx.get_type(msg_id);
+        let next = self.new_block();
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: msg_ty,
+                    value: mir::ConstantKind::Function(
+                        msg_id,
+                        GenericArguments::empty(),
+                        msg_ty,
+                    ),
+                }),
+                args: vec![data_operand],
+                destination,
+                target: next,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+        next.unit()
+    }
+
+    fn lower_panic_payload_rethrow_call(
+        &mut self,
+        destination: Place<'ctx>,
+        mut block: BasicBlockId,
+        args: &[ExprId],
+        span: Span,
+    ) -> BlockAnd<()> {
+        let [data_arg] = args else {
+            panic!("ICE: panic_payload_rethrow expects exactly one argument");
+        };
+        let data_operand = unpack!(block = self.as_local_operand(block, *data_arg));
+        let rethrow_id = find_or_register_async_runtime_function(
+            self.gcx,
+            AsyncRuntimeFn::PanicPayloadRethrow,
+            span,
+        );
+        let rethrow_ty = self.gcx.get_type(rethrow_id);
+        let next = self.new_block();
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: rethrow_ty,
+                    value: mir::ConstantKind::Function(
+                        rethrow_id,
+                        GenericArguments::empty(),
+                        rethrow_ty,
+                    ),
+                }),
+                args: vec![data_operand],
+                destination,
+                target: next,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+        next.unit()
     }
 
     fn async_callable_operand(

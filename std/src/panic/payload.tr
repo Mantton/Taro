@@ -1,0 +1,32 @@
+extern "C" {
+    /// Opaque runtime type backing a captured task panic.
+    /// Can only be used behind a pointer.
+    type PanicPayloadData
+}
+
+extern "taro_intrinsic" {
+    func __intrinsic_panic_payload_message(_ data: *mut PanicPayloadData) -> string
+    func __intrinsic_panic_payload_rethrow(_ data: *mut PanicPayloadData) -> !
+}
+
+/// An opaque handle to a captured task panic, carrying the original
+/// message and enough context to re-raise it with the original backtrace.
+@lang("PanicPayload")
+public struct PanicPayload {
+    data: *mut PanicPayloadData
+}
+
+impl PanicPayload {
+    /// Returns the original panic message from the task that panicked.
+    public func message(&self) -> string {
+        __intrinsic_panic_payload_message(self.data)
+    }
+
+    /// Re-raises the original panic.
+    ///
+    /// - From a root-task context: crashes the program showing the original backtrace.
+    /// - From a spawned-task context: becomes another `TaskError.panicked` at the outer level.
+    public func rethrow(self) -> ! {
+        __intrinsic_panic_payload_rethrow(self.data)
+    }
+}

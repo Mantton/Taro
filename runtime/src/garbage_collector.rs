@@ -337,23 +337,57 @@ pub extern "C" fn __rt__gc_pop_frame(frame: *mut GcShadowFrame) {
             top.set(prev);
             prev.is_null()
         } else {
-            // Frame is not at top - this can happen with longjmp/exceptions.
-            // Walk the list to unlink if present (debug builds only).
-            #[cfg(debug_assertions)]
-            {
-                let mut current = top.get();
-                while !current.is_null() {
-                    let prev = unsafe { (*current).prev };
-                    if prev == frame {
-                        unsafe { (*current).prev = (*frame).prev };
-                        return false;
-                    }
-                    current = prev;
+            // Frame is not at top - this can happen with unwinding.
+            // Always walk and unlink so stale frame pointers cannot survive
+            // into a later collection cycle.
+            let mut current = top.get();
+            while !current.is_null() {
+                let prev = unsafe { (*current).prev };
+                if prev == frame {
+                    unsafe { (*current).prev = (*frame).prev };
+                    return false;
                 }
+                current = prev;
             }
+            debug_assert!(false, "gc_pop_frame: frame not found in shadow stack");
             false
         }
     });
+    if reached_thread_root {
+        enter_safepoint();
+    }
+}
+
+/// Best-effort cleanup for task-frame teardown paths.
+///
+/// If a frame is still linked in the current thread's shadow stack when its
+/// async handle is about to be destroyed, unlink it so later collections do
+/// not dereference freed frame memory.
+pub(crate) fn unlink_shadow_frame_if_present(frame: *mut GcShadowFrame) {
+    if frame.is_null() {
+        return;
+    }
+
+    let reached_thread_root = GC_SHADOW_TOP.with(|top| {
+        if top.get() == frame {
+            let prev = unsafe { (*frame).prev };
+            top.set(prev);
+            return prev.is_null();
+        }
+
+        let mut current = top.get();
+        while !current.is_null() {
+            let prev = unsafe { (*current).prev };
+            if prev == frame {
+                unsafe { (*current).prev = (*frame).prev };
+                return false;
+            }
+            current = prev;
+        }
+
+        false
+    });
+
     if reached_thread_root {
         enter_safepoint();
     }
@@ -878,22 +912,24 @@ impl GcStats {
     }
 
     fn log(&self) {
-        eprintln!(
-            "gc: collections={} live_objects={} live_bytes={} last_freed_objects={} last_freed_bytes={} free_runs={} free_bytes={} segments={} segment_bytes={} total_allocs={} total_frees={} total_alloc_bytes={} total_freed_bytes={}",
-            self.collections,
-            self.live_objects,
-            self.live_bytes,
-            self.last_freed_objects,
-            self.last_freed_bytes,
-            self.free_runs,
-            self.free_bytes,
-            self.last_segment_count,
-            self.last_segment_bytes,
-            self.total_allocations,
-            self.total_frees,
-            self.total_allocated_bytes,
-            self.total_freed_bytes,
-        );
+        if std::env::var("TARO_GC_STATS").map_or(false, |val| val == "1") {
+            eprintln!(
+                "gc: collections={} live_objects={} live_bytes={} last_freed_objects={} last_freed_bytes={} free_runs={} free_bytes={} segments={} segment_bytes={} total_allocs={} total_frees={} total_alloc_bytes={} total_freed_bytes={}",
+                self.collections,
+                self.live_objects,
+                self.live_bytes,
+                self.last_freed_objects,
+                self.last_freed_bytes,
+                self.free_runs,
+                self.free_bytes,
+                self.last_segment_count,
+                self.last_segment_bytes,
+                self.total_allocations,
+                self.total_frees,
+                self.total_allocated_bytes,
+                self.total_freed_bytes,
+            );
+        }
     }
 }
 
@@ -1297,13 +1333,33 @@ impl Gc {
 
     fn push_shadow_roots(&self, stack: &mut Vec<*const u8>, threads: &[Arc<ThreadState>]) {
         // Walk the shadow stack frames of the parked thread snapshot.
+        const MAX_SHADOW_SLOTS: usize = 1 << 16;
+        const MAX_FRAME_SLOT_DISTANCE: usize = 8 << 20; // 8 MiB
+
         for thread in threads {
             let top_cell = unsafe { &*thread.shadow_top };
             let mut frame = top_cell.get();
             while !frame.is_null() {
+                let prev = unsafe { (*frame).prev };
                 let count = unsafe { (*frame).count };
                 let slots = unsafe { (*frame).slots };
-                if !slots.is_null() {
+
+                // Corrupted frames can appear after unwinding edge cases. Keep the
+                // collector resilient by ignoring implausible metadata instead of
+                // blindly dereferencing arbitrary pointers.
+                let slots_look_sane = if count == 0 {
+                    true
+                } else if count > MAX_SHADOW_SLOTS || slots.is_null() {
+                    false
+                } else {
+                    let frame_addr = frame as usize;
+                    let slots_addr = slots as usize;
+                    let near_frame = frame_addr.abs_diff(slots_addr) <= MAX_FRAME_SLOT_DISTANCE;
+                    let in_gc_heap = self.segment_index_for_ptr(slots as *const u8).is_some();
+                    near_frame || in_gc_heap
+                };
+
+                if slots_look_sane && !slots.is_null() {
                     for i in 0..count {
                         let val = unsafe { *slots.add(i) };
                         if !val.is_null() {
@@ -1311,7 +1367,10 @@ impl Gc {
                         }
                     }
                 }
-                frame = unsafe { (*frame).prev };
+                if prev == frame {
+                    break;
+                }
+                frame = prev;
             }
         }
     }

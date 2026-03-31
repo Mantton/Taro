@@ -896,6 +896,7 @@ pub enum StdItemWire {
     OptionalNoneVariant,
     OptionalNoneCtor,
     Task,
+    PanicPayload,
     Make,
 }
 
@@ -1491,6 +1492,7 @@ pub fn std_item_to_wire(v: hir::StdItem) -> StdItemWire {
         hir::StdItem::OptionalNoneVariant => StdItemWire::OptionalNoneVariant,
         hir::StdItem::OptionalNoneCtor => StdItemWire::OptionalNoneCtor,
         hir::StdItem::Task => StdItemWire::Task,
+        hir::StdItem::PanicPayload => StdItemWire::PanicPayload,
         hir::StdItem::Make => StdItemWire::Make,
     }
 }
@@ -1542,6 +1544,7 @@ pub fn std_item_from_wire(v: &StdItemWire) -> hir::StdItem {
         StdItemWire::OptionalNoneVariant => hir::StdItem::OptionalNoneVariant,
         StdItemWire::OptionalNoneCtor => hir::StdItem::OptionalNoneCtor,
         StdItemWire::Task => hir::StdItem::Task,
+        StdItemWire::PanicPayload => hir::StdItem::PanicPayload,
         StdItemWire::Make => hir::StdItem::Make,
     }
 }

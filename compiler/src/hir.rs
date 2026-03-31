@@ -959,6 +959,7 @@ pub enum StdItem {
 
     // Async
     Task,
+    PanicPayload,
 
     // Builtin
     Make,
@@ -1007,6 +1008,7 @@ impl StdItem {
             StdItem::PartialEq => Some("PartialEq"),
             StdItem::PartialOrd => Some("PartialOrd"),
             StdItem::Task => Some("Task"),
+            StdItem::PanicPayload => Some("PanicPayload"),
             StdItem::OptionalSomeVariant => Some("OptionalSomeVariant"),
             StdItem::OptionalSomeCtor => Some("OptionalSomeCtor"),
             StdItem::OptionalNoneVariant => Some("OptionalNoneVariant"),
@@ -1057,6 +1059,7 @@ impl StdItem {
             "PartialEq" => Some(Self::PartialEq),
             "PartialOrd" => Some(Self::PartialOrd),
             "Task" => Some(Self::Task),
+            "PanicPayload" => Some(Self::PanicPayload),
             _ => None,
         }
     }
@@ -1071,7 +1074,8 @@ impl StdItem {
             | StdItem::ClosedRange
             | StdItem::MaybeUninit
             | StdItem::Span
-            | StdItem::Task => Some(DefinitionKind::Struct),
+            | StdItem::Task
+            | StdItem::PanicPayload => Some(DefinitionKind::Struct),
             StdItem::Copy
             | StdItem::Clone
             | StdItem::Sendable
@@ -1143,6 +1147,7 @@ impl StdItem {
                 | StdItem::FnOnce
                 | StdItem::AsyncFnOnce
                 | StdItem::Task
+                | StdItem::PanicPayload
                 | StdItem::Tuple
                 | StdItem::Add
                 | StdItem::Sub
@@ -1166,7 +1171,7 @@ impl StdItem {
         )
     }
 
-    pub const ALL_REQUIRED: [StdItem; 44] = [
+    pub const ALL_REQUIRED: [StdItem; 45] = [
         StdItem::Optional,
         StdItem::List,
         StdItem::Set,
@@ -1207,6 +1212,7 @@ impl StdItem {
         StdItem::PartialEq,
         StdItem::PartialOrd,
         StdItem::Task,
+        StdItem::PanicPayload,
         StdItem::OptionalSomeVariant,
         StdItem::OptionalSomeCtor,
         StdItem::OptionalNoneVariant,

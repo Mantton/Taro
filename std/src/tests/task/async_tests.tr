@@ -311,14 +311,11 @@ func listsSurviveAcrossYields() async {
 func asyncClosuresCaptureAcrossYields() async {
     let captured = 5 as int32
     let addCaptured = |x: int32| async {
-        std.println("before yield, x=" + std.sprintf("%d", x) + " captured=" + std.sprintf("%d", captured))
         await std.testing.yieldNow()
-        std.println("after yield, x=" + std.sprintf("%d", x) + " captured=" + std.sprintf("%d", captured))
         return x + captured
     }
 
     let value = await addCaptured(7)
-    std.println("value=" + std.sprintf("%d", value))
     std.testing.assertEqual(value, 12, "async closures should capture locals across yields")
 }
 
@@ -482,6 +479,7 @@ func cancelledTaskResultReturnsCancelledError() async {
         case .ok(_) => std.panic.panic("cancelled task should resolve through Task.result() as an error")
         case .err(err) => match err {
             case .cancelled => {}
+            case .panicked(_) => std.panic.panic("cancelled task should not report as panicked")
         }
     }
 }
@@ -545,6 +543,7 @@ func cancellingSleepingTaskCompletesQuickly() async {
         case .ok(_) => std.panic.panic("cancelled sleeper should not resolve successfully")
         case .err(err) => match err {
             case .cancelled => {}
+            case .panicked(_) => std.panic.panic("cancelled sleeper should not report as panicked")
         }
     }
 
@@ -678,20 +677,35 @@ func withTaskGroupBodyPanicRemainsVisible() async {
 }
 
 @test
-@expectPanic
-func spawnedTaskPanicAfterAsyncRootStillFailsTest() async {
-    let _ = std.task.spawn(|| async {
+func spawnedTaskPanicIsolatedFromTest() async {
+    // Detached spawned task panics are now isolated: they print to stderr
+    // but do not crash the program or fail the test.
+    let task = std.task.spawn(|| async {
         await std.testing.yieldNow()
-        std.panic.panic("post-root spawned panic should still fail the async test")
+        std.panic.panic("spawned task panic should be isolated")
     })
+    let result = await task.result()
+    match result {
+        case .ok(_) => std.panic.panic("panicking task should not succeed")
+        case .err(err) => match err {
+            case .panicked(payload) => {
+                std.testing.assertTrue(
+                    payload.message() == "spawned task panic should be isolated",
+                    "panic payload message should match the original panic message",
+                )
+            }
+            case .cancelled => std.panic.panic("panicking task should not report as cancelled")
+        }
+    }
 }
 
 @test
-@expectPanic
-func syncSpawnedTaskPanicIsAttributedToTest() {
+func syncSpawnedTaskPanicIsIsolated() {
+    // Detached spawned task panics are now isolated: they print to stderr
+    // but do not crash the program or fail the test.
     let _ = std.task.spawn(|| async {
         await std.testing.yieldNow()
-        std.panic.panic("spawned task panic should fail the sync test")
+        std.panic.panic("spawned task panic should be isolated in sync test")
     })
 }
 
@@ -810,4 +824,42 @@ func asyncClosuresReusedThroughZeroArgAsyncFnMut() async {
     let sum = await applyZeroAsyncMut(closure)
     // 7 + 7 + 7 = 21
     std.testing.assertEqual(sum, 21, "non-capturing async closure should be reusable through AsyncFnMut() bound")
+}
+
+@test
+func awaitedPanickedTaskResultReturnsPanickedError() async {
+    let task = std.task.spawn(|| async {
+        await std.testing.yieldNow()
+        std.panic.panic("intentional task panic")
+    })
+    let result = await task.result()
+    match result {
+        case .ok(_) => std.panic.panic("panicking task should not succeed")
+        case .err(err) => match err {
+            case .panicked(payload) => {
+                std.testing.assertTrue(
+                    payload.message() == "intentional task panic",
+                    "panic payload message should match the original panic message",
+                )
+            }
+            case .cancelled => std.panic.panic("panicking task should not report as cancelled")
+        }
+    }
+}
+
+@test
+@expectPanic
+func panicPayloadRethrowReRaisesOriginalPanic() async {
+    let task = std.task.spawn(|| async {
+        await std.testing.yieldNow()
+        std.panic.panic("rethrow test panic")
+    })
+    let result = await task.result()
+    match result {
+        case .ok(_) => std.panic.panic("panicking task should not succeed")
+        case .err(err) => match err {
+            case .panicked(payload) => payload.rethrow()
+            case .cancelled => std.panic.panic("panicking task should not report as cancelled")
+        }
+    }
 }
