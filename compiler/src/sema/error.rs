@@ -34,6 +34,10 @@ pub enum TypeError<'ctx> {
         name: Symbol,
         struct_ty: Ty<'ctx>,
     },
+    MethodNotVisible {
+        name: Symbol,
+        on: Ty<'ctx>,
+    },
     NotCallable {
         found: Ty<'ctx>,
     },
@@ -134,6 +138,13 @@ impl<'ctx> TypeError<'ctx> {
                     "field '{}' of {} is not visible here",
                     gcx.symbol_text(name),
                     struct_ty.format(gcx)
+                )
+            }
+            TypeError::MethodNotVisible { name, on } => {
+                format!(
+                    "method '{}' on {} is private and cannot be accessed here",
+                    gcx.symbol_text(name),
+                    on.format(gcx)
                 )
             }
             TypeError::NotCallable { found } => {

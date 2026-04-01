@@ -9,4 +9,5 @@ export std.panic.{panic, unreachable, todo}
 export std.mem.{sizeOf, alignOf, Span, MutableSpan}
 export std.{print, println, eprint, eprintln, printf, sprintf, assert, debugAssert}
 export std.default.Default
+export std.convert.{From, Into}
 export std.testing.{assertEqual, assertTrue, assertFalse, fail}

@@ -91,9 +91,9 @@ impl<'ctx> Actor<'ctx> {
                     .emit_error("cannot impl for function types".to_string(), Some(ty.span));
                 None
             }
-            hir::TypeKind::BoxedExistential { .. } => {
+            hir::TypeKind::BoxedExistential { .. } | hir::TypeKind::ImplTrait { .. } => {
                 self.context.dcx().emit_error(
-                    "cannot impl for `any` existentials; impl for the interface type directly"
+                    "cannot impl for `any` or `impl` existentials; impl for the interface type directly"
                         .to_string(),
                     Some(ty.span),
                 );

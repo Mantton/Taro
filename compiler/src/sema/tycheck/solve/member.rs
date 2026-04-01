@@ -219,13 +219,26 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return SolverResult::Deferred;
         }
 
-        let error = Spanned::new(
+        let error_kind = if let Some(head) = self.type_head_from_type(final_ty) {
+            if self.has_invisible_instance_member(head, name.symbol) {
+                TypeError::MethodNotVisible {
+                    name: name.symbol,
+                    on: final_ty,
+                }
+            } else {
+                TypeError::NoSuchMember {
+                    name: name.symbol,
+                    on: final_ty,
+                }
+            }
+        } else {
             TypeError::NoSuchMember {
                 name: name.symbol,
                 on: final_ty,
-            },
-            span,
-        );
+            }
+        };
+
+        let error = Spanned::new(error_kind, span);
         SolverResult::Error(vec![error])
     }
 
@@ -503,6 +516,42 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         members.retain(|id| gcx.is_definition_visible(*id, self.current_def));
         members
+    }
+
+    /// Check whether a type has any instance member with the given name that
+    /// exists but is not visible from the current definition. Used to produce
+    /// a "method is private" error instead of "no such member".
+    pub(crate) fn has_invisible_instance_member(
+        &self,
+        head: TypeHead,
+        name: Symbol,
+    ) -> bool {
+        let gcx = self.gcx();
+        let current_def = self.current_def;
+
+        let check = |db: &crate::compile::context::TypeDatabase<'ctx>| -> bool {
+            if let Some(idx) = db.type_head_to_members.get(&head) {
+                if let Some(set) = idx.inherent_instance.get(&name) {
+                    for &id in &set.members {
+                        if !gcx.is_definition_visible(id, current_def) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            false
+        };
+
+        if gcx.with_session_type_database(|db| check(db)) {
+            return true;
+        }
+        for index in gcx.visible_packages() {
+            if gcx.with_type_database(index, |db| check(db)) {
+                return true;
+            }
+        }
+
+        false
     }
 
     fn collect_visible_trait_methods_for_name(

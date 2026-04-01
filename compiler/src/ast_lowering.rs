@@ -1106,6 +1106,12 @@ impl Actor<'_, '_> {
                     .map(|n| self.lower_path_node(n))
                     .collect(),
             },
+            ast::TypeKind::ImplTrait { interfaces } => hir::TypeKind::ImplTrait {
+                interfaces: interfaces
+                    .into_iter()
+                    .map(|n| self.lower_path_node(n))
+                    .collect(),
+            },
             ast::TypeKind::QualifiedAccess {
                 target,
                 interface,

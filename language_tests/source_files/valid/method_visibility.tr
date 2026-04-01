@@ -1,0 +1,120 @@
+// Tests for method visibility in impl blocks.
+
+struct Counter {
+    value: int32
+}
+
+impl Counter {
+    // Private helper methods
+    private func increment(&mut self) {
+        self.value = self.value + 1
+    }
+
+    private func decrement(&mut self) {
+        self.value = self.value - 1
+    }
+
+    // Public methods that use private helpers
+    public func advance(&mut self, _ steps: int32) {
+        var i = 0
+        while i < steps {
+            self.increment()
+            i = i + 1
+        }
+    }
+
+    public func retreat(&mut self, _ steps: int32) {
+        var i = 0
+        while i < steps {
+            self.decrement()
+            i = i + 1
+        }
+    }
+
+    public func get(&self) -> int32 {
+        self.value
+    }
+}
+
+// Default visibility (no modifier) should be public
+struct Widget {
+    label: string
+}
+
+impl Widget {
+    func getLabel(&self) -> string {
+        self.label
+    }
+}
+
+// Private methods can call other private methods in the same impl block
+struct Calculator {
+    result: int32
+}
+
+impl Calculator {
+    private func addInternal(&mut self, _ x: int32) {
+        self.result = self.result + x
+    }
+
+    private func doubleInternal(&mut self) {
+        let current = self.result
+        self.addInternal(current)
+    }
+
+    public func doubleAndGet(&mut self) -> int32 {
+        self.doubleInternal()
+        self.result
+    }
+}
+
+// Interface impl methods are public (as required by the interface contract)
+interface Describable {
+    func describe(&self) -> string
+}
+
+struct Item {
+    name: string
+}
+
+impl Describable for Item {
+    public func describe(&self) -> string {
+        self.name
+    }
+}
+
+impl Item {
+    // Private helper only used internally
+    private func internalId(&self) -> int32 {
+        42
+    }
+
+    public func fullDescription(&self) -> string {
+        self.describe()
+    }
+}
+
+func main() {
+    // Private methods work within the type's own impl
+    var c = Counter { value: 0 }
+    c.advance(5)
+    assert(c.get() == 5, "advance should use private increment")
+    c.retreat(2)
+    assert(c.get() == 3, "retreat should use private decrement")
+
+    // Default visibility is public
+    let w = Widget { label: "hello" }
+    assert(w.getLabel() == "hello", "default visibility should be public")
+
+    // Private methods calling other private methods
+    var calc = Calculator { result: 5 }
+    let doubled = calc.doubleAndGet()
+    assert(doubled == 10, "doubleAndGet should use private helpers")
+
+    // Interface methods are accessible
+    let item = Item { name: "test" }
+    assert(item.describe() == "test", "interface method should be public")
+    assert(item.fullDescription() == "test", "public method using interface method")
+
+    std.print("PASS: method_visibility\n")
+}

@@ -1,0 +1,39 @@
+/// Interface for constructing a value from another type.
+///
+/// `From[T]` provides a standard way to create a value of the implementing
+/// type from a value of type `T`. This is the primary conversion interface
+/// and should be preferred over `Into` when implementing conversions.
+///
+/// Example:
+/// ```
+/// struct Meters {
+///     value: float64
+/// }
+///
+/// impl From[float64] for Meters {
+///     public func from(_ value: float64) -> Meters {
+///         Meters { value: value }
+///     }
+/// }
+///
+/// let m = Meters.from(3.5)
+/// ```
+public interface From[T] {
+    func from(_ value: T) -> Self
+}
+
+/// Interface for converting a value into another type.
+///
+/// `Into[T]` provides a standard way to convert the implementing type
+/// into a value of type `T`. Prefer implementing `From` instead of `Into`,
+/// as `From` is more flexible and `Into` can be implemented in terms of `From`.
+///
+/// Example:
+/// ```
+/// func acceptString[T: Into[string]](_ value: T) -> string {
+///     value.into()
+/// }
+/// ```
+public interface Into[T] {
+    func into(self) -> T
+}

@@ -1,0 +1,25 @@
+// CHECK_ONLY
+
+struct Secret {
+    value: int32
+}
+
+impl Secret {
+    private func hidden(&self) -> int32 {
+        self.value
+    }
+
+    public func visible(&self) -> int32 {
+        self.hidden()
+    }
+}
+
+func main() {
+    let s = Secret { value: 42 }
+
+    // This should work
+    let _ = s.visible()
+
+    // This should fail - calling private method from outside
+    let _ = s.hidden()
+}

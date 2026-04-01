@@ -1,0 +1,106 @@
+// Tests for `some Interface` opaque return types.
+
+interface Describable {
+    func describe(&self) -> string
+}
+
+interface Countable {
+    func count(&self) -> int32
+}
+
+struct Dog {
+    name: string
+}
+
+impl Describable for Dog {
+    public func describe(&self) -> string {
+        self.name
+    }
+}
+
+struct Cat {
+    name: string
+    lives: int32
+}
+
+impl Describable for Cat {
+    public func describe(&self) -> string {
+        self.name
+    }
+}
+
+impl Countable for Cat {
+    public func count(&self) -> int32 {
+        self.lives
+    }
+}
+
+// Basic some Interface return
+func makeDog() -> some Describable {
+    Dog { name: "Rex" }
+}
+
+func makeCat() -> some Describable {
+    Cat { name: "Whiskers", lives: 9 }
+}
+
+// some with multiple interface bounds
+func makeCountableCat() -> some Describable & Countable {
+    Cat { name: "Luna", lives: 7 }
+}
+
+// Using some Interface return value with any Interface parameter
+func greet(_ d: any Describable) -> string {
+    d.describe()
+}
+
+// Generic function accepting any Describable
+func greetGeneric[T: Describable](_ d: T) -> string {
+    d.describe()
+}
+
+// some Interface return from a function that takes parameters
+func makeNamedDog(_ name: string) -> some Describable {
+    Dog { name: name }
+}
+
+// Wrapper struct to test some Interface in more complex contexts
+struct Pair {
+    first: any Describable
+    second: any Describable
+}
+
+func makePair() -> Pair {
+    Pair {
+        first: makeDog(),
+        second: makeCat(),
+    }
+}
+
+func main() {
+    // Basic some return
+    let dog = makeDog()
+    assert(greet(dog) == "Rex", "some Describable return for Dog failed")
+
+    let cat = makeCat()
+    assert(greet(cat) == "Whiskers", "some Describable return for Cat failed")
+
+    // Multiple bounds
+    let luna = makeCountableCat()
+    assert(greet(luna) == "Luna", "some Describable & Countable describe failed")
+
+    // Pass to generic function
+    let dog2 = makeDog()
+    assert(greetGeneric(dog2) == "Rex", "some return passed to generic function failed")
+
+    // Parameterized function with some return
+    let named = makeNamedDog("Buddy")
+    assert(greet(named) == "Buddy", "parameterized some return failed")
+
+    // some return used in struct fields via any Interface
+    let pair = makePair()
+    assert(pair.first.describe() == "Rex", "pair first describe failed")
+    assert(pair.second.describe() == "Whiskers", "pair second describe failed")
+
+    std.print("PASS: impl_trait_return\n")
+}

@@ -1,0 +1,141 @@
+// Tests for From/Into conversion traits.
+
+struct Meters {
+    value: int32
+}
+
+impl From[int32] for Meters {
+    public func from(_ value: int32) -> Meters {
+        Meters { value: value }
+    }
+}
+
+impl Into[int32] for Meters {
+    public func into(self) -> int32 {
+        self.value
+    }
+}
+
+struct Celsius {
+    degrees: int32
+}
+
+struct Fahrenheit {
+    degrees: int32
+}
+
+impl From[Celsius] for Fahrenheit {
+    public func from(_ c: Celsius) -> Fahrenheit {
+        Fahrenheit { degrees: c.degrees * 9 / 5 + 32 }
+    }
+}
+
+impl Into[Fahrenheit] for Celsius {
+    public func into(self) -> Fahrenheit {
+        convertFrom[Celsius, Fahrenheit](self)
+    }
+}
+
+// Generic function using From bound - the primary way to call from()
+func convertFrom[T, U: From[T]](_ value: T) -> U {
+    U.from(value)
+}
+
+// Generic function using Into bound
+func convertInto[T: Into[int32]](_ value: T) -> int32 {
+    value.into()
+}
+
+// From with string conversion
+struct Name {
+    value: string
+}
+
+impl From[string] for Name {
+    public func from(_ s: string) -> Name {
+        Name { value: s }
+    }
+}
+
+// From between integer wrapper types
+struct UserId {
+    raw: int64
+}
+
+impl From[int64] for UserId {
+    public func from(_ id: int64) -> UserId {
+        UserId { raw: id }
+    }
+}
+
+impl Into[int64] for UserId {
+    public func into(self) -> int64 {
+        self.raw
+    }
+}
+
+// Multiple From impls on same type
+struct Wrapper {
+    value: int32
+}
+
+impl From[int32] for Wrapper {
+    public func from(_ v: int32) -> Wrapper {
+        Wrapper { value: v }
+    }
+}
+
+impl From[bool] for Wrapper {
+    public func from(_ b: bool) -> Wrapper {
+        if b {
+            Wrapper { value: 1 }
+        } else {
+            Wrapper { value: 0 }
+        }
+    }
+}
+
+func main() {
+    // From via generic helper
+    let m: Meters = convertFrom(3)
+    assert(m.value == 3, "From[int32] for Meters failed")
+
+    // Into method call (works directly since into takes self)
+    let v = m.into()
+    assert(v == 3, "Into[int32] for Meters failed")
+
+    // Cross-type From via generic helper
+    let c = Celsius { degrees: 100 }
+    let fahr: Fahrenheit = convertFrom(c)
+    assert(fahr.degrees == 212, "From[Celsius] for Fahrenheit failed")
+
+    // Cross-type Into
+    let c2 = Celsius { degrees: 0 }
+    let fahr2: Fahrenheit = c2.into()
+    assert(fahr2.degrees == 32, "Into[Fahrenheit] for Celsius failed")
+
+    // Generic function with Into bound
+    let m2 = Meters { value: 42 }
+    let val = convertInto(m2)
+    assert(val == 42, "convertInto with Into bound failed")
+
+    // From with string via generic helper
+    let name: Name = convertFrom("Alice")
+    assert(name.value == "Alice", "From[string] for Name failed")
+
+    // From/Into with integer wrapper
+    let uid: UserId = convertFrom(123 as int64)
+    assert(uid.raw == 123 as int64, "From[int64] for UserId failed")
+    let raw = uid.into()
+    assert(raw == 123 as int64, "Into[int64] for UserId failed")
+
+    // Multiple From impls
+    let w1: Wrapper = convertFrom(42)
+    assert(w1.value == 42, "From[int32] for Wrapper failed")
+    let w2: Wrapper = convertFrom(true)
+    assert(w2.value == 1, "From[bool] for Wrapper (true) failed")
+    let w3: Wrapper = convertFrom(false)
+    assert(w3.value == 0, "From[bool] for Wrapper (false) failed")
+
+    std.print("PASS: from_into\n")
+}

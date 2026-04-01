@@ -1929,6 +1929,11 @@ impl Parser {
         let res = match self.current_token() {
             Token::Star => self.parse_pointer_type(Token::Star),
             Token::Amp | Token::AmpAmp => self.parse_pointer_type(Token::Amp),
+            Token::Identifier { .. } if self.matches_contextual_identifier("some") => {
+                self.bump();
+                let interfaces = self.parse_sequence(Token::Amp, |this| this.parse_path_node())?;
+                Ok(TypeKind::ImplTrait { interfaces })
+            }
             Token::Identifier { .. } => self.parse_identifier_type(),
             Token::LParen => self.parse_tuple_type(),
             Token::LBracket => self.parse_collection_type(),

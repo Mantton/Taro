@@ -107,7 +107,11 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                     gcx,
                 )
             }
-            hir::TypeKind::BoxedExistential { interfaces } => {
+            hir::TypeKind::BoxedExistential { interfaces }
+            | hir::TypeKind::ImplTrait { interfaces } => {
+                // Both `any Interface` and `impl Interface` currently lower to
+                // BoxedExistential. A future optimisation pass can avoid boxing
+                // for `impl Interface` when the concrete type is statically known.
                 let self_ty = gcx.types.self_type_parameter;
                 let mut lowered = Vec::with_capacity(interfaces.len());
                 for interface in interfaces {

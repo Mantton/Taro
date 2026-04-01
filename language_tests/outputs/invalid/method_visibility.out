@@ -1,0 +1,5 @@
+Checking – method_visibility
+error: method 'hidden' on Secret is private and cannot be accessed here
+ -> language_tests/source_files/invalid/method_visibility.tr:24:14
+	    let _ = s.hidden()
+	              ^^^^^^

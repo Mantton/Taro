@@ -201,7 +201,8 @@ impl<'r, 'a> ast::AstVisitor for Actor<'r, 'a> {
                     .unwrap_or(ResolutionSource::Type);
                 self.resolve_path_with_source(node.id, path, source);
             }
-            ast::TypeKind::BoxedExistential { interfaces } => {
+            ast::TypeKind::BoxedExistential { interfaces }
+            | ast::TypeKind::ImplTrait { interfaces } => {
                 for node in interfaces {
                     self.resolve_path_with_source(node.id, &node.path, ResolutionSource::Interface);
                 }

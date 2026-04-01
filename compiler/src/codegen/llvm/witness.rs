@@ -887,6 +887,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let mir::ConstantKind::Function(def_id, args, _) = c.value else {
             return None;
         };
+        // Resolve generic args with the current monomorphization substitution
+        // context so that `Self = T` becomes `Self = any Interface` (or the
+        // concrete type) before we ask resolve_instance to decide between
+        // direct and virtual dispatch.
+        let args = self.resolve_generic_args(args);
         let instance = resolve_instance(self.gcx, def_id, args);
         match instance.kind() {
             InstanceKind::Virtual(instance) => Some(instance),

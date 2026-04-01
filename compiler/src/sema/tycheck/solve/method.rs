@@ -472,13 +472,28 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return SolverResult::Deferred;
         }
 
-        return SolverResult::Error(vec![Spanned::new(
+        // Check if the member exists but is private before falling back to
+        // "no such member" — this gives a much more actionable error message.
+        let error = if let Some(head) = self.type_head_from_type(final_on) {
+            if self.has_invisible_instance_member(head, name.symbol) {
+                TypeError::MethodNotVisible {
+                    name: name.symbol,
+                    on: final_on,
+                }
+            } else {
+                TypeError::NoSuchMember {
+                    name: name.symbol,
+                    on: final_on,
+                }
+            }
+        } else {
             TypeError::NoSuchMember {
                 name: name.symbol,
                 on: final_on,
-            },
-            name.span,
-        )]);
+            }
+        };
+
+        return SolverResult::Error(vec![Spanned::new(error, name.span)]);
     }
 
     fn reciever_candidates(&self, base_ty: Ty<'ctx>) -> Vec<(Ty<'ctx>, usize)> {

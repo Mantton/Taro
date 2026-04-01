@@ -650,6 +650,8 @@ pub enum TypeKind {
     InferedClosureParameter,
     /// any T
     BoxedExistential { interfaces: Vec<PathNode> },
+    /// some T — opaque return type that implements one or more interfaces (Swift-style)
+    ImplTrait { interfaces: Vec<PathNode> },
     /// Qualified type access: `(T as I).Member`
     /// Used to disambiguate associated types when a type implements multiple interfaces
     QualifiedAccess {
@@ -1783,7 +1785,7 @@ pub fn walk_type<V: AstVisitor>(visitor: &mut V, ty: &Type) -> V::Result {
             walk_list!(visitor, visit_type, inputs);
             try_visit!(visitor.visit_type(output));
         }
-        TypeKind::BoxedExistential { interfaces } => {
+        TypeKind::BoxedExistential { interfaces } | TypeKind::ImplTrait { interfaces } => {
             walk_list!(visitor, visit_path_node, interfaces);
         }
         TypeKind::QualifiedAccess {
