@@ -6,8 +6,7 @@ use crate::{
         Category, Constant, LocalId, Operand, Place, PlaceElem, Rvalue, RvalueFunc, TerminatorKind,
         builder::MirBuilder,
         optimize::async_transform::{
-            AsyncRuntimeFn, find_or_register_async_runtime_function, find_std_function,
-            raw_ptr_ty,
+            AsyncRuntimeFn, find_or_register_async_runtime_function, find_std_function, raw_ptr_ty,
         },
     },
     sema::{
@@ -737,6 +736,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             TerminatorKind::Call {
                 func: function,
                 args: final_args,
+                devirt_hint: None,
                 destination,
                 target: next,
                 unwind,
@@ -784,7 +784,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             )
             .into_block();
 
-        let size_local = unpack!(block = self.lower_size_of_type_to_local(block, task_output_ty, span));
+        let size_local =
+            unpack!(block = self.lower_size_of_type_to_local(block, task_output_ty, span));
         let task_token_local = self.new_temp_with_ty(self.gcx.types.uint, span);
 
         let executor_spawn_id =
@@ -807,6 +808,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     Operand::Copy(Place::from_local(handle_local)),
                     Operand::Copy(Place::from_local(size_local)),
                 ],
+                devirt_hint: None,
                 destination: Place::from_local(task_token_local),
                 target: after_spawn,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -871,6 +873,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     Operand::Copy(duration_secs_place(self.gcx, duration_place.clone())),
                     Operand::Copy(duration_nanos_place(self.gcx, duration_place)),
                 ],
+                devirt_hint: None,
                 destination,
                 target: next,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -909,6 +912,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     ),
                 }),
                 args: vec![Operand::Copy(Place::from_local(token_local))],
+                devirt_hint: None,
                 destination,
                 target: next,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -957,6 +961,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     ),
                 }),
                 args: vec![Operand::Copy(Place::from_local(token_local))],
+                devirt_hint: None,
                 destination,
                 target: next,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -991,10 +996,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let token_local = unpack!(block = self.lower_task_token_local(block, *task, span));
         let handle_local = self.new_temp_with_ty(self.gcx.async_handle_ty(), span);
         let (ready_local, resume_local) = if ready_is_never {
-            (
-                None,
-                self.new_temp_with_ty(self.gcx.types.uint8, span),
-            )
+            (None, self.new_temp_with_ty(self.gcx.types.uint8, span))
         } else {
             let ready_local = self.new_temp_with_ty(ready_ty, span);
             (Some(ready_local), ready_local)
@@ -1020,6 +1022,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     ),
                 }),
                 args: vec![Operand::Copy(Place::from_local(token_local))],
+                devirt_hint: None,
                 destination: Place::from_local(handle_local),
                 target: after_handle,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -1058,6 +1061,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     ),
                 }),
                 args: vec![Operand::Copy(Place::from_local(token_local))],
+                devirt_hint: None,
                 destination: Place::from_local(status_local),
                 target: after_status,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -1065,7 +1069,11 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         );
 
         // Take the panic payload pointer BEFORE reclaiming the slot (reclaim clears panic_info).
-        let ptr_u8_mut_ty = raw_ptr_ty(self.gcx, self.gcx.types.uint8, crate::hir::Mutability::Mutable);
+        let ptr_u8_mut_ty = raw_ptr_ty(
+            self.gcx,
+            self.gcx.types.uint8,
+            crate::hir::Mutability::Mutable,
+        );
         let raw_ptr_local = self.new_temp_with_ty(ptr_u8_mut_ty, span);
         let take_panic_id = find_or_register_async_runtime_function(
             self.gcx,
@@ -1087,6 +1095,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     ),
                 }),
                 args: vec![Operand::Copy(Place::from_local(token_local))],
+                devirt_hint: None,
                 destination: Place::from_local(raw_ptr_local),
                 target: after_take_panic,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -1111,6 +1120,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     ),
                 }),
                 args: vec![Operand::Copy(Place::from_local(token_local))],
+                devirt_hint: None,
                 destination: Place::from_local(reclaim_dest),
                 target: after_reclaim,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -1185,14 +1195,18 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     variant_index: Some(thir::VariantIndex::from_usize(1)),
                     generic_args: result_args,
                 },
-                fields: IndexVec::from_vec(vec![Operand::Move(Place::from_local(cancelled_error_local))]),
+                fields: IndexVec::from_vec(vec![Operand::Move(Place::from_local(
+                    cancelled_error_local,
+                ))]),
             },
             span,
         );
         self.goto(cancelled_block, join_block, span);
 
         // panicked branch: Result.err(TaskError.panicked(PanicPayload { data: raw_ptr }))  [variant 1]
-        let panic_payload_def_id = self.gcx.std_item_def(StdItem::PanicPayload)
+        let panic_payload_def_id = self
+            .gcx
+            .std_item_def(StdItem::PanicPayload)
             .unwrap_or_else(|| panic!("ICE: PanicPayload std item missing"));
         let panic_payload_ty = self.gcx.get_type(panic_payload_def_id);
         let TyKind::Adt(panic_payload_adt, panic_payload_args) = panic_payload_ty.kind() else {
@@ -1235,7 +1249,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     variant_index: Some(thir::VariantIndex::from_usize(1)),
                     generic_args: result_args,
                 },
-                fields: IndexVec::from_vec(vec![Operand::Move(Place::from_local(panicked_error_local))]),
+                fields: IndexVec::from_vec(vec![Operand::Move(Place::from_local(
+                    panicked_error_local,
+                ))]),
             },
             span,
         );
@@ -1283,6 +1299,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     Operand::Copy(Place::from_local(size_local)),
                     Operand::Copy(Place::from_local(policy_local)),
                 ],
+                devirt_hint: None,
                 destination,
                 target: next,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -1341,6 +1358,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     Operand::Copy(Place::from_local(handle_local)),
                     Operand::Copy(Place::from_local(size_local)),
                 ],
+                devirt_hint: None,
                 destination: Place::from_local(token_local),
                 target: after_spawn,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -1382,6 +1400,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     value: mir::ConstantKind::Function(next_id, GenericArguments::empty(), next_ty),
                 }),
                 args: vec![group_operand],
+                devirt_hint: None,
                 destination,
                 target: next,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -1436,6 +1455,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     value: mir::ConstantKind::Function(next_id, GenericArguments::empty(), next_ty),
                 }),
                 args: vec![Operand::Copy(Place::from_local(group_local))],
+                devirt_hint: None,
                 destination: Place::from_local(handle_local),
                 target: after_handle,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -1474,6 +1494,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     ),
                 }),
                 args: vec![Operand::Copy(Place::from_local(group_local))],
+                devirt_hint: None,
                 destination: Place::from_local(status_local),
                 target: after_status,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -1604,6 +1625,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     value: mir::ConstantKind::Function(call_id, GenericArguments::empty(), call_ty),
                 }),
                 args: vec![group_operand],
+                devirt_hint: None,
                 destination,
                 target: next,
                 // This runtime helper re-panics when a child panic was recorded,
@@ -1640,6 +1662,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     value: mir::ConstantKind::Function(call_id, GenericArguments::empty(), call_ty),
                 }),
                 args: vec![group_operand],
+                devirt_hint: None,
                 destination,
                 target: next,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -1711,6 +1734,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     ),
                 }),
                 args: vec![],
+                devirt_hint: None,
                 destination: Place::from_local(size_local),
                 target: after_size,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -1772,6 +1796,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     value: mir::ConstantKind::Function(wait_id, GenericArguments::empty(), wait_ty),
                 }),
                 args: vec![source_id_operand],
+                devirt_hint: None,
                 destination,
                 target: next,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -1830,6 +1855,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     value: mir::ConstantKind::Function(func_id, GenericArguments::empty(), func_ty),
                 }),
                 args: vec![],
+                devirt_hint: None,
                 destination,
                 target: next,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -1979,13 +2005,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             TerminatorKind::Call {
                 func: Operand::Constant(Constant {
                     ty: msg_ty,
-                    value: mir::ConstantKind::Function(
-                        msg_id,
-                        GenericArguments::empty(),
-                        msg_ty,
-                    ),
+                    value: mir::ConstantKind::Function(msg_id, GenericArguments::empty(), msg_ty),
                 }),
                 args: vec![data_operand],
+                devirt_hint: None,
                 destination,
                 target: next,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -2025,6 +2048,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     ),
                 }),
                 args: vec![data_operand],
+                devirt_hint: None,
                 destination,
                 target: next,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -2516,6 +2540,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 TerminatorKind::Call {
                     func: string_eq_func,
                     args: vec![Operand::Copy(branch_place.clone()), rhs],
+                    devirt_hint: None,
                     destination: destination.clone(),
                     target: next_block,
                     unwind,
@@ -2586,6 +2611,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             TerminatorKind::Call {
                 func: desc_func_op,
                 args: vec![],
+                devirt_hint: None,
                 destination: desc_dest.clone(),
                 target: next_block,
                 unwind: mir::CallUnwindAction::Terminate,
@@ -2625,6 +2651,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     len_const.clone(),
                     len_const.clone(),
                 ],
+                devirt_hint: None,
                 destination: buf_ptr_dest.clone(),
                 target: next_block_2,
                 unwind: makebuf_unwind,
@@ -2693,6 +2720,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     TerminatorKind::Call {
                         func: ptr_add_func.clone(),
                         args: vec![Operand::Copy(Place::from_local(buf_ptr_t)), idx_op],
+                        devirt_hint: None,
                         destination: Place::from_local(temp_ptr),
                         target: next_block_loop,
                         unwind: mir::CallUnwindAction::Terminate,
@@ -2824,6 +2852,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     len_const.clone(),
                     len_const.clone(),
                 ],
+                devirt_hint: None,
                 destination,
                 target: next_block,
                 unwind,

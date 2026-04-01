@@ -899,6 +899,126 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         }
     }
 
+    pub(super) fn try_lower_devirtualized_call(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        hint: &mir::DevirtHint<'gcx>,
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+        normal_bb: BasicBlock<'llvm>,
+        unwind_target: Option<BasicBlock<'llvm>>,
+    ) -> CompileResult<bool> {
+        macro_rules! fallback {
+            () => {{
+                crate::mir::optimize::devirtualize::bump_codegen_fallback();
+                return Ok(false);
+            }};
+        }
+
+        let receiver = match args.first() {
+            Some(receiver) => receiver,
+            None => fallback!(),
+        };
+
+        let impl_instance = self.instance_for_call(hint.impl_def_id, hint.impl_args);
+        let impl_def_id = match impl_instance.kind() {
+            InstanceKind::Item(def_id) => def_id,
+            InstanceKind::Virtual(_) => fallback!(),
+        };
+
+        let synthetic_func = Operand::Constant(mir::Constant {
+            ty: hint.concrete_self_ty,
+            value: mir::ConstantKind::Function(
+                hint.impl_def_id,
+                hint.impl_args,
+                hint.concrete_self_ty,
+            ),
+        });
+        let (callable, fn_abi) = self.lower_callable_with_abi(&synthetic_func);
+
+        let receiver_ty = self.operand_ty(body, receiver);
+        let Some(receiver_val) = self.eval_operand(body, locals, receiver)? else {
+            fallback!();
+        };
+        let Some(data_ptr) = self.extract_existential_data_ptr(receiver_ty, receiver_val) else {
+            fallback!();
+        };
+
+        let sig = self.gcx.get_signature(impl_def_id);
+        if sig.inputs.is_empty() || args.len() != sig.inputs.len() || fn_abi.args.is_empty() {
+            fallback!();
+        }
+
+        let resolved_input_tys: Vec<_> = sig
+            .inputs
+            .iter()
+            .map(|param| {
+                let ty = if impl_instance.args().is_empty() {
+                    param.ty
+                } else {
+                    instantiate_ty_with_args(self.gcx, param.ty, impl_instance.args())
+                };
+                self.normalize_post_mono_ty(ty)
+            })
+            .collect();
+        let self_input_ty = resolved_input_tys[0];
+        let self_abi = fn_abi.args[0];
+
+        let self_value = match self_abi.mode {
+            abi::PassMode::Ignore => fallback!(),
+            abi::PassMode::Direct => {
+                let self_is_ref_like = matches!(
+                    self_input_ty.kind(),
+                    TyKind::Reference(..) | TyKind::Pointer(..)
+                );
+                if self_is_ref_like {
+                    data_ptr.as_basic_value_enum()
+                } else {
+                    let Some(load_ty) = self
+                        .lower_ty(self_input_ty)
+                        .or_else(|| self.lower_ty(self_abi.ty))
+                    else {
+                        fallback!();
+                    };
+                    let loaded =
+                        match self
+                            .builder
+                            .build_load(load_ty, data_ptr, "devirt_self_load")
+                        {
+                            Ok(v) => v,
+                            Err(_) => fallback!(),
+                        };
+                    loaded
+                }
+            }
+            abi::PassMode::Indirect { .. } => data_ptr.as_basic_value_enum(),
+        };
+
+        let mut lowered_args =
+            self.lower_call_args_with_fn_abi(body, locals, args, destination, &fn_abi)?;
+        let self_slot = if matches!(fn_abi.ret.mode, abi::PassMode::Indirect { .. }) {
+            1
+        } else {
+            0
+        };
+        let Some(slot) = lowered_args.get_mut(self_slot) else {
+            fallback!();
+        };
+        *slot = self_value;
+
+        let call_site = self.emit_direct_call_maybe_unwind(
+            callable,
+            &lowered_args,
+            normal_bb,
+            unwind_target,
+            "devirt_call",
+        )?;
+        self.store_direct_call_result(body, locals, destination, &fn_abi, call_site)?;
+        crate::mir::optimize::devirtualize::bump_codegen_used();
+        Ok(true)
+    }
+
     pub(super) fn lower_virtual_call(
         &mut self,
         body: &mir::Body<'gcx>,
@@ -1078,6 +1198,49 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         // Rc release of old destination can be inserted before the branch.
 
         Ok(())
+    }
+
+    fn extract_existential_data_ptr(
+        &self,
+        receiver_ty: Ty<'gcx>,
+        receiver_val: BasicValueEnum<'llvm>,
+    ) -> Option<PointerValue<'llvm>> {
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        match receiver_ty.kind() {
+            TyKind::Reference(inner, _) | TyKind::Pointer(inner, _) => {
+                if !matches!(inner.kind(), TyKind::BoxedExistential { .. }) {
+                    return None;
+                }
+                let BasicValueEnum::PointerValue(struct_ptr) = receiver_val else {
+                    return None;
+                };
+                let Some(BasicTypeEnum::StructType(struct_ty)) = self.lower_ty(inner) else {
+                    return None;
+                };
+                let data_ptr_gep = self
+                    .builder
+                    .build_struct_gep(struct_ty, struct_ptr, 0, "devirt_exist_data_ptr")
+                    .ok()?;
+                let data_ptr = self
+                    .builder
+                    .build_load(ptr_ty, data_ptr_gep, "devirt_exist_data_load")
+                    .ok()?
+                    .into_pointer_value();
+                Some(data_ptr)
+            }
+            TyKind::BoxedExistential { .. } => {
+                let BasicValueEnum::StructValue(struct_val) = receiver_val else {
+                    return None;
+                };
+                let data_ptr = self
+                    .builder
+                    .build_extract_value(struct_val, 0, "devirt_exist_data")
+                    .ok()?
+                    .into_pointer_value();
+                Some(data_ptr)
+            }
+            _ => None,
+        }
     }
 
     fn extract_existential_parts(

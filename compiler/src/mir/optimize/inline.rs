@@ -69,6 +69,7 @@ impl Inline {
                 if let TerminatorKind::Call {
                     func,
                     args,
+                    devirt_hint,
                     destination,
                     target,
                     unwind,
@@ -77,7 +78,11 @@ impl Inline {
                     if !matches!(unwind, CallUnwindAction::Terminate) {
                         return None;
                     }
-                    let (callee_id, gen_args) = extract_callee(func)?;
+                    let (callee_id, gen_args) = if let Some(hint) = devirt_hint {
+                        (hint.impl_def_id, hint.impl_args)
+                    } else {
+                        extract_callee(func)?
+                    };
 
                     if self.should_inline(gcx, callee_id, gen_args) {
                         return Some(CallSite {
@@ -413,6 +418,7 @@ fn remap_terminator<'ctx>(
         TerminatorKind::Call {
             func,
             args,
+            devirt_hint: _,
             destination,
             target,
             unwind,
@@ -422,6 +428,7 @@ fn remap_terminator<'ctx>(
                 .iter()
                 .map(|a| remap_operand(gcx, a, local_map, gen_args))
                 .collect(),
+            devirt_hint: None,
             destination: remap_place(gcx, destination, local_map, gen_args),
             target: block_map[target.index()],
             unwind: match unwind {

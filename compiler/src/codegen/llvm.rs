@@ -2494,9 +2494,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 let ptr = self.project_place(place, body, locals)?;
                 let place_ty = self.place_ty(body, place);
                 let (def, adt_args) = match place_ty.kind() {
-                    TyKind::Adt(def, args)
-                        if def.kind == crate::sema::models::AdtKind::Enum =>
-                    {
+                    TyKind::Adt(def, args) if def.kind == crate::sema::models::AdtKind::Enum => {
                         (def, args)
                     }
                     _ => panic!(
@@ -2527,8 +2525,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         .builder
                         .build_struct_gep(enum_struct, ptr, 0, "enum_discr_ptr")
                         .unwrap();
-                    let discr_val =
-                        self.usize_ty.const_int(variant_index.index() as u64, false);
+                    let discr_val = self.usize_ty.const_int(variant_index.index() as u64, false);
                     let _ = self.builder.build_store(discr_ptr, discr_val).unwrap();
                 }
             }
@@ -2693,9 +2690,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 let ptr = self.project_place(place, body, locals)?;
                 let place_ty = self.place_ty(body, place);
                 let (def, adt_args) = match place_ty.kind() {
-                    TyKind::Adt(def, args)
-                        if def.kind == crate::sema::models::AdtKind::Enum =>
-                    {
+                    TyKind::Adt(def, args) if def.kind == crate::sema::models::AdtKind::Enum => {
                         (def, args)
                     }
                     _ => panic!(
@@ -2714,10 +2709,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 if let Some(npo) = layout.npo {
                     // NPO: discriminant is derived from a null check on the niche pointer.
                     let npo_ty = self.lower_ty(place_ty).expect("npo enum type");
-                    let loaded = self
-                        .builder
-                        .build_load(npo_ty, ptr, "npo_val")
-                        .unwrap();
+                    let loaded = self.builder.build_load(npo_ty, ptr, "npo_val").unwrap();
                     let niche_ptr = match loaded {
                         BasicValueEnum::PointerValue(ptr) => ptr,
                         BasicValueEnum::StructValue(struct_val) => self
@@ -2738,10 +2730,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         .builder
                         .build_select(
                             is_null,
-                            self.usize_ty
-                                .const_int(npo.null_variant as u64, false),
-                            self.usize_ty
-                                .const_int(npo.payload_variant as u64, false),
+                            self.usize_ty.const_int(npo.null_variant as u64, false),
+                            self.usize_ty.const_int(npo.payload_variant as u64, false),
                             "npo_discr",
                         )
                         .unwrap();
@@ -3668,6 +3658,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             mir::TerminatorKind::Call {
                 func,
                 args,
+                devirt_hint,
                 destination,
                 target,
                 unwind,
@@ -3695,6 +3686,20 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     unwind_bb,
                 )? {
                     return Ok(());
+                }
+                if let Some(hint) = devirt_hint {
+                    if self.try_lower_devirtualized_call(
+                        body,
+                        locals,
+                        hint,
+                        args,
+                        destination,
+                        normal_bb,
+                        unwind_bb,
+                    )? {
+                        let _ = self.builder.build_unconditional_branch(normal_bb).unwrap();
+                        return Ok(());
+                    }
                 }
                 let virtual_instance = self.virtual_instance_for_call(func);
                 if let Some(instance) = virtual_instance.as_ref() {
@@ -5308,23 +5313,22 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         ptr_is_storage = true;
                         ty = variant_ty;
                     } else {
-                        let payload_ptr =
-                            if let Some(payload_index) = layout.payload_field_index {
-                                let enum_ty = self.lower_ty(ty).expect("enum");
-                                let enum_struct = enum_ty.into_struct_type();
-                                self.builder
-                                    .build_struct_gep(
-                                        enum_struct,
-                                        ptr,
-                                        payload_index,
-                                        "enum_payload_ptr",
-                                    )
-                                    .unwrap()
-                            } else {
-                                // Zero-sized enum payloads (e.g. Optional[()]) have no dedicated payload field.
-                                // Reuse the enum base address as the variant payload base.
-                                ptr
-                            };
+                        let payload_ptr = if let Some(payload_index) = layout.payload_field_index {
+                            let enum_ty = self.lower_ty(ty).expect("enum");
+                            let enum_struct = enum_ty.into_struct_type();
+                            self.builder
+                                .build_struct_gep(
+                                    enum_struct,
+                                    ptr,
+                                    payload_index,
+                                    "enum_payload_ptr",
+                                )
+                                .unwrap()
+                        } else {
+                            // Zero-sized enum payloads (e.g. Optional[()]) have no dedicated payload field.
+                            // Reuse the enum base address as the variant payload base.
+                            ptr
+                        };
 
                         let _variant_struct = match self.lower_ty(variant_ty) {
                             Some(BasicTypeEnum::StructType(st)) => st,
@@ -5816,11 +5820,7 @@ fn align_up(value: u64, align: u64) -> u64 {
 
 /// Returns `true` when `ty` is guaranteed to never have an all-zero bit pattern,
 /// making it eligible for null-pointer optimization in enums.
-fn is_niche_eligible_ty<'gcx>(
-    gcx: Gcx<'gcx>,
-    ty: Ty<'gcx>,
-    subst: GenericArguments<'gcx>,
-) -> bool {
+fn is_niche_eligible_ty<'gcx>(gcx: Gcx<'gcx>, ty: Ty<'gcx>, subst: GenericArguments<'gcx>) -> bool {
     let ty = if subst.is_empty() {
         ty
     } else {

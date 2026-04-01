@@ -2,8 +2,10 @@ use crate::compile::context::Gcx;
 use crate::error::CompileResult;
 use crate::mir::{Body, MirPhase};
 
+pub mod alloc_escape;
 pub mod async_transform;
 pub mod coalesce;
+pub mod devirtualize;
 pub mod dse;
 pub mod escape;
 pub mod inline;
@@ -63,6 +65,7 @@ pub fn run_local_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileR
 pub fn run_global_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
     let mut passes: Vec<Box<dyn MirPass>> = vec![
         Box::new(async_transform::AsyncTransform),
+        Box::new(devirtualize::DevirtualizeStaticCalls),
         Box::new(inline::Inline::default()),
         Box::new(passes::SimplifyCfg), // Clean up after inlining (merges blocks, removes unreachable)
         Box::new(passes::LowerAggregates),
@@ -72,6 +75,8 @@ pub fn run_global_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> Compile
         Box::new(propagate::CopyPropagation),
         Box::new(coalesce::TempCoalescing),
         Box::new(coalesce::RepeatFieldForwarding),
+        Box::new(alloc_escape::AllocEscapeAnalysis),
+        Box::new(alloc_escape::StackPromoteAllocations),
         Box::new(dse::DeadStoreElimination),
         Box::new(passes::DeadLocalElimination),
         // Interprocedural escape analysis (uses precomputed summaries)

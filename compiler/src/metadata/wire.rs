@@ -1033,6 +1033,7 @@ pub enum TerminatorKindWire {
     Call {
         func: OperandWire,
         args: Vec<OperandWire>,
+        devirt_hint: Option<DevirtHintWire>,
         destination: PlaceWire,
         target: u32,
         unwind: CallUnwindActionWire,
@@ -1048,6 +1049,13 @@ pub enum TerminatorKindWire {
 pub enum CallUnwindActionWire {
     Cleanup(u32),
     Terminate,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DevirtHintWire {
+    pub impl_def_id: DefIdWire,
+    pub impl_args: Vec<GenericArgumentWire>,
+    pub concrete_self_ty: TyWire,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3821,6 +3829,31 @@ pub fn unwind_from_wire(v: &CallUnwindActionWire) -> mir::CallUnwindAction {
     }
 }
 
+fn devirt_hint_to_wire(v: &mir::DevirtHint<'_>) -> DevirtHintWire {
+    DevirtHintWire {
+        impl_def_id: def_to_wire(v.impl_def_id),
+        impl_args: v
+            .impl_args
+            .iter()
+            .map(|arg| generic_arg_to_wire(*arg))
+            .collect(),
+        concrete_self_ty: ty_to_wire(v.concrete_self_ty),
+    }
+}
+
+fn devirt_hint_from_wire<'a>(gcx: GlobalContext<'a>, v: &DevirtHintWire) -> mir::DevirtHint<'a> {
+    mir::DevirtHint {
+        impl_def_id: def_from_wire(&v.impl_def_id),
+        impl_args: gcx.store.interners.intern_generic_args(
+            v.impl_args
+                .iter()
+                .map(|arg| generic_arg_from_wire(gcx, arg))
+                .collect(),
+        ),
+        concrete_self_ty: ty_from_wire(gcx, &v.concrete_self_ty),
+    }
+}
+
 pub fn terminator_to_wire(v: &mir::Terminator<'_>) -> TerminatorWire {
     TerminatorWire {
         kind: match &v.kind {
@@ -3846,12 +3879,14 @@ pub fn terminator_to_wire(v: &mir::Terminator<'_>) -> TerminatorWire {
             mir::TerminatorKind::Call {
                 func,
                 args,
+                devirt_hint,
                 destination,
                 target,
                 unwind,
             } => TerminatorKindWire::Call {
                 func: operand_to_wire(func),
                 args: args.iter().map(operand_to_wire).collect(),
+                devirt_hint: devirt_hint.as_ref().map(devirt_hint_to_wire),
                 destination: place_to_wire(destination),
                 target: target.index() as u32,
                 unwind: unwind_to_wire(*unwind),
@@ -3899,12 +3934,16 @@ pub fn terminator_from_wire<'a>(
             TerminatorKindWire::Call {
                 func,
                 args,
+                devirt_hint,
                 destination,
                 target,
                 unwind,
             } => mir::TerminatorKind::Call {
                 func: operand_from_wire(gcx, func),
                 args: args.iter().map(|arg| operand_from_wire(gcx, arg)).collect(),
+                devirt_hint: devirt_hint
+                    .as_ref()
+                    .map(|hint| devirt_hint_from_wire(gcx, hint)),
                 destination: place_from_wire(gcx, destination),
                 target: mir::BasicBlockId::from_raw(*target),
                 unwind: unwind_from_wire(unwind),

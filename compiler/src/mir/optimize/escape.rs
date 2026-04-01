@@ -77,12 +77,14 @@ fn analyze_function_for_summary<'ctx>(
 ) -> EscapeSummary {
     let local_count = body.locals.len();
 
-    // Map from local to parameter index (for params only)
+    // Map from address-like local parameter to parameter index.
     let mut local_to_param: FxHashMap<LocalId, usize> = FxHashMap::default();
     let mut param_count = 0;
     for (local_id, decl) in body.locals.iter_enumerated() {
-        if decl.kind == LocalKind::Param {
+        if decl.kind == LocalKind::Param && is_address_like_ty(decl.ty) {
             local_to_param.insert(local_id, param_count);
+        }
+        if decl.kind == LocalKind::Param {
             param_count += 1;
         }
     }
@@ -102,7 +104,7 @@ fn analyze_function_for_summary<'ctx>(
     let is_ref_local: Vec<bool> = body
         .locals
         .iter()
-        .map(|decl| matches!(decl.ty.kind(), TyKind::Reference(..)))
+        .map(|decl| is_address_like_ty(decl.ty))
         .collect();
 
     // Analyze all statements and terminators
@@ -255,7 +257,7 @@ fn get_external_summary<'ctx>(gcx: Gcx<'ctx>, def_id: DefinitionID) -> EscapeSum
             .inputs
             .iter()
             .map(|p| {
-                let is_ref = matches!(p.ty.kind(), TyKind::Reference(..));
+                let is_ref = is_address_like_ty(p.ty);
                 ParamEscapeInfo {
                     leaks_to_heap: is_ref,
                     flows_to_return: is_ref,
@@ -285,7 +287,7 @@ impl<'ctx> MirPass<'ctx> for EscapeAnalysis {
         let is_ref_local: Vec<bool> = body
             .locals
             .iter()
-            .map(|decl| matches!(decl.ty.kind(), TyKind::Reference(..)))
+            .map(|decl| is_address_like_ty(decl.ty))
             .collect();
 
         for bb in body.basic_blocks.iter() {
@@ -755,10 +757,14 @@ fn ref_local_operand<'a>(body: &Body<'a>, operand: &Operand<'a>) -> Option<Local
                 return None;
             }
             let ty = body.locals[place.local].ty;
-            matches!(ty.kind(), TyKind::Reference(..)).then_some(place.local)
+            is_address_like_ty(ty).then_some(place.local)
         }
         Operand::Constant(_) => None,
     }
+}
+
+fn is_address_like_ty(ty: Ty<'_>) -> bool {
+    matches!(ty.kind(), TyKind::Reference(..) | TyKind::Pointer(..))
 }
 
 fn rewrite_statement<'ctx>(

@@ -94,6 +94,7 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
             TerminatorKind::Call {
                 func,
                 args,
+                devirt_hint,
                 destination,
                 target,
                 unwind,
@@ -109,6 +110,14 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                     self.write_operand(arg, f)?;
                 }
                 write!(f, ") -> bb{:?}", target)?;
+                if let Some(hint) = devirt_hint {
+                    write!(
+                        f,
+                        " [devirt -> {}::<...> self={}]",
+                        self.gcx.definition_symbol_or_fallback(hint.impl_def_id),
+                        hint.concrete_self_ty.format(self.gcx)
+                    )?;
+                }
                 match unwind {
                     CallUnwindAction::Cleanup(bb) => write!(f, " unwind bb{:?}", bb),
                     CallUnwindAction::Terminate => write!(f, " unwind terminate"),

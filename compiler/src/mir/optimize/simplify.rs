@@ -528,12 +528,14 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
                 TerminatorKind::Call {
                     func,
                     args,
+                    devirt_hint: _,
                     destination,
                     target,
                     unwind,
                 } => TerminatorKind::Call {
                     func: remap_operand(func, &remap),
                     args: args.iter().map(|a| remap_operand(a, &remap)).collect(),
+                    devirt_hint: None,
                     destination: remap_place(destination, &remap),
                     target: *target,
                     unwind: *unwind,

@@ -121,6 +121,13 @@ pub enum CallUnwindAction {
 }
 
 #[derive(Debug, Clone)]
+pub struct DevirtHint<'ctx> {
+    pub impl_def_id: DefinitionID,
+    pub impl_args: GenericArguments<'ctx>,
+    pub concrete_self_ty: Ty<'ctx>,
+}
+
+#[derive(Debug, Clone)]
 pub enum TerminatorKind<'ctx> {
     Goto {
         target: BasicBlockId,
@@ -138,6 +145,7 @@ pub enum TerminatorKind<'ctx> {
     Call {
         func: Operand<'ctx>,
         args: Vec<Operand<'ctx>>,
+        devirt_hint: Option<DevirtHint<'ctx>>,
         destination: Place<'ctx>,
         target: BasicBlockId,
         unwind: CallUnwindAction,
