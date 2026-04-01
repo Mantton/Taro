@@ -1,0 +1,185 @@
+import std.io.Error
+import std.intrinsic.{
+    __intrinsic_channel_wait_send,
+    __intrinsic_channel_wait_recv,
+    __intrinsic_mutex_lock,
+    __intrinsic_rwlock_read,
+    __intrinsic_rwlock_write,
+}
+import std.marker.Copy
+import std.result.Result
+
+public struct RawChannel: Copy {
+    id: usize
+}
+
+public struct RawMutex: Copy {
+    id: usize
+}
+
+public struct RawRwLock: Copy {
+    id: usize
+}
+
+public enum ChannelTryRecvStatus {
+    case value
+    case empty
+    case closed
+}
+
+@cfg(os("linux"))
+func errnoWouldBlock() -> int32 {
+    11
+}
+
+@cfg(os("macos"))
+func errnoWouldBlock() -> int32 {
+    35
+}
+
+func errnoBrokenPipe() -> int32 {
+    32
+}
+
+func mapStatus(_ code: int32) -> Result[(), Error] {
+    if code == 0 {
+        return .ok(())
+    }
+    return .err(std.sys.io.mapErrno(code))
+}
+
+public func channelCreate(_ elem_size: usize, _ capacity: usize, _ bounded: bool) -> Result[RawChannel, Error] {
+    if bounded && capacity == 0 {
+        return .err(Error.invalidInput)
+    }
+
+    let id = impChannelCreate(elem_size, capacity, bounded)
+    if id == 0 {
+        return .err(Error.invalidInput)
+    }
+
+    return .ok(RawChannel { id })
+}
+
+public func channelDestroy(_ channel: RawChannel) -> Result[(), Error] {
+    let code = impChannelDestroy(channel.id)
+    mapStatus(code)
+}
+
+public func channelClose(_ channel: &RawChannel) -> Result[(), Error] {
+    let code = impChannelClose(channel.id)
+    mapStatus(code)
+}
+
+public func channelTrySend(_ channel: &RawChannel, _ value_ptr: *const uint8) -> Result[(), Error] {
+    let code = impChannelTrySend(channel.id, value_ptr)
+    mapStatus(code)
+}
+
+public func channelTryRecv(_ channel: &RawChannel, _ out_ptr: *mut uint8) -> Result[ChannelTryRecvStatus, Error] {
+    let code = impChannelTryRecv(channel.id, out_ptr)
+    if code == 0 {
+        return .ok(.value)
+    }
+    if code == errnoWouldBlock() {
+        return .ok(.empty)
+    }
+    if code == errnoBrokenPipe() {
+        return .ok(.closed)
+    }
+    return .err(std.sys.io.mapErrno(code))
+}
+
+public func waitChannelSend(_ channel: &RawChannel) async -> Result[(), Error] {
+    let code = await __intrinsic_channel_wait_send(channel.id)
+    mapStatus(code)
+}
+
+public func waitChannelRecv(_ channel: &RawChannel) async -> Result[(), Error] {
+    let code = await __intrinsic_channel_wait_recv(channel.id)
+    mapStatus(code)
+}
+
+public func mutexCreate() -> Result[RawMutex, Error] {
+    let id = impMutexCreate()
+    if id == 0 {
+        return .err(Error.invalidInput)
+    }
+    return .ok(RawMutex { id })
+}
+
+public func mutexDestroy(_ mutex: RawMutex) -> Result[(), Error] {
+    mapStatus(impMutexDestroy(mutex.id))
+}
+
+public func mutexTryLock(_ mutex: &RawMutex) -> Result[bool, Error] {
+    let code = impMutexTryLock(mutex.id)
+    if code == 0 {
+        return .ok(true)
+    }
+    if code == errnoWouldBlock() {
+        return .ok(false)
+    }
+    return .err(std.sys.io.mapErrno(code))
+}
+
+public func mutexUnlock(_ mutex: &RawMutex) -> Result[(), Error] {
+    mapStatus(impMutexUnlock(mutex.id))
+}
+
+public func waitMutexLock(_ mutex: &RawMutex) async -> Result[(), Error] {
+    let code = await __intrinsic_mutex_lock(mutex.id)
+    mapStatus(code)
+}
+
+public func rwlockCreate() -> Result[RawRwLock, Error] {
+    let id = impRwLockCreate()
+    if id == 0 {
+        return .err(Error.invalidInput)
+    }
+    return .ok(RawRwLock { id })
+}
+
+public func rwlockDestroy(_ lock: RawRwLock) -> Result[(), Error] {
+    mapStatus(impRwLockDestroy(lock.id))
+}
+
+public func rwlockTryRead(_ lock: &RawRwLock) -> Result[bool, Error] {
+    let code = impRwLockTryRead(lock.id)
+    if code == 0 {
+        return .ok(true)
+    }
+    if code == errnoWouldBlock() {
+        return .ok(false)
+    }
+    return .err(std.sys.io.mapErrno(code))
+}
+
+public func rwlockTryWrite(_ lock: &RawRwLock) -> Result[bool, Error] {
+    let code = impRwLockTryWrite(lock.id)
+    if code == 0 {
+        return .ok(true)
+    }
+    if code == errnoWouldBlock() {
+        return .ok(false)
+    }
+    return .err(std.sys.io.mapErrno(code))
+}
+
+public func rwlockUnlockRead(_ lock: &RawRwLock) -> Result[(), Error] {
+    mapStatus(impRwLockUnlockRead(lock.id))
+}
+
+public func rwlockUnlockWrite(_ lock: &RawRwLock) -> Result[(), Error] {
+    mapStatus(impRwLockUnlockWrite(lock.id))
+}
+
+public func waitRwLockRead(_ lock: &RawRwLock) async -> Result[(), Error] {
+    let code = await __intrinsic_rwlock_read(lock.id)
+    mapStatus(code)
+}
+
+public func waitRwLockWrite(_ lock: &RawRwLock) async -> Result[(), Error] {
+    let code = await __intrinsic_rwlock_write(lock.id)
+    mapStatus(code)
+}

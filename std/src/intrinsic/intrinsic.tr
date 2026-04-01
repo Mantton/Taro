@@ -104,5 +104,10 @@ extern "taro_intrinsic" {
     func __intrinsic_task_group_destroy_and_rethrow(_ group: usize)
     func __intrinsic_wait_readable(_ source_id: usize) async -> int32
     func __intrinsic_wait_writable(_ source_id: usize) async -> int32
+    func __intrinsic_channel_wait_send(_ channel_id: usize) async -> int32
+    func __intrinsic_channel_wait_recv(_ channel_id: usize) async -> int32
+    func __intrinsic_mutex_lock(_ mutex_id: usize) async -> int32
+    func __intrinsic_rwlock_read(_ lock_id: usize) async -> int32
+    func __intrinsic_rwlock_write(_ lock_id: usize) async -> int32
     func __intrinsic_sleep(_ duration: std.time.Duration) async -> ()
 }

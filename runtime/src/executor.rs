@@ -701,6 +701,7 @@ impl Scheduler {
         };
 
         io_poller::cancel_task(task_token);
+        crate::sync::task_finalized(task_token);
         self.clear_task_timer(task_token);
         if !frame.is_null() {
             crate::garbage_collector::unlink_shadow_frame_if_present(
@@ -779,6 +780,7 @@ impl Scheduler {
         };
 
         io_poller::cancel_task(task_token);
+        crate::sync::task_finalized(task_token);
         self.clear_task_timer(task_token);
         if !frame.is_null() {
             crate::garbage_collector::unlink_shadow_frame_if_present(
@@ -837,6 +839,7 @@ impl Scheduler {
         };
 
         io_poller::cancel_task(task_token);
+        crate::sync::task_finalized(task_token);
         self.clear_task_timer(task_token);
         if !frame.is_null() {
             crate::garbage_collector::unlink_shadow_frame_if_present(
@@ -1291,6 +1294,7 @@ impl Scheduler {
                 continue;
             };
             io_poller::cancel_task(task_token);
+            crate::sync::task_finalized(task_token);
             self.clear_task_timer(task_token);
             if !frame.is_null() {
                 crate::garbage_collector::unlink_shadow_frame_if_present(
@@ -1395,6 +1399,10 @@ fn current_worker_scheduler() -> Option<Arc<Scheduler>> {
 
 fn current_worker_id() -> Option<usize> {
     WORKER_CONTEXT.with(|cell| cell.borrow().as_ref().map(|context| context.worker_id))
+}
+
+pub(crate) fn current_task_token() -> Option<TaskToken> {
+    WORKER_CONTEXT.with(|cell| cell.borrow().as_ref().and_then(|context| context.current_task))
 }
 
 /// Entry point: run an async handle to completion using the multithreaded
@@ -1879,6 +1887,20 @@ pub(crate) fn register_io_wait(source_id: usize, interest: Interest) -> Result<(
             .expect("async io polled with no current task");
 
         io_poller::register_wait(source_id, current, interest)?;
+        context.current_task_blocked = true;
+        Ok(())
+    })
+}
+
+pub(crate) fn register_sync_wait(sync_id: usize, kind: crate::sync::WaitKind) -> Result<(), i32> {
+    WORKER_CONTEXT.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        let context = borrow.as_mut().expect("sync wait polled outside executor");
+        let current = context
+            .current_task
+            .expect("sync wait polled with no current task");
+
+        crate::sync::register_wait(current, sync_id, kind)?;
         context.current_task_blocked = true;
         Ok(())
     })

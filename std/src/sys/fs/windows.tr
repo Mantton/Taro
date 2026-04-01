@@ -46,6 +46,10 @@ func impSeek(_ file: &PlatformFile, _ offset: isize, _ whence: int32) -> Result[
     std.panic.todo("std.sys.fs.seek not implemented on windows yet")
 }
 
+func impIntoAsyncStream(_ file: &mut PlatformFile) -> Result[std.sys.io.RawAsyncStream, Error] {
+    std.panic.todo("std.sys.fs.intoAsyncStream not implemented on windows yet")
+}
+
 func impCreateDir(_ path: string) -> Result[(), Error] {
     std.panic.todo("std.sys.fs.createDir not implemented on windows yet")
 }

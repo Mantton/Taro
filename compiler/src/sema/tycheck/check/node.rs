@@ -3253,14 +3253,18 @@ impl<'ctx> Checker<'ctx> {
                 if let Some(bound_args) = instantiation_args
                     && let Some(bound) = self.try_resolve_fn_bound(original_ty, def_id, bound_args)
                 {
+                    let expectation_ty =
+                        self.freshen_method_expectation_ty(def_id, bound.fn_signature_ty, name.span, cs);
                     input_expectations.push(ArgumentExpectation {
-                        ty: bound.fn_signature_ty,
+                        ty: expectation_ty,
                         expects_async_callable: bound.expects_async_callable,
                     });
                 } else {
+                    let expectation_ty =
+                        self.freshen_method_expectation_ty(def_id, instantiated_ty, name.span, cs);
                     input_expectations.push(ArgumentExpectation {
-                        ty: instantiated_ty,
-                        expects_async_callable: self.ty_is_known_async_callable(instantiated_ty),
+                        ty: expectation_ty,
+                        expects_async_callable: self.ty_is_known_async_callable(expectation_ty),
                     });
                 }
             }
@@ -3344,6 +3348,86 @@ impl<'ctx> Checker<'ctx> {
                     TyKind::Reference(_, hir::Mutability::Mutable)
                 )
             })
+    }
+
+    fn freshen_method_expectation_ty(
+        &self,
+        def_id: DefinitionID,
+        ty: Ty<'ctx>,
+        span: Span,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        use rustc_hash::FxHashSet;
+
+        fn collect_generic_param_indices<'ctx>(ty: Ty<'ctx>, indices: &mut FxHashSet<usize>) {
+            use crate::sema::models::TyKind;
+
+            match ty.kind() {
+                TyKind::Array { element, .. } => {
+                    collect_generic_param_indices(element, indices);
+                }
+                TyKind::Parameter(param) => {
+                    indices.insert(param.index);
+                }
+                TyKind::Reference(inner, _) | TyKind::Pointer(inner, _) => {
+                    collect_generic_param_indices(inner, indices);
+                }
+                TyKind::Tuple(items) => {
+                    for &item in items.iter() {
+                        collect_generic_param_indices(item, indices);
+                    }
+                }
+                TyKind::FnPointer { inputs, output } => {
+                    for &input in inputs.iter() {
+                        collect_generic_param_indices(input, indices);
+                    }
+                    collect_generic_param_indices(output, indices);
+                }
+                TyKind::Closure {
+                    captured_generics,
+                    inputs,
+                    output,
+                    ..
+                } => {
+                    for &arg in captured_generics.iter() {
+                        if let GenericArgument::Type(inner) = arg {
+                            collect_generic_param_indices(inner, indices);
+                        }
+                    }
+                    for &input in inputs.iter() {
+                        collect_generic_param_indices(input, indices);
+                    }
+                    collect_generic_param_indices(output, indices);
+                }
+                TyKind::Adt(_, args) | TyKind::Alias { args, .. } => {
+                    for &arg in args.iter() {
+                        if let GenericArgument::Type(inner) = arg {
+                            collect_generic_param_indices(inner, indices);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut indices = FxHashSet::default();
+        collect_generic_param_indices(ty, &mut indices);
+        if indices.is_empty() {
+            return ty;
+        }
+
+        let mut args: Vec<GenericArgument<'ctx>> = GenericsBuilder::identity_for_item(self.gcx(), def_id)
+            .iter()
+            .copied()
+            .collect();
+        for param in self.gcx().generics_of(def_id).parameters.iter() {
+            if indices.contains(&param.index) {
+                args[param.index] = cs.infer_cx.var_for_generic_param(param, span);
+            }
+        }
+        let args = self.gcx().store.interners.intern_generic_args(args);
+
+        instantiate_ty_with_args(self.gcx(), ty, args)
     }
 
     fn collect_inherent_instance_candidates(

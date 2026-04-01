@@ -1,0 +1,166 @@
+@cfg(family("unix"))
+@test
+func channelTrySendAndTryRecv() async {
+    let channelRes = std.sync.bounded[int32](1)
+    let channel = match channelRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("bounded channel create should succeed")
+    }
+
+    match channel.trySend(41_i32) {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("first trySend should succeed")
+    }
+
+    let fullRes = channel.trySend(42_i32)
+    match fullRes {
+        case .ok(_) => std.panic.panic("second trySend should be full")
+        case .err(err) => match err {
+            case .full => {}
+            case _ => std.panic.panic("expected .full from second trySend")
+        }
+    }
+
+    let recvRes = channel.tryRecv()
+    let first = match recvRes {
+        case .ok(.some(value)) => value
+        case .ok(.none) => std.panic.panic("channel should still contain one value")
+        case .err(_) => std.panic.panic("tryRecv should succeed with a value")
+    }
+    std.testing.assertEqual(first, 41_i32, "channel should return the queued value")
+
+    let emptyRes = channel.tryRecv()
+    match emptyRes {
+        case .ok(_) => std.panic.panic("empty channel tryRecv should report .empty")
+        case .err(err) => match err {
+            case .empty => {}
+            case _ => std.panic.panic("expected .empty from empty tryRecv")
+        }
+    }
+
+    std.testing.assertTrue(channel.close().isOk(), "channel close should succeed")
+
+    let drained = await channel.recv()
+    match drained {
+        case .none => {}
+        case .some(_) => std.panic.panic("closed+drained channel recv should return none")
+    }
+
+    std.testing.assertTrue(channel.destroy().isOk(), "channel destroy should succeed")
+}
+
+@cfg(family("unix"))
+@test
+func channelRecvWakeOnClose() async {
+    let channel = match std.sync.bounded[int32](1) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("channel create should succeed")
+    }
+
+    let waiting = channel
+    let waiter = std.task.spawn(|| async {
+        let value = await waiting.recv()
+        match value {
+            case .none => return 1_i32
+            case .some(_) => return 0_i32
+        }
+    })
+
+    await std.testing.yieldNow()
+    std.testing.assertTrue(channel.close().isOk(), "close should wake recv waiters")
+
+    let waited = (await waiter.result()).unwrap()
+    std.testing.assertEqual(waited, 1_i32, "waiter should observe channel closure")
+    std.testing.assertTrue(channel.destroy().isOk(), "channel destroy should succeed")
+}
+
+@cfg(family("unix"))
+@test
+func mutexGuardAndWithLock() async {
+    let mutexRes = std.sync.Mutex[int32].new(7_i32)
+    let mutex = match mutexRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("mutex create should succeed")
+    }
+
+    let guardRes = await mutex.lock()
+    var held = match guardRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("mutex lock should succeed")
+    }
+
+    *held.value() = 10_i32
+
+    let nestedTry = mutex.tryLock()
+    match nestedTry {
+        case .ok(_) => std.panic.panic("nested tryLock should report wouldBlock")
+        case .err(err) => {
+            match err {
+                case .wouldBlock => {}
+                case _ => std.panic.panic("nested tryLock should return wouldBlock")
+            }
+        }
+    }
+
+    std.testing.assertTrue(held.unlock().isOk(), "mutex unlock should succeed")
+
+    let withLockRes: std.result.Result[int32, std.io.Error] = await mutex.withLock(|value: &mut int32| {
+        *value = *value + 1_i32
+        return *value
+    })
+    let updated = match withLockRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("withLock should succeed")
+    }
+    std.testing.assertEqual(updated, 11_i32, "withLock should mutate and return state")
+
+    std.testing.assertTrue(mutex.destroy().isOk(), "mutex destroy should succeed")
+}
+
+@cfg(family("unix"))
+@test
+func rwlockReadWriteGuardsAndTryMethods() async {
+    let lockRes = std.sync.RwLock[int32].new(5_i32)
+    let lock = match lockRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("rwlock create should succeed")
+    }
+
+    let readGuardRes = await lock.read()
+    let readGuard = match readGuardRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("read lock should succeed")
+    }
+
+    std.testing.assertEqual(*readGuard.value(), 5_i32, "read guard should see initial value")
+
+    let blockedWrite = lock.tryWrite()
+    match blockedWrite {
+        case .ok(_) => std.panic.panic("tryWrite should block while read guard is held")
+        case .err(err) => match err {
+            case .wouldBlock => {}
+            case _ => std.panic.panic("tryWrite should return wouldBlock")
+        }
+    }
+
+    std.testing.assertTrue(readGuard.unlock().isOk(), "read unlock should succeed")
+
+    let writeGuardRes = await lock.write()
+    var writeGuard = match writeGuardRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("write lock should succeed")
+    }
+    *writeGuard.value() = 17_i32
+    std.testing.assertTrue(writeGuard.unlock().isOk(), "write unlock should succeed")
+
+    let afterRes: std.result.Result[int32, std.io.Error] = await lock.withRead(|value: &int32| {
+        return *value
+    })
+    let after = match afterRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("withRead should succeed")
+    }
+    std.testing.assertEqual(after, 17_i32, "write guard mutation should be observable")
+
+    std.testing.assertTrue(lock.destroy().isOk(), "rwlock destroy should succeed")
+}

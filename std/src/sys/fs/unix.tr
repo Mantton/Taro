@@ -142,6 +142,16 @@ func impSeek(_ file: &PlatformFile, _ offset: isize, _ whence: int32) -> Result[
     return .ok(res)
 }
 
+func impIntoAsyncStream(_ file: &mut PlatformFile) -> Result[std.sys.io.RawAsyncStream, Error] {
+    if file.fd < 0 {
+        return .err(Error.invalidInput)
+    }
+
+    let fd = file.fd
+    file.fd = -1
+    std.sys.io.adoptFd(fd)
+}
+
 func impCreateDir(_ path: string) -> Result[(), Error] {
     let cpath = CString.new(path)
     let res = std.libc.mkdir(cpath.asPtr(), DEFAULT_DIR_MODE)

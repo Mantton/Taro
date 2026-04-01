@@ -429,6 +429,51 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 AsyncRuntimeFn::WaitWritable,
             );
         }
+        if self.is_hidden_channel_wait_send_intrinsic(callee) {
+            return self.lower_io_wait_call(
+                destination,
+                block,
+                args,
+                span,
+                AsyncRuntimeFn::ChannelWaitSend,
+            );
+        }
+        if self.is_hidden_channel_wait_recv_intrinsic(callee) {
+            return self.lower_io_wait_call(
+                destination,
+                block,
+                args,
+                span,
+                AsyncRuntimeFn::ChannelWaitRecv,
+            );
+        }
+        if self.is_hidden_mutex_lock_intrinsic(callee) {
+            return self.lower_io_wait_call(
+                destination,
+                block,
+                args,
+                span,
+                AsyncRuntimeFn::MutexLock,
+            );
+        }
+        if self.is_hidden_rwlock_read_intrinsic(callee) {
+            return self.lower_io_wait_call(
+                destination,
+                block,
+                args,
+                span,
+                AsyncRuntimeFn::RwLockRead,
+            );
+        }
+        if self.is_hidden_rwlock_write_intrinsic(callee) {
+            return self.lower_io_wait_call(
+                destination,
+                block,
+                args,
+                span,
+                AsyncRuntimeFn::RwLockWrite,
+            );
+        }
         if self.is_hidden_sleep_intrinsic(callee) {
             return self.lower_sleep_call(destination, block, args, span);
         }
@@ -1832,6 +1877,26 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             self.gcx.definition_ident(id).symbol,
             "__intrinsic_wait_writable",
         )
+    }
+
+    fn is_hidden_channel_wait_send_intrinsic(&self, callee: ExprId) -> bool {
+        self.is_hidden_intrinsic_named(callee, "__intrinsic_channel_wait_send")
+    }
+
+    fn is_hidden_channel_wait_recv_intrinsic(&self, callee: ExprId) -> bool {
+        self.is_hidden_intrinsic_named(callee, "__intrinsic_channel_wait_recv")
+    }
+
+    fn is_hidden_mutex_lock_intrinsic(&self, callee: ExprId) -> bool {
+        self.is_hidden_intrinsic_named(callee, "__intrinsic_mutex_lock")
+    }
+
+    fn is_hidden_rwlock_read_intrinsic(&self, callee: ExprId) -> bool {
+        self.is_hidden_intrinsic_named(callee, "__intrinsic_rwlock_read")
+    }
+
+    fn is_hidden_rwlock_write_intrinsic(&self, callee: ExprId) -> bool {
+        self.is_hidden_intrinsic_named(callee, "__intrinsic_rwlock_write")
     }
 
     fn is_hidden_intrinsic_named(&self, callee: ExprId, name: &str) -> bool {

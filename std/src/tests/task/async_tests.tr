@@ -789,6 +789,47 @@ func asyncStreamSupportsConcurrentReadWaiters() async {
     SHARED_PIPE_WRITE_STREAM = .none
 }
 
+@cfg(family("unix"))
+@test
+func asyncStreamHelperApisRoundTrip() async {
+    let pipeRes = std.io.task.pipe()
+    let pair = match pipeRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("pipe() should succeed on unix")
+    }
+
+    let reader = pair.0
+    let writer = pair.1
+
+    let writerTask = std.task.spawn(|| async {
+        let writeRes = await std.io.task.writeString(&writer, "helper-apis")
+        match writeRes {
+            case .ok(_) => {}
+            case .err(_) => std.panic.panic("async stream writeString should succeed")
+        }
+        match writer.close() {
+            case .ok(_) => {}
+            case .err(_) => std.panic.panic("async stream close should succeed")
+        }
+        return 1_i32
+    })
+
+    let textRes = await std.io.task.readToString(&reader)
+    let text = match textRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("readToString helper should succeed")
+    }
+    std.testing.assertEqual(text, "helper-apis", "async helper readToString should read the full stream")
+
+    let done = (await writerTask.result()).unwrap()
+    std.testing.assertEqual(done, 1_i32, "writer task should complete")
+
+    match reader.close() {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("reader close should succeed")
+    }
+}
+
 func applyAsyncMut[F: std.ops.AsyncFnMut(int32) -> int32](_ f: F, _ x: int32) async -> int32 {
     var f = f
     let first = await f(x)

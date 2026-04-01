@@ -343,3 +343,36 @@ func testOpenOptionsInvalidConfigurations() {
         }
     }
 }
+
+@cfg(family("unix"))
+@test
+func testAsyncFileRoundTrip() async {
+    let path = "taro_fs_async_round_trip.txt"
+    let payload = "async fs payload"
+
+    let createRes = std.fs.task.AsyncFile.create(path)
+    let writer = match createRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("async create should succeed")
+    }
+
+    let writeRes = await writer.writeString(payload)
+    std.assert(writeRes.isOk(), "async writeString should succeed")
+    std.assert(writer.close().isOk(), "async writer close should succeed")
+
+    let openRes = std.fs.task.AsyncFile.open(path)
+    let reader = match openRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("async open should succeed")
+    }
+
+    let textRes = await reader.readToString()
+    let content = match textRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("async readToString should succeed")
+    }
+    std.assert(std.string.stringEq(content, payload), "async file contents should round-trip")
+
+    std.assert(reader.close().isOk(), "async reader close should succeed")
+    std.assert(std.fs.removeFile(path).isOk(), "async file cleanup should succeed")
+}

@@ -1,0 +1,39 @@
+// CHECK_ONLY
+
+import std.io.Error
+import std.result.Result
+
+struct Boxed[T] {
+    value: T
+}
+
+impl[T] Boxed[T] {
+    func withOut[R, F: std.ops.FnOnce(&mut T) -> R](&self, _ f: F) -> Result[R, Error] {
+        let ptr = unsafe { (&self.value as *const T) as *mut T }
+        let out = f(unsafe { ptr as &mut T })
+        return .ok(out)
+    }
+
+    func withOutAsync[R, F: std.ops.FnOnce(&mut T) -> R](&self, _ f: F) async -> Result[R, Error] {
+        let ptr = unsafe { (&self.value as *const T) as *mut T }
+        let out = f(unsafe { ptr as &mut T })
+        return .ok(out)
+    }
+}
+
+func main() async {
+    let boxed = Boxed[int32] { value: 10 }
+
+    let syncRes: Result[int32, Error] = boxed.withOut(|value: &mut int32| {
+        *value = *value + 1
+        return *value
+    })
+
+    let asyncRes: Result[int32, Error] = await boxed.withOutAsync(|value: &mut int32| {
+        *value = *value + 1
+        return *value
+    })
+
+    let _ = syncRes
+    let _ = asyncRes
+}

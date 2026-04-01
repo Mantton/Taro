@@ -1580,6 +1580,11 @@ pub(crate) enum AsyncRuntimeFn {
     CancelTask,
     WaitReadable,
     WaitWritable,
+    ChannelWaitSend,
+    ChannelWaitRecv,
+    MutexLock,
+    RwLockRead,
+    RwLockWrite,
     Sleep,
     YieldNow,
     IsTaskCancelled,
@@ -1645,6 +1650,31 @@ pub(crate) fn find_or_register_async_runtime_function<'ctx>(
         ),
         AsyncRuntimeFn::WaitWritable => (
             "__rt__async_wait_writable",
+            vec![gcx.types.uint],
+            gcx.async_handle_ty(),
+        ),
+        AsyncRuntimeFn::ChannelWaitSend => (
+            "__rt__async_channel_wait_send",
+            vec![gcx.types.uint],
+            gcx.async_handle_ty(),
+        ),
+        AsyncRuntimeFn::ChannelWaitRecv => (
+            "__rt__async_channel_wait_recv",
+            vec![gcx.types.uint],
+            gcx.async_handle_ty(),
+        ),
+        AsyncRuntimeFn::MutexLock => (
+            "__rt__async_mutex_lock",
+            vec![gcx.types.uint],
+            gcx.async_handle_ty(),
+        ),
+        AsyncRuntimeFn::RwLockRead => (
+            "__rt__async_rwlock_read",
+            vec![gcx.types.uint],
+            gcx.async_handle_ty(),
+        ),
+        AsyncRuntimeFn::RwLockWrite => (
+            "__rt__async_rwlock_write",
             vec![gcx.types.uint],
             gcx.async_handle_ty(),
         ),

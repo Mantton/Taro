@@ -15,6 +15,10 @@ public struct TcpStream {
     inner: std.sys.net.task.RawAsyncSocket
 }
 
+public struct UdpSocket {
+    inner: std.sys.net.task.RawAsyncSocket
+}
+
 impl TcpListener {
     public func bind(_ address: SocketAddress) -> Result[TcpListener, Error] {
         TcpListener.bindWithBacklog(address, DEFAULT_TCP_BACKLOG)
@@ -177,5 +181,42 @@ impl TcpStream {
         }
 
         return .ok(())
+    }
+}
+
+impl UdpSocket {
+    public func bind(_ address: SocketAddress) -> Result[UdpSocket, Error] {
+        let socketRes = std.sys.net.task.socket(std.sys.net.domainForAddress(address), .datagram)
+        var socket = match socketRes {
+            case .ok(value) => value
+            case .err(err) => return .err(err)
+        }
+
+        let bindRes = std.sys.net.task.bind(&socket, address)
+        match bindRes {
+            case .ok(_) => {}
+            case .err(err) => {
+                let _ = std.sys.net.task.close(socket)
+                return .err(err)
+            }
+        }
+
+        return .ok(UdpSocket { inner: socket })
+    }
+
+    public func localAddress(&self) -> Result[SocketAddress, Error] {
+        std.sys.net.task.localAddress(&self.inner)
+    }
+
+    public func sendTo(&self, _ buf: Span[uint8], _ address: SocketAddress) async -> Result[usize, Error] {
+        await std.sys.net.task.sendTo(&self.inner, buf, address)
+    }
+
+    public func recvFrom(&self, _ buf: MutableSpan[uint8]) async -> Result[(usize, SocketAddress), Error] {
+        await std.sys.net.task.recvFrom(&self.inner, buf)
+    }
+
+    public func close(self) -> Result[(), Error] {
+        std.sys.net.task.close(self.inner)
     }
 }

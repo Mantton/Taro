@@ -1,0 +1,82 @@
+//+cfg family("unix")
+
+extern "taro_rt" {
+    func __rt__sync_channel_create(_ elem_size: usize, _ capacity: usize, _ bounded: uint8) -> usize
+    func __rt__sync_channel_destroy(_ channel_id: usize) -> int32
+    func __rt__sync_channel_close(_ channel_id: usize) -> int32
+    func __rt__sync_channel_try_send(_ channel_id: usize, _ value_ptr: *const uint8) -> int32
+    func __rt__sync_channel_try_recv(_ channel_id: usize, _ out_ptr: *mut uint8) -> int32
+
+    func __rt__sync_mutex_create() -> usize
+    func __rt__sync_mutex_destroy(_ mutex_id: usize) -> int32
+    func __rt__sync_mutex_try_lock(_ mutex_id: usize) -> int32
+    func __rt__sync_mutex_unlock(_ mutex_id: usize) -> int32
+
+    func __rt__sync_rwlock_create() -> usize
+    func __rt__sync_rwlock_destroy(_ lock_id: usize) -> int32
+    func __rt__sync_rwlock_try_read(_ lock_id: usize) -> int32
+    func __rt__sync_rwlock_try_write(_ lock_id: usize) -> int32
+    func __rt__sync_rwlock_unlock_read(_ lock_id: usize) -> int32
+    func __rt__sync_rwlock_unlock_write(_ lock_id: usize) -> int32
+}
+
+func impChannelCreate(_ elem_size: usize, _ capacity: usize, _ bounded: bool) -> usize {
+    let boundedByte: uint8 = if bounded { 1_u8 } else { 0_u8 }
+    __rt__sync_channel_create(elem_size, capacity, boundedByte)
+}
+
+func impChannelDestroy(_ channel_id: usize) -> int32 {
+    __rt__sync_channel_destroy(channel_id)
+}
+
+func impChannelClose(_ channel_id: usize) -> int32 {
+    __rt__sync_channel_close(channel_id)
+}
+
+func impChannelTrySend(_ channel_id: usize, _ value_ptr: *const uint8) -> int32 {
+    __rt__sync_channel_try_send(channel_id, value_ptr)
+}
+
+func impChannelTryRecv(_ channel_id: usize, _ out_ptr: *mut uint8) -> int32 {
+    __rt__sync_channel_try_recv(channel_id, out_ptr)
+}
+
+func impMutexCreate() -> usize {
+    __rt__sync_mutex_create()
+}
+
+func impMutexDestroy(_ mutex_id: usize) -> int32 {
+    __rt__sync_mutex_destroy(mutex_id)
+}
+
+func impMutexTryLock(_ mutex_id: usize) -> int32 {
+    __rt__sync_mutex_try_lock(mutex_id)
+}
+
+func impMutexUnlock(_ mutex_id: usize) -> int32 {
+    __rt__sync_mutex_unlock(mutex_id)
+}
+
+func impRwLockCreate() -> usize {
+    __rt__sync_rwlock_create()
+}
+
+func impRwLockDestroy(_ lock_id: usize) -> int32 {
+    __rt__sync_rwlock_destroy(lock_id)
+}
+
+func impRwLockTryRead(_ lock_id: usize) -> int32 {
+    __rt__sync_rwlock_try_read(lock_id)
+}
+
+func impRwLockTryWrite(_ lock_id: usize) -> int32 {
+    __rt__sync_rwlock_try_write(lock_id)
+}
+
+func impRwLockUnlockRead(_ lock_id: usize) -> int32 {
+    __rt__sync_rwlock_unlock_read(lock_id)
+}
+
+func impRwLockUnlockWrite(_ lock_id: usize) -> int32 {
+    __rt__sync_rwlock_unlock_write(lock_id)
+}

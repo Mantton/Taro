@@ -24,6 +24,21 @@ public interface Writer {
     public func flush(&mut self) -> Result[(), Error]
 }
 
+/// The `AsyncReader` interface allows async reads into byte buffers.
+public interface AsyncReader {
+    /// Parses up to `buf.len()` bytes into `buf`, returning the count.
+    public func read(&self, _ buf: MutableSpan[uint8]) async -> Result[usize, Error]
+}
+
+/// The `AsyncWriter` interface allows async writes from byte buffers.
+public interface AsyncWriter {
+    /// Writes some or all bytes from `buf`, returning the written byte count.
+    public func write(&self, _ buf: Span[uint8]) async -> Result[usize, Error]
+
+    /// Flushes buffered output state to the destination.
+    public func flush(&self) async -> Result[(), Error]
+}
+
 /// Enumeration of possible methods to seek within an I/O object.
 public enum SeekFrom {
     /// Sets the offset to the provided number of bytes.

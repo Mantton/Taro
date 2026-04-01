@@ -42,6 +42,10 @@ public func seek(_ file: &RawFile, _ offset: isize, _ whence: int32) -> Result[i
     impSeek(file, offset, whence)
 }
 
+public func intoAsyncStream(_ file: &mut RawFile) -> Result[std.sys.io.RawAsyncStream, Error] {
+    impIntoAsyncStream(file)
+}
+
 public func createDir(_ path: string) -> Result[(), Error] {
     impCreateDir(path)
 }

@@ -1,6 +1,44 @@
-import std.io.Error
+import std.io.{Error, AsyncReader, AsyncWriter}
 import std.mem.{Span, MutableSpan}
 import std.result.Result
+
+const IO_CHUNK_SIZE: usize = 4096
+
+func readSourceLoop(_ source_id: usize, _ buf: *mut uint8, _ len: usize) async -> Result[usize, Error] {
+    loop {
+        let readRes = std.sys.io.readSourceId(source_id, buf, len)
+        match readRes {
+            case .ok(count) => return .ok(count)
+            case .err(.interrupted) => {}
+            case .err(.wouldBlock) => {
+                let waitRes = await std.sys.io.waitReadableSourceId(source_id)
+                match waitRes {
+                    case .ok(_) => {}
+                    case .err(err) => return .err(err)
+                }
+            }
+            case .err(err) => return .err(err)
+        }
+    }
+}
+
+func writeSourceLoop(_ source_id: usize, _ buf: *const uint8, _ len: usize) async -> Result[usize, Error] {
+    loop {
+        let writeRes = std.sys.io.writeSourceId(source_id, buf, len)
+        match writeRes {
+            case .ok(count) => return .ok(count)
+            case .err(.interrupted) => {}
+            case .err(.wouldBlock) => {
+                let waitRes = await std.sys.io.waitWritableSourceId(source_id)
+                match waitRes {
+                    case .ok(_) => {}
+                    case .err(err) => return .err(err)
+                }
+            }
+            case .err(err) => return .err(err)
+        }
+    }
+}
 
 public struct AsyncStream {
     inner: std.sys.io.RawAsyncStream
@@ -44,7 +82,163 @@ public func pipe() -> Result[(AsyncStream, AsyncStream), Error] {
     }
 }
 
+public func writeAll[W: AsyncWriter](_ writer: &W, _ buf: Span[uint8]) async -> Result[(), Error] {
+    let len = buf.len()
+    if len == 0 {
+        return .ok(())
+    }
+
+    var written: usize = 0
+    while written < len {
+        let remaining = buf.slice(written, len - written)
+        let writeRes = await writer.write(remaining)
+        match writeRes {
+            case .ok(count) => {
+                if count == 0 {
+                    return .err(Error.unexpected(0_i32))
+                }
+                written += count
+            }
+            case .err(err) => return .err(err)
+        }
+    }
+
+    return .ok(())
+}
+
+public func writeString[W: AsyncWriter](_ writer: &W, _ s: string) async -> Result[(), Error] {
+    let len = std.string.stringLen(s)
+    if len == 0 {
+        return .ok(())
+    }
+
+    let ptr = std.string.stringData(s)
+    let bytes = Span[uint8].from(ptr, len)
+    await writeAll(writer, bytes)
+}
+
+public func readExact[R: AsyncReader](_ reader: &R, _ buf: MutableSpan[uint8]) async -> Result[(), Error] {
+    let len = buf.len()
+    if len == 0 {
+        return .ok(())
+    }
+
+    var total: usize = 0
+    var writable = buf
+    while total < len {
+        let tail = writable.slice(total, len - total)
+        let readRes = await reader.read(tail)
+        let count = match readRes {
+            case .ok(value) => value
+            case .err(err) => return .err(err)
+        }
+
+        if count == 0 {
+            return .err(Error.unexpected(0_i32))
+        }
+
+        total += count
+    }
+
+    return .ok(())
+}
+
+public func readAtLeast[R: AsyncReader](
+    _ reader: &R,
+    _ min: usize,
+    _ buf: MutableSpan[uint8],
+) async -> Result[usize, Error] {
+    let len = buf.len()
+    if min > len {
+        return .err(Error.invalidInput)
+    }
+
+    if min == 0 {
+        return .ok(0)
+    }
+
+    var total: usize = 0
+    var writable = buf
+    while total < min {
+        let tail = writable.slice(total, len - total)
+        let readRes = await reader.read(tail)
+        let count = match readRes {
+            case .ok(value) => value
+            case .err(err) => return .err(err)
+        }
+
+        if count == 0 {
+            return .err(Error.unexpected(0_i32))
+        }
+
+        total += count
+    }
+
+    return .ok(total)
+}
+
+public func readAll[R: AsyncReader](_ reader: &R) async -> Result[std.collections.List[uint8], Error] {
+    var out = std.collections.List[uint8]()
+    var storage: [uint8; IO_CHUNK_SIZE] = [0; IO_CHUNK_SIZE]
+    let storagePtr = unsafe { (&mut storage as *mut [uint8; IO_CHUNK_SIZE]) as *mut uint8 }
+
+    loop {
+        let readBuf = MutableSpan[uint8].from(storagePtr, IO_CHUNK_SIZE)
+        let readRes = await reader.read(readBuf)
+        match readRes {
+            case .ok(count) => {
+                if count == 0 {
+                    break
+                }
+
+                var idx: usize = 0
+                while idx < count {
+                    out.append(*storage.at(idx))
+                    idx += 1
+                }
+            }
+            case .err(err) => return .err(err)
+        }
+    }
+
+    return .ok(out)
+}
+
+public func readToString[R: AsyncReader](_ reader: &R) async -> Result[string, Error] {
+    let bytesRes = await readAll(reader)
+    let bytes = match bytesRes {
+        case .ok(value) => value
+        case .err(err) => return .err(err)
+    }
+
+    let len = bytes.len()
+    if len == 0 {
+        return .ok("")
+    }
+
+    let data = std.mem.allocBytes(len)
+    var idx: usize = 0
+    while idx < len {
+        data.add(idx).write(*bytes.at(idx))
+        idx += 1
+    }
+
+    return .ok(std.string.stringFromParts(data, len))
+}
+
 impl AsyncStream {
+    public func sourceId(&self) -> usize {
+        std.sys.io.sourceId(&self.inner)
+    }
+
+    public func waitReadable(&self) async -> Result[(), Error] {
+        await std.sys.io.waitReadable(&self.inner)
+    }
+
+    public func waitWritable(&self) async -> Result[(), Error] {
+        await std.sys.io.waitWritable(&self.inner)
+    }
+
     public func close(self) -> Result[(), Error] {
         let stream = self.inner
         std.sys.io.close(stream)
@@ -59,21 +253,7 @@ impl AsyncStream {
         let sourceId = std.sys.io.sourceId(&self.inner)
         var writable = buf
         let ptr = unsafe { writable.at(0) as *mut uint8 }
-        loop {
-            let readRes = std.sys.io.readSourceId(sourceId, ptr, len)
-            match readRes {
-                case .ok(count) => return .ok(count)
-                case .err(.interrupted) => {}
-                case .err(.wouldBlock) => {
-                    let waitRes = await std.sys.io.waitReadableSourceId(sourceId)
-                    match waitRes {
-                        case .ok(_) => {}
-                        case .err(err) => return .err(err)
-                    }
-                }
-                case .err(err) => return .err(err)
-            }
-        }
+        await readSourceLoop(sourceId, ptr, len)
     }
 
     public func write(&self, _ buf: Span[uint8]) async -> Result[usize, Error] {
@@ -84,20 +264,65 @@ impl AsyncStream {
 
         let sourceId = std.sys.io.sourceId(&self.inner)
         let ptr = unsafe { buf.at(0) as *const uint8 }
-        loop {
-            let writeRes = std.sys.io.writeSourceId(sourceId, ptr, len)
-            match writeRes {
-                case .ok(count) => return .ok(count)
-                case .err(.interrupted) => {}
-                case .err(.wouldBlock) => {
-                    let waitRes = await std.sys.io.waitWritableSourceId(sourceId)
-                    match waitRes {
-                        case .ok(_) => {}
-                        case .err(err) => return .err(err)
-                    }
-                }
-                case .err(err) => return .err(err)
-            }
+        await writeSourceLoop(sourceId, ptr, len)
+    }
+
+    public func flush(&self) async -> Result[(), Error] {
+        return .ok(())
+    }
+
+    public func writeAll(&self, _ buf: Span[uint8]) async -> Result[(), Error] {
+        await std.io.task.writeAll(self, buf)
+    }
+
+    public func writeString(&self, _ s: string) async -> Result[(), Error] {
+        await std.io.task.writeString(self, s)
+    }
+
+    public func readExact(&self, _ buf: MutableSpan[uint8]) async -> Result[(), Error] {
+        await std.io.task.readExact(self, buf)
+    }
+
+    public func readAtLeast(&self, _ min: usize, _ buf: MutableSpan[uint8]) async -> Result[usize, Error] {
+        await std.io.task.readAtLeast(self, min, buf)
+    }
+
+    public func readAll(&self) async -> Result[std.collections.List[uint8], Error] {
+        await std.io.task.readAll(self)
+    }
+
+    public func readToString(&self) async -> Result[string, Error] {
+        await std.io.task.readToString(self)
+    }
+}
+
+impl AsyncReader for AsyncStream {
+    public func read(&self, _ buf: MutableSpan[uint8]) async -> Result[usize, Error] {
+        let len = buf.len()
+        if len == 0 {
+            return .ok(0)
         }
+
+        let sourceId = std.sys.io.sourceId(&self.inner)
+        var writable = buf
+        let ptr = unsafe { writable.at(0) as *mut uint8 }
+        await readSourceLoop(sourceId, ptr, len)
+    }
+}
+
+impl AsyncWriter for AsyncStream {
+    public func write(&self, _ buf: Span[uint8]) async -> Result[usize, Error] {
+        let len = buf.len()
+        if len == 0 {
+            return .ok(0)
+        }
+
+        let sourceId = std.sys.io.sourceId(&self.inner)
+        let ptr = unsafe { buf.at(0) as *const uint8 }
+        await writeSourceLoop(sourceId, ptr, len)
+    }
+
+    public func flush(&self) async -> Result[(), Error] {
+        return .ok(())
     }
 }

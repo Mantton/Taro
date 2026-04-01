@@ -1,0 +1,61 @@
+//+cfg family("windows")
+
+func impChannelCreate(_ elem_size: usize, _ capacity: usize, _ bounded: bool) -> usize {
+    std.panic.todo("std.sys.sync.channelCreate not implemented on windows yet")
+}
+
+func impChannelDestroy(_ channel_id: usize) -> int32 {
+    std.panic.todo("std.sys.sync.channelDestroy not implemented on windows yet")
+}
+
+func impChannelClose(_ channel_id: usize) -> int32 {
+    std.panic.todo("std.sys.sync.channelClose not implemented on windows yet")
+}
+
+func impChannelTrySend(_ channel_id: usize, _ value_ptr: *const uint8) -> int32 {
+    std.panic.todo("std.sys.sync.channelTrySend not implemented on windows yet")
+}
+
+func impChannelTryRecv(_ channel_id: usize, _ out_ptr: *mut uint8) -> int32 {
+    std.panic.todo("std.sys.sync.channelTryRecv not implemented on windows yet")
+}
+
+func impMutexCreate() -> usize {
+    std.panic.todo("std.sys.sync.mutexCreate not implemented on windows yet")
+}
+
+func impMutexDestroy(_ mutex_id: usize) -> int32 {
+    std.panic.todo("std.sys.sync.mutexDestroy not implemented on windows yet")
+}
+
+func impMutexTryLock(_ mutex_id: usize) -> int32 {
+    std.panic.todo("std.sys.sync.mutexTryLock not implemented on windows yet")
+}
+
+func impMutexUnlock(_ mutex_id: usize) -> int32 {
+    std.panic.todo("std.sys.sync.mutexUnlock not implemented on windows yet")
+}
+
+func impRwLockCreate() -> usize {
+    std.panic.todo("std.sys.sync.rwlockCreate not implemented on windows yet")
+}
+
+func impRwLockDestroy(_ lock_id: usize) -> int32 {
+    std.panic.todo("std.sys.sync.rwlockDestroy not implemented on windows yet")
+}
+
+func impRwLockTryRead(_ lock_id: usize) -> int32 {
+    std.panic.todo("std.sys.sync.rwlockTryRead not implemented on windows yet")
+}
+
+func impRwLockTryWrite(_ lock_id: usize) -> int32 {
+    std.panic.todo("std.sys.sync.rwlockTryWrite not implemented on windows yet")
+}
+
+func impRwLockUnlockRead(_ lock_id: usize) -> int32 {
+    std.panic.todo("std.sys.sync.rwlockUnlockRead not implemented on windows yet")
+}
+
+func impRwLockUnlockWrite(_ lock_id: usize) -> int32 {
+    std.panic.todo("std.sys.sync.rwlockUnlockWrite not implemented on windows yet")
+}

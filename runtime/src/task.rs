@@ -2,6 +2,7 @@ use std::time::{Duration as StdDuration, Instant};
 
 use crate::garbage_collector::with_gc;
 use crate::io_poller::Interest;
+use crate::sync::WaitKind;
 
 type PollThunk = unsafe extern "C-unwind" fn(frame: *mut u8, ctx: *mut u8, out: *mut u8) -> u8;
 type DropThunk = unsafe extern "C" fn(frame: *mut u8);
@@ -174,6 +175,13 @@ struct IoWaitFrame {
     armed: bool,
 }
 
+#[repr(C)]
+struct SyncWaitFrame {
+    sync_id: usize,
+    kind: u8,
+    armed: bool,
+}
+
 unsafe extern "C" fn spawned_task_drop(frame: *mut u8) {
     if frame.is_null() {
         return;
@@ -281,6 +289,52 @@ unsafe extern "C" fn io_wait_drop(frame: *mut u8) {
     let _ = unsafe { Box::from_raw(frame as *mut IoWaitFrame) };
 }
 
+unsafe extern "C-unwind" fn sync_wait_poll(frame: *mut u8, _ctx: *mut u8, out: *mut u8) -> u8 {
+    if frame.is_null() {
+        return 1;
+    }
+
+    let wait = unsafe { &mut *(frame as *mut SyncWaitFrame) };
+
+    if wait.armed {
+        wait.armed = false;
+        if !out.is_null() {
+            unsafe { (out as *mut i32).write(0) };
+        }
+        return 1;
+    }
+
+    let kind = match wait.kind {
+        0 => WaitKind::ChannelSend,
+        1 => WaitKind::ChannelRecv,
+        2 => WaitKind::Mutex,
+        3 => WaitKind::RwRead,
+        4 => WaitKind::RwWrite,
+        _ => panic!("invalid sync wait kind"),
+    };
+
+    match crate::executor::register_sync_wait(wait.sync_id, kind) {
+        Ok(()) => {
+            wait.armed = true;
+            0
+        }
+        Err(err) => {
+            if !out.is_null() {
+                unsafe { (out as *mut i32).write(err) };
+            }
+            1
+        }
+    }
+}
+
+unsafe extern "C" fn sync_wait_drop(frame: *mut u8) {
+    if frame.is_null() {
+        return;
+    }
+
+    let _ = unsafe { Box::from_raw(frame as *mut SyncWaitFrame) };
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt__async_yield_now() -> *mut u8 {
     let frame = Box::into_raw(Box::new(0u8));
@@ -335,6 +389,45 @@ pub extern "C" fn __rt__async_wait_writable(source_id: usize) -> *mut u8 {
         io_wait_drop as *const () as *const u8,
         TaskMobility::Movable as u8,
     )
+}
+
+fn create_sync_wait(sync_id: usize, kind: u8) -> *mut u8 {
+    let frame = Box::into_raw(Box::new(SyncWaitFrame {
+        sync_id,
+        kind,
+        armed: false,
+    }));
+    __rt__async_create(
+        frame as *mut u8,
+        sync_wait_poll as *const () as *const u8,
+        sync_wait_drop as *const () as *const u8,
+        TaskMobility::Movable as u8,
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __rt__async_channel_wait_send(channel_id: usize) -> *mut u8 {
+    create_sync_wait(channel_id, 0)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __rt__async_channel_wait_recv(channel_id: usize) -> *mut u8 {
+    create_sync_wait(channel_id, 1)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __rt__async_mutex_lock(mutex_id: usize) -> *mut u8 {
+    create_sync_wait(mutex_id, 2)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __rt__async_rwlock_read(lock_id: usize) -> *mut u8 {
+    create_sync_wait(lock_id, 3)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __rt__async_rwlock_write(lock_id: usize) -> *mut u8 {
+    create_sync_wait(lock_id, 4)
 }
 
 // --- Task group poll ---
