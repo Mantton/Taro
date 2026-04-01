@@ -4,8 +4,13 @@
 
 ; Literals
 (string_literal) @string
+(f_string_literal) @string
 (escape_sequence) @string.escape
+(f_string_escape) @string.escape
 (rune_literal) @string.special
+(f_string_brace_escape) @string.escape
+(f_string_interpolation "{" @punctuation.special)
+(f_string_interpolation "}" @punctuation.special)
 (number_literal) @number
 (boolean_literal) @constant.builtin
 (nil_literal) @constant.builtin

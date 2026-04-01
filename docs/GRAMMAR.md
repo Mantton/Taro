@@ -37,6 +37,7 @@ This document describes the formal grammar of the Taro programming language in E
                          | <integer_literal>
                          | <float_literal>
                          | <string_literal>
+                         | <f_string_literal>
                          | <rune_literal>
 
 <bool_literal>         ::= 'true' | 'false'
@@ -58,6 +59,11 @@ This document describes the formal grammar of the Taro programming language in E
 <exponent>             ::= ( 'e' | 'E' ) [ '+' | '-' ] <decimal_literal>
 
 <string_literal>       ::= '"' { <string_char> } '"'
+<f_string_literal>     ::= 'f"' { <f_string_item> } '"'
+<f_string_item>        ::= <string_char>
+                         | '{{'
+                         | '}}'
+                         | '{' <expression> '}'
 <rune_literal>         ::= '\'' <rune_char> '\''
 ```
 

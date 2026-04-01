@@ -1,0 +1,18 @@
+func main() {
+    let name = "Ada"
+    let score = 7
+
+    let greeting = f"Hello, {name} (score={score})"
+    assert(greeting == "Hello, Ada (score=7)", "f-string should interpolate identifiers")
+
+    let computed = f"sum={score + 5}"
+    assert(computed == "sum=12", "f-string should support full expressions")
+
+    let braces = f"{{ok}}"
+    assert(braces == "{ok}", "double braces should render literal braces")
+
+    let pct = f"100% {score}"
+    assert(pct == "100% 7", "literal percent should survive sprintf escaping")
+
+    std.print("PASS: f-string interpolation\n")
+}

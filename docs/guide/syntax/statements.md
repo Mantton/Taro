@@ -76,6 +76,21 @@ func main() {
 }
 ```
 
+F-strings provide a shorthand for `%v`-style formatting:
+
+```taro
+func main() {
+    let name = "Ada"
+    let score = 7
+    let line = f"Hello, {name} (score={score})"
+}
+```
+
+Notes:
+- Interpolations use `{expr}` and support full expressions.
+- Literal braces use `{{` and `}}`.
+- `%` in literal segments is preserved (compiler escapes it when lowering to `std.sprintf`).
+
 ---
 
 ## Assertions

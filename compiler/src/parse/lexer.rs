@@ -241,12 +241,16 @@ pub struct Lexer {
 
 impl Lexer {
     pub fn new(source: &str, file: FileID) -> Lexer {
+        Self::new_with_position(source, file, Position { line: 0, offset: 0 })
+    }
+
+    pub fn new_with_position(source: &str, file: FileID, position: Position) -> Lexer {
         let source: Vec<char> = source.chars().collect();
         Lexer {
-            anchor: Position { line: 0, offset: 0 },
+            anchor: position,
             cursor: 0,
-            line: 0,
-            offset: 0,
+            line: position.line,
+            offset: position.offset,
             tokens: Vec::new(),
             source,
             file,
@@ -540,6 +544,13 @@ impl Lexer {
                     Token::Underscore
                 }
             }
+            'f' => {
+                if self.first() == Some('"') {
+                    self.lex_fstring()?;
+                    return Ok(TokenCase::Skip);
+                }
+                self.identifier()
+            }
             '"' => self.string()?,
             '`' => self.escaped_identifier()?,
             '\'' => self.rune()?,
@@ -664,6 +675,247 @@ impl Lexer {
         }
 
         Ok(None)
+    }
+}
+
+// f-strings
+impl Lexer {
+    fn push_token_with_span(&mut self, token: Token, start: Position, end: Position) {
+        self.tokens.push(Spanned::new(
+            token,
+            Span {
+                start,
+                end,
+                file: self.file,
+            },
+        ));
+    }
+
+    fn emit_fstring_text(&mut self, text: &mut String, start: Position) {
+        if text.is_empty() {
+            return;
+        }
+        let end = self.position();
+        let value = std::mem::take(text);
+        self.push_token_with_span(Token::FStringText { value }, start, end);
+    }
+
+    fn lex_fstring(&mut self) -> Result<(), LexerError> {
+        let start = self.anchor;
+        if !self.eat('"') {
+            return Err(LexerError::InvalidCharacter('f'));
+        }
+        self.push_token_with_span(Token::FStringStart, start, self.position());
+
+        let mut text = String::new();
+        let mut text_start = self.position();
+
+        loop {
+            let Some(ch) = self.first() else {
+                return Err(LexerError::UnterminatedStringLiteral);
+            };
+
+            match ch {
+                '"' => {
+                    self.emit_fstring_text(&mut text, text_start);
+                    let quote_start = self.position();
+                    self.next_char();
+                    self.push_token_with_span(Token::FStringEnd, quote_start, self.position());
+                    break;
+                }
+                '{' => {
+                    if self.second() == Some('{') {
+                        self.next_char();
+                        self.next_char();
+                        text.push('{');
+                        continue;
+                    }
+
+                    self.emit_fstring_text(&mut text, text_start);
+
+                    let marker_start = self.position();
+                    self.next_char(); // consume '{'
+                    let expr_start = self.position();
+                    self.push_token_with_span(Token::FStringExprStart, marker_start, expr_start);
+
+                    let expr_source = self.scan_fstring_interpolation_source()?;
+                    let expr_tokens =
+                        self.lex_fstring_expression_tokens(&expr_source, expr_start)?;
+                    self.tokens.extend(expr_tokens);
+
+                    let close_start = self.position();
+                    if !self.eat('}') {
+                        return Err(LexerError::UnterminatedFStringInterpolation);
+                    }
+                    self.push_token_with_span(Token::FStringExprEnd, close_start, self.position());
+                    text_start = self.position();
+                }
+                '}' => {
+                    if self.second() == Some('}') {
+                        self.next_char();
+                        self.next_char();
+                        text.push('}');
+                    } else {
+                        return Err(LexerError::UnmatchedFStringBrace);
+                    }
+                }
+                '\\' => {
+                    self.next_char(); // consume '\'
+                    text.push('\\');
+                    let Some(escaped) = self.first() else {
+                        return Err(LexerError::UnterminatedStringLiteral);
+                    };
+                    if escaped == '\n' {
+                        return Err(LexerError::StringLiteralMustBeSingleLine);
+                    }
+                    self.next_char();
+                    text.push(escaped);
+                }
+                '\n' => return Err(LexerError::StringLiteralMustBeSingleLine),
+                _ => {
+                    self.next_char();
+                    text.push(ch);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn scan_fstring_interpolation_source(&mut self) -> Result<String, LexerError> {
+        let mut source = String::new();
+        let mut brace_depth = 0usize;
+
+        loop {
+            let Some(ch) = self.first() else {
+                return Err(LexerError::UnterminatedFStringInterpolation);
+            };
+
+            match ch {
+                '\n' => return Err(LexerError::UnterminatedFStringInterpolation),
+                '{' => {
+                    brace_depth += 1;
+                    source.push(ch);
+                    self.next_char();
+                }
+                '}' => {
+                    if brace_depth == 0 {
+                        if source.trim().is_empty() {
+                            return Err(LexerError::EmptyFStringInterpolation);
+                        }
+                        return Ok(source);
+                    }
+                    brace_depth -= 1;
+                    source.push(ch);
+                    self.next_char();
+                }
+                '"' | '\'' | '`' => {
+                    source.push(ch);
+                    self.next_char();
+                    self.consume_fstring_quoted_segment(ch, &mut source)?;
+                }
+                '/' if self.second() == Some('/') => {
+                    source.push('/');
+                    source.push('/');
+                    self.next_char();
+                    self.next_char();
+                    while let Some(c) = self.first() {
+                        if c == '\n' {
+                            return Err(LexerError::UnterminatedFStringInterpolation);
+                        }
+                        source.push(c);
+                        self.next_char();
+                    }
+                    return Err(LexerError::UnterminatedFStringInterpolation);
+                }
+                '/' if self.second() == Some('*') => {
+                    source.push('/');
+                    source.push('*');
+                    self.next_char();
+                    self.next_char();
+                    loop {
+                        let Some(c) = self.first() else {
+                            return Err(LexerError::UnterminatedFStringInterpolation);
+                        };
+                        if c == '\n' {
+                            return Err(LexerError::UnterminatedFStringInterpolation);
+                        }
+                        if c == '*' && self.second() == Some('/') {
+                            source.push('*');
+                            source.push('/');
+                            self.next_char();
+                            self.next_char();
+                            break;
+                        }
+                        source.push(c);
+                        self.next_char();
+                    }
+                }
+                _ => {
+                    source.push(ch);
+                    self.next_char();
+                }
+            }
+        }
+    }
+
+    fn consume_fstring_quoted_segment(
+        &mut self,
+        delimiter: char,
+        out: &mut String,
+    ) -> Result<(), LexerError> {
+        loop {
+            let Some(ch) = self.first() else {
+                return Err(LexerError::UnterminatedFStringInterpolation);
+            };
+
+            match ch {
+                '\n' => return Err(LexerError::UnterminatedFStringInterpolation),
+                '\\' => {
+                    out.push('\\');
+                    self.next_char();
+                    let Some(escaped) = self.first() else {
+                        return Err(LexerError::UnterminatedFStringInterpolation);
+                    };
+                    if escaped == '\n' {
+                        return Err(LexerError::UnterminatedFStringInterpolation);
+                    }
+                    out.push(escaped);
+                    self.next_char();
+                }
+                _ if ch == delimiter => {
+                    out.push(ch);
+                    self.next_char();
+                    return Ok(());
+                }
+                _ => {
+                    out.push(ch);
+                    self.next_char();
+                }
+            }
+        }
+    }
+
+    fn lex_fstring_expression_tokens(
+        &self,
+        source: &str,
+        start: Position,
+    ) -> Result<Vec<Spanned<Token>>, LexerError> {
+        let lexer = Lexer::new_with_position(source, self.file, start);
+        let file = lexer.tokenize().map_err(|err| err.value)?;
+        let mut tokens = file.tokens;
+
+        if matches!(tokens.last().map(|token| &token.value), Some(Token::EOF)) {
+            let _ = tokens.pop();
+        }
+        if matches!(
+            tokens.last().map(|token| &token.value),
+            Some(Token::Semicolon)
+        ) {
+            let _ = tokens.pop();
+        }
+
+        Ok(tokens)
     }
 }
 
@@ -1017,6 +1269,9 @@ pub enum LexerError {
     UnterminatedEscapedIdentifier,
     UnterminatedRuneLiteral,
     UnterminatedStringLiteral,
+    UnterminatedFStringInterpolation,
+    UnmatchedFStringBrace,
+    EmptyFStringInterpolation,
     StringLiteralMustBeSingleLine,
     EscapeIdentifierMustBeSingleLine,
     InvalidIntegerLiteral,
@@ -1033,6 +1288,16 @@ impl std::fmt::Display for LexerError {
             }
             LexerError::UnterminatedRuneLiteral => write!(f, "unterminated rune literal"),
             LexerError::UnterminatedStringLiteral => write!(f, "unterminated string literal"),
+            LexerError::UnterminatedFStringInterpolation => {
+                write!(f, "unterminated f-string interpolation")
+            }
+            LexerError::UnmatchedFStringBrace => write!(
+                f,
+                "f-string contains an unmatched '}}' (use '}}}}' for a literal brace)"
+            ),
+            LexerError::EmptyFStringInterpolation => {
+                write!(f, "f-string interpolation cannot be empty")
+            }
             LexerError::StringLiteralMustBeSingleLine => {
                 write!(f, "string literals must be on a single line")
             }
@@ -1128,6 +1393,7 @@ fn can_end_statement(tok: &Token) -> bool {
         | Token::Float { .. }
         | Token::Rune { .. }
         | Token::String { .. }
+        | Token::FStringEnd
         // singletons
         | Token::True
         | Token::False
@@ -1385,6 +1651,100 @@ mod tests {
                 Token::EOF,
             ]
         );
+    }
+
+    #[test]
+    fn test_literals_fstring_basic() {
+        let input = r#"f"hello, {name}""#;
+        let tokens = tokenize(input);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::FStringStart,
+                Token::FStringText {
+                    value: "hello, ".into()
+                },
+                Token::FStringExprStart,
+                Token::Identifier {
+                    value: "name".into()
+                },
+                Token::FStringExprEnd,
+                Token::FStringEnd,
+                Token::Semicolon,
+                Token::EOF,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_literals_fstring_with_escaped_braces() {
+        let input = r#"f"{{ok}}""#;
+        let tokens = tokenize(input);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::FStringStart,
+                Token::FStringText {
+                    value: "{ok}".into()
+                },
+                Token::FStringEnd,
+                Token::Semicolon,
+                Token::EOF,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_literals_fstring_nested_braces_in_expression() {
+        let input = r#"f"value={Point { x: 1 }}""#;
+        let tokens = tokenize(input);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::FStringStart,
+                Token::FStringText {
+                    value: "value=".into()
+                },
+                Token::FStringExprStart,
+                Token::Identifier {
+                    value: "Point".into()
+                },
+                Token::LBrace,
+                Token::Identifier { value: "x".into() },
+                Token::Colon,
+                Token::Integer {
+                    value: "1".into(),
+                    base: Base::Decimal,
+                    suffix: None,
+                },
+                Token::RBrace,
+                Token::FStringExprEnd,
+                Token::FStringEnd,
+                Token::Semicolon,
+                Token::EOF,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_fstring_empty_interpolation_error() {
+        let error = tokenize_result(r#"f"{}""#).expect_err("expected lexing to fail");
+        assert!(matches!(error, LexerError::EmptyFStringInterpolation));
+    }
+
+    #[test]
+    fn test_fstring_unmatched_brace_error() {
+        let error = tokenize_result(r#"f"}""#).expect_err("expected lexing to fail");
+        assert!(matches!(error, LexerError::UnmatchedFStringBrace));
+    }
+
+    #[test]
+    fn test_fstring_unterminated_interpolation_error() {
+        let error = tokenize_result(r#"f"{name""#).expect_err("expected lexing to fail");
+        assert!(matches!(
+            error,
+            LexerError::UnterminatedFStringInterpolation
+        ));
     }
 
     #[test]

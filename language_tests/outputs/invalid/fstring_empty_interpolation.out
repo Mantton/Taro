@@ -1,0 +1,4 @@
+error: lexer error: f-string interpolation cannot be empty
+ -> language_tests/source_files/invalid/fstring_empty_interpolation.tr:2:12
+	    let _ = f"{}"
+	            ^^^

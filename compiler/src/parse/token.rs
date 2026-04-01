@@ -13,6 +13,13 @@ pub enum Token {
     String {
         value: String,
     },
+    FStringStart,
+    FStringText {
+        value: String,
+    },
+    FStringExprStart,
+    FStringExprEnd,
+    FStringEnd,
     Rune {
         value: String,
     },

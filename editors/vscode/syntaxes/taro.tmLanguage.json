@@ -55,6 +55,46 @@
         "strings": {
             "patterns": [
                 {
+                    "name": "string.quoted.double.interpolated.taro",
+                    "begin": "f\"",
+                    "end": "\"",
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.taro",
+                            "match": "\\\\."
+                        },
+                        {
+                            "name": "constant.character.escape.taro",
+                            "match": "\\{\\{|\\}\\}"
+                        },
+                        {
+                            "name": "meta.interpolation.taro",
+                            "begin": "\\{",
+                            "end": "\\}",
+                            "patterns": [
+                                {
+                                    "include": "#numbers"
+                                },
+                                {
+                                    "include": "#keywords"
+                                },
+                                {
+                                    "include": "#constants"
+                                },
+                                {
+                                    "include": "#operators"
+                                },
+                                {
+                                    "include": "#functions"
+                                },
+                                {
+                                    "include": "#types"
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
                     "name": "string.quoted.double.taro",
                     "begin": "\"",
                     "end": "\"",

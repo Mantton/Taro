@@ -6,9 +6,9 @@ use crate::{
         DeclarationKind, Enum, EnumCase, Expression, ExpressionArgument, ExpressionField,
         ExpressionKind, FieldDefinition, ForStatement, Function, FunctionDeclaration,
         FunctionDeclarationKind, FunctionParameter, FunctionPrototype, FunctionSignature,
-        GenericBound, GenericBounds, GenericRequirement, GenericRequirementList, GenericWhereClause,
-        Generics, Identifier, IfExpression, Impl, Interface, Label, Literal, Local, MapPair,
-        MatchArm, MatchExpression, Mutability, Namespace, NamespaceDeclaration,
+        GenericBound, GenericBounds, GenericRequirement, GenericRequirementList,
+        GenericWhereClause, Generics, Identifier, IfExpression, Impl, Interface, Label, Literal,
+        Local, MapPair, MatchArm, MatchExpression, Mutability, Namespace, NamespaceDeclaration,
         NamespaceDeclarationKind, NodeID, Path, PathNode, PathSegment, Pattern,
         PatternBindingCondition, PatternKind, PatternPath, RequiredTypeConstraint, SelfKind,
         Statement, StatementKind, StaticVariable, Struct, StructLiteral, Type, TypeAlias,
@@ -3636,6 +3636,7 @@ impl Parser {
             | Token::True
             | Token::False
             | Token::Nil => self.parse_literal(),
+            Token::FStringStart => self.parse_fstring_expression(),
             Token::Identifier { .. } => self.parse_identifier_expression(),
             Token::Dot => self.parse_inferred_member_expression(),
             Token::LParen => self.parse_tuple_expr(),
@@ -3836,6 +3837,93 @@ impl Parser {
     }
 }
 impl Parser {
+    fn escape_percent_for_sprintf(segment: &str) -> String {
+        if !segment.contains('%') {
+            return segment.to_string();
+        }
+        segment.replace('%', "%%")
+    }
+
+    fn parse_fstring_expression(&mut self) -> R<Box<Expression>> {
+        let lo = self.lo_span();
+        self.expect(Token::FStringStart)?;
+
+        let mut plain_text = String::new();
+        let mut sprintf_format = String::new();
+        let mut has_interpolation = false;
+        let mut arguments: Vec<ExpressionArgument> = vec![];
+
+        while !self.matches(Token::FStringEnd) && !self.is_at_end() {
+            match self.current_token() {
+                Token::FStringText { value } => {
+                    plain_text.push_str(value);
+                    sprintf_format.push_str(&Self::escape_percent_for_sprintf(value));
+                    self.bump();
+                }
+                Token::FStringExprStart => {
+                    has_interpolation = true;
+                    self.bump(); // consume FStringExprStart
+
+                    sprintf_format.push_str("%v");
+                    let expression = self.parse_expression()?;
+                    let span = expression.span;
+                    arguments.push(ExpressionArgument {
+                        label: None,
+                        expression,
+                        span,
+                    });
+
+                    self.expect(Token::FStringExprEnd)?;
+                }
+                _ => return Err(self.err_at_current(ParserError::ExpectedExpression)),
+            }
+        }
+
+        self.expect(Token::FStringEnd)?;
+        let span = lo.to(self.hi_span());
+
+        if !has_interpolation {
+            return Ok(self.build_expr(
+                ExpressionKind::Literal(Literal::String { value: plain_text }),
+                span,
+            ));
+        }
+
+        let format_expr = self.build_expr(
+            ExpressionKind::Literal(Literal::String {
+                value: sprintf_format,
+            }),
+            span,
+        );
+        let format_span = format_expr.span;
+        let mut call_args = Vec::with_capacity(arguments.len() + 1);
+        call_args.push(ExpressionArgument {
+            label: None,
+            expression: format_expr,
+            span: format_span,
+        });
+        call_args.extend(arguments);
+
+        let std_identifier = Identifier {
+            symbol: self.intern_symbol("std"),
+            span,
+        };
+        let sprintf_identifier = Identifier {
+            symbol: self.intern_symbol("sprintf"),
+            span,
+        };
+        let std_expr = self.build_expr(ExpressionKind::Identifier(std_identifier), span);
+        let callee = self.build_expr(
+            ExpressionKind::Member {
+                target: std_expr,
+                name: sprintf_identifier,
+            },
+            span,
+        );
+
+        Ok(self.build_expr(ExpressionKind::Call(callee, call_args), span))
+    }
+
     fn parse_literal(&mut self) -> R<Box<Expression>> {
         let literal = match self.current_token() {
             Token::Integer {
@@ -4288,6 +4376,7 @@ impl Parser {
             if let Some(tok) = self.next(3) {
                 match tok {
                     Token::String { .. }
+                    | Token::FStringStart
                     | Token::Integer { .. }
                     | Token::Float { .. }
                     | Token::True
@@ -4491,20 +4580,16 @@ impl Display for ParserError {
             ExpectedComputedPropertyAccessor => {
                 f.write_str("expected computed property accessor `get` or `set`")
             }
-            MissingComputedPropertyGetter => {
-                f.write_str("computed property must declare a getter")
-            }
+            MissingComputedPropertyGetter => f.write_str("computed property must declare a getter"),
             DuplicateComputedPropertyAccessor => {
                 f.write_str("duplicate computed property accessor")
             }
             InvalidComputedPropertyGetterSignature => {
                 f.write_str("invalid getter signature; expected `get(self|&self|&mut self)`")
             }
-            InvalidComputedPropertySetterSignature => {
-                f.write_str(
-                    "invalid setter signature; expected `set(&mut self, value: T)` with no return",
-                )
-            }
+            InvalidComputedPropertySetterSignature => f.write_str(
+                "invalid setter signature; expected `set(&mut self, value: T)` with no return",
+            ),
             AsyncComputedPropertySetterNotAllowed => {
                 f.write_str("computed property setter cannot be async")
             }
@@ -5241,6 +5326,68 @@ mod tests {
             expr.kind,
             ExpressionKind::Literal(Literal::String { .. })
         ));
+    }
+
+    #[test]
+    fn test_fstring_no_interpolation_lowers_to_string_literal() {
+        let expr = parse_expr_str(r#"f"hello {{world}}""#);
+        match &expr.kind {
+            ExpressionKind::Literal(Literal::String { value }) => {
+                assert_eq!(value, "hello {world}");
+            }
+            _ => panic!("expected string literal"),
+        }
+    }
+
+    #[test]
+    fn test_fstring_interpolation_lowers_to_std_sprintf_call() {
+        let expr = parse_expr_str(r#"f"hello {name}""#);
+        let symbols = Symbols;
+        let ExpressionKind::Call(callee, args) = &expr.kind else {
+            panic!("expected call expression");
+        };
+
+        assert_eq!(args.len(), 2);
+        match &args[0].expression.kind {
+            ExpressionKind::Literal(Literal::String { value }) => {
+                assert_eq!(value, "hello %v");
+            }
+            _ => panic!("expected format literal as first argument"),
+        }
+
+        match &args[1].expression.kind {
+            ExpressionKind::Identifier(identifier) => {
+                assert_eq!(symbol_text(&symbols, identifier.symbol), "name");
+            }
+            _ => panic!("expected interpolation expression as second argument"),
+        }
+
+        match &callee.kind {
+            ExpressionKind::Member { target, name } => {
+                assert_eq!(symbol_text(&symbols, name.symbol), "sprintf");
+                match &target.kind {
+                    ExpressionKind::Identifier(identifier) => {
+                        assert_eq!(symbol_text(&symbols, identifier.symbol), "std");
+                    }
+                    _ => panic!("expected std identifier target"),
+                }
+            }
+            _ => panic!("expected std.sprintf member call"),
+        }
+    }
+
+    #[test]
+    fn test_fstring_interpolation_escapes_percent_in_literal_segments() {
+        let expr = parse_expr_str(r#"f"100% {value}""#);
+        let ExpressionKind::Call(_, args) = &expr.kind else {
+            panic!("expected call expression");
+        };
+        match &args[0].expression.kind {
+            ExpressionKind::Literal(Literal::String { value }) => {
+                assert_eq!(value, "100%% %v");
+            }
+            _ => panic!("expected format literal"),
+        }
     }
 
     #[test]
@@ -6600,18 +6747,16 @@ mod tests {
         let errors = parse_decls("interface Foo { var x: int32 { get(self) { 1 } } }")
             .expect_err("parse should fail");
         assert!(errors.iter().any(|error| {
-            matches!(
-                error.value,
-                ParserError::ComputedPropertyOnlyAllowedInImpl
-            )
+            matches!(error.value, ParserError::ComputedPropertyOnlyAllowedInImpl)
         }));
     }
 
     #[test]
     fn test_computed_property_async_setter_rejected() {
-        let errors =
-            parse_decls("impl Foo { var x: int32 { get(self) { 1 } set(&mut self, value: int32) async { } } }")
-                .expect_err("parse should fail");
+        let errors = parse_decls(
+            "impl Foo { var x: int32 { get(self) { 1 } set(&mut self, value: int32) async { } } }",
+        )
+        .expect_err("parse should fail");
         assert!(errors.iter().any(|error| {
             matches!(
                 error.value,

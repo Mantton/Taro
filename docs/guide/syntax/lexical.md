@@ -90,6 +90,23 @@ Strings are enclosed in double quotes and support escape sequences.
 "Unicode: \u{1F600}"        // Unicode escape
 ```
 
+### F-String Literals
+
+F-strings are prefixed with `f` and support interpolation with `{expr}`.
+
+```taro
+let name = "Ada"
+let score = 7
+f"Hello, {name} (score={score})"
+f"sum={score + 5}"          // Full expression support
+f"{{ok}}"                   // Escaped braces -> "{ok}"
+```
+
+Rules:
+- Use `{expr}` for interpolation.
+- Use `{{` and `}}` for literal braces.
+- F-strings are single-line, like normal strings.
+
 ### Rune Literals
 
 Runes represent single Unicode code points and are enclosed in single quotes.

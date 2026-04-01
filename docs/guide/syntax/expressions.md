@@ -35,6 +35,7 @@ From lowest to highest precedence:
 42                  // Integer
 3.14                // Float
 "hello"             // String
+f"hello, {name}"    // Interpolated string (f-string)
 'a'                 // Rune
 true                // Bool
 false               // Bool

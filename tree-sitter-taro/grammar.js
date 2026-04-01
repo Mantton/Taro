@@ -463,6 +463,7 @@ module.exports = grammar({
         $.self_expression,
         $.number_literal,
         $.string_literal,
+        $.f_string_literal,
         $.rune_literal,
         $.boolean_literal,
         $.nil_literal,
@@ -702,6 +703,21 @@ module.exports = grammar({
 
     string_literal: ($) =>
       seq('"', repeat(choice($.escape_sequence, /[^"\\]+/)), '"'),
+
+    f_string_literal: ($) =>
+      seq('f"', repeat(choice($.f_string_escape, $.f_string_brace_escape, $.f_string_interpolation, $.f_string_text)), '"'),
+
+    f_string_text: ($) =>
+      token.immediate(/[^"\\{}]+/),
+
+    f_string_escape: ($) =>
+      $.escape_sequence,
+
+    f_string_brace_escape: ($) =>
+      token.immediate(choice("{{", "}}")),
+
+    f_string_interpolation: ($) =>
+      seq("{", $._expression, "}"),
 
     rune_literal: ($) =>
       seq("'", choice($.escape_sequence, /[^'\\]/), "'"),
