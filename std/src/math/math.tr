@@ -1,0 +1,171 @@
+public const E: double = 2.718281828459045
+public const PI: double = 3.141592653589793
+public const TAU: double = 6.283185307179586
+
+public func abs(_ x: float) -> float {
+    return x.abs()
+}
+
+public func abs(_ x: double) -> double {
+    return x.abs()
+}
+
+public func sqrt(_ x: float) -> float {
+    return x.sqrt()
+}
+
+public func sqrt(_ x: double) -> double {
+    return x.sqrt()
+}
+
+public func sin(_ x: float) -> float {
+    return x.sin()
+}
+
+public func sin(_ x: double) -> double {
+    return x.sin()
+}
+
+public func cos(_ x: float) -> float {
+    return x.cos()
+}
+
+public func cos(_ x: double) -> double {
+    return x.cos()
+}
+
+public func tan(_ x: float) -> float {
+    return x.tan()
+}
+
+public func tan(_ x: double) -> double {
+    return x.tan()
+}
+
+public func asin(_ x: float) -> float {
+    return x.asin()
+}
+
+public func asin(_ x: double) -> double {
+    return x.asin()
+}
+
+public func acos(_ x: float) -> float {
+    return x.acos()
+}
+
+public func acos(_ x: double) -> double {
+    return x.acos()
+}
+
+public func atan(_ x: float) -> float {
+    return x.atan()
+}
+
+public func atan(_ x: double) -> double {
+    return x.atan()
+}
+
+public func exp(_ x: float) -> float {
+    return x.exp()
+}
+
+public func exp(_ x: double) -> double {
+    return x.exp()
+}
+
+public func exp2(_ x: float) -> float {
+    return x.exp2()
+}
+
+public func exp2(_ x: double) -> double {
+    return x.exp2()
+}
+
+public func log(_ x: float) -> float {
+    return x.log()
+}
+
+public func log(_ x: double) -> double {
+    return x.log()
+}
+
+public func log2(_ x: float) -> float {
+    return x.log2()
+}
+
+public func log2(_ x: double) -> double {
+    return x.log2()
+}
+
+public func log10(_ x: float) -> float {
+    return x.log10()
+}
+
+public func log10(_ x: double) -> double {
+    return x.log10()
+}
+
+public func floor(_ x: float) -> float {
+    return x.floor()
+}
+
+public func floor(_ x: double) -> double {
+    return x.floor()
+}
+
+public func ceil(_ x: float) -> float {
+    return x.ceil()
+}
+
+public func ceil(_ x: double) -> double {
+    return x.ceil()
+}
+
+public func trunc(_ x: float) -> float {
+    return x.trunc()
+}
+
+public func trunc(_ x: double) -> double {
+    return x.trunc()
+}
+
+public func round(_ x: float) -> float {
+    return x.round()
+}
+
+public func round(_ x: double) -> double {
+    return x.round()
+}
+
+public func pow(_ x: float, _ y: float) -> float {
+    return x.pow(y)
+}
+
+public func pow(_ x: double, _ y: double) -> double {
+    return x.pow(y)
+}
+
+public func powi(_ x: float, _ y: int32) -> float {
+    return x.powi(y)
+}
+
+public func powi(_ x: double, _ y: int32) -> double {
+    return x.powi(y)
+}
+
+public func copysign(_ x: float, _ y: float) -> float {
+    return x.copysign(y)
+}
+
+public func copysign(_ x: double, _ y: double) -> double {
+    return x.copysign(y)
+}
+
+public func fma(_ x: float, _ y: float, _ z: float) -> float {
+    return x.fma(y, z)
+}
+
+public func fma(_ x: double, _ y: double, _ z: double) -> double {
+    return x.fma(y, z)
+}

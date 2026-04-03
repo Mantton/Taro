@@ -1,0 +1,94 @@
+import std.math
+import std.testing.{assertEqual, assertTrue}
+
+func approxEqDouble(_ a: double, _ b: double, _ eps: double) -> bool {
+    return (a - b).abs() <= eps
+}
+
+func approxEqFloat(_ a: float, _ b: float, _ eps: float) -> bool {
+    return (a - b).abs() <= eps
+}
+
+@test
+func testMathConstants() {
+    let eps: double = 0.000000000001
+
+    assertTrue(approxEqDouble(math.E, 2.718281828459045, eps), "math.E should be available")
+    assertTrue(approxEqDouble(math.PI, 3.141592653589793, eps), "math.PI should be available")
+    assertTrue(approxEqDouble(math.TAU, 6.283185307179586, eps), "math.TAU should be available")
+
+    let pi32: float = math.PI as float
+    assertTrue(
+        approxEqFloat(pi32, 3.1415927 as float, 0.000001 as float),
+        "math.PI should cast to float",
+    )
+}
+
+@test
+func testMathDoubleWrappers() {
+    let eps: double = 0.000001
+
+    assertTrue(approxEqDouble(math.abs(-3.5), 3.5, eps), "double abs")
+    assertTrue(approxEqDouble(math.sqrt(9.0), 3.0, eps), "double sqrt")
+    assertTrue(approxEqDouble(math.sin(0.0), 0.0, eps), "double sin")
+    assertTrue(approxEqDouble(math.cos(0.0), 1.0, eps), "double cos")
+    assertTrue(approxEqDouble(math.tan(0.0), 0.0, eps), "double tan")
+    assertTrue(approxEqDouble(math.asin(0.0), 0.0, eps), "double asin")
+    assertTrue(approxEqDouble(math.acos(1.0), 0.0, eps), "double acos")
+    assertTrue(approxEqDouble(math.atan(0.0), 0.0, eps), "double atan")
+    assertTrue(approxEqDouble(math.exp(0.0), 1.0, eps), "double exp")
+    assertTrue(approxEqDouble(math.exp2(3.0), 8.0, eps), "double exp2")
+    assertTrue(approxEqDouble(math.log(1.0), 0.0, eps), "double log")
+    assertTrue(approxEqDouble(math.log2(8.0), 3.0, eps), "double log2")
+    assertTrue(approxEqDouble(math.log10(100.0), 2.0, eps), "double log10")
+    assertTrue(approxEqDouble(math.floor(3.7), 3.0, eps), "double floor")
+    assertTrue(approxEqDouble(math.ceil(3.2), 4.0, eps), "double ceil")
+    assertTrue(approxEqDouble(math.trunc(-3.7), -3.0, eps), "double trunc")
+    assertTrue(approxEqDouble(math.round(2.3), 2.0, eps), "double round")
+
+    let powValue: double = math.pow(2.0 as double, 3.0 as double)
+    let powiValue: double = math.powi(2.0 as double, 3)
+    let copysignValue: double = math.copysign(3.0 as double, -1.0 as double)
+    let fmaValue: double = math.fma(2.0 as double, 3.0 as double, 4.0 as double)
+
+    assertEqual(powValue, 8.0 as double, "double pow")
+    assertEqual(powiValue, 8.0 as double, "double powi")
+    assertEqual(copysignValue, -3.0 as double, "double copysign")
+    assertEqual(fmaValue, 10.0 as double, "double fma")
+}
+
+@test
+func testMathFloatWrappers() {
+    let eps: float = 0.0001 as float
+
+    assertTrue(approxEqFloat(math.abs(-3.5 as float), 3.5 as float, eps), "float abs")
+    assertTrue(approxEqFloat(math.sqrt(9.0 as float), 3.0 as float, eps), "float sqrt")
+    assertTrue(approxEqFloat(math.sin(0.0 as float), 0.0 as float, eps), "float sin")
+    assertTrue(approxEqFloat(math.cos(0.0 as float), 1.0 as float, eps), "float cos")
+    assertTrue(approxEqFloat(math.tan(0.0 as float), 0.0 as float, eps), "float tan")
+    assertTrue(approxEqFloat(math.asin(0.0 as float), 0.0 as float, eps), "float asin")
+    assertTrue(approxEqFloat(math.acos(1.0 as float), 0.0 as float, eps), "float acos")
+    assertTrue(approxEqFloat(math.atan(0.0 as float), 0.0 as float, eps), "float atan")
+    assertTrue(approxEqFloat(math.exp(0.0 as float), 1.0 as float, eps), "float exp")
+    assertTrue(approxEqFloat(math.exp2(3.0 as float), 8.0 as float, eps), "float exp2")
+    assertTrue(approxEqFloat(math.log(1.0 as float), 0.0 as float, eps), "float log")
+    assertTrue(approxEqFloat(math.log2(8.0 as float), 3.0 as float, eps), "float log2")
+    assertTrue(approxEqFloat(math.log10(100.0 as float), 2.0 as float, eps), "float log10")
+    assertTrue(approxEqFloat(math.floor(3.7 as float), 3.0 as float, eps), "float floor")
+    assertTrue(approxEqFloat(math.ceil(3.2 as float), 4.0 as float, eps), "float ceil")
+    assertTrue(approxEqFloat(math.trunc(-3.7 as float), -3.0 as float, eps), "float trunc")
+    assertTrue(approxEqFloat(math.round(2.3 as float), 2.0 as float, eps), "float round")
+
+    assertEqual(math.pow(2.0 as float, 3.0 as float), 8.0 as float, "float pow")
+    assertEqual(math.powi(2.0 as float, 3), 8.0 as float, "float powi")
+    assertEqual(
+        math.copysign(3.0 as float, -1.0 as float),
+        -3.0 as float,
+        "float copysign",
+    )
+    assertEqual(
+        math.fma(2.0 as float, 3.0 as float, 4.0 as float),
+        10.0 as float,
+        "float fma",
+    )
+}
